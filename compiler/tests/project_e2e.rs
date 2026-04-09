@@ -1301,8 +1301,10 @@ fn sample_scene() -> Integer {
     scene = capture scene_shape
     glow = radiance_at(
         capture=scene,
-        point=vec3(0.0, 0.0, 0.0),
-        direction=vec3(0.0, 0.0, -1.0)
+        sample=point_direction_query(
+            point=vec3(0.0, 0.0, 0.0),
+            direction=vec3(0.0, 0.0, -1.0)
+        )
     )
     fog = medium_at(capture=scene, point=vec3(0.0, 0.0, 0.0))
     if glow.z > fog.density {

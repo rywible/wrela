@@ -1728,6 +1728,12 @@ impl<'a> Checker<'a> {
         let mut out = Vec::new();
         for scope in self.scopes.iter().rev() {
             for name in scope.bindings.keys() {
+                let Some(binding) = scope.bindings.get(name) else {
+                    continue;
+                };
+                if binding.span.is_none() || matches!(binding.kind, BindingKind::Implicit) {
+                    continue;
+                }
                 if name.starts_with("__wr_") {
                     continue;
                 }

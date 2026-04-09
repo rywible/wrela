@@ -5,8 +5,8 @@ use crate::mir::ir::TypeTagId;
 use crate::mir::lower::portable_value_struct_abi;
 use crate::pir;
 use crate::portable::{
-    self, PortableAbiType, PortableStructField, portable_abi_emit_wgsl_structs,
-    portable_builtin_record_abi,
+    PortableAbiType, PortableStructField, all_builtin_records, portable_abi_emit_wgsl_structs,
+    portable_any_builtin_record_abi, portable_builtin_record_abi,
 };
 use crate::query_exec::QueryExecContext;
 use crate::query_exec::cpu::{DirectQueryOps, QueryExecError};
@@ -177,7 +177,7 @@ pub(crate) fn generate_shader(
 fn build_type_tags(ctx: &QueryExecContext) -> HashMap<SmolStr, TypeTagId> {
     let mut next = 1usize;
     let mut tags = HashMap::new();
-    for record in portable::builtin_records() {
+    for record in all_builtin_records() {
         tags.insert(SmolStr::new(record.name), TypeTagId(next));
         next += 1;
     }
@@ -227,23 +227,6 @@ pub(crate) fn wgsl_dispatch_config_abi() -> PortableAbiType {
     }
 }
 
-pub(crate) fn wgsl_point_direction_query_abi() -> PortableAbiType {
-    PortableAbiType::Struct {
-        name: SmolStr::new("PointDirectionQuery"),
-        class_id: 0,
-        fields: vec![
-            PortableStructField {
-                name: SmolStr::new("point"),
-                ty: PortableAbiType::Vec3,
-            },
-            PortableStructField {
-                name: SmolStr::new("direction"),
-                ty: PortableAbiType::Vec3,
-            },
-        ],
-    }
-}
-
 fn wgsl_builtin_contract_abi(name: &str) -> Result<PortableAbiType, QueryExecError> {
     portable_builtin_record_abi(name).ok_or_else(|| QueryExecError::Unsupported {
         message: format!("missing portable ABI for '{name}'"),
@@ -270,7 +253,7 @@ pub(crate) fn wgsl_item_abi_for_flavor(
             wgsl_builtin_contract_abi("Hit3")
         }
         QueryFlavor::CaptureRadiance | QueryFlavor::WorldRadiance => {
-            Ok(wgsl_point_direction_query_abi())
+            wgsl_builtin_contract_abi("PointDirectionQuery")
         }
     }
 }
@@ -305,8 +288,8 @@ fn emit_value_and_abi_structs(
     extra_roots: &[PortableAbiType],
 ) -> Result<String, QueryExecError> {
     let mut value_roots = Vec::new();
-    for record in portable::builtin_records() {
-        if let Some(abi) = portable_builtin_record_abi(record.name) {
+    for record in all_builtin_records() {
+        if let Some(abi) = portable_any_builtin_record_abi(record.name) {
             value_roots.push(abi);
         }
     }
@@ -431,8 +414,8 @@ fn emit_struct_conversions(
     extra_roots: &[PortableAbiType],
 ) -> Result<String, QueryExecError> {
     let mut roots = Vec::new();
-    for record in portable::builtin_records() {
-        if let Some(abi) = portable_builtin_record_abi(record.name) {
+    for record in all_builtin_records() {
+        if let Some(abi) = portable_any_builtin_record_abi(record.name) {
             roots.push(abi);
         }
     }

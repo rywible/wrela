@@ -4417,7 +4417,7 @@ fn runtime_builtin_func_id(
             module,
             runtime,
             "wr_wgsl_world_trace_capture",
-            9,
+            4,
         )?),
         "__wr_wgsl_world_surface_capture" => Some(runtime_fn_wgsl_bridge(
             module,
@@ -4429,7 +4429,7 @@ fn runtime_builtin_func_id(
             module,
             runtime,
             "wr_wgsl_world_radiance_capture",
-            5,
+            4,
         )?),
         "__wr_wgsl_world_medium_capture" => Some(runtime_fn_wgsl_bridge(
             module,
@@ -4498,6 +4498,9 @@ fn runtime_builtin_func_id(
         "__wr_list_push" => Some(runtime_fn_list_push(module, runtime)?),
         "__wr_list_len" => Some(runtime_fn_list_len(module, runtime)?),
         "__wr_external_call" => Some(runtime_fn_external_call(module, runtime)?),
+        "__wr_http_call" => Some(runtime_fn_http_call(module, runtime)?),
+        "__wr_web_parse_json_text" => Some(runtime_fn_web_parse_json_text(module, runtime)?),
+        "__wr_web_render_json_text" => Some(runtime_fn_web_render_json_text(module, runtime)?),
         "__wr_bytes_from_string" => Some(runtime_fn_bytes_from_string(module, runtime)?),
         "__wr_bytes_from_list" => Some(runtime_fn_bytes_from_list(module, runtime)?),
         "__wr_bytes_to_string" => Some(runtime_fn_bytes_to_string(module, runtime)?),
@@ -4585,6 +4588,127 @@ fn runtime_builtin_func_id(
         "__wr_metrics_web_sendfile_calls_id" => {
             Some(runtime_fn_metrics_web_sendfile_calls_id(module, runtime)?)
         }
+        "__wr_fs_read_bytes" => Some(runtime_fn_fs_read_bytes(module, runtime)?),
+        "__wr_fs_write_bytes" => Some(runtime_fn_fs_write_bytes(module, runtime)?),
+        "__wr_auth_hash_password" => Some(runtime_fn_auth_hash_password(module, runtime)?),
+        "__wr_auth_verify_password_hash" => {
+            Some(runtime_fn_auth_verify_password_hash(module, runtime)?)
+        }
+        "__wr_auth_sign_jwt" => Some(runtime_fn_auth_sign_jwt(module, runtime)?),
+        "__wr_auth_verify_jwt" => Some(runtime_fn_auth_verify_jwt(module, runtime)?),
+        "__wr_auth_generate_secure_token" => {
+            Some(runtime_fn_auth_generate_secure_token(module, runtime)?)
+        }
+        "__wr_auth_render_jwks_document" => {
+            Some(runtime_fn_auth_render_jwks_document(module, runtime)?)
+        }
+        "__wr_str_len" => Some(runtime_fn_str_len(module, runtime)?),
+        "__wr_log" => Some(runtime_fn_log(module, runtime)?),
+        "__wr_log_configure" => Some(runtime_fn_log_configure(module, runtime)?),
+        "__wr_runtime_cpu_count" => Some(runtime_fn_runtime_cpu_count(module, runtime)?),
+        "__wr_runtime_configure" => Some(runtime_fn_runtime_configure(module, runtime)?),
+        "__wr_reactor_new" => Some(runtime_fn_reactor_new(module, runtime)?),
+        "__wr_reactor_drop" => Some(runtime_fn_reactor_drop(module, runtime)?),
+        "__wr_reactor_register" => Some(runtime_fn_reactor_register(module, runtime)?),
+        "__wr_reactor_deregister" => Some(runtime_fn_reactor_deregister(module, runtime)?),
+        "__wr_reactor_arm_timer" => Some(runtime_fn_reactor_arm_timer(module, runtime)?),
+        "__wr_task_signal_new" => Some(runtime_fn_task_signal_new(module, runtime)?),
+        "__wr_task_signal_drop" => Some(runtime_fn_task_signal_drop(module, runtime)?),
+        "__wr_task_unpark_one" => Some(runtime_fn_task_unpark_one(module, runtime)?),
+        "__wr_task_unpark_all" => Some(runtime_fn_task_unpark_all(module, runtime)?),
+        "__wr_task_epoch" => Some(runtime_fn_task_epoch(module, runtime)?),
+        "__wr_atomic_i64_new" => Some(runtime_fn_atomic_i64_new(module, runtime)?),
+        "__wr_atomic_i64_drop" => Some(runtime_fn_atomic_i64_drop(module, runtime)?),
+        "__wr_atomic_i64_load" => Some(runtime_fn_atomic_i64_load(module, runtime)?),
+        "__wr_atomic_i64_store" => Some(runtime_fn_atomic_i64_store(module, runtime)?),
+        "__wr_atomic_i64_fetch_add" => Some(runtime_fn_atomic_i64_fetch_add(module, runtime)?),
+        "__wr_pool_size" => Some(runtime_fn_pool_size(module, runtime)?),
+        "__wr_pool_rr" => Some(runtime_fn_pool_rr(module, runtime)?),
+        "__wr_pool_queue_len" => Some(runtime_fn_pool_queue_len(module, runtime)?),
+        "__wr_actor_mailbox_len" => Some(runtime_fn_actor_mailbox_len(module, runtime)?),
+        "__wr_actor_pause" => Some(runtime_fn_actor_pause(module, runtime)?),
+        "__wr_actor_resume" => Some(runtime_fn_actor_resume(module, runtime)?),
+        "__wr_actor_pause_wait" => Some(runtime_fn_actor_pause_wait(module, runtime)?),
+        "__wr_actor_fire_burst_begin" => Some(runtime_fn_actor_fire_burst_begin(module, runtime)?),
+        "__wr_actor_fire_burst_end" => Some(runtime_fn_actor_fire_burst_end(module, runtime)?),
+        "__wr_actor_fire_burst_abort" => Some(runtime_fn_actor_fire_burst_abort(module, runtime)?),
+        "__wr_clock_ns" => Some(runtime_fn_clock_ns(module, runtime)?),
+        "__wr_sleep_ms" => Some(runtime_fn_sleep_ms(module, runtime)?),
+        "__wr_db_core_open" => Some(runtime_fn_db_core_open(module, runtime)?),
+        "__wr_db_core_close" => Some(runtime_fn_db_core_close(module, runtime)?),
+        "__wr_db_core_submit_batch" => Some(runtime_fn_db_core_submit_batch(module, runtime)?),
+        "__wr_db_core_read_point" => Some(runtime_fn_db_core_read_point(module, runtime)?),
+        "__wr_db_core_read_range" => Some(runtime_fn_db_core_read_range(module, runtime)?),
+        "__wr_db_core_txn_begin" => Some(runtime_fn_db_core_txn_begin(module, runtime)?),
+        "__wr_db_core_txn_prepare" => Some(runtime_fn_db_core_txn_prepare(module, runtime)?),
+        "__wr_db_core_txn_commit" => Some(runtime_fn_db_core_txn_commit(module, runtime)?),
+        "__wr_db_core_txn_abort" => Some(runtime_fn_db_core_txn_abort(module, runtime)?),
+        "__wr_db_admin_snapshot_start" => {
+            Some(runtime_fn_db_admin_snapshot_start(module, runtime)?)
+        }
+        "__wr_db_admin_snapshot_status" => {
+            Some(runtime_fn_db_admin_snapshot_status(module, runtime)?)
+        }
+        "__wr_db_admin_restore" => Some(runtime_fn_db_admin_restore(module, runtime)?),
+        "__wr_db_admin_checkpoint_create" => {
+            Some(runtime_fn_db_admin_checkpoint_create(module, runtime)?)
+        }
+        "__wr_db_admin_checkpoint_restore_latest" => Some(
+            runtime_fn_db_admin_checkpoint_restore_latest(module, runtime)?,
+        ),
+        "__wr_db_admin_schema_epoch_set" => {
+            Some(runtime_fn_db_admin_schema_epoch_set(module, runtime)?)
+        }
+        "__wr_db_admin_schema_set_all_voters_on_target_binary" => Some(
+            runtime_fn_db_admin_schema_set_all_voters_on_target_binary(module, runtime)?,
+        ),
+        "__wr_db_admin_autoscale_tick" => {
+            Some(runtime_fn_db_admin_autoscale_tick(module, runtime)?)
+        }
+        "__wr_db_admin_plan_rehome" => Some(runtime_fn_db_admin_plan_rehome(module, runtime)?),
+        "__wr_db_admin_advance_rehome" => {
+            Some(runtime_fn_db_admin_advance_rehome(module, runtime)?)
+        }
+        "__wr_db_admin_promote_async_failover" => {
+            Some(runtime_fn_db_admin_promote_async_failover(module, runtime)?)
+        }
+        "__wr_db_explain_checkpoint_count" => {
+            Some(runtime_fn_db_explain_checkpoint_count(module, runtime)?)
+        }
+        "__wr_db_explain_schema_epoch_get" => {
+            Some(runtime_fn_db_explain_schema_epoch_get(module, runtime)?)
+        }
+        "__wr_db_explain_health_has_checkpoint_or_schema_error" => Some(
+            runtime_fn_db_explain_health_has_checkpoint_or_schema_error(module, runtime)?,
+        ),
+        "__wr_db_explain_private_mesh_status" => {
+            Some(runtime_fn_db_explain_private_mesh_status(module, runtime)?)
+        }
+        "__wr_db_explain_logical_shard_count" => {
+            Some(runtime_fn_db_explain_logical_shard_count(module, runtime)?)
+        }
+        "__wr_db_explain_active_group_count" => {
+            Some(runtime_fn_db_explain_active_group_count(module, runtime)?)
+        }
+        "__wr_db_explain_autoscale_status" => {
+            Some(runtime_fn_db_explain_autoscale_status(module, runtime)?)
+        }
+        "__wr_db_explain_topology_status" => {
+            Some(runtime_fn_db_explain_topology_status(module, runtime)?)
+        }
+        "__wr_db_explain_shard_map_epoch" => {
+            Some(runtime_fn_db_explain_shard_map_epoch(module, runtime)?)
+        }
+        "__wr_db_explain_shard_for_key" => {
+            Some(runtime_fn_db_explain_shard_for_key(module, runtime)?)
+        }
+        "__wr_db_explain_resolve_owner" => {
+            Some(runtime_fn_db_explain_resolve_owner(module, runtime)?)
+        }
+        "__wr_db_explain_global_route_lookup" => {
+            Some(runtime_fn_db_explain_global_route_lookup(module, runtime)?)
+        }
+        "__wr_assert_err" => Some(runtime_fn_assert_err(module, runtime)?),
         _ => None,
     };
     Ok(func_id)

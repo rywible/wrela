@@ -3766,12 +3766,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![
                     (SmolStr::new("capture"), portable_named_type("ShapeCapture")),
-                    (SmolStr::new("origin"), Type::Vec3),
-                    (SmolStr::new("direction"), Type::Vec3),
-                    (SmolStr::new("max_distance"), Type::F32),
-                    (SmolStr::new("min_step"), Type::F32),
-                    (SmolStr::new("hit_epsilon"), Type::F32),
-                    (SmolStr::new("max_steps"), Type::Integer),
+                    (SmolStr::new("ray"), portable_named_type("RayQuery")),
                 ],
                 ret: portable_named_type("Hit3"),
                 kind: FunctionKind::Function,
@@ -3797,8 +3792,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             FunctionSig {
                 params: vec![
                     (SmolStr::new("capture"), portable_named_type("ShapeCapture")),
-                    (SmolStr::new("point"), Type::Vec3),
-                    (SmolStr::new("direction"), Type::Vec3),
+                    (
+                        SmolStr::new("sample"),
+                        portable_named_type("PointDirectionQuery"),
+                    ),
                 ],
                 ret: Type::Vec3,
                 kind: FunctionKind::Function,
@@ -3861,12 +3858,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                 params: vec![
                     (SmolStr::new("capture"), portable_named_type("RegionCapture")),
                     (SmolStr::new("domain"), portable_named_type("SceneDomain")),
-                    (SmolStr::new("origin"), Type::Vec3),
-                    (SmolStr::new("direction"), Type::Vec3),
-                    (SmolStr::new("max_distance"), Type::F32),
-                    (SmolStr::new("min_step"), Type::F32),
-                    (SmolStr::new("hit_epsilon"), Type::F32),
-                    (SmolStr::new("max_steps"), Type::Integer),
+                    (SmolStr::new("ray"), portable_named_type("RayQuery")),
                     (
                         SmolStr::new("backend"),
                         portable_named_type("DispatchBackend"),
@@ -3902,8 +3894,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                 params: vec![
                     (SmolStr::new("capture"), portable_named_type("RegionCapture")),
                     (SmolStr::new("domain"), portable_named_type("SceneDomain")),
-                    (SmolStr::new("point"), Type::Vec3),
-                    (SmolStr::new("direction"), Type::Vec3),
+                    (
+                        SmolStr::new("sample"),
+                        portable_named_type("PointDirectionQuery"),
+                    ),
                     (
                         SmolStr::new("backend"),
                         portable_named_type("DispatchBackend"),

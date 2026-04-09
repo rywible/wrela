@@ -1255,20 +1255,14 @@ pub(crate) fn lower_scene_trace_capture_helper(
         false,
         MirType::Named(SmolStr::new("ShapeCapture")),
     );
-    let origin = lowerer.new_local(SmolStr::new("origin"), false, MirType::Vec3);
-    let direction = lowerer.new_local(SmolStr::new("direction"), false, MirType::Vec3);
-    let max_distance = lowerer.new_local(SmolStr::new("max_distance"), false, MirType::Float);
-    let min_step = lowerer.new_local(SmolStr::new("min_step"), false, MirType::Float);
-    let hit_epsilon = lowerer.new_local(SmolStr::new("hit_epsilon"), false, MirType::Float);
-    let max_steps = lowerer.new_local(SmolStr::new("max_steps"), false, MirType::Integer);
+    let ray = lowerer.new_local(
+        SmolStr::new("ray"),
+        false,
+        MirType::Named(SmolStr::new("RayQuery")),
+    );
     for (name, local) in [
         (SmolStr::new("capture"), capture),
-        (SmolStr::new("origin"), origin),
-        (SmolStr::new("direction"), direction),
-        (SmolStr::new("max_distance"), max_distance),
-        (SmolStr::new("min_step"), min_step),
-        (SmolStr::new("hit_epsilon"), hit_epsilon),
-        (SmolStr::new("max_steps"), max_steps),
+        (SmolStr::new("ray"), ray),
     ] {
         lowerer.declare_local(name, local);
         lowerer.params.push(local);
@@ -1319,12 +1313,54 @@ pub(crate) fn lower_scene_trace_capture_helper(
     });
 
     lowerer.current_block = shape_capture_block;
+    let origin = lowerer.lower_get_named_field(
+        Value::Local(ray),
+        "RayQuery",
+        "origin",
+        MirType::Vec3,
+        span,
+    );
+    let direction = lowerer.lower_get_named_field(
+        Value::Local(ray),
+        "RayQuery",
+        "direction",
+        MirType::Vec3,
+        span,
+    );
+    let max_distance = lowerer.lower_get_named_field(
+        Value::Local(ray),
+        "RayQuery",
+        "max_distance",
+        MirType::Float,
+        span,
+    );
+    let min_step = lowerer.lower_get_named_field(
+        Value::Local(ray),
+        "RayQuery",
+        "min_step",
+        MirType::Float,
+        span,
+    );
+    let hit_epsilon = lowerer.lower_get_named_field(
+        Value::Local(ray),
+        "RayQuery",
+        "hit_epsilon",
+        MirType::Float,
+        span,
+    );
+    let max_steps = lowerer.lower_get_named_field(
+        Value::Local(ray),
+        "RayQuery",
+        "max_steps",
+        MirType::Integer,
+        span,
+    );
     let result = lowerer.new_local(
         SmolStr::new("$scene_trace_result"),
         true,
         MirType::Named(SmolStr::new("Hit3")),
     );
-    let default_hit = lowerer.build_default_hit(Value::Local(origin), span);
+    let default_hit = lowerer.build_default_hit(origin.clone(), span);
     lowerer.assign_use(Place::Local(result), default_hit, span);
     let return_block = lowerer.new_block();
 
@@ -1360,12 +1396,12 @@ pub(crate) fn lower_scene_trace_capture_helper(
         let mode = lowerer.shape_capture_execution_mode(CaptureQueryKind::Trace, &shape_name);
         let hit = lowerer.lower_shape_trace_call_with_mode(
             &shape_name,
-            Value::Local(origin),
-            Value::Local(direction),
-            Value::Local(max_distance),
-            Value::Local(min_step),
-            Value::Local(hit_epsilon),
-            Value::Local(max_steps),
+            origin.clone(),
+            direction.clone(),
+            max_distance.clone(),
+            min_step.clone(),
+            hit_epsilon.clone(),
+            max_steps.clone(),
             span,
             mode,
         );
@@ -1418,12 +1454,16 @@ pub(crate) fn lower_scene_trace_capture_helper(
                 type_tags,
                 &mut HashSet::new(),
             ),
-            PortableAbiType::Vec3,
-            PortableAbiType::Vec3,
-            PortableAbiType::F32,
-            PortableAbiType::F32,
-            PortableAbiType::F32,
-            PortableAbiType::I32,
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("RayQuery"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
         ],
         abi_return: portable_abi_from_type_ref(
             Some(&hir::TypeRef {
@@ -1712,12 +1752,14 @@ pub(crate) fn lower_scene_radiance_capture_helper(
         false,
         MirType::Named(SmolStr::new("ShapeCapture")),
     );
-    let point = lowerer.new_local(SmolStr::new("point"), false, MirType::Vec3);
-    let direction = lowerer.new_local(SmolStr::new("direction"), false, MirType::Vec3);
+    let sample = lowerer.new_local(
+        SmolStr::new("sample"),
+        false,
+        MirType::Named(SmolStr::new("PointDirectionQuery")),
+    );
     for (name, local) in [
         (SmolStr::new("capture"), capture),
-        (SmolStr::new("point"), point),
-        (SmolStr::new("direction"), direction),
+        (SmolStr::new("sample"), sample),
     ] {
         lowerer.declare_local(name, local);
         lowerer.params.push(local);
@@ -1768,6 +1810,20 @@ pub(crate) fn lower_scene_radiance_capture_helper(
     });
 
     lowerer.current_block = shape_capture_block;
+    let point = lowerer.lower_get_named_field(
+        Value::Local(sample),
+        "PointDirectionQuery",
+        "point",
+        MirType::Vec3,
+        span,
+    );
+    let direction = lowerer.lower_get_named_field(
+        Value::Local(sample),
+        "PointDirectionQuery",
+        "direction",
+        MirType::Vec3,
+        span,
+    );
     let result = lowerer.new_local(SmolStr::new("$scene_radiance_result"), true, MirType::Vec3);
     let default_radiance = lowerer.lower_call_temp(
         MirType::Vec3,
@@ -1817,8 +1873,8 @@ pub(crate) fn lower_scene_radiance_capture_helper(
             .expect("shape scene");
         let radiance = lowerer.lower_shape_radiance_participation_scene(
             &shape_scene.root,
-            Value::Local(point),
-            Value::Local(direction),
+            point.clone(),
+            direction.clone(),
             span,
         );
         lowerer.assign_use(Place::Local(result), radiance, span);
@@ -1871,8 +1927,16 @@ pub(crate) fn lower_scene_radiance_capture_helper(
                 type_tags,
                 &mut HashSet::new(),
             ),
-            PortableAbiType::Vec3,
-            PortableAbiType::Vec3,
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("PointDirectionQuery"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
         ],
         abi_return: PortableAbiType::Vec3,
         locals: lowerer.locals,
@@ -2151,9 +2215,16 @@ fn lower_world_domain_validation(
     });
 
     lowerer.current_block = matched_block;
-    let detail = lowerer.lower_get_named_field(
+    let spatial = lowerer.lower_get_named_field(
         Value::Local(domain),
         "SceneDomain",
+        "spatial",
+        MirType::Named(SmolStr::new("SpatialDomainContract")),
+        span,
+    );
+    let detail = lowerer.lower_get_named_field(
+        spatial,
+        "SpatialDomainContract",
         "geometry_detail",
         MirType::Integer,
         span,
@@ -2168,9 +2239,21 @@ fn lower_world_domain_flag_guard(
     disabled_return: Value,
     span: TextRange,
 ) {
-    let enabled = lowerer.lower_get_named_field(
+    let (contract_name, contract_field) = match flag {
+        "material" => ("SurfaceDomainContract", "surface"),
+        "radiance" | "media" => ("ParticipantDomainContract", "participants"),
+        other => panic!("unknown SceneDomain flag '{other}'"),
+    };
+    let contract = lowerer.lower_get_named_field(
         Value::Local(domain),
         "SceneDomain",
+        contract_field,
+        MirType::Named(SmolStr::new(contract_name)),
+        span,
+    );
+    let enabled = lowerer.lower_get_named_field(
+        contract,
+        contract_name,
         flag,
         MirType::Boolean,
         span,
@@ -2445,12 +2528,12 @@ impl WorldNormalBackend for MirWorldNormalBackend<'_> {
 
 struct MirWorldTraceBackend<'a> {
     lowerer: &'a mut FunctionLowerer,
-    origin: LocalId,
-    direction: LocalId,
-    max_distance: LocalId,
-    min_step: LocalId,
-    hit_epsilon: LocalId,
-    max_steps: LocalId,
+    origin: Value,
+    direction: Value,
+    max_distance: Value,
+    min_step: Value,
+    hit_epsilon: Value,
+    max_steps: Value,
     result: LocalId,
     span: TextRange,
 }
@@ -2467,12 +2550,12 @@ impl WorldTraceBackend for MirWorldTraceBackend<'_> {
             MirType::Named(SmolStr::new("Hit3")),
             SmolStr::new(format!("__wr_shape_trace_{}", shape)),
             vec![
-                Value::Local(self.origin),
-                Value::Local(self.direction),
-                Value::Local(self.max_distance),
-                Value::Local(self.min_step),
-                Value::Local(self.hit_epsilon),
-                Value::Local(self.max_steps),
+                self.origin.clone(),
+                self.direction.clone(),
+                self.max_distance.clone(),
+                self.min_step.clone(),
+                self.hit_epsilon.clone(),
+                self.max_steps.clone(),
             ],
             self.span,
         );
@@ -2614,8 +2697,8 @@ impl WorldSurfaceBackend for MirWorldSurfaceBackend<'_> {
 
 struct MirWorldRadianceBackend<'a> {
     lowerer: &'a mut FunctionLowerer,
-    point: LocalId,
-    direction: LocalId,
+    point: Value,
+    direction: Value,
     result: LocalId,
     span: TextRange,
 }
@@ -2631,8 +2714,8 @@ impl WorldRadianceBackend for MirWorldRadianceBackend<'_> {
         if let Some(scene) = self.lowerer.shape_scene(shape).cloned() {
             let radiance = self.lowerer.lower_shape_radiance_participation_scene(
                 &scene.root,
-                Value::Local(self.point),
-                Value::Local(self.direction),
+                self.point.clone(),
+                self.direction.clone(),
                 self.span,
             );
             let sum = self.lowerer.lower_binary_temp(
@@ -3424,22 +3507,16 @@ pub(crate) fn lower_world_trace_capture_helper(
         false,
         MirType::Named(SmolStr::new("SceneDomain")),
     );
-    let origin = lowerer.new_local(SmolStr::new("origin"), false, MirType::Vec3);
-    let direction = lowerer.new_local(SmolStr::new("direction"), false, MirType::Vec3);
-    let max_distance = lowerer.new_local(SmolStr::new("max_distance"), false, MirType::Float);
-    let min_step = lowerer.new_local(SmolStr::new("min_step"), false, MirType::Float);
-    let hit_epsilon = lowerer.new_local(SmolStr::new("hit_epsilon"), false, MirType::Float);
-    let max_steps = lowerer.new_local(SmolStr::new("max_steps"), false, MirType::Integer);
+    let ray = lowerer.new_local(
+        SmolStr::new("ray"),
+        false,
+        MirType::Named(SmolStr::new("RayQuery")),
+    );
     let backend = lowerer.new_local(SmolStr::new("backend"), false, MirType::Integer);
     for (name, local) in [
         (SmolStr::new("capture"), capture),
         (SmolStr::new("domain"), domain),
-        (SmolStr::new("origin"), origin),
-        (SmolStr::new("direction"), direction),
-        (SmolStr::new("max_distance"), max_distance),
-        (SmolStr::new("min_step"), min_step),
-        (SmolStr::new("hit_epsilon"), hit_epsilon),
-        (SmolStr::new("max_steps"), max_steps),
+        (SmolStr::new("ray"), ray),
         (SmolStr::new("backend"), backend),
     ] {
         lowerer.declare_local(name, local);
@@ -3453,12 +3530,54 @@ pub(crate) fn lower_world_trace_capture_helper(
     lowerer.current_block = entry;
     let (capture_scene_id, detail) =
         lower_world_domain_validation(&mut lowerer, capture, domain, semantics.query_name, span);
+    let origin = lowerer.lower_get_named_field(
+        Value::Local(ray),
+        "RayQuery",
+        "origin",
+        MirType::Vec3,
+        span,
+    );
+    let direction = lowerer.lower_get_named_field(
+        Value::Local(ray),
+        "RayQuery",
+        "direction",
+        MirType::Vec3,
+        span,
+    );
+    let max_distance = lowerer.lower_get_named_field(
+        Value::Local(ray),
+        "RayQuery",
+        "max_distance",
+        MirType::Float,
+        span,
+    );
+    let min_step = lowerer.lower_get_named_field(
+        Value::Local(ray),
+        "RayQuery",
+        "min_step",
+        MirType::Float,
+        span,
+    );
+    let hit_epsilon = lowerer.lower_get_named_field(
+        Value::Local(ray),
+        "RayQuery",
+        "hit_epsilon",
+        MirType::Float,
+        span,
+    );
+    let max_steps = lowerer.lower_get_named_field(
+        Value::Local(ray),
+        "RayQuery",
+        "max_steps",
+        MirType::Integer,
+        span,
+    );
     let result = lowerer.new_local(
         SmolStr::new("$world_trace_result"),
         true,
         MirType::Named(SmolStr::new("Hit3")),
     );
-    let default_hit = lowerer.build_default_hit(Value::Local(origin), span);
+    let default_hit = lowerer.build_default_hit(origin.clone(), span);
     lowerer.assign_use(Place::Local(result), default_hit, span);
     let return_block = lowerer.new_block();
     lower_native_world_backend_guard(
@@ -3483,12 +3602,12 @@ pub(crate) fn lower_world_trace_capture_helper(
         |lowerer, shapes, span| {
             let mut backend = MirWorldTraceBackend {
                 lowerer,
-                origin,
-                direction,
-                max_distance,
-                min_step,
-                hit_epsilon,
-                max_steps,
+                origin: origin.clone(),
+                direction: direction.clone(),
+                max_distance: max_distance.clone(),
+                min_step: min_step.clone(),
+                hit_epsilon: hit_epsilon.clone(),
+                max_steps: max_steps.clone(),
                 result,
                 span,
             };
@@ -3514,14 +3633,7 @@ pub(crate) fn lower_world_trace_capture_helper(
                     "__wr_wgsl_world_trace_capture",
                     shapes,
                     wgsl_shape_indices,
-                    vec![
-                        Value::Local(origin),
-                        Value::Local(direction),
-                        Value::Local(max_distance),
-                        Value::Local(min_step),
-                        Value::Local(hit_epsilon),
-                        Value::Local(max_steps),
-                    ],
+                    vec![Value::Local(ray)],
                     span,
                 )
                 .expect("validated WGSL world trace config");
@@ -3568,12 +3680,16 @@ pub(crate) fn lower_world_trace_capture_helper(
                 type_tags,
                 &mut HashSet::new(),
             ),
-            PortableAbiType::Vec3,
-            PortableAbiType::Vec3,
-            PortableAbiType::F32,
-            PortableAbiType::F32,
-            PortableAbiType::F32,
-            PortableAbiType::I32,
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("RayQuery"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
             PortableAbiType::I32,
         ],
         abi_return: portable_abi_from_type_ref(
@@ -3878,14 +3994,16 @@ pub(crate) fn lower_world_radiance_capture_helper(
         false,
         MirType::Named(SmolStr::new("SceneDomain")),
     );
-    let point = lowerer.new_local(SmolStr::new("point"), false, MirType::Vec3);
-    let direction = lowerer.new_local(SmolStr::new("direction"), false, MirType::Vec3);
+    let sample = lowerer.new_local(
+        SmolStr::new("sample"),
+        false,
+        MirType::Named(SmolStr::new("PointDirectionQuery")),
+    );
     let backend = lowerer.new_local(SmolStr::new("backend"), false, MirType::Integer);
     for (name, local) in [
         (SmolStr::new("capture"), capture),
         (SmolStr::new("domain"), domain),
-        (SmolStr::new("point"), point),
-        (SmolStr::new("direction"), direction),
+        (SmolStr::new("sample"), sample),
         (SmolStr::new("backend"), backend),
     ] {
         lowerer.declare_local(name, local);
@@ -3897,6 +4015,20 @@ pub(crate) fn lower_world_radiance_capture_helper(
     let wgsl_block = lowerer.new_block();
     let unsupported_block = lowerer.new_block();
     lowerer.current_block = entry;
+    let point = lowerer.lower_get_named_field(
+        Value::Local(sample),
+        "PointDirectionQuery",
+        "point",
+        MirType::Vec3,
+        span,
+    );
+    let direction = lowerer.lower_get_named_field(
+        Value::Local(sample),
+        "PointDirectionQuery",
+        "direction",
+        MirType::Vec3,
+        span,
+    );
     let black = lowerer.lower_call_temp(
         MirType::Vec3,
         SmolStr::new("vec3"),
@@ -3951,8 +4083,8 @@ pub(crate) fn lower_world_radiance_capture_helper(
         |lowerer, shapes, span| {
             let mut backend = MirWorldRadianceBackend {
                 lowerer,
-                point,
-                direction,
+                point: point.clone(),
+                direction: direction.clone(),
                 result,
                 span,
             };
@@ -3978,7 +4110,7 @@ pub(crate) fn lower_world_radiance_capture_helper(
                     "__wr_wgsl_world_radiance_capture",
                     shapes,
                     wgsl_shape_indices,
-                    vec![Value::Local(point), Value::Local(direction)],
+                    vec![Value::Local(sample)],
                     span,
                 )
                 .expect("validated WGSL world radiance config");
@@ -4025,8 +4157,16 @@ pub(crate) fn lower_world_radiance_capture_helper(
                 type_tags,
                 &mut HashSet::new(),
             ),
-            PortableAbiType::Vec3,
-            PortableAbiType::Vec3,
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("PointDirectionQuery"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
             PortableAbiType::I32,
         ],
         abi_return: PortableAbiType::Vec3,
@@ -4407,18 +4547,19 @@ pub(crate) fn lower_scene_trace_queries_helper(
         },
         span,
     });
+    let ray = lowerer.build_ray_query_value(
+        Value::Temp(origin),
+        Value::Temp(direction),
+        Value::Temp(max_distance),
+        Value::Temp(min_step),
+        Value::Temp(hit_epsilon),
+        Value::Temp(max_steps),
+        span,
+    );
     let hit = lowerer.lower_call_temp(
         MirType::Named(SmolStr::new("Hit3")),
         SmolStr::new("__wr_scene_trace_capture"),
-        vec![
-            Value::Temp(capture),
-            Value::Temp(origin),
-            Value::Temp(direction),
-            Value::Temp(max_distance),
-            Value::Temp(min_step),
-            Value::Temp(hit_epsilon),
-            Value::Temp(max_steps),
-        ],
+        vec![Value::Temp(capture), ray],
         span,
     );
     let _ = lowerer.lower_call_temp(

@@ -57,6 +57,64 @@ fn direct_call_targets(func: &mir::MirFunction) -> BTreeSet<String> {
     targets
 }
 
+fn first_direct_call_args<'a>(
+    func: &'a mir::MirFunction,
+    target_name: &str,
+) -> Option<&'a [mir::Value]> {
+    for block in &func.blocks {
+        for stmt in &block.stmts {
+            if let mir::Stmt::Assign {
+                value:
+                    mir::Rvalue::Call {
+                        target: mir::CallTarget::Function(name),
+                        args,
+                        ..
+                    },
+                ..
+            } = stmt
+                && name == target_name
+            {
+                return Some(args);
+            }
+        }
+    }
+    None
+}
+
+fn assert_float_const(value: &mir::Value, expected: f64) {
+    let mir::Value::Const(hir::Literal::Float(actual)) = value else {
+        panic!("expected float constant {expected}, got {value:?}");
+    };
+    assert!(
+        (actual - expected).abs() <= 0.00001,
+        "expected float constant {expected}, got {actual}"
+    );
+}
+
+fn assert_integer_const(value: &mir::Value, expected: i64) {
+    let mir::Value::Const(hir::Literal::Integer(actual)) = value else {
+        panic!("expected integer constant {expected}, got {value:?}");
+    };
+    assert_eq!(*actual, expected);
+}
+
+fn set_field_local_name(func: &mir::MirFunction, field_name: &str) -> Option<String> {
+    for block in &func.blocks {
+        for stmt in &block.stmts {
+            if let mir::Stmt::SetField {
+                field,
+                value: mir::Value::Local(local),
+                ..
+            } = stmt
+                && field == field_name
+            {
+                return Some(func.locals[local.0].name.to_string());
+            }
+        }
+    }
+    None
+}
+
 #[test]
 fn phase9_scene_ir_is_stable_for_semantic_and_opaque_fields() {
     let source = r#"
@@ -311,18 +369,22 @@ fn main() -> Integer {
 
     hit = trace_shape(
         capture=scene_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     scene_surface = surface_at(capture=scene_capture, hit=hit)
     scene_radiance = radiance_at(
         capture=scene_capture,
-        point=hit.position,
-        direction=normalize(vec3(0.0, 1.0, 1.0)),
+        sample=point_direction_query(
+            point=hit.position,
+            direction=normalize(vec3(0.0, 1.0, 1.0))
+        )
     )
     scene_medium = medium_at(capture=scene_capture, point=hit.position)
     cpu_distances = distance_at_batch(
@@ -364,19 +426,23 @@ fn main() -> Integer {
     world_hit = trace_world(
         capture=world,
         domain=fine_domain,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     world_surface = surface_world(capture=world, domain=fine_domain, hit=world_hit)
     world_radiance = radiance_world(
         capture=world,
         domain=fine_domain,
-        point=world_hit.position,
-        direction=normalize(vec3(0.0, 1.0, 1.0))
+        sample=point_direction_query(
+            point=world_hit.position,
+            direction=normalize(vec3(0.0, 1.0, 1.0))
+        )
     )
     world_medium = medium_world(capture=world, domain=fine_domain, point=world_hit.position)
     return 0
@@ -605,21 +671,25 @@ fn main() -> Integer {
     opaque_normal = normal_at(capture=opaque_capture, point=point)
     semantic_hit = trace_shape(
         capture=semantic_capture,
-        origin=ray.origin,
-        direction=ray.direction,
-        max_distance=ray.max_distance,
-        min_step=ray.min_step,
-        hit_epsilon=ray.hit_epsilon,
-        max_steps=ray.max_steps
+        ray=ray_query(
+            origin=ray.origin,
+            direction=ray.direction,
+            max_distance=ray.max_distance,
+            min_step=ray.min_step,
+            hit_epsilon=ray.hit_epsilon,
+            max_steps=ray.max_steps
+        )
     )
     opaque_hit = trace_shape(
         capture=opaque_capture,
-        origin=ray.origin,
-        direction=ray.direction,
-        max_distance=ray.max_distance,
-        min_step=ray.min_step,
-        hit_epsilon=ray.hit_epsilon,
-        max_steps=ray.max_steps
+        ray=ray_query(
+            origin=ray.origin,
+            direction=ray.direction,
+            max_distance=ray.max_distance,
+            min_step=ray.min_step,
+            hit_epsilon=ray.hit_epsilon,
+            max_steps=ray.max_steps
+        )
     )
     points = [PointQuery(point=point)]
     rays = [ray]
@@ -691,6 +761,90 @@ fn main() -> Integer {
     assert!(distance_batch_targets.contains("__wr_shape_distance_conservative_opaque_scene"));
     assert!(trace_batch_targets.contains("__wr_shape_trace_semantic_scene"));
     assert!(trace_batch_targets.contains("__wr_shape_trace_conservative_opaque_scene"));
+}
+
+#[test]
+fn render_implicit_ray_queries_preserve_legacy_domain_trace_budgets() {
+    let source = r#"
+field exact distance render_budget_field(p: Vec3) -> F32 {
+    sphere(radius = 0.5)
+}
+
+material render_budget_material(hit: Hit3) -> Surface {
+    return Surface(
+        albedo = vec3(0.4, 0.5, 0.6),
+        roughness = 0.3,
+        metalness = 0.0,
+        clearcoat = 0.0,
+        clearcoat_roughness = 0.0,
+        sheen = 0.0,
+        emissive = vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape render_budget_shape {
+    field = render_budget_field
+    material = render_budget_material
+}
+
+region render_budget_region() {
+    place scene = render_budget_shape
+}
+
+domain render_budget_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = true
+    media = true
+    max_distance = 4.5
+    min_step = 0.07
+    hit_epsilon = 0.003
+    max_steps = 33
+}
+
+render render_budget_ppm(world: RegionCapture, camera: Camera) {
+    domain = render_budget_domain(world = world)
+    width = 1
+    height = 1
+}
+"#;
+
+    let mir_module = lower_mir_module_from_source(source);
+    let render = mir_module
+        .functions
+        .iter()
+        .find(|func| func.name == "render_budget_ppm")
+        .expect("render function");
+    let render_args = first_direct_call_args(render, "__wr_render_capture_to_ppm")
+        .expect("render should call compiler-owned ppm helper");
+    assert_eq!(render_args.len(), 13);
+    assert_float_const(&render_args[9], 4.5);
+    assert_float_const(&render_args[10], 0.07);
+    assert_float_const(&render_args[11], 0.003);
+    assert_integer_const(&render_args[12], 33);
+
+    let scene_color = mir_module
+        .functions
+        .iter()
+        .find(|func| func.name == "__wr_render_scene_color_capture")
+        .expect("scene color render helper");
+    assert_eq!(scene_color.params.len(), 10);
+    assert_eq!(
+        set_field_local_name(scene_color, "max_distance").as_deref(),
+        Some("trace_max_distance")
+    );
+    assert_eq!(
+        set_field_local_name(scene_color, "min_step").as_deref(),
+        Some("trace_min_step")
+    );
+    assert_eq!(
+        set_field_local_name(scene_color, "hit_epsilon").as_deref(),
+        Some("trace_hit_epsilon")
+    );
+    assert_eq!(
+        set_field_local_name(scene_color, "max_steps").as_deref(),
+        Some("trace_max_steps")
+    );
 }
 
 #[test]

@@ -823,6 +823,7 @@ fn item_kind_label(item_kind: QueryItemKind) -> &'static str {
     match item_kind {
         QueryItemKind::Unit => "unit",
         QueryItemKind::PointQuery => "point",
+        QueryItemKind::PointDirectionQuery => "point-direction",
         QueryItemKind::RayQuery => "ray",
         QueryItemKind::Hit3 => "hit3",
     }
@@ -835,6 +836,10 @@ mod tests {
     #[test]
     fn item_kind_label_covers_unit_queries() {
         assert_eq!(item_kind_label(QueryItemKind::Unit), "unit");
+        assert_eq!(
+            item_kind_label(QueryItemKind::PointDirectionQuery),
+            "point-direction"
+        );
     }
 }
 

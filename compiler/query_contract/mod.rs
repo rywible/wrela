@@ -50,6 +50,7 @@ pub enum InternalKernelKind {
 pub enum QueryItemKind {
     Unit,
     PointQuery,
+    PointDirectionQuery,
     RayQuery,
     Hit3,
 }
@@ -592,7 +593,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 21] = [
         question: QueryQuestionId::Radiance,
         surface: QuerySurfaceKind::CaptureScalar,
         capture_kind: CaptureKind::Shape,
-        item_kind: QueryItemKind::PointQuery,
+        item_kind: QueryItemKind::PointDirectionQuery,
         result_kind: QueryResultKind::RadianceResult,
         domain_contract: None,
         required_domain_flags: NO_DOMAIN_FLAGS,
@@ -608,7 +609,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 21] = [
         question: QueryQuestionId::Radiance,
         surface: QuerySurfaceKind::WorldScalar,
         capture_kind: CaptureKind::Region,
-        item_kind: QueryItemKind::PointQuery,
+        item_kind: QueryItemKind::PointDirectionQuery,
         result_kind: QueryResultKind::RadianceResult,
         domain_contract: Some(DomainContractKind::SceneDomain),
         required_domain_flags: RADIANCE_DOMAIN_FLAGS,

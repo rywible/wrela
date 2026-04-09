@@ -75,12 +75,13 @@ pub(crate) fn execute_capture_query<B: CaptureQueryBackend>(
         }
         crate::query_plan::CaptureQueryKind::Trace => {
             let capture = backend.resolve_shape_capture(args.first())?;
-            let origin = expect_vec3_arg(args.get(1), "origin")?;
-            let direction = expect_vec3_arg(args.get(2), "direction")?;
-            let max_distance = expect_f32_arg(args.get(3), "max_distance")?;
-            let min_step = expect_f32_arg(args.get(4), "min_step")?;
-            let hit_epsilon = expect_f32_arg(args.get(5), "hit_epsilon")?;
-            let max_steps = expect_i32_arg(args.get(6), "max_steps")?;
+            let ray = expect_struct_ref_arg(args.get(1), "RayQuery")?;
+            let origin = expect_struct_vec3(ray, "origin")?;
+            let direction = expect_struct_vec3(ray, "direction")?;
+            let max_distance = expect_struct_f32(ray, "max_distance")?;
+            let min_step = expect_struct_f32(ray, "min_step")?;
+            let hit_epsilon = expect_struct_f32(ray, "hit_epsilon")?;
+            let max_steps = expect_struct_i32(ray, "max_steps")?;
             backend.trace_shape(
                 &capture,
                 origin,
@@ -98,8 +99,9 @@ pub(crate) fn execute_capture_query<B: CaptureQueryBackend>(
         }
         crate::query_plan::CaptureQueryKind::Radiance => {
             let capture = backend.resolve_shape_capture(args.first())?;
-            let point = expect_vec3_arg(args.get(1), "point")?;
-            let direction = expect_vec3_arg(args.get(2), "direction")?;
+            let sample = expect_struct_ref_arg(args.get(1), "PointDirectionQuery")?;
+            let point = expect_struct_vec3(sample, "point")?;
+            let direction = expect_struct_vec3(sample, "direction")?;
             backend.radiance_at(&capture, point, direction)
         }
         crate::query_plan::CaptureQueryKind::Medium => {
@@ -185,22 +187,16 @@ fn build_batch_capture_args(
             args.push(KernelValue::Vec3(expect_struct_vec3(point, "point")?));
         }
         crate::query_plan::CaptureQueryKind::Trace => {
-            let ray = expect_struct_ref_arg(Some(item), "RayQuery")?;
-            args.push(KernelValue::Vec3(expect_struct_vec3(ray, "origin")?));
-            args.push(KernelValue::Vec3(expect_struct_vec3(ray, "direction")?));
-            args.push(KernelValue::F32(expect_struct_f32(ray, "max_distance")?));
-            args.push(KernelValue::F32(expect_struct_f32(ray, "min_step")?));
-            args.push(KernelValue::F32(expect_struct_f32(ray, "hit_epsilon")?));
-            args.push(KernelValue::I32(expect_struct_i32(ray, "max_steps")?));
+            expect_struct_ref_arg(Some(item), "RayQuery")?;
+            args.push(item.clone());
         }
         crate::query_plan::CaptureQueryKind::Surface => {
             expect_struct_ref_arg(Some(item), "Hit3")?;
             args.push(item.clone());
         }
         crate::query_plan::CaptureQueryKind::Radiance => {
-            let point = expect_struct_ref_arg(Some(item), "RadianceQuery")?;
-            args.push(KernelValue::Vec3(expect_struct_vec3(point, "point")?));
-            args.push(KernelValue::Vec3(expect_struct_vec3(point, "direction")?));
+            expect_struct_ref_arg(Some(item), "PointDirectionQuery")?;
+            args.push(item.clone());
         }
         crate::query_plan::CaptureQueryKind::Medium => {
             let point = expect_struct_ref_arg(Some(item), "PointQuery")?;
@@ -229,17 +225,6 @@ fn expect_f32_arg(value: Option<&KernelValue>, name: &'static str) -> Result<f32
         Some(KernelValue::F32(number)) => Ok(*number),
         Some(other) => Err(QueryExecError::TypeMismatch {
             expected: format!("F32 for {name}"),
-            found: format!("{other:?}"),
-        }),
-        None => Err(QueryExecError::MissingCaptureTarget { kind: name }),
-    }
-}
-
-fn expect_i32_arg(value: Option<&KernelValue>, name: &'static str) -> Result<i32, QueryExecError> {
-    match value {
-        Some(KernelValue::I32(number)) => Ok(*number),
-        Some(other) => Err(QueryExecError::TypeMismatch {
-            expected: format!("I32 for {name}"),
             found: format!("{other:?}"),
         }),
         None => Err(QueryExecError::MissingCaptureTarget { kind: name }),

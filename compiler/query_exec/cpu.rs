@@ -301,12 +301,13 @@ impl<'a> DirectQueryOps<'a> {
                 Ok(KernelValue::Vec3(execute_world_normal(&mut backend)?))
             }
             WorldQueryKind::Trace => {
-                let origin = expect_vec3(args.get(2), "origin")?;
-                let direction = expect_vec3(args.get(3), "direction")?;
-                let max_distance = expect_f32(args.get(4), "max_distance")?;
-                let min_step = expect_f32(args.get(5), "min_step")?;
-                let hit_epsilon = expect_f32(args.get(6), "hit_epsilon")?;
-                let max_steps = expect_i32(args.get(7), "max_steps")?;
+                let ray = expect_struct(args.get(2), "RayQuery")?;
+                let origin = expect_struct_vec3(ray, "origin")?;
+                let direction = expect_struct_vec3(ray, "direction")?;
+                let max_distance = expect_struct_f32(ray, "max_distance")?;
+                let min_step = expect_struct_f32(ray, "min_step")?;
+                let hit_epsilon = expect_struct_f32(ray, "hit_epsilon")?;
+                let max_steps = expect_struct_i32(ray, "max_steps")?;
                 let mut backend = CpuWorldTraceBackend {
                     evaluator: self,
                     capture: &capture,
@@ -338,8 +339,9 @@ impl<'a> DirectQueryOps<'a> {
                 Ok(backend.result)
             }
             WorldQueryKind::Radiance => {
-                let point = expect_vec3(args.get(2), "point")?;
-                let direction = expect_vec3(args.get(3), "direction")?;
+                let sample = expect_struct(args.get(2), "PointDirectionQuery")?;
+                let point = expect_struct_vec3(sample, "point")?;
+                let direction = expect_struct_vec3(sample, "direction")?;
                 let mut backend = CpuWorldRadianceBackend {
                     evaluator: self,
                     capture: &capture,
@@ -387,7 +389,8 @@ impl<'a> DirectQueryOps<'a> {
                 message: world_domain_mismatch_message(query_name),
             });
         }
-        expect_struct_i32(domain, "geometry_detail")
+        let spatial = expect_struct_ref(struct_field(domain, "spatial")?, "SpatialDomainContract")?;
+        expect_struct_i32(spatial, "geometry_detail")
     }
 
     pub(crate) fn world_domain_flag_enabled(
@@ -398,7 +401,17 @@ impl<'a> DirectQueryOps<'a> {
         let Some(flag) = world_query_semantics(kind).domain_flag else {
             return Ok(true);
         };
-        expect_struct_bool(domain, flag)
+        let (contract_field, contract_name) = match flag {
+            "material" => ("surface", "SurfaceDomainContract"),
+            "radiance" | "media" => ("participants", "ParticipantDomainContract"),
+            _ => {
+                return Err(QueryExecError::Unsupported {
+                    message: format!("unknown SceneDomain flag '{flag}'"),
+                });
+            }
+        };
+        let contract = expect_struct_ref(struct_field(domain, contract_field)?, contract_name)?;
+        expect_struct_bool(contract, flag)
     }
 
     pub(crate) fn execute_batch_query(

@@ -172,22 +172,22 @@ fn build_capture_request(
         CaptureQueryKind::Distance | CaptureQueryKind::Normal | CaptureQueryKind::Medium => {
             point_query(expect_vec3_arg(args.get(1), "point")?)
         }
-        CaptureQueryKind::Trace => ray_query(
-            expect_vec3_arg(args.get(1), "origin")?,
-            expect_vec3_arg(args.get(2), "direction")?,
-            expect_f32_arg(args.get(3), "max_distance")?,
-            expect_f32_arg(args.get(4), "min_step")?,
-            expect_f32_arg(args.get(5), "hit_epsilon")?,
-            expect_i32_arg(args.get(6), "max_steps")?,
-        ),
+        CaptureQueryKind::Trace => {
+            expect_struct_arg(args.get(1), "RayQuery")?;
+            args.get(1)
+                .cloned()
+                .ok_or(QueryExecError::MissingCaptureTarget { kind: "ray" })?
+        }
         CaptureQueryKind::Surface => args
             .get(1)
             .cloned()
             .ok_or(QueryExecError::MissingCaptureTarget { kind: "hit" })?,
-        CaptureQueryKind::Radiance => point_direction_query(
-            expect_vec3_arg(args.get(1), "point")?,
-            expect_vec3_arg(args.get(2), "direction")?,
-        ),
+        CaptureQueryKind::Radiance => {
+            expect_struct_arg(args.get(1), "PointDirectionQuery")?;
+            args.get(1)
+                .cloned()
+                .ok_or(QueryExecError::MissingCaptureTarget { kind: "sample" })?
+        }
     };
 
     Ok(GpuDispatchRequest {
@@ -246,22 +246,22 @@ fn build_world_request(
         WorldQueryKind::Distance | WorldQueryKind::Normal | WorldQueryKind::Medium => {
             point_query(expect_vec3_arg(args.get(2), "point")?)
         }
-        WorldQueryKind::Trace => ray_query(
-            expect_vec3_arg(args.get(2), "origin")?,
-            expect_vec3_arg(args.get(3), "direction")?,
-            expect_f32_arg(args.get(4), "max_distance")?,
-            expect_f32_arg(args.get(5), "min_step")?,
-            expect_f32_arg(args.get(6), "hit_epsilon")?,
-            expect_i32_arg(args.get(7), "max_steps")?,
-        ),
+        WorldQueryKind::Trace => {
+            expect_struct_arg(args.get(2), "RayQuery")?;
+            args.get(2)
+                .cloned()
+                .ok_or(QueryExecError::MissingCaptureTarget { kind: "ray" })?
+        }
         WorldQueryKind::Surface => args
             .get(2)
             .cloned()
             .ok_or(QueryExecError::MissingCaptureTarget { kind: "hit" })?,
-        WorldQueryKind::Radiance => point_direction_query(
-            expect_vec3_arg(args.get(2), "point")?,
-            expect_vec3_arg(args.get(3), "direction")?,
-        ),
+        WorldQueryKind::Radiance => {
+            expect_struct_arg(args.get(2), "PointDirectionQuery")?;
+            args.get(2)
+                .cloned()
+                .ok_or(QueryExecError::MissingCaptureTarget { kind: "sample" })?
+        }
     };
 
     Ok(GpuDispatchRequest {
@@ -710,37 +710,6 @@ fn point_query(point: [f32; 3]) -> KernelValue {
     })
 }
 
-fn point_direction_query(point: [f32; 3], direction: [f32; 3]) -> KernelValue {
-    KernelValue::Struct(KernelStructValue {
-        name: SmolStr::new("PointDirectionQuery"),
-        fields: vec![
-            (SmolStr::new("point"), KernelValue::Vec3(point)),
-            (SmolStr::new("direction"), KernelValue::Vec3(direction)),
-        ],
-    })
-}
-
-fn ray_query(
-    origin: [f32; 3],
-    direction: [f32; 3],
-    max_distance: f32,
-    min_step: f32,
-    hit_epsilon: f32,
-    max_steps: i32,
-) -> KernelValue {
-    KernelValue::Struct(KernelStructValue {
-        name: SmolStr::new("RayQuery"),
-        fields: vec![
-            (SmolStr::new("origin"), KernelValue::Vec3(origin)),
-            (SmolStr::new("direction"), KernelValue::Vec3(direction)),
-            (SmolStr::new("max_distance"), KernelValue::F32(max_distance)),
-            (SmolStr::new("min_step"), KernelValue::F32(min_step)),
-            (SmolStr::new("hit_epsilon"), KernelValue::F32(hit_epsilon)),
-            (SmolStr::new("max_steps"), KernelValue::I32(max_steps)),
-        ],
-    })
-}
-
 fn encode_shape_indices(indices: &[u32]) -> Result<Vec<u8>, QueryExecError> {
     let values = if indices.is_empty() {
         vec![KernelValue::U32(0)]
@@ -830,28 +799,6 @@ fn expect_vec3_arg(
         Some(KernelValue::Vec3(value)) => Ok(*value),
         Some(other) => Err(QueryExecError::TypeMismatch {
             expected: format!("Vec3 for {name}"),
-            found: format!("{other:?}"),
-        }),
-        None => Err(QueryExecError::MissingCaptureTarget { kind: name }),
-    }
-}
-
-fn expect_f32_arg(value: Option<&KernelValue>, name: &'static str) -> Result<f32, QueryExecError> {
-    match value {
-        Some(KernelValue::F32(value)) => Ok(*value),
-        Some(other) => Err(QueryExecError::TypeMismatch {
-            expected: format!("F32 for {name}"),
-            found: format!("{other:?}"),
-        }),
-        None => Err(QueryExecError::MissingCaptureTarget { kind: name }),
-    }
-}
-
-fn expect_i32_arg(value: Option<&KernelValue>, name: &'static str) -> Result<i32, QueryExecError> {
-    match value {
-        Some(KernelValue::I32(value)) => Ok(*value),
-        Some(other) => Err(QueryExecError::TypeMismatch {
-            expected: format!("I32 for {name}"),
             found: format!("{other:?}"),
         }),
         None => Err(QueryExecError::MissingCaptureTarget { kind: name }),

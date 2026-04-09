@@ -748,12 +748,13 @@ impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
                 Ok(KernelValue::Vec3(execute_world_normal(&mut backend)?))
             }
             WorldQueryKind::Trace => {
-                let origin = expect_vec3_arg(args.get(2), "origin")?;
-                let direction = expect_vec3_arg(args.get(3), "direction")?;
-                let max_distance = expect_f32_arg(args.get(4), "max_distance")?;
-                let min_step = expect_f32_arg(args.get(5), "min_step")?;
-                let hit_epsilon = expect_f32_arg(args.get(6), "hit_epsilon")?;
-                let max_steps = expect_i32(args.get(7), "max_steps")?;
+                let ray = expect_struct_ref_arg(args.get(2), "RayQuery")?;
+                let origin = expect_struct_vec3_from_struct(ray, "origin")?;
+                let direction = expect_struct_vec3_from_struct(ray, "direction")?;
+                let max_distance = expect_struct_f32(ray, "max_distance")?;
+                let min_step = expect_struct_f32(ray, "min_step")?;
+                let hit_epsilon = expect_struct_f32(ray, "hit_epsilon")?;
+                let max_steps = expect_struct_i32(ray, "max_steps")?;
                 let mut backend = VirtualGpuWorldTraceBackend {
                     runtime: self.runtime.as_ref(),
                     capture: &capture,
@@ -785,8 +786,9 @@ impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
                 Ok(backend.result)
             }
             WorldQueryKind::Radiance => {
-                let point = expect_vec3_arg(args.get(2), "point")?;
-                let direction = expect_vec3_arg(args.get(3), "direction")?;
+                let sample = expect_struct_ref_arg(args.get(2), "PointDirectionQuery")?;
+                let point = expect_struct_vec3_from_struct(sample, "point")?;
+                let direction = expect_struct_vec3_from_struct(sample, "direction")?;
                 let mut backend = VirtualGpuWorldRadianceBackend {
                     runtime: self.runtime.as_ref(),
                     capture: &capture,
@@ -1424,14 +1426,6 @@ fn expect_vec3_arg(
     expect_vec3(value, expected)
 }
 
-fn expect_f32_arg(
-    value: Option<&KernelValue>,
-    expected: &'static str,
-) -> Result<f32, QueryExecError> {
-    let value = value.ok_or(QueryExecError::MissingCaptureTarget { kind: expected })?;
-    expect_f32(value, expected)
-}
-
 fn expect_struct<'a>(
     value: &'a KernelValue,
     name: &str,
@@ -1457,21 +1451,6 @@ fn field_value<'a>(
         .ok_or_else(|| QueryExecError::Unsupported {
             message: format!("missing field '{name}' on {}", value.name),
         })
-}
-
-fn expect_struct_vec3(
-    value: &KernelValue,
-    struct_name: &str,
-    field: &str,
-) -> Result<[f32; 3], QueryExecError> {
-    let value = expect_struct(value, struct_name)?;
-    match field_value(value, field)? {
-        KernelValue::Vec3(value) => Ok(*value),
-        other => Err(QueryExecError::TypeMismatch {
-            expected: "Vec3".to_string(),
-            found: format!("{other:?}"),
-        }),
-    }
 }
 
 fn expect_struct_bool(
@@ -1534,27 +1513,6 @@ fn expect_struct_vec3_from_struct(
         KernelValue::Vec3(value) => Ok(*value),
         other => Err(QueryExecError::TypeMismatch {
             expected: "Vec3".to_string(),
-            found: format!("{other:?}"),
-        }),
-    }
-}
-
-fn expect_i32(value: Option<&KernelValue>, expected: &'static str) -> Result<i32, QueryExecError> {
-    let value = value.ok_or(QueryExecError::MissingCaptureTarget { kind: expected })?;
-    match value {
-        KernelValue::I32(value) => Ok(*value),
-        other => Err(QueryExecError::TypeMismatch {
-            expected: expected.to_string(),
-            found: format!("{other:?}"),
-        }),
-    }
-}
-
-fn expect_f32(value: &KernelValue, expected: &str) -> Result<f32, QueryExecError> {
-    match value {
-        KernelValue::F32(value) => Ok(*value),
-        other => Err(QueryExecError::TypeMismatch {
-            expected: expected.to_string(),
             found: format!("{other:?}"),
         }),
     }

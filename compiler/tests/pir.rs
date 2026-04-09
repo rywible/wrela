@@ -113,17 +113,19 @@ fn portable_builtin_catalog_matches_expected_surface() {
             "Medium",
             "NormalResult",
             "OcclusionResult",
+            "ParticipantDomainContract",
             "Payload",
+            "PointDirectionQuery",
             "PointQuery",
             "Ray3",
             "RayQuery",
             "RegionCapture",
             "SceneDomain",
             "ShapeCapture",
+            "SpatialDomainContract",
             "Support3",
             "Surface",
-            "SurfaceQuery",
-            "TraceQuery",
+            "SurfaceDomainContract",
             "Transform3",
         ]
     );
@@ -261,31 +263,45 @@ fn portable_builtin_catalog_matches_expected_surface() {
             .collect::<Vec<_>>(),
         vec!["scene_id", "epoch", "root_feature_id"]
     );
-    let trace_query = portable::builtin_record("TraceQuery").expect("TraceQuery");
+    assert!(portable::builtin_record("TraceQuery").is_none());
+    assert!(portable::builtin_record("SurfaceQuery").is_none());
+    let scene_domain = portable::builtin_record("SceneDomain").expect("SceneDomain");
     assert_eq!(
-        trace_query
+        scene_domain
             .fields
             .iter()
             .map(|field| field.name)
             .collect::<Vec<_>>(),
-        vec![
-            "capture",
-            "origin",
-            "direction",
-            "max_distance",
-            "min_step",
-            "hit_epsilon",
-            "max_steps",
-        ]
+        vec!["scene_id", "spatial", "surface", "participants"]
     );
-    let surface_query = portable::builtin_record("SurfaceQuery").expect("SurfaceQuery");
+    let spatial = portable::builtin_record("SpatialDomainContract").expect("SpatialDomainContract");
     assert_eq!(
-        surface_query
+        spatial
             .fields
             .iter()
             .map(|field| field.name)
             .collect::<Vec<_>>(),
-        vec!["capture", "hit"]
+        vec!["geometry_detail", "guarantee"]
+    );
+    let surface_domain =
+        portable::builtin_record("SurfaceDomainContract").expect("SurfaceDomainContract");
+    assert_eq!(
+        surface_domain
+            .fields
+            .iter()
+            .map(|field| field.name)
+            .collect::<Vec<_>>(),
+        vec!["material"]
+    );
+    let participants =
+        portable::builtin_record("ParticipantDomainContract").expect("ParticipantDomainContract");
+    assert_eq!(
+        participants
+            .fields
+            .iter()
+            .map(|field| field.name)
+            .collect::<Vec<_>>(),
+        vec!["radiance", "media"]
     );
     let point_query = portable::builtin_record("PointQuery").expect("PointQuery");
     assert_eq!(
@@ -295,6 +311,16 @@ fn portable_builtin_catalog_matches_expected_surface() {
             .map(|field| field.name)
             .collect::<Vec<_>>(),
         vec!["point"]
+    );
+    let point_direction_query =
+        portable::builtin_record("PointDirectionQuery").expect("PointDirectionQuery");
+    assert_eq!(
+        point_direction_query
+            .fields
+            .iter()
+            .map(|field| field.name)
+            .collect::<Vec<_>>(),
+        vec!["point", "direction"]
     );
     let ray_query = portable::builtin_record("RayQuery").expect("RayQuery");
     assert_eq!(
@@ -1003,18 +1029,22 @@ kernel fn portable_entry() -> Phase7Probe {
     scene_capture = capture phase7_scene_shape
     hit = trace_shape(
         capture=scene_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     surface = surface_at(capture=scene_capture, hit=hit)
     radiance_sample = radiance_at(
         capture=scene_capture,
-        point=hit.position,
-        direction=normalize(vec3(0.0, 1.0, 1.0))
+        sample=point_direction_query(
+            point=hit.position,
+            direction=normalize(vec3(0.0, 1.0, 1.0))
+        )
     )
     medium_sample = medium_at(
         capture=scene_capture,

@@ -10,7 +10,7 @@ use crate::kernel::{
 use crate::mir::ir::Stmt as MirStmt;
 use crate::mir::ir::*;
 use crate::portable::{
-    PortableBuiltinType, builtin_record, builtin_record_by_function, builtin_records,
+    PortableBuiltinType, all_builtin_records, any_builtin_record, builtin_record_by_function,
     portable_builtin_type_abi,
 };
 use crate::query_exec::mir::{
@@ -68,7 +68,7 @@ pub fn lower_module_with_types_and_backend(
     let mut interface_impls: HashMap<SmolStr, Vec<SmolStr>> = HashMap::new();
     let mut method_ids = HashSet::new();
     let mut method_qnames: HashMap<hir::Idx<hir::Function>, SmolStr> = HashMap::new();
-    for record in builtin_records() {
+    for record in all_builtin_records() {
         let id = TypeTagId(type_tags.len() + CLASS_ID_BASE);
         let name = SmolStr::new(record.name);
         let fields: Vec<SmolStr> = record
@@ -1620,72 +1620,18 @@ fn lower_domain_function(
         )
     });
 
-    let mut class = lowerer.synthetic_class_target_info("SceneDomain");
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "scene_id",
+    let result = build_scene_domain_contract_value(
+        &mut lowerer,
         world_scene_id.unwrap_or(Value::Const(Literal::Integer(0))),
-    );
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "geometry_detail",
         Value::Const(Literal::Integer(match metadata.geometry_detail {
             hir::DomainGeometryDetail::Coarse => 0,
             hir::DomainGeometryDetail::Fine => 1,
         })),
-    );
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "material",
         Value::Const(Literal::Boolean(metadata.material)),
-    );
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "radiance",
         Value::Const(Literal::Boolean(metadata.radiance)),
-    );
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "media",
         Value::Const(Literal::Boolean(metadata.media)),
+        span,
     );
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "max_distance",
-        metadata
-            .max_distance
-            .as_ref()
-            .map(|body| lowerer.lower_wrapped_body_value(body, span))
-            .unwrap_or(Value::Const(Literal::Float(12.0))),
-    );
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "min_step",
-        metadata
-            .min_step
-            .as_ref()
-            .map(|body| lowerer.lower_wrapped_body_value(body, span))
-            .unwrap_or(Value::Const(Literal::Float(0.02))),
-    );
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "hit_epsilon",
-        metadata
-            .hit_epsilon
-            .as_ref()
-            .map(|body| lowerer.lower_wrapped_body_value(body, span))
-            .unwrap_or(Value::Const(Literal::Float(0.001))),
-    );
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "max_steps",
-        metadata
-            .max_steps
-            .as_ref()
-            .map(|body| lowerer.lower_wrapped_body_value(body, span))
-            .unwrap_or(Value::Const(Literal::Integer(96))),
-    );
-    let result = lowerer.build_class_instance(&class, span);
     lowerer.set_terminator(Terminator::Return {
         value: Some(result),
         span,
@@ -1808,6 +1754,7 @@ fn lower_render_function(
         .as_ref()
         .map(|body| lowerer.lower_wrapped_body_value(body, span))
         .unwrap_or_else(|| build_default_scene_domain_value(&mut lowerer, world_local, span));
+    let trace_budget = lower_render_trace_budget_values(module, metadata, &mut lowerer, span);
     let light = metadata
         .light
         .as_ref()
@@ -1860,6 +1807,10 @@ fn lower_render_function(
             world_up,
             view_scale,
             fill_dir,
+            trace_budget.max_distance,
+            trace_budget.min_step,
+            trace_budget.hit_epsilon,
+            trace_budget.max_steps,
         ],
         span,
     );
@@ -1942,6 +1893,207 @@ fn build_default_render_light_value(lowerer: &mut FunctionLowerer, span: TextRan
     lowerer.build_class_instance(&class, span)
 }
 
+fn default_trace_max_distance() -> Value {
+    Value::Const(Literal::Float(12.0))
+}
+
+fn default_trace_min_step() -> Value {
+    Value::Const(Literal::Float(0.02))
+}
+
+fn default_trace_hit_epsilon() -> Value {
+    Value::Const(Literal::Float(0.001))
+}
+
+fn default_trace_max_steps() -> Value {
+    Value::Const(Literal::Integer(96))
+}
+
+struct RenderTraceBudgetValues {
+    max_distance: Value,
+    min_step: Value,
+    hit_epsilon: Value,
+    max_steps: Value,
+}
+
+struct RenderDomainTraceSource<'a> {
+    function: &'a hir::Function,
+    metadata: &'a hir::DomainMetadata,
+    call_body: &'a hir::Body,
+    call_args: &'a [hir::Arg],
+}
+
+fn default_render_trace_budget_values() -> RenderTraceBudgetValues {
+    RenderTraceBudgetValues {
+        max_distance: default_trace_max_distance(),
+        min_step: default_trace_min_step(),
+        hit_epsilon: default_trace_hit_epsilon(),
+        max_steps: default_trace_max_steps(),
+    }
+}
+
+fn terminal_expr(body: &hir::Body) -> Option<hir::Idx<Expr>> {
+    let stmt = *body.root_stmts.last()?;
+    match &body.stmts[stmt] {
+        HirStmt::Expr(expr) | HirStmt::Return(Some(expr)) => Some(*expr),
+        _ => None,
+    }
+}
+
+fn callee_name_from_expr(body: &hir::Body, expr: hir::Idx<Expr>) -> Option<&SmolStr> {
+    match &body.exprs[expr] {
+        Expr::Variable(name) => Some(name),
+        Expr::TypeApply { callee, .. } => callee_name_from_expr(body, *callee),
+        _ => None,
+    }
+}
+
+fn render_domain_trace_source<'a>(
+    module: &'a hir::Module,
+    render_metadata: &'a hir::RenderMetadata,
+) -> Option<RenderDomainTraceSource<'a>> {
+    let call_body = render_metadata.domain.as_ref()?;
+    let expr = terminal_expr(call_body)?;
+    let Expr::Call { callee, args, .. } = &call_body.exprs[expr] else {
+        return None;
+    };
+    let callee_name = callee_name_from_expr(call_body, *callee)?;
+    let function = module.functions.iter().find_map(|(_, func)| {
+        (func.role == FunctionRole::Domain && func.name == *callee_name).then_some(func)
+    })?;
+    let metadata = function.domain.as_ref()?;
+    Some(RenderDomainTraceSource {
+        function,
+        metadata,
+        call_body,
+        call_args: args,
+    })
+}
+
+fn domain_arg_expr_for_param(
+    args: &[hir::Arg],
+    param_index: usize,
+    param_name: &SmolStr,
+) -> Option<hir::Idx<Expr>> {
+    if let Some(value) = args.iter().find_map(|arg| match arg {
+        hir::Arg::Named { name, value, .. } if name == param_name => Some(*value),
+        _ => None,
+    }) {
+        return Some(value);
+    }
+
+    args.iter()
+        .filter_map(|arg| match arg {
+            hir::Arg::Positional { value, .. } => Some(*value),
+            hir::Arg::Named { .. } => None,
+        })
+        .nth(param_index)
+}
+
+fn lower_domain_budget_value(
+    lowerer: &mut FunctionLowerer,
+    budget: Option<&hir::Body>,
+    default: fn() -> Value,
+    span: TextRange,
+) -> Value {
+    budget
+        .map(|body| lowerer.lower_wrapped_body_value(body, span))
+        .unwrap_or_else(default)
+}
+
+fn lower_render_trace_budget_values(
+    module: &hir::Module,
+    render_metadata: &hir::RenderMetadata,
+    lowerer: &mut FunctionLowerer,
+    span: TextRange,
+) -> RenderTraceBudgetValues {
+    let Some(source) = render_domain_trace_source(module, render_metadata) else {
+        return default_render_trace_budget_values();
+    };
+
+    let bound_args = source
+        .function
+        .params
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, param)| {
+            let expr = domain_arg_expr_for_param(source.call_args, idx, &param.name)?;
+            let value = lowerer.lower_expr(source.call_body, expr);
+            Some((param.name.clone(), value))
+        })
+        .collect::<Vec<_>>();
+
+    lowerer.scopes.push(HashMap::new());
+    for (name, value) in bound_args {
+        let local = lowerer.new_local(name.clone(), false, MirType::Unknown);
+        lowerer.declare_local(name, local);
+        lowerer.assign_use(Place::Local(local), value, span);
+    }
+    let values = RenderTraceBudgetValues {
+        max_distance: lower_domain_budget_value(
+            lowerer,
+            source.metadata.max_distance.as_ref(),
+            default_trace_max_distance,
+            span,
+        ),
+        min_step: lower_domain_budget_value(
+            lowerer,
+            source.metadata.min_step.as_ref(),
+            default_trace_min_step,
+            span,
+        ),
+        hit_epsilon: lower_domain_budget_value(
+            lowerer,
+            source.metadata.hit_epsilon.as_ref(),
+            default_trace_hit_epsilon,
+            span,
+        ),
+        max_steps: lower_domain_budget_value(
+            lowerer,
+            source.metadata.max_steps.as_ref(),
+            default_trace_max_steps,
+            span,
+        ),
+    };
+    lowerer.scopes.pop();
+    values
+}
+
+fn build_scene_domain_contract_value(
+    lowerer: &mut FunctionLowerer,
+    scene_id: Value,
+    geometry_detail: Value,
+    material: Value,
+    radiance: Value,
+    media: Value,
+    span: TextRange,
+) -> Value {
+    let mut spatial = lowerer.synthetic_class_target_info("SpatialDomainContract");
+    FunctionLowerer::set_class_field_value(&mut spatial, "geometry_detail", geometry_detail);
+    FunctionLowerer::set_class_field_value(
+        &mut spatial,
+        "guarantee",
+        Value::Const(Literal::Integer(0)),
+    );
+    let spatial = lowerer.build_class_instance(&spatial, span);
+
+    let mut surface = lowerer.synthetic_class_target_info("SurfaceDomainContract");
+    FunctionLowerer::set_class_field_value(&mut surface, "material", material);
+    let surface = lowerer.build_class_instance(&surface, span);
+
+    let mut participants = lowerer.synthetic_class_target_info("ParticipantDomainContract");
+    FunctionLowerer::set_class_field_value(&mut participants, "radiance", radiance);
+    FunctionLowerer::set_class_field_value(&mut participants, "media", media);
+    let participants = lowerer.build_class_instance(&participants, span);
+
+    let mut domain = lowerer.synthetic_class_target_info("SceneDomain");
+    FunctionLowerer::set_class_field_value(&mut domain, "scene_id", scene_id);
+    FunctionLowerer::set_class_field_value(&mut domain, "spatial", spatial);
+    FunctionLowerer::set_class_field_value(&mut domain, "surface", surface);
+    FunctionLowerer::set_class_field_value(&mut domain, "participants", participants);
+    lowerer.build_class_instance(&domain, span)
+}
+
 fn build_default_scene_domain_value(
     lowerer: &mut FunctionLowerer,
     world_local: LocalId,
@@ -1954,49 +2106,15 @@ fn build_default_scene_domain_value(
         MirType::Integer,
         span,
     );
-    let mut class = lowerer.synthetic_class_target_info("SceneDomain");
-    FunctionLowerer::set_class_field_value(&mut class, "scene_id", scene_id);
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "geometry_detail",
+    build_scene_domain_contract_value(
+        lowerer,
+        scene_id,
         Value::Const(Literal::Integer(1)),
-    );
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "material",
         Value::Const(Literal::Boolean(true)),
-    );
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "radiance",
         Value::Const(Literal::Boolean(true)),
-    );
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "media",
         Value::Const(Literal::Boolean(true)),
-    );
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "max_distance",
-        Value::Const(Literal::Float(12.0)),
-    );
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "min_step",
-        Value::Const(Literal::Float(0.02)),
-    );
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "hit_epsilon",
-        Value::Const(Literal::Float(0.001)),
-    );
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "max_steps",
-        Value::Const(Literal::Integer(96)),
-    );
-    lowerer.build_class_instance(&class, span)
+        span,
+    )
 }
 
 fn declare_internal_param(lowerer: &mut FunctionLowerer, name: &str, ty: MirType) -> LocalId {
@@ -2034,12 +2152,7 @@ fn lower_render_world_trace_call(
     lowerer: &mut FunctionLowerer,
     world: Value,
     domain: Value,
-    origin: Value,
-    direction: Value,
-    max_distance: Value,
-    min_step: Value,
-    hit_epsilon: Value,
-    max_steps: Value,
+    ray: Value,
     span: TextRange,
 ) -> Value {
     let plan = WorldQueryPlan::for_query(WorldQueryKind::Trace);
@@ -2054,17 +2167,7 @@ fn lower_render_world_trace_call(
     lowerer.lower_call_temp(
         MirType::Named(SmolStr::new("Hit3")),
         plan.helper_name,
-        vec![
-            world,
-            domain,
-            origin,
-            direction,
-            max_distance,
-            min_step,
-            hit_epsilon,
-            max_steps,
-            backend,
-        ],
+        vec![world, domain, ray, backend],
         span,
     )
 }
@@ -2110,10 +2213,14 @@ fn lower_render_world_radiance_call(
             DispatchBackend::Auto => 3,
         },
     ));
+    let mut sample = lowerer.synthetic_class_target_info("PointDirectionQuery");
+    FunctionLowerer::set_class_field_value(&mut sample, "point", point);
+    FunctionLowerer::set_class_field_value(&mut sample, "direction", direction);
+    let sample = lowerer.build_class_instance(&sample, span);
     lowerer.lower_call_temp(
         MirType::Vec3,
         plan.helper_name,
-        vec![world, domain, point, direction, backend],
+        vec![world, domain, sample, backend],
         span,
     )
 }
@@ -2198,6 +2305,12 @@ fn lower_render_shadow_visibility_helper(
     let hit_normal = declare_internal_param(&mut lowerer, "hit_normal", MirType::Vec3);
     let light =
         declare_internal_param(&mut lowerer, "light", MirType::Named(SmolStr::new("Light")));
+    let trace_max_distance =
+        declare_internal_param(&mut lowerer, "trace_max_distance", MirType::Float);
+    let trace_min_step = declare_internal_param(&mut lowerer, "trace_min_step", MirType::Float);
+    let trace_hit_epsilon =
+        declare_internal_param(&mut lowerer, "trace_hit_epsilon", MirType::Float);
+    let trace_max_steps = declare_internal_param(&mut lowerer, "trace_max_steps", MirType::Integer);
 
     let entry = lowerer.new_block();
     let hit_block = lowerer.new_block();
@@ -2247,43 +2360,32 @@ fn lower_render_shadow_visibility_helper(
         vec![light_delta],
         span,
     );
-    let shadow_limit = lowerer.lower_call_temp(
+    let light_limit = lowerer.lower_call_temp(
         MirType::Float,
         SmolStr::new("min"),
         vec![light_distance, light_range],
         span,
     );
-    let min_step = lowerer.lower_get_named_field(
-        Value::Local(domain),
-        "SceneDomain",
-        "min_step",
+    let shadow_limit = lowerer.lower_call_temp(
         MirType::Float,
+        SmolStr::new("min"),
+        vec![light_limit, Value::Local(trace_max_distance)],
         span,
     );
-    let hit_epsilon = lowerer.lower_get_named_field(
-        Value::Local(domain),
-        "SceneDomain",
-        "hit_epsilon",
-        MirType::Float,
-        span,
-    );
-    let max_steps = lowerer.lower_get_named_field(
-        Value::Local(domain),
-        "SceneDomain",
-        "max_steps",
-        MirType::Integer,
+    let shadow_ray = lowerer.build_ray_query_value(
+        shadow_origin,
+        shadow_direction,
+        shadow_limit,
+        Value::Local(trace_min_step),
+        Value::Local(trace_hit_epsilon),
+        Value::Local(trace_max_steps),
         span,
     );
     let shadow_hit = lower_render_world_trace_call(
         &mut lowerer,
         Value::Local(world),
         Value::Local(domain),
-        shadow_origin,
-        shadow_direction,
-        shadow_limit,
-        min_step,
-        hit_epsilon,
-        max_steps,
+        shadow_ray,
         span,
     );
     let shadow_hit_flag =
@@ -2338,6 +2440,10 @@ fn lower_render_shadow_visibility_helper(
             PortableAbiType::Vec3,
             PortableAbiType::Vec3,
             portable_abi_named_type("Light", module, type_tags),
+            PortableAbiType::F32,
+            PortableAbiType::F32,
+            PortableAbiType::F32,
+            PortableAbiType::I32,
         ],
         abi_return: PortableAbiType::F32,
         locals: lowerer.locals,
@@ -2618,6 +2724,12 @@ fn lower_render_scene_color_helper(
         declare_internal_param(&mut lowerer, "light", MirType::Named(SmolStr::new("Light")));
     let ray_direction = declare_internal_param(&mut lowerer, "ray_direction", MirType::Vec3);
     let fill_dir = declare_internal_param(&mut lowerer, "fill_dir", MirType::Vec3);
+    let trace_max_distance =
+        declare_internal_param(&mut lowerer, "trace_max_distance", MirType::Float);
+    let trace_min_step = declare_internal_param(&mut lowerer, "trace_min_step", MirType::Float);
+    let trace_hit_epsilon =
+        declare_internal_param(&mut lowerer, "trace_hit_epsilon", MirType::Float);
+    let trace_max_steps = declare_internal_param(&mut lowerer, "trace_max_steps", MirType::Integer);
 
     let entry = lowerer.new_block();
     let hit_block = lowerer.new_block();
@@ -2625,44 +2737,20 @@ fn lower_render_scene_color_helper(
     let join_block = lowerer.new_block();
     lowerer.current_block = entry;
 
-    let max_distance = lowerer.lower_get_named_field(
-        Value::Local(domain),
-        "SceneDomain",
-        "max_distance",
-        MirType::Float,
-        span,
-    );
-    let min_step = lowerer.lower_get_named_field(
-        Value::Local(domain),
-        "SceneDomain",
-        "min_step",
-        MirType::Float,
-        span,
-    );
-    let hit_epsilon = lowerer.lower_get_named_field(
-        Value::Local(domain),
-        "SceneDomain",
-        "hit_epsilon",
-        MirType::Float,
-        span,
-    );
-    let max_steps = lowerer.lower_get_named_field(
-        Value::Local(domain),
-        "SceneDomain",
-        "max_steps",
-        MirType::Integer,
+    let camera_ray = lowerer.build_ray_query_value(
+        Value::Local(camera_position),
+        Value::Local(ray_direction),
+        Value::Local(trace_max_distance),
+        Value::Local(trace_min_step),
+        Value::Local(trace_hit_epsilon),
+        Value::Local(trace_max_steps),
         span,
     );
     let hit = lower_render_world_trace_call(
         &mut lowerer,
         Value::Local(world),
         Value::Local(domain),
-        Value::Local(camera_position),
-        Value::Local(ray_direction),
-        max_distance,
-        min_step.clone(),
-        hit_epsilon.clone(),
-        max_steps.clone(),
+        camera_ray,
         span,
     );
     let hit_flag =
@@ -2809,6 +2897,10 @@ fn lower_render_scene_color_helper(
             hit_position.clone(),
             hit_normal.clone(),
             Value::Local(light),
+            Value::Local(trace_max_distance),
+            Value::Local(trace_min_step),
+            Value::Local(trace_hit_epsilon),
+            Value::Local(trace_max_steps),
         ],
         span,
     );
@@ -3316,6 +3408,10 @@ fn lower_render_scene_color_helper(
             portable_abi_named_type("Light", module, type_tags),
             PortableAbiType::Vec3,
             PortableAbiType::Vec3,
+            PortableAbiType::F32,
+            PortableAbiType::F32,
+            PortableAbiType::F32,
+            PortableAbiType::I32,
         ],
         abi_return: PortableAbiType::Vec3,
         locals: lowerer.locals,
@@ -3390,6 +3486,12 @@ fn lower_render_capture_to_ppm_helper(
     let world_up = declare_internal_param(&mut lowerer, "world_up", MirType::Vec3);
     let view_scale = declare_internal_param(&mut lowerer, "view_scale", MirType::Float);
     let fill_dir = declare_internal_param(&mut lowerer, "fill_dir", MirType::Vec3);
+    let trace_max_distance =
+        declare_internal_param(&mut lowerer, "trace_max_distance", MirType::Float);
+    let trace_min_step = declare_internal_param(&mut lowerer, "trace_min_step", MirType::Float);
+    let trace_hit_epsilon =
+        declare_internal_param(&mut lowerer, "trace_hit_epsilon", MirType::Float);
+    let trace_max_steps = declare_internal_param(&mut lowerer, "trace_max_steps", MirType::Integer);
 
     let entry = lowerer.new_block();
     let y_head = lowerer.new_block();
@@ -3644,6 +3746,10 @@ fn lower_render_capture_to_ppm_helper(
             Value::Local(light),
             ray,
             Value::Local(fill_dir),
+            Value::Local(trace_max_distance),
+            Value::Local(trace_min_step),
+            Value::Local(trace_hit_epsilon),
+            Value::Local(trace_max_steps),
         ],
         span,
     );
@@ -3772,6 +3878,10 @@ fn lower_render_capture_to_ppm_helper(
             PortableAbiType::Vec3,
             PortableAbiType::F32,
             PortableAbiType::Vec3,
+            PortableAbiType::F32,
+            PortableAbiType::F32,
+            PortableAbiType::F32,
+            PortableAbiType::I32,
         ],
         abi_return: PortableAbiType::Value,
         locals: lowerer.locals,
@@ -6239,6 +6349,27 @@ impl FunctionLowerer {
                         return Value::Temp(temp);
                     }
                 }
+                if let MirType::Named(class_name) = self.expr_type(body, *object)
+                    && class_name.as_str() == "SceneDomain"
+                    && let Some((contract_name, contract_field, nested_field, nested_ty)) =
+                        scene_domain_compat_member(member.as_str())
+                {
+                    let base = self.lower_expr(body, *object);
+                    let contract = self.lower_get_named_field(
+                        base,
+                        "SceneDomain",
+                        contract_field,
+                        MirType::Named(SmolStr::new(contract_name)),
+                        span,
+                    );
+                    return self.lower_get_named_field(
+                        contract,
+                        contract_name,
+                        nested_field,
+                        nested_ty,
+                        span,
+                    );
+                }
                 if let Some(component_index) =
                     vector_component_index(self.expr_type(body, *object), member)
                 {
@@ -6967,6 +7098,26 @@ impl FunctionLowerer {
             self.maybe_call_configure(&class.name, Value::Temp(temp), span);
         }
         Value::Temp(temp)
+    }
+
+    pub(crate) fn build_ray_query_value(
+        &mut self,
+        origin: Value,
+        direction: Value,
+        max_distance: Value,
+        min_step: Value,
+        hit_epsilon: Value,
+        max_steps: Value,
+        span: TextRange,
+    ) -> Value {
+        let mut class = self.synthetic_class_target_info("RayQuery");
+        Self::set_class_field_value(&mut class, "origin", origin);
+        Self::set_class_field_value(&mut class, "direction", direction);
+        Self::set_class_field_value(&mut class, "max_distance", max_distance);
+        Self::set_class_field_value(&mut class, "min_step", min_step);
+        Self::set_class_field_value(&mut class, "hit_epsilon", hit_epsilon);
+        Self::set_class_field_value(&mut class, "max_steps", max_steps);
+        self.build_class_instance(&class, span)
     }
 
     pub(crate) fn lower_field_default(
@@ -8037,7 +8188,7 @@ pub(crate) fn portable_value_struct_abi(
         visiting.remove(&name);
         return None;
     };
-    let fields = if let Some(record) = builtin_record(name.as_str()) {
+    let fields = if let Some(record) = any_builtin_record(name.as_str()) {
         record
             .fields
             .iter()
@@ -8513,6 +8664,38 @@ fn builtin_function_names() -> Vec<SmolStr> {
     ]
 }
 
+fn scene_domain_compat_member(
+    member: &str,
+) -> Option<(&'static str, &'static str, &'static str, MirType)> {
+    match member {
+        "geometry_detail" => Some((
+            "SpatialDomainContract",
+            "spatial",
+            "geometry_detail",
+            MirType::Integer,
+        )),
+        "material" => Some((
+            "SurfaceDomainContract",
+            "surface",
+            "material",
+            MirType::Boolean,
+        )),
+        "radiance" => Some((
+            "ParticipantDomainContract",
+            "participants",
+            "radiance",
+            MirType::Boolean,
+        )),
+        "media" => Some((
+            "ParticipantDomainContract",
+            "participants",
+            "media",
+            MirType::Boolean,
+        )),
+        _ => None,
+    }
+}
+
 pub(crate) fn vector_component_index(ty: MirType, member: &SmolStr) -> Option<usize> {
     match (ty, member.as_str()) {
         (MirType::Vec2, "x") => Some(0),
@@ -8589,7 +8772,7 @@ class Whale {\n    fn swim() -> Boolean {\n        return true\n    }\n}\n\nfn f
     fn test_lower_member_assign_sets_field() {
         let input = "\
 class Counter {
-    value: Integer
+    mutable value: Integer
     fn add(delta: Integer) -> Nothing {
         self.value += delta
     }
@@ -8618,8 +8801,8 @@ class Counter {
         let input = "\
 class Foo {
     x: Integer = 1
-    y: List = [1, 2]
-    z: Map = {\"a\": 1}
+    y: List[Integer] = [1, 2]
+    z: Map[String, Integer] = {\"a\": 1}
 }
 
 fn run() -> Nothing {
@@ -8744,8 +8927,8 @@ fn run() -> Nothing {
         hit_epsilon=0.001,
         max_steps=96
     )]
-    _ = distance_at_batch(capture=field_scene, points=points, backend=dispatch_backend_cpu())
-    _ = trace_shape_batch(capture=shape_scene, rays=rays, backend=dispatch_backend_virtual_gpu())
+    distance_results = distance_at_batch(capture=field_scene, points=points, backend=dispatch_backend_cpu())
+    trace_results = trace_shape_batch(capture=shape_scene, rays=rays, backend=dispatch_backend_virtual_gpu())
 }
 "#;
         let node = parse(input);
@@ -9012,21 +9195,25 @@ shape semantic_scene {
 fn main() -> Integer {
     supported = trace_shape(
         capture = capture supported_scene,
-        origin = vec3(0.0, 0.0, 3.0),
-        direction = vec3(0.0, 0.0, -1.0),
-        max_distance = 6.0,
-        min_step = 0.05,
-        hit_epsilon = 0.001,
-        max_steps = 96
+        ray = ray_query(
+            origin = vec3(0.0, 0.0, 3.0),
+            direction = vec3(0.0, 0.0, -1.0),
+            max_distance = 6.0,
+            min_step = 0.05,
+            hit_epsilon = 0.001,
+            max_steps = 96
+        )
     )
     semantic = trace_shape(
         capture = capture semantic_scene,
-        origin = vec3(0.0, 0.0, 3.0),
-        direction = vec3(0.0, 0.0, -1.0),
-        max_distance = 6.0,
-        min_step = 0.05,
-        hit_epsilon = 0.001,
-        max_steps = 96
+        ray = ray_query(
+            origin = vec3(0.0, 0.0, 3.0),
+            direction = vec3(0.0, 0.0, -1.0),
+            max_distance = 6.0,
+            min_step = 0.05,
+            hit_epsilon = 0.001,
+            max_steps = 96
+        )
     )
     if supported.hit && semantic.hit {
         return 0
@@ -9138,6 +9325,35 @@ shape semantic_scene {
         use far_semantic_shape
     }
 }
+
+fn main() -> Integer {
+    supported = trace_shape(
+        capture = capture supported_scene,
+        ray = ray_query(
+            origin = vec3(0.0, 0.0, 3.0),
+            direction = vec3(0.0, 0.0, -1.0),
+            max_distance = 6.0,
+            min_step = 0.05,
+            hit_epsilon = 0.001,
+            max_steps = 96
+        )
+    )
+    semantic = trace_shape(
+        capture = capture semantic_scene,
+        ray = ray_query(
+            origin = vec3(0.0, 0.0, 3.0),
+            direction = vec3(0.0, 0.0, -1.0),
+            max_distance = 6.0,
+            min_step = 0.05,
+            hit_epsilon = 0.001,
+            max_steps = 96
+        )
+    )
+    if supported.hit && semantic.hit {
+        return 0
+    }
+    return 1
+}
 "#;
         let node = parse(input);
         let root = ast::Root::cast(node).unwrap();
@@ -9215,12 +9431,14 @@ fn run() -> Nothing {
     scene = capture orb_shape
     hit = trace_shape(
         capture=scene,
-        origin=vec3(0.8, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.8, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     surface = surface_at(capture=scene, hit=hit)
 }
@@ -9287,12 +9505,14 @@ fn run() -> Nothing {
     scene = capture orb_shape
     hit = trace_shape(
         capture=scene,
-        origin=vec3(0.8, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.8, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     surface = surface_at(capture=scene, hit=hit)
 }
@@ -9367,12 +9587,14 @@ fn run() -> Nothing {
     exact_before = __wr_metrics_get(__wr_metrics_scene_trace_exact_path_id())
     hit = trace_shape(
         capture=orb_scene,
-        origin=vec3(0.8, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.8, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     field_samples_after_trace = __wr_metrics_get(__wr_metrics_field_sample_id())
     surface = surface_at(capture=orb_scene, hit=hit)
@@ -9460,12 +9682,14 @@ fn run() -> Nothing {
 
     hit = trace_shape(
         capture=orb_scene,
-        origin=vec3(0.8, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.8, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     field_samples_after_trace = __wr_metrics_get(__wr_metrics_field_sample_id())
     surface = surface_at(capture=orb_scene, hit=hit)

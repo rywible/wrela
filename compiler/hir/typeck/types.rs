@@ -59,7 +59,20 @@ fn is_portable_named_data_type_name(name: &str) -> bool {
     is_builtin_record_name(name)
 }
 
+fn scene_domain_compat_field_type(member: &str) -> Option<Type> {
+    match member {
+        "geometry_detail" => Some(Type::I32),
+        "material" | "radiance" | "media" => Some(Type::Boolean),
+        _ => None,
+    }
+}
+
 fn portable_named_field_type(name: &str, member: &str) -> Option<Type> {
+    if name == "SceneDomain"
+        && let Some(field_ty) = scene_domain_compat_field_type(member)
+    {
+        return Some(field_ty);
+    }
     let record = builtin_record(name)?;
     let field = record.fields.iter().find(|field| field.name == member)?;
     Some(portable_builtin_type_to_type(field.ty))

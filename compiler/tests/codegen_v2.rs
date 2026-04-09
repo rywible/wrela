@@ -1481,12 +1481,14 @@ fn main() -> Integer {
     scene_capture = capture scene_shape
     hit = trace_shape(
         capture=scene_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     candidates_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
@@ -1562,12 +1564,14 @@ fn render_ppm() -> String {
 
     hit = trace_shape(
         capture=sphere_scene,
-        origin=camera.position,
-        direction=camera.forward,
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=camera.position,
+            direction=camera.forward,
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     surface = surface_at(capture=sphere_scene, hit=hit)
     to_light = normalize(light.position - hit.position)
@@ -1827,12 +1831,14 @@ fn main() -> Integer {
     supported_scene_capture = capture supported_scene
     supported_hit = trace_shape(
         capture=supported_scene_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     supported_surface = surface_at(capture=supported_scene_capture, hit=supported_hit)
     supported_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
@@ -1841,12 +1847,14 @@ fn main() -> Integer {
     semantic_scene_capture = capture semantic_scene
     semantic_hit = trace_shape(
         capture=semantic_scene_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     semantic_surface = surface_at(capture=semantic_scene_capture, hit=semantic_hit)
     semantic_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
@@ -1926,12 +1934,14 @@ fn main() -> Integer {
 
     hit = trace_shape(
         capture=orb_scene,
-        origin=vec3(0.8, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.8, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     field_samples_after_trace = __wr_metrics_get(__wr_metrics_field_sample_id())
     surface = surface_at(capture=orb_scene, hit=hit)
@@ -2086,22 +2096,26 @@ fn main() -> Integer {
     near_capture = capture near_shape
     near_hit = trace_shape(
         capture=near_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     scene_capture = capture supported_scene
     supported_hit = trace_shape(
         capture=scene_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     pruned_mid = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     candidate_mid = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
@@ -2111,12 +2125,14 @@ fn main() -> Integer {
     semantic_capture = capture semantic_scene
     semantic_hit = trace_shape(
         capture=semantic_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     semantic_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     semantic_candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
@@ -2232,12 +2248,14 @@ fn main() -> Integer {
 
     hit = trace_shape(
         capture=scene_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
 
     pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
@@ -2304,12 +2322,14 @@ fn main() -> Integer {
 
     hit = trace_shape(
         capture=scene_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
 
     pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
@@ -2560,120 +2580,146 @@ fn main() -> Integer {
     carved_left_scene_capture = capture carved_left_shape
     left_lr = trace_shape(
         capture=left_scene,
-        origin=vec3(-0.8, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(-0.8, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     right_lr = trace_shape(
         capture=right_scene,
-        origin=vec3(0.8, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.8, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     left_rl = trace_shape(
         capture=left_scene,
-        origin=vec3(-0.8, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(-0.8, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     right_rl = trace_shape(
         capture=right_scene,
-        origin=vec3(0.8, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.8, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     carve_hit = trace_shape(
         capture=carved_scene_capture,
-        origin=vec3(0.0, 0.0, 0.0),
-        direction=vec3(1.0, 0.0, 0.0),
-        max_distance=4.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 0.0),
+            direction=vec3(1.0, 0.0, 0.0),
+            max_distance=4.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     near_direct = trace_shape(
         capture=near_scene,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     far_direct = trace_shape(
         capture=far_scene,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     nearest_hit = trace_shape(
         capture=nearest_scene_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     ordered_hit = trace_shape(
         capture=ordered_scene_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     overlap_hit = trace_shape(
         capture=overlap_scene_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     cutter_hit = trace_shape(
         capture=cutter_scene,
-        origin=vec3(0.0, 0.0, 0.0),
-        direction=vec3(1.0, 0.0, 0.0),
-        max_distance=4.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 0.0),
+            direction=vec3(1.0, 0.0, 0.0),
+            max_distance=4.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     body_hit = trace_shape(
         capture=body_scene,
-        origin=vec3(0.0, 0.0, 0.0),
-        direction=vec3(1.0, 0.0, 0.0),
-        max_distance=4.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 0.0),
+            direction=vec3(1.0, 0.0, 0.0),
+            max_distance=4.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     carve_left_hit = trace_shape(
         capture=carved_left_scene_capture,
-        origin=vec3(0.0, 0.0, 0.0),
-        direction=vec3(1.0, 0.0, 0.0),
-        max_distance=4.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 0.0),
+            direction=vec3(1.0, 0.0, 0.0),
+            max_distance=4.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     left_hit_surface = surface_at(capture=left_scene, hit=left_lr)
     right_hit_surface = surface_at(capture=right_scene, hit=right_lr)
@@ -2882,57 +2928,69 @@ fn main() -> Integer {
     wrapped_shape_scene = capture wrapped_shape
     tie_left_hit = trace_shape(
         capture=tie_left_scene,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     tie_right_hit = trace_shape(
         capture=tie_right_scene,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     tie_union_hit = trace_shape(
         capture=tie_union_scene,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     tie_intersection_hit = trace_shape(
         capture=tie_intersection_scene,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     wrapped_direct_hit = trace_shape(
         capture=wrapped_shape_scene,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     wrapped_scene_hit = trace_shape(
         capture=wrapped_scene_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     tie_union_surface = surface_at(capture=tie_union_scene, hit=tie_union_hit)
     tie_intersection_surface = surface_at(capture=tie_intersection_scene, hit=tie_intersection_hit)
@@ -3542,18 +3600,22 @@ fn main() -> Integer {
     sampled_normal = normal_at(capture=scene_capture, point=probe)
     sampled_hit = trace_shape(
         capture=scene_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     sampled_surface = surface_at(capture=scene_capture, hit=sampled_hit)
     sampled_radiance = radiance_at(
         capture=scene_capture,
-        point=sampled_hit.position,
-        direction=normalize(vec3(0.0, 1.0, 1.0))
+        sample=point_direction_query(
+            point=sampled_hit.position,
+            direction=normalize(vec3(0.0, 1.0, 1.0))
+        )
     )
     sampled_medium = medium_at(capture=scene_capture, point=sampled_hit.position)
 
@@ -3597,12 +3659,14 @@ fn main() -> Integer {
     scene = capture sphere_field
     hit = trace_shape(
         capture=scene,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     if hit.hit {
         return 1
@@ -3658,8 +3722,10 @@ fn main() -> Integer {
     scene = capture sphere_field
     _ = radiance_at(
         capture=scene,
-        point=vec3(0.0, 0.0, 0.0),
-        direction=vec3(0.0, 0.0, -1.0)
+        sample=point_direction_query(
+            point=vec3(0.0, 0.0, 0.0),
+            direction=vec3(0.0, 0.0, -1.0)
+        )
     )
     _ = medium_at(capture=scene, point=vec3(0.0, 0.0, 0.0))
     return 0
@@ -3858,12 +3924,14 @@ fn main() -> Integer {
     control_capture = capture control_shape
     control_hit = trace_shape(
         capture=control_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     control_after = __wr_metrics_get(__wr_metrics_field_sample_id())
 
@@ -3871,12 +3939,14 @@ fn main() -> Integer {
     smooth_capture = capture smooth_shape
     smooth_hit = trace_shape(
         capture=smooth_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     smooth_after = __wr_metrics_get(__wr_metrics_field_sample_id())
 
@@ -3884,42 +3954,50 @@ fn main() -> Integer {
     deform_capture = capture bend_shape
     bend_hit = trace_shape(
         capture=deform_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     twist_capture = capture twist_shape
     twist_hit = trace_shape(
         capture=twist_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     taper_capture = capture taper_shape
     taper_hit = trace_shape(
         capture=taper_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     displace_capture = capture displace_shape
     displace_hit = trace_shape(
         capture=displace_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     deform_after = __wr_metrics_get(__wr_metrics_field_sample_id())
 
@@ -4018,18 +4096,22 @@ fn main() -> Integer {
     scene_capture = capture phase7_scene_shape
     hit = trace_shape(
         capture=scene_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     surface = surface_at(capture=scene_capture, hit=hit)
     radiance_sample = radiance_at(
         capture=scene_capture,
-        point=hit.position,
-        direction=normalize(vec3(0.0, 1.0, 1.0)),
+        sample=point_direction_query(
+            point=hit.position,
+            direction=normalize(vec3(0.0, 1.0, 1.0))
+        )
     )
     medium_sample = medium_at(capture=scene_capture, point=hit.position)
     ambient = compute_ambient_occlusion(
@@ -4107,12 +4189,14 @@ fn main() -> Integer {
     scene = capture rotated_shape
     hit = trace_shape(
         capture=scene,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
 
     if hit.hit != true { return 1 }
@@ -4211,21 +4295,25 @@ fn main() -> Integer {
     reference_scene = capture phase5_ellipsoid_shape
     rotated_hit = trace_shape(
         capture=rotated_scene,
-        origin=world_origin,
-        direction=world_direction,
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=world_origin,
+            direction=world_direction,
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     reference_hit = trace_shape(
         capture=reference_scene,
-        origin=reference_origin,
-        direction=reference_direction,
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=reference_origin,
+            direction=reference_direction,
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     rotated_hits = trace_shape_batch(
         capture=rotated_scene,
@@ -4432,59 +4520,71 @@ fn main() -> Integer {
 
     capsule_rotated_hit = trace_shape(
         capture=capsule_rotated_scene,
-        origin=capsule_world_origin,
-        direction=world_direction,
-        max_distance=8.0,
-        min_step=0.02,
-        hit_epsilon=0.001,
-        max_steps=128
+        ray=ray_query(
+            origin=capsule_world_origin,
+            direction=world_direction,
+            max_distance=8.0,
+            min_step=0.02,
+            hit_epsilon=0.001,
+            max_steps=128
+        )
     )
     capsule_reference_hit = trace_shape(
         capture=capsule_reference_scene,
-        origin=capsule_reference_origin,
-        direction=reference_direction,
-        max_distance=8.0,
-        min_step=0.02,
-        hit_epsilon=0.001,
-        max_steps=128
+        ray=ray_query(
+            origin=capsule_reference_origin,
+            direction=reference_direction,
+            max_distance=8.0,
+            min_step=0.02,
+            hit_epsilon=0.001,
+            max_steps=128
+        )
     )
 
     cylinder_rotated_hit = trace_shape(
         capture=cylinder_rotated_scene,
-        origin=cylinder_world_origin,
-        direction=world_direction,
-        max_distance=8.0,
-        min_step=0.02,
-        hit_epsilon=0.001,
-        max_steps=128
+        ray=ray_query(
+            origin=cylinder_world_origin,
+            direction=world_direction,
+            max_distance=8.0,
+            min_step=0.02,
+            hit_epsilon=0.001,
+            max_steps=128
+        )
     )
     cylinder_reference_hit = trace_shape(
         capture=cylinder_reference_scene,
-        origin=cylinder_reference_origin,
-        direction=reference_direction,
-        max_distance=8.0,
-        min_step=0.02,
-        hit_epsilon=0.001,
-        max_steps=128
+        ray=ray_query(
+            origin=cylinder_reference_origin,
+            direction=reference_direction,
+            max_distance=8.0,
+            min_step=0.02,
+            hit_epsilon=0.001,
+            max_steps=128
+        )
     )
 
     torus_rotated_hit = trace_shape(
         capture=torus_rotated_scene,
-        origin=torus_world_origin,
-        direction=world_direction,
-        max_distance=8.0,
-        min_step=0.02,
-        hit_epsilon=0.001,
-        max_steps=128
+        ray=ray_query(
+            origin=torus_world_origin,
+            direction=world_direction,
+            max_distance=8.0,
+            min_step=0.02,
+            hit_epsilon=0.001,
+            max_steps=128
+        )
     )
     torus_reference_hit = trace_shape(
         capture=torus_reference_scene,
-        origin=torus_reference_origin,
-        direction=reference_direction,
-        max_distance=8.0,
-        min_step=0.02,
-        hit_epsilon=0.001,
-        max_steps=128
+        ray=ray_query(
+            origin=torus_reference_origin,
+            direction=reference_direction,
+            max_distance=8.0,
+            min_step=0.02,
+            hit_epsilon=0.001,
+            max_steps=128
+        )
     )
 
     if not capsule_rotated_hit.hit or not capsule_reference_hit.hit { return 1 }
@@ -4771,38 +4871,46 @@ fn main() -> Integer {
     fine_distance = distance_world(capture = world, domain = fine_domain, point = probe)
     fine_normal = normal_world(capture = world, domain = fine_domain, point = probe)
     coarse_hit = trace_world(
-        capture = world,
-        domain = coarse_domain,
-        origin = vec3(0.0, 0.0, 3.0),
-        direction = vec3(0.0, 0.0, -1.0),
-        max_distance = 6.0,
-        min_step = 0.05,
-        hit_epsilon = 0.001,
-        max_steps = 96
+        capture=world,
+        domain=coarse_domain,
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     fine_hit = trace_world(
-        capture = world,
-        domain = fine_domain,
-        origin = vec3(0.0, 0.0, 3.0),
-        direction = vec3(0.0, 0.0, -1.0),
-        max_distance = 6.0,
-        min_step = 0.05,
-        hit_epsilon = 0.001,
-        max_steps = 96
+        capture=world,
+        domain=fine_domain,
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     coarse_surface = surface_world(capture = world, domain = coarse_domain, hit = fine_hit)
     fine_surface = surface_world(capture = world, domain = fine_domain, hit = fine_hit)
     coarse_radiance = radiance_world(
-        capture = world,
-        domain = coarse_domain,
-        point = fine_hit.position,
-        direction = normalize(vec3(0.0, 1.0, 1.0))
+        capture=world,
+        domain=coarse_domain,
+        sample=point_direction_query(
+            point=fine_hit.position,
+            direction=normalize(vec3(0.0, 1.0, 1.0))
+        )
     )
     fine_radiance = radiance_world(
-        capture = world,
-        domain = fine_domain,
-        point = fine_hit.position,
-        direction = normalize(vec3(0.0, 1.0, 1.0))
+        capture=world,
+        domain=fine_domain,
+        sample=point_direction_query(
+            point=fine_hit.position,
+            direction=normalize(vec3(0.0, 1.0, 1.0))
+        )
     )
     coarse_medium = medium_world(capture = world, domain = coarse_domain, point = fine_hit.position)
     fine_medium = medium_world(capture = world, domain = fine_domain, point = fine_hit.position)
@@ -4957,23 +5065,27 @@ fn main() -> Integer {
     cpu_hit = trace_world(
         capture=world,
         domain=domain,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96,
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        ),
         backend=dispatch_backend_cpu()
     )
     auto_hit = trace_world(
         capture=world,
         domain=domain,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     cpu_surface = surface_world(
         capture=world,
@@ -4985,15 +5097,19 @@ fn main() -> Integer {
     cpu_radiance = radiance_world(
         capture=world,
         domain=domain,
-        point=auto_hit.position,
-        direction=normalize(vec3(0.0, 1.0, 1.0)),
+        sample=point_direction_query(
+            point=auto_hit.position,
+            direction=normalize(vec3(0.0, 1.0, 1.0))
+        ),
         backend=dispatch_backend_cpu()
     )
     auto_radiance = radiance_world(
         capture=world,
         domain=domain,
-        point=auto_hit.position,
-        direction=normalize(vec3(0.0, 1.0, 1.0))
+        sample=point_direction_query(
+            point=auto_hit.position,
+            direction=normalize(vec3(0.0, 1.0, 1.0))
+        )
     )
     cpu_medium = medium_world(
         capture=world,
@@ -5070,23 +5186,27 @@ fn probe(world: RegionCapture, domain: SceneDomain, direction: Vec3, code_base: 
     cpu_hit = trace_world(
         capture=world,
         domain=domain,
-        origin=vec3(0.0, 0.1, 2.7),
-        direction=direction,
-        max_distance=12.0,
-        min_step=0.02,
-        hit_epsilon=0.0008,
-        max_steps=96,
+        ray=ray_query(
+            origin=vec3(0.0, 0.1, 2.7),
+            direction=direction,
+            max_distance=12.0,
+            min_step=0.02,
+            hit_epsilon=0.0008,
+            max_steps=96
+        ),
         backend=dispatch_backend_cpu()
     )
     auto_hit = trace_world(
         capture=world,
         domain=domain,
-        origin=vec3(0.0, 0.1, 2.7),
-        direction=direction,
-        max_distance=12.0,
-        min_step=0.02,
-        hit_epsilon=0.0008,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.1, 2.7),
+            direction=direction,
+            max_distance=12.0,
+            min_step=0.02,
+            hit_epsilon=0.0008,
+            max_steps=96
+        )
     )
     if cpu_hit.hit != auto_hit.hit { return fail(code=code_base + 1) }
     if abs(cpu_hit.distance - auto_hit.distance) > 0.01 { return code_base + 2 }
@@ -5100,15 +5220,19 @@ fn probe(world: RegionCapture, domain: SceneDomain, direction: Vec3, code_base: 
         cpu_radiance = radiance_world(
             capture=world,
             domain=domain,
-            point=miss_point,
-            direction=direction,
+            sample=point_direction_query(
+                point=miss_point,
+                direction=direction
+            ),
             backend=dispatch_backend_cpu()
         )
         auto_radiance = radiance_world(
             capture=world,
             domain=domain,
-            point=miss_point,
-            direction=direction
+            sample=point_direction_query(
+                point=miss_point,
+                direction=direction
+            )
         )
         if approx_vec3(a=cpu_radiance, b=auto_radiance, tolerance=0.01) == false { return code_base + 7 }
         cpu_medium = medium_world(
@@ -5138,15 +5262,19 @@ fn probe(world: RegionCapture, domain: SceneDomain, direction: Vec3, code_base: 
     cpu_radiance = radiance_world(
         capture=world,
         domain=domain,
-        point=cpu_hit.position,
-        direction=direction,
+        sample=point_direction_query(
+            point=cpu_hit.position,
+            direction=direction
+        ),
         backend=dispatch_backend_cpu()
     )
     auto_radiance = radiance_world(
         capture=world,
         domain=domain,
-        point=cpu_hit.position,
-        direction=direction
+        sample=point_direction_query(
+            point=cpu_hit.position,
+            direction=direction
+        )
     )
     if approx_vec3(a=cpu_radiance, b=auto_radiance, tolerance=0.01) == false { return code_base + 14 }
 
@@ -5195,23 +5323,27 @@ fn probe(world: RegionCapture, domain: SceneDomain, direction: Vec3, code_base: 
     cpu_shadow = trace_world(
         capture=world,
         domain=domain,
-        origin=shadow_origin,
-        direction=shadow_direction,
-        max_distance=shadow_limit,
-        min_step=0.02,
-        hit_epsilon=0.0008,
-        max_steps=96,
+        ray=ray_query(
+            origin=shadow_origin,
+            direction=shadow_direction,
+            max_distance=shadow_limit,
+            min_step=0.02,
+            hit_epsilon=0.0008,
+            max_steps=96
+        ),
         backend=dispatch_backend_cpu()
     )
     auto_shadow = trace_world(
         capture=world,
         domain=domain,
-        origin=shadow_origin,
-        direction=shadow_direction,
-        max_distance=shadow_limit,
-        min_step=0.02,
-        hit_epsilon=0.0008,
-        max_steps=96
+        ray=ray_query(
+            origin=shadow_origin,
+            direction=shadow_direction,
+            max_distance=shadow_limit,
+            min_step=0.02,
+            hit_epsilon=0.0008,
+            max_steps=96
+        )
     )
     if cpu_shadow.hit != auto_shadow.hit { return code_base + 20 }
     if abs(cpu_shadow.distance - auto_shadow.distance) > 0.01 { return code_base + 21 }

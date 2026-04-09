@@ -137,6 +137,33 @@ const DISPATCH_BACKEND_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField 
     ty: TyAtom(Atom::I32),
 }];
 
+const SPATIAL_DOMAIN_CONTRACT_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "geometry_detail",
+        ty: TyAtom(Atom::I32),
+    },
+    PortableBuiltinField {
+        name: "guarantee",
+        ty: TyAtom(Atom::U32),
+    },
+];
+
+const SURFACE_DOMAIN_CONTRACT_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField {
+    name: "material",
+    ty: TyAtom(Atom::Bool),
+}];
+
+const PARTICIPANT_DOMAIN_CONTRACT_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "radiance",
+        ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "media",
+        ty: TyAtom(Atom::Bool),
+    },
+];
+
 const TRACE_QUERY_FIELDS: &[PortableBuiltinField] = &[
     PortableBuiltinField {
         name: "capture",
@@ -183,6 +210,17 @@ const POINT_QUERY_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField {
     name: "point",
     ty: TyAtom(Atom::Vec3),
 }];
+
+const POINT_DIRECTION_QUERY_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "point",
+        ty: TyAtom(Atom::Vec3),
+    },
+    PortableBuiltinField {
+        name: "direction",
+        ty: TyAtom(Atom::Vec3),
+    },
+];
 
 const RAY_QUERY_FIELDS: &[PortableBuiltinField] = &[
     PortableBuiltinField {
@@ -442,6 +480,24 @@ const BUILTIN_RECORDS: &[PortableBuiltinRecord] = &[
         fields: SCENE_CAPTURE_FIELDS,
     },
     PortableBuiltinRecord {
+        name: "SpatialDomainContract",
+        function_name: None,
+        constructible: false,
+        fields: SPATIAL_DOMAIN_CONTRACT_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "SurfaceDomainContract",
+        function_name: None,
+        constructible: false,
+        fields: SURFACE_DOMAIN_CONTRACT_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "ParticipantDomainContract",
+        function_name: None,
+        constructible: false,
+        fields: PARTICIPANT_DOMAIN_CONTRACT_FIELDS,
+    },
+    PortableBuiltinRecord {
         name: "SceneDomain",
         function_name: None,
         constructible: false,
@@ -451,36 +507,16 @@ const BUILTIN_RECORDS: &[PortableBuiltinRecord] = &[
                 ty: TyAtom(Atom::U32),
             },
             PortableBuiltinField {
-                name: "geometry_detail",
-                ty: TyAtom(Atom::I32),
+                name: "spatial",
+                ty: TyNamed("SpatialDomainContract"),
             },
             PortableBuiltinField {
-                name: "material",
-                ty: TyAtom(Atom::Bool),
+                name: "surface",
+                ty: TyNamed("SurfaceDomainContract"),
             },
             PortableBuiltinField {
-                name: "radiance",
-                ty: TyAtom(Atom::Bool),
-            },
-            PortableBuiltinField {
-                name: "media",
-                ty: TyAtom(Atom::Bool),
-            },
-            PortableBuiltinField {
-                name: "max_distance",
-                ty: TyAtom(Atom::F32),
-            },
-            PortableBuiltinField {
-                name: "min_step",
-                ty: TyAtom(Atom::F32),
-            },
-            PortableBuiltinField {
-                name: "hit_epsilon",
-                ty: TyAtom(Atom::F32),
-            },
-            PortableBuiltinField {
-                name: "max_steps",
-                ty: TyAtom(Atom::I32),
+                name: "participants",
+                ty: TyNamed("ParticipantDomainContract"),
             },
         ],
     },
@@ -491,22 +527,16 @@ const BUILTIN_RECORDS: &[PortableBuiltinRecord] = &[
         fields: DISPATCH_BACKEND_FIELDS,
     },
     PortableBuiltinRecord {
-        name: "TraceQuery",
-        function_name: None,
-        constructible: false,
-        fields: TRACE_QUERY_FIELDS,
-    },
-    PortableBuiltinRecord {
-        name: "SurfaceQuery",
-        function_name: None,
-        constructible: false,
-        fields: SURFACE_QUERY_FIELDS,
-    },
-    PortableBuiltinRecord {
         name: "PointQuery",
         function_name: Some("point_query"),
         constructible: true,
         fields: POINT_QUERY_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "PointDirectionQuery",
+        function_name: Some("point_direction_query"),
+        constructible: true,
+        fields: POINT_DIRECTION_QUERY_FIELDS,
     },
     PortableBuiltinRecord {
         name: "RayQuery",
@@ -591,6 +621,21 @@ const BUILTIN_RECORDS: &[PortableBuiltinRecord] = &[
         function_name: None,
         constructible: true,
         fields: ACTOR_HANDLE_FIELDS,
+    },
+];
+
+const INTERNAL_BUILTIN_RECORDS: &[PortableBuiltinRecord] = &[
+    PortableBuiltinRecord {
+        name: "TraceQuery",
+        function_name: None,
+        constructible: false,
+        fields: TRACE_QUERY_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "SurfaceQuery",
+        function_name: None,
+        constructible: false,
+        fields: SURFACE_QUERY_FIELDS,
     },
 ];
 
@@ -684,6 +729,22 @@ pub fn builtin_record(name: &str) -> Option<&'static PortableBuiltinRecord> {
     BUILTIN_RECORDS.iter().find(|record| record.name == name)
 }
 
+pub(crate) fn internal_builtin_record(name: &str) -> Option<&'static PortableBuiltinRecord> {
+    INTERNAL_BUILTIN_RECORDS
+        .iter()
+        .find(|record| record.name == name)
+}
+
+pub(crate) fn any_builtin_record(name: &str) -> Option<&'static PortableBuiltinRecord> {
+    builtin_record(name).or_else(|| internal_builtin_record(name))
+}
+
+pub(crate) fn all_builtin_records() -> impl Iterator<Item = &'static PortableBuiltinRecord> {
+    BUILTIN_RECORDS
+        .iter()
+        .chain(INTERNAL_BUILTIN_RECORDS.iter())
+}
+
 pub fn builtin_record_by_function(name: &str) -> Option<&'static PortableBuiltinRecord> {
     BUILTIN_RECORDS
         .iter()
@@ -712,20 +773,24 @@ pub fn is_builtin_field_primitive_function(name: &str) -> bool {
     BUILTIN_FIELD_PRIMITIVE_FUNCTIONS.contains(&name)
 }
 
+fn portable_builtin_atom_abi(atom: PortableBuiltinAtom) -> PortableAbiType {
+    match atom {
+        PortableBuiltinAtom::Bool => PortableAbiType::Bool,
+        PortableBuiltinAtom::I32 => PortableAbiType::I32,
+        PortableBuiltinAtom::U32 => PortableAbiType::U32,
+        PortableBuiltinAtom::F32 => PortableAbiType::F32,
+        PortableBuiltinAtom::Vec2 => PortableAbiType::Vec2,
+        PortableBuiltinAtom::Vec3 => PortableAbiType::Vec3,
+        PortableBuiltinAtom::Vec4 => PortableAbiType::Vec4,
+        PortableBuiltinAtom::Mat3 => PortableAbiType::Mat3,
+        PortableBuiltinAtom::Mat4 => PortableAbiType::Mat4,
+        PortableBuiltinAtom::Quat => PortableAbiType::Quat,
+    }
+}
+
 pub fn portable_builtin_type_abi(ty: PortableBuiltinType) -> Option<PortableAbiType> {
     match ty {
-        PortableBuiltinType::Atom(atom) => Some(match atom {
-            PortableBuiltinAtom::Bool => PortableAbiType::Bool,
-            PortableBuiltinAtom::I32 => PortableAbiType::I32,
-            PortableBuiltinAtom::U32 => PortableAbiType::U32,
-            PortableBuiltinAtom::F32 => PortableAbiType::F32,
-            PortableBuiltinAtom::Vec2 => PortableAbiType::Vec2,
-            PortableBuiltinAtom::Vec3 => PortableAbiType::Vec3,
-            PortableBuiltinAtom::Vec4 => PortableAbiType::Vec4,
-            PortableBuiltinAtom::Mat3 => PortableAbiType::Mat3,
-            PortableBuiltinAtom::Mat4 => PortableAbiType::Mat4,
-            PortableBuiltinAtom::Quat => PortableAbiType::Quat,
-        }),
+        PortableBuiltinType::Atom(atom) => Some(portable_builtin_atom_abi(atom)),
         PortableBuiltinType::Named(name) => portable_builtin_record_abi(name),
     }
 }
@@ -744,6 +809,35 @@ pub fn portable_builtin_record_abi(name: &str) -> Option<PortableAbiType> {
         fields.push(PortableStructField {
             name: SmolStr::new(field.name),
             ty: portable_builtin_type_abi(field.ty)?,
+        });
+    }
+    Some(PortableAbiType::Struct {
+        name: SmolStr::new(record.name),
+        class_id,
+        fields,
+    })
+}
+
+fn portable_any_builtin_type_abi(ty: PortableBuiltinType) -> Option<PortableAbiType> {
+    match ty {
+        PortableBuiltinType::Atom(atom) => Some(portable_builtin_atom_abi(atom)),
+        PortableBuiltinType::Named(name) => portable_any_builtin_record_abi(name),
+    }
+}
+
+pub(crate) fn portable_any_builtin_record_abi(name: &str) -> Option<PortableAbiType> {
+    let class_id = u32::try_from(
+        all_builtin_records()
+            .position(|record| record.name == name)?
+            .saturating_add(1),
+    )
+    .ok()?;
+    let record = any_builtin_record(name)?;
+    let mut fields = Vec::with_capacity(record.fields.len());
+    for field in record.fields {
+        fields.push(PortableStructField {
+            name: SmolStr::new(field.name),
+            ty: portable_any_builtin_type_abi(field.ty)?,
         });
     }
     Some(PortableAbiType::Struct {

@@ -2367,12 +2367,7 @@ fn infer_shape_query_builtin(
     let expected = match query_name.as_str() {
         "trace_shape" => vec![
             (SmolStr::new("capture"), Type::Unknown),
-            (SmolStr::new("origin"), Type::Vec3),
-            (SmolStr::new("direction"), Type::Vec3),
-            (SmolStr::new("max_distance"), Type::F32),
-            (SmolStr::new("min_step"), Type::F32),
-            (SmolStr::new("hit_epsilon"), Type::F32),
-            (SmolStr::new("max_steps"), Type::Integer),
+            (SmolStr::new("ray"), portable_named_type("RayQuery")),
         ],
         _ => vec![
             (SmolStr::new("capture"), Type::Unknown),
@@ -2466,8 +2461,10 @@ fn infer_shape_point_query_builtin(
     let expected = match query_name.as_str() {
         "radiance_at" => vec![
             (SmolStr::new("capture"), Type::Unknown),
-            (SmolStr::new("point"), Type::Vec3),
-            (SmolStr::new("direction"), Type::Vec3),
+            (
+                SmolStr::new("sample"),
+                portable_named_type("PointDirectionQuery"),
+            ),
         ],
         _ => vec![
             (SmolStr::new("capture"), Type::Unknown),
@@ -2682,12 +2679,7 @@ fn infer_world_shape_query_builtin(
         "trace_world" => vec![
             (SmolStr::new("capture"), region_capture_type()),
             (SmolStr::new("domain"), scene_domain_type()),
-            (SmolStr::new("origin"), Type::Vec3),
-            (SmolStr::new("direction"), Type::Vec3),
-            (SmolStr::new("max_distance"), Type::F32),
-            (SmolStr::new("min_step"), Type::F32),
-            (SmolStr::new("hit_epsilon"), Type::F32),
-            (SmolStr::new("max_steps"), Type::Integer),
+            (SmolStr::new("ray"), portable_named_type("RayQuery")),
         ],
         _ => vec![
             (SmolStr::new("capture"), region_capture_type()),
@@ -2775,8 +2767,10 @@ fn infer_world_point_query_builtin(
         "radiance_world" => vec![
             (SmolStr::new("capture"), region_capture_type()),
             (SmolStr::new("domain"), scene_domain_type()),
-            (SmolStr::new("point"), Type::Vec3),
-            (SmolStr::new("direction"), Type::Vec3),
+            (
+                SmolStr::new("sample"),
+                portable_named_type("PointDirectionQuery"),
+            ),
         ],
         _ => vec![
             (SmolStr::new("capture"), region_capture_type()),

@@ -30,8 +30,8 @@ pub(crate) enum FieldQueryKind {
 pub(crate) struct FieldQuerySpec {
     pub(crate) kind: FieldQueryKind,
     pub(crate) capture: hir::Idx<Expr>,
-    pub(crate) point: hir::Idx<Expr>,
-    pub(crate) direction: Option<hir::Idx<Expr>>,
+    pub(crate) point: Option<hir::Idx<Expr>>,
+    pub(crate) sample: Option<hir::Idx<Expr>>,
 }
 
 #[derive(Clone, Copy)]
@@ -43,12 +43,7 @@ pub(crate) enum ShapeQueryKind {
 pub(crate) struct ShapeQuerySpec {
     pub(crate) kind: ShapeQueryKind,
     pub(crate) capture: hir::Idx<Expr>,
-    pub(crate) origin: Option<hir::Idx<Expr>>,
-    pub(crate) direction: Option<hir::Idx<Expr>>,
-    pub(crate) max_distance: Option<hir::Idx<Expr>>,
-    pub(crate) min_step: Option<hir::Idx<Expr>>,
-    pub(crate) hit_epsilon: Option<hir::Idx<Expr>>,
-    pub(crate) max_steps: Option<hir::Idx<Expr>>,
+    pub(crate) ray: Option<hir::Idx<Expr>>,
     pub(crate) hit: Option<hir::Idx<Expr>>,
 }
 
@@ -64,8 +59,8 @@ pub(crate) struct WorldPointQuerySpec {
     pub(crate) kind: WorldPointQueryKind,
     pub(crate) capture: hir::Idx<Expr>,
     pub(crate) domain: hir::Idx<Expr>,
-    pub(crate) point: hir::Idx<Expr>,
-    pub(crate) direction: Option<hir::Idx<Expr>>,
+    pub(crate) point: Option<hir::Idx<Expr>>,
+    pub(crate) sample: Option<hir::Idx<Expr>>,
     pub(crate) backend: Option<hir::Idx<Expr>>,
 }
 
@@ -79,12 +74,7 @@ pub(crate) struct WorldShapeQuerySpec {
     pub(crate) kind: WorldShapeQueryKind,
     pub(crate) capture: hir::Idx<Expr>,
     pub(crate) domain: hir::Idx<Expr>,
-    pub(crate) origin: Option<hir::Idx<Expr>>,
-    pub(crate) direction: Option<hir::Idx<Expr>>,
-    pub(crate) max_distance: Option<hir::Idx<Expr>>,
-    pub(crate) min_step: Option<hir::Idx<Expr>>,
-    pub(crate) hit_epsilon: Option<hir::Idx<Expr>>,
-    pub(crate) max_steps: Option<hir::Idx<Expr>>,
+    pub(crate) ray: Option<hir::Idx<Expr>>,
     pub(crate) hit: Option<hir::Idx<Expr>>,
     pub(crate) backend: Option<hir::Idx<Expr>>,
 }

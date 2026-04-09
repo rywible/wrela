@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::hir::{
-    self, BinaryOp, Expr, FieldBounds, FieldClass, FieldSupport, FunctionRole, Literal,
-    Stmt as HirStmt, UnaryOp,
+    self, BinaryOp, Expr, FieldBounds, FieldSupport, FunctionRole, Literal, Stmt as HirStmt,
+    UnaryOp,
 };
 use crate::kernel::{
     KernelPlanStage, lower_batch_query_plan, lower_capture_query_plan, lower_world_query_plan,

@@ -21,15 +21,15 @@ impl FunctionLowerer {
 
         let mut capture = None;
         let mut point = None;
-        let mut direction = None;
+        let mut sample = None;
         for arg in args {
             let hir::Arg::Named { name, value, .. } = arg else {
                 return None;
             };
             match name.as_str() {
                 "capture" => capture = Some(*value),
-                "point" => point = Some(*value),
-                "direction" => direction = Some(*value),
+                "point" if !matches!(kind, FieldQueryKind::Radiance) => point = Some(*value),
+                "sample" if matches!(kind, FieldQueryKind::Radiance) => sample = Some(*value),
                 _ => return None,
             }
         }
@@ -37,8 +37,8 @@ impl FunctionLowerer {
         Some(FieldQuerySpec {
             kind,
             capture: capture?,
-            point: point?,
-            direction,
+            point,
+            sample,
         })
     }
 
@@ -139,12 +139,7 @@ impl FunctionLowerer {
         };
 
         let mut capture = None;
-        let mut origin = None;
-        let mut direction = None;
-        let mut max_distance = None;
-        let mut min_step = None;
-        let mut hit_epsilon = None;
-        let mut max_steps = None;
+        let mut ray = None;
         let mut hit = None;
 
         for arg in args {
@@ -153,12 +148,7 @@ impl FunctionLowerer {
             };
             match name.as_str() {
                 "capture" => capture = Some(*value),
-                "origin" => origin = Some(*value),
-                "direction" => direction = Some(*value),
-                "max_distance" => max_distance = Some(*value),
-                "min_step" => min_step = Some(*value),
-                "hit_epsilon" => hit_epsilon = Some(*value),
-                "max_steps" => max_steps = Some(*value),
+                "ray" if matches!(kind, ShapeQueryKind::Trace) => ray = Some(*value),
                 "hit" => hit = Some(*value),
                 _ => return None,
             }
@@ -167,12 +157,7 @@ impl FunctionLowerer {
         Some(ShapeQuerySpec {
             kind,
             capture: capture?,
-            origin,
-            direction,
-            max_distance,
-            min_step,
-            hit_epsilon,
-            max_steps,
+            ray,
             hit,
         })
     }
@@ -199,7 +184,7 @@ impl FunctionLowerer {
         let mut capture = None;
         let mut domain = None;
         let mut point = None;
-        let mut direction = None;
+        let mut sample = None;
         let mut backend = None;
         for arg in args {
             let hir::Arg::Named { name, value, .. } = arg else {
@@ -208,10 +193,8 @@ impl FunctionLowerer {
             match name.as_str() {
                 "capture" => capture = Some(*value),
                 "domain" => domain = Some(*value),
-                "point" => point = Some(*value),
-                "direction" if matches!(kind, WorldPointQueryKind::Radiance) => {
-                    direction = Some(*value)
-                }
+                "point" if !matches!(kind, WorldPointQueryKind::Radiance) => point = Some(*value),
+                "sample" if matches!(kind, WorldPointQueryKind::Radiance) => sample = Some(*value),
                 "backend" => backend = Some(*value),
                 _ => return None,
             }
@@ -220,8 +203,8 @@ impl FunctionLowerer {
             kind,
             capture: capture?,
             domain: domain?,
-            point: point?,
-            direction,
+            point,
+            sample,
             backend,
         })
     }
@@ -245,12 +228,7 @@ impl FunctionLowerer {
         };
         let mut capture = None;
         let mut domain = None;
-        let mut origin = None;
-        let mut direction = None;
-        let mut max_distance = None;
-        let mut min_step = None;
-        let mut hit_epsilon = None;
-        let mut max_steps = None;
+        let mut ray = None;
         let mut hit = None;
         let mut backend = None;
         for arg in args {
@@ -260,12 +238,7 @@ impl FunctionLowerer {
             match name.as_str() {
                 "capture" => capture = Some(*value),
                 "domain" => domain = Some(*value),
-                "origin" => origin = Some(*value),
-                "direction" => direction = Some(*value),
-                "max_distance" => max_distance = Some(*value),
-                "min_step" => min_step = Some(*value),
-                "hit_epsilon" => hit_epsilon = Some(*value),
-                "max_steps" => max_steps = Some(*value),
+                "ray" if matches!(kind, WorldShapeQueryKind::Trace) => ray = Some(*value),
                 "hit" => hit = Some(*value),
                 "backend" => backend = Some(*value),
                 _ => return None,
@@ -275,12 +248,7 @@ impl FunctionLowerer {
             kind,
             capture: capture?,
             domain: domain?,
-            origin,
-            direction,
-            max_distance,
-            min_step,
-            hit_epsilon,
-            max_steps,
+            ray,
             hit,
             backend,
         })
@@ -380,7 +348,6 @@ impl FunctionLowerer {
         spec: &FieldQuerySpec,
     ) -> Value {
         let capture = self.lower_expr(body, spec.capture);
-        let point = self.lower_expr(body, spec.point);
         let plan = self.build_capture_query_plan(body, spec);
         let kernel_plan = lower_capture_query_plan(&plan);
         debug_assert!(
@@ -389,27 +356,27 @@ impl FunctionLowerer {
         );
         match spec.kind {
             FieldQueryKind::Distance => {
+                let point = self.lower_expr(body, spec.point.expect("distance_at missing point"));
                 self.lower_call_temp(MirType::Float, plan.helper_name, vec![capture, point], span)
             }
             FieldQueryKind::Normal => {
+                let point = self.lower_expr(body, spec.point.expect("normal_at missing point"));
                 self.lower_call_temp(MirType::Vec3, plan.helper_name, vec![capture, point], span)
             }
             FieldQueryKind::Radiance => {
-                let direction =
-                    self.lower_expr(body, spec.direction.expect("radiance_at missing direction"));
+                let sample =
+                    self.lower_expr(body, spec.sample.expect("radiance_at missing sample"));
+                self.lower_call_temp(MirType::Vec3, plan.helper_name, vec![capture, sample], span)
+            }
+            FieldQueryKind::Medium => {
+                let point = self.lower_expr(body, spec.point.expect("medium_at missing point"));
                 self.lower_call_temp(
-                    MirType::Vec3,
+                    MirType::Named(SmolStr::new("Medium")),
                     plan.helper_name,
-                    vec![capture, point, direction],
+                    vec![capture, point],
                     span,
                 )
             }
-            FieldQueryKind::Medium => self.lower_call_temp(
-                MirType::Named(SmolStr::new("Medium")),
-                plan.helper_name,
-                vec![capture, point],
-                span,
-            ),
         }
     }
 
@@ -428,34 +395,11 @@ impl FunctionLowerer {
         );
         match spec.kind {
             ShapeQueryKind::Trace => {
-                let origin =
-                    self.lower_expr(body, spec.origin.expect("trace_shape missing origin"));
-                let direction =
-                    self.lower_expr(body, spec.direction.expect("trace_shape missing direction"));
-                let max_distance = self.lower_expr(
-                    body,
-                    spec.max_distance.expect("trace_shape missing max_distance"),
-                );
-                let min_step =
-                    self.lower_expr(body, spec.min_step.expect("trace_shape missing min_step"));
-                let hit_epsilon = self.lower_expr(
-                    body,
-                    spec.hit_epsilon.expect("trace_shape missing hit_epsilon"),
-                );
-                let max_steps =
-                    self.lower_expr(body, spec.max_steps.expect("trace_shape missing max_steps"));
+                let ray = self.lower_expr(body, spec.ray.expect("trace_shape missing ray"));
                 self.lower_call_temp(
                     MirType::Named(SmolStr::new("Hit3")),
                     plan.helper_name,
-                    vec![
-                        capture,
-                        origin,
-                        direction,
-                        max_distance,
-                        min_step,
-                        hit_epsilon,
-                        max_steps,
-                    ],
+                    vec![capture, ray],
                     span,
                 )
             }
@@ -479,7 +423,6 @@ impl FunctionLowerer {
     ) -> Value {
         let capture = self.lower_expr(body, spec.capture);
         let domain = self.lower_expr(body, spec.domain);
-        let point = self.lower_expr(body, spec.point);
         let backend = self.lower_world_query_backend_value(body, spec.backend, span);
         let plan = self.build_world_point_query_plan(body, spec);
         let kernel_plan = lower_world_query_plan(&plan);
@@ -488,36 +431,43 @@ impl FunctionLowerer {
             "compiler-generated world point query plans must stay kernel-valid"
         );
         match spec.kind {
-            WorldPointQueryKind::Distance => self.lower_call_temp(
-                MirType::Float,
-                plan.helper_name,
-                vec![capture, domain, point, backend],
-                span,
-            ),
-            WorldPointQueryKind::Normal => self.lower_call_temp(
-                MirType::Vec3,
-                plan.helper_name,
-                vec![capture, domain, point, backend],
-                span,
-            ),
-            WorldPointQueryKind::Radiance => {
-                let direction = self.lower_expr(
-                    body,
-                    spec.direction.expect("radiance_world missing direction"),
-                );
+            WorldPointQueryKind::Distance => {
+                let point = self.lower_expr(body, spec.point.expect("distance_world missing point"));
                 self.lower_call_temp(
-                    MirType::Vec3,
+                    MirType::Float,
                     plan.helper_name,
-                    vec![capture, domain, point, direction, backend],
+                    vec![capture, domain, point, backend],
                     span,
                 )
             }
-            WorldPointQueryKind::Medium => self.lower_call_temp(
-                MirType::Named(SmolStr::new("Medium")),
-                plan.helper_name,
-                vec![capture, domain, point, backend],
-                span,
-            ),
+            WorldPointQueryKind::Normal => {
+                let point = self.lower_expr(body, spec.point.expect("normal_world missing point"));
+                self.lower_call_temp(
+                    MirType::Vec3,
+                    plan.helper_name,
+                    vec![capture, domain, point, backend],
+                    span,
+                )
+            }
+            WorldPointQueryKind::Radiance => {
+                let sample =
+                    self.lower_expr(body, spec.sample.expect("radiance_world missing sample"));
+                self.lower_call_temp(
+                    MirType::Vec3,
+                    plan.helper_name,
+                    vec![capture, domain, sample, backend],
+                    span,
+                )
+            }
+            WorldPointQueryKind::Medium => {
+                let point = self.lower_expr(body, spec.point.expect("medium_world missing point"));
+                self.lower_call_temp(
+                    MirType::Named(SmolStr::new("Medium")),
+                    plan.helper_name,
+                    vec![capture, domain, point, backend],
+                    span,
+                )
+            }
         }
     }
 
@@ -538,36 +488,11 @@ impl FunctionLowerer {
         );
         match spec.kind {
             WorldShapeQueryKind::Trace => {
-                let origin =
-                    self.lower_expr(body, spec.origin.expect("trace_world missing origin"));
-                let direction =
-                    self.lower_expr(body, spec.direction.expect("trace_world missing direction"));
-                let max_distance = self.lower_expr(
-                    body,
-                    spec.max_distance.expect("trace_world missing max_distance"),
-                );
-                let min_step =
-                    self.lower_expr(body, spec.min_step.expect("trace_world missing min_step"));
-                let hit_epsilon = self.lower_expr(
-                    body,
-                    spec.hit_epsilon.expect("trace_world missing hit_epsilon"),
-                );
-                let max_steps =
-                    self.lower_expr(body, spec.max_steps.expect("trace_world missing max_steps"));
+                let ray = self.lower_expr(body, spec.ray.expect("trace_world missing ray"));
                 self.lower_call_temp(
                     MirType::Named(SmolStr::new("Hit3")),
                     plan.helper_name,
-                    vec![
-                        capture,
-                        domain,
-                        origin,
-                        direction,
-                        max_distance,
-                        min_step,
-                        hit_epsilon,
-                        max_steps,
-                        backend,
-                    ],
+                    vec![capture, domain, ray, backend],
                     span,
                 )
             }
@@ -1131,6 +1056,39 @@ impl FunctionLowerer {
                 });
                 BatchQueryLoopInputs {
                     point: Some(Value::Temp(point)),
+                    ..BatchQueryLoopInputs::default()
+                }
+            }
+            QueryItemKind::PointDirectionQuery => {
+                let sample = self.lower_call_temp(
+                    MirType::Named(SmolStr::new("PointDirectionQuery")),
+                    SmolStr::new("__wr_list_get"),
+                    vec![items, index],
+                    span,
+                );
+                let point = self.new_temp(MirType::Vec3);
+                self.push_stmt(MirStmt::Assign {
+                    place: Place::Temp(point),
+                    value: Rvalue::GetField {
+                        base: sample.clone(),
+                        field: SmolStr::new("point"),
+                        slot: self.field_slot("PointDirectionQuery", "point"),
+                    },
+                    span,
+                });
+                let direction = self.new_temp(MirType::Vec3);
+                self.push_stmt(MirStmt::Assign {
+                    place: Place::Temp(direction),
+                    value: Rvalue::GetField {
+                        base: sample,
+                        field: SmolStr::new("direction"),
+                        slot: self.field_slot("PointDirectionQuery", "direction"),
+                    },
+                    span,
+                });
+                BatchQueryLoopInputs {
+                    point: Some(Value::Temp(point)),
+                    direction: Some(Value::Temp(direction)),
                     ..BatchQueryLoopInputs::default()
                 }
             }

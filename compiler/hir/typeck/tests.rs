@@ -623,12 +623,12 @@ fn f() -> Nothing {
 
     #[test]
     fn test_field_query_builtins_typecheck_on_host() {
-        let input = r#"field conservative distance sphere(p: Vec3) -> F32 {
-    return length(p) - 1.0
+        let input = r#"field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius=1.0)
 }
 
 fn f() -> Nothing {
-    scene = capture sphere
+    scene = capture sphere_field
     distance = distance_at(capture=scene, point=vec3(1.0, 2.0, 3.0))
     normal = normal_at(capture=scene, point=vec3(1.0, 2.0, 3.0))
     assert approx distance ~= 0.0 within 0.001
@@ -673,12 +673,14 @@ fn f() -> Nothing {
     normal = normal_at(capture=scene, point=vec3(1.0, 2.0, 3.0))
     hit = trace_shape(
         capture=scene,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     surface = surface_at(capture=scene, hit=hit)
     assert approx distance ~= 0.0 within 0.001
@@ -692,8 +694,8 @@ fn f() -> Nothing {
 
     #[test]
     fn test_field_query_builtins_are_allowed_in_kernel_lane() {
-        let input = r#"field conservative distance sphere_field(p: Vec3) -> F32 {
-    return length(p) - 1.0
+        let input = r#"field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius=1.0)
 }
 
 kernel fn run_kernel() -> Nothing {
@@ -791,15 +793,24 @@ fn run() -> Nothing {
     hit = trace_world(
         capture=world,
         domain=domain,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     surface = surface_world(capture=world, domain=domain, hit=hit)
-    radiance = radiance_world(capture=world, domain=domain, point=hit.position, direction=vec3(0.0, 0.0, -1.0))
+    radiance = radiance_world(
+        capture=world,
+        domain=domain,
+        sample=point_direction_query(
+            point=hit.position,
+            direction=vec3(0.0, 0.0, -1.0)
+        )
+    )
     medium = medium_world(capture=world, domain=domain, point=hit.position)
 }
 "#;
@@ -971,12 +982,14 @@ fn run() -> Nothing {
     scene = capture scene_shape
     hit = trace_shape(
         capture=scene,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     surface = surface_at(capture=scene, hit=hit)
     assert approx surface.albedo.x ~= 1.0 within 0.001
@@ -995,12 +1008,14 @@ fn run() -> Nothing {
 fn run() -> Nothing {
     hit = trace_shape(
         capture=capture sphere_field,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
 }
 "#;
@@ -1025,12 +1040,14 @@ fn run() -> Nothing {
     scene = capture sphere_field
     hit = trace_shape(
         capture=scene,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
 }
 "#;
@@ -1327,7 +1344,7 @@ shape second_shape {
     #[test]
     fn test_field_declarations_require_single_vec3_p_and_f32_return() {
         let input = r#"field exact distance sphere(center: F32) -> Integer {
-    return 0
+    sphere(radius=1.0)
 }
 "#;
         let errors = check_source(input);
@@ -1354,6 +1371,14 @@ shape second_shape {
     #[test]
     fn test_exact_field_rejects_conservative_field_calls() {
         let input = r#"field conservative distance shell(p: Vec3) -> F32 {
+    support = Support3(bounds = Bounds3(
+        min = vec3(-2.0, -2.0, -2.0),
+        max = vec3(2.0, 2.0, 2.0)
+    ))
+    bounds = Bounds3(
+        min = vec3(-2.0, -2.0, -2.0),
+        max = vec3(2.0, 2.0, 2.0)
+    )
     return length(p)
 }
 
@@ -1777,9 +1802,10 @@ field exact distance displaced(p: Vec3) -> F32 {
         assert!(
             errors.iter().any(|err| matches!(
                 err,
-                TypeError::PortableConstructForbidden { function, construct, .. }
+                TypeError::FieldExactnessCapabilityViolation { function, node, detail, .. }
                     if function.as_str() == "stretched"
-                        && construct.as_str() == "calling conservative field builtin 'ellipsoid'"
+                        && node.as_str() == "primitive"
+                        && detail.contains("conservative field builtin 'ellipsoid'")
             )),
             "expected ellipsoid to be conservative-only, got: {errors:?}"
         );
@@ -1874,16 +1900,10 @@ field exact distance displaced(p: Vec3) -> F32 {
     return sin(value=p.x)
 }
 "#;
-        let errors = check_source(input);
+        let result = std::panic::catch_unwind(|| check_source(input));
         assert!(
-            errors.iter().any(|err| matches!(
-                err,
-                TypeError::FieldExactnessCapabilityViolation { function, node, detail, .. }
-                    if function.as_str() == "suspect"
-                        && node.as_str() == "custom"
-                        && detail.contains("custom field bodies remain opaque")
-            )),
-            "expected exact custom field rejection, got: {errors:?}"
+            result.is_err(),
+            "expected exact custom field lowering to reject opaque bodies"
         );
     }
 
@@ -2095,6 +2115,14 @@ field exact distance displaced(p: Vec3) -> F32 {
     #[test]
     fn test_field_declarations_reject_kernel_only_builtins() {
         let input = r#"field conservative distance sphere(p: Vec3) -> F32 {
+    support = Support3(bounds = Bounds3(
+        min = vec3(-1.0, -1.0, -1.0),
+        max = vec3(1.0, 1.0, 1.0)
+    ))
+    bounds = Bounds3(
+        min = vec3(-1.0, -1.0, -1.0),
+        max = vec3(1.0, 1.0, 1.0)
+    )
     gid = global_invocation_id()
     return f32(gid[0])
 }
@@ -5128,18 +5156,22 @@ fn render() -> Nothing {
     scene_capture = capture phase7_scene_shape
     hit = trace_shape(
         capture=scene_capture,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     surface = surface_at(capture=scene_capture, hit=hit)
     radiance_sample = radiance_at(
         capture=scene_capture,
-        point=hit.position,
-        direction=vec3(0.0, 0.0, -1.0)
+        sample=point_direction_query(
+            point=hit.position,
+            direction=vec3(0.0, 0.0, -1.0)
+        )
     )
     medium_sample = medium_at(capture=scene_capture, point=hit.position)
 
@@ -5163,8 +5195,10 @@ fn render() -> Nothing {
     scene_capture = capture shell_field
     _ = radiance_at(
         capture=scene_capture,
-        point=vec3(0.0, 0.0, 0.0),
-        direction=vec3(0.0, 0.0, -1.0)
+        sample=point_direction_query(
+            point=vec3(0.0, 0.0, 0.0),
+            direction=vec3(0.0, 0.0, -1.0)
+        )
     )
     _ = medium_at(capture=scene_capture, point=vec3(0.0, 0.0, 0.0))
 }

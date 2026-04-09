@@ -394,87 +394,73 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
                 span,
             }
         };
-        let fields = vec![
-            (SmolStr::new("scene_id"), scene_id),
-            (
-                SmolStr::new("geometry_detail"),
-                KernelExpr::Literal {
-                    value: hir::Literal::Integer(match metadata.geometry_detail {
-                        hir::DomainGeometryDetail::Coarse => 0,
-                        hir::DomainGeometryDetail::Fine => 1,
-                    }),
-                    ty: Type::I32,
-                    span,
-                },
-            ),
-            (
+        let spatial = KernelExpr::StructLiteral {
+            name: SmolStr::new("SpatialDomainContract"),
+            fields: vec![
+                (
+                    SmolStr::new("geometry_detail"),
+                    KernelExpr::Literal {
+                        value: hir::Literal::Integer(match metadata.geometry_detail {
+                            hir::DomainGeometryDetail::Coarse => 0,
+                            hir::DomainGeometryDetail::Fine => 1,
+                        }),
+                        ty: Type::I32,
+                        span,
+                    },
+                ),
+                (
+                    SmolStr::new("guarantee"),
+                    KernelExpr::Literal {
+                        value: hir::Literal::Integer(0),
+                        ty: Type::U32,
+                        span,
+                    },
+                ),
+            ],
+            ty: Type::Named(SmolStr::new("SpatialDomainContract"), Vec::new()),
+            span,
+        };
+        let surface = KernelExpr::StructLiteral {
+            name: SmolStr::new("SurfaceDomainContract"),
+            fields: vec![(
                 SmolStr::new("material"),
                 KernelExpr::Literal {
                     value: hir::Literal::Boolean(metadata.material),
                     ty: Type::Boolean,
                     span,
                 },
-            ),
-            (
-                SmolStr::new("radiance"),
-                KernelExpr::Literal {
-                    value: hir::Literal::Boolean(metadata.radiance),
-                    ty: Type::Boolean,
-                    span,
-                },
-            ),
-            (
-                SmolStr::new("media"),
-                KernelExpr::Literal {
-                    value: hir::Literal::Boolean(metadata.media),
-                    ty: Type::Boolean,
-                    span,
-                },
-            ),
-            (
-                SmolStr::new("max_distance"),
-                metadata.max_distance.as_ref().map_or(
-                    Some(KernelExpr::Literal {
-                        value: hir::Literal::Float(12.0),
-                        ty: Type::F32,
+            )],
+            ty: Type::Named(SmolStr::new("SurfaceDomainContract"), Vec::new()),
+            span,
+        };
+        let participants = KernelExpr::StructLiteral {
+            name: SmolStr::new("ParticipantDomainContract"),
+            fields: vec![
+                (
+                    SmolStr::new("radiance"),
+                    KernelExpr::Literal {
+                        value: hir::Literal::Boolean(metadata.radiance),
+                        ty: Type::Boolean,
                         span,
-                    }),
-                    |body| self.lower_domain_body_value(body, Type::F32),
-                )?,
-            ),
-            (
-                SmolStr::new("min_step"),
-                metadata.min_step.as_ref().map_or(
-                    Some(KernelExpr::Literal {
-                        value: hir::Literal::Float(0.02),
-                        ty: Type::F32,
+                    },
+                ),
+                (
+                    SmolStr::new("media"),
+                    KernelExpr::Literal {
+                        value: hir::Literal::Boolean(metadata.media),
+                        ty: Type::Boolean,
                         span,
-                    }),
-                    |body| self.lower_domain_body_value(body, Type::F32),
-                )?,
-            ),
-            (
-                SmolStr::new("hit_epsilon"),
-                metadata.hit_epsilon.as_ref().map_or(
-                    Some(KernelExpr::Literal {
-                        value: hir::Literal::Float(0.001),
-                        ty: Type::F32,
-                        span,
-                    }),
-                    |body| self.lower_domain_body_value(body, Type::F32),
-                )?,
-            ),
-            (
-                SmolStr::new("max_steps"),
-                metadata.max_steps.as_ref().map_or(
-                    Some(KernelExpr::Literal {
-                        value: hir::Literal::Integer(96),
-                        ty: Type::I32,
-                        span,
-                    }),
-                    |body| self.lower_domain_body_value(body, Type::I32),
-                )?,
-            ),
+                    },
+                ),
+            ],
+            ty: Type::Named(SmolStr::new("ParticipantDomainContract"), Vec::new()),
+            span,
+        };
+        let fields = vec![
+            (SmolStr::new("scene_id"), scene_id),
+            (SmolStr::new("spatial"), spatial),
+            (SmolStr::new("surface"), surface),
+            (SmolStr::new("participants"), participants),
         ];
         Some(vec![KernelStmt::Return {
             value: Some(KernelExpr::StructLiteral {
@@ -494,73 +480,6 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
             out.push(stmt);
         }
         Some(out)
-    }
-
-    fn lower_domain_body_value(&mut self, body: &'a hir::Body, ty: Type) -> Option<KernelExpr> {
-        let last = *body.root_stmts.last()?;
-        let expr = match &body.stmts[last] {
-            Stmt::Expr(expr) | Stmt::Return(Some(expr)) => *expr,
-            _ => return None,
-        };
-        self.lower_domain_value_expr(body, expr, ty)
-    }
-
-    fn lower_domain_value_expr(
-        &mut self,
-        body: &'a hir::Body,
-        expr_id: Idx<Expr>,
-        ty: Type,
-    ) -> Option<KernelExpr> {
-        let span = body.expr_span(expr_id);
-        match &body.exprs[expr_id] {
-            Expr::Literal(value) => Some(KernelExpr::Literal {
-                value: value.clone(),
-                ty,
-                span,
-            }),
-            Expr::Variable(name) => Some(KernelExpr::Var {
-                name: name.clone(),
-                ty,
-                span,
-            }),
-            Expr::Unary { op, expr, .. } => Some(KernelExpr::Unary {
-                op: *op,
-                expr: Box::new(self.lower_domain_value_expr(body, *expr, ty.clone())?),
-                ty,
-                span,
-            }),
-            Expr::Binary { lhs, op, rhs, .. } => Some(KernelExpr::Binary {
-                op: *op,
-                lhs: Box::new(self.lower_domain_value_expr(body, *lhs, ty.clone())?),
-                rhs: Box::new(self.lower_domain_value_expr(body, *rhs, ty.clone())?),
-                ty,
-                span,
-            }),
-            Expr::Call {
-                callee,
-                args,
-                type_args,
-            } if type_args.is_empty() => {
-                let Expr::Variable(target) = &body.exprs[*callee] else {
-                    return None;
-                };
-                let args = args
-                    .iter()
-                    .map(|arg| match arg {
-                        Arg::Positional { value, .. } | Arg::Named { value, .. } => {
-                            self.lower_domain_value_expr(body, *value, ty.clone())
-                        }
-                    })
-                    .collect::<Option<Vec<_>>>()?;
-                Some(KernelExpr::Call {
-                    target: target.clone(),
-                    args,
-                    ty,
-                    span,
-                })
-            }
-            _ => None,
-        }
     }
 
     fn lower_stmt(&mut self, stmt_id: Idx<Stmt>) -> Option<KernelStmt> {
@@ -1057,26 +976,30 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
         let Expr::Variable(name) = &self.body.exprs[*callee] else {
             return None;
         };
-        let (kind, expects_direction) = match name.as_str() {
-            "distance_at" => (CaptureQueryKind::Distance, false),
-            "normal_at" => (CaptureQueryKind::Normal, false),
-            "radiance_at" => (CaptureQueryKind::Radiance, true),
-            "medium_at" => (CaptureQueryKind::Medium, false),
+        let kind = match name.as_str() {
+            "distance_at" => CaptureQueryKind::Distance,
+            "normal_at" => CaptureQueryKind::Normal,
+            "radiance_at" => CaptureQueryKind::Radiance,
+            "medium_at" => CaptureQueryKind::Medium,
             _ => return None,
         };
         let named = self.collect_named_expr_args(args)?;
         let capture = named.get("capture").copied()?;
-        let point = named.get("point").copied()?;
         let capture_kind = self.capture_kind_for_expr(capture);
         let scene = self.batch_capture_scene_summary(capture, capture_kind);
         let plan = lower_capture_query_plan(
             &CaptureQueryPlan::for_query(kind, capture_kind, scene)
                 .expect("kernel capture query plan"),
         );
-        let mut ordered_args = vec![self.lower_expr(capture)?, self.lower_expr(point)?];
-        if expects_direction {
-            ordered_args.push(self.lower_expr(*named.get("direction")?)?);
-        }
+        let item_key = if matches!(kind, CaptureQueryKind::Radiance) {
+            "sample"
+        } else {
+            "point"
+        };
+        let ordered_args = vec![
+            self.lower_expr(capture)?,
+            self.lower_expr(*named.get(item_key)?)?,
+        ];
         if ordered_args.iter().any(|arg| {
             arg.span() == TextRange::empty(0.into()) && span == TextRange::empty(0.into())
         }) {
@@ -1111,12 +1034,7 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
         let ordered_args = match kind {
             CaptureQueryKind::Trace => vec![
                 self.lower_expr(capture)?,
-                self.lower_expr(*named.get("origin")?)?,
-                self.lower_expr(*named.get("direction")?)?,
-                self.lower_expr(*named.get("max_distance")?)?,
-                self.lower_expr(*named.get("min_step")?)?,
-                self.lower_expr(*named.get("hit_epsilon")?)?,
-                self.lower_expr(*named.get("max_steps")?)?,
+                self.lower_expr(*named.get("ray")?)?,
             ],
             CaptureQueryKind::Surface => vec![
                 self.lower_expr(capture)?,
@@ -1138,11 +1056,11 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
         let Expr::Variable(name) = &self.body.exprs[*callee] else {
             return None;
         };
-        let (kind, expects_direction) = match name.as_str() {
-            "distance_world" => (WorldQueryKind::Distance, false),
-            "normal_world" => (WorldQueryKind::Normal, false),
-            "radiance_world" => (WorldQueryKind::Radiance, true),
-            "medium_world" => (WorldQueryKind::Medium, false),
+        let kind = match name.as_str() {
+            "distance_world" => WorldQueryKind::Distance,
+            "normal_world" => WorldQueryKind::Normal,
+            "radiance_world" => WorldQueryKind::Radiance,
+            "medium_world" => WorldQueryKind::Medium,
             _ => return None,
         };
         let named = self.collect_named_expr_args(args)?;
@@ -1151,14 +1069,16 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
             .and_then(|expr_id| self.parse_dispatch_backend_builtin(expr_id))
             .unwrap_or(DispatchBackend::Auto);
         let plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(kind, backend));
+        let item_key = if matches!(kind, WorldQueryKind::Radiance) {
+            "sample"
+        } else {
+            "point"
+        };
         let mut ordered_args = vec![
             self.lower_expr(*named.get("capture")?)?,
             self.lower_expr(*named.get("domain")?)?,
-            self.lower_expr(*named.get("point")?)?,
+            self.lower_expr(*named.get(item_key)?)?,
         ];
-        if expects_direction {
-            ordered_args.push(self.lower_expr(*named.get("direction")?)?);
-        }
         if let Some(backend_expr) = backend_expr {
             ordered_args.push(self.lower_expr(backend_expr)?);
         }
@@ -1191,12 +1111,7 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
             WorldQueryKind::Trace => vec![
                 self.lower_expr(*named.get("capture")?)?,
                 self.lower_expr(*named.get("domain")?)?,
-                self.lower_expr(*named.get("origin")?)?,
-                self.lower_expr(*named.get("direction")?)?,
-                self.lower_expr(*named.get("max_distance")?)?,
-                self.lower_expr(*named.get("min_step")?)?,
-                self.lower_expr(*named.get("hit_epsilon")?)?,
-                self.lower_expr(*named.get("max_steps")?)?,
+                self.lower_expr(*named.get("ray")?)?,
             ],
             WorldQueryKind::Surface => vec![
                 self.lower_expr(*named.get("capture")?)?,

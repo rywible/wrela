@@ -160,22 +160,26 @@ kernel fn portable_entry() -> QuerySummary {
     domain = fine_domain(world=world)
     hit = trace_shape(
         capture=scene,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     world_hit = trace_world(
         capture=world,
         domain=domain,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     points = [
         PointQuery(point=vec3(0.0, 0.0, 2.0)),
@@ -241,34 +245,42 @@ fn scene_domain_with_limits(
     material: bool,
     radiance: bool,
     media: bool,
-    max_distance: f32,
-    min_step: f32,
-    hit_epsilon: f32,
-    max_steps: i32,
+    _max_distance: f32,
+    _min_step: f32,
+    _hit_epsilon: f32,
+    _max_steps: i32,
 ) -> KernelValue {
     KernelValue::Struct(KernelStructValue {
         name: SmolStr::new("SceneDomain"),
         fields: vec![
             (SmolStr::new("scene_id"), KernelValue::U32(scene_id)),
             (
-                SmolStr::new("world"),
+                SmolStr::new("spatial"),
                 KernelValue::Struct(KernelStructValue {
-                    name: SmolStr::new("RegionCapture"),
+                    name: SmolStr::new("SpatialDomainContract"),
                     fields: vec![
-                        (SmolStr::new("scene_id"), KernelValue::U32(scene_id)),
-                        (SmolStr::new("epoch"), KernelValue::U32(0)),
-                        (SmolStr::new("root_feature_id"), KernelValue::U32(0)),
+                        (SmolStr::new("geometry_detail"), KernelValue::I32(detail)),
+                        (SmolStr::new("guarantee"), KernelValue::U32(0)),
                     ],
                 }),
             ),
-            (SmolStr::new("geometry_detail"), KernelValue::I32(detail)),
-            (SmolStr::new("material"), KernelValue::Bool(material)),
-            (SmolStr::new("radiance"), KernelValue::Bool(radiance)),
-            (SmolStr::new("media"), KernelValue::Bool(media)),
-            (SmolStr::new("max_distance"), KernelValue::F32(max_distance)),
-            (SmolStr::new("min_step"), KernelValue::F32(min_step)),
-            (SmolStr::new("hit_epsilon"), KernelValue::F32(hit_epsilon)),
-            (SmolStr::new("max_steps"), KernelValue::I32(max_steps)),
+            (
+                SmolStr::new("surface"),
+                KernelValue::Struct(KernelStructValue {
+                    name: SmolStr::new("SurfaceDomainContract"),
+                    fields: vec![(SmolStr::new("material"), KernelValue::Bool(material))],
+                }),
+            ),
+            (
+                SmolStr::new("participants"),
+                KernelValue::Struct(KernelStructValue {
+                    name: SmolStr::new("ParticipantDomainContract"),
+                    fields: vec![
+                        (SmolStr::new("radiance"), KernelValue::Bool(radiance)),
+                        (SmolStr::new("media"), KernelValue::Bool(media)),
+                    ],
+                }),
+            ),
         ],
     })
 }
@@ -281,15 +293,36 @@ fn point_query(point: [f32; 3]) -> KernelValue {
 }
 
 fn ray_query(origin: [f32; 3], direction: [f32; 3]) -> KernelValue {
+    ray_query_with_limits(origin, direction, 6.0, 0.05, 0.001, 96)
+}
+
+fn ray_query_with_limits(
+    origin: [f32; 3],
+    direction: [f32; 3],
+    max_distance: f32,
+    min_step: f32,
+    hit_epsilon: f32,
+    max_steps: i32,
+) -> KernelValue {
     KernelValue::Struct(KernelStructValue {
         name: SmolStr::new("RayQuery"),
         fields: vec![
             (SmolStr::new("origin"), KernelValue::Vec3(origin)),
             (SmolStr::new("direction"), KernelValue::Vec3(direction)),
-            (SmolStr::new("max_distance"), KernelValue::F32(6.0)),
-            (SmolStr::new("min_step"), KernelValue::F32(0.05)),
-            (SmolStr::new("hit_epsilon"), KernelValue::F32(0.001)),
-            (SmolStr::new("max_steps"), KernelValue::I32(96)),
+            (SmolStr::new("max_distance"), KernelValue::F32(max_distance)),
+            (SmolStr::new("min_step"), KernelValue::F32(min_step)),
+            (SmolStr::new("hit_epsilon"), KernelValue::F32(hit_epsilon)),
+            (SmolStr::new("max_steps"), KernelValue::I32(max_steps)),
+        ],
+    })
+}
+
+fn point_direction_query(point: [f32; 3], direction: [f32; 3]) -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("PointDirectionQuery"),
+        fields: vec![
+            (SmolStr::new("point"), KernelValue::Vec3(point)),
+            (SmolStr::new("direction"), KernelValue::Vec3(direction)),
         ],
     })
 }
@@ -644,12 +677,7 @@ fn query_exec_cpu_runs_capture_world_and_batch_queries_with_shared_results() {
         &capture_trace,
         &[
             shape_capture.clone(),
-            KernelValue::Vec3([0.0, 0.0, 3.0]),
-            KernelValue::Vec3([0.0, 0.0, -1.0]),
-            KernelValue::F32(6.0),
-            KernelValue::F32(0.05),
-            KernelValue::F32(0.001),
-            KernelValue::I32(96),
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
         ],
     )
     .expect("capture trace");
@@ -679,8 +707,7 @@ fn query_exec_cpu_runs_capture_world_and_batch_queries_with_shared_results() {
         &capture_radiance,
         &[
             shape_capture.clone(),
-            KernelValue::Vec3([0.0, 0.0, 1.0]),
-            KernelValue::Vec3([0.0, 1.0, 0.0]),
+            point_direction_query([0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
         ],
     )
     .expect("capture radiance");
@@ -725,12 +752,7 @@ fn query_exec_cpu_runs_capture_world_and_batch_queries_with_shared_results() {
         &[
             region_capture.clone(),
             fine_domain.clone(),
-            KernelValue::Vec3([0.0, 0.0, 3.0]),
-            KernelValue::Vec3([0.0, 0.0, -1.0]),
-            KernelValue::F32(6.0),
-            KernelValue::F32(0.05),
-            KernelValue::F32(0.001),
-            KernelValue::I32(96),
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
         ],
     )
     .expect("world trace");
@@ -839,12 +861,7 @@ fn query_exec_world_queries_enforce_domain_contract_and_flags() {
         &[
             region_capture.clone(),
             valid_domain.clone(),
-            KernelValue::Vec3([0.0, 0.0, 3.0]),
-            KernelValue::Vec3([0.0, 0.0, -1.0]),
-            KernelValue::F32(6.0),
-            KernelValue::F32(0.05),
-            KernelValue::F32(0.001),
-            KernelValue::I32(96),
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
         ],
     )
     .expect("world trace");
@@ -870,8 +887,7 @@ fn query_exec_world_queries_enforce_domain_contract_and_flags() {
         &[
             region_capture.clone(),
             scene_domain(region_scene_id, 1, true, false, true),
-            KernelValue::Vec3([0.0, 0.0, 1.0]),
-            KernelValue::Vec3([0.0, 1.0, 0.0]),
+            point_direction_query([0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
         ],
     )
     .expect("radiance_world with radiance disabled");
@@ -1072,12 +1088,7 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
     );
     let capture_trace_args = vec![
         KernelValue::Capture(SmolStr::new("scene_shape")),
-        KernelValue::Vec3([0.0, 0.0, 3.0]),
-        KernelValue::Vec3([0.0, 0.0, -1.0]),
-        KernelValue::F32(6.0),
-        KernelValue::F32(0.05),
-        KernelValue::F32(0.001),
-        KernelValue::I32(96),
+        ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
     ];
     let cpu_capture_trace =
         execute_capture_query(&ctx, &capture_trace_plan, &capture_trace_args).expect("cpu trace");
@@ -1132,8 +1143,7 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
     );
     let capture_radiance_args = vec![
         KernelValue::Capture(SmolStr::new("scene_shape")),
-        KernelValue::Vec3([0.0, 0.0, 1.0]),
-        KernelValue::Vec3([0.0, 0.0, -1.0]),
+        point_direction_query([0.0, 0.0, 1.0], [0.0, 0.0, -1.0]),
     ];
     let cpu_capture_radiance =
         execute_capture_query(&ctx, &capture_radiance_plan, &capture_radiance_args)
@@ -1188,12 +1198,7 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
     let world_trace_args = vec![
         KernelValue::Capture(SmolStr::new("scene_region")),
         scene_domain(region_scene_id, 1, true, true, true),
-        KernelValue::Vec3([0.0, 0.0, 3.0]),
-        KernelValue::Vec3([0.0, 0.0, -1.0]),
-        KernelValue::F32(6.0),
-        KernelValue::F32(0.05),
-        KernelValue::F32(0.001),
-        KernelValue::I32(96),
+        ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
     ];
     let cpu_world_trace =
         execute_world_query(&ctx, &world_trace_plan, &world_trace_args).expect("cpu world trace");
@@ -1242,8 +1247,7 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
     let world_radiance_args = vec![
         KernelValue::Capture(SmolStr::new("scene_region")),
         scene_domain(region_scene_id, 1, true, true, true),
-        KernelValue::Vec3([0.0, 0.0, 1.0]),
-        KernelValue::Vec3([0.0, 0.0, -1.0]),
+        point_direction_query([0.0, 0.0, 1.0], [0.0, 0.0, -1.0]),
     ];
     let cpu_world_radiance = execute_world_query(&ctx, &world_radiance_plan, &world_radiance_args)
         .expect("cpu world radiance");
@@ -1327,12 +1331,7 @@ fn query_exec_traces_report_observability_counters() {
         &shape_trace_plan,
         &[
             KernelValue::Capture(SmolStr::new("scene_shape")),
-            KernelValue::Vec3([0.0, 0.0, 3.0]),
-            KernelValue::Vec3([0.0, 0.0, -1.0]),
-            KernelValue::F32(6.0),
-            KernelValue::F32(0.05),
-            KernelValue::F32(0.001),
-            KernelValue::I32(96),
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
         ],
     )
     .expect("cpu trace");
@@ -1364,12 +1363,7 @@ fn query_exec_traces_report_observability_counters() {
         &[
             KernelValue::Capture(SmolStr::new("scene_region")),
             scene_domain(region_scene_id, 1, true, true, true),
-            KernelValue::Vec3([0.0, 0.0, 3.0]),
-            KernelValue::Vec3([0.0, 0.0, -1.0]),
-            KernelValue::F32(6.0),
-            KernelValue::F32(0.05),
-            KernelValue::F32(0.001),
-            KernelValue::I32(96),
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
         ],
     )
     .expect("vgpu world trace");
@@ -1397,12 +1391,7 @@ fn query_exec_traces_report_observability_counters() {
         &[
             KernelValue::Capture(SmolStr::new("scene_region")),
             scene_domain(region_scene_id, 1, true, true, true),
-            KernelValue::Vec3([0.0, 0.0, 3.0]),
-            KernelValue::Vec3([0.0, 0.0, -1.0]),
-            KernelValue::F32(6.0),
-            KernelValue::F32(0.05),
-            KernelValue::F32(0.001),
-            KernelValue::I32(96),
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
         ],
     )
     .expect("wgsl world trace");
@@ -1487,12 +1476,7 @@ fn query_exec_semantic_cost_reports_explain_support_domain_and_identity_causes()
         &[
             KernelValue::Capture(SmolStr::new("scene_region")),
             support_domain,
-            KernelValue::Vec3([0.0, 0.0, 3.0]),
-            KernelValue::Vec3([0.0, 0.0, -1.0]),
-            KernelValue::F32(6.0),
-            KernelValue::F32(0.05),
-            KernelValue::F32(0.001),
-            KernelValue::I32(96),
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
         ],
     )
     .expect("support-pruned world trace");
@@ -1570,12 +1554,7 @@ fn query_exec_semantic_cost_reports_explain_support_domain_and_identity_causes()
         &trace_plan,
         &[
             KernelValue::Capture(SmolStr::new("identity_shape")),
-            KernelValue::Vec3([3.25, 0.0, 3.0]),
-            KernelValue::Vec3([0.0, 0.0, -1.0]),
-            KernelValue::F32(6.0),
-            KernelValue::F32(0.05),
-            KernelValue::F32(0.001),
-            KernelValue::I32(96),
+            ray_query_with_limits([3.25, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
         ],
     )
     .expect("identity trace");
@@ -1695,12 +1674,7 @@ fn query_exec_explicit_wgsl_backend_matches_cpu_for_capture_and_world_queries() 
     );
     let capture_trace_args = vec![
         shape_capture.clone(),
-        KernelValue::Vec3([0.0, 0.0, 3.0]),
-        KernelValue::Vec3([0.0, 0.0, -1.0]),
-        KernelValue::F32(6.0),
-        KernelValue::F32(0.05),
-        KernelValue::F32(0.001),
-        KernelValue::I32(96),
+        ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
     ];
     let cpu_capture_hit =
         execute_capture_query(&ctx, &capture_trace_plan, &capture_trace_args).expect("cpu trace");
@@ -1740,8 +1714,7 @@ fn query_exec_explicit_wgsl_backend_matches_cpu_for_capture_and_world_queries() 
     );
     let capture_radiance_args = vec![
         shape_capture.clone(),
-        KernelValue::Vec3([0.0, 0.0, 1.0]),
-        KernelValue::Vec3([0.0, 0.0, -1.0]),
+        point_direction_query([0.0, 0.0, 1.0], [0.0, 0.0, -1.0]),
     ];
     let cpu_capture_radiance =
         execute_capture_query(&ctx, &capture_radiance_plan, &capture_radiance_args)
@@ -1836,12 +1809,7 @@ fn query_exec_explicit_wgsl_backend_matches_cpu_for_capture_and_world_queries() 
     let world_trace_args = vec![
         region_capture.clone(),
         fine_domain.clone(),
-        KernelValue::Vec3([0.0, 0.0, 3.0]),
-        KernelValue::Vec3([0.0, 0.0, -1.0]),
-        KernelValue::F32(6.0),
-        KernelValue::F32(0.05),
-        KernelValue::F32(0.001),
-        KernelValue::I32(96),
+        ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
     ];
     let cpu_world_hit =
         execute_world_query(&ctx, &world_trace_plan, &world_trace_args).expect("cpu world trace");
@@ -1886,8 +1854,7 @@ fn query_exec_explicit_wgsl_backend_matches_cpu_for_capture_and_world_queries() 
     let world_radiance_args = vec![
         region_capture.clone(),
         fine_domain.clone(),
-        KernelValue::Vec3([0.0, 0.0, 1.0]),
-        KernelValue::Vec3([0.0, 0.0, -1.0]),
+        point_direction_query([0.0, 0.0, 1.0], [0.0, 0.0, -1.0]),
     ];
     let cpu_world_radiance = execute_world_query(&ctx, &world_radiance_plan, &world_radiance_args)
         .expect("cpu world radiance");
@@ -1959,12 +1926,7 @@ fn query_exec_wgsl_matches_cpu_for_preview_project_render_sampling() {
             let trace_args = vec![
                 region_capture.clone(),
                 domain.clone(),
-                KernelValue::Vec3(camera_position),
-                KernelValue::Vec3(ray),
-                KernelValue::F32(12.0),
-                KernelValue::F32(0.02),
-                KernelValue::F32(0.0008),
-                KernelValue::I32(96),
+                ray_query_with_limits(camera_position, ray, 12.0, 0.02, 0.0008, 96),
             ];
             let cpu_hit =
                 execute_world_query(&ctx, &trace_plan, &trace_args).expect("cpu preview trace");
@@ -2016,8 +1978,7 @@ fn query_exec_wgsl_matches_cpu_for_preview_project_render_sampling() {
                 let radiance_args = vec![
                     region_capture.clone(),
                     domain.clone(),
-                    KernelValue::Vec3(miss_point),
-                    KernelValue::Vec3(ray),
+                    point_direction_query(miss_point, ray),
                 ];
                 let medium_args = vec![
                     region_capture.clone(),
@@ -2114,8 +2075,7 @@ fn query_exec_wgsl_matches_cpu_for_preview_project_render_sampling() {
             let radiance_args = vec![
                 region_capture.clone(),
                 domain.clone(),
-                KernelValue::Vec3(hit_position),
-                KernelValue::Vec3(ray),
+                point_direction_query(hit_position, ray),
             ];
             let cpu_radiance =
                 execute_world_query(&ctx, &radiance_plan, &radiance_args).expect("cpu radiance");
@@ -2189,12 +2149,14 @@ fn query_exec_wgsl_matches_cpu_for_preview_project_render_sampling() {
             let shadow_args = vec![
                 region_capture.clone(),
                 domain.clone(),
-                KernelValue::Vec3(shadow_origin),
-                KernelValue::Vec3(shadow_direction),
-                KernelValue::F32(shadow_limit),
-                KernelValue::F32(0.02),
-                KernelValue::F32(0.0008),
-                KernelValue::I32(96),
+                ray_query_with_limits(
+                    shadow_origin,
+                    shadow_direction,
+                    shadow_limit,
+                    0.02,
+                    0.0008,
+                    96,
+                ),
             ];
             let cpu_shadow =
                 execute_world_query(&ctx, &trace_plan, &shadow_args).expect("cpu shadow trace");
@@ -2246,12 +2208,7 @@ fn query_exec_wgsl_matches_cpu_for_preview_probe_b_world_and_scene_medium() {
     let trace_args = vec![
         region_capture.clone(),
         domain.clone(),
-        KernelValue::Vec3(origin),
-        KernelValue::Vec3(direction),
-        KernelValue::F32(12.0),
-        KernelValue::F32(0.02),
-        KernelValue::F32(0.0008),
-        KernelValue::I32(96),
+        ray_query_with_limits(origin, direction, 12.0, 0.02, 0.0008, 96),
     ];
     let cpu_hit = execute_world_query(&ctx, &trace_plan, &trace_args).expect("cpu probe_b trace");
     let wgsl_hit = execute_world_query_on(&ctx, DispatchBackend::Wgsl, &trace_plan, &trace_args)
@@ -2616,12 +2573,7 @@ fn query_exec_wgsl_matches_virtual_gpu_for_world_and_batch_queries() {
     let world_trace_args = vec![
         region_capture.clone(),
         fine_domain.clone(),
-        KernelValue::Vec3([0.0, 0.0, 3.0]),
-        KernelValue::Vec3([0.0, 0.0, -1.0]),
-        KernelValue::F32(6.0),
-        KernelValue::F32(0.05),
-        KernelValue::F32(0.001),
-        KernelValue::I32(96),
+        ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
     ];
     let vgpu_world_hit = execute_world_query_on(
         &ctx,
@@ -3342,12 +3294,7 @@ fn query_exec_direct_trace_preserves_local_context_and_shape_provenance() {
         &trace_plan,
         &[
             KernelValue::Capture(SmolStr::new("nearest_scene")),
-            KernelValue::Vec3([0.0, 0.0, 3.0]),
-            KernelValue::Vec3([0.0, 0.0, -1.0]),
-            KernelValue::F32(6.0),
-            KernelValue::F32(0.05),
-            KernelValue::F32(0.001),
-            KernelValue::I32(96),
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
         ],
     )
     .expect("nearest trace");
@@ -3356,12 +3303,7 @@ fn query_exec_direct_trace_preserves_local_context_and_shape_provenance() {
         &trace_plan,
         &[
             KernelValue::Capture(SmolStr::new("ordered_scene")),
-            KernelValue::Vec3([0.0, 0.0, 3.0]),
-            KernelValue::Vec3([0.0, 0.0, -1.0]),
-            KernelValue::F32(6.0),
-            KernelValue::F32(0.05),
-            KernelValue::F32(0.001),
-            KernelValue::I32(96),
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
         ],
     )
     .expect("ordered trace");
@@ -3394,12 +3336,7 @@ fn query_exec_direct_trace_preserves_local_context_and_shape_provenance() {
         &trace_plan,
         &[
             KernelValue::Capture(SmolStr::new("identity_shape")),
-            KernelValue::Vec3([3.25, 0.0, 3.0]),
-            KernelValue::Vec3([0.0, 0.0, -1.0]),
-            KernelValue::F32(6.0),
-            KernelValue::F32(0.05),
-            KernelValue::F32(0.001),
-            KernelValue::I32(96),
+            ray_query_with_limits([3.25, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
         ],
     )
     .expect("identity trace");
@@ -3454,12 +3391,7 @@ fn query_exec_virtual_gpu_matches_cpu_for_local_context_and_provenance_sensitive
 
     let ordered_trace_args = vec![
         KernelValue::Capture(SmolStr::new("ordered_scene")),
-        KernelValue::Vec3([0.0, 0.0, 3.0]),
-        KernelValue::Vec3([0.0, 0.0, -1.0]),
-        KernelValue::F32(6.0),
-        KernelValue::F32(0.05),
-        KernelValue::F32(0.001),
-        KernelValue::I32(96),
+        ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
     ];
     let cpu_ordered_hit =
         execute_capture_query(&ctx, &trace_plan, &ordered_trace_args).expect("cpu ordered trace");
@@ -3497,12 +3429,7 @@ fn query_exec_virtual_gpu_matches_cpu_for_local_context_and_provenance_sensitive
 
     let identity_trace_args = vec![
         KernelValue::Capture(SmolStr::new("identity_shape")),
-        KernelValue::Vec3([3.25, 0.0, 3.0]),
-        KernelValue::Vec3([0.0, 0.0, -1.0]),
-        KernelValue::F32(6.0),
-        KernelValue::F32(0.05),
-        KernelValue::F32(0.001),
-        KernelValue::I32(96),
+        ray_query_with_limits([3.25, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
     ];
     let cpu_identity_hit =
         execute_capture_query(&ctx, &trace_plan, &identity_trace_args).expect("cpu identity trace");
@@ -3517,8 +3444,7 @@ fn query_exec_virtual_gpu_matches_cpu_for_local_context_and_provenance_sensitive
 
     let radiance_args = vec![
         KernelValue::Capture(SmolStr::new("lighting_scene")),
-        KernelValue::Vec3([0.25, 0.0, 0.0]),
-        KernelValue::Vec3([0.0, 0.0, 1.0]),
+        point_direction_query([0.25, 0.0, 0.0], [0.0, 0.0, 1.0]),
     ];
     let cpu_radiance =
         execute_capture_query(&ctx, &radiance_plan, &radiance_args).expect("cpu radiance");
@@ -3568,12 +3494,7 @@ fn query_exec_wgsl_matches_cpu_for_local_context_and_provenance_sensitive_querie
 
     let ordered_trace_args = vec![
         KernelValue::Capture(SmolStr::new("ordered_scene")),
-        KernelValue::Vec3([0.0, 0.0, 3.0]),
-        KernelValue::Vec3([0.0, 0.0, -1.0]),
-        KernelValue::F32(6.0),
-        KernelValue::F32(0.05),
-        KernelValue::F32(0.001),
-        KernelValue::I32(96),
+        ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
     ];
     let cpu_ordered_hit =
         execute_capture_query(&ctx, &trace_plan, &ordered_trace_args).expect("cpu ordered trace");
@@ -3611,12 +3532,7 @@ fn query_exec_wgsl_matches_cpu_for_local_context_and_provenance_sensitive_querie
 
     let identity_trace_args = vec![
         KernelValue::Capture(SmolStr::new("identity_shape")),
-        KernelValue::Vec3([3.25, 0.0, 3.0]),
-        KernelValue::Vec3([0.0, 0.0, -1.0]),
-        KernelValue::F32(6.0),
-        KernelValue::F32(0.05),
-        KernelValue::F32(0.001),
-        KernelValue::I32(96),
+        ray_query_with_limits([3.25, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
     ];
     let cpu_identity_hit =
         execute_capture_query(&ctx, &trace_plan, &identity_trace_args).expect("cpu identity trace");
@@ -3631,8 +3547,7 @@ fn query_exec_wgsl_matches_cpu_for_local_context_and_provenance_sensitive_querie
 
     let radiance_args = vec![
         KernelValue::Capture(SmolStr::new("lighting_scene")),
-        KernelValue::Vec3([0.25, 0.0, 0.0]),
-        KernelValue::Vec3([0.0, 0.0, 1.0]),
+        point_direction_query([0.25, 0.0, 0.0], [0.0, 0.0, 1.0]),
     ];
     let cpu_radiance =
         execute_capture_query(&ctx, &radiance_plan, &radiance_args).expect("cpu radiance");
@@ -3694,8 +3609,7 @@ fn query_exec_direct_radiance_and_medium_use_local_participation() {
         &radiance_plan,
         &[
             KernelValue::Capture(SmolStr::new("lighting_scene")),
-            KernelValue::Vec3([0.25, 0.0, 0.0]),
-            KernelValue::Vec3([0.0, 0.0, 1.0]),
+            point_direction_query([0.25, 0.0, 0.0], [0.0, 0.0, 1.0]),
         ],
     )
     .expect("radiance");

@@ -52,25 +52,13 @@ pub extern "C" fn wr_wgsl_world_trace_capture(
     source: RuntimeValue,
     workgroup_size: RuntimeValue,
     world_shape_indices: RuntimeValue,
-    origin: RuntimeValue,
-    direction: RuntimeValue,
-    max_distance: RuntimeValue,
-    min_step: RuntimeValue,
-    hit_epsilon: RuntimeValue,
-    max_steps: RuntimeValue,
+    ray: RuntimeValue,
 ) -> RuntimeValue {
     bridge_result(world_query(
         &cached_world_module(source, workgroup_size, WorldBridgeKind::Trace),
         WorldBridgeKind::Trace,
         world_shape_indices,
-        &[
-            origin,
-            direction,
-            max_distance,
-            min_step,
-            hit_epsilon,
-            max_steps,
-        ],
+        &[ray],
     ))
 }
 
@@ -94,14 +82,13 @@ pub extern "C" fn wr_wgsl_world_radiance_capture(
     source: RuntimeValue,
     workgroup_size: RuntimeValue,
     world_shape_indices: RuntimeValue,
-    point: RuntimeValue,
-    direction: RuntimeValue,
+    sample: RuntimeValue,
 ) -> RuntimeValue {
     bridge_result(world_query(
         &cached_world_module(source, workgroup_size, WorldBridgeKind::Radiance),
         WorldBridgeKind::Radiance,
         world_shape_indices,
-        &[point, direction],
+        &[sample],
     ))
 }
 
@@ -611,60 +598,10 @@ impl WorldBridgeKind {
                 }))
             }
             Self::Trace => {
-                let [
-                    origin,
-                    direction,
-                    max_distance,
-                    min_step,
-                    hit_epsilon,
-                    max_steps,
-                ] = args
-                else {
+                let [ray] = args else {
                     return Err(arity_error("trace world query"));
                 };
-                Ok(KernelValue::Struct(KernelStructValue {
-                    name: SmolStr::new("RayQuery"),
-                    fields: vec![
-                        (
-                            SmolStr::new("origin"),
-                            runtime_to_builtin_type(
-                                *origin,
-                                PortableBuiltinType::Atom(PortableBuiltinAtom::Vec3),
-                                "origin",
-                            )?,
-                        ),
-                        (
-                            SmolStr::new("direction"),
-                            runtime_to_builtin_type(
-                                *direction,
-                                PortableBuiltinType::Atom(PortableBuiltinAtom::Vec3),
-                                "direction",
-                            )?,
-                        ),
-                        (
-                            SmolStr::new("max_distance"),
-                            KernelValue::F32(runtime_f32(*max_distance, "max_distance")?),
-                        ),
-                        (
-                            SmolStr::new("min_step"),
-                            KernelValue::F32(runtime_f32(*min_step, "min_step")?),
-                        ),
-                        (
-                            SmolStr::new("hit_epsilon"),
-                            KernelValue::F32(runtime_f32(*hit_epsilon, "hit_epsilon")?),
-                        ),
-                        (
-                            SmolStr::new("max_steps"),
-                            KernelValue::I32(
-                                i32::try_from(runtime_int(*max_steps, "max_steps")?).map_err(
-                                    |_| QueryExecError::Unsupported {
-                                        message: "invalid max_steps".to_string(),
-                                    },
-                                )?,
-                            ),
-                        ),
-                    ],
-                }))
+                runtime_to_builtin_record_value(*ray, "RayQuery")
             }
             Self::Surface => {
                 let [hit] = args else {
@@ -673,30 +610,10 @@ impl WorldBridgeKind {
                 runtime_to_builtin_record_value(*hit, "Hit3")
             }
             Self::Radiance => {
-                let [point, direction] = args else {
+                let [sample] = args else {
                     return Err(arity_error("radiance world query"));
                 };
-                Ok(KernelValue::Struct(KernelStructValue {
-                    name: SmolStr::new("PointDirectionQuery"),
-                    fields: vec![
-                        (
-                            SmolStr::new("point"),
-                            runtime_to_builtin_type(
-                                *point,
-                                PortableBuiltinType::Atom(PortableBuiltinAtom::Vec3),
-                                "point",
-                            )?,
-                        ),
-                        (
-                            SmolStr::new("direction"),
-                            runtime_to_builtin_type(
-                                *direction,
-                                PortableBuiltinType::Atom(PortableBuiltinAtom::Vec3),
-                                "direction",
-                            )?,
-                        ),
-                    ],
-                }))
+                runtime_to_builtin_record_value(*sample, "PointDirectionQuery")
             }
         }
     }
@@ -827,29 +744,32 @@ mod tests {
                     ))),
                 ),
                 (
-                    SmolStr::new("world"),
+                    SmolStr::new("spatial"),
                     KernelValue::Struct(KernelStructValue {
-                        name: SmolStr::new("RegionCapture"),
+                        name: SmolStr::new("SpatialDomainContract"),
                         fields: vec![
-                            (
-                                SmolStr::new("scene_id"),
-                                KernelValue::U32(stable_region_scene_capture_id(&SmolStr::new(
-                                    "scene_region",
-                                ))),
-                            ),
-                            (SmolStr::new("epoch"), KernelValue::U32(0)),
-                            (SmolStr::new("root_feature_id"), KernelValue::U32(0)),
+                            (SmolStr::new("geometry_detail"), KernelValue::I32(1)),
+                            (SmolStr::new("guarantee"), KernelValue::U32(0)),
                         ],
                     }),
                 ),
-                (SmolStr::new("geometry_detail"), KernelValue::I32(1)),
-                (SmolStr::new("material"), KernelValue::Bool(true)),
-                (SmolStr::new("radiance"), KernelValue::Bool(true)),
-                (SmolStr::new("media"), KernelValue::Bool(true)),
-                (SmolStr::new("max_distance"), KernelValue::F32(12.0)),
-                (SmolStr::new("min_step"), KernelValue::F32(0.02)),
-                (SmolStr::new("hit_epsilon"), KernelValue::F32(0.0008)),
-                (SmolStr::new("max_steps"), KernelValue::I32(96)),
+                (
+                    SmolStr::new("surface"),
+                    KernelValue::Struct(KernelStructValue {
+                        name: SmolStr::new("SurfaceDomainContract"),
+                        fields: vec![(SmolStr::new("material"), KernelValue::Bool(true))],
+                    }),
+                ),
+                (
+                    SmolStr::new("participants"),
+                    KernelValue::Struct(KernelStructValue {
+                        name: SmolStr::new("ParticipantDomainContract"),
+                        fields: vec![
+                            (SmolStr::new("radiance"), KernelValue::Bool(true)),
+                            (SmolStr::new("media"), KernelValue::Bool(true)),
+                        ],
+                    }),
+                ),
             ],
         })
     }
@@ -893,18 +813,12 @@ mod tests {
             );
         }
 
-        let origin = KernelValue::Vec3([0.0, 0.1, 2.7]);
-        let direction = KernelValue::Vec3([-0.405183, -0.375170, -0.833711]);
+        let ray = ray_query([0.0, 0.1, 2.7], [-0.405183, -0.375170, -0.833711]);
         let bridge_hit = wr_wgsl_world_trace_capture(
             wr_str_from_utf8(shader.source.as_ptr(), shader.source.len()),
             RuntimeValue::from_int(i64::from(shader.workgroup_size)),
             shape_indices_runtime,
-            kernel_to_runtime(&origin).expect("origin runtime"),
-            kernel_to_runtime(&direction).expect("direction runtime"),
-            kernel_to_runtime(&KernelValue::F32(12.0)).expect("max_distance runtime"),
-            kernel_to_runtime(&KernelValue::F32(0.02)).expect("min_step runtime"),
-            kernel_to_runtime(&KernelValue::F32(0.0008)).expect("hit epsilon runtime"),
-            kernel_to_runtime(&KernelValue::I32(96)).expect("max steps runtime"),
+            kernel_to_runtime(&ray).expect("ray runtime"),
         );
         let bridge_hit = runtime_to_builtin_record_value(bridge_hit, "Hit3").expect("bridge hit");
 
@@ -915,12 +829,7 @@ mod tests {
             &[
                 KernelValue::Capture(SmolStr::new("scene_region")),
                 preview_domain(),
-                origin,
-                direction,
-                KernelValue::F32(12.0),
-                KernelValue::F32(0.02),
-                KernelValue::F32(0.0008),
-                KernelValue::I32(96),
+                ray,
             ],
         )
         .expect("direct world trace");
