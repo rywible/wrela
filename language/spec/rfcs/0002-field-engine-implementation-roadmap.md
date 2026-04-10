@@ -86,7 +86,7 @@ The current implementation already ships the following semantic geometry substra
 - structural operators: `union`, `intersection`, `subtract`
 - structural wrappers: `transform`, `mirror`, `repeat`, `instance`
 - binding layer: `shape(field, material, payload)`
-- scalar host queries: `distance_at`, `normal_at`, `trace_shape`, `surface_at`
+- scalar host queries: `spatial.distance`, `spatial.normal`, `spatial.nearest`, `surface.sample`
 
 The following semantic building blocks still need to ship if we want authored scenes to stop falling back to opaque custom math.
 
@@ -469,11 +469,11 @@ Normalize and extend the host query surface for single-point and single-ray work
 
 Core queries:
 
-- `distance_at`
-- `normal_at`
-- `trace_shape`
-- `surface_at`
-- later `nearest`, `occluded`, `overlap`
+- `spatial.distance`
+- `spatial.normal`
+- `spatial.nearest`
+- `surface.sample`
+- later `spatial.occluded`, `overlap`
 
 Acceptance criteria:
 

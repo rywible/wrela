@@ -15,7 +15,13 @@ fn infer_expr(
         Expr::Literal(lit) => literal_type(lit),
         Expr::Variable(name) => match name.as_str() {
             "coarse" | "fine" => detail_tier_type(),
-            _ => ctx.resolve(name).unwrap_or(Type::Unknown),
+            _ => ctx
+                .resolve(name)
+                .or_else(|| {
+                    crate::query_contract::query_family_namespace(name.as_str())
+                        .map(Type::QueryFamily)
+                })
+                .unwrap_or(Type::Unknown),
         },
         Expr::Detach { target, .. } => actor_type_for_detach_target(body, *target, classes),
         Expr::Unary { op, expr, op_span } => {
@@ -754,7 +760,39 @@ fn infer_expr(
                     ret_ty = Some(Type::Unknown);
                     valid_callee = true;
                 }
-                if !enum_ctor_handled {
+                if !valid_callee
+                    && let Some(family) = query_family_object(body, *object, ctx)
+                {
+                    if let Some(ret) = infer_family_query_member_builtin(
+                        body,
+                        expr_id,
+                        family,
+                        member,
+                        args,
+                        ctx,
+                        classes,
+                        enums,
+                        interfaces,
+                        functions,
+                        errors,
+                        allow_result,
+                        in_result_fn,
+                    ) {
+                        ret_ty = Some(ret);
+                    } else {
+                        errors.push(TypeError::UnknownMember {
+                            object: format!(
+                                "{} query family",
+                                crate::query_contract::query_family_name(family)
+                            ),
+                            member: member.clone(),
+                            span: span_from_range(*member_span),
+                        });
+                        ret_ty = Some(Type::Unknown);
+                    }
+                    valid_callee = true;
+                }
+                if !enum_ctor_handled && !valid_callee {
                     let object_ty = infer_expr(
                         body,
                         *object,
@@ -1507,6 +1545,23 @@ fn infer_compute_builtin_call(
     allow_result: bool,
     in_result_fn: bool,
 ) -> Option<Type> {
+    if let Some(ret) = infer_legacy_query_builtin(
+        body,
+        expr_id,
+        name,
+        args,
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        allow_result,
+        in_result_fn,
+    ) {
+        return Some(ret);
+    }
+
     let span = span_from_range(body.expr_span(expr_id));
     match name.as_str() {
         "gpu_buffer_new" => {
@@ -2248,81 +2303,6 @@ fn infer_capture_builtin(
     })
 }
 
-fn infer_field_query_builtin(
-    body: &Body,
-    expr_id: Idx<Expr>,
-    query_name: &SmolStr,
-    args: &Vec<crate::hir::Arg>,
-    ctx: &mut TypeContext,
-    classes: &ClassIndex,
-    enums: &EnumIndex,
-    interfaces: &InterfaceIndex,
-    functions: &FunctionIndex,
-    errors: &mut Vec<TypeError>,
-    allow_result: bool,
-    in_result_fn: bool,
-    ret: Type,
-) -> Option<Type> {
-    if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
-        errors.push(TypeError::PortableHostCallForbidden {
-            function: ctx.current_function_name(),
-            callee: query_name.clone(),
-            span: span_from_range(body.expr_span(expr_id)),
-            help: "Field sampling queries belong in the host lane for now. Capture the scene first, then sample the capture with `distance_at` / `normal_at`.".to_string(),
-        });
-    }
-
-    infer_exact_builtin_call(
-        body,
-        expr_id,
-        args,
-        ctx,
-        classes,
-        enums,
-        interfaces,
-        functions,
-        errors,
-        allow_result,
-        in_result_fn,
-        &[(SmolStr::new("capture"), Type::Unknown), (SmolStr::new("point"), Type::Vec3)],
-        ret.clone(),
-    )?;
-
-    if let Some(capture_expr) = call_named_arg_value(args, "capture") {
-        let found = infer_expr(
-            body,
-            capture_expr,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            false,
-            allow_result,
-            in_result_fn,
-        );
-        if let Some(target) = direct_capture_target_name(body, capture_expr) {
-            if !(functions.is_field(&target) || functions.is_shape(&target)) {
-                errors.push(TypeError::ShapeQueryTargetMustBeShape {
-                    query: query_name.clone(),
-                    span: span_from_range(body.expr_span(capture_expr)),
-                    help: "Pass a capture created from a top-level field or shape declaration, for example `distance_at(capture=capture sphere, ...)`.".to_string(),
-                });
-            }
-        } else if !is_scene_sample_capture_type(&found) {
-            errors.push(TypeError::ArgumentTypeMismatch {
-                name: SmolStr::new("capture"),
-                expected: "FieldCapture or ShapeCapture".to_string(),
-                found: type_label(&found),
-                span: span_from_range(body.expr_span(capture_expr)),
-            });
-        }
-    }
-
-    Some(ret)
-}
-
 fn direct_capture_target_name(body: &Body, expr_id: Idx<Expr>) -> Option<SmolStr> {
     let Expr::Call { callee, args, .. } = &body.exprs[expr_id] else {
         return None;
@@ -2338,199 +2318,6 @@ fn direct_capture_target_name(body: &Body, expr_id: Idx<Expr>) -> Option<SmolStr
         return None;
     };
     Some(target.clone())
-}
-
-fn infer_shape_query_builtin(
-    body: &Body,
-    expr_id: Idx<Expr>,
-    query_name: &SmolStr,
-    args: &Vec<crate::hir::Arg>,
-    ctx: &mut TypeContext,
-    classes: &ClassIndex,
-    enums: &EnumIndex,
-    interfaces: &InterfaceIndex,
-    functions: &FunctionIndex,
-    errors: &mut Vec<TypeError>,
-    allow_result: bool,
-    in_result_fn: bool,
-    ret: Type,
-) -> Option<Type> {
-    if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
-        errors.push(TypeError::PortableHostCallForbidden {
-            function: ctx.current_function_name(),
-            callee: query_name.clone(),
-            span: span_from_range(body.expr_span(expr_id)),
-            help: "Shape tracing queries belong in the host lane for now. Capture the scene first, then trace or sample that capture with `trace_shape` / `surface_at`.".to_string(),
-        });
-    }
-
-    let expected = match query_name.as_str() {
-        "trace_shape" | "occluded" => vec![
-            (SmolStr::new("capture"), Type::Unknown),
-            (SmolStr::new("ray"), portable_named_type("RayQuery")),
-        ],
-        _ => vec![
-            (SmolStr::new("capture"), Type::Unknown),
-            (SmolStr::new("hit"), Type::Named(SmolStr::new("Hit3"), Vec::new())),
-        ],
-    };
-
-    infer_exact_builtin_call(
-        body,
-        expr_id,
-        args,
-        ctx,
-        classes,
-        enums,
-        interfaces,
-        functions,
-        errors,
-        allow_result,
-        in_result_fn,
-        &expected,
-        ret.clone(),
-    )?;
-
-    if let Some(capture_expr) = call_named_arg_value(args, "capture") {
-        let found = infer_expr(
-            body,
-            capture_expr,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            false,
-            allow_result,
-            in_result_fn,
-        );
-        if let Some(target) = direct_capture_target_name(body, capture_expr) {
-            if !functions.is_shape(&target) {
-                errors.push(TypeError::ShapeQueryTargetMustBeShape {
-                    query: query_name.clone(),
-                    span: span_from_range(body.expr_span(capture_expr)),
-                    help: "Pass a capture created from a top-level shape declaration, for example `trace_shape(capture=capture scene_shape, ...)`.".to_string(),
-                });
-            }
-        } else if types_known(&shape_capture_type(), &found)
-            && !is_assignable(&shape_capture_type(), &found, classes, interfaces)
-        {
-            errors.push(TypeError::ShapeQueryTargetMustBeShape {
-                query: query_name.clone(),
-                span: span_from_range(body.expr_span(capture_expr)),
-                help: "Store captures from top-level shapes in `ShapeCapture` values before using shape queries like `trace_shape` or `surface_at`.".to_string(),
-            });
-        } else if !types_known(&shape_capture_type(), &found) && found != Type::Unknown {
-            errors.push(TypeError::ArgumentTypeMismatch {
-                name: SmolStr::new("capture"),
-                expected: type_label(&shape_capture_type()),
-                found: type_label(&found),
-                span: span_from_range(body.expr_span(capture_expr)),
-            });
-        }
-    }
-
-    Some(ret)
-}
-
-fn infer_shape_point_query_builtin(
-    body: &Body,
-    expr_id: Idx<Expr>,
-    query_name: &SmolStr,
-    args: &Vec<crate::hir::Arg>,
-    ctx: &mut TypeContext,
-    classes: &ClassIndex,
-    enums: &EnumIndex,
-    interfaces: &InterfaceIndex,
-    functions: &FunctionIndex,
-    errors: &mut Vec<TypeError>,
-    allow_result: bool,
-    in_result_fn: bool,
-    ret: Type,
-) -> Option<Type> {
-    if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
-        errors.push(TypeError::PortableHostCallForbidden {
-            function: ctx.current_function_name(),
-            callee: query_name.clone(),
-            span: span_from_range(body.expr_span(expr_id)),
-            help: "Scene sampling queries belong in the host lane for now. Capture the scene first, then sample that capture with `radiance_at` / `medium_at`.".to_string(),
-        });
-    }
-
-    let expected = match query_name.as_str() {
-        "radiance_at" => vec![
-            (SmolStr::new("capture"), Type::Unknown),
-            (
-                SmolStr::new("sample"),
-                portable_named_type("PointDirectionQuery"),
-            ),
-        ],
-        _ => vec![
-            (SmolStr::new("capture"), Type::Unknown),
-            (SmolStr::new("point"), Type::Vec3),
-        ],
-    };
-
-    infer_exact_builtin_call(
-        body,
-        expr_id,
-        args,
-        ctx,
-        classes,
-        enums,
-        interfaces,
-        functions,
-        errors,
-        allow_result,
-        in_result_fn,
-        &expected,
-        ret.clone(),
-    )?;
-
-    if let Some(capture_expr) = call_named_arg_value(args, "capture") {
-        let found = infer_expr(
-            body,
-            capture_expr,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            false,
-            allow_result,
-            in_result_fn,
-        );
-        if let Some(target) = direct_capture_target_name(body, capture_expr) {
-            if !functions.is_shape(&target) {
-                errors.push(TypeError::ShapeQueryTargetMustBeShape {
-                    query: query_name.clone(),
-                    span: span_from_range(body.expr_span(capture_expr)),
-                    help: "Pass a capture created from a top-level shape declaration, for example `trace_shape(capture=capture scene_shape, ...)`.".to_string(),
-                });
-            }
-        } else if types_known(&shape_capture_type(), &found)
-            && !is_assignable(&shape_capture_type(), &found, classes, interfaces)
-        {
-            errors.push(TypeError::ShapeQueryTargetMustBeShape {
-                query: query_name.clone(),
-                span: span_from_range(body.expr_span(capture_expr)),
-                help: format!(
-                    "Store captures from top-level shapes in `ShapeCapture` values before using `{query_name}`."
-                ),
-            });
-        } else if !types_known(&shape_capture_type(), &found) && found != Type::Unknown {
-            errors.push(TypeError::ArgumentTypeMismatch {
-                name: SmolStr::new("capture"),
-                expected: type_label(&shape_capture_type()),
-                found: type_label(&found),
-                span: span_from_range(body.expr_span(capture_expr)),
-            });
-        }
-    }
-
-    Some(ret)
 }
 
 fn infer_scene_backend_builtin(
@@ -2572,10 +2359,10 @@ fn infer_scene_backend_builtin(
     )
 }
 
-fn infer_world_distance_query_builtin(
+fn infer_legacy_query_builtin(
     body: &Body,
     expr_id: Idx<Expr>,
-    query_name: &SmolStr,
+    name: &SmolStr,
     args: &Vec<crate::hir::Arg>,
     ctx: &mut TypeContext,
     classes: &ClassIndex,
@@ -2585,27 +2372,75 @@ fn infer_world_distance_query_builtin(
     errors: &mut Vec<TypeError>,
     allow_result: bool,
     in_result_fn: bool,
-    ret: Type,
 ) -> Option<Type> {
+    use crate::query_contract::{CaptureKind, QuerySurfaceKind};
+
+    let candidates = legacy_query_contract_candidates(name.as_str());
+    if candidates.is_empty() {
+        return None;
+    }
     if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
         errors.push(TypeError::PortableHostCallForbidden {
             function: ctx.current_function_name(),
-            callee: query_name.clone(),
+            callee: name.clone(),
             span: span_from_range(body.expr_span(expr_id)),
-            help: "World queries belong in the host lane. Capture the region first, derive a domain plan, then query that captured world.".to_string(),
+            help: "Compatibility query aliases are execution boundaries. Prefer the family surface (`spatial.*`, `surface.*`, `participants.*`, or `support.*`) from host or query-kernel code.".to_string(),
         });
     }
-    let mut expected = vec![
-        (SmolStr::new("capture"), region_capture_type()),
-        (SmolStr::new("domain"), scene_domain_type()),
-        (SmolStr::new("point"), Type::Vec3),
-    ];
-    if call_named_arg_value(args, "backend").is_some() {
-        expected.push((
-            SmolStr::new("backend"),
-            portable_named_type("DispatchBackend"),
-        ));
-    }
+
+    let capture_expr = call_named_arg_value(args, "capture");
+    let surface = legacy_query_surface(&candidates, args);
+    let capture_kind = match (surface, capture_expr) {
+        (QuerySurfaceKind::WorldScalar, _) => CaptureKind::Region,
+        (_, Some(capture_expr)) => infer_capture_kind_for_query_arg(
+            body,
+            capture_expr,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+        ),
+        (_, None) => candidates
+            .iter()
+            .find_map(|descriptor| (descriptor.surface == surface).then_some(descriptor.capture_kind))
+            .unwrap_or(CaptureKind::Field),
+    };
+    let Some(descriptor) = candidates
+        .iter()
+        .find(|descriptor| descriptor.surface == surface && descriptor.capture_kind == capture_kind)
+        .copied()
+    else {
+        if let Some(capture_expr) = capture_expr {
+            let expected = expected_legacy_query_capture_label(name.as_str(), surface)
+                .unwrap_or("a supported capture");
+            let found = infer_expr(
+                body,
+                capture_expr,
+                ctx,
+                classes,
+                enums,
+                interfaces,
+                functions,
+                errors,
+                false,
+                allow_result,
+                in_result_fn,
+            );
+            errors.push(TypeError::ArgumentTypeMismatch {
+                name: SmolStr::new("capture"),
+                expected: expected.to_string(),
+                found: type_label(&found),
+                span: span_from_range(body.expr_span(capture_expr)),
+            });
+        }
+        return Some(Type::Unknown);
+    };
+
+    let params = family_query_params(descriptor, args);
     infer_exact_builtin_call(
         body,
         expr_id,
@@ -2618,13 +2453,14 @@ fn infer_world_distance_query_builtin(
         errors,
         allow_result,
         in_result_fn,
-        &expected,
-        ret.clone(),
+        &params,
+        family_query_return_type(descriptor),
     )?;
-    if let Some(capture_expr) = call_named_arg_value(args, "capture") {
-        validate_region_capture_argument(
+    if let Some(capture_expr) = capture_expr {
+        validate_family_query_capture_argument(
             body,
             capture_expr,
+            descriptor,
             ctx,
             classes,
             enums,
@@ -2649,101 +2485,88 @@ fn infer_world_distance_query_builtin(
             in_result_fn,
         );
     }
-    Some(ret)
+
+    Some(family_query_return_type(descriptor))
 }
 
-fn infer_world_shape_query_builtin(
-    body: &Body,
-    expr_id: Idx<Expr>,
-    query_name: &SmolStr,
-    args: &Vec<crate::hir::Arg>,
-    ctx: &mut TypeContext,
-    classes: &ClassIndex,
-    enums: &EnumIndex,
-    interfaces: &InterfaceIndex,
-    functions: &FunctionIndex,
-    errors: &mut Vec<TypeError>,
-    allow_result: bool,
-    in_result_fn: bool,
-    ret: Type,
-) -> Option<Type> {
-    if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
-        errors.push(TypeError::PortableHostCallForbidden {
-            function: ctx.current_function_name(),
-            callee: query_name.clone(),
-            span: span_from_range(body.expr_span(expr_id)),
-            help: "World queries belong in the host lane. Capture the region first, derive a domain plan, then query that captured world.".to_string(),
-        });
-    }
-    let expected = match query_name.as_str() {
-        "trace_world" | "occluded_world" => vec![
-            (SmolStr::new("capture"), region_capture_type()),
-            (SmolStr::new("domain"), scene_domain_type()),
-            (SmolStr::new("ray"), portable_named_type("RayQuery")),
-        ],
-        _ => vec![
-            (SmolStr::new("capture"), region_capture_type()),
-            (SmolStr::new("domain"), scene_domain_type()),
-            (SmolStr::new("hit"), portable_named_type("Hit3")),
-        ],
-    };
-    let mut expected = expected;
-    if call_named_arg_value(args, "backend").is_some() {
-        expected.push((
-            SmolStr::new("backend"),
-            portable_named_type("DispatchBackend"),
-        ));
-    }
-    infer_exact_builtin_call(
-        body,
-        expr_id,
-        args,
-        ctx,
-        classes,
-        enums,
-        interfaces,
-        functions,
-        errors,
-        allow_result,
-        in_result_fn,
-        &expected,
-        ret.clone(),
-    )?;
-    if let Some(capture_expr) = call_named_arg_value(args, "capture") {
-        validate_region_capture_argument(
-            body,
-            capture_expr,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-        );
-    }
-    if let Some(domain_expr) = call_named_arg_value(args, "domain") {
-        validate_scene_domain_argument(
-            body,
-            domain_expr,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-        );
-    }
-    Some(ret)
+fn legacy_query_contract_candidates(
+    legacy_builtin_name: &str,
+) -> Vec<&'static crate::query_contract::QueryContractDescriptor> {
+    crate::query_contract::query_execution_bindings()
+        .iter()
+        .filter(|binding| binding.legacy_builtin_name == legacy_builtin_name)
+        .filter_map(|binding| crate::query_contract::query_contract(binding.contract_id))
+        .collect()
 }
 
-fn infer_world_point_query_builtin(
+fn legacy_query_surface(
+    candidates: &[&crate::query_contract::QueryContractDescriptor],
+    args: &[crate::hir::Arg],
+) -> crate::query_contract::QuerySurfaceKind {
+    use crate::query_contract::QuerySurfaceKind;
+
+    if candidates
+        .iter()
+        .any(|descriptor| descriptor.surface == QuerySurfaceKind::CaptureBatch)
+    {
+        return QuerySurfaceKind::CaptureBatch;
+    }
+    if call_named_arg_value(args, "domain").is_some()
+        || candidates
+            .iter()
+            .all(|descriptor| descriptor.surface == QuerySurfaceKind::WorldScalar)
+    {
+        return QuerySurfaceKind::WorldScalar;
+    }
+    QuerySurfaceKind::CaptureScalar
+}
+
+fn expected_legacy_query_capture_label(
+    legacy_builtin_name: &str,
+    surface: crate::query_contract::QuerySurfaceKind,
+) -> Option<&'static str> {
+    let mut kinds = legacy_query_contract_candidates(legacy_builtin_name)
+        .into_iter()
+        .filter(|descriptor| descriptor.surface == surface)
+        .map(|descriptor| descriptor.capture_kind)
+        .collect::<Vec<_>>();
+    kinds.sort();
+    kinds.dedup();
+    capture_kind_label(kinds.as_slice())
+}
+
+fn query_family_object(
+    body: &Body,
+    object: Idx<Expr>,
+    ctx: &mut TypeContext,
+) -> Option<crate::query_contract::QueryFamilyId> {
+    let Expr::Variable(name) = &body.exprs[object] else {
+        return None;
+    };
+    if ctx.resolve(name).is_some() {
+        return None;
+    }
+    let family = crate::query_contract::query_family_namespace(name.as_str())?;
+    ctx.record_expr(body, object, Type::QueryFamily(family));
+    Some(family)
+}
+
+fn family_query_call_name(
+    family: crate::query_contract::QueryFamilyId,
+    member: &SmolStr,
+) -> SmolStr {
+    SmolStr::new(format!(
+        "{}.{}",
+        crate::query_contract::query_family_name(family),
+        member
+    ))
+}
+
+fn infer_family_query_member_builtin(
     body: &Body,
     expr_id: Idx<Expr>,
-    query_name: &SmolStr,
+    family: crate::query_contract::QueryFamilyId,
+    member: &SmolStr,
     args: &Vec<crate::hir::Arg>,
     ctx: &mut TypeContext,
     classes: &ClassIndex,
@@ -2753,38 +2576,84 @@ fn infer_world_point_query_builtin(
     errors: &mut Vec<TypeError>,
     allow_result: bool,
     in_result_fn: bool,
-    ret: Type,
 ) -> Option<Type> {
+    use crate::query_contract::{QueryFamilyCallSurface, QuerySurfaceKind};
+
+    let family_member = crate::query_contract::query_family_member(family, member.as_str())?;
+    let query_name = family_query_call_name(family, member);
     if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
         errors.push(TypeError::PortableHostCallForbidden {
             function: ctx.current_function_name(),
             callee: query_name.clone(),
             span: span_from_range(body.expr_span(expr_id)),
-            help: "World queries belong in the host lane. Capture the region first, derive a domain plan, then query that captured world.".to_string(),
+            help: "Query-family calls are execution boundaries. Capture the scene first, then issue the query from host or query-kernel code.".to_string(),
         });
     }
-    let expected = match query_name.as_str() {
-        "radiance_world" => vec![
-            (SmolStr::new("capture"), region_capture_type()),
-            (SmolStr::new("domain"), scene_domain_type()),
-            (
-                SmolStr::new("sample"),
-                portable_named_type("PointDirectionQuery"),
-            ),
-        ],
-        _ => vec![
-            (SmolStr::new("capture"), region_capture_type()),
-            (SmolStr::new("domain"), scene_domain_type()),
-            (SmolStr::new("point"), Type::Vec3),
-        ],
+
+    let capture_expr = call_named_arg_value(args, "capture");
+    let surface = match family_member.call_surface {
+        QueryFamilyCallSurface::Batch => QuerySurfaceKind::CaptureBatch,
+        QueryFamilyCallSurface::Scalar if call_named_arg_value(args, "domain").is_some() => {
+            QuerySurfaceKind::WorldScalar
+        }
+        QueryFamilyCallSurface::Scalar => QuerySurfaceKind::CaptureScalar,
     };
-    let mut expected = expected;
-    if call_named_arg_value(args, "backend").is_some() {
-        expected.push((
-            SmolStr::new("backend"),
-            portable_named_type("DispatchBackend"),
-        ));
-    }
+    let capture_kind = match (surface, capture_expr) {
+        (QuerySurfaceKind::WorldScalar, _) => crate::query_contract::CaptureKind::Region,
+        (_, Some(capture_expr)) => infer_capture_kind_for_query_arg(
+            body,
+            capture_expr,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+        ),
+        (_, None) => crate::query_contract::CaptureKind::Field,
+    };
+    let (descriptor, _binding) =
+        match crate::query_contract::query_contract_bundle_for_family_member(
+            family,
+            member.as_str(),
+            surface,
+            capture_kind,
+        ) {
+            Some(bundle) => bundle,
+            None => {
+                if let Some(capture_expr) = capture_expr {
+                    let expected = expected_family_query_capture_label(
+                        family_member.family,
+                        family_member.question,
+                        surface,
+                    )
+                    .unwrap_or("a supported capture");
+                    let found = infer_expr(
+                        body,
+                        capture_expr,
+                        ctx,
+                        classes,
+                        enums,
+                        interfaces,
+                        functions,
+                        errors,
+                        false,
+                        allow_result,
+                        in_result_fn,
+                    );
+                    errors.push(TypeError::ArgumentTypeMismatch {
+                        name: SmolStr::new("capture"),
+                        expected: expected.to_string(),
+                        found: type_label(&found),
+                        span: span_from_range(body.expr_span(capture_expr)),
+                    });
+                }
+                return Some(Type::Unknown);
+            }
+        };
+    let params = family_query_params(descriptor, args);
     infer_exact_builtin_call(
         body,
         expr_id,
@@ -2797,13 +2666,15 @@ fn infer_world_point_query_builtin(
         errors,
         allow_result,
         in_result_fn,
-        &expected,
-        ret.clone(),
+        &params,
+        family_query_return_type(descriptor),
     )?;
-    if let Some(capture_expr) = call_named_arg_value(args, "capture") {
-        validate_region_capture_argument(
+
+    if let Some(capture_expr) = capture_expr {
+        validate_family_query_capture_argument(
             body,
             capture_expr,
+            descriptor,
             ctx,
             classes,
             enums,
@@ -2828,7 +2699,279 @@ fn infer_world_point_query_builtin(
             in_result_fn,
         );
     }
-    Some(ret)
+
+    Some(family_query_return_type(descriptor))
+}
+
+fn infer_capture_kind_for_query_arg(
+    body: &Body,
+    capture_expr: Idx<Expr>,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    allow_result: bool,
+    in_result_fn: bool,
+) -> crate::query_contract::CaptureKind {
+    if let Some(target) = direct_capture_target_name(body, capture_expr) {
+        if functions.is_shape(&target) {
+            return crate::query_contract::CaptureKind::Shape;
+        }
+        if functions.is_region(&target) {
+            return crate::query_contract::CaptureKind::Region;
+        }
+        return crate::query_contract::CaptureKind::Field;
+    }
+    let found = infer_expr(
+        body,
+        capture_expr,
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        false,
+        allow_result,
+        in_result_fn,
+    );
+    match found {
+        Type::Named(name, _) if name.as_str() == "ShapeCapture" => {
+            crate::query_contract::CaptureKind::Shape
+        }
+        Type::Named(name, _) if name.as_str() == "RegionCapture" => {
+            crate::query_contract::CaptureKind::Region
+        }
+        _ => crate::query_contract::CaptureKind::Field,
+    }
+}
+
+fn family_query_params(
+    descriptor: &crate::query_contract::QueryContractDescriptor,
+    args: &Vec<crate::hir::Arg>,
+) -> Vec<(SmolStr, Type)> {
+    use crate::query_contract::QuerySurfaceKind;
+
+    let mut params = Vec::new();
+    let capture_ty = match descriptor.surface {
+        QuerySurfaceKind::WorldScalar => region_capture_type(),
+        QuerySurfaceKind::CaptureScalar | QuerySurfaceKind::CaptureBatch => Type::Unknown,
+    };
+    params.push((SmolStr::new("capture"), capture_ty));
+    if descriptor.domain_contract.is_some() {
+        params.push((SmolStr::new("domain"), scene_domain_type()));
+    }
+    match descriptor.surface {
+        QuerySurfaceKind::CaptureBatch => {
+            if let Some(item_arg) = batch_item_arg_name(descriptor.item_kind) {
+                params.push((
+                    SmolStr::new(item_arg),
+                    Type::List(Box::new(batch_item_type(descriptor.item_kind))),
+                ));
+            }
+            params.push((SmolStr::new("backend"), dispatch_backend_type()));
+        }
+        QuerySurfaceKind::CaptureScalar | QuerySurfaceKind::WorldScalar => {
+            if let Some((item_arg, item_ty)) = scalar_item_param(descriptor.item_kind) {
+                params.push((SmolStr::new(item_arg), item_ty));
+            }
+            if descriptor.surface == QuerySurfaceKind::WorldScalar
+                && call_named_arg_value(args, "backend").is_some()
+            {
+                params.push((SmolStr::new("backend"), dispatch_backend_type()));
+            }
+        }
+    }
+    params
+}
+
+fn scalar_item_param(kind: crate::query_contract::QueryItemKind) -> Option<(&'static str, Type)> {
+    use crate::query_contract::QueryItemKind;
+    match kind {
+        QueryItemKind::Unit => None,
+        QueryItemKind::PointQuery => Some(("point", Type::Vec3)),
+        QueryItemKind::PointDirectionQuery => {
+            Some(("sample", portable_named_type("PointDirectionQuery")))
+        }
+        QueryItemKind::RayQuery => Some(("ray", portable_named_type("RayQuery"))),
+        QueryItemKind::Hit3 => Some(("hit", portable_named_type("Hit3"))),
+    }
+}
+
+fn batch_item_arg_name(kind: crate::query_contract::QueryItemKind) -> Option<&'static str> {
+    use crate::query_contract::QueryItemKind;
+    match kind {
+        QueryItemKind::PointQuery => Some("points"),
+        QueryItemKind::RayQuery => Some("rays"),
+        QueryItemKind::Hit3 => Some("hits"),
+        QueryItemKind::PointDirectionQuery | QueryItemKind::Unit => None,
+    }
+}
+
+fn batch_item_type(kind: crate::query_contract::QueryItemKind) -> Type {
+    use crate::query_contract::QueryItemKind;
+    match kind {
+        QueryItemKind::PointQuery => portable_named_type("PointQuery"),
+        QueryItemKind::PointDirectionQuery => portable_named_type("PointDirectionQuery"),
+        QueryItemKind::RayQuery => portable_named_type("RayQuery"),
+        QueryItemKind::Hit3 => portable_named_type("Hit3"),
+        QueryItemKind::Unit => portable_named_type("UnitQuery"),
+    }
+}
+
+fn family_query_return_type(
+    descriptor: &crate::query_contract::QueryContractDescriptor,
+) -> Type {
+    use crate::query_contract::{QueryResultKind, QuerySurfaceKind};
+
+    let result = match descriptor.result_kind {
+        QueryResultKind::DistanceResult if descriptor.surface != QuerySurfaceKind::CaptureBatch => {
+            Type::F32
+        }
+        QueryResultKind::NormalResult if descriptor.surface != QuerySurfaceKind::CaptureBatch => {
+            Type::Vec3
+        }
+        QueryResultKind::RadianceResult => Type::Vec3,
+        QueryResultKind::MediumResult => portable_named_type("Medium"),
+        QueryResultKind::DistanceResult => portable_named_type("DistanceResult"),
+        QueryResultKind::NormalResult => portable_named_type("NormalResult"),
+        QueryResultKind::SupportSummaryResult => portable_named_type("SupportSummaryResult"),
+        QueryResultKind::Hit3 => portable_named_type("Hit3"),
+        QueryResultKind::Surface => portable_named_type("Surface"),
+        QueryResultKind::OcclusionResult => portable_named_type("OcclusionResult"),
+    };
+
+    if descriptor.surface == QuerySurfaceKind::CaptureBatch {
+        Type::List(Box::new(result))
+    } else {
+        result
+    }
+}
+
+fn validate_family_query_capture_argument(
+    body: &Body,
+    capture_expr: Idx<Expr>,
+    descriptor: &crate::query_contract::QueryContractDescriptor,
+    ctx: &mut TypeContext,
+    classes: &ClassIndex,
+    enums: &EnumIndex,
+    interfaces: &InterfaceIndex,
+    functions: &FunctionIndex,
+    errors: &mut Vec<TypeError>,
+    allow_result: bool,
+    in_result_fn: bool,
+) {
+    use crate::query_contract::{CaptureKind, QuerySurfaceKind};
+
+    if descriptor.surface == QuerySurfaceKind::WorldScalar {
+        validate_region_capture_argument(
+            body,
+            capture_expr,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+        );
+        return;
+    }
+
+    let found = infer_expr(
+        body,
+        capture_expr,
+        ctx,
+        classes,
+        enums,
+        interfaces,
+        functions,
+        errors,
+        false,
+        allow_result,
+        in_result_fn,
+    );
+    if let Some(target) = direct_capture_target_name(body, capture_expr) {
+        let actual = if functions.is_shape(&target) {
+            CaptureKind::Shape
+        } else if functions.is_region(&target) {
+            CaptureKind::Region
+        } else {
+            CaptureKind::Field
+        };
+        if actual != descriptor.capture_kind {
+            errors.push(TypeError::ArgumentTypeMismatch {
+                name: SmolStr::new("capture"),
+                expected: expected_capture_label(descriptor.capture_kind).to_string(),
+                found: type_label(&found),
+                span: span_from_range(body.expr_span(capture_expr)),
+            });
+        }
+        return;
+    }
+
+    let expected = match descriptor.capture_kind {
+        CaptureKind::Field => field_capture_type(),
+        CaptureKind::Shape => shape_capture_type(),
+        CaptureKind::Region => region_capture_type(),
+    };
+    if found != Type::Unknown && !is_assignable(&expected, &found, classes, interfaces) {
+        errors.push(TypeError::ArgumentTypeMismatch {
+            name: SmolStr::new("capture"),
+            expected: expected_capture_label(descriptor.capture_kind).to_string(),
+            found: type_label(&found),
+            span: span_from_range(body.expr_span(capture_expr)),
+        });
+    } else if descriptor.capture_kind == CaptureKind::Region {
+        errors.push(TypeError::ArgumentTypeMismatch {
+            name: SmolStr::new("capture"),
+            expected: expected_capture_label(descriptor.capture_kind).to_string(),
+            found: type_label(&found),
+            span: span_from_range(body.expr_span(capture_expr)),
+        });
+    }
+}
+
+fn expected_capture_label(capture_kind: crate::query_contract::CaptureKind) -> &'static str {
+    match capture_kind {
+        crate::query_contract::CaptureKind::Field => "FieldCapture",
+        crate::query_contract::CaptureKind::Shape => "ShapeCapture",
+        crate::query_contract::CaptureKind::Region => "RegionCapture",
+    }
+}
+
+fn expected_family_query_capture_label(
+    family: crate::query_contract::QueryFamilyId,
+    question: crate::query_contract::QueryQuestionId,
+    surface: crate::query_contract::QuerySurfaceKind,
+) -> Option<&'static str> {
+    let mut kinds = crate::query_contract::query_contracts()
+        .iter()
+        .filter(|descriptor| {
+            descriptor.family == family
+                && descriptor.question == question
+                && descriptor.surface == surface
+        })
+        .map(|descriptor| descriptor.capture_kind)
+        .collect::<Vec<_>>();
+    kinds.sort();
+    kinds.dedup();
+    capture_kind_label(kinds.as_slice())
+}
+
+fn capture_kind_label(kinds: &[crate::query_contract::CaptureKind]) -> Option<&'static str> {
+    use crate::query_contract::CaptureKind;
+
+    match kinds {
+        [CaptureKind::Field] => Some("FieldCapture"),
+        [CaptureKind::Shape] => Some("ShapeCapture"),
+        [CaptureKind::Region] => Some("RegionCapture"),
+        [CaptureKind::Field, CaptureKind::Shape] => Some("FieldCapture or ShapeCapture"),
+        _ => None,
+    }
 }
 
 fn validate_region_capture_argument(
@@ -2911,177 +3054,6 @@ fn validate_scene_domain_argument(
     }
 }
 
-fn infer_shape_batch_query_builtin(
-    body: &Body,
-    expr_id: Idx<Expr>,
-    query_name: &SmolStr,
-    args: &Vec<crate::hir::Arg>,
-    ctx: &mut TypeContext,
-    classes: &ClassIndex,
-    enums: &EnumIndex,
-    interfaces: &InterfaceIndex,
-    functions: &FunctionIndex,
-    errors: &mut Vec<TypeError>,
-    allow_result: bool,
-    in_result_fn: bool,
-    ret: Type,
-) -> Option<Type> {
-    if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
-        errors.push(TypeError::PortableHostCallForbidden {
-            function: ctx.current_function_name(),
-            callee: query_name.clone(),
-            span: span_from_range(body.expr_span(expr_id)),
-            help: "Bulk scene dispatch belongs in the host lane; portable scene code stays pure.".to_string(),
-        });
-    }
-    let expected = match query_name.as_str() {
-        "trace_shape_batch" | "occluded_batch" => vec![
-            (SmolStr::new("capture"), Type::Unknown),
-            (SmolStr::new("rays"), Type::List(Box::new(portable_named_type("RayQuery")))),
-            (SmolStr::new("backend"), dispatch_backend_type()),
-        ],
-        _ => vec![
-            (SmolStr::new("capture"), Type::Unknown),
-            (SmolStr::new("hits"), Type::List(Box::new(portable_named_type("Hit3")))),
-            (SmolStr::new("backend"), dispatch_backend_type()),
-        ],
-    };
-    infer_exact_builtin_call(
-        body,
-        expr_id,
-        args,
-        ctx,
-        classes,
-        enums,
-        interfaces,
-        functions,
-        errors,
-        allow_result,
-        in_result_fn,
-        &expected,
-        ret.clone(),
-    )?;
-    if let Some(capture_expr) = call_named_arg_value(args, "capture") {
-        let found = infer_expr(
-            body,
-            capture_expr,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            false,
-            allow_result,
-            in_result_fn,
-        );
-        if let Some(target) = direct_capture_target_name(body, capture_expr) {
-            if !functions.is_shape(&target) {
-                errors.push(TypeError::ShapeQueryTargetMustBeShape {
-                    query: query_name.clone(),
-                    span: span_from_range(body.expr_span(capture_expr)),
-                    help: "Pass a capture created from a top-level shape declaration, for example `trace_shape_batch(capture=capture scene_shape, rays=queries, backend=dispatch_backend_cpu())`.".to_string(),
-                });
-            }
-        } else if types_known(&shape_capture_type(), &found)
-            && !is_assignable(&shape_capture_type(), &found, classes, interfaces)
-        {
-            errors.push(TypeError::ShapeQueryTargetMustBeShape {
-                query: query_name.clone(),
-                span: span_from_range(body.expr_span(capture_expr)),
-                help: "Store captures from top-level shapes in `ShapeCapture` values before using shape batch queries.".to_string(),
-            });
-        } else if !types_known(&shape_capture_type(), &found) && found != Type::Unknown {
-            errors.push(TypeError::ArgumentTypeMismatch {
-                name: SmolStr::new("capture"),
-                expected: type_label(&shape_capture_type()),
-                found: type_label(&found),
-                span: span_from_range(body.expr_span(capture_expr)),
-            });
-        }
-    }
-    Some(ret)
-}
-
-fn infer_field_batch_query_builtin(
-    body: &Body,
-    expr_id: Idx<Expr>,
-    query_name: &SmolStr,
-    args: &Vec<crate::hir::Arg>,
-    ctx: &mut TypeContext,
-    classes: &ClassIndex,
-    enums: &EnumIndex,
-    interfaces: &InterfaceIndex,
-    functions: &FunctionIndex,
-    errors: &mut Vec<TypeError>,
-    allow_result: bool,
-    in_result_fn: bool,
-    ret: Type,
-) -> Option<Type> {
-    if ctx.in_portable_lane() && !ctx.in_portable_query_kernel_lane() {
-        errors.push(TypeError::PortableHostCallForbidden {
-            function: ctx.current_function_name(),
-            callee: query_name.clone(),
-            span: span_from_range(body.expr_span(expr_id)),
-            help: "Bulk field sampling belongs in the host lane; portable `field` declarations stay pure.".to_string(),
-        });
-    }
-    infer_exact_builtin_call(
-        body,
-        expr_id,
-        args,
-        ctx,
-        classes,
-        enums,
-        interfaces,
-        functions,
-        errors,
-        allow_result,
-        in_result_fn,
-        &[
-            (SmolStr::new("capture"), Type::Unknown),
-            (
-                SmolStr::new("points"),
-                Type::List(Box::new(portable_named_type("PointQuery"))),
-            ),
-            (SmolStr::new("backend"), dispatch_backend_type()),
-        ],
-        ret.clone(),
-    )?;
-    if let Some(capture_expr) = call_named_arg_value(args, "capture") {
-        let found = infer_expr(
-            body,
-            capture_expr,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            false,
-            allow_result,
-            in_result_fn,
-        );
-        if let Some(target) = direct_capture_target_name(body, capture_expr) {
-            if !(functions.is_field(&target) || functions.is_shape(&target)) {
-                errors.push(TypeError::ShapeQueryTargetMustBeShape {
-                    query: query_name.clone(),
-                    span: span_from_range(body.expr_span(capture_expr)),
-                    help: "Pass a capture created from a top-level field or shape declaration, for example `distance_at_batch(capture=capture sphere, points=queries, backend=dispatch_backend_cpu())`.".to_string(),
-                });
-            }
-        } else if !is_scene_sample_capture_type(&found) {
-            errors.push(TypeError::ArgumentTypeMismatch {
-                name: SmolStr::new("capture"),
-                expected: "FieldCapture or ShapeCapture".to_string(),
-                found: type_label(&found),
-                span: span_from_range(body.expr_span(capture_expr)),
-            });
-        }
-    }
-    Some(ret)
-}
-
 fn field_capture_type() -> Type {
     portable_named_type("FieldCapture")
 }
@@ -3108,10 +3080,6 @@ fn dispatch_backend_type() -> Type {
 
 fn scene_domain_type() -> Type {
     portable_named_type("SceneDomain")
-}
-
-fn is_scene_sample_capture_type(found: &Type) -> bool {
-    *found == field_capture_type() || *found == shape_capture_type()
 }
 
 fn infer_math_builtin_call(
@@ -4260,291 +4228,6 @@ fn infer_math_builtin_call(
                 in_result_fn,
             )
         }
-        "distance_at" => infer_field_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            Type::F32,
-        ),
-        "normal_at" => infer_field_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            Type::Vec3,
-        ),
-        "trace_shape" => infer_shape_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            Type::Named(SmolStr::new("Hit3"), Vec::new()),
-        ),
-        "occluded" => infer_shape_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            Type::Named(SmolStr::new("OcclusionResult"), Vec::new()),
-        ),
-        "surface_at" => infer_shape_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            Type::Named(SmolStr::new("Surface"), Vec::new()),
-        ),
-        "radiance_at" => infer_shape_point_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            Type::Vec3,
-        ),
-        "medium_at" => infer_shape_point_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            portable_named_type("Medium"),
-        ),
-        "distance_world" => infer_world_distance_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            Type::F32,
-        ),
-        "normal_world" => infer_world_distance_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            Type::Vec3,
-        ),
-        "trace_world" => infer_world_shape_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            portable_named_type("Hit3"),
-        ),
-        "occluded_world" => infer_world_shape_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            portable_named_type("OcclusionResult"),
-        ),
-        "surface_world" => infer_world_shape_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            portable_named_type("Surface"),
-        ),
-        "radiance_world" => infer_world_point_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            Type::Vec3,
-        ),
-        "medium_world" => infer_world_point_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            portable_named_type("Medium"),
-        ),
-        "trace_shape_batch" => infer_shape_batch_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            Type::List(Box::new(portable_named_type("Hit3"))),
-        ),
-        "surface_at_batch" => infer_shape_batch_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            Type::List(Box::new(portable_named_type("Surface"))),
-        ),
-        "occluded_batch" => infer_shape_batch_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            Type::List(Box::new(portable_named_type("OcclusionResult"))),
-        ),
-        "distance_at_batch" => infer_field_batch_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            Type::List(Box::new(portable_named_type("DistanceResult"))),
-        ),
-        "normal_at_batch" => infer_field_batch_query_builtin(
-            body,
-            expr_id,
-            name,
-            args,
-            ctx,
-            classes,
-            enums,
-            interfaces,
-            functions,
-            errors,
-            allow_result,
-            in_result_fn,
-            Type::List(Box::new(portable_named_type("NormalResult"))),
-        ),
         "min" | "max" | "pow" => infer_componentwise_binary_builtin(
             body,
             expr_id,

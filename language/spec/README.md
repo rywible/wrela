@@ -27,6 +27,21 @@ Current executable coverage includes:
 - operators/precedence/ranges
 - Result workflows (`error`, `??`, `ignore result`, `capture`)
 - `require ... else`
+- family query calls (`spatial.distance`, `spatial.normal`, `spatial.nearest`, `surface.sample`, `participants.radiance`, `participants.medium`, `support.summary`) over capture, world, and batch surfaces
+
+## New Question Checklist
+
+Every new query question must preserve the family/contract model. Add it by following this checklist:
+
+1. Add the canonical descriptor with stable id, version, family, question, authored family member name, surface, capture kind, item kind, result kind, domain dependency, backend support, and observability.
+2. Add the execution binding that maps the descriptor to planner recipe, executor, kernel, helper name, and any legacy compatibility alias.
+3. Add or confirm item/result record shapes in the portable ABI and WGSL layout snapshots.
+4. Add domain contract fields only when the family policy needs them; keep per-call data in item records.
+5. Add descriptor-driven plan construction and validation paths.
+6. Add the CPU oracle first.
+7. Add virtual GPU/WGSL support only when they preserve the contract; otherwise mark the backend unsupported in the descriptor.
+8. Add observability/cost coverage for the semantic work the question performs.
+9. Add parser/HIR, planning/kernel, execution parity, CLI/catalog, and spec coverage.
 
 Notes:
 

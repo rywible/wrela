@@ -76,7 +76,7 @@ fn contract_cert_report_schema_has_required_fields() {
     let cert_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
-        .join("cert_schema_v3_example.json");
+        .join("cert_schema_v4_example.json");
     let contents = std::fs::read_to_string(&cert_path).expect("read cert.json");
     let json: serde_json::Value = serde_json::from_str(&contents).expect("parse cert.json");
 
@@ -89,6 +89,7 @@ fn contract_cert_report_schema_has_required_fields() {
         "compiler_version",
         "runtime_version",
         "source_hash",
+        "query_contracts",
         "binary_hash",
     ] {
         assert!(
@@ -96,4 +97,25 @@ fn contract_cert_report_schema_has_required_fields() {
             "missing required cert field: {field}"
         );
     }
+    assert_eq!(
+        json.get("cert_schema_version").and_then(|v| v.as_u64()),
+        Some(4)
+    );
+    assert_eq!(
+        json.get("query_contracts")
+            .and_then(|v| v.get("schema_version"))
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    let query_contracts = json
+        .get("query_contracts")
+        .and_then(|v| v.get("contracts"))
+        .and_then(|v| v.as_array())
+        .expect("query contract array");
+    assert!(
+        query_contracts
+            .iter()
+            .all(|contract| contract.get("helper").is_none()),
+        "cert report query contract catalog must not expose internal helper names"
+    );
 }

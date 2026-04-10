@@ -456,6 +456,12 @@ fn type_label(ty: &Type) -> String {
         Type::Mat3 => "Mat3".to_string(),
         Type::Mat4 => "Mat4".to_string(),
         Type::Quat => "Quat".to_string(),
+        Type::QueryFamily(family) => {
+            format!(
+                "{} query family",
+                crate::query_contract::query_family_name(*family)
+            )
+        }
         Type::GpuBuffer(inner) => format!("GpuBuffer[{}]", type_label(inner)),
         Type::GpuAtomicI32 => "GpuAtomicI32".to_string(),
         Type::GpuAtomicU32 => "GpuAtomicU32".to_string(),

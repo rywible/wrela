@@ -1245,6 +1245,91 @@ fn main() -> Integer {
 }
 
 #[test]
+fn native_v2_family_query_surface_smoke() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.8, 0.1, 0.2),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape sphere_shape {
+    field = sphere_field
+    material = shade
+    payload = Payload(
+        entity_id=u32(7),
+        material_id=u32(8),
+        actor=ActorHandle(id=u32(9), generation=u32(0))
+    )
+}
+
+fn main() -> Integer {
+    field_scene = capture sphere_field
+    shape_scene = capture sphere_shape
+    sample_point = vec3(0.0, 0.0, 2.0)
+
+    sampled_distance = spatial.distance(capture=field_scene, point=sample_point)
+    sampled_normal = spatial.normal(capture=field_scene, point=sample_point)
+    summary = support.summary(capture=field_scene)
+    ray = ray_query(
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    hit = spatial.nearest(capture=shape_scene, ray=ray)
+    occlusion = spatial.occluded(capture=shape_scene, ray=ray)
+    sampled_surface = surface.sample(capture=shape_scene, hit=hit)
+    points = [PointQuery(point=sample_point)]
+    rays = [ray]
+    distances = spatial.distance_batch(capture=field_scene, points=points, backend=dispatch_backend_cpu())
+    normals = spatial.normal_batch(capture=field_scene, points=points, backend=dispatch_backend_cpu())
+    hits = spatial.nearest_batch(capture=shape_scene, rays=rays, backend=dispatch_backend_cpu())
+    surfaces = surface.sample_batch(capture=shape_scene, hits=hits, backend=dispatch_backend_cpu())
+    occlusions = spatial.occluded_batch(capture=shape_scene, rays=rays, backend=dispatch_backend_cpu())
+
+    assert approx sampled_distance ~= 1.0 within 0.001
+    assert approx sampled_normal.z ~= 1.0 within 0.01
+    assert value summary.has_bounds == true
+    assert value hit.hit == true
+    assert value occlusion.occluded == true
+    assert approx sampled_surface.albedo.x ~= 0.8 within 0.001
+    assert approx distances[0].distance ~= 1.0 within 0.001
+    assert approx normals[0].normal.z ~= 1.0 within 0.01
+    assert value hits[0].hit == true
+    assert approx surfaces[0].albedo.x ~= 0.8 within 0.001
+    assert value occlusions[0].occluded == true
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_inline_source(source, "wr_v2_family_query_surface_smoke");
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn native_v2_field_primitive_catalog_smoke() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
         return;
@@ -3604,9 +3689,9 @@ fn main() -> Integer {
     field_capture = capture scene_field
     probe = vec3(0.0, 0.0, 1.2)
 
-    sampled_distance = distance_at(capture=field_capture, point=probe)
-    sampled_normal = normal_at(capture=scene_capture, point=probe)
-    sampled_hit = trace_shape(
+    sampled_distance = spatial.distance(capture=field_capture, point=probe)
+    sampled_normal = spatial.normal(capture=scene_capture, point=probe)
+    sampled_hit = spatial.nearest(
         capture=scene_capture,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -3617,15 +3702,15 @@ fn main() -> Integer {
             max_steps=96
         )
     )
-    sampled_surface = surface_at(capture=scene_capture, hit=sampled_hit)
-    sampled_radiance = radiance_at(
+    sampled_surface = surface.sample(capture=scene_capture, hit=sampled_hit)
+    sampled_radiance = participants.radiance(
         capture=scene_capture,
         sample=point_direction_query(
             point=sampled_hit.position,
             direction=normalize(vec3(0.0, 1.0, 1.0))
         )
     )
-    sampled_medium = medium_at(capture=scene_capture, point=sampled_hit.position)
+    sampled_medium = participants.medium(capture=scene_capture, point=sampled_hit.position)
 
     if abs(sampled_distance - 0.6) > 0.01 { return 1 }
     if abs(sampled_normal.z - 1.0) > 0.01 { return 2 }
@@ -3687,8 +3772,10 @@ fn main() -> Integer {
     assert!(
         errors.iter().any(|err| matches!(
             err,
-            hir::typeck::TypeError::ShapeQueryTargetMustBeShape { query, .. }
-                if query.as_str() == "trace_shape"
+            hir::typeck::TypeError::ArgumentTypeMismatch { name, expected, found, .. }
+                if name.as_str() == "capture"
+                    && expected == "ShapeCapture"
+                    && found == "FieldCapture"
         )),
         "expected stored field capture shape query rejection, got: {errors:?}"
     );
@@ -3746,8 +3833,10 @@ fn main() -> Integer {
         .filter(|err| {
             matches!(
                 err,
-                hir::typeck::TypeError::ShapeQueryTargetMustBeShape { query, .. }
-                    if query.as_str() == "radiance_at" || query.as_str() == "medium_at"
+                hir::typeck::TypeError::ArgumentTypeMismatch { name, expected, found, .. }
+                    if name.as_str() == "capture"
+                        && expected == "ShapeCapture"
+                        && found == "FieldCapture"
             )
         })
         .count();
@@ -4094,15 +4183,15 @@ shape phase7_scene_shape {
 }
 
 fn compute_ambient_occlusion(scene_capture: ShapeCapture, hit_position: Vec3, hit_normal: Vec3) -> F32 {
-    sample_a = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.08)
-    sample_b = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.18)
+    sample_a = spatial.distance(capture=scene_capture, point=hit_position + hit_normal * 0.08)
+    sample_b = spatial.distance(capture=scene_capture, point=hit_position + hit_normal * 0.18)
     occlusion = clamp((0.08 - sample_a) * 2.0 + (0.18 - sample_b) * 1.1, 0.0, 1.0)
     return 1.0 - occlusion * 0.75
 }
 
 fn main() -> Integer {
     scene_capture = capture phase7_scene_shape
-    hit = trace_shape(
+    hit = spatial.nearest(
         capture=scene_capture,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -4113,15 +4202,15 @@ fn main() -> Integer {
             max_steps=96
         )
     )
-    surface = surface_at(capture=scene_capture, hit=hit)
-    radiance_sample = radiance_at(
+    surface = surface.sample(capture=scene_capture, hit=hit)
+    radiance_sample = participants.radiance(
         capture=scene_capture,
         sample=point_direction_query(
             point=hit.position,
             direction=normalize(vec3(0.0, 1.0, 1.0))
         )
     )
-    medium_sample = medium_at(capture=scene_capture, point=hit.position)
+    medium_sample = participants.medium(capture=scene_capture, point=hit.position)
     ambient = compute_ambient_occlusion(
         scene_capture=scene_capture,
         hit_position=hit.position,
@@ -4875,10 +4964,10 @@ fn main() -> Integer {
     fine_domain = phase8_fine_domain(world = world)
     probe = vec3(0.0, 0.0, 0.6)
 
-    coarse_distance = distance_world(capture = world, domain = coarse_domain, point = probe)
-    fine_distance = distance_world(capture = world, domain = fine_domain, point = probe)
-    fine_normal = normal_world(capture = world, domain = fine_domain, point = probe)
-    coarse_hit = trace_world(
+    coarse_distance = spatial.distance(capture = world, domain = coarse_domain, point = probe)
+    fine_distance = spatial.distance(capture = world, domain = fine_domain, point = probe)
+    fine_normal = spatial.normal(capture = world, domain = fine_domain, point = probe)
+    coarse_hit = spatial.nearest(
         capture=world,
         domain=coarse_domain,
         ray=ray_query(
@@ -4890,7 +4979,7 @@ fn main() -> Integer {
             max_steps=96
         )
     )
-    fine_hit = trace_world(
+    fine_hit = spatial.nearest(
         capture=world,
         domain=fine_domain,
         ray=ray_query(
@@ -4902,7 +4991,7 @@ fn main() -> Integer {
             max_steps=96
         )
     )
-    fine_occlusion_hit = occluded_world(
+    fine_occlusion_hit = spatial.occluded(
         capture=world,
         domain=fine_domain,
         ray=ray_query(
@@ -4915,7 +5004,7 @@ fn main() -> Integer {
         ),
         backend=dispatch_backend_cpu()
     )
-    fine_occlusion_miss = occluded_world(
+    fine_occlusion_miss = spatial.occluded(
         capture=world,
         domain=fine_domain,
         ray=ray_query(
@@ -4928,9 +5017,9 @@ fn main() -> Integer {
         ),
         backend=dispatch_backend_cpu()
     )
-    coarse_surface = surface_world(capture = world, domain = coarse_domain, hit = fine_hit)
-    fine_surface = surface_world(capture = world, domain = fine_domain, hit = fine_hit)
-    coarse_radiance = radiance_world(
+    coarse_surface = surface.sample(capture = world, domain = coarse_domain, hit = fine_hit)
+    fine_surface = surface.sample(capture = world, domain = fine_domain, hit = fine_hit)
+    coarse_radiance = participants.radiance(
         capture=world,
         domain=coarse_domain,
         sample=point_direction_query(
@@ -4938,7 +5027,7 @@ fn main() -> Integer {
             direction=normalize(vec3(0.0, 1.0, 1.0))
         )
     )
-    fine_radiance = radiance_world(
+    fine_radiance = participants.radiance(
         capture=world,
         domain=fine_domain,
         sample=point_direction_query(
@@ -4946,8 +5035,8 @@ fn main() -> Integer {
             direction=normalize(vec3(0.0, 1.0, 1.0))
         )
     )
-    coarse_medium = medium_world(capture = world, domain = coarse_domain, point = fine_hit.position)
-    fine_medium = medium_world(capture = world, domain = fine_domain, point = fine_hit.position)
+    coarse_medium = participants.medium(capture = world, domain = coarse_domain, point = fine_hit.position)
+    fine_medium = participants.medium(capture = world, domain = fine_domain, point = fine_hit.position)
     camera = Camera(
         position = vec3(0.0, 0.0, 3.0),
         forward = vec3(0.0, 0.0, -1.0),

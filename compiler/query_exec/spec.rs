@@ -24,7 +24,7 @@ pub(crate) struct ScalarQueryInvocationSpec {
     pub(crate) contract_id: QueryContractId,
     pub(crate) capture: hir::Idx<Expr>,
     pub(crate) domain: Option<hir::Idx<Expr>>,
-    pub(crate) item: hir::Idx<Expr>,
+    pub(crate) item: Option<hir::Idx<Expr>>,
     pub(crate) backend: Option<hir::Idx<Expr>>,
 }
 

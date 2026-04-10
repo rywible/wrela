@@ -18,12 +18,13 @@ use crate::query_exec::mir::{
     lower_field_batch_queries_helper, lower_scene_distance_capture_helper,
     lower_scene_medium_capture_helper, lower_scene_normal_capture_helper,
     lower_scene_occluded_capture_helper, lower_scene_radiance_capture_helper,
-    lower_scene_surface_capture_helper, lower_scene_surface_queries_helper,
-    lower_scene_trace_capture_helper, lower_scene_trace_queries_helper,
-    lower_shape_batch_queries_helper, lower_shape_distance_helper, lower_shape_surface_helper,
-    lower_shape_trace_helper, lower_world_distance_capture_helper,
-    lower_world_medium_capture_helper, lower_world_normal_capture_helper,
-    lower_world_occluded_capture_helper, lower_world_radiance_capture_helper,
+    lower_scene_support_summary_capture_helper, lower_scene_surface_capture_helper,
+    lower_scene_surface_queries_helper, lower_scene_trace_capture_helper,
+    lower_scene_trace_queries_helper, lower_shape_batch_queries_helper,
+    lower_shape_distance_helper, lower_shape_surface_helper, lower_shape_trace_helper,
+    lower_world_distance_capture_helper, lower_world_medium_capture_helper,
+    lower_world_normal_capture_helper, lower_world_occluded_capture_helper,
+    lower_world_radiance_capture_helper, lower_world_support_summary_capture_helper,
     lower_world_surface_capture_helper, lower_world_trace_capture_helper,
 };
 use crate::query_exec::{QueryExecContext, wgsl};
@@ -609,6 +610,46 @@ pub fn lower_module_with_types_and_backend(
         "ShapeCapture",
         "__wr_shape_normal_capture",
     ));
+    functions.push(lower_scene_support_summary_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &radiance_param_counts,
+        &volume_param_counts,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+        "FieldCapture",
+        "__wr_field_support_summary_capture",
+    ));
+    functions.push(lower_scene_support_summary_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &radiance_param_counts,
+        &volume_param_counts,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+        "ShapeCapture",
+        "__wr_shape_support_summary_capture",
+    ));
     functions.push(lower_scene_trace_capture_helper(
         module,
         &tag_map,
@@ -740,6 +781,24 @@ pub fn lower_module_with_types_and_backend(
         default_query_backend,
         world_wgsl_configs.get(&WorldQueryKind::Normal),
         &wgsl_shape_indices,
+    ));
+    functions.push(lower_world_support_summary_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &radiance_param_counts,
+        &volume_param_counts,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
     ));
     functions.push(lower_world_trace_capture_helper(
         module,
@@ -8724,7 +8783,7 @@ mod tests {
     use crate::parser::ast;
     use crate::parser::ast::AstNode;
     use crate::parser::parse;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashMap, HashSet};
 
     fn direct_call_targets(func: &MirFunction) -> BTreeSet<SmolStr> {
         let mut targets = BTreeSet::new();
@@ -8956,6 +9015,78 @@ fn run() -> Nothing {
                 .functions
                 .iter()
                 .any(|func| func.name == "__wr_scene_trace_batch_queries")
+        );
+    }
+
+    #[test]
+    fn test_shadowed_family_namespace_method_call_does_not_lower_as_query() {
+        let input = r#"field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+class Probe {
+    fn distance(capture: FieldCapture, point: Vec3) -> F32 {
+        return 7.0
+    }
+}
+
+fn run() -> F32 {
+    spatial = Probe()
+    field_scene = capture sphere_field
+    return spatial.distance(capture=field_scene, point=vec3(0.0, 0.0, 2.0))
+}
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = hir_lower::lower(root);
+        let (_type_errors, type_info) = typeck::check_module_with_info(&module);
+        let (run_idx, run) = module
+            .functions
+            .iter()
+            .find(|(_, func)| func.name == "run")
+            .expect("missing run");
+        let body = run.body.as_ref().expect("run body");
+        let call_expr = body
+            .exprs
+            .iter()
+            .find_map(|(expr_id, expr)| {
+                let Expr::Call { callee, .. } = expr else {
+                    return None;
+                };
+                let Expr::Member { object, member, .. } = &body.exprs[*callee] else {
+                    return None;
+                };
+                let Expr::Variable(object_name) = &body.exprs[*object] else {
+                    return None;
+                };
+                (object_name.as_str() == "spatial" && member.as_str() == "distance")
+                    .then_some(expr_id)
+            })
+            .expect("spatial.distance call");
+        let fn_info = type_info.function(run_idx).expect("run type info");
+        let lowerer = FunctionLowerer::new(
+            SmolStr::new("run"),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            false,
+            Some(fn_info),
+        );
+        assert!(
+            lowerer.parse_scalar_query(body, call_expr).is_none(),
+            "shadowed method call was parsed as an intrinsic query"
         );
     }
 

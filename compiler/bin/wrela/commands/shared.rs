@@ -79,6 +79,61 @@ fn project_naming_diagnostics(
     diagnostics
 }
 
+fn execute_query_contracts_command(
+    output_format: OutputFormat,
+    path_arg: Option<String>,
+    program_args: Vec<String>,
+) {
+    if path_arg.is_some() {
+        eprintln!("error: query-contracts does not take a path");
+        std::process::exit(EXIT_USAGE);
+    }
+    if !program_args.is_empty() {
+        eprintln!("error: unexpected extra arguments");
+        std::process::exit(EXIT_USAGE);
+    }
+    let catalog = query_contract_catalog_snapshot();
+    if matches!(output_format, OutputFormat::Json) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&catalog).unwrap_or_else(|_| "{}".to_string())
+        );
+        return;
+    }
+    println!(
+        "query contract catalog schema v{}",
+        catalog.schema_version
+    );
+    for contract in &catalog.contracts {
+        let backends = if contract.backends.is_empty() {
+            "none".to_string()
+        } else {
+            contract.backends.join(",")
+        };
+        println!(
+            "{} v{}  call={}  surface={}  capture={}  item={}  result={}  backends={}  legacy={}",
+            contract.contract_id,
+            contract.contract_version,
+            contract.call,
+            contract.surface,
+            contract.capture_kind,
+            contract.item_kind,
+            contract.result_kind,
+            backends,
+            contract.legacy_builtin,
+        );
+    }
+    if !catalog.aliases.is_empty() {
+        println!("aliases:");
+        for alias in &catalog.aliases {
+            println!(
+                "{} -> {}  ({})",
+                alias.alias_id, alias.canonical_id, alias.reason
+            );
+        }
+    }
+}
+
 pub fn execute(spec: CommandSpec) {
     let trace = spec.trace_enabled;
     if trace {
@@ -315,6 +370,12 @@ pub fn execute(spec: CommandSpec) {
                 eprintln!("update error: {err}");
                 std::process::exit(EXIT_CODEGEN);
             }
+        }
+        "query-contracts" => {
+            if trace {
+                eprintln!("build: command query-contracts");
+            }
+            execute_query_contracts_command(output_format, path_arg, program_args);
         }
         "check" | "analyze" => {
             if trace {

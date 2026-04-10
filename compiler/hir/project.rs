@@ -3587,6 +3587,10 @@ fn is_builtin_value_name(name: &SmolStr) -> bool {
     if is_builtin_record_name(name.as_str())
         || is_builtin_record_function(name.as_str())
         || is_builtin_helper_function(name.as_str())
+        || crate::query_contract::query_family_namespace(name.as_str()).is_some()
+        || crate::query_contract::query_execution_bindings()
+            .iter()
+            .any(|binding| binding.legacy_builtin_name == name.as_str())
     {
         return true;
     }

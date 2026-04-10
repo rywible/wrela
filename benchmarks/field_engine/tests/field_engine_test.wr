@@ -397,23 +397,27 @@ fn test_field_repetition_identity_stability_ops_120000() -> Nothing {
     require repeat_scene.scene_id == repeat_scene_again.scene_id else "repeat scene_id stable"
     require repeat_scene.root_feature_id == repeat_scene_again.root_feature_id else "repeat root_feature_id stable"
 
-    baseline_hit = trace_shape(
+    baseline_hit = spatial.nearest(
         capture=repeat_scene,
-        origin=repeat_origin,
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=repeat_origin,
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
-    baseline_hit_again = trace_shape(
+    baseline_hit_again = spatial.nearest(
         capture=repeat_scene_again,
-        origin=repeat_origin,
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=repeat_origin,
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
     require baseline_hit.hit == true else "repeat baseline hit"
     require baseline_hit_again.hit == true else "repeat baseline hit again"
@@ -427,17 +431,19 @@ fn test_field_repetition_identity_stability_ops_120000() -> Nothing {
         tile_x = f32(i % 24) * 0.22 - 2.6
         tile_y = f32((i / 24) % 4) * 0.10 - 0.12
         sample_point = vec3(tile_x, tile_y, 0.18)
-        sampled_distance = distance_at(capture=repeat_scene, point=sample_point)
+        sampled_distance = spatial.distance(capture=repeat_scene, point=sample_point)
         checksum = update_checksum(current=checksum, value=i32(abs(sampled_distance) * 1000.0) + (i % 19))
         if i % 30000 == 0 {
-            probe_hit = trace_shape(
+            probe_hit = spatial.nearest(
                 capture=repeat_scene,
-                origin=repeat_origin,
-                direction=vec3(0.0, 0.0, -1.0),
-                max_distance=6.0,
-                min_step=0.05,
-                hit_epsilon=0.001,
-                max_steps=96
+                ray=ray_query(
+                    origin=repeat_origin,
+                    direction=vec3(0.0, 0.0, -1.0),
+                    max_distance=6.0,
+                    min_step=0.05,
+                    hit_epsilon=0.001,
+                    max_steps=96
+                )
             )
             require probe_hit.hit == true else "repeat probe hit"
             repeat_ids += i32(probe_hit.repeat_id)
@@ -459,23 +465,27 @@ fn test_field_thin_nested_local_frame_ops_100000() -> Nothing {
     reference_origin = vec3(0.02, 0.08, 3.0)
     reference_direction = world_direction
 
-    nested_hit = trace_shape(
+    nested_hit = spatial.nearest(
         capture=nested_scene,
-        origin=world_origin,
-        direction=world_direction,
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=world_origin,
+            direction=world_direction,
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
-    reference_hit = trace_shape(
+    reference_hit = spatial.nearest(
         capture=reference_scene,
-        origin=reference_origin,
-        direction=reference_direction,
-        max_distance=6.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=reference_origin,
+            direction=reference_direction,
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
 
     assert value nested_hit.hit == true
@@ -494,17 +504,19 @@ fn test_field_thin_nested_local_frame_ops_100000() -> Nothing {
         probe_x = 0.24 + f32(i % 6) * 0.02
         probe_y = -0.02 + f32((i / 6) % 6) * 0.01
         probe_point = vec3(probe_x, probe_y, 0.12)
-        sampled_distance = distance_at(capture=nested_scene, point=probe_point)
+        sampled_distance = spatial.distance(capture=nested_scene, point=probe_point)
         checksum = update_checksum(current=checksum, value=i32(abs(sampled_distance) * 2000.0) + (i % 23))
         if i % 25000 == 0 {
-            probe_hit = trace_shape(
+            probe_hit = spatial.nearest(
                 capture=nested_scene,
-                origin=world_origin,
-                direction=world_direction,
-                max_distance=6.0,
-                min_step=0.05,
-                hit_epsilon=0.001,
-                max_steps=96
+                ray=ray_query(
+                    origin=world_origin,
+                    direction=world_direction,
+                    max_distance=6.0,
+                    min_step=0.05,
+                    hit_epsilon=0.001,
+                    max_steps=96
+                )
             )
             assert value probe_hit.hit == true
             hit_steps += probe_hit.steps
@@ -521,22 +533,26 @@ fn test_field_smooth_deform_character_ops_90000() -> Nothing {
     mirrored_scene = capture hard_character_shape
     assert value character_scene.scene_id == mirrored_scene.scene_id
 
-    hero_hit = trace_shape(
+    hero_hit = spatial.nearest(
         capture=character_scene,
-        origin=vec3(0.05, 0.45, 4.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=8.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.05, 0.45, 4.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=8.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
-    hero_surface = surface_at(capture=character_scene, hit=hero_hit)
-    hero_radiance = radiance_at(
+    hero_surface = surface.sample(capture=character_scene, hit=hero_hit)
+    hero_radiance = participants.radiance(
         capture=character_scene,
-        point=hero_hit.position,
-        direction=normalize(vec3(0.0, 1.0, 1.0))
+        sample=point_direction_query(
+            point=hero_hit.position,
+            direction=normalize(vec3(0.0, 1.0, 1.0))
+        )
     )
-    hero_medium = medium_at(capture=character_scene, point=hero_hit.position)
+    hero_medium = participants.medium(capture=character_scene, point=hero_hit.position)
 
     assert value hero_hit.hit == true
     assert value hero_hit.feature_id != u32(0)
@@ -552,18 +568,20 @@ fn test_field_smooth_deform_character_ops_90000() -> Nothing {
         probe_x = f32(i % 8) * 0.05 - 0.16
         probe_y = f32((i / 8) % 14) * 0.08 - 0.52
         probe_origin = vec3(probe_x, probe_y, 3.6)
-        probe_hit = trace_shape(
+        probe_hit = spatial.nearest(
             capture=character_scene,
-            origin=probe_origin,
-            direction=vec3(0.0, 0.0, -1.0),
-            max_distance=8.0,
-            min_step=0.05,
-            hit_epsilon=0.001,
-            max_steps=96
+            ray=ray_query(
+                origin=probe_origin,
+                direction=vec3(0.0, 0.0, -1.0),
+                max_distance=8.0,
+                min_step=0.05,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
         )
         assert value probe_hit.hit == true
         if i % 2 == 0 {
-            probe_surface = surface_at(capture=character_scene, hit=probe_hit)
+            probe_surface = surface.sample(capture=character_scene, hit=probe_hit)
             checksum = update_checksum(
                 current=checksum,
                 value=i32(probe_hit.steps) + i32(probe_surface.albedo.x)
@@ -573,14 +591,16 @@ fn test_field_smooth_deform_character_ops_90000() -> Nothing {
         }
         feature_mix += i32(probe_hit.feature_id % u32(13))
         if i % 30000 == 0 {
-            stable_hit = trace_shape(
+            stable_hit = spatial.nearest(
                 capture=character_scene,
-                origin=vec3(0.05, 0.45, 4.0),
-                direction=vec3(0.0, 0.0, -1.0),
-                max_distance=8.0,
-                min_step=0.05,
-                hit_epsilon=0.001,
-                max_steps=96
+                ray=ray_query(
+                    origin=vec3(0.05, 0.45, 4.0),
+                    direction=vec3(0.0, 0.0, -1.0),
+                    max_distance=8.0,
+                    min_step=0.05,
+                    hit_epsilon=0.001,
+                    max_steps=96
+                )
             )
             assert value stable_hit.hit == true
             checksum = update_checksum(current=checksum, value=stable_hit.steps)
@@ -601,45 +621,53 @@ fn test_field_region_domain_media_radiance_ops_60000() -> Nothing {
     fine_domain = hard_fine_domain(world = world)
     probe = vec3(0.0, 0.0, 0.86)
 
-    coarse_distance = distance_world(capture = world, domain = coarse_domain, point = probe)
-    fine_distance = distance_world(capture = world, domain = fine_domain, point = probe)
-    fine_normal = normal_world(capture = world, domain = fine_domain, point = probe)
-    coarse_hit = trace_world(
+    coarse_distance = spatial.distance(capture = world, domain = coarse_domain, point = probe)
+    fine_distance = spatial.distance(capture = world, domain = fine_domain, point = probe)
+    fine_normal = spatial.normal(capture = world, domain = fine_domain, point = probe)
+    coarse_hit = spatial.nearest(
         capture = world,
         domain = coarse_domain,
-        origin = vec3(0.0, 0.0, 3.0),
-        direction = vec3(0.0, 0.0, -1.0),
-        max_distance = 8.0,
-        min_step = 0.05,
-        hit_epsilon = 0.001,
-        max_steps = 96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=8.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
-    fine_hit = trace_world(
+    fine_hit = spatial.nearest(
         capture = world,
         domain = fine_domain,
-        origin = vec3(0.0, 0.0, 3.0),
-        direction = vec3(0.0, 0.0, -1.0),
-        max_distance = 8.0,
-        min_step = 0.05,
-        hit_epsilon = 0.001,
-        max_steps = 96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=8.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
-    coarse_surface = surface_world(capture = world, domain = coarse_domain, hit = fine_hit)
-    fine_surface = surface_world(capture = world, domain = fine_domain, hit = fine_hit)
-    coarse_radiance = radiance_world(
+    coarse_surface = surface.sample(capture = world, domain = coarse_domain, hit = fine_hit)
+    fine_surface = surface.sample(capture = world, domain = fine_domain, hit = fine_hit)
+    coarse_radiance = participants.radiance(
         capture = world,
         domain = coarse_domain,
-        point = fine_hit.position,
-        direction = normalize(vec3(0.0, 1.0, 1.0))
+        sample=point_direction_query(
+            point=fine_hit.position,
+            direction=normalize(vec3(0.0, 1.0, 1.0))
+        )
     )
-    fine_radiance = radiance_world(
+    fine_radiance = participants.radiance(
         capture = world,
         domain = fine_domain,
-        point = fine_hit.position,
-        direction = normalize(vec3(0.0, 1.0, 1.0))
+        sample=point_direction_query(
+            point=fine_hit.position,
+            direction=normalize(vec3(0.0, 1.0, 1.0))
+        )
     )
-    coarse_medium = medium_world(capture = world, domain = coarse_domain, point = fine_hit.position)
-    fine_medium = medium_world(capture = world, domain = fine_domain, point = fine_hit.position)
+    coarse_medium = participants.medium(capture = world, domain = coarse_domain, point = fine_hit.position)
+    fine_medium = participants.medium(capture = world, domain = fine_domain, point = fine_hit.position)
     camera = Camera(
         position = vec3(0.0, 0.0, 3.0),
         forward = vec3(0.0, 0.0, -1.0),
@@ -673,15 +701,17 @@ fn test_field_region_domain_media_radiance_ops_60000() -> Nothing {
         probe_y = f32((i / 10) % 12) * 0.08 - 0.36
         probe_point = vec3(probe_x, probe_y, 0.7)
         if i % 2 == 0 {
-            distance_sample = distance_world(capture = world, domain = coarse_domain, point = probe_point)
+            distance_sample = spatial.distance(capture = world, domain = coarse_domain, point = probe_point)
             checksum = update_checksum(current=checksum, value=i32(abs(distance_sample) * 1000.0) + (i % 31))
         } else {
-            distance_sample = distance_world(capture = world, domain = fine_domain, point = probe_point)
-            radiance_sample = radiance_world(
+            distance_sample = spatial.distance(capture = world, domain = fine_domain, point = probe_point)
+            radiance_sample = participants.radiance(
                 capture = world,
                 domain = fine_domain,
-                point = probe_point,
-                direction = normalize(vec3(0.0, 1.0, 1.0))
+                sample=point_direction_query(
+                    point=probe_point,
+                    direction=normalize(vec3(0.0, 1.0, 1.0))
+                )
             )
             checksum = update_checksum(current=checksum, value=i32(abs(distance_sample) * 1000.0) + i32(radiance_sample.z))
         }
@@ -697,30 +727,34 @@ fn test_field_opaque_leaf_pessimization_ops_4000() -> Nothing {
     opaque_scene_again = capture hard_scene_shape
     require opaque_scene.scene_id == opaque_scene_again.scene_id else "opaque scene_id stable"
 
-    baseline_hit = trace_shape(
+    baseline_hit = spatial.nearest(
         capture=opaque_scene,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=8.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=8.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
-    baseline_surface = surface_at(capture=opaque_scene, hit=baseline_hit)
+    baseline_surface = surface.sample(capture=opaque_scene, hit=baseline_hit)
     require baseline_hit.hit == true else "opaque baseline hit"
     require baseline_surface.albedo.x > 0.0 else "opaque baseline surface"
 
     far_scene = capture hard_support_opaque_shape
-    far_hit = trace_shape(
+    far_hit = spatial.nearest(
         capture=far_scene,
-        origin=vec3(9.5, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=20.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(9.5, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=20.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
-    far_surface = surface_at(capture=far_scene, hit=far_hit)
+    far_surface = surface.sample(capture=far_scene, hit=far_hit)
     support_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
 
@@ -730,16 +764,18 @@ fn test_field_opaque_leaf_pessimization_ops_4000() -> Nothing {
     require candidate_after - candidate_before > 0 else "opaque candidate metric increased"
 
     support_scene = capture hard_scene_shape
-    support_hit = trace_shape(
+    support_hit = spatial.nearest(
         capture=support_scene,
-        origin=vec3(0.0, 0.0, 3.0),
-        direction=vec3(0.0, 0.0, -1.0),
-        max_distance=8.0,
-        min_step=0.05,
-        hit_epsilon=0.001,
-        max_steps=96
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=8.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
     )
-    support_surface = surface_at(capture=support_scene, hit=support_hit)
+    support_surface = surface.sample(capture=support_scene, hit=support_hit)
 
     require support_hit.hit == true else "opaque support hit"
     require support_surface.albedo.x >= 0.0 else "opaque support surface"
@@ -751,17 +787,19 @@ fn test_field_opaque_leaf_pessimization_ops_4000() -> Nothing {
         probe_x = f32(i % 6) * 0.12 - 0.30
         probe_y = f32((i / 6) % 6) * 0.06 - 0.15
         probe_origin = vec3(probe_x, probe_y, 3.0)
-        probe_hit = trace_shape(
+        probe_hit = spatial.nearest(
             capture=opaque_scene,
-            origin=probe_origin,
-            direction=vec3(0.0, 0.0, -1.0),
-            max_distance=8.0,
-            min_step=0.05,
-            hit_epsilon=0.001,
-            max_steps=96
+            ray=ray_query(
+                origin=probe_origin,
+                direction=vec3(0.0, 0.0, -1.0),
+                max_distance=8.0,
+                min_step=0.05,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
         )
         if probe_hit.hit {
-            probe_surface = surface_at(capture=opaque_scene, hit=probe_hit)
+            probe_surface = surface.sample(capture=opaque_scene, hit=probe_hit)
             checksum = update_checksum(current=checksum, value=probe_hit.steps + i32(probe_surface.albedo.x))
         } else {
             checksum = update_checksum(current=checksum, value=probe_hit.steps + i32(abs(probe_hit.distance) * 1000.0))

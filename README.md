@@ -18,6 +18,7 @@ The repo now focuses on the compiler, the core runtime, and the language librari
 ```bash
 cargo test --workspace
 cargo run -p wrela -- --help
+cargo run -p wrela -- query-contracts
 cargo run -p wrela -- build path/to/main.wr
 cargo run -p wrela -- preview language/preview
 ```
@@ -51,3 +52,5 @@ cargo run -p wrela -- perfcmp benchmarks/field_engine \
 ## Direction
 
 Wrela should stay opinionated around authoring worlds. New runtime features should justify how they support fields, scene queries, previews, deterministic execution, simulation, or world asset pipelines. Platform integrations should remain thin host boundaries rather than becoming product-specific subsystems.
+
+New query questions should start from the family/contract checklist in `language/spec/README.md`, not from legacy flat builtin names.

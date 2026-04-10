@@ -176,6 +176,7 @@ commands:\n\
   fmt <path>            canonical formatting pass (idempotent)\n\
   build <path>          run certification, then compile executable on success only\n\
   compile <path>        alias for build (also certification-gated)\n\
+  query-contracts       list family/question query contracts and compatibility aliases\n\
   verify-cert <path>    verify an emitted cert.json report and hashes\n\
   run <path>            compile and run\n\
   dev <path>            watch and rebuild (polling)\n\

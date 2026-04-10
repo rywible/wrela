@@ -31,7 +31,7 @@ fn supports_structural_value_type(
             supports_structural_value_type(ok, classes, enums, visiting)
                 && supports_structural_value_type(err, classes, enums, visiting)
         }
-        Type::Actor(_) | Type::Pending(_) => false,
+        Type::Actor(_) | Type::Pending(_) | Type::QueryFamily(_) => false,
         Type::Vec2 | Type::Vec3 | Type::Vec4 | Type::Mat3 | Type::Mat4 | Type::Quat => true,
         Type::GpuBuffer(_)
         | Type::GpuAtomicI32
@@ -796,7 +796,7 @@ fn builtin_function_is_portable(name: &str) -> bool {
 
 fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
     let err = error_type();
-    vec![
+    let mut functions = vec![
         (
             SmolStr::new("__wr_assert_err"),
             FunctionSig {
@@ -3244,314 +3244,6 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
-            SmolStr::new("distance_at"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), Type::Unknown),
-                    (SmolStr::new("point"), Type::Vec3),
-                ],
-                ret: Type::F32,
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("normal_at"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), Type::Unknown),
-                    (SmolStr::new("point"), Type::Vec3),
-                ],
-                ret: Type::Vec3,
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("trace_shape"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), portable_named_type("ShapeCapture")),
-                    (SmolStr::new("ray"), portable_named_type("RayQuery")),
-                ],
-                ret: portable_named_type("Hit3"),
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("occluded"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), portable_named_type("ShapeCapture")),
-                    (SmolStr::new("ray"), portable_named_type("RayQuery")),
-                ],
-                ret: portable_named_type("OcclusionResult"),
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("surface_at"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), portable_named_type("ShapeCapture")),
-                    (SmolStr::new("hit"), portable_named_type("Hit3")),
-                ],
-                ret: portable_named_type("Surface"),
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("radiance_at"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), portable_named_type("ShapeCapture")),
-                    (
-                        SmolStr::new("sample"),
-                        portable_named_type("PointDirectionQuery"),
-                    ),
-                ],
-                ret: Type::Vec3,
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("medium_at"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), portable_named_type("ShapeCapture")),
-                    (SmolStr::new("point"), Type::Vec3),
-                ],
-                ret: portable_named_type("Medium"),
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("distance_world"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), portable_named_type("RegionCapture")),
-                    (SmolStr::new("domain"), portable_named_type("SceneDomain")),
-                    (SmolStr::new("point"), Type::Vec3),
-                    (
-                        SmolStr::new("backend"),
-                        portable_named_type("DispatchBackend"),
-                    ),
-                ],
-                ret: Type::F32,
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("normal_world"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), portable_named_type("RegionCapture")),
-                    (SmolStr::new("domain"), portable_named_type("SceneDomain")),
-                    (SmolStr::new("point"), Type::Vec3),
-                    (
-                        SmolStr::new("backend"),
-                        portable_named_type("DispatchBackend"),
-                    ),
-                ],
-                ret: Type::Vec3,
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("trace_world"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), portable_named_type("RegionCapture")),
-                    (SmolStr::new("domain"), portable_named_type("SceneDomain")),
-                    (SmolStr::new("ray"), portable_named_type("RayQuery")),
-                    (
-                        SmolStr::new("backend"),
-                        portable_named_type("DispatchBackend"),
-                    ),
-                ],
-                ret: portable_named_type("Hit3"),
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("occluded_world"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), portable_named_type("RegionCapture")),
-                    (SmolStr::new("domain"), portable_named_type("SceneDomain")),
-                    (SmolStr::new("ray"), portable_named_type("RayQuery")),
-                    (
-                        SmolStr::new("backend"),
-                        portable_named_type("DispatchBackend"),
-                    ),
-                ],
-                ret: portable_named_type("OcclusionResult"),
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("surface_world"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), portable_named_type("RegionCapture")),
-                    (SmolStr::new("domain"), portable_named_type("SceneDomain")),
-                    (SmolStr::new("hit"), portable_named_type("Hit3")),
-                    (
-                        SmolStr::new("backend"),
-                        portable_named_type("DispatchBackend"),
-                    ),
-                ],
-                ret: portable_named_type("Surface"),
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("radiance_world"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), portable_named_type("RegionCapture")),
-                    (SmolStr::new("domain"), portable_named_type("SceneDomain")),
-                    (
-                        SmolStr::new("sample"),
-                        portable_named_type("PointDirectionQuery"),
-                    ),
-                    (
-                        SmolStr::new("backend"),
-                        portable_named_type("DispatchBackend"),
-                    ),
-                ],
-                ret: Type::Vec3,
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("medium_world"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), portable_named_type("RegionCapture")),
-                    (SmolStr::new("domain"), portable_named_type("SceneDomain")),
-                    (SmolStr::new("point"), Type::Vec3),
-                    (
-                        SmolStr::new("backend"),
-                        portable_named_type("DispatchBackend"),
-                    ),
-                ],
-                ret: portable_named_type("Medium"),
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("trace_shape_batch"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), portable_named_type("ShapeCapture")),
-                    (
-                        SmolStr::new("rays"),
-                        Type::List(Box::new(portable_named_type("RayQuery"))),
-                    ),
-                    (SmolStr::new("backend"), portable_named_type("DispatchBackend")),
-                ],
-                ret: Type::List(Box::new(portable_named_type("Hit3"))),
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("surface_at_batch"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), portable_named_type("ShapeCapture")),
-                    (
-                        SmolStr::new("hits"),
-                        Type::List(Box::new(portable_named_type("Hit3"))),
-                    ),
-                    (SmolStr::new("backend"), portable_named_type("DispatchBackend")),
-                ],
-                ret: Type::List(Box::new(portable_named_type("Surface"))),
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("distance_at_batch"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), Type::Unknown),
-                    (
-                        SmolStr::new("points"),
-                        Type::List(Box::new(portable_named_type("PointQuery"))),
-                    ),
-                    (SmolStr::new("backend"), portable_named_type("DispatchBackend")),
-                ],
-                ret: Type::List(Box::new(portable_named_type("DistanceResult"))),
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("normal_at_batch"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), Type::Unknown),
-                    (
-                        SmolStr::new("points"),
-                        Type::List(Box::new(portable_named_type("PointQuery"))),
-                    ),
-                    (SmolStr::new("backend"), portable_named_type("DispatchBackend")),
-                ],
-                ret: Type::List(Box::new(portable_named_type("NormalResult"))),
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
-            SmolStr::new("occluded_batch"),
-            FunctionSig {
-                params: vec![
-                    (SmolStr::new("capture"), portable_named_type("ShapeCapture")),
-                    (
-                        SmolStr::new("rays"),
-                        Type::List(Box::new(portable_named_type("RayQuery"))),
-                    ),
-                    (SmolStr::new("backend"), portable_named_type("DispatchBackend")),
-                ],
-                ret: Type::List(Box::new(portable_named_type("OcclusionResult"))),
-                kind: FunctionKind::Function,
-                type_params: Vec::new(),
-                type_param_bounds: Vec::new(),
-            },
-        ),
-        (
             SmolStr::new("dispatch_backend_cpu"),
             FunctionSig {
                 params: Vec::new(),
@@ -3641,7 +3333,118 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                 type_param_bounds: Vec::new(),
             },
         ),
-    ]
+    ];
+    functions.extend(query_compat_builtin_functions());
+    functions
+}
+
+fn query_compat_builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for binding in crate::query_contract::query_execution_bindings() {
+        if !seen.insert(binding.legacy_builtin_name) {
+            continue;
+        }
+        let Some(descriptor) = crate::query_contract::query_contract(binding.contract_id) else {
+            continue;
+        };
+        out.push((
+            SmolStr::new(binding.legacy_builtin_name),
+            FunctionSig {
+                params: query_compat_builtin_params(descriptor),
+                ret: query_authored_return_type(descriptor),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ));
+    }
+    out
+}
+
+fn query_compat_builtin_params(
+    descriptor: &crate::query_contract::QueryContractDescriptor,
+) -> Vec<(SmolStr, Type)> {
+    use crate::query_contract::{QueryItemKind, QuerySurfaceKind};
+
+    let mut params = Vec::new();
+    let capture_ty = match descriptor.surface {
+        QuerySurfaceKind::WorldScalar => portable_named_type("RegionCapture"),
+        QuerySurfaceKind::CaptureScalar | QuerySurfaceKind::CaptureBatch => Type::Unknown,
+    };
+    params.push((SmolStr::new("capture"), capture_ty));
+    if descriptor.domain_contract.is_some() {
+        params.push((SmolStr::new("domain"), portable_named_type("SceneDomain")));
+    }
+    match descriptor.surface {
+        QuerySurfaceKind::CaptureBatch => {
+            match descriptor.item_kind {
+                QueryItemKind::PointQuery => params.push((
+                    SmolStr::new("points"),
+                    Type::List(Box::new(portable_named_type("PointQuery"))),
+                )),
+                QueryItemKind::RayQuery => params.push((
+                    SmolStr::new("rays"),
+                    Type::List(Box::new(portable_named_type("RayQuery"))),
+                )),
+                QueryItemKind::Hit3 => params.push((
+                    SmolStr::new("hits"),
+                    Type::List(Box::new(portable_named_type("Hit3"))),
+                )),
+                QueryItemKind::PointDirectionQuery | QueryItemKind::Unit => {}
+            }
+            params.push((SmolStr::new("backend"), portable_named_type("DispatchBackend")));
+        }
+        QuerySurfaceKind::CaptureScalar | QuerySurfaceKind::WorldScalar => {
+            match descriptor.item_kind {
+                QueryItemKind::PointQuery => params.push((SmolStr::new("point"), Type::Vec3)),
+                QueryItemKind::PointDirectionQuery => params.push((
+                    SmolStr::new("sample"),
+                    portable_named_type("PointDirectionQuery"),
+                )),
+                QueryItemKind::RayQuery => {
+                    params.push((SmolStr::new("ray"), portable_named_type("RayQuery")))
+                }
+                QueryItemKind::Hit3 => {
+                    params.push((SmolStr::new("hit"), portable_named_type("Hit3")))
+                }
+                QueryItemKind::Unit => {}
+            }
+            if descriptor.surface == QuerySurfaceKind::WorldScalar {
+                params.push((SmolStr::new("backend"), portable_named_type("DispatchBackend")));
+            }
+        }
+    }
+    params
+}
+
+fn query_authored_return_type(
+    descriptor: &crate::query_contract::QueryContractDescriptor,
+) -> Type {
+    use crate::query_contract::{QueryResultKind, QuerySurfaceKind};
+
+    let result = match descriptor.result_kind {
+        QueryResultKind::DistanceResult if descriptor.surface != QuerySurfaceKind::CaptureBatch => {
+            Type::F32
+        }
+        QueryResultKind::NormalResult if descriptor.surface != QuerySurfaceKind::CaptureBatch => {
+            Type::Vec3
+        }
+        QueryResultKind::RadianceResult => Type::Vec3,
+        QueryResultKind::MediumResult => portable_named_type("Medium"),
+        QueryResultKind::DistanceResult => portable_named_type("DistanceResult"),
+        QueryResultKind::NormalResult => portable_named_type("NormalResult"),
+        QueryResultKind::SupportSummaryResult => portable_named_type("SupportSummaryResult"),
+        QueryResultKind::Hit3 => portable_named_type("Hit3"),
+        QueryResultKind::Surface => portable_named_type("Surface"),
+        QueryResultKind::OcclusionResult => portable_named_type("OcclusionResult"),
+    };
+
+    if descriptor.surface == QuerySurfaceKind::CaptureBatch {
+        Type::List(Box::new(result))
+    } else {
+        result
+    }
 }
 
 fn is_pool_of_call(body: &Body, callee: Idx<Expr>) -> bool {

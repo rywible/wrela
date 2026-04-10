@@ -13,7 +13,8 @@ fn init_project(path: &str) -> io::Result<()> {
     Ok(())
 }
 
-const CERT_SCHEMA_VERSION: u32 = 3;
+const CERT_SCHEMA_VERSION: u32 = 4;
+const QUERY_CONTRACT_CATALOG_SCHEMA_VERSION: u32 = 1;
 const CERT_GATE_VERSIONS_MARKER: &str = "wrela-cert-gates-v1";
 const COVERAGE_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 const COVERAGE_INDEX_SCHEMA_VERSION: u32 = 2;
@@ -67,7 +68,114 @@ struct CertificationReport {
     differential_results_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     impact_manifest: Option<CertifiedImpactManifest>,
+    query_contracts: CertifiedQueryContractCatalog,
     binary_hash: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct CertifiedQueryContractCatalog {
+    schema_version: u32,
+    contracts: Vec<CertifiedQueryContractItem>,
+    aliases: Vec<CertifiedQueryContractAlias>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct CertifiedQueryContractItem {
+    contract_id: String,
+    contract_version: u32,
+    family: String,
+    question: String,
+    call: String,
+    surface: String,
+    capture_kind: String,
+    item_kind: String,
+    result_kind: String,
+    backends: Vec<String>,
+    domain_contract: Option<String>,
+    required_domain_flags: Vec<String>,
+    participant_contract: Option<String>,
+    preserves_local_hit_context: bool,
+    legacy_builtin: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct CertifiedQueryContractAlias {
+    alias_id: String,
+    canonical_id: String,
+    reason: String,
+}
+
+fn query_contract_catalog_snapshot() -> CertifiedQueryContractCatalog {
+    let contracts = wrela::query_contract::query_contracts()
+        .iter()
+        .map(|descriptor| {
+            let binding = wrela::query_contract::query_execution_binding(descriptor.id);
+            CertifiedQueryContractItem {
+                contract_id: descriptor.id.as_str().to_string(),
+                contract_version: descriptor.version,
+                family: wrela::query_contract::query_family_name(descriptor.family).to_string(),
+                question: wrela::query_contract::query_question_name(descriptor.question)
+                    .to_string(),
+                call: format!(
+                    "{}.{}",
+                    wrela::query_contract::query_family_name(descriptor.family),
+                    wrela::query_contract::query_family_member_name(descriptor)
+                ),
+                surface: wrela::query_contract::query_surface_name(descriptor.surface).to_string(),
+                capture_kind: wrela::query_contract::query_capture_kind_name(
+                    descriptor.capture_kind,
+                )
+                .to_string(),
+                item_kind: wrela::query_contract::query_item_kind_name(descriptor.item_kind)
+                    .to_string(),
+                result_kind: wrela::query_contract::query_result_kind_name(descriptor.result_kind)
+                    .to_string(),
+                backends: wrela::query_contract::query_backend_support_names(
+                    descriptor.supported_backends,
+                )
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+                domain_contract: descriptor.domain_contract.map(domain_contract_name),
+                required_domain_flags: descriptor
+                    .required_domain_flags
+                    .iter()
+                    .map(|flag| wrela::query_contract::scene_domain_flag_name(*flag).to_string())
+                    .collect(),
+                participant_contract: descriptor.participant_kind.map(participant_contract_name),
+                preserves_local_hit_context: descriptor.preserves_local_hit_context,
+                legacy_builtin: binding
+                    .map(|binding| binding.legacy_builtin_name.to_string())
+                    .unwrap_or_default(),
+            }
+        })
+        .collect();
+    let aliases = wrela::query_contract::query_contract_aliases()
+        .iter()
+        .map(|alias| CertifiedQueryContractAlias {
+            alias_id: alias.alias_id.as_str().to_string(),
+            canonical_id: alias.canonical_id.as_str().to_string(),
+            reason: alias.reason.to_string(),
+        })
+        .collect();
+    CertifiedQueryContractCatalog {
+        schema_version: QUERY_CONTRACT_CATALOG_SCHEMA_VERSION,
+        contracts,
+        aliases,
+    }
+}
+
+fn domain_contract_name(kind: wrela::query_contract::DomainContractKind) -> String {
+    match kind {
+        wrela::query_contract::DomainContractKind::SceneDomain => "scene_domain".to_string(),
+    }
+}
+
+fn participant_contract_name(kind: wrela::query_contract::ParticipantContractKind) -> String {
+    match kind {
+        wrela::query_contract::ParticipantContractKind::Radiance => "radiance".to_string(),
+        wrela::query_contract::ParticipantContractKind::Medium => "medium".to_string(),
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -305,6 +413,7 @@ fn write_certification_report(
         mutation_summary_hash: mutation_summary_hash.map(str::to_string),
         differential_results_hash: differential_results_hash.map(str::to_string),
         impact_manifest: build_certified_impact_manifest(workspace_root).ok(),
+        query_contracts: query_contract_catalog_snapshot(),
         binary_hash: binary_hash.clone(),
     };
     let payload = serde_json::to_vec_pretty(&report).map_err(|err| err.to_string())?;

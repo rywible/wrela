@@ -1,10 +1,20 @@
+enum ParsedQueryCall<'a> {
+    Legacy {
+        name: &'a SmolStr,
+    },
+    Family {
+        family: query_contract::QueryFamilyId,
+        member: &'a SmolStr,
+    },
+}
+
 impl FunctionLowerer {
     pub(crate) fn parse_scalar_query(
         &self,
         body: &hir::Body,
         expr_id: hir::Idx<Expr>,
     ) -> Option<ScalarQueryInvocationSpec> {
-        let (name, args) = self.parse_query_call(body, expr_id)?;
+        let (query, args) = self.parse_query_call(body, expr_id)?;
         let named = self.collect_named_query_args(args)?;
         let capture = *named.get("capture")?;
         let surface = if named.contains_key("domain") {
@@ -17,19 +27,31 @@ impl FunctionLowerer {
         } else {
             self.capture_kind_for_expr(body, capture)
         };
-        let (descriptor, _binding) = query_contract::query_contract_bundle_for_legacy_builtin(
-            name.as_str(),
-            surface,
-            capture_kind,
-        )?;
-        let item_arg = scalar_item_arg_name(descriptor)?;
-        let item = *named.get(item_arg)?;
+        let (descriptor, _binding) = match query {
+            ParsedQueryCall::Legacy { name } => {
+                query_contract::query_contract_bundle_for_legacy_builtin(
+                    name.as_str(),
+                    surface,
+                    capture_kind,
+                )?
+            }
+            ParsedQueryCall::Family { family, member } => {
+                query_contract::query_contract_bundle_for_family_member(
+                    family,
+                    member.as_str(),
+                    surface,
+                    capture_kind,
+                )?
+            }
+        };
+        let item_arg = scalar_item_arg_name(descriptor);
+        let item = item_arg.and_then(|name| named.get(name).copied());
         self.require_query_args(
             &named,
-            &[Some("capture"), Some(item_arg), scalar_domain_arg(descriptor)],
+            &[Some("capture"), item_arg, scalar_domain_arg(descriptor)],
             &[
                 Some("capture"),
-                Some(item_arg),
+                item_arg,
                 scalar_domain_arg(descriptor),
                 scalar_backend_arg(descriptor),
             ],
@@ -126,18 +148,33 @@ impl FunctionLowerer {
         body: &hir::Body,
         expr_id: hir::Idx<Expr>,
     ) -> Option<BatchQueryInvocationSpec> {
-        let (name, args) = self.parse_query_call(body, expr_id)?;
+        let (query, args) = self.parse_query_call(body, expr_id)?;
         let named = self.collect_named_query_args(args)?;
         let capture = *named.get("capture")?;
-        let capture_kind = match name.as_str() {
-            "trace_shape_batch" | "surface_at_batch" | "occluded_batch" => CaptureKind::Shape,
-            _ => self.capture_kind_for_expr(body, capture),
+        let capture_kind = self.capture_kind_for_expr(body, capture);
+        let (descriptor, _binding) = match query {
+            ParsedQueryCall::Legacy { name } => {
+                let capture_kind = match name.as_str() {
+                    "trace_shape_batch" | "surface_at_batch" | "occluded_batch" => {
+                        CaptureKind::Shape
+                    }
+                    _ => capture_kind,
+                };
+                query_contract::query_contract_bundle_for_legacy_builtin(
+                    name.as_str(),
+                    QuerySurfaceKind::CaptureBatch,
+                    capture_kind,
+                )?
+            }
+            ParsedQueryCall::Family { family, member } => {
+                query_contract::query_contract_bundle_for_family_member(
+                    family,
+                    member.as_str(),
+                    QuerySurfaceKind::CaptureBatch,
+                    capture_kind,
+                )?
+            }
         };
-        let (descriptor, _binding) = query_contract::query_contract_bundle_for_legacy_builtin(
-            name.as_str(),
-            QuerySurfaceKind::CaptureBatch,
-            capture_kind,
-        )?;
         let items_arg = batch_items_arg_name(descriptor)?;
         self.require_query_args(
             &named,
@@ -157,15 +194,38 @@ impl FunctionLowerer {
         &self,
         body: &'a hir::Body,
         expr_id: hir::Idx<Expr>,
-    ) -> Option<(&'a SmolStr, &'a [hir::Arg])> {
+    ) -> Option<(ParsedQueryCall<'a>, &'a [hir::Arg])> {
         let (callee, args) = match &body.exprs[expr_id] {
             Expr::Call { callee, args, .. } => (callee, args),
             _ => return None,
         };
-        let Expr::Variable(name) = &body.exprs[*callee] else {
+        match &body.exprs[*callee] {
+            Expr::Variable(name) => Some((ParsedQueryCall::Legacy { name }, args.as_slice())),
+            Expr::Member { object, member, .. } => {
+                let family = self.query_family_expr(body, *object)?;
+                query_contract::query_family_member(family, member.as_str())?;
+                Some((ParsedQueryCall::Family { family, member }, args.as_slice()))
+            }
+            _ => None,
+        }
+    }
+
+    fn query_family_expr(
+        &self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+    ) -> Option<query_contract::QueryFamilyId> {
+        let Some(ty) = self
+            .type_info
+            .as_ref()
+            .and_then(|info| info.expr_type(body, expr_id))
+        else {
             return None;
         };
-        Some((name, args.as_slice()))
+        match ty {
+            crate::hir::typeck::Type::QueryFamily(family) => Some(*family),
+            _ => None,
+        }
     }
 
     fn collect_named_query_args(
@@ -211,35 +271,38 @@ impl FunctionLowerer {
         spec: &ScalarQueryInvocationSpec,
     ) -> Value {
         let capture = self.lower_expr(body, spec.capture);
-        let item = self.lower_expr(body, spec.item);
         let descriptor =
             query_contract::query_contract(spec.contract_id).expect("scalar query descriptor");
         match descriptor.surface {
             QuerySurfaceKind::CaptureScalar => {
+                let mut args = vec![capture];
+                if let Some(item) = spec.item {
+                    args.push(self.lower_expr(body, item));
+                }
                 let plan = self.build_scalar_capture_query_plan(body, spec);
                 let kernel_plan = lower_capture_query_plan(&plan);
                 debug_assert!(
                     validate_capture_query_plan(&kernel_plan).is_ok(),
                     "compiler-generated capture query plans must stay kernel-valid"
                 );
-                self.lower_call_temp(ret_ty, plan.helper_name, vec![capture, item], span)
+                self.lower_call_temp(ret_ty, plan.helper_name, args, span)
             }
             QuerySurfaceKind::WorldScalar => {
                 let domain =
                     self.lower_expr(body, spec.domain.expect("world query missing domain"));
                 let backend = self.lower_world_query_backend_value(body, spec.backend, span);
+                let mut args = vec![capture, domain];
+                if let Some(item) = spec.item {
+                    args.push(self.lower_expr(body, item));
+                }
+                args.push(backend);
                 let plan = self.build_scalar_world_query_plan(body, spec);
                 let kernel_plan = lower_world_query_plan(&plan);
                 debug_assert!(
                     validate_world_query_plan(&kernel_plan).is_ok(),
                     "compiler-generated world query plans must stay kernel-valid"
                 );
-                self.lower_call_temp(
-                    ret_ty,
-                    plan.helper_name,
-                    vec![capture, domain, item, backend],
-                    span,
-                )
+                self.lower_call_temp(ret_ty, plan.helper_name, args, span)
             }
             QuerySurfaceKind::CaptureBatch => panic!("scalar query lowering received batch contract"),
         }

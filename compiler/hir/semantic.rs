@@ -1495,7 +1495,9 @@ impl<'a> Checker<'a> {
             Expr::Variable(name) => {
                 let span = body.expr_span(expr_id);
                 if self.resolve(name).is_none() {
-                    if is_typed_hole_name(name) {
+                    if crate::query_contract::query_family_namespace(name.as_str()).is_some() {
+                        // Query-family namespaces are intrinsic values resolved by typeck.
+                    } else if is_typed_hole_name(name) {
                         self.errors.push(SemanticError::TypedHole {
                             name: name.clone(),
                             candidates: self.hole_candidate_bindings(),
@@ -2278,6 +2280,47 @@ fn pattern_has_bindings(pattern: &Pattern) -> bool {
     }
 }
 
+fn body_binds_name(body: &Body, name: &SmolStr) -> bool {
+    body.stmts
+        .iter()
+        .any(|(_idx, stmt)| stmt_binds_name(stmt, name))
+}
+
+fn stmt_binds_name(stmt: &Stmt, name: &SmolStr) -> bool {
+    match stmt {
+        Stmt::Let { name: bound, .. }
+        | Stmt::Assign { name: bound, .. }
+        | Stmt::Capture { name: bound, .. } => bound == name,
+        Stmt::For {
+            value_name,
+            key_name,
+            index_name,
+            ..
+        } => {
+            value_name == name
+                || key_name.as_ref().is_some_and(|bound| bound == name)
+                || index_name.as_ref().is_some_and(|bound| bound == name)
+        }
+        Stmt::Match { cases, .. } => cases.iter().any(|case| {
+            case.labels
+                .iter()
+                .any(|label| pattern_binds_name(label, name))
+        }),
+        _ => false,
+    }
+}
+
+fn pattern_binds_name(pattern: &Pattern, name: &SmolStr) -> bool {
+    match pattern {
+        Pattern::Binding(bound) => bound == name,
+        Pattern::Path { args, .. } => args.iter().any(|arg| pattern_binds_name(arg, name)),
+        Pattern::Struct { fields, .. } => fields
+            .iter()
+            .any(|(_field, value)| pattern_binds_name(value, name)),
+        _ => false,
+    }
+}
+
 fn span_from_option(range: Option<TextRange>) -> SourceSpan {
     range
         .map(span_from_range)
@@ -2758,10 +2801,18 @@ fn collect_expr_calls_and_awaits(
                         callees.insert(*id);
                     }
                 }
-                Expr::Member { member, .. } => {
+                Expr::Member { object, member, .. } => {
                     if !matches!(&body.exprs[*callee], Expr::Member { object, member, .. }
                         if member.as_str() == "of"
                             && matches!(&body.exprs[*object], Expr::Variable(name) if name.as_str() == "Pool"))
+                        && !matches!(&body.exprs[*object], Expr::Variable(name)
+                            if !body_binds_name(body, name)
+                                && crate::query_contract::query_family_namespace(name.as_str())
+                                .and_then(|family| crate::query_contract::query_family_member(
+                                    family,
+                                    member.as_str(),
+                                ))
+                                .is_some())
                         && let Some(methods) = method_name_ids.get(member)
                     {
                         for method in methods {
@@ -2956,6 +3007,8 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
         (SmolStr::new("field_taper_point"), BindingKind::Function),
         (SmolStr::new("field_displace_point"), BindingKind::Function),
         (SmolStr::new("capture"), BindingKind::Function),
+        (SmolStr::new("support_summary"), BindingKind::Function),
+        (SmolStr::new("support_summary_world"), BindingKind::Function),
         (SmolStr::new("distance_at"), BindingKind::Function),
         (SmolStr::new("normal_at"), BindingKind::Function),
         (SmolStr::new("trace_shape"), BindingKind::Function),
@@ -3967,6 +4020,46 @@ fn f() -> Integer {
                 .errors
                 .iter()
                 .any(|err| matches!(err, SemanticError::MissingObjective { .. }))
+        );
+    }
+
+    #[test]
+    fn test_shadowed_family_namespace_method_call_still_counts_for_objective() {
+        let input = r#"
+class Whale {
+    has {
+        value: Integer
+
+    }
+}
+class SpatialThing {
+    fn distance() -> Integer {
+        await 1
+        return 1
+    }
+}
+fn run() -> Integer {
+    return f()
+
+}
+fn f() -> Integer {
+    spatial = SpatialThing()
+    _ = spatial.distance()
+    whale = detach Whale() * 1
+    return 1
+}
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::MissingObjective { .. })),
+            "expected shadowed spatial.distance method call to keep await in the call graph, got: {:?}",
+            diagnostics.errors
         );
     }
 

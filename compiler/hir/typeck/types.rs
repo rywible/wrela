@@ -43,6 +43,7 @@ pub enum Type {
     Mat3,
     Mat4,
     Quat,
+    QueryFamily(crate::query_contract::QueryFamilyId),
     GpuBuffer(Box<Type>),
     GpuAtomicI32,
     GpuAtomicU32,
@@ -1329,6 +1330,7 @@ fn supports_fixed_value_type(
         | Type::Result(_, _)
         | Type::Actor(_)
         | Type::Pending(_)
+        | Type::QueryFamily(_)
         | Type::GpuBuffer(_)
         | Type::GpuAtomicI32
         | Type::GpuAtomicU32
@@ -3960,6 +3962,7 @@ fn supports_portable_boundary_type(
         | Type::Result(_, _)
         | Type::Actor(_)
         | Type::Pending(_)
+        | Type::QueryFamily(_)
         | Type::GpuDispatchSchedule
         | Type::Texture2D
         | Type::Sampler
@@ -4017,6 +4020,7 @@ fn supports_pure_helper_boundary_type(
         | Type::Result(_, _)
         | Type::Actor(_)
         | Type::Pending(_)
+        | Type::QueryFamily(_)
         | Type::GpuBuffer(_)
         | Type::GpuAtomicI32
         | Type::GpuAtomicU32

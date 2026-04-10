@@ -155,6 +155,19 @@ pub enum QuerySurfaceKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum QueryFamilyCallSurface {
+    Scalar,
+    Batch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryFamilyMember {
+    pub family: QueryFamilyId,
+    pub question: QueryQuestionId,
+    pub call_surface: QueryFamilyCallSurface,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DomainContractKind {
     SceneDomain,
 }
@@ -1027,6 +1040,192 @@ const QUERY_CONTRACT_ALIASES: [QueryContractAlias; 3] = [
         reason: "trace is the legacy name for spatial.nearest",
     },
 ];
+
+pub fn query_family_namespace(name: &str) -> Option<QueryFamilyId> {
+    match name {
+        "spatial" => Some(QueryFamilyId::Spatial),
+        "surface" => Some(QueryFamilyId::Surface),
+        "participants" => Some(QueryFamilyId::Participants),
+        "support" => Some(QueryFamilyId::Support),
+        _ => None,
+    }
+}
+
+pub fn query_family_name(family: QueryFamilyId) -> &'static str {
+    match family {
+        QueryFamilyId::Spatial => "spatial",
+        QueryFamilyId::Surface => "surface",
+        QueryFamilyId::Participants => "participants",
+        QueryFamilyId::Support => "support",
+    }
+}
+
+pub fn query_question_name(question: QueryQuestionId) -> &'static str {
+    match question {
+        QueryQuestionId::Distance => "distance",
+        QueryQuestionId::Normal => "normal",
+        QueryQuestionId::Nearest => "nearest",
+        QueryQuestionId::Trace => "trace",
+        QueryQuestionId::Sample => "sample",
+        QueryQuestionId::Radiance => "radiance",
+        QueryQuestionId::Medium => "medium",
+        QueryQuestionId::Occluded => "occluded",
+        QueryQuestionId::Summary => "summary",
+    }
+}
+
+pub fn query_surface_name(surface: QuerySurfaceKind) -> &'static str {
+    match surface {
+        QuerySurfaceKind::CaptureScalar => "capture",
+        QuerySurfaceKind::WorldScalar => "world",
+        QuerySurfaceKind::CaptureBatch => "batch",
+    }
+}
+
+pub fn query_capture_kind_name(capture_kind: CaptureKind) -> &'static str {
+    match capture_kind {
+        CaptureKind::Field => "field",
+        CaptureKind::Shape => "shape",
+        CaptureKind::Region => "region",
+    }
+}
+
+pub fn query_item_kind_name(kind: QueryItemKind) -> &'static str {
+    match kind {
+        QueryItemKind::Unit => "unit",
+        QueryItemKind::PointQuery => "point",
+        QueryItemKind::PointDirectionQuery => "point_direction",
+        QueryItemKind::RayQuery => "ray",
+        QueryItemKind::Hit3 => "hit",
+    }
+}
+
+pub fn query_result_kind_name(kind: QueryResultKind) -> &'static str {
+    match kind {
+        QueryResultKind::DistanceResult => "distance_result",
+        QueryResultKind::NormalResult => "normal_result",
+        QueryResultKind::SupportSummaryResult => "support_summary_result",
+        QueryResultKind::Hit3 => "hit",
+        QueryResultKind::Surface => "surface",
+        QueryResultKind::OcclusionResult => "occlusion_result",
+        QueryResultKind::RadianceResult => "radiance_result",
+        QueryResultKind::MediumResult => "medium",
+    }
+}
+
+pub fn query_backend_support_names(support: BackendSupport) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    if support.cpu {
+        names.push("cpu");
+    }
+    if support.virtual_gpu {
+        names.push("virtual_gpu");
+    }
+    if support.wgsl {
+        names.push("wgsl");
+    }
+    names
+}
+
+pub fn query_family_member(family: QueryFamilyId, member: &str) -> Option<QueryFamilyMember> {
+    let (question, call_surface) = match (family, member) {
+        (QueryFamilyId::Spatial, "distance") => {
+            (QueryQuestionId::Distance, QueryFamilyCallSurface::Scalar)
+        }
+        (QueryFamilyId::Spatial, "normal") => {
+            (QueryQuestionId::Normal, QueryFamilyCallSurface::Scalar)
+        }
+        (QueryFamilyId::Spatial, "nearest") => {
+            (QueryQuestionId::Nearest, QueryFamilyCallSurface::Scalar)
+        }
+        (QueryFamilyId::Spatial, "occluded") => {
+            (QueryQuestionId::Occluded, QueryFamilyCallSurface::Scalar)
+        }
+        (QueryFamilyId::Surface, "sample") => {
+            (QueryQuestionId::Sample, QueryFamilyCallSurface::Scalar)
+        }
+        (QueryFamilyId::Participants, "radiance") => {
+            (QueryQuestionId::Radiance, QueryFamilyCallSurface::Scalar)
+        }
+        (QueryFamilyId::Participants, "medium") => {
+            (QueryQuestionId::Medium, QueryFamilyCallSurface::Scalar)
+        }
+        (QueryFamilyId::Support, "summary") => {
+            (QueryQuestionId::Summary, QueryFamilyCallSurface::Scalar)
+        }
+        (QueryFamilyId::Spatial, "distance_batch") => {
+            (QueryQuestionId::Distance, QueryFamilyCallSurface::Batch)
+        }
+        (QueryFamilyId::Spatial, "normal_batch") => {
+            (QueryQuestionId::Normal, QueryFamilyCallSurface::Batch)
+        }
+        (QueryFamilyId::Spatial, "nearest_batch") => {
+            (QueryQuestionId::Nearest, QueryFamilyCallSurface::Batch)
+        }
+        (QueryFamilyId::Spatial, "occluded_batch") => {
+            (QueryQuestionId::Occluded, QueryFamilyCallSurface::Batch)
+        }
+        (QueryFamilyId::Surface, "sample_batch") => {
+            (QueryQuestionId::Sample, QueryFamilyCallSurface::Batch)
+        }
+        _ => return None,
+    };
+    Some(QueryFamilyMember {
+        family,
+        question,
+        call_surface,
+    })
+}
+
+pub fn query_family_member_name(descriptor: &QueryContractDescriptor) -> &'static str {
+    match (descriptor.family, descriptor.question, descriptor.surface) {
+        (QueryFamilyId::Spatial, QueryQuestionId::Distance, QuerySurfaceKind::CaptureBatch) => {
+            "distance_batch"
+        }
+        (QueryFamilyId::Spatial, QueryQuestionId::Normal, QuerySurfaceKind::CaptureBatch) => {
+            "normal_batch"
+        }
+        (QueryFamilyId::Spatial, QueryQuestionId::Nearest, QuerySurfaceKind::CaptureBatch) => {
+            "nearest_batch"
+        }
+        (QueryFamilyId::Spatial, QueryQuestionId::Occluded, QuerySurfaceKind::CaptureBatch) => {
+            "occluded_batch"
+        }
+        (QueryFamilyId::Surface, QueryQuestionId::Sample, QuerySurfaceKind::CaptureBatch) => {
+            "sample_batch"
+        }
+        (_, question, _) => query_question_name(question),
+    }
+}
+
+pub fn query_contract_bundle_for_family_member(
+    family: QueryFamilyId,
+    member: &str,
+    surface: QuerySurfaceKind,
+    capture_kind: CaptureKind,
+) -> Option<(
+    &'static QueryContractDescriptor,
+    &'static QueryExecutionBinding,
+)> {
+    let member = query_family_member(family, member)?;
+    if member.call_surface == QueryFamilyCallSurface::Scalar
+        && surface == QuerySurfaceKind::CaptureBatch
+    {
+        return None;
+    }
+    if member.call_surface == QueryFamilyCallSurface::Batch
+        && surface != QuerySurfaceKind::CaptureBatch
+    {
+        return None;
+    }
+    let descriptor = QUERY_CONTRACTS.iter().find(|descriptor| {
+        descriptor.family == member.family
+            && descriptor.question == member.question
+            && descriptor.surface == surface
+            && descriptor.capture_kind == capture_kind
+    })?;
+    Some((descriptor, query_execution_binding(descriptor.id)?))
+}
 
 pub fn query_contracts() -> &'static [QueryContractDescriptor] {
     &QUERY_CONTRACTS

@@ -19,6 +19,16 @@ use smol_str::SmolStr;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use thiserror::Error;
 
+enum ParsedKernelQueryCall {
+    Legacy {
+        name: SmolStr,
+    },
+    Family {
+        family: query_contract::QueryFamilyId,
+        member: SmolStr,
+    },
+}
+
 #[derive(Debug, Error, Clone, PartialEq)]
 pub enum KernelLowerError {
     #[error("kernel entry '{name}' was not found")]
@@ -956,7 +966,10 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
             &CaptureQueryPlan::for_contract(spec.contract_id, scene)
                 .expect("kernel capture query plan"),
         );
-        let ordered_args = vec![self.lower_expr(spec.capture)?, self.lower_expr(spec.item)?];
+        let mut ordered_args = vec![self.lower_expr(spec.capture)?];
+        if let Some(item) = spec.item {
+            ordered_args.push(self.lower_expr(item)?);
+        }
         Some((plan, ordered_args))
     }
 
@@ -981,8 +994,10 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
         let mut ordered_args = vec![
             self.lower_expr(spec.capture)?,
             self.lower_expr(spec.domain?)?,
-            self.lower_expr(spec.item)?,
         ];
+        if let Some(item) = spec.item {
+            ordered_args.push(self.lower_expr(item)?);
+        }
         if let Some(backend_expr) = spec.backend {
             ordered_args.push(self.lower_expr(backend_expr)?);
         }
@@ -1033,7 +1048,7 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
         &mut self,
         expr_id: Idx<Expr>,
     ) -> Option<ScalarQueryInvocationSpec> {
-        let (name, named) = self.parse_query_name_and_args(expr_id)?;
+        let (query, named) = self.parse_query_name_and_args(expr_id)?;
         let capture = *named.get("capture")?;
         let surface = if named.contains_key("domain") {
             QuerySurfaceKind::WorldScalar
@@ -1045,22 +1060,34 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
         } else {
             self.capture_kind_for_expr(capture)
         };
-        let (descriptor, _binding) = query_contract::query_contract_bundle_for_legacy_builtin(
-            name.as_str(),
-            surface,
-            capture_kind,
-        )?;
-        let item_arg = kernel_scalar_item_arg_name(descriptor)?;
+        let (descriptor, _binding) = match query {
+            ParsedKernelQueryCall::Legacy { name } => {
+                query_contract::query_contract_bundle_for_legacy_builtin(
+                    name.as_str(),
+                    surface,
+                    capture_kind,
+                )?
+            }
+            ParsedKernelQueryCall::Family { family, member } => {
+                query_contract::query_contract_bundle_for_family_member(
+                    family,
+                    member.as_str(),
+                    surface,
+                    capture_kind,
+                )?
+            }
+        };
+        let item_arg = kernel_scalar_item_arg_name(descriptor);
         self.require_query_args(
             &named,
             &[
                 Some("capture"),
-                Some(item_arg),
+                item_arg,
                 kernel_scalar_domain_arg(descriptor),
             ],
             &[
                 Some("capture"),
-                Some(item_arg),
+                item_arg,
                 kernel_scalar_domain_arg(descriptor),
                 kernel_scalar_backend_arg(descriptor),
             ],
@@ -1069,7 +1096,7 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
             contract_id: descriptor.id,
             capture,
             domain: kernel_scalar_domain_arg(descriptor).and_then(|name| named.get(name).copied()),
-            item: *named.get(item_arg)?,
+            item: item_arg.and_then(|name| named.get(name).copied()),
             backend: kernel_scalar_backend_arg(descriptor)
                 .and_then(|name| named.get(name).copied()),
         })
@@ -1079,17 +1106,36 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
         &mut self,
         expr_id: Idx<Expr>,
     ) -> Option<BatchQueryInvocationSpec> {
-        let (name, named) = self.parse_query_name_and_args(expr_id)?;
+        let (query, named) = self.parse_query_name_and_args(expr_id)?;
         let capture = *named.get("capture")?;
-        let capture_kind = match name.as_str() {
-            "trace_shape_batch" | "surface_at_batch" | "occluded_batch" => CaptureKind::Shape,
+        let capture_kind = match &query {
+            ParsedKernelQueryCall::Legacy { name }
+                if matches!(
+                    name.as_str(),
+                    "trace_shape_batch" | "surface_at_batch" | "occluded_batch"
+                ) =>
+            {
+                CaptureKind::Shape
+            }
             _ => self.capture_kind_for_expr(capture),
         };
-        let (descriptor, _binding) = query_contract::query_contract_bundle_for_legacy_builtin(
-            name.as_str(),
-            QuerySurfaceKind::CaptureBatch,
-            capture_kind,
-        )?;
+        let (descriptor, _binding) = match query {
+            ParsedKernelQueryCall::Legacy { name } => {
+                query_contract::query_contract_bundle_for_legacy_builtin(
+                    name.as_str(),
+                    QuerySurfaceKind::CaptureBatch,
+                    capture_kind,
+                )?
+            }
+            ParsedKernelQueryCall::Family { family, member } => {
+                query_contract::query_contract_bundle_for_family_member(
+                    family,
+                    member.as_str(),
+                    QuerySurfaceKind::CaptureBatch,
+                    capture_kind,
+                )?
+            }
+        };
         let items_arg = kernel_batch_items_arg_name(descriptor)?;
         self.require_query_args(
             &named,
@@ -1108,15 +1154,31 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
     fn parse_query_name_and_args(
         &self,
         expr_id: Idx<Expr>,
-    ) -> Option<(SmolStr, HashMap<SmolStr, Idx<Expr>>)> {
+    ) -> Option<(ParsedKernelQueryCall, HashMap<SmolStr, Idx<Expr>>)> {
         let (callee, args) = match &self.body.exprs[expr_id] {
             Expr::Call { callee, args, .. } => (callee, args),
             _ => return None,
         };
-        let Expr::Variable(name) = &self.body.exprs[*callee] else {
-            return None;
+        let query = match &self.body.exprs[*callee] {
+            Expr::Variable(name) => ParsedKernelQueryCall::Legacy { name: name.clone() },
+            Expr::Member { object, member, .. } => {
+                let family = self.query_family_expr(*object)?;
+                query_contract::query_family_member(family, member.as_str())?;
+                ParsedKernelQueryCall::Family {
+                    family,
+                    member: member.clone(),
+                }
+            }
+            _ => return None,
         };
-        Some((name.clone(), self.collect_named_expr_args(args)?))
+        Some((query, self.collect_named_expr_args(args)?))
+    }
+
+    fn query_family_expr(&self, expr_id: Idx<Expr>) -> Option<query_contract::QueryFamilyId> {
+        match self.fn_info.expr_type(self.body, expr_id)? {
+            Type::QueryFamily(family) => Some(*family),
+            _ => None,
+        }
     }
 
     fn require_query_args(

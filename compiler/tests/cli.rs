@@ -177,7 +177,81 @@ fn cli_help() {
     assert!(stdout.contains("--replay-trace"));
     assert!(stdout.contains("--integration-mode"));
     assert!(stdout.contains("run certification"));
+    assert!(stdout.contains("query-contracts"));
     assert!(!stdout.contains("--no-certify"));
+}
+
+#[test]
+fn cli_query_contracts_json_lists_family_catalog() {
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("query-contracts")
+        .arg("--json")
+        .output()
+        .expect("run query-contracts");
+    assert!(
+        output.status.success(),
+        "query-contracts failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let catalog: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("query contract catalog json");
+    assert_eq!(
+        catalog.get("schema_version").and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    let contracts = catalog
+        .get("contracts")
+        .and_then(|v| v.as_array())
+        .expect("contracts array");
+    assert!(
+        contracts
+            .iter()
+            .all(|contract| contract.get("helper").is_none()),
+        "public query contract catalog must not expose internal helper names"
+    );
+    assert!(contracts.iter().any(|contract| {
+        contract
+            .get("contract_id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|id| id == "spatial.nearest.capture.shape")
+            && contract
+                .get("call")
+                .and_then(|v| v.as_str())
+                .is_some_and(|call| call == "spatial.nearest")
+            && contract
+                .get("legacy_builtin")
+                .and_then(|v| v.as_str())
+                .is_some_and(|name| name == "trace_shape")
+    }));
+    assert!(contracts.iter().any(|contract| {
+        contract
+            .get("contract_id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|id| id == "support.summary.world")
+            && contract
+                .get("backends")
+                .and_then(|v| v.as_array())
+                .is_some_and(|backends| {
+                    backends.iter().any(|backend| backend == "cpu")
+                        && backends.iter().any(|backend| backend == "virtual_gpu")
+                        && !backends.iter().any(|backend| backend == "wgsl")
+                })
+    }));
+    let aliases = catalog
+        .get("aliases")
+        .and_then(|v| v.as_array())
+        .expect("aliases array");
+    assert!(aliases.iter().any(|alias| {
+        alias
+            .get("alias_id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|id| id == "spatial.trace.world")
+            && alias
+                .get("canonical_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| id == "spatial.nearest.world")
+    }));
 }
 
 #[test]
@@ -3742,7 +3816,7 @@ fn cli_build_emits_cert_report_on_success() {
 
     assert_eq!(
         cert.get("cert_schema_version").and_then(|v| v.as_u64()),
-        Some(3),
+        Some(4),
         "expected cert schema version"
     );
     assert_eq!(
@@ -3844,6 +3918,31 @@ fn cli_build_emits_cert_report_on_success() {
             .and_then(|v| v.as_str())
             .is_some_and(|v| !v.is_empty()),
         "expected non-empty differential hash"
+    );
+    let query_contracts = cert
+        .get("query_contracts")
+        .expect("expected query contract catalog in cert report");
+    assert_eq!(
+        query_contracts
+            .get("schema_version")
+            .and_then(|v| v.as_u64()),
+        Some(1)
+    );
+    assert!(
+        query_contracts
+            .get("contracts")
+            .and_then(|v| v.as_array())
+            .is_some_and(|contracts| contracts.iter().any(|contract| {
+                contract
+                    .get("contract_id")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|id| id == "spatial.distance.world")
+                    && contract
+                        .get("call")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|call| call == "spatial.distance")
+            })),
+        "expected cert report to expose family/query contract identity"
     );
 
     let expected_binary_hash = fnv1a64_hex(&std::fs::read(&bin).expect("read binary"));

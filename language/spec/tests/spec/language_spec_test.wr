@@ -519,15 +519,18 @@ field conservative distance shifted_sphere(p: Vec3) -> F32 {
 fn test_field_query_surface() -> Nothing {
     sphere_capture = capture sphere_field
     shifted_capture = capture shifted_sphere
-    sampled_distance = distance_at(capture=sphere_capture, point=vec3(0.0, 0.0, 2.0))
-    sampled_normal = normal_at(capture=sphere_capture, point=vec3(0.0, 0.0, 2.0))
-    shifted_distance = distance_at(capture=shifted_capture, point=vec3(0.0, 0.0, 3.0))
+    sampled_distance = spatial.distance(capture=sphere_capture, point=vec3(0.0, 0.0, 2.0))
+    sampled_normal = spatial.normal(capture=sphere_capture, point=vec3(0.0, 0.0, 2.0))
+    shifted_distance = spatial.distance(capture=shifted_capture, point=vec3(0.0, 0.0, 3.0))
+    support_info = support.summary(capture=sphere_capture)
 
     assert approx sampled_distance ~= 1.0 within 0.001
     assert approx sampled_normal.x ~= 0.0 within 0.01
     assert approx sampled_normal.y ~= 0.0 within 0.01
     assert approx sampled_normal.z ~= 1.0 within 0.01
     assert approx shifted_distance ~= 1.0 within 0.001
+    assert value support_info.support_class == u32(1)
+    assert value support_info.has_bounds == true
 }
 
 field conservative distance left_x(p: Vec3) -> F32 {
@@ -564,8 +567,8 @@ field conservative distance composed(p: Vec3) -> F32 {
 
 fn test_semantic_field_composition() -> Nothing {
     composed_capture = capture composed
-    sample_a = distance_at(capture=composed_capture, point=vec3(1.0, 2.0, 3.0))
-    sample_b = distance_at(capture=composed_capture, point=vec3(-1.0, 2.0, 0.5))
+    sample_a = spatial.distance(capture=composed_capture, point=vec3(1.0, 2.0, 3.0))
+    sample_b = spatial.distance(capture=composed_capture, point=vec3(-1.0, 2.0, 0.5))
 
     assert approx sample_a ~= 3.0 within 0.001
     assert approx sample_b ~= 1.5 within 0.001
@@ -608,7 +611,7 @@ fn render_ppm() -> String {
     )
     scene = capture sphere_shape
 
-    hit = trace_shape(
+    hit = spatial.nearest(
         capture=scene,
         ray=ray_query(
             origin=camera.position,
@@ -619,7 +622,7 @@ fn render_ppm() -> String {
             max_steps=96
         )
     )
-    surface = surface_at(capture=scene, hit=hit)
+    surface = surface.sample(capture=scene, hit=hit)
     to_light = normalize(light.position - hit.position)
     ndotl = max(dot(hit.normal, to_light), 0.0)
 
@@ -680,52 +683,52 @@ fn test_query_batch_records_and_snapshot_determinism() -> Nothing {
             max_steps=96
         )
     ]
-    cpu_distances = distance_at_batch(
+    cpu_distances = spatial.distance_batch(
         capture=scene,
         points=points,
         backend=dispatch_backend_cpu()
     )
-    vgpu_distances = distance_at_batch(
+    vgpu_distances = spatial.distance_batch(
         capture=scene,
         points=points,
         backend=dispatch_backend_virtual_gpu()
     )
-    cpu_normals = normal_at_batch(
+    cpu_normals = spatial.normal_batch(
         capture=scene,
         points=points,
         backend=dispatch_backend_cpu()
     )
-    vgpu_normals = normal_at_batch(
+    vgpu_normals = spatial.normal_batch(
         capture=scene,
         points=points,
         backend=dispatch_backend_virtual_gpu()
     )
-    cpu_hits = trace_shape_batch(
+    cpu_hits = spatial.nearest_batch(
         capture=scene,
         rays=rays,
         backend=dispatch_backend_cpu()
     )
-    vgpu_hits = trace_shape_batch(
+    vgpu_hits = spatial.nearest_batch(
         capture=scene,
         rays=rays,
         backend=dispatch_backend_virtual_gpu()
     )
-    cpu_surfaces = surface_at_batch(
+    cpu_surfaces = surface.sample_batch(
         capture=scene,
         hits=cpu_hits,
         backend=dispatch_backend_auto()
     )
-    vgpu_surfaces = surface_at_batch(
+    vgpu_surfaces = surface.sample_batch(
         capture=scene,
         hits=vgpu_hits,
         backend=dispatch_backend_virtual_gpu()
     )
-    cpu_occlusions = occluded_batch(
+    cpu_occlusions = spatial.occluded_batch(
         capture=scene,
         rays=shadow_rays,
         backend=dispatch_backend_cpu()
     )
-    vgpu_occlusions = occluded_batch(
+    vgpu_occlusions = spatial.occluded_batch(
         capture=scene,
         rays=shadow_rays,
         backend=dispatch_backend_virtual_gpu()
@@ -780,12 +783,12 @@ fn test_field_primitive_catalog() -> Nothing {
     cylinder_scene = capture primitive_cylinder
     plane_scene = capture primitive_plane
     torus_scene = capture primitive_torus
-    sphere_sample = distance_at(capture=sphere_scene, point=vec3(0.0, 0.0, 0.0))
-    box_sample = distance_at(capture=box_scene, point=vec3(0.0, 0.0, 0.0))
-    capsule_sample = distance_at(capture=capsule_scene, point=vec3(0.0, 0.0, 0.0))
-    cylinder_sample = distance_at(capture=cylinder_scene, point=vec3(0.0, 0.0, 0.0))
-    plane_sample = distance_at(capture=plane_scene, point=vec3(0.0, 0.0, 0.0))
-    torus_sample = distance_at(capture=torus_scene, point=vec3(2.0, 0.0, 0.0))
+    sphere_sample = spatial.distance(capture=sphere_scene, point=vec3(0.0, 0.0, 0.0))
+    box_sample = spatial.distance(capture=box_scene, point=vec3(0.0, 0.0, 0.0))
+    capsule_sample = spatial.distance(capture=capsule_scene, point=vec3(0.0, 0.0, 0.0))
+    cylinder_sample = spatial.distance(capture=cylinder_scene, point=vec3(0.0, 0.0, 0.0))
+    plane_sample = spatial.distance(capture=plane_scene, point=vec3(0.0, 0.0, 0.0))
+    torus_sample = spatial.distance(capture=torus_scene, point=vec3(2.0, 0.0, 0.0))
 
     assert approx sphere_sample ~= -1.0 within 0.001
     assert approx box_sample ~= -1.0 within 0.001
@@ -829,7 +832,7 @@ fn test_repeat_wrapper_trace_steps() -> Nothing {
     )
     while repeat_steps < 96 and repeat_traveled <= 6.0 {
         rp = vec3(0.0, 0.0, 3.0) + vec3(0.0, 0.0, -1.0) * repeat_traveled
-        rd = distance_at(capture=repeat_scene, point=rp)
+        rd = spatial.distance(capture=repeat_scene, point=rp)
         if abs(rd) <= 0.05 {
             repeat_hit = Hit3(
                 hit=true,
@@ -871,7 +874,7 @@ fn test_repeat_wrapper_trace_steps() -> Nothing {
     )
     while manual_steps < 96 and manual_traveled <= 6.0 {
         mp = vec3(0.0, 0.0, 3.0) + vec3(0.0, 0.0, -1.0) * manual_traveled
-        md = distance_at(capture=manual_scene, point=mp)
+        md = spatial.distance(capture=manual_scene, point=mp)
         if abs(md) <= 0.05 {
             manual_hit = Hit3(
                 hit=true,
@@ -963,7 +966,7 @@ shape semantic_scene_shape {
 fn test_authored_support_bounds_prune_scene() -> Nothing {
     hinted_pruned_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     hinted_scene = capture hinted_scene_shape
-    hinted_hit = trace_shape(
+    hinted_hit = spatial.nearest(
         capture=hinted_scene,
         ray=ray_query(
             origin=vec3(-0.8, 0.0, 3.0),
@@ -977,7 +980,7 @@ fn test_authored_support_bounds_prune_scene() -> Nothing {
     hinted_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     semantic_pruned_before = hinted_pruned_after
     semantic_scene = capture semantic_scene_shape
-    semantic_hit = trace_shape(
+    semantic_hit = spatial.nearest(
         capture=semantic_scene,
         ray=ray_query(
             origin=vec3(-0.8, 0.0, 3.0),
@@ -989,8 +992,8 @@ fn test_authored_support_bounds_prune_scene() -> Nothing {
         )
     )
     semantic_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
-    hinted_surface = surface_at(capture=hinted_scene, hit=hinted_hit)
-    semantic_surface = surface_at(capture=semantic_scene, hit=semantic_hit)
+    hinted_surface = surface.sample(capture=hinted_scene, hit=hinted_hit)
+    semantic_surface = surface.sample(capture=semantic_scene, hit=semantic_hit)
 
     assert value hinted_hit.hit == true
     assert value semantic_hit.hit == true
@@ -1081,7 +1084,7 @@ fn test_boolean_scene_metrics_are_queryable() -> Nothing {
         + __wr_metrics_get(__wr_metrics_scene_trace_steps_le_8_id())
         + __wr_metrics_get(__wr_metrics_scene_trace_steps_le_16_id())
         + __wr_metrics_get(__wr_metrics_scene_trace_steps_gt_16_id())
-    left_hit = trace_shape(
+    left_hit = spatial.nearest(
         capture=scene_capture,
         ray=ray_query(
             origin=vec3(-0.8, 0.0, 3.0),
@@ -1092,7 +1095,7 @@ fn test_boolean_scene_metrics_are_queryable() -> Nothing {
             max_steps=96
         )
     )
-    right_hit = trace_shape(
+    right_hit = spatial.nearest(
         capture=scene_capture,
         ray=ray_query(
             origin=vec3(0.8, 0.0, 3.0),
@@ -1249,7 +1252,7 @@ fn test_boolean_provenance_is_stable_across_order_and_subtract() -> Nothing {
     cutter_scene_capture = capture cutter_shape
     body_scene_capture = capture body_shape
     carved_left_scene_capture = capture carved_left_shape
-    left_hit = trace_shape(
+    left_hit = spatial.nearest(
         capture=scene_capture,
         ray=ray_query(
             origin=vec3(-0.8, 0.0, 3.0),
@@ -1260,7 +1263,7 @@ fn test_boolean_provenance_is_stable_across_order_and_subtract() -> Nothing {
             max_steps=96
         )
     )
-    right_hit = trace_shape(
+    right_hit = spatial.nearest(
         capture=scene_capture,
         ray=ray_query(
             origin=vec3(0.8, 0.0, 3.0),
@@ -1271,7 +1274,7 @@ fn test_boolean_provenance_is_stable_across_order_and_subtract() -> Nothing {
             max_steps=96
         )
     )
-    reversed_left_hit = trace_shape(
+    reversed_left_hit = spatial.nearest(
         capture=reversed_scene_capture,
         ray=ray_query(
             origin=vec3(-0.8, 0.0, 3.0),
@@ -1282,7 +1285,7 @@ fn test_boolean_provenance_is_stable_across_order_and_subtract() -> Nothing {
             max_steps=96
         )
     )
-    reversed_right_hit = trace_shape(
+    reversed_right_hit = spatial.nearest(
         capture=reversed_scene_capture,
         ray=ray_query(
             origin=vec3(0.8, 0.0, 3.0),
@@ -1293,7 +1296,7 @@ fn test_boolean_provenance_is_stable_across_order_and_subtract() -> Nothing {
             max_steps=96
         )
     )
-    carve_hit = trace_shape(
+    carve_hit = spatial.nearest(
         capture=carved_scene_capture,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 0.0),
@@ -1304,7 +1307,7 @@ fn test_boolean_provenance_is_stable_across_order_and_subtract() -> Nothing {
             max_steps=96
         )
     )
-    near_direct = trace_shape(
+    near_direct = spatial.nearest(
         capture=near_scene_capture,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -1315,7 +1318,7 @@ fn test_boolean_provenance_is_stable_across_order_and_subtract() -> Nothing {
             max_steps=96
         )
     )
-    far_direct = trace_shape(
+    far_direct = spatial.nearest(
         capture=far_scene_capture,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -1326,7 +1329,7 @@ fn test_boolean_provenance_is_stable_across_order_and_subtract() -> Nothing {
             max_steps=96
         )
     )
-    nearest_hit = trace_shape(
+    nearest_hit = spatial.nearest(
         capture=nearest_scene_capture,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -1337,7 +1340,7 @@ fn test_boolean_provenance_is_stable_across_order_and_subtract() -> Nothing {
             max_steps=96
         )
     )
-    ordered_hit = trace_shape(
+    ordered_hit = spatial.nearest(
         capture=ordered_scene_capture,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -1348,7 +1351,7 @@ fn test_boolean_provenance_is_stable_across_order_and_subtract() -> Nothing {
             max_steps=96
         )
     )
-    overlap_hit = trace_shape(
+    overlap_hit = spatial.nearest(
         capture=overlap_scene_capture,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -1359,7 +1362,7 @@ fn test_boolean_provenance_is_stable_across_order_and_subtract() -> Nothing {
             max_steps=96
         )
     )
-    cutter_hit = trace_shape(
+    cutter_hit = spatial.nearest(
         capture=cutter_scene_capture,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 0.0),
@@ -1370,7 +1373,7 @@ fn test_boolean_provenance_is_stable_across_order_and_subtract() -> Nothing {
             max_steps=96
         )
     )
-    body_hit = trace_shape(
+    body_hit = spatial.nearest(
         capture=body_scene_capture,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 0.0),
@@ -1381,7 +1384,7 @@ fn test_boolean_provenance_is_stable_across_order_and_subtract() -> Nothing {
             max_steps=96
         )
     )
-    carve_left_hit = trace_shape(
+    carve_left_hit = spatial.nearest(
         capture=carved_left_scene_capture,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 0.0),
@@ -1424,8 +1427,8 @@ fn test_boolean_provenance_is_stable_across_order_and_subtract() -> Nothing {
     assert approx carve_left_local_origin.x ~= 0.0 within 0.001
     assert approx carve_left_local_origin.y ~= 0.0 within 0.001
     assert approx carve_left_local_origin.z ~= 0.0 within 0.001
-    assert approx surface_at(capture=carved_scene_capture, hit=carve_hit).albedo.y ~= 200.0 within 0.001
-    assert approx surface_at(capture=carved_left_scene_capture, hit=carve_left_hit).albedo.x ~= 220.0 within 0.001
+    assert approx surface.sample(capture=carved_scene_capture, hit=carve_hit).albedo.y ~= 200.0 within 0.001
+    assert approx surface.sample(capture=carved_left_scene_capture, hit=carve_left_hit).albedo.x ~= 220.0 within 0.001
 }
 
 field exact distance tie_left_field(p: Vec3) -> F32 {
@@ -1574,7 +1577,7 @@ fn test_boolean_provenance_ties_and_wrapper_stack_stay_stable() -> Nothing {
     tie_intersection_scene = capture tie_intersection_shape
     wrapped_stack_scene = capture wrapped_stack_shape
     wrapped_scene_capture = capture wrapped_scene_shape
-    tie_left_hit = trace_shape(
+    tie_left_hit = spatial.nearest(
         capture=tie_left_scene,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -1585,7 +1588,7 @@ fn test_boolean_provenance_ties_and_wrapper_stack_stay_stable() -> Nothing {
             max_steps=96
         )
     )
-    tie_right_hit = trace_shape(
+    tie_right_hit = spatial.nearest(
         capture=tie_right_scene,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -1596,7 +1599,7 @@ fn test_boolean_provenance_ties_and_wrapper_stack_stay_stable() -> Nothing {
             max_steps=96
         )
     )
-    tie_union_hit = trace_shape(
+    tie_union_hit = spatial.nearest(
         capture=tie_union_scene,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -1607,7 +1610,7 @@ fn test_boolean_provenance_ties_and_wrapper_stack_stay_stable() -> Nothing {
             max_steps=96
         )
     )
-    tie_intersection_hit = trace_shape(
+    tie_intersection_hit = spatial.nearest(
         capture=tie_intersection_scene,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -1618,7 +1621,7 @@ fn test_boolean_provenance_ties_and_wrapper_stack_stay_stable() -> Nothing {
             max_steps=96
         )
     )
-    wrapped_direct_hit = trace_shape(
+    wrapped_direct_hit = spatial.nearest(
         capture=wrapped_stack_scene,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -1629,7 +1632,7 @@ fn test_boolean_provenance_ties_and_wrapper_stack_stay_stable() -> Nothing {
             max_steps=96
         )
     )
-    wrapped_scene_hit = trace_shape(
+    wrapped_scene_hit = spatial.nearest(
         capture=wrapped_scene_capture,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -1640,7 +1643,7 @@ fn test_boolean_provenance_ties_and_wrapper_stack_stay_stable() -> Nothing {
             max_steps=96
         )
     )
-    wrapped_repeat_hit = trace_shape(
+    wrapped_repeat_hit = spatial.nearest(
         capture=wrapped_stack_scene,
         ray=ray_query(
             origin=vec3(2.0, 0.0, 3.0),
@@ -1660,8 +1663,8 @@ fn test_boolean_provenance_ties_and_wrapper_stack_stay_stable() -> Nothing {
     assert value tie_intersection_hit.payload.entity_id == u32(101)
     assert value tie_union_hit.feature_id == tie_left_hit.feature_id
     assert value tie_intersection_hit.feature_id == tie_left_hit.feature_id
-    assert approx surface_at(capture=tie_union_scene, hit=tie_union_hit).albedo.x ~= 220.0 within 0.001
-    assert approx surface_at(capture=tie_intersection_scene, hit=tie_intersection_hit).albedo.x ~= 220.0 within 0.001
+    assert approx surface.sample(capture=tie_union_scene, hit=tie_union_hit).albedo.x ~= 220.0 within 0.001
+    assert approx surface.sample(capture=tie_intersection_scene, hit=tie_intersection_hit).albedo.x ~= 220.0 within 0.001
     assert value wrapped_direct_hit.hit == true
     assert value wrapped_scene_hit.hit == true
     assert value wrapped_repeat_hit.hit == true
@@ -1681,12 +1684,12 @@ fn test_boolean_provenance_ties_and_wrapper_stack_stay_stable() -> Nothing {
     assert approx wrapped_direct_hit.local_normal.x ~= wrapped_repeat_hit.local_normal.x within 0.001
     assert approx wrapped_direct_hit.local_normal.y ~= wrapped_repeat_hit.local_normal.y within 0.001
     assert approx wrapped_direct_hit.local_normal.z ~= wrapped_repeat_hit.local_normal.z within 0.001
-    assert approx surface_at(capture=wrapped_scene_capture, hit=wrapped_scene_hit).albedo.z ~= 120.0 within 0.001
+    assert approx surface.sample(capture=wrapped_scene_capture, hit=wrapped_scene_hit).albedo.z ~= 120.0 within 0.001
 }
 
 fn test_phase9_trace_shape_batch_preserves_repeat_identity_and_local_frame() -> Nothing {
     wrapped_scene = capture wrapped_stack_shape
-    hits = trace_shape_batch(
+    hits = spatial.nearest_batch(
         capture=wrapped_scene,
         rays=[
             RayQuery(
@@ -1819,7 +1822,7 @@ fn test_authored_support_quarantines_custom_field_branches() -> Nothing {
     pruned_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
     supported_scene_capture = capture authored_support_scene
-    supported_hit = trace_shape(
+    supported_hit = spatial.nearest(
         capture=supported_scene_capture,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -1832,9 +1835,9 @@ fn test_authored_support_quarantines_custom_field_branches() -> Nothing {
     )
     pruned_mid = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     candidate_mid = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
-    supported_surface = surface_at(capture=supported_scene_capture, hit=supported_hit)
+    supported_surface = surface.sample(capture=supported_scene_capture, hit=supported_hit)
     semantic_scene_capture = capture authored_semantic_scene
-    semantic_hit = trace_shape(
+    semantic_hit = spatial.nearest(
         capture=semantic_scene_capture,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -1847,7 +1850,7 @@ fn test_authored_support_quarantines_custom_field_branches() -> Nothing {
     )
     pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
-    semantic_surface = surface_at(capture=semantic_scene_capture, hit=semantic_hit)
+    semantic_surface = surface.sample(capture=semantic_scene_capture, hit=semantic_hit)
 
     assert value supported_hit.hit == true
     assert value semantic_hit.hit == true
@@ -1866,7 +1869,7 @@ fn test_phase9_opaque_custom_leaf_bounds_preserve_trace_results() -> Nothing {
     hinted_pruned_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     hinted_candidates_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
     hinted_scene = capture authored_support_scene
-    hinted_hit = trace_shape(
+    hinted_hit = spatial.nearest(
         capture=hinted_scene,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -1879,12 +1882,12 @@ fn test_phase9_opaque_custom_leaf_bounds_preserve_trace_results() -> Nothing {
     )
     hinted_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     hinted_candidates_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
-    hinted_surface = surface_at(capture=hinted_scene, hit=hinted_hit)
+    hinted_surface = surface.sample(capture=hinted_scene, hit=hinted_hit)
 
     semantic_pruned_before = hinted_pruned_after
     semantic_candidates_before = hinted_candidates_after
     semantic_scene = capture authored_semantic_scene
-    semantic_hit = trace_shape(
+    semantic_hit = spatial.nearest(
         capture=semantic_scene,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -1897,7 +1900,7 @@ fn test_phase9_opaque_custom_leaf_bounds_preserve_trace_results() -> Nothing {
     )
     semantic_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     semantic_candidates_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
-    semantic_surface = surface_at(capture=semantic_scene, hit=semantic_hit)
+    semantic_surface = surface.sample(capture=semantic_scene, hit=semantic_hit)
 
     assert value hinted_hit.hit == true
     assert value semantic_hit.hit == true
@@ -1956,10 +1959,10 @@ fn test_structural_field_wrappers_affect_sampling() -> Nothing {
     mirrored_scene = capture mirrored_box
     repeated_scene = capture repeated_sphere
     instanced_scene = capture instanced_sphere
-    translated_sample = distance_at(capture=translated_scene, point=vec3(2.0, 0.0, 0.0))
-    mirrored_sample = distance_at(capture=mirrored_scene, point=vec3(-1.0, 0.0, 0.0))
-    repeated_sample = distance_at(capture=repeated_scene, point=vec3(2.0, 0.0, 0.0))
-    instanced_sample = distance_at(capture=instanced_scene, point=vec3(0.0, 0.0, 1.0))
+    translated_sample = spatial.distance(capture=translated_scene, point=vec3(2.0, 0.0, 0.0))
+    mirrored_sample = spatial.distance(capture=mirrored_scene, point=vec3(-1.0, 0.0, 0.0))
+    repeated_sample = spatial.distance(capture=repeated_scene, point=vec3(2.0, 0.0, 0.0))
+    instanced_sample = spatial.distance(capture=instanced_scene, point=vec3(0.0, 0.0, 1.0))
 
     assert approx translated_sample ~= -1.0 within 0.001
     assert approx mirrored_sample ~= -0.5 within 0.001
@@ -2778,14 +2781,14 @@ fn test_phase5_primitive_point_sampling() -> Nothing {
     triangle_scene = capture phase5_triangle_prism_shape
     hex_scene = capture phase5_hex_prism_shape
 
-    rounded_box_center = distance_at(capture=rounded_box_scene, point=vec3(0.0, 0.0, 0.0))
-    ellipsoid_center = distance_at(capture=ellipsoid_scene, point=vec3(0.0, 0.0, 0.0))
-    cone_center = distance_at(capture=cone_scene, point=vec3(0.0, 0.0, 0.0))
-    capped_cone_center = distance_at(capture=capped_cone_scene, point=vec3(0.0, 0.0, 0.0))
-    box_frame_center = distance_at(capture=box_frame_scene, point=vec3(0.0, 0.0, 0.0))
-    slab_center = distance_at(capture=slab_scene, point=vec3(0.0, 0.0, 0.0))
-    triangle_center = distance_at(capture=triangle_scene, point=vec3(0.0, 0.0, 0.0))
-    hex_center = distance_at(capture=hex_scene, point=vec3(0.0, 0.0, 0.0))
+    rounded_box_center = spatial.distance(capture=rounded_box_scene, point=vec3(0.0, 0.0, 0.0))
+    ellipsoid_center = spatial.distance(capture=ellipsoid_scene, point=vec3(0.0, 0.0, 0.0))
+    cone_center = spatial.distance(capture=cone_scene, point=vec3(0.0, 0.0, 0.0))
+    capped_cone_center = spatial.distance(capture=capped_cone_scene, point=vec3(0.0, 0.0, 0.0))
+    box_frame_center = spatial.distance(capture=box_frame_scene, point=vec3(0.0, 0.0, 0.0))
+    slab_center = spatial.distance(capture=slab_scene, point=vec3(0.0, 0.0, 0.0))
+    triangle_center = spatial.distance(capture=triangle_scene, point=vec3(0.0, 0.0, 0.0))
+    hex_center = spatial.distance(capture=hex_scene, point=vec3(0.0, 0.0, 0.0))
 
     assert value rounded_box_center < 0.0
     assert value ellipsoid_center < 0.0
@@ -2809,16 +2812,16 @@ fn test_phase5_transform_and_repeat_families_are_sampleable() -> Nothing {
     mirror_array_scene = capture phase5_mirror_array_shape
     instance_array_scene = capture phase5_instance_array_shape
 
-    translate_sample = distance_at(capture=translate_scene, point=vec3(0.85, 0.0, 0.0))
-    rotate_sample = distance_at(capture=rotate_scene, point=vec3(0.0, 0.0, 0.0))
-    scale_sample = distance_at(capture=scale_scene, point=vec3(0.0, 0.0, 0.0))
-    affine_sample = distance_at(capture=affine_scene, point=vec3(0.32, 0.0, 0.0))
-    warp_sample = distance_at(capture=warp_scene, point=vec3(0.0, 0.0, 0.0))
-    repeat_linear_sample = distance_at(capture=repeat_linear_scene, point=vec3(1.35, 0.0, 0.0))
-    repeat_grid_sample = distance_at(capture=repeat_grid_scene, point=vec3(1.35, 1.35, 0.0))
-    radial_repeat_sample = distance_at(capture=radial_repeat_scene, point=vec3(0.0, 0.0, 0.0))
-    mirror_array_sample = distance_at(capture=mirror_array_scene, point=vec3(-0.85, 0.0, 0.0))
-    instance_array_sample = distance_at(capture=instance_array_scene, point=vec3(0.0, 0.0, 0.0))
+    translate_sample = spatial.distance(capture=translate_scene, point=vec3(0.85, 0.0, 0.0))
+    rotate_sample = spatial.distance(capture=rotate_scene, point=vec3(0.0, 0.0, 0.0))
+    scale_sample = spatial.distance(capture=scale_scene, point=vec3(0.0, 0.0, 0.0))
+    affine_sample = spatial.distance(capture=affine_scene, point=vec3(0.32, 0.0, 0.0))
+    warp_sample = spatial.distance(capture=warp_scene, point=vec3(0.0, 0.0, 0.0))
+    repeat_linear_sample = spatial.distance(capture=repeat_linear_scene, point=vec3(1.35, 0.0, 0.0))
+    repeat_grid_sample = spatial.distance(capture=repeat_grid_scene, point=vec3(1.35, 1.35, 0.0))
+    radial_repeat_sample = spatial.distance(capture=radial_repeat_scene, point=vec3(0.0, 0.0, 0.0))
+    mirror_array_sample = spatial.distance(capture=mirror_array_scene, point=vec3(-0.85, 0.0, 0.0))
+    instance_array_sample = spatial.distance(capture=instance_array_scene, point=vec3(0.0, 0.0, 0.0))
 
     assert value translate_sample < 0.0
     assert value rotate_sample < 0.0
@@ -2835,7 +2838,7 @@ fn test_phase5_transform_and_repeat_families_are_sampleable() -> Nothing {
 fn test_phase5_smooth_and_deform_costs_raise_field_sampling() -> Nothing {
     control_samples_before = __wr_metrics_get(__wr_metrics_field_sample_id())
     control_scene = capture phase5_rounded_box_shape
-    control_hit = trace_shape(
+    control_hit = spatial.nearest(
         capture=control_scene,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -2850,7 +2853,7 @@ fn test_phase5_smooth_and_deform_costs_raise_field_sampling() -> Nothing {
 
     smooth_samples_before = control_samples_after
     smooth_scene = capture phase5_smooth_scene_shape
-    smooth_hit = trace_shape(
+    smooth_hit = spatial.nearest(
         capture=smooth_scene,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -2865,7 +2868,7 @@ fn test_phase5_smooth_and_deform_costs_raise_field_sampling() -> Nothing {
 
     deform_samples_before = smooth_samples_after
     deform_scene = capture phase5_deform_scene_shape
-    deform_hit = trace_shape(
+    deform_hit = spatial.nearest(
         capture=deform_scene,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -3009,13 +3012,13 @@ fn test_phase6_construction_operators_are_sampleable() -> Nothing {
     loft_scene = capture phase6_lofted_form
     plate_scene = capture phase6_polygon_plate
 
-    disc_center = distance_at(capture=disc_scene, point=vec3(0.0, 0.0, 0.0))
-    orb_center = distance_at(capture=orb_scene, point=vec3(0.0, 0.0, 0.0))
-    beam_center = distance_at(capture=beam_scene, point=vec3(0.0, 0.0, 0.0))
-    loft_center = distance_at(capture=loft_scene, point=vec3(0.0, 0.0, 0.0))
-    plate_center = distance_at(capture=plate_scene, point=vec3(0.05, 0.0, 0.05))
-    disc_outside = distance_at(capture=disc_scene, point=vec3(0.0, 1.2, 0.0))
-    beam_outside = distance_at(capture=beam_scene, point=vec3(0.45, 0.0, 0.0))
+    disc_center = spatial.distance(capture=disc_scene, point=vec3(0.0, 0.0, 0.0))
+    orb_center = spatial.distance(capture=orb_scene, point=vec3(0.0, 0.0, 0.0))
+    beam_center = spatial.distance(capture=beam_scene, point=vec3(0.0, 0.0, 0.0))
+    loft_center = spatial.distance(capture=loft_scene, point=vec3(0.0, 0.0, 0.0))
+    plate_center = spatial.distance(capture=plate_scene, point=vec3(0.05, 0.0, 0.05))
+    disc_outside = spatial.distance(capture=disc_scene, point=vec3(0.0, 1.2, 0.0))
+    beam_outside = spatial.distance(capture=beam_scene, point=vec3(0.45, 0.0, 0.0))
 
     assert approx disc_center ~= -0.75 within 0.001
     assert approx orb_center ~= -0.5 within 0.001
@@ -3030,7 +3033,7 @@ fn test_phase6_constructed_shapes_prune_by_inferred_support() -> Nothing {
     pruned_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     candidates_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
     scene_capture = capture phase6_scene_shape
-    hit = trace_shape(
+    hit = spatial.nearest(
         capture=scene_capture,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -3098,15 +3101,15 @@ shape phase7_scene_shape {
 }
 
 fn compute_ambient_occlusion(scene_capture: ShapeCapture, hit_position: Vec3, hit_normal: Vec3) -> F32 {
-    sample_a = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.08)
-    sample_b = distance_at(capture=scene_capture, point=hit_position + hit_normal * 0.18)
+    sample_a = spatial.distance(capture=scene_capture, point=hit_position + hit_normal * 0.08)
+    sample_b = spatial.distance(capture=scene_capture, point=hit_position + hit_normal * 0.18)
     occlusion = clamp((0.08 - sample_a) * 2.0 + (0.18 - sample_b) * 1.1, 0.0, 1.0)
     return 1.0 - occlusion * 0.75
 }
 
 fn test_phase7_radiance_and_volume_surface_and_queries() -> Nothing {
     scene_capture = capture phase7_scene_shape
-    hit = trace_shape(
+    hit = spatial.nearest(
         capture=scene_capture,
         ray=ray_query(
             origin=vec3(0.0, 0.0, 3.0),
@@ -3117,15 +3120,15 @@ fn test_phase7_radiance_and_volume_surface_and_queries() -> Nothing {
             max_steps=96
         )
     )
-    surface = surface_at(capture=scene_capture, hit=hit)
-    radiance_sample = radiance_at(
+    surface = surface.sample(capture=scene_capture, hit=hit)
+    radiance_sample = participants.radiance(
         capture=scene_capture,
         sample=point_direction_query(
             point=hit.position,
             direction=normalize(vec3(0.0, 1.0, 1.0))
         )
     )
-    medium_sample = medium_at(capture=scene_capture, point=hit.position)
+    medium_sample = participants.medium(capture=scene_capture, point=hit.position)
     ambient = compute_ambient_occlusion(
         scene_capture=scene_capture,
         hit_position=hit.position,
@@ -3259,10 +3262,10 @@ fn phase8_region_domain_render_and_world_query_status() -> Integer {
     fine_domain = phase8_fine_domain(world = world)
     probe = vec3(0.0, 0.0, 0.6)
 
-    coarse_distance = distance_world(capture = world, domain = coarse_domain, point = probe)
-    fine_distance = distance_world(capture = world, domain = fine_domain, point = probe)
-    fine_normal = normal_world(capture = world, domain = fine_domain, point = probe)
-    coarse_hit = trace_world(
+    coarse_distance = spatial.distance(capture = world, domain = coarse_domain, point = probe)
+    fine_distance = spatial.distance(capture = world, domain = fine_domain, point = probe)
+    fine_normal = spatial.normal(capture = world, domain = fine_domain, point = probe)
+    coarse_hit = spatial.nearest(
         capture=world,
         domain=coarse_domain,
         ray=ray_query(
@@ -3274,7 +3277,7 @@ fn phase8_region_domain_render_and_world_query_status() -> Integer {
             max_steps=96
         )
     )
-    fine_hit = trace_world(
+    fine_hit = spatial.nearest(
         capture=world,
         domain=fine_domain,
         ray=ray_query(
@@ -3286,9 +3289,9 @@ fn phase8_region_domain_render_and_world_query_status() -> Integer {
             max_steps=96
         )
     )
-    coarse_surface = surface_world(capture = world, domain = coarse_domain, hit = fine_hit)
-    fine_surface = surface_world(capture = world, domain = fine_domain, hit = fine_hit)
-    coarse_radiance = radiance_world(
+    coarse_surface = surface.sample(capture = world, domain = coarse_domain, hit = fine_hit)
+    fine_surface = surface.sample(capture = world, domain = fine_domain, hit = fine_hit)
+    coarse_radiance = participants.radiance(
         capture=world,
         domain=coarse_domain,
         sample=point_direction_query(
@@ -3296,7 +3299,7 @@ fn phase8_region_domain_render_and_world_query_status() -> Integer {
             direction=normalize(vec3(0.0, 1.0, 1.0))
         )
     )
-    fine_radiance = radiance_world(
+    fine_radiance = participants.radiance(
         capture=world,
         domain=fine_domain,
         sample=point_direction_query(
@@ -3304,8 +3307,8 @@ fn phase8_region_domain_render_and_world_query_status() -> Integer {
             direction=normalize(vec3(0.0, 1.0, 1.0))
         )
     )
-    coarse_medium = medium_world(capture = world, domain = coarse_domain, point = fine_hit.position)
-    fine_medium = medium_world(capture = world, domain = fine_domain, point = fine_hit.position)
+    coarse_medium = participants.medium(capture = world, domain = coarse_domain, point = fine_hit.position)
+    fine_medium = participants.medium(capture = world, domain = fine_domain, point = fine_hit.position)
     camera = Camera(
         position = vec3(0.0, 0.0, 3.0),
         forward = vec3(0.0, 0.0, -1.0),
@@ -3375,7 +3378,7 @@ fn test_phase9_rotated_local_normal_matches_reference_trace_and_batch_trace() ->
     reference_direction = transform_vector(transform=inverse_rotation, vector=world_direction)
     rotated_scene = capture phase9_rotated_ellipsoid_shape
     reference_scene = capture phase5_ellipsoid_shape
-    rotated_hit = trace_shape(
+    rotated_hit = spatial.nearest(
         capture=rotated_scene,
         ray=ray_query(
             origin=world_origin,
@@ -3386,7 +3389,7 @@ fn test_phase9_rotated_local_normal_matches_reference_trace_and_batch_trace() ->
             max_steps=96
         )
     )
-    reference_hit = trace_shape(
+    reference_hit = spatial.nearest(
         capture=reference_scene,
         ray=ray_query(
             origin=reference_origin,
@@ -3397,7 +3400,7 @@ fn test_phase9_rotated_local_normal_matches_reference_trace_and_batch_trace() ->
             max_steps=96
         )
     )
-    rotated_hits = trace_shape_batch(
+    rotated_hits = spatial.nearest_batch(
         capture=rotated_scene,
         rays=[
             RayQuery(
@@ -3411,7 +3414,7 @@ fn test_phase9_rotated_local_normal_matches_reference_trace_and_batch_trace() ->
         ],
         backend=dispatch_backend_cpu()
     )
-    reference_hits = trace_shape_batch(
+    reference_hits = spatial.nearest_batch(
         capture=reference_scene,
         rays=[
             RayQuery(

@@ -688,6 +688,99 @@ fn f() -> Nothing {
     assert approx surface.albedo.x ~= 1.0 within 0.001
 }
 "#;
+    let errors = check_source(input);
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+    #[test]
+    fn test_family_query_namespaces_typecheck_on_host() {
+        let input = r#"field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius=1.0)
+}
+
+radiance field glow(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
+    return vec3(0.25, 0.50, 0.75) + direction * 0.0 + vec3(f32(feature_id) * 0.0 + p.x * 0.0, 0.0, 0.0)
+}
+
+volume field fog(p: Vec3, surface_distance: F32) -> Medium {
+    return Medium(
+        density=0.2 + surface_distance * 0.0,
+        emission=vec3(0.0, 0.0, 0.0),
+        anisotropy=0.0
+    )
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(1.0, 0.0, 0.0),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape scene_shape {
+    field = sphere_field
+    material = shade
+    radiance = glow
+    volume = fog
+    payload = Payload(
+        entity_id=u32(1),
+        material_id=u32(2),
+        actor=ActorHandle(id=u32(3), generation=u32(0))
+    )
+}
+
+fn run() -> Nothing {
+    field_scene = capture sphere_field
+    shape_scene = capture scene_shape
+    distance = spatial.distance(capture=field_scene, point=vec3(1.0, 2.0, 3.0))
+    normal = spatial.normal(capture=field_scene, point=vec3(1.0, 2.0, 3.0))
+    summary = support.summary(capture=field_scene)
+    ray = ray_query(
+        origin=vec3(0.0, 0.0, 3.0),
+        direction=vec3(0.0, 0.0, -1.0),
+        max_distance=6.0,
+        min_step=0.05,
+        hit_epsilon=0.001,
+        max_steps=96
+    )
+    hit = spatial.nearest(capture=shape_scene, ray=ray)
+    occlusion = spatial.occluded(capture=shape_scene, ray=ray)
+    sampled_surface = surface.sample(capture=shape_scene, hit=hit)
+    radiance_sample = participants.radiance(
+        capture=shape_scene,
+        sample=point_direction_query(
+            point=hit.position,
+            direction=vec3(0.0, 0.0, -1.0)
+        )
+    )
+    medium_sample = participants.medium(capture=shape_scene, point=hit.position)
+    rays = [ray]
+    points = [PointQuery(point=vec3(0.0, 0.0, 2.0))]
+    hits = spatial.nearest_batch(capture=shape_scene, rays=rays, backend=dispatch_backend_cpu())
+    surfaces = surface.sample_batch(capture=shape_scene, hits=hits, backend=dispatch_backend_cpu())
+    distances = spatial.distance_batch(capture=field_scene, points=points, backend=dispatch_backend_cpu())
+    normals = spatial.normal_batch(capture=field_scene, points=points, backend=dispatch_backend_cpu())
+    occlusions = spatial.occluded_batch(capture=shape_scene, rays=rays, backend=dispatch_backend_cpu())
+    assert approx distance ~= 0.0 within 0.001
+    assert approx normal.x ~= 0.0 within 0.001
+    assert value summary.has_bounds == true
+    assert value hit.hit == true
+    assert value occlusion.occluded == true
+    assert approx sampled_surface.albedo.x ~= 1.0 within 0.001
+    assert approx radiance_sample.x ~= 0.25 within 0.001
+    assert approx medium_sample.density ~= 0.2 within 0.001
+    assert value hits[0].hit == true
+    assert approx surfaces[0].albedo.x ~= 1.0 within 0.001
+    assert approx distances[0].distance ~= 1.0 within 0.001
+    assert approx normals[0].normal.z ~= 1.0 within 0.001
+    assert value occlusions[0].occluded == true
+}
+"#;
         let errors = check_source(input);
         assert!(errors.is_empty(), "{errors:?}");
     }
@@ -1023,10 +1116,12 @@ fn run() -> Nothing {
         assert!(
             errors.iter().any(|err| matches!(
                 err,
-                TypeError::ShapeQueryTargetMustBeShape { query, .. }
-                    if query.as_str() == "trace_shape"
+                TypeError::ArgumentTypeMismatch { name, expected, found, .. }
+                    if name.as_str() == "capture"
+                        && expected == "ShapeCapture"
+                        && found == "FieldCapture"
             )),
-            "expected ShapeQueryTargetMustBeShape(trace_shape), got: {errors:?}"
+            "expected trace_shape to reject FieldCapture, got: {errors:?}"
         );
     }
 
@@ -1055,8 +1150,10 @@ fn run() -> Nothing {
         assert!(
             errors.iter().any(|err| matches!(
                 err,
-                TypeError::ShapeQueryTargetMustBeShape { query, .. }
-                    if query.as_str() == "trace_shape"
+                TypeError::ArgumentTypeMismatch { name, expected, found, .. }
+                    if name.as_str() == "capture"
+                        && expected == "ShapeCapture"
+                        && found == "FieldCapture"
             )),
             "expected stored field capture rejection, got: {errors:?}"
         );
@@ -5208,8 +5305,10 @@ fn render() -> Nothing {
             .iter()
             .filter(|err| matches!(
                 err,
-                TypeError::ShapeQueryTargetMustBeShape { query, .. }
-                    if query.as_str() == "radiance_at" || query.as_str() == "medium_at"
+                TypeError::ArgumentTypeMismatch { name, expected, found, .. }
+                    if name.as_str() == "capture"
+                        && expected == "ShapeCapture"
+                        && found == "FieldCapture"
             ))
             .count();
         assert_eq!(

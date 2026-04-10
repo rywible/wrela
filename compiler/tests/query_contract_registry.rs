@@ -111,6 +111,118 @@ fn nearest_contracts_are_canonical_and_trace_ids_are_compatibility_aliases() {
 }
 
 #[test]
+fn family_namespace_members_resolve_through_contract_registry() {
+    assert_eq!(
+        query_contract::query_family_namespace("spatial"),
+        Some(query_contract::QueryFamilyId::Spatial)
+    );
+    assert_eq!(
+        query_contract::query_family_namespace("surface"),
+        Some(query_contract::QueryFamilyId::Surface)
+    );
+    assert_eq!(
+        query_contract::query_family_namespace("participants"),
+        Some(query_contract::QueryFamilyId::Participants)
+    );
+    assert_eq!(
+        query_contract::query_family_namespace("support"),
+        Some(query_contract::QueryFamilyId::Support)
+    );
+
+    let cases = [
+        (
+            query_contract::QueryFamilyId::Spatial,
+            "distance",
+            query_contract::QuerySurfaceKind::CaptureScalar,
+            query_contract::CaptureKind::Field,
+            query_contract::SPATIAL_DISTANCE_CAPTURE_FIELD,
+            "spatial.distance",
+        ),
+        (
+            query_contract::QueryFamilyId::Spatial,
+            "distance_batch",
+            query_contract::QuerySurfaceKind::CaptureBatch,
+            query_contract::CaptureKind::Shape,
+            query_contract::SPATIAL_DISTANCE_BATCH_SHAPE,
+            "spatial.distance_batch",
+        ),
+        (
+            query_contract::QueryFamilyId::Spatial,
+            "nearest",
+            query_contract::QuerySurfaceKind::WorldScalar,
+            query_contract::CaptureKind::Region,
+            query_contract::SPATIAL_NEAREST_WORLD,
+            "spatial.nearest",
+        ),
+        (
+            query_contract::QueryFamilyId::Surface,
+            "sample_batch",
+            query_contract::QuerySurfaceKind::CaptureBatch,
+            query_contract::CaptureKind::Shape,
+            query_contract::SURFACE_SAMPLE_BATCH_SHAPE,
+            "surface.sample_batch",
+        ),
+        (
+            query_contract::QueryFamilyId::Participants,
+            "radiance",
+            query_contract::QuerySurfaceKind::WorldScalar,
+            query_contract::CaptureKind::Region,
+            query_contract::PARTICIPANTS_RADIANCE_WORLD,
+            "participants.radiance",
+        ),
+        (
+            query_contract::QueryFamilyId::Support,
+            "summary",
+            query_contract::QuerySurfaceKind::CaptureScalar,
+            query_contract::CaptureKind::Shape,
+            query_contract::SUPPORT_SUMMARY_CAPTURE_SHAPE,
+            "support.summary",
+        ),
+    ];
+
+    for (family, member, surface, capture_kind, contract_id, call) in cases {
+        let (descriptor, binding) = query_contract::query_contract_bundle_for_family_member(
+            family,
+            member,
+            surface,
+            capture_kind,
+        )
+        .unwrap_or_else(|| panic!("missing family member bundle for {call}"));
+        assert_eq!(descriptor.id, contract_id);
+        assert_eq!(
+            call,
+            format!(
+                "{}.{}",
+                query_contract::query_family_name(descriptor.family),
+                query_contract::query_family_member_name(descriptor)
+            )
+        );
+        assert_eq!(binding.contract_id, contract_id);
+    }
+
+    assert!(
+        query_contract::query_contract_bundle_for_family_member(
+            query_contract::QueryFamilyId::Spatial,
+            "distance",
+            query_contract::QuerySurfaceKind::CaptureBatch,
+            query_contract::CaptureKind::Field,
+        )
+        .is_none(),
+        "scalar family members must not resolve to batch contracts"
+    );
+    assert!(
+        query_contract::query_contract_bundle_for_family_member(
+            query_contract::QueryFamilyId::Spatial,
+            "distance_batch",
+            query_contract::QuerySurfaceKind::CaptureScalar,
+            query_contract::CaptureKind::Field,
+        )
+        .is_none(),
+        "batch family members must not resolve to scalar contracts"
+    );
+}
+
+#[test]
 fn query_contract_registry_bindings_cover_every_descriptor() {
     assert_eq!(
         query_contract::query_contracts().len(),

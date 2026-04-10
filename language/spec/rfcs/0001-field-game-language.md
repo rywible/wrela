@@ -1422,10 +1422,10 @@ Domains that expose navigation or walkability semantics MUST also define:
 
 The runtime and stdlib MUST expose domain-aware query APIs over captures, including at minimum:
 
-- `nearest(world=..., ray=..., domain=..., max_distance=...)`
-- `occluded(world=..., ray=..., domain=..., max_distance=...)`
-- `distance_at(world=..., point=..., domain=...)`
-- `normal_at(world=..., point=..., domain=...)`
+- `spatial.nearest(capture=..., domain=..., ray=...)`
+- `spatial.occluded(capture=..., domain=..., ray=...)`
+- `spatial.distance(capture=..., domain=..., point=...)`
+- `spatial.normal(capture=..., domain=..., point=...)`
 - `walkable(world=..., point=..., domain=...)`
 
 ### Navigation And Impossible Geometry Semantics
