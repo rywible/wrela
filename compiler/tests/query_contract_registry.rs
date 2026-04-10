@@ -24,6 +24,9 @@ fn query_contract_registry_has_stable_seed_order_and_versions() {
             "spatial.normal.world",
             "spatial.normal.batch.field",
             "spatial.normal.batch.shape",
+            "support.summary.capture.field",
+            "support.summary.capture.shape",
+            "support.summary.world",
             "spatial.nearest.capture.shape",
             "spatial.nearest.batch.shape",
             "spatial.nearest.world",
@@ -39,7 +42,7 @@ fn query_contract_registry_has_stable_seed_order_and_versions() {
             "participants.medium.world",
         ]
     );
-    assert_eq!(query_contract::query_contracts().len(), 23);
+    assert_eq!(query_contract::query_contracts().len(), 26);
     assert!(
         query_contract::query_contracts()
             .iter()
@@ -211,6 +214,16 @@ fn query_contract_registry_exhaustively_maps_current_plan_surfaces() {
             query_contract::SPATIAL_NORMAL_CAPTURE_SHAPE,
         ),
         (
+            CaptureQueryPlan::for_query(CaptureQueryKind::SupportSummary, CaptureKind::Field, None)
+                .unwrap(),
+            query_contract::SUPPORT_SUMMARY_CAPTURE_FIELD,
+        ),
+        (
+            CaptureQueryPlan::for_query(CaptureQueryKind::SupportSummary, CaptureKind::Shape, None)
+                .unwrap(),
+            query_contract::SUPPORT_SUMMARY_CAPTURE_SHAPE,
+        ),
+        (
             CaptureQueryPlan::for_query(CaptureQueryKind::Nearest, CaptureKind::Shape, None)
                 .unwrap(),
             query_contract::SPATIAL_NEAREST_CAPTURE_SHAPE,
@@ -257,6 +270,10 @@ fn query_contract_registry_exhaustively_maps_current_plan_surfaces() {
         (
             WorldQueryPlan::for_query(WorldQueryKind::Normal),
             query_contract::SPATIAL_NORMAL_WORLD,
+        ),
+        (
+            WorldQueryPlan::for_query(WorldQueryKind::SupportSummary),
+            query_contract::SUPPORT_SUMMARY_WORLD,
         ),
         (
             WorldQueryPlan::for_query(WorldQueryKind::Nearest),
@@ -389,6 +406,10 @@ fn world_query_semantics_is_a_registry_wrapper() {
             query_contract::SPATIAL_DISTANCE_WORLD,
         ),
         (WorldQueryKind::Normal, query_contract::SPATIAL_NORMAL_WORLD),
+        (
+            WorldQueryKind::SupportSummary,
+            query_contract::SUPPORT_SUMMARY_WORLD,
+        ),
         (
             WorldQueryKind::Nearest,
             query_contract::SPATIAL_NEAREST_WORLD,

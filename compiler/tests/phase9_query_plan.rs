@@ -1739,6 +1739,13 @@ fn phase9_world_query_plans_cover_domain_backed_queries() {
             false,
         ),
         (
+            query_plan::WorldQueryPlan::for_query(query_plan::WorldQueryKind::SupportSummary),
+            "__wr_world_support_summary_capture",
+            query_plan::QueryResultKind::SupportSummaryResult,
+            query_plan::PlanExecutor::WorldSupportSummaryCapture,
+            false,
+        ),
+        (
             query_plan::WorldQueryPlan::for_query(query_plan::WorldQueryKind::Trace),
             "__wr_world_trace_capture",
             query_plan::QueryResultKind::Hit3,
@@ -1791,6 +1798,10 @@ fn phase9_world_query_plans_cover_domain_backed_queries() {
             query_plan::WorldQueryKind::Normal => (
                 query_contract::SPATIAL_NORMAL_WORLD,
                 query_contract::QueryFamilyId::Spatial,
+            ),
+            query_plan::WorldQueryKind::SupportSummary => (
+                query_contract::SUPPORT_SUMMARY_WORLD,
+                query_contract::QueryFamilyId::Support,
             ),
             query_plan::WorldQueryKind::Nearest => (
                 query_contract::SPATIAL_NEAREST_WORLD,

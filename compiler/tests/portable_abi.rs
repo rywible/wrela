@@ -5,8 +5,8 @@ use wrela::portable::{
     portable_abi_emit_wgsl_structs, portable_abi_encode_slice, portable_abi_encode_value,
     portable_abi_field_offset, portable_abi_layout, portable_artifact_contract_abi,
     portable_builtin_record_abi, portable_candidate_contract_abi, portable_dispatch_contract_abi,
-    portable_hit_context_contract_abi, portable_participant_contract_abi,
-    portable_result_contract_abi,
+    portable_hit_context_contract_abi, portable_participant_contract_abi, portable_query_item_abi,
+    portable_query_result_abi, portable_result_contract_abi,
 };
 use wrela::query_plan;
 use wrela::scene_ir;
@@ -174,6 +174,78 @@ fn point_direction_query_layout_matches_two_vec3_samples() {
 
     let layout = portable_abi_layout(&point_direction);
     assert_eq!(layout.size, 32);
+    assert_eq!(layout.align, 16);
+}
+
+#[test]
+fn unit_query_layout_is_a_stable_empty_public_record() {
+    let unit = portable_builtin_record_abi("UnitQuery").unwrap();
+    let PortableAbiType::Struct { fields, .. } = &unit else {
+        panic!("UnitQuery should lower to a struct ABI");
+    };
+    assert!(fields.is_empty());
+    assert_eq!(
+        portable_query_item_abi(query_plan::QueryItemKind::Unit),
+        Some(unit.clone())
+    );
+
+    let layout = portable_abi_layout(&unit);
+    assert_eq!(layout.size, 4);
+    assert_eq!(layout.align, 4);
+}
+
+#[test]
+fn support_summary_result_layout_preserves_wgsl_padding_boundaries() {
+    let summary = portable_builtin_record_abi("SupportSummaryResult").unwrap();
+    let PortableAbiType::Struct { fields, .. } = &summary else {
+        panic!("SupportSummaryResult should lower to a struct ABI");
+    };
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "support_class",
+            "semantics",
+            "has_bounds",
+            "opaque_boundary",
+            "can_coarse_support_prune",
+            "min",
+            "max"
+        ]
+    );
+    assert_eq!(portable_abi_field_offset(fields, 0), 0);
+    assert_eq!(portable_abi_field_offset(fields, 1), 4);
+    assert_eq!(portable_abi_field_offset(fields, 2), 8);
+    assert_eq!(portable_abi_field_offset(fields, 3), 12);
+    assert_eq!(portable_abi_field_offset(fields, 4), 16);
+    assert_eq!(portable_abi_field_offset(fields, 5), 32);
+    assert_eq!(portable_abi_field_offset(fields, 6), 48);
+    assert_eq!(
+        portable_query_result_abi(
+            query_plan::QuerySurfaceKind::CaptureScalar,
+            query_plan::QueryResultKind::SupportSummaryResult
+        ),
+        Some(summary.clone())
+    );
+    assert_eq!(
+        portable_query_result_abi(
+            query_plan::QuerySurfaceKind::WorldScalar,
+            query_plan::QueryResultKind::SupportSummaryResult
+        ),
+        Some(summary.clone())
+    );
+    assert!(
+        portable_query_result_abi(
+            query_plan::QuerySurfaceKind::CaptureBatch,
+            query_plan::QueryResultKind::SupportSummaryResult
+        )
+        .is_none()
+    );
+
+    let layout = portable_abi_layout(&summary);
+    assert_eq!(layout.size, 64);
     assert_eq!(layout.align, 16);
 }
 
@@ -490,6 +562,7 @@ fn portable_abi_emits_deterministic_wgsl_structs_and_rejects_runtime_value() {
     let scene_domain = portable_builtin_record_abi("SceneDomain").expect("SceneDomain abi");
     let point_direction =
         portable_builtin_record_abi("PointDirectionQuery").expect("PointDirectionQuery abi");
+    let unit_query = portable_builtin_record_abi("UnitQuery").expect("UnitQuery abi");
     let dispatch = portable_dispatch_contract_abi(&query_plan::DispatchRecordContract {
         backend: query_plan::DispatchBackend::Wgsl,
         kernel: query_plan::InternalKernelKind::ShapeTraceCapture,
@@ -501,6 +574,7 @@ fn portable_abi_emits_deterministic_wgsl_structs_and_rejects_runtime_value() {
         hit3.clone(),
         scene_domain.clone(),
         point_direction.clone(),
+        unit_query.clone(),
     ])
     .expect("emit wgsl");
     let transform_index = rendered
@@ -529,6 +603,9 @@ fn portable_abi_emits_deterministic_wgsl_structs_and_rejects_runtime_value() {
     let point_direction_index = rendered
         .find("struct PointDirectionQuery")
         .expect("PointDirectionQuery in wgsl");
+    let unit_query_index = rendered
+        .find("struct UnitQuery")
+        .expect("UnitQuery in wgsl");
     assert!(transform_index < hit_index);
     assert!(actor_index < payload_index);
     assert!(payload_index < hit_index);
@@ -537,7 +614,9 @@ fn portable_abi_emits_deterministic_wgsl_structs_and_rejects_runtime_value() {
     assert!(surface_domain_index < scene_domain_index);
     assert!(participants_index < scene_domain_index);
     assert!(point_direction_index < rendered.len());
+    assert!(unit_query_index < rendered.len());
     assert!(rendered.contains("hit: u32,") || rendered.contains("hit: u32"));
+    assert!(rendered.contains("struct UnitQuery {\n  _unit: u32,\n}"));
 
     let err = portable_abi_emit_wgsl_structs(&[PortableAbiType::Value]).expect_err("Value reject");
     assert_eq!(err, PortableAbiError::UnsupportedValueType);

@@ -80,6 +80,9 @@ pub fn portable_abi_layout(abi: &PortableAbiType) -> PortableAbiLayout {
             PortableAbiLayout::new(size, portable_abi_layout(inner).align.max(1))
         }
         PortableAbiType::Struct { fields, .. } => {
+            if fields.is_empty() {
+                return PortableAbiLayout::new(4, 4);
+            }
             let mut offset = 0;
             let mut max_align = 1;
             for field in fields {
@@ -310,11 +313,7 @@ pub fn portable_artifact_contract_abi(contract: &ArtifactContract) -> PortableAb
 
 pub fn portable_query_item_abi(item_kind: QueryItemKind) -> Option<PortableAbiType> {
     match item_kind {
-        QueryItemKind::Unit => Some(PortableAbiType::Struct {
-            name: SmolStr::new("UnitQuery"),
-            class_id: 0,
-            fields: Vec::new(),
-        }),
+        QueryItemKind::Unit => portable_builtin_record_abi("UnitQuery"),
         QueryItemKind::PointQuery => portable_builtin_record_abi("PointQuery"),
         QueryItemKind::PointDirectionQuery => portable_builtin_record_abi("PointDirectionQuery"),
         QueryItemKind::RayQuery => portable_builtin_record_abi("RayQuery"),
@@ -335,6 +334,10 @@ pub fn portable_query_result_abi(
             QuerySurfaceKind::CaptureScalar | QuerySurfaceKind::WorldScalar,
             QueryResultKind::NormalResult | QueryResultKind::RadianceResult,
         ) => Some(PortableAbiType::Vec3),
+        (
+            QuerySurfaceKind::CaptureScalar | QuerySurfaceKind::WorldScalar,
+            QueryResultKind::SupportSummaryResult,
+        ) => portable_builtin_record_abi("SupportSummaryResult"),
         (QuerySurfaceKind::CaptureBatch, QueryResultKind::DistanceResult) => {
             portable_builtin_record_abi("DistanceResult")
         }
@@ -345,7 +348,10 @@ pub fn portable_query_result_abi(
         (_, QueryResultKind::Surface) => portable_builtin_record_abi("Surface"),
         (_, QueryResultKind::OcclusionResult) => portable_builtin_record_abi("OcclusionResult"),
         (_, QueryResultKind::MediumResult) => portable_builtin_record_abi("Medium"),
-        (QuerySurfaceKind::CaptureBatch, QueryResultKind::RadianceResult) => None,
+        (
+            QuerySurfaceKind::CaptureBatch,
+            QueryResultKind::RadianceResult | QueryResultKind::SupportSummaryResult,
+        ) => None,
     }
 }
 
@@ -468,12 +474,16 @@ fn collect_wgsl_structs(
             }
             seen.insert(name.clone());
             let mut rendered = format!("struct {} {{\n", name);
-            for field in fields {
-                rendered.push_str(&format!(
-                    "  {}: {},\n",
-                    field.name,
-                    portable_abi_wgsl_type_name(&field.ty)?
-                ));
+            if fields.is_empty() {
+                rendered.push_str("  _unit: u32,\n");
+            } else {
+                for field in fields {
+                    rendered.push_str(&format!(
+                        "  {}: {},\n",
+                        field.name,
+                        portable_abi_wgsl_type_name(&field.ty)?
+                    ));
+                }
             }
             rendered.push('}');
             emitted.push(rendered);

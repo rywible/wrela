@@ -159,6 +159,11 @@ fn build_capture_request(
                 });
             }
         },
+        CaptureQueryKind::SupportSummary => {
+            return Err(QueryExecError::Unsupported {
+                message: "support.summary is not supported by the native WGSL backend".to_string(),
+            });
+        }
         CaptureQueryKind::Nearest
         | CaptureQueryKind::Trace
         | CaptureQueryKind::Occluded
@@ -173,6 +178,11 @@ fn build_capture_request(
     let item = match plan.kind {
         CaptureQueryKind::Distance | CaptureQueryKind::Normal | CaptureQueryKind::Medium => {
             point_query(expect_vec3_arg(args.get(1), "point")?)
+        }
+        CaptureQueryKind::SupportSummary => {
+            return Err(QueryExecError::Unsupported {
+                message: "support.summary is not supported by the native WGSL backend".to_string(),
+            });
         }
         CaptureQueryKind::Nearest | CaptureQueryKind::Trace | CaptureQueryKind::Occluded => {
             expect_struct_arg(args.get(1), "RayQuery")?;
@@ -256,6 +266,11 @@ fn build_world_request(
     let item = match plan.kind {
         WorldQueryKind::Distance | WorldQueryKind::Normal | WorldQueryKind::Medium => {
             point_query(expect_vec3_arg(args.get(2), "point")?)
+        }
+        WorldQueryKind::SupportSummary => {
+            return Err(QueryExecError::Unsupported {
+                message: "support.summary is not supported by the native WGSL backend".to_string(),
+            });
         }
         WorldQueryKind::Nearest | WorldQueryKind::Trace | WorldQueryKind::Occluded => {
             expect_struct_arg(args.get(2), "RayQuery")?;

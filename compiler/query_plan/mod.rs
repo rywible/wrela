@@ -32,6 +32,7 @@ pub enum FieldBatchPlanKind {
 pub enum CaptureQueryKind {
     Distance,
     Normal,
+    SupportSummary,
     Radiance,
     Medium,
     Nearest,
@@ -52,6 +53,7 @@ pub enum ShapeBatchPlanKind {
 pub enum WorldQueryKind {
     Distance,
     Normal,
+    SupportSummary,
     Radiance,
     Medium,
     Nearest,
@@ -63,6 +65,7 @@ pub enum WorldQueryKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CandidateStrategy {
     DirectFieldCapture,
+    SemanticSupportSummary,
     ShapeBranchTraversal,
     SupportAcceleratedShapeTraversal,
     SurfaceHitReuse,
@@ -384,6 +387,12 @@ pub(crate) fn capture_query_contract_id(
         (CaptureQueryKind::Normal, CaptureKind::Shape) => {
             Some(query_contract::SPATIAL_NORMAL_CAPTURE_SHAPE)
         }
+        (CaptureQueryKind::SupportSummary, CaptureKind::Field) => {
+            Some(query_contract::SUPPORT_SUMMARY_CAPTURE_FIELD)
+        }
+        (CaptureQueryKind::SupportSummary, CaptureKind::Shape) => {
+            Some(query_contract::SUPPORT_SUMMARY_CAPTURE_SHAPE)
+        }
         (CaptureQueryKind::Radiance, CaptureKind::Shape) => {
             Some(query_contract::PARTICIPANTS_RADIANCE_CAPTURE_SHAPE)
         }
@@ -407,6 +416,7 @@ pub(crate) fn world_query_contract_id(kind: WorldQueryKind) -> QueryContractId {
     match kind {
         WorldQueryKind::Distance => query_contract::SPATIAL_DISTANCE_WORLD,
         WorldQueryKind::Normal => query_contract::SPATIAL_NORMAL_WORLD,
+        WorldQueryKind::SupportSummary => query_contract::SUPPORT_SUMMARY_WORLD,
         WorldQueryKind::Radiance => query_contract::PARTICIPANTS_RADIANCE_WORLD,
         WorldQueryKind::Medium => query_contract::PARTICIPANTS_MEDIUM_WORLD,
         WorldQueryKind::Nearest | WorldQueryKind::Trace => query_contract::SPATIAL_NEAREST_WORLD,
@@ -460,6 +470,8 @@ fn capture_query_kind_for_recipe(recipe: QueryPlannerRecipeKind) -> CaptureQuery
         | QueryPlannerRecipeKind::SpatialDistanceCaptureShape => CaptureQueryKind::Distance,
         QueryPlannerRecipeKind::SpatialNormalCaptureField
         | QueryPlannerRecipeKind::SpatialNormalCaptureShape => CaptureQueryKind::Normal,
+        QueryPlannerRecipeKind::SupportSummaryCaptureField
+        | QueryPlannerRecipeKind::SupportSummaryCaptureShape => CaptureQueryKind::SupportSummary,
         QueryPlannerRecipeKind::SpatialNearestCaptureShape => CaptureQueryKind::Nearest,
         QueryPlannerRecipeKind::SpatialTraceCaptureShape => CaptureQueryKind::Trace,
         QueryPlannerRecipeKind::SpatialOccludedCaptureShape => CaptureQueryKind::Occluded,
@@ -474,6 +486,7 @@ fn world_query_kind_for_recipe(recipe: QueryPlannerRecipeKind) -> WorldQueryKind
     match recipe {
         QueryPlannerRecipeKind::SpatialDistanceWorld => WorldQueryKind::Distance,
         QueryPlannerRecipeKind::SpatialNormalWorld => WorldQueryKind::Normal,
+        QueryPlannerRecipeKind::SupportSummaryWorld => WorldQueryKind::SupportSummary,
         QueryPlannerRecipeKind::SpatialNearestWorld => WorldQueryKind::Nearest,
         QueryPlannerRecipeKind::SpatialTraceWorld => WorldQueryKind::Trace,
         QueryPlannerRecipeKind::SpatialOccludedWorld => WorldQueryKind::Occluded,
@@ -609,6 +622,7 @@ impl BatchQueryPlan {
         }
 
         let winner_mode = match result_kind {
+            QueryResultKind::SupportSummaryResult => WinnerSelectionMode::None,
             QueryResultKind::Surface => WinnerSelectionMode::SurfaceReuse,
             QueryResultKind::Hit3 | QueryResultKind::OcclusionResult => {
                 WinnerSelectionMode::Nearest
@@ -794,6 +808,7 @@ impl CaptureQueryPlan {
         let kind = capture_query_kind_for_recipe(binding.planner_recipe);
         let capture_kind = descriptor.capture_kind;
         let candidate_strategy = match kind {
+            CaptureQueryKind::SupportSummary => CandidateStrategy::SemanticSupportSummary,
             CaptureQueryKind::Surface => CandidateStrategy::SurfaceHitReuse,
             CaptureQueryKind::Distance | CaptureQueryKind::Normal
                 if matches!(descriptor.capture_kind, CaptureKind::Field) =>
@@ -803,6 +818,7 @@ impl CaptureQueryPlan {
             _ => candidate_strategy_for_shape_query(BatchQueryKind::Nearest, scene.as_ref()),
         };
         let pruning_strategy = match kind {
+            CaptureQueryKind::SupportSummary => PruningStrategy::None,
             CaptureQueryKind::Surface => PruningStrategy::None,
             CaptureQueryKind::Distance | CaptureQueryKind::Normal
                 if matches!(descriptor.capture_kind, CaptureKind::Field) =>
@@ -824,12 +840,14 @@ impl CaptureQueryPlan {
         );
         let mut stages = vec![PlanStage::LoadCapture];
         stages.extend(load_artifact_stages(&derived_artifacts));
-        stages.push(PlanStage::GenerateCandidates {
-            strategy: candidate_strategy,
-        });
-        stages.push(PlanStage::PruneCandidates {
-            strategy: pruning_strategy,
-        });
+        if !matches!(kind, CaptureQueryKind::SupportSummary) {
+            stages.push(PlanStage::GenerateCandidates {
+                strategy: candidate_strategy,
+            });
+            stages.push(PlanStage::PruneCandidates {
+                strategy: pruning_strategy,
+            });
+        }
         if let Some(participant_kind) = descriptor.participant_kind {
             stages.push(PlanStage::SelectParticipants {
                 kind: participant_selection_kind(participant_kind),
@@ -977,12 +995,14 @@ impl WorldQueryPlan {
         let mut stages = vec![PlanStage::SelectBackend, PlanStage::LoadCapture];
         stages.extend(load_artifact_stages(&derived_artifacts));
         stages.push(PlanStage::LoadDomainFlags);
-        stages.push(PlanStage::GenerateCandidates {
-            strategy: candidate_strategy,
-        });
-        stages.push(PlanStage::PruneCandidates {
-            strategy: pruning_strategy,
-        });
+        if !matches!(kind, WorldQueryKind::SupportSummary) {
+            stages.push(PlanStage::GenerateCandidates {
+                strategy: candidate_strategy,
+            });
+            stages.push(PlanStage::PruneCandidates {
+                strategy: pruning_strategy,
+            });
+        }
         if let Some(participant_kind) = descriptor.participant_kind {
             stages.push(PlanStage::SelectParticipants {
                 kind: participant_selection_kind(participant_kind),
@@ -1007,6 +1027,7 @@ impl WorldQueryPlan {
             candidate_strategy,
             pruning_strategy,
             match result_kind {
+                QueryResultKind::SupportSummaryResult => WinnerSelectionMode::None,
                 QueryResultKind::Surface => WinnerSelectionMode::SurfaceReuse,
                 QueryResultKind::RadianceResult | QueryResultKind::MediumResult => {
                     WinnerSelectionMode::Ordered
@@ -1214,6 +1235,7 @@ fn planning_observability(
 
 fn world_candidate_strategy(kind: WorldQueryKind) -> CandidateStrategy {
     match kind {
+        WorldQueryKind::SupportSummary => CandidateStrategy::SemanticSupportSummary,
         WorldQueryKind::Surface => CandidateStrategy::SurfaceHitReuse,
         WorldQueryKind::Radiance | WorldQueryKind::Medium => {
             CandidateStrategy::ShapeBranchTraversal
@@ -1231,6 +1253,7 @@ fn world_pruning_strategy(
     candidate_strategy: CandidateStrategy,
 ) -> PruningStrategy {
     match kind {
+        WorldQueryKind::SupportSummary => PruningStrategy::None,
         WorldQueryKind::Surface => PruningStrategy::None,
         WorldQueryKind::Radiance | WorldQueryKind::Medium => PruningStrategy::ConservativeTraversal,
         WorldQueryKind::Distance

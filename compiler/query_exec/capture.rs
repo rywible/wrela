@@ -25,6 +25,11 @@ pub(crate) trait CaptureQueryBackend {
         point: [f32; 3],
         capture_kind: CaptureKind,
     ) -> Result<[f32; 3], QueryExecError>;
+    fn support_summary(
+        &self,
+        capture: &SmolStr,
+        capture_kind: CaptureKind,
+    ) -> Result<KernelValue, QueryExecError>;
     fn trace_shape(
         &self,
         shape: &SmolStr,
@@ -72,6 +77,10 @@ pub(crate) fn execute_capture_query<B: CaptureQueryBackend>(
                 point,
                 plan.capture_kind,
             )?))
+        }
+        crate::query_plan::CaptureQueryKind::SupportSummary => {
+            let capture = backend.resolve_field_or_shape_capture(args.first())?;
+            backend.support_summary(&capture, plan.capture_kind)
         }
         crate::query_plan::CaptureQueryKind::Nearest
         | crate::query_plan::CaptureQueryKind::Trace => {
@@ -200,6 +209,7 @@ fn build_batch_capture_args(
             let point = expect_struct_ref_arg(Some(item), "PointQuery")?;
             args.push(KernelValue::Vec3(expect_struct_vec3(point, "point")?));
         }
+        crate::query_plan::CaptureQueryKind::SupportSummary => {}
         crate::query_plan::CaptureQueryKind::Nearest
         | crate::query_plan::CaptureQueryKind::Trace
         | crate::query_plan::CaptureQueryKind::Occluded => {

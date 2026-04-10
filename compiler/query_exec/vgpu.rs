@@ -63,6 +63,16 @@ trait QueryContractRuntime {
         point: [f32; 3],
         capture_kind: crate::query_plan::CaptureKind,
     ) -> Result<[f32; 3], QueryExecError>;
+    fn support_summary(
+        &self,
+        capture: &SmolStr,
+        capture_kind: crate::query_plan::CaptureKind,
+    ) -> Result<KernelValue, QueryExecError>;
+    fn support_summary_for_region(
+        &self,
+        capture: &SmolStr,
+        detail: i32,
+    ) -> Result<KernelValue, QueryExecError>;
     fn eval_shape_distance(&self, shape: &SmolStr, point: [f32; 3]) -> Result<f32, QueryExecError>;
     fn eval_shape_support_lower_bound(
         &self,
@@ -481,6 +491,22 @@ impl QueryContractRuntime for VirtualGpuRuntime<'_> {
         }
     }
 
+    fn support_summary(
+        &self,
+        capture: &SmolStr,
+        capture_kind: crate::query_plan::CaptureKind,
+    ) -> Result<KernelValue, QueryExecError> {
+        self.ops.support_summary_for_capture(capture, capture_kind)
+    }
+
+    fn support_summary_for_region(
+        &self,
+        capture: &SmolStr,
+        detail: i32,
+    ) -> Result<KernelValue, QueryExecError> {
+        self.ops.support_summary_for_region(capture, detail)
+    }
+
     fn eval_shape_distance(&self, shape: &SmolStr, point: [f32; 3]) -> Result<f32, QueryExecError> {
         let scene = self.ops.shape_scene(shape)?;
         self.eval_shape_distance_node(&scene.root, point)
@@ -747,6 +773,9 @@ impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
                 };
                 Ok(KernelValue::Vec3(execute_world_normal(&mut backend)?))
             }
+            WorldQueryKind::SupportSummary => {
+                self.runtime.support_summary_for_region(&capture, detail)
+            }
             WorldQueryKind::Nearest | WorldQueryKind::Trace => {
                 let ray = expect_struct_ref_arg(args.get(2), "RayQuery")?;
                 self.execute_world_ray_hit(&capture, detail, ray, WorldQueryKind::Nearest)
@@ -888,6 +917,14 @@ impl CaptureQueryBackend for VirtualGpuCaptureBackend<'_> {
         capture_kind: crate::query_plan::CaptureKind,
     ) -> Result<[f32; 3], QueryExecError> {
         self.runtime.capture_normal(capture, point, capture_kind)
+    }
+
+    fn support_summary(
+        &self,
+        capture: &SmolStr,
+        capture_kind: crate::query_plan::CaptureKind,
+    ) -> Result<KernelValue, QueryExecError> {
+        self.runtime.support_summary(capture, capture_kind)
     }
 
     fn trace_shape(

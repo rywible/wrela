@@ -31,6 +31,8 @@ pub enum InternalKernelKind {
     ShapeDistanceCapture,
     FieldNormalCapture,
     ShapeNormalCapture,
+    FieldSupportSummaryCapture,
+    ShapeSupportSummaryCapture,
     ShapeTraceCapture,
     ShapeSurfaceCapture,
     ShapeOccludedCapture,
@@ -38,6 +40,7 @@ pub enum InternalKernelKind {
     SceneMediumCapture,
     WorldDistanceCapture,
     WorldNormalCapture,
+    WorldSupportSummaryCapture,
     WorldTraceCapture,
     WorldSurfaceCapture,
     WorldRadianceCapture,
@@ -59,6 +62,7 @@ pub enum QueryItemKind {
 pub enum QueryResultKind {
     DistanceResult,
     NormalResult,
+    SupportSummaryResult,
     Hit3,
     Surface,
     OcclusionResult,
@@ -72,12 +76,15 @@ pub enum PlanExecutor {
     ShapeDistanceCapture,
     FieldNormalCapture,
     ShapeNormalCapture,
+    FieldSupportSummaryCapture,
+    ShapeSupportSummaryCapture,
     SceneTraceCapture,
     SceneSurfaceCapture,
     SceneRadianceCapture,
     SceneMediumCapture,
     WorldDistanceCapture,
     WorldNormalCapture,
+    WorldSupportSummaryCapture,
     WorldTraceCapture,
     WorldSurfaceCapture,
     WorldRadianceCapture,
@@ -170,6 +177,9 @@ pub enum QueryPlannerRecipeKind {
     SpatialNormalWorld,
     SpatialNormalBatchField,
     SpatialNormalBatchShape,
+    SupportSummaryCaptureField,
+    SupportSummaryCaptureShape,
+    SupportSummaryWorld,
     SpatialNearestCaptureShape,
     SpatialNearestBatchShape,
     SpatialNearestWorld,
@@ -204,6 +214,14 @@ impl BackendSupport {
         }
     }
 
+    pub const fn cpu_and_virtual_gpu() -> Self {
+        Self {
+            cpu: true,
+            virtual_gpu: true,
+            wgsl: false,
+        }
+    }
+
     pub const fn supports(self, backend: DispatchBackend) -> bool {
         match backend {
             DispatchBackend::Cpu => self.cpu,
@@ -227,6 +245,19 @@ pub struct QueryObservabilityProfile {
 }
 
 impl QueryObservabilityProfile {
+    pub const fn support_summary() -> Self {
+        Self {
+            candidate_count: false,
+            branch_visits: false,
+            support_prune_effectiveness: false,
+            culling_hit_rate: false,
+            trace_steps: false,
+            field_samples: false,
+            artifact_sizes: true,
+            dispatch_overhead: true,
+        }
+    }
+
     pub const fn spatial() -> Self {
         Self {
             candidate_count: true,
@@ -307,6 +338,11 @@ pub const SPATIAL_NORMAL_BATCH_FIELD: QueryContractId =
     QueryContractId::new("spatial.normal.batch.field");
 pub const SPATIAL_NORMAL_BATCH_SHAPE: QueryContractId =
     QueryContractId::new("spatial.normal.batch.shape");
+pub const SUPPORT_SUMMARY_CAPTURE_FIELD: QueryContractId =
+    QueryContractId::new("support.summary.capture.field");
+pub const SUPPORT_SUMMARY_CAPTURE_SHAPE: QueryContractId =
+    QueryContractId::new("support.summary.capture.shape");
+pub const SUPPORT_SUMMARY_WORLD: QueryContractId = QueryContractId::new("support.summary.world");
 pub const SPATIAL_NEAREST_CAPTURE_SHAPE: QueryContractId =
     QueryContractId::new("spatial.nearest.capture.shape");
 pub const SPATIAL_NEAREST_BATCH_SHAPE: QueryContractId =
@@ -344,7 +380,7 @@ const MATERIAL_DOMAIN_FLAGS: &[SceneDomainFlag] = &[SceneDomainFlag::Material];
 const RADIANCE_DOMAIN_FLAGS: &[SceneDomainFlag] = &[SceneDomainFlag::Radiance];
 const MEDIA_DOMAIN_FLAGS: &[SceneDomainFlag] = &[SceneDomainFlag::Media];
 
-const QUERY_CONTRACTS: [QueryContractDescriptor; 23] = [
+const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
     QueryContractDescriptor {
         id: SPATIAL_DISTANCE_CAPTURE_FIELD,
         version: QUERY_CONTRACT_VERSION,
@@ -504,6 +540,54 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 23] = [
         participant_kind: None,
         supported_backends: BackendSupport::all(),
         observability: QueryObservabilityProfile::spatial(),
+    },
+    QueryContractDescriptor {
+        id: SUPPORT_SUMMARY_CAPTURE_FIELD,
+        version: QUERY_CONTRACT_VERSION,
+        family: QueryFamilyId::Support,
+        question: QueryQuestionId::Summary,
+        surface: QuerySurfaceKind::CaptureScalar,
+        capture_kind: CaptureKind::Field,
+        item_kind: QueryItemKind::Unit,
+        result_kind: QueryResultKind::SupportSummaryResult,
+        domain_contract: None,
+        required_domain_flags: NO_DOMAIN_FLAGS,
+        preserves_local_hit_context: false,
+        participant_kind: None,
+        supported_backends: BackendSupport::cpu_and_virtual_gpu(),
+        observability: QueryObservabilityProfile::support_summary(),
+    },
+    QueryContractDescriptor {
+        id: SUPPORT_SUMMARY_CAPTURE_SHAPE,
+        version: QUERY_CONTRACT_VERSION,
+        family: QueryFamilyId::Support,
+        question: QueryQuestionId::Summary,
+        surface: QuerySurfaceKind::CaptureScalar,
+        capture_kind: CaptureKind::Shape,
+        item_kind: QueryItemKind::Unit,
+        result_kind: QueryResultKind::SupportSummaryResult,
+        domain_contract: None,
+        required_domain_flags: NO_DOMAIN_FLAGS,
+        preserves_local_hit_context: false,
+        participant_kind: None,
+        supported_backends: BackendSupport::cpu_and_virtual_gpu(),
+        observability: QueryObservabilityProfile::support_summary(),
+    },
+    QueryContractDescriptor {
+        id: SUPPORT_SUMMARY_WORLD,
+        version: QUERY_CONTRACT_VERSION,
+        family: QueryFamilyId::Support,
+        question: QueryQuestionId::Summary,
+        surface: QuerySurfaceKind::WorldScalar,
+        capture_kind: CaptureKind::Region,
+        item_kind: QueryItemKind::Unit,
+        result_kind: QueryResultKind::SupportSummaryResult,
+        domain_contract: Some(DomainContractKind::SceneDomain),
+        required_domain_flags: NO_DOMAIN_FLAGS,
+        preserves_local_hit_context: false,
+        participant_kind: None,
+        supported_backends: BackendSupport::cpu_and_virtual_gpu(),
+        observability: QueryObservabilityProfile::support_summary(),
     },
     QueryContractDescriptor {
         id: SPATIAL_NEAREST_CAPTURE_SHAPE,
@@ -715,7 +799,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 23] = [
     },
 ];
 
-const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 23] = [
+const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 26] = [
     QueryExecutionBinding {
         contract_id: SPATIAL_DISTANCE_CAPTURE_FIELD,
         planner_recipe: QueryPlannerRecipeKind::SpatialDistanceCaptureField,
@@ -795,6 +879,30 @@ const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 23] = [
         default_kernel: Some(InternalKernelKind::ShapeNormalCapture),
         helper_name: Some("__wr_shape_normal_batch_queries"),
         legacy_builtin_name: "normal_at_batch",
+    },
+    QueryExecutionBinding {
+        contract_id: SUPPORT_SUMMARY_CAPTURE_FIELD,
+        planner_recipe: QueryPlannerRecipeKind::SupportSummaryCaptureField,
+        default_executor: PlanExecutor::FieldSupportSummaryCapture,
+        default_kernel: Some(InternalKernelKind::FieldSupportSummaryCapture),
+        helper_name: Some("__wr_field_support_summary_capture"),
+        legacy_builtin_name: "support_summary",
+    },
+    QueryExecutionBinding {
+        contract_id: SUPPORT_SUMMARY_CAPTURE_SHAPE,
+        planner_recipe: QueryPlannerRecipeKind::SupportSummaryCaptureShape,
+        default_executor: PlanExecutor::ShapeSupportSummaryCapture,
+        default_kernel: Some(InternalKernelKind::ShapeSupportSummaryCapture),
+        helper_name: Some("__wr_shape_support_summary_capture"),
+        legacy_builtin_name: "support_summary",
+    },
+    QueryExecutionBinding {
+        contract_id: SUPPORT_SUMMARY_WORLD,
+        planner_recipe: QueryPlannerRecipeKind::SupportSummaryWorld,
+        default_executor: PlanExecutor::WorldSupportSummaryCapture,
+        default_kernel: Some(InternalKernelKind::WorldSupportSummaryCapture),
+        helper_name: Some("__wr_world_support_summary_capture"),
+        legacy_builtin_name: "support_summary_world",
     },
     QueryExecutionBinding {
         contract_id: SPATIAL_NEAREST_CAPTURE_SHAPE,

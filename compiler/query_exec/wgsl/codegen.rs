@@ -296,8 +296,12 @@ fn emit_value_struct_recursive(
             }
             seen.insert(name.clone());
             writeln!(out, "struct {name} {{").ok();
-            for field in fields {
-                writeln!(out, "  {}: {},", field.name, value_type_name(&field.ty)?).ok();
+            if fields.is_empty() {
+                writeln!(out, "  _unit: u32,").ok();
+            } else {
+                for field in fields {
+                    writeln!(out, "  {}: {},", field.name, value_type_name(&field.ty)?).ok();
+                }
             }
             writeln!(out, "}}\n").ok();
             Ok(())
@@ -410,24 +414,36 @@ fn emit_conversion_recursive(
             seen.insert(name.clone());
             let abi_name = format!("Abi_{name}");
             writeln!(out, "fn to_{abi_name}(value: {name}) -> {abi_name} {{").ok();
-            write!(out, "  return {abi_name}(").ok();
-            for (index, field) in fields.iter().enumerate() {
-                if index > 0 {
-                    out.push_str(", ");
+            if fields.is_empty() {
+                writeln!(out, "  _ = value;").ok();
+                writeln!(out, "  return {abi_name}(0u);").ok();
+            } else {
+                write!(out, "  return {abi_name}(").ok();
+                for (index, field) in fields.iter().enumerate() {
+                    if index > 0 {
+                        out.push_str(", ");
+                    }
+                    out.push_str(&to_abi_expr(&field.ty, &format!("value.{}", field.name))?);
                 }
-                out.push_str(&to_abi_expr(&field.ty, &format!("value.{}", field.name))?);
+                out.push_str(");\n");
             }
-            out.push_str(");\n}\n\n");
+            out.push_str("}\n\n");
 
             writeln!(out, "fn from_{abi_name}(value: {abi_name}) -> {name} {{").ok();
-            write!(out, "  return {name}(").ok();
-            for (index, field) in fields.iter().enumerate() {
-                if index > 0 {
-                    out.push_str(", ");
+            if fields.is_empty() {
+                writeln!(out, "  _ = value;").ok();
+                writeln!(out, "  return {name}(0u);").ok();
+            } else {
+                write!(out, "  return {name}(").ok();
+                for (index, field) in fields.iter().enumerate() {
+                    if index > 0 {
+                        out.push_str(", ");
+                    }
+                    out.push_str(&from_abi_expr(&field.ty, &format!("value.{}", field.name))?);
                 }
-                out.push_str(&from_abi_expr(&field.ty, &format!("value.{}", field.name))?);
+                out.push_str(");\n");
             }
-            out.push_str(");\n}\n\n");
+            out.push_str("}\n\n");
             Ok(())
         }
         PortableAbiType::Value => Err(QueryExecError::Unsupported {

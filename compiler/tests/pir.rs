@@ -124,9 +124,11 @@ fn portable_builtin_catalog_matches_expected_surface() {
             "ShapeCapture",
             "SpatialDomainContract",
             "Support3",
+            "SupportSummaryResult",
             "Surface",
             "SurfaceDomainContract",
             "Transform3",
+            "UnitQuery",
         ]
     );
     assert_eq!(

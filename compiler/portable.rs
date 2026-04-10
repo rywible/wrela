@@ -92,6 +92,37 @@ const NORMAL_RESULT_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField {
     ty: TyAtom(Atom::Vec3),
 }];
 
+const SUPPORT_SUMMARY_RESULT_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "support_class",
+        ty: TyAtom(Atom::U32),
+    },
+    PortableBuiltinField {
+        name: "semantics",
+        ty: TyAtom(Atom::U32),
+    },
+    PortableBuiltinField {
+        name: "has_bounds",
+        ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "opaque_boundary",
+        ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "can_coarse_support_prune",
+        ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "min",
+        ty: TyAtom(Atom::Vec3),
+    },
+    PortableBuiltinField {
+        name: "max",
+        ty: TyAtom(Atom::Vec3),
+    },
+];
+
 const OCCLUSION_RESULT_FIELDS: &[PortableBuiltinField] = &[
     PortableBuiltinField {
         name: "occluded",
@@ -211,6 +242,8 @@ const POINT_QUERY_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField {
     name: "point",
     ty: TyAtom(Atom::Vec3),
 }];
+
+const UNIT_QUERY_FIELDS: &[PortableBuiltinField] = &[];
 
 const POINT_DIRECTION_QUERY_FIELDS: &[PortableBuiltinField] = &[
     PortableBuiltinField {
@@ -622,6 +655,18 @@ const BUILTIN_RECORDS: &[PortableBuiltinRecord] = &[
         function_name: None,
         constructible: true,
         fields: ACTOR_HANDLE_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "UnitQuery",
+        function_name: None,
+        constructible: true,
+        fields: UNIT_QUERY_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "SupportSummaryResult",
+        function_name: None,
+        constructible: true,
+        fields: SUPPORT_SUMMARY_RESULT_FIELDS,
     },
 ];
 

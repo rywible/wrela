@@ -804,6 +804,8 @@ fn executor_label(executor: PlanExecutor) -> &'static str {
     match executor {
         PlanExecutor::FieldDistanceCapture => "field-distance",
         PlanExecutor::ShapeDistanceCapture => "shape-distance",
+        PlanExecutor::FieldSupportSummaryCapture => "field-support-summary",
+        PlanExecutor::ShapeSupportSummaryCapture => "shape-support-summary",
         PlanExecutor::FieldNormalCapture => "field-normal",
         PlanExecutor::ShapeNormalCapture => "shape-normal",
         PlanExecutor::SceneTraceCapture => "scene-trace",
@@ -812,6 +814,7 @@ fn executor_label(executor: PlanExecutor) -> &'static str {
         PlanExecutor::SceneMediumCapture => "scene-medium",
         PlanExecutor::WorldDistanceCapture => "world-distance",
         PlanExecutor::WorldNormalCapture => "world-normal",
+        PlanExecutor::WorldSupportSummaryCapture => "world-support-summary",
         PlanExecutor::WorldTraceCapture => "world-trace",
         PlanExecutor::WorldSurfaceCapture => "world-surface",
         PlanExecutor::WorldRadianceCapture => "world-radiance",
@@ -846,6 +849,7 @@ mod tests {
 fn candidate_strategy_label(strategy: CandidateStrategy) -> &'static str {
     match strategy {
         CandidateStrategy::DirectFieldCapture => "direct-field-capture",
+        CandidateStrategy::SemanticSupportSummary => "semantic-support-summary",
         CandidateStrategy::ShapeBranchTraversal => "shape-branch-traversal",
         CandidateStrategy::SupportAcceleratedShapeTraversal => {
             "support-accelerated-shape-traversal"
@@ -892,6 +896,7 @@ fn capture_query_kind_label(kind: CaptureQueryKind) -> &'static str {
     match kind {
         CaptureQueryKind::Distance => "distance",
         CaptureQueryKind::Normal => "normal",
+        CaptureQueryKind::SupportSummary => "support-summary",
         CaptureQueryKind::Radiance => "radiance",
         CaptureQueryKind::Medium => "medium",
         CaptureQueryKind::Nearest => "nearest",
@@ -905,6 +910,7 @@ fn world_query_kind_label(kind: WorldQueryKind) -> &'static str {
     match kind {
         WorldQueryKind::Distance => "distance",
         WorldQueryKind::Normal => "normal",
+        WorldQueryKind::SupportSummary => "support-summary",
         WorldQueryKind::Radiance => "radiance",
         WorldQueryKind::Medium => "medium",
         WorldQueryKind::Nearest => "nearest",

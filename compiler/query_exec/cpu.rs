@@ -19,9 +19,10 @@ use crate::query_exec::world::{
 };
 use crate::query_plan::{BatchQueryKind, WorldQueryKind};
 use crate::scene_ir::{
-    FieldNode, RepeatKind, SceneArgExpr, SceneProfileExpr, SceneValueExpr, ShapeLeafRef,
-    ShapeMergeProvenancePolicy, ShapeNode, ShapeProvenanceExpr, ShapeSubtractProvenancePolicy,
-    SmoothKind, TransformKind,
+    DistanceSemantics, FieldNode, RepeatKind, SceneArgExpr, SceneProfileExpr, SceneValueExpr,
+    ShapeLeafRef, ShapeMergeProvenancePolicy, ShapeNode, ShapeProvenanceExpr,
+    ShapeSubtractProvenancePolicy, SmoothKind, SupportClass, SupportNodeId, SupportNodeKindSummary,
+    SupportPayload, TransformKind,
 };
 use smol_str::SmolStr;
 use std::cell::RefCell;
@@ -174,6 +175,22 @@ struct ShapeWinner {
     leaf: Option<ShapeLeafRef>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SupportBounds {
+    min: [f32; 3],
+    max: [f32; 3],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SupportSummaryParts {
+    support_class: SupportClass,
+    semantics: DistanceSemantics,
+    has_bounds: bool,
+    opaque_boundary: bool,
+    can_coarse_support_prune: bool,
+    bounds: SupportBounds,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct FieldLocalFrame<'a> {
     pub(crate) field_name: SmolStr,
@@ -301,6 +318,7 @@ impl<'a> DirectQueryOps<'a> {
                 };
                 Ok(KernelValue::Vec3(execute_world_normal(&mut backend)?))
             }
+            WorldQueryKind::SupportSummary => self.support_summary_for_region(&capture, detail),
             WorldQueryKind::Nearest | WorldQueryKind::Trace => {
                 let ray = expect_struct(args.get(2), "RayQuery")?;
                 self.execute_world_ray_hit(&capture, detail, ray, WorldQueryKind::Nearest)
@@ -615,6 +633,71 @@ impl<'a> DirectQueryOps<'a> {
                 message: "region captures are only valid for world queries".to_string(),
             }),
         }
+    }
+
+    pub(crate) fn support_summary_for_capture(
+        &self,
+        capture: &SmolStr,
+        capture_kind: crate::query_plan::CaptureKind,
+    ) -> Result<KernelValue, QueryExecError> {
+        self.note_artifact_load();
+        let summary = match capture_kind {
+            crate::query_plan::CaptureKind::Field => {
+                let scene = self.field_scene(capture)?;
+                let bounds = self.field_support_bounds(scene, scene.root_support_id)?;
+                SupportSummaryParts {
+                    support_class: scene.support_class,
+                    semantics: scene.semantics,
+                    has_bounds: bounds.is_some(),
+                    opaque_boundary: scene.opaque_boundary,
+                    can_coarse_support_prune: scene.can_coarse_support_pruning,
+                    bounds: bounds.unwrap_or_else(empty_support_bounds),
+                }
+            }
+            crate::query_plan::CaptureKind::Shape => {
+                let scene = self.shape_scene(capture)?;
+                let bounds = self.shape_support_bounds(scene, scene.root_support_id)?;
+                SupportSummaryParts {
+                    support_class: scene.support_class,
+                    semantics: scene.semantics,
+                    has_bounds: bounds.is_some(),
+                    opaque_boundary: scene.opaque_boundary,
+                    can_coarse_support_prune: scene.can_coarse_support_pruning,
+                    bounds: bounds.unwrap_or_else(empty_support_bounds),
+                }
+            }
+            crate::query_plan::CaptureKind::Region => {
+                return Err(QueryExecError::Unsupported {
+                    message: "region captures require support_summary_world".to_string(),
+                });
+            }
+        };
+        Ok(support_summary_value(summary))
+    }
+
+    pub(crate) fn support_summary_for_region(
+        &self,
+        capture: &SmolStr,
+        detail: i32,
+    ) -> Result<KernelValue, QueryExecError> {
+        self.note_artifact_load();
+        let shapes = self.resolve_world_shapes(capture, detail, None)?;
+        let mut shape_summaries = Vec::with_capacity(shapes.len());
+        for shape in shapes {
+            let scene = self.shape_scene(&shape)?;
+            let bounds = self.shape_support_bounds(scene, scene.root_support_id)?;
+            shape_summaries.push(SupportSummaryParts {
+                support_class: scene.support_class,
+                semantics: scene.semantics,
+                has_bounds: bounds.is_some(),
+                opaque_boundary: scene.opaque_boundary,
+                can_coarse_support_prune: scene.can_coarse_support_pruning,
+                bounds: bounds.unwrap_or_else(empty_support_bounds),
+            });
+        }
+        Ok(support_summary_value(merge_world_support_summaries(
+            &shape_summaries,
+        )))
     }
 
     pub(crate) fn eval_field_distance(
@@ -1923,6 +2006,239 @@ impl<'a> DirectQueryOps<'a> {
         }
     }
 
+    fn field_support_bounds(
+        &self,
+        scene: &crate::scene_ir::FieldScene,
+        id: SupportNodeId,
+    ) -> Result<Option<SupportBounds>, QueryExecError> {
+        let Some(record) = scene.support_records.iter().find(|record| record.id == id) else {
+            return Ok(None);
+        };
+        match record.kind {
+            SupportNodeKindSummary::Unknown
+            | SupportNodeKindSummary::Unbounded
+            | SupportNodeKindSummary::Periodic(_) => Ok(None),
+            SupportNodeKindSummary::Use => {
+                let Some(target) = record.target.as_ref() else {
+                    return Ok(None);
+                };
+                let target_scene = self.field_scene(target)?;
+                self.field_support_bounds(target_scene, target_scene.root_support_id)
+            }
+            SupportNodeKindSummary::Aabb
+            | SupportNodeKindSummary::Sphere
+            | SupportNodeKindSummary::OpaqueBoundary => self.support_payload_bounds(record),
+            SupportNodeKindSummary::Union => self.field_support_children_bounds(
+                scene,
+                &record.children,
+                merge_union_support_bounds,
+                false,
+            ),
+            SupportNodeKindSummary::Intersection => self.field_support_children_bounds(
+                scene,
+                &record.children,
+                merge_intersection_support_bounds,
+                true,
+            ),
+            SupportNodeKindSummary::Difference => record
+                .children
+                .first()
+                .copied()
+                .map(|child| self.field_support_bounds(scene, child))
+                .unwrap_or(Ok(None)),
+            SupportNodeKindSummary::Transform(kind) => {
+                let Some(child) = record.children.first().copied() else {
+                    return Ok(None);
+                };
+                let Some(bounds) = self.field_support_bounds(scene, child)? else {
+                    return Ok(None);
+                };
+                let param = match record.payload.as_ref() {
+                    Some(SupportPayload::Transform { param }) => param.as_ref(),
+                    _ => None,
+                };
+                self.transform_support_bounds(kind, param, bounds)
+            }
+            SupportNodeKindSummary::Repeat(_) => Ok(None),
+        }
+    }
+
+    fn shape_support_bounds(
+        &self,
+        scene: &crate::scene_ir::ShapeScene,
+        id: SupportNodeId,
+    ) -> Result<Option<SupportBounds>, QueryExecError> {
+        let Some(record) = scene.support_records.iter().find(|record| record.id == id) else {
+            return Ok(None);
+        };
+        match record.kind {
+            SupportNodeKindSummary::Unknown
+            | SupportNodeKindSummary::Unbounded
+            | SupportNodeKindSummary::Periodic(_) => Ok(None),
+            SupportNodeKindSummary::Use => {
+                let Some(target) = record.target.as_ref() else {
+                    return Ok(None);
+                };
+                let target_scene = self.shape_scene(target)?;
+                self.shape_support_bounds(target_scene, target_scene.root_support_id)
+            }
+            SupportNodeKindSummary::Aabb
+            | SupportNodeKindSummary::Sphere
+            | SupportNodeKindSummary::OpaqueBoundary => self.support_payload_bounds(record),
+            SupportNodeKindSummary::Union => self.shape_support_children_bounds(
+                scene,
+                &record.children,
+                merge_union_support_bounds,
+                false,
+            ),
+            SupportNodeKindSummary::Intersection => self.shape_support_children_bounds(
+                scene,
+                &record.children,
+                merge_intersection_support_bounds,
+                true,
+            ),
+            SupportNodeKindSummary::Difference => record
+                .children
+                .first()
+                .copied()
+                .map(|child| self.shape_support_bounds(scene, child))
+                .unwrap_or(Ok(None)),
+            SupportNodeKindSummary::Transform(kind) => {
+                let Some(child) = record.children.first().copied() else {
+                    return Ok(None);
+                };
+                let Some(bounds) = self.shape_support_bounds(scene, child)? else {
+                    return Ok(None);
+                };
+                let param = match record.payload.as_ref() {
+                    Some(SupportPayload::Transform { param }) => param.as_ref(),
+                    _ => None,
+                };
+                self.transform_support_bounds(kind, param, bounds)
+            }
+            SupportNodeKindSummary::Repeat(_) => Ok(None),
+        }
+    }
+
+    fn support_payload_bounds(
+        &self,
+        record: &crate::scene_ir::SupportNodeRecord,
+    ) -> Result<Option<SupportBounds>, QueryExecError> {
+        match record.payload.as_ref() {
+            Some(SupportPayload::Aabb { min, max }) => {
+                let min = self.eval_scene_constant(min)?;
+                let max = self.eval_scene_constant(max)?;
+                Ok(Some(SupportBounds {
+                    min: expect_vec3(Some(&min), "support min")?,
+                    max: expect_vec3(Some(&max), "support max")?,
+                }))
+            }
+            Some(SupportPayload::Sphere { center, radius }) => {
+                let center = self.eval_scene_constant(center)?;
+                let radius = self.eval_scene_constant(radius)?;
+                let center = expect_vec3(Some(&center), "support center")?;
+                let radius = expect_f32(Some(&radius), "support radius")?.abs();
+                Ok(Some(SupportBounds {
+                    min: [center[0] - radius, center[1] - radius, center[2] - radius],
+                    max: [center[0] + radius, center[1] + radius, center[2] + radius],
+                }))
+            }
+            Some(SupportPayload::OpaqueBoundary {
+                bounds: Some(bounds),
+            }) => {
+                let bounds_value = self.eval_scene_constant(bounds)?;
+                let bounds = expect_struct_ref(&bounds_value, "Bounds3")?;
+                Ok(Some(SupportBounds {
+                    min: expect_struct_vec3(bounds, "min")?,
+                    max: expect_struct_vec3(bounds, "max")?,
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn field_support_children_bounds(
+        &self,
+        scene: &crate::scene_ir::FieldScene,
+        children: &[SupportNodeId],
+        merge: fn(SupportBounds, SupportBounds) -> SupportBounds,
+        allow_partial: bool,
+    ) -> Result<Option<SupportBounds>, QueryExecError> {
+        let mut out = None;
+        for child in children {
+            match self.field_support_bounds(scene, *child)? {
+                Some(bounds) => {
+                    out = Some(match out {
+                        Some(current) => merge(current, bounds),
+                        None => bounds,
+                    });
+                }
+                None if !allow_partial => return Ok(None),
+                None => {}
+            }
+        }
+        Ok(out)
+    }
+
+    fn shape_support_children_bounds(
+        &self,
+        scene: &crate::scene_ir::ShapeScene,
+        children: &[SupportNodeId],
+        merge: fn(SupportBounds, SupportBounds) -> SupportBounds,
+        allow_partial: bool,
+    ) -> Result<Option<SupportBounds>, QueryExecError> {
+        let mut out = None;
+        for child in children {
+            match self.shape_support_bounds(scene, *child)? {
+                Some(bounds) => {
+                    out = Some(match out {
+                        Some(current) => merge(current, bounds),
+                        None => bounds,
+                    });
+                }
+                None if !allow_partial => return Ok(None),
+                None => {}
+            }
+        }
+        Ok(out)
+    }
+
+    fn transform_support_bounds(
+        &self,
+        kind: TransformKind,
+        param: Option<&SceneValueExpr>,
+        bounds: SupportBounds,
+    ) -> Result<Option<SupportBounds>, QueryExecError> {
+        let Some(param) = param else {
+            return Ok(Some(bounds));
+        };
+        let value = self.eval_scene_constant(param)?;
+        match kind {
+            TransformKind::Translate => {
+                let offset = expect_vec3(Some(&value), "support translate")?;
+                Ok(Some(SupportBounds {
+                    min: add3(bounds.min, offset),
+                    max: add3(bounds.max, offset),
+                }))
+            }
+            TransformKind::UniformScale => {
+                let scale = expect_f32(Some(&value), "support uniform scale")?;
+                let scaled = SupportBounds {
+                    min: mul3_scalar(bounds.min, scale),
+                    max: mul3_scalar(bounds.max, scale),
+                };
+                Ok(Some(normalize_support_bounds(scaled)))
+            }
+            TransformKind::Rotate
+            | TransformKind::AffineTransform
+            | TransformKind::Warp
+            | TransformKind::Bend
+            | TransformKind::Twist
+            | TransformKind::Taper
+            | TransformKind::Displace => Ok(None),
+        }
+    }
+
     fn eval_field_support_children(
         &self,
         scene: &crate::scene_ir::FieldScene,
@@ -2493,6 +2809,14 @@ impl CaptureQueryBackend for DirectQueryOps<'_> {
         capture_kind: crate::query_plan::CaptureKind,
     ) -> Result<[f32; 3], QueryExecError> {
         DirectQueryOps::eval_capture_normal(self, capture, point, capture_kind)
+    }
+
+    fn support_summary(
+        &self,
+        capture: &SmolStr,
+        capture_kind: crate::query_plan::CaptureKind,
+    ) -> Result<KernelValue, QueryExecError> {
+        DirectQueryOps::support_summary_for_capture(self, capture, capture_kind)
     }
 
     fn trace_shape(
@@ -4048,6 +4372,173 @@ fn chain_identity_component(current: u32, component: u32) -> u32 {
 
 fn add3(lhs: [f32; 3], rhs: [f32; 3]) -> [f32; 3] {
     [lhs[0] + rhs[0], lhs[1] + rhs[1], lhs[2] + rhs[2]]
+}
+
+fn mul3_scalar(value: [f32; 3], scalar: f32) -> [f32; 3] {
+    [value[0] * scalar, value[1] * scalar, value[2] * scalar]
+}
+
+fn empty_support_bounds() -> SupportBounds {
+    SupportBounds {
+        min: [0.0, 0.0, 0.0],
+        max: [0.0, 0.0, 0.0],
+    }
+}
+
+fn normalize_support_bounds(bounds: SupportBounds) -> SupportBounds {
+    SupportBounds {
+        min: [
+            bounds.min[0].min(bounds.max[0]),
+            bounds.min[1].min(bounds.max[1]),
+            bounds.min[2].min(bounds.max[2]),
+        ],
+        max: [
+            bounds.min[0].max(bounds.max[0]),
+            bounds.min[1].max(bounds.max[1]),
+            bounds.min[2].max(bounds.max[2]),
+        ],
+    }
+}
+
+fn merge_union_support_bounds(lhs: SupportBounds, rhs: SupportBounds) -> SupportBounds {
+    SupportBounds {
+        min: [
+            lhs.min[0].min(rhs.min[0]),
+            lhs.min[1].min(rhs.min[1]),
+            lhs.min[2].min(rhs.min[2]),
+        ],
+        max: [
+            lhs.max[0].max(rhs.max[0]),
+            lhs.max[1].max(rhs.max[1]),
+            lhs.max[2].max(rhs.max[2]),
+        ],
+    }
+}
+
+fn merge_intersection_support_bounds(lhs: SupportBounds, rhs: SupportBounds) -> SupportBounds {
+    normalize_support_bounds(SupportBounds {
+        min: [
+            lhs.min[0].max(rhs.min[0]),
+            lhs.min[1].max(rhs.min[1]),
+            lhs.min[2].max(rhs.min[2]),
+        ],
+        max: [
+            lhs.max[0].min(rhs.max[0]),
+            lhs.max[1].min(rhs.max[1]),
+            lhs.max[2].min(rhs.max[2]),
+        ],
+    })
+}
+
+fn merge_world_support_summaries(items: &[SupportSummaryParts]) -> SupportSummaryParts {
+    if items.is_empty() {
+        return SupportSummaryParts {
+            support_class: SupportClass::Unknown,
+            semantics: DistanceSemantics::ConservativeLowerBound,
+            has_bounds: false,
+            opaque_boundary: false,
+            can_coarse_support_prune: false,
+            bounds: empty_support_bounds(),
+        };
+    }
+
+    let support_class = if items
+        .iter()
+        .any(|item| matches!(item.support_class, SupportClass::Unbounded))
+    {
+        SupportClass::Unbounded
+    } else if items
+        .iter()
+        .any(|item| matches!(item.support_class, SupportClass::Periodic))
+    {
+        SupportClass::Periodic
+    } else if items
+        .iter()
+        .any(|item| matches!(item.support_class, SupportClass::Unknown))
+    {
+        SupportClass::Unknown
+    } else {
+        SupportClass::Bounded
+    };
+    let semantics = if items
+        .iter()
+        .any(|item| matches!(item.semantics, DistanceSemantics::UnknownOpaque))
+    {
+        DistanceSemantics::UnknownOpaque
+    } else if items.len() == 1 {
+        items[0].semantics
+    } else {
+        DistanceSemantics::ConservativeLowerBound
+    };
+    let has_bounds = items.iter().all(|item| item.has_bounds);
+    let bounds = if has_bounds {
+        items
+            .iter()
+            .map(|item| item.bounds)
+            .reduce(merge_union_support_bounds)
+            .unwrap_or_else(empty_support_bounds)
+    } else {
+        empty_support_bounds()
+    };
+    let opaque_boundary = items.iter().any(|item| item.opaque_boundary);
+    let can_coarse_support_prune = !opaque_boundary
+        && matches!(support_class, SupportClass::Bounded)
+        && items.iter().all(|item| item.can_coarse_support_prune);
+    SupportSummaryParts {
+        support_class,
+        semantics,
+        has_bounds,
+        opaque_boundary,
+        can_coarse_support_prune,
+        bounds,
+    }
+}
+
+fn support_class_code(class: SupportClass) -> u32 {
+    match class {
+        SupportClass::Unknown => 0,
+        SupportClass::Bounded => 1,
+        SupportClass::Periodic => 2,
+        SupportClass::Unbounded => 3,
+    }
+}
+
+fn distance_semantics_code(semantics: DistanceSemantics) -> u32 {
+    match semantics {
+        DistanceSemantics::ExactSignedDistance => 0,
+        DistanceSemantics::ConservativeLowerBound => 1,
+        DistanceSemantics::UnknownOpaque => 2,
+    }
+}
+
+fn support_summary_value(summary: SupportSummaryParts) -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("SupportSummaryResult"),
+        fields: vec![
+            (
+                SmolStr::new("support_class"),
+                KernelValue::U32(support_class_code(summary.support_class)),
+            ),
+            (
+                SmolStr::new("semantics"),
+                KernelValue::U32(distance_semantics_code(summary.semantics)),
+            ),
+            (
+                SmolStr::new("has_bounds"),
+                KernelValue::Bool(summary.has_bounds),
+            ),
+            (
+                SmolStr::new("opaque_boundary"),
+                KernelValue::Bool(summary.opaque_boundary),
+            ),
+            (
+                SmolStr::new("can_coarse_support_prune"),
+                KernelValue::Bool(summary.can_coarse_support_prune),
+            ),
+            (SmolStr::new("min"), KernelValue::Vec3(summary.bounds.min)),
+            (SmolStr::new("max"), KernelValue::Vec3(summary.bounds.max)),
+        ],
+    })
 }
 
 fn dot3(lhs: [f32; 3], rhs: [f32; 3]) -> f32 {
