@@ -105,8 +105,11 @@ fn nearest_contracts_are_canonical_and_trace_ids_are_compatibility_aliases() {
             descriptor.question,
             query_contract::QueryQuestionId::Nearest
         );
-        let binding = query_contract::query_execution_binding(legacy_id).unwrap();
-        assert_eq!(binding.contract_id, canonical_id);
+        assert!(
+            query_contract::query_legacy_builtin_name(legacy_id).is_some(),
+            "legacy id '{}' should resolve to the canonical contract's legacy execution name",
+            legacy_id.as_str()
+        );
     }
 }
 
@@ -181,13 +184,9 @@ fn family_namespace_members_resolve_through_contract_registry() {
     ];
 
     for (family, member, surface, capture_kind, contract_id, call) in cases {
-        let (descriptor, binding) = query_contract::query_contract_bundle_for_family_member(
-            family,
-            member,
-            surface,
-            capture_kind,
-        )
-        .unwrap_or_else(|| panic!("missing family member bundle for {call}"));
+        let descriptor =
+            query_contract::query_contract_for_family_member(family, member, surface, capture_kind)
+                .unwrap_or_else(|| panic!("missing family member bundle for {call}"));
         assert_eq!(descriptor.id, contract_id);
         assert_eq!(
             call,
@@ -197,11 +196,10 @@ fn family_namespace_members_resolve_through_contract_registry() {
                 query_contract::query_family_member_name(descriptor)
             )
         );
-        assert_eq!(binding.contract_id, contract_id);
     }
 
     assert!(
-        query_contract::query_contract_bundle_for_family_member(
+        query_contract::query_contract_for_family_member(
             query_contract::QueryFamilyId::Spatial,
             "distance",
             query_contract::QuerySurfaceKind::CaptureBatch,
@@ -211,7 +209,7 @@ fn family_namespace_members_resolve_through_contract_registry() {
         "scalar family members must not resolve to batch contracts"
     );
     assert!(
-        query_contract::query_contract_bundle_for_family_member(
+        query_contract::query_contract_for_family_member(
             query_contract::QueryFamilyId::Spatial,
             "distance_batch",
             query_contract::QuerySurfaceKind::CaptureScalar,
@@ -223,19 +221,34 @@ fn family_namespace_members_resolve_through_contract_registry() {
 }
 
 #[test]
-fn query_contract_registry_bindings_cover_every_descriptor() {
-    assert_eq!(
-        query_contract::query_contracts().len(),
-        query_contract::query_execution_bindings().len()
-    );
-
+fn query_family_member_names_round_trip_through_registry() {
     for descriptor in query_contract::query_contracts() {
-        let binding = query_contract::query_execution_binding(descriptor.id)
-            .expect("every descriptor should have an execution binding");
-        assert_eq!(binding.contract_id, descriptor.id);
-        assert!(!binding.legacy_builtin_name.is_empty());
-        assert!(binding.helper_name.is_some());
-        assert!(query_contract::query_contract_bundle(descriptor.id).is_some());
+        let member_name = query_contract::query_family_member_name(descriptor);
+        let resolved = query_contract::query_contract_for_family_member(
+            descriptor.family,
+            member_name,
+            descriptor.surface,
+            descriptor.capture_kind,
+        )
+        .unwrap_or_else(|| {
+            panic!(
+                "descriptor '{}' should round-trip through family member '{}'",
+                descriptor.id.as_str(),
+                member_name
+            )
+        });
+        assert_eq!(resolved.id, descriptor.id);
+    }
+}
+
+#[test]
+fn query_contract_registry_public_catalog_has_legacy_builtin_names() {
+    for descriptor in query_contract::query_contracts() {
+        assert!(
+            query_contract::query_legacy_builtin_name(descriptor.id).is_some(),
+            "public descriptor '{}' should expose its legacy authored builtin name",
+            descriptor.id.as_str()
+        );
     }
 }
 
@@ -297,11 +310,9 @@ fn query_contract_registry_exhaustively_maps_current_plan_surfaces() {
     ];
     for (plan, contract_id) in batch_cases {
         let descriptor = query_contract::query_contract(contract_id).unwrap();
-        let binding = query_contract::query_execution_binding(contract_id).unwrap();
         assert_eq!(plan.contract_id, contract_id);
         assert_eq!(plan.family, descriptor.family);
         assert_eq!(plan.surface, descriptor.surface);
-        assert_eq!(binding.helper_name, Some(plan.helper_name.as_str()));
     }
 
     let capture_cases = [
@@ -367,11 +378,9 @@ fn query_contract_registry_exhaustively_maps_current_plan_surfaces() {
     ];
     for (plan, contract_id) in capture_cases {
         let descriptor = query_contract::query_contract(contract_id).unwrap();
-        let binding = query_contract::query_execution_binding(contract_id).unwrap();
         assert_eq!(plan.contract_id, contract_id);
         assert_eq!(plan.family, descriptor.family);
         assert_eq!(plan.surface, descriptor.surface);
-        assert_eq!(binding.helper_name, Some(plan.helper_name.as_str()));
     }
 
     let world_cases = [
@@ -414,19 +423,15 @@ fn query_contract_registry_exhaustively_maps_current_plan_surfaces() {
     ];
     for (plan, contract_id) in world_cases {
         let descriptor = query_contract::query_contract(contract_id).unwrap();
-        let binding = query_contract::query_execution_binding(contract_id).unwrap();
         assert_eq!(plan.contract_id, contract_id);
         assert_eq!(plan.family, descriptor.family);
         assert_eq!(plan.surface, descriptor.surface);
-        assert_eq!(binding.helper_name, Some(plan.helper_name.as_str()));
     }
 }
 
 #[test]
 fn descriptor_driven_plan_builders_cover_every_registered_contract() {
     for descriptor in query_contract::query_contracts() {
-        let binding = query_contract::query_execution_binding(descriptor.id)
-            .expect("descriptor should have an execution binding");
         match descriptor.surface {
             query_contract::QuerySurfaceKind::CaptureScalar => {
                 let plan = CaptureQueryPlan::for_contract(descriptor.id, None)
@@ -437,8 +442,6 @@ fn descriptor_driven_plan_builders_cover_every_registered_contract() {
                 assert_eq!(plan.surface, descriptor.surface);
                 assert_eq!(plan.capture_kind, descriptor.capture_kind);
                 assert_eq!(plan.result_kind, descriptor.result_kind);
-                assert_eq!(plan.executor, binding.default_executor);
-                assert_eq!(binding.helper_name, Some(plan.helper_name.as_str()));
                 assert_eq!(plan.candidate_contract.item_kind, descriptor.item_kind);
                 assert_eq!(plan.result_contract.result_kind, descriptor.result_kind);
                 assert_eq!(
@@ -466,9 +469,7 @@ fn descriptor_driven_plan_builders_cover_every_registered_contract() {
                 assert_eq!(plan.family, descriptor.family);
                 assert_eq!(plan.surface, descriptor.surface);
                 assert_eq!(plan.result_kind, descriptor.result_kind);
-                assert_eq!(plan.executor, binding.default_executor);
                 assert_eq!(plan.backend, DispatchBackend::Auto);
-                assert_eq!(binding.helper_name, Some(plan.helper_name.as_str()));
                 assert_eq!(plan.dispatch_contract.item_kind, descriptor.item_kind);
                 assert_eq!(plan.dispatch_contract.result_kind, descriptor.result_kind);
                 assert_eq!(plan.candidate_contract.item_kind, descriptor.item_kind);
@@ -491,8 +492,6 @@ fn descriptor_driven_plan_builders_cover_every_registered_contract() {
                 assert_eq!(plan.surface, descriptor.surface);
                 assert_eq!(plan.capture_kind, descriptor.capture_kind);
                 assert_eq!(plan.backend, DispatchBackend::Auto);
-                assert_eq!(plan.executor, binding.default_executor);
-                assert_eq!(binding.helper_name, Some(plan.helper_name.as_str()));
                 assert_eq!(plan.dispatch_contract.item_kind, descriptor.item_kind);
                 assert_eq!(plan.dispatch_contract.result_kind, descriptor.result_kind);
                 assert_eq!(plan.candidate_contract.item_kind, descriptor.item_kind);
@@ -547,10 +546,11 @@ fn world_query_semantics_is_a_registry_wrapper() {
 
     for (kind, contract_id) in cases {
         let semantics = query_exec::world_query_semantics(kind);
-        let (descriptor, binding) = query_contract::query_contract_bundle(contract_id).unwrap();
+        let descriptor = query_contract::query_contract(contract_id).unwrap();
+        let legacy_builtin = query_contract::query_legacy_builtin_name(contract_id).unwrap();
         let expected_query_name = match kind {
             WorldQueryKind::Nearest => "nearest_world",
-            _ => binding.legacy_builtin_name,
+            _ => legacy_builtin,
         };
         assert_eq!(semantics.query_name, expected_query_name);
         assert_eq!(

@@ -6,6 +6,7 @@ use crate::query_plan::{
     ParticipantSelectionContract, PlanExecutor, PlanStage, PlanningObservability, PruningStrategy,
     QueryContractId, QueryFamilyId, QueryItemKind, QueryResultKind, QuerySurfaceKind,
     ResultRecordContract, SceneDomainFlag, SceneSummary, WorldQueryKind, WorldQueryPlan,
+    capture_query_kind_for_contract_id, world_query_kind_for_contract_id,
 };
 use rowan::TextRange;
 use smol_str::SmolStr;
@@ -415,7 +416,8 @@ impl From<&CaptureQueryPlan> for KernelCaptureQueryPlan {
             family: plan.family,
             surface: plan.surface,
             helper_name: plan.helper_name.clone(),
-            kind: plan.kind,
+            kind: capture_query_kind_for_contract_id(plan.contract_id)
+                .expect("capture query plan contract id must resolve"),
             capture_kind: plan.capture_kind,
             result_kind: plan.result_kind,
             executor: plan.executor,
@@ -443,7 +445,8 @@ impl From<&WorldQueryPlan> for KernelWorldQueryPlan {
             family: plan.family,
             surface: plan.surface,
             helper_name: plan.helper_name.clone(),
-            kind: plan.kind,
+            kind: world_query_kind_for_contract_id(plan.contract_id)
+                .expect("world query plan contract id must resolve"),
             backend: plan.backend,
             result_kind: plan.result_kind,
             executor: plan.executor,

@@ -285,6 +285,72 @@ fn capture_query_validation_rejects_participant_family_mismatch() {
 }
 
 #[test]
+fn query_plan_validation_rejects_legacy_kind_descriptor_mismatch() {
+    let mut capture_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Nearest, CaptureKind::Shape, None).unwrap(),
+    );
+    capture_plan.kind = CaptureQueryKind::Normal;
+    let capture_errors =
+        validate_capture_query_plan(&capture_plan).expect_err("capture kind mismatch");
+    assert!(
+        capture_errors
+            .iter()
+            .any(|error| error.message.contains("legacy kind"))
+    );
+
+    let mut world_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Nearest));
+    world_plan.kind = WorldQueryKind::Surface;
+    let world_errors = validate_world_query_plan(&world_plan).expect_err("world kind mismatch");
+    assert!(
+        world_errors
+            .iter()
+            .any(|error| error.message.contains("legacy kind"))
+    );
+
+    let mut batch_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Nearest,
+        DispatchBackend::Auto,
+        None,
+    ));
+    batch_plan.kind = BatchQueryKind::Surface;
+    let batch_errors = validate_batch_query_plan(&batch_plan).expect_err("batch kind mismatch");
+    assert!(
+        batch_errors
+            .iter()
+            .any(|error| error.message.contains("legacy kind"))
+    );
+}
+
+#[test]
+fn query_plan_validation_rejects_capture_kind_descriptor_mismatch() {
+    let mut capture_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Nearest, CaptureKind::Shape, None).unwrap(),
+    );
+    capture_plan.capture_kind = CaptureKind::Field;
+    let capture_errors =
+        validate_capture_query_plan(&capture_plan).expect_err("capture kind mismatch");
+    assert!(
+        capture_errors
+            .iter()
+            .any(|error| error.message.contains("capture kind"))
+    );
+
+    let mut batch_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Nearest,
+        DispatchBackend::Auto,
+        None,
+    ));
+    batch_plan.capture_kind = CaptureKind::Field;
+    let batch_errors = validate_batch_query_plan(&batch_plan).expect_err("batch capture mismatch");
+    assert!(
+        batch_errors
+            .iter()
+            .any(|error| error.message.contains("capture kind"))
+    );
+}
+
+#[test]
 fn world_query_plan_lowers_into_kernel_contract() {
     let plan = WorldQueryPlan::for_query_with_backend(
         WorldQueryKind::Trace,

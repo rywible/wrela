@@ -14,7 +14,7 @@ use crate::query_exec::world::{
     execute_world_surface,
 };
 use crate::query_exec::{QueryExecContext, QueryExecError, QueryExecutionObservability};
-use crate::query_plan::WorldQueryKind;
+use crate::query_plan::{WorldQueryKind, world_query_kind_for_contract_id};
 use crate::scene_ir::{
     ShapeLeafRef, ShapeMergeProvenancePolicy, ShapeNode, ShapeProvenanceExpr,
     ShapeSubtractProvenancePolicy,
@@ -743,14 +743,23 @@ impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
         plan: &KernelWorldQueryPlan,
         args: &[KernelValue],
     ) -> Result<KernelValue, QueryExecError> {
+        let kind = world_query_kind_for_contract_id(plan.contract_id).ok_or_else(|| {
+            QueryExecError::Unsupported {
+                message: format!(
+                    "missing world query contract '{}'",
+                    plan.contract_id.as_str()
+                ),
+            }
+        })?;
         let capture = self.runtime.resolve_region_capture(args.first())?;
         let domain = expect_struct_ref_arg(args.get(1), "SceneDomain")?;
         let detail = self.runtime.validate_world_domain(
             &capture,
             domain,
-            crate::query_exec::world::world_query_semantics(plan.kind).query_name,
+            crate::query_exec::world::world_query_semantics_for_contract(plan.contract_id)
+                .query_name,
         )?;
-        match plan.kind {
+        match kind {
             WorldQueryKind::Distance => {
                 let point = expect_vec3_arg(args.get(2), "point")?;
                 let mut backend = VirtualGpuWorldDistanceBackend {

@@ -1,7 +1,7 @@
 use self::DispatchBackend::{Auto, VirtualGpu, Wgsl};
 use crate::query_contract::{
     self, ParticipantContractKind, QueryContractDescriptor, QueryExecutionBinding,
-    QueryObservabilityProfile, QueryPlannerRecipeKind,
+    QueryObservabilityProfile, QueryQuestionId,
 };
 use crate::scene_ir::{DistanceSemantics, SupportClass};
 use smol_str::SmolStr;
@@ -450,51 +450,80 @@ fn participant_selection_kind(kind: ParticipantContractKind) -> CaptureQueryKind
     }
 }
 
-fn batch_query_kind_for_recipe(recipe: QueryPlannerRecipeKind) -> BatchQueryKind {
-    match recipe {
-        QueryPlannerRecipeKind::SpatialDistanceBatchField
-        | QueryPlannerRecipeKind::SpatialDistanceBatchShape => BatchQueryKind::Distance,
-        QueryPlannerRecipeKind::SpatialNormalBatchField
-        | QueryPlannerRecipeKind::SpatialNormalBatchShape => BatchQueryKind::Normal,
-        QueryPlannerRecipeKind::SpatialNearestBatchShape => BatchQueryKind::Nearest,
-        QueryPlannerRecipeKind::SpatialTraceBatchShape => BatchQueryKind::Trace,
-        QueryPlannerRecipeKind::SpatialOccludedBatchShape => BatchQueryKind::Occluded,
-        QueryPlannerRecipeKind::SurfaceSampleBatchShape => BatchQueryKind::Surface,
-        other => panic!("unexpected batch planner recipe: {other:?}"),
+pub(crate) fn batch_query_kind_for_descriptor(
+    descriptor: &QueryContractDescriptor,
+) -> Option<BatchQueryKind> {
+    if descriptor.surface != QuerySurfaceKind::CaptureBatch {
+        return None;
+    }
+    match (descriptor.family, descriptor.question) {
+        (QueryFamilyId::Spatial, QueryQuestionId::Distance) => Some(BatchQueryKind::Distance),
+        (QueryFamilyId::Spatial, QueryQuestionId::Normal) => Some(BatchQueryKind::Normal),
+        (QueryFamilyId::Spatial, QueryQuestionId::Nearest) => Some(BatchQueryKind::Nearest),
+        (QueryFamilyId::Spatial, QueryQuestionId::Occluded) => Some(BatchQueryKind::Occluded),
+        (QueryFamilyId::Surface, QueryQuestionId::Sample) => Some(BatchQueryKind::Surface),
+        _ => None,
     }
 }
 
-fn capture_query_kind_for_recipe(recipe: QueryPlannerRecipeKind) -> CaptureQueryKind {
-    match recipe {
-        QueryPlannerRecipeKind::SpatialDistanceCaptureField
-        | QueryPlannerRecipeKind::SpatialDistanceCaptureShape => CaptureQueryKind::Distance,
-        QueryPlannerRecipeKind::SpatialNormalCaptureField
-        | QueryPlannerRecipeKind::SpatialNormalCaptureShape => CaptureQueryKind::Normal,
-        QueryPlannerRecipeKind::SupportSummaryCaptureField
-        | QueryPlannerRecipeKind::SupportSummaryCaptureShape => CaptureQueryKind::SupportSummary,
-        QueryPlannerRecipeKind::SpatialNearestCaptureShape => CaptureQueryKind::Nearest,
-        QueryPlannerRecipeKind::SpatialTraceCaptureShape => CaptureQueryKind::Trace,
-        QueryPlannerRecipeKind::SpatialOccludedCaptureShape => CaptureQueryKind::Occluded,
-        QueryPlannerRecipeKind::SurfaceSampleCaptureShape => CaptureQueryKind::Surface,
-        QueryPlannerRecipeKind::ParticipantsRadianceCaptureShape => CaptureQueryKind::Radiance,
-        QueryPlannerRecipeKind::ParticipantsMediumCaptureShape => CaptureQueryKind::Medium,
-        other => panic!("unexpected capture planner recipe: {other:?}"),
+pub(crate) fn batch_query_kind_for_contract_id(
+    contract_id: QueryContractId,
+) -> Option<BatchQueryKind> {
+    query_contract::query_contract(contract_id).and_then(batch_query_kind_for_descriptor)
+}
+
+pub(crate) fn capture_query_kind_for_descriptor(
+    descriptor: &QueryContractDescriptor,
+) -> Option<CaptureQueryKind> {
+    if descriptor.surface != QuerySurfaceKind::CaptureScalar {
+        return None;
+    }
+    match (descriptor.family, descriptor.question) {
+        (QueryFamilyId::Spatial, QueryQuestionId::Distance) => Some(CaptureQueryKind::Distance),
+        (QueryFamilyId::Spatial, QueryQuestionId::Normal) => Some(CaptureQueryKind::Normal),
+        (QueryFamilyId::Spatial, QueryQuestionId::Nearest) => Some(CaptureQueryKind::Nearest),
+        (QueryFamilyId::Spatial, QueryQuestionId::Occluded) => Some(CaptureQueryKind::Occluded),
+        (QueryFamilyId::Surface, QueryQuestionId::Sample) => Some(CaptureQueryKind::Surface),
+        (QueryFamilyId::Participants, QueryQuestionId::Radiance) => {
+            Some(CaptureQueryKind::Radiance)
+        }
+        (QueryFamilyId::Participants, QueryQuestionId::Medium) => Some(CaptureQueryKind::Medium),
+        (QueryFamilyId::Support, QueryQuestionId::Summary) => {
+            Some(CaptureQueryKind::SupportSummary)
+        }
+        _ => None,
     }
 }
 
-fn world_query_kind_for_recipe(recipe: QueryPlannerRecipeKind) -> WorldQueryKind {
-    match recipe {
-        QueryPlannerRecipeKind::SpatialDistanceWorld => WorldQueryKind::Distance,
-        QueryPlannerRecipeKind::SpatialNormalWorld => WorldQueryKind::Normal,
-        QueryPlannerRecipeKind::SupportSummaryWorld => WorldQueryKind::SupportSummary,
-        QueryPlannerRecipeKind::SpatialNearestWorld => WorldQueryKind::Nearest,
-        QueryPlannerRecipeKind::SpatialTraceWorld => WorldQueryKind::Trace,
-        QueryPlannerRecipeKind::SpatialOccludedWorld => WorldQueryKind::Occluded,
-        QueryPlannerRecipeKind::SurfaceSampleWorld => WorldQueryKind::Surface,
-        QueryPlannerRecipeKind::ParticipantsRadianceWorld => WorldQueryKind::Radiance,
-        QueryPlannerRecipeKind::ParticipantsMediumWorld => WorldQueryKind::Medium,
-        other => panic!("unexpected world planner recipe: {other:?}"),
+pub(crate) fn capture_query_kind_for_contract_id(
+    contract_id: QueryContractId,
+) -> Option<CaptureQueryKind> {
+    query_contract::query_contract(contract_id).and_then(capture_query_kind_for_descriptor)
+}
+
+pub(crate) fn world_query_kind_for_descriptor(
+    descriptor: &QueryContractDescriptor,
+) -> Option<WorldQueryKind> {
+    if descriptor.surface != QuerySurfaceKind::WorldScalar {
+        return None;
     }
+    match (descriptor.family, descriptor.question) {
+        (QueryFamilyId::Spatial, QueryQuestionId::Distance) => Some(WorldQueryKind::Distance),
+        (QueryFamilyId::Spatial, QueryQuestionId::Normal) => Some(WorldQueryKind::Normal),
+        (QueryFamilyId::Spatial, QueryQuestionId::Nearest) => Some(WorldQueryKind::Nearest),
+        (QueryFamilyId::Spatial, QueryQuestionId::Occluded) => Some(WorldQueryKind::Occluded),
+        (QueryFamilyId::Surface, QueryQuestionId::Sample) => Some(WorldQueryKind::Surface),
+        (QueryFamilyId::Participants, QueryQuestionId::Radiance) => Some(WorldQueryKind::Radiance),
+        (QueryFamilyId::Participants, QueryQuestionId::Medium) => Some(WorldQueryKind::Medium),
+        (QueryFamilyId::Support, QueryQuestionId::Summary) => Some(WorldQueryKind::SupportSummary),
+        _ => None,
+    }
+}
+
+pub(crate) fn world_query_kind_for_contract_id(
+    contract_id: QueryContractId,
+) -> Option<WorldQueryKind> {
+    query_contract::query_contract(contract_id).and_then(world_query_kind_for_descriptor)
 }
 
 fn batch_item_contract_for_descriptor(
@@ -559,7 +588,7 @@ impl BatchQueryPlan {
         Self::for_descriptor(descriptor, binding, backend, scene)
     }
 
-    pub fn for_descriptor(
+    pub(crate) fn for_descriptor(
         descriptor: &'static QueryContractDescriptor,
         binding: &'static QueryExecutionBinding,
         backend: DispatchBackend,
@@ -577,7 +606,8 @@ impl BatchQueryPlan {
 
         let helper_name = helper_name(binding);
         let kernel = bound_kernel(binding);
-        let kind = batch_query_kind_for_recipe(binding.planner_recipe);
+        let kind = batch_query_kind_for_descriptor(descriptor)
+            .ok_or("batch query descriptor does not map to a batch question kind")?;
         let capture_kind = descriptor.capture_kind;
         let item_kind = descriptor.item_kind;
         let result_kind = descriptor.result_kind;
@@ -789,7 +819,7 @@ impl CaptureQueryPlan {
         Self::for_descriptor(descriptor, binding, scene)
     }
 
-    pub fn for_descriptor(
+    pub(crate) fn for_descriptor(
         descriptor: &'static QueryContractDescriptor,
         binding: &'static QueryExecutionBinding,
         scene: Option<SceneSummary>,
@@ -805,7 +835,8 @@ impl CaptureQueryPlan {
         let result_kind = descriptor.result_kind;
         let executor = binding.default_executor;
         let preserves_local_hit_context = descriptor.preserves_local_hit_context;
-        let kind = capture_query_kind_for_recipe(binding.planner_recipe);
+        let kind = capture_query_kind_for_descriptor(descriptor)
+            .ok_or("capture query descriptor does not map to a capture question kind")?;
         let capture_kind = descriptor.capture_kind;
         let candidate_strategy = match kind {
             CaptureQueryKind::SupportSummary => CandidateStrategy::SemanticSupportSummary,
@@ -968,7 +999,7 @@ impl WorldQueryPlan {
         Self::for_descriptor(descriptor, binding, backend)
     }
 
-    pub fn for_descriptor(
+    pub(crate) fn for_descriptor(
         descriptor: &'static QueryContractDescriptor,
         binding: &'static QueryExecutionBinding,
         backend: DispatchBackend,
@@ -988,7 +1019,8 @@ impl WorldQueryPlan {
         let executor = binding.default_executor;
         let preserves_local_hit_context = descriptor.preserves_local_hit_context;
         let item_kind = descriptor.item_kind;
-        let kind = world_query_kind_for_recipe(binding.planner_recipe);
+        let kind = world_query_kind_for_descriptor(descriptor)
+            .ok_or("world query descriptor does not map to a world question kind")?;
         let candidate_strategy = world_candidate_strategy(kind);
         let pruning_strategy = world_pruning_strategy(kind, candidate_strategy);
         let derived_artifacts = derive_world_artifacts(candidate_strategy, pruning_strategy);

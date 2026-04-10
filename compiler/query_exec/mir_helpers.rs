@@ -6430,7 +6430,9 @@ pub(crate) fn lower_shape_batch_queries_helper(
     ));
     debug_assert_eq!(plan.capture_kind, CaptureKind::Shape);
     let helper_name = plan.helper_name.clone();
-    match plan.kind {
+    let batch_kind =
+        batch_query_kind_for_contract_id(plan.contract_id).expect("batch query plan contract id must resolve");
+    match batch_kind {
         BatchQueryKind::Nearest | BatchQueryKind::Trace | BatchQueryKind::Occluded => {
             debug_assert!(matches!(
                 plan.candidate_strategy(),

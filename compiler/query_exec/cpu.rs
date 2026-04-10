@@ -2,6 +2,10 @@ use crate::hir;
 use crate::hir::body::{BinaryOp, Expr, Literal, UnaryOp};
 use crate::kernel::ir::{KernelBatchQueryPlan, KernelCaptureQueryPlan, KernelWorldQueryPlan};
 use crate::kernel::{KernelStructValue, KernelValue};
+use crate::kernel::{
+    KernelValidationError, validate_batch_query_plan, validate_capture_query_plan,
+    validate_world_query_plan,
+};
 use crate::portable;
 use crate::query_exec::QueryExecutionObservability;
 use crate::query_exec::capture::{self, CaptureQueryBackend, execute_batch_item_contract};
@@ -15,9 +19,12 @@ use crate::query_exec::world::{
     WorldDistanceBackend, WorldMediumBackend, WorldNormalBackend, WorldQueryBackend,
     WorldRadianceBackend, WorldSurfaceBackend, WorldTraceBackend, execute_world_distance,
     execute_world_medium, execute_world_normal, execute_world_radiance, execute_world_ray,
-    execute_world_surface, world_query_semantics,
+    execute_world_surface, world_query_semantics, world_query_semantics_for_contract,
 };
-use crate::query_plan::{BatchQueryKind, WorldQueryKind};
+use crate::query_plan::{
+    BatchQueryKind, WorldQueryKind, batch_query_kind_for_contract_id,
+    world_query_kind_for_contract_id,
+};
 use crate::scene_ir::{
     DistanceSemantics, FieldNode, RepeatKind, SceneArgExpr, SceneProfileExpr, SceneValueExpr,
     ShapeLeafRef, ShapeMergeProvenancePolicy, ShapeNode, ShapeProvenanceExpr,
@@ -102,6 +109,10 @@ pub(crate) fn execute_capture_query_with_observability(
 ) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
     let ops = DirectQueryOps::new(ctx);
     ops.note_dispatch();
+    if let Err(errors) = validate_capture_query_plan(plan) {
+        ops.note_contract_validation_failure();
+        return Err(validation_error("capture query", errors));
+    }
     let value = capture::execute_capture_query(&ops, plan, args)?;
     Ok((value, ops.snapshot_observability()))
 }
@@ -113,6 +124,10 @@ pub(crate) fn execute_world_query_with_observability(
 ) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
     let evaluator = DirectQueryEvaluator::new(ctx);
     evaluator.note_dispatch();
+    if let Err(errors) = validate_world_query_plan(plan) {
+        evaluator.note_contract_validation_failure();
+        return Err(validation_error("world query", errors));
+    }
     let value = evaluator.execute_world_query(plan, args)?;
     Ok((value, evaluator.snapshot_observability()))
 }
@@ -124,6 +139,10 @@ pub(crate) fn execute_batch_query_with_observability(
 ) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
     let evaluator = DirectQueryEvaluator::new(ctx);
     evaluator.note_dispatch();
+    if let Err(errors) = validate_batch_query_plan(plan) {
+        evaluator.note_contract_validation_failure();
+        return Err(validation_error("batch query", errors));
+    }
     let value = evaluator.execute_batch_query(plan, args)?;
     Ok((value, evaluator.snapshot_observability()))
 }
@@ -134,7 +153,7 @@ pub(crate) fn resolve_batch_capture(
     capture: Option<&KernelValue>,
 ) -> Result<SmolStr, QueryExecError> {
     let evaluator = DirectQueryEvaluator::new(ctx);
-    match plan.kind {
+    match batch_kind_for_plan(plan)? {
         BatchQueryKind::Distance | BatchQueryKind::Normal => {
             evaluator.resolve_field_or_shape_capture(capture)
         }
@@ -297,11 +316,12 @@ impl<'a> DirectQueryOps<'a> {
         plan: &KernelWorldQueryPlan,
         args: &[KernelValue],
     ) -> Result<KernelValue, QueryExecError> {
-        let semantics = world_query_semantics(plan.kind);
+        let kind = world_kind_for_plan(plan)?;
+        let semantics = world_query_semantics_for_contract(plan.contract_id);
         let capture = self.resolve_region_capture(args.first())?;
         let domain = expect_struct(args.get(1), "SceneDomain")?;
         let detail = self.validate_world_domain(&capture, domain, semantics.query_name)?;
-        match plan.kind {
+        match kind {
             WorldQueryKind::Distance => {
                 let point = expect_vec3(args.get(2), "point")?;
                 Ok(KernelValue::F32(
@@ -429,7 +449,8 @@ impl<'a> DirectQueryOps<'a> {
         plan: &KernelBatchQueryPlan,
         args: &[KernelValue],
     ) -> Result<KernelValue, QueryExecError> {
-        let capture = match plan.kind {
+        let kind = batch_kind_for_plan(plan)?;
+        let capture = match kind {
             BatchQueryKind::Distance | BatchQueryKind::Normal => {
                 self.resolve_field_or_shape_capture(args.first())
             }
@@ -440,9 +461,9 @@ impl<'a> DirectQueryOps<'a> {
         }?;
         let items = expect_array(
             args.get(1),
-            if matches!(plan.kind, BatchQueryKind::Distance | BatchQueryKind::Normal) {
+            if matches!(kind, BatchQueryKind::Distance | BatchQueryKind::Normal) {
                 "points"
-            } else if matches!(plan.kind, BatchQueryKind::Surface) {
+            } else if matches!(kind, BatchQueryKind::Surface) {
                 "hits"
             } else {
                 "rays"
@@ -2776,6 +2797,37 @@ impl<'a> DirectQueryOps<'a> {
             .rev()
             .find_map(|scope| scope.get(name).map(|variable| &variable.value))
     }
+}
+
+fn validation_error(label: &str, errors: Vec<KernelValidationError>) -> QueryExecError {
+    QueryExecError::Unsupported {
+        message: format!(
+            "{label} failed contract validation: {}",
+            errors
+                .into_iter()
+                .map(|error| error.message)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ),
+    }
+}
+
+fn batch_kind_for_plan(plan: &KernelBatchQueryPlan) -> Result<BatchQueryKind, QueryExecError> {
+    batch_query_kind_for_contract_id(plan.contract_id).ok_or_else(|| QueryExecError::Unsupported {
+        message: format!(
+            "missing batch query contract '{}'",
+            plan.contract_id.as_str()
+        ),
+    })
+}
+
+fn world_kind_for_plan(plan: &KernelWorldQueryPlan) -> Result<WorldQueryKind, QueryExecError> {
+    world_query_kind_for_contract_id(plan.contract_id).ok_or_else(|| QueryExecError::Unsupported {
+        message: format!(
+            "missing world query contract '{}'",
+            plan.contract_id.as_str()
+        ),
+    })
 }
 
 impl CaptureQueryBackend for DirectQueryOps<'_> {

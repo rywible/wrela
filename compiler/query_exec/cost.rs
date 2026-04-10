@@ -6,7 +6,8 @@ use crate::kernel::{
 use crate::query_plan::{
     BatchQueryKind, CandidateStrategy, CaptureKind, CaptureQueryKind, DerivedArtifact,
     DispatchBackend, PlanExecutor, PruningStrategy, QueryItemKind, SceneDomainFlag, SceneSummary,
-    WorldQueryKind,
+    WorldQueryKind, batch_query_kind_for_contract_id, capture_query_kind_for_contract_id,
+    world_query_kind_for_contract_id,
 };
 use crate::scene_ir::SupportClass;
 
@@ -116,7 +117,8 @@ pub(crate) fn capture_cost_report(
 ) -> SemanticCostReport {
     let context = SemanticCostContext {
         scope: SemanticQueryScope::Capture {
-            kind: plan.kind,
+            kind: capture_query_kind_for_contract_id(plan.contract_id)
+                .expect("capture query plan contract id must resolve"),
             capture_kind: plan.capture_kind,
         },
         backend,
@@ -145,7 +147,10 @@ pub(crate) fn world_cost_report(
     observability: &QueryExecutionObservability,
 ) -> SemanticCostReport {
     let context = SemanticCostContext {
-        scope: SemanticQueryScope::World { kind: plan.kind },
+        scope: SemanticQueryScope::World {
+            kind: world_query_kind_for_contract_id(plan.contract_id)
+                .expect("world query plan contract id must resolve"),
+        },
         backend,
         executor: plan.executor,
         item_kind: plan.dispatch_contract.item_kind,
@@ -175,7 +180,8 @@ pub(crate) fn batch_cost_report(
     let item_count = trace.iterations.len() as u32;
     let context = SemanticCostContext {
         scope: SemanticQueryScope::Batch {
-            kind: plan.kind,
+            kind: batch_query_kind_for_contract_id(plan.contract_id)
+                .expect("batch query plan contract id must resolve"),
             capture_kind: plan.capture_kind,
             item_count,
         },

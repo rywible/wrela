@@ -36,7 +36,7 @@ impl FunctionLowerer {
                 )?
             }
             ParsedQueryCall::Family { family, member } => {
-                query_contract::query_contract_bundle_for_family_member(
+                query_contract::query_contract_bundle_for_family_member_internal(
                     family,
                     member.as_str(),
                     surface,
@@ -154,20 +154,14 @@ impl FunctionLowerer {
         let capture_kind = self.capture_kind_for_expr(body, capture);
         let (descriptor, _binding) = match query {
             ParsedQueryCall::Legacy { name } => {
-                let capture_kind = match name.as_str() {
-                    "trace_shape_batch" | "surface_at_batch" | "occluded_batch" => {
-                        CaptureKind::Shape
-                    }
-                    _ => capture_kind,
-                };
-                query_contract::query_contract_bundle_for_legacy_builtin(
+                query_contract::query_contract_bundle_for_legacy_builtin_capture_candidates(
                     name.as_str(),
                     QuerySurfaceKind::CaptureBatch,
-                    capture_kind,
+                    &[capture_kind, CaptureKind::Shape, CaptureKind::Field],
                 )?
             }
             ParsedQueryCall::Family { family, member } => {
-                query_contract::query_contract_bundle_for_family_member(
+                query_contract::query_contract_bundle_for_family_member_internal(
                     family,
                     member.as_str(),
                     QuerySurfaceKind::CaptureBatch,
@@ -941,7 +935,8 @@ impl FunctionLowerer {
                 span,
             ),
             PlanExecutor::SceneTraceCapture => self.lower_batch_shape_trace_executor_value(
-                plan.kind,
+                batch_query_kind_for_contract_id(plan.contract_id)
+                    .expect("batch query plan contract id must resolve"),
                 capture,
                 inputs
                     .origin
@@ -1127,14 +1122,22 @@ impl FunctionLowerer {
                     self.lower_field_distance_call(&name, point.clone(), span)
                 }
                 PlanExecutor::ShapeDistanceCapture => {
-                    let mode = self.shape_point_batch_execution_mode(plan.kind, &name);
+                    let mode = self.shape_point_batch_execution_mode(
+                        batch_query_kind_for_contract_id(plan.contract_id)
+                            .expect("batch query plan contract id must resolve"),
+                        &name,
+                    );
                     self.lower_shape_distance_call_with_mode(&name, point.clone(), span, mode)
                 }
                 PlanExecutor::FieldNormalCapture => {
                     self.lower_field_normal_call(&name, point.clone(), span)
                 }
                 PlanExecutor::ShapeNormalCapture => {
-                    let mode = self.shape_point_batch_execution_mode(plan.kind, &name);
+                    let mode = self.shape_point_batch_execution_mode(
+                        batch_query_kind_for_contract_id(plan.contract_id)
+                            .expect("batch query plan contract id must resolve"),
+                        &name,
+                    );
                     self.lower_shape_normal_call_with_mode(&name, point.clone(), span, mode)
                 }
                 _ => unreachable!(),

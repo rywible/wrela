@@ -40,6 +40,7 @@ use crate::query_plan::{
     BatchQueryKind, BatchQueryPlan, CandidateStrategy, CaptureKind, CaptureQueryKind,
     CaptureQueryPlan, DispatchBackend, InternalKernelKind, PlanExecutor, PruningStrategy,
     QueryItemKind, QueryResultKind, SceneSummary, WorldQueryKind, WorldQueryPlan,
+    batch_query_kind_for_contract_id,
 };
 use crate::scene_ir;
 use rowan::TextRange;

@@ -5,7 +5,7 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const PREVIEW_TIMEOUT: Duration = Duration::from_secs(60);
+const PREVIEW_TIMEOUT: Duration = Duration::from_secs(120);
 
 fn preview_run_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

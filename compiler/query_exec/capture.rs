@@ -1,7 +1,7 @@
 use crate::kernel::ir::{KernelBatchItemContract, KernelCaptureQueryPlan};
 use crate::kernel::{KernelStructValue, KernelValue};
 use crate::query_exec::cpu::QueryExecError;
-use crate::query_plan::CaptureKind;
+use crate::query_plan::{CaptureKind, CaptureQueryKind, capture_query_kind_for_contract_id};
 use smol_str::SmolStr;
 
 pub(crate) trait CaptureQueryBackend {
@@ -59,8 +59,9 @@ pub(crate) fn execute_capture_query<B: CaptureQueryBackend>(
     plan: &KernelCaptureQueryPlan,
     args: &[KernelValue],
 ) -> Result<KernelValue, QueryExecError> {
-    match plan.kind {
-        crate::query_plan::CaptureQueryKind::Distance => {
+    let kind = capture_kind_for_plan(plan)?;
+    match kind {
+        CaptureQueryKind::Distance => {
             let capture = backend.resolve_field_or_shape_capture(args.first())?;
             let point = expect_vec3_arg(args.get(1), "point")?;
             Ok(KernelValue::F32(backend.capture_distance(
@@ -69,7 +70,7 @@ pub(crate) fn execute_capture_query<B: CaptureQueryBackend>(
                 plan.capture_kind,
             )?))
         }
-        crate::query_plan::CaptureQueryKind::Normal => {
+        CaptureQueryKind::Normal => {
             let capture = backend.resolve_field_or_shape_capture(args.first())?;
             let point = expect_vec3_arg(args.get(1), "point")?;
             Ok(KernelValue::Vec3(backend.capture_normal(
@@ -78,36 +79,35 @@ pub(crate) fn execute_capture_query<B: CaptureQueryBackend>(
                 plan.capture_kind,
             )?))
         }
-        crate::query_plan::CaptureQueryKind::SupportSummary => {
+        CaptureQueryKind::SupportSummary => {
             let capture = backend.resolve_field_or_shape_capture(args.first())?;
             backend.support_summary(&capture, plan.capture_kind)
         }
-        crate::query_plan::CaptureQueryKind::Nearest
-        | crate::query_plan::CaptureQueryKind::Trace => {
+        CaptureQueryKind::Nearest | CaptureQueryKind::Trace => {
             let capture = backend.resolve_shape_capture(args.first())?;
             let ray = expect_struct_ref_arg(args.get(1), "RayQuery")?;
             execute_capture_ray_hit(backend, &capture, ray)
         }
-        crate::query_plan::CaptureQueryKind::Occluded => {
+        CaptureQueryKind::Occluded => {
             let capture = backend.resolve_shape_capture(args.first())?;
             let ray = expect_struct_ref_arg(args.get(1), "RayQuery")?;
             let hit = execute_capture_ray_hit(backend, &capture, ray)?;
             let hit = expect_struct_ref_arg(Some(&hit), "Hit3")?;
             occlusion_result_from_hit(hit)
         }
-        crate::query_plan::CaptureQueryKind::Surface => {
+        CaptureQueryKind::Surface => {
             let capture = backend.resolve_shape_capture(args.first())?;
             let hit = expect_struct_ref_arg(args.get(1), "Hit3")?;
             backend.surface_at(&capture, hit)
         }
-        crate::query_plan::CaptureQueryKind::Radiance => {
+        CaptureQueryKind::Radiance => {
             let capture = backend.resolve_shape_capture(args.first())?;
             let sample = expect_struct_ref_arg(args.get(1), "PointDirectionQuery")?;
             let point = expect_struct_vec3(sample, "point")?;
             let direction = expect_struct_vec3(sample, "direction")?;
             backend.radiance_at(&capture, point, direction)
         }
-        crate::query_plan::CaptureQueryKind::Medium => {
+        CaptureQueryKind::Medium => {
             let capture = backend.resolve_shape_capture(args.first())?;
             let point = expect_vec3_arg(args.get(1), "point")?;
             backend.medium_at(&capture, point)
@@ -123,13 +123,14 @@ pub(crate) fn execute_batch_item_contract<B: CaptureQueryBackend>(
 ) -> Result<KernelValue, QueryExecError> {
     match contract {
         KernelBatchItemContract::CaptureQuery { plan } => {
+            let kind = capture_kind_for_plan(plan)?;
             let args = build_batch_capture_args(plan, capture, item)?;
             let value = execute_capture_query(backend, plan, &args)?;
-            match plan.kind {
-                crate::query_plan::CaptureQueryKind::Distance => {
+            match kind {
+                CaptureQueryKind::Distance => {
                     Ok(distance_result(expect_f32_arg(Some(&value), "distance")?))
                 }
-                crate::query_plan::CaptureQueryKind::Normal => {
+                CaptureQueryKind::Normal => {
                     Ok(normal_result(expect_vec3_arg(Some(&value), "normal")?))
                 }
                 _ => Ok(value),
@@ -203,33 +204,43 @@ fn build_batch_capture_args(
     if let Some(capture) = capture {
         args.push(capture.clone());
     }
-    match plan.kind {
-        crate::query_plan::CaptureQueryKind::Distance
-        | crate::query_plan::CaptureQueryKind::Normal => {
+    match capture_kind_for_plan(plan)? {
+        CaptureQueryKind::Distance | CaptureQueryKind::Normal => {
             let point = expect_struct_ref_arg(Some(item), "PointQuery")?;
             args.push(KernelValue::Vec3(expect_struct_vec3(point, "point")?));
         }
-        crate::query_plan::CaptureQueryKind::SupportSummary => {}
-        crate::query_plan::CaptureQueryKind::Nearest
-        | crate::query_plan::CaptureQueryKind::Trace
-        | crate::query_plan::CaptureQueryKind::Occluded => {
+        CaptureQueryKind::SupportSummary => {}
+        CaptureQueryKind::Nearest | CaptureQueryKind::Trace | CaptureQueryKind::Occluded => {
             expect_struct_ref_arg(Some(item), "RayQuery")?;
             args.push(item.clone());
         }
-        crate::query_plan::CaptureQueryKind::Surface => {
+        CaptureQueryKind::Surface => {
             expect_struct_ref_arg(Some(item), "Hit3")?;
             args.push(item.clone());
         }
-        crate::query_plan::CaptureQueryKind::Radiance => {
+        CaptureQueryKind::Radiance => {
             expect_struct_ref_arg(Some(item), "PointDirectionQuery")?;
             args.push(item.clone());
         }
-        crate::query_plan::CaptureQueryKind::Medium => {
+        CaptureQueryKind::Medium => {
             let point = expect_struct_ref_arg(Some(item), "PointQuery")?;
             args.push(KernelValue::Vec3(expect_struct_vec3(point, "point")?));
         }
     }
     Ok(args)
+}
+
+fn capture_kind_for_plan(
+    plan: &KernelCaptureQueryPlan,
+) -> Result<CaptureQueryKind, QueryExecError> {
+    capture_query_kind_for_contract_id(plan.contract_id).ok_or_else(|| {
+        QueryExecError::Unsupported {
+            message: format!(
+                "missing capture query contract '{}'",
+                plan.contract_id.as_str()
+            ),
+        }
+    })
 }
 
 fn expect_vec3_arg(

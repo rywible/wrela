@@ -7,11 +7,14 @@ use crate::portable::{
     BUILTIN_FIELD_PRIMITIVE_FUNCTIONS, BUILTIN_HELPER_FUNCTIONS, builtin_record_by_function,
 };
 use crate::query_contract::{
-    ParticipantContractKind, QueryContractId, QueryFamilyId, QuerySurfaceKind, query_contract,
+    CaptureKind, ParticipantContractKind, QueryContractId, QueryFamilyId, QuerySurfaceKind,
+    query_contract,
 };
 use crate::query_plan::{
-    ArtifactContract, ArtifactSchema, CaptureQueryKind, DerivedArtifact, DispatchRecordContract,
-    QueryItemKind, QueryResultKind, ResultRecordContract, SceneDomainFlag,
+    ArtifactContract, ArtifactSchema, BatchQueryKind, CaptureQueryKind, DerivedArtifact,
+    DispatchRecordContract, QueryItemKind, QueryResultKind, ResultRecordContract, SceneDomainFlag,
+    WorldQueryKind, batch_query_kind_for_descriptor, capture_query_kind_for_descriptor,
+    world_query_kind_for_descriptor,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +188,13 @@ pub fn validate_batch_query_plan(
         plan.preserves_local_hit_context,
         &mut errors,
     );
+    validate_batch_contract_authority(
+        plan.contract_id,
+        plan.contract_version,
+        plan.kind,
+        plan.capture_kind,
+        &mut errors,
+    );
     if let Some(descriptor) = query_contract(plan.contract_id)
         && !descriptor.supported_backends.supports(plan.backend)
     {
@@ -248,6 +258,13 @@ pub fn validate_capture_query_plan(
             .as_ref()
             .map(|contract| contract.kind),
         plan.preserves_local_hit_context,
+        &mut errors,
+    );
+    validate_capture_contract_authority(
+        plan.contract_id,
+        plan.contract_version,
+        plan.kind,
+        plan.capture_kind,
         &mut errors,
     );
     if errors.is_empty() {
@@ -325,6 +342,12 @@ pub fn validate_world_query_plan(
             .as_ref()
             .map(|contract| contract.kind),
         plan.preserves_local_hit_context,
+        &mut errors,
+    );
+    validate_world_contract_authority(
+        plan.contract_id,
+        plan.contract_version,
+        plan.kind,
         &mut errors,
     );
     if let Some(descriptor) = query_contract(plan.contract_id)
@@ -473,6 +496,102 @@ fn validate_query_contract_descriptor(
                 preserves_local_hit_context,
                 descriptor.version,
                 descriptor.preserves_local_hit_context
+            ),
+        });
+    }
+}
+
+fn validate_batch_contract_authority(
+    contract_id: QueryContractId,
+    contract_version: u32,
+    kind: BatchQueryKind,
+    capture_kind: CaptureKind,
+    errors: &mut Vec<KernelValidationError>,
+) {
+    let Some(descriptor) = query_contract(contract_id) else {
+        return;
+    };
+    if let Some(expected_kind) = batch_query_kind_for_descriptor(descriptor)
+        && expected_kind != kind
+    {
+        errors.push(KernelValidationError {
+            message: format!(
+                "batch query contract '{}' v{} legacy kind {:?} does not match descriptor question {:?}",
+                contract_id.as_str(),
+                contract_version,
+                kind,
+                descriptor.question
+            ),
+        });
+    }
+    if descriptor.capture_kind != capture_kind {
+        errors.push(KernelValidationError {
+            message: format!(
+                "batch query contract '{}' v{} capture kind {:?} does not match descriptor capture kind {:?}",
+                contract_id.as_str(),
+                contract_version,
+                capture_kind,
+                descriptor.capture_kind
+            ),
+        });
+    }
+}
+
+fn validate_capture_contract_authority(
+    contract_id: QueryContractId,
+    contract_version: u32,
+    kind: CaptureQueryKind,
+    capture_kind: CaptureKind,
+    errors: &mut Vec<KernelValidationError>,
+) {
+    let Some(descriptor) = query_contract(contract_id) else {
+        return;
+    };
+    if let Some(expected_kind) = capture_query_kind_for_descriptor(descriptor)
+        && expected_kind != kind
+    {
+        errors.push(KernelValidationError {
+            message: format!(
+                "capture query contract '{}' v{} legacy kind {:?} does not match descriptor question {:?}",
+                contract_id.as_str(),
+                contract_version,
+                kind,
+                descriptor.question
+            ),
+        });
+    }
+    if descriptor.capture_kind != capture_kind {
+        errors.push(KernelValidationError {
+            message: format!(
+                "capture query contract '{}' v{} capture kind {:?} does not match descriptor capture kind {:?}",
+                contract_id.as_str(),
+                contract_version,
+                capture_kind,
+                descriptor.capture_kind
+            ),
+        });
+    }
+}
+
+fn validate_world_contract_authority(
+    contract_id: QueryContractId,
+    contract_version: u32,
+    kind: WorldQueryKind,
+    errors: &mut Vec<KernelValidationError>,
+) {
+    let Some(descriptor) = query_contract(contract_id) else {
+        return;
+    };
+    if let Some(expected_kind) = world_query_kind_for_descriptor(descriptor)
+        && expected_kind != kind
+    {
+        errors.push(KernelValidationError {
+            message: format!(
+                "world query contract '{}' v{} legacy kind {:?} does not match descriptor question {:?}",
+                contract_id.as_str(),
+                contract_version,
+                kind,
+                descriptor.question
             ),
         });
     }

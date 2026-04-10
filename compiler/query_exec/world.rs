@@ -1,4 +1,4 @@
-use crate::query_contract::{query_contract_bundle, scene_domain_flag_name};
+use crate::query_contract::{QueryContractId, query_contract_bundle, scene_domain_flag_name};
 use crate::query_plan::{WorldQueryKind, world_query_contract_id};
 use smol_str::SmolStr;
 
@@ -10,6 +10,16 @@ pub struct WorldQuerySemantics {
 
 pub fn world_query_semantics(kind: WorldQueryKind) -> WorldQuerySemantics {
     let contract_id = world_query_contract_id(kind);
+    let mut semantics = world_query_semantics_for_contract(contract_id);
+    if matches!(kind, WorldQueryKind::Trace) {
+        semantics.query_name = "trace_world";
+    }
+    semantics
+}
+
+pub(crate) fn world_query_semantics_for_contract(
+    contract_id: QueryContractId,
+) -> WorldQuerySemantics {
     let Some((descriptor, binding)) = query_contract_bundle(contract_id) else {
         panic!(
             "missing world query contract bundle for '{}'",
@@ -17,8 +27,8 @@ pub fn world_query_semantics(kind: WorldQueryKind) -> WorldQuerySemantics {
         );
     };
     WorldQuerySemantics {
-        query_name: match kind {
-            WorldQueryKind::Nearest => "nearest_world",
+        query_name: match descriptor.question {
+            crate::query_contract::QueryQuestionId::Nearest => "nearest_world",
             _ => binding.legacy_builtin_name,
         },
         domain_flag: descriptor

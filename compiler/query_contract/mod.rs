@@ -271,7 +271,20 @@ impl QueryObservabilityProfile {
         }
     }
 
-    pub const fn spatial() -> Self {
+    pub const fn spatial_point() -> Self {
+        Self {
+            candidate_count: true,
+            branch_visits: true,
+            support_prune_effectiveness: true,
+            culling_hit_rate: true,
+            trace_steps: false,
+            field_samples: true,
+            artifact_sizes: true,
+            dispatch_overhead: true,
+        }
+    }
+
+    pub const fn spatial_ray() -> Self {
         Self {
             candidate_count: true,
             branch_visits: true,
@@ -317,7 +330,7 @@ pub struct QueryContractDescriptor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct QueryExecutionBinding {
+pub(crate) struct QueryExecutionBinding {
     pub contract_id: QueryContractId,
     pub planner_recipe: QueryPlannerRecipeKind,
     pub default_executor: PlanExecutor,
@@ -408,7 +421,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: false,
         participant_kind: None,
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_point(),
     },
     QueryContractDescriptor {
         id: SPATIAL_DISTANCE_CAPTURE_SHAPE,
@@ -424,7 +437,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: false,
         participant_kind: None,
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_point(),
     },
     QueryContractDescriptor {
         id: SPATIAL_DISTANCE_WORLD,
@@ -440,7 +453,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: false,
         participant_kind: None,
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_point(),
     },
     QueryContractDescriptor {
         id: SPATIAL_DISTANCE_BATCH_FIELD,
@@ -456,7 +469,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: false,
         participant_kind: None,
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_point(),
     },
     QueryContractDescriptor {
         id: SPATIAL_DISTANCE_BATCH_SHAPE,
@@ -472,7 +485,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: false,
         participant_kind: None,
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_point(),
     },
     QueryContractDescriptor {
         id: SPATIAL_NORMAL_CAPTURE_FIELD,
@@ -488,7 +501,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: false,
         participant_kind: None,
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_point(),
     },
     QueryContractDescriptor {
         id: SPATIAL_NORMAL_CAPTURE_SHAPE,
@@ -504,7 +517,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: false,
         participant_kind: None,
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_point(),
     },
     QueryContractDescriptor {
         id: SPATIAL_NORMAL_WORLD,
@@ -520,7 +533,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: false,
         participant_kind: None,
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_point(),
     },
     QueryContractDescriptor {
         id: SPATIAL_NORMAL_BATCH_FIELD,
@@ -536,7 +549,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: false,
         participant_kind: None,
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_point(),
     },
     QueryContractDescriptor {
         id: SPATIAL_NORMAL_BATCH_SHAPE,
@@ -552,7 +565,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: false,
         participant_kind: None,
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_point(),
     },
     QueryContractDescriptor {
         id: SUPPORT_SUMMARY_CAPTURE_FIELD,
@@ -616,7 +629,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: true,
         participant_kind: None,
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_ray(),
     },
     QueryContractDescriptor {
         id: SPATIAL_NEAREST_BATCH_SHAPE,
@@ -632,7 +645,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: true,
         participant_kind: None,
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_ray(),
     },
     QueryContractDescriptor {
         id: SPATIAL_NEAREST_WORLD,
@@ -648,7 +661,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: true,
         participant_kind: None,
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_ray(),
     },
     QueryContractDescriptor {
         id: SPATIAL_OCCLUDED_CAPTURE_SHAPE,
@@ -664,7 +677,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: true,
         participant_kind: None,
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_ray(),
     },
     QueryContractDescriptor {
         id: SPATIAL_OCCLUDED_BATCH_SHAPE,
@@ -680,7 +693,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: true,
         participant_kind: None,
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_ray(),
     },
     QueryContractDescriptor {
         id: SPATIAL_OCCLUDED_WORLD,
@@ -696,7 +709,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: true,
         participant_kind: None,
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_ray(),
     },
     QueryContractDescriptor {
         id: SURFACE_SAMPLE_CAPTURE_SHAPE,
@@ -760,7 +773,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: false,
         participant_kind: Some(ParticipantContractKind::Radiance),
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_point(),
     },
     QueryContractDescriptor {
         id: PARTICIPANTS_RADIANCE_WORLD,
@@ -776,7 +789,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: false,
         participant_kind: Some(ParticipantContractKind::Radiance),
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_point(),
     },
     QueryContractDescriptor {
         id: PARTICIPANTS_MEDIUM_CAPTURE_SHAPE,
@@ -792,7 +805,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: false,
         participant_kind: Some(ParticipantContractKind::Medium),
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_point(),
     },
     QueryContractDescriptor {
         id: PARTICIPANTS_MEDIUM_WORLD,
@@ -808,7 +821,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         preserves_local_hit_context: false,
         participant_kind: Some(ParticipantContractKind::Medium),
         supported_backends: BackendSupport::all(),
-        observability: QueryObservabilityProfile::spatial(),
+        observability: QueryObservabilityProfile::spatial_point(),
     },
 ];
 
@@ -1198,7 +1211,17 @@ pub fn query_family_member_name(descriptor: &QueryContractDescriptor) -> &'stati
     }
 }
 
-pub fn query_contract_bundle_for_family_member(
+pub fn query_contract_for_family_member(
+    family: QueryFamilyId,
+    member: &str,
+    surface: QuerySurfaceKind,
+    capture_kind: CaptureKind,
+) -> Option<&'static QueryContractDescriptor> {
+    query_contract_bundle_for_family_member_internal(family, member, surface, capture_kind)
+        .map(|(descriptor, _binding)| descriptor)
+}
+
+pub(crate) fn query_contract_bundle_for_family_member_internal(
     family: QueryFamilyId,
     member: &str,
     surface: QuerySurfaceKind,
@@ -1231,7 +1254,7 @@ pub fn query_contracts() -> &'static [QueryContractDescriptor] {
     &QUERY_CONTRACTS
 }
 
-pub fn query_execution_bindings() -> &'static [QueryExecutionBinding] {
+pub(crate) fn query_execution_bindings() -> &'static [QueryExecutionBinding] {
     &QUERY_EXECUTION_BINDINGS
 }
 
@@ -1253,14 +1276,20 @@ pub fn query_contract(id: QueryContractId) -> Option<&'static QueryContractDescr
         .find(|descriptor| descriptor.id == id)
 }
 
-pub fn query_execution_binding(id: QueryContractId) -> Option<&'static QueryExecutionBinding> {
+pub fn query_legacy_builtin_name(id: QueryContractId) -> Option<&'static str> {
+    query_execution_binding(id).map(|binding| binding.legacy_builtin_name)
+}
+
+pub(crate) fn query_execution_binding(
+    id: QueryContractId,
+) -> Option<&'static QueryExecutionBinding> {
     let id = canonical_query_contract_id(id);
     QUERY_EXECUTION_BINDINGS
         .iter()
         .find(|binding| binding.contract_id == id)
 }
 
-pub fn query_contract_bundle(
+pub(crate) fn query_contract_bundle(
     id: QueryContractId,
 ) -> Option<(
     &'static QueryContractDescriptor,
@@ -1269,7 +1298,7 @@ pub fn query_contract_bundle(
     Some((query_contract(id)?, query_execution_binding(id)?))
 }
 
-pub fn query_contract_bundle_for_legacy_builtin(
+pub(crate) fn query_contract_bundle_for_legacy_builtin(
     legacy_builtin_name: &str,
     surface: QuerySurfaceKind,
     capture_kind: CaptureKind,
@@ -1285,4 +1314,36 @@ pub fn query_contract_bundle_for_legacy_builtin(
             (descriptor.surface == surface && descriptor.capture_kind == capture_kind)
                 .then_some((descriptor, binding))
         })
+}
+
+pub(crate) fn query_contract_bundle_for_legacy_builtin_capture_candidates(
+    legacy_builtin_name: &str,
+    surface: QuerySurfaceKind,
+    capture_kinds: &[CaptureKind],
+) -> Option<(
+    &'static QueryContractDescriptor,
+    &'static QueryExecutionBinding,
+)> {
+    capture_kinds.iter().find_map(|capture_kind| {
+        query_contract_bundle_for_legacy_builtin(legacy_builtin_name, surface, *capture_kind)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_bindings_cover_every_descriptor_internally() {
+        assert_eq!(query_contracts().len(), query_execution_bindings().len());
+
+        for descriptor in query_contracts() {
+            let binding = query_execution_binding(descriptor.id)
+                .expect("every descriptor should have an execution binding");
+            assert_eq!(binding.contract_id, descriptor.id);
+            assert!(!binding.legacy_builtin_name.is_empty());
+            assert!(binding.helper_name.is_some());
+            assert!(query_contract_bundle(descriptor.id).is_some());
+        }
+    }
 }

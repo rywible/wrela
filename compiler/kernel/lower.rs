@@ -12,6 +12,7 @@ use crate::query_exec::QueryExecContext;
 use crate::query_exec::spec::{BatchQueryInvocationSpec, ScalarQueryInvocationSpec};
 use crate::query_plan::{
     BatchQueryPlan, CaptureKind, CaptureQueryPlan, DispatchBackend, SceneSummary, WorldQueryPlan,
+    batch_query_kind_for_contract_id,
 };
 use crate::scene_ir::{self, FieldScene, ShapeScene};
 use rowan::TextRange;
@@ -203,7 +204,8 @@ pub fn lower_batch_query_plan(plan: &BatchQueryPlan) -> KernelBatchQueryPlan {
         family: plan.family,
         surface: plan.surface,
         helper_name: plan.helper_name.clone(),
-        kind: plan.kind,
+        kind: batch_query_kind_for_contract_id(plan.contract_id)
+            .expect("batch query plan contract id must resolve"),
         capture_kind: plan.capture_kind,
         backend: plan.backend,
         kernel: plan.kernel,
@@ -1069,7 +1071,7 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
                 )?
             }
             ParsedKernelQueryCall::Family { family, member } => {
-                query_contract::query_contract_bundle_for_family_member(
+                query_contract::query_contract_bundle_for_family_member_internal(
                     family,
                     member.as_str(),
                     surface,
@@ -1108,27 +1110,17 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
     ) -> Option<BatchQueryInvocationSpec> {
         let (query, named) = self.parse_query_name_and_args(expr_id)?;
         let capture = *named.get("capture")?;
-        let capture_kind = match &query {
-            ParsedKernelQueryCall::Legacy { name }
-                if matches!(
-                    name.as_str(),
-                    "trace_shape_batch" | "surface_at_batch" | "occluded_batch"
-                ) =>
-            {
-                CaptureKind::Shape
-            }
-            _ => self.capture_kind_for_expr(capture),
-        };
+        let capture_kind = self.capture_kind_for_expr(capture);
         let (descriptor, _binding) = match query {
             ParsedKernelQueryCall::Legacy { name } => {
-                query_contract::query_contract_bundle_for_legacy_builtin(
+                query_contract::query_contract_bundle_for_legacy_builtin_capture_candidates(
                     name.as_str(),
                     QuerySurfaceKind::CaptureBatch,
-                    capture_kind,
+                    &[capture_kind, CaptureKind::Shape, CaptureKind::Field],
                 )?
             }
             ParsedKernelQueryCall::Family { family, member } => {
-                query_contract::query_contract_bundle_for_family_member(
+                query_contract::query_contract_bundle_for_family_member_internal(
                     family,
                     member.as_str(),
                     QuerySurfaceKind::CaptureBatch,

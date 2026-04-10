@@ -56,8 +56,8 @@ pub extern "C" fn wr_wgsl_world_trace_capture(
     ray: RuntimeValue,
 ) -> RuntimeValue {
     bridge_result(world_query(
-        &cached_world_module(source, workgroup_size, WorldBridgeKind::Trace),
-        WorldBridgeKind::Trace,
+        &cached_world_module(source, workgroup_size, WorldBridgeKind::Nearest),
+        WorldBridgeKind::Nearest,
         world_shape_indices,
         &[ray],
     ))
@@ -180,10 +180,10 @@ pub extern "C" fn wr_wgsl_shape_trace_batch_queries(
     rays: RuntimeValue,
 ) -> RuntimeValue {
     bridge_result(batch_query(
-        &cached_batch_module(source, workgroup_size, BatchBridgeKind::ShapeTrace),
+        &cached_batch_module(source, workgroup_size, BatchBridgeKind::ShapeNearest),
         1,
         capture_index,
-        BatchBridgeKind::ShapeTrace,
+        BatchBridgeKind::ShapeNearest,
         rays,
     ))
 }
@@ -224,7 +224,7 @@ pub extern "C" fn wr_wgsl_shape_occluded_batch_queries(
 enum WorldBridgeKind {
     Distance,
     Normal,
-    Trace,
+    Nearest,
     Surface,
     Radiance,
     Medium,
@@ -236,7 +236,7 @@ enum BatchBridgeKind {
     ShapeDistance,
     FieldNormal,
     ShapeNormal,
-    ShapeTrace,
+    ShapeNearest,
     ShapeSurface,
     ShapeOccluded,
 }
@@ -291,30 +291,6 @@ fn cached_batch_module(
         .entry(key)
         .or_insert_with(|| batch_module_from_parts(source, workgroup_size, kind));
     entry.clone()
-}
-
-fn make_world_module(
-    source: RuntimeValue,
-    workgroup_size: RuntimeValue,
-    kind: WorldBridgeKind,
-) -> Result<GeneratedShaderModule, QueryExecError> {
-    world_module_from_parts(
-        runtime_string(source)?,
-        runtime_workgroup_size(workgroup_size)?,
-        kind,
-    )
-}
-
-fn make_batch_module(
-    source: RuntimeValue,
-    workgroup_size: RuntimeValue,
-    kind: BatchBridgeKind,
-) -> Result<GeneratedShaderModule, QueryExecError> {
-    batch_module_from_parts(
-        runtime_string(source)?,
-        runtime_workgroup_size(workgroup_size)?,
-        kind,
-    )
 }
 
 fn world_module_from_parts(
@@ -584,7 +560,7 @@ impl WorldBridgeKind {
         match self {
             Self::Distance => query_contract::SPATIAL_DISTANCE_WORLD,
             Self::Normal => query_contract::SPATIAL_NORMAL_WORLD,
-            Self::Trace => query_contract::SPATIAL_NEAREST_WORLD,
+            Self::Nearest => query_contract::SPATIAL_NEAREST_WORLD,
             Self::Surface => query_contract::SURFACE_SAMPLE_WORLD,
             Self::Radiance => query_contract::PARTICIPANTS_RADIANCE_WORLD,
             Self::Medium => query_contract::PARTICIPANTS_MEDIUM_WORLD,
@@ -609,9 +585,9 @@ impl WorldBridgeKind {
                     )],
                 }))
             }
-            Self::Trace => {
+            Self::Nearest => {
                 let [ray] = args else {
-                    return Err(arity_error("trace world query"));
+                    return Err(arity_error("nearest world query"));
                 };
                 runtime_to_builtin_record_value(*ray, "RayQuery")
             }
@@ -638,7 +614,7 @@ impl BatchBridgeKind {
             Self::ShapeDistance => query_contract::SPATIAL_DISTANCE_BATCH_SHAPE,
             Self::FieldNormal => query_contract::SPATIAL_NORMAL_BATCH_FIELD,
             Self::ShapeNormal => query_contract::SPATIAL_NORMAL_BATCH_SHAPE,
-            Self::ShapeTrace => query_contract::SPATIAL_NEAREST_BATCH_SHAPE,
+            Self::ShapeNearest => query_contract::SPATIAL_NEAREST_BATCH_SHAPE,
             Self::ShapeSurface => query_contract::SURFACE_SAMPLE_BATCH_SHAPE,
             Self::ShapeOccluded => query_contract::SPATIAL_OCCLUDED_BATCH_SHAPE,
         }
@@ -654,7 +630,7 @@ impl BatchBridgeKind {
                 | Self::ShapeDistance
                 | Self::FieldNormal
                 | Self::ShapeNormal => runtime_to_builtin_record_value(item, "PointQuery")?,
-                Self::ShapeTrace | Self::ShapeOccluded => {
+                Self::ShapeNearest | Self::ShapeOccluded => {
                     runtime_to_builtin_record_value(item, "RayQuery")?
                 }
                 Self::ShapeSurface => runtime_to_builtin_record_value(item, "Hit3")?,

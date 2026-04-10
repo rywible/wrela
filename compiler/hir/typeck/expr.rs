@@ -2615,7 +2615,7 @@ fn infer_family_query_member_builtin(
         (_, None) => crate::query_contract::CaptureKind::Field,
     };
     let (descriptor, _binding) =
-        match crate::query_contract::query_contract_bundle_for_family_member(
+        match crate::query_contract::query_contract_bundle_for_family_member_internal(
             family,
             member.as_str(),
             surface,

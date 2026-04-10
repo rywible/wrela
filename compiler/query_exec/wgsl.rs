@@ -11,10 +11,14 @@ use crate::portable::{
     PortableAbiType, portable_abi_array_stride, portable_abi_decode_slice,
     portable_abi_encode_slice, portable_abi_encode_value, portable_abi_layout,
 };
+use crate::query_contract::{
+    QueryContractDescriptor, QueryItemKind, QueryResultKind, SceneDomainFlag, query_contract,
+    scene_domain_flag_name,
+};
 use crate::query_exec::QueryExecutionObservability;
 use crate::query_exec::cpu::{DirectQueryOps, QueryExecError};
-use crate::query_exec::world::world_query_semantics;
-use crate::query_plan::{BatchQueryKind, CaptureKind, CaptureQueryKind, WorldQueryKind};
+use crate::query_exec::world::world_query_semantics_for_contract;
+use crate::query_plan::CaptureKind;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use smol_str::SmolStr;
 use std::borrow::Cow;
@@ -70,7 +74,7 @@ pub(crate) fn execute_capture_query_with_observability(
     let request = build_capture_request(&ops, plan, args)?;
     let generated = generate_compiled_shader(ctx, ShaderPlan::Capture(plan))?;
     let mut values = dispatch_compiled_shader(&generated, request)?;
-    note_capture_observability(&ops, plan.kind);
+    note_contract_observability(&ops, descriptor_for_plan(plan.contract_id)?);
     let value = values.pop().ok_or_else(|| QueryExecError::Unsupported {
         message: "native WGSL backend produced no capture result".to_string(),
     })?;
@@ -91,7 +95,7 @@ pub(crate) fn execute_world_query_with_observability(
     let request = build_world_request(&ops, plan, args)?;
     let generated = generate_compiled_shader(ctx, ShaderPlan::World(plan))?;
     let mut values = dispatch_compiled_shader(&generated, request)?;
-    note_world_observability(&ops, plan.kind);
+    note_contract_observability(&ops, descriptor_for_plan(plan.contract_id)?);
     let value = values.pop().ok_or_else(|| QueryExecError::Unsupported {
         message: "native WGSL backend produced no world result".to_string(),
     })?;
@@ -113,7 +117,7 @@ pub(crate) fn execute_batch_query_with_observability(
     let request = build_batch_request(&ops, plan, args)?;
     let generated = generate_compiled_shader(ctx, ShaderPlan::Batch(plan))?;
     let values = dispatch_compiled_shader(&generated, request)?;
-    note_batch_observability(&ops, plan.kind);
+    note_contract_observability(&ops, descriptor_for_plan(plan.contract_id)?);
     Ok((KernelValue::Array(values), ops.snapshot_observability()))
 }
 
@@ -143,64 +147,30 @@ fn build_capture_request(
     plan: &KernelCaptureQueryPlan,
     args: &[KernelValue],
 ) -> Result<GpuDispatchRequest, QueryExecError> {
-    let (capture_kind, capture_index) = match plan.kind {
-        CaptureQueryKind::Distance | CaptureQueryKind::Normal => match plan.capture_kind {
-            CaptureKind::Field => {
-                let capture = ops.resolve_field_or_shape_capture(args.first())?;
-                (0u32, field_index(ops.context(), &capture)?)
-            }
-            CaptureKind::Shape => {
-                let capture = ops.resolve_field_or_shape_capture(args.first())?;
-                (1u32, shape_index(ops.context(), &capture)?)
-            }
-            CaptureKind::Region => {
-                return Err(QueryExecError::Unsupported {
-                    message: "region captures are only valid for world queries".to_string(),
-                });
-            }
-        },
-        CaptureQueryKind::SupportSummary => {
-            return Err(QueryExecError::Unsupported {
-                message: "support.summary is not supported by the native WGSL backend".to_string(),
-            });
+    let descriptor = descriptor_for_plan(plan.contract_id)?;
+    if descriptor.result_kind == QueryResultKind::SupportSummaryResult {
+        return Err(QueryExecError::Unsupported {
+            message: "support.summary is not supported by the native WGSL backend".to_string(),
+        });
+    }
+
+    let (capture_kind, capture_index) = match descriptor.capture_kind {
+        CaptureKind::Field => {
+            let capture = ops.resolve_field_or_shape_capture(args.first())?;
+            (0u32, field_index(ops.context(), &capture)?)
         }
-        CaptureQueryKind::Nearest
-        | CaptureQueryKind::Trace
-        | CaptureQueryKind::Occluded
-        | CaptureQueryKind::Surface
-        | CaptureQueryKind::Radiance
-        | CaptureQueryKind::Medium => {
+        CaptureKind::Shape => {
             let capture = ops.resolve_shape_capture(args.first())?;
             (1u32, shape_index(ops.context(), &capture)?)
         }
-    };
-
-    let item = match plan.kind {
-        CaptureQueryKind::Distance | CaptureQueryKind::Normal | CaptureQueryKind::Medium => {
-            point_query(expect_vec3_arg(args.get(1), "point")?)
-        }
-        CaptureQueryKind::SupportSummary => {
+        CaptureKind::Region => {
             return Err(QueryExecError::Unsupported {
-                message: "support.summary is not supported by the native WGSL backend".to_string(),
+                message: "region captures are only valid for world queries".to_string(),
             });
         }
-        CaptureQueryKind::Nearest | CaptureQueryKind::Trace | CaptureQueryKind::Occluded => {
-            expect_struct_arg(args.get(1), "RayQuery")?;
-            args.get(1)
-                .cloned()
-                .ok_or(QueryExecError::MissingCaptureTarget { kind: "ray" })?
-        }
-        CaptureQueryKind::Surface => args
-            .get(1)
-            .cloned()
-            .ok_or(QueryExecError::MissingCaptureTarget { kind: "hit" })?,
-        CaptureQueryKind::Radiance => {
-            expect_struct_arg(args.get(1), "PointDirectionQuery")?;
-            args.get(1)
-                .cloned()
-                .ok_or(QueryExecError::MissingCaptureTarget { kind: "sample" })?
-        }
     };
+
+    let item = scalar_item_arg(descriptor, args.get(1))?;
 
     Ok(GpuDispatchRequest {
         dispatch: dispatch_config(capture_kind, capture_index, 1, 0, true, true, true),
@@ -209,33 +179,75 @@ fn build_capture_request(
     })
 }
 
-fn note_capture_observability(ops: &DirectQueryOps<'_>, kind: CaptureQueryKind) {
+fn scalar_item_arg(
+    descriptor: &QueryContractDescriptor,
+    value: Option<&KernelValue>,
+) -> Result<KernelValue, QueryExecError> {
+    match descriptor.item_kind {
+        QueryItemKind::Unit => Err(QueryExecError::Unsupported {
+            message: "unit query items are not supported by the native WGSL backend".to_string(),
+        }),
+        QueryItemKind::PointQuery => Ok(point_query(expect_vec3_arg(value, "point")?)),
+        QueryItemKind::RayQuery => {
+            expect_struct_arg(value, "RayQuery")?;
+            value
+                .cloned()
+                .ok_or(QueryExecError::MissingCaptureTarget { kind: "ray" })
+        }
+        QueryItemKind::Hit3 => value
+            .cloned()
+            .ok_or(QueryExecError::MissingCaptureTarget { kind: "hit" }),
+        QueryItemKind::PointDirectionQuery => {
+            expect_struct_arg(value, "PointDirectionQuery")?;
+            value
+                .cloned()
+                .ok_or(QueryExecError::MissingCaptureTarget { kind: "sample" })
+        }
+    }
+}
+
+fn descriptor_for_plan(
+    contract_id: crate::query_contract::QueryContractId,
+) -> Result<&'static QueryContractDescriptor, QueryExecError> {
+    query_contract(contract_id).ok_or_else(|| QueryExecError::Unsupported {
+        message: format!("missing query contract '{}'", contract_id.as_str()),
+    })
+}
+
+fn note_contract_observability(ops: &DirectQueryOps<'_>, descriptor: &QueryContractDescriptor) {
     ops.note_artifact_load();
-    if matches!(
-        kind,
-        CaptureQueryKind::Nearest | CaptureQueryKind::Trace | CaptureQueryKind::Occluded
-    ) {
+    if descriptor.observability.trace_steps
+        && matches!(
+            descriptor.item_kind,
+            QueryItemKind::RayQuery | QueryItemKind::Hit3
+        )
+    {
         ops.note_trace_step();
     }
 }
 
-fn note_world_observability(ops: &DirectQueryOps<'_>, kind: WorldQueryKind) {
-    ops.note_artifact_load();
-    if matches!(
-        kind,
-        WorldQueryKind::Nearest | WorldQueryKind::Trace | WorldQueryKind::Occluded
-    ) {
-        ops.note_trace_step();
-    }
+fn scene_domain_flag_enabled(
+    domain: &KernelStructValue,
+    flag: SceneDomainFlag,
+) -> Result<bool, QueryExecError> {
+    let flag_name = scene_domain_flag_name(flag);
+    let (contract_field, contract_name) = match flag {
+        SceneDomainFlag::Material => ("surface", "SurfaceDomainContract"),
+        SceneDomainFlag::Radiance | SceneDomainFlag::Media => {
+            ("participants", "ParticipantDomainContract")
+        }
+    };
+    let contract = expect_struct_arg(struct_field(domain, contract_field), contract_name)?;
+    expect_struct_bool(contract, flag_name)
 }
 
-fn note_batch_observability(ops: &DirectQueryOps<'_>, kind: BatchQueryKind) {
-    ops.note_artifact_load();
-    if matches!(
-        kind,
-        BatchQueryKind::Nearest | BatchQueryKind::Trace | BatchQueryKind::Occluded
-    ) {
-        ops.note_trace_step();
+fn batch_array_label(descriptor: &QueryContractDescriptor) -> &'static str {
+    match descriptor.item_kind {
+        QueryItemKind::PointQuery => "points",
+        QueryItemKind::RayQuery => "rays",
+        QueryItemKind::Hit3 => "hits",
+        QueryItemKind::PointDirectionQuery => "samples",
+        QueryItemKind::Unit => "items",
     }
 }
 
@@ -244,14 +256,20 @@ fn build_world_request(
     plan: &KernelWorldQueryPlan,
     args: &[KernelValue],
 ) -> Result<GpuDispatchRequest, QueryExecError> {
+    let descriptor = descriptor_for_plan(plan.contract_id)?;
+    if descriptor.result_kind == QueryResultKind::SupportSummaryResult {
+        return Err(QueryExecError::Unsupported {
+            message: "support.summary is not supported by the native WGSL backend".to_string(),
+        });
+    }
     let capture = ops.resolve_region_capture(args.first())?;
     let domain = expect_struct_arg(args.get(1), "SceneDomain")?;
     let detail = ops.validate_world_domain(
         &capture,
         domain,
-        world_query_semantics(plan.kind).query_name,
+        world_query_semantics_for_contract(plan.contract_id).query_name,
     )?;
-    let surface_root_shape_id = if matches!(plan.kind, WorldQueryKind::Surface) {
+    let surface_root_shape_id = if descriptor.item_kind == QueryItemKind::Hit3 {
         let hit = expect_struct_arg(args.get(2), "Hit3")?;
         Some(expect_struct_u32(hit, "root_shape_id")?)
     } else {
@@ -263,32 +281,7 @@ fn build_world_request(
         .iter()
         .map(|shape| shape_index(ops.context(), shape))
         .collect::<Result<Vec<_>, _>>()?;
-    let item = match plan.kind {
-        WorldQueryKind::Distance | WorldQueryKind::Normal | WorldQueryKind::Medium => {
-            point_query(expect_vec3_arg(args.get(2), "point")?)
-        }
-        WorldQueryKind::SupportSummary => {
-            return Err(QueryExecError::Unsupported {
-                message: "support.summary is not supported by the native WGSL backend".to_string(),
-            });
-        }
-        WorldQueryKind::Nearest | WorldQueryKind::Trace | WorldQueryKind::Occluded => {
-            expect_struct_arg(args.get(2), "RayQuery")?;
-            args.get(2)
-                .cloned()
-                .ok_or(QueryExecError::MissingCaptureTarget { kind: "ray" })?
-        }
-        WorldQueryKind::Surface => args
-            .get(2)
-            .cloned()
-            .ok_or(QueryExecError::MissingCaptureTarget { kind: "hit" })?,
-        WorldQueryKind::Radiance => {
-            expect_struct_arg(args.get(2), "PointDirectionQuery")?;
-            args.get(2)
-                .cloned()
-                .ok_or(QueryExecError::MissingCaptureTarget { kind: "sample" })?
-        }
-    };
+    let item = scalar_item_arg(descriptor, args.get(2))?;
 
     Ok(GpuDispatchRequest {
         dispatch: dispatch_config(
@@ -296,9 +289,9 @@ fn build_world_request(
             0,
             1,
             world_shape_indices.len() as u32,
-            ops.world_domain_flag_enabled(domain, WorldQueryKind::Surface)?,
-            ops.world_domain_flag_enabled(domain, WorldQueryKind::Radiance)?,
-            ops.world_domain_flag_enabled(domain, WorldQueryKind::Medium)?,
+            scene_domain_flag_enabled(domain, SceneDomainFlag::Material)?,
+            scene_domain_flag_enabled(domain, SceneDomainFlag::Radiance)?,
+            scene_domain_flag_enabled(domain, SceneDomainFlag::Media)?,
         ),
         items: vec![item],
         world_shape_indices,
@@ -310,32 +303,26 @@ fn build_batch_request(
     plan: &KernelBatchQueryPlan,
     args: &[KernelValue],
 ) -> Result<GpuDispatchRequest, QueryExecError> {
-    let capture = match plan.kind {
-        BatchQueryKind::Distance | BatchQueryKind::Normal => {
-            ops.resolve_field_or_shape_capture(args.first())?
+    let descriptor = descriptor_for_plan(plan.contract_id)?;
+    let capture = match descriptor.capture_kind {
+        CaptureKind::Field => ops.resolve_field_or_shape_capture(args.first())?,
+        CaptureKind::Shape => ops.resolve_shape_capture(args.first())?,
+        CaptureKind::Region => {
+            return Err(QueryExecError::Unsupported {
+                message: "region captures are only valid for world queries".to_string(),
+            });
         }
-        BatchQueryKind::Nearest
-        | BatchQueryKind::Trace
-        | BatchQueryKind::Surface
-        | BatchQueryKind::Occluded => ops.resolve_shape_capture(args.first())?,
     };
-    let items = expect_array_arg(
-        args.get(1),
-        match plan.kind {
-            BatchQueryKind::Distance | BatchQueryKind::Normal => "points",
-            BatchQueryKind::Surface => "hits",
-            BatchQueryKind::Nearest | BatchQueryKind::Trace | BatchQueryKind::Occluded => "rays",
-        },
-    )?;
+    let items = expect_array_arg(args.get(1), batch_array_label(descriptor))?;
     ops.note_candidate_count(items.len() as u32);
     Ok(GpuDispatchRequest {
         dispatch: dispatch_config(
-            match plan.capture_kind {
+            match descriptor.capture_kind {
                 CaptureKind::Field => 0,
                 CaptureKind::Shape => 1,
                 CaptureKind::Region => 2,
             },
-            match plan.capture_kind {
+            match descriptor.capture_kind {
                 CaptureKind::Field => field_index(ops.context(), &capture)?,
                 CaptureKind::Shape => shape_index(ops.context(), &capture)?,
                 CaptureKind::Region => 0,
@@ -802,8 +789,30 @@ fn expect_struct_arg<'a>(
     }
 }
 
+fn struct_field<'a>(value: &'a KernelStructValue, field: &str) -> Option<&'a KernelValue> {
+    value
+        .fields
+        .iter()
+        .find_map(|(name, value)| (name.as_str() == field).then_some(value))
+}
+
+fn expect_struct_bool(value: &KernelStructValue, field: &str) -> Result<bool, QueryExecError> {
+    let Some(value) = struct_field(value, field) else {
+        return Err(QueryExecError::MissingCaptureTarget {
+            kind: "struct field",
+        });
+    };
+    match value {
+        KernelValue::Bool(value) => Ok(*value),
+        other => Err(QueryExecError::TypeMismatch {
+            expected: format!("Bool for field {field}"),
+            found: format!("{other:?}"),
+        }),
+    }
+}
+
 fn expect_struct_u32(value: &KernelStructValue, field: &str) -> Result<u32, QueryExecError> {
-    let Some((_, value)) = value.fields.iter().find(|(name, _)| name.as_str() == field) else {
+    let Some(value) = struct_field(value, field) else {
         return Err(QueryExecError::MissingCaptureTarget {
             kind: "struct field",
         });

@@ -791,7 +791,7 @@ fn contract_requires_volume(descriptor: &QueryContractDescriptor) -> bool {
 fn contract_requires_trace(descriptor: &QueryContractDescriptor) -> bool {
     matches!(
         descriptor.question,
-        QueryQuestionId::Nearest | QueryQuestionId::Trace | QueryQuestionId::Occluded
+        QueryQuestionId::Nearest | QueryQuestionId::Occluded
     )
 }
 
@@ -932,7 +932,6 @@ fn emit_query_helpers(
     writeln!(out, "}}\n").ok();
 
     if contract_is_world_question(descriptor, QueryQuestionId::Nearest)
-        || contract_is_world_question(descriptor, QueryQuestionId::Trace)
         || contract_is_world_question(descriptor, QueryQuestionId::Occluded)
     {
         writeln!(out, "fn world_trace_ray(ray: RayQuery) -> Hit3 {{").ok();
@@ -1034,7 +1033,6 @@ fn emit_query_helpers(
     writeln!(out, "}}\n").ok();
 
     if contract_is_capture_or_batch_question(descriptor, QueryQuestionId::Nearest)
-        || contract_is_capture_or_batch_question(descriptor, QueryQuestionId::Trace)
         || contract_is_capture_or_batch_question(descriptor, QueryQuestionId::Occluded)
     {
         out.push_str("fn capture_trace_ray(ray: RayQuery) -> Hit3 { return trace_shape_for_index(dispatch_config.capture_index, ray.origin, ray.direction, ray.max_distance, ray.min_step, ray.hit_epsilon, ray.max_steps); }\n\n");
@@ -1076,7 +1074,7 @@ fn emit_main(
         (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Normal, _) => {
             format!("capture_normal_point({item_expr})")
         }
-        (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Nearest | QueryQuestionId::Trace, _) => {
+        (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Nearest, _) => {
             format!("capture_trace_ray({item_expr})")
         }
         (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Occluded, _) => {
@@ -1097,7 +1095,7 @@ fn emit_main(
         (QuerySurfaceKind::WorldScalar, QueryQuestionId::Normal, _) => {
             format!("world_normal_point({item_expr}.point)")
         }
-        (QuerySurfaceKind::WorldScalar, QueryQuestionId::Nearest | QueryQuestionId::Trace, _) => {
+        (QuerySurfaceKind::WorldScalar, QueryQuestionId::Nearest, _) => {
             format!("world_trace_ray({item_expr})")
         }
         (QuerySurfaceKind::WorldScalar, QueryQuestionId::Occluded, _) => {
@@ -1118,7 +1116,7 @@ fn emit_main(
         (QuerySurfaceKind::CaptureBatch, QueryQuestionId::Normal, _) => {
             format!("NormalResult(capture_normal_point({item_expr}))")
         }
-        (QuerySurfaceKind::CaptureBatch, QueryQuestionId::Nearest | QueryQuestionId::Trace, _) => {
+        (QuerySurfaceKind::CaptureBatch, QueryQuestionId::Nearest, _) => {
             format!("capture_trace_ray({item_expr})")
         }
         (QuerySurfaceKind::CaptureBatch, QueryQuestionId::Sample, QueryResultKind::Surface) => {

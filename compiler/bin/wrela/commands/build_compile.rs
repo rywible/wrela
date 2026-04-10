@@ -109,7 +109,9 @@ fn query_contract_catalog_snapshot() -> CertifiedQueryContractCatalog {
     let contracts = wrela::query_contract::query_contracts()
         .iter()
         .map(|descriptor| {
-            let binding = wrela::query_contract::query_execution_binding(descriptor.id);
+            let legacy_builtin =
+                wrela::query_contract::query_legacy_builtin_name(descriptor.id)
+                    .unwrap_or_default();
             CertifiedQueryContractItem {
                 contract_id: descriptor.id.as_str().to_string(),
                 contract_version: descriptor.version,
@@ -144,9 +146,7 @@ fn query_contract_catalog_snapshot() -> CertifiedQueryContractCatalog {
                     .collect(),
                 participant_contract: descriptor.participant_kind.map(participant_contract_name),
                 preserves_local_hit_context: descriptor.preserves_local_hit_context,
-                legacy_builtin: binding
-                    .map(|binding| binding.legacy_builtin_name.to_string())
-                    .unwrap_or_default(),
+                legacy_builtin: legacy_builtin.to_string(),
             }
         })
         .collect();

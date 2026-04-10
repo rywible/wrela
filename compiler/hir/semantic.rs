@@ -2280,10 +2280,11 @@ fn pattern_has_bindings(pattern: &Pattern) -> bool {
     }
 }
 
-fn body_binds_name(body: &Body, name: &SmolStr) -> bool {
+fn body_binds_name_before_expr(body: &Body, name: &SmolStr, expr_id: Idx<Expr>) -> bool {
+    let expr_start = body.expr_span(expr_id).start();
     body.stmts
         .iter()
-        .any(|(_idx, stmt)| stmt_binds_name(stmt, name))
+        .any(|(idx, stmt)| body.stmt_span(idx).end() <= expr_start && stmt_binds_name(stmt, name))
 }
 
 fn stmt_binds_name(stmt: &Stmt, name: &SmolStr) -> bool {
@@ -2806,7 +2807,7 @@ fn collect_expr_calls_and_awaits(
                         if member.as_str() == "of"
                             && matches!(&body.exprs[*object], Expr::Variable(name) if name.as_str() == "Pool"))
                         && !matches!(&body.exprs[*object], Expr::Variable(name)
-                            if !body_binds_name(body, name)
+                            if !body_binds_name_before_expr(body, name, *callee)
                                 && crate::query_contract::query_family_namespace(name.as_str())
                                 .and_then(|family| crate::query_contract::query_family_member(
                                     family,
@@ -4059,6 +4060,46 @@ fn f() -> Integer {
                 .iter()
                 .any(|err| matches!(err, SemanticError::MissingObjective { .. })),
             "expected shadowed spatial.distance method call to keep await in the call graph, got: {:?}",
+            diagnostics.errors
+        );
+    }
+
+    #[test]
+    fn test_future_family_namespace_binding_does_not_create_method_edge() {
+        let input = r#"
+class Whale {
+    has {
+        value: Integer
+
+    }
+}
+class SpatialThing {
+    fn distance() -> Integer {
+        await 1
+        return 1
+    }
+}
+fn run() -> Integer {
+    return f()
+
+}
+fn f() -> Integer {
+    _ = spatial.distance()
+    spatial = SpatialThing()
+    whale = detach Whale() * 1
+    return 1
+}
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(
+            !diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::MissingObjective { .. })),
+            "future spatial binding should not turn an earlier family call into a method edge, got: {:?}",
             diagnostics.errors
         );
     }
