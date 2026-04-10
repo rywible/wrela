@@ -14,8 +14,8 @@ use crate::query_exec::region::{select_region_exec_case, world_domain_mismatch_m
 use crate::query_exec::world::{
     WorldDistanceBackend, WorldMediumBackend, WorldNormalBackend, WorldQueryBackend,
     WorldRadianceBackend, WorldSurfaceBackend, WorldTraceBackend, execute_world_distance,
-    execute_world_medium, execute_world_normal, execute_world_radiance, execute_world_surface,
-    execute_world_trace, world_query_semantics,
+    execute_world_medium, execute_world_normal, execute_world_radiance, execute_world_ray,
+    execute_world_surface, world_query_semantics,
 };
 use crate::query_plan::{BatchQueryKind, WorldQueryKind};
 use crate::scene_ir::{
@@ -137,9 +137,10 @@ pub(crate) fn resolve_batch_capture(
         BatchQueryKind::Distance | BatchQueryKind::Normal => {
             evaluator.resolve_field_or_shape_capture(capture)
         }
-        BatchQueryKind::Trace | BatchQueryKind::Surface | BatchQueryKind::Occluded => {
-            evaluator.resolve_shape_capture(capture)
-        }
+        BatchQueryKind::Nearest
+        | BatchQueryKind::Trace
+        | BatchQueryKind::Surface
+        | BatchQueryKind::Occluded => evaluator.resolve_shape_capture(capture),
     }
 }
 
@@ -300,29 +301,20 @@ impl<'a> DirectQueryOps<'a> {
                 };
                 Ok(KernelValue::Vec3(execute_world_normal(&mut backend)?))
             }
-            WorldQueryKind::Trace => {
+            WorldQueryKind::Nearest | WorldQueryKind::Trace => {
                 let ray = expect_struct(args.get(2), "RayQuery")?;
-                let origin = expect_struct_vec3(ray, "origin")?;
-                let direction = expect_struct_vec3(ray, "direction")?;
-                let max_distance = expect_struct_f32(ray, "max_distance")?;
-                let min_step = expect_struct_f32(ray, "min_step")?;
-                let hit_epsilon = expect_struct_f32(ray, "hit_epsilon")?;
-                let max_steps = expect_struct_i32(ray, "max_steps")?;
-                let mut backend = CpuWorldTraceBackend {
-                    evaluator: self,
-                    capture: &capture,
-                    detail,
-                    origin,
-                    direction,
-                    max_distance,
-                    min_step,
-                    hit_epsilon,
-                    max_steps,
-                    result: default_hit(origin),
-                    best_distance: f32::INFINITY,
-                };
-                execute_world_trace(&mut backend)?;
-                Ok(backend.result)
+                self.execute_world_ray_hit(&capture, detail, ray, WorldQueryKind::Nearest)
+            }
+            WorldQueryKind::Occluded => {
+                let ray = expect_struct(args.get(2), "RayQuery")?;
+                let hit =
+                    self.execute_world_ray_hit(&capture, detail, ray, WorldQueryKind::Occluded)?;
+                let hit = expect_struct_ref(&hit, "Hit3")?;
+                Ok(occlusion_result(
+                    expect_struct_bool(hit, "hit")?,
+                    expect_struct_f32(hit, "distance")?,
+                    expect_struct_i32(hit, "steps")?,
+                ))
             }
             WorldQueryKind::Surface => {
                 let hit = expect_struct(args.get(2), "Hit3")?;
@@ -423,9 +415,10 @@ impl<'a> DirectQueryOps<'a> {
             BatchQueryKind::Distance | BatchQueryKind::Normal => {
                 self.resolve_field_or_shape_capture(args.first())
             }
-            BatchQueryKind::Trace | BatchQueryKind::Surface | BatchQueryKind::Occluded => {
-                self.resolve_shape_capture(args.first())
-            }
+            BatchQueryKind::Nearest
+            | BatchQueryKind::Trace
+            | BatchQueryKind::Surface
+            | BatchQueryKind::Occluded => self.resolve_shape_capture(args.first()),
         }?;
         let items = expect_array(
             args.get(1),
@@ -492,6 +485,48 @@ impl<'a> DirectQueryOps<'a> {
                 kind: "field-or-shape capture",
             }),
         }
+    }
+
+    fn execute_world_ray_hit(
+        &self,
+        capture: &SmolStr,
+        detail: i32,
+        ray: &KernelStructValue,
+        kind: WorldQueryKind,
+    ) -> Result<KernelValue, QueryExecError> {
+        let origin = expect_struct_vec3(ray, "origin")?;
+        let direction = expect_struct_vec3(ray, "direction")?;
+        let max_distance = expect_struct_f32(ray, "max_distance")?;
+        let min_step = expect_struct_f32(ray, "min_step")?;
+        let hit_epsilon = expect_struct_f32(ray, "hit_epsilon")?;
+        let max_steps = expect_struct_i32(ray, "max_steps")?;
+        let mut backend = CpuWorldTraceBackend {
+            evaluator: self,
+            capture,
+            detail,
+            origin,
+            direction,
+            max_distance,
+            min_step,
+            hit_epsilon,
+            max_steps,
+            result: default_hit(origin),
+            best_distance: f32::INFINITY,
+        };
+        execute_world_ray(
+            &mut backend,
+            kind,
+            match kind {
+                WorldQueryKind::Occluded => {
+                    "occluded_world requires a capture created from a region declaration"
+                }
+                WorldQueryKind::Nearest => {
+                    "nearest_world requires a capture created from a region declaration"
+                }
+                _ => "trace_world requires a capture created from a region declaration",
+            },
+        )?;
+        Ok(backend.result)
     }
 
     pub(crate) fn resolve_shape_capture(

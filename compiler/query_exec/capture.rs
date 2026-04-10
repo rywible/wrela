@@ -73,24 +73,18 @@ pub(crate) fn execute_capture_query<B: CaptureQueryBackend>(
                 plan.capture_kind,
             )?))
         }
-        crate::query_plan::CaptureQueryKind::Trace => {
+        crate::query_plan::CaptureQueryKind::Nearest
+        | crate::query_plan::CaptureQueryKind::Trace => {
             let capture = backend.resolve_shape_capture(args.first())?;
             let ray = expect_struct_ref_arg(args.get(1), "RayQuery")?;
-            let origin = expect_struct_vec3(ray, "origin")?;
-            let direction = expect_struct_vec3(ray, "direction")?;
-            let max_distance = expect_struct_f32(ray, "max_distance")?;
-            let min_step = expect_struct_f32(ray, "min_step")?;
-            let hit_epsilon = expect_struct_f32(ray, "hit_epsilon")?;
-            let max_steps = expect_struct_i32(ray, "max_steps")?;
-            backend.trace_shape(
-                &capture,
-                origin,
-                direction,
-                max_distance,
-                min_step,
-                hit_epsilon,
-                max_steps,
-            )
+            execute_capture_ray_hit(backend, &capture, ray)
+        }
+        crate::query_plan::CaptureQueryKind::Occluded => {
+            let capture = backend.resolve_shape_capture(args.first())?;
+            let ray = expect_struct_ref_arg(args.get(1), "RayQuery")?;
+            let hit = execute_capture_ray_hit(backend, &capture, ray)?;
+            let hit = expect_struct_ref_arg(Some(&hit), "Hit3")?;
+            occlusion_result_from_hit(hit)
         }
         crate::query_plan::CaptureQueryKind::Surface => {
             let capture = backend.resolve_shape_capture(args.first())?;
@@ -132,29 +126,49 @@ pub(crate) fn execute_batch_item_contract<B: CaptureQueryBackend>(
                 _ => Ok(value),
             }
         }
-        KernelBatchItemContract::TraceThenOcclusion { trace_plan } => {
-            let args = build_batch_capture_args(trace_plan, capture, item)?;
-            let hit = execute_capture_query(backend, trace_plan, &args)?;
+        KernelBatchItemContract::RayThenOcclusion { nearest_plan } => {
+            let args = build_batch_capture_args(nearest_plan, capture, item)?;
+            let hit = execute_capture_query(backend, nearest_plan, &args)?;
             let hit = expect_struct_ref_arg(Some(&hit), "Hit3")?;
-            Ok(KernelValue::Struct(KernelStructValue {
-                name: SmolStr::new("OcclusionResult"),
-                fields: vec![
-                    (
-                        SmolStr::new("occluded"),
-                        KernelValue::Bool(expect_struct_bool(hit, "hit")?),
-                    ),
-                    (
-                        SmolStr::new("distance"),
-                        KernelValue::F32(expect_struct_f32(hit, "distance")?),
-                    ),
-                    (
-                        SmolStr::new("steps"),
-                        KernelValue::I32(expect_struct_i32(hit, "steps")?),
-                    ),
-                ],
-            }))
+            occlusion_result_from_hit(hit)
         }
     }
+}
+
+fn execute_capture_ray_hit<B: CaptureQueryBackend>(
+    backend: &B,
+    capture: &SmolStr,
+    ray: &KernelStructValue,
+) -> Result<KernelValue, QueryExecError> {
+    backend.trace_shape(
+        capture,
+        expect_struct_vec3(ray, "origin")?,
+        expect_struct_vec3(ray, "direction")?,
+        expect_struct_f32(ray, "max_distance")?,
+        expect_struct_f32(ray, "min_step")?,
+        expect_struct_f32(ray, "hit_epsilon")?,
+        expect_struct_i32(ray, "max_steps")?,
+    )
+}
+
+fn occlusion_result_from_hit(hit: &KernelStructValue) -> Result<KernelValue, QueryExecError> {
+    Ok(KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("OcclusionResult"),
+        fields: vec![
+            (
+                SmolStr::new("occluded"),
+                KernelValue::Bool(expect_struct_bool(hit, "hit")?),
+            ),
+            (
+                SmolStr::new("distance"),
+                KernelValue::F32(expect_struct_f32(hit, "distance")?),
+            ),
+            (
+                SmolStr::new("steps"),
+                KernelValue::I32(expect_struct_i32(hit, "steps")?),
+            ),
+        ],
+    }))
 }
 
 fn distance_result(distance: f32) -> KernelValue {
@@ -186,7 +200,9 @@ fn build_batch_capture_args(
             let point = expect_struct_ref_arg(Some(item), "PointQuery")?;
             args.push(KernelValue::Vec3(expect_struct_vec3(point, "point")?));
         }
-        crate::query_plan::CaptureQueryKind::Trace => {
+        crate::query_plan::CaptureQueryKind::Nearest
+        | crate::query_plan::CaptureQueryKind::Trace
+        | crate::query_plan::CaptureQueryKind::Occluded => {
             expect_struct_ref_arg(Some(item), "RayQuery")?;
             args.push(item.clone());
         }

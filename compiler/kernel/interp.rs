@@ -4,10 +4,13 @@ use crate::kernel::ir::{
     KernelFunction, KernelPlanStage, KernelStmt, ResolvedKernelDispatch,
 };
 use crate::kernel::program::KernelProgram;
+use crate::query_contract::{
+    self, QueryContractId, QueryFamilyId, QueryItemKind, QueryQuestionId, QuerySurfaceKind,
+};
 use crate::query_exec::{
     QueryExecError, execute_batch_query_on, execute_capture_query_on, execute_world_query_on,
 };
-use crate::query_plan::{DispatchBackend, WorldQueryKind};
+use crate::query_plan::DispatchBackend;
 use smol_str::SmolStr;
 use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
@@ -31,6 +34,11 @@ pub struct KernelBatchIterationTrace {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelBatchQueryTrace {
+    pub contract_id: QueryContractId,
+    pub family: QueryFamilyId,
+    pub question: QueryQuestionId,
+    pub surface: QuerySurfaceKind,
+    pub contract_version: u32,
     pub helper_name: String,
     pub begins_virtual_gpu_dispatch: bool,
     pub iterations: Vec<KernelBatchIterationTrace>,
@@ -291,6 +299,8 @@ pub fn interpret_batch_query(
     plan: &KernelBatchQueryPlan,
     item_count: u32,
 ) -> KernelBatchQueryTrace {
+    let descriptor = query_contract::query_contract(plan.contract_id)
+        .expect("kernel batch query plan must reference a registered query contract");
     let per_item_stages = plan
         .stages
         .iter()
@@ -312,6 +322,11 @@ pub fn interpret_batch_query(
         });
     }
     KernelBatchQueryTrace {
+        contract_id: plan.contract_id,
+        family: plan.family,
+        question: descriptor.question,
+        surface: plan.surface,
+        contract_version: plan.contract_version,
         helper_name: plan.helper_name.to_string(),
         begins_virtual_gpu_dispatch: plan.requires_virtual_gpu_dispatch(),
         iterations,
@@ -768,7 +783,7 @@ impl<'a> KernelExecutor<'a> {
                     .map(|arg| self.execute_expr(arg, scopes))
                     .collect::<Result<Vec<_>, _>>()?;
                 let (requested_backend, query_args) =
-                    split_query_backend_arg(&args, world_query_input_count(plan.kind))?;
+                    split_query_backend_arg(&args, world_query_input_count(plan))?;
                 let backend = requested_backend.unwrap_or(match plan.backend {
                     DispatchBackend::Auto => self.query_backend,
                     explicit => explicit,
@@ -1455,13 +1470,19 @@ fn expect_dispatch_backend_value(value: &KernelValue) -> Result<DispatchBackend,
     }
 }
 
-fn world_query_input_count(kind: WorldQueryKind) -> usize {
-    match kind {
-        WorldQueryKind::Distance | WorldQueryKind::Normal | WorldQueryKind::Medium => 3,
-        WorldQueryKind::Radiance => 4,
-        WorldQueryKind::Trace => 8,
-        WorldQueryKind::Surface => 3,
-    }
+fn world_query_input_count(plan: &crate::kernel::ir::KernelWorldQueryPlan) -> usize {
+    let descriptor = query_contract::query_contract(plan.contract_id)
+        .expect("kernel world query plan must reference a registered query contract");
+    let capture_count = 1;
+    let domain_count = usize::from(descriptor.domain_contract.is_some());
+    let item_count = match descriptor.item_kind {
+        QueryItemKind::Unit => 0,
+        QueryItemKind::PointQuery
+        | QueryItemKind::PointDirectionQuery
+        | QueryItemKind::RayQuery
+        | QueryItemKind::Hit3 => 1,
+    };
+    capture_count + domain_count + item_count
 }
 
 fn split_query_backend_arg<'a>(
@@ -1638,5 +1659,50 @@ fn value_label(value: &KernelValue) -> String {
         KernelValue::GpuBuffer(_) => "GpuBuffer".to_string(),
         KernelValue::GpuAtomicI32(_) => "GpuAtomicI32".to_string(),
         KernelValue::GpuAtomicU32(_) => "GpuAtomicU32".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kernel::lower_world_query_plan;
+    use crate::query_plan::WorldQueryPlan;
+
+    #[test]
+    fn world_query_backend_split_uses_descriptor_item_shape() {
+        for descriptor in query_contract::query_contracts()
+            .iter()
+            .filter(|descriptor| descriptor.surface == QuerySurfaceKind::WorldScalar)
+        {
+            let plan = lower_world_query_plan(
+                &WorldQueryPlan::for_contract_with_backend(descriptor.id, DispatchBackend::Auto)
+                    .expect("world descriptor should build a plan"),
+            );
+            let expected_count = 1
+                + usize::from(descriptor.domain_contract.is_some())
+                + match descriptor.item_kind {
+                    QueryItemKind::Unit => 0,
+                    QueryItemKind::PointQuery
+                    | QueryItemKind::PointDirectionQuery
+                    | QueryItemKind::RayQuery
+                    | QueryItemKind::Hit3 => 1,
+                };
+            assert_eq!(
+                world_query_input_count(&plan),
+                expected_count,
+                "unexpected world query input count for {}",
+                descriptor.id.as_str()
+            );
+
+            let mut args = (0..expected_count)
+                .map(|_| KernelValue::Nothing)
+                .collect::<Vec<_>>();
+            args.push(KernelValue::DispatchBackend(DispatchBackend::Wgsl));
+            let (backend, query_args) =
+                split_query_backend_arg(&args, world_query_input_count(&plan))
+                    .expect("dynamic backend should split");
+            assert_eq!(backend, Some(DispatchBackend::Wgsl));
+            assert_eq!(query_args.len(), expected_count);
+        }
     }
 }

@@ -24,6 +24,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 use target_lexicon::Triple;
 
@@ -552,6 +553,12 @@ fn run_linker_with_timeout(
 }
 
 fn ensure_native_support_built() -> Result<PathBuf, CodegenError> {
+    static NATIVE_SUPPORT_BUILD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = NATIVE_SUPPORT_BUILD_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| CodegenError("native support build lock poisoned".to_string()))?;
+
     let lib_name = if cfg!(target_os = "windows") {
         "wrela.lib"
     } else {

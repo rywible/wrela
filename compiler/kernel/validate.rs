@@ -19,6 +19,24 @@ pub struct KernelValidationError {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct QueryValidationContext {
+    label: &'static str,
+    contract_id: QueryContractId,
+    contract_version: u32,
+}
+
+impl QueryValidationContext {
+    fn message(self, detail: impl std::fmt::Display) -> String {
+        format!(
+            "{} contract '{}' v{}: {detail}",
+            self.label,
+            self.contract_id.as_str(),
+            self.contract_version
+        )
+    }
+}
+
 pub fn validate_dispatch(
     dispatch: &ResolvedKernelDispatch,
 ) -> Result<(), Vec<KernelValidationError>> {
@@ -72,9 +90,15 @@ pub fn validate_batch_query_plan(
     plan: &KernelBatchQueryPlan,
 ) -> Result<(), Vec<KernelValidationError>> {
     let mut errors = Vec::new();
-    validate_plan_stages(&plan.stages, &mut errors);
-    validate_contract_version(plan.contract_version, "batch query", &mut errors);
+    let context = QueryValidationContext {
+        label: "batch query",
+        contract_id: plan.contract_id,
+        contract_version: plan.contract_version,
+    };
+    validate_plan_stages(context, &plan.stages, &mut errors);
+    validate_contract_version(context, &mut errors);
     validate_artifact_contracts(
+        context,
         &plan.artifact_contracts,
         Some(&plan.dispatch_contract),
         &plan.result_contract,
@@ -84,7 +108,9 @@ pub fn validate_batch_query_plan(
     if !matches!(plan.stages.first(), Some(KernelPlanStage::SelectBackend)) {
         errors.push(KernelValidationError {
             message: format!(
-                "batch query '{}' must start with SelectBackend",
+                "batch query contract '{}' v{} helper '{}' must start with SelectBackend",
+                plan.contract_id.as_str(),
+                plan.contract_version,
                 plan.helper_name
             ),
         });
@@ -92,38 +118,55 @@ pub fn validate_batch_query_plan(
     validate_batch_item_contract(
         &plan.item_contract,
         &plan.result_contract,
+        plan.contract_id,
         plan.contract_version,
         &mut errors,
     );
     if plan.candidate_contract.item_kind != plan.item_kind {
         errors.push(KernelValidationError {
             message: format!(
-                "batch query '{}' candidate item kind {:?} does not match plan item kind {:?}",
-                plan.helper_name, plan.candidate_contract.item_kind, plan.item_kind
+                "batch query contract '{}' v{} helper '{}' candidate item kind {:?} does not match plan item kind {:?}",
+                plan.contract_id.as_str(),
+                plan.contract_version,
+                plan.helper_name,
+                plan.candidate_contract.item_kind,
+                plan.item_kind
             ),
         });
     }
     if plan.dispatch_contract.item_kind != plan.item_kind {
         errors.push(KernelValidationError {
             message: format!(
-                "batch query '{}' dispatch item kind {:?} does not match plan item kind {:?}",
-                plan.helper_name, plan.dispatch_contract.item_kind, plan.item_kind
+                "batch query contract '{}' v{} helper '{}' dispatch item kind {:?} does not match plan item kind {:?}",
+                plan.contract_id.as_str(),
+                plan.contract_version,
+                plan.helper_name,
+                plan.dispatch_contract.item_kind,
+                plan.item_kind
             ),
         });
     }
     if plan.dispatch_contract.result_kind != plan.result_kind {
         errors.push(KernelValidationError {
             message: format!(
-                "batch query '{}' dispatch result kind {:?} does not match plan result kind {:?}",
-                plan.helper_name, plan.dispatch_contract.result_kind, plan.result_kind
+                "batch query contract '{}' v{} helper '{}' dispatch result kind {:?} does not match plan result kind {:?}",
+                plan.contract_id.as_str(),
+                plan.contract_version,
+                plan.helper_name,
+                plan.dispatch_contract.result_kind,
+                plan.result_kind
             ),
         });
     }
     if plan.result_contract.result_kind != plan.result_kind {
         errors.push(KernelValidationError {
             message: format!(
-                "batch query '{}' result contract kind {:?} does not match plan result kind {:?}",
-                plan.helper_name, plan.result_contract.result_kind, plan.result_kind
+                "batch query contract '{}' v{} helper '{}' result contract kind {:?} does not match plan result kind {:?}",
+                plan.contract_id.as_str(),
+                plan.contract_version,
+                plan.helper_name,
+                plan.result_contract.result_kind,
+                plan.result_kind
             ),
         });
     }
@@ -147,8 +190,9 @@ pub fn validate_batch_query_plan(
     {
         errors.push(KernelValidationError {
             message: format!(
-                "batch query contract '{}' does not support backend {:?}",
+                "batch query contract '{}' v{} does not support backend {:?}",
                 plan.contract_id.as_str(),
+                plan.contract_version,
                 plan.backend
             ),
         });
@@ -164,9 +208,15 @@ pub fn validate_capture_query_plan(
     plan: &KernelCaptureQueryPlan,
 ) -> Result<(), Vec<KernelValidationError>> {
     let mut errors = Vec::new();
-    validate_plan_stages(&plan.stages, &mut errors);
-    validate_contract_version(plan.contract_version, "capture query", &mut errors);
+    let context = QueryValidationContext {
+        label: "capture query",
+        contract_id: plan.contract_id,
+        contract_version: plan.contract_version,
+    };
+    validate_plan_stages(context, &plan.stages, &mut errors);
+    validate_contract_version(context, &mut errors);
     validate_artifact_contracts(
+        context,
         &plan.artifact_contracts,
         None,
         &plan.result_contract,
@@ -176,8 +226,12 @@ pub fn validate_capture_query_plan(
     if plan.result_contract.result_kind != plan.result_kind {
         errors.push(KernelValidationError {
             message: format!(
-                "capture query '{}' result contract kind {:?} does not match plan result kind {:?}",
-                plan.helper_name, plan.result_contract.result_kind, plan.result_kind
+                "capture query contract '{}' v{} helper '{}' result contract kind {:?} does not match plan result kind {:?}",
+                plan.contract_id.as_str(),
+                plan.contract_version,
+                plan.helper_name,
+                plan.result_contract.result_kind,
+                plan.result_kind
             ),
         });
     }
@@ -207,9 +261,15 @@ pub fn validate_world_query_plan(
     plan: &KernelWorldQueryPlan,
 ) -> Result<(), Vec<KernelValidationError>> {
     let mut errors = Vec::new();
-    validate_plan_stages(&plan.stages, &mut errors);
-    validate_contract_version(plan.contract_version, "world query", &mut errors);
+    let context = QueryValidationContext {
+        label: "world query",
+        contract_id: plan.contract_id,
+        contract_version: plan.contract_version,
+    };
+    validate_plan_stages(context, &plan.stages, &mut errors);
+    validate_contract_version(context, &mut errors);
     validate_artifact_contracts(
+        context,
         &plan.artifact_contracts,
         Some(&plan.dispatch_contract),
         &plan.result_contract,
@@ -219,7 +279,9 @@ pub fn validate_world_query_plan(
     if plan.candidate_contract.item_kind != plan.dispatch_contract.item_kind {
         errors.push(KernelValidationError {
             message: format!(
-                "world query '{}' candidate item kind {:?} does not match dispatch item kind {:?}",
+                "world query contract '{}' v{} helper '{}' candidate item kind {:?} does not match dispatch item kind {:?}",
+                plan.contract_id.as_str(),
+                plan.contract_version,
                 plan.helper_name,
                 plan.candidate_contract.item_kind,
                 plan.dispatch_contract.item_kind
@@ -229,16 +291,24 @@ pub fn validate_world_query_plan(
     if plan.dispatch_contract.result_kind != plan.result_kind {
         errors.push(KernelValidationError {
             message: format!(
-                "world query '{}' dispatch result kind {:?} does not match plan result kind {:?}",
-                plan.helper_name, plan.dispatch_contract.result_kind, plan.result_kind
+                "world query contract '{}' v{} helper '{}' dispatch result kind {:?} does not match plan result kind {:?}",
+                plan.contract_id.as_str(),
+                plan.contract_version,
+                plan.helper_name,
+                plan.dispatch_contract.result_kind,
+                plan.result_kind
             ),
         });
     }
     if plan.result_contract.result_kind != plan.result_kind {
         errors.push(KernelValidationError {
             message: format!(
-                "world query '{}' result contract kind {:?} does not match plan result kind {:?}",
-                plan.helper_name, plan.result_contract.result_kind, plan.result_kind
+                "world query contract '{}' v{} helper '{}' result contract kind {:?} does not match plan result kind {:?}",
+                plan.contract_id.as_str(),
+                plan.contract_version,
+                plan.helper_name,
+                plan.result_contract.result_kind,
+                plan.result_kind
             ),
         });
     }
@@ -262,8 +332,9 @@ pub fn validate_world_query_plan(
     {
         errors.push(KernelValidationError {
             message: format!(
-                "world query contract '{}' does not support backend {:?}",
+                "world query contract '{}' v{} does not support backend {:?}",
                 plan.contract_id.as_str(),
+                plan.contract_version,
                 plan.backend
             ),
         });
@@ -275,10 +346,13 @@ pub fn validate_world_query_plan(
     }
 }
 
-fn validate_contract_version(version: u32, label: &str, errors: &mut Vec<KernelValidationError>) {
-    if version == 0 {
+fn validate_contract_version(
+    context: QueryValidationContext,
+    errors: &mut Vec<KernelValidationError>,
+) {
+    if context.contract_version == 0 {
         errors.push(KernelValidationError {
-            message: format!("{label} contract version must be greater than zero"),
+            message: context.message("contract version must be greater than zero"),
         });
     }
 }
@@ -299,8 +373,9 @@ fn validate_query_contract_descriptor(
     let Some(descriptor) = query_contract(contract_id) else {
         errors.push(KernelValidationError {
             message: format!(
-                "{label} contract '{}' was not found in the query registry",
-                contract_id.as_str()
+                "{label} contract '{}' v{} was not found in the query registry",
+                contract_id.as_str(),
+                contract_version
             ),
         });
         return;
@@ -319,9 +394,11 @@ fn validate_query_contract_descriptor(
     if descriptor.family != family {
         errors.push(KernelValidationError {
             message: format!(
-                "{label} contract '{}' family {:?} does not match descriptor family {:?}",
+                "{label} contract '{}' v{} family {:?} does not match descriptor v{} family {:?}",
                 contract_id.as_str(),
+                contract_version,
                 family,
+                descriptor.version,
                 descriptor.family
             ),
         });
@@ -329,9 +406,11 @@ fn validate_query_contract_descriptor(
     if descriptor.surface != surface {
         errors.push(KernelValidationError {
             message: format!(
-                "{label} contract '{}' surface {:?} does not match descriptor surface {:?}",
+                "{label} contract '{}' v{} surface {:?} does not match descriptor v{} surface {:?}",
                 contract_id.as_str(),
+                contract_version,
                 surface,
+                descriptor.version,
                 descriptor.surface
             ),
         });
@@ -339,9 +418,11 @@ fn validate_query_contract_descriptor(
     if descriptor.item_kind != item_kind {
         errors.push(KernelValidationError {
             message: format!(
-                "{label} contract '{}' item kind {:?} does not match descriptor item kind {:?}",
+                "{label} contract '{}' v{} item kind {:?} does not match descriptor v{} item kind {:?}",
                 contract_id.as_str(),
+                contract_version,
                 item_kind,
+                descriptor.version,
                 descriptor.item_kind
             ),
         });
@@ -349,9 +430,11 @@ fn validate_query_contract_descriptor(
     if descriptor.result_kind != result_kind {
         errors.push(KernelValidationError {
             message: format!(
-                "{label} contract '{}' result kind {:?} does not match descriptor result kind {:?}",
+                "{label} contract '{}' v{} result kind {:?} does not match descriptor v{} result kind {:?}",
                 contract_id.as_str(),
+                contract_version,
                 result_kind,
+                descriptor.version,
                 descriptor.result_kind
             ),
         });
@@ -359,9 +442,11 @@ fn validate_query_contract_descriptor(
     if descriptor.required_domain_flags != domain_flags {
         errors.push(KernelValidationError {
             message: format!(
-                "{label} contract '{}' domain flags {:?} do not match descriptor flags {:?}",
+                "{label} contract '{}' v{} domain flags {:?} do not match descriptor v{} flags {:?}",
                 contract_id.as_str(),
+                contract_version,
                 domain_flags,
+                descriptor.version,
                 descriptor.required_domain_flags
             ),
         });
@@ -370,9 +455,11 @@ fn validate_query_contract_descriptor(
     if expected_participant_kind != participant_kind {
         errors.push(KernelValidationError {
             message: format!(
-                "{label} contract '{}' participant selection {:?} does not match descriptor {:?}",
+                "{label} contract '{}' v{} participant selection {:?} does not match descriptor v{} {:?}",
                 contract_id.as_str(),
+                contract_version,
                 participant_kind,
+                descriptor.version,
                 expected_participant_kind
             ),
         });
@@ -380,9 +467,11 @@ fn validate_query_contract_descriptor(
     if descriptor.preserves_local_hit_context != preserves_local_hit_context {
         errors.push(KernelValidationError {
             message: format!(
-                "{label} contract '{}' local hit preservation {} does not match descriptor {}",
+                "{label} contract '{}' v{} local hit preservation {} does not match descriptor v{} {}",
                 contract_id.as_str(),
+                contract_version,
                 preserves_local_hit_context,
+                descriptor.version,
                 descriptor.preserves_local_hit_context
             ),
         });
@@ -399,6 +488,7 @@ fn participant_query_kind(kind: ParticipantContractKind) -> CaptureQueryKind {
 fn validate_batch_item_contract(
     contract: &KernelBatchItemContract,
     result: &crate::query_plan::ResultRecordContract,
+    batch_contract_id: QueryContractId,
     batch_contract_version: u32,
     errors: &mut Vec<KernelValidationError>,
 ) {
@@ -409,17 +499,28 @@ fn validate_batch_item_contract(
             }
             if plan.result_kind != result.result_kind {
                 errors.push(KernelValidationError {
-                    message: "batch capture item contract result kind does not match batch result contract".to_string(),
+                    message: format!(
+                        "batch query contract '{}' v{} capture item contract result kind {:?} does not match batch result contract {:?}",
+                        batch_contract_id.as_str(),
+                        batch_contract_version,
+                        plan.result_kind,
+                        result.result_kind
+                    ),
                 });
             }
             if plan.contract_version != batch_contract_version {
                 errors.push(KernelValidationError {
-                    message: "batch capture item contract version does not match the parent batch contract".to_string(),
+                    message: format!(
+                        "batch query contract '{}' v{} capture item contract version {} does not match the parent batch contract",
+                        batch_contract_id.as_str(),
+                        batch_contract_version,
+                        plan.contract_version
+                    ),
                 });
             }
         }
-        KernelBatchItemContract::TraceThenOcclusion { trace_plan } => {
-            if let Err(plan_errors) = validate_capture_query_plan(trace_plan) {
+        KernelBatchItemContract::RayThenOcclusion { nearest_plan } => {
+            if let Err(plan_errors) = validate_capture_query_plan(nearest_plan) {
                 errors.extend(plan_errors);
             }
             if !matches!(
@@ -427,22 +528,33 @@ fn validate_batch_item_contract(
                 crate::query_plan::QueryResultKind::OcclusionResult
             ) {
                 errors.push(KernelValidationError {
-                    message: "TraceThenOcclusion contracts must produce OcclusionResult"
-                        .to_string(),
+                    message: format!(
+                        "batch query contract '{}' v{} RayThenOcclusion contracts must produce OcclusionResult",
+                        batch_contract_id.as_str(),
+                        batch_contract_version
+                    ),
                 });
             }
             if !matches!(
-                trace_plan.result_kind,
+                nearest_plan.result_kind,
                 crate::query_plan::QueryResultKind::Hit3
             ) {
                 errors.push(KernelValidationError {
-                    message: "TraceThenOcclusion contracts must embed a Hit3 trace plan"
-                        .to_string(),
+                    message: format!(
+                        "batch query contract '{}' v{} RayThenOcclusion contracts must embed a Hit3 nearest plan",
+                        batch_contract_id.as_str(),
+                        batch_contract_version
+                    ),
                 });
             }
-            if trace_plan.contract_version != batch_contract_version {
+            if nearest_plan.contract_version != batch_contract_version {
                 errors.push(KernelValidationError {
-                    message: "TraceThenOcclusion trace plan version does not match the parent batch contract".to_string(),
+                    message: format!(
+                        "batch query contract '{}' v{} RayThenOcclusion nearest plan version {} does not match the parent batch contract",
+                        batch_contract_id.as_str(),
+                        batch_contract_version,
+                        nearest_plan.contract_version
+                    ),
                 });
             }
         }
@@ -450,6 +562,7 @@ fn validate_batch_item_contract(
 }
 
 fn validate_artifact_contracts(
+    context: QueryValidationContext,
     artifacts: &[ArtifactContract],
     dispatch: Option<&DispatchRecordContract>,
     result: &ResultRecordContract,
@@ -459,15 +572,15 @@ fn validate_artifact_contracts(
     for artifact in artifacts {
         if artifact.id.is_empty() {
             errors.push(KernelValidationError {
-                message: "artifact contracts must carry a stable id".to_string(),
+                message: context.message("artifact contracts must carry a stable id"),
             });
         }
         if artifact.version == 0 {
             errors.push(KernelValidationError {
-                message: format!(
+                message: context.message(format!(
                     "artifact contract '{}' must have a non-zero version",
                     artifact.id
-                ),
+                )),
             });
         }
     }
@@ -484,8 +597,9 @@ fn validate_artifact_contracts(
         });
         if !has_dispatch_contract {
             errors.push(KernelValidationError {
-                message: "dispatch artifact contract does not match the dispatch record contract"
-                    .to_string(),
+                message: context.message(
+                    "dispatch artifact contract does not match the dispatch record contract",
+                ),
             });
         }
     }
@@ -502,8 +616,8 @@ fn validate_artifact_contracts(
     });
     if !has_result_contract {
         errors.push(KernelValidationError {
-            message: "result artifact contract does not match the result record contract"
-                .to_string(),
+            message: context
+                .message("result artifact contract does not match the result record contract"),
         });
     }
 
@@ -578,7 +692,9 @@ fn validate_artifact_contracts(
             });
         if !matches_schema {
             errors.push(KernelValidationError {
-                message: format!("missing artifact contract for derived artifact '{artifact:?}'"),
+                message: context.message(format!(
+                    "missing artifact contract for derived artifact '{artifact:?}'"
+                )),
             });
         }
     }
@@ -592,10 +708,14 @@ fn validate_grid(grid: KernelDispatchGrid, errors: &mut Vec<KernelValidationErro
     }
 }
 
-fn validate_plan_stages(stages: &[KernelPlanStage], errors: &mut Vec<KernelValidationError>) {
+fn validate_plan_stages(
+    context: QueryValidationContext,
+    stages: &[KernelPlanStage],
+    errors: &mut Vec<KernelValidationError>,
+) {
     if stages.is_empty() {
         errors.push(KernelValidationError {
-            message: "kernel plan must contain at least one stage".to_string(),
+            message: context.message("kernel plan must contain at least one stage"),
         });
         return;
     }
@@ -608,8 +728,8 @@ fn validate_plan_stages(stages: &[KernelPlanStage], errors: &mut Vec<KernelValid
         .position(|stage| matches!(stage, KernelPlanStage::EndVirtualGpuDispatch));
     if begin.is_some() != end.is_some() {
         errors.push(KernelValidationError {
-            message: "virtual GPU dispatch scaffolding must include both begin and end stages"
-                .to_string(),
+            message: context
+                .message("virtual GPU dispatch scaffolding must include both begin and end stages"),
         });
     }
 
@@ -631,7 +751,7 @@ fn validate_plan_stages(stages: &[KernelPlanStage], errors: &mut Vec<KernelValid
             && iterate < load_capture
         {
             errors.push(KernelValidationError {
-                message: "IterateItems must happen after LoadCapture".to_string(),
+                message: context.message("IterateItems must happen after LoadCapture"),
             });
         }
     }
@@ -639,21 +759,22 @@ fn validate_plan_stages(stages: &[KernelPlanStage], errors: &mut Vec<KernelValid
         && execute < iterate
     {
         errors.push(KernelValidationError {
-            message: "Execute must happen after IterateItems".to_string(),
+            message: context.message("Execute must happen after IterateItems"),
         });
     }
     if let (Some(execute), Some(append)) = (execute, append)
         && append < execute
     {
         errors.push(KernelValidationError {
-            message: "AppendResult must happen after Execute".to_string(),
+            message: context.message("AppendResult must happen after Execute"),
         });
     }
     if let (Some(begin), Some(end)) = (begin, end)
         && end < begin
     {
         errors.push(KernelValidationError {
-            message: "EndVirtualGpuDispatch must happen after BeginVirtualGpuDispatch".to_string(),
+            message: context
+                .message("EndVirtualGpuDispatch must happen after BeginVirtualGpuDispatch"),
         });
     }
 }

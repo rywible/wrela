@@ -10,8 +10,8 @@ use crate::query_exec::cpu::{DirectQueryOps, default_hit, default_surface, mediu
 use crate::query_exec::world::{
     WorldDistanceBackend, WorldMediumBackend, WorldNormalBackend, WorldQueryBackend,
     WorldRadianceBackend, WorldSurfaceBackend, WorldTraceBackend, execute_world_distance,
-    execute_world_medium, execute_world_normal, execute_world_radiance, execute_world_surface,
-    execute_world_trace,
+    execute_world_medium, execute_world_normal, execute_world_radiance, execute_world_ray,
+    execute_world_surface,
 };
 use crate::query_exec::{QueryExecContext, QueryExecError, QueryExecutionObservability};
 use crate::query_plan::WorldQueryKind;
@@ -747,29 +747,20 @@ impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
                 };
                 Ok(KernelValue::Vec3(execute_world_normal(&mut backend)?))
             }
-            WorldQueryKind::Trace => {
+            WorldQueryKind::Nearest | WorldQueryKind::Trace => {
                 let ray = expect_struct_ref_arg(args.get(2), "RayQuery")?;
-                let origin = expect_struct_vec3_from_struct(ray, "origin")?;
-                let direction = expect_struct_vec3_from_struct(ray, "direction")?;
-                let max_distance = expect_struct_f32(ray, "max_distance")?;
-                let min_step = expect_struct_f32(ray, "min_step")?;
-                let hit_epsilon = expect_struct_f32(ray, "hit_epsilon")?;
-                let max_steps = expect_struct_i32(ray, "max_steps")?;
-                let mut backend = VirtualGpuWorldTraceBackend {
-                    runtime: self.runtime.as_ref(),
-                    capture: &capture,
-                    detail,
-                    origin,
-                    direction,
-                    max_distance,
-                    min_step,
-                    hit_epsilon,
-                    max_steps,
-                    result: default_hit(origin),
-                    best_distance: f32::INFINITY,
-                };
-                execute_world_trace(&mut backend)?;
-                Ok(backend.result)
+                self.execute_world_ray_hit(&capture, detail, ray, WorldQueryKind::Nearest)
+            }
+            WorldQueryKind::Occluded => {
+                let ray = expect_struct_ref_arg(args.get(2), "RayQuery")?;
+                let hit =
+                    self.execute_world_ray_hit(&capture, detail, ray, WorldQueryKind::Occluded)?;
+                let hit = expect_struct(&hit, "Hit3")?;
+                Ok(occlusion_result(
+                    expect_struct_bool(hit, "hit")?,
+                    expect_struct_f32(hit, "distance")?,
+                    expect_struct_i32(hit, "steps")?,
+                ))
             }
             WorldQueryKind::Surface => {
                 let hit = expect_struct_ref_arg(args.get(2), "Hit3")?;
@@ -821,6 +812,48 @@ impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
                 ))
             }
         }
+    }
+
+    fn execute_world_ray_hit(
+        &self,
+        capture: &SmolStr,
+        detail: i32,
+        ray: &KernelStructValue,
+        kind: WorldQueryKind,
+    ) -> Result<KernelValue, QueryExecError> {
+        let origin = expect_struct_vec3_from_struct(ray, "origin")?;
+        let direction = expect_struct_vec3_from_struct(ray, "direction")?;
+        let max_distance = expect_struct_f32(ray, "max_distance")?;
+        let min_step = expect_struct_f32(ray, "min_step")?;
+        let hit_epsilon = expect_struct_f32(ray, "hit_epsilon")?;
+        let max_steps = expect_struct_i32(ray, "max_steps")?;
+        let mut backend = VirtualGpuWorldTraceBackend {
+            runtime: self.runtime.as_ref(),
+            capture,
+            detail,
+            origin,
+            direction,
+            max_distance,
+            min_step,
+            hit_epsilon,
+            max_steps,
+            result: default_hit(origin),
+            best_distance: f32::INFINITY,
+        };
+        execute_world_ray(
+            &mut backend,
+            kind,
+            match kind {
+                WorldQueryKind::Occluded => {
+                    "occluded_world requires a capture created from a region declaration"
+                }
+                WorldQueryKind::Nearest => {
+                    "nearest_world requires a capture created from a region declaration"
+                }
+                _ => "trace_world requires a capture created from a region declaration",
+            },
+        )?;
+        Ok(backend.result)
     }
 }
 

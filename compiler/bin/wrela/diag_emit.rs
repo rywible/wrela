@@ -161,7 +161,7 @@ struct SarifRegion {
 }
 
 pub fn print_help() {
-    println!("{}", help_text());
+    print!("{}", help_text());
 }
 
 pub fn help_text() -> &'static str {

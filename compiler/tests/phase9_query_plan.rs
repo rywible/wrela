@@ -968,13 +968,31 @@ fn phase9_query_plan_matrix_covers_every_batch_family() {
         ),
         (
             query_plan::BatchQueryPlan::for_shape_query(
+                query_plan::BatchQueryKind::Nearest,
+                query_plan::DispatchBackend::Cpu,
+                Some(shape_summary.clone()),
+            ),
+            shape_summary.clone(),
+            "__wr_scene_trace_batch_queries",
+            query_plan::BatchQueryKind::Nearest,
+            query_plan::QueryItemKind::RayQuery,
+            query_plan::QueryResultKind::Hit3,
+            query_plan::PlanExecutor::SceneTraceCapture,
+            query_plan::InternalKernelKind::ShapeTraceCapture,
+            true,
+            query_plan::CandidateStrategy::SupportAcceleratedShapeTraversal,
+            query_plan::PruningStrategy::CullingTable,
+            false,
+        ),
+        (
+            query_plan::BatchQueryPlan::for_shape_query(
                 query_plan::BatchQueryKind::Trace,
                 query_plan::DispatchBackend::Cpu,
                 Some(shape_summary.clone()),
             ),
             shape_summary.clone(),
             "__wr_scene_trace_batch_queries",
-            query_plan::BatchQueryKind::Trace,
+            query_plan::BatchQueryKind::Nearest,
             query_plan::QueryItemKind::RayQuery,
             query_plan::QueryResultKind::Hit3,
             query_plan::PlanExecutor::SceneTraceCapture,
@@ -1056,6 +1074,11 @@ fn phase9_query_plan_matrix_covers_every_batch_family() {
                 ),
                 (query_plan::BatchQueryKind::Normal, query_plan::CaptureKind::Shape) => (
                     query_contract::SPATIAL_NORMAL_BATCH_SHAPE,
+                    query_contract::QueryFamilyId::Spatial,
+                    query_contract::QuerySurfaceKind::CaptureBatch,
+                ),
+                (query_plan::BatchQueryKind::Nearest, query_plan::CaptureKind::Shape) => (
+                    query_contract::SPATIAL_NEAREST_BATCH_SHAPE,
                     query_contract::QueryFamilyId::Spatial,
                     query_contract::QuerySurfaceKind::CaptureBatch,
                 ),
@@ -1356,12 +1379,24 @@ fn phase9_capture_query_plans_cover_field_shape_and_participant_paths() {
         Some(shape_summary.clone()),
     )
     .expect("shape normal plan");
+    let nearest = query_plan::CaptureQueryPlan::for_query(
+        query_plan::CaptureQueryKind::Nearest,
+        query_plan::CaptureKind::Shape,
+        Some(shape_summary.clone()),
+    )
+    .expect("nearest plan");
     let trace = query_plan::CaptureQueryPlan::for_query(
         query_plan::CaptureQueryKind::Trace,
         query_plan::CaptureKind::Shape,
         Some(opaque_summary.clone()),
     )
     .expect("trace plan");
+    let occluded = query_plan::CaptureQueryPlan::for_query(
+        query_plan::CaptureQueryKind::Occluded,
+        query_plan::CaptureKind::Shape,
+        Some(opaque_summary.clone()),
+    )
+    .expect("occluded plan");
     let surface = query_plan::CaptureQueryPlan::for_query(
         query_plan::CaptureQueryKind::Surface,
         query_plan::CaptureKind::Shape,
@@ -1403,8 +1438,18 @@ fn phase9_capture_query_plans_cover_field_shape_and_participant_paths() {
             query_contract::QueryFamilyId::Spatial,
         ),
         (
+            &nearest,
+            query_contract::SPATIAL_NEAREST_CAPTURE_SHAPE,
+            query_contract::QueryFamilyId::Spatial,
+        ),
+        (
             &trace,
             query_contract::SPATIAL_TRACE_CAPTURE_SHAPE,
+            query_contract::QueryFamilyId::Spatial,
+        ),
+        (
+            &occluded,
+            query_contract::SPATIAL_OCCLUDED_CAPTURE_SHAPE,
             query_contract::QueryFamilyId::Spatial,
         ),
         (
@@ -1475,7 +1520,7 @@ fn phase9_capture_query_plans_cover_field_shape_and_participant_paths() {
         );
     }
 
-    for plan in [&shape_distance, &shape_normal, &radiance, &medium] {
+    for plan in [&shape_distance, &shape_normal, &nearest, &radiance, &medium] {
         assert_eq!(plan.capture_kind, query_plan::CaptureKind::Shape);
         assert_eq!(plan.scene, Some(shape_summary.clone()));
         assert_eq!(
@@ -1568,6 +1613,44 @@ fn phase9_capture_query_plans_cover_field_shape_and_participant_paths() {
             .iter()
             .any(|artifact| matches!(artifact, query_plan::DerivedArtifact::CullingTable { .. }))
     );
+
+    assert_eq!(nearest.helper_name, "__wr_scene_trace_capture");
+    assert_eq!(nearest.scene, Some(shape_summary.clone()));
+    assert_eq!(nearest.result_kind, query_plan::QueryResultKind::Hit3);
+    assert_eq!(
+        nearest.executor,
+        query_plan::PlanExecutor::SceneTraceCapture
+    );
+    assert!(nearest.preserves_local_hit_context);
+    assert_eq!(
+        nearest.candidate_strategy(),
+        query_plan::CandidateStrategy::SupportAcceleratedShapeTraversal
+    );
+    assert_eq!(
+        nearest.pruning_strategy(),
+        query_plan::PruningStrategy::CullingTable
+    );
+
+    assert_eq!(occluded.helper_name, "__wr_scene_occluded_capture");
+    assert_eq!(occluded.scene, Some(opaque_summary.clone()));
+    assert_eq!(
+        occluded.result_kind,
+        query_plan::QueryResultKind::OcclusionResult
+    );
+    assert_eq!(
+        occluded.executor,
+        query_plan::PlanExecutor::SceneTraceCapture
+    );
+    assert!(occluded.preserves_local_hit_context);
+    assert_eq!(
+        occluded.candidate_strategy(),
+        query_plan::CandidateStrategy::OpaqueFallback
+    );
+    assert_eq!(
+        occluded.pruning_strategy(),
+        query_plan::PruningStrategy::OpaquePessimizationBoundary
+    );
+    assert!(occluded.has_opaque_pessimization_boundary());
 
     assert_eq!(surface.helper_name, "__wr_scene_surface_capture");
     assert_eq!(surface.scene, Some(shape_summary.clone()));
@@ -1663,6 +1746,20 @@ fn phase9_world_query_plans_cover_domain_backed_queries() {
             true,
         ),
         (
+            query_plan::WorldQueryPlan::for_query(query_plan::WorldQueryKind::Nearest),
+            "__wr_world_trace_capture",
+            query_plan::QueryResultKind::Hit3,
+            query_plan::PlanExecutor::WorldTraceCapture,
+            true,
+        ),
+        (
+            query_plan::WorldQueryPlan::for_query(query_plan::WorldQueryKind::Occluded),
+            "__wr_world_occluded_capture",
+            query_plan::QueryResultKind::OcclusionResult,
+            query_plan::PlanExecutor::WorldTraceCapture,
+            true,
+        ),
+        (
             query_plan::WorldQueryPlan::for_query(query_plan::WorldQueryKind::Surface),
             "__wr_world_surface_capture",
             query_plan::QueryResultKind::Surface,
@@ -1695,8 +1792,16 @@ fn phase9_world_query_plans_cover_domain_backed_queries() {
                 query_contract::SPATIAL_NORMAL_WORLD,
                 query_contract::QueryFamilyId::Spatial,
             ),
+            query_plan::WorldQueryKind::Nearest => (
+                query_contract::SPATIAL_NEAREST_WORLD,
+                query_contract::QueryFamilyId::Spatial,
+            ),
             query_plan::WorldQueryKind::Trace => (
                 query_contract::SPATIAL_TRACE_WORLD,
+                query_contract::QueryFamilyId::Spatial,
+            ),
+            query_plan::WorldQueryKind::Occluded => (
+                query_contract::SPATIAL_OCCLUDED_WORLD,
                 query_contract::QueryFamilyId::Spatial,
             ),
             query_plan::WorldQueryKind::Surface => (

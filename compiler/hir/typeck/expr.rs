@@ -2365,7 +2365,7 @@ fn infer_shape_query_builtin(
     }
 
     let expected = match query_name.as_str() {
-        "trace_shape" => vec![
+        "trace_shape" | "occluded" => vec![
             (SmolStr::new("capture"), Type::Unknown),
             (SmolStr::new("ray"), portable_named_type("RayQuery")),
         ],
@@ -2676,7 +2676,7 @@ fn infer_world_shape_query_builtin(
         });
     }
     let expected = match query_name.as_str() {
-        "trace_world" => vec![
+        "trace_world" | "occluded_world" => vec![
             (SmolStr::new("capture"), region_capture_type()),
             (SmolStr::new("domain"), scene_domain_type()),
             (SmolStr::new("ray"), portable_named_type("RayQuery")),
@@ -4305,6 +4305,21 @@ fn infer_math_builtin_call(
             in_result_fn,
             Type::Named(SmolStr::new("Hit3"), Vec::new()),
         ),
+        "occluded" => infer_shape_query_builtin(
+            body,
+            expr_id,
+            name,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            Type::Named(SmolStr::new("OcclusionResult"), Vec::new()),
+        ),
         "surface_at" => infer_shape_query_builtin(
             body,
             expr_id,
@@ -4394,6 +4409,21 @@ fn infer_math_builtin_call(
             allow_result,
             in_result_fn,
             portable_named_type("Hit3"),
+        ),
+        "occluded_world" => infer_world_shape_query_builtin(
+            body,
+            expr_id,
+            name,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+            portable_named_type("OcclusionResult"),
         ),
         "surface_world" => infer_world_shape_query_builtin(
             body,

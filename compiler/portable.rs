@@ -7,7 +7,8 @@ pub use abi::{
     portable_abi_field_offset, portable_abi_lane_offset, portable_abi_layout,
     portable_abi_wgsl_type_name, portable_artifact_contract_abi, portable_candidate_contract_abi,
     portable_dispatch_contract_abi, portable_hit_context_contract_abi,
-    portable_participant_contract_abi, portable_result_contract_abi,
+    portable_participant_contract_abi, portable_query_item_abi, portable_query_result_abi,
+    portable_result_contract_abi,
 };
 use smol_str::SmolStr;
 
@@ -684,12 +685,14 @@ pub const BUILTIN_HELPER_FUNCTIONS: &[&str] = &[
     "__wr_shape_distance_capture",
     "__wr_shape_normal_capture",
     "__wr_scene_trace_capture",
+    "__wr_scene_occluded_capture",
     "__wr_scene_surface_capture",
     "__wr_scene_radiance_capture",
     "__wr_scene_medium_capture",
     "__wr_world_distance_capture",
     "__wr_world_normal_capture",
     "__wr_world_trace_capture",
+    "__wr_world_occluded_capture",
     "__wr_world_surface_capture",
     "__wr_world_radiance_capture",
     "__wr_world_medium_capture",

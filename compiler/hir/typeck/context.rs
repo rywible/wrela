@@ -3283,6 +3283,19 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
             },
         ),
         (
+            SmolStr::new("occluded"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("capture"), portable_named_type("ShapeCapture")),
+                    (SmolStr::new("ray"), portable_named_type("RayQuery")),
+                ],
+                ret: portable_named_type("OcclusionResult"),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
             SmolStr::new("surface_at"),
             FunctionSig {
                 params: vec![
@@ -3373,6 +3386,24 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
                     ),
                 ],
                 ret: portable_named_type("Hit3"),
+                kind: FunctionKind::Function,
+                type_params: Vec::new(),
+                type_param_bounds: Vec::new(),
+            },
+        ),
+        (
+            SmolStr::new("occluded_world"),
+            FunctionSig {
+                params: vec![
+                    (SmolStr::new("capture"), portable_named_type("RegionCapture")),
+                    (SmolStr::new("domain"), portable_named_type("SceneDomain")),
+                    (SmolStr::new("ray"), portable_named_type("RayQuery")),
+                    (
+                        SmolStr::new("backend"),
+                        portable_named_type("DispatchBackend"),
+                    ),
+                ],
+                ret: portable_named_type("OcclusionResult"),
                 kind: FunctionKind::Function,
                 type_params: Vec::new(),
                 type_param_bounds: Vec::new(),

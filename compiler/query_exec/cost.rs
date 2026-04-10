@@ -894,8 +894,10 @@ fn capture_query_kind_label(kind: CaptureQueryKind) -> &'static str {
         CaptureQueryKind::Normal => "normal",
         CaptureQueryKind::Radiance => "radiance",
         CaptureQueryKind::Medium => "medium",
+        CaptureQueryKind::Nearest => "nearest",
         CaptureQueryKind::Trace => "trace",
         CaptureQueryKind::Surface => "surface",
+        CaptureQueryKind::Occluded => "occluded",
     }
 }
 
@@ -905,8 +907,10 @@ fn world_query_kind_label(kind: WorldQueryKind) -> &'static str {
         WorldQueryKind::Normal => "normal",
         WorldQueryKind::Radiance => "radiance",
         WorldQueryKind::Medium => "medium",
+        WorldQueryKind::Nearest => "nearest",
         WorldQueryKind::Trace => "trace",
         WorldQueryKind::Surface => "surface",
+        WorldQueryKind::Occluded => "occluded",
     }
 }
 
@@ -914,6 +918,7 @@ fn batch_query_kind_label(kind: BatchQueryKind) -> &'static str {
     match kind {
         BatchQueryKind::Distance => "distance",
         BatchQueryKind::Normal => "normal",
+        BatchQueryKind::Nearest => "nearest",
         BatchQueryKind::Trace => "trace",
         BatchQueryKind::Surface => "surface",
         BatchQueryKind::Occluded => "occluded",

@@ -118,7 +118,7 @@ fn batch_query_plan_lowers_into_kernel_contract_and_traces_iterations() {
 }
 
 #[test]
-fn occluded_batch_query_lowers_trace_then_occlusion_contract() {
+fn occluded_batch_query_lowers_ray_then_occlusion_contract() {
     let plan = BatchQueryPlan::for_shape_query(
         BatchQueryKind::Occluded,
         DispatchBackend::VirtualGpu,
@@ -128,7 +128,7 @@ fn occluded_batch_query_lowers_trace_then_occlusion_contract() {
     assert!(validate_batch_query_plan(&kernel_plan).is_ok());
     assert!(matches!(
         kernel_plan.item_contract,
-        wrela::kernel::KernelBatchItemContract::TraceThenOcclusion { .. }
+        wrela::kernel::KernelBatchItemContract::RayThenOcclusion { .. }
     ));
 }
 
@@ -160,7 +160,11 @@ fn batch_query_validation_rejects_descriptor_family_mismatch() {
     plan.family = query_contract::QueryFamilyId::Surface;
 
     let errors = validate_batch_query_plan(&plan).expect_err("descriptor family mismatch");
-    assert!(errors.iter().any(|error| error.message.contains("family")));
+    assert!(errors.iter().any(|error| {
+        error.message.contains(plan.contract_id.as_str())
+            && error.message.contains("v1")
+            && error.message.contains("family")
+    }));
 }
 
 #[test]
@@ -179,6 +183,8 @@ fn batch_query_validation_rejects_zero_version_and_unbalanced_dispatch_stages() 
         error
             .message
             .contains("contract version must be greater than zero")
+            && error.message.contains(plan.contract_id.as_str())
+            && error.message.contains("v0")
     }));
     assert!(
         errors
@@ -206,9 +212,11 @@ fn batch_query_validation_rejects_invalid_nested_item_contracts() {
 
     let errors = validate_batch_query_plan(&plan).expect_err("invalid nested capture plan");
     assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("capture query contract version must be greater than zero")
+        error.message.contains("capture query contract")
+            && error
+                .message
+                .contains("contract version must be greater than zero")
+            && error.message.contains("v0")
     }));
     assert!(errors.iter().any(|error| {
         error
@@ -216,9 +224,10 @@ fn batch_query_validation_rejects_invalid_nested_item_contracts() {
             .contains("result artifact contract does not match the result record contract")
     }));
     assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("batch capture item contract version does not match")
+        error.message.contains("capture item contract version")
+            && error
+                .message
+                .contains("does not match the parent batch contract")
     }));
 }
 
@@ -388,6 +397,8 @@ fn world_query_validation_rejects_unknown_contract_id() {
         error
             .message
             .contains("was not found in the query registry")
+            && error.message.contains("missing.world.contract")
+            && error.message.contains("v1")
     }));
 }
 

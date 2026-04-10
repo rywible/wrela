@@ -399,8 +399,12 @@ pub struct KernelWorldQueryPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KernelBatchItemContract {
-    CaptureQuery { plan: KernelCaptureQueryPlan },
-    TraceThenOcclusion { trace_plan: KernelCaptureQueryPlan },
+    CaptureQuery {
+        plan: KernelCaptureQueryPlan,
+    },
+    RayThenOcclusion {
+        nearest_plan: KernelCaptureQueryPlan,
+    },
 }
 
 impl From<&CaptureQueryPlan> for KernelCaptureQueryPlan {
@@ -464,8 +468,8 @@ impl From<&BatchItemContract> for KernelBatchItemContract {
     fn from(value: &BatchItemContract) -> Self {
         match value {
             BatchItemContract::CaptureQuery { plan } => Self::CaptureQuery { plan: plan.into() },
-            BatchItemContract::TraceThenOcclusion { trace_plan } => Self::TraceThenOcclusion {
-                trace_plan: trace_plan.into(),
+            BatchItemContract::RayThenOcclusion { nearest_plan } => Self::RayThenOcclusion {
+                nearest_plan: nearest_plan.into(),
             },
         }
     }

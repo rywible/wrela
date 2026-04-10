@@ -11,9 +11,11 @@ use wrela::kernel::{
 use wrela::parser::ast;
 use wrela::parser::ast::AstNode;
 use wrela::parser::parse;
+use wrela::query_contract;
 use wrela::query_exec::{
-    CostFidelity, DirectQueryExecutor, QueryExecContext, SemanticCostCauseKind, SemanticCostUnit,
-    SemanticStageKind, executable_region_shape_lists, execute_batch_query_with_trace,
+    BatchQueryExecutionTrace, CostFidelity, DirectQueryExecutionTrace, DirectQueryExecutor,
+    QueryExecContext, SemanticCostCauseKind, SemanticCostUnit, SemanticStageKind,
+    executable_region_shape_lists, execute_batch_query_with_trace,
     execute_batch_query_with_trace_on, execute_capture_query, execute_capture_query_on,
     execute_capture_query_with_trace_on, execute_world_query, execute_world_query_on,
     execute_world_query_with_trace_on, render_semantic_cost_report, stable_field_scene_capture_id,
@@ -42,6 +44,35 @@ fn typed_query_module(source: &str) -> (hir::Module, hir::TypeInfo, QueryExecCon
     assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
     let ctx = QueryExecContext::compile(&module, &type_info);
     (module, type_info, ctx)
+}
+
+fn assert_direct_trace_contract(
+    trace: &DirectQueryExecutionTrace,
+    contract_id: query_contract::QueryContractId,
+) {
+    let descriptor = query_contract::query_contract(contract_id).expect("query contract");
+    assert_eq!(trace.contract_id, descriptor.id);
+    assert_eq!(trace.family, descriptor.family);
+    assert_eq!(trace.question, descriptor.question);
+    assert_eq!(trace.surface, descriptor.surface);
+    assert_eq!(trace.contract_version, descriptor.version);
+}
+
+fn assert_batch_trace_contract(
+    trace: &BatchQueryExecutionTrace,
+    contract_id: query_contract::QueryContractId,
+) {
+    let descriptor = query_contract::query_contract(contract_id).expect("query contract");
+    assert_eq!(trace.contract_id, descriptor.id);
+    assert_eq!(trace.family, descriptor.family);
+    assert_eq!(trace.question, descriptor.question);
+    assert_eq!(trace.surface, descriptor.surface);
+    assert_eq!(trace.contract_version, descriptor.version);
+    assert_eq!(trace.plan_trace.contract_id, descriptor.id);
+    assert_eq!(trace.plan_trace.family, descriptor.family);
+    assert_eq!(trace.plan_trace.question, descriptor.question);
+    assert_eq!(trace.plan_trace.surface, descriptor.surface);
+    assert_eq!(trace.plan_trace.contract_version, descriptor.version);
 }
 
 fn repo_root() -> PathBuf {
@@ -149,6 +180,8 @@ value QuerySummary {
     batch_distance0: F32
     batch_distance1: F32
     occluded0: Boolean
+    scalar_occluded: Boolean
+    world_occluded: Boolean
     hit: Hit3
     world_hit: Hit3
     surface: Surface
@@ -213,12 +246,38 @@ kernel fn portable_entry() -> QuerySummary {
         rays=rays,
         backend=dispatch_backend_virtual_gpu()
     )
+    scalar_occlusion = occluded(
+        capture=scene,
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+    world_occlusion = occluded_world(
+        capture=world,
+        domain=domain,
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        ),
+        backend=dispatch_backend_virtual_gpu()
+    )
     return QuerySummary(
         distance=distance_at(capture=scene, point=vec3(0.0, 0.0, 2.0)),
         world_distance=distance_world(capture=world, domain=domain, point=vec3(0.0, 0.0, 2.0)),
         batch_distance0=distances[0].distance,
         batch_distance1=distances[1].distance,
         occluded0=occlusions[0].occluded,
+        scalar_occluded=scalar_occlusion.occluded,
+        world_occluded=world_occlusion.occluded,
         hit=hit,
         world_hit=world_hit,
         surface=surface_at(capture=scene, hit=hit)
@@ -357,6 +416,13 @@ fn expect_bool(value: &KernelValue) -> bool {
     }
 }
 
+fn expect_i32(value: &KernelValue) -> i32 {
+    match value {
+        KernelValue::I32(value) => *value,
+        other => panic!("expected I32, got {other:?}"),
+    }
+}
+
 fn expect_vec3(value: &KernelValue) -> [f32; 3] {
     match value {
         KernelValue::Vec3(value) => *value,
@@ -473,6 +539,23 @@ fn assert_hit3_approx_eq(lhs: &KernelValue, rhs: &KernelValue) {
     assert_mat4_approx_eq(
         expect_mat4(field(lhs_frame, "inverse")),
         expect_mat4(field(rhs_frame, "inverse")),
+    );
+}
+
+fn assert_occlusion_approx_eq(lhs: &KernelValue, rhs: &KernelValue) {
+    let lhs = expect_struct(lhs, "OcclusionResult");
+    let rhs = expect_struct(rhs, "OcclusionResult");
+    assert_eq!(
+        expect_bool(field(lhs, "occluded")),
+        expect_bool(field(rhs, "occluded"))
+    );
+    assert_approx_eq(
+        expect_f32(field(lhs, "distance")),
+        expect_f32(field(rhs, "distance")),
+    );
+    assert_eq!(
+        expect_i32(field(lhs, "steps")),
+        expect_i32(field(rhs, "steps"))
     );
 }
 
@@ -1312,7 +1395,8 @@ fn query_exec_virtual_gpu_batch_execution_uses_lowered_item_contracts() {
     let error = execute_batch_query_with_trace(&ctx, &plan, &[capture, rays])
         .expect_err("mismatched item contract should fail");
     assert!(
-        format!("{error:?}").contains("result kind does not match"),
+        format!("{error:?}").contains("capture item contract result kind")
+            && format!("{error:?}").contains("does not match batch result contract"),
         "expected contract validation mismatch, got {error:?}"
     );
 }
@@ -1598,6 +1682,10 @@ fn query_exec_explicit_wgsl_backend_matches_cpu_for_capture_and_world_queries() 
         expect_f32(&wgsl_field_distance),
     );
     assert_eq!(wgsl_field_distance_trace.backend, DispatchBackend::Wgsl);
+    assert_direct_trace_contract(
+        &wgsl_field_distance_trace,
+        query_contract::SPATIAL_DISTANCE_CAPTURE_FIELD,
+    );
 
     let field_normal_plan = lower_capture_query_plan(
         &CaptureQueryPlan::for_query(CaptureQueryKind::Normal, CaptureKind::Field, None)
@@ -1688,6 +1776,10 @@ fn query_exec_explicit_wgsl_backend_matches_cpu_for_capture_and_world_queries() 
     assert_hit3_approx_eq(&cpu_capture_hit, &wgsl_capture_hit);
     assert_eq!(wgsl_capture_trace.backend, DispatchBackend::Wgsl);
     assert_eq!(wgsl_capture_trace.executor, DirectQueryExecutor::Wgsl);
+    assert_direct_trace_contract(
+        &wgsl_capture_trace,
+        query_contract::SPATIAL_TRACE_CAPTURE_SHAPE,
+    );
 
     let capture_surface_plan = lower_capture_query_plan(
         &CaptureQueryPlan::for_query(CaptureQueryKind::Surface, CaptureKind::Shape, None)
@@ -1823,6 +1915,7 @@ fn query_exec_explicit_wgsl_backend_matches_cpu_for_capture_and_world_queries() 
     assert_hit3_approx_eq(&cpu_world_hit, &wgsl_world_hit);
     assert_eq!(wgsl_world_trace.backend, DispatchBackend::Wgsl);
     assert_eq!(wgsl_world_trace.executor, DirectQueryExecutor::Wgsl);
+    assert_direct_trace_contract(&wgsl_world_trace, query_contract::SPATIAL_TRACE_WORLD);
 
     let world_surface_plan =
         lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Surface));
@@ -1887,6 +1980,101 @@ fn query_exec_explicit_wgsl_backend_matches_cpu_for_capture_and_world_queries() 
     )
     .expect("wgsl world medium");
     assert_medium_approx_eq(&cpu_world_medium, &wgsl_world_medium);
+}
+
+#[test]
+fn query_exec_scalar_occlusion_matches_cpu_virtual_gpu_and_wgsl_for_capture_and_world() {
+    let (_, _, ctx) = typed_query_module(query_fixture_source());
+    let shape_capture = KernelValue::Capture(SmolStr::new("scene_shape"));
+    let region_capture = KernelValue::Capture(SmolStr::new("scene_region"));
+    let fine_domain = scene_domain(
+        stable_region_scene_capture_id(&SmolStr::new("scene_region")),
+        1,
+        true,
+        true,
+        true,
+    );
+
+    let capture_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Occluded, CaptureKind::Shape, None)
+            .expect("capture occluded plan"),
+    );
+    for (ray, expected_occluded) in [
+        (
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
+            true,
+        ),
+        (
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 1.0, 0.0], 6.0, 0.05, 0.001, 96),
+            false,
+        ),
+    ] {
+        let args = vec![shape_capture.clone(), ray];
+        let (cpu, cpu_trace) =
+            execute_capture_query_with_trace_on(&ctx, DispatchBackend::Cpu, &capture_plan, &args)
+                .expect("cpu capture occlusion");
+        let (vgpu, vgpu_trace) = execute_capture_query_with_trace_on(
+            &ctx,
+            DispatchBackend::VirtualGpu,
+            &capture_plan,
+            &args,
+        )
+        .expect("vgpu capture occlusion");
+        let (wgsl, wgsl_trace) =
+            execute_capture_query_with_trace_on(&ctx, DispatchBackend::Wgsl, &capture_plan, &args)
+                .expect("wgsl capture occlusion");
+        assert_occlusion_approx_eq(&cpu, &vgpu);
+        assert_occlusion_approx_eq(&cpu, &wgsl);
+        assert_eq!(
+            expect_bool(field(expect_struct(&cpu, "OcclusionResult"), "occluded")),
+            expected_occluded
+        );
+        assert_direct_trace_contract(&cpu_trace, query_contract::SPATIAL_OCCLUDED_CAPTURE_SHAPE);
+        assert_direct_trace_contract(&vgpu_trace, query_contract::SPATIAL_OCCLUDED_CAPTURE_SHAPE);
+        assert_direct_trace_contract(&wgsl_trace, query_contract::SPATIAL_OCCLUDED_CAPTURE_SHAPE);
+        assert!(cpu_trace.observability.trace_steps > 0);
+        assert!(vgpu_trace.observability.trace_steps > 0);
+        assert!(wgsl_trace.observability.trace_steps > 0);
+    }
+
+    let world_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Occluded));
+    for (ray, expected_occluded) in [
+        (
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
+            true,
+        ),
+        (
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 1.0, 0.0], 6.0, 0.05, 0.001, 96),
+            false,
+        ),
+    ] {
+        let args = vec![region_capture.clone(), fine_domain.clone(), ray];
+        let (cpu, cpu_trace) =
+            execute_world_query_with_trace_on(&ctx, DispatchBackend::Cpu, &world_plan, &args)
+                .expect("cpu world occlusion");
+        let (vgpu, vgpu_trace) = execute_world_query_with_trace_on(
+            &ctx,
+            DispatchBackend::VirtualGpu,
+            &world_plan,
+            &args,
+        )
+        .expect("vgpu world occlusion");
+        let (wgsl, wgsl_trace) =
+            execute_world_query_with_trace_on(&ctx, DispatchBackend::Wgsl, &world_plan, &args)
+                .expect("wgsl world occlusion");
+        assert_occlusion_approx_eq(&cpu, &vgpu);
+        assert_occlusion_approx_eq(&cpu, &wgsl);
+        assert_eq!(
+            expect_bool(field(expect_struct(&cpu, "OcclusionResult"), "occluded")),
+            expected_occluded
+        );
+        assert_direct_trace_contract(&cpu_trace, query_contract::SPATIAL_OCCLUDED_WORLD);
+        assert_direct_trace_contract(&vgpu_trace, query_contract::SPATIAL_OCCLUDED_WORLD);
+        assert_direct_trace_contract(&wgsl_trace, query_contract::SPATIAL_OCCLUDED_WORLD);
+        assert!(cpu_trace.observability.trace_steps > 0);
+        assert!(vgpu_trace.observability.trace_steps > 0);
+        assert!(wgsl_trace.observability.trace_steps > 0);
+    }
 }
 
 #[test]
@@ -2276,18 +2464,22 @@ fn query_exec_wgsl_batch_queries_match_cpu_results() {
         ray_query([0.0, 0.0, 3.0], [0.0, 1.0, 0.0]),
     ]);
 
-    let cpu_field_distance = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
-        BatchQueryKind::Distance,
-        CaptureKind::Field,
-        DispatchBackend::Cpu,
-        None,
-    ));
-    let wgsl_field_distance = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
-        BatchQueryKind::Distance,
-        CaptureKind::Field,
-        DispatchBackend::Wgsl,
-        None,
-    ));
+    let cpu_field_distance = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_DISTANCE_BATCH_FIELD,
+            DispatchBackend::Cpu,
+            None,
+        )
+        .unwrap(),
+    );
+    let wgsl_field_distance = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_DISTANCE_BATCH_FIELD,
+            DispatchBackend::Wgsl,
+            None,
+        )
+        .unwrap(),
+    );
     let (cpu_field_distances, _) = execute_batch_query_with_trace(
         &ctx,
         &cpu_field_distance,
@@ -2310,26 +2502,34 @@ fn query_exec_wgsl_batch_queries_match_cpu_results() {
         );
     }
     assert_eq!(wgsl_field_distance_trace.backend, DispatchBackend::Wgsl);
+    assert_batch_trace_contract(
+        &wgsl_field_distance_trace,
+        query_contract::SPATIAL_DISTANCE_BATCH_FIELD,
+    );
 
-    let cpu_shape_distance = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
-        BatchQueryKind::Distance,
-        CaptureKind::Shape,
-        DispatchBackend::Cpu,
-        None,
-    ));
-    let wgsl_shape_distance = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
-        BatchQueryKind::Distance,
-        CaptureKind::Shape,
-        DispatchBackend::Wgsl,
-        None,
-    ));
+    let cpu_shape_distance = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_DISTANCE_BATCH_SHAPE,
+            DispatchBackend::Cpu,
+            None,
+        )
+        .unwrap(),
+    );
+    let wgsl_shape_distance = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_DISTANCE_BATCH_SHAPE,
+            DispatchBackend::Wgsl,
+            None,
+        )
+        .unwrap(),
+    );
     let (cpu_shape_distances, _) = execute_batch_query_with_trace(
         &ctx,
         &cpu_shape_distance,
         &[shape_capture.clone(), point_items.clone()],
     )
     .expect("cpu shape distance batch");
-    let (wgsl_shape_distances, _) = execute_batch_query_with_trace(
+    let (wgsl_shape_distances, wgsl_shape_distance_trace) = execute_batch_query_with_trace(
         &ctx,
         &wgsl_shape_distance,
         &[shape_capture.clone(), point_items.clone()],
@@ -2344,26 +2544,34 @@ fn query_exec_wgsl_batch_queries_match_cpu_results() {
             expect_f32(field(expect_struct(wgsl, "DistanceResult"), "distance")),
         );
     }
+    assert_batch_trace_contract(
+        &wgsl_shape_distance_trace,
+        query_contract::SPATIAL_DISTANCE_BATCH_SHAPE,
+    );
 
-    let cpu_field_normal = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
-        BatchQueryKind::Normal,
-        CaptureKind::Field,
-        DispatchBackend::Cpu,
-        None,
-    ));
-    let wgsl_field_normal = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
-        BatchQueryKind::Normal,
-        CaptureKind::Field,
-        DispatchBackend::Wgsl,
-        None,
-    ));
+    let cpu_field_normal = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_NORMAL_BATCH_FIELD,
+            DispatchBackend::Cpu,
+            None,
+        )
+        .unwrap(),
+    );
+    let wgsl_field_normal = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_NORMAL_BATCH_FIELD,
+            DispatchBackend::Wgsl,
+            None,
+        )
+        .unwrap(),
+    );
     let (cpu_field_normals, _) = execute_batch_query_with_trace(
         &ctx,
         &cpu_field_normal,
         &[field_capture, point_items.clone()],
     )
     .expect("cpu field normal batch");
-    let (wgsl_field_normals, _) = execute_batch_query_with_trace(
+    let (wgsl_field_normals, wgsl_field_normal_trace) = execute_batch_query_with_trace(
         &ctx,
         &wgsl_field_normal,
         &[
@@ -2381,26 +2589,34 @@ fn query_exec_wgsl_batch_queries_match_cpu_results() {
             expect_vec3(field(expect_struct(wgsl, "NormalResult"), "normal")),
         );
     }
+    assert_batch_trace_contract(
+        &wgsl_field_normal_trace,
+        query_contract::SPATIAL_NORMAL_BATCH_FIELD,
+    );
 
-    let cpu_shape_normal = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
-        BatchQueryKind::Normal,
-        CaptureKind::Shape,
-        DispatchBackend::Cpu,
-        None,
-    ));
-    let wgsl_shape_normal = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
-        BatchQueryKind::Normal,
-        CaptureKind::Shape,
-        DispatchBackend::Wgsl,
-        None,
-    ));
+    let cpu_shape_normal = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_NORMAL_BATCH_SHAPE,
+            DispatchBackend::Cpu,
+            None,
+        )
+        .unwrap(),
+    );
+    let wgsl_shape_normal = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_NORMAL_BATCH_SHAPE,
+            DispatchBackend::Wgsl,
+            None,
+        )
+        .unwrap(),
+    );
     let (cpu_shape_normals, _) = execute_batch_query_with_trace(
         &ctx,
         &cpu_shape_normal,
         &[shape_capture.clone(), point_items.clone()],
     )
     .expect("cpu shape normal batch");
-    let (wgsl_shape_normals, _) = execute_batch_query_with_trace(
+    let (wgsl_shape_normals, wgsl_shape_normal_trace) = execute_batch_query_with_trace(
         &ctx,
         &wgsl_shape_normal,
         &[shape_capture.clone(), point_items.clone()],
@@ -2415,17 +2631,27 @@ fn query_exec_wgsl_batch_queries_match_cpu_results() {
             expect_vec3(field(expect_struct(wgsl, "NormalResult"), "normal")),
         );
     }
+    assert_batch_trace_contract(
+        &wgsl_shape_normal_trace,
+        query_contract::SPATIAL_NORMAL_BATCH_SHAPE,
+    );
 
-    let cpu_trace_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
-        BatchQueryKind::Trace,
-        DispatchBackend::Cpu,
-        None,
-    ));
-    let wgsl_trace_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
-        BatchQueryKind::Trace,
-        DispatchBackend::Wgsl,
-        None,
-    ));
+    let cpu_trace_plan = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_TRACE_BATCH_SHAPE,
+            DispatchBackend::Cpu,
+            None,
+        )
+        .unwrap(),
+    );
+    let wgsl_trace_plan = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_TRACE_BATCH_SHAPE,
+            DispatchBackend::Wgsl,
+            None,
+        )
+        .unwrap(),
+    );
     let (cpu_hits, _) = execute_batch_query_with_trace(
         &ctx,
         &cpu_trace_plan,
@@ -2442,24 +2668,31 @@ fn query_exec_wgsl_batch_queries_match_cpu_results() {
         assert_hit3_approx_eq(cpu, wgsl);
     }
     assert_eq!(wgsl_trace_batch.backend, DispatchBackend::Wgsl);
+    assert_batch_trace_contract(&wgsl_trace_batch, query_contract::SPATIAL_TRACE_BATCH_SHAPE);
 
-    let cpu_surface_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
-        BatchQueryKind::Surface,
-        DispatchBackend::Cpu,
-        None,
-    ));
-    let wgsl_surface_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
-        BatchQueryKind::Surface,
-        DispatchBackend::Wgsl,
-        None,
-    ));
+    let cpu_surface_plan = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SURFACE_SAMPLE_BATCH_SHAPE,
+            DispatchBackend::Cpu,
+            None,
+        )
+        .unwrap(),
+    );
+    let wgsl_surface_plan = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SURFACE_SAMPLE_BATCH_SHAPE,
+            DispatchBackend::Wgsl,
+            None,
+        )
+        .unwrap(),
+    );
     let (cpu_surfaces, _) = execute_batch_query_with_trace(
         &ctx,
         &cpu_surface_plan,
         &[shape_capture.clone(), cpu_hits.clone()],
     )
     .expect("cpu surface batch");
-    let (wgsl_surfaces, _) = execute_batch_query_with_trace(
+    let (wgsl_surfaces, wgsl_surface_trace) = execute_batch_query_with_trace(
         &ctx,
         &wgsl_surface_plan,
         &[shape_capture.clone(), wgsl_hits.clone()],
@@ -2471,21 +2704,31 @@ fn query_exec_wgsl_batch_queries_match_cpu_results() {
     {
         assert_surface_approx_eq(cpu, wgsl);
     }
+    assert_batch_trace_contract(
+        &wgsl_surface_trace,
+        query_contract::SURFACE_SAMPLE_BATCH_SHAPE,
+    );
 
-    let cpu_occluded_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
-        BatchQueryKind::Occluded,
-        DispatchBackend::Cpu,
-        None,
-    ));
-    let wgsl_occluded_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
-        BatchQueryKind::Occluded,
-        DispatchBackend::Wgsl,
-        None,
-    ));
+    let cpu_occluded_plan = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_OCCLUDED_BATCH_SHAPE,
+            DispatchBackend::Cpu,
+            None,
+        )
+        .unwrap(),
+    );
+    let wgsl_occluded_plan = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_OCCLUDED_BATCH_SHAPE,
+            DispatchBackend::Wgsl,
+            None,
+        )
+        .unwrap(),
+    );
     let (cpu_occlusions, _) =
         execute_batch_query_with_trace(&ctx, &cpu_occluded_plan, &[shape_capture, ray_items])
             .expect("cpu occluded batch");
-    let (wgsl_occlusions, _) = execute_batch_query_with_trace(
+    let (wgsl_occlusions, wgsl_occluded_trace) = execute_batch_query_with_trace(
         &ctx,
         &wgsl_occluded_plan,
         &[
@@ -2512,6 +2755,10 @@ fn query_exec_wgsl_batch_queries_match_cpu_results() {
             expect_f32(field(wgsl, "distance")),
         );
     }
+    assert_batch_trace_contract(
+        &wgsl_occluded_trace,
+        query_contract::SPATIAL_OCCLUDED_BATCH_SHAPE,
+    );
 }
 
 #[test]
@@ -2860,7 +3107,8 @@ fn query_exec_virtual_gpu_rejects_invalid_batch_contracts_before_execution() {
     )
     .expect_err("invalid nested item contract should fail");
     assert!(
-        format!("{nested_error:?}").contains("capture query contract version"),
+        format!("{nested_error:?}").contains("capture query contract")
+            && format!("{nested_error:?}").contains("contract version"),
         "expected nested capture-plan validation failure, got {nested_error:?}"
     );
 }
@@ -2879,6 +3127,8 @@ fn kernel_entry_executes_query_expressions_via_query_exec_context() {
     assert_approx_eq(expect_f32(field(summary, "batch_distance0")), 1.0);
     assert_approx_eq(expect_f32(field(summary, "batch_distance1")), 2.0);
     assert!(expect_bool(field(summary, "occluded0")));
+    assert!(expect_bool(field(summary, "scalar_occluded")));
+    assert!(expect_bool(field(summary, "world_occluded")));
 
     let hit = expect_struct(field(summary, "hit"), "Hit3");
     let world_hit = expect_struct(field(summary, "world_hit"), "Hit3");

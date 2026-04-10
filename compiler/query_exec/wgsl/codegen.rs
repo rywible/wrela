@@ -6,11 +6,14 @@ use crate::mir::lower::portable_value_struct_abi;
 use crate::pir;
 use crate::portable::{
     PortableAbiType, PortableStructField, all_builtin_records, portable_abi_emit_wgsl_structs,
-    portable_any_builtin_record_abi, portable_builtin_record_abi,
+    portable_any_builtin_record_abi, portable_query_item_abi, portable_query_result_abi,
+};
+use crate::query_contract::{
+    self, ParticipantContractKind, QueryContractDescriptor, QueryExecutionBinding, QueryQuestionId,
+    QueryResultKind, QuerySurfaceKind,
 };
 use crate::query_exec::QueryExecContext;
 use crate::query_exec::cpu::{DirectQueryOps, QueryExecError};
-use crate::query_plan::{BatchQueryKind, WorldQueryKind};
 use crate::scene_ir::{
     FieldNodeKindSummary, FieldNodeRecord, RepeatKind, SceneOperatorPayload, SceneProfileExpr,
     SceneValueExpr, ShapeMergeProvenancePolicy, ShapeNodeKindSummary, ShapeNodeProvenancePolicy,
@@ -36,27 +39,6 @@ pub(crate) struct GeneratedShader {
     pub(crate) dispatch_abi: PortableAbiType,
     pub(crate) item_abi: PortableAbiType,
     pub(crate) result_abi: PortableAbiType,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum QueryFlavor {
-    CaptureDistance,
-    CaptureNormal,
-    CaptureTrace,
-    CaptureSurface,
-    CaptureRadiance,
-    CaptureMedium,
-    WorldDistance,
-    WorldNormal,
-    WorldTrace,
-    WorldSurface,
-    WorldRadiance,
-    WorldMedium,
-    BatchDistance,
-    BatchNormal,
-    BatchTrace,
-    BatchSurface,
-    BatchOccluded,
 }
 
 #[derive(Debug, Clone)]
@@ -106,36 +88,12 @@ pub(crate) fn generate_shader(
     ctx: &QueryExecContext,
     plan: ShaderPlan<'_>,
 ) -> Result<GeneratedShader, QueryExecError> {
-    let flavor = match plan {
-        ShaderPlan::Capture(plan) => match plan.kind {
-            crate::query_plan::CaptureQueryKind::Distance => QueryFlavor::CaptureDistance,
-            crate::query_plan::CaptureQueryKind::Normal => QueryFlavor::CaptureNormal,
-            crate::query_plan::CaptureQueryKind::Trace => QueryFlavor::CaptureTrace,
-            crate::query_plan::CaptureQueryKind::Surface => QueryFlavor::CaptureSurface,
-            crate::query_plan::CaptureQueryKind::Radiance => QueryFlavor::CaptureRadiance,
-            crate::query_plan::CaptureQueryKind::Medium => QueryFlavor::CaptureMedium,
-        },
-        ShaderPlan::World(plan) => match plan.kind {
-            WorldQueryKind::Distance => QueryFlavor::WorldDistance,
-            WorldQueryKind::Normal => QueryFlavor::WorldNormal,
-            WorldQueryKind::Trace => QueryFlavor::WorldTrace,
-            WorldQueryKind::Surface => QueryFlavor::WorldSurface,
-            WorldQueryKind::Radiance => QueryFlavor::WorldRadiance,
-            WorldQueryKind::Medium => QueryFlavor::WorldMedium,
-        },
-        ShaderPlan::Batch(plan) => match plan.kind {
-            BatchQueryKind::Distance => QueryFlavor::BatchDistance,
-            BatchQueryKind::Normal => QueryFlavor::BatchNormal,
-            BatchQueryKind::Trace => QueryFlavor::BatchTrace,
-            BatchQueryKind::Surface => QueryFlavor::BatchSurface,
-            BatchQueryKind::Occluded => QueryFlavor::BatchOccluded,
-        },
-    };
+    let (descriptor, _binding) = shader_contract(plan)?;
 
     let type_tags = build_type_tags(ctx);
     let dispatch_abi = wgsl_dispatch_config_abi();
-    let item_abi = wgsl_item_abi_for_flavor(flavor)?;
-    let result_abi = wgsl_result_abi_for_flavor(flavor)?;
+    let item_abi = wgsl_item_abi_for_descriptor(descriptor)?;
+    let result_abi = wgsl_result_abi_for_descriptor(descriptor)?;
     let scene_index = ShaderSceneIndex::new(ctx);
     let mut rendered = String::new();
 
@@ -155,15 +113,15 @@ pub(crate) fn generate_shader(
         &[dispatch_abi.clone(), item_abi.clone(), result_abi.clone()],
     )?);
     rendered.push('\n');
-    rendered.push_str(&emit_scene_functions(ctx, &scene_index, flavor)?);
+    rendered.push_str(&emit_scene_functions(ctx, &scene_index, descriptor)?);
     rendered.push('\n');
-    rendered.push_str(&emit_portable_functions(ctx, flavor)?);
+    rendered.push_str(&emit_portable_functions(ctx, descriptor)?);
     rendered.push('\n');
     rendered.push_str(&emit_bindings(&dispatch_abi, &item_abi, &result_abi)?);
     rendered.push('\n');
-    rendered.push_str(&emit_query_helpers(ctx, &scene_index, flavor)?);
+    rendered.push_str(&emit_query_helpers(ctx, &scene_index, descriptor)?);
     rendered.push('\n');
-    rendered.push_str(&emit_main(flavor, &item_abi, &result_abi)?);
+    rendered.push_str(&emit_main(descriptor, &item_abi, &result_abi)?);
 
     Ok(GeneratedShader {
         source: rendered,
@@ -171,6 +129,25 @@ pub(crate) fn generate_shader(
         dispatch_abi,
         item_abi,
         result_abi,
+    })
+}
+
+fn shader_contract(
+    plan: ShaderPlan<'_>,
+) -> Result<
+    (
+        &'static QueryContractDescriptor,
+        &'static QueryExecutionBinding,
+    ),
+    QueryExecError,
+> {
+    let contract_id = match plan {
+        ShaderPlan::Capture(plan) => plan.contract_id,
+        ShaderPlan::World(plan) => plan.contract_id,
+        ShaderPlan::Batch(plan) => plan.contract_id,
+    };
+    query_contract::query_contract_bundle(contract_id).ok_or_else(|| QueryExecError::Unsupported {
+        message: format!("missing WGSL query contract '{}'", contract_id.as_str()),
     })
 }
 
@@ -227,59 +204,28 @@ pub(crate) fn wgsl_dispatch_config_abi() -> PortableAbiType {
     }
 }
 
-fn wgsl_builtin_contract_abi(name: &str) -> Result<PortableAbiType, QueryExecError> {
-    portable_builtin_record_abi(name).ok_or_else(|| QueryExecError::Unsupported {
-        message: format!("missing portable ABI for '{name}'"),
+pub(crate) fn wgsl_item_abi_for_descriptor(
+    descriptor: &QueryContractDescriptor,
+) -> Result<PortableAbiType, QueryExecError> {
+    portable_query_item_abi(descriptor.item_kind).ok_or_else(|| QueryExecError::Unsupported {
+        message: format!(
+            "missing WGSL item ABI for query contract '{}'",
+            descriptor.id.as_str()
+        ),
     })
 }
 
-pub(crate) fn wgsl_item_abi_for_flavor(
-    flavor: QueryFlavor,
+pub(crate) fn wgsl_result_abi_for_descriptor(
+    descriptor: &QueryContractDescriptor,
 ) -> Result<PortableAbiType, QueryExecError> {
-    match flavor {
-        QueryFlavor::CaptureDistance
-        | QueryFlavor::CaptureNormal
-        | QueryFlavor::WorldDistance
-        | QueryFlavor::WorldNormal
-        | QueryFlavor::CaptureMedium
-        | QueryFlavor::WorldMedium
-        | QueryFlavor::BatchDistance
-        | QueryFlavor::BatchNormal => wgsl_builtin_contract_abi("PointQuery"),
-        QueryFlavor::CaptureTrace
-        | QueryFlavor::WorldTrace
-        | QueryFlavor::BatchTrace
-        | QueryFlavor::BatchOccluded => wgsl_builtin_contract_abi("RayQuery"),
-        QueryFlavor::CaptureSurface | QueryFlavor::WorldSurface | QueryFlavor::BatchSurface => {
-            wgsl_builtin_contract_abi("Hit3")
+    portable_query_result_abi(descriptor.surface, descriptor.result_kind).ok_or_else(|| {
+        QueryExecError::Unsupported {
+            message: format!(
+                "missing WGSL result ABI for query contract '{}'",
+                descriptor.id.as_str()
+            ),
         }
-        QueryFlavor::CaptureRadiance | QueryFlavor::WorldRadiance => {
-            wgsl_builtin_contract_abi("PointDirectionQuery")
-        }
-    }
-}
-
-pub(crate) fn wgsl_result_abi_for_flavor(
-    flavor: QueryFlavor,
-) -> Result<PortableAbiType, QueryExecError> {
-    match flavor {
-        QueryFlavor::CaptureDistance | QueryFlavor::WorldDistance => Ok(PortableAbiType::F32),
-        QueryFlavor::CaptureNormal
-        | QueryFlavor::WorldNormal
-        | QueryFlavor::CaptureRadiance
-        | QueryFlavor::WorldRadiance => Ok(PortableAbiType::Vec3),
-        QueryFlavor::CaptureTrace | QueryFlavor::WorldTrace | QueryFlavor::BatchTrace => {
-            wgsl_builtin_contract_abi("Hit3")
-        }
-        QueryFlavor::CaptureSurface | QueryFlavor::WorldSurface | QueryFlavor::BatchSurface => {
-            wgsl_builtin_contract_abi("Surface")
-        }
-        QueryFlavor::CaptureMedium | QueryFlavor::WorldMedium => {
-            wgsl_builtin_contract_abi("Medium")
-        }
-        QueryFlavor::BatchDistance => wgsl_builtin_contract_abi("DistanceResult"),
-        QueryFlavor::BatchNormal => wgsl_builtin_contract_abi("NormalResult"),
-        QueryFlavor::BatchOccluded => wgsl_builtin_contract_abi("OcclusionResult"),
-    }
+    })
 }
 
 fn emit_value_and_abi_structs(
@@ -610,14 +556,14 @@ fn emit_bindings(
 fn emit_scene_functions(
     ctx: &QueryExecContext,
     scene_index: &ShaderSceneIndex,
-    flavor: QueryFlavor,
+    descriptor: &QueryContractDescriptor,
 ) -> Result<String, QueryExecError> {
     let ops = DirectQueryOps::new(ctx);
     let mut out = String::new();
     emit_profile_helper_functions(ctx, &mut out)?;
     emit_field_scene_functions(ctx, scene_index, &ops, &mut out)?;
-    emit_shape_scene_functions(ctx, scene_index, &ops, flavor, &mut out)?;
-    emit_scene_dispatch_functions(ctx, scene_index, flavor, &mut out)?;
+    emit_shape_scene_functions(ctx, scene_index, &ops, descriptor, &mut out)?;
+    emit_scene_dispatch_functions(ctx, scene_index, descriptor, &mut out)?;
     Ok(out)
 }
 
@@ -770,21 +716,21 @@ fn emit_polyline_helper(out: &mut String, arity: usize) -> Result<(), QueryExecE
 
 fn emit_portable_functions(
     ctx: &QueryExecContext,
-    flavor: QueryFlavor,
+    descriptor: &QueryContractDescriptor,
 ) -> Result<String, QueryExecError> {
     let mut lowered = BTreeMap::<SmolStr, pir::ir::PirFunction>::new();
     let mut roots = BTreeSet::new();
     for scene in ctx.scene.shapes.values() {
         for leaf in scene.leaves.values() {
-            if flavor_requires_material(flavor) {
+            if contract_requires_material(descriptor) {
                 roots.insert(leaf.material.clone());
             }
-            if flavor_requires_radiance(flavor)
+            if contract_requires_radiance(descriptor)
                 && let Some(radiance) = &leaf.radiance
             {
                 roots.insert(radiance.clone());
             }
-            if flavor_requires_volume(flavor)
+            if contract_requires_volume(descriptor)
                 && let Some(volume) = &leaf.volume
             {
                 roots.insert(volume.clone());
@@ -814,50 +760,55 @@ fn emit_portable_functions(
     Ok(out)
 }
 
-fn flavor_requires_material(flavor: QueryFlavor) -> bool {
+fn contract_requires_material(descriptor: &QueryContractDescriptor) -> bool {
+    descriptor.result_kind == QueryResultKind::Surface
+}
+
+fn contract_requires_radiance(descriptor: &QueryContractDescriptor) -> bool {
+    descriptor.participant_kind == Some(ParticipantContractKind::Radiance)
+}
+
+fn contract_requires_volume(descriptor: &QueryContractDescriptor) -> bool {
+    descriptor.participant_kind == Some(ParticipantContractKind::Medium)
+}
+
+fn contract_requires_trace(descriptor: &QueryContractDescriptor) -> bool {
     matches!(
-        flavor,
-        QueryFlavor::CaptureSurface | QueryFlavor::WorldSurface | QueryFlavor::BatchSurface
+        descriptor.question,
+        QueryQuestionId::Nearest | QueryQuestionId::Trace | QueryQuestionId::Occluded
     )
 }
 
-fn flavor_requires_radiance(flavor: QueryFlavor) -> bool {
-    matches!(
-        flavor,
-        QueryFlavor::CaptureRadiance | QueryFlavor::WorldRadiance
-    )
+fn contract_requires_root_shape_lookup(descriptor: &QueryContractDescriptor) -> bool {
+    contract_requires_trace(descriptor) || contract_requires_material(descriptor)
 }
 
-fn flavor_requires_volume(flavor: QueryFlavor) -> bool {
-    matches!(
-        flavor,
-        QueryFlavor::CaptureMedium | QueryFlavor::WorldMedium
-    )
+fn contract_is_world_question(
+    descriptor: &QueryContractDescriptor,
+    question: QueryQuestionId,
+) -> bool {
+    descriptor.surface == QuerySurfaceKind::WorldScalar && descriptor.question == question
 }
 
-fn flavor_requires_trace(flavor: QueryFlavor) -> bool {
+fn contract_is_capture_or_batch_question(
+    descriptor: &QueryContractDescriptor,
+    question: QueryQuestionId,
+) -> bool {
     matches!(
-        flavor,
-        QueryFlavor::CaptureTrace
-            | QueryFlavor::WorldTrace
-            | QueryFlavor::BatchTrace
-            | QueryFlavor::BatchOccluded
-    )
-}
-
-fn flavor_requires_root_shape_lookup(flavor: QueryFlavor) -> bool {
-    flavor_requires_trace(flavor) || flavor_requires_material(flavor)
+        descriptor.surface,
+        QuerySurfaceKind::CaptureScalar | QuerySurfaceKind::CaptureBatch
+    ) && descriptor.question == question
 }
 
 fn emit_query_helpers(
     ctx: &QueryExecContext,
     scene_index: &ShaderSceneIndex,
-    flavor: QueryFlavor,
+    descriptor: &QueryContractDescriptor,
 ) -> Result<String, QueryExecError> {
     let ops = DirectQueryOps::new(ctx);
     let mut out = String::new();
 
-    if flavor_requires_trace(flavor) {
+    if contract_requires_trace(descriptor) {
         emit_payload_lookup_function(ctx, scene_index, &ops, &mut out)?;
 
         writeln!(
@@ -964,7 +915,10 @@ fn emit_query_helpers(
     writeln!(out, "  return wr_normalize3(vec3<f32>(dx, dy, dz));").ok();
     writeln!(out, "}}\n").ok();
 
-    if matches!(flavor, QueryFlavor::WorldTrace) {
+    if contract_is_world_question(descriptor, QueryQuestionId::Nearest)
+        || contract_is_world_question(descriptor, QueryQuestionId::Trace)
+        || contract_is_world_question(descriptor, QueryQuestionId::Occluded)
+    {
         writeln!(out, "fn world_trace_ray(ray: RayQuery) -> Hit3 {{").ok();
         writeln!(out, "  var best = wr_default_hit(ray.origin);").ok();
         writeln!(out, "  var best_distance: f32 = 1e30;").ok();
@@ -984,7 +938,7 @@ fn emit_query_helpers(
         writeln!(out, "}}\n").ok();
     }
 
-    if matches!(flavor, QueryFlavor::WorldSurface) {
+    if contract_is_world_question(descriptor, QueryQuestionId::Sample) {
         writeln!(out, "fn world_surface_hit(hit: Hit3) -> Surface {{").ok();
         out.push_str(
             "  if (dispatch_config.material_enabled == 0u) { return wr_default_surface(); }\n",
@@ -999,7 +953,7 @@ fn emit_query_helpers(
         writeln!(out, "}}\n").ok();
     }
 
-    if matches!(flavor, QueryFlavor::WorldRadiance) {
+    if contract_is_world_question(descriptor, QueryQuestionId::Radiance) {
         writeln!(
             out,
             "fn world_radiance_query(query: PointDirectionQuery) -> vec3<f32> {{"
@@ -1020,7 +974,7 @@ fn emit_query_helpers(
         writeln!(out, "}}\n").ok();
     }
 
-    if matches!(flavor, QueryFlavor::WorldMedium) {
+    if contract_is_world_question(descriptor, QueryQuestionId::Medium) {
         writeln!(out, "fn world_medium_point(point: PointQuery) -> Medium {{").ok();
         out.push_str(
             "  if (dispatch_config.media_enabled == 0u) { return wr_default_medium(); }\n",
@@ -1063,25 +1017,26 @@ fn emit_query_helpers(
     .ok();
     writeln!(out, "}}\n").ok();
 
-    if matches!(
-        flavor,
-        QueryFlavor::CaptureTrace | QueryFlavor::BatchTrace | QueryFlavor::BatchOccluded
-    ) {
+    if contract_is_capture_or_batch_question(descriptor, QueryQuestionId::Nearest)
+        || contract_is_capture_or_batch_question(descriptor, QueryQuestionId::Trace)
+        || contract_is_capture_or_batch_question(descriptor, QueryQuestionId::Occluded)
+    {
         out.push_str("fn capture_trace_ray(ray: RayQuery) -> Hit3 { return trace_shape_for_index(dispatch_config.capture_index, ray.origin, ray.direction, ray.max_distance, ray.min_step, ray.hit_epsilon, ray.max_steps); }\n\n");
     }
 
-    if matches!(
-        flavor,
-        QueryFlavor::CaptureSurface | QueryFlavor::BatchSurface
-    ) {
+    if contract_is_capture_or_batch_question(descriptor, QueryQuestionId::Sample) {
         out.push_str("fn capture_surface_hit(hit: Hit3) -> Surface { return surface_at_shape_dispatch(dispatch_config.capture_index, hit); }\n\n");
     }
 
-    if matches!(flavor, QueryFlavor::CaptureRadiance) {
+    if descriptor.surface == QuerySurfaceKind::CaptureScalar
+        && descriptor.question == QueryQuestionId::Radiance
+    {
         out.push_str("fn capture_radiance_query(query: PointDirectionQuery) -> vec3<f32> { return radiance_at_shape_dispatch(dispatch_config.capture_index, query.point, query.direction); }\n\n");
     }
 
-    if matches!(flavor, QueryFlavor::CaptureMedium) {
+    if descriptor.surface == QuerySurfaceKind::CaptureScalar
+        && descriptor.question == QueryQuestionId::Medium
+    {
         out.push_str("fn capture_medium_point(point: PointQuery) -> Medium { return medium_at_shape_dispatch(dispatch_config.capture_index, point.point); }\n\n");
     }
 
@@ -1089,34 +1044,83 @@ fn emit_query_helpers(
 }
 
 fn emit_main(
-    flavor: QueryFlavor,
+    descriptor: &QueryContractDescriptor,
     item_abi: &PortableAbiType,
     result_abi: &PortableAbiType,
 ) -> Result<String, QueryExecError> {
     let item_expr = from_abi_expr(item_abi, "input_items.values[index]")?;
-    let eval_expr = match flavor {
-        QueryFlavor::CaptureDistance => format!("capture_distance_point({item_expr})"),
-        QueryFlavor::CaptureNormal => format!("capture_normal_point({item_expr})"),
-        QueryFlavor::CaptureTrace => format!("capture_trace_ray({item_expr})"),
-        QueryFlavor::CaptureSurface => format!("capture_surface_hit({item_expr})"),
-        QueryFlavor::CaptureRadiance => format!("capture_radiance_query({item_expr})"),
-        QueryFlavor::CaptureMedium => format!("capture_medium_point({item_expr})"),
-        QueryFlavor::WorldDistance => format!("world_distance_point({item_expr}.point)"),
-        QueryFlavor::WorldNormal => format!("world_normal_point({item_expr}.point)"),
-        QueryFlavor::WorldTrace => format!("world_trace_ray({item_expr})"),
-        QueryFlavor::WorldSurface => format!("world_surface_hit({item_expr})"),
-        QueryFlavor::WorldRadiance => format!("world_radiance_query({item_expr})"),
-        QueryFlavor::WorldMedium => format!("world_medium_point({item_expr})"),
-        QueryFlavor::BatchDistance => {
+    let eval_expr = match (
+        descriptor.surface,
+        descriptor.question,
+        descriptor.result_kind,
+    ) {
+        (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Distance, _) => {
+            format!("capture_distance_point({item_expr})")
+        }
+        (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Normal, _) => {
+            format!("capture_normal_point({item_expr})")
+        }
+        (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Nearest | QueryQuestionId::Trace, _) => {
+            format!("capture_trace_ray({item_expr})")
+        }
+        (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Occluded, _) => {
+            format!("wr_occlusion_result_from_hit(capture_trace_ray({item_expr}))")
+        }
+        (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Sample, QueryResultKind::Surface) => {
+            format!("capture_surface_hit({item_expr})")
+        }
+        (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Radiance, _) => {
+            format!("capture_radiance_query({item_expr})")
+        }
+        (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Medium, _) => {
+            format!("capture_medium_point({item_expr})")
+        }
+        (QuerySurfaceKind::WorldScalar, QueryQuestionId::Distance, _) => {
+            format!("world_distance_point({item_expr}.point)")
+        }
+        (QuerySurfaceKind::WorldScalar, QueryQuestionId::Normal, _) => {
+            format!("world_normal_point({item_expr}.point)")
+        }
+        (QuerySurfaceKind::WorldScalar, QueryQuestionId::Nearest | QueryQuestionId::Trace, _) => {
+            format!("world_trace_ray({item_expr})")
+        }
+        (QuerySurfaceKind::WorldScalar, QueryQuestionId::Occluded, _) => {
+            format!("wr_occlusion_result_from_hit(world_trace_ray({item_expr}))")
+        }
+        (QuerySurfaceKind::WorldScalar, QueryQuestionId::Sample, QueryResultKind::Surface) => {
+            format!("world_surface_hit({item_expr})")
+        }
+        (QuerySurfaceKind::WorldScalar, QueryQuestionId::Radiance, _) => {
+            format!("world_radiance_query({item_expr})")
+        }
+        (QuerySurfaceKind::WorldScalar, QueryQuestionId::Medium, _) => {
+            format!("world_medium_point({item_expr})")
+        }
+        (QuerySurfaceKind::CaptureBatch, QueryQuestionId::Distance, _) => {
             format!("DistanceResult(capture_distance_point({item_expr}))")
         }
-        QueryFlavor::BatchNormal => {
+        (QuerySurfaceKind::CaptureBatch, QueryQuestionId::Normal, _) => {
             format!("NormalResult(capture_normal_point({item_expr}))")
         }
-        QueryFlavor::BatchTrace => format!("capture_trace_ray({item_expr})"),
-        QueryFlavor::BatchSurface => format!("capture_surface_hit({item_expr})"),
-        QueryFlavor::BatchOccluded => {
+        (QuerySurfaceKind::CaptureBatch, QueryQuestionId::Nearest | QueryQuestionId::Trace, _) => {
+            format!("capture_trace_ray({item_expr})")
+        }
+        (QuerySurfaceKind::CaptureBatch, QueryQuestionId::Sample, QueryResultKind::Surface) => {
+            format!("capture_surface_hit({item_expr})")
+        }
+        (QuerySurfaceKind::CaptureBatch, QueryQuestionId::Occluded, _) => {
             format!("wr_occlusion_result_from_hit(capture_trace_ray({item_expr}))")
+        }
+        _ => {
+            return Err(QueryExecError::Unsupported {
+                message: format!(
+                    "WGSL does not support query contract '{}' ({:?}/{:?}/{:?})",
+                    descriptor.id.as_str(),
+                    descriptor.surface,
+                    descriptor.question,
+                    descriptor.result_kind
+                ),
+            });
         }
     };
     let store_expr = to_abi_expr(result_abi, "result")?;
@@ -1762,17 +1766,17 @@ fn emit_shape_scene_functions(
     ctx: &QueryExecContext,
     scene_index: &ShaderSceneIndex,
     ops: &DirectQueryOps<'_>,
-    flavor: QueryFlavor,
+    descriptor: &QueryContractDescriptor,
     out: &mut String,
 ) -> Result<(), QueryExecError> {
     for (shape_name, scene) in &ctx.scene.shapes {
         let shape_index = scene_index.shape(shape_name)?;
         for record in &scene.node_records {
             emit_shape_distance_function(ctx, scene_index, shape_name, shape_index, record, out)?;
-            if flavor_requires_trace(flavor) {
+            if contract_requires_trace(descriptor) {
                 emit_shape_winner_function(ctx, scene_index, shape_name, shape_index, record, out)?;
             }
-            if flavor_requires_radiance(flavor) {
+            if contract_requires_radiance(descriptor) {
                 emit_shape_radiance_function(
                     ctx,
                     scene_index,
@@ -1782,7 +1786,7 @@ fn emit_shape_scene_functions(
                     out,
                 )?;
             }
-            if flavor_requires_volume(flavor) {
+            if contract_requires_volume(descriptor) {
                 emit_shape_medium_function(
                     ctx,
                     scene_index,
@@ -1794,7 +1798,7 @@ fn emit_shape_scene_functions(
                 )?;
             }
         }
-        if flavor_requires_material(flavor) {
+        if contract_requires_material(descriptor) {
             emit_shape_surface_function(ctx, scene_index, shape_name, shape_index, out)?;
         }
     }
@@ -1804,11 +1808,11 @@ fn emit_shape_scene_functions(
 fn emit_scene_dispatch_functions(
     ctx: &QueryExecContext,
     scene_index: &ShaderSceneIndex,
-    flavor: QueryFlavor,
+    descriptor: &QueryContractDescriptor,
     out: &mut String,
 ) -> Result<(), QueryExecError> {
     emit_field_dispatch_functions(ctx, scene_index, out)?;
-    emit_shape_dispatch_functions(ctx, scene_index, flavor, out)?;
+    emit_shape_dispatch_functions(ctx, scene_index, descriptor, out)?;
     Ok(())
 }
 
@@ -1953,7 +1957,7 @@ fn emit_field_dispatch_functions(
 fn emit_shape_dispatch_functions(
     ctx: &QueryExecContext,
     scene_index: &ShaderSceneIndex,
-    flavor: QueryFlavor,
+    descriptor: &QueryContractDescriptor,
     out: &mut String,
 ) -> Result<(), QueryExecError> {
     writeln!(
@@ -1975,7 +1979,7 @@ fn emit_shape_dispatch_functions(
     writeln!(out, "  }}").ok();
     writeln!(out, "}}\n").ok();
 
-    if flavor_requires_trace(flavor) {
+    if contract_requires_trace(descriptor) {
         writeln!(
             out,
             "fn shape_winner_dispatch(shape_index: u32, point: vec3<f32>) -> ShapeWinner {{"
@@ -2020,7 +2024,7 @@ fn emit_shape_dispatch_functions(
     writeln!(out, "  return wr_normalize3(vec3<f32>(dx, dy, dz));").ok();
     writeln!(out, "}}\n").ok();
 
-    if flavor_requires_material(flavor) {
+    if contract_requires_material(descriptor) {
         writeln!(
             out,
             "fn surface_at_shape_dispatch(shape_index: u32, hit: Hit3) -> Surface {{"
@@ -2041,7 +2045,7 @@ fn emit_shape_dispatch_functions(
         writeln!(out, "}}\n").ok();
     }
 
-    if flavor_requires_radiance(flavor) {
+    if contract_requires_radiance(descriptor) {
         writeln!(out, "fn radiance_at_shape_dispatch(shape_index: u32, point: vec3<f32>, direction: vec3<f32>) -> vec3<f32> {{").ok();
         writeln!(out, "  switch shape_index {{").ok();
         for (shape_name, scene) in &ctx.scene.shapes {
@@ -2058,7 +2062,7 @@ fn emit_shape_dispatch_functions(
         writeln!(out, "}}\n").ok();
     }
 
-    if flavor_requires_volume(flavor) {
+    if contract_requires_volume(descriptor) {
         writeln!(
             out,
             "fn medium_at_shape_dispatch(shape_index: u32, point: vec3<f32>) -> Medium {{"
@@ -2079,7 +2083,7 @@ fn emit_shape_dispatch_functions(
         writeln!(out, "}}\n").ok();
     }
 
-    if flavor_requires_trace(flavor) {
+    if contract_requires_trace(descriptor) {
         writeln!(
             out,
             "fn root_shape_id_for_shape(shape_index: u32) -> u32 {{"
@@ -2100,7 +2104,7 @@ fn emit_shape_dispatch_functions(
         writeln!(out, "}}\n").ok();
     }
 
-    if flavor_requires_root_shape_lookup(flavor) {
+    if contract_requires_root_shape_lookup(descriptor) {
         writeln!(
             out,
             "fn shape_index_from_root_shape_id(root_shape_id: u32) -> u32 {{"

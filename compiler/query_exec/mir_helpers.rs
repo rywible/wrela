@@ -1483,6 +1483,122 @@ pub(crate) fn lower_scene_trace_capture_helper(
     }
 }
 
+pub(crate) fn lower_scene_occluded_capture_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    radiance_param_counts: &HashMap<SmolStr, usize>,
+    volume_param_counts: &HashMap<SmolStr, usize>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let helper_name = SmolStr::new("__wr_scene_occluded_capture");
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        radiance_param_counts,
+        volume_param_counts,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let capture = lowerer.new_local(
+        SmolStr::new("capture"),
+        false,
+        MirType::Named(SmolStr::new("ShapeCapture")),
+    );
+    let ray = lowerer.new_local(
+        SmolStr::new("ray"),
+        false,
+        MirType::Named(SmolStr::new("RayQuery")),
+    );
+    for (name, local) in [
+        (SmolStr::new("capture"), capture),
+        (SmolStr::new("ray"), ray),
+    ] {
+        lowerer.declare_local(name, local);
+        lowerer.params.push(local);
+    }
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let hit = lowerer.lower_call_temp(
+        MirType::Named(SmolStr::new("Hit3")),
+        SmolStr::new("__wr_scene_trace_capture"),
+        vec![Value::Local(capture), Value::Local(ray)],
+        span,
+    );
+    let occlusion = lowerer.build_occlusion_result_value(hit, span);
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(occlusion),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("ShapeCapture"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("RayQuery"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+        ],
+        abi_return: portable_abi_from_type_ref(
+            Some(&hir::TypeRef {
+                name: SmolStr::new("OcclusionResult"),
+                name_span: None,
+                args: Vec::new(),
+            }),
+            module,
+            type_tags,
+            &mut HashSet::new(),
+        ),
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
 pub(crate) fn lower_scene_surface_capture_helper(
     module: &hir::Module,
     type_tags: &HashMap<SmolStr, TypeTagId>,
@@ -3710,6 +3826,147 @@ pub(crate) fn lower_world_trace_capture_helper(
     }
 }
 
+pub(crate) fn lower_world_occluded_capture_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    radiance_param_counts: &HashMap<SmolStr, usize>,
+    volume_param_counts: &HashMap<SmolStr, usize>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+) -> MirFunction {
+    let plan = crate::query_plan::WorldQueryPlan::for_query(WorldQueryKind::Occluded);
+    let helper_name = plan.helper_name.clone();
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        radiance_param_counts,
+        volume_param_counts,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let capture = lowerer.new_local(
+        SmolStr::new("capture"),
+        false,
+        MirType::Named(SmolStr::new("RegionCapture")),
+    );
+    let domain = lowerer.new_local(
+        SmolStr::new("domain"),
+        false,
+        MirType::Named(SmolStr::new("SceneDomain")),
+    );
+    let ray = lowerer.new_local(
+        SmolStr::new("ray"),
+        false,
+        MirType::Named(SmolStr::new("RayQuery")),
+    );
+    let backend = lowerer.new_local(SmolStr::new("backend"), false, MirType::Integer);
+    for (name, local) in [
+        (SmolStr::new("capture"), capture),
+        (SmolStr::new("domain"), domain),
+        (SmolStr::new("ray"), ray),
+        (SmolStr::new("backend"), backend),
+    ] {
+        lowerer.declare_local(name, local);
+        lowerer.params.push(local);
+    }
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    let hit = lowerer.lower_call_temp(
+        MirType::Named(SmolStr::new("Hit3")),
+        SmolStr::new("__wr_world_trace_capture"),
+        vec![
+            Value::Local(capture),
+            Value::Local(domain),
+            Value::Local(ray),
+            Value::Local(backend),
+        ],
+        span,
+    );
+    let occlusion = lowerer.build_occlusion_result_value(hit, span);
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(occlusion),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("RegionCapture"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("SceneDomain"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            portable_abi_from_type_ref(
+                Some(&hir::TypeRef {
+                    name: SmolStr::new("RayQuery"),
+                    name_span: None,
+                    args: Vec::new(),
+                }),
+                module,
+                type_tags,
+                &mut HashSet::new(),
+            ),
+            PortableAbiType::I32,
+        ],
+        abi_return: portable_abi_from_type_ref(
+            Some(&hir::TypeRef {
+                name: SmolStr::new("OcclusionResult"),
+                name_span: None,
+                args: Vec::new(),
+            }),
+            module,
+            type_tags,
+            &mut HashSet::new(),
+        ),
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
 pub(crate) fn lower_world_surface_capture_helper(
     module: &hir::Module,
     type_tags: &HashMap<SmolStr, TypeTagId>,
@@ -5104,7 +5361,7 @@ pub(crate) fn lower_shape_batch_queries_helper(
     debug_assert_eq!(plan.capture_kind, CaptureKind::Shape);
     let helper_name = plan.helper_name.clone();
     match plan.kind {
-        BatchQueryKind::Trace | BatchQueryKind::Occluded => {
+        BatchQueryKind::Nearest | BatchQueryKind::Trace | BatchQueryKind::Occluded => {
             debug_assert!(matches!(
                 plan.candidate_strategy(),
                 CandidateStrategy::ShapeBranchTraversal

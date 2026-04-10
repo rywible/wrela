@@ -2,7 +2,9 @@ use smol_str::SmolStr;
 use std::collections::BTreeSet;
 use thiserror::Error;
 
+use super::portable_builtin_record_abi;
 use crate::kernel::{KernelStructValue, KernelValue};
+use crate::query_contract::{QueryItemKind, QueryResultKind, QuerySurfaceKind};
 use crate::query_plan::{
     ArtifactContract, ArtifactSchema, CandidateRecordContract, DispatchRecordContract,
     HitContextContract, ParticipantSelectionContract, ResultRecordContract,
@@ -303,6 +305,47 @@ pub fn portable_artifact_contract_abi(contract: &ArtifactContract) -> PortableAb
         name: SmolStr::new("ArtifactContract"),
         class_id: 0,
         fields,
+    }
+}
+
+pub fn portable_query_item_abi(item_kind: QueryItemKind) -> Option<PortableAbiType> {
+    match item_kind {
+        QueryItemKind::Unit => Some(PortableAbiType::Struct {
+            name: SmolStr::new("UnitQuery"),
+            class_id: 0,
+            fields: Vec::new(),
+        }),
+        QueryItemKind::PointQuery => portable_builtin_record_abi("PointQuery"),
+        QueryItemKind::PointDirectionQuery => portable_builtin_record_abi("PointDirectionQuery"),
+        QueryItemKind::RayQuery => portable_builtin_record_abi("RayQuery"),
+        QueryItemKind::Hit3 => portable_builtin_record_abi("Hit3"),
+    }
+}
+
+pub fn portable_query_result_abi(
+    surface: QuerySurfaceKind,
+    result_kind: QueryResultKind,
+) -> Option<PortableAbiType> {
+    match (surface, result_kind) {
+        (
+            QuerySurfaceKind::CaptureScalar | QuerySurfaceKind::WorldScalar,
+            QueryResultKind::DistanceResult,
+        ) => Some(PortableAbiType::F32),
+        (
+            QuerySurfaceKind::CaptureScalar | QuerySurfaceKind::WorldScalar,
+            QueryResultKind::NormalResult | QueryResultKind::RadianceResult,
+        ) => Some(PortableAbiType::Vec3),
+        (QuerySurfaceKind::CaptureBatch, QueryResultKind::DistanceResult) => {
+            portable_builtin_record_abi("DistanceResult")
+        }
+        (QuerySurfaceKind::CaptureBatch, QueryResultKind::NormalResult) => {
+            portable_builtin_record_abi("NormalResult")
+        }
+        (_, QueryResultKind::Hit3) => portable_builtin_record_abi("Hit3"),
+        (_, QueryResultKind::Surface) => portable_builtin_record_abi("Surface"),
+        (_, QueryResultKind::OcclusionResult) => portable_builtin_record_abi("OcclusionResult"),
+        (_, QueryResultKind::MediumResult) => portable_builtin_record_abi("Medium"),
+        (QuerySurfaceKind::CaptureBatch, QueryResultKind::RadianceResult) => None,
     }
 }
 

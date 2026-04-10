@@ -13,15 +13,17 @@ use crate::portable::{
     PortableBuiltinType, all_builtin_records, any_builtin_record, builtin_record_by_function,
     portable_builtin_type_abi,
 };
+use crate::query_contract::{self, QueryItemKind};
 use crate::query_exec::mir::{
     lower_field_batch_queries_helper, lower_scene_distance_capture_helper,
     lower_scene_medium_capture_helper, lower_scene_normal_capture_helper,
-    lower_scene_radiance_capture_helper, lower_scene_surface_capture_helper,
-    lower_scene_surface_queries_helper, lower_scene_trace_capture_helper,
-    lower_scene_trace_queries_helper, lower_shape_batch_queries_helper,
-    lower_shape_distance_helper, lower_shape_surface_helper, lower_shape_trace_helper,
-    lower_world_distance_capture_helper, lower_world_medium_capture_helper,
-    lower_world_normal_capture_helper, lower_world_radiance_capture_helper,
+    lower_scene_occluded_capture_helper, lower_scene_radiance_capture_helper,
+    lower_scene_surface_capture_helper, lower_scene_surface_queries_helper,
+    lower_scene_trace_capture_helper, lower_scene_trace_queries_helper,
+    lower_shape_batch_queries_helper, lower_shape_distance_helper, lower_shape_surface_helper,
+    lower_shape_trace_helper, lower_world_distance_capture_helper,
+    lower_world_medium_capture_helper, lower_world_normal_capture_helper,
+    lower_world_occluded_capture_helper, lower_world_radiance_capture_helper,
     lower_world_surface_capture_helper, lower_world_trace_capture_helper,
 };
 use crate::query_exec::{QueryExecContext, wgsl};
@@ -50,6 +52,21 @@ pub fn lower_module(module: &Module) -> MirModule {
 
 pub fn lower_module_with_types(module: &Module, type_info: &TypeInfo) -> MirModule {
     lower_module_with_types_and_backend(module, type_info, DispatchBackend::Auto)
+}
+
+fn kernel_world_query_input_count(plan: &crate::kernel::KernelWorldQueryPlan) -> usize {
+    let descriptor = query_contract::query_contract(plan.contract_id)
+        .expect("kernel world query plan must reference a registered query contract");
+    let capture_count = 1;
+    let domain_count = usize::from(descriptor.domain_contract.is_some());
+    let item_count = match descriptor.item_kind {
+        QueryItemKind::Unit => 0,
+        QueryItemKind::PointQuery
+        | QueryItemKind::PointDirectionQuery
+        | QueryItemKind::RayQuery
+        | QueryItemKind::Hit3 => 1,
+    };
+    capture_count + domain_count + item_count
 }
 
 pub fn lower_module_with_types_and_backend(
@@ -610,6 +627,24 @@ pub fn lower_module_with_types_and_backend(
         &class_method_ids,
         &interface_methods,
     ));
+    functions.push(lower_scene_occluded_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &radiance_param_counts,
+        &volume_param_counts,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
+    ));
     functions.push(lower_scene_surface_capture_helper(
         module,
         &tag_map,
@@ -726,6 +761,24 @@ pub fn lower_module_with_types_and_backend(
         default_query_backend,
         world_wgsl_configs.get(&WorldQueryKind::Trace),
         &wgsl_shape_indices,
+    ));
+    functions.push(lower_world_occluded_capture_helper(
+        module,
+        &tag_map,
+        &class_fields,
+        &class_field_defaults,
+        &function_names,
+        &field_names,
+        &shape_names,
+        &shape_graphs,
+        &field_graphs,
+        &field_bodies,
+        &field_metadata,
+        &radiance_param_counts,
+        &volume_param_counts,
+        &result_functions,
+        &class_method_ids,
+        &interface_methods,
     ));
     functions.push(lower_world_surface_capture_helper(
         module,
@@ -4554,12 +4607,7 @@ impl FunctionLowerer {
                 ty,
                 span,
             } => {
-                let query_arg_count = match plan.kind {
-                    WorldQueryKind::Distance | WorldQueryKind::Normal | WorldQueryKind::Medium => 3,
-                    WorldQueryKind::Radiance => 4,
-                    WorldQueryKind::Trace => 8,
-                    WorldQueryKind::Surface => 3,
-                };
+                let query_arg_count = kernel_world_query_input_count(plan);
                 let mut lowered_args = args
                     .iter()
                     .take(query_arg_count)
@@ -6429,23 +6477,16 @@ impl FunctionLowerer {
                 if let Some(mode) = self.parse_dispatch_backend_builtin(body, expr_id) {
                     return self.build_dispatch_backend_value(mode, span);
                 }
-                if let Some(spec) = self.parse_field_query(body, expr_id) {
-                    return self.lower_field_query_call(body, span, &spec);
+                if let Some(spec) = self.parse_scalar_query(body, expr_id) {
+                    return self.lower_scalar_query_call(
+                        body,
+                        span,
+                        self.expr_type(body, expr_id),
+                        &spec,
+                    );
                 }
-                if let Some(spec) = self.parse_shape_query(body, expr_id) {
-                    return self.lower_shape_query_call(body, span, &spec);
-                }
-                if let Some(spec) = self.parse_world_point_query(body, expr_id) {
-                    return self.lower_world_point_query_call(body, span, &spec);
-                }
-                if let Some(spec) = self.parse_world_shape_query(body, expr_id) {
-                    return self.lower_world_shape_query_call(body, span, &spec);
-                }
-                if let Some(spec) = self.parse_field_batch_query(body, expr_id) {
-                    return self.lower_field_batch_query_call(body, span, &spec);
-                }
-                if let Some(spec) = self.parse_shape_batch_query(body, expr_id) {
-                    return self.lower_shape_batch_query_call(body, span, &spec);
+                if let Some(spec) = self.parse_batch_query(body, expr_id) {
+                    return self.lower_batch_query_call(body, span, &spec);
                 }
                 if let Some(spec) = parse_kernel_dispatch_compute(body, expr_id) {
                     return self.lower_dispatch_compute_call(body, span, &spec);
@@ -8508,9 +8549,11 @@ fn builtin_function_names() -> Vec<SmolStr> {
         SmolStr::new("__wr_shape_distance_capture"),
         SmolStr::new("__wr_shape_normal_capture"),
         SmolStr::new("__wr_scene_trace_capture"),
+        SmolStr::new("__wr_scene_occluded_capture"),
         SmolStr::new("__wr_scene_surface_capture"),
         SmolStr::new("__wr_scene_radiance_capture"),
         SmolStr::new("__wr_scene_medium_capture"),
+        SmolStr::new("__wr_world_occluded_capture"),
         SmolStr::new("__wr_field_distance_batch_queries"),
         SmolStr::new("__wr_shape_distance_batch_queries"),
         SmolStr::new("__wr_field_normal_batch_queries"),

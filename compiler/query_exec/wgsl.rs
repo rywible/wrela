@@ -159,7 +159,9 @@ fn build_capture_request(
                 });
             }
         },
-        CaptureQueryKind::Trace
+        CaptureQueryKind::Nearest
+        | CaptureQueryKind::Trace
+        | CaptureQueryKind::Occluded
         | CaptureQueryKind::Surface
         | CaptureQueryKind::Radiance
         | CaptureQueryKind::Medium => {
@@ -172,7 +174,7 @@ fn build_capture_request(
         CaptureQueryKind::Distance | CaptureQueryKind::Normal | CaptureQueryKind::Medium => {
             point_query(expect_vec3_arg(args.get(1), "point")?)
         }
-        CaptureQueryKind::Trace => {
+        CaptureQueryKind::Nearest | CaptureQueryKind::Trace | CaptureQueryKind::Occluded => {
             expect_struct_arg(args.get(1), "RayQuery")?;
             args.get(1)
                 .cloned()
@@ -199,21 +201,30 @@ fn build_capture_request(
 
 fn note_capture_observability(ops: &DirectQueryOps<'_>, kind: CaptureQueryKind) {
     ops.note_artifact_load();
-    if matches!(kind, CaptureQueryKind::Trace) {
+    if matches!(
+        kind,
+        CaptureQueryKind::Nearest | CaptureQueryKind::Trace | CaptureQueryKind::Occluded
+    ) {
         ops.note_trace_step();
     }
 }
 
 fn note_world_observability(ops: &DirectQueryOps<'_>, kind: WorldQueryKind) {
     ops.note_artifact_load();
-    if matches!(kind, WorldQueryKind::Trace) {
+    if matches!(
+        kind,
+        WorldQueryKind::Nearest | WorldQueryKind::Trace | WorldQueryKind::Occluded
+    ) {
         ops.note_trace_step();
     }
 }
 
 fn note_batch_observability(ops: &DirectQueryOps<'_>, kind: BatchQueryKind) {
     ops.note_artifact_load();
-    if matches!(kind, BatchQueryKind::Trace | BatchQueryKind::Occluded) {
+    if matches!(
+        kind,
+        BatchQueryKind::Nearest | BatchQueryKind::Trace | BatchQueryKind::Occluded
+    ) {
         ops.note_trace_step();
     }
 }
@@ -246,7 +257,7 @@ fn build_world_request(
         WorldQueryKind::Distance | WorldQueryKind::Normal | WorldQueryKind::Medium => {
             point_query(expect_vec3_arg(args.get(2), "point")?)
         }
-        WorldQueryKind::Trace => {
+        WorldQueryKind::Nearest | WorldQueryKind::Trace | WorldQueryKind::Occluded => {
             expect_struct_arg(args.get(2), "RayQuery")?;
             args.get(2)
                 .cloned()
@@ -288,16 +299,17 @@ fn build_batch_request(
         BatchQueryKind::Distance | BatchQueryKind::Normal => {
             ops.resolve_field_or_shape_capture(args.first())?
         }
-        BatchQueryKind::Trace | BatchQueryKind::Surface | BatchQueryKind::Occluded => {
-            ops.resolve_shape_capture(args.first())?
-        }
+        BatchQueryKind::Nearest
+        | BatchQueryKind::Trace
+        | BatchQueryKind::Surface
+        | BatchQueryKind::Occluded => ops.resolve_shape_capture(args.first())?,
     };
     let items = expect_array_arg(
         args.get(1),
         match plan.kind {
             BatchQueryKind::Distance | BatchQueryKind::Normal => "points",
             BatchQueryKind::Surface => "hits",
-            BatchQueryKind::Trace | BatchQueryKind::Occluded => "rays",
+            BatchQueryKind::Nearest | BatchQueryKind::Trace | BatchQueryKind::Occluded => "rays",
         },
     )?;
     ops.note_candidate_count(items.len() as u32);

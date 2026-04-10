@@ -1,8 +1,9 @@
 use crate::kernel::{KernelStructValue, KernelValue};
 use crate::portable::{PortableBuiltinAtom, PortableBuiltinType, builtin_record};
+use crate::query_contract::{self, QueryContractId};
 use crate::query_exec::cpu::{QueryExecError, kernel_to_runtime, runtime_to_kernel_value};
 use crate::query_exec::wgsl::codegen::{
-    QueryFlavor, wgsl_dispatch_config_abi, wgsl_item_abi_for_flavor, wgsl_result_abi_for_flavor,
+    wgsl_dispatch_config_abi, wgsl_item_abi_for_descriptor, wgsl_result_abi_for_descriptor,
 };
 use crate::query_exec::wgsl::{
     GeneratedShaderModule, GpuDispatchRequest, dispatch_compiled_shader, dispatch_config,
@@ -321,13 +322,13 @@ fn world_module_from_parts(
     workgroup_size: u32,
     kind: WorldBridgeKind,
 ) -> Result<GeneratedShaderModule, QueryExecError> {
-    let flavor = kind.flavor();
+    let descriptor = descriptor_for_contract(kind.contract_id())?;
     Ok(GeneratedShaderModule {
         source,
         workgroup_size,
         dispatch_abi: wgsl_dispatch_config_abi(),
-        item_abi: wgsl_item_abi_for_flavor(flavor)?,
-        result_abi: wgsl_result_abi_for_flavor(flavor)?,
+        item_abi: wgsl_item_abi_for_descriptor(descriptor)?,
+        result_abi: wgsl_result_abi_for_descriptor(descriptor)?,
     })
 }
 
@@ -336,13 +337,24 @@ fn batch_module_from_parts(
     workgroup_size: u32,
     kind: BatchBridgeKind,
 ) -> Result<GeneratedShaderModule, QueryExecError> {
-    let flavor = kind.flavor();
+    let descriptor = descriptor_for_contract(kind.contract_id())?;
     Ok(GeneratedShaderModule {
         source,
         workgroup_size,
         dispatch_abi: wgsl_dispatch_config_abi(),
-        item_abi: wgsl_item_abi_for_flavor(flavor)?,
-        result_abi: wgsl_result_abi_for_flavor(flavor)?,
+        item_abi: wgsl_item_abi_for_descriptor(descriptor)?,
+        result_abi: wgsl_result_abi_for_descriptor(descriptor)?,
+    })
+}
+
+fn descriptor_for_contract(
+    contract_id: QueryContractId,
+) -> Result<&'static query_contract::QueryContractDescriptor, QueryExecError> {
+    query_contract::query_contract(contract_id).ok_or_else(|| QueryExecError::Unsupported {
+        message: format!(
+            "missing WGSL bridge query contract '{}'",
+            contract_id.as_str()
+        ),
     })
 }
 
@@ -568,14 +580,14 @@ fn runtime_to_builtin_type(
 }
 
 impl WorldBridgeKind {
-    fn flavor(self) -> QueryFlavor {
+    fn contract_id(self) -> QueryContractId {
         match self {
-            Self::Distance => QueryFlavor::WorldDistance,
-            Self::Normal => QueryFlavor::WorldNormal,
-            Self::Trace => QueryFlavor::WorldTrace,
-            Self::Surface => QueryFlavor::WorldSurface,
-            Self::Radiance => QueryFlavor::WorldRadiance,
-            Self::Medium => QueryFlavor::WorldMedium,
+            Self::Distance => query_contract::SPATIAL_DISTANCE_WORLD,
+            Self::Normal => query_contract::SPATIAL_NORMAL_WORLD,
+            Self::Trace => query_contract::SPATIAL_NEAREST_WORLD,
+            Self::Surface => query_contract::SURFACE_SAMPLE_WORLD,
+            Self::Radiance => query_contract::PARTICIPANTS_RADIANCE_WORLD,
+            Self::Medium => query_contract::PARTICIPANTS_MEDIUM_WORLD,
         }
     }
 
@@ -620,13 +632,15 @@ impl WorldBridgeKind {
 }
 
 impl BatchBridgeKind {
-    fn flavor(self) -> QueryFlavor {
+    fn contract_id(self) -> QueryContractId {
         match self {
-            Self::FieldDistance | Self::ShapeDistance => QueryFlavor::BatchDistance,
-            Self::FieldNormal | Self::ShapeNormal => QueryFlavor::BatchNormal,
-            Self::ShapeTrace => QueryFlavor::BatchTrace,
-            Self::ShapeSurface => QueryFlavor::BatchSurface,
-            Self::ShapeOccluded => QueryFlavor::BatchOccluded,
+            Self::FieldDistance => query_contract::SPATIAL_DISTANCE_BATCH_FIELD,
+            Self::ShapeDistance => query_contract::SPATIAL_DISTANCE_BATCH_SHAPE,
+            Self::FieldNormal => query_contract::SPATIAL_NORMAL_BATCH_FIELD,
+            Self::ShapeNormal => query_contract::SPATIAL_NORMAL_BATCH_SHAPE,
+            Self::ShapeTrace => query_contract::SPATIAL_NEAREST_BATCH_SHAPE,
+            Self::ShapeSurface => query_contract::SURFACE_SAMPLE_BATCH_SHAPE,
+            Self::ShapeOccluded => query_contract::SPATIAL_OCCLUDED_BATCH_SHAPE,
         }
     }
 

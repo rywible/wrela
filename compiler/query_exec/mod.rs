@@ -15,6 +15,9 @@ pub mod world;
 use crate::kernel::KernelValue;
 use crate::kernel::ir::{KernelBatchQueryPlan, KernelCaptureQueryPlan, KernelWorldQueryPlan};
 use crate::kernel::{KernelBatchQueryTrace, interpret_batch_query};
+use crate::query_contract::{
+    self, QueryContractId, QueryFamilyId, QueryQuestionId, QuerySurfaceKind,
+};
 use crate::query_plan::DispatchBackend;
 
 pub use context::QueryExecContext;
@@ -35,6 +38,11 @@ pub use world::{WorldQuerySemantics, world_query_semantics};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchQueryExecutionTrace {
+    pub contract_id: QueryContractId,
+    pub family: QueryFamilyId,
+    pub question: QueryQuestionId,
+    pub surface: QuerySurfaceKind,
+    pub contract_version: u32,
     pub backend: DispatchBackend,
     pub plan_trace: KernelBatchQueryTrace,
     pub observability: QueryExecutionObservability,
@@ -43,6 +51,11 @@ pub struct BatchQueryExecutionTrace {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectQueryExecutionTrace {
+    pub contract_id: QueryContractId,
+    pub family: QueryFamilyId,
+    pub question: QueryQuestionId,
+    pub surface: QuerySurfaceKind,
+    pub contract_version: u32,
     pub backend: DispatchBackend,
     pub executor: DirectQueryExecutor,
     pub observability: QueryExecutionObservability,
@@ -69,6 +82,16 @@ pub enum DirectQueryExecutor {
     Wgsl,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QueryTraceIdentity {
+    contract_id: QueryContractId,
+    family: QueryFamilyId,
+    question: QueryQuestionId,
+    surface: QuerySurfaceKind,
+    contract_version: u32,
+    supported_backends: query_contract::BackendSupport,
+}
+
 pub fn execute_capture_query(
     ctx: &QueryExecContext,
     plan: &KernelCaptureQueryPlan,
@@ -93,7 +116,9 @@ pub fn execute_capture_query_with_trace_on(
     plan: &KernelCaptureQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, DirectQueryExecutionTrace), QueryExecError> {
+    let identity = trace_identity(plan.contract_id)?;
     let backend = resolve_direct_backend(backend);
+    ensure_backend_supported(identity, backend)?;
     let (value, executor, observability) = match backend {
         DispatchBackend::VirtualGpu => {
             let (value, observability) =
@@ -114,6 +139,11 @@ pub fn execute_capture_query_with_trace_on(
     Ok((
         value,
         DirectQueryExecutionTrace {
+            contract_id: identity.contract_id,
+            family: identity.family,
+            question: identity.question,
+            surface: identity.surface,
+            contract_version: identity.contract_version,
             backend,
             executor,
             cost_report: cost::capture_cost_report(backend, plan, &observability),
@@ -145,7 +175,9 @@ pub fn execute_world_query_with_trace_on(
     plan: &KernelWorldQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, DirectQueryExecutionTrace), QueryExecError> {
+    let identity = trace_identity(plan.contract_id)?;
     let backend = resolve_world_backend(requested_backend, plan);
+    ensure_backend_supported(identity, backend)?;
     let (value, executor, observability) = match backend {
         DispatchBackend::VirtualGpu => {
             let (value, observability) =
@@ -166,6 +198,11 @@ pub fn execute_world_query_with_trace_on(
     Ok((
         value,
         DirectQueryExecutionTrace {
+            contract_id: identity.contract_id,
+            family: identity.family,
+            question: identity.question,
+            surface: identity.surface,
+            contract_version: identity.contract_version,
             backend,
             executor,
             cost_report: cost::world_cost_report(backend, plan, &observability),
@@ -205,9 +242,11 @@ pub fn execute_batch_query_with_trace_on(
     plan: &KernelBatchQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, BatchQueryExecutionTrace), QueryExecError> {
+    let identity = trace_identity(plan.contract_id)?;
     let item_count = batch_query_item_count(args)?;
     let plan_trace = interpret_batch_query(plan, item_count);
     let backend = resolve_batch_backend(requested_backend, plan);
+    ensure_backend_supported(identity, backend)?;
     let (value, observability) = match backend {
         DispatchBackend::VirtualGpu => {
             vgpu::execute_batch_query_with_observability(ctx, plan, args, &plan_trace)?
@@ -223,12 +262,52 @@ pub fn execute_batch_query_with_trace_on(
     Ok((
         value,
         BatchQueryExecutionTrace {
+            contract_id: identity.contract_id,
+            family: identity.family,
+            question: identity.question,
+            surface: identity.surface,
+            contract_version: identity.contract_version,
             backend,
             plan_trace,
             cost_report,
             observability,
         },
     ))
+}
+
+fn trace_identity(contract_id: QueryContractId) -> Result<QueryTraceIdentity, QueryExecError> {
+    let descriptor =
+        query_contract::query_contract(contract_id).ok_or_else(|| QueryExecError::Unsupported {
+            message: format!("missing query contract '{}'", contract_id.as_str()),
+        })?;
+    Ok(QueryTraceIdentity {
+        contract_id: descriptor.id,
+        family: descriptor.family,
+        question: descriptor.question,
+        surface: descriptor.surface,
+        contract_version: descriptor.version,
+        supported_backends: descriptor.supported_backends,
+    })
+}
+
+fn ensure_backend_supported(
+    identity: QueryTraceIdentity,
+    backend: DispatchBackend,
+) -> Result<(), QueryExecError> {
+    if identity.supported_backends.supports(backend) {
+        Ok(())
+    } else {
+        Err(QueryExecError::Unsupported {
+            message: format!(
+                "query contract '{}' v{} ({:?}/{:?}) does not support backend {:?}",
+                identity.contract_id.as_str(),
+                identity.contract_version,
+                identity.surface,
+                identity.question,
+                backend
+            ),
+        })
+    }
 }
 
 fn resolve_direct_backend(backend: DispatchBackend) -> DispatchBackend {

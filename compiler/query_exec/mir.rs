@@ -15,6 +15,7 @@ use crate::mir::lower::{
     vector_component_index,
 };
 use crate::portable::{PortableAbiType, builtin_record_by_function};
+use crate::query_contract::{self, QueryContractDescriptor, QuerySurfaceKind};
 use crate::query_exec::ids::{
     stable_field_scene_capture_id as stable_field_scene_capture_id_u32,
     stable_region_scene_capture_id as stable_region_scene_capture_id_u32,
@@ -25,10 +26,8 @@ use crate::query_exec::region::{
     build_region_exec_cases, executable_region_shape_lists, world_domain_mismatch_message,
 };
 use crate::query_exec::spec::{
-    BatchQueryExecutionState, BatchQueryLoopInputs, FieldBatchQueryKind, FieldBatchQuerySpec,
-    FieldQueryKind, FieldQuerySpec, ShapeBatchQueryKind, ShapeBatchQuerySpec, ShapeQueryKind,
-    ShapeQuerySpec, WorldPointQueryKind, WorldPointQuerySpec, WorldShapeQueryKind,
-    WorldShapeQuerySpec,
+    BatchQueryExecutionState, BatchQueryInvocationSpec, BatchQueryLoopInputs,
+    ScalarQueryInvocationSpec,
 };
 use crate::query_exec::wgsl::NativeWgslBridgeConfig;
 use crate::query_exec::world::{

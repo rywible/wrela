@@ -17,7 +17,10 @@ pub fn world_query_semantics(kind: WorldQueryKind) -> WorldQuerySemantics {
         );
     };
     WorldQuerySemantics {
-        query_name: binding.legacy_builtin_name,
+        query_name: match kind {
+            WorldQueryKind::Nearest => "nearest_world",
+            _ => binding.legacy_builtin_name,
+        },
         domain_flag: descriptor
             .required_domain_flags
             .first()
@@ -130,18 +133,18 @@ pub(crate) fn walk_world_distance_shapes<B: WorldDistanceBackend>(
     Ok(())
 }
 
-pub(crate) fn execute_world_trace<B: WorldTraceBackend>(
+pub(crate) fn execute_world_ray<B: WorldTraceBackend>(
     backend: &mut B,
+    kind: WorldQueryKind,
+    invalid_message: &'static str,
 ) -> Result<(), <B as WorldTraceBackend>::Error>
 where
     B: WorldQueryBackend<Error = <B as WorldTraceBackend>::Error>,
 {
     backend.init_world_trace()?;
-    backend.with_world_shapes(
-        WorldQueryKind::Trace,
-        "trace_world requires a capture created from a region declaration",
-        |backend, shapes| walk_world_trace_shapes(backend, shapes),
-    )
+    backend.with_world_shapes(kind, invalid_message, |backend, shapes| {
+        walk_world_trace_shapes(backend, shapes)
+    })
 }
 
 pub(crate) fn walk_world_trace_shapes<B: WorldTraceBackend>(

@@ -3348,6 +3348,8 @@ fn main() -> Integer {
         rays=shadow_rays,
         backend=dispatch_backend_virtual_gpu()
     )
+    scalar_occlusion = occluded(capture=scene, ray=shadow_rays[0])
+    scalar_miss = occluded(capture=scene, ray=shadow_rays[1])
 
     if scene.scene_id != scene_again.scene_id {
         return 1
@@ -3390,6 +3392,12 @@ fn main() -> Integer {
     }
     if vgpu_occlusion[1].occluded != cpu_occlusion[1].occluded {
         return 14
+    }
+    if not scalar_occlusion.occluded {
+        return 15
+    }
+    if scalar_miss.occluded {
+        return 16
     }
     return 0
 }
@@ -4894,6 +4902,32 @@ fn main() -> Integer {
             max_steps=96
         )
     )
+    fine_occlusion_hit = occluded_world(
+        capture=world,
+        domain=fine_domain,
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        ),
+        backend=dispatch_backend_cpu()
+    )
+    fine_occlusion_miss = occluded_world(
+        capture=world,
+        domain=fine_domain,
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 1.0, 0.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        ),
+        backend=dispatch_backend_cpu()
+    )
     coarse_surface = surface_world(capture = world, domain = coarse_domain, hit = fine_hit)
     fine_surface = surface_world(capture = world, domain = fine_domain, hit = fine_hit)
     coarse_radiance = radiance_world(
@@ -4938,6 +4972,8 @@ fn main() -> Integer {
     if coarse_medium.density != 0.0 { return 14 }
     if fine_medium.density <= 0.0 { return 15 }
     if ppm == "" { return 16 }
+    if not fine_occlusion_hit.occluded { return 17 }
+    if fine_occlusion_miss.occluded { return 18 }
 
     __wr_print(ppm)
     return 0

@@ -7,10 +7,11 @@ use crate::kernel::ir::{
 };
 use crate::kernel::program::KernelProgram;
 use crate::portable;
+use crate::query_contract::{self, QueryContractDescriptor, QuerySurfaceKind};
 use crate::query_exec::QueryExecContext;
+use crate::query_exec::spec::{BatchQueryInvocationSpec, ScalarQueryInvocationSpec};
 use crate::query_plan::{
-    BatchQueryKind, BatchQueryPlan, CaptureKind, CaptureQueryKind, CaptureQueryPlan,
-    DispatchBackend, SceneSummary, WorldQueryKind, WorldQueryPlan,
+    BatchQueryPlan, CaptureKind, CaptureQueryPlan, DispatchBackend, SceneSummary, WorldQueryPlan,
 };
 use crate::scene_ir::{self, FieldScene, ShapeScene};
 use rowan::TextRange;
@@ -565,7 +566,7 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
                 span,
             });
         }
-        if let Some((plan, args)) = self.parse_field_query(expr_id) {
+        if let Some((plan, args)) = self.parse_scalar_capture_query(expr_id) {
             return Some(KernelExpr::CaptureQuery {
                 plan,
                 args,
@@ -573,15 +574,7 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
                 span,
             });
         }
-        if let Some((plan, args)) = self.parse_shape_query(expr_id) {
-            return Some(KernelExpr::CaptureQuery {
-                plan,
-                args,
-                ty: self.expr_type(expr_id, span)?,
-                span,
-            });
-        }
-        if let Some((plan, args)) = self.parse_world_point_query(expr_id) {
+        if let Some((plan, args)) = self.parse_scalar_world_query(expr_id) {
             return Some(KernelExpr::WorldQuery {
                 plan,
                 args,
@@ -589,23 +582,7 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
                 span,
             });
         }
-        if let Some((plan, args)) = self.parse_world_shape_query(expr_id) {
-            return Some(KernelExpr::WorldQuery {
-                plan,
-                args,
-                ty: self.expr_type(expr_id, span)?,
-                span,
-            });
-        }
-        if let Some((plan, args)) = self.parse_field_batch_query(expr_id) {
-            return Some(KernelExpr::BatchQuery {
-                plan,
-                args,
-                ty: self.expr_type(expr_id, span)?,
-                span,
-            });
-        }
-        if let Some((plan, args)) = self.parse_shape_batch_query(expr_id) {
+        if let Some((plan, args)) = self.parse_batch_query(expr_id) {
             return Some(KernelExpr::BatchQuery {
                 plan,
                 args,
@@ -964,239 +941,77 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
         }
     }
 
-    fn parse_field_query(
+    fn parse_scalar_capture_query(
         &mut self,
         expr_id: Idx<Expr>,
     ) -> Option<(KernelCaptureQueryPlan, Vec<KernelExpr>)> {
-        let span = self.body.expr_span(expr_id);
-        let (callee, args) = match &self.body.exprs[expr_id] {
-            Expr::Call { callee, args, .. } => (callee, args),
-            _ => return None,
-        };
-        let Expr::Variable(name) = &self.body.exprs[*callee] else {
+        let spec = self.parse_scalar_query_invocation(expr_id)?;
+        let descriptor =
+            query_contract::query_contract(spec.contract_id).expect("scalar query descriptor");
+        if descriptor.surface != QuerySurfaceKind::CaptureScalar {
             return None;
-        };
-        let kind = match name.as_str() {
-            "distance_at" => CaptureQueryKind::Distance,
-            "normal_at" => CaptureQueryKind::Normal,
-            "radiance_at" => CaptureQueryKind::Radiance,
-            "medium_at" => CaptureQueryKind::Medium,
-            _ => return None,
-        };
-        let named = self.collect_named_expr_args(args)?;
-        let capture = named.get("capture").copied()?;
-        let capture_kind = self.capture_kind_for_expr(capture);
-        let scene = self.batch_capture_scene_summary(capture, capture_kind);
+        }
+        let scene = self.batch_capture_scene_summary(spec.capture, descriptor.capture_kind);
         let plan = lower_capture_query_plan(
-            &CaptureQueryPlan::for_query(kind, capture_kind, scene)
+            &CaptureQueryPlan::for_contract(spec.contract_id, scene)
                 .expect("kernel capture query plan"),
         );
-        let item_key = if matches!(kind, CaptureQueryKind::Radiance) {
-            "sample"
-        } else {
-            "point"
-        };
-        let ordered_args = vec![
-            self.lower_expr(capture)?,
-            self.lower_expr(*named.get(item_key)?)?,
-        ];
-        if ordered_args.iter().any(|arg| {
-            arg.span() == TextRange::empty(0.into()) && span == TextRange::empty(0.into())
-        }) {
-            return None;
-        }
+        let ordered_args = vec![self.lower_expr(spec.capture)?, self.lower_expr(spec.item)?];
         Some((plan, ordered_args))
     }
 
-    fn parse_shape_query(
+    fn parse_scalar_world_query(
         &mut self,
         expr_id: Idx<Expr>,
-    ) -> Option<(KernelCaptureQueryPlan, Vec<KernelExpr>)> {
-        let (callee, args) = match &self.body.exprs[expr_id] {
-            Expr::Call { callee, args, .. } => (callee, args),
-            _ => return None,
-        };
-        let Expr::Variable(name) = &self.body.exprs[*callee] else {
+    ) -> Option<(KernelWorldQueryPlan, Vec<KernelExpr>)> {
+        let spec = self.parse_scalar_query_invocation(expr_id)?;
+        let descriptor =
+            query_contract::query_contract(spec.contract_id).expect("scalar query descriptor");
+        if descriptor.surface != QuerySurfaceKind::WorldScalar {
             return None;
-        };
-        let kind = match name.as_str() {
-            "trace_shape" => CaptureQueryKind::Trace,
-            "surface_at" => CaptureQueryKind::Surface,
-            _ => return None,
-        };
-        let named = self.collect_named_expr_args(args)?;
-        let capture = named.get("capture").copied()?;
-        let scene = self.batch_capture_scene_summary(capture, CaptureKind::Shape);
-        let plan = lower_capture_query_plan(
-            &CaptureQueryPlan::for_query(kind, CaptureKind::Shape, scene)
-                .expect("kernel shape query plan"),
+        }
+        let backend = spec
+            .backend
+            .and_then(|expr_id| self.parse_dispatch_backend_builtin(expr_id))
+            .unwrap_or(DispatchBackend::Auto);
+        let plan = lower_world_query_plan(
+            &WorldQueryPlan::for_contract_with_backend(spec.contract_id, backend)
+                .expect("kernel world query plan"),
         );
-        let ordered_args = match kind {
-            CaptureQueryKind::Trace => vec![
-                self.lower_expr(capture)?,
-                self.lower_expr(*named.get("ray")?)?,
-            ],
-            CaptureQueryKind::Surface => vec![
-                self.lower_expr(capture)?,
-                self.lower_expr(*named.get("hit")?)?,
-            ],
-            _ => return None,
-        };
-        Some((plan, ordered_args))
-    }
-
-    fn parse_world_point_query(
-        &mut self,
-        expr_id: Idx<Expr>,
-    ) -> Option<(KernelWorldQueryPlan, Vec<KernelExpr>)> {
-        let (callee, args) = match &self.body.exprs[expr_id] {
-            Expr::Call { callee, args, .. } => (callee, args),
-            _ => return None,
-        };
-        let Expr::Variable(name) = &self.body.exprs[*callee] else {
-            return None;
-        };
-        let kind = match name.as_str() {
-            "distance_world" => WorldQueryKind::Distance,
-            "normal_world" => WorldQueryKind::Normal,
-            "radiance_world" => WorldQueryKind::Radiance,
-            "medium_world" => WorldQueryKind::Medium,
-            _ => return None,
-        };
-        let named = self.collect_named_expr_args(args)?;
-        let backend_expr = named.get("backend").copied();
-        let backend = backend_expr
-            .and_then(|expr_id| self.parse_dispatch_backend_builtin(expr_id))
-            .unwrap_or(DispatchBackend::Auto);
-        let plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(kind, backend));
-        let item_key = if matches!(kind, WorldQueryKind::Radiance) {
-            "sample"
-        } else {
-            "point"
-        };
         let mut ordered_args = vec![
-            self.lower_expr(*named.get("capture")?)?,
-            self.lower_expr(*named.get("domain")?)?,
-            self.lower_expr(*named.get(item_key)?)?,
+            self.lower_expr(spec.capture)?,
+            self.lower_expr(spec.domain?)?,
+            self.lower_expr(spec.item)?,
         ];
-        if let Some(backend_expr) = backend_expr {
+        if let Some(backend_expr) = spec.backend {
             ordered_args.push(self.lower_expr(backend_expr)?);
         }
         Some((plan, ordered_args))
     }
 
-    fn parse_world_shape_query(
-        &mut self,
-        expr_id: Idx<Expr>,
-    ) -> Option<(KernelWorldQueryPlan, Vec<KernelExpr>)> {
-        let (callee, args) = match &self.body.exprs[expr_id] {
-            Expr::Call { callee, args, .. } => (callee, args),
-            _ => return None,
-        };
-        let Expr::Variable(name) = &self.body.exprs[*callee] else {
-            return None;
-        };
-        let kind = match name.as_str() {
-            "trace_world" => WorldQueryKind::Trace,
-            "surface_world" => WorldQueryKind::Surface,
-            _ => return None,
-        };
-        let named = self.collect_named_expr_args(args)?;
-        let backend_expr = named.get("backend").copied();
-        let backend = backend_expr
-            .and_then(|expr_id| self.parse_dispatch_backend_builtin(expr_id))
-            .unwrap_or(DispatchBackend::Auto);
-        let plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(kind, backend));
-        let mut ordered_args = match kind {
-            WorldQueryKind::Trace => vec![
-                self.lower_expr(*named.get("capture")?)?,
-                self.lower_expr(*named.get("domain")?)?,
-                self.lower_expr(*named.get("ray")?)?,
-            ],
-            WorldQueryKind::Surface => vec![
-                self.lower_expr(*named.get("capture")?)?,
-                self.lower_expr(*named.get("domain")?)?,
-                self.lower_expr(*named.get("hit")?)?,
-            ],
-            _ => return None,
-        };
-        if let Some(backend_expr) = backend_expr {
-            ordered_args.push(self.lower_expr(backend_expr)?);
-        }
-        Some((plan, ordered_args))
-    }
-
-    fn parse_shape_batch_query(
+    fn parse_batch_query(
         &mut self,
         expr_id: Idx<Expr>,
     ) -> Option<(KernelBatchQueryPlan, Vec<KernelExpr>)> {
-        let (callee, args) = match &self.body.exprs[expr_id] {
-            Expr::Call { callee, args, .. } => (callee, args),
-            _ => return None,
-        };
-        let Expr::Variable(name) = &self.body.exprs[*callee] else {
-            return None;
-        };
-        let kind = match name.as_str() {
-            "trace_shape_batch" => BatchQueryKind::Trace,
-            "surface_at_batch" => BatchQueryKind::Surface,
-            "occluded_batch" => BatchQueryKind::Occluded,
-            _ => return None,
-        };
-        let named = self.collect_named_expr_args(args)?;
-        let capture = *named.get("capture")?;
-        let items_key = match kind {
-            BatchQueryKind::Surface => "hits",
-            _ => "rays",
-        };
-        let backend_expr = *named.get("backend")?;
+        let spec = self.parse_batch_query_invocation(expr_id)?;
+        debug_assert!(
+            spec.domain.is_none(),
+            "batch query descriptors do not carry domains yet"
+        );
+        let descriptor =
+            query_contract::query_contract(spec.contract_id).expect("batch query descriptor");
         let backend = self
-            .parse_dispatch_backend_builtin(backend_expr)
+            .parse_dispatch_backend_builtin(spec.backend)
             .unwrap_or(DispatchBackend::Auto);
-        let scene = self.batch_capture_scene_summary(capture, CaptureKind::Shape);
-        let plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(kind, backend, scene));
+        let scene = self.batch_capture_scene_summary(spec.capture, descriptor.capture_kind);
+        let plan = lower_batch_query_plan(
+            &BatchQueryPlan::for_contract(spec.contract_id, backend, scene)
+                .expect("kernel batch query plan"),
+        );
         let ordered_args = vec![
-            self.lower_expr(capture)?,
-            self.lower_expr(*named.get(items_key)?)?,
-            self.lower_expr(backend_expr)?,
-        ];
-        Some((plan, ordered_args))
-    }
-
-    fn parse_field_batch_query(
-        &mut self,
-        expr_id: Idx<Expr>,
-    ) -> Option<(KernelBatchQueryPlan, Vec<KernelExpr>)> {
-        let (callee, args) = match &self.body.exprs[expr_id] {
-            Expr::Call { callee, args, .. } => (callee, args),
-            _ => return None,
-        };
-        let Expr::Variable(name) = &self.body.exprs[*callee] else {
-            return None;
-        };
-        let kind = match name.as_str() {
-            "distance_at_batch" => BatchQueryKind::Distance,
-            "normal_at_batch" => BatchQueryKind::Normal,
-            _ => return None,
-        };
-        let named = self.collect_named_expr_args(args)?;
-        let capture = *named.get("capture")?;
-        let backend_expr = *named.get("backend")?;
-        let backend = self
-            .parse_dispatch_backend_builtin(backend_expr)
-            .unwrap_or(DispatchBackend::Auto);
-        let capture_kind = self.capture_kind_for_expr(capture);
-        let scene = self.batch_capture_scene_summary(capture, capture_kind);
-        let plan = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
-            kind,
-            capture_kind,
-            backend,
-            scene,
-        ));
-        let ordered_args = vec![
-            self.lower_expr(capture)?,
-            self.lower_expr(*named.get("points")?)?,
-            self.lower_expr(backend_expr)?,
+            self.lower_expr(spec.capture)?,
+            self.lower_expr(spec.items)?,
+            self.lower_expr(spec.backend)?,
         ];
         Some((plan, ordered_args))
     }
@@ -1207,9 +1022,120 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
             let Arg::Named { name, value, .. } = arg else {
                 return None;
             };
-            named.insert(name.clone(), *value);
+            if named.insert(name.clone(), *value).is_some() {
+                return None;
+            }
         }
         Some(named)
+    }
+
+    fn parse_scalar_query_invocation(
+        &mut self,
+        expr_id: Idx<Expr>,
+    ) -> Option<ScalarQueryInvocationSpec> {
+        let (name, named) = self.parse_query_name_and_args(expr_id)?;
+        let capture = *named.get("capture")?;
+        let surface = if named.contains_key("domain") {
+            QuerySurfaceKind::WorldScalar
+        } else {
+            QuerySurfaceKind::CaptureScalar
+        };
+        let capture_kind = if surface == QuerySurfaceKind::WorldScalar {
+            CaptureKind::Region
+        } else {
+            self.capture_kind_for_expr(capture)
+        };
+        let (descriptor, _binding) = query_contract::query_contract_bundle_for_legacy_builtin(
+            name.as_str(),
+            surface,
+            capture_kind,
+        )?;
+        let item_arg = kernel_scalar_item_arg_name(descriptor)?;
+        self.require_query_args(
+            &named,
+            &[
+                Some("capture"),
+                Some(item_arg),
+                kernel_scalar_domain_arg(descriptor),
+            ],
+            &[
+                Some("capture"),
+                Some(item_arg),
+                kernel_scalar_domain_arg(descriptor),
+                kernel_scalar_backend_arg(descriptor),
+            ],
+        )?;
+        Some(ScalarQueryInvocationSpec {
+            contract_id: descriptor.id,
+            capture,
+            domain: kernel_scalar_domain_arg(descriptor).and_then(|name| named.get(name).copied()),
+            item: *named.get(item_arg)?,
+            backend: kernel_scalar_backend_arg(descriptor)
+                .and_then(|name| named.get(name).copied()),
+        })
+    }
+
+    fn parse_batch_query_invocation(
+        &mut self,
+        expr_id: Idx<Expr>,
+    ) -> Option<BatchQueryInvocationSpec> {
+        let (name, named) = self.parse_query_name_and_args(expr_id)?;
+        let capture = *named.get("capture")?;
+        let capture_kind = match name.as_str() {
+            "trace_shape_batch" | "surface_at_batch" | "occluded_batch" => CaptureKind::Shape,
+            _ => self.capture_kind_for_expr(capture),
+        };
+        let (descriptor, _binding) = query_contract::query_contract_bundle_for_legacy_builtin(
+            name.as_str(),
+            QuerySurfaceKind::CaptureBatch,
+            capture_kind,
+        )?;
+        let items_arg = kernel_batch_items_arg_name(descriptor)?;
+        self.require_query_args(
+            &named,
+            &[Some("capture"), Some(items_arg), Some("backend")],
+            &[Some("capture"), Some(items_arg), Some("backend")],
+        )?;
+        Some(BatchQueryInvocationSpec {
+            contract_id: descriptor.id,
+            capture,
+            domain: None,
+            items: *named.get(items_arg)?,
+            backend: *named.get("backend")?,
+        })
+    }
+
+    fn parse_query_name_and_args(
+        &self,
+        expr_id: Idx<Expr>,
+    ) -> Option<(SmolStr, HashMap<SmolStr, Idx<Expr>>)> {
+        let (callee, args) = match &self.body.exprs[expr_id] {
+            Expr::Call { callee, args, .. } => (callee, args),
+            _ => return None,
+        };
+        let Expr::Variable(name) = &self.body.exprs[*callee] else {
+            return None;
+        };
+        Some((name.clone(), self.collect_named_expr_args(args)?))
+    }
+
+    fn require_query_args(
+        &self,
+        named: &HashMap<SmolStr, Idx<Expr>>,
+        required: &[Option<&str>],
+        allowed: &[Option<&str>],
+    ) -> Option<()> {
+        let allowed = allowed.iter().flatten().copied().collect::<HashSet<_>>();
+        if named.keys().all(|name| allowed.contains(name.as_str()))
+            && required
+                .iter()
+                .flatten()
+                .all(|name| named.contains_key(*name))
+        {
+            Some(())
+        } else {
+            None
+        }
     }
 
     fn capture_kind_for_expr(&mut self, expr_id: Idx<Expr>) -> CaptureKind {
@@ -1507,4 +1433,32 @@ fn expr_kind(expr: &Expr) -> &'static str {
         Expr::StringInterp(_) => "string-interp",
         Expr::Closure { .. } => "closure",
     }
+}
+
+fn kernel_scalar_item_arg_name(descriptor: &QueryContractDescriptor) -> Option<&'static str> {
+    match descriptor.item_kind {
+        crate::query_plan::QueryItemKind::PointQuery => Some("point"),
+        crate::query_plan::QueryItemKind::PointDirectionQuery => Some("sample"),
+        crate::query_plan::QueryItemKind::RayQuery => Some("ray"),
+        crate::query_plan::QueryItemKind::Hit3 => Some("hit"),
+        crate::query_plan::QueryItemKind::Unit => None,
+    }
+}
+
+fn kernel_batch_items_arg_name(descriptor: &QueryContractDescriptor) -> Option<&'static str> {
+    match descriptor.item_kind {
+        crate::query_plan::QueryItemKind::PointQuery => Some("points"),
+        crate::query_plan::QueryItemKind::RayQuery => Some("rays"),
+        crate::query_plan::QueryItemKind::Hit3 => Some("hits"),
+        crate::query_plan::QueryItemKind::PointDirectionQuery
+        | crate::query_plan::QueryItemKind::Unit => None,
+    }
+}
+
+fn kernel_scalar_domain_arg(descriptor: &QueryContractDescriptor) -> Option<&'static str> {
+    descriptor.domain_contract.map(|_| "domain")
+}
+
+fn kernel_scalar_backend_arg(descriptor: &QueryContractDescriptor) -> Option<&'static str> {
+    (descriptor.surface == QuerySurfaceKind::WorldScalar).then_some("backend")
 }

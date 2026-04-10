@@ -130,6 +130,8 @@ pub enum QueryFamilyId {
 pub enum QueryQuestionId {
     Distance,
     Normal,
+    Nearest,
+    /// Compatibility-only question id for legacy trace contract aliases.
     Trace,
     Sample,
     Radiance,
@@ -168,10 +170,15 @@ pub enum QueryPlannerRecipeKind {
     SpatialNormalWorld,
     SpatialNormalBatchField,
     SpatialNormalBatchShape,
+    SpatialNearestCaptureShape,
+    SpatialNearestBatchShape,
+    SpatialNearestWorld,
     SpatialTraceCaptureShape,
     SpatialTraceBatchShape,
     SpatialTraceWorld,
+    SpatialOccludedCaptureShape,
     SpatialOccludedBatchShape,
+    SpatialOccludedWorld,
     SurfaceSampleCaptureShape,
     SurfaceSampleBatchShape,
     SurfaceSampleWorld,
@@ -213,6 +220,8 @@ pub struct QueryObservabilityProfile {
     pub branch_visits: bool,
     pub support_prune_effectiveness: bool,
     pub culling_hit_rate: bool,
+    pub trace_steps: bool,
+    pub field_samples: bool,
     pub artifact_sizes: bool,
     pub dispatch_overhead: bool,
 }
@@ -224,6 +233,8 @@ impl QueryObservabilityProfile {
             branch_visits: true,
             support_prune_effectiveness: true,
             culling_hit_rate: true,
+            trace_steps: true,
+            field_samples: true,
             artifact_sizes: true,
             dispatch_overhead: true,
         }
@@ -235,6 +246,8 @@ impl QueryObservabilityProfile {
             branch_visits: true,
             support_prune_effectiveness: false,
             culling_hit_rate: false,
+            trace_steps: false,
+            field_samples: true,
             artifact_sizes: true,
             dispatch_overhead: true,
         }
@@ -269,6 +282,13 @@ pub struct QueryExecutionBinding {
     pub legacy_builtin_name: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryContractAlias {
+    pub alias_id: QueryContractId,
+    pub canonical_id: QueryContractId,
+    pub reason: &'static str,
+}
+
 pub const SPATIAL_DISTANCE_CAPTURE_FIELD: QueryContractId =
     QueryContractId::new("spatial.distance.capture.field");
 pub const SPATIAL_DISTANCE_CAPTURE_SHAPE: QueryContractId =
@@ -287,13 +307,24 @@ pub const SPATIAL_NORMAL_BATCH_FIELD: QueryContractId =
     QueryContractId::new("spatial.normal.batch.field");
 pub const SPATIAL_NORMAL_BATCH_SHAPE: QueryContractId =
     QueryContractId::new("spatial.normal.batch.shape");
-pub const SPATIAL_TRACE_CAPTURE_SHAPE: QueryContractId =
+pub const SPATIAL_NEAREST_CAPTURE_SHAPE: QueryContractId =
+    QueryContractId::new("spatial.nearest.capture.shape");
+pub const SPATIAL_NEAREST_BATCH_SHAPE: QueryContractId =
+    QueryContractId::new("spatial.nearest.batch.shape");
+pub const SPATIAL_NEAREST_WORLD: QueryContractId = QueryContractId::new("spatial.nearest.world");
+pub const LEGACY_SPATIAL_TRACE_CAPTURE_SHAPE: QueryContractId =
     QueryContractId::new("spatial.trace.capture.shape");
-pub const SPATIAL_TRACE_BATCH_SHAPE: QueryContractId =
+pub const LEGACY_SPATIAL_TRACE_BATCH_SHAPE: QueryContractId =
     QueryContractId::new("spatial.trace.batch.shape");
-pub const SPATIAL_TRACE_WORLD: QueryContractId = QueryContractId::new("spatial.trace.world");
+pub const LEGACY_SPATIAL_TRACE_WORLD: QueryContractId = QueryContractId::new("spatial.trace.world");
+pub const SPATIAL_TRACE_CAPTURE_SHAPE: QueryContractId = SPATIAL_NEAREST_CAPTURE_SHAPE;
+pub const SPATIAL_TRACE_BATCH_SHAPE: QueryContractId = SPATIAL_NEAREST_BATCH_SHAPE;
+pub const SPATIAL_TRACE_WORLD: QueryContractId = SPATIAL_NEAREST_WORLD;
+pub const SPATIAL_OCCLUDED_CAPTURE_SHAPE: QueryContractId =
+    QueryContractId::new("spatial.occluded.capture.shape");
 pub const SPATIAL_OCCLUDED_BATCH_SHAPE: QueryContractId =
     QueryContractId::new("spatial.occluded.batch.shape");
+pub const SPATIAL_OCCLUDED_WORLD: QueryContractId = QueryContractId::new("spatial.occluded.world");
 pub const SURFACE_SAMPLE_CAPTURE_SHAPE: QueryContractId =
     QueryContractId::new("surface.sample.capture.shape");
 pub const SURFACE_SAMPLE_BATCH_SHAPE: QueryContractId =
@@ -313,7 +344,7 @@ const MATERIAL_DOMAIN_FLAGS: &[SceneDomainFlag] = &[SceneDomainFlag::Material];
 const RADIANCE_DOMAIN_FLAGS: &[SceneDomainFlag] = &[SceneDomainFlag::Radiance];
 const MEDIA_DOMAIN_FLAGS: &[SceneDomainFlag] = &[SceneDomainFlag::Media];
 
-const QUERY_CONTRACTS: [QueryContractDescriptor; 21] = [
+const QUERY_CONTRACTS: [QueryContractDescriptor; 23] = [
     QueryContractDescriptor {
         id: SPATIAL_DISTANCE_CAPTURE_FIELD,
         version: QUERY_CONTRACT_VERSION,
@@ -475,10 +506,10 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 21] = [
         observability: QueryObservabilityProfile::spatial(),
     },
     QueryContractDescriptor {
-        id: SPATIAL_TRACE_CAPTURE_SHAPE,
+        id: SPATIAL_NEAREST_CAPTURE_SHAPE,
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
-        question: QueryQuestionId::Trace,
+        question: QueryQuestionId::Nearest,
         surface: QuerySurfaceKind::CaptureScalar,
         capture_kind: CaptureKind::Shape,
         item_kind: QueryItemKind::RayQuery,
@@ -491,10 +522,10 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 21] = [
         observability: QueryObservabilityProfile::spatial(),
     },
     QueryContractDescriptor {
-        id: SPATIAL_TRACE_BATCH_SHAPE,
+        id: SPATIAL_NEAREST_BATCH_SHAPE,
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
-        question: QueryQuestionId::Trace,
+        question: QueryQuestionId::Nearest,
         surface: QuerySurfaceKind::CaptureBatch,
         capture_kind: CaptureKind::Shape,
         item_kind: QueryItemKind::RayQuery,
@@ -507,15 +538,31 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 21] = [
         observability: QueryObservabilityProfile::spatial(),
     },
     QueryContractDescriptor {
-        id: SPATIAL_TRACE_WORLD,
+        id: SPATIAL_NEAREST_WORLD,
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
-        question: QueryQuestionId::Trace,
+        question: QueryQuestionId::Nearest,
         surface: QuerySurfaceKind::WorldScalar,
         capture_kind: CaptureKind::Region,
         item_kind: QueryItemKind::RayQuery,
         result_kind: QueryResultKind::Hit3,
         domain_contract: Some(DomainContractKind::SceneDomain),
+        required_domain_flags: NO_DOMAIN_FLAGS,
+        preserves_local_hit_context: true,
+        participant_kind: None,
+        supported_backends: BackendSupport::all(),
+        observability: QueryObservabilityProfile::spatial(),
+    },
+    QueryContractDescriptor {
+        id: SPATIAL_OCCLUDED_CAPTURE_SHAPE,
+        version: QUERY_CONTRACT_VERSION,
+        family: QueryFamilyId::Spatial,
+        question: QueryQuestionId::Occluded,
+        surface: QuerySurfaceKind::CaptureScalar,
+        capture_kind: CaptureKind::Shape,
+        item_kind: QueryItemKind::RayQuery,
+        result_kind: QueryResultKind::OcclusionResult,
+        domain_contract: None,
         required_domain_flags: NO_DOMAIN_FLAGS,
         preserves_local_hit_context: true,
         participant_kind: None,
@@ -532,6 +579,22 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 21] = [
         item_kind: QueryItemKind::RayQuery,
         result_kind: QueryResultKind::OcclusionResult,
         domain_contract: None,
+        required_domain_flags: NO_DOMAIN_FLAGS,
+        preserves_local_hit_context: true,
+        participant_kind: None,
+        supported_backends: BackendSupport::all(),
+        observability: QueryObservabilityProfile::spatial(),
+    },
+    QueryContractDescriptor {
+        id: SPATIAL_OCCLUDED_WORLD,
+        version: QUERY_CONTRACT_VERSION,
+        family: QueryFamilyId::Spatial,
+        question: QueryQuestionId::Occluded,
+        surface: QuerySurfaceKind::WorldScalar,
+        capture_kind: CaptureKind::Region,
+        item_kind: QueryItemKind::RayQuery,
+        result_kind: QueryResultKind::OcclusionResult,
+        domain_contract: Some(DomainContractKind::SceneDomain),
         required_domain_flags: NO_DOMAIN_FLAGS,
         preserves_local_hit_context: true,
         participant_kind: None,
@@ -652,7 +715,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 21] = [
     },
 ];
 
-const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 21] = [
+const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 23] = [
     QueryExecutionBinding {
         contract_id: SPATIAL_DISTANCE_CAPTURE_FIELD,
         planner_recipe: QueryPlannerRecipeKind::SpatialDistanceCaptureField,
@@ -734,28 +797,36 @@ const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 21] = [
         legacy_builtin_name: "normal_at_batch",
     },
     QueryExecutionBinding {
-        contract_id: SPATIAL_TRACE_CAPTURE_SHAPE,
-        planner_recipe: QueryPlannerRecipeKind::SpatialTraceCaptureShape,
+        contract_id: SPATIAL_NEAREST_CAPTURE_SHAPE,
+        planner_recipe: QueryPlannerRecipeKind::SpatialNearestCaptureShape,
         default_executor: PlanExecutor::SceneTraceCapture,
         default_kernel: Some(InternalKernelKind::ShapeTraceCapture),
         helper_name: Some("__wr_scene_trace_capture"),
         legacy_builtin_name: "trace_shape",
     },
     QueryExecutionBinding {
-        contract_id: SPATIAL_TRACE_BATCH_SHAPE,
-        planner_recipe: QueryPlannerRecipeKind::SpatialTraceBatchShape,
+        contract_id: SPATIAL_NEAREST_BATCH_SHAPE,
+        planner_recipe: QueryPlannerRecipeKind::SpatialNearestBatchShape,
         default_executor: PlanExecutor::SceneTraceCapture,
         default_kernel: Some(InternalKernelKind::ShapeTraceCapture),
         helper_name: Some("__wr_scene_trace_batch_queries"),
         legacy_builtin_name: "trace_shape_batch",
     },
     QueryExecutionBinding {
-        contract_id: SPATIAL_TRACE_WORLD,
-        planner_recipe: QueryPlannerRecipeKind::SpatialTraceWorld,
+        contract_id: SPATIAL_NEAREST_WORLD,
+        planner_recipe: QueryPlannerRecipeKind::SpatialNearestWorld,
         default_executor: PlanExecutor::WorldTraceCapture,
         default_kernel: Some(InternalKernelKind::WorldTraceCapture),
         helper_name: Some("__wr_world_trace_capture"),
         legacy_builtin_name: "trace_world",
+    },
+    QueryExecutionBinding {
+        contract_id: SPATIAL_OCCLUDED_CAPTURE_SHAPE,
+        planner_recipe: QueryPlannerRecipeKind::SpatialOccludedCaptureShape,
+        default_executor: PlanExecutor::SceneTraceCapture,
+        default_kernel: Some(InternalKernelKind::ShapeOccludedCapture),
+        helper_name: Some("__wr_scene_occluded_capture"),
+        legacy_builtin_name: "occluded",
     },
     QueryExecutionBinding {
         contract_id: SPATIAL_OCCLUDED_BATCH_SHAPE,
@@ -764,6 +835,14 @@ const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 21] = [
         default_kernel: Some(InternalKernelKind::ShapeOccludedCapture),
         helper_name: Some("__wr_scene_occluded_batch_queries"),
         legacy_builtin_name: "occluded_batch",
+    },
+    QueryExecutionBinding {
+        contract_id: SPATIAL_OCCLUDED_WORLD,
+        planner_recipe: QueryPlannerRecipeKind::SpatialOccludedWorld,
+        default_executor: PlanExecutor::WorldTraceCapture,
+        default_kernel: Some(InternalKernelKind::WorldTraceCapture),
+        helper_name: Some("__wr_world_occluded_capture"),
+        legacy_builtin_name: "occluded_world",
     },
     QueryExecutionBinding {
         contract_id: SURFACE_SAMPLE_CAPTURE_SHAPE,
@@ -823,6 +902,24 @@ const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 21] = [
     },
 ];
 
+const QUERY_CONTRACT_ALIASES: [QueryContractAlias; 3] = [
+    QueryContractAlias {
+        alias_id: LEGACY_SPATIAL_TRACE_CAPTURE_SHAPE,
+        canonical_id: SPATIAL_NEAREST_CAPTURE_SHAPE,
+        reason: "trace is the legacy name for spatial.nearest",
+    },
+    QueryContractAlias {
+        alias_id: LEGACY_SPATIAL_TRACE_BATCH_SHAPE,
+        canonical_id: SPATIAL_NEAREST_BATCH_SHAPE,
+        reason: "trace is the legacy name for spatial.nearest",
+    },
+    QueryContractAlias {
+        alias_id: LEGACY_SPATIAL_TRACE_WORLD,
+        canonical_id: SPATIAL_NEAREST_WORLD,
+        reason: "trace is the legacy name for spatial.nearest",
+    },
+];
+
 pub fn query_contracts() -> &'static [QueryContractDescriptor] {
     &QUERY_CONTRACTS
 }
@@ -831,13 +928,26 @@ pub fn query_execution_bindings() -> &'static [QueryExecutionBinding] {
     &QUERY_EXECUTION_BINDINGS
 }
 
+pub fn query_contract_aliases() -> &'static [QueryContractAlias] {
+    &QUERY_CONTRACT_ALIASES
+}
+
+pub fn canonical_query_contract_id(id: QueryContractId) -> QueryContractId {
+    QUERY_CONTRACT_ALIASES
+        .iter()
+        .find_map(|alias| (alias.alias_id == id).then_some(alias.canonical_id))
+        .unwrap_or(id)
+}
+
 pub fn query_contract(id: QueryContractId) -> Option<&'static QueryContractDescriptor> {
+    let id = canonical_query_contract_id(id);
     QUERY_CONTRACTS
         .iter()
         .find(|descriptor| descriptor.id == id)
 }
 
 pub fn query_execution_binding(id: QueryContractId) -> Option<&'static QueryExecutionBinding> {
+    let id = canonical_query_contract_id(id);
     QUERY_EXECUTION_BINDINGS
         .iter()
         .find(|binding| binding.contract_id == id)
@@ -850,4 +960,22 @@ pub fn query_contract_bundle(
     &'static QueryExecutionBinding,
 )> {
     Some((query_contract(id)?, query_execution_binding(id)?))
+}
+
+pub fn query_contract_bundle_for_legacy_builtin(
+    legacy_builtin_name: &str,
+    surface: QuerySurfaceKind,
+    capture_kind: CaptureKind,
+) -> Option<(
+    &'static QueryContractDescriptor,
+    &'static QueryExecutionBinding,
+)> {
+    QUERY_EXECUTION_BINDINGS
+        .iter()
+        .filter(|binding| binding.legacy_builtin_name == legacy_builtin_name)
+        .find_map(|binding| {
+            let descriptor = query_contract(binding.contract_id)?;
+            (descriptor.surface == surface && descriptor.capture_kind == capture_kind)
+                .then_some((descriptor, binding))
+        })
 }
