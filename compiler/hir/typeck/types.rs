@@ -1702,7 +1702,7 @@ fn validate_region_domain_render_declarations(
             FunctionRole::Domain => {
                 validate_domain_declaration(func, classes, enums, interfaces, functions, errors)
             }
-            FunctionRole::Render => {
+            FunctionRole::Render | FunctionRole::View => {
                 validate_render_declaration(func, classes, enums, interfaces, functions, errors)
             }
             _ => {}
@@ -1906,12 +1906,17 @@ fn validate_render_declaration(
     functions: &FunctionIndex,
     errors: &mut Vec<TypeError>,
 ) {
+    let is_view = func.role == FunctionRole::View;
+    let declaration_label = if is_view { "view" } else { "render" };
     if func.render.is_none() {
         errors.push(TypeError::PortableConstructForbidden {
             function: func.name.clone(),
-            construct: "missing render metadata".to_string(),
+            construct: format!("missing {declaration_label} metadata"),
             span: span_from_option_range(func.name_span),
-            help: "Render declarations must lower into dedicated presentation metadata so camera/world routing stays compiler-visible.".to_string(),
+            help: format!(
+                "{} declarations must lower into dedicated presentation metadata so camera/world routing stays compiler-visible.",
+                if is_view { "View" } else { "Render" }
+            ),
         });
     }
     let found = func
@@ -1919,7 +1924,12 @@ fn validate_render_declaration(
         .as_ref()
         .map(type_from_ref)
         .unwrap_or(Type::Unknown);
-    if found != Type::String {
+    let expected_return = if is_view {
+        portable_named_type("FrameState")
+    } else {
+        Type::String
+    };
+    if found != expected_return {
         errors.push(TypeError::PortableBoundaryTypeForbidden {
             function: func.name.clone(),
             site: "return type".to_string(),
@@ -1930,15 +1940,24 @@ fn validate_render_declaration(
                 .and_then(|ty| ty.name_span)
                 .map(span_from_range)
                 .unwrap_or_else(|| span_from_option_range(func.name_span)),
-            help: "Render declarations lower to `String` so presentation plans remain host-side artifacts.".to_string(),
+            help: if is_view {
+                "View declarations lower to `FrameState` so canonical presentation stays explicit without going through the legacy PPM string path.".to_string()
+            } else {
+                "Render declarations lower to `String` so legacy presentation plans remain host-side artifacts.".to_string()
+            },
         });
     }
     if func.params.len() < 2 {
         errors.push(TypeError::PortableConstructForbidden {
             function: func.name.clone(),
-            construct: "a render parameter list without `world: RegionCapture` and `camera: Camera`".to_string(),
+            construct: format!(
+                "a {declaration_label} parameter list without `world: RegionCapture` and `camera: Camera`"
+            ),
             span: span_from_option_range(func.name_span),
-            help: "Render declarations require a leading world capture and camera parameter so presentation stays tied to a captured region.".to_string(),
+            help: format!(
+                "{} declarations require a leading world capture and camera parameter so presentation stays tied to a captured region.",
+                if is_view { "View" } else { "Render" }
+            ),
         });
         return;
     }
@@ -1946,9 +1965,12 @@ fn validate_render_declaration(
     if world.name != "world" {
         errors.push(TypeError::PortableConstructForbidden {
             function: func.name.clone(),
-            construct: format!("render parameter '{}'", world.name),
+            construct: format!("{declaration_label} parameter '{}'", world.name),
             span: span_from_option_range(world.name_span),
-            help: "Render declarations use a leading `world` parameter to make capture specialization explicit.".to_string(),
+            help: format!(
+                "{} declarations use a leading `world` parameter to make capture specialization explicit.",
+                if is_view { "View" } else { "Render" }
+            ),
         });
     }
     let found = world.ty.as_ref().map(type_from_ref).unwrap_or(Type::Unknown);
@@ -1963,16 +1985,22 @@ fn validate_render_declaration(
                 .and_then(|ty| ty.name_span)
                 .map(span_from_range)
                 .unwrap_or_else(|| span_from_option_range(world.name_span)),
-            help: "Render declarations require a leading `world: RegionCapture` parameter so presentation plans stay tied to a captured region.".to_string(),
+            help: format!(
+                "{} declarations require a leading `world: RegionCapture` parameter so presentation plans stay tied to a captured region.",
+                if is_view { "View" } else { "Render" }
+            ),
         });
     }
     let camera = &func.params[1];
     if camera.name != "camera" {
         errors.push(TypeError::PortableConstructForbidden {
             function: func.name.clone(),
-            construct: format!("render parameter '{}'", camera.name),
+            construct: format!("{declaration_label} parameter '{}'", camera.name),
             span: span_from_option_range(camera.name_span),
-            help: "Render declarations use a `camera` parameter as their second argument so presentation plans stay explicit.".to_string(),
+            help: format!(
+                "{} declarations use a `camera` parameter as their second argument so presentation plans stay explicit.",
+                if is_view { "View" } else { "Render" }
+            ),
         });
     }
     let found = camera.ty.as_ref().map(type_from_ref).unwrap_or(Type::Unknown);
@@ -1987,12 +2015,15 @@ fn validate_render_declaration(
                 .and_then(|ty| ty.name_span)
                 .map(span_from_range)
                 .unwrap_or_else(|| span_from_option_range(camera.name_span)),
-            help: "Render declarations require a `camera: Camera` parameter so presentation plans stay tied to a concrete view.".to_string(),
+            help: format!(
+                "{} declarations require a `camera: Camera` parameter; Camera.vertical_fov_degrees is the canonical projection input, while world_up/view_scale remain compatibility-only metadata.",
+                if is_view { "View" } else { "Render" }
+            ),
         });
     }
     validate_semantic_world_params(
         func,
-        "render",
+        declaration_label,
         func.params.iter().skip(2),
         classes,
         enums,
@@ -2038,12 +2069,32 @@ fn validate_world_decl_body(
         FunctionRole::Render => &[
             "domain",
             "light",
+            "key_light",
             "lights",
             "width",
             "height",
+            // Compatibility-only projection metadata retained for legacy
+            // preview stability; PresentationPlan reports these separately
+            // from the canonical Camera.vertical_fov_degrees projection input.
             "world_up",
             "view_scale",
             "fill_dir",
+            "fill_direction",
+            "fill_strength",
+            "ambient_color",
+        ],
+        FunctionRole::View => &[
+            "domain",
+            "light",
+            "key_light",
+            "width",
+            "height",
+            "viewport",
+            "outputs",
+            "fill_dir",
+            "fill_direction",
+            "fill_strength",
+            "ambient_color",
         ],
         _ => &[],
     };
@@ -2051,14 +2102,21 @@ fn validate_world_decl_body(
     for stmt_id in &body.root_stmts {
         match &body.stmts[*stmt_id] {
             Stmt::Let { name, value, .. } | Stmt::Assign { name, value, .. }
-                if func.role == FunctionRole::Render && name == "lights" =>
+                if matches!(func.role, FunctionRole::Render | FunctionRole::View)
+                    && name == "lights" =>
             {
                 let _ = value;
                 errors.push(TypeError::PortableConstructForbidden {
                     function: func.name.clone(),
-                    construct: "render lights metadata".to_string(),
+                    construct: format!(
+                        "{} lights metadata",
+                        match func.role {
+                            FunctionRole::View => "view",
+                            _ => "render",
+                        }
+                    ),
                     span: span_from_option_range(func.name_span),
-                    help: "Plural render lights metadata is not supported yet; keep render metadata to the typed single-light path or reject the construct before runtime.".to_string(),
+                    help: "Plural presentation lights metadata is not supported yet; keep metadata to the typed single-light path or reject the construct before runtime.".to_string(),
                 });
             }
             Stmt::Let { name, value, .. } | Stmt::Assign { name, value, .. }
@@ -2084,12 +2142,13 @@ fn validate_world_decl_body(
                         match func.role {
                             FunctionRole::Domain => "domain",
                             FunctionRole::Render => "render",
+                            FunctionRole::View => "view",
                             _ => "world",
                         },
                         name
                     ),
                     span: span_from_option_range(func.name_span),
-                    help: "World declarations are metadata-only. Use only the explicit world-policy assignment keys the compiler understands.".to_string(),
+                    help: "World declarations are metadata-only. Render metadata is split into view, frame, lighting, and compatibility projection keys; use only the explicit assignment keys the compiler understands.".to_string(),
                 });
             }
             other => {
@@ -2100,6 +2159,7 @@ fn validate_world_decl_body(
                         match func.role {
                             FunctionRole::Domain => "domain",
                             FunctionRole::Render => "render",
+                            FunctionRole::View => "view",
                             _ => "world",
                         },
                         other

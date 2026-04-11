@@ -169,7 +169,7 @@ fn check_function(
             }
         } else {
             let forbidden_world_return = match func.role {
-                FunctionRole::Domain | FunctionRole::Render => {
+                FunctionRole::Domain | FunctionRole::Render | FunctionRole::View => {
                     body_contains_forbidden_world_return(body, false)
                 }
                 _ => false,
@@ -3365,19 +3365,19 @@ fn query_compat_builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
 fn query_compat_builtin_params(
     descriptor: &crate::query_contract::QueryContractDescriptor,
 ) -> Vec<(SmolStr, Type)> {
-    use crate::query_contract::{QueryItemKind, QuerySurfaceKind};
+    use crate::query_contract::{QueryCardinality, QueryItemKind, QueryTargetKind};
 
     let mut params = Vec::new();
-    let capture_ty = match descriptor.surface {
-        QuerySurfaceKind::WorldScalar => portable_named_type("RegionCapture"),
-        QuerySurfaceKind::CaptureScalar | QuerySurfaceKind::CaptureBatch => Type::Unknown,
+    let capture_ty = match descriptor.target {
+        QueryTargetKind::World => portable_named_type("RegionCapture"),
+        QueryTargetKind::Capture => Type::Unknown,
     };
     params.push((SmolStr::new("capture"), capture_ty));
     if descriptor.domain_contract.is_some() {
         params.push((SmolStr::new("domain"), portable_named_type("SceneDomain")));
     }
-    match descriptor.surface {
-        QuerySurfaceKind::CaptureBatch => {
+    match descriptor.cardinality {
+        QueryCardinality::Batch => {
             match descriptor.item_kind {
                 QueryItemKind::PointQuery => params.push((
                     SmolStr::new("points"),
@@ -3391,11 +3391,18 @@ fn query_compat_builtin_params(
                     SmolStr::new("hits"),
                     Type::List(Box::new(portable_named_type("Hit3"))),
                 )),
-                QueryItemKind::PointDirectionQuery | QueryItemKind::Unit => {}
+                QueryItemKind::PointDirectionQuery => params.push((
+                    SmolStr::new("samples"),
+                    Type::List(Box::new(portable_named_type("PointDirectionQuery"))),
+                )),
+                QueryItemKind::Unit => params.push((
+                    SmolStr::new("items"),
+                    Type::List(Box::new(portable_named_type("UnitQuery"))),
+                )),
             }
             params.push((SmolStr::new("backend"), portable_named_type("DispatchBackend")));
         }
-        QuerySurfaceKind::CaptureScalar | QuerySurfaceKind::WorldScalar => {
+        QueryCardinality::Scalar => {
             match descriptor.item_kind {
                 QueryItemKind::PointQuery => params.push((SmolStr::new("point"), Type::Vec3)),
                 QueryItemKind::PointDirectionQuery => params.push((
@@ -3410,7 +3417,7 @@ fn query_compat_builtin_params(
                 }
                 QueryItemKind::Unit => {}
             }
-            if descriptor.surface == QuerySurfaceKind::WorldScalar {
+            if descriptor.target == QueryTargetKind::World {
                 params.push((SmolStr::new("backend"), portable_named_type("DispatchBackend")));
             }
         }
@@ -3421,13 +3428,13 @@ fn query_compat_builtin_params(
 fn query_authored_return_type(
     descriptor: &crate::query_contract::QueryContractDescriptor,
 ) -> Type {
-    use crate::query_contract::{QueryResultKind, QuerySurfaceKind};
+    use crate::query_contract::{QueryCardinality, QueryResultKind};
 
     let result = match descriptor.result_kind {
-        QueryResultKind::DistanceResult if descriptor.surface != QuerySurfaceKind::CaptureBatch => {
+        QueryResultKind::DistanceResult if descriptor.cardinality == QueryCardinality::Scalar => {
             Type::F32
         }
-        QueryResultKind::NormalResult if descriptor.surface != QuerySurfaceKind::CaptureBatch => {
+        QueryResultKind::NormalResult if descriptor.cardinality == QueryCardinality::Scalar => {
             Type::Vec3
         }
         QueryResultKind::RadianceResult => Type::Vec3,
@@ -3440,7 +3447,7 @@ fn query_authored_return_type(
         QueryResultKind::OcclusionResult => portable_named_type("OcclusionResult"),
     };
 
-    if descriptor.surface == QuerySurfaceKind::CaptureBatch {
+    if descriptor.cardinality == QueryCardinality::Batch {
         Type::List(Box::new(result))
     } else {
         result

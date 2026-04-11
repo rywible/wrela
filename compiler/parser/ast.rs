@@ -51,6 +51,7 @@ pub enum Stmt {
     RegionDecl(RegionDecl),
     DomainDecl(DomainDecl),
     RenderDecl(RenderDecl),
+    ViewDecl(ViewDecl),
     RadianceDecl(RadianceDecl),
     VolumeDecl(VolumeDecl),
     MaterialDecl(MaterialDecl),
@@ -93,6 +94,7 @@ impl AstNode for Stmt {
                 | SyntaxKind::RegionDecl
                 | SyntaxKind::DomainDecl
                 | SyntaxKind::RenderDecl
+                | SyntaxKind::ViewDecl
                 | SyntaxKind::RadianceDecl
                 | SyntaxKind::VolumeDecl
                 | SyntaxKind::MaterialDecl
@@ -133,6 +135,7 @@ impl AstNode for Stmt {
             SyntaxKind::RegionDecl => RegionDecl::cast(node).map(Stmt::RegionDecl),
             SyntaxKind::DomainDecl => DomainDecl::cast(node).map(Stmt::DomainDecl),
             SyntaxKind::RenderDecl => RenderDecl::cast(node).map(Stmt::RenderDecl),
+            SyntaxKind::ViewDecl => ViewDecl::cast(node).map(Stmt::ViewDecl),
             SyntaxKind::RadianceDecl => RadianceDecl::cast(node).map(Stmt::RadianceDecl),
             SyntaxKind::VolumeDecl => VolumeDecl::cast(node).map(Stmt::VolumeDecl),
             SyntaxKind::MaterialDecl => MaterialDecl::cast(node).map(Stmt::MaterialDecl),
@@ -182,6 +185,7 @@ impl AstNode for Stmt {
             Stmt::RegionDecl(it) => it.syntax(),
             Stmt::DomainDecl(it) => it.syntax(),
             Stmt::RenderDecl(it) => it.syntax(),
+            Stmt::ViewDecl(it) => it.syntax(),
             Stmt::RadianceDecl(it) => it.syntax(),
             Stmt::VolumeDecl(it) => it.syntax(),
             Stmt::MaterialDecl(it) => it.syntax(),
@@ -1320,6 +1324,7 @@ macro_rules! impl_world_decl {
 impl_world_decl!(RegionDecl, SyntaxKind::RegionDecl);
 impl_world_decl!(DomainDecl, SyntaxKind::DomainDecl);
 impl_world_decl!(RenderDecl, SyntaxKind::RenderDecl);
+impl_world_decl!(ViewDecl, SyntaxKind::ViewDecl);
 
 impl RegionDecl {
     pub fn items(&self) -> impl Iterator<Item = RegionItem> {

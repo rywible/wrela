@@ -2391,7 +2391,7 @@ fn infer_legacy_query_builtin(
     let capture_expr = call_named_arg_value(args, "capture");
     let surface = legacy_query_surface(&candidates, args);
     let capture_kind = match (surface, capture_expr) {
-        (QuerySurfaceKind::WorldScalar, _) => CaptureKind::Region,
+        (QuerySurfaceKind::WorldScalar | QuerySurfaceKind::WorldBatch, _) => CaptureKind::Region,
         (_, Some(capture_expr)) => infer_capture_kind_for_query_arg(
             body,
             capture_expr,
@@ -2503,13 +2503,22 @@ fn legacy_query_surface(
     candidates: &[&crate::query_contract::QueryContractDescriptor],
     args: &[crate::hir::Arg],
 ) -> crate::query_contract::QuerySurfaceKind {
-    use crate::query_contract::QuerySurfaceKind;
+    use crate::query_contract::{QueryCardinality, QuerySurfaceKind, QueryTargetKind};
 
     if candidates
         .iter()
-        .any(|descriptor| descriptor.surface == QuerySurfaceKind::CaptureBatch)
+        .any(|descriptor| descriptor.cardinality == QueryCardinality::Batch)
     {
-        return QuerySurfaceKind::CaptureBatch;
+        let target = if call_named_arg_value(args, "domain").is_some()
+            || candidates
+                .iter()
+                .any(|descriptor| descriptor.surface == QuerySurfaceKind::WorldBatch)
+        {
+            QueryTargetKind::World
+        } else {
+            QueryTargetKind::Capture
+        };
+        return QuerySurfaceKind::from_axes(target, QueryCardinality::Batch);
     }
     if call_named_arg_value(args, "domain").is_some()
         || candidates
@@ -2577,7 +2586,7 @@ fn infer_family_query_member_builtin(
     allow_result: bool,
     in_result_fn: bool,
 ) -> Option<Type> {
-    use crate::query_contract::{QueryFamilyCallSurface, QuerySurfaceKind};
+    use crate::query_contract::{QueryCardinality, QueryFamilyCallSurface, QuerySurfaceKind, QueryTargetKind};
 
     let family_member = crate::query_contract::query_family_member(family, member.as_str())?;
     let query_name = family_query_call_name(family, member);
@@ -2591,15 +2600,20 @@ fn infer_family_query_member_builtin(
     }
 
     let capture_expr = call_named_arg_value(args, "capture");
-    let surface = match family_member.call_surface {
-        QueryFamilyCallSurface::Batch => QuerySurfaceKind::CaptureBatch,
-        QueryFamilyCallSurface::Scalar if call_named_arg_value(args, "domain").is_some() => {
-            QuerySurfaceKind::WorldScalar
-        }
-        QueryFamilyCallSurface::Scalar => QuerySurfaceKind::CaptureScalar,
+    let cardinality = match family_member.call_surface {
+        QueryFamilyCallSurface::Batch => QueryCardinality::Batch,
+        QueryFamilyCallSurface::Scalar => QueryCardinality::Scalar,
     };
+    let target = if call_named_arg_value(args, "domain").is_some() {
+        QueryTargetKind::World
+    } else {
+        QueryTargetKind::Capture
+    };
+    let surface = QuerySurfaceKind::from_axes(target, cardinality);
     let capture_kind = match (surface, capture_expr) {
-        (QuerySurfaceKind::WorldScalar, _) => crate::query_contract::CaptureKind::Region,
+        (QuerySurfaceKind::WorldScalar | QuerySurfaceKind::WorldBatch, _) => {
+            crate::query_contract::CaptureKind::Region
+        }
         (_, Some(capture_expr)) => infer_capture_kind_for_query_arg(
             body,
             capture_expr,
@@ -2752,19 +2766,19 @@ fn family_query_params(
     descriptor: &crate::query_contract::QueryContractDescriptor,
     args: &Vec<crate::hir::Arg>,
 ) -> Vec<(SmolStr, Type)> {
-    use crate::query_contract::QuerySurfaceKind;
+    use crate::query_contract::{QueryCardinality, QueryTargetKind};
 
     let mut params = Vec::new();
-    let capture_ty = match descriptor.surface {
-        QuerySurfaceKind::WorldScalar => region_capture_type(),
-        QuerySurfaceKind::CaptureScalar | QuerySurfaceKind::CaptureBatch => Type::Unknown,
+    let capture_ty = match descriptor.target {
+        QueryTargetKind::World => region_capture_type(),
+        QueryTargetKind::Capture => Type::Unknown,
     };
     params.push((SmolStr::new("capture"), capture_ty));
     if descriptor.domain_contract.is_some() {
         params.push((SmolStr::new("domain"), scene_domain_type()));
     }
-    match descriptor.surface {
-        QuerySurfaceKind::CaptureBatch => {
+    match descriptor.cardinality {
+        QueryCardinality::Batch => {
             if let Some(item_arg) = batch_item_arg_name(descriptor.item_kind) {
                 params.push((
                     SmolStr::new(item_arg),
@@ -2773,11 +2787,11 @@ fn family_query_params(
             }
             params.push((SmolStr::new("backend"), dispatch_backend_type()));
         }
-        QuerySurfaceKind::CaptureScalar | QuerySurfaceKind::WorldScalar => {
+        QueryCardinality::Scalar => {
             if let Some((item_arg, item_ty)) = scalar_item_param(descriptor.item_kind) {
                 params.push((SmolStr::new(item_arg), item_ty));
             }
-            if descriptor.surface == QuerySurfaceKind::WorldScalar
+            if descriptor.target == QueryTargetKind::World
                 && call_named_arg_value(args, "backend").is_some()
             {
                 params.push((SmolStr::new("backend"), dispatch_backend_type()));
@@ -2806,7 +2820,8 @@ fn batch_item_arg_name(kind: crate::query_contract::QueryItemKind) -> Option<&'s
         QueryItemKind::PointQuery => Some("points"),
         QueryItemKind::RayQuery => Some("rays"),
         QueryItemKind::Hit3 => Some("hits"),
-        QueryItemKind::PointDirectionQuery | QueryItemKind::Unit => None,
+        QueryItemKind::PointDirectionQuery => Some("samples"),
+        QueryItemKind::Unit => Some("items"),
     }
 }
 
@@ -2824,13 +2839,13 @@ fn batch_item_type(kind: crate::query_contract::QueryItemKind) -> Type {
 fn family_query_return_type(
     descriptor: &crate::query_contract::QueryContractDescriptor,
 ) -> Type {
-    use crate::query_contract::{QueryResultKind, QuerySurfaceKind};
+    use crate::query_contract::{QueryCardinality, QueryResultKind};
 
     let result = match descriptor.result_kind {
-        QueryResultKind::DistanceResult if descriptor.surface != QuerySurfaceKind::CaptureBatch => {
+        QueryResultKind::DistanceResult if descriptor.cardinality == QueryCardinality::Scalar => {
             Type::F32
         }
-        QueryResultKind::NormalResult if descriptor.surface != QuerySurfaceKind::CaptureBatch => {
+        QueryResultKind::NormalResult if descriptor.cardinality == QueryCardinality::Scalar => {
             Type::Vec3
         }
         QueryResultKind::RadianceResult => Type::Vec3,
@@ -2843,7 +2858,7 @@ fn family_query_return_type(
         QueryResultKind::OcclusionResult => portable_named_type("OcclusionResult"),
     };
 
-    if descriptor.surface == QuerySurfaceKind::CaptureBatch {
+    if descriptor.cardinality == QueryCardinality::Batch {
         Type::List(Box::new(result))
     } else {
         result
@@ -2863,9 +2878,9 @@ fn validate_family_query_capture_argument(
     allow_result: bool,
     in_result_fn: bool,
 ) {
-    use crate::query_contract::{CaptureKind, QuerySurfaceKind};
+    use crate::query_contract::{CaptureKind, QueryTargetKind};
 
-    if descriptor.surface == QuerySurfaceKind::WorldScalar {
+    if descriptor.target == QueryTargetKind::World {
         validate_region_capture_argument(
             body,
             capture_expr,

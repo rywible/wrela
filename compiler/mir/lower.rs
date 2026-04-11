@@ -13,6 +13,8 @@ use crate::portable::{
     PortableBuiltinType, all_builtin_records, any_builtin_record, builtin_record_by_function,
     portable_builtin_type_abi,
 };
+use crate::presentation_binding::resolve_execution_binding;
+use crate::presentation_plan::PresentationPlan;
 use crate::query_contract::{self, QueryItemKind};
 use crate::query_exec::mir::{
     lower_field_batch_queries_helper, lower_scene_distance_capture_helper,
@@ -22,15 +24,16 @@ use crate::query_exec::mir::{
     lower_scene_surface_queries_helper, lower_scene_trace_capture_helper,
     lower_scene_trace_queries_helper, lower_shape_batch_queries_helper,
     lower_shape_distance_helper, lower_shape_surface_helper, lower_shape_trace_helper,
-    lower_world_distance_capture_helper, lower_world_medium_capture_helper,
-    lower_world_normal_capture_helper, lower_world_occluded_capture_helper,
-    lower_world_radiance_capture_helper, lower_world_support_summary_capture_helper,
-    lower_world_surface_capture_helper, lower_world_trace_capture_helper,
+    lower_world_batch_queries_helper, lower_world_distance_capture_helper,
+    lower_world_medium_capture_helper, lower_world_normal_capture_helper,
+    lower_world_occluded_capture_helper, lower_world_radiance_capture_helper,
+    lower_world_support_summary_capture_helper, lower_world_surface_capture_helper,
+    lower_world_trace_capture_helper,
 };
 use crate::query_exec::{QueryExecContext, wgsl};
 use crate::query_plan::{
-    BatchQueryPlan, CaptureKind, DispatchBackend, FieldBatchPlanKind, ShapeBatchPlanKind,
-    WorldQueryKind, WorldQueryPlan,
+    BatchQueryKind, BatchQueryPlan, CaptureKind, DispatchBackend, FieldBatchPlanKind,
+    ShapeBatchPlanKind, WorldQueryKind, WorldQueryPlan,
 };
 use crate::scene_ir;
 use rowan::TextRange;
@@ -365,12 +368,22 @@ pub fn lower_module_with_types_and_backend(
         BatchQueryPlan::for_shape(ShapeBatchPlanKind::Surface),
         BatchQueryPlan::for_shape(ShapeBatchPlanKind::Occluded),
     ];
+    let world_batch_plans = vec![
+        BatchQueryPlan::for_world_query(BatchQueryKind::Distance, DispatchBackend::Auto),
+        BatchQueryPlan::for_world_query(BatchQueryKind::Normal, DispatchBackend::Auto),
+        BatchQueryPlan::for_world_query(BatchQueryKind::Nearest, DispatchBackend::Auto),
+        BatchQueryPlan::for_world_query(BatchQueryKind::Occluded, DispatchBackend::Auto),
+        BatchQueryPlan::for_world_query(BatchQueryKind::Surface, DispatchBackend::Auto),
+        BatchQueryPlan::for_world_query(BatchQueryKind::Radiance, DispatchBackend::Auto),
+        BatchQueryPlan::for_world_query(BatchQueryKind::Medium, DispatchBackend::Auto),
+    ];
     let batch_wgsl_configs = wgsl_query_ctx
         .as_ref()
         .map(|ctx| {
             field_batch_plans
                 .iter()
                 .chain(shape_batch_plans.iter())
+                .chain(world_batch_plans.iter())
                 .map(|plan| {
                     let lowered = lower_batch_query_plan(plan);
                     (
@@ -1043,6 +1056,30 @@ pub fn lower_module_with_types_and_backend(
     }
     for plan in &shape_batch_plans {
         functions.push(lower_shape_batch_queries_helper(
+            &tag_map,
+            &class_fields,
+            &class_field_defaults,
+            &function_names,
+            &field_names,
+            &shape_names,
+            &shape_graphs,
+            &field_graphs,
+            &field_bodies,
+            &field_metadata,
+            &radiance_param_counts,
+            &volume_param_counts,
+            &result_functions,
+            &class_method_ids,
+            &interface_methods,
+            plan,
+            default_query_backend,
+            batch_wgsl_configs.get(&plan.helper_name),
+            &wgsl_shape_indices,
+        ));
+    }
+    for plan in &world_batch_plans {
+        functions.push(lower_world_batch_queries_helper(
+            module,
             &tag_map,
             &class_fields,
             &class_field_defaults,
@@ -1850,6 +1887,17 @@ fn lower_render_function(
     lowerer.current_block = entry;
 
     let metadata = func.render.as_ref().expect("render metadata");
+    let presentation_plan = PresentationPlan::from_render_function(func, default_query_backend)
+        .expect("render function should produce a presentation plan");
+    debug_assert!(
+        presentation_plan.validate().is_empty(),
+        "compiler-generated presentation plan should validate"
+    );
+    let legacy_ppm_helper = presentation_plan
+        .export_binding()
+        .and_then(resolve_execution_binding)
+        .and_then(|binding| binding.helper_name)
+        .expect("legacy preview presentation plan should bind a PPM export helper");
     let world_local = func
         .params
         .first()
@@ -1862,27 +1910,32 @@ fn lower_render_function(
         .expect("render camera param");
 
     let domain = metadata
+        .frame
         .domain
         .as_ref()
         .map(|body| lowerer.lower_wrapped_body_value(body, span))
         .unwrap_or_else(|| build_default_scene_domain_value(&mut lowerer, world_local, span));
     let trace_budget = lower_render_trace_budget_values(module, metadata, &mut lowerer, span);
     let light = metadata
+        .lighting
         .light
         .as_ref()
         .map(|body| lowerer.lower_wrapped_body_value(body, span))
         .unwrap_or_else(|| build_default_render_light_value(&mut lowerer, span));
     let width = metadata
+        .view
         .width
         .as_ref()
         .map(|body| lowerer.lower_wrapped_body_value(body, span))
         .unwrap_or(Value::Const(Literal::Integer(40)));
     let height = metadata
+        .view
         .height
         .as_ref()
         .map(|body| lowerer.lower_wrapped_body_value(body, span))
         .unwrap_or(Value::Const(Literal::Integer(40)));
     let world_up = metadata
+        .compatibility
         .world_up
         .as_ref()
         .map(|body| lowerer.lower_wrapped_body_value(body, span))
@@ -1896,19 +1949,33 @@ fn lower_render_function(
             )
         });
     let view_scale = metadata
+        .compatibility
         .view_scale
         .as_ref()
         .map(|body| lowerer.lower_wrapped_body_value(body, span))
         .unwrap_or(Value::Const(Literal::Float(0.72)));
     let fill_dir = metadata
+        .lighting
         .fill_dir
         .as_ref()
         .map(|body| lowerer.lower_wrapped_body_value(body, span))
         .unwrap_or_else(|| build_default_render_fill_dir_value(&mut lowerer, span));
+    let fill_strength = metadata
+        .lighting
+        .fill_strength
+        .as_ref()
+        .map(|body| lowerer.lower_wrapped_body_value(body, span))
+        .unwrap_or(Value::Const(Literal::Float(0.22)));
+    let ambient_color = metadata
+        .lighting
+        .ambient_color
+        .as_ref()
+        .map(|body| lowerer.lower_wrapped_body_value(body, span))
+        .unwrap_or_else(|| build_default_render_ambient_color_value(&mut lowerer, span));
 
     let result = lowerer.lower_call_temp(
         MirType::String,
-        SmolStr::new("__wr_render_capture_to_ppm"),
+        SmolStr::new(legacy_ppm_helper),
         vec![
             Value::Local(world_local),
             domain,
@@ -1919,6 +1986,8 @@ fn lower_render_function(
             world_up,
             view_scale,
             fill_dir,
+            fill_strength,
+            ambient_color,
             trace_budget.max_distance,
             trace_budget.min_step,
             trace_budget.hit_epsilon,
@@ -1976,6 +2045,13 @@ fn build_vec3_value(lowerer: &mut FunctionLowerer, values: [f64; 3], span: TextR
 fn build_default_render_fill_dir_value(lowerer: &mut FunctionLowerer, span: TextRange) -> Value {
     let base = build_vec3_value(lowerer, [-0.9, 0.45, 0.2], span);
     lowerer.lower_call_temp(MirType::Vec3, SmolStr::new("normalize"), vec![base], span)
+}
+
+fn build_default_render_ambient_color_value(
+    lowerer: &mut FunctionLowerer,
+    span: TextRange,
+) -> Value {
+    build_vec3_value(lowerer, [0.12, 0.12, 0.12], span)
 }
 
 fn build_default_render_light_value(lowerer: &mut FunctionLowerer, span: TextRange) -> Value {
@@ -2064,7 +2140,7 @@ fn render_domain_trace_source<'a>(
     module: &'a hir::Module,
     render_metadata: &'a hir::RenderMetadata,
 ) -> Option<RenderDomainTraceSource<'a>> {
-    let call_body = render_metadata.domain.as_ref()?;
+    let call_body = render_metadata.frame.domain.as_ref()?;
     let expr = terminal_expr(call_body)?;
     let Expr::Call { callee, args, .. } = &call_body.exprs[expr] else {
         return None;
@@ -2779,6 +2855,10 @@ fn lower_render_ambient_occlusion_helper(
     }
 }
 
+// Temporary compatibility scaffold for authored `render` preview output. The
+// canonical Phase 21 presentation path lives in `presentation_plan` and
+// `presentation_exec`; this helper remains only while preview/sample projects
+// still route through `render` syntax.
 fn lower_render_scene_color_helper(
     module: &hir::Module,
     default_query_backend: DispatchBackend,
@@ -2836,6 +2916,8 @@ fn lower_render_scene_color_helper(
         declare_internal_param(&mut lowerer, "light", MirType::Named(SmolStr::new("Light")));
     let ray_direction = declare_internal_param(&mut lowerer, "ray_direction", MirType::Vec3);
     let fill_dir = declare_internal_param(&mut lowerer, "fill_dir", MirType::Vec3);
+    let fill_strength = declare_internal_param(&mut lowerer, "fill_strength", MirType::Float);
+    let ambient_color = declare_internal_param(&mut lowerer, "ambient_color", MirType::Vec3);
     let trace_max_distance =
         declare_internal_param(&mut lowerer, "trace_max_distance", MirType::Float);
     let trace_min_step = declare_internal_param(&mut lowerer, "trace_min_step", MirType::Float);
@@ -3072,7 +3154,7 @@ fn lower_render_scene_color_helper(
         MirType::Float,
         BinaryOp::Mul,
         fill_dot,
-        Value::Const(Literal::Float(0.22)),
+        Value::Local(fill_strength),
         span,
     );
     let roughness = lowerer.lower_get_named_field(
@@ -3157,17 +3239,9 @@ fn lower_render_scene_color_helper(
         specular_strength.clone(),
         span,
     );
-    let lighting_a = lowerer.lower_binary_temp(
-        MirType::Float,
-        BinaryOp::Add,
-        Value::Const(Literal::Float(0.12)),
-        diffuse,
-        span,
-    );
-    let lighting_b =
-        lowerer.lower_binary_temp(MirType::Float, BinaryOp::Add, lighting_a, fill, span);
+    let lighting_a = lowerer.lower_binary_temp(MirType::Float, BinaryOp::Add, diffuse, fill, span);
     let lighting =
-        lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, lighting_b, ao.clone(), span);
+        lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, lighting_a, ao.clone(), span);
     let albedo =
         lowerer.lower_get_named_field(surface.clone(), "Surface", "albedo", MirType::Vec3, span);
     let intensity_x = lowerer.lower_call_temp(
@@ -3206,17 +3280,53 @@ fn lower_render_scene_color_helper(
         vec![albedo, Value::Const(Literal::Integer(2))],
         span,
     );
+    let ambient_x = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_vec_component"),
+        vec![
+            Value::Local(ambient_color),
+            Value::Const(Literal::Integer(0)),
+        ],
+        span,
+    );
+    let ambient_y = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_vec_component"),
+        vec![
+            Value::Local(ambient_color),
+            Value::Const(Literal::Integer(1)),
+        ],
+        span,
+    );
+    let ambient_z = lowerer.lower_call_temp(
+        MirType::Float,
+        SmolStr::new("__wr_vec_component"),
+        vec![
+            Value::Local(ambient_color),
+            Value::Const(Literal::Integer(2)),
+        ],
+        span,
+    );
     let direct_x_base = lowerer.lower_binary_temp(
         MirType::Float,
         BinaryOp::Mul,
-        albedo_x,
+        albedo_x.clone(),
         lighting.clone(),
+        span,
+    );
+    let direct_x_ambient =
+        lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, albedo_x, ambient_x, span);
+    let direct_x_unlit = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Add,
+        direct_x_ambient,
+        direct_x_base,
         span,
     );
     let direct_x_lit = lowerer.lower_binary_temp(
         MirType::Float,
         BinaryOp::Mul,
-        direct_x_base,
+        direct_x_unlit,
         intensity_x,
         span,
     );
@@ -3247,14 +3357,23 @@ fn lower_render_scene_color_helper(
     let direct_y_base = lowerer.lower_binary_temp(
         MirType::Float,
         BinaryOp::Mul,
-        albedo_y,
+        albedo_y.clone(),
         lighting.clone(),
+        span,
+    );
+    let direct_y_ambient =
+        lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, albedo_y, ambient_y, span);
+    let direct_y_unlit = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Add,
+        direct_y_ambient,
+        direct_y_base,
         span,
     );
     let direct_y_lit = lowerer.lower_binary_temp(
         MirType::Float,
         BinaryOp::Mul,
-        direct_y_base,
+        direct_y_unlit,
         intensity_y,
         span,
     );
@@ -3282,12 +3401,26 @@ fn lower_render_scene_color_helper(
         ],
         span,
     );
-    let direct_z_base =
-        lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, albedo_z, lighting, span);
+    let direct_z_base = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Mul,
+        albedo_z.clone(),
+        lighting,
+        span,
+    );
+    let direct_z_ambient =
+        lowerer.lower_binary_temp(MirType::Float, BinaryOp::Mul, albedo_z, ambient_z, span);
+    let direct_z_unlit = lowerer.lower_binary_temp(
+        MirType::Float,
+        BinaryOp::Add,
+        direct_z_ambient,
+        direct_z_base,
+        span,
+    );
     let direct_z_lit = lowerer.lower_binary_temp(
         MirType::Float,
         BinaryOp::Mul,
-        direct_z_base,
+        direct_z_unlit,
         intensity_z,
         span,
     );
@@ -3521,6 +3654,8 @@ fn lower_render_scene_color_helper(
             PortableAbiType::Vec3,
             PortableAbiType::Vec3,
             PortableAbiType::F32,
+            PortableAbiType::Vec3,
+            PortableAbiType::F32,
             PortableAbiType::F32,
             PortableAbiType::F32,
             PortableAbiType::I32,
@@ -3534,6 +3669,9 @@ fn lower_render_scene_color_helper(
     }
 }
 
+// Temporary compatibility wrapper over the Phase 21 first-color recipe. This
+// keeps authored `render` scaffolding alive while canonical `view`-based
+// presentation becomes the long-term surface.
 fn lower_render_capture_to_ppm_helper(
     module: &hir::Module,
     default_query_backend: DispatchBackend,
@@ -3598,6 +3736,8 @@ fn lower_render_capture_to_ppm_helper(
     let world_up = declare_internal_param(&mut lowerer, "world_up", MirType::Vec3);
     let view_scale = declare_internal_param(&mut lowerer, "view_scale", MirType::Float);
     let fill_dir = declare_internal_param(&mut lowerer, "fill_dir", MirType::Vec3);
+    let fill_strength = declare_internal_param(&mut lowerer, "fill_strength", MirType::Float);
+    let ambient_color = declare_internal_param(&mut lowerer, "ambient_color", MirType::Vec3);
     let trace_max_distance =
         declare_internal_param(&mut lowerer, "trace_max_distance", MirType::Float);
     let trace_min_step = declare_internal_param(&mut lowerer, "trace_min_step", MirType::Float);
@@ -3858,6 +3998,8 @@ fn lower_render_capture_to_ppm_helper(
             Value::Local(light),
             ray,
             Value::Local(fill_dir),
+            Value::Local(fill_strength),
+            Value::Local(ambient_color),
             Value::Local(trace_max_distance),
             Value::Local(trace_min_step),
             Value::Local(trace_hit_epsilon),
@@ -3987,6 +4129,8 @@ fn lower_render_capture_to_ppm_helper(
             portable_abi_named_type("Light", module, type_tags),
             PortableAbiType::I32,
             PortableAbiType::I32,
+            PortableAbiType::Vec3,
+            PortableAbiType::F32,
             PortableAbiType::Vec3,
             PortableAbiType::F32,
             PortableAbiType::Vec3,

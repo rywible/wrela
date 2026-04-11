@@ -129,6 +129,146 @@ fn write_fixture_file(
     std::fs::write(path, contents)
 }
 
+fn write_presentation_plan_fixture(root: &std::path::Path) -> PathBuf {
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+    let entry = src_dir.join("main.wr");
+    write_fixture_file(
+        &entry,
+        r#"
+field exact distance cli_plan_field(p: Vec3) -> F32 {
+    sphere(radius = 0.5)
+}
+
+material cli_plan_material(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.2, 0.4, 0.8),
+        roughness=0.35,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape cli_plan_shape {
+    field = cli_plan_field
+    material = cli_plan_material
+}
+
+region cli_plan_region() {
+    place scene = cli_plan_shape
+}
+
+domain cli_plan_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = true
+    media = true
+    max_distance = 6.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 64
+}
+
+render cli_plan_ppm(world: RegionCapture, camera: Camera) {
+    domain = cli_plan_domain(world = world)
+    light = Light(
+        position = camera.position + vec3(1.0, 1.2, 1.0),
+        direction = normalize(vec3(-0.5, -0.8, -0.4)),
+        intensity = vec3(1.0, 0.95, 0.90),
+        range = 8.0
+    )
+    width = 2
+    height = 2
+    world_up = camera.up
+    view_scale = 0.82
+    fill_dir = normalize(vec3(-0.4, 0.5, 0.2))
+}
+
+view cli_plan_view(world: RegionCapture, camera: Camera) {
+    domain = cli_plan_domain(world = world)
+    key_light = Light(
+        position = camera.position + vec3(0.5, 1.0, 0.5),
+        direction = normalize(vec3(-0.4, -0.7, -0.2)),
+        intensity = vec3(1.0, 1.0, 1.0),
+        range = 8.0
+    )
+    fill_direction = normalize(vec3(-0.2, 0.8, 0.4))
+    fill_strength = 0.33
+    ambient_color = vec3(0.08, 0.11, 0.14)
+    width = 2
+    height = 2
+}
+"#,
+    )
+    .expect("write presentation plan fixture");
+    entry
+}
+
+fn write_presentation_debug_expression_fixture(root: &std::path::Path) -> PathBuf {
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).expect("create src dir");
+    let entry = src_dir.join("main.wr");
+    write_fixture_file(
+        &entry,
+        r#"
+field exact distance expr_field(p: Vec3) -> F32 {
+    sphere(radius = 0.5)
+}
+
+material expr_material(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.5, 0.5, 0.5),
+        roughness=0.2,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape expr_shape {
+    field = expr_field
+    material = expr_material
+}
+
+region expr_region() {
+    place scene = expr_shape
+}
+
+fn expr_width() -> Integer {
+    return 4
+}
+
+fn expr_distance() -> F32 {
+    return 8.0
+}
+
+domain expr_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = false
+    media = false
+    max_distance = expr_distance()
+    min_step = 0.02
+    hit_epsilon = 0.0005
+    max_steps = 128
+}
+
+view expr_view(world: RegionCapture, camera: Camera) {
+    domain = expr_domain(world = world)
+    width = expr_width()
+    height = 4
+}
+"#,
+    )
+    .expect("write presentation debug expression fixture");
+    entry
+}
+
 #[test]
 fn cli_version() {
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
@@ -178,6 +318,8 @@ fn cli_help() {
     assert!(stdout.contains("--integration-mode"));
     assert!(stdout.contains("run certification"));
     assert!(stdout.contains("query-contracts"));
+    assert!(stdout.contains("presentation-plan"));
+    assert!(stdout.contains("presentation-debug"));
     assert!(!stdout.contains("--no-certify"));
 }
 
@@ -238,6 +380,24 @@ fn cli_query_contracts_json_lists_family_catalog() {
                         && !backends.iter().any(|backend| backend == "wgsl")
                 })
     }));
+    assert!(contracts.iter().any(|contract| {
+        contract
+            .get("contract_id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|id| id == "spatial.nearest.batch.world")
+            && contract
+                .get("target")
+                .and_then(|v| v.as_str())
+                .is_some_and(|target| target == "world")
+            && contract
+                .get("cardinality")
+                .and_then(|v| v.as_str())
+                .is_some_and(|cardinality| cardinality == "batch")
+            && contract
+                .get("surface")
+                .and_then(|v| v.as_str())
+                .is_some_and(|surface| surface == "batch.world")
+    }));
     let aliases = catalog
         .get("aliases")
         .and_then(|v| v.as_array())
@@ -252,6 +412,656 @@ fn cli_query_contracts_json_lists_family_catalog() {
                 .and_then(|v| v.as_str())
                 .is_some_and(|id| id == "spatial.nearest.world")
     }));
+}
+
+#[test]
+fn cli_presentation_plan_human_shows_contracts_without_helper_names() {
+    let temp = workspace_tempdir();
+    write_presentation_plan_fixture(temp.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("presentation-plan")
+        .arg(temp.path())
+        .output()
+        .expect("run presentation-plan");
+    assert!(
+        output.status.success(),
+        "presentation-plan failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("presentation plan schema v1"));
+    assert!(stdout.contains("plan cli_plan_ppm"));
+    assert!(stdout.contains("plan cli_plan_view"));
+    assert!(stdout.contains("canonical_projection=true"));
+    assert!(stdout.contains("input=Camera.vertical_fov_degrees"));
+    assert!(stdout.contains("screen lattice: sample_position=PixelCenter origin=TopLeft"));
+    assert!(stdout.contains("canonical view rays: space=World normalized_direction=true"));
+    assert!(stdout.contains("compatibility_legacy_path=true"));
+    assert!(stdout.contains("authored_world_up_override=true"));
+    assert!(stdout.contains("authored_view_scale_override=true"));
+    assert!(stdout.contains("GenerateScreenSamples"));
+    assert!(stdout.contains("PrimaryVisibility"));
+    assert!(stdout.contains("SurfaceResolve"));
+    assert!(stdout.contains("ParticipantsResolve"));
+    assert!(stdout.contains("ShadePrimary"));
+    assert!(stdout.contains("CompositeColor"));
+    assert!(stdout.contains("ExportAttachment(color)"));
+    assert!(stdout.contains("screen samples: viewport=view.widthxview.height"));
+    assert!(stdout.contains("spatial.nearest.batch.world"));
+    assert!(stdout.contains("surface.sample.batch.world"));
+    assert!(stdout.contains("participants.radiance.batch.world"));
+    assert!(stdout.contains("participants.medium.batch.world"));
+    assert!(
+        stdout
+            .contains("primary hit attachment: primary_hit record=Hit3 depth=RayParameterDistance")
+    );
+    assert!(stdout.contains("frame outputs: primary_hit(PrimaryHit,Hit3,Transient,Viewport,1x1,SemanticDefault), depth(Depth,f32,Transient,Viewport,1x1,SemanticDefault), world_normal(WorldNormal,vec3<f32>,Transient,Viewport,1x1,Zero), surface(Surface,Surface,Transient,Viewport,1x1,SemanticDefault), radiance(Radiance,vec3<f32>,Transient,Viewport,1x1,Zero), medium(Medium,Medium,Transient,Viewport,1x1,SemanticDefault), shaded_color(Color,vec3<f32>,Transient,Viewport,1x1,Zero), color(Color,vec3<f32>,Exported,Viewport,1x1,Zero)"));
+    assert!(stdout.contains(
+        "lighting: key_light=lighting.key_light:Light:AuthoredMetadata:compat_alias=true"
+    ));
+    assert!(stdout.contains(
+        "fill_direction=lighting.fill_direction:vec3<f32>:AuthoredMetadata:compat_alias=true"
+    ));
+    assert!(stdout.contains(
+        "fill_strength=lighting.fill_strength:f32:DefaultCompatibilityRecipe:compat_alias=false"
+    ));
+    assert!(stdout.contains("ambient_color=lighting.ambient_color:vec3<f32>:DefaultCompatibilityRecipe:compat_alias=false"));
+    assert!(stdout.contains(
+        "lighting: key_light=lighting.key_light:Light:AuthoredMetadata:compat_alias=false"
+    ));
+    assert!(stdout.contains(
+        "fill_direction=lighting.fill_direction:vec3<f32>:AuthoredMetadata:compat_alias=false"
+    ));
+    assert!(
+        stdout.contains(
+            "fill_strength=lighting.fill_strength:f32:AuthoredMetadata:compat_alias=false"
+        )
+    );
+    assert!(stdout.contains(
+        "ambient_color=lighting.ambient_color:vec3<f32>:AuthoredMetadata:compat_alias=false"
+    ));
+    assert!(stdout.contains("future acceleration hooks: ScreenLattice"));
+    assert!(stdout.contains("future acceleration hooks: WorldBatch, SemanticSupport"));
+    assert!(stdout.contains("motion(Motion,MotionVector,Transient,Viewport,1x1,SemanticDefault)"));
+    assert!(stdout.contains(
+        "history_color(Color,vec3<f32>,HistorySlot(0),Viewport,1x1,PreservePrevious)"
+    ));
+    assert!(stdout.contains(
+        "history_primary_hit(PrimaryHit,Hit3,HistorySlot(1),Viewport,1x1,PreservePrevious)"
+    ));
+    assert!(stdout.contains("motion_resolve kind=MotionResolve(primary_hit->motion) binding=motion.resolve"));
+    assert!(stdout.contains(
+        "temporal_resolve kind=TemporalResolve(shaded_color->color) binding=temporal.resolve"
+    ));
+    assert!(stdout.contains("materializes: motion"));
+    assert!(stdout.contains("materializes: color, history_color, history_primary_hit"));
+    assert!(stdout.contains("future acceleration hooks: TemporalHistory"));
+    assert!(stdout.contains(
+        "motion.resolve recipe=MotionResolve backend=auto execution=motion_resolve"
+    ));
+    assert!(stdout.contains(
+        "temporal.resolve recipe=TemporalResolve backend=auto execution=temporal_resolve"
+    ));
+    assert!(!stdout.contains("__wr_render_capture_to_ppm"));
+}
+
+#[test]
+fn cli_presentation_plan_json_reports_passes_bindings_and_query_dependencies() {
+    let temp = workspace_tempdir();
+    write_presentation_plan_fixture(temp.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("presentation-plan")
+        .arg(temp.path())
+        .arg("--json")
+        .output()
+        .expect("run presentation-plan json");
+    assert!(
+        output.status.success(),
+        "presentation-plan --json failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let dump: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("presentation plan json");
+    assert_eq!(
+        dump.get("schema_version").and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    let plans = dump
+        .get("plans")
+        .and_then(|value| value.as_array())
+        .expect("plans array");
+    assert_eq!(plans.len(), 2);
+    let plan = plans
+        .iter()
+        .find(|plan| {
+            plan.get("name")
+                .and_then(|value| value.as_str())
+                .is_some_and(|name| name == "cli_plan_ppm")
+        })
+        .expect("render plan");
+    assert_eq!(
+        plan.get("name").and_then(|value| value.as_str()),
+        Some("cli_plan_ppm")
+    );
+    assert_eq!(
+        plan.pointer("/view/canonical_projection_input")
+            .and_then(|value| value.as_str()),
+        Some("Camera.vertical_fov_degrees")
+    );
+    assert_eq!(
+        plan.pointer("/view/compatibility_projection/legacy_path_active")
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        plan.pointer("/view/compatibility_projection/authored_world_up_override")
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        plan.pointer("/view/compatibility_projection/authored_view_scale_override")
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    let passes = plan
+        .get("passes")
+        .and_then(|value| value.as_array())
+        .expect("passes array");
+    assert!(passes.iter().any(|pass| {
+        pass.get("kind")
+            .and_then(|value| value.as_str())
+            .is_some_and(|kind| kind == "PrimaryVisibility(spatial.nearest.batch.world)")
+            && pass
+                .get("query_dependencies")
+                .and_then(|value| value.as_array())
+                .is_some_and(|deps| {
+                    deps.iter().any(|dep| {
+                        dep.get("contract_id")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|id| id == "spatial.nearest.batch.world")
+                    }) && deps.iter().any(|dep| {
+                        dep.get("family")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|family| family == "spatial")
+                    })
+                })
+    }));
+    assert!(passes.iter().any(|pass| {
+        pass.get("kind")
+            .and_then(|value| value.as_str())
+            .is_some_and(|kind| kind == "SurfaceResolve(surface.sample.batch.world)")
+    }));
+    assert!(passes.iter().any(|pass| {
+        pass.get("kind").and_then(|value| value.as_str()).is_some_and(|kind| {
+            kind
+                == "ParticipantsResolve(radiance=participants.radiance.batch.world,medium=participants.medium.batch.world)"
+        })
+    }));
+    assert!(passes.iter().any(|pass| {
+        pass.get("kind")
+            .and_then(|value| value.as_str())
+            .is_some_and(|kind| kind == "ShadePrimary(shaded_color)")
+    }));
+    assert!(passes.iter().any(|pass| {
+        pass.get("kind")
+            .and_then(|value| value.as_str())
+            .is_some_and(|kind| kind == "CompositeColor(shaded_color->color)")
+    }));
+    assert!(passes.iter().any(|pass| {
+        pass.get("kind")
+            .and_then(|value| value.as_str())
+            .is_some_and(|kind| kind == "ExportAttachment(color)")
+    }));
+    let bindings = plan
+        .get("bindings")
+        .and_then(|value| value.as_array())
+        .expect("bindings array");
+    assert!(bindings.iter().any(|binding| {
+        binding
+            .get("id")
+            .and_then(|value| value.as_str())
+            .is_some_and(|id| id == "attachment.export.ppm")
+            && binding
+                .get("default_backend")
+                .and_then(|value| value.as_str())
+                .is_some_and(|backend| backend == "auto")
+            && binding
+                .get("execution")
+                .and_then(|value| value.as_str())
+                .is_some_and(|execution| execution == "attachment_export")
+    }));
+    assert_eq!(
+        plan.pointer("/frame/lighting/key_light/source")
+            .and_then(|value| value.as_str()),
+        Some("AuthoredMetadata")
+    );
+    assert_eq!(
+        plan.pointer("/frame/lighting/key_light/temporary_compatibility_alias")
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        plan.pointer("/frame/lighting/fill_strength/source")
+            .and_then(|value| value.as_str()),
+        Some("DefaultCompatibilityRecipe")
+    );
+    let view_plan = plans
+        .iter()
+        .find(|plan| {
+            plan.get("name")
+                .and_then(|value| value.as_str())
+                .is_some_and(|name| name == "cli_plan_view")
+        })
+        .expect("view plan");
+    assert_eq!(
+        view_plan
+            .pointer("/view/compatibility_projection/legacy_path_active")
+            .and_then(|value| value.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/view/screen_lattice/sample_position")
+            .and_then(|value| value.as_str()),
+        Some("PixelCenter")
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/view/canonical_view_ray/space")
+            .and_then(|value| value.as_str()),
+        Some("World")
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/frame/primary_hit/record")
+            .and_then(|value| value.as_str()),
+        Some("Hit3")
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/frame/primary_hit/depth_semantics")
+            .and_then(|value| value.as_str()),
+        Some("RayParameterDistance")
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/frame/lighting/key_light/source")
+            .and_then(|value| value.as_str()),
+        Some("AuthoredMetadata")
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/frame/lighting/key_light/temporary_compatibility_alias")
+            .and_then(|value| value.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/frame/lighting/fill_strength/source")
+            .and_then(|value| value.as_str()),
+        Some("AuthoredMetadata")
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/frame/lighting/ambient_color/source")
+            .and_then(|value| value.as_str()),
+        Some("AuthoredMetadata")
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/frame/temporal_reuse")
+            .and_then(|value| value.as_str()),
+        Some("ReprojectColorAndMotion")
+    );
+    let view_outputs = view_plan
+        .pointer("/frame/outputs")
+        .and_then(|value| value.as_array())
+        .expect("view outputs array");
+    assert_eq!(view_outputs.len(), 11);
+    assert!(view_outputs.iter().any(|output| {
+        output.get("name").and_then(|value| value.as_str()) == Some("motion")
+            && output.get("kind").and_then(|value| value.as_str()) == Some("Motion")
+            && output.get("element_schema").and_then(|value| value.as_str()) == Some("MotionVector")
+            && output.get("lifetime").and_then(|value| value.as_str()) == Some("Transient")
+            && output.get("clear_policy").and_then(|value| value.as_str()) == Some("SemanticDefault")
+    }));
+    assert!(view_outputs.iter().any(|output| {
+        output.get("name").and_then(|value| value.as_str()) == Some("history_color")
+            && output.get("kind").and_then(|value| value.as_str()) == Some("Color")
+            && output.get("element_schema").and_then(|value| value.as_str()) == Some("vec3<f32>")
+            && output.get("lifetime").and_then(|value| value.as_str()) == Some("HistorySlot(0)")
+            && output.get("clear_policy").and_then(|value| value.as_str()) == Some("PreservePrevious")
+    }));
+    assert!(view_outputs.iter().any(|output| {
+        output.get("name").and_then(|value| value.as_str()) == Some("history_primary_hit")
+            && output.get("kind").and_then(|value| value.as_str()) == Some("PrimaryHit")
+            && output.get("element_schema").and_then(|value| value.as_str()) == Some("Hit3")
+            && output.get("lifetime").and_then(|value| value.as_str()) == Some("HistorySlot(1)")
+            && output.get("clear_policy").and_then(|value| value.as_str()) == Some("PreservePrevious")
+    }));
+    let view_passes = view_plan
+        .get("passes")
+        .and_then(|value| value.as_array())
+        .expect("view passes array");
+    assert_eq!(view_passes.len(), 7);
+    assert_eq!(
+        view_passes
+            .iter()
+            .map(|pass| {
+                pass.get("kind")
+                    .and_then(|value| value.as_str())
+                    .expect("view pass kind")
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            "GenerateScreenSamples",
+            "PrimaryVisibility(spatial.nearest.batch.world)",
+            "SurfaceResolve(surface.sample.batch.world)",
+            "ParticipantsResolve(radiance=participants.radiance.batch.world,medium=participants.medium.batch.world)",
+            "ShadePrimary(shaded_color)",
+            "MotionResolve(primary_hit->motion)",
+            "TemporalResolve(shaded_color->color)",
+        ]
+    );
+    assert!(view_passes.iter().any(|pass| {
+        pass.get("kind")
+            .and_then(|value| value.as_str())
+            .is_some_and(|kind| kind == "GenerateScreenSamples")
+            && pass
+                .pointer("/screen_samples/output_item_record")
+                .and_then(|value| value.as_str())
+                .is_some_and(|record| record == "ScreenSampleQuery")
+            && pass
+                .pointer("/screen_samples/item_count_expression")
+                .and_then(|value| value.as_str())
+                .is_some_and(|expr| expr == "view.width * view.height * 1")
+    }));
+    assert!(view_passes.iter().any(|pass| {
+        pass.get("kind")
+            .and_then(|value| value.as_str())
+            .is_some_and(|kind| kind == "PrimaryVisibility(spatial.nearest.batch.world)")
+            && pass
+                .get("query_dependencies")
+                .and_then(|value| value.as_array())
+                .is_some_and(|deps| {
+                    deps.iter().any(|dep| {
+                        dep.get("contract_id")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|id| id == "spatial.nearest.batch.world")
+                    }) && deps.iter().any(|dep| {
+                        dep.get("target")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|target| target == "world")
+                            && dep
+                                .get("cardinality")
+                                .and_then(|value| value.as_str())
+                                .is_some_and(|cardinality| cardinality == "batch")
+                    })
+                })
+    }));
+    assert!(view_passes.iter().any(|pass| {
+        pass.get("kind")
+            .and_then(|value| value.as_str())
+            .is_some_and(|kind| kind == "SurfaceResolve(surface.sample.batch.world)")
+            && pass
+                .get("query_dependencies")
+                .and_then(|value| value.as_array())
+                .is_some_and(|deps| {
+                    deps.iter().any(|dep| {
+                        dep.get("contract_id")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|id| id == "surface.sample.batch.world")
+                    })
+                })
+    }));
+    assert!(view_passes.iter().any(|pass| {
+        pass.get("kind").and_then(|value| value.as_str()).is_some_and(|kind| {
+            kind
+                == "ParticipantsResolve(radiance=participants.radiance.batch.world,medium=participants.medium.batch.world)"
+        })
+    }));
+    assert!(view_passes.iter().any(|pass| {
+        pass.get("kind")
+            .and_then(|value| value.as_str())
+            .is_some_and(|kind| kind == "ShadePrimary(shaded_color)")
+    }));
+    assert!(view_passes.iter().any(|pass| {
+        pass.get("kind")
+            .and_then(|value| value.as_str())
+            .is_some_and(|kind| kind == "MotionResolve(primary_hit->motion)")
+            && pass.get("binding").and_then(|value| value.as_str()) == Some("motion.resolve")
+            && pass
+                .get("materializes")
+                .and_then(|value| value.as_array())
+                .is_some_and(|materializes| {
+                    materializes.iter().any(|value| value.as_str() == Some("motion"))
+                })
+            && pass
+                .get("future_acceleration_hooks")
+                .and_then(|value| value.as_array())
+                .is_some_and(|hooks| {
+                    hooks.iter().any(|value| value.as_str() == Some("TemporalHistory"))
+                })
+    }));
+    assert!(view_passes.iter().any(|pass| {
+        pass.get("kind")
+            .and_then(|value| value.as_str())
+            .is_some_and(|kind| kind == "TemporalResolve(shaded_color->color)")
+            && pass.get("binding").and_then(|value| value.as_str()) == Some("temporal.resolve")
+            && pass
+                .get("materializes")
+                .and_then(|value| value.as_array())
+                .is_some_and(|materializes| {
+                    materializes.iter().any(|value| value.as_str() == Some("color"))
+                        && materializes
+                            .iter()
+                            .any(|value| value.as_str() == Some("history_color"))
+                        && materializes
+                            .iter()
+                            .any(|value| value.as_str() == Some("history_primary_hit"))
+                })
+            && pass
+                .get("future_acceleration_hooks")
+                .and_then(|value| value.as_array())
+                .is_some_and(|hooks| {
+                    hooks.iter().any(|value| value.as_str() == Some("TemporalHistory"))
+                })
+    }));
+    assert!(view_passes.iter().any(|pass| {
+        pass.get("query_dependencies")
+            .and_then(|value| value.as_array())
+            .is_some_and(|deps| {
+                deps.iter().any(|dep| {
+                    dep.get("contract_id")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|id| id == "spatial.nearest.batch.world")
+                }) && deps.iter().any(|dep| {
+                    dep.get("target")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|target| target == "world")
+                        && dep
+                            .get("cardinality")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|cardinality| cardinality == "batch")
+                })
+            })
+    }));
+    assert!(view_passes.iter().any(|pass| {
+        pass.get("query_dependencies")
+            .and_then(|value| value.as_array())
+            .is_some_and(|deps| {
+                deps.iter().any(|dep| {
+                    dep.get("contract_id")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|id| id == "spatial.nearest.batch.world")
+                        && dep
+                            .pointer("/solver_diagnostics/fallback")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|fallback| fallback == "exact-dense-sphere-tracing")
+                        && dep
+                            .pointer("/solver_diagnostics/methods")
+                            .and_then(|value| value.as_array())
+                            .is_some_and(|methods| {
+                                methods.iter().any(|method| {
+                                    method.as_str().is_some_and(|method| {
+                                        method == "analytic-primitive-intersection"
+                                    })
+                                })
+                            })
+                })
+            })
+    }));
+    let view_artifacts = view_plan
+        .get("frame_artifacts")
+        .and_then(|value| value.as_array())
+        .expect("view frame artifacts array");
+    assert_eq!(view_artifacts.len(), 11);
+    assert!(view_artifacts.iter().any(|artifact| {
+        artifact.get("attachment").and_then(|value| value.as_str()) == Some("motion")
+            && artifact.get("producer_pass").and_then(|value| value.as_str())
+                == Some("motion_resolve")
+    }));
+    assert!(view_artifacts.iter().any(|artifact| {
+        artifact.get("attachment").and_then(|value| value.as_str()) == Some("color")
+            && artifact.get("producer_pass").and_then(|value| value.as_str())
+                == Some("temporal_resolve")
+    }));
+    assert!(view_artifacts.iter().any(|artifact| {
+        artifact.get("attachment").and_then(|value| value.as_str()) == Some("history_color")
+            && artifact.get("producer_pass").and_then(|value| value.as_str())
+                == Some("temporal_resolve")
+    }));
+    assert!(view_artifacts.iter().any(|artifact| {
+        artifact.get("attachment").and_then(|value| value.as_str()) == Some("history_primary_hit")
+            && artifact.get("producer_pass").and_then(|value| value.as_str())
+                == Some("temporal_resolve")
+    }));
+    let view_bindings = view_plan
+        .get("bindings")
+        .and_then(|value| value.as_array())
+        .expect("view bindings array");
+    assert_eq!(view_bindings.len(), 7);
+    assert_eq!(
+        view_bindings
+            .iter()
+            .map(|binding| {
+                binding
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .expect("view binding id")
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            "screen.samples",
+            "primary.visibility",
+            "surface.resolve",
+            "participants.resolve",
+            "shade.primary",
+            "motion.resolve",
+            "temporal.resolve",
+        ]
+    );
+    assert!(view_bindings.iter().any(|binding| {
+        binding.get("id").and_then(|value| value.as_str()) == Some("motion.resolve")
+            && binding.get("pass_kind").and_then(|value| value.as_str())
+                == Some("MotionResolve(primary_hit->motion)")
+            && binding.get("recipe").and_then(|value| value.as_str()) == Some("MotionResolve")
+            && binding.get("execution").and_then(|value| value.as_str()) == Some("motion_resolve")
+    }));
+    assert!(view_bindings.iter().any(|binding| {
+        binding.get("id").and_then(|value| value.as_str()) == Some("temporal.resolve")
+            && binding.get("pass_kind").and_then(|value| value.as_str())
+                == Some("TemporalResolve(shaded_color->color)")
+            && binding.get("recipe").and_then(|value| value.as_str()) == Some("TemporalResolve")
+            && binding.get("execution").and_then(|value| value.as_str()) == Some("temporal_resolve")
+    }));
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("__wr_render_capture_to_ppm"),
+        "presentation-plan JSON should not expose raw helper names"
+    );
+}
+
+#[test]
+fn cli_presentation_debug_exports_depth_normal_and_stats() {
+    let temp = workspace_tempdir();
+    write_presentation_plan_fixture(temp.path());
+    let out_dir = temp.path().join("presentation-debug-output");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("presentation-debug")
+        .arg(temp.path())
+        .arg("--view")
+        .arg("cli_plan_view")
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .arg("--width")
+        .arg("4")
+        .arg("--height")
+        .arg("4")
+        .output()
+        .expect("run presentation-debug");
+    assert!(
+        output.status.success(),
+        "presentation-debug failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("presentation debug view=cli_plan_view backend=cpu"));
+    assert!(stdout.contains("color ppm:"));
+    assert!(stdout.contains("depth ppm:"));
+    assert!(stdout.contains("world normal ppm:"));
+    assert!(stdout.contains("hit_rate="));
+    assert!(out_dir.join("color.ppm").exists());
+    assert!(out_dir.join("depth.ppm").exists());
+    assert!(out_dir.join("world_normal.ppm").exists());
+    assert!(out_dir.join("stats.txt").exists());
+
+    let stats = std::fs::read_to_string(out_dir.join("stats.txt")).expect("read stats");
+    assert!(stats.contains("samples=16"));
+    assert!(stats.contains("solver=ray-solver:spatial.nearest.batch.world:v1"));
+}
+
+#[test]
+fn cli_presentation_debug_rejects_non_literal_view_dimensions_without_override() {
+    let temp = workspace_tempdir();
+    write_presentation_debug_expression_fixture(temp.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("presentation-debug")
+        .arg(temp.path())
+        .arg("--view")
+        .arg("expr_view")
+        .output()
+        .expect("run presentation-debug");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot evaluate non-literal view width"));
+}
+
+#[test]
+fn cli_presentation_debug_rejects_non_literal_domain_budget() {
+    let temp = workspace_tempdir();
+    write_presentation_debug_expression_fixture(temp.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("presentation-debug")
+        .arg(temp.path())
+        .arg("--view")
+        .arg("expr_view")
+        .arg("--width")
+        .arg("4")
+        .arg("--height")
+        .arg("4")
+        .output()
+        .expect("run presentation-debug");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot evaluate non-literal domain max_distance"));
 }
 
 #[test]
@@ -3941,6 +4751,14 @@ fn cli_build_emits_cert_report_on_success() {
                         .get("call")
                         .and_then(|v| v.as_str())
                         .is_some_and(|call| call == "spatial.distance")
+                    && contract
+                        .get("target")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|target| target == "world")
+                    && contract
+                        .get("cardinality")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|cardinality| cardinality == "scalar")
             })),
         "expected cert report to expose family/query contract identity"
     );
@@ -9104,6 +9922,7 @@ fn benchmark_manifest_scenarios_resolve_via_discovery() {
     let manifests = [
         "benchmarks/micro/bench.toml",
         "benchmarks/field_engine/bench.toml",
+        "benchmarks/realtime_presentation/bench.toml",
     ];
 
     for manifest_rel in manifests {

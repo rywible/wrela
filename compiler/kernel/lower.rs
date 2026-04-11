@@ -7,7 +7,9 @@ use crate::kernel::ir::{
 };
 use crate::kernel::program::KernelProgram;
 use crate::portable;
-use crate::query_contract::{self, QueryContractDescriptor, QuerySurfaceKind};
+use crate::query_contract::{
+    self, QueryCardinality, QueryContractDescriptor, QuerySurfaceKind, QueryTargetKind,
+};
 use crate::query_exec::QueryExecContext;
 use crate::query_exec::spec::{BatchQueryInvocationSpec, ScalarQueryInvocationSpec};
 use crate::query_plan::{
@@ -202,6 +204,8 @@ pub fn lower_batch_query_plan(plan: &BatchQueryPlan) -> KernelBatchQueryPlan {
         contract_version: plan.contract_version,
         contract_id: plan.contract_id,
         family: plan.family,
+        target: plan.target,
+        cardinality: plan.cardinality,
         surface: plan.surface,
         helper_name: plan.helper_name.clone(),
         kind: batch_query_kind_for_contract_id(plan.contract_id)
@@ -225,6 +229,7 @@ pub fn lower_batch_query_plan(plan: &BatchQueryPlan) -> KernelBatchQueryPlan {
         domain_flags: plan.domain_flags.clone(),
         artifact_contracts: plan.artifact_contracts.clone(),
         item_contract: (&plan.item_contract).into(),
+        ray_solver: plan.ray_solver.clone(),
         observability: plan.observability.clone(),
         preserves_local_hit_context: plan.preserves_local_hit_context,
     }
@@ -1011,25 +1016,26 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
         expr_id: Idx<Expr>,
     ) -> Option<(KernelBatchQueryPlan, Vec<KernelExpr>)> {
         let spec = self.parse_batch_query_invocation(expr_id)?;
-        debug_assert!(
-            spec.domain.is_none(),
-            "batch query descriptors do not carry domains yet"
-        );
         let descriptor =
             query_contract::query_contract(spec.contract_id).expect("batch query descriptor");
         let backend = self
             .parse_dispatch_backend_builtin(spec.backend)
             .unwrap_or(DispatchBackend::Auto);
-        let scene = self.batch_capture_scene_summary(spec.capture, descriptor.capture_kind);
+        let scene = if descriptor.target == QueryTargetKind::Capture {
+            self.batch_capture_scene_summary(spec.capture, descriptor.capture_kind)
+        } else {
+            None
+        };
         let plan = lower_batch_query_plan(
             &BatchQueryPlan::for_contract(spec.contract_id, backend, scene)
                 .expect("kernel batch query plan"),
         );
-        let ordered_args = vec![
-            self.lower_expr(spec.capture)?,
-            self.lower_expr(spec.items)?,
-            self.lower_expr(spec.backend)?,
-        ];
+        let mut ordered_args = vec![self.lower_expr(spec.capture)?];
+        if let Some(domain) = spec.domain {
+            ordered_args.push(self.lower_expr(domain)?);
+        }
+        ordered_args.push(self.lower_expr(spec.items)?);
+        ordered_args.push(self.lower_expr(spec.backend)?);
         Some((plan, ordered_args))
     }
 
@@ -1111,33 +1117,59 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
         let (query, named) = self.parse_query_name_and_args(expr_id)?;
         let capture = *named.get("capture")?;
         let capture_kind = self.capture_kind_for_expr(capture);
+        let target = if named.contains_key("domain") || capture_kind == CaptureKind::Region {
+            QueryTargetKind::World
+        } else {
+            QueryTargetKind::Capture
+        };
+        let surface = QuerySurfaceKind::from_axes(target, QueryCardinality::Batch);
         let (descriptor, _binding) = match query {
             ParsedKernelQueryCall::Legacy { name } => {
                 query_contract::query_contract_bundle_for_legacy_builtin_capture_candidates(
                     name.as_str(),
-                    QuerySurfaceKind::CaptureBatch,
-                    &[capture_kind, CaptureKind::Shape, CaptureKind::Field],
+                    surface,
+                    &[
+                        capture_kind,
+                        CaptureKind::Region,
+                        CaptureKind::Shape,
+                        CaptureKind::Field,
+                    ],
                 )?
             }
             ParsedKernelQueryCall::Family { family, member } => {
                 query_contract::query_contract_bundle_for_family_member_internal(
                     family,
                     member.as_str(),
-                    QuerySurfaceKind::CaptureBatch,
-                    capture_kind,
+                    surface,
+                    if target == QueryTargetKind::World {
+                        CaptureKind::Region
+                    } else {
+                        capture_kind
+                    },
                 )?
             }
         };
         let items_arg = kernel_batch_items_arg_name(descriptor)?;
+        let required_domain = kernel_scalar_domain_arg(descriptor);
         self.require_query_args(
             &named,
-            &[Some("capture"), Some(items_arg), Some("backend")],
-            &[Some("capture"), Some(items_arg), Some("backend")],
+            &[
+                Some("capture"),
+                required_domain,
+                Some(items_arg),
+                Some("backend"),
+            ],
+            &[
+                Some("capture"),
+                required_domain,
+                Some(items_arg),
+                Some("backend"),
+            ],
         )?;
         Some(BatchQueryInvocationSpec {
             contract_id: descriptor.id,
             capture,
-            domain: None,
+            domain: required_domain.and_then(|name| named.get(name).copied()),
             items: *named.get(items_arg)?,
             backend: *named.get("backend")?,
         })
@@ -1504,8 +1536,8 @@ fn kernel_batch_items_arg_name(descriptor: &QueryContractDescriptor) -> Option<&
         crate::query_plan::QueryItemKind::PointQuery => Some("points"),
         crate::query_plan::QueryItemKind::RayQuery => Some("rays"),
         crate::query_plan::QueryItemKind::Hit3 => Some("hits"),
-        crate::query_plan::QueryItemKind::PointDirectionQuery
-        | crate::query_plan::QueryItemKind::Unit => None,
+        crate::query_plan::QueryItemKind::PointDirectionQuery => Some("samples"),
+        crate::query_plan::QueryItemKind::Unit => Some("items"),
     }
 }
 
@@ -1514,5 +1546,7 @@ fn kernel_scalar_domain_arg(descriptor: &QueryContractDescriptor) -> Option<&'st
 }
 
 fn kernel_scalar_backend_arg(descriptor: &QueryContractDescriptor) -> Option<&'static str> {
-    (descriptor.surface == QuerySurfaceKind::WorldScalar).then_some("backend")
+    (descriptor.target == QueryTargetKind::World
+        && descriptor.cardinality == QueryCardinality::Scalar)
+        .then_some("backend")
 }

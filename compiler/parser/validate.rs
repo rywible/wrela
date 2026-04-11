@@ -28,7 +28,10 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
     }
     for node in root.descendants() {
         match node.kind() {
-            SyntaxKind::RegionDecl | SyntaxKind::DomainDecl | SyntaxKind::RenderDecl => {
+            SyntaxKind::RegionDecl
+            | SyntaxKind::DomainDecl
+            | SyntaxKind::RenderDecl
+            | SyntaxKind::ViewDecl => {
                 let (name_message, name_present, has_params) = match node.kind() {
                     SyntaxKind::RegionDecl => {
                         let region = ast::RegionDecl::cast(node.clone());
@@ -44,6 +47,15 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                         (
                             "domain declaration requires a name",
                             domain.as_ref().and_then(|decl| decl.name()).is_some(),
+                            has_token(&node, SyntaxKind::LParen)
+                                && has_token(&node, SyntaxKind::RParen),
+                        )
+                    }
+                    SyntaxKind::ViewDecl => {
+                        let view = ast::ViewDecl::cast(node.clone());
+                        (
+                            "view declaration requires a name",
+                            view.as_ref().and_then(|decl| decl.name()).is_some(),
                             has_token(&node, SyntaxKind::LParen)
                                 && has_token(&node, SyntaxKind::RParen),
                         )
@@ -397,6 +409,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                                 | SyntaxKind::RegionDecl
                                 | SyntaxKind::DomainDecl
                                 | SyntaxKind::RenderDecl
+                                | SyntaxKind::ViewDecl
                                 | SyntaxKind::SystemDef
                         ) {
                             errors.push(ValidationError {
@@ -839,6 +852,9 @@ domain Combat {
 render (world: Capture[StaircaseWorld]) {
     domain = Presentation(world = world, camera = camera)
 }
+view (world: Capture[StaircaseWorld]) {
+    domain = Presentation(world = world, camera = camera)
+}
 ";
         let root = parse(text);
         let errors = validate(&root);
@@ -853,6 +869,12 @@ render (world: Capture[StaircaseWorld]) {
                 .iter()
                 .any(|e| e.message == "render declaration requires a name"),
             "expected render name validation error, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message == "view declaration requires a name"),
+            "expected view name validation error, got: {errors:?}"
         );
         assert!(
             errors

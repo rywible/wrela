@@ -59,6 +59,7 @@ pub enum FunctionRole {
     Region,
     Domain,
     Render,
+    View,
     Radiance,
     Volume,
     Shape,
@@ -159,14 +160,66 @@ pub struct DomainMetadata {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderMetadata {
-    pub domain: Option<Body>,
-    pub light: Option<Body>,
-    pub lights: Option<Body>,
+    pub view: RenderViewMetadata,
+    pub frame: RenderFrameMetadata,
+    pub lighting: RenderLightingMetadata,
+    pub compatibility: RenderCompatibilityProjectionMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderViewMetadata {
+    pub projection: RenderProjectionMetadata,
     pub width: Option<Body>,
     pub height: Option<Body>,
-    pub world_up: Option<Body>,
-    pub view_scale: Option<Body>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderProjectionMetadata {
+    pub source: RenderProjectionSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderProjectionSource {
+    CameraVerticalFovDegrees,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderFrameMetadata {
+    pub domain: Option<Body>,
+    pub export: RenderFrameExportMetadata,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderFrameExportMetadata {
+    pub kind: RenderFrameExportKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderFrameExportKind {
+    LegacyPpmString,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderLightingMetadata {
+    pub light: Option<Body>,
+    pub lights: Option<Body>,
     pub fill_dir: Option<Body>,
+    pub fill_strength: Option<Body>,
+    pub ambient_color: Option<Body>,
+    pub light_compatibility_alias: bool,
+    pub fill_dir_compatibility_alias: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderCompatibilityProjectionMetadata {
+    /// Compatibility-only projection override retained for current preview
+    /// stability. Canonical projection is represented by
+    /// `RenderProjectionSource::CameraVerticalFovDegrees`.
+    pub world_up: Option<Body>,
+    /// Compatibility-only projection scale retained for current preview
+    /// stability. New presentation contracts should treat the camera FOV as
+    /// canonical and report this as a legacy projection input.
+    pub view_scale: Option<Body>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -530,7 +583,8 @@ impl Function {
             | FunctionRole::System
             | FunctionRole::Region
             | FunctionRole::Domain
-            | FunctionRole::Render => FunctionLane::Host,
+            | FunctionRole::Render
+            | FunctionRole::View => FunctionLane::Host,
             FunctionRole::Pure
             | FunctionRole::Kernel
             | FunctionRole::Field

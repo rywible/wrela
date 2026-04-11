@@ -25,6 +25,7 @@ use wrela::query_plan::{
     ArtifactSchema, BatchQueryKind, BatchQueryPlan, CaptureKind, CaptureQueryKind,
     CaptureQueryPlan, DispatchBackend, WorldQueryKind, WorldQueryPlan,
 };
+use wrela::query_solver::RaySolverMethod;
 
 fn lower_inline_module_from_source(source: &str) -> hir::Module {
     let node = parse(source);
@@ -1455,6 +1456,15 @@ fn query_exec_traces_report_observability_counters() {
     assert!(vgpu_world_trace.observability.candidate_count > 0);
     assert!(vgpu_world_trace.observability.trace_steps > 0);
     assert!(vgpu_world_trace.observability.artifact_loads > 0);
+    assert!(vgpu_world_trace.observability.solver_plan_id.is_some());
+    assert!(vgpu_world_trace.observability.solver_dense_fallback_rays > 0);
+    assert!(
+        vgpu_world_trace
+            .cost_report
+            .dominant_stages
+            .iter()
+            .any(|stage| stage.stage == SemanticStageKind::RaySolver)
+    );
     assert_eq!(
         vgpu_world_trace.cost_report.unit,
         SemanticCostUnit::WorldShapes
@@ -1483,6 +1493,17 @@ fn query_exec_traces_report_observability_counters() {
     assert!(wgsl_world_trace.observability.candidate_count > 0);
     assert!(wgsl_world_trace.observability.trace_steps > 0);
     assert!(wgsl_world_trace.observability.artifact_loads > 0);
+    assert!(wgsl_world_trace.observability.solver_plan_id.is_some());
+    assert_eq!(
+        wgsl_world_trace
+            .observability
+            .solver_generated_dense_fallback_rays,
+        1
+    );
+    assert!(
+        render_semantic_cost_report(&wgsl_world_trace.cost_report)
+            .contains("solver_generated_dense_fallback_rays=1")
+    );
     assert_eq!(
         wgsl_world_trace.cost_report.fidelity,
         CostFidelity::StructuralApproximation
@@ -1649,6 +1670,128 @@ fn query_exec_semantic_cost_reports_explain_support_domain_and_identity_causes()
             .iter()
             .any(|cause| { cause.kind == SemanticCostCauseKind::IdentityLocality })
     );
+}
+
+#[test]
+fn query_exec_ray_solver_support_rejects_far_world_candidates() {
+    let (_, _, ctx) = typed_query_module(world_ray_solver_support_fixture_source());
+    let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("scene_region"));
+    let domain = scene_domain(region_scene_id, 1, true, false, false);
+    let plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(
+        WorldQueryKind::Trace,
+        DispatchBackend::VirtualGpu,
+    ));
+    let (_hit, trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &plan,
+        &[
+            KernelValue::Capture(SmolStr::new("scene_region")),
+            domain,
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
+        ],
+    )
+    .expect("support-pruned solver trace");
+
+    assert_eq!(trace.observability.candidate_count, 1);
+    assert_eq!(trace.observability.support_pruned_candidates, 1);
+    assert_eq!(trace.observability.solver_support_rejections, 1);
+    assert_eq!(trace.observability.solver_dense_fallback_rays, 1);
+    assert_eq!(trace.observability.solver_generated_dense_fallback_rays, 0);
+    assert!(trace.observability.solver_plan_id.is_some());
+    assert!(
+        trace
+            .observability
+            .solver_methods
+            .contains(&RaySolverMethod::SupportBoundCandidateRejection)
+    );
+    let rendered = render_semantic_cost_report(&trace.cost_report);
+    assert!(rendered.contains("ray-solver"));
+    assert!(rendered.contains("solver_support_rejections=1"));
+    assert!(rendered.contains("solver_dense_fallback_rays=1"));
+}
+
+#[test]
+fn query_exec_ray_solver_reports_specific_dense_fallback_reasons() {
+    let (_, _, ctx) = typed_query_module(ray_solver_opaque_fixture_source());
+    let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("scene_region"));
+    let domain = scene_domain(region_scene_id, 1, true, false, false);
+    let plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Nearest));
+    let (_hit, trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &plan,
+        &[
+            KernelValue::Capture(SmolStr::new("scene_region")),
+            domain,
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
+        ],
+    )
+    .expect("opaque solver trace");
+
+    assert_eq!(trace.observability.solver_dense_fallback_rays, 1);
+    assert_eq!(trace.observability.solver_fallback_contract_dense, 1);
+    assert_eq!(trace.observability.solver_fallback_missing_facts, 1);
+    assert_eq!(trace.observability.solver_fallback_analytic_unsupported, 1);
+    assert_eq!(trace.observability.solver_analytic_hits, 0);
+    let rendered = render_semantic_cost_report(&trace.cost_report);
+    assert!(rendered.contains("solver_fallback_missing_facts=1"));
+    assert!(rendered.contains("solver_fallback_analytic_unsupported=1"));
+}
+
+#[test]
+fn query_exec_ray_solver_cpu_oracle_covers_analytic_dense_miss_and_provenance() {
+    let (_, _, ctx) = typed_query_module(query_fixture_source());
+    let shape_capture = KernelValue::Capture(SmolStr::new("scene_shape"));
+    let region_capture = KernelValue::Capture(SmolStr::new("scene_region"));
+    let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("scene_region"));
+    let domain = scene_domain(region_scene_id, 1, true, true, true);
+
+    let capture_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None)
+            .expect("capture trace plan"),
+    );
+    let world_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Nearest));
+    let hit_ray = ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96);
+    let dense_oracle = execute_capture_query(
+        &ctx,
+        &capture_plan,
+        &[shape_capture.clone(), hit_ray.clone()],
+    )
+    .expect("dense capture oracle");
+    let (solver_hit, solver_trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &world_plan,
+        &[region_capture.clone(), domain.clone(), hit_ray],
+    )
+    .expect("solver world hit");
+    assert_hit3_approx_eq(&dense_oracle, &solver_hit);
+    assert_eq!(solver_trace.observability.solver_analytic_hits, 1);
+    assert_eq!(solver_trace.observability.solver_dense_fallback_rays, 0);
+    let hit_ref = expect_struct(&solver_hit, "Hit3");
+    assert_eq!(expect_u32(field(hit_ref, "feature_id")), 1);
+    assert_eq!(
+        expect_u32(field(hit_ref, "root_shape_id")),
+        stable_shape_capture_id(&SmolStr::new("scene_shape"))
+    );
+    assert_eq!(
+        field(hit_ref, "payload"),
+        field(expect_struct(&dense_oracle, "Hit3"), "payload")
+    );
+
+    let miss_ray = ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 1.0, 0.0], 6.0, 0.05, 0.001, 96);
+    let (miss, miss_trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &world_plan,
+        &[region_capture, domain, miss_ray],
+    )
+    .expect("solver world miss");
+    assert!(!expect_bool(field(expect_struct(&miss, "Hit3"), "hit")));
+    assert_eq!(miss_trace.observability.solver_analytic_hits, 0);
+    assert!(miss_trace.observability.solver_dense_fallback_rays > 0);
+    assert!(render_semantic_cost_report(&miss_trace.cost_report).contains("ray-solver-fallback"));
 }
 
 #[test]
@@ -2034,7 +2177,15 @@ fn query_exec_scalar_occlusion_matches_cpu_virtual_gpu_and_wgsl_for_capture_and_
         assert_direct_trace_contract(&wgsl_trace, query_contract::SPATIAL_OCCLUDED_CAPTURE_SHAPE);
         assert!(cpu_trace.observability.trace_steps > 0);
         assert!(vgpu_trace.observability.trace_steps > 0);
-        assert!(wgsl_trace.observability.trace_steps > 0);
+        if expected_occluded {
+            assert!(wgsl_trace.observability.trace_steps > 0);
+        } else {
+            assert_eq!(wgsl_trace.observability.trace_steps, 0);
+            assert_eq!(
+                wgsl_trace.cost_report.fidelity,
+                CostFidelity::StructuralApproximation
+            );
+        }
     }
 
     let world_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Occluded));
@@ -2073,7 +2224,15 @@ fn query_exec_scalar_occlusion_matches_cpu_virtual_gpu_and_wgsl_for_capture_and_
         assert_direct_trace_contract(&wgsl_trace, query_contract::SPATIAL_OCCLUDED_WORLD);
         assert!(cpu_trace.observability.trace_steps > 0);
         assert!(vgpu_trace.observability.trace_steps > 0);
-        assert!(wgsl_trace.observability.trace_steps > 0);
+        if expected_occluded {
+            assert!(wgsl_trace.observability.trace_steps > 0);
+        } else {
+            assert_eq!(wgsl_trace.observability.trace_steps, 0);
+            assert_eq!(
+                wgsl_trace.cost_report.fidelity,
+                CostFidelity::StructuralApproximation
+            );
+        }
     }
 }
 
@@ -2455,6 +2614,14 @@ fn query_exec_wgsl_batch_queries_match_cpu_results() {
     let (_, _, ctx) = typed_query_module(query_fixture_source());
     let shape_capture = KernelValue::Capture(SmolStr::new("scene_shape"));
     let field_capture = KernelValue::Capture(SmolStr::new("sphere_field"));
+    let region_capture = KernelValue::Capture(SmolStr::new("scene_region"));
+    let fine_domain = scene_domain(
+        stable_region_scene_capture_id(&SmolStr::new("scene_region")),
+        1,
+        true,
+        true,
+        true,
+    );
     let point_items = KernelValue::Array(vec![
         point_query([0.0, 0.0, 2.0]),
         point_query([0.0, 0.0, 3.0]),
@@ -2759,6 +2926,303 @@ fn query_exec_wgsl_batch_queries_match_cpu_results() {
         &wgsl_occluded_trace,
         query_contract::SPATIAL_OCCLUDED_BATCH_SHAPE,
     );
+
+    let world_nearest_cpu = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_NEAREST_BATCH_WORLD,
+            DispatchBackend::Cpu,
+            None,
+        )
+        .unwrap(),
+    );
+    let world_nearest_wgsl = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_NEAREST_BATCH_WORLD,
+            DispatchBackend::Wgsl,
+            None,
+        )
+        .unwrap(),
+    );
+    let world_ray_items = KernelValue::Array(vec![
+        ray_query([0.0, 0.0, 3.0], [0.0, 0.0, -1.0]),
+        ray_query([0.0, 0.0, 3.0], [0.0, 1.0, 0.0]),
+    ]);
+    let (cpu_world_hits, _) = execute_batch_query_with_trace(
+        &ctx,
+        &world_nearest_cpu,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            world_ray_items.clone(),
+        ],
+    )
+    .expect("cpu world nearest batch");
+    let (wgsl_world_hits, wgsl_world_nearest_trace) = execute_batch_query_with_trace(
+        &ctx,
+        &world_nearest_wgsl,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            world_ray_items.clone(),
+        ],
+    )
+    .expect("wgsl world nearest batch");
+    for (cpu, wgsl) in expect_array(&cpu_world_hits)
+        .iter()
+        .zip(expect_array(&wgsl_world_hits))
+    {
+        assert_hit3_approx_eq(cpu, wgsl);
+    }
+    assert_batch_trace_contract(
+        &wgsl_world_nearest_trace,
+        query_contract::SPATIAL_NEAREST_BATCH_WORLD,
+    );
+    assert_eq!(
+        wgsl_world_nearest_trace
+            .observability
+            .world_batch_item_count,
+        2
+    );
+    assert_eq!(
+        wgsl_world_nearest_trace.observability.screen_sample_count,
+        2
+    );
+    assert_eq!(wgsl_world_nearest_trace.observability.dispatch_items, 2);
+    assert!(
+        wgsl_world_nearest_trace
+            .observability
+            .candidates_before_pruning
+            >= 2
+    );
+    assert!(
+        wgsl_world_nearest_trace
+            .observability
+            .candidates_after_pruning
+            >= 2
+    );
+    assert!(wgsl_world_nearest_trace.observability.trace_steps_max > 0);
+    assert_eq!(
+        wgsl_world_nearest_trace.observability.hit_count
+            + wgsl_world_nearest_trace.observability.miss_count,
+        2
+    );
+    assert_eq!(
+        wgsl_world_nearest_trace
+            .observability
+            .semantic_pruned_batches,
+        1
+    );
+    assert_eq!(
+        wgsl_world_nearest_trace
+            .observability
+            .solver_generated_dense_fallback_rays,
+        2
+    );
+    let rendered_cost = render_semantic_cost_report(&wgsl_world_nearest_trace.cost_report);
+    assert!(rendered_cost.contains("world_batch_items=2"));
+    assert!(rendered_cost.contains("dispatch_items=2"));
+    assert!(rendered_cost.contains("trace_steps_avg="));
+    assert!(rendered_cost.contains("semantic_pruned_batches=1"));
+    assert!(rendered_cost.contains("solver_generated_dense_fallback_rays=2"));
+
+    let world_occluded_cpu = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_OCCLUDED_BATCH_WORLD,
+            DispatchBackend::Cpu,
+            None,
+        )
+        .unwrap(),
+    );
+    let world_occluded_wgsl = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_OCCLUDED_BATCH_WORLD,
+            DispatchBackend::Wgsl,
+            None,
+        )
+        .unwrap(),
+    );
+    let (cpu_world_occlusions, _) = execute_batch_query_with_trace(
+        &ctx,
+        &world_occluded_cpu,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            world_ray_items.clone(),
+        ],
+    )
+    .expect("cpu world occluded batch");
+    let (wgsl_world_occlusions, wgsl_world_occluded_trace) = execute_batch_query_with_trace(
+        &ctx,
+        &world_occluded_wgsl,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            world_ray_items.clone(),
+        ],
+    )
+    .expect("wgsl world occluded batch");
+    for (cpu, wgsl) in expect_array(&cpu_world_occlusions)
+        .iter()
+        .zip(expect_array(&wgsl_world_occlusions))
+    {
+        let cpu = expect_struct(cpu, "OcclusionResult");
+        let wgsl = expect_struct(wgsl, "OcclusionResult");
+        assert_eq!(
+            expect_bool(field(cpu, "occluded")),
+            expect_bool(field(wgsl, "occluded"))
+        );
+        assert_approx_eq(
+            expect_f32(field(cpu, "distance")),
+            expect_f32(field(wgsl, "distance")),
+        );
+    }
+    assert_batch_trace_contract(
+        &wgsl_world_occluded_trace,
+        query_contract::SPATIAL_OCCLUDED_BATCH_WORLD,
+    );
+    assert_eq!(
+        wgsl_world_occluded_trace
+            .observability
+            .solver_generated_dense_fallback_rays,
+        2
+    );
+
+    let world_surface_cpu = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SURFACE_SAMPLE_BATCH_WORLD,
+            DispatchBackend::Cpu,
+            None,
+        )
+        .unwrap(),
+    );
+    let world_surface_wgsl = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SURFACE_SAMPLE_BATCH_WORLD,
+            DispatchBackend::Wgsl,
+            None,
+        )
+        .unwrap(),
+    );
+    let (cpu_world_surfaces, _) = execute_batch_query_with_trace(
+        &ctx,
+        &world_surface_cpu,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            cpu_world_hits.clone(),
+        ],
+    )
+    .expect("cpu world surface batch");
+    let (wgsl_world_surfaces, wgsl_world_surface_trace) = execute_batch_query_with_trace(
+        &ctx,
+        &world_surface_wgsl,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            wgsl_world_hits.clone(),
+        ],
+    )
+    .expect("wgsl world surface batch");
+    for (cpu, wgsl) in expect_array(&cpu_world_surfaces)
+        .iter()
+        .zip(expect_array(&wgsl_world_surfaces))
+    {
+        assert_surface_approx_eq(cpu, wgsl);
+    }
+    assert_batch_trace_contract(
+        &wgsl_world_surface_trace,
+        query_contract::SURFACE_SAMPLE_BATCH_WORLD,
+    );
+
+    let sample_items = KernelValue::Array(vec![
+        point_direction_query([0.0, 0.0, 1.0], [0.0, 0.0, -1.0]),
+        point_direction_query([0.0, 0.0, 2.0], [0.0, 0.0, -1.0]),
+    ]);
+    let world_radiance_cpu = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::PARTICIPANTS_RADIANCE_BATCH_WORLD,
+            DispatchBackend::Cpu,
+            None,
+        )
+        .unwrap(),
+    );
+    let world_radiance_wgsl = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::PARTICIPANTS_RADIANCE_BATCH_WORLD,
+            DispatchBackend::Wgsl,
+            None,
+        )
+        .unwrap(),
+    );
+    let (cpu_world_radiance, _) = execute_batch_query_with_trace(
+        &ctx,
+        &world_radiance_cpu,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            sample_items.clone(),
+        ],
+    )
+    .expect("cpu world radiance batch");
+    let (wgsl_world_radiance, wgsl_world_radiance_trace) = execute_batch_query_with_trace(
+        &ctx,
+        &world_radiance_wgsl,
+        &[region_capture.clone(), fine_domain.clone(), sample_items],
+    )
+    .expect("wgsl world radiance batch");
+    for (cpu, wgsl) in expect_array(&cpu_world_radiance)
+        .iter()
+        .zip(expect_array(&wgsl_world_radiance))
+    {
+        assert_vec3_approx_eq(expect_vec3(cpu), expect_vec3(wgsl));
+    }
+    assert_batch_trace_contract(
+        &wgsl_world_radiance_trace,
+        query_contract::PARTICIPANTS_RADIANCE_BATCH_WORLD,
+    );
+
+    let world_medium_cpu = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::PARTICIPANTS_MEDIUM_BATCH_WORLD,
+            DispatchBackend::Cpu,
+            None,
+        )
+        .unwrap(),
+    );
+    let world_medium_wgsl = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::PARTICIPANTS_MEDIUM_BATCH_WORLD,
+            DispatchBackend::Wgsl,
+            None,
+        )
+        .unwrap(),
+    );
+    let (cpu_world_medium, _) = execute_batch_query_with_trace(
+        &ctx,
+        &world_medium_cpu,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            point_items.clone(),
+        ],
+    )
+    .expect("cpu world medium batch");
+    let (wgsl_world_medium, wgsl_world_medium_trace) = execute_batch_query_with_trace(
+        &ctx,
+        &world_medium_wgsl,
+        &[region_capture, fine_domain, point_items],
+    )
+    .expect("wgsl world medium batch");
+    for (cpu, wgsl) in expect_array(&cpu_world_medium)
+        .iter()
+        .zip(expect_array(&wgsl_world_medium))
+    {
+        assert_medium_approx_eq(cpu, wgsl);
+    }
+    assert_batch_trace_contract(
+        &wgsl_world_medium_trace,
+        query_contract::PARTICIPANTS_MEDIUM_BATCH_WORLD,
+    );
 }
 
 #[test]
@@ -2886,13 +3350,66 @@ fn query_exec_wgsl_matches_virtual_gpu_for_world_and_batch_queries() {
         DispatchBackend::Wgsl,
         &world_medium_plan,
         &[
-            region_capture,
-            fine_domain,
+            region_capture.clone(),
+            fine_domain.clone(),
             KernelValue::Vec3([0.0, 0.1, 0.75]),
         ],
     )
     .expect("wgsl world medium");
     assert_medium_approx_eq(&vgpu_world_medium, &wgsl_world_medium);
+
+    let world_batch_plan = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_NEAREST_BATCH_WORLD,
+            DispatchBackend::Wgsl,
+            None,
+        )
+        .unwrap(),
+    );
+    let (vgpu_world_hits, vgpu_world_batch_trace) = execute_batch_query_with_trace_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &world_batch_plan,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            ray_items.clone(),
+        ],
+    )
+    .expect("vgpu world nearest batch");
+    let (wgsl_world_hits, wgsl_world_batch_trace) = execute_batch_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &world_batch_plan,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            ray_items.clone(),
+        ],
+    )
+    .expect("wgsl world nearest batch");
+    for (vgpu, wgsl) in expect_array(&vgpu_world_hits)
+        .iter()
+        .zip(expect_array(&wgsl_world_hits))
+    {
+        assert_hit3_approx_eq(vgpu, wgsl);
+    }
+    assert_batch_trace_contract(
+        &vgpu_world_batch_trace,
+        query_contract::SPATIAL_NEAREST_BATCH_WORLD,
+    );
+    assert_batch_trace_contract(
+        &wgsl_world_batch_trace,
+        query_contract::SPATIAL_NEAREST_BATCH_WORLD,
+    );
+    assert_eq!(
+        vgpu_world_batch_trace.observability.world_batch_item_count,
+        2
+    );
+    assert_eq!(
+        wgsl_world_batch_trace.observability.world_batch_item_count,
+        2
+    );
 
     let shape_distance_plan = lower_batch_query_plan(&BatchQueryPlan::for_field_query(
         BatchQueryKind::Distance,
@@ -3421,6 +3938,109 @@ shape far_shape {
 region scene_region() {
     place near = near_shape
     place far = far_shape
+}
+
+domain scene_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = false
+    media = false
+    max_distance = 6.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+"#
+}
+
+fn world_ray_solver_support_fixture_source() -> &'static str {
+    r#"
+field exact distance near_field(p: Vec3) -> F32 {
+    sphere(radius = 0.6)
+}
+
+field exact distance far_supported_field(p: Vec3) -> F32 {
+    translate = vec3(9.5, 0.0, 0.0) {
+        sphere(radius = 0.5)
+    }
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.25, 0.35, 0.45),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape near_shape {
+    field = near_field
+    material = shade
+    payload = Payload(entity_id=u32(1), material_id=u32(1), actor=ActorHandle(id=u32(1), generation=u32(0)))
+}
+
+shape far_shape {
+    field = far_supported_field
+    material = shade
+    payload = Payload(entity_id=u32(2), material_id=u32(2), actor=ActorHandle(id=u32(2), generation=u32(0)))
+}
+
+region scene_region() {
+    place near = near_shape
+    place far = far_shape
+}
+
+domain scene_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = false
+    media = false
+    max_distance = 6.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+"#
+}
+
+fn ray_solver_opaque_fixture_source() -> &'static str {
+    r#"
+field conservative distance opaque_field(p: Vec3) -> F32 {
+    support = Support3(bounds=Bounds3(
+        min=vec3(-0.6, -0.6, -0.6),
+        max=vec3(0.6, 0.6, 0.6)
+    ))
+    bounds = Bounds3(
+        min=vec3(-0.6, -0.6, -0.6),
+        max=vec3(0.6, 0.6, 0.6)
+    )
+    return length(p) - 0.6
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.25, 0.35, 0.45),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape opaque_shape {
+    field = opaque_field
+    material = shade
+    payload = Payload(entity_id=u32(7), material_id=u32(8), actor=ActorHandle(id=u32(9), generation=u32(0)))
+}
+
+region scene_region() {
+    place opaque = opaque_shape
 }
 
 domain scene_domain(world: RegionCapture) {

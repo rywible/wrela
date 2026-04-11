@@ -107,6 +107,10 @@ fn parse_root_statement(p: &mut Parser) {
         func::render_decl(p);
         return;
     }
+    if p.at_ident_text("view") {
+        func::view_decl(p);
+        return;
+    }
     if p.at_ident_text("radiance") {
         func::radiance_decl(p);
         return;

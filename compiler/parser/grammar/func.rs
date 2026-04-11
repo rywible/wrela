@@ -61,6 +61,12 @@ pub fn render_decl(p: &mut Parser) {
     m.complete(p, SyntaxKind::RenderDecl);
 }
 
+pub fn view_decl(p: &mut Parser) {
+    let m = p.start();
+    parse_view_signature_and_block(p);
+    m.complete(p, SyntaxKind::ViewDecl);
+}
+
 pub fn radiance_decl(p: &mut Parser) {
     let m = p.start();
     parse_radiance_signature_and_block(p);
@@ -314,6 +320,17 @@ fn parse_render_signature_and_block(p: &mut Parser) {
     p.expect_with_message(SyntaxKind::RParen, "expected ')' after render parameters");
 
     expect_block_intro(p, "expected '{' after render signature");
+    parse_block(p);
+}
+
+fn parse_view_signature_and_block(p: &mut Parser) {
+    expect_ident_text(p, "view", "expected 'view' to start a view declaration");
+    p.expect_with_message(SyntaxKind::Ident, "expected view name after 'view'");
+    p.expect_with_message(SyntaxKind::LParen, "expected '(' after view name");
+    parse_param_list(p);
+    p.expect_with_message(SyntaxKind::RParen, "expected ')' after view parameters");
+
+    expect_block_intro(p, "expected '{' after view signature");
     parse_block(p);
 }
 

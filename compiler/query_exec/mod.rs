@@ -1,5 +1,5 @@
 mod capture;
-mod cost;
+pub(crate) mod cost;
 mod native_bridge;
 
 pub mod context;
@@ -19,6 +19,8 @@ use crate::query_contract::{
     self, QueryContractId, QueryFamilyId, QueryQuestionId, QuerySurfaceKind,
 };
 use crate::query_plan::DispatchBackend;
+use crate::query_solver::RaySolverMethod;
+use smol_str::SmolStr;
 
 pub use context::QueryExecContext;
 pub use cost::{
@@ -64,13 +66,47 @@ pub struct DirectQueryExecutionTrace {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueryExecutionObservability {
+    pub solver_plan_id: Option<SmolStr>,
+    pub solver_methods: Vec<RaySolverMethod>,
     pub dispatch_count: u32,
+    pub dispatch_items: u32,
+    pub dispatch_workgroups_x: u32,
+    pub dispatch_workgroups_y: u32,
+    pub dispatch_workgroups_z: u32,
+    pub screen_sample_count: u32,
+    pub world_batch_item_count: u32,
     pub candidate_count: u32,
+    pub candidates_before_pruning: u32,
+    pub candidates_after_pruning: u32,
     pub branch_visits: u32,
     pub support_pruned_candidates: u32,
     pub artifact_loads: u32,
     pub opaque_fallbacks: u32,
     pub trace_steps: u32,
+    pub trace_steps_max: u32,
+    pub hit_count: u32,
+    pub miss_count: u32,
+    pub dense_compatibility_batches: u32,
+    pub semantic_pruned_batches: u32,
+    pub solver_analytic_hits: u32,
+    pub solver_support_rejections: u32,
+    pub solver_interval_skips: u32,
+    pub solver_packet_tile_rejections: u32,
+    pub solver_newton_refinements: u32,
+    pub solver_lipschitz_steps: u32,
+    pub solver_adaptive_epsilon_uses: u32,
+    pub solver_dense_fallback_rays: u32,
+    pub solver_generated_dense_fallback_rays: u32,
+    pub solver_fallback_contract_dense: u32,
+    pub solver_fallback_missing_facts: u32,
+    pub solver_fallback_analytic_unsupported: u32,
+    pub solver_fallback_verification_failed: u32,
+    pub solver_fallback_unsupported_backend: u32,
+    pub solver_certificate_failures: u32,
+    pub solver_continuation_available: u32,
+    pub solver_continuation_consumed: u32,
+    pub solver_continuation_rejected: u32,
+    pub solver_continuation_unavailable: u32,
     pub field_samples: u32,
     pub contract_validation_failures: u32,
 }
@@ -243,7 +279,7 @@ pub fn execute_batch_query_with_trace_on(
     args: &[KernelValue],
 ) -> Result<(KernelValue, BatchQueryExecutionTrace), QueryExecError> {
     let identity = trace_identity(plan.contract_id)?;
-    let item_count = batch_query_item_count(args)?;
+    let item_count = batch_query_item_count(plan, args)?;
     let plan_trace = interpret_batch_query(plan, item_count);
     let backend = resolve_batch_backend(requested_backend, plan);
     ensure_backend_supported(identity, backend)?;
@@ -356,8 +392,16 @@ fn resolve_batch_backend(
     }
 }
 
-fn batch_query_item_count(args: &[KernelValue]) -> Result<u32, QueryExecError> {
-    match args.get(1) {
+fn batch_query_item_count(
+    plan: &KernelBatchQueryPlan,
+    args: &[KernelValue],
+) -> Result<u32, QueryExecError> {
+    let item_index = if matches!(plan.capture_kind, crate::query_plan::CaptureKind::Region) {
+        2
+    } else {
+        1
+    };
+    match args.get(item_index) {
         Some(KernelValue::Array(items)) => Ok(items.len() as u32),
         Some(other) => Err(QueryExecError::TypeMismatch {
             expected: "Array".to_string(),

@@ -1,6 +1,6 @@
 use crate::kernel::{KernelStructValue, KernelValue};
 use crate::portable::{PortableBuiltinAtom, PortableBuiltinType, builtin_record};
-use crate::query_contract::{self, QueryContractId};
+use crate::query_contract::{self, QueryContractId, QueryItemKind, QuerySurfaceKind};
 use crate::query_exec::cpu::{QueryExecError, kernel_to_runtime, runtime_to_kernel_value};
 use crate::query_exec::wgsl::codegen::{
     wgsl_dispatch_config_abi, wgsl_item_abi_for_descriptor, wgsl_result_abi_for_descriptor,
@@ -220,6 +220,31 @@ pub extern "C" fn wr_wgsl_shape_occluded_batch_queries(
     ))
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn wr_wgsl_world_batch_queries(
+    source: RuntimeValue,
+    workgroup_size: RuntimeValue,
+    contract_id: RuntimeValue,
+    world_shape_indices: RuntimeValue,
+    material_enabled: RuntimeValue,
+    radiance_enabled: RuntimeValue,
+    media_enabled: RuntimeValue,
+    items: RuntimeValue,
+) -> RuntimeValue {
+    bridge_result((|| {
+        let contract_id = runtime_string(contract_id)?;
+        world_batch_query(
+            &cached_world_batch_module(source, workgroup_size, &contract_id),
+            &contract_id,
+            world_shape_indices,
+            material_enabled,
+            radiance_enabled,
+            media_enabled,
+            items,
+        )
+    })())
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum WorldBridgeKind {
     Distance,
@@ -293,12 +318,54 @@ fn cached_batch_module(
     entry.clone()
 }
 
+fn cached_world_batch_module(
+    source: RuntimeValue,
+    workgroup_size: RuntimeValue,
+    contract_id: &str,
+) -> Result<GeneratedShaderModule, QueryExecError> {
+    static MODULES: OnceLock<
+        Mutex<HashMap<(String, String, u32), Result<GeneratedShaderModule, QueryExecError>>>,
+    > = OnceLock::new();
+    let cache = MODULES.get_or_init(|| Mutex::new(HashMap::new()));
+    let source = runtime_string(source)?;
+    let workgroup_size = runtime_workgroup_size(workgroup_size)?;
+    let key = (contract_id.to_string(), source.clone(), workgroup_size);
+    let mut guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
+    let entry = guard
+        .entry(key)
+        .or_insert_with(|| world_batch_module_from_parts(source, workgroup_size, contract_id));
+    entry.clone()
+}
+
 fn world_module_from_parts(
     source: String,
     workgroup_size: u32,
     kind: WorldBridgeKind,
 ) -> Result<GeneratedShaderModule, QueryExecError> {
     let descriptor = descriptor_for_contract(kind.contract_id())?;
+    Ok(GeneratedShaderModule {
+        source,
+        workgroup_size,
+        dispatch_abi: wgsl_dispatch_config_abi(),
+        item_abi: wgsl_item_abi_for_descriptor(descriptor)?,
+        result_abi: wgsl_result_abi_for_descriptor(descriptor)?,
+    })
+}
+
+fn world_batch_module_from_parts(
+    source: String,
+    workgroup_size: u32,
+    contract_id: &str,
+) -> Result<GeneratedShaderModule, QueryExecError> {
+    let descriptor = descriptor_for_contract_name(contract_id)?;
+    if descriptor.surface != QuerySurfaceKind::WorldBatch {
+        return Err(QueryExecError::Unsupported {
+            message: format!(
+                "native WGSL world batch bridge requires a world-batch contract, got '{}'",
+                descriptor.id.as_str()
+            ),
+        });
+    }
     Ok(GeneratedShaderModule {
         source,
         workgroup_size,
@@ -323,6 +390,17 @@ fn batch_module_from_parts(
     })
 }
 
+fn descriptor_for_contract_name(
+    contract_id: &str,
+) -> Result<&'static query_contract::QueryContractDescriptor, QueryExecError> {
+    query_contract::query_contracts()
+        .iter()
+        .find(|descriptor| descriptor.id.as_str() == contract_id)
+        .ok_or_else(|| QueryExecError::Unsupported {
+            message: format!("missing WGSL bridge query contract '{contract_id}'"),
+        })
+}
+
 fn descriptor_for_contract(
     contract_id: QueryContractId,
 ) -> Result<&'static query_contract::QueryContractDescriptor, QueryExecError> {
@@ -332,6 +410,46 @@ fn descriptor_for_contract(
             contract_id.as_str()
         ),
     })
+}
+
+fn world_batch_query(
+    module: &Result<GeneratedShaderModule, QueryExecError>,
+    contract_id: &str,
+    world_shape_indices: RuntimeValue,
+    material_enabled: RuntimeValue,
+    radiance_enabled: RuntimeValue,
+    media_enabled: RuntimeValue,
+    items: RuntimeValue,
+) -> BridgeResult {
+    let module = module.clone()?;
+    let descriptor = descriptor_for_contract_name(contract_id)?;
+    if descriptor.surface != QuerySurfaceKind::WorldBatch {
+        return Err(QueryExecError::Unsupported {
+            message: format!(
+                "native WGSL world batch bridge requires a world-batch contract, got '{}'",
+                descriptor.id.as_str()
+            ),
+        });
+    }
+    let shape_indices = runtime_u32_list(world_shape_indices)?;
+    let items = runtime_items_for_query_item(descriptor.item_kind, items)?;
+    let values = dispatch_compiled_shader(
+        &module,
+        GpuDispatchRequest {
+            dispatch: dispatch_config(
+                2,
+                0,
+                items.len() as u32,
+                shape_indices.len() as u32,
+                runtime_bool(material_enabled, "material_enabled")?,
+                runtime_bool(radiance_enabled, "radiance_enabled")?,
+                runtime_bool(media_enabled, "media_enabled")?,
+            ),
+            items,
+            world_shape_indices: shape_indices,
+        },
+    )?;
+    kernel_array_to_runtime(&values)
 }
 
 fn world_query(
@@ -365,6 +483,26 @@ fn world_query(
         message: "native WGSL bridge produced no world result".to_string(),
     })?;
     kernel_to_runtime(&result)
+}
+
+fn runtime_items_for_query_item(
+    item_kind: QueryItemKind,
+    value: RuntimeValue,
+) -> Result<Vec<KernelValue>, QueryExecError> {
+    let len = runtime_list_len(value)?;
+    let mut items = Vec::with_capacity(len);
+    for index in 0..len {
+        let item = wr_list_get(value, index);
+        let record_name = match item_kind {
+            QueryItemKind::Unit => "UnitQuery",
+            QueryItemKind::PointQuery => "PointQuery",
+            QueryItemKind::PointDirectionQuery => "PointDirectionQuery",
+            QueryItemKind::RayQuery => "RayQuery",
+            QueryItemKind::Hit3 => "Hit3",
+        };
+        items.push(runtime_to_builtin_record_value(item, record_name)?);
+    }
+    Ok(items)
 }
 
 fn batch_query(
@@ -825,6 +963,92 @@ mod tests {
         .expect("direct world trace");
 
         assert_eq!(bridge_hit, direct_hit);
+    }
+
+    #[test]
+    fn generic_world_batch_bridge_matches_direct_wgsl_for_nearest_screen_rays() {
+        let ctx = preview_context();
+        let plan = lower_batch_query_plan(&BatchQueryPlan::for_world_query(
+            BatchQueryKind::Nearest,
+            DispatchBackend::Wgsl,
+        ));
+        let shader = crate::query_exec::wgsl::compile_batch_shader(&ctx, &plan)
+            .expect("compile preview world nearest batch shader");
+
+        let shape_lookup = ctx
+            .scene
+            .shapes
+            .keys()
+            .enumerate()
+            .map(|(index, name)| (name.clone(), index as u32))
+            .collect::<std::collections::HashMap<_, _>>();
+        let shape_indices = ctx
+            .region_cases
+            .iter()
+            .find(|case| case.region_name.as_str() == "scene_region")
+            .expect("scene region case")
+            .shapes_for_detail(1)
+            .expect("scene region fine shapes")
+            .iter()
+            .map(|shape| {
+                *shape_lookup
+                    .get(shape)
+                    .unwrap_or_else(|| panic!("missing shape index for {shape}"))
+            })
+            .collect::<Vec<_>>();
+        let shape_indices_runtime = wrela_runtime::wr_list_new(0);
+        for index in shape_indices {
+            wrela_runtime::wr_list_push(
+                shape_indices_runtime,
+                RuntimeValue::from_int(i64::from(index)),
+            );
+        }
+
+        let rays = vec![
+            ray_query([0.0, 0.1, 2.7], [-0.405183, -0.375170, -0.833711]),
+            ray_query([0.0, 0.1, 2.7], [0.0, 1.0, 0.0]),
+        ];
+        let runtime_rays = wrela_runtime::wr_list_new(0);
+        for ray in &rays {
+            wrela_runtime::wr_list_push(runtime_rays, kernel_to_runtime(ray).expect("runtime ray"));
+        }
+        let contract_id = query_contract::SPATIAL_NEAREST_BATCH_WORLD.as_str();
+        let bridge_hits = wr_wgsl_world_batch_queries(
+            wr_str_from_utf8(shader.source.as_ptr(), shader.source.len()),
+            RuntimeValue::from_int(i64::from(shader.workgroup_size)),
+            wr_str_from_utf8(contract_id.as_ptr(), contract_id.len()),
+            shape_indices_runtime,
+            RuntimeValue::from_bool(false),
+            RuntimeValue::from_bool(false),
+            RuntimeValue::from_bool(false),
+            runtime_rays,
+        );
+        assert_eq!(runtime_list_len(bridge_hits).expect("bridge hit len"), 2);
+
+        let mut bridge_values = Vec::new();
+        for index in 0..2 {
+            bridge_values.push(
+                runtime_to_builtin_record_value(wr_list_get(bridge_hits, index), "Hit3")
+                    .unwrap_or_else(|err| panic!("bridge hit {index} decode failed: {err:?}")),
+            );
+        }
+
+        let (direct_hits, _) = execute_batch_query_with_trace_on(
+            &ctx,
+            DispatchBackend::Wgsl,
+            &plan,
+            &[
+                KernelValue::Capture(SmolStr::new("scene_region")),
+                preview_domain(),
+                KernelValue::Array(rays),
+            ],
+        )
+        .expect("direct world nearest batch");
+        let KernelValue::Array(direct_hits) = direct_hits else {
+            panic!("expected direct WGSL world nearest hit array");
+        };
+
+        assert_eq!(bridge_values, direct_hits);
     }
 
     #[test]

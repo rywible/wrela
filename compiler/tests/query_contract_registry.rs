@@ -19,30 +19,37 @@ fn query_contract_registry_has_stable_seed_order_and_versions() {
             "spatial.distance.world",
             "spatial.distance.batch.field",
             "spatial.distance.batch.shape",
+            "spatial.distance.batch.world",
             "spatial.normal.capture.field",
             "spatial.normal.capture.shape",
             "spatial.normal.world",
             "spatial.normal.batch.field",
             "spatial.normal.batch.shape",
+            "spatial.normal.batch.world",
             "support.summary.capture.field",
             "support.summary.capture.shape",
             "support.summary.world",
             "spatial.nearest.capture.shape",
             "spatial.nearest.batch.shape",
+            "spatial.nearest.batch.world",
             "spatial.nearest.world",
             "spatial.occluded.capture.shape",
             "spatial.occluded.batch.shape",
+            "spatial.occluded.batch.world",
             "spatial.occluded.world",
             "surface.sample.capture.shape",
             "surface.sample.batch.shape",
+            "surface.sample.batch.world",
             "surface.sample.world",
             "participants.radiance.capture.shape",
             "participants.radiance.world",
+            "participants.radiance.batch.world",
             "participants.medium.capture.shape",
             "participants.medium.world",
+            "participants.medium.batch.world",
         ]
     );
-    assert_eq!(query_contract::query_contracts().len(), 26);
+    assert_eq!(query_contract::query_contracts().len(), 33);
     assert!(
         query_contract::query_contracts()
             .iter()
@@ -79,6 +86,10 @@ fn nearest_contracts_are_canonical_and_trace_ids_are_compatibility_aliases() {
         (
             query_contract::LEGACY_SPATIAL_TRACE_BATCH_SHAPE,
             query_contract::SPATIAL_NEAREST_BATCH_SHAPE,
+        ),
+        (
+            query_contract::LEGACY_SPATIAL_TRACE_BATCH_WORLD,
+            query_contract::SPATIAL_NEAREST_BATCH_WORLD,
         ),
         (
             query_contract::LEGACY_SPATIAL_TRACE_WORLD,
@@ -151,6 +162,14 @@ fn family_namespace_members_resolve_through_contract_registry() {
         ),
         (
             query_contract::QueryFamilyId::Spatial,
+            "distance_batch",
+            query_contract::QuerySurfaceKind::WorldBatch,
+            query_contract::CaptureKind::Region,
+            query_contract::SPATIAL_DISTANCE_BATCH_WORLD,
+            "spatial.distance_batch",
+        ),
+        (
+            query_contract::QueryFamilyId::Spatial,
             "nearest",
             query_contract::QuerySurfaceKind::WorldScalar,
             query_contract::CaptureKind::Region,
@@ -163,6 +182,14 @@ fn family_namespace_members_resolve_through_contract_registry() {
             query_contract::QuerySurfaceKind::CaptureBatch,
             query_contract::CaptureKind::Shape,
             query_contract::SURFACE_SAMPLE_BATCH_SHAPE,
+            "surface.sample_batch",
+        ),
+        (
+            query_contract::QueryFamilyId::Surface,
+            "sample_batch",
+            query_contract::QuerySurfaceKind::WorldBatch,
+            query_contract::CaptureKind::Region,
+            query_contract::SURFACE_SAMPLE_BATCH_WORLD,
             "surface.sample_batch",
         ),
         (
@@ -253,6 +280,34 @@ fn query_contract_registry_public_catalog_has_legacy_builtin_names() {
 }
 
 #[test]
+fn query_contract_descriptors_expose_target_and_cardinality_axes() {
+    for descriptor in query_contract::query_contracts() {
+        assert_eq!(descriptor.target, descriptor.surface.target());
+        assert_eq!(descriptor.cardinality, descriptor.surface.cardinality());
+        assert_eq!(
+            descriptor.surface,
+            query_contract::QuerySurfaceKind::from_axes(descriptor.target, descriptor.cardinality)
+        );
+    }
+
+    let world_batch = query_contract::query_contract(query_contract::SPATIAL_NEAREST_BATCH_WORLD)
+        .expect("world batch descriptor");
+    assert_eq!(world_batch.target, query_contract::QueryTargetKind::World);
+    assert_eq!(
+        world_batch.cardinality,
+        query_contract::QueryCardinality::Batch
+    );
+    assert_eq!(
+        query_contract::query_target_name(world_batch.target),
+        "world"
+    );
+    assert_eq!(
+        query_contract::query_cardinality_name(world_batch.cardinality),
+        "batch"
+    );
+}
+
+#[test]
 fn query_contract_registry_exhaustively_maps_current_plan_surfaces() {
     let batch_cases = [
         (
@@ -306,6 +361,34 @@ fn query_contract_registry_exhaustively_maps_current_plan_surfaces() {
         (
             BatchQueryPlan::for_shape_query(BatchQueryKind::Occluded, DispatchBackend::Auto, None),
             query_contract::SPATIAL_OCCLUDED_BATCH_SHAPE,
+        ),
+        (
+            BatchQueryPlan::for_world_query(BatchQueryKind::Distance, DispatchBackend::Auto),
+            query_contract::SPATIAL_DISTANCE_BATCH_WORLD,
+        ),
+        (
+            BatchQueryPlan::for_world_query(BatchQueryKind::Normal, DispatchBackend::Auto),
+            query_contract::SPATIAL_NORMAL_BATCH_WORLD,
+        ),
+        (
+            BatchQueryPlan::for_world_query(BatchQueryKind::Nearest, DispatchBackend::Auto),
+            query_contract::SPATIAL_NEAREST_BATCH_WORLD,
+        ),
+        (
+            BatchQueryPlan::for_world_query(BatchQueryKind::Occluded, DispatchBackend::Auto),
+            query_contract::SPATIAL_OCCLUDED_BATCH_WORLD,
+        ),
+        (
+            BatchQueryPlan::for_world_query(BatchQueryKind::Surface, DispatchBackend::Auto),
+            query_contract::SURFACE_SAMPLE_BATCH_WORLD,
+        ),
+        (
+            BatchQueryPlan::for_world_query(BatchQueryKind::Radiance, DispatchBackend::Auto),
+            query_contract::PARTICIPANTS_RADIANCE_BATCH_WORLD,
+        ),
+        (
+            BatchQueryPlan::for_world_query(BatchQueryKind::Medium, DispatchBackend::Auto),
+            query_contract::PARTICIPANTS_MEDIUM_BATCH_WORLD,
         ),
     ];
     for (plan, contract_id) in batch_cases {
@@ -440,6 +523,8 @@ fn descriptor_driven_plan_builders_cover_every_registered_contract() {
                 assert_eq!(plan.contract_version, descriptor.version);
                 assert_eq!(plan.family, descriptor.family);
                 assert_eq!(plan.surface, descriptor.surface);
+                assert_eq!(plan.target, descriptor.target);
+                assert_eq!(plan.cardinality, descriptor.cardinality);
                 assert_eq!(plan.capture_kind, descriptor.capture_kind);
                 assert_eq!(plan.result_kind, descriptor.result_kind);
                 assert_eq!(plan.candidate_contract.item_kind, descriptor.item_kind);
@@ -468,6 +553,8 @@ fn descriptor_driven_plan_builders_cover_every_registered_contract() {
                 assert_eq!(plan.contract_version, descriptor.version);
                 assert_eq!(plan.family, descriptor.family);
                 assert_eq!(plan.surface, descriptor.surface);
+                assert_eq!(plan.target, descriptor.target);
+                assert_eq!(plan.cardinality, descriptor.cardinality);
                 assert_eq!(plan.result_kind, descriptor.result_kind);
                 assert_eq!(plan.backend, DispatchBackend::Auto);
                 assert_eq!(plan.dispatch_contract.item_kind, descriptor.item_kind);
@@ -490,6 +577,32 @@ fn descriptor_driven_plan_builders_cover_every_registered_contract() {
                 assert_eq!(plan.contract_version, descriptor.version);
                 assert_eq!(plan.family, descriptor.family);
                 assert_eq!(plan.surface, descriptor.surface);
+                assert_eq!(plan.target, descriptor.target);
+                assert_eq!(plan.cardinality, descriptor.cardinality);
+                assert_eq!(plan.capture_kind, descriptor.capture_kind);
+                assert_eq!(plan.backend, DispatchBackend::Auto);
+                assert_eq!(plan.dispatch_contract.item_kind, descriptor.item_kind);
+                assert_eq!(plan.dispatch_contract.result_kind, descriptor.result_kind);
+                assert_eq!(plan.candidate_contract.item_kind, descriptor.item_kind);
+                assert_eq!(plan.result_contract.result_kind, descriptor.result_kind);
+                assert_eq!(
+                    plan.domain_flags.as_slice(),
+                    descriptor.required_domain_flags
+                );
+                assert_eq!(
+                    plan.preserves_local_hit_context,
+                    descriptor.preserves_local_hit_context
+                );
+            }
+            query_contract::QuerySurfaceKind::WorldBatch => {
+                let plan = BatchQueryPlan::for_contract(descriptor.id, DispatchBackend::Auto, None)
+                    .expect("world batch descriptor should build a plan");
+                assert_eq!(plan.contract_id, descriptor.id);
+                assert_eq!(plan.contract_version, descriptor.version);
+                assert_eq!(plan.family, descriptor.family);
+                assert_eq!(plan.surface, descriptor.surface);
+                assert_eq!(plan.target, descriptor.target);
+                assert_eq!(plan.cardinality, descriptor.cardinality);
                 assert_eq!(plan.capture_kind, descriptor.capture_kind);
                 assert_eq!(plan.backend, DispatchBackend::Auto);
                 assert_eq!(plan.dispatch_contract.item_kind, descriptor.item_kind);

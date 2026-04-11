@@ -2212,16 +2212,22 @@ fn world_metadata_binding(role: FunctionRole, name: &str) -> bool {
                 | "hit_epsilon"
                 | "max_steps"
         ),
-        FunctionRole::Render => matches!(
+        FunctionRole::Render | FunctionRole::View => matches!(
             name,
             "domain"
                 | "light"
+                | "key_light"
                 | "lights"
                 | "width"
                 | "height"
+                // Compatibility-only projection metadata; canonical view
+                // projection comes from Camera.vertical_fov_degrees.
                 | "world_up"
                 | "view_scale"
                 | "fill_dir"
+                | "fill_direction"
+                | "fill_strength"
+                | "ambient_color"
         ),
         _ => false,
     }

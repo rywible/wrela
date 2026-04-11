@@ -4141,6 +4141,76 @@ fn lower_world_wgsl_bridge_call(
     ))
 }
 
+fn lower_world_domain_flag_value(
+    lowerer: &mut FunctionLowerer,
+    domain: LocalId,
+    flag: &str,
+    span: TextRange,
+) -> Value {
+    let (contract_name, contract_field) = match flag {
+        "material" => ("SurfaceDomainContract", "surface"),
+        "radiance" | "media" => ("ParticipantDomainContract", "participants"),
+        other => panic!("unknown SceneDomain flag '{other}'"),
+    };
+    let contract = lowerer.lower_get_named_field(
+        Value::Local(domain),
+        "SceneDomain",
+        contract_field,
+        MirType::Named(SmolStr::new(contract_name)),
+        span,
+    );
+    lowerer.lower_get_named_field(contract, contract_name, flag, MirType::Boolean, span)
+}
+
+fn lower_world_batch_wgsl_bridge_call(
+    lowerer: &mut FunctionLowerer,
+    config: Option<&Result<NativeWgslBridgeConfig, SmolStr>>,
+    contract_id: query_contract::QueryContractId,
+    shapes: &[SmolStr],
+    shape_indices: &HashMap<SmolStr, u32>,
+    domain: LocalId,
+    items: LocalId,
+    span: TextRange,
+) -> Option<Value> {
+    let config = match config {
+        Some(Ok(config)) => config,
+        Some(Err(err)) => {
+            lower_wgsl_bridge_failure(lowerer, err.clone(), span);
+            return None;
+        }
+        None => {
+            lower_wgsl_bridge_failure(
+                lowerer,
+                SmolStr::new(format!(
+                    "missing WGSL bridge config for {}",
+                    contract_id.as_str()
+                )),
+                span,
+            );
+            return None;
+        }
+    };
+    let world_shape_indices = lower_world_shape_index_list(lowerer, shapes, shape_indices, span);
+    let material = lower_world_domain_flag_value(lowerer, domain, "material", span);
+    let radiance = lower_world_domain_flag_value(lowerer, domain, "radiance", span);
+    let media = lower_world_domain_flag_value(lowerer, domain, "media", span);
+    Some(lowerer.lower_call_temp(
+        MirType::Named(SmolStr::new("List")),
+        SmolStr::new("__wr_wgsl_world_batch_queries"),
+        vec![
+            Value::Const(Literal::String(config.source.clone())),
+            Value::Const(Literal::Integer(config.workgroup_size)),
+            Value::Const(Literal::String(SmolStr::new(contract_id.as_str()))),
+            world_shape_indices,
+            material,
+            radiance,
+            media,
+            Value::Local(items),
+        ],
+        span,
+    ))
+}
+
 fn lower_batch_wgsl_bridge_call(
     lowerer: &mut FunctionLowerer,
     capture: LocalId,
@@ -6624,6 +6694,213 @@ pub(crate) fn lower_shape_batch_queries_helper(
         name: helper_name,
         params: lowerer.params,
         abi_params: vec![
+            PortableAbiType::Value,
+            PortableAbiType::Value,
+            PortableAbiType::Value,
+        ],
+        abi_return: PortableAbiType::Value,
+        locals: lowerer.locals,
+        temps: lowerer.temps,
+        blocks: lowerer.blocks,
+        entry,
+        suspendable: false,
+    }
+}
+
+pub(crate) fn lower_world_batch_queries_helper(
+    module: &hir::Module,
+    type_tags: &HashMap<SmolStr, TypeTagId>,
+    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
+    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
+    function_names: &HashSet<SmolStr>,
+    field_names: &HashSet<SmolStr>,
+    shape_names: &HashSet<SmolStr>,
+    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
+    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
+    field_bodies: &HashMap<SmolStr, hir::Body>,
+    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
+    radiance_param_counts: &HashMap<SmolStr, usize>,
+    volume_param_counts: &HashMap<SmolStr, usize>,
+    result_functions: &HashSet<SmolStr>,
+    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
+    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
+    plan: &BatchQueryPlan,
+    auto_backend: DispatchBackend,
+    wgsl_config: Option<&Result<NativeWgslBridgeConfig, SmolStr>>,
+    wgsl_shape_indices: &HashMap<SmolStr, u32>,
+) -> MirFunction {
+    debug_assert_eq!(plan.capture_kind, CaptureKind::Region);
+    debug_assert_eq!(plan.surface, QuerySurfaceKind::WorldBatch);
+    let helper_name = plan.helper_name.clone();
+    let batch_kind = batch_query_kind_for_contract_id(plan.contract_id)
+        .expect("world batch query plan contract id must resolve");
+    let semantics = match batch_kind {
+        BatchQueryKind::Distance => world_query_semantics(WorldQueryKind::Distance),
+        BatchQueryKind::Normal => world_query_semantics(WorldQueryKind::Normal),
+        BatchQueryKind::Nearest | BatchQueryKind::Trace => {
+            world_query_semantics(WorldQueryKind::Trace)
+        }
+        BatchQueryKind::Occluded => world_query_semantics(WorldQueryKind::Occluded),
+        BatchQueryKind::Surface => world_query_semantics(WorldQueryKind::Surface),
+        BatchQueryKind::Radiance => world_query_semantics(WorldQueryKind::Radiance),
+        BatchQueryKind::Medium => world_query_semantics(WorldQueryKind::Medium),
+    };
+    let span = TextRange::empty(0.into());
+    let mut lowerer = FunctionLowerer::new(
+        helper_name.clone(),
+        type_tags,
+        class_fields,
+        class_field_defaults,
+        function_names,
+        field_names,
+        shape_names,
+        shape_graphs,
+        field_graphs,
+        field_bodies,
+        field_metadata,
+        radiance_param_counts,
+        volume_param_counts,
+        result_functions,
+        class_method_ids,
+        interface_methods,
+        false,
+        None,
+    );
+
+    let capture = lowerer.new_local(
+        SmolStr::new("capture"),
+        false,
+        MirType::Named(SmolStr::new("RegionCapture")),
+    );
+    let domain = lowerer.new_local(
+        SmolStr::new("domain"),
+        false,
+        MirType::Named(SmolStr::new("SceneDomain")),
+    );
+    let items = lowerer.new_local(
+        SmolStr::new("items"),
+        false,
+        MirType::Named(SmolStr::new("List")),
+    );
+    let backend = lowerer.new_local(SmolStr::new("backend"), false, MirType::Integer);
+    for (name, local) in [
+        (SmolStr::new("capture"), capture),
+        (SmolStr::new("domain"), domain),
+        (SmolStr::new("items"), items),
+        (SmolStr::new("backend"), backend),
+    ] {
+        lowerer.declare_local(name, local);
+        lowerer.params.push(local);
+    }
+
+    let result = lowerer.new_local(
+        SmolStr::new("$world_batch_result"),
+        true,
+        MirType::Named(SmolStr::new("List")),
+    );
+
+    let entry = lowerer.new_block();
+    lowerer.current_block = entry;
+    lowerer.push_stmt(MirStmt::Assign {
+        place: Place::Local(result),
+        value: Rvalue::BuildList {
+            items: Vec::new(),
+            alloc: AllocKind::Escaping,
+        },
+        span,
+    });
+    let (capture_scene_id, detail) =
+        lower_world_domain_validation(&mut lowerer, capture, domain, semantics.query_name, span);
+
+    let cpu_block = lowerer.new_block();
+    let vgpu_block = lowerer.new_block();
+    let wgsl_block = lowerer.new_block();
+    let invalid_backend_block = lowerer.new_block();
+    let merge_block = lowerer.new_block();
+    lower_native_batch_backend_guard(
+        &mut lowerer,
+        backend,
+        auto_backend,
+        cpu_block,
+        vgpu_block,
+        wgsl_block,
+        invalid_backend_block,
+        span,
+    );
+
+    lowerer.current_block = invalid_backend_block;
+    lower_wgsl_bridge_failure(
+        &mut lowerer,
+        SmolStr::new(
+            "world batch dispatch backend must be cpu, virtual_gpu, wgsl, or auto",
+        ),
+        span,
+    );
+
+    lowerer.current_block = cpu_block;
+    lowerer.lower_world_batch_query_loop(
+        plan,
+        Value::Local(items),
+        Value::Local(capture),
+        Value::Local(domain),
+        Value::Const(Literal::Integer(0)),
+        result,
+        span,
+        merge_block,
+    );
+
+    lowerer.current_block = vgpu_block;
+    lowerer.lower_world_batch_query_loop(
+        plan,
+        Value::Local(items),
+        Value::Local(capture),
+        Value::Local(domain),
+        Value::Const(Literal::Integer(1)),
+        result,
+        span,
+        merge_block,
+    );
+
+    lowerer.current_block = wgsl_block;
+    lower_world_region_dispatch(
+        &mut lowerer,
+        module,
+        capture_scene_id,
+        detail,
+        merge_block,
+        "world batch WGSL dispatch requires a capture created from a region declaration",
+        span,
+        |lowerer, shapes, span| {
+            if let Some(value) = lower_world_batch_wgsl_bridge_call(
+                lowerer,
+                wgsl_config,
+                plan.contract_id,
+                shapes,
+                wgsl_shape_indices,
+                domain,
+                items,
+                span,
+            ) {
+                lowerer.assign_use(Place::Local(result), value, span);
+                lowerer.set_terminator(Terminator::Jump {
+                    target: merge_block,
+                    span,
+                });
+            }
+        },
+    );
+
+    lowerer.current_block = merge_block;
+    lowerer.set_terminator(Terminator::Return {
+        value: Some(Value::Local(result)),
+        span,
+    });
+
+    MirFunction {
+        name: helper_name,
+        params: lowerer.params,
+        abi_params: vec![
+            PortableAbiType::Value,
             PortableAbiType::Value,
             PortableAbiType::Value,
             PortableAbiType::Value,

@@ -390,6 +390,21 @@ render render_hard_ppm(
     fill_dir = normalize(vec3(-0.5, 0.42, 0.25))
 }
 
+view render_hard_primary_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = hard_fine_domain(world = world)
+    light = Light(
+        position=vec3(-1.8, 3.0, 2.8),
+        direction=normalize(vec3(-0.9, -0.85, -0.8)),
+        intensity=vec3(1.0, 0.98, 0.96),
+        range=18.0
+    )
+    width = 6
+    height = 6
+}
+
 fn test_field_repetition_identity_stability_ops_120000() -> Nothing {
     repeat_scene = capture hard_repeat_shape
     repeat_scene_again = capture hard_repeat_shape
@@ -813,4 +828,92 @@ fn test_field_opaque_leaf_pessimization_ops_4000() -> Nothing {
     require checksum != 0 else "opaque checksum nonzero"
     require candidate_signal > 0 else "opaque candidate signal nonzero"
     require support_signal == 0 else "opaque support signal stays quarantined"
+}
+
+fn test_field_presentation_dense_screen_vs_semantic_pruning_ops_1024() -> Nothing {
+    dense_scene = capture hard_scene_shape
+    world = capture hard_scene_region
+    fine_domain = hard_fine_domain(world = world)
+    support_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+
+    camera = Camera(
+        position = vec3(0.0, 0.0, 3.0),
+        forward = vec3(0.0, 0.0, -1.0),
+        up = vec3(0.0, 1.0, 0.0),
+        vertical_fov_degrees = 48.0
+    )
+    ppm = render_hard_ppm(world = world, camera = camera)
+    require ppm != "" else "legacy render stays available beside canonical view plan"
+
+    mutable rays = []
+    mutable points = []
+    for i in 1...1025 {
+        px = f32(i % 32) / 31.0 - 0.5
+        py = f32((i / 32) % 32) / 31.0 - 0.5
+        origin = vec3(px * 1.4, py * 1.1, 3.0)
+        __wr_list_push(
+            rays,
+            ray_query(
+                origin=origin,
+                direction=normalize(vec3(-px * 0.12, -py * 0.08, -1.0)),
+                max_distance=18.0,
+                min_step=0.05,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+        )
+        __wr_list_push(
+            points,
+            PointQuery(point=origin + vec3(0.0, 0.0, -1.5))
+        )
+    }
+
+    dense_hits = spatial.nearest_batch(
+        capture=dense_scene,
+        rays=rays,
+        backend=dispatch_backend_auto()
+    )
+    semantic_hits = spatial.nearest_batch(
+        capture=world,
+        domain=fine_domain,
+        rays=rays,
+        backend=dispatch_backend_auto()
+    )
+    dense_normals = spatial.normal_batch(
+        capture=dense_scene,
+        points=points,
+        backend=dispatch_backend_auto()
+    )
+    semantic_normals = spatial.normal_batch(
+        capture=world,
+        domain=fine_domain,
+        points=points,
+        backend=dispatch_backend_auto()
+    )
+
+    mutable dense_checksum = 0
+    mutable semantic_checksum = 0
+    for sample_i in 0...32 {
+        sample_index = sample_i * 31
+        dense_checksum = update_checksum(
+            current=dense_checksum,
+            value=dense_hits[sample_index].steps
+                + i32(abs(dense_hits[sample_index].distance) * 100.0)
+                + i32(abs(dense_normals[sample_index].normal.x + dense_normals[sample_index].normal.y) * 100.0)
+        )
+        semantic_checksum = update_checksum(
+            current=semantic_checksum,
+            value=semantic_hits[sample_index].steps
+                + i32(abs(semantic_hits[sample_index].distance) * 100.0)
+                + i32(abs(semantic_normals[sample_index].normal.x + semantic_normals[sample_index].normal.y) * 100.0)
+        )
+    }
+
+    support_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    require dense_checksum != 0 else "dense screen checksum nonzero"
+    require semantic_checksum != 0 else "semantic screen checksum nonzero"
+    require candidate_after - candidate_before > 0 else "dense candidate path records work"
+    require support_after - support_before >= 0 else "semantic pruning metric is monotonic"
 }

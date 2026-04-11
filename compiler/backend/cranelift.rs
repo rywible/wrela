@@ -4486,6 +4486,12 @@ fn runtime_builtin_func_id(
             "wr_wgsl_shape_occluded_batch_queries",
             4,
         )?),
+        "__wr_wgsl_world_batch_queries" => Some(runtime_fn_wgsl_bridge(
+            module,
+            runtime,
+            "wr_wgsl_world_batch_queries",
+            8,
+        )?),
         "f32" => Some(runtime_fn_cast_f32(module, runtime)?),
         "i32" => Some(runtime_fn_cast_i32(module, runtime)?),
         "i64" => Some(runtime_fn_cast_i64(module, runtime)?),

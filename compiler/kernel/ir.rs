@@ -4,10 +4,12 @@ use crate::query_plan::{
     CandidateStrategy, CaptureKind, CaptureQueryKind, CaptureQueryPlan, DerivedArtifact,
     DispatchBackend, DispatchRecordContract, HitContextContract, InternalKernelKind,
     ParticipantSelectionContract, PlanExecutor, PlanStage, PlanningObservability, PruningStrategy,
-    QueryContractId, QueryFamilyId, QueryItemKind, QueryResultKind, QuerySurfaceKind,
-    ResultRecordContract, SceneDomainFlag, SceneSummary, WorldQueryKind, WorldQueryPlan,
-    capture_query_kind_for_contract_id, world_query_kind_for_contract_id,
+    QueryCardinality, QueryContractId, QueryFamilyId, QueryItemKind, QueryResultKind,
+    QuerySurfaceKind, QueryTargetKind, ResultRecordContract, SceneDomainFlag, SceneSummary,
+    WorldQueryKind, WorldQueryPlan, capture_query_kind_for_contract_id,
+    world_query_kind_for_contract_id,
 };
+use crate::query_solver::RaySolverPlan;
 use rowan::TextRange;
 use smol_str::SmolStr;
 
@@ -313,6 +315,8 @@ pub struct KernelBatchQueryPlan {
     pub contract_version: u32,
     pub contract_id: QueryContractId,
     pub family: QueryFamilyId,
+    pub target: QueryTargetKind,
+    pub cardinality: QueryCardinality,
     pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: BatchQueryKind,
@@ -335,6 +339,7 @@ pub struct KernelBatchQueryPlan {
     pub domain_flags: Vec<SceneDomainFlag>,
     pub artifact_contracts: Vec<ArtifactContract>,
     pub item_contract: KernelBatchItemContract,
+    pub ray_solver: Option<RaySolverPlan>,
     pub observability: PlanningObservability,
     pub preserves_local_hit_context: bool,
 }
@@ -352,6 +357,8 @@ pub struct KernelCaptureQueryPlan {
     pub contract_version: u32,
     pub contract_id: QueryContractId,
     pub family: QueryFamilyId,
+    pub target: QueryTargetKind,
+    pub cardinality: QueryCardinality,
     pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: CaptureQueryKind,
@@ -377,6 +384,8 @@ pub struct KernelWorldQueryPlan {
     pub contract_version: u32,
     pub contract_id: QueryContractId,
     pub family: QueryFamilyId,
+    pub target: QueryTargetKind,
+    pub cardinality: QueryCardinality,
     pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: WorldQueryKind,
@@ -394,6 +403,7 @@ pub struct KernelWorldQueryPlan {
     pub participant_contract: Option<ParticipantSelectionContract>,
     pub domain_flags: Vec<SceneDomainFlag>,
     pub artifact_contracts: Vec<ArtifactContract>,
+    pub ray_solver: Option<RaySolverPlan>,
     pub observability: PlanningObservability,
     pub preserves_local_hit_context: bool,
 }
@@ -406,6 +416,9 @@ pub enum KernelBatchItemContract {
     RayThenOcclusion {
         nearest_plan: KernelCaptureQueryPlan,
     },
+    WorldQuery {
+        plan: KernelWorldQueryPlan,
+    },
 }
 
 impl From<&CaptureQueryPlan> for KernelCaptureQueryPlan {
@@ -414,6 +427,8 @@ impl From<&CaptureQueryPlan> for KernelCaptureQueryPlan {
             contract_version: plan.contract_version,
             contract_id: plan.contract_id,
             family: plan.family,
+            target: plan.target,
+            cardinality: plan.cardinality,
             surface: plan.surface,
             helper_name: plan.helper_name.clone(),
             kind: capture_query_kind_for_contract_id(plan.contract_id)
@@ -443,6 +458,8 @@ impl From<&WorldQueryPlan> for KernelWorldQueryPlan {
             contract_version: plan.contract_version,
             contract_id: plan.contract_id,
             family: plan.family,
+            target: plan.target,
+            cardinality: plan.cardinality,
             surface: plan.surface,
             helper_name: plan.helper_name.clone(),
             kind: world_query_kind_for_contract_id(plan.contract_id)
@@ -461,6 +478,7 @@ impl From<&WorldQueryPlan> for KernelWorldQueryPlan {
             participant_contract: plan.participant_contract.clone(),
             domain_flags: plan.domain_flags.clone(),
             artifact_contracts: plan.artifact_contracts.clone(),
+            ray_solver: plan.ray_solver.clone(),
             observability: plan.observability.clone(),
             preserves_local_hit_context: plan.preserves_local_hit_context,
         }
@@ -474,6 +492,7 @@ impl From<&BatchItemContract> for KernelBatchItemContract {
             BatchItemContract::RayThenOcclusion { nearest_plan } => Self::RayThenOcclusion {
                 nearest_plan: nearest_plan.into(),
             },
+            BatchItemContract::WorldQuery { plan } => Self::WorldQuery { plan: plan.into() },
         }
     }
 }

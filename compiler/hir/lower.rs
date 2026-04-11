@@ -24,6 +24,7 @@ pub fn lower_root_body(root: ast::Root) -> Option<Body> {
             | ast::Stmt::RegionDecl(_)
             | ast::Stmt::DomainDecl(_)
             | ast::Stmt::RenderDecl(_)
+            | ast::Stmt::ViewDecl(_)
             | ast::Stmt::RadianceDecl(_)
             | ast::Stmt::VolumeDecl(_)
             | ast::Stmt::MaterialDecl(_)
@@ -114,6 +115,10 @@ impl LoweringContext {
                     let func = self.lower_render_decl(r);
                     self.module.functions.alloc(func);
                 }
+                ast::Stmt::ViewDecl(v) => {
+                    let func = self.lower_view_decl(v);
+                    self.module.functions.alloc(func);
+                }
                 ast::Stmt::RadianceDecl(f) => {
                     let func = self.lower_radiance_decl(f);
                     self.module.functions.alloc(func);
@@ -180,6 +185,10 @@ impl LoweringContext {
                             }
                             ast::Stmt::RenderDecl(r) => {
                                 let func = self.lower_render_decl(r);
+                                self.module.functions.alloc(func);
+                            }
+                            ast::Stmt::ViewDecl(v) => {
+                                let func = self.lower_view_decl(v);
                                 self.module.functions.alloc(func);
                             }
                             ast::Stmt::RadianceDecl(f) => {
@@ -1355,6 +1364,40 @@ impl LoweringContext {
         }
     }
 
+    fn lower_view_decl(&mut self, v: ast::ViewDecl) -> Function {
+        let name = v.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let name_span = v.name().map(|t| t.text_range());
+        let visibility = visibility_for_node_default(v.syntax());
+        let params = v.params().map(|p| self.lower_param(p)).collect();
+        let stmts: Vec<_> = v.statements().collect();
+        let metadata = self.lower_render_metadata(&stmts);
+        let view_ret_type = TypeRef {
+            name: SmolStr::new("FrameState"),
+            name_span: None,
+            args: Vec::new(),
+        };
+        let body = self.lower_world_body(stmts);
+
+        Function {
+            name,
+            name_span,
+            attributes: Vec::new(),
+            visibility,
+            kind: FunctionKind::Function,
+            role: FunctionRole::View,
+            field: None,
+            region: None,
+            domain: None,
+            render: Some(metadata),
+            field_graph: None,
+            system_metadata: None,
+            type_params: Vec::new(),
+            params,
+            ret_type: Some(view_ret_type),
+            body: Some(body),
+        }
+    }
+
     fn lower_radiance_decl(&mut self, f: ast::RadianceDecl) -> Function {
         let name = f.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
         let name_span = f.name().map(|t| t.text_range());
@@ -1575,14 +1618,32 @@ impl LoweringContext {
 
     fn lower_render_metadata(&mut self, stmts: &[ast::Stmt]) -> RenderMetadata {
         let mut metadata = RenderMetadata {
-            domain: None,
-            light: None,
-            lights: None,
-            width: None,
-            height: None,
-            world_up: None,
-            view_scale: None,
-            fill_dir: None,
+            view: RenderViewMetadata {
+                projection: RenderProjectionMetadata {
+                    source: RenderProjectionSource::CameraVerticalFovDegrees,
+                },
+                width: None,
+                height: None,
+            },
+            frame: RenderFrameMetadata {
+                domain: None,
+                export: RenderFrameExportMetadata {
+                    kind: RenderFrameExportKind::LegacyPpmString,
+                },
+            },
+            lighting: RenderLightingMetadata {
+                light: None,
+                lights: None,
+                fill_dir: None,
+                fill_strength: None,
+                ambient_color: None,
+                light_compatibility_alias: false,
+                fill_dir_compatibility_alias: false,
+            },
+            compatibility: RenderCompatibilityProjectionMetadata {
+                world_up: None,
+                view_scale: None,
+            },
         };
         for stmt in stmts {
             let ast::Stmt::VarAssign(assign) = stmt else {
@@ -1595,14 +1656,38 @@ impl LoweringContext {
                 continue;
             };
             match name.as_str() {
-                "domain" => metadata.domain = Some(self.lower_shape_payload(value)),
-                "light" => metadata.light = Some(self.lower_shape_payload(value)),
-                "lights" => metadata.lights = Some(self.lower_shape_payload(value)),
-                "width" => metadata.width = Some(self.lower_shape_payload(value)),
-                "height" => metadata.height = Some(self.lower_shape_payload(value)),
-                "world_up" => metadata.world_up = Some(self.lower_shape_payload(value)),
-                "view_scale" => metadata.view_scale = Some(self.lower_shape_payload(value)),
-                "fill_dir" => metadata.fill_dir = Some(self.lower_shape_payload(value)),
+                "domain" => metadata.frame.domain = Some(self.lower_shape_payload(value)),
+                "light" => {
+                    metadata.lighting.light = Some(self.lower_shape_payload(value));
+                    metadata.lighting.light_compatibility_alias = true;
+                }
+                "key_light" => {
+                    metadata.lighting.light = Some(self.lower_shape_payload(value));
+                    metadata.lighting.light_compatibility_alias = false;
+                }
+                "lights" => metadata.lighting.lights = Some(self.lower_shape_payload(value)),
+                "width" => metadata.view.width = Some(self.lower_shape_payload(value)),
+                "height" => metadata.view.height = Some(self.lower_shape_payload(value)),
+                "world_up" => {
+                    metadata.compatibility.world_up = Some(self.lower_shape_payload(value))
+                }
+                "view_scale" => {
+                    metadata.compatibility.view_scale = Some(self.lower_shape_payload(value))
+                }
+                "fill_dir" => {
+                    metadata.lighting.fill_dir = Some(self.lower_shape_payload(value));
+                    metadata.lighting.fill_dir_compatibility_alias = true;
+                }
+                "fill_direction" => {
+                    metadata.lighting.fill_dir = Some(self.lower_shape_payload(value));
+                    metadata.lighting.fill_dir_compatibility_alias = false;
+                }
+                "fill_strength" => {
+                    metadata.lighting.fill_strength = Some(self.lower_shape_payload(value))
+                }
+                "ambient_color" => {
+                    metadata.lighting.ambient_color = Some(self.lower_shape_payload(value))
+                }
                 _ => {}
             }
         }

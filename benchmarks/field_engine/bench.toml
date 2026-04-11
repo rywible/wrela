@@ -60,3 +60,12 @@ class = "critical"
 min_runtime_ms = 1200
 timeout_ms = 180000
 allow_unstable = false
+
+[[scenarios]]
+id = "presentation_dense_screen_vs_semantic_pruning"
+test_name = "tests/field_engine::test_field_presentation_dense_screen_vs_semantic_pruning_ops_1024"
+ops = 1024
+class = "critical"
+min_runtime_ms = 200
+timeout_ms = 180000
+allow_unstable = false

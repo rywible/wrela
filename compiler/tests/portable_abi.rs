@@ -8,6 +8,14 @@ use wrela::portable::{
     portable_hit_context_contract_abi, portable_participant_contract_abi, portable_query_item_abi,
     portable_query_result_abi, portable_result_contract_abi,
 };
+use wrela::presentation_contract::{
+    AttachmentClearPolicy, AttachmentLifetime, FrameAttachmentContract, FrameContract,
+    LightingContract, PresentationObservabilityProfile,
+};
+use wrela::presentation_exec::{
+    allocate_frame_attachment_resources, allocate_frame_attachment_resources_with_history,
+    frame_attachment_layout,
+};
 use wrela::query_plan;
 use wrela::scene_ir;
 
@@ -157,6 +165,131 @@ fn scene_domain_contract_layout_is_nested_and_budget_free() {
 }
 
 #[test]
+fn view_and_frame_state_records_have_stable_portable_layouts() {
+    let viewport = portable_builtin_record_abi("Viewport").unwrap();
+    let view_state = portable_builtin_record_abi("ViewState").unwrap();
+    let frame_state = portable_builtin_record_abi("FrameState").unwrap();
+
+    let PortableAbiType::Struct {
+        fields: viewport_fields,
+        ..
+    } = &viewport
+    else {
+        panic!("Viewport should lower to a struct ABI");
+    };
+    assert_eq!(
+        viewport_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["width", "height"]
+    );
+    assert_eq!(portable_abi_field_offset(viewport_fields, 0), 0);
+    assert_eq!(portable_abi_field_offset(viewport_fields, 1), 4);
+    assert_eq!(portable_abi_layout(&viewport).size, 8);
+    assert_eq!(portable_abi_layout(&viewport).align, 4);
+
+    let PortableAbiType::Struct {
+        fields: view_fields,
+        ..
+    } = &view_state
+    else {
+        panic!("ViewState should lower to a struct ABI");
+    };
+    assert_eq!(
+        view_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "camera",
+            "previous_camera",
+            "viewport",
+            "previous_viewport",
+            "jitter",
+            "previous_jitter"
+        ]
+    );
+    assert_eq!(portable_abi_field_offset(view_fields, 0), 0);
+    assert_eq!(portable_abi_field_offset(view_fields, 1), 48);
+    assert_eq!(portable_abi_field_offset(view_fields, 2), 96);
+    assert_eq!(portable_abi_field_offset(view_fields, 3), 104);
+    assert_eq!(portable_abi_field_offset(view_fields, 4), 112);
+    assert_eq!(portable_abi_field_offset(view_fields, 5), 120);
+    assert_eq!(portable_abi_layout(&view_state).size, 128);
+    assert_eq!(portable_abi_layout(&view_state).align, 16);
+
+    let PortableAbiType::Struct {
+        fields: frame_fields,
+        ..
+    } = &frame_state
+    else {
+        panic!("FrameState should lower to a struct ABI");
+    };
+    assert_eq!(
+        frame_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "view",
+            "frame_index",
+            "previous_frame_index",
+            "delta_seconds",
+            "history_reset"
+        ]
+    );
+    assert_eq!(portable_abi_field_offset(frame_fields, 0), 0);
+    assert_eq!(portable_abi_field_offset(frame_fields, 1), 128);
+    assert_eq!(portable_abi_field_offset(frame_fields, 2), 132);
+    assert_eq!(portable_abi_field_offset(frame_fields, 3), 136);
+    assert_eq!(portable_abi_field_offset(frame_fields, 4), 140);
+    assert_eq!(portable_abi_layout(&frame_state).size, 144);
+    assert_eq!(portable_abi_layout(&frame_state).align, 16);
+}
+
+#[test]
+fn motion_vector_record_has_stable_portable_layout() {
+    let motion_vector = portable_builtin_record_abi("MotionVector").unwrap();
+    let PortableAbiType::Struct { fields, .. } = &motion_vector else {
+        panic!("MotionVector should lower to a struct ABI");
+    };
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["delta_pixels", "previous_sample", "valid", "disoccluded"]
+    );
+    assert_eq!(portable_abi_field_offset(fields, 0), 0);
+    assert_eq!(portable_abi_field_offset(fields, 1), 8);
+    assert_eq!(portable_abi_field_offset(fields, 2), 16);
+    assert_eq!(portable_abi_field_offset(fields, 3), 20);
+    assert_eq!(portable_abi_layout(&motion_vector).size, 24);
+    assert_eq!(portable_abi_layout(&motion_vector).align, 8);
+}
+
+#[test]
+fn screen_sample_query_records_canonical_pixel_uv_and_view_ray() {
+    let sample = portable_builtin_record_abi("ScreenSampleQuery").unwrap();
+    let PortableAbiType::Struct { fields, .. } = &sample else {
+        panic!("ScreenSampleQuery should lower to a struct ABI");
+    };
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["pixel", "uv", "ray"]
+    );
+    assert_eq!(portable_abi_field_offset(fields, 0), 0);
+    assert_eq!(portable_abi_field_offset(fields, 1), 8);
+    assert_eq!(portable_abi_field_offset(fields, 2), 16);
+    assert_eq!(portable_abi_layout(&sample).size, 64);
+    assert_eq!(portable_abi_layout(&sample).align, 16);
+}
+
+#[test]
 fn point_direction_query_layout_matches_two_vec3_samples() {
     let point_direction = portable_builtin_record_abi("PointDirectionQuery").unwrap();
     let PortableAbiType::Struct { fields, .. } = &point_direction else {
@@ -175,6 +308,151 @@ fn point_direction_query_layout_matches_two_vec3_samples() {
     let layout = portable_abi_layout(&point_direction);
     assert_eq!(layout.size, 32);
     assert_eq!(layout.align, 16);
+}
+
+#[test]
+fn presentation_attachment_layouts_use_portable_row_major_storage() {
+    let frame = FrameContract {
+        outputs: vec![
+            FrameAttachmentContract::primary_hit("primary_hit"),
+            FrameAttachmentContract::depth("depth"),
+            FrameAttachmentContract::world_normal("world_normal"),
+        ],
+        primary_hit: None,
+        temporal: None,
+        lighting: LightingContract::legacy_preview(false),
+        observability: PresentationObservabilityProfile::preview_compatibility(),
+    };
+    let primary_hit = frame_attachment_layout(&frame, &frame.outputs[0], 4, 3).unwrap();
+    let depth = frame_attachment_layout(&frame, &frame.outputs[1], 4, 3).unwrap();
+    let world_normal = frame_attachment_layout(&frame, &frame.outputs[2], 4, 3).unwrap();
+
+    assert_eq!(
+        primary_hit.element_stride,
+        portable_abi_array_stride(&primary_hit.element_abi)
+    );
+    assert_eq!(primary_hit.total_size, primary_hit.element_stride * 12);
+    assert_eq!(primary_hit.wgsl_storage_type, "Hit3");
+
+    assert_eq!(depth.element_stride, 4);
+    assert_eq!(depth.total_size, 48);
+    assert_eq!(depth.wgsl_storage_type, "f32");
+
+    assert_eq!(world_normal.element_stride, 16);
+    assert_eq!(world_normal.total_size, 192);
+    assert_eq!(world_normal.wgsl_storage_type, "vec3<f32>");
+}
+
+#[test]
+fn presentation_attachment_resources_allocate_dense_buffers_for_all_declared_outputs() {
+    let frame = FrameContract {
+        outputs: vec![
+            FrameAttachmentContract::primary_hit("primary_hit"),
+            FrameAttachmentContract::depth("depth"),
+            FrameAttachmentContract::world_normal("world_normal"),
+        ],
+        primary_hit: None,
+        temporal: None,
+        lighting: LightingContract::legacy_preview(false),
+        observability: PresentationObservabilityProfile::preview_compatibility(),
+    };
+    let resources = allocate_frame_attachment_resources(&frame, 2, 2).unwrap();
+    assert_eq!(resources.width, 2);
+    assert_eq!(resources.height, 2);
+    assert_eq!(resources.attachments.len(), 3);
+    assert_eq!(
+        resources
+            .attachment("primary_hit")
+            .expect("primary_hit")
+            .bytes
+            .len(),
+        4 * portable_abi_array_stride(&portable_builtin_record_abi("Hit3").expect("Hit3 abi"))
+            as usize
+    );
+    assert_eq!(
+        resources.attachment("depth").expect("depth").bytes.len(),
+        16
+    );
+    assert_eq!(
+        resources
+            .attachment("world_normal")
+            .expect("world_normal")
+            .bytes
+            .len(),
+        64
+    );
+}
+
+#[test]
+fn presentation_attachment_layouts_apply_resolution_scale_to_physical_dimensions() {
+    let mut half_depth = FrameAttachmentContract::depth("half_depth");
+    half_depth.resolution = wrela::presentation_contract::AttachmentResolutionClass::HalfViewport;
+    half_depth.scale = wrela::presentation_contract::AttachmentResolutionScale::half();
+    let frame = FrameContract {
+        outputs: vec![half_depth.clone()],
+        primary_hit: None,
+        temporal: None,
+        lighting: LightingContract::legacy_preview(false),
+        observability: PresentationObservabilityProfile::preview_compatibility(),
+    };
+    let layout = frame_attachment_layout(&frame, &half_depth, 5, 3).unwrap();
+    assert_eq!(layout.width, 3);
+    assert_eq!(layout.height, 2);
+    assert_eq!(layout.total_size, layout.element_stride * 6);
+}
+
+#[test]
+fn presentation_attachment_resources_seed_semantic_defaults_and_preserve_history() {
+    let primary_hit = FrameAttachmentContract::primary_hit("primary_hit");
+    let mut history_depth = FrameAttachmentContract::depth("history_depth");
+    history_depth.lifetime = AttachmentLifetime::HistorySlot(0);
+    history_depth.clear_policy = AttachmentClearPolicy::PreservePrevious;
+
+    let history_seed = FrameContract {
+        outputs: vec![{
+            let mut attachment = history_depth.clone();
+            attachment.clear_policy = AttachmentClearPolicy::Zero;
+            attachment
+        }],
+        primary_hit: None,
+        temporal: None,
+        lighting: LightingContract::legacy_preview(false),
+        observability: PresentationObservabilityProfile::preview_compatibility(),
+    };
+    let mut previous = allocate_frame_attachment_resources(&history_seed, 2, 2).unwrap();
+    let prior_pattern = vec![7u8; previous.attachment("history_depth").unwrap().bytes.len()];
+    previous
+        .attachment_mut("history_depth")
+        .unwrap()
+        .bytes
+        .copy_from_slice(&prior_pattern);
+
+    let frame = FrameContract {
+        outputs: vec![primary_hit.clone(), history_depth.clone()],
+        primary_hit: None,
+        temporal: None,
+        lighting: LightingContract::legacy_preview(false),
+        observability: PresentationObservabilityProfile::preview_compatibility(),
+    };
+    let resources =
+        allocate_frame_attachment_resources_with_history(&frame, 2, 2, Some(&previous)).unwrap();
+    let primary_hit_values = resources.decode_attachment("primary_hit").unwrap();
+    assert_eq!(primary_hit_values.len(), 4);
+    let KernelValue::Struct(KernelStructValue { fields, .. }) = &primary_hit_values[0] else {
+        panic!("expected Hit3 semantic default");
+    };
+    assert!(
+        fields
+            .iter()
+            .any(|(name, value)| name == "hit" && matches!(value, KernelValue::Bool(false)))
+    );
+    assert!(fields.iter().any(|(name, value)| {
+        name == "distance" && matches!(value, KernelValue::F32(distance) if distance.is_infinite())
+    }));
+    assert_eq!(
+        resources.attachment("history_depth").unwrap().bytes,
+        prior_pattern
+    );
 }
 
 #[test]
@@ -563,6 +841,9 @@ fn portable_abi_emits_deterministic_wgsl_structs_and_rejects_runtime_value() {
     let point_direction =
         portable_builtin_record_abi("PointDirectionQuery").expect("PointDirectionQuery abi");
     let unit_query = portable_builtin_record_abi("UnitQuery").expect("UnitQuery abi");
+    let frame_state = portable_builtin_record_abi("FrameState").expect("FrameState abi");
+    let screen_sample =
+        portable_builtin_record_abi("ScreenSampleQuery").expect("ScreenSampleQuery abi");
     let dispatch = portable_dispatch_contract_abi(&query_plan::DispatchRecordContract {
         backend: query_plan::DispatchBackend::Wgsl,
         kernel: query_plan::InternalKernelKind::ShapeTraceCapture,
@@ -575,6 +856,8 @@ fn portable_abi_emits_deterministic_wgsl_structs_and_rejects_runtime_value() {
         scene_domain.clone(),
         point_direction.clone(),
         unit_query.clone(),
+        frame_state.clone(),
+        screen_sample.clone(),
     ])
     .expect("emit wgsl");
     let transform_index = rendered
@@ -606,6 +889,17 @@ fn portable_abi_emits_deterministic_wgsl_structs_and_rejects_runtime_value() {
     let unit_query_index = rendered
         .find("struct UnitQuery")
         .expect("UnitQuery in wgsl");
+    let camera_index = rendered.find("struct Camera").expect("Camera in wgsl");
+    let viewport_index = rendered.find("struct Viewport").expect("Viewport in wgsl");
+    let view_state_index = rendered
+        .find("struct ViewState")
+        .expect("ViewState in wgsl");
+    let frame_state_index = rendered
+        .find("struct FrameState")
+        .expect("FrameState in wgsl");
+    let screen_sample_index = rendered
+        .find("struct ScreenSampleQuery")
+        .expect("ScreenSampleQuery in wgsl");
     assert!(transform_index < hit_index);
     assert!(actor_index < payload_index);
     assert!(payload_index < hit_index);
@@ -615,6 +909,11 @@ fn portable_abi_emits_deterministic_wgsl_structs_and_rejects_runtime_value() {
     assert!(participants_index < scene_domain_index);
     assert!(point_direction_index < rendered.len());
     assert!(unit_query_index < rendered.len());
+    assert!(camera_index < view_state_index);
+    assert!(viewport_index < view_state_index);
+    assert!(view_state_index < frame_state_index);
+    assert!(screen_sample_index < rendered.len());
+    assert!(rendered.contains("ray: RayQuery"));
     assert!(rendered.contains("hit: u32,") || rendered.contains("hit: u32"));
     assert!(rendered.contains("struct UnitQuery {\n  _unit: u32,\n}"));
 

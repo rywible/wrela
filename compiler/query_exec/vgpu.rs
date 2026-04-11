@@ -1,5 +1,7 @@
 use crate::kernel::interp::KernelBatchQueryTrace;
-use crate::kernel::{KernelBatchQueryPlan, KernelCaptureQueryPlan, KernelWorldQueryPlan};
+use crate::kernel::{
+    KernelBatchItemContract, KernelBatchQueryPlan, KernelCaptureQueryPlan, KernelWorldQueryPlan,
+};
 use crate::kernel::{KernelStructValue, KernelValue};
 use crate::kernel::{
     KernelValidationError, validate_batch_query_plan, validate_capture_query_plan,
@@ -14,7 +16,10 @@ use crate::query_exec::world::{
     execute_world_surface,
 };
 use crate::query_exec::{QueryExecContext, QueryExecError, QueryExecutionObservability};
-use crate::query_plan::{WorldQueryKind, world_query_kind_for_contract_id};
+use crate::query_plan::{
+    CaptureKind, PruningStrategy, WorldQueryKind, world_query_kind_for_contract_id,
+};
+use crate::query_solver::{RaySolverFallbackReason, RaySolverMethod, RaySolverPlan};
 use crate::scene_ir::{
     ShapeLeafRef, ShapeMergeProvenancePolicy, ShapeNode, ShapeProvenanceExpr,
     ShapeSubtractProvenancePolicy,
@@ -105,6 +110,13 @@ trait QueryContractRuntime {
     fn note_candidate_count(&self, count: u32);
     fn note_support_pruned_candidates(&self, count: u32);
     fn note_dispatch(&self);
+    fn note_batch_dispatch_shape(&self, items: u32, world_batch: bool);
+    fn note_batch_execution_mode(&self, semantic_pruned: bool);
+    fn note_solver_plan(&self, plan: &RaySolverPlan);
+    fn note_solver_dense_fallback_reasons(&self, reasons: &[RaySolverFallbackReason]);
+    fn note_solver_support_rejection(&self);
+    fn note_solver_lipschitz_step(&self);
+    fn note_hit_result(&self, hit: bool, steps: u32);
     fn note_contract_validation_failure(&self);
 }
 
@@ -124,10 +136,6 @@ impl<'a> VirtualGpuRuntime<'a> {
         Self {
             ops: DirectQueryOps::new(ctx),
         }
-    }
-
-    fn note_candidate_count(&self, count: u32) {
-        self.ops.note_candidate_count(count);
     }
 
     fn eval_shape_distance_node(
@@ -657,6 +665,34 @@ impl QueryContractRuntime for VirtualGpuRuntime<'_> {
         self.ops.note_dispatch();
     }
 
+    fn note_batch_dispatch_shape(&self, items: u32, world_batch: bool) {
+        self.ops.note_batch_dispatch_shape(items, world_batch);
+    }
+
+    fn note_batch_execution_mode(&self, semantic_pruned: bool) {
+        self.ops.note_batch_execution_mode(semantic_pruned);
+    }
+
+    fn note_solver_plan(&self, plan: &RaySolverPlan) {
+        self.ops.note_solver_plan(plan);
+    }
+
+    fn note_solver_dense_fallback_reasons(&self, reasons: &[RaySolverFallbackReason]) {
+        self.ops.note_solver_dense_fallback_reasons(reasons);
+    }
+
+    fn note_solver_support_rejection(&self) {
+        self.ops.note_solver_support_rejection();
+    }
+
+    fn note_solver_lipschitz_step(&self) {
+        self.ops.note_solver_lipschitz_step();
+    }
+
+    fn note_hit_result(&self, hit: bool, steps: u32) {
+        self.ops.note_hit_result(hit, steps);
+    }
+
     fn note_contract_validation_failure(&self) {
         self.ops.note_contract_validation_failure();
     }
@@ -787,12 +823,17 @@ impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
             }
             WorldQueryKind::Nearest | WorldQueryKind::Trace => {
                 let ray = expect_struct_ref_arg(args.get(2), "RayQuery")?;
-                self.execute_world_ray_hit(&capture, detail, ray, WorldQueryKind::Nearest)
+                self.execute_world_ray_hit(plan, &capture, detail, ray, WorldQueryKind::Nearest)
             }
             WorldQueryKind::Occluded => {
                 let ray = expect_struct_ref_arg(args.get(2), "RayQuery")?;
-                let hit =
-                    self.execute_world_ray_hit(&capture, detail, ray, WorldQueryKind::Occluded)?;
+                let hit = self.execute_world_ray_hit(
+                    plan,
+                    &capture,
+                    detail,
+                    ray,
+                    WorldQueryKind::Occluded,
+                )?;
                 let hit = expect_struct(&hit, "Hit3")?;
                 Ok(occlusion_result(
                     expect_struct_bool(hit, "hit")?,
@@ -854,11 +895,22 @@ impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
 
     fn execute_world_ray_hit(
         &self,
+        plan: &KernelWorldQueryPlan,
         capture: &SmolStr,
         detail: i32,
         ray: &KernelStructValue,
         kind: WorldQueryKind,
     ) -> Result<KernelValue, QueryExecError> {
+        let solver_plan = plan
+            .ray_solver
+            .as_ref()
+            .ok_or_else(|| QueryExecError::Unsupported {
+                message: format!(
+                    "world ray contract '{}' is missing a RaySolverPlan",
+                    plan.contract_id.as_str()
+                ),
+            })?;
+        self.runtime.note_solver_plan(solver_plan);
         let origin = expect_struct_vec3_from_struct(ray, "origin")?;
         let direction = expect_struct_vec3_from_struct(ray, "direction")?;
         let max_distance = expect_struct_f32(ray, "max_distance")?;
@@ -875,6 +927,7 @@ impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
             min_step,
             hit_epsilon,
             max_steps,
+            solver_plan,
             result: default_hit(origin),
             best_distance: f32::INFINITY,
         };
@@ -891,6 +944,12 @@ impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
                 _ => "trace_world requires a capture created from a region declaration",
             },
         )?;
+        if let Ok(hit) = expect_struct(&backend.result, "Hit3") {
+            self.runtime.note_hit_result(
+                expect_struct_bool(hit, "hit").unwrap_or(false),
+                expect_struct_i32(hit, "steps").unwrap_or_default().max(0) as u32,
+            );
+        }
         Ok(backend.result)
     }
 }
@@ -1159,6 +1218,7 @@ struct VirtualGpuWorldTraceBackend<'a> {
     min_step: f32,
     hit_epsilon: f32,
     max_steps: i32,
+    solver_plan: &'a RaySolverPlan,
     result: KernelValue,
     best_distance: f32,
 }
@@ -1203,15 +1263,25 @@ impl WorldTraceBackend for VirtualGpuWorldTraceBackend<'_> {
     }
 
     fn consider_world_trace_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
+        let prune_distance = self.best_distance.min(self.max_distance);
         if let Some(lower_bound) = self
             .runtime
             .eval_shape_support_lower_bound(shape, self.origin)?
-            && lower_bound > self.best_distance
+            && lower_bound > prune_distance
         {
             self.runtime.note_support_pruned_candidates(1);
+            self.runtime.note_solver_support_rejection();
             return Ok(());
         }
         self.runtime.note_candidate_count(1);
+        self.runtime
+            .note_solver_dense_fallback_reasons(self.solver_plan.dense_fallback_reasons());
+        if self
+            .solver_plan
+            .method_enabled(RaySolverMethod::LipschitzSafeStepping)
+        {
+            self.runtime.note_solver_lipschitz_step();
+        }
         let hit = self.runtime.trace_shape(
             shape,
             self.origin,
@@ -1452,7 +1522,15 @@ pub(crate) fn execute_batch_query_with_observability(
         runtime.note_contract_validation_failure();
         return Err(validation_error("batch query", errors));
     }
-    let items = match args.get(1) {
+    let evaluator = VirtualGpuDirectQueryEvaluator {
+        runtime: Box::new(runtime),
+    };
+    let item_arg_index = if matches!(plan.capture_kind, CaptureKind::Region) {
+        2
+    } else {
+        1
+    };
+    let items = match args.get(item_arg_index) {
         Some(KernelValue::Array(items)) => items,
         Some(other) => {
             return Err(QueryExecError::TypeMismatch {
@@ -1466,7 +1544,23 @@ pub(crate) fn execute_batch_query_with_observability(
             });
         }
     };
-    runtime.note_candidate_count(items.len() as u32);
+    evaluator.runtime.note_candidate_count(items.len() as u32);
+    evaluator.runtime.note_batch_dispatch_shape(
+        items.len() as u32,
+        matches!(plan.capture_kind, CaptureKind::Region),
+    );
+    evaluator.runtime.note_batch_execution_mode(!matches!(
+        plan.pruning_strategy,
+        PruningStrategy::None | PruningStrategy::ConservativeTraversal
+    ));
+
+    if matches!(plan.capture_kind, CaptureKind::Region) {
+        let out = execute_world_batch_query(&evaluator, plan, args, items, trace)?;
+        return Ok((
+            KernelValue::Array(out),
+            evaluator.runtime.snapshot_observability(),
+        ));
+    }
 
     let mut out = vec![KernelValue::Nothing; items.len()];
     for iteration in &trace.iterations {
@@ -1480,13 +1574,116 @@ pub(crate) fn execute_batch_query_with_observability(
             });
         };
         out[item_index] = execute_batch_item_contract(
-            &VirtualGpuCaptureBackend { runtime: &runtime },
+            &VirtualGpuCaptureBackend {
+                runtime: evaluator.runtime.as_ref(),
+            },
             &plan.item_contract,
             args.first(),
             item,
         )?;
     }
-    Ok((KernelValue::Array(out), runtime.snapshot_observability()))
+    Ok((
+        KernelValue::Array(out),
+        evaluator.runtime.snapshot_observability(),
+    ))
+}
+
+fn execute_world_batch_query(
+    evaluator: &VirtualGpuDirectQueryEvaluator<'_>,
+    plan: &KernelBatchQueryPlan,
+    args: &[KernelValue],
+    items: &[KernelValue],
+    trace: &KernelBatchQueryTrace,
+) -> Result<Vec<KernelValue>, QueryExecError> {
+    let KernelBatchItemContract::WorldQuery { plan: world_plan } = &plan.item_contract else {
+        return Err(QueryExecError::Unsupported {
+            message: "world-batch plans require a world-query item contract".to_string(),
+        });
+    };
+    let capture = args
+        .first()
+        .cloned()
+        .ok_or(QueryExecError::MissingCaptureTarget {
+            kind: "world batch capture",
+        })?;
+    let domain = args
+        .get(1)
+        .cloned()
+        .ok_or(QueryExecError::MissingCaptureTarget {
+            kind: "world batch domain",
+        })?;
+    let mut out = vec![KernelValue::Nothing; items.len()];
+    for iteration in &trace.iterations {
+        let item_index = iteration.item_index as usize;
+        let Some(item) = items.get(item_index) else {
+            return Err(QueryExecError::Unsupported {
+                message: format!(
+                    "virtual GPU scheduled missing world item index {}",
+                    iteration.item_index
+                ),
+            });
+        };
+        let world_args = build_world_batch_args(world_plan, &capture, &domain, item)?;
+        let value = evaluator.execute_world_query(world_plan, &world_args)?;
+        out[item_index] = wrap_world_batch_result(world_plan, value)?;
+    }
+    Ok(out)
+}
+
+fn build_world_batch_args(
+    plan: &KernelWorldQueryPlan,
+    capture: &KernelValue,
+    domain: &KernelValue,
+    item: &KernelValue,
+) -> Result<Vec<KernelValue>, QueryExecError> {
+    let mut args = vec![capture.clone(), domain.clone()];
+    match world_query_kind_for_contract_id(plan.contract_id).ok_or_else(|| {
+        QueryExecError::Unsupported {
+            message: format!(
+                "missing world query contract '{}'",
+                plan.contract_id.as_str()
+            ),
+        }
+    })? {
+        WorldQueryKind::Distance | WorldQueryKind::Normal | WorldQueryKind::Medium => {
+            let point = expect_struct(item, "PointQuery")?;
+            args.push(KernelValue::Vec3(expect_struct_vec3_from_struct(
+                point, "point",
+            )?));
+        }
+        WorldQueryKind::Nearest | WorldQueryKind::Trace | WorldQueryKind::Occluded => {
+            expect_struct(item, "RayQuery")?;
+            args.push(item.clone());
+        }
+        WorldQueryKind::Surface => {
+            expect_struct(item, "Hit3")?;
+            args.push(item.clone());
+        }
+        WorldQueryKind::Radiance => {
+            expect_struct(item, "PointDirectionQuery")?;
+            args.push(item.clone());
+        }
+        WorldQueryKind::SupportSummary => {}
+    }
+    Ok(args)
+}
+
+fn wrap_world_batch_result(
+    plan: &KernelWorldQueryPlan,
+    value: KernelValue,
+) -> Result<KernelValue, QueryExecError> {
+    match world_query_kind_for_contract_id(plan.contract_id).ok_or_else(|| {
+        QueryExecError::Unsupported {
+            message: format!(
+                "missing world query contract '{}'",
+                plan.contract_id.as_str()
+            ),
+        }
+    })? {
+        WorldQueryKind::Distance => Ok(distance_result(expect_f32_value(&value)?)),
+        WorldQueryKind::Normal => Ok(normal_result(expect_vec3(&value, "normal")?)),
+        _ => Ok(value),
+    }
 }
 
 fn expect_struct_ref_arg<'a>(
@@ -1602,6 +1799,16 @@ fn expect_vec3(value: &KernelValue, expected: &str) -> Result<[f32; 3], QueryExe
         KernelValue::Vec3(value) => Ok(*value),
         other => Err(QueryExecError::TypeMismatch {
             expected: expected.to_string(),
+            found: format!("{other:?}"),
+        }),
+    }
+}
+
+fn expect_f32_value(value: &KernelValue) -> Result<f32, QueryExecError> {
+    match value {
+        KernelValue::F32(value) => Ok(*value),
+        other => Err(QueryExecError::TypeMismatch {
+            expected: "F32".to_string(),
             found: format!("{other:?}"),
         }),
     }

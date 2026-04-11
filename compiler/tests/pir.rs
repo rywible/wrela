@@ -108,6 +108,7 @@ fn portable_builtin_catalog_matches_expected_surface() {
             "DispatchBackend",
             "DistanceResult",
             "FieldCapture",
+            "FrameState",
             "Hit3",
             "Light",
             "Medium",
@@ -121,6 +122,7 @@ fn portable_builtin_catalog_matches_expected_surface() {
             "RayQuery",
             "RegionCapture",
             "SceneDomain",
+            "ScreenSampleQuery",
             "ShapeCapture",
             "SpatialDomainContract",
             "Support3",
@@ -129,6 +131,8 @@ fn portable_builtin_catalog_matches_expected_surface() {
             "SurfaceDomainContract",
             "Transform3",
             "UnitQuery",
+            "ViewState",
+            "Viewport",
         ]
     );
     assert_eq!(
@@ -196,6 +200,13 @@ fn portable_builtin_catalog_matches_expected_surface() {
             "__wr_scene_trace_batch_queries",
             "__wr_scene_surface_batch_queries",
             "__wr_scene_occluded_batch_queries",
+            "__wr_world_distance_batch_queries",
+            "__wr_world_normal_batch_queries",
+            "__wr_world_trace_batch_queries",
+            "__wr_world_occluded_batch_queries",
+            "__wr_world_surface_batch_queries",
+            "__wr_world_radiance_batch_queries",
+            "__wr_world_medium_batch_queries",
             "__wr_scene_trace_queries",
             "__wr_scene_surface_queries",
         ]
@@ -395,6 +406,33 @@ fn portable_builtin_catalog_matches_expected_surface() {
             .collect::<Vec<_>>(),
         vec!["position", "forward", "up", "vertical_fov_degrees"]
     );
+    let viewport = portable::builtin_record("Viewport").expect("Viewport");
+    assert_eq!(
+        viewport
+            .fields
+            .iter()
+            .map(|field| field.name)
+            .collect::<Vec<_>>(),
+        vec!["width", "height"]
+    );
+    let view_state = portable::builtin_record("ViewState").expect("ViewState");
+    assert_eq!(
+        view_state
+            .fields
+            .iter()
+            .map(|field| field.name)
+            .collect::<Vec<_>>(),
+        vec!["camera", "previous_camera", "viewport", "jitter"]
+    );
+    let frame_state = portable::builtin_record("FrameState").expect("FrameState");
+    assert_eq!(
+        frame_state
+            .fields
+            .iter()
+            .map(|field| field.name)
+            .collect::<Vec<_>>(),
+        vec!["view", "frame_index", "delta_seconds"]
+    );
     let light = portable::builtin_record("Light").expect("Light");
     assert_eq!(
         light
@@ -404,6 +442,33 @@ fn portable_builtin_catalog_matches_expected_surface() {
             .collect::<Vec<_>>(),
         vec!["position", "direction", "intensity", "range"]
     );
+}
+
+#[test]
+fn portable_frame_state_records_lower_and_execute_in_pir() {
+    let source = r#"
+kernel fn portable_entry() -> U32 {
+    camera = Camera(
+        position=vec3(0.0, 0.0, 3.0),
+        forward=vec3(0.0, 0.0, -1.0),
+        up=vec3(0.0, 1.0, 0.0),
+        vertical_fov_degrees=f32(60.0)
+    )
+    viewport = Viewport(width=u32(1920), height=u32(1080))
+    view = ViewState(
+        camera=camera,
+        previous_camera=camera,
+        viewport=viewport,
+        jitter=vec2(0.25, 0.75)
+    )
+    frame = FrameState(view=view, frame_index=u32(7), delta_seconds=0.016)
+    return frame.view.viewport.width + frame.frame_index
+}
+"#;
+
+    let module = lower_pir_inline(source, "portable_entry");
+    let result = pir::execute_entry(&module, Vec::new()).expect("execute");
+    assert_eq!(result, pir::PirValue::U32(1927));
 }
 
 #[test]

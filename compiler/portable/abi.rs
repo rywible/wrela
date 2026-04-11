@@ -334,16 +334,21 @@ pub fn portable_query_result_abi(
             QuerySurfaceKind::CaptureScalar | QuerySurfaceKind::WorldScalar,
             QueryResultKind::NormalResult | QueryResultKind::RadianceResult,
         ) => Some(PortableAbiType::Vec3),
+        (QuerySurfaceKind::WorldBatch, QueryResultKind::RadianceResult) => {
+            Some(PortableAbiType::Vec3)
+        }
         (
             QuerySurfaceKind::CaptureScalar | QuerySurfaceKind::WorldScalar,
             QueryResultKind::SupportSummaryResult,
         ) => portable_builtin_record_abi("SupportSummaryResult"),
-        (QuerySurfaceKind::CaptureBatch, QueryResultKind::DistanceResult) => {
-            portable_builtin_record_abi("DistanceResult")
-        }
-        (QuerySurfaceKind::CaptureBatch, QueryResultKind::NormalResult) => {
-            portable_builtin_record_abi("NormalResult")
-        }
+        (
+            QuerySurfaceKind::CaptureBatch | QuerySurfaceKind::WorldBatch,
+            QueryResultKind::DistanceResult,
+        ) => portable_builtin_record_abi("DistanceResult"),
+        (
+            QuerySurfaceKind::CaptureBatch | QuerySurfaceKind::WorldBatch,
+            QueryResultKind::NormalResult,
+        ) => portable_builtin_record_abi("NormalResult"),
         (_, QueryResultKind::Hit3) => portable_builtin_record_abi("Hit3"),
         (_, QueryResultKind::Surface) => portable_builtin_record_abi("Surface"),
         (_, QueryResultKind::OcclusionResult) => portable_builtin_record_abi("OcclusionResult"),
@@ -352,6 +357,7 @@ pub fn portable_query_result_abi(
             QuerySurfaceKind::CaptureBatch,
             QueryResultKind::RadianceResult | QueryResultKind::SupportSummaryResult,
         ) => None,
+        (QuerySurfaceKind::WorldBatch, QueryResultKind::SupportSummaryResult) => None,
     }
 }
 

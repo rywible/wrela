@@ -378,7 +378,10 @@ impl<'a> Checker<'a> {
             }
         }
 
-        if !matches!(func.role, FunctionRole::Domain | FunctionRole::Render) {
+        if !matches!(
+            func.role,
+            FunctionRole::Domain | FunctionRole::Render | FunctionRole::View
+        ) {
             let fn_types = self.type_info.functions.get(&func_id);
             func.visit_analysis_bodies(|body| self.check_body_locals(body, fn_types));
         }

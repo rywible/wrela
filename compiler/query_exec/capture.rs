@@ -142,6 +142,12 @@ pub(crate) fn execute_batch_item_contract<B: CaptureQueryBackend>(
             let hit = expect_struct_ref_arg(Some(&hit), "Hit3")?;
             occlusion_result_from_hit(hit)
         }
+        KernelBatchItemContract::WorldQuery { plan } => Err(QueryExecError::Unsupported {
+            message: format!(
+                "capture batch executor cannot run world item contract '{}'",
+                plan.contract_id.as_str()
+            ),
+        }),
     }
 }
 

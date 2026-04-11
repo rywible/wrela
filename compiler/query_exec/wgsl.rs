@@ -12,8 +12,8 @@ use crate::portable::{
     portable_abi_encode_slice, portable_abi_encode_value, portable_abi_layout,
 };
 use crate::query_contract::{
-    QueryContractDescriptor, QueryItemKind, QueryResultKind, SceneDomainFlag, query_contract,
-    scene_domain_flag_name,
+    QueryCardinality, QueryContractDescriptor, QueryItemKind, QueryResultKind, QueryTargetKind,
+    SceneDomainFlag, query_contract, scene_domain_flag_name,
 };
 use crate::query_exec::QueryExecutionObservability;
 use crate::query_exec::cpu::{DirectQueryOps, QueryExecError};
@@ -27,12 +27,12 @@ use std::sync::{Mutex, OnceLock, mpsc};
 use wgpu::util::{DeviceExt, initialize_adapter_from_env_or_default};
 
 #[derive(Clone)]
-struct NativeWgpuContext {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+pub(crate) struct NativeWgpuContext {
+    pub(crate) device: wgpu::Device,
+    pub(crate) queue: wgpu::Queue,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct GpuDispatchRequest {
     pub(crate) dispatch: KernelValue,
     pub(crate) items: Vec<KernelValue>,
@@ -55,9 +55,9 @@ pub(crate) struct NativeWgslBridgeConfig {
 }
 
 #[derive(Clone)]
-struct CachedPipeline {
-    bind_group_layout: wgpu::BindGroupLayout,
-    pipeline: wgpu::ComputePipeline,
+pub(crate) struct CachedPipeline {
+    pub(crate) bind_group_layout: wgpu::BindGroupLayout,
+    pub(crate) pipeline: wgpu::ComputePipeline,
 }
 
 pub(crate) fn execute_capture_query_with_observability(
@@ -74,7 +74,9 @@ pub(crate) fn execute_capture_query_with_observability(
     let request = build_capture_request(&ops, plan, args)?;
     let generated = generate_compiled_shader(ctx, ShaderPlan::Capture(plan))?;
     let mut values = dispatch_compiled_shader(&generated, request)?;
-    note_contract_observability(&ops, descriptor_for_plan(plan.contract_id)?);
+    let descriptor = descriptor_for_plan(plan.contract_id)?;
+    note_contract_observability(&ops);
+    note_result_observability(&ops, descriptor, &values);
     let value = values.pop().ok_or_else(|| QueryExecError::Unsupported {
         message: "native WGSL backend produced no capture result".to_string(),
     })?;
@@ -95,7 +97,10 @@ pub(crate) fn execute_world_query_with_observability(
     let request = build_world_request(&ops, plan, args)?;
     let generated = generate_compiled_shader(ctx, ShaderPlan::World(plan))?;
     let mut values = dispatch_compiled_shader(&generated, request)?;
-    note_contract_observability(&ops, descriptor_for_plan(plan.contract_id)?);
+    let descriptor = descriptor_for_plan(plan.contract_id)?;
+    note_contract_observability(&ops);
+    note_wgsl_solver_fallback(&ops, plan.ray_solver.as_ref(), values.len() as u32);
+    note_result_observability(&ops, descriptor, &values);
     let value = values.pop().ok_or_else(|| QueryExecError::Unsupported {
         message: "native WGSL backend produced no world result".to_string(),
     })?;
@@ -114,10 +119,21 @@ pub(crate) fn execute_batch_query_with_observability(
         ops.note_contract_validation_failure();
         return Err(validation_error("batch query", errors));
     }
-    let request = build_batch_request(&ops, plan, args)?;
     let generated = generate_compiled_shader(ctx, ShaderPlan::Batch(plan))?;
+    let request = build_batch_request(&ops, plan, args)?;
+    let workgroups_x = (request.items.len() as u32).div_ceil(generated.workgroup_size);
+    ops.note_batch_dispatch_grid(
+        request.items.len() as u32,
+        workgroups_x.max(1),
+        1,
+        1,
+        descriptor_for_plan(plan.contract_id)?.target == QueryTargetKind::World,
+    );
     let values = dispatch_compiled_shader(&generated, request)?;
-    note_contract_observability(&ops, descriptor_for_plan(plan.contract_id)?);
+    let descriptor = descriptor_for_plan(plan.contract_id)?;
+    note_contract_observability(&ops);
+    note_wgsl_solver_fallback(&ops, plan.ray_solver.as_ref(), values.len() as u32);
+    note_result_observability(&ops, descriptor, &values);
     Ok((KernelValue::Array(values), ops.snapshot_observability()))
 }
 
@@ -133,6 +149,18 @@ pub(crate) fn compile_batch_shader(
     plan: &KernelBatchQueryPlan,
 ) -> Result<GeneratedShaderModule, QueryExecError> {
     generate_compiled_shader(ctx, ShaderPlan::Batch(plan))
+}
+
+pub(crate) fn build_batch_request_for_shader(
+    ctx: &crate::query_exec::context::QueryExecContext,
+    plan: &KernelBatchQueryPlan,
+    args: &[KernelValue],
+) -> Result<GpuDispatchRequest, QueryExecError> {
+    if let Err(errors) = validate_batch_query_plan(plan) {
+        return Err(validation_error("batch query", errors));
+    }
+    let ops = DirectQueryOps::new(ctx);
+    build_batch_request(&ops, plan, args)
 }
 
 pub(crate) fn bridge_config(shader: &GeneratedShaderModule) -> NativeWgslBridgeConfig {
@@ -214,15 +242,64 @@ fn descriptor_for_plan(
     })
 }
 
-fn note_contract_observability(ops: &DirectQueryOps<'_>, descriptor: &QueryContractDescriptor) {
+fn note_contract_observability(ops: &DirectQueryOps<'_>) {
     ops.note_artifact_load();
-    if descriptor.observability.trace_steps
-        && matches!(
-            descriptor.item_kind,
-            QueryItemKind::RayQuery | QueryItemKind::Hit3
-        )
-    {
-        ops.note_trace_step();
+}
+
+fn note_wgsl_solver_fallback(
+    ops: &DirectQueryOps<'_>,
+    solver: Option<&crate::query_solver::RaySolverPlan>,
+    count: u32,
+) {
+    let Some(solver) = solver else {
+        return;
+    };
+    for _ in 0..count {
+        ops.note_solver_generated_dense_fallback(solver);
+    }
+}
+
+fn note_result_observability(
+    ops: &DirectQueryOps<'_>,
+    descriptor: &QueryContractDescriptor,
+    values: &[KernelValue],
+) {
+    if !descriptor.observability.trace_steps {
+        return;
+    }
+    for value in values {
+        match descriptor.result_kind {
+            QueryResultKind::Hit3 => {
+                if let Ok(hit) = expect_struct_arg(Some(value), "Hit3") {
+                    let hit_value = expect_struct_bool(hit, "hit").unwrap_or(false);
+                    let steps = expect_struct_i32(hit, "steps").unwrap_or_default().max(0) as u32;
+                    // WGSL currently reports trace work from result records rather than a
+                    // sideband metric buffer. Preserve the encoded value exactly; miss
+                    // records that carry zero steps must stay zero instead of inventing
+                    // work the backend did not report.
+                    ops.note_trace_steps(steps);
+                    ops.note_hit_result(hit_value, steps);
+                }
+            }
+            QueryResultKind::OcclusionResult => {
+                if let Ok(occlusion) = expect_struct_arg(Some(value), "OcclusionResult") {
+                    let hit_value = expect_struct_bool(occlusion, "occluded").unwrap_or(false);
+                    let steps = expect_struct_i32(occlusion, "steps")
+                        .unwrap_or_default()
+                        .max(0) as u32;
+                    ops.note_trace_steps(steps);
+                    ops.note_hit_result(hit_value, steps);
+                }
+            }
+            _ => {
+                if matches!(
+                    descriptor.item_kind,
+                    QueryItemKind::RayQuery | QueryItemKind::Hit3
+                ) {
+                    ops.note_trace_step();
+                }
+            }
+        }
     }
 }
 
@@ -304,6 +381,22 @@ fn build_batch_request(
     args: &[KernelValue],
 ) -> Result<GpuDispatchRequest, QueryExecError> {
     let descriptor = descriptor_for_plan(plan.contract_id)?;
+    if descriptor.cardinality != QueryCardinality::Batch {
+        return Err(QueryExecError::Unsupported {
+            message: format!(
+                "WGSL batch execution requires a batch contract, got '{}'",
+                descriptor.id.as_str()
+            ),
+        });
+    }
+    if descriptor.result_kind == QueryResultKind::SupportSummaryResult {
+        return Err(QueryExecError::Unsupported {
+            message: "support.summary is not supported by the native WGSL backend".to_string(),
+        });
+    }
+    if descriptor.target == QueryTargetKind::World {
+        return build_world_batch_request(ops, plan, descriptor, args);
+    }
     let capture = match descriptor.capture_kind {
         CaptureKind::Field => ops.resolve_field_or_shape_capture(args.first())?,
         CaptureKind::Shape => ops.resolve_shape_capture(args.first())?,
@@ -315,6 +408,11 @@ fn build_batch_request(
     };
     let items = expect_array_arg(args.get(1), batch_array_label(descriptor))?;
     ops.note_candidate_count(items.len() as u32);
+    ops.note_batch_execution_mode(!matches!(
+        plan.pruning_strategy,
+        crate::query_plan::PruningStrategy::None
+            | crate::query_plan::PruningStrategy::ConservativeTraversal
+    ));
     Ok(GpuDispatchRequest {
         dispatch: dispatch_config(
             match descriptor.capture_kind {
@@ -335,6 +433,47 @@ fn build_batch_request(
         ),
         items: items.to_vec(),
         world_shape_indices: Vec::new(),
+    })
+}
+
+fn build_world_batch_request(
+    ops: &DirectQueryOps<'_>,
+    plan: &KernelBatchQueryPlan,
+    descriptor: &QueryContractDescriptor,
+    args: &[KernelValue],
+) -> Result<GpuDispatchRequest, QueryExecError> {
+    let capture = ops.resolve_region_capture(args.first())?;
+    let domain = expect_struct_arg(args.get(1), "SceneDomain")?;
+    let detail = ops.validate_world_domain(
+        &capture,
+        domain,
+        world_query_semantics_for_contract(plan.contract_id).query_name,
+    )?;
+    let items = expect_array_arg(args.get(2), batch_array_label(descriptor))?;
+    let world_shapes = ops.resolve_world_shapes(&capture, detail, None)?;
+    ops.note_candidate_count((world_shapes.len() * items.len()) as u32);
+    ops.note_batch_execution_mode(!matches!(
+        plan.pruning_strategy,
+        crate::query_plan::PruningStrategy::None
+            | crate::query_plan::PruningStrategy::ConservativeTraversal
+    ));
+    let world_shape_indices = world_shapes
+        .iter()
+        .map(|shape| shape_index(ops.context(), shape))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(GpuDispatchRequest {
+        dispatch: dispatch_config(
+            2,
+            0,
+            items.len() as u32,
+            world_shape_indices.len() as u32,
+            scene_domain_flag_enabled(domain, SceneDomainFlag::Material)?,
+            scene_domain_flag_enabled(domain, SceneDomainFlag::Radiance)?,
+            scene_domain_flag_enabled(domain, SceneDomainFlag::Media)?,
+        ),
+        items: items.to_vec(),
+        world_shape_indices,
     })
 }
 
@@ -362,19 +501,9 @@ pub(crate) fn dispatch_compiled_shader(
     }
 
     let native = native_wgpu_context()?;
-    let dispatch_bytes = encode_value(&generated.dispatch_abi, &request.dispatch)?;
     let input_bytes = encode_slice(&generated.item_abi, &request.items)?;
-    let shape_bytes = encode_shape_indices(&request.world_shape_indices)?;
     let result_stride = portable_abi_array_stride(&generated.result_abi) as usize;
     let result_buffer_size = (result_stride * request.items.len()).max(result_stride.max(4));
-
-    let dispatch_buffer = native
-        .device
-        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wrela.wgsl.dispatch"),
-            contents: &dispatch_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
     let input_buffer = native
         .device
         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -388,6 +517,32 @@ pub(crate) fn dispatch_compiled_shader(
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
+
+    dispatch_compiled_shader_with_buffers(generated, &request, &input_buffer, &output_buffer)?;
+    let bytes = readback_storage_buffer(&output_buffer, result_buffer_size as u64)?;
+
+    decode_slice(&generated.result_abi, &bytes, request.items.len())
+}
+
+pub(crate) fn dispatch_compiled_shader_with_buffers(
+    generated: &GeneratedShaderModule,
+    request: &GpuDispatchRequest,
+    input_buffer: &wgpu::Buffer,
+    output_buffer: &wgpu::Buffer,
+) -> Result<(), QueryExecError> {
+    if request.items.is_empty() {
+        return Ok(());
+    }
+    let native = native_wgpu_context()?;
+    let dispatch_bytes = encode_value(&generated.dispatch_abi, &request.dispatch)?;
+    let shape_bytes = encode_shape_indices(&request.world_shape_indices)?;
+    let dispatch_buffer = native
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("wrela.wgsl.dispatch"),
+            contents: &dispatch_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+        });
     let world_shapes_buffer = native
         .device
         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -395,17 +550,10 @@ pub(crate) fn dispatch_compiled_shader(
             contents: &shape_bytes,
             usage: wgpu::BufferUsages::STORAGE,
         });
-    let readback_buffer = native.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wrela.wgsl.readback"),
-        size: result_buffer_size as u64,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-
     let dispatch_min_size =
         wgpu::BufferSize::new(portable_abi_layout(&generated.dispatch_abi).size as u64);
     let cached = compiled_pipeline(
-        &native,
+        native,
         &generated.source,
         generated.workgroup_size,
         dispatch_min_size,
@@ -451,16 +599,30 @@ pub(crate) fn dispatch_compiled_shader(
             1,
         );
     }
-    encoder.copy_buffer_to_buffer(
-        &output_buffer,
-        0,
-        &readback_buffer,
-        0,
-        result_buffer_size as u64,
-    );
+    native.queue.submit(Some(encoder.finish()));
+    Ok(())
+}
+
+pub(crate) fn readback_storage_buffer(
+    buffer: &wgpu::Buffer,
+    size: u64,
+) -> Result<Vec<u8>, QueryExecError> {
+    let native = native_wgpu_context()?;
+    let readback_buffer = native.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wrela.wgsl.readback"),
+        size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = native
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("wrela.wgsl.readback_encoder"),
+        });
+    encoder.copy_buffer_to_buffer(buffer, 0, &readback_buffer, 0, size);
     native.queue.submit(Some(encoder.finish()));
 
-    let slice = readback_buffer.slice(..result_buffer_size as u64);
+    let slice = readback_buffer.slice(..size);
     let (tx, rx) = mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = tx.send(result);
@@ -485,11 +647,10 @@ pub(crate) fn dispatch_compiled_shader(
     let bytes = slice.get_mapped_range().to_vec();
     let _ = slice;
     readback_buffer.unmap();
-
-    decode_slice(&generated.result_abi, &bytes, request.items.len())
+    Ok(bytes)
 }
 
-fn compiled_pipeline(
+pub(crate) fn compiled_pipeline(
     native: &NativeWgpuContext,
     source: &str,
     workgroup_size: u32,
@@ -619,7 +780,7 @@ fn validate_generated_shader(source: &str) -> Result<(), QueryExecError> {
     Ok(())
 }
 
-fn native_wgpu_context() -> Result<&'static NativeWgpuContext, QueryExecError> {
+pub(crate) fn native_wgpu_context() -> Result<&'static NativeWgpuContext, QueryExecError> {
     static CONTEXT: OnceLock<Result<NativeWgpuContext, String>> = OnceLock::new();
     match CONTEXT.get_or_init(init_native_wgpu_context) {
         Ok(context) => Ok(context),
@@ -724,7 +885,7 @@ fn point_query(point: [f32; 3]) -> KernelValue {
     })
 }
 
-fn encode_shape_indices(indices: &[u32]) -> Result<Vec<u8>, QueryExecError> {
+pub(crate) fn encode_shape_indices(indices: &[u32]) -> Result<Vec<u8>, QueryExecError> {
     let values = if indices.is_empty() {
         vec![KernelValue::U32(0)]
     } else {
@@ -733,15 +894,21 @@ fn encode_shape_indices(indices: &[u32]) -> Result<Vec<u8>, QueryExecError> {
     encode_slice(&PortableAbiType::U32, &values)
 }
 
-fn encode_value(abi: &PortableAbiType, value: &KernelValue) -> Result<Vec<u8>, QueryExecError> {
+pub(crate) fn encode_value(
+    abi: &PortableAbiType,
+    value: &KernelValue,
+) -> Result<Vec<u8>, QueryExecError> {
     portable_abi_encode_value(abi, value).map_err(portable_abi_error)
 }
 
-fn encode_slice(abi: &PortableAbiType, values: &[KernelValue]) -> Result<Vec<u8>, QueryExecError> {
+pub(crate) fn encode_slice(
+    abi: &PortableAbiType,
+    values: &[KernelValue],
+) -> Result<Vec<u8>, QueryExecError> {
     portable_abi_encode_slice(abi, values).map_err(portable_abi_error)
 }
 
-fn decode_slice(
+pub(crate) fn decode_slice(
     abi: &PortableAbiType,
     bytes: &[u8],
     len: usize,
@@ -755,7 +922,7 @@ fn portable_abi_error(err: crate::portable::PortableAbiError) -> QueryExecError 
     }
 }
 
-fn wgpu_poll_error(err: wgpu::PollError) -> QueryExecError {
+pub(crate) fn wgpu_poll_error(err: wgpu::PollError) -> QueryExecError {
     QueryExecError::Unsupported {
         message: format!("native WGSL device poll failed: {err}"),
     }
@@ -822,6 +989,22 @@ fn expect_struct_u32(value: &KernelStructValue, field: &str) -> Result<u32, Quer
         KernelValue::I32(value) if *value >= 0 => Ok(*value as u32),
         other => Err(QueryExecError::TypeMismatch {
             expected: format!("U32 for field {field}"),
+            found: format!("{other:?}"),
+        }),
+    }
+}
+
+fn expect_struct_i32(value: &KernelStructValue, field: &str) -> Result<i32, QueryExecError> {
+    let Some(value) = struct_field(value, field) else {
+        return Err(QueryExecError::MissingCaptureTarget {
+            kind: "struct field",
+        });
+    };
+    match value {
+        KernelValue::I32(value) => Ok(*value),
+        KernelValue::U32(value) if *value <= i32::MAX as u32 => Ok(*value as i32),
+        other => Err(QueryExecError::TypeMismatch {
+            expected: format!("I32 for field {field}"),
             found: format!("{other:?}"),
         }),
     }

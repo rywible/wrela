@@ -2241,6 +2241,11 @@ render StaircaseView(world: Capture[StaircaseWorld], camera: Camera) {
     lights = []
     limits = render_limits(max_steps = 128)
 }
+view PrimaryView(world: Capture[StaircaseWorld], camera: Camera) {
+    domain = Presentation(world = world, camera = camera)
+    width = 128
+    height = 72
+}
 ";
         let (_node, errors) = parse_with_errors(text);
         assert!(errors.is_empty(), "{errors:?}");
@@ -2248,7 +2253,7 @@ render StaircaseView(world: Capture[StaircaseWorld], camera: Camera) {
         let node = parse(text);
         let root = ast::Root::cast(node).unwrap();
         let statements: Vec<_> = root.statements().collect();
-        assert_eq!(statements.len(), 3);
+        assert_eq!(statements.len(), 4);
 
         let region = match &statements[0] {
             Stmt::RegionDecl(region) => region,
@@ -2295,6 +2300,14 @@ render StaircaseView(world: Capture[StaircaseWorld], camera: Camera) {
         assert_eq!(render.name().unwrap().text(), "StaircaseView");
         assert_eq!(render.params().count(), 2);
         assert_eq!(render.statements().count(), 3);
+
+        let view = match &statements[3] {
+            Stmt::ViewDecl(view) => view,
+            _ => panic!("expected view declaration"),
+        };
+        assert_eq!(view.name().unwrap().text(), "PrimaryView");
+        assert_eq!(view.params().count(), 2);
+        assert_eq!(view.statements().count(), 3);
     }
 
     #[test]
@@ -2324,6 +2337,15 @@ render StaircaseView(world: Capture[StaircaseWorld], camera: Camera) {
                 .iter()
                 .any(|error| error.message == "expected render name after 'render'"),
             "expected missing render name parse error, got: {render_errors:?}"
+        );
+
+        let view_text = "view (world: Capture[StaircaseWorld]) {}\n";
+        let (_node, view_errors) = parse_with_errors(view_text);
+        assert!(
+            view_errors
+                .iter()
+                .any(|error| error.message == "expected view name after 'view'"),
+            "expected missing view name parse error, got: {view_errors:?}"
         );
     }
 

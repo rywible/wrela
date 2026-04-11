@@ -1,6 +1,8 @@
 use crate::hir;
 use crate::hir::body::{BinaryOp, Expr, Literal, UnaryOp};
-use crate::kernel::ir::{KernelBatchQueryPlan, KernelCaptureQueryPlan, KernelWorldQueryPlan};
+use crate::kernel::ir::{
+    KernelBatchItemContract, KernelBatchQueryPlan, KernelCaptureQueryPlan, KernelWorldQueryPlan,
+};
 use crate::kernel::{KernelStructValue, KernelValue};
 use crate::kernel::{
     KernelValidationError, validate_batch_query_plan, validate_capture_query_plan,
@@ -25,6 +27,7 @@ use crate::query_plan::{
     BatchQueryKind, WorldQueryKind, batch_query_kind_for_contract_id,
     world_query_kind_for_contract_id,
 };
+use crate::query_solver::{FieldFacts, RaySolverFallbackReason, RaySolverMethod, RaySolverPlan};
 use crate::scene_ir::{
     DistanceSemantics, FieldNode, RepeatKind, SceneArgExpr, SceneProfileExpr, SceneValueExpr,
     ShapeLeafRef, ShapeMergeProvenancePolicy, ShapeNode, ShapeProvenanceExpr,
@@ -160,7 +163,9 @@ pub(crate) fn resolve_batch_capture(
         BatchQueryKind::Nearest
         | BatchQueryKind::Trace
         | BatchQueryKind::Surface
-        | BatchQueryKind::Occluded => evaluator.resolve_shape_capture(capture),
+        | BatchQueryKind::Occluded
+        | BatchQueryKind::Radiance
+        | BatchQueryKind::Medium => evaluator.resolve_shape_capture(capture),
     }
 }
 
@@ -208,6 +213,13 @@ struct SupportSummaryParts {
     opaque_boundary: bool,
     can_coarse_support_prune: bool,
     bounds: SupportBounds,
+}
+
+#[derive(Debug, Clone)]
+enum AnalyticRayHit {
+    Hit(KernelValue),
+    VerificationFailed,
+    NotApplicable,
 }
 
 #[derive(Debug, Clone)]
@@ -280,11 +292,191 @@ impl<'a> DirectQueryOps<'a> {
     }
 
     pub(crate) fn note_candidate_count(&self, count: u32) {
-        self.update_observability(|observability| observability.candidate_count += count);
+        self.update_observability(|observability| {
+            observability.candidate_count += count;
+            observability.candidates_after_pruning += count;
+            observability.candidates_before_pruning += count;
+        });
     }
 
     pub(crate) fn note_support_pruned_candidates(&self, count: u32) {
-        self.update_observability(|observability| observability.support_pruned_candidates += count);
+        self.update_observability(|observability| {
+            observability.support_pruned_candidates += count;
+            observability.candidates_before_pruning += count;
+        });
+    }
+
+    pub(crate) fn note_batch_dispatch_shape(&self, items: u32, world_batch: bool) {
+        self.note_batch_dispatch_grid(items, items.max(1), 1, 1, world_batch);
+    }
+
+    pub(crate) fn note_batch_dispatch_grid(
+        &self,
+        items: u32,
+        workgroups_x: u32,
+        workgroups_y: u32,
+        workgroups_z: u32,
+        world_batch: bool,
+    ) {
+        self.update_observability(|observability| {
+            observability.dispatch_items += items;
+            observability.dispatch_workgroups_x =
+                observability.dispatch_workgroups_x.max(workgroups_x);
+            observability.dispatch_workgroups_y =
+                observability.dispatch_workgroups_y.max(workgroups_y);
+            observability.dispatch_workgroups_z =
+                observability.dispatch_workgroups_z.max(workgroups_z);
+            if world_batch {
+                observability.world_batch_item_count += items;
+                observability.screen_sample_count += items;
+            }
+        });
+    }
+
+    pub(crate) fn note_batch_execution_mode(&self, semantic_pruned: bool) {
+        self.update_observability(|observability| {
+            if semantic_pruned {
+                observability.semantic_pruned_batches += 1;
+            } else {
+                observability.dense_compatibility_batches += 1;
+            }
+        });
+    }
+
+    pub(crate) fn note_solver_plan(&self, plan: &RaySolverPlan) {
+        self.update_observability(|observability| {
+            observability.solver_plan_id = Some(plan.id.clone());
+            for method in plan.diagnostic_summary().methods {
+                if !observability.solver_methods.contains(&method) {
+                    observability.solver_methods.push(method);
+                }
+            }
+        });
+    }
+
+    pub(crate) fn note_solver_dense_fallback(&self, reason: RaySolverFallbackReason) {
+        self.update_observability(|observability| {
+            observability.solver_dense_fallback_rays += 1;
+            match reason {
+                RaySolverFallbackReason::ContractRequiresDenseOracle => {
+                    observability.solver_fallback_contract_dense += 1;
+                }
+                RaySolverFallbackReason::MissingFieldFacts => {
+                    observability.solver_fallback_missing_facts += 1;
+                }
+                RaySolverFallbackReason::AnalyticUnsupported => {
+                    observability.solver_fallback_analytic_unsupported += 1;
+                }
+                RaySolverFallbackReason::VerificationFailed => {
+                    observability.solver_fallback_verification_failed += 1;
+                }
+                RaySolverFallbackReason::UnsupportedBackend => {
+                    observability.solver_fallback_unsupported_backend += 1;
+                }
+            }
+        });
+    }
+
+    pub(crate) fn note_solver_dense_fallback_reasons(&self, reasons: &[RaySolverFallbackReason]) {
+        if reasons.is_empty() {
+            self.note_solver_dense_fallback(RaySolverFallbackReason::ContractRequiresDenseOracle);
+            return;
+        }
+        self.update_observability(|observability| {
+            observability.solver_dense_fallback_rays += 1;
+            for reason in reasons {
+                match reason {
+                    RaySolverFallbackReason::ContractRequiresDenseOracle => {
+                        observability.solver_fallback_contract_dense += 1;
+                    }
+                    RaySolverFallbackReason::MissingFieldFacts => {
+                        observability.solver_fallback_missing_facts += 1;
+                    }
+                    RaySolverFallbackReason::AnalyticUnsupported => {
+                        observability.solver_fallback_analytic_unsupported += 1;
+                    }
+                    RaySolverFallbackReason::VerificationFailed => {
+                        observability.solver_fallback_verification_failed += 1;
+                    }
+                    RaySolverFallbackReason::UnsupportedBackend => {
+                        observability.solver_fallback_unsupported_backend += 1;
+                    }
+                }
+            }
+        });
+    }
+
+    pub(crate) fn note_solver_generated_dense_fallback(&self, plan: &RaySolverPlan) {
+        self.note_solver_plan(plan);
+        self.update_observability(|observability| {
+            observability.solver_generated_dense_fallback_rays += 1;
+            observability.solver_fallback_unsupported_backend += 1;
+        });
+    }
+
+    pub(crate) fn note_solver_analytic_hit(&self) {
+        self.update_observability(|observability| {
+            observability.solver_analytic_hits += 1;
+            if !observability
+                .solver_methods
+                .contains(&RaySolverMethod::AnalyticPrimitiveIntersection)
+            {
+                observability
+                    .solver_methods
+                    .push(RaySolverMethod::AnalyticPrimitiveIntersection);
+            }
+        });
+    }
+
+    pub(crate) fn note_solver_support_rejection(&self) {
+        self.update_observability(|observability| {
+            observability.solver_support_rejections += 1;
+            if !observability
+                .solver_methods
+                .contains(&RaySolverMethod::SupportBoundCandidateRejection)
+            {
+                observability
+                    .solver_methods
+                    .push(RaySolverMethod::SupportBoundCandidateRejection);
+            }
+        });
+    }
+
+    pub(crate) fn note_solver_lipschitz_step(&self) {
+        self.update_observability(|observability| {
+            observability.solver_lipschitz_steps += 1;
+            if !observability
+                .solver_methods
+                .contains(&RaySolverMethod::LipschitzSafeStepping)
+            {
+                observability
+                    .solver_methods
+                    .push(RaySolverMethod::LipschitzSafeStepping);
+            }
+        });
+    }
+
+    pub(crate) fn note_solver_adaptive_epsilon(&self) {
+        self.update_observability(|observability| {
+            observability.solver_adaptive_epsilon_uses += 1;
+        });
+    }
+
+    pub(crate) fn note_solver_certificate_failure(&self) {
+        self.update_observability(|observability| {
+            observability.solver_certificate_failures += 1;
+        });
+    }
+
+    pub(crate) fn note_hit_result(&self, hit: bool, steps: u32) {
+        self.update_observability(|observability| {
+            if hit {
+                observability.hit_count += 1;
+            } else {
+                observability.miss_count += 1;
+            }
+            observability.trace_steps_max = observability.trace_steps_max.max(steps);
+        });
     }
 
     pub(crate) fn note_branch_visit(&self) {
@@ -300,7 +492,14 @@ impl<'a> DirectQueryOps<'a> {
     }
 
     pub(crate) fn note_trace_step(&self) {
-        self.update_observability(|observability| observability.trace_steps += 1);
+        self.note_trace_steps(1);
+    }
+
+    pub(crate) fn note_trace_steps(&self, count: u32) {
+        self.update_observability(|observability| {
+            observability.trace_steps = observability.trace_steps.saturating_add(count);
+            observability.trace_steps_max = observability.trace_steps_max.max(count);
+        });
     }
 
     pub(crate) fn note_field_sample(&self) {
@@ -341,12 +540,17 @@ impl<'a> DirectQueryOps<'a> {
             WorldQueryKind::SupportSummary => self.support_summary_for_region(&capture, detail),
             WorldQueryKind::Nearest | WorldQueryKind::Trace => {
                 let ray = expect_struct(args.get(2), "RayQuery")?;
-                self.execute_world_ray_hit(&capture, detail, ray, WorldQueryKind::Nearest)
+                self.execute_world_ray_hit(plan, &capture, detail, ray, WorldQueryKind::Nearest)
             }
             WorldQueryKind::Occluded => {
                 let ray = expect_struct(args.get(2), "RayQuery")?;
-                let hit =
-                    self.execute_world_ray_hit(&capture, detail, ray, WorldQueryKind::Occluded)?;
+                let hit = self.execute_world_ray_hit(
+                    plan,
+                    &capture,
+                    detail,
+                    ray,
+                    WorldQueryKind::Occluded,
+                )?;
                 let hit = expect_struct_ref(&hit, "Hit3")?;
                 Ok(occlusion_result(
                     expect_struct_bool(hit, "hit")?,
@@ -450,6 +654,9 @@ impl<'a> DirectQueryOps<'a> {
         args: &[KernelValue],
     ) -> Result<KernelValue, QueryExecError> {
         let kind = batch_kind_for_plan(plan)?;
+        if plan.capture_kind == crate::query_plan::CaptureKind::Region {
+            return self.execute_world_batch_query(plan, args);
+        }
         let capture = match kind {
             BatchQueryKind::Distance | BatchQueryKind::Normal => {
                 self.resolve_field_or_shape_capture(args.first())
@@ -457,7 +664,9 @@ impl<'a> DirectQueryOps<'a> {
             BatchQueryKind::Nearest
             | BatchQueryKind::Trace
             | BatchQueryKind::Surface
-            | BatchQueryKind::Occluded => self.resolve_shape_capture(args.first()),
+            | BatchQueryKind::Occluded
+            | BatchQueryKind::Radiance
+            | BatchQueryKind::Medium => self.resolve_shape_capture(args.first()),
         }?;
         let items = expect_array(
             args.get(1),
@@ -470,6 +679,12 @@ impl<'a> DirectQueryOps<'a> {
             },
         )?;
         self.note_candidate_count(items.len() as u32);
+        self.note_batch_dispatch_shape(items.len() as u32, false);
+        self.note_batch_execution_mode(!matches!(
+            plan.pruning_strategy,
+            crate::query_plan::PruningStrategy::None
+                | crate::query_plan::PruningStrategy::ConservativeTraversal
+        ));
         let mut out = Vec::with_capacity(items.len());
         let capture_value = KernelValue::Capture(capture.clone());
         for item in items {
@@ -479,6 +694,38 @@ impl<'a> DirectQueryOps<'a> {
                 Some(&capture_value),
                 item,
             )?);
+        }
+        Ok(KernelValue::Array(out))
+    }
+
+    fn execute_world_batch_query(
+        &self,
+        plan: &KernelBatchQueryPlan,
+        args: &[KernelValue],
+    ) -> Result<KernelValue, QueryExecError> {
+        let capture = self.resolve_region_capture(args.first())?;
+        let domain = expect_struct(args.get(1), "SceneDomain")?.clone();
+        let items = expect_array(args.get(2), "world batch items")?;
+        self.note_batch_dispatch_shape(items.len() as u32, true);
+        self.note_batch_execution_mode(!matches!(
+            plan.pruning_strategy,
+            crate::query_plan::PruningStrategy::None
+                | crate::query_plan::PruningStrategy::ConservativeTraversal
+        ));
+
+        let KernelBatchItemContract::WorldQuery { plan: world_plan } = &plan.item_contract else {
+            return Err(QueryExecError::Unsupported {
+                message: "world-batch plans require a world-query item contract".to_string(),
+            });
+        };
+        let capture_value = KernelValue::Capture(capture);
+        let domain_value = KernelValue::Struct(domain);
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            let world_args =
+                build_world_batch_args(world_plan, &capture_value, &domain_value, item)?;
+            let value = self.execute_world_query(world_plan, &world_args)?;
+            out.push(wrap_world_batch_result(world_plan, value)?);
         }
         Ok(KernelValue::Array(out))
     }
@@ -528,11 +775,22 @@ impl<'a> DirectQueryOps<'a> {
 
     fn execute_world_ray_hit(
         &self,
+        plan: &KernelWorldQueryPlan,
         capture: &SmolStr,
         detail: i32,
         ray: &KernelStructValue,
         kind: WorldQueryKind,
     ) -> Result<KernelValue, QueryExecError> {
+        let solver_plan = plan
+            .ray_solver
+            .as_ref()
+            .ok_or_else(|| QueryExecError::Unsupported {
+                message: format!(
+                    "world ray contract '{}' is missing a RaySolverPlan",
+                    plan.contract_id.as_str()
+                ),
+            })?;
+        self.note_solver_plan(solver_plan);
         let origin = expect_struct_vec3(ray, "origin")?;
         let direction = expect_struct_vec3(ray, "direction")?;
         let max_distance = expect_struct_f32(ray, "max_distance")?;
@@ -549,6 +807,7 @@ impl<'a> DirectQueryOps<'a> {
             min_step,
             hit_epsilon,
             max_steps,
+            solver_plan,
             result: default_hit(origin),
             best_distance: f32::INFINITY,
         };
@@ -565,6 +824,12 @@ impl<'a> DirectQueryOps<'a> {
                 _ => "trace_world requires a capture created from a region declaration",
             },
         )?;
+        if let Ok(hit) = expect_struct_ref(&backend.result, "Hit3") {
+            self.note_hit_result(
+                expect_struct_bool(hit, "hit").unwrap_or(false),
+                expect_struct_i32(hit, "steps").unwrap_or_default().max(0) as u32,
+            );
+        }
         Ok(backend.result)
     }
 
@@ -1643,46 +1908,204 @@ impl<'a> DirectQueryOps<'a> {
             ];
             let distance = self.eval_shape_distance(shape, point)?;
             if distance <= hit_epsilon {
-                let normal = self.eval_shape_normal(shape, point)?;
-                let winner = self.eval_shape_winner(shape, point)?;
-                let feature_id = winner.feature_id;
-                let (payload, local_position, local_normal, instance_id, repeat_id) = self
-                    .shape_leaf_from_winner(shape, feature_id, winner.leaf.as_ref())
-                    .map(|leaf| {
-                        let local_frame = self.eval_field_local_frame(&leaf.field, point)?;
-                        let local_normal = self.eval_field_local_normal(&leaf.field, point)?;
-                        let payload = self
-                            .eval_payload_body(&leaf.payload)
-                            .unwrap_or_else(|_| default_payload());
-                        Ok::<_, QueryExecError>((
-                            payload,
-                            local_frame.point,
-                            local_normal,
-                            local_frame.instance_id,
-                            local_frame.repeat_id,
-                        ))
-                    })
-                    .transpose()?
-                    .unwrap_or_else(|| (default_payload(), point, normal, 0, 0));
-                return Ok(hit_value(
-                    true,
-                    travel,
-                    point,
-                    normal,
-                    local_position,
-                    local_normal,
-                    steps,
-                    feature_id,
-                    instance_id,
-                    repeat_id,
-                    stable_shape_capture_id(shape),
-                    payload,
-                ));
+                return self.shape_hit_value(shape, travel, point, steps);
             }
             travel += distance.max(min_step);
             steps += 1;
         }
         Ok(default_hit(origin))
+    }
+
+    pub(crate) fn solve_shape_ray(
+        &self,
+        solver_plan: &RaySolverPlan,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+        min_step: f32,
+        hit_epsilon: f32,
+        max_steps: i32,
+    ) -> Result<KernelValue, QueryExecError> {
+        let runtime_plan = self.runtime_shape_solver_plan(solver_plan, shape)?;
+        self.note_solver_plan(&runtime_plan);
+        let mut dense_fallback_recorded = false;
+        if runtime_plan.method_enabled(RaySolverMethod::AnalyticPrimitiveIntersection) {
+            match self.try_analytic_sphere_hit(
+                shape,
+                origin,
+                direction,
+                max_distance,
+                hit_epsilon,
+            )? {
+                AnalyticRayHit::Hit(hit) => {
+                    self.note_solver_analytic_hit();
+                    return Ok(hit);
+                }
+                AnalyticRayHit::VerificationFailed => {
+                    self.note_solver_certificate_failure();
+                    self.note_solver_dense_fallback_reasons(&[
+                        RaySolverFallbackReason::VerificationFailed,
+                    ]);
+                    dense_fallback_recorded = true;
+                }
+                AnalyticRayHit::NotApplicable => {}
+            }
+        }
+        if !dense_fallback_recorded {
+            self.note_solver_dense_fallback_reasons(runtime_plan.dense_fallback_reasons());
+        }
+        if runtime_plan.method_enabled(RaySolverMethod::LipschitzSafeStepping) {
+            self.note_solver_lipschitz_step();
+        }
+        self.trace_shape(
+            shape,
+            origin,
+            direction,
+            max_distance,
+            min_step,
+            hit_epsilon,
+            max_steps,
+        )
+    }
+
+    fn runtime_shape_solver_plan(
+        &self,
+        solver_plan: &RaySolverPlan,
+        shape: &SmolStr,
+    ) -> Result<RaySolverPlan, QueryExecError> {
+        let scene = self.shape_scene(shape)?;
+        let facts = match &scene.root {
+            ShapeNode::Leaf(leaf) => {
+                let mut facts = FieldFacts::for_field_scene(self.field_scene(&leaf.field)?);
+                facts.subject = shape.clone();
+                facts.provenance.hit3_identity_required = true;
+                facts.provenance.stable_feature_id = true;
+                facts.provenance.stable_instance_id = true;
+                facts.provenance.stable_repeat_id = true;
+                facts.provenance.payload_required = true;
+                facts
+            }
+            _ => FieldFacts::for_shape_scene(scene),
+        };
+        RaySolverPlan::for_contract(solver_plan.contract_id, Some(facts)).ok_or_else(|| {
+            QueryExecError::Unsupported {
+                message: format!(
+                    "contract '{}' is not a ray-shaped spatial solver contract",
+                    solver_plan.contract_id.as_str()
+                ),
+            }
+        })
+    }
+
+    fn try_analytic_sphere_hit(
+        &self,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+        hit_epsilon: f32,
+    ) -> Result<AnalyticRayHit, QueryExecError> {
+        let scene = self.shape_scene(shape)?;
+        let ShapeNode::Leaf(leaf) = &scene.root else {
+            return Ok(AnalyticRayHit::NotApplicable);
+        };
+        let field = self.field_scene(&leaf.field)?;
+        let FieldNode::Primitive {
+            primitive: hir::FieldPrimitive::Sphere,
+            args: Some(args),
+        } = &field.root
+        else {
+            return Ok(AnalyticRayHit::NotApplicable);
+        };
+        let radius_value = self.eval_scene_named_arg(args, "radius")?;
+        let radius = expect_f32(Some(&radius_value), "sphere radius")?.abs();
+        if self.eval_shape_distance(shape, origin)? <= hit_epsilon {
+            self.note_trace_steps(1);
+            return self
+                .shape_hit_value(shape, 0.0, origin, 0)
+                .map(AnalyticRayHit::Hit);
+        }
+        let a = dot3(direction, direction);
+        if a <= f32::EPSILON {
+            return Ok(AnalyticRayHit::NotApplicable);
+        }
+        let b = 2.0 * dot3(origin, direction);
+        let c = dot3(origin, origin) - radius * radius;
+        let discriminant = b * b - 4.0 * a * c;
+        if discriminant < 0.0 {
+            return Ok(AnalyticRayHit::NotApplicable);
+        }
+        let root = discriminant.sqrt();
+        let inv = 1.0 / (2.0 * a);
+        let near = (-b - root) * inv;
+        let travel = if near >= 0.0 {
+            near
+        } else {
+            return Ok(AnalyticRayHit::NotApplicable);
+        };
+        if !(0.0..=max_distance).contains(&travel) {
+            return Ok(AnalyticRayHit::NotApplicable);
+        }
+        let point = [
+            origin[0] + direction[0] * travel,
+            origin[1] + direction[1] * travel,
+            origin[2] + direction[2] * travel,
+        ];
+        let adaptive_epsilon = adaptive_hit_epsilon(hit_epsilon, travel, radius);
+        self.note_solver_adaptive_epsilon();
+        let residual = self.eval_shape_distance(shape, point)?.abs();
+        if residual > adaptive_epsilon {
+            return Ok(AnalyticRayHit::VerificationFailed);
+        }
+        let dense_compatible_steps = if travel <= hit_epsilon { 0 } else { 1 };
+        self.note_trace_steps(dense_compatible_steps.max(1) as u32);
+        self.shape_hit_value(shape, travel, point, dense_compatible_steps)
+            .map(AnalyticRayHit::Hit)
+    }
+
+    fn shape_hit_value(
+        &self,
+        shape: &SmolStr,
+        travel: f32,
+        point: [f32; 3],
+        steps: i32,
+    ) -> Result<KernelValue, QueryExecError> {
+        let normal = self.eval_shape_normal(shape, point)?;
+        let winner = self.eval_shape_winner(shape, point)?;
+        let feature_id = winner.feature_id;
+        let (payload, local_position, local_normal, instance_id, repeat_id) = self
+            .shape_leaf_from_winner(shape, feature_id, winner.leaf.as_ref())
+            .map(|leaf| {
+                let local_frame = self.eval_field_local_frame(&leaf.field, point)?;
+                let local_normal = self.eval_field_local_normal(&leaf.field, point)?;
+                let payload = self
+                    .eval_payload_body(&leaf.payload)
+                    .unwrap_or_else(|_| default_payload());
+                Ok::<_, QueryExecError>((
+                    payload,
+                    local_frame.point,
+                    local_normal,
+                    local_frame.instance_id,
+                    local_frame.repeat_id,
+                ))
+            })
+            .transpose()?
+            .unwrap_or_else(|| (default_payload(), point, normal, 0, 0));
+        Ok(hit_value(
+            true,
+            travel,
+            point,
+            normal,
+            local_position,
+            local_normal,
+            steps,
+            feature_id,
+            instance_id,
+            repeat_id,
+            stable_shape_capture_id(shape),
+            payload,
+        ))
     }
 
     pub(crate) fn surface_at(
@@ -2821,6 +3244,46 @@ fn batch_kind_for_plan(plan: &KernelBatchQueryPlan) -> Result<BatchQueryKind, Qu
     })
 }
 
+fn build_world_batch_args(
+    plan: &KernelWorldQueryPlan,
+    capture: &KernelValue,
+    domain: &KernelValue,
+    item: &KernelValue,
+) -> Result<Vec<KernelValue>, QueryExecError> {
+    let mut args = vec![capture.clone(), domain.clone()];
+    match world_kind_for_plan(plan)? {
+        WorldQueryKind::Distance | WorldQueryKind::Normal | WorldQueryKind::Medium => {
+            let point = expect_struct(Some(item), "PointQuery")?;
+            args.push(KernelValue::Vec3(expect_struct_vec3(point, "point")?));
+        }
+        WorldQueryKind::Nearest | WorldQueryKind::Trace | WorldQueryKind::Occluded => {
+            expect_struct(Some(item), "RayQuery")?;
+            args.push(item.clone());
+        }
+        WorldQueryKind::Surface => {
+            expect_struct(Some(item), "Hit3")?;
+            args.push(item.clone());
+        }
+        WorldQueryKind::Radiance => {
+            expect_struct(Some(item), "PointDirectionQuery")?;
+            args.push(item.clone());
+        }
+        WorldQueryKind::SupportSummary => {}
+    }
+    Ok(args)
+}
+
+fn wrap_world_batch_result(
+    plan: &KernelWorldQueryPlan,
+    value: KernelValue,
+) -> Result<KernelValue, QueryExecError> {
+    match world_kind_for_plan(plan)? {
+        WorldQueryKind::Distance => Ok(distance_result(expect_f32(Some(&value), "distance")?)),
+        WorldQueryKind::Normal => Ok(normal_result(expect_vec3(Some(&value), "normal")?)),
+        _ => Ok(value),
+    }
+}
+
 fn world_kind_for_plan(plan: &KernelWorldQueryPlan) -> Result<WorldQueryKind, QueryExecError> {
     world_query_kind_for_contract_id(plan.contract_id).ok_or_else(|| QueryExecError::Unsupported {
         message: format!(
@@ -3180,6 +3643,7 @@ struct CpuWorldTraceBackend<'a, 'ctx> {
     min_step: f32,
     hit_epsilon: f32,
     max_steps: i32,
+    solver_plan: &'a RaySolverPlan,
     result: KernelValue,
     best_distance: f32,
 }
@@ -3224,16 +3688,19 @@ impl WorldTraceBackend for CpuWorldTraceBackend<'_, '_> {
     }
 
     fn consider_world_trace_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
+        let prune_distance = self.best_distance.min(self.max_distance);
         if let Some(lower_bound) = self
             .evaluator
             .eval_shape_support_lower_bound(shape, self.origin)?
-            && lower_bound > self.best_distance
+            && lower_bound > prune_distance
         {
             self.evaluator.note_support_pruned_candidates(1);
+            self.evaluator.note_solver_support_rejection();
             return Ok(());
         }
         self.evaluator.note_candidate_count(1);
-        let hit = self.evaluator.trace_shape(
+        let hit = self.evaluator.solve_shape_ray(
+            self.solver_plan,
             shape,
             self.origin,
             self.direction,
@@ -4595,6 +5062,11 @@ fn support_summary_value(summary: SupportSummaryParts) -> KernelValue {
 
 fn dot3(lhs: [f32; 3], rhs: [f32; 3]) -> f32 {
     lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2]
+}
+
+fn adaptive_hit_epsilon(base: f32, travel: f32, scale: f32) -> f32 {
+    base.max(travel.abs() * 0.000_01)
+        .max(scale.abs() * 0.000_001)
 }
 
 fn support_box_lower_bound(

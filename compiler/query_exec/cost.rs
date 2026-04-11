@@ -9,6 +9,7 @@ use crate::query_plan::{
     WorldQueryKind, batch_query_kind_for_contract_id, capture_query_kind_for_contract_id,
     world_query_kind_for_contract_id,
 };
+use crate::query_solver::ray_solver_method_name;
 use crate::scene_ir::SupportClass;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +63,7 @@ pub enum SemanticStageKind {
     CaptureLoad,
     HitContextAssembly,
     ResultAppend,
+    RaySolver,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +84,7 @@ pub enum SemanticCostCauseKind {
     IdentityLocality,
     OpaqueFallback,
     BackendDispatch,
+    RaySolverFallback,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,15 +268,72 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
             cause.detail
         ));
     }
+    let traced_items = report
+        .counters
+        .hit_count
+        .saturating_add(report.counters.miss_count);
+    let trace_steps_avg = if traced_items == 0 {
+        0.0
+    } else {
+        report.counters.trace_steps as f32 / traced_items as f32
+    };
+    let solver_plan = report
+        .counters
+        .solver_plan_id
+        .as_ref()
+        .map(|id| id.as_str())
+        .unwrap_or("none");
+    let solver_methods = if report.counters.solver_methods.is_empty() {
+        "none".to_string()
+    } else {
+        report
+            .counters
+            .solver_methods
+            .iter()
+            .map(|method| ray_solver_method_name(*method))
+            .collect::<Vec<_>>()
+            .join("|")
+    };
     out.push_str(&format!(
-        "counters dispatch={} candidates={} pruned={} trace_steps={} field_samples={} artifacts={} opaque_fallbacks={}",
+        "counters dispatch={} dispatch_items={} workgroups={}x{}x{} screen_samples={} world_batch_items={} candidates={} candidates_before={} candidates_after={} pruned={} trace_steps={} trace_steps_avg={:.2} trace_steps_max={} hits={} misses={} field_samples={} artifacts={} opaque_fallbacks={} dense_batches={} semantic_pruned_batches={} solver_plan={} solver_methods={} solver_analytic_hits={} solver_support_rejections={} solver_interval_skips={} solver_packet_tile_rejections={} solver_newton_refinements={} solver_lipschitz_steps={} solver_adaptive_epsilon={} solver_dense_fallback_rays={} solver_generated_dense_fallback_rays={} solver_fallback_contract_dense={} solver_fallback_missing_facts={} solver_fallback_analytic_unsupported={} solver_fallback_verification_failed={} solver_fallback_unsupported_backend={} solver_certificate_failures={}",
         report.counters.dispatch_count,
+        report.counters.dispatch_items,
+        report.counters.dispatch_workgroups_x,
+        report.counters.dispatch_workgroups_y,
+        report.counters.dispatch_workgroups_z,
+        report.counters.screen_sample_count,
+        report.counters.world_batch_item_count,
         report.counters.candidate_count,
+        report.counters.candidates_before_pruning,
+        report.counters.candidates_after_pruning,
         report.counters.support_pruned_candidates,
         report.counters.trace_steps,
+        trace_steps_avg,
+        report.counters.trace_steps_max,
+        report.counters.hit_count,
+        report.counters.miss_count,
         report.counters.field_samples,
         report.counters.artifact_loads,
         report.counters.opaque_fallbacks,
+        report.counters.dense_compatibility_batches,
+        report.counters.semantic_pruned_batches,
+        solver_plan,
+        solver_methods,
+        report.counters.solver_analytic_hits,
+        report.counters.solver_support_rejections,
+        report.counters.solver_interval_skips,
+        report.counters.solver_packet_tile_rejections,
+        report.counters.solver_newton_refinements,
+        report.counters.solver_lipschitz_steps,
+        report.counters.solver_adaptive_epsilon_uses,
+        report.counters.solver_dense_fallback_rays,
+        report.counters.solver_generated_dense_fallback_rays,
+        report.counters.solver_fallback_contract_dense,
+        report.counters.solver_fallback_missing_facts,
+        report.counters.solver_fallback_analytic_unsupported,
+        report.counters.solver_fallback_verification_failed,
+        report.counters.solver_fallback_unsupported_backend,
+        report.counters.solver_certificate_failures,
     ));
     out
 }
@@ -417,8 +477,10 @@ fn collect_dominant_stages(
                     .saturating_add(context.counters.support_pruned_candidates),
             ),
             format!(
-                "{} executed candidates and {} support-pruned candidates under {}",
+                "{} executed candidates ({} before pruning, {} after) and {} support-pruned candidates under {}",
                 context.counters.candidate_count,
+                context.counters.candidates_before_pruning,
+                context.counters.candidates_after_pruning,
                 context.counters.support_pruned_candidates,
                 candidate_strategy_label(context.candidate_strategy)
             ),
@@ -502,6 +564,36 @@ fn collect_dominant_stages(
                 context.counters.candidate_count
             ),
         )),
+    );
+    push_stage_if_present(
+        &mut stages,
+        context,
+        SemanticStageKind::RaySolver,
+        context.counters.solver_plan_id.as_ref().map(|plan_id| {
+            let weight = u64::from(
+                context
+                    .counters
+                    .solver_dense_fallback_rays
+                    .saturating_add(context.counters.solver_generated_dense_fallback_rays)
+                    .saturating_add(context.counters.solver_analytic_hits)
+                    .max(1),
+            );
+            let methods = if context.counters.solver_methods.is_empty() {
+                "dense fallback".to_string()
+            } else {
+                context
+                    .counters
+                    .solver_methods
+                    .iter()
+                    .map(|method| ray_solver_method_name(*method))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            (
+                weight,
+                format!("ray solver {plan_id} used {methods} under the query contract"),
+            )
+        }),
     );
     push_stage_if_present(
         &mut stages,
@@ -708,6 +800,38 @@ fn collect_causes(
             detail: format!(
                 "opaque or quarantine boundaries forced {} fallback paths",
                 counters.opaque_fallbacks.max(1)
+            ),
+        });
+    }
+
+    let solver_fallbacks = counters
+        .solver_dense_fallback_rays
+        .saturating_add(counters.solver_generated_dense_fallback_rays);
+    if counters.solver_plan_id.is_some()
+        || solver_fallbacks > 0
+        || counters.solver_analytic_hits > 0
+        || counters.solver_support_rejections > 0
+    {
+        causes.push(SemanticCostCause {
+            kind: SemanticCostCauseKind::RaySolverFallback,
+            score: u64::from(
+                solver_fallbacks
+                    .saturating_add(counters.solver_analytic_hits)
+                    .saturating_add(counters.solver_support_rejections)
+                    .max(1),
+            ),
+            detail: format!(
+                "ray solver plan={} dense_fallback={} generated_dense_fallback={} analytic_hits={} support_rejections={} certificate_failures={}",
+                counters
+                    .solver_plan_id
+                    .as_ref()
+                    .map(|id| id.as_str())
+                    .unwrap_or("none"),
+                counters.solver_dense_fallback_rays,
+                counters.solver_generated_dense_fallback_rays,
+                counters.solver_analytic_hits,
+                counters.solver_support_rejections,
+                counters.solver_certificate_failures
             ),
         });
     }
@@ -934,6 +1058,8 @@ fn batch_query_kind_label(kind: BatchQueryKind) -> &'static str {
         BatchQueryKind::Trace => "trace",
         BatchQueryKind::Surface => "surface",
         BatchQueryKind::Occluded => "occluded",
+        BatchQueryKind::Radiance => "radiance",
+        BatchQueryKind::Medium => "medium",
     }
 }
 
@@ -968,6 +1094,7 @@ fn stage_label(stage: SemanticStageKind) -> &'static str {
         SemanticStageKind::CaptureLoad => "capture-load",
         SemanticStageKind::HitContextAssembly => "hit-context-assembly",
         SemanticStageKind::ResultAppend => "result-append",
+        SemanticStageKind::RaySolver => "ray-solver",
     }
 }
 
@@ -997,5 +1124,6 @@ fn cause_label(kind: SemanticCostCauseKind) -> &'static str {
         SemanticCostCauseKind::IdentityLocality => "identity-locality",
         SemanticCostCauseKind::OpaqueFallback => "opaque-fallback",
         SemanticCostCauseKind::BackendDispatch => "backend-dispatch",
+        SemanticCostCauseKind::RaySolverFallback => "ray-solver-fallback",
     }
 }

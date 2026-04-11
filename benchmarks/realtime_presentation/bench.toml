@@ -1,0 +1,26 @@
+version = 1
+suite = "realtime_presentation"
+
+[profiles.smoke]
+warmup_pairs = 2
+measure_pairs = 6
+coverage = "critical"
+
+[profiles.standard]
+warmup_pairs = 3
+measure_pairs = 10
+coverage = "all"
+
+[profiles.deep]
+warmup_pairs = 5
+measure_pairs = 18
+coverage = "all"
+
+[[scenarios]]
+id = "presentation_cpu_wgsl_screen_batch_parity"
+test_name = "tests/realtime_presentation::test_realtime_presentation_cpu_wgsl_screen_batch_parity_ops_256"
+ops = 256
+class = "critical"
+min_runtime_ms = 200
+timeout_ms = 180000
+allow_unstable = false

@@ -151,34 +151,46 @@ impl FunctionLowerer {
         let (query, args) = self.parse_query_call(body, expr_id)?;
         let named = self.collect_named_query_args(args)?;
         let capture = *named.get("capture")?;
-        let capture_kind = self.capture_kind_for_expr(body, capture);
+        let target = if named.contains_key("domain") {
+            query_contract::QueryTargetKind::World
+        } else {
+            query_contract::QueryTargetKind::Capture
+        };
+        let surface =
+            QuerySurfaceKind::from_axes(target, query_contract::QueryCardinality::Batch);
+        let capture_kind = if matches!(target, query_contract::QueryTargetKind::World) {
+            CaptureKind::Region
+        } else {
+            self.capture_kind_for_expr(body, capture)
+        };
         let (descriptor, _binding) = match query {
             ParsedQueryCall::Legacy { name } => {
                 query_contract::query_contract_bundle_for_legacy_builtin_capture_candidates(
                     name.as_str(),
-                    QuerySurfaceKind::CaptureBatch,
-                    &[capture_kind, CaptureKind::Shape, CaptureKind::Field],
+                    surface,
+                    &[capture_kind, CaptureKind::Region, CaptureKind::Shape, CaptureKind::Field],
                 )?
             }
             ParsedQueryCall::Family { family, member } => {
                 query_contract::query_contract_bundle_for_family_member_internal(
                     family,
                     member.as_str(),
-                    QuerySurfaceKind::CaptureBatch,
+                    surface,
                     capture_kind,
                 )?
             }
         };
         let items_arg = batch_items_arg_name(descriptor)?;
+        let domain_arg = descriptor.domain_contract.map(|_| "domain");
         self.require_query_args(
             &named,
-            &[Some("capture"), Some(items_arg), Some("backend")],
-            &[Some("capture"), Some(items_arg), Some("backend")],
+            &[Some("capture"), domain_arg, Some(items_arg), Some("backend")],
+            &[Some("capture"), domain_arg, Some(items_arg), Some("backend")],
         )?;
         Some(BatchQueryInvocationSpec {
             contract_id: descriptor.id,
             capture,
-            domain: None,
+            domain: domain_arg.and_then(|name| named.get(name).copied()),
             items: *named.get(items_arg)?,
             backend: *named.get("backend")?,
         })
@@ -298,7 +310,9 @@ impl FunctionLowerer {
                 );
                 self.lower_call_temp(ret_ty, plan.helper_name, args, span)
             }
-            QuerySurfaceKind::CaptureBatch => panic!("scalar query lowering received batch contract"),
+            QuerySurfaceKind::CaptureBatch | QuerySurfaceKind::WorldBatch => {
+                panic!("scalar query lowering received batch contract")
+            }
         }
     }
 
@@ -308,16 +322,22 @@ impl FunctionLowerer {
         span: TextRange,
         spec: &BatchQueryInvocationSpec,
     ) -> Value {
-        debug_assert!(spec.domain.is_none(), "batch query descriptors do not carry domains yet");
         let capture = self.lower_expr(body, spec.capture);
+        let domain = spec.domain.map(|domain| self.lower_expr(body, domain));
         let items = self.lower_expr(body, spec.items);
         let backend_value = self.lower_expr(body, spec.backend);
         let backend = self.lower_dispatch_backend_id(backend_value, span);
         let plan = self.build_batch_query_plan(body, spec);
+        let mut args = vec![capture];
+        if let Some(domain) = domain {
+            args.push(domain);
+        }
+        args.push(items);
+        args.push(backend);
         self.lower_call_temp(
             MirType::Named(SmolStr::new("List")),
             plan.helper_name.clone(),
-            vec![capture, items, backend],
+            args,
             span,
         )
     }
@@ -747,6 +767,82 @@ impl FunctionLowerer {
         });
     }
 
+    pub(crate) fn lower_world_batch_query_loop(
+        &mut self,
+        plan: &BatchQueryPlan,
+        items: Value,
+        capture: Value,
+        domain: Value,
+        backend: Value,
+        result_local: LocalId,
+        span: TextRange,
+        merge_block: BlockId,
+    ) {
+        let len = self.lower_call_temp(
+            MirType::Integer,
+            SmolStr::new("__wr_list_len"),
+            vec![items.clone()],
+            span,
+        );
+        let index = self.new_local(
+            SmolStr::new(format!("$world_batch_query_index{}", self.locals.len())),
+            true,
+            MirType::Integer,
+        );
+        self.assign_use(Place::Local(index), Value::Const(Literal::Integer(0)), span);
+        let head = self.new_block();
+        let body_block = self.new_block();
+        let exit = self.new_block();
+        self.set_terminator(Terminator::Jump { target: head, span });
+        self.current_block = head;
+        let cond = self.lower_binary_temp(
+            MirType::Boolean,
+            BinaryOp::Lt,
+            Value::Local(index),
+            len,
+            span,
+        );
+        self.set_terminator(Terminator::Branch {
+            cond,
+            then_target: body_block,
+            else_target: exit,
+            span,
+        });
+        self.current_block = body_block;
+        let inputs =
+            self.lower_batch_query_item_inputs(plan.item_kind, items, Value::Local(index), span);
+        let execution_value = self.lower_world_batch_scalar_execution_value(
+            plan,
+            capture,
+            domain,
+            backend,
+            &inputs,
+            span,
+        );
+        let result_value =
+            self.lower_batch_query_result_value(plan.result_kind, execution_value, span);
+        let _ = self.lower_call_temp(
+            MirType::Nil,
+            SmolStr::new("__wr_list_push"),
+            vec![Value::Local(result_local), result_value],
+            span,
+        );
+        let next = self.lower_binary_temp(
+            MirType::Integer,
+            BinaryOp::Add,
+            Value::Local(index),
+            Value::Const(Literal::Integer(1)),
+            span,
+        );
+        self.assign_use(Place::Local(index), next, span);
+        self.set_terminator(Terminator::Jump { target: head, span });
+        self.current_block = exit;
+        self.set_terminator(Terminator::Jump {
+            target: merge_block,
+            span,
+        });
+    }
+
     pub(crate) fn lower_batch_query_item_inputs(
         &mut self,
         item_kind: QueryItemKind,
@@ -972,8 +1068,141 @@ impl FunctionLowerer {
                     .expect("surface batch plan must load a hit before executing"),
                 span,
             ),
+            PlanExecutor::WorldDistanceCapture
+            | PlanExecutor::WorldNormalCapture
+            | PlanExecutor::WorldTraceCapture
+            | PlanExecutor::WorldSurfaceCapture
+            | PlanExecutor::WorldRadianceCapture
+            | PlanExecutor::WorldMediumCapture => {
+                panic!("world batch helpers route through scalar world helper calls")
+            }
             other => panic!("batch helpers do not support executor {other:?}"),
         }
+    }
+
+    fn lower_world_batch_scalar_execution_value(
+        &mut self,
+        plan: &BatchQueryPlan,
+        capture: Value,
+        domain: Value,
+        backend: Value,
+        inputs: &BatchQueryLoopInputs,
+        span: TextRange,
+    ) -> Value {
+        let kind = batch_query_kind_for_contract_id(plan.contract_id)
+            .expect("world batch query plan contract id must resolve");
+        let (helper, ret_ty, item) = match kind {
+            BatchQueryKind::Distance => (
+                "__wr_world_distance_capture",
+                MirType::Float,
+                inputs
+                    .point
+                    .clone()
+                    .expect("world distance batch plan must load a point before executing"),
+            ),
+            BatchQueryKind::Normal => (
+                "__wr_world_normal_capture",
+                MirType::Vec3,
+                inputs
+                    .point
+                    .clone()
+                    .expect("world normal batch plan must load a point before executing"),
+            ),
+            BatchQueryKind::Nearest | BatchQueryKind::Trace => (
+                "__wr_world_trace_capture",
+                MirType::Named(SmolStr::new("Hit3")),
+                self.build_ray_query_value(
+                    inputs
+                        .origin
+                        .clone()
+                        .expect("world trace batch plan must load an origin"),
+                    inputs
+                        .direction
+                        .clone()
+                        .expect("world trace batch plan must load a direction"),
+                    inputs
+                        .max_distance
+                        .clone()
+                        .expect("world trace batch plan must load max_distance"),
+                    inputs
+                        .min_step
+                        .clone()
+                        .expect("world trace batch plan must load min_step"),
+                    inputs
+                        .hit_epsilon
+                        .clone()
+                        .expect("world trace batch plan must load hit_epsilon"),
+                    inputs
+                        .max_steps
+                        .clone()
+                        .expect("world trace batch plan must load max_steps"),
+                    span,
+                ),
+            ),
+            BatchQueryKind::Occluded => (
+                "__wr_world_occluded_capture",
+                MirType::Named(SmolStr::new("OcclusionResult")),
+                self.build_ray_query_value(
+                    inputs
+                        .origin
+                        .clone()
+                        .expect("world occluded batch plan must load an origin"),
+                    inputs
+                        .direction
+                        .clone()
+                        .expect("world occluded batch plan must load a direction"),
+                    inputs
+                        .max_distance
+                        .clone()
+                        .expect("world occluded batch plan must load max_distance"),
+                    inputs
+                        .min_step
+                        .clone()
+                        .expect("world occluded batch plan must load min_step"),
+                    inputs
+                        .hit_epsilon
+                        .clone()
+                        .expect("world occluded batch plan must load hit_epsilon"),
+                    inputs
+                        .max_steps
+                        .clone()
+                        .expect("world occluded batch plan must load max_steps"),
+                    span,
+                ),
+            ),
+            BatchQueryKind::Surface => (
+                "__wr_world_surface_capture",
+                MirType::Named(SmolStr::new("Surface")),
+                inputs
+                    .hit
+                    .clone()
+                    .expect("world surface batch plan must load a hit before executing"),
+            ),
+            BatchQueryKind::Radiance => (
+                "__wr_world_radiance_capture",
+                MirType::Vec3,
+                self.build_point_direction_query_value(
+                    inputs
+                        .point
+                        .clone()
+                        .expect("world radiance batch plan must load a point"),
+                    inputs
+                        .direction
+                        .clone()
+                        .expect("world radiance batch plan must load a direction"),
+                    span,
+                ),
+            ),
+            BatchQueryKind::Medium => (
+                "__wr_world_medium_capture",
+                MirType::Named(SmolStr::new("Medium")),
+                inputs
+                    .point
+                    .clone()
+                    .expect("world medium batch plan must load a point before executing"),
+            ),
+        };
+        self.lower_call_temp(ret_ty, SmolStr::new(helper), vec![capture, domain, item, backend], span)
     }
 
     pub(crate) fn lower_capture_scene_id_value(
@@ -1344,10 +1573,25 @@ impl FunctionLowerer {
         match result_kind {
             QueryResultKind::DistanceResult => self.build_distance_result_value(value, span),
             QueryResultKind::NormalResult => self.build_normal_result_value(value, span),
-            QueryResultKind::Hit3 | QueryResultKind::Surface => value,
+            QueryResultKind::Hit3
+            | QueryResultKind::Surface
+            | QueryResultKind::RadianceResult
+            | QueryResultKind::MediumResult => value,
             QueryResultKind::OcclusionResult => self.build_occlusion_result_value(value, span),
             other => panic!("batch helpers do not support result kind {other:?}"),
         }
+    }
+
+    pub(crate) fn build_point_direction_query_value(
+        &mut self,
+        point: Value,
+        direction: Value,
+        span: TextRange,
+    ) -> Value {
+        let mut class = self.synthetic_class_target_info("PointDirectionQuery");
+        Self::set_class_field_value(&mut class, "point", point);
+        Self::set_class_field_value(&mut class, "direction", direction);
+        self.build_class_instance(&class, span)
     }
 
     pub(crate) fn build_distance_result_value(&mut self, distance: Value, span: TextRange) -> Value {
@@ -1416,7 +1660,8 @@ fn batch_items_arg_name(descriptor: &QueryContractDescriptor) -> Option<&'static
         QueryItemKind::PointQuery => Some("points"),
         QueryItemKind::RayQuery => Some("rays"),
         QueryItemKind::Hit3 => Some("hits"),
-        QueryItemKind::PointDirectionQuery | QueryItemKind::Unit => None,
+        QueryItemKind::PointDirectionQuery => Some("samples"),
+        QueryItemKind::Unit => Some("items"),
     }
 }
 
@@ -1425,5 +1670,7 @@ fn scalar_domain_arg(descriptor: &QueryContractDescriptor) -> Option<&'static st
 }
 
 fn scalar_backend_arg(descriptor: &QueryContractDescriptor) -> Option<&'static str> {
-    (descriptor.surface == QuerySurfaceKind::WorldScalar).then_some("backend")
+    (descriptor.target == query_contract::QueryTargetKind::World
+        && descriptor.cardinality == query_contract::QueryCardinality::Scalar)
+        .then_some("backend")
 }

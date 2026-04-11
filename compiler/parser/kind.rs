@@ -188,6 +188,7 @@ pub enum SyntaxKind {
     RegionScatterStmt,
     DomainDecl,
     RenderDecl,
+    ViewDecl,
     RadianceDecl,
     VolumeDecl,
     MaterialDecl,

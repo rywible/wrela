@@ -7,8 +7,8 @@ use crate::portable::{
     BUILTIN_FIELD_PRIMITIVE_FUNCTIONS, BUILTIN_HELPER_FUNCTIONS, builtin_record_by_function,
 };
 use crate::query_contract::{
-    CaptureKind, ParticipantContractKind, QueryContractId, QueryFamilyId, QuerySurfaceKind,
-    query_contract,
+    CaptureKind, ParticipantContractKind, QueryCardinality, QueryContractId, QueryFamilyId,
+    QuerySurfaceKind, QueryTargetKind, query_contract,
 };
 use crate::query_plan::{
     ArtifactContract, ArtifactSchema, BatchQueryKind, CaptureQueryKind, DerivedArtifact,
@@ -16,6 +16,7 @@ use crate::query_plan::{
     WorldQueryKind, batch_query_kind_for_descriptor, capture_query_kind_for_descriptor,
     world_query_kind_for_descriptor,
 };
+use crate::query_solver::is_ray_shaped_spatial_contract;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelValidationError {
@@ -177,6 +178,8 @@ pub fn validate_batch_query_plan(
         "batch query",
         plan.contract_id,
         plan.family,
+        plan.target,
+        plan.cardinality,
         plan.surface,
         plan.item_kind,
         plan.result_kind,
@@ -193,6 +196,13 @@ pub fn validate_batch_query_plan(
         plan.contract_version,
         plan.kind,
         plan.capture_kind,
+        &mut errors,
+    );
+    validate_ray_solver_presence(
+        "batch query",
+        plan.contract_id,
+        plan.contract_version,
+        plan.ray_solver.as_ref(),
         &mut errors,
     );
     if let Some(descriptor) = query_contract(plan.contract_id)
@@ -249,6 +259,8 @@ pub fn validate_capture_query_plan(
         "capture query",
         plan.contract_id,
         plan.family,
+        plan.target,
+        plan.cardinality,
         plan.surface,
         plan.candidate_contract.item_kind,
         plan.result_kind,
@@ -333,6 +345,8 @@ pub fn validate_world_query_plan(
         "world query",
         plan.contract_id,
         plan.family,
+        plan.target,
+        plan.cardinality,
         plan.surface,
         plan.dispatch_contract.item_kind,
         plan.result_kind,
@@ -348,6 +362,13 @@ pub fn validate_world_query_plan(
         plan.contract_id,
         plan.contract_version,
         plan.kind,
+        &mut errors,
+    );
+    validate_ray_solver_presence(
+        "world query",
+        plan.contract_id,
+        plan.contract_version,
+        plan.ray_solver.as_ref(),
         &mut errors,
     );
     if let Some(descriptor) = query_contract(plan.contract_id)
@@ -369,6 +390,44 @@ pub fn validate_world_query_plan(
     }
 }
 
+fn validate_ray_solver_presence(
+    label: &str,
+    contract_id: QueryContractId,
+    contract_version: u32,
+    solver: Option<&crate::query_solver::RaySolverPlan>,
+    errors: &mut Vec<KernelValidationError>,
+) {
+    let ray_shaped = is_ray_shaped_spatial_contract(contract_id);
+    match (ray_shaped, solver) {
+        (true, None) => errors.push(KernelValidationError {
+            message: format!(
+                "{label} contract '{}' v{} must route through a RaySolverPlan",
+                contract_id.as_str(),
+                contract_version
+            ),
+        }),
+        (false, Some(plan)) => errors.push(KernelValidationError {
+            message: format!(
+                "{label} contract '{}' v{} must not carry ray solver diagnostics from '{}'",
+                contract_id.as_str(),
+                contract_version,
+                plan.id
+            ),
+        }),
+        (true, Some(plan)) if plan.contract_id != contract_id => {
+            errors.push(KernelValidationError {
+                message: format!(
+                    "{label} contract '{}' v{} has mismatched RaySolverPlan for '{}'",
+                    contract_id.as_str(),
+                    contract_version,
+                    plan.contract_id.as_str()
+                ),
+            });
+        }
+        _ => {}
+    }
+}
+
 fn validate_contract_version(
     context: QueryValidationContext,
     errors: &mut Vec<KernelValidationError>,
@@ -384,6 +443,8 @@ fn validate_query_contract_descriptor(
     label: &str,
     contract_id: QueryContractId,
     family: QueryFamilyId,
+    target: QueryTargetKind,
+    cardinality: QueryCardinality,
     surface: QuerySurfaceKind,
     item_kind: QueryItemKind,
     result_kind: QueryResultKind,
@@ -423,6 +484,30 @@ fn validate_query_contract_descriptor(
                 family,
                 descriptor.version,
                 descriptor.family
+            ),
+        });
+    }
+    if descriptor.target != target {
+        errors.push(KernelValidationError {
+            message: format!(
+                "{label} contract '{}' v{} target {:?} does not match descriptor v{} target {:?}",
+                contract_id.as_str(),
+                contract_version,
+                target,
+                descriptor.version,
+                descriptor.target
+            ),
+        });
+    }
+    if descriptor.cardinality != cardinality {
+        errors.push(KernelValidationError {
+            message: format!(
+                "{label} contract '{}' v{} cardinality {:?} does not match descriptor v{} cardinality {:?}",
+                contract_id.as_str(),
+                contract_version,
+                cardinality,
+                descriptor.version,
+                descriptor.cardinality
             ),
         });
     }
@@ -673,6 +758,32 @@ fn validate_batch_item_contract(
                         batch_contract_id.as_str(),
                         batch_contract_version,
                         nearest_plan.contract_version
+                    ),
+                });
+            }
+        }
+        KernelBatchItemContract::WorldQuery { plan } => {
+            if let Err(plan_errors) = validate_world_query_plan(plan) {
+                errors.extend(plan_errors);
+            }
+            if plan.result_kind != result.result_kind {
+                errors.push(KernelValidationError {
+                    message: format!(
+                        "batch query contract '{}' v{} world item contract result kind {:?} does not match batch result contract {:?}",
+                        batch_contract_id.as_str(),
+                        batch_contract_version,
+                        plan.result_kind,
+                        result.result_kind
+                    ),
+                });
+            }
+            if plan.contract_version != batch_contract_version {
+                errors.push(KernelValidationError {
+                    message: format!(
+                        "batch query contract '{}' v{} world item contract version {} does not match the parent batch contract",
+                        batch_contract_id.as_str(),
+                        batch_contract_version,
+                        plan.contract_version
                     ),
                 });
             }

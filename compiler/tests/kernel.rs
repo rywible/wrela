@@ -267,6 +267,58 @@ fn capture_query_validation_rejects_descriptor_surface_mismatch() {
 }
 
 #[test]
+fn query_plan_validation_rejects_target_and_cardinality_drift() {
+    let mut capture_target_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None).unwrap(),
+    );
+    capture_target_plan.target = query_contract::QueryTargetKind::World;
+    let capture_target_errors =
+        validate_capture_query_plan(&capture_target_plan).expect_err("capture target drift");
+    assert!(
+        capture_target_errors
+            .iter()
+            .any(|error| error.message.contains("target"))
+    );
+
+    let mut capture_cardinality_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None).unwrap(),
+    );
+    capture_cardinality_plan.cardinality = query_contract::QueryCardinality::Batch;
+    let capture_cardinality_errors = validate_capture_query_plan(&capture_cardinality_plan)
+        .expect_err("capture cardinality drift");
+    assert!(
+        capture_cardinality_errors
+            .iter()
+            .any(|error| error.message.contains("cardinality"))
+    );
+
+    let mut world_target_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Nearest));
+    world_target_plan.target = query_contract::QueryTargetKind::Capture;
+    let world_target_errors =
+        validate_world_query_plan(&world_target_plan).expect_err("world target drift");
+    assert!(
+        world_target_errors
+            .iter()
+            .any(|error| error.message.contains("target"))
+    );
+
+    let mut batch_cardinality_plan = lower_batch_query_plan(&BatchQueryPlan::for_shape_query(
+        BatchQueryKind::Nearest,
+        DispatchBackend::Auto,
+        None,
+    ));
+    batch_cardinality_plan.cardinality = query_contract::QueryCardinality::Scalar;
+    let batch_cardinality_errors =
+        validate_batch_query_plan(&batch_cardinality_plan).expect_err("batch cardinality drift");
+    assert!(
+        batch_cardinality_errors
+            .iter()
+            .any(|error| error.message.contains("cardinality"))
+    );
+}
+
+#[test]
 fn capture_query_validation_rejects_participant_family_mismatch() {
     let mut plan = lower_capture_query_plan(
         &CaptureQueryPlan::for_query(CaptureQueryKind::Radiance, CaptureKind::Shape, None).unwrap(),

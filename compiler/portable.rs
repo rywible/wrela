@@ -476,6 +476,101 @@ const CAMERA_FIELDS: &[PortableBuiltinField] = &[
     },
 ];
 
+const VIEWPORT_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "width",
+        ty: TyAtom(Atom::U32),
+    },
+    PortableBuiltinField {
+        name: "height",
+        ty: TyAtom(Atom::U32),
+    },
+];
+
+const VIEW_STATE_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "camera",
+        ty: TyNamed("Camera"),
+    },
+    PortableBuiltinField {
+        name: "previous_camera",
+        ty: TyNamed("Camera"),
+    },
+    PortableBuiltinField {
+        name: "viewport",
+        ty: TyNamed("Viewport"),
+    },
+    PortableBuiltinField {
+        name: "previous_viewport",
+        ty: TyNamed("Viewport"),
+    },
+    PortableBuiltinField {
+        name: "jitter",
+        ty: TyAtom(Atom::Vec2),
+    },
+    PortableBuiltinField {
+        name: "previous_jitter",
+        ty: TyAtom(Atom::Vec2),
+    },
+];
+
+const FRAME_STATE_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "view",
+        ty: TyNamed("ViewState"),
+    },
+    PortableBuiltinField {
+        name: "frame_index",
+        ty: TyAtom(Atom::U32),
+    },
+    PortableBuiltinField {
+        name: "previous_frame_index",
+        ty: TyAtom(Atom::U32),
+    },
+    PortableBuiltinField {
+        name: "delta_seconds",
+        ty: TyAtom(Atom::F32),
+    },
+    PortableBuiltinField {
+        name: "history_reset",
+        ty: TyAtom(Atom::Bool),
+    },
+];
+
+const SCREEN_SAMPLE_QUERY_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "pixel",
+        ty: TyAtom(Atom::Vec2),
+    },
+    PortableBuiltinField {
+        name: "uv",
+        ty: TyAtom(Atom::Vec2),
+    },
+    PortableBuiltinField {
+        name: "ray",
+        ty: TyNamed("RayQuery"),
+    },
+];
+
+const MOTION_VECTOR_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "delta_pixels",
+        ty: TyAtom(Atom::Vec2),
+    },
+    PortableBuiltinField {
+        name: "previous_sample",
+        ty: TyAtom(Atom::Vec2),
+    },
+    PortableBuiltinField {
+        name: "valid",
+        ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "disoccluded",
+        ty: TyAtom(Atom::Bool),
+    },
+];
+
 const BUILTIN_RECORDS: &[PortableBuiltinRecord] = &[
     PortableBuiltinRecord {
         name: "Bounds2",
@@ -657,6 +752,12 @@ const BUILTIN_RECORDS: &[PortableBuiltinRecord] = &[
         fields: ACTOR_HANDLE_FIELDS,
     },
     PortableBuiltinRecord {
+        name: "MotionVector",
+        function_name: None,
+        constructible: true,
+        fields: MOTION_VECTOR_FIELDS,
+    },
+    PortableBuiltinRecord {
         name: "UnitQuery",
         function_name: None,
         constructible: true,
@@ -667,6 +768,30 @@ const BUILTIN_RECORDS: &[PortableBuiltinRecord] = &[
         function_name: None,
         constructible: true,
         fields: SUPPORT_SUMMARY_RESULT_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "Viewport",
+        function_name: None,
+        constructible: true,
+        fields: VIEWPORT_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "ViewState",
+        function_name: None,
+        constructible: true,
+        fields: VIEW_STATE_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "FrameState",
+        function_name: None,
+        constructible: true,
+        fields: FRAME_STATE_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "ScreenSampleQuery",
+        function_name: None,
+        constructible: true,
+        fields: SCREEN_SAMPLE_QUERY_FIELDS,
     },
 ];
 
@@ -748,6 +873,13 @@ pub const BUILTIN_HELPER_FUNCTIONS: &[&str] = &[
     "__wr_scene_trace_batch_queries",
     "__wr_scene_surface_batch_queries",
     "__wr_scene_occluded_batch_queries",
+    "__wr_world_distance_batch_queries",
+    "__wr_world_normal_batch_queries",
+    "__wr_world_trace_batch_queries",
+    "__wr_world_occluded_batch_queries",
+    "__wr_world_surface_batch_queries",
+    "__wr_world_radiance_batch_queries",
+    "__wr_world_medium_batch_queries",
     "__wr_scene_trace_queries",
     "__wr_scene_surface_queries",
 ];

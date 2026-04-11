@@ -87,6 +87,8 @@ struct CertifiedQueryContractItem {
     question: String,
     call: String,
     surface: String,
+    target: String,
+    cardinality: String,
     capture_kind: String,
     item_kind: String,
     result_kind: String,
@@ -124,6 +126,11 @@ fn query_contract_catalog_snapshot() -> CertifiedQueryContractCatalog {
                     wrela::query_contract::query_family_member_name(descriptor)
                 ),
                 surface: wrela::query_contract::query_surface_name(descriptor.surface).to_string(),
+                target: wrela::query_contract::query_target_name(descriptor.target).to_string(),
+                cardinality: wrela::query_contract::query_cardinality_name(
+                    descriptor.cardinality,
+                )
+                .to_string(),
                 capture_kind: wrela::query_contract::query_capture_kind_name(
                     descriptor.capture_kind,
                 )

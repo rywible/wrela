@@ -148,10 +148,51 @@ pub enum QueryQuestionId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum QueryTargetKind {
+    Capture,
+    World,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum QueryCardinality {
+    Scalar,
+    Batch,
+}
+
+/// Compatibility adapter for older compiler layers that still talk about a
+/// combined query surface. Public contract reporting should prefer the
+/// orthogonal `QueryTargetKind` and `QueryCardinality` axes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum QuerySurfaceKind {
     CaptureScalar,
     WorldScalar,
     CaptureBatch,
+    WorldBatch,
+}
+
+impl QuerySurfaceKind {
+    pub const fn from_axes(target: QueryTargetKind, cardinality: QueryCardinality) -> Self {
+        match (target, cardinality) {
+            (QueryTargetKind::Capture, QueryCardinality::Scalar) => Self::CaptureScalar,
+            (QueryTargetKind::World, QueryCardinality::Scalar) => Self::WorldScalar,
+            (QueryTargetKind::Capture, QueryCardinality::Batch) => Self::CaptureBatch,
+            (QueryTargetKind::World, QueryCardinality::Batch) => Self::WorldBatch,
+        }
+    }
+
+    pub const fn target(self) -> QueryTargetKind {
+        match self {
+            Self::CaptureScalar | Self::CaptureBatch => QueryTargetKind::Capture,
+            Self::WorldScalar | Self::WorldBatch => QueryTargetKind::World,
+        }
+    }
+
+    pub const fn cardinality(self) -> QueryCardinality {
+        match self {
+            Self::CaptureScalar | Self::WorldScalar => QueryCardinality::Scalar,
+            Self::CaptureBatch | Self::WorldBatch => QueryCardinality::Batch,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -185,30 +226,37 @@ pub enum QueryPlannerRecipeKind {
     SpatialDistanceWorld,
     SpatialDistanceBatchField,
     SpatialDistanceBatchShape,
+    SpatialDistanceBatchWorld,
     SpatialNormalCaptureField,
     SpatialNormalCaptureShape,
     SpatialNormalWorld,
     SpatialNormalBatchField,
     SpatialNormalBatchShape,
+    SpatialNormalBatchWorld,
     SupportSummaryCaptureField,
     SupportSummaryCaptureShape,
     SupportSummaryWorld,
     SpatialNearestCaptureShape,
     SpatialNearestBatchShape,
+    SpatialNearestBatchWorld,
     SpatialNearestWorld,
     SpatialTraceCaptureShape,
     SpatialTraceBatchShape,
     SpatialTraceWorld,
     SpatialOccludedCaptureShape,
     SpatialOccludedBatchShape,
+    SpatialOccludedBatchWorld,
     SpatialOccludedWorld,
     SurfaceSampleCaptureShape,
     SurfaceSampleBatchShape,
+    SurfaceSampleBatchWorld,
     SurfaceSampleWorld,
     ParticipantsRadianceCaptureShape,
     ParticipantsRadianceWorld,
+    ParticipantsRadianceBatchWorld,
     ParticipantsMediumCaptureShape,
     ParticipantsMediumWorld,
+    ParticipantsMediumBatchWorld,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -317,6 +365,8 @@ pub struct QueryContractDescriptor {
     pub version: u32,
     pub family: QueryFamilyId,
     pub question: QueryQuestionId,
+    pub target: QueryTargetKind,
+    pub cardinality: QueryCardinality,
     pub surface: QuerySurfaceKind,
     pub capture_kind: CaptureKind,
     pub item_kind: QueryItemKind,
@@ -355,6 +405,8 @@ pub const SPATIAL_DISTANCE_BATCH_FIELD: QueryContractId =
     QueryContractId::new("spatial.distance.batch.field");
 pub const SPATIAL_DISTANCE_BATCH_SHAPE: QueryContractId =
     QueryContractId::new("spatial.distance.batch.shape");
+pub const SPATIAL_DISTANCE_BATCH_WORLD: QueryContractId =
+    QueryContractId::new("spatial.distance.batch.world");
 pub const SPATIAL_NORMAL_CAPTURE_FIELD: QueryContractId =
     QueryContractId::new("spatial.normal.capture.field");
 pub const SPATIAL_NORMAL_CAPTURE_SHAPE: QueryContractId =
@@ -364,6 +416,8 @@ pub const SPATIAL_NORMAL_BATCH_FIELD: QueryContractId =
     QueryContractId::new("spatial.normal.batch.field");
 pub const SPATIAL_NORMAL_BATCH_SHAPE: QueryContractId =
     QueryContractId::new("spatial.normal.batch.shape");
+pub const SPATIAL_NORMAL_BATCH_WORLD: QueryContractId =
+    QueryContractId::new("spatial.normal.batch.world");
 pub const SUPPORT_SUMMARY_CAPTURE_FIELD: QueryContractId =
     QueryContractId::new("support.summary.capture.field");
 pub const SUPPORT_SUMMARY_CAPTURE_SHAPE: QueryContractId =
@@ -373,45 +427,60 @@ pub const SPATIAL_NEAREST_CAPTURE_SHAPE: QueryContractId =
     QueryContractId::new("spatial.nearest.capture.shape");
 pub const SPATIAL_NEAREST_BATCH_SHAPE: QueryContractId =
     QueryContractId::new("spatial.nearest.batch.shape");
+pub const SPATIAL_NEAREST_BATCH_WORLD: QueryContractId =
+    QueryContractId::new("spatial.nearest.batch.world");
 pub const SPATIAL_NEAREST_WORLD: QueryContractId = QueryContractId::new("spatial.nearest.world");
 pub const LEGACY_SPATIAL_TRACE_CAPTURE_SHAPE: QueryContractId =
     QueryContractId::new("spatial.trace.capture.shape");
 pub const LEGACY_SPATIAL_TRACE_BATCH_SHAPE: QueryContractId =
     QueryContractId::new("spatial.trace.batch.shape");
+pub const LEGACY_SPATIAL_TRACE_BATCH_WORLD: QueryContractId =
+    QueryContractId::new("spatial.trace.batch.world");
 pub const LEGACY_SPATIAL_TRACE_WORLD: QueryContractId = QueryContractId::new("spatial.trace.world");
 pub const SPATIAL_TRACE_CAPTURE_SHAPE: QueryContractId = SPATIAL_NEAREST_CAPTURE_SHAPE;
 pub const SPATIAL_TRACE_BATCH_SHAPE: QueryContractId = SPATIAL_NEAREST_BATCH_SHAPE;
+pub const SPATIAL_TRACE_BATCH_WORLD: QueryContractId = SPATIAL_NEAREST_BATCH_WORLD;
 pub const SPATIAL_TRACE_WORLD: QueryContractId = SPATIAL_NEAREST_WORLD;
 pub const SPATIAL_OCCLUDED_CAPTURE_SHAPE: QueryContractId =
     QueryContractId::new("spatial.occluded.capture.shape");
 pub const SPATIAL_OCCLUDED_BATCH_SHAPE: QueryContractId =
     QueryContractId::new("spatial.occluded.batch.shape");
+pub const SPATIAL_OCCLUDED_BATCH_WORLD: QueryContractId =
+    QueryContractId::new("spatial.occluded.batch.world");
 pub const SPATIAL_OCCLUDED_WORLD: QueryContractId = QueryContractId::new("spatial.occluded.world");
 pub const SURFACE_SAMPLE_CAPTURE_SHAPE: QueryContractId =
     QueryContractId::new("surface.sample.capture.shape");
 pub const SURFACE_SAMPLE_BATCH_SHAPE: QueryContractId =
     QueryContractId::new("surface.sample.batch.shape");
+pub const SURFACE_SAMPLE_BATCH_WORLD: QueryContractId =
+    QueryContractId::new("surface.sample.batch.world");
 pub const SURFACE_SAMPLE_WORLD: QueryContractId = QueryContractId::new("surface.sample.world");
 pub const PARTICIPANTS_RADIANCE_CAPTURE_SHAPE: QueryContractId =
     QueryContractId::new("participants.radiance.capture.shape");
 pub const PARTICIPANTS_RADIANCE_WORLD: QueryContractId =
     QueryContractId::new("participants.radiance.world");
+pub const PARTICIPANTS_RADIANCE_BATCH_WORLD: QueryContractId =
+    QueryContractId::new("participants.radiance.batch.world");
 pub const PARTICIPANTS_MEDIUM_CAPTURE_SHAPE: QueryContractId =
     QueryContractId::new("participants.medium.capture.shape");
 pub const PARTICIPANTS_MEDIUM_WORLD: QueryContractId =
     QueryContractId::new("participants.medium.world");
+pub const PARTICIPANTS_MEDIUM_BATCH_WORLD: QueryContractId =
+    QueryContractId::new("participants.medium.batch.world");
 
 const NO_DOMAIN_FLAGS: &[SceneDomainFlag] = &[];
 const MATERIAL_DOMAIN_FLAGS: &[SceneDomainFlag] = &[SceneDomainFlag::Material];
 const RADIANCE_DOMAIN_FLAGS: &[SceneDomainFlag] = &[SceneDomainFlag::Radiance];
 const MEDIA_DOMAIN_FLAGS: &[SceneDomainFlag] = &[SceneDomainFlag::Media];
 
-const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
+const QUERY_CONTRACTS: [QueryContractDescriptor; 33] = [
     QueryContractDescriptor {
         id: SPATIAL_DISTANCE_CAPTURE_FIELD,
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
         question: QueryQuestionId::Distance,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::CaptureScalar,
         capture_kind: CaptureKind::Field,
         item_kind: QueryItemKind::PointQuery,
@@ -428,6 +497,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
         question: QueryQuestionId::Distance,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::CaptureScalar,
         capture_kind: CaptureKind::Shape,
         item_kind: QueryItemKind::PointQuery,
@@ -444,6 +515,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
         question: QueryQuestionId::Distance,
+        target: QueryTargetKind::World,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::WorldScalar,
         capture_kind: CaptureKind::Region,
         item_kind: QueryItemKind::PointQuery,
@@ -460,6 +533,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
         question: QueryQuestionId::Distance,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Batch,
         surface: QuerySurfaceKind::CaptureBatch,
         capture_kind: CaptureKind::Field,
         item_kind: QueryItemKind::PointQuery,
@@ -476,6 +551,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
         question: QueryQuestionId::Distance,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Batch,
         surface: QuerySurfaceKind::CaptureBatch,
         capture_kind: CaptureKind::Shape,
         item_kind: QueryItemKind::PointQuery,
@@ -488,10 +565,30 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         observability: QueryObservabilityProfile::spatial_point(),
     },
     QueryContractDescriptor {
+        id: SPATIAL_DISTANCE_BATCH_WORLD,
+        version: QUERY_CONTRACT_VERSION,
+        family: QueryFamilyId::Spatial,
+        question: QueryQuestionId::Distance,
+        target: QueryTargetKind::World,
+        cardinality: QueryCardinality::Batch,
+        surface: QuerySurfaceKind::WorldBatch,
+        capture_kind: CaptureKind::Region,
+        item_kind: QueryItemKind::PointQuery,
+        result_kind: QueryResultKind::DistanceResult,
+        domain_contract: Some(DomainContractKind::SceneDomain),
+        required_domain_flags: NO_DOMAIN_FLAGS,
+        preserves_local_hit_context: false,
+        participant_kind: None,
+        supported_backends: BackendSupport::all(),
+        observability: QueryObservabilityProfile::spatial_point(),
+    },
+    QueryContractDescriptor {
         id: SPATIAL_NORMAL_CAPTURE_FIELD,
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
         question: QueryQuestionId::Normal,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::CaptureScalar,
         capture_kind: CaptureKind::Field,
         item_kind: QueryItemKind::PointQuery,
@@ -508,6 +605,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
         question: QueryQuestionId::Normal,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::CaptureScalar,
         capture_kind: CaptureKind::Shape,
         item_kind: QueryItemKind::PointQuery,
@@ -524,6 +623,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
         question: QueryQuestionId::Normal,
+        target: QueryTargetKind::World,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::WorldScalar,
         capture_kind: CaptureKind::Region,
         item_kind: QueryItemKind::PointQuery,
@@ -540,6 +641,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
         question: QueryQuestionId::Normal,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Batch,
         surface: QuerySurfaceKind::CaptureBatch,
         capture_kind: CaptureKind::Field,
         item_kind: QueryItemKind::PointQuery,
@@ -556,6 +659,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
         question: QueryQuestionId::Normal,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Batch,
         surface: QuerySurfaceKind::CaptureBatch,
         capture_kind: CaptureKind::Shape,
         item_kind: QueryItemKind::PointQuery,
@@ -568,10 +673,30 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         observability: QueryObservabilityProfile::spatial_point(),
     },
     QueryContractDescriptor {
+        id: SPATIAL_NORMAL_BATCH_WORLD,
+        version: QUERY_CONTRACT_VERSION,
+        family: QueryFamilyId::Spatial,
+        question: QueryQuestionId::Normal,
+        target: QueryTargetKind::World,
+        cardinality: QueryCardinality::Batch,
+        surface: QuerySurfaceKind::WorldBatch,
+        capture_kind: CaptureKind::Region,
+        item_kind: QueryItemKind::PointQuery,
+        result_kind: QueryResultKind::NormalResult,
+        domain_contract: Some(DomainContractKind::SceneDomain),
+        required_domain_flags: NO_DOMAIN_FLAGS,
+        preserves_local_hit_context: false,
+        participant_kind: None,
+        supported_backends: BackendSupport::all(),
+        observability: QueryObservabilityProfile::spatial_point(),
+    },
+    QueryContractDescriptor {
         id: SUPPORT_SUMMARY_CAPTURE_FIELD,
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Support,
         question: QueryQuestionId::Summary,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::CaptureScalar,
         capture_kind: CaptureKind::Field,
         item_kind: QueryItemKind::Unit,
@@ -588,6 +713,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Support,
         question: QueryQuestionId::Summary,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::CaptureScalar,
         capture_kind: CaptureKind::Shape,
         item_kind: QueryItemKind::Unit,
@@ -604,6 +731,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Support,
         question: QueryQuestionId::Summary,
+        target: QueryTargetKind::World,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::WorldScalar,
         capture_kind: CaptureKind::Region,
         item_kind: QueryItemKind::Unit,
@@ -620,6 +749,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
         question: QueryQuestionId::Nearest,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::CaptureScalar,
         capture_kind: CaptureKind::Shape,
         item_kind: QueryItemKind::RayQuery,
@@ -636,6 +767,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
         question: QueryQuestionId::Nearest,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Batch,
         surface: QuerySurfaceKind::CaptureBatch,
         capture_kind: CaptureKind::Shape,
         item_kind: QueryItemKind::RayQuery,
@@ -648,10 +781,30 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         observability: QueryObservabilityProfile::spatial_ray(),
     },
     QueryContractDescriptor {
+        id: SPATIAL_NEAREST_BATCH_WORLD,
+        version: QUERY_CONTRACT_VERSION,
+        family: QueryFamilyId::Spatial,
+        question: QueryQuestionId::Nearest,
+        target: QueryTargetKind::World,
+        cardinality: QueryCardinality::Batch,
+        surface: QuerySurfaceKind::WorldBatch,
+        capture_kind: CaptureKind::Region,
+        item_kind: QueryItemKind::RayQuery,
+        result_kind: QueryResultKind::Hit3,
+        domain_contract: Some(DomainContractKind::SceneDomain),
+        required_domain_flags: NO_DOMAIN_FLAGS,
+        preserves_local_hit_context: true,
+        participant_kind: None,
+        supported_backends: BackendSupport::all(),
+        observability: QueryObservabilityProfile::spatial_ray(),
+    },
+    QueryContractDescriptor {
         id: SPATIAL_NEAREST_WORLD,
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
         question: QueryQuestionId::Nearest,
+        target: QueryTargetKind::World,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::WorldScalar,
         capture_kind: CaptureKind::Region,
         item_kind: QueryItemKind::RayQuery,
@@ -668,6 +821,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
         question: QueryQuestionId::Occluded,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::CaptureScalar,
         capture_kind: CaptureKind::Shape,
         item_kind: QueryItemKind::RayQuery,
@@ -684,6 +839,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
         question: QueryQuestionId::Occluded,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Batch,
         surface: QuerySurfaceKind::CaptureBatch,
         capture_kind: CaptureKind::Shape,
         item_kind: QueryItemKind::RayQuery,
@@ -696,10 +853,30 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         observability: QueryObservabilityProfile::spatial_ray(),
     },
     QueryContractDescriptor {
+        id: SPATIAL_OCCLUDED_BATCH_WORLD,
+        version: QUERY_CONTRACT_VERSION,
+        family: QueryFamilyId::Spatial,
+        question: QueryQuestionId::Occluded,
+        target: QueryTargetKind::World,
+        cardinality: QueryCardinality::Batch,
+        surface: QuerySurfaceKind::WorldBatch,
+        capture_kind: CaptureKind::Region,
+        item_kind: QueryItemKind::RayQuery,
+        result_kind: QueryResultKind::OcclusionResult,
+        domain_contract: Some(DomainContractKind::SceneDomain),
+        required_domain_flags: NO_DOMAIN_FLAGS,
+        preserves_local_hit_context: true,
+        participant_kind: None,
+        supported_backends: BackendSupport::all(),
+        observability: QueryObservabilityProfile::spatial_ray(),
+    },
+    QueryContractDescriptor {
         id: SPATIAL_OCCLUDED_WORLD,
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Spatial,
         question: QueryQuestionId::Occluded,
+        target: QueryTargetKind::World,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::WorldScalar,
         capture_kind: CaptureKind::Region,
         item_kind: QueryItemKind::RayQuery,
@@ -716,6 +893,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Surface,
         question: QueryQuestionId::Sample,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::CaptureScalar,
         capture_kind: CaptureKind::Shape,
         item_kind: QueryItemKind::Hit3,
@@ -732,6 +911,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Surface,
         question: QueryQuestionId::Sample,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Batch,
         surface: QuerySurfaceKind::CaptureBatch,
         capture_kind: CaptureKind::Shape,
         item_kind: QueryItemKind::Hit3,
@@ -744,10 +925,30 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         observability: QueryObservabilityProfile::point_sample(),
     },
     QueryContractDescriptor {
+        id: SURFACE_SAMPLE_BATCH_WORLD,
+        version: QUERY_CONTRACT_VERSION,
+        family: QueryFamilyId::Surface,
+        question: QueryQuestionId::Sample,
+        target: QueryTargetKind::World,
+        cardinality: QueryCardinality::Batch,
+        surface: QuerySurfaceKind::WorldBatch,
+        capture_kind: CaptureKind::Region,
+        item_kind: QueryItemKind::Hit3,
+        result_kind: QueryResultKind::Surface,
+        domain_contract: Some(DomainContractKind::SceneDomain),
+        required_domain_flags: MATERIAL_DOMAIN_FLAGS,
+        preserves_local_hit_context: false,
+        participant_kind: None,
+        supported_backends: BackendSupport::all(),
+        observability: QueryObservabilityProfile::point_sample(),
+    },
+    QueryContractDescriptor {
         id: SURFACE_SAMPLE_WORLD,
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Surface,
         question: QueryQuestionId::Sample,
+        target: QueryTargetKind::World,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::WorldScalar,
         capture_kind: CaptureKind::Region,
         item_kind: QueryItemKind::Hit3,
@@ -764,6 +965,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Participants,
         question: QueryQuestionId::Radiance,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::CaptureScalar,
         capture_kind: CaptureKind::Shape,
         item_kind: QueryItemKind::PointDirectionQuery,
@@ -780,7 +983,27 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Participants,
         question: QueryQuestionId::Radiance,
+        target: QueryTargetKind::World,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::WorldScalar,
+        capture_kind: CaptureKind::Region,
+        item_kind: QueryItemKind::PointDirectionQuery,
+        result_kind: QueryResultKind::RadianceResult,
+        domain_contract: Some(DomainContractKind::SceneDomain),
+        required_domain_flags: RADIANCE_DOMAIN_FLAGS,
+        preserves_local_hit_context: false,
+        participant_kind: Some(ParticipantContractKind::Radiance),
+        supported_backends: BackendSupport::all(),
+        observability: QueryObservabilityProfile::spatial_point(),
+    },
+    QueryContractDescriptor {
+        id: PARTICIPANTS_RADIANCE_BATCH_WORLD,
+        version: QUERY_CONTRACT_VERSION,
+        family: QueryFamilyId::Participants,
+        question: QueryQuestionId::Radiance,
+        target: QueryTargetKind::World,
+        cardinality: QueryCardinality::Batch,
+        surface: QuerySurfaceKind::WorldBatch,
         capture_kind: CaptureKind::Region,
         item_kind: QueryItemKind::PointDirectionQuery,
         result_kind: QueryResultKind::RadianceResult,
@@ -796,6 +1019,8 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Participants,
         question: QueryQuestionId::Medium,
+        target: QueryTargetKind::Capture,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::CaptureScalar,
         capture_kind: CaptureKind::Shape,
         item_kind: QueryItemKind::PointQuery,
@@ -812,7 +1037,27 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
         version: QUERY_CONTRACT_VERSION,
         family: QueryFamilyId::Participants,
         question: QueryQuestionId::Medium,
+        target: QueryTargetKind::World,
+        cardinality: QueryCardinality::Scalar,
         surface: QuerySurfaceKind::WorldScalar,
+        capture_kind: CaptureKind::Region,
+        item_kind: QueryItemKind::PointQuery,
+        result_kind: QueryResultKind::MediumResult,
+        domain_contract: Some(DomainContractKind::SceneDomain),
+        required_domain_flags: MEDIA_DOMAIN_FLAGS,
+        preserves_local_hit_context: false,
+        participant_kind: Some(ParticipantContractKind::Medium),
+        supported_backends: BackendSupport::all(),
+        observability: QueryObservabilityProfile::spatial_point(),
+    },
+    QueryContractDescriptor {
+        id: PARTICIPANTS_MEDIUM_BATCH_WORLD,
+        version: QUERY_CONTRACT_VERSION,
+        family: QueryFamilyId::Participants,
+        question: QueryQuestionId::Medium,
+        target: QueryTargetKind::World,
+        cardinality: QueryCardinality::Batch,
+        surface: QuerySurfaceKind::WorldBatch,
         capture_kind: CaptureKind::Region,
         item_kind: QueryItemKind::PointQuery,
         result_kind: QueryResultKind::MediumResult,
@@ -825,7 +1070,7 @@ const QUERY_CONTRACTS: [QueryContractDescriptor; 26] = [
     },
 ];
 
-const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 26] = [
+const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 33] = [
     QueryExecutionBinding {
         contract_id: SPATIAL_DISTANCE_CAPTURE_FIELD,
         planner_recipe: QueryPlannerRecipeKind::SpatialDistanceCaptureField,
@@ -865,6 +1110,14 @@ const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 26] = [
         default_kernel: Some(InternalKernelKind::ShapeDistanceCapture),
         helper_name: Some("__wr_shape_distance_batch_queries"),
         legacy_builtin_name: "distance_at_batch",
+    },
+    QueryExecutionBinding {
+        contract_id: SPATIAL_DISTANCE_BATCH_WORLD,
+        planner_recipe: QueryPlannerRecipeKind::SpatialDistanceBatchWorld,
+        default_executor: PlanExecutor::WorldDistanceCapture,
+        default_kernel: Some(InternalKernelKind::WorldDistanceCapture),
+        helper_name: Some("__wr_world_distance_batch_queries"),
+        legacy_builtin_name: "distance_world_batch",
     },
     QueryExecutionBinding {
         contract_id: SPATIAL_NORMAL_CAPTURE_FIELD,
@@ -907,6 +1160,14 @@ const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 26] = [
         legacy_builtin_name: "normal_at_batch",
     },
     QueryExecutionBinding {
+        contract_id: SPATIAL_NORMAL_BATCH_WORLD,
+        planner_recipe: QueryPlannerRecipeKind::SpatialNormalBatchWorld,
+        default_executor: PlanExecutor::WorldNormalCapture,
+        default_kernel: Some(InternalKernelKind::WorldNormalCapture),
+        helper_name: Some("__wr_world_normal_batch_queries"),
+        legacy_builtin_name: "normal_world_batch",
+    },
+    QueryExecutionBinding {
         contract_id: SUPPORT_SUMMARY_CAPTURE_FIELD,
         planner_recipe: QueryPlannerRecipeKind::SupportSummaryCaptureField,
         default_executor: PlanExecutor::FieldSupportSummaryCapture,
@@ -947,6 +1208,14 @@ const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 26] = [
         legacy_builtin_name: "trace_shape_batch",
     },
     QueryExecutionBinding {
+        contract_id: SPATIAL_NEAREST_BATCH_WORLD,
+        planner_recipe: QueryPlannerRecipeKind::SpatialNearestBatchWorld,
+        default_executor: PlanExecutor::WorldTraceCapture,
+        default_kernel: Some(InternalKernelKind::WorldTraceCapture),
+        helper_name: Some("__wr_world_trace_batch_queries"),
+        legacy_builtin_name: "trace_world_batch",
+    },
+    QueryExecutionBinding {
         contract_id: SPATIAL_NEAREST_WORLD,
         planner_recipe: QueryPlannerRecipeKind::SpatialNearestWorld,
         default_executor: PlanExecutor::WorldTraceCapture,
@@ -969,6 +1238,14 @@ const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 26] = [
         default_kernel: Some(InternalKernelKind::ShapeOccludedCapture),
         helper_name: Some("__wr_scene_occluded_batch_queries"),
         legacy_builtin_name: "occluded_batch",
+    },
+    QueryExecutionBinding {
+        contract_id: SPATIAL_OCCLUDED_BATCH_WORLD,
+        planner_recipe: QueryPlannerRecipeKind::SpatialOccludedBatchWorld,
+        default_executor: PlanExecutor::WorldTraceCapture,
+        default_kernel: Some(InternalKernelKind::WorldTraceCapture),
+        helper_name: Some("__wr_world_occluded_batch_queries"),
+        legacy_builtin_name: "occluded_world_batch",
     },
     QueryExecutionBinding {
         contract_id: SPATIAL_OCCLUDED_WORLD,
@@ -995,6 +1272,14 @@ const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 26] = [
         legacy_builtin_name: "surface_at_batch",
     },
     QueryExecutionBinding {
+        contract_id: SURFACE_SAMPLE_BATCH_WORLD,
+        planner_recipe: QueryPlannerRecipeKind::SurfaceSampleBatchWorld,
+        default_executor: PlanExecutor::WorldSurfaceCapture,
+        default_kernel: Some(InternalKernelKind::WorldSurfaceCapture),
+        helper_name: Some("__wr_world_surface_batch_queries"),
+        legacy_builtin_name: "surface_world_batch",
+    },
+    QueryExecutionBinding {
         contract_id: SURFACE_SAMPLE_WORLD,
         planner_recipe: QueryPlannerRecipeKind::SurfaceSampleWorld,
         default_executor: PlanExecutor::WorldSurfaceCapture,
@@ -1019,6 +1304,14 @@ const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 26] = [
         legacy_builtin_name: "radiance_world",
     },
     QueryExecutionBinding {
+        contract_id: PARTICIPANTS_RADIANCE_BATCH_WORLD,
+        planner_recipe: QueryPlannerRecipeKind::ParticipantsRadianceBatchWorld,
+        default_executor: PlanExecutor::WorldRadianceCapture,
+        default_kernel: Some(InternalKernelKind::WorldRadianceCapture),
+        helper_name: Some("__wr_world_radiance_batch_queries"),
+        legacy_builtin_name: "radiance_world_batch",
+    },
+    QueryExecutionBinding {
         contract_id: PARTICIPANTS_MEDIUM_CAPTURE_SHAPE,
         planner_recipe: QueryPlannerRecipeKind::ParticipantsMediumCaptureShape,
         default_executor: PlanExecutor::SceneMediumCapture,
@@ -1034,9 +1327,17 @@ const QUERY_EXECUTION_BINDINGS: [QueryExecutionBinding; 26] = [
         helper_name: Some("__wr_world_medium_capture"),
         legacy_builtin_name: "medium_world",
     },
+    QueryExecutionBinding {
+        contract_id: PARTICIPANTS_MEDIUM_BATCH_WORLD,
+        planner_recipe: QueryPlannerRecipeKind::ParticipantsMediumBatchWorld,
+        default_executor: PlanExecutor::WorldMediumCapture,
+        default_kernel: Some(InternalKernelKind::WorldMediumCapture),
+        helper_name: Some("__wr_world_medium_batch_queries"),
+        legacy_builtin_name: "medium_world_batch",
+    },
 ];
 
-const QUERY_CONTRACT_ALIASES: [QueryContractAlias; 3] = [
+const QUERY_CONTRACT_ALIASES: [QueryContractAlias; 4] = [
     QueryContractAlias {
         alias_id: LEGACY_SPATIAL_TRACE_CAPTURE_SHAPE,
         canonical_id: SPATIAL_NEAREST_CAPTURE_SHAPE,
@@ -1045,6 +1346,11 @@ const QUERY_CONTRACT_ALIASES: [QueryContractAlias; 3] = [
     QueryContractAlias {
         alias_id: LEGACY_SPATIAL_TRACE_BATCH_SHAPE,
         canonical_id: SPATIAL_NEAREST_BATCH_SHAPE,
+        reason: "trace is the legacy name for spatial.nearest",
+    },
+    QueryContractAlias {
+        alias_id: LEGACY_SPATIAL_TRACE_BATCH_WORLD,
+        canonical_id: SPATIAL_NEAREST_BATCH_WORLD,
         reason: "trace is the legacy name for spatial.nearest",
     },
     QueryContractAlias {
@@ -1092,6 +1398,21 @@ pub fn query_surface_name(surface: QuerySurfaceKind) -> &'static str {
         QuerySurfaceKind::CaptureScalar => "capture",
         QuerySurfaceKind::WorldScalar => "world",
         QuerySurfaceKind::CaptureBatch => "batch",
+        QuerySurfaceKind::WorldBatch => "batch.world",
+    }
+}
+
+pub fn query_target_name(target: QueryTargetKind) -> &'static str {
+    match target {
+        QueryTargetKind::Capture => "capture",
+        QueryTargetKind::World => "world",
+    }
+}
+
+pub fn query_cardinality_name(cardinality: QueryCardinality) -> &'static str {
+    match cardinality {
+        QueryCardinality::Scalar => "scalar",
+        QueryCardinality::Batch => "batch",
     }
 }
 
@@ -1181,6 +1502,12 @@ pub fn query_family_member(family: QueryFamilyId, member: &str) -> Option<QueryF
         (QueryFamilyId::Surface, "sample_batch") => {
             (QueryQuestionId::Sample, QueryFamilyCallSurface::Batch)
         }
+        (QueryFamilyId::Participants, "radiance_batch") => {
+            (QueryQuestionId::Radiance, QueryFamilyCallSurface::Batch)
+        }
+        (QueryFamilyId::Participants, "medium_batch") => {
+            (QueryQuestionId::Medium, QueryFamilyCallSurface::Batch)
+        }
         _ => return None,
     };
     Some(QueryFamilyMember {
@@ -1191,21 +1518,31 @@ pub fn query_family_member(family: QueryFamilyId, member: &str) -> Option<QueryF
 }
 
 pub fn query_family_member_name(descriptor: &QueryContractDescriptor) -> &'static str {
-    match (descriptor.family, descriptor.question, descriptor.surface) {
-        (QueryFamilyId::Spatial, QueryQuestionId::Distance, QuerySurfaceKind::CaptureBatch) => {
+    match (
+        descriptor.family,
+        descriptor.question,
+        descriptor.cardinality,
+    ) {
+        (QueryFamilyId::Spatial, QueryQuestionId::Distance, QueryCardinality::Batch) => {
             "distance_batch"
         }
-        (QueryFamilyId::Spatial, QueryQuestionId::Normal, QuerySurfaceKind::CaptureBatch) => {
+        (QueryFamilyId::Spatial, QueryQuestionId::Normal, QueryCardinality::Batch) => {
             "normal_batch"
         }
-        (QueryFamilyId::Spatial, QueryQuestionId::Nearest, QuerySurfaceKind::CaptureBatch) => {
+        (QueryFamilyId::Spatial, QueryQuestionId::Nearest, QueryCardinality::Batch) => {
             "nearest_batch"
         }
-        (QueryFamilyId::Spatial, QueryQuestionId::Occluded, QuerySurfaceKind::CaptureBatch) => {
+        (QueryFamilyId::Spatial, QueryQuestionId::Occluded, QueryCardinality::Batch) => {
             "occluded_batch"
         }
-        (QueryFamilyId::Surface, QueryQuestionId::Sample, QuerySurfaceKind::CaptureBatch) => {
+        (QueryFamilyId::Surface, QueryQuestionId::Sample, QueryCardinality::Batch) => {
             "sample_batch"
+        }
+        (QueryFamilyId::Participants, QueryQuestionId::Radiance, QueryCardinality::Batch) => {
+            "radiance_batch"
+        }
+        (QueryFamilyId::Participants, QueryQuestionId::Medium, QueryCardinality::Batch) => {
+            "medium_batch"
         }
         (_, question, _) => query_question_name(question),
     }
@@ -1232,12 +1569,12 @@ pub(crate) fn query_contract_bundle_for_family_member_internal(
 )> {
     let member = query_family_member(family, member)?;
     if member.call_surface == QueryFamilyCallSurface::Scalar
-        && surface == QuerySurfaceKind::CaptureBatch
+        && surface.cardinality() == QueryCardinality::Batch
     {
         return None;
     }
     if member.call_surface == QueryFamilyCallSurface::Batch
-        && surface != QuerySurfaceKind::CaptureBatch
+        && surface.cardinality() != QueryCardinality::Batch
     {
         return None;
     }

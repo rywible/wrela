@@ -10,6 +10,8 @@ fmt <path>            canonical formatting pass (idempotent)
 build <path>          run certification, then compile executable on success only
 compile <path>        alias for build (also certification-gated)
 query-contracts       list family/question query contracts and compatibility aliases
+presentation-plan <path>  inspect compiled presentation contracts and pass plan
+presentation-debug <path> run presentation passes and export color/depth/normal debug attachments
 verify-cert <path>    verify an emitted cert.json report and hashes
 run <path>            compile and run
 dev <path>            watch and rebuild (polling)

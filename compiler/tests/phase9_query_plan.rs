@@ -817,18 +817,18 @@ render render_budget_ppm(world: RegionCapture, camera: Camera) {
         .expect("render function");
     let render_args = first_direct_call_args(render, "__wr_render_capture_to_ppm")
         .expect("render should call compiler-owned ppm helper");
-    assert_eq!(render_args.len(), 13);
-    assert_float_const(&render_args[9], 4.5);
-    assert_float_const(&render_args[10], 0.07);
-    assert_float_const(&render_args[11], 0.003);
-    assert_integer_const(&render_args[12], 33);
+    assert_eq!(render_args.len(), 15);
+    assert_float_const(&render_args[11], 4.5);
+    assert_float_const(&render_args[12], 0.07);
+    assert_float_const(&render_args[13], 0.003);
+    assert_integer_const(&render_args[14], 33);
 
     let scene_color = mir_module
         .functions
         .iter()
         .find(|func| func.name == "__wr_render_scene_color_capture")
         .expect("scene color render helper");
-    assert_eq!(scene_color.params.len(), 10);
+    assert_eq!(scene_color.params.len(), 12);
     assert_eq!(
         set_field_local_name(scene_color, "max_distance").as_deref(),
         Some("trace_max_distance")

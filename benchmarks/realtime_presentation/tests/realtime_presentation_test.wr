@@ -1,0 +1,156 @@
+fn update_checksum(current: Integer, value: Integer) -> Integer {
+    return ((current * 41) + value) % 2147483647
+}
+
+field exact distance screen_batch_sphere(p: Vec3) -> F32 {
+    sphere(radius = 0.82)
+}
+
+material screen_batch_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.42, 0.56, 0.74),
+        roughness=0.45,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0) + hit.normal * 0.0
+    )
+}
+
+shape screen_batch_sphere_shape {
+    field = screen_batch_sphere
+    material = screen_batch_surface
+    payload = Payload(
+        entity_id=u32(41),
+        material_id=u32(41),
+        actor=ActorHandle(id=u32(41), generation=u32(0))
+    )
+}
+
+region screen_batch_region() {
+    place primary = screen_batch_sphere_shape
+}
+
+domain screen_batch_domain(world: RegionCapture) {
+    geometry_detail = 0
+    material = false
+    radiance = false
+    media = false
+    max_distance = 8.0
+    min_step = 0.04
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+
+view render_screen_batch_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = screen_batch_domain(world = world)
+    width = 16
+    height = 16
+}
+
+fn test_realtime_presentation_cpu_wgsl_screen_batch_parity_ops_256() -> Nothing {
+    world = capture screen_batch_region
+    domain = screen_batch_domain(world = world)
+
+    mutable rays = []
+    mutable points = []
+    for i in 1...257 {
+        px = (f32(i % 16) / 15.0 - 0.5) * 2.4
+        py = (f32((i / 16) % 16) / 15.0 - 0.5) * 2.0
+        ray_dir = normalize(vec3(-px * 0.04, -py * 0.04, -1.0))
+        __wr_list_push(
+            rays,
+            ray_query(
+                origin=vec3(px, py, 3.0),
+                direction=ray_dir,
+                max_distance=8.0,
+                min_step=0.04,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+        )
+        __wr_list_push(
+            points,
+            PointQuery(point=normalize(vec3(px * 0.4, py * 0.4, 1.0)) * 0.82)
+        )
+    }
+
+    cpu_hits = spatial.nearest_batch(
+        capture=world,
+        domain=domain,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    wgsl_hits = spatial.nearest_batch(
+        capture=world,
+        domain=domain,
+        rays=rays,
+        backend=dispatch_backend_wgsl()
+    )
+    cpu_normals = spatial.normal_batch(
+        capture=world,
+        domain=domain,
+        points=points,
+        backend=dispatch_backend_cpu()
+    )
+    wgsl_normals = spatial.normal_batch(
+        capture=world,
+        domain=domain,
+        points=points,
+        backend=dispatch_backend_wgsl()
+    )
+
+    mutable cpu_hit_count = 0
+    mutable wgsl_hit_count = 0
+    mutable cpu_miss_count = 0
+    mutable wgsl_miss_count = 0
+    mutable cpu_step_signal = 0
+    mutable wgsl_step_signal = 0
+    mutable parity_checksum = 0
+    for sample_i in 0...64 {
+        sample_index = sample_i * 4
+        cpu_hit = cpu_hits[sample_index]
+        wgsl_hit = wgsl_hits[sample_index]
+        require cpu_hit.hit == wgsl_hit.hit else "cpu/wgsl nearest hit density parity"
+        if cpu_hit.hit {
+            cpu_hit_count += 1
+            require abs(cpu_hit.distance - wgsl_hit.distance) < 0.04 else "cpu/wgsl nearest distance parity"
+        } else {
+            cpu_miss_count += 1
+        }
+        if wgsl_hit.hit {
+            wgsl_hit_count += 1
+        } else {
+            wgsl_miss_count += 1
+        }
+        cpu_step_signal += cpu_hit.steps
+        wgsl_step_signal += wgsl_hit.steps
+
+        cpu_normal = cpu_normals[sample_index].normal
+        wgsl_normal = wgsl_normals[sample_index].normal
+        normal_delta = abs(cpu_normal.x - wgsl_normal.x)
+            + abs(cpu_normal.y - wgsl_normal.y)
+            + abs(cpu_normal.z - wgsl_normal.z)
+        require normal_delta < 0.05 else "cpu/wgsl normal batch parity"
+
+        parity_checksum = update_checksum(
+            current=parity_checksum,
+            value=cpu_hit.steps
+                + wgsl_hit.steps
+                + i32(abs(cpu_hit.distance - wgsl_hit.distance) * 1000.0)
+                + i32(normal_delta * 1000.0)
+        )
+    }
+
+    require cpu_hit_count > 0 else "cpu/wgsl benchmark has hits"
+    require cpu_miss_count > 0 else "cpu/wgsl benchmark has misses"
+    require cpu_hit_count == wgsl_hit_count else "cpu/wgsl hit count parity"
+    require cpu_miss_count == wgsl_miss_count else "cpu/wgsl miss count parity"
+    require cpu_step_signal > 0 else "cpu step signal nonzero"
+    require wgsl_step_signal > 0 else "wgsl step signal nonzero"
+    require parity_checksum != 0 else "cpu/wgsl parity checksum nonzero"
+}

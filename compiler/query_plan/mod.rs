@@ -3,13 +3,15 @@ use crate::query_contract::{
     self, ParticipantContractKind, QueryContractDescriptor, QueryExecutionBinding,
     QueryObservabilityProfile, QueryQuestionId,
 };
+use crate::query_solver::{RaySolverPlan, is_ray_shaped_spatial_contract};
 use crate::scene_ir::{DistanceSemantics, SupportClass};
 use smol_str::SmolStr;
 
 pub use crate::query_contract::{
     CaptureKind, DispatchBackend, InternalKernelKind, PlanExecutor,
-    QUERY_CONTRACT_VERSION as QUERY_PLAN_CONTRACT_VERSION, QueryContractId, QueryFamilyId,
-    QueryItemKind, QueryResultKind, QuerySurfaceKind, SceneDomainFlag,
+    QUERY_CONTRACT_VERSION as QUERY_PLAN_CONTRACT_VERSION, QueryCardinality, QueryContractId,
+    QueryFamilyId, QueryItemKind, QueryResultKind, QuerySurfaceKind, QueryTargetKind,
+    SceneDomainFlag,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -20,6 +22,8 @@ pub enum BatchQueryKind {
     Trace,
     Surface,
     Occluded,
+    Radiance,
+    Medium,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -241,6 +245,7 @@ pub struct PlanningObservability {
 pub enum BatchItemContract {
     CaptureQuery { plan: CaptureQueryPlan },
     RayThenOcclusion { nearest_plan: CaptureQueryPlan },
+    WorldQuery { plan: WorldQueryPlan },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,6 +268,8 @@ pub struct BatchQueryPlan {
     pub contract_version: u32,
     pub contract_id: QueryContractId,
     pub family: QueryFamilyId,
+    pub target: QueryTargetKind,
+    pub cardinality: QueryCardinality,
     pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: BatchQueryKind,
@@ -285,6 +292,7 @@ pub struct BatchQueryPlan {
     pub domain_flags: Vec<SceneDomainFlag>,
     pub artifact_contracts: Vec<ArtifactContract>,
     pub item_contract: BatchItemContract,
+    pub ray_solver: Option<RaySolverPlan>,
     pub observability: PlanningObservability,
     pub preserves_local_hit_context: bool,
 }
@@ -294,6 +302,8 @@ pub struct CaptureQueryPlan {
     pub contract_version: u32,
     pub contract_id: QueryContractId,
     pub family: QueryFamilyId,
+    pub target: QueryTargetKind,
+    pub cardinality: QueryCardinality,
     pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: CaptureQueryKind,
@@ -319,6 +329,8 @@ pub struct WorldQueryPlan {
     pub contract_version: u32,
     pub contract_id: QueryContractId,
     pub family: QueryFamilyId,
+    pub target: QueryTargetKind,
+    pub cardinality: QueryCardinality,
     pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: WorldQueryKind,
@@ -336,6 +348,7 @@ pub struct WorldQueryPlan {
     pub participant_contract: Option<ParticipantSelectionContract>,
     pub domain_flags: Vec<SceneDomainFlag>,
     pub artifact_contracts: Vec<ArtifactContract>,
+    pub ray_solver: Option<RaySolverPlan>,
     pub observability: PlanningObservability,
     pub preserves_local_hit_context: bool,
 }
@@ -351,20 +364,41 @@ pub(crate) fn batch_query_contract_id(
         (BatchQueryKind::Distance, CaptureKind::Shape) => {
             Some(query_contract::SPATIAL_DISTANCE_BATCH_SHAPE)
         }
+        (BatchQueryKind::Distance, CaptureKind::Region) => {
+            Some(query_contract::SPATIAL_DISTANCE_BATCH_WORLD)
+        }
         (BatchQueryKind::Normal, CaptureKind::Field) => {
             Some(query_contract::SPATIAL_NORMAL_BATCH_FIELD)
         }
         (BatchQueryKind::Normal, CaptureKind::Shape) => {
             Some(query_contract::SPATIAL_NORMAL_BATCH_SHAPE)
         }
+        (BatchQueryKind::Normal, CaptureKind::Region) => {
+            Some(query_contract::SPATIAL_NORMAL_BATCH_WORLD)
+        }
         (BatchQueryKind::Nearest | BatchQueryKind::Trace, CaptureKind::Shape) => {
             Some(query_contract::SPATIAL_NEAREST_BATCH_SHAPE)
+        }
+        (BatchQueryKind::Nearest | BatchQueryKind::Trace, CaptureKind::Region) => {
+            Some(query_contract::SPATIAL_NEAREST_BATCH_WORLD)
         }
         (BatchQueryKind::Surface, CaptureKind::Shape) => {
             Some(query_contract::SURFACE_SAMPLE_BATCH_SHAPE)
         }
+        (BatchQueryKind::Surface, CaptureKind::Region) => {
+            Some(query_contract::SURFACE_SAMPLE_BATCH_WORLD)
+        }
         (BatchQueryKind::Occluded, CaptureKind::Shape) => {
             Some(query_contract::SPATIAL_OCCLUDED_BATCH_SHAPE)
+        }
+        (BatchQueryKind::Occluded, CaptureKind::Region) => {
+            Some(query_contract::SPATIAL_OCCLUDED_BATCH_WORLD)
+        }
+        (BatchQueryKind::Radiance, CaptureKind::Region) => {
+            Some(query_contract::PARTICIPANTS_RADIANCE_BATCH_WORLD)
+        }
+        (BatchQueryKind::Medium, CaptureKind::Region) => {
+            Some(query_contract::PARTICIPANTS_MEDIUM_BATCH_WORLD)
         }
         _ => None,
     }
@@ -425,6 +459,22 @@ pub(crate) fn world_query_contract_id(kind: WorldQueryKind) -> QueryContractId {
     }
 }
 
+fn world_scalar_contract_for_batch_descriptor(
+    descriptor: &QueryContractDescriptor,
+) -> Option<QueryContractId> {
+    let kind = match (descriptor.family, descriptor.question) {
+        (QueryFamilyId::Spatial, QueryQuestionId::Distance) => WorldQueryKind::Distance,
+        (QueryFamilyId::Spatial, QueryQuestionId::Normal) => WorldQueryKind::Normal,
+        (QueryFamilyId::Spatial, QueryQuestionId::Nearest) => WorldQueryKind::Nearest,
+        (QueryFamilyId::Spatial, QueryQuestionId::Occluded) => WorldQueryKind::Occluded,
+        (QueryFamilyId::Surface, QueryQuestionId::Sample) => WorldQueryKind::Surface,
+        (QueryFamilyId::Participants, QueryQuestionId::Radiance) => WorldQueryKind::Radiance,
+        (QueryFamilyId::Participants, QueryQuestionId::Medium) => WorldQueryKind::Medium,
+        _ => return None,
+    };
+    Some(world_query_contract_id(kind))
+}
+
 fn helper_name(binding: &QueryExecutionBinding) -> &'static str {
     binding.helper_name.unwrap_or_else(|| {
         panic!(
@@ -453,7 +503,7 @@ fn participant_selection_kind(kind: ParticipantContractKind) -> CaptureQueryKind
 pub(crate) fn batch_query_kind_for_descriptor(
     descriptor: &QueryContractDescriptor,
 ) -> Option<BatchQueryKind> {
-    if descriptor.surface != QuerySurfaceKind::CaptureBatch {
+    if descriptor.cardinality != QueryCardinality::Batch {
         return None;
     }
     match (descriptor.family, descriptor.question) {
@@ -462,6 +512,8 @@ pub(crate) fn batch_query_kind_for_descriptor(
         (QueryFamilyId::Spatial, QueryQuestionId::Nearest) => Some(BatchQueryKind::Nearest),
         (QueryFamilyId::Spatial, QueryQuestionId::Occluded) => Some(BatchQueryKind::Occluded),
         (QueryFamilyId::Surface, QueryQuestionId::Sample) => Some(BatchQueryKind::Surface),
+        (QueryFamilyId::Participants, QueryQuestionId::Radiance) => Some(BatchQueryKind::Radiance),
+        (QueryFamilyId::Participants, QueryQuestionId::Medium) => Some(BatchQueryKind::Medium),
         _ => None,
     }
 }
@@ -475,7 +527,9 @@ pub(crate) fn batch_query_kind_for_contract_id(
 pub(crate) fn capture_query_kind_for_descriptor(
     descriptor: &QueryContractDescriptor,
 ) -> Option<CaptureQueryKind> {
-    if descriptor.surface != QuerySurfaceKind::CaptureScalar {
+    if descriptor.target != QueryTargetKind::Capture
+        || descriptor.cardinality != QueryCardinality::Scalar
+    {
         return None;
     }
     match (descriptor.family, descriptor.question) {
@@ -504,7 +558,9 @@ pub(crate) fn capture_query_kind_for_contract_id(
 pub(crate) fn world_query_kind_for_descriptor(
     descriptor: &QueryContractDescriptor,
 ) -> Option<WorldQueryKind> {
-    if descriptor.surface != QuerySurfaceKind::WorldScalar {
+    if descriptor.target != QueryTargetKind::World
+        || descriptor.cardinality != QueryCardinality::Scalar
+    {
         return None;
     }
     match (descriptor.family, descriptor.question) {
@@ -530,6 +586,15 @@ fn batch_item_contract_for_descriptor(
     descriptor: &QueryContractDescriptor,
     scene: Option<SceneSummary>,
 ) -> Result<BatchItemContract, &'static str> {
+    if descriptor.target == QueryTargetKind::World {
+        let Some(contract_id) = world_scalar_contract_for_batch_descriptor(descriptor) else {
+            return Err("missing world scalar contract for world-batch item");
+        };
+        return Ok(BatchItemContract::WorldQuery {
+            plan: WorldQueryPlan::for_contract_with_backend(contract_id, DispatchBackend::Auto)?,
+        });
+    }
+
     if descriptor.result_kind == QueryResultKind::OcclusionResult {
         let Some(trace_contract) = query_contract::query_contracts().iter().find(|candidate| {
             candidate.surface == QuerySurfaceKind::CaptureScalar
@@ -568,12 +633,25 @@ impl BatchQueryPlan {
         let kind = kind.into();
         match kind {
             BatchQueryKind::Distance | BatchQueryKind::Normal => {
-                Self::for_field_query(kind, capture_kind, DispatchBackend::Auto, None)
+                if matches!(capture_kind, CaptureKind::Region) {
+                    Self::for_world_query(kind, DispatchBackend::Auto)
+                } else {
+                    Self::for_field_query(kind, capture_kind, DispatchBackend::Auto, None)
+                }
             }
             BatchQueryKind::Nearest
             | BatchQueryKind::Trace
             | BatchQueryKind::Surface
-            | BatchQueryKind::Occluded => Self::for_shape_query(kind, DispatchBackend::Auto, None),
+            | BatchQueryKind::Occluded => {
+                if matches!(capture_kind, CaptureKind::Region) {
+                    Self::for_world_query(kind, DispatchBackend::Auto)
+                } else {
+                    Self::for_shape_query(kind, DispatchBackend::Auto, None)
+                }
+            }
+            BatchQueryKind::Radiance | BatchQueryKind::Medium => {
+                Self::for_world_query(kind, DispatchBackend::Auto)
+            }
         }
     }
 
@@ -597,11 +675,18 @@ impl BatchQueryPlan {
         if descriptor.id != binding.contract_id {
             return Err("query descriptor and execution binding ids do not match");
         }
-        if descriptor.surface != QuerySurfaceKind::CaptureBatch {
-            return Err("batch query plans require capture-batch contracts");
+        if descriptor.cardinality != QueryCardinality::Batch {
+            return Err("batch query plans require batch contracts");
         }
-        if descriptor.capture_kind == CaptureKind::Region {
-            return Err("batch query plans do not support region captures");
+        if descriptor.target == QueryTargetKind::World
+            && descriptor.capture_kind != CaptureKind::Region
+        {
+            return Err("world-batch query plans require region captures");
+        }
+        if descriptor.target == QueryTargetKind::Capture
+            && descriptor.capture_kind == CaptureKind::Region
+        {
+            return Err("capture-batch query plans do not support region captures");
         }
 
         let helper_name = helper_name(binding);
@@ -613,7 +698,9 @@ impl BatchQueryPlan {
         let result_kind = descriptor.result_kind;
         let executor = binding.default_executor;
         let preserves_local_hit_context = descriptor.preserves_local_hit_context;
-        let candidate_strategy = if matches!(
+        let candidate_strategy = if descriptor.target == QueryTargetKind::World {
+            world_candidate_strategy(batch_kind_to_world_kind(kind))
+        } else if matches!(
             descriptor.result_kind,
             QueryResultKind::DistanceResult | QueryResultKind::NormalResult
         ) {
@@ -621,20 +708,30 @@ impl BatchQueryPlan {
         } else {
             candidate_strategy_for_shape_query(kind, scene.as_ref())
         };
-        let pruning_strategy =
-            pruning_strategy_for_plan(kind, capture_kind, scene.as_ref(), candidate_strategy);
-        let derived_artifacts = derive_artifacts(
-            scene.as_ref(),
-            capture_kind,
-            candidate_strategy,
-            pruning_strategy,
-        );
+        let pruning_strategy = if descriptor.target == QueryTargetKind::World {
+            world_pruning_strategy(batch_kind_to_world_kind(kind), candidate_strategy)
+        } else {
+            pruning_strategy_for_plan(kind, capture_kind, scene.as_ref(), candidate_strategy)
+        };
+        let derived_artifacts = if descriptor.target == QueryTargetKind::World {
+            derive_world_artifacts(candidate_strategy, pruning_strategy)
+        } else {
+            derive_artifacts(
+                scene.as_ref(),
+                capture_kind,
+                candidate_strategy,
+                pruning_strategy,
+            )
+        };
         let mut stages = vec![PlanStage::SelectBackend];
         if matches!(backend, VirtualGpu | Wgsl | Auto) {
             stages.push(PlanStage::BeginVirtualGpuDispatch);
         }
         stages.push(PlanStage::LoadCapture);
         stages.extend(load_artifact_stages(&derived_artifacts));
+        if descriptor.target == QueryTargetKind::World {
+            stages.push(PlanStage::LoadDomainFlags);
+        }
         stages.push(PlanStage::IterateItems { item_kind });
         stages.push(PlanStage::GenerateCandidates {
             strategy: candidate_strategy,
@@ -665,7 +762,11 @@ impl BatchQueryPlan {
             }
         };
         let candidate_contract = build_candidate_contract(
-            CandidateSource::CaptureScene,
+            if descriptor.target == QueryTargetKind::World {
+                CandidateSource::WorldRegionShapes
+            } else {
+                CandidateSource::CaptureScene
+            },
             item_kind,
             candidate_strategy,
             pruning_strategy,
@@ -683,11 +784,14 @@ impl BatchQueryPlan {
             helper_name,
         );
         let item_contract = batch_item_contract_for_descriptor(descriptor, scene.clone())?;
+        let ray_solver = ray_solver_for_descriptor(descriptor);
 
         Ok(Self {
             contract_version: QUERY_PLAN_CONTRACT_VERSION,
             contract_id: descriptor.id,
             family: descriptor.family,
+            target: descriptor.target,
+            cardinality: descriptor.cardinality,
             surface: descriptor.surface,
             helper_name: SmolStr::new(helper_name),
             kind,
@@ -715,6 +819,7 @@ impl BatchQueryPlan {
             domain_flags: descriptor.required_domain_flags.to_vec(),
             artifact_contracts,
             item_contract,
+            ray_solver,
             observability: planning_observability(descriptor.observability, pruning_strategy),
             preserves_local_hit_context,
         })
@@ -740,6 +845,12 @@ impl BatchQueryPlan {
         let contract_id = batch_query_contract_id(kind, CaptureKind::Shape)
             .unwrap_or_else(|| panic!("unsupported shape batch query: {kind:?}"));
         Self::for_contract(contract_id, backend, scene).expect("shape batch contract plan")
+    }
+
+    pub fn for_world_query(kind: BatchQueryKind, backend: DispatchBackend) -> Self {
+        let contract_id = batch_query_contract_id(kind, CaptureKind::Region)
+            .unwrap_or_else(|| panic!("unsupported world batch query: {kind:?}"));
+        Self::for_contract(contract_id, backend, None).expect("world batch contract plan")
     }
 
     pub fn requires_virtual_gpu_scaffolding(&self) -> bool {
@@ -922,6 +1033,8 @@ impl CaptureQueryPlan {
             contract_version: QUERY_PLAN_CONTRACT_VERSION,
             contract_id: descriptor.id,
             family: descriptor.family,
+            target: descriptor.target,
+            cardinality: descriptor.cardinality,
             surface: descriptor.surface,
             helper_name: SmolStr::new(helper_name),
             kind,
@@ -1072,6 +1185,8 @@ impl WorldQueryPlan {
             contract_version: QUERY_PLAN_CONTRACT_VERSION,
             contract_id: descriptor.id,
             family: descriptor.family,
+            target: descriptor.target,
+            cardinality: descriptor.cardinality,
             surface: descriptor.surface,
             helper_name: SmolStr::new(helper_name),
             kind,
@@ -1096,6 +1211,7 @@ impl WorldQueryPlan {
                 preserves_local_hit_context,
                 helper_name,
             ),
+            ray_solver: ray_solver_for_descriptor(descriptor),
             observability: planning_observability(descriptor.observability, pruning_strategy),
             preserves_local_hit_context,
         })
@@ -1280,6 +1396,18 @@ fn world_candidate_strategy(kind: WorldQueryKind) -> CandidateStrategy {
     }
 }
 
+fn batch_kind_to_world_kind(kind: BatchQueryKind) -> WorldQueryKind {
+    match kind {
+        BatchQueryKind::Distance => WorldQueryKind::Distance,
+        BatchQueryKind::Normal => WorldQueryKind::Normal,
+        BatchQueryKind::Nearest | BatchQueryKind::Trace => WorldQueryKind::Nearest,
+        BatchQueryKind::Surface => WorldQueryKind::Surface,
+        BatchQueryKind::Occluded => WorldQueryKind::Occluded,
+        BatchQueryKind::Radiance => WorldQueryKind::Radiance,
+        BatchQueryKind::Medium => WorldQueryKind::Medium,
+    }
+}
+
 fn world_pruning_strategy(
     kind: WorldQueryKind,
     candidate_strategy: CandidateStrategy,
@@ -1322,6 +1450,12 @@ fn derive_world_artifacts(
         });
     }
     artifacts
+}
+
+fn ray_solver_for_descriptor(descriptor: &QueryContractDescriptor) -> Option<RaySolverPlan> {
+    is_ray_shaped_spatial_contract(descriptor.id)
+        .then(|| RaySolverPlan::for_contract(descriptor.id, None))
+        .flatten()
 }
 
 fn derive_artifact_contracts(
@@ -1505,7 +1639,9 @@ fn pruning_strategy_for_plan(
             }
             PruningStrategy::ConservativeTraversal
         }
-        BatchQueryKind::Surface => PruningStrategy::None,
+        BatchQueryKind::Surface | BatchQueryKind::Radiance | BatchQueryKind::Medium => {
+            PruningStrategy::None
+        }
     }
 }
 

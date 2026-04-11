@@ -25,6 +25,7 @@ struct ShapeWinner {
 const WR_F32_EPSILON: f32 = 1.1920929e-7;
 const WR_SURFACE_NORMAL_EPSILON: f32 = 1.0e-6;
 const WR_TAU: f32 = 6.283185307179586;
+const WR_DEG_TO_RAD: f32 = 0.017453292519943295;
 const WR_IDENTITY_HASH_OFFSET: u32 = 0x811c9dc5u;
 const WR_IDENTITY_HASH_PRIME: u32 = 0x01000193u;
 
@@ -91,6 +92,57 @@ fn wr_surface_normalize3(value: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(0.0, 0.0, 1.0);
   }
   return value / len;
+}
+
+fn wr_canonical_screen_uv(
+  pixel: vec2<f32>,
+  jitter_pixels: vec2<f32>,
+  viewport: Viewport,
+) -> vec2<f32> {
+  let viewport_size = max(
+    vec2<f32>(f32(viewport.width), f32(viewport.height)),
+    vec2<f32>(1.0, 1.0),
+  );
+  return (pixel + vec2<f32>(0.5, 0.5) + jitter_pixels) / viewport_size;
+}
+
+fn wr_canonical_view_ray_direction(
+  camera: Camera,
+  viewport: Viewport,
+  uv: vec2<f32>,
+) -> vec3<f32> {
+  let forward = wr_surface_normalize3(camera.forward);
+  let right = wr_surface_normalize3(cross(forward, camera.up));
+  let up = wr_surface_normalize3(cross(right, forward));
+  let viewport_size = max(
+    vec2<f32>(f32(viewport.width), f32(viewport.height)),
+    vec2<f32>(1.0, 1.0),
+  );
+  let aspect = viewport_size.x / viewport_size.y;
+  let vertical_scale = tan(camera.vertical_fov_degrees * WR_DEG_TO_RAD * 0.5);
+  let screen_x = (uv.x * 2.0 - 1.0) * aspect * vertical_scale;
+  let screen_y = (1.0 - uv.y * 2.0) * vertical_scale;
+  return wr_surface_normalize3(forward + right * screen_x + up * screen_y);
+}
+
+fn wr_canonical_screen_sample_query(
+  view: ViewState,
+  pixel: vec2<f32>,
+  max_distance: f32,
+  min_step: f32,
+  hit_epsilon: f32,
+  max_steps: i32,
+) -> ScreenSampleQuery {
+  let uv = wr_canonical_screen_uv(pixel, view.jitter, view.viewport);
+  let ray = RayQuery(
+    view.camera.position,
+    wr_canonical_view_ray_direction(view.camera, view.viewport, uv),
+    max_distance,
+    min_step,
+    hit_epsilon,
+    max_steps,
+  );
+  return ScreenSampleQuery(pixel, uv, ray);
 }
 
 fn wr_splat_period(period: f32) -> vec3<f32> {
