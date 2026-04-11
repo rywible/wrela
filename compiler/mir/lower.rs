@@ -13,8 +13,6 @@ use crate::portable::{
     PortableBuiltinType, all_builtin_records, any_builtin_record, builtin_record_by_function,
     portable_builtin_type_abi,
 };
-use crate::presentation_binding::resolve_execution_binding;
-use crate::presentation_plan::PresentationPlan;
 use crate::query_contract::{self, QueryItemKind};
 use crate::query_exec::mir::{
     lower_field_batch_queries_helper, lower_scene_distance_capture_helper,
@@ -1214,30 +1212,6 @@ fn lower_function(
             type_info,
         );
     }
-    if matches!(func.role, FunctionRole::Render) {
-        return lower_render_function(
-            module,
-            func,
-            name,
-            default_query_backend,
-            type_tags,
-            class_fields,
-            class_field_defaults,
-            function_names,
-            field_names,
-            shape_names,
-            shape_graphs,
-            field_graphs,
-            field_bodies,
-            field_metadata,
-            radiance_param_counts,
-            volume_param_counts,
-            result_functions,
-            class_method_ids,
-            interface_methods,
-            type_info,
-        );
-    }
     if matches!(func.role, FunctionRole::Field) {
         if let Some(graph) = func.field_graph.as_ref() {
             if !matches!(&graph.root, hir::FieldExpr::Custom { .. }) {
@@ -1828,207 +1802,6 @@ fn portable_abi_named_type(
     portable_abi_from_type_ref(Some(&ty), module, type_tags, &mut HashSet::new())
 }
 
-fn lower_render_function(
-    module: &hir::Module,
-    func: &hir::Function,
-    name: SmolStr,
-    default_query_backend: DispatchBackend,
-    type_tags: &HashMap<SmolStr, TypeTagId>,
-    class_fields: &HashMap<SmolStr, Vec<SmolStr>>,
-    class_field_defaults: &HashMap<SmolStr, Vec<Option<hir::FieldDefault>>>,
-    function_names: &HashSet<SmolStr>,
-    field_names: &HashSet<SmolStr>,
-    shape_names: &HashSet<SmolStr>,
-    shape_graphs: &HashMap<SmolStr, hir::ShapeGraph>,
-    field_graphs: &HashMap<SmolStr, hir::FieldGraph>,
-    field_bodies: &HashMap<SmolStr, hir::Body>,
-    field_metadata: &HashMap<SmolStr, hir::FieldMetadata>,
-    radiance_param_counts: &HashMap<SmolStr, usize>,
-    volume_param_counts: &HashMap<SmolStr, usize>,
-    result_functions: &HashSet<SmolStr>,
-    class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, u32>>,
-    interface_methods: &HashMap<SmolStr, HashSet<SmolStr>>,
-    type_info: &FunctionTypeInfo,
-) -> MirFunction {
-    let span = TextRange::empty(0.into());
-    let mut lowerer = FunctionLowerer::new(
-        name,
-        type_tags,
-        class_fields,
-        class_field_defaults,
-        function_names,
-        field_names,
-        shape_names,
-        shape_graphs,
-        field_graphs,
-        field_bodies,
-        field_metadata,
-        radiance_param_counts,
-        volume_param_counts,
-        result_functions,
-        class_method_ids,
-        interface_methods,
-        false,
-        Some(type_info),
-    );
-    lowerer.default_query_backend = default_query_backend;
-
-    for param in &func.params {
-        let local = lowerer.new_local(
-            param.name.clone(),
-            false,
-            lowerer.local_type_for_name(&param.name),
-        );
-        lowerer.declare_local(param.name.clone(), local);
-        lowerer.params.push(local);
-    }
-
-    let entry = lowerer.new_block();
-    lowerer.current_block = entry;
-
-    let metadata = func.render.as_ref().expect("render metadata");
-    let presentation_plan = PresentationPlan::from_render_function(func, default_query_backend)
-        .expect("render function should produce a presentation plan");
-    debug_assert!(
-        presentation_plan.validate().is_empty(),
-        "compiler-generated presentation plan should validate"
-    );
-    let legacy_ppm_helper = presentation_plan
-        .export_binding()
-        .and_then(resolve_execution_binding)
-        .and_then(|binding| binding.helper_name)
-        .expect("legacy preview presentation plan should bind a PPM export helper");
-    let world_local = func
-        .params
-        .first()
-        .and_then(|param| lowerer.resolve_local(&param.name))
-        .expect("render world param");
-    let camera_local = func
-        .params
-        .get(1)
-        .and_then(|param| lowerer.resolve_local(&param.name))
-        .expect("render camera param");
-
-    let domain = metadata
-        .frame
-        .domain
-        .as_ref()
-        .map(|body| lowerer.lower_wrapped_body_value(body, span))
-        .unwrap_or_else(|| build_default_scene_domain_value(&mut lowerer, world_local, span));
-    let trace_budget = lower_render_trace_budget_values(module, metadata, &mut lowerer, span);
-    let light = metadata
-        .lighting
-        .light
-        .as_ref()
-        .map(|body| lowerer.lower_wrapped_body_value(body, span))
-        .unwrap_or_else(|| build_default_render_light_value(&mut lowerer, span));
-    let width = metadata
-        .view
-        .width
-        .as_ref()
-        .map(|body| lowerer.lower_wrapped_body_value(body, span))
-        .unwrap_or(Value::Const(Literal::Integer(40)));
-    let height = metadata
-        .view
-        .height
-        .as_ref()
-        .map(|body| lowerer.lower_wrapped_body_value(body, span))
-        .unwrap_or(Value::Const(Literal::Integer(40)));
-    let world_up = metadata
-        .compatibility
-        .world_up
-        .as_ref()
-        .map(|body| lowerer.lower_wrapped_body_value(body, span))
-        .unwrap_or_else(|| {
-            lowerer.lower_get_named_field(
-                Value::Local(camera_local),
-                "Camera",
-                "up",
-                MirType::Vec3,
-                span,
-            )
-        });
-    let view_scale = metadata
-        .compatibility
-        .view_scale
-        .as_ref()
-        .map(|body| lowerer.lower_wrapped_body_value(body, span))
-        .unwrap_or(Value::Const(Literal::Float(0.72)));
-    let fill_dir = metadata
-        .lighting
-        .fill_dir
-        .as_ref()
-        .map(|body| lowerer.lower_wrapped_body_value(body, span))
-        .unwrap_or_else(|| build_default_render_fill_dir_value(&mut lowerer, span));
-    let fill_strength = metadata
-        .lighting
-        .fill_strength
-        .as_ref()
-        .map(|body| lowerer.lower_wrapped_body_value(body, span))
-        .unwrap_or(Value::Const(Literal::Float(0.22)));
-    let ambient_color = metadata
-        .lighting
-        .ambient_color
-        .as_ref()
-        .map(|body| lowerer.lower_wrapped_body_value(body, span))
-        .unwrap_or_else(|| build_default_render_ambient_color_value(&mut lowerer, span));
-
-    let result = lowerer.lower_call_temp(
-        MirType::String,
-        SmolStr::new(legacy_ppm_helper),
-        vec![
-            Value::Local(world_local),
-            domain,
-            Value::Local(camera_local),
-            light,
-            width,
-            height,
-            world_up,
-            view_scale,
-            fill_dir,
-            fill_strength,
-            ambient_color,
-            trace_budget.max_distance,
-            trace_budget.min_step,
-            trace_budget.hit_epsilon,
-            trace_budget.max_steps,
-        ],
-        span,
-    );
-    lowerer.set_terminator(Terminator::Return {
-        value: Some(result),
-        span,
-    });
-
-    MirFunction {
-        name: lowerer.name,
-        params: lowerer.params,
-        abi_params: func
-            .params
-            .iter()
-            .map(|param| {
-                portable_abi_from_type_ref(
-                    param.ty.as_ref(),
-                    module,
-                    type_tags,
-                    &mut HashSet::new(),
-                )
-            })
-            .collect(),
-        abi_return: portable_abi_from_type_ref(
-            func.ret_type.as_ref(),
-            module,
-            type_tags,
-            &mut HashSet::new(),
-        ),
-        locals: lowerer.locals,
-        temps: lowerer.temps,
-        blocks: lowerer.blocks,
-        entry,
-        suspendable: false,
-    }
-}
-
 fn build_vec3_value(lowerer: &mut FunctionLowerer, values: [f64; 3], span: TextRange) -> Value {
     lowerer.lower_call_temp(
         MirType::Vec3,
@@ -2040,211 +1813,6 @@ fn build_vec3_value(lowerer: &mut FunctionLowerer, values: [f64; 3], span: TextR
         ],
         span,
     )
-}
-
-fn build_default_render_fill_dir_value(lowerer: &mut FunctionLowerer, span: TextRange) -> Value {
-    let base = build_vec3_value(lowerer, [-0.9, 0.45, 0.2], span);
-    lowerer.lower_call_temp(MirType::Vec3, SmolStr::new("normalize"), vec![base], span)
-}
-
-fn build_default_render_ambient_color_value(
-    lowerer: &mut FunctionLowerer,
-    span: TextRange,
-) -> Value {
-    build_vec3_value(lowerer, [0.12, 0.12, 0.12], span)
-}
-
-fn build_default_render_light_value(lowerer: &mut FunctionLowerer, span: TextRange) -> Value {
-    let mut class = lowerer.synthetic_class_target_info("Light");
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "position",
-        build_vec3_value(lowerer, [2.4, 2.8, 2.4], span),
-    );
-    let light_dir = build_vec3_value(lowerer, [-0.8, -0.9, -0.9], span);
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "direction",
-        lowerer.lower_call_temp(
-            MirType::Vec3,
-            SmolStr::new("normalize"),
-            vec![light_dir],
-            span,
-        ),
-    );
-    FunctionLowerer::set_class_field_value(
-        &mut class,
-        "intensity",
-        build_vec3_value(lowerer, [1.0, 0.98, 0.95], span),
-    );
-    FunctionLowerer::set_class_field_value(&mut class, "range", Value::Const(Literal::Float(12.0)));
-    lowerer.build_class_instance(&class, span)
-}
-
-fn default_trace_max_distance() -> Value {
-    Value::Const(Literal::Float(12.0))
-}
-
-fn default_trace_min_step() -> Value {
-    Value::Const(Literal::Float(0.02))
-}
-
-fn default_trace_hit_epsilon() -> Value {
-    Value::Const(Literal::Float(0.001))
-}
-
-fn default_trace_max_steps() -> Value {
-    Value::Const(Literal::Integer(96))
-}
-
-struct RenderTraceBudgetValues {
-    max_distance: Value,
-    min_step: Value,
-    hit_epsilon: Value,
-    max_steps: Value,
-}
-
-struct RenderDomainTraceSource<'a> {
-    function: &'a hir::Function,
-    metadata: &'a hir::DomainMetadata,
-    call_body: &'a hir::Body,
-    call_args: &'a [hir::Arg],
-}
-
-fn default_render_trace_budget_values() -> RenderTraceBudgetValues {
-    RenderTraceBudgetValues {
-        max_distance: default_trace_max_distance(),
-        min_step: default_trace_min_step(),
-        hit_epsilon: default_trace_hit_epsilon(),
-        max_steps: default_trace_max_steps(),
-    }
-}
-
-fn terminal_expr(body: &hir::Body) -> Option<hir::Idx<Expr>> {
-    let stmt = *body.root_stmts.last()?;
-    match &body.stmts[stmt] {
-        HirStmt::Expr(expr) | HirStmt::Return(Some(expr)) => Some(*expr),
-        _ => None,
-    }
-}
-
-fn callee_name_from_expr(body: &hir::Body, expr: hir::Idx<Expr>) -> Option<&SmolStr> {
-    match &body.exprs[expr] {
-        Expr::Variable(name) => Some(name),
-        Expr::TypeApply { callee, .. } => callee_name_from_expr(body, *callee),
-        _ => None,
-    }
-}
-
-fn render_domain_trace_source<'a>(
-    module: &'a hir::Module,
-    render_metadata: &'a hir::RenderMetadata,
-) -> Option<RenderDomainTraceSource<'a>> {
-    let call_body = render_metadata.frame.domain.as_ref()?;
-    let expr = terminal_expr(call_body)?;
-    let Expr::Call { callee, args, .. } = &call_body.exprs[expr] else {
-        return None;
-    };
-    let callee_name = callee_name_from_expr(call_body, *callee)?;
-    let function = module.functions.iter().find_map(|(_, func)| {
-        (func.role == FunctionRole::Domain && func.name == *callee_name).then_some(func)
-    })?;
-    let metadata = function.domain.as_ref()?;
-    Some(RenderDomainTraceSource {
-        function,
-        metadata,
-        call_body,
-        call_args: args,
-    })
-}
-
-fn domain_arg_expr_for_param(
-    args: &[hir::Arg],
-    param_index: usize,
-    param_name: &SmolStr,
-) -> Option<hir::Idx<Expr>> {
-    if let Some(value) = args.iter().find_map(|arg| match arg {
-        hir::Arg::Named { name, value, .. } if name == param_name => Some(*value),
-        _ => None,
-    }) {
-        return Some(value);
-    }
-
-    args.iter()
-        .filter_map(|arg| match arg {
-            hir::Arg::Positional { value, .. } => Some(*value),
-            hir::Arg::Named { .. } => None,
-        })
-        .nth(param_index)
-}
-
-fn lower_domain_budget_value(
-    lowerer: &mut FunctionLowerer,
-    budget: Option<&hir::Body>,
-    default: fn() -> Value,
-    span: TextRange,
-) -> Value {
-    budget
-        .map(|body| lowerer.lower_wrapped_body_value(body, span))
-        .unwrap_or_else(default)
-}
-
-fn lower_render_trace_budget_values(
-    module: &hir::Module,
-    render_metadata: &hir::RenderMetadata,
-    lowerer: &mut FunctionLowerer,
-    span: TextRange,
-) -> RenderTraceBudgetValues {
-    let Some(source) = render_domain_trace_source(module, render_metadata) else {
-        return default_render_trace_budget_values();
-    };
-
-    let bound_args = source
-        .function
-        .params
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, param)| {
-            let expr = domain_arg_expr_for_param(source.call_args, idx, &param.name)?;
-            let value = lowerer.lower_expr(source.call_body, expr);
-            Some((param.name.clone(), value))
-        })
-        .collect::<Vec<_>>();
-
-    lowerer.scopes.push(HashMap::new());
-    for (name, value) in bound_args {
-        let local = lowerer.new_local(name.clone(), false, MirType::Unknown);
-        lowerer.declare_local(name, local);
-        lowerer.assign_use(Place::Local(local), value, span);
-    }
-    let values = RenderTraceBudgetValues {
-        max_distance: lower_domain_budget_value(
-            lowerer,
-            source.metadata.max_distance.as_ref(),
-            default_trace_max_distance,
-            span,
-        ),
-        min_step: lower_domain_budget_value(
-            lowerer,
-            source.metadata.min_step.as_ref(),
-            default_trace_min_step,
-            span,
-        ),
-        hit_epsilon: lower_domain_budget_value(
-            lowerer,
-            source.metadata.hit_epsilon.as_ref(),
-            default_trace_hit_epsilon,
-            span,
-        ),
-        max_steps: lower_domain_budget_value(
-            lowerer,
-            source.metadata.max_steps.as_ref(),
-            default_trace_max_steps,
-            span,
-        ),
-    };
-    lowerer.scopes.pop();
-    values
 }
 
 fn build_scene_domain_contract_value(
@@ -2280,29 +1848,6 @@ fn build_scene_domain_contract_value(
     FunctionLowerer::set_class_field_value(&mut domain, "surface", surface);
     FunctionLowerer::set_class_field_value(&mut domain, "participants", participants);
     lowerer.build_class_instance(&domain, span)
-}
-
-fn build_default_scene_domain_value(
-    lowerer: &mut FunctionLowerer,
-    world_local: LocalId,
-    span: TextRange,
-) -> Value {
-    let scene_id = lowerer.lower_get_named_field(
-        Value::Local(world_local),
-        "RegionCapture",
-        "scene_id",
-        MirType::Integer,
-        span,
-    );
-    build_scene_domain_contract_value(
-        lowerer,
-        scene_id,
-        Value::Const(Literal::Integer(1)),
-        Value::Const(Literal::Boolean(true)),
-        Value::Const(Literal::Boolean(true)),
-        Value::Const(Literal::Boolean(true)),
-        span,
-    )
 }
 
 fn declare_internal_param(lowerer: &mut FunctionLowerer, name: &str, ty: MirType) -> LocalId {
@@ -2855,10 +2400,9 @@ fn lower_render_ambient_occlusion_helper(
     }
 }
 
-// Temporary compatibility scaffold for authored `render` preview output. The
-// canonical Phase 21 presentation path lives in `presentation_plan` and
-// `presentation_exec`; this helper remains only while preview/sample projects
-// still route through `render` syntax.
+// Shared color-capture helper for internal presentation export bindings. The
+// canonical presentation path lives in `presentation_plan` and
+// `presentation_exec`; this helper only serializes a prepared color attachment.
 fn lower_render_scene_color_helper(
     module: &hir::Module,
     default_query_backend: DispatchBackend,
@@ -2880,7 +2424,7 @@ fn lower_render_scene_color_helper(
 ) -> MirFunction {
     let span = TextRange::empty(0.into());
     let mut lowerer = FunctionLowerer::new(
-        SmolStr::new("__wr_render_scene_color_capture"),
+        SmolStr::new("__wr_presentation_scene_color_capture"),
         type_tags,
         class_fields,
         class_field_defaults,
@@ -3669,9 +3213,8 @@ fn lower_render_scene_color_helper(
     }
 }
 
-// Temporary compatibility wrapper over the Phase 21 first-color recipe. This
-// keeps authored `render` scaffolding alive while canonical `view`-based
-// presentation becomes the long-term surface.
+// Shared PPM export wrapper over the canonical presentation color path. This
+// remains as a thin host/export helper rather than authored presentation syntax.
 fn lower_render_capture_to_ppm_helper(
     module: &hir::Module,
     default_query_backend: DispatchBackend,
@@ -3693,7 +3236,7 @@ fn lower_render_capture_to_ppm_helper(
 ) -> MirFunction {
     let span = TextRange::empty(0.into());
     let mut lowerer = FunctionLowerer::new(
-        SmolStr::new("__wr_render_capture_to_ppm"),
+        SmolStr::new("__wr_presentation_attachment_to_ppm"),
         type_tags,
         class_fields,
         class_field_defaults,
@@ -3990,7 +3533,7 @@ fn lower_render_capture_to_ppm_helper(
     );
     let shaded = lowerer.lower_call_temp(
         MirType::Vec3,
-        SmolStr::new("__wr_render_scene_color_capture"),
+        SmolStr::new("__wr_presentation_scene_color_capture"),
         vec![
             Value::Local(world),
             Value::Local(domain),

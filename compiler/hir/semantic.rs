@@ -4802,7 +4802,7 @@ system updater[stage=fixed, writes=[Velocity]]() -> Nothing {
             field_graph: None,
             region: None,
             domain: None,
-            render: None,
+            presentation: None,
             system_metadata: Some(SystemMetadata {
                 stage: Some(SmolStr::new("fixed")),
                 reads: Vec::new(),
@@ -4826,7 +4826,7 @@ system updater[stage=fixed, writes=[Velocity]]() -> Nothing {
             field_graph: None,
             region: None,
             domain: None,
-            render: None,
+            presentation: None,
             system_metadata: Some(SystemMetadata {
                 stage: Some(SmolStr::new("fixed")),
                 reads: Vec::new(),

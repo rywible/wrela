@@ -1099,7 +1099,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
-            render: None,
+            presentation: None,
             field_graph: None,
             system_metadata: None,
             type_params,
@@ -1135,7 +1135,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
-            render: None,
+            presentation: None,
             field_graph: None,
             system_metadata: parse_system_metadata(f.syntax()),
             type_params,
@@ -1171,7 +1171,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
-            render: None,
+            presentation: None,
             field_graph: None,
             system_metadata: None,
             type_params,
@@ -1252,7 +1252,7 @@ impl LoweringContext {
             field,
             region: None,
             domain: None,
-            render: None,
+            presentation: None,
             field_graph,
             system_metadata: None,
             type_params: Vec::new(),
@@ -1283,7 +1283,7 @@ impl LoweringContext {
             field: None,
             region: Some(RegionMetadata { layers, items }),
             domain: None,
-            render: None,
+            presentation: None,
             field_graph: None,
             system_metadata: None,
             type_params: Vec::new(),
@@ -1316,7 +1316,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: Some(metadata),
-            render: None,
+            presentation: None,
             field_graph: None,
             system_metadata: None,
             type_params: Vec::new(),
@@ -1336,7 +1336,7 @@ impl LoweringContext {
         let visibility = visibility_for_node_default(r.syntax());
         let params = r.params().map(|p| self.lower_param(p)).collect();
         let stmts: Vec<_> = r.statements().collect();
-        let metadata = self.lower_render_metadata(&stmts);
+        let metadata = self.lower_presentation_metadata(&stmts);
         let render_ret_type = TypeRef {
             name: SmolStr::new("String"),
             name_span: None,
@@ -1354,7 +1354,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
-            render: Some(metadata),
+            presentation: Some(metadata),
             field_graph: None,
             system_metadata: None,
             type_params: Vec::new(),
@@ -1370,7 +1370,7 @@ impl LoweringContext {
         let visibility = visibility_for_node_default(v.syntax());
         let params = v.params().map(|p| self.lower_param(p)).collect();
         let stmts: Vec<_> = v.statements().collect();
-        let metadata = self.lower_render_metadata(&stmts);
+        let metadata = self.lower_presentation_metadata(&stmts);
         let view_ret_type = TypeRef {
             name: SmolStr::new("FrameState"),
             name_span: None,
@@ -1388,7 +1388,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
-            render: Some(metadata),
+            presentation: Some(metadata),
             field_graph: None,
             system_metadata: None,
             type_params: Vec::new(),
@@ -1422,7 +1422,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
-            render: None,
+            presentation: None,
             field_graph: None,
             system_metadata: None,
             type_params: Vec::new(),
@@ -1456,7 +1456,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
-            render: None,
+            presentation: None,
             field_graph: None,
             system_metadata: None,
             type_params: Vec::new(),
@@ -1490,7 +1490,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
-            render: None,
+            presentation: None,
             field_graph: None,
             system_metadata: None,
             type_params: Vec::new(),
@@ -1616,26 +1616,23 @@ impl LoweringContext {
         metadata
     }
 
-    fn lower_render_metadata(&mut self, stmts: &[ast::Stmt]) -> RenderMetadata {
-        let mut metadata = RenderMetadata {
-            view: RenderViewMetadata {
-                projection: RenderProjectionMetadata {
-                    source: RenderProjectionSource::CameraVerticalFovDegrees,
+    fn lower_presentation_metadata(&mut self, stmts: &[ast::Stmt]) -> PresentationMetadata {
+        let mut metadata = PresentationMetadata {
+            view: PresentationViewMetadata {
+                projection: PresentationProjectionMetadata {
+                    source: PresentationProjectionSource::CameraVerticalFovDegrees,
                 },
                 width: None,
                 height: None,
                 viewport: None,
             },
-            frame: RenderFrameMetadata {
+            frame: PresentationFrameMetadata {
                 domain: None,
-                export: RenderFrameExportMetadata {
-                    kind: RenderFrameExportKind::LegacyPpmString,
-                },
                 quality: None,
                 outputs: None,
                 history: None,
             },
-            lighting: RenderLightingMetadata {
+            lighting: PresentationLightingMetadata {
                 light: None,
                 lights: None,
                 fill_dir: None,
@@ -1645,7 +1642,7 @@ impl LoweringContext {
                 light_compatibility_alias: false,
                 fill_dir_compatibility_alias: false,
             },
-            compatibility: RenderCompatibilityProjectionMetadata {
+            compatibility: PresentationCompatibilityProjectionMetadata {
                 world_up: None,
                 view_scale: None,
             },
@@ -2642,7 +2639,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
-            render: None,
+            presentation: None,
             field_graph: None,
             system_metadata: None,
             type_params: Vec::new(),

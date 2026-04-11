@@ -159,52 +159,41 @@ pub struct DomainMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RenderMetadata {
-    pub view: RenderViewMetadata,
-    pub frame: RenderFrameMetadata,
-    pub lighting: RenderLightingMetadata,
-    pub compatibility: RenderCompatibilityProjectionMetadata,
+pub struct PresentationMetadata {
+    pub view: PresentationViewMetadata,
+    pub frame: PresentationFrameMetadata,
+    pub lighting: PresentationLightingMetadata,
+    pub compatibility: PresentationCompatibilityProjectionMetadata,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RenderViewMetadata {
-    pub projection: RenderProjectionMetadata,
+pub struct PresentationViewMetadata {
+    pub projection: PresentationProjectionMetadata,
     pub width: Option<Body>,
     pub height: Option<Body>,
     pub viewport: Option<Body>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RenderProjectionMetadata {
-    pub source: RenderProjectionSource,
+pub struct PresentationProjectionMetadata {
+    pub source: PresentationProjectionSource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenderProjectionSource {
+pub enum PresentationProjectionSource {
     CameraVerticalFovDegrees,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RenderFrameMetadata {
+pub struct PresentationFrameMetadata {
     pub domain: Option<Body>,
-    pub export: RenderFrameExportMetadata,
     pub quality: Option<Body>,
     pub outputs: Option<Body>,
     pub history: Option<Body>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RenderFrameExportMetadata {
-    pub kind: RenderFrameExportKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenderFrameExportKind {
-    LegacyPpmString,
-}
-
 #[derive(Debug, Clone, PartialEq)]
-pub struct RenderLightingMetadata {
+pub struct PresentationLightingMetadata {
     pub light: Option<Body>,
     pub lights: Option<Body>,
     pub fill_dir: Option<Body>,
@@ -216,10 +205,10 @@ pub struct RenderLightingMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RenderCompatibilityProjectionMetadata {
+pub struct PresentationCompatibilityProjectionMetadata {
     /// Compatibility-only projection override retained for current preview
     /// stability. Canonical projection is represented by
-    /// `RenderProjectionSource::CameraVerticalFovDegrees`.
+    /// `PresentationProjectionSource::CameraVerticalFovDegrees`.
     pub world_up: Option<Body>,
     /// Compatibility-only projection scale retained for current preview
     /// stability. New presentation contracts should treat the camera FOV as
@@ -572,7 +561,7 @@ pub struct Function {
     pub field: Option<FieldMetadata>,
     pub region: Option<RegionMetadata>,
     pub domain: Option<DomainMetadata>,
-    pub render: Option<RenderMetadata>,
+    pub presentation: Option<PresentationMetadata>,
     pub field_graph: Option<FieldGraph>,
     pub system_metadata: Option<SystemMetadata>,
     pub type_params: Vec<TypeParam>,

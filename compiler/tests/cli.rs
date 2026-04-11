@@ -980,6 +980,7 @@ fn cli_presentation_debug_exports_depth_normal_and_stats() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("presentation debug schema v1"));
     assert!(stdout.contains("presentation debug view=cli_plan_view backend=cpu"));
     assert!(stdout.contains("color ppm:"));
     assert!(stdout.contains("depth ppm:"));
@@ -1024,6 +1025,10 @@ fn cli_presentation_debug_json_reports_frame_cost_and_quality() {
     let dump: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("presentation-debug json");
     assert_eq!(
+        dump.get("schema_version").and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
         dump.pointer("/frame_cost/quality/tier")
             .and_then(|value| value.as_str()),
         Some("realtime_120")
@@ -1049,6 +1054,110 @@ fn cli_presentation_debug_json_reports_frame_cost_and_quality() {
             .and_then(|value| value.as_str())
             .is_some_and(|stats| stats.contains("quality tier=realtime_120"))
     );
+}
+
+#[test]
+fn cli_presentation_debug_handles_missing_optional_exports() {
+    let temp = workspace_tempdir();
+    write_presentation_plan_fixture(temp.path());
+    let out_dir = temp.path().join("presentation-debug-fast-view");
+
+    let seeded_output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("presentation-debug")
+        .arg(temp.path())
+        .arg("--view")
+        .arg("cli_plan_view")
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .arg("--width")
+        .arg("4")
+        .arg("--height")
+        .arg("4")
+        .output()
+        .expect("seed presentation-debug output dir");
+    assert!(
+        seeded_output.status.success(),
+        "presentation-debug seed failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&seeded_output.stdout),
+        String::from_utf8_lossy(&seeded_output.stderr)
+    );
+    assert!(out_dir.join("depth.ppm").exists());
+    assert!(out_dir.join("world_normal.ppm").exists());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("presentation-debug")
+        .arg(temp.path())
+        .arg("--view")
+        .arg("cli_plan_fast_view")
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .arg("--width")
+        .arg("4")
+        .arg("--height")
+        .arg("4")
+        .output()
+        .expect("run presentation-debug");
+    assert!(
+        output.status.success(),
+        "presentation-debug fast view failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("presentation debug schema v1"));
+    assert!(stdout.contains("presentation debug view=cli_plan_fast_view backend=cpu"));
+    assert!(stdout.contains("color ppm:"));
+    assert!(stdout.contains("depth ppm: not materialized"));
+    assert!(stdout.contains("world normal ppm: not materialized"));
+    assert!(out_dir.join("color.ppm").exists());
+    assert!(!out_dir.join("depth.ppm").exists());
+    assert!(!out_dir.join("world_normal.ppm").exists());
+    assert!(out_dir.join("stats.txt").exists());
+}
+
+#[test]
+fn cli_presentation_debug_json_reports_null_optional_exports() {
+    let temp = workspace_tempdir();
+    write_presentation_plan_fixture(temp.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("presentation-debug")
+        .arg(temp.path())
+        .arg("--view")
+        .arg("cli_plan_fast_view")
+        .arg("--width")
+        .arg("4")
+        .arg("--height")
+        .arg("4")
+        .arg("--json")
+        .output()
+        .expect("run presentation-debug json");
+    assert!(
+        output.status.success(),
+        "presentation-debug fast view --json failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let dump: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("presentation-debug fast view json");
+    assert_eq!(
+        dump.get("schema_version").and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        dump.get("color_ppm"),
+        Some(&serde_json::Value::String(
+            temp.path()
+                .join("src")
+                .join("presentation_debug")
+                .join("cli_plan_fast_view")
+                .join("color.ppm")
+                .display()
+                .to_string()
+        ))
+    );
+    assert_eq!(dump.get("depth_ppm"), Some(&serde_json::Value::Null));
+    assert_eq!(dump.get("world_normal_ppm"), Some(&serde_json::Value::Null));
 }
 
 #[test]

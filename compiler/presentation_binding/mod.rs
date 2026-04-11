@@ -7,7 +7,6 @@ pub struct PresentationBindingId(pub SmolStr);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PresentationPassRecipeKind {
-    LegacyPpmExport,
     GenerateScreenSamples,
     PrimaryVisibility,
     SurfaceResolve,
@@ -46,15 +45,6 @@ impl PresentationBindingId {
 }
 
 impl PresentationBindingSummary {
-    pub fn legacy_ppm_export(default_backend: DispatchBackend) -> Self {
-        Self {
-            id: PresentationBindingId::new("legacy.ppm.export"),
-            pass_kind: PresentationPassKind::LegacyPpmExport,
-            recipe: PresentationPassRecipeKind::LegacyPpmExport,
-            default_backend,
-        }
-    }
-
     pub fn screen_samples(default_backend: DispatchBackend) -> Self {
         Self {
             id: PresentationBindingId::new("screen.samples"),
@@ -232,25 +222,10 @@ impl PresentationBindingSummary {
     }
 }
 
-impl PresentationExecutionBinding {
-    pub fn legacy_ppm_export(default_backend: DispatchBackend) -> Self {
-        Self {
-            summary: PresentationBindingSummary::legacy_ppm_export(default_backend),
-            helper_name: Some("__wr_render_capture_to_ppm"),
-        }
-    }
-}
-
 pub fn resolve_execution_binding(
     summary: &PresentationBindingSummary,
 ) -> Option<PresentationExecutionBinding> {
     match (summary.id.as_str(), summary.recipe) {
-        ("legacy.ppm.export", PresentationPassRecipeKind::LegacyPpmExport) => {
-            Some(PresentationExecutionBinding {
-                summary: summary.clone(),
-                helper_name: Some("__wr_render_capture_to_ppm"),
-            })
-        }
         ("screen.samples", PresentationPassRecipeKind::GenerateScreenSamples)
         | ("primary.visibility", PresentationPassRecipeKind::PrimaryVisibility)
         | ("surface.resolve", PresentationPassRecipeKind::SurfaceResolve)
@@ -270,7 +245,7 @@ pub fn resolve_execution_binding(
         ("attachment.export.ppm", PresentationPassRecipeKind::ExportAttachment) => {
             Some(PresentationExecutionBinding {
                 summary: summary.clone(),
-                helper_name: Some("__wr_render_capture_to_ppm"),
+                helper_name: Some("__wr_presentation_attachment_to_ppm"),
             })
         }
         _ => None,

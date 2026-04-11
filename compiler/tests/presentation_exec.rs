@@ -122,7 +122,7 @@ fn presentation_fixture(
 ) {
     let (module, _type_info, ctx) = typed_module(presentation_exec_source());
     let view = view_function(&module, "exec_view");
-    let plan = PresentationPlan::from_render_function(view, backend).expect("presentation plan");
+    let plan = PresentationPlan::from_view_function(view, backend).expect("presentation plan");
     let camera = CanonicalCameraInput {
         position: [0.0, 0.0, 2.0],
         forward: [0.0, 0.0, -1.0],
@@ -187,7 +187,7 @@ fn presentation_fixture_with_state(
 ) {
     let (module, _type_info, ctx) = typed_module(source);
     let view = view_function(&module, view_name);
-    let plan = PresentationPlan::from_render_function(view, backend).expect("presentation plan");
+    let plan = PresentationPlan::from_view_function(view, backend).expect("presentation plan");
     let input = PresentationExecutionInput {
         region_capture: SmolStr::new(region_name),
         frame_domain: scene_domain_value(

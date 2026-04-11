@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresentationDebugArtifacts {
-    pub color_ppm: PathBuf,
-    pub depth_ppm: PathBuf,
-    pub world_normal_ppm: PathBuf,
+    pub color_ppm: Option<PathBuf>,
+    pub depth_ppm: Option<PathBuf>,
+    pub world_normal_ppm: Option<PathBuf>,
     pub stats_path: PathBuf,
 }
 
@@ -28,9 +28,15 @@ pub fn export_frame_debug(
     let depth_ppm = out_dir.join("depth.ppm");
     let world_normal_ppm = out_dir.join("world_normal.ppm");
     let stats_path = out_dir.join("stats.txt");
-    write_color_ppm(result, &color_ppm)?;
-    write_depth_ppm(result, &depth_ppm)?;
-    write_world_normal_ppm(result, &world_normal_ppm)?;
+    let color_ppm =
+        write_attachment_ppm_if_present(result, FrameAttachmentKind::Color, &color_ppm)?;
+    let depth_ppm =
+        write_attachment_ppm_if_present(result, FrameAttachmentKind::Depth, &depth_ppm)?;
+    let world_normal_ppm = write_attachment_ppm_if_present(
+        result,
+        FrameAttachmentKind::WorldNormal,
+        &world_normal_ppm,
+    )?;
     fs::write(&stats_path, render_primary_visibility_stats(result)).map_err(|err| {
         PresentationExecError::UnsupportedPlan {
             message: err.to_string(),
@@ -49,6 +55,32 @@ pub fn export_primary_visibility_debug(
     out_dir: &Path,
 ) -> Result<PresentationDebugArtifacts, PresentationExecError> {
     export_frame_debug(result, out_dir)
+}
+
+fn write_attachment_ppm_if_present(
+    result: &PresentationExecutionResult,
+    kind: FrameAttachmentKind,
+    path: &Path,
+) -> Result<Option<PathBuf>, PresentationExecError> {
+    let Some(attachment_name) = attachment_name_for_kind_optional(result, kind) else {
+        remove_stale_debug_artifact(path)?;
+        return Ok(None);
+    };
+    let data = render_attachment_ppm_string(result, attachment_name)?;
+    fs::write(path, data).map_err(|err| PresentationExecError::UnsupportedPlan {
+        message: err.to_string(),
+    })?;
+    Ok(Some(path.to_path_buf()))
+}
+
+fn remove_stale_debug_artifact(path: &Path) -> Result<(), PresentationExecError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(PresentationExecError::UnsupportedPlan {
+            message: err.to_string(),
+        }),
+    }
 }
 
 pub fn render_primary_visibility_stats(result: &PresentationExecutionResult) -> String {
@@ -357,15 +389,23 @@ pub fn attachment_name_for_kind(
     result: &PresentationExecutionResult,
     kind: FrameAttachmentKind,
 ) -> Result<&str, PresentationExecError> {
+    attachment_name_for_kind_optional(result, kind).ok_or_else(|| {
+        PresentationExecError::UnsupportedPlan {
+            message: format!("missing {:?} attachment for debug export", kind),
+        }
+    })
+}
+
+fn attachment_name_for_kind_optional(
+    result: &PresentationExecutionResult,
+    kind: FrameAttachmentKind,
+) -> Option<&str> {
     result
         .attachments
         .attachments
         .iter()
         .find_map(|(name, attachment)| {
             (attachment.layout.attachment.kind == kind).then_some(name.as_str())
-        })
-        .ok_or_else(|| PresentationExecError::UnsupportedPlan {
-            message: format!("missing {:?} attachment for debug export", kind),
         })
 }
 

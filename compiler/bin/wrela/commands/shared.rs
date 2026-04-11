@@ -147,14 +147,15 @@ struct PresentationPlanDump {
 
 #[derive(Serialize)]
 struct PresentationDebugDump {
+    schema_version: u32,
     view: String,
     region: String,
     domain: String,
     backend: String,
     frames_executed: u32,
-    color_ppm: String,
-    depth_ppm: String,
-    world_normal_ppm: String,
+    color_ppm: Option<String>,
+    depth_ppm: Option<String>,
+    world_normal_ppm: Option<String>,
     stats_path: String,
     stats: String,
     frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
@@ -608,14 +609,24 @@ fn execute_presentation_debug_command(
     };
     let stats = wrela::presentation_exec::debug::render_primary_visibility_stats(&result);
     let dump = PresentationDebugDump {
+        schema_version: 1,
         view: plan.name.to_string(),
         region: region_name.to_string(),
         domain: domain_name.to_string(),
         backend: dispatch_backend_name(result.backend).to_string(),
         frames_executed: frame_cost_history.len() as u32,
-        color_ppm: artifacts.color_ppm.display().to_string(),
-        depth_ppm: artifacts.depth_ppm.display().to_string(),
-        world_normal_ppm: artifacts.world_normal_ppm.display().to_string(),
+        color_ppm: artifacts
+            .color_ppm
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        depth_ppm: artifacts
+            .depth_ppm
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        world_normal_ppm: artifacts
+            .world_normal_ppm
+            .as_ref()
+            .map(|path| path.display().to_string()),
         stats_path: artifacts.stats_path.display().to_string(),
         stats,
         frame_cost: result.frame_cost.clone(),
@@ -627,6 +638,7 @@ fn execute_presentation_debug_command(
             serde_json::to_string_pretty(&dump).unwrap_or_else(|_| "{}".to_string())
         );
     } else {
+        println!("presentation debug schema v{}", dump.schema_version);
         println!(
             "presentation debug view={} backend={}",
             dump.view, dump.backend
@@ -634,9 +646,20 @@ fn execute_presentation_debug_command(
         println!("  region: {}", dump.region);
         println!("  domain: {}", dump.domain);
         println!("  frames: {}", dump.frames_executed);
-        println!("  color ppm: {}", dump.color_ppm);
-        println!("  depth ppm: {}", dump.depth_ppm);
-        println!("  world normal ppm: {}", dump.world_normal_ppm);
+        println!(
+            "  color ppm: {}",
+            dump.color_ppm.as_deref().unwrap_or("not materialized")
+        );
+        println!(
+            "  depth ppm: {}",
+            dump.depth_ppm.as_deref().unwrap_or("not materialized")
+        );
+        println!(
+            "  world normal ppm: {}",
+            dump.world_normal_ppm
+                .as_deref()
+                .unwrap_or("not materialized")
+        );
         println!("  stats: {}", dump.stats_path);
         println!("{}", dump.stats.trim_end());
     }
@@ -1299,9 +1322,9 @@ fn authored_presentation_lighting_inputs(
     view_func: &hir::Function,
     bindings: &PreviewEvalBindings,
 ) -> Result<wrela::presentation_contract::PresentationLightingInputs, String> {
-    let metadata = view_func.render.as_ref().ok_or_else(|| {
+    let metadata = view_func.presentation.as_ref().ok_or_else(|| {
         format!(
-            "selected view `{}` is missing render metadata",
+            "selected view `{}` is missing presentation metadata",
             view_func.name
         )
     })?;
@@ -1396,9 +1419,9 @@ fn authored_compatibility_projection_input(
     if !plan.view.compatibility_projection.legacy_path_active {
         return Ok(None);
     }
-    let metadata = view_func.render.as_ref().ok_or_else(|| {
+    let metadata = view_func.presentation.as_ref().ok_or_else(|| {
         format!(
-            "selected view `{}` is missing render metadata",
+            "selected view `{}` is missing presentation metadata",
             view_func.name
         )
     })?;
@@ -2314,7 +2337,7 @@ fn select_domain_name(
             .ok_or_else(|| format!("missing domain `{requested}`"));
     }
     if let Some(domain_body) = view
-        .render
+        .presentation
         .as_ref()
         .and_then(|metadata| metadata.frame.domain.as_ref())
         && let Some(name) = body_called_function_name(domain_body)
@@ -2389,9 +2412,9 @@ fn resolve_view_dimension(
         return Ok(value);
     }
     let metadata = view
-        .render
+        .presentation
         .as_ref()
-        .ok_or_else(|| "selected view is missing render metadata".to_string())?;
+        .ok_or_else(|| "selected view is missing presentation metadata".to_string())?;
     let label = if width { "width" } else { "height" };
     if let Some(viewport_body) = metadata.view.viewport.as_ref()
         && let Some(value) = helper_call_named_expr_id(viewport_body, "viewport", label)
@@ -3042,9 +3065,6 @@ fn lighting_input_source_name(
 
 fn presentation_pass_kind_name(kind: &wrela::presentation_plan::PresentationPassKind) -> String {
     match kind {
-        wrela::presentation_plan::PresentationPassKind::LegacyPpmExport => {
-            "LegacyPpmExport".to_string()
-        }
         wrela::presentation_plan::PresentationPassKind::GenerateScreenSamples { .. } => {
             "GenerateScreenSamples".to_string()
         }
@@ -3122,9 +3142,6 @@ fn presentation_recipe_name(
     recipe: wrela::presentation_binding::PresentationPassRecipeKind,
 ) -> &'static str {
     match recipe {
-        wrela::presentation_binding::PresentationPassRecipeKind::LegacyPpmExport => {
-            "LegacyPpmExport"
-        }
         wrela::presentation_binding::PresentationPassRecipeKind::GenerateScreenSamples => {
             "GenerateScreenSamples"
         }
@@ -3155,9 +3172,6 @@ fn presentation_binding_execution_name(
     binding: &wrela::presentation_binding::PresentationBindingSummary,
 ) -> &'static str {
     match binding.recipe {
-        wrela::presentation_binding::PresentationPassRecipeKind::LegacyPpmExport => {
-            "legacy_ppm_export"
-        }
         wrela::presentation_binding::PresentationPassRecipeKind::GenerateScreenSamples => {
             "screen_sample_generation"
         }
@@ -4321,7 +4335,7 @@ view sample_view(world: RegionCapture, camera: Camera) {
 "#,
         );
         let view = function(&module, "sample_view");
-        let plan = wrela::presentation_plan::PresentationPlan::from_render_function(
+        let plan = wrela::presentation_plan::PresentationPlan::from_view_function(
             view,
             wrela::query_plan::DispatchBackend::Auto,
         )

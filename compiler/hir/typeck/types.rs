@@ -1917,10 +1917,10 @@ fn validate_render_declaration(
         });
         return;
     }
-    if func.render.is_none() {
+    if func.presentation.is_none() {
         errors.push(TypeError::PortableConstructForbidden {
             function: func.name.clone(),
-            construct: format!("missing {declaration_label} metadata"),
+            construct: format!("missing {declaration_label} presentation metadata"),
             span: span_from_option_range(func.name_span),
             help: format!(
                 "{} declarations must lower into dedicated presentation metadata so camera/world routing stays compiler-visible.",

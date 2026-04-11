@@ -36,7 +36,6 @@ pub struct PresentationPass {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PresentationPassKind {
-    LegacyPpmExport,
     GenerateScreenSamples {
         contract: ScreenSampleGenerationContract,
     },
@@ -206,11 +205,11 @@ pub struct PresentationPlanValidationError {
 }
 
 impl PresentationPlan {
-    pub fn from_render_function(
+    pub fn from_view_function(
         func: &hir::Function,
         default_backend: DispatchBackend,
     ) -> Option<Self> {
-        let metadata = func.render.as_ref()?;
+        let metadata = func.presentation.as_ref()?;
         match func.role {
             hir::FunctionRole::View => Some(Self::canonical_view_from_metadata(
                 func.name.clone(),
@@ -221,27 +220,9 @@ impl PresentationPlan {
         }
     }
 
-    pub fn legacy_ppm_from_render_metadata(
-        name: SmolStr,
-        metadata: &hir::RenderMetadata,
-        default_backend: DispatchBackend,
-    ) -> Self {
-        Self::presentation_path_from_metadata(
-            name,
-            metadata,
-            default_backend,
-            ViewContract::legacy_preview(
-                metadata.compatibility.world_up.is_some(),
-                metadata.compatibility.view_scale.is_some(),
-            ),
-            true,
-            false,
-        )
-    }
-
     pub fn canonical_view_from_metadata(
         name: SmolStr,
-        metadata: &hir::RenderMetadata,
+        metadata: &hir::PresentationMetadata,
         default_backend: DispatchBackend,
     ) -> Self {
         Self::presentation_path_from_metadata(
@@ -256,7 +237,7 @@ impl PresentationPlan {
 
     fn presentation_path_from_metadata(
         name: SmolStr,
-        metadata: &hir::RenderMetadata,
+        metadata: &hir::PresentationMetadata,
         default_backend: DispatchBackend,
         view: ViewContract,
         export_color: bool,
@@ -853,7 +834,7 @@ impl PresentationObservability {
     }
 }
 
-fn authored_viewport_sources(metadata: &hir::RenderMetadata) -> (&'static str, &'static str) {
+fn authored_viewport_sources(metadata: &hir::PresentationMetadata) -> (&'static str, &'static str) {
     if metadata
         .view
         .viewport
@@ -867,7 +848,7 @@ fn authored_viewport_sources(metadata: &hir::RenderMetadata) -> (&'static str, &
     }
 }
 
-fn authored_output_selection(metadata: &hir::RenderMetadata) -> AuthoredOutputSelection {
+fn authored_output_selection(metadata: &hir::PresentationMetadata) -> AuthoredOutputSelection {
     let mut selection = AuthoredOutputSelection::default();
     let Some(body) = metadata.frame.outputs.as_ref() else {
         return selection;
@@ -894,7 +875,7 @@ fn authored_output_selection(metadata: &hir::RenderMetadata) -> AuthoredOutputSe
 }
 
 fn authored_temporal_history_selection(
-    metadata: &hir::RenderMetadata,
+    metadata: &hir::PresentationMetadata,
 ) -> Option<AuthoredTemporalHistorySelection> {
     let body = metadata.frame.history.as_ref()?;
     let (callee, args) = body_terminal_call(body)?;
@@ -907,7 +888,7 @@ fn authored_temporal_history_selection(
 }
 
 fn authored_quality_contract(
-    metadata: &hir::RenderMetadata,
+    metadata: &hir::PresentationMetadata,
     temporal_mode: TemporalReuseMode,
 ) -> RealtimeQualityContract {
     let Some(body) = metadata.frame.quality.as_ref() else {
@@ -959,7 +940,7 @@ fn quality_tier_for_target_fps(target_fps: u32) -> RealtimeQualityTier {
     }
 }
 
-fn authored_lighting_selection(metadata: &hir::RenderMetadata) -> AuthoredLightingSelection {
+fn authored_lighting_selection(metadata: &hir::PresentationMetadata) -> AuthoredLightingSelection {
     let mut selection = AuthoredLightingSelection {
         key_light: metadata.lighting.light.is_some(),
         fill_direction: metadata.lighting.fill_dir.is_some(),
@@ -1079,7 +1060,7 @@ pub fn plans_for_module(
     module
         .functions
         .iter()
-        .filter_map(|(_, func)| PresentationPlan::from_render_function(func, default_backend))
+        .filter_map(|(_, func)| PresentationPlan::from_view_function(func, default_backend))
         .collect()
 }
 
@@ -1598,16 +1579,6 @@ fn validation_error(message: impl Into<SmolStr>) -> PresentationPlanValidationEr
     PresentationPlanValidationError {
         message: message.into(),
     }
-}
-
-fn legacy_ppm_query_dependencies() -> Vec<QueryContractId> {
-    vec![
-        crate::query_contract::SPATIAL_NEAREST_WORLD,
-        crate::query_contract::SPATIAL_OCCLUDED_WORLD,
-        crate::query_contract::SURFACE_SAMPLE_WORLD,
-        crate::query_contract::PARTICIPANTS_RADIANCE_WORLD,
-        crate::query_contract::PARTICIPANTS_MEDIUM_WORLD,
-    ]
 }
 
 fn expected_scale_for_resolution(

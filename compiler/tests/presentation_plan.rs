@@ -55,11 +55,11 @@ view primary_view(world: RegionCapture, camera: Camera) {
 fn view_metadata_is_split_into_view_frame_lighting_and_contract_buckets() {
     let module = lower_inline_module(view_plan_source());
     let view = presentation_function(&module, "primary_view");
-    let metadata = view.render.as_ref().expect("view metadata");
+    let metadata = view.presentation.as_ref().expect("view metadata");
 
     assert_eq!(
         metadata.view.projection.source,
-        hir::RenderProjectionSource::CameraVerticalFovDegrees
+        hir::PresentationProjectionSource::CameraVerticalFovDegrees
     );
     assert!(metadata.view.width.is_none());
     assert!(metadata.view.height.is_none());
@@ -83,7 +83,7 @@ fn view_metadata_is_split_into_view_frame_lighting_and_contract_buckets() {
 fn canonical_view_plan_separates_semantic_contracts_from_execution_binding() {
     let module = lower_inline_module(view_plan_source());
     let view = presentation_function(&module, "primary_view");
-    let plan = PresentationPlan::from_render_function(view, DispatchBackend::Auto).expect("plan");
+    let plan = PresentationPlan::from_view_function(view, DispatchBackend::Auto).expect("plan");
 
     assert!(plan.validate().is_empty());
     assert!(plan.view.canonical_projection);
@@ -163,7 +163,7 @@ fn canonical_view_plan_materializes_primary_visibility_and_semantic_attachments(
         Some("FrameState")
     );
 
-    let plan = PresentationPlan::from_render_function(view, DispatchBackend::Wgsl).expect("plan");
+    let plan = PresentationPlan::from_view_function(view, DispatchBackend::Wgsl).expect("plan");
     assert!(plan.validate().is_empty());
     assert!(plan.view.canonical_projection);
     assert!(!plan.view.compatibility_projection.legacy_path_active);
@@ -419,7 +419,7 @@ fn canonical_view_plan_materializes_primary_visibility_and_semantic_attachments(
 fn presentation_plan_validation_catches_screen_lattice_item_count_drift() {
     let module = lower_inline_module(view_plan_source());
     let view = presentation_function(&module, "primary_view");
-    let mut plan = PresentationPlan::from_render_function(view, DispatchBackend::Wgsl).unwrap();
+    let mut plan = PresentationPlan::from_view_function(view, DispatchBackend::Wgsl).unwrap();
     let screen_pass = plan
         .passes
         .iter_mut()
@@ -449,7 +449,7 @@ fn presentation_plan_validation_catches_screen_lattice_item_count_drift() {
 fn presentation_plan_validation_rejects_duplicate_attachment_names_and_history_clear_mismatch() {
     let module = lower_inline_module(view_plan_source());
     let view = presentation_function(&module, "primary_view");
-    let mut plan = PresentationPlan::from_render_function(view, DispatchBackend::Wgsl).unwrap();
+    let mut plan = PresentationPlan::from_view_function(view, DispatchBackend::Wgsl).unwrap();
     plan.frame.outputs[1].name = "primary_hit".into();
     plan.frame.outputs[2].lifetime = AttachmentLifetime::HistorySlot(0);
     plan.frame.outputs[2].clear_policy = AttachmentClearPolicy::SemanticDefault;
@@ -480,7 +480,7 @@ fn presentation_plan_validation_rejects_duplicate_attachment_names_and_history_c
 fn presentation_plan_validation_rejects_broken_temporal_history_and_motion_wiring() {
     let module = lower_inline_module(view_plan_source());
     let view = presentation_function(&module, "primary_view");
-    let mut plan = PresentationPlan::from_render_function(view, DispatchBackend::Wgsl).unwrap();
+    let mut plan = PresentationPlan::from_view_function(view, DispatchBackend::Wgsl).unwrap();
     plan.frame
         .outputs
         .retain(|attachment| attachment.name != "motion");
@@ -555,7 +555,7 @@ fn presentation_plan_validation_rejects_broken_temporal_history_and_motion_wirin
 fn canonical_view_plan_carries_named_realtime_quality_contract_and_order() {
     let module = lower_inline_module(view_plan_source());
     let view = presentation_function(&module, "primary_view");
-    let plan = PresentationPlan::from_render_function(view, DispatchBackend::Wgsl).expect("plan");
+    let plan = PresentationPlan::from_view_function(view, DispatchBackend::Wgsl).expect("plan");
 
     assert_eq!(plan.frame.quality.tier, RealtimeQualityTier::Realtime60);
     assert_eq!(plan.frame.quality.target_fps, 60);

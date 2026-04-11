@@ -3273,7 +3273,7 @@ fn make_main_wrapper() -> crate::hir::Function {
         field: None,
         region: None,
         domain: None,
-        render: None,
+        presentation: None,
         field_graph: None,
         system_metadata: None,
         type_params: Vec::new(),
