@@ -171,6 +171,7 @@ pub struct RenderViewMetadata {
     pub projection: RenderProjectionMetadata,
     pub width: Option<Body>,
     pub height: Option<Body>,
+    pub viewport: Option<Body>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +188,9 @@ pub enum RenderProjectionSource {
 pub struct RenderFrameMetadata {
     pub domain: Option<Body>,
     pub export: RenderFrameExportMetadata,
+    pub quality: Option<Body>,
+    pub outputs: Option<Body>,
+    pub history: Option<Body>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +210,7 @@ pub struct RenderLightingMetadata {
     pub fill_dir: Option<Body>,
     pub fill_strength: Option<Body>,
     pub ambient_color: Option<Body>,
+    pub grouped: Option<Body>,
     pub light_compatibility_alias: bool,
     pub fill_dir_compatibility_alias: bool,
 }

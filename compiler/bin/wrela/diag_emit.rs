@@ -177,6 +177,9 @@ commands:\n\
   build <path>          run certification, then compile executable on success only\n\
   compile <path>        alias for build (also certification-gated)\n\
   query-contracts       list family/question query contracts and compatibility aliases\n\
+  preview <path>        emit a named view attachment (default: color) as PPM\n\
+  frame <path>          evaluate a named view and emit typed frame attachments or PPM\n\
+  frame-contracts <path>  inspect compiled frame contracts for named views\n\
   presentation-plan <path>  inspect compiled presentation contracts and pass plan\n\
   presentation-debug <path> run presentation passes and export color/depth/normal debug attachments\n\
   verify-cert <path>    verify an emitted cert.json report and hashes\n\
@@ -195,7 +198,10 @@ options:\n\
   --emit-mir-opt        emit MIR after optimization\n\
   --emit-obj=PATH       emit object file\n\
   --emit-bin=PATH       emit executable\n\
-  --query-backend=NAME  compile direct world/render queries with backend (cpu|virtual_gpu|wgsl|auto)\n\
+  --query-backend=NAME  compile direct world/view queries with backend (cpu|virtual_gpu|wgsl|auto)\n\
+  preview/frame flags:  --view NAME --region NAME --domain NAME --attachment NAME --width N --height N\n\
+  frame flags:          --attachment-format=json|ppm\n\
+  preview flag:         --json-report\n\
   --integration-mode    run/build fixture mode; bypasses strict naming policy for integration executables\n\
   --poll-ms=N           poll interval for dev (default: 500)\n\
   --jobs=N              test runner parallelism (default: 1)\n\

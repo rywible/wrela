@@ -142,12 +142,15 @@ fn run_preview_project_command(
     let root = repo_root();
     let preview_root = root.join(project_root);
     let mut command = Command::new(env!("CARGO_BIN_EXE_wrela"));
-    command.arg("run");
+    command.arg("preview");
+    command.arg(&preview_root);
+    command.arg("--view");
+    command.arg("main_view");
     if let Some(query_backend) = query_backend {
         command.arg(format!("--query-backend={query_backend}"));
     }
+    append_preview_camera_args(&mut command, project_root);
     let mut child = command
-        .arg(&preview_root)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -191,6 +194,36 @@ fn run_preview_project_command(
     let stderr = stderr_reader.join().expect("join preview stderr");
 
     (status, stdout, stderr)
+}
+
+fn append_preview_camera_args(command: &mut Command, project_root: &str) {
+    match project_root {
+        "language/preview" => {
+            command.arg("--camera-position=0.0,0.1,2.7");
+            command.arg("--camera-forward=0.0,0.0,-1.0");
+            command.arg("--camera-up=0.0,1.0,0.0");
+            command.arg("--fov=46.0");
+        }
+        "language/preview_boolean" => {
+            command.arg("--camera-position=0.05,0.12,3.0");
+            command.arg("--camera-forward=0.0,-0.02,-1.0");
+            command.arg("--camera-up=0.0,1.0,0.0");
+            command.arg("--fov=46.0");
+        }
+        "language/preview_repetition" => {
+            command.arg("--camera-position=0.2,0.45,4.35");
+            command.arg("--camera-forward=-0.10,-0.03,-1.0");
+            command.arg("--camera-up=0.0,1.0,0.0");
+            command.arg("--fov=46.0");
+        }
+        "language/preview_thinstack" => {
+            command.arg("--camera-position=-0.15,0.55,4.4");
+            command.arg("--camera-forward=0.10,-0.10,-1.0");
+            command.arg("--camera-up=0.0,1.0,0.0");
+            command.arg("--fov=46.0");
+        }
+        other => panic!("missing preview camera settings for {other}"),
+    }
 }
 
 fn run_preview_project_with_backend(
@@ -345,16 +378,17 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "min_step = 0.02",
                 "hit_epsilon = 0.0008",
                 "max_steps = 96",
-                "render render_ppm(",
+                "view main_view(",
+                "viewport = viewport(width = 40, height = 40)",
+                "quality = realtime_quality(target_fps = 60)",
+                "lighting = key_light(",
+                "outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)",
+                "history = temporal_history(color = true)",
                 "radiance field",
                 "volume field",
                 "local_position",
                 "local_normal",
-                "world = capture scene_region",
-                "world_up = camera.up",
-                "view_scale = 0.72",
-                "fill_dir = normalize(vec3(-0.9, 0.45, 0.2))",
-                "render_ppm(",
+                "fill_direction = normalize(vec3(-0.9, 0.45, 0.2))",
             ][..],
             &[
                 "use render_ppm from render",
@@ -378,6 +412,8 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "while y <",
                 "while x <",
                 "mutable ppm",
+                "render render_ppm(",
+                "fn run()",
             ][..],
             &["feature_bias"][..],
         ),
@@ -394,16 +430,17 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "min_step = 0.1",
                 "hit_epsilon = 0.0008",
                 "max_steps = 96",
-                "render render_ppm(",
+                "view main_view(",
+                "viewport = viewport(width = 8, height = 8)",
+                "quality = realtime_quality(target_fps = 60)",
+                "lighting = key_light(",
+                "outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)",
+                "history = temporal_history(color = true)",
                 "radiance field",
                 "volume field",
                 "local_position",
                 "local_normal",
-                "world = capture scene_region",
-                "world_up = camera.up",
-                "view_scale = 0.70",
-                "fill_dir = normalize(vec3(-0.7, 0.4, 0.2))",
-                "render_ppm(",
+                "fill_direction = normalize(vec3(-0.7, 0.4, 0.2))",
             ][..],
             &[
                 "use render_ppm from render",
@@ -427,6 +464,8 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "while y <",
                 "while x <",
                 "mutable ppm",
+                "render render_ppm(",
+                "fn run()",
             ][..],
             &["feature_bias"][..],
         ),
@@ -443,16 +482,17 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "min_step = 0.06",
                 "hit_epsilon = 0.0011",
                 "max_steps = 64",
-                "render render_ppm(",
+                "view main_view(",
+                "viewport = viewport(width = 32, height = 32)",
+                "quality = realtime_quality(target_fps = 60)",
+                "lighting = key_light(",
+                "outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)",
+                "history = temporal_history(color = true)",
                 "radiance field",
                 "volume field",
                 "local_position",
                 "local_normal",
-                "world = capture scene_region",
-                "world_up = camera.up",
-                "view_scale = 0.76",
-                "fill_dir = normalize(vec3(-0.55, 0.42, 0.28))",
-                "render_ppm(",
+                "fill_direction = normalize(vec3(-0.55, 0.42, 0.28))",
             ][..],
             &[
                 "use render_ppm from render",
@@ -476,6 +516,8 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "while y <",
                 "while x <",
                 "mutable ppm",
+                "render render_ppm(",
+                "fn run()",
             ][..],
             &["feature_bias"][..],
         ),
@@ -492,16 +534,17 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "min_step = 0.04",
                 "hit_epsilon = 0.0008",
                 "max_steps = 88",
-                "render render_ppm(",
+                "view main_view(",
+                "viewport = viewport(width = 40, height = 40)",
+                "quality = realtime_quality(target_fps = 60)",
+                "lighting = key_light(",
+                "outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)",
+                "history = temporal_history(color = true)",
                 "radiance field",
                 "volume field",
                 "local_position",
                 "local_normal",
-                "world = capture scene_region",
-                "world_up = camera.up",
-                "view_scale = 0.74",
-                "fill_dir = normalize(vec3(-0.5, 0.42, 0.25))",
-                "render_ppm(",
+                "fill_direction = normalize(vec3(-0.5, 0.42, 0.25))",
             ][..],
             &[
                 "use render_ppm from render",
@@ -525,6 +568,8 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "while y <",
                 "while x <",
                 "mutable ppm",
+                "render render_ppm(",
+                "fn run()",
             ][..],
             &["feature_bias"][..],
         ),

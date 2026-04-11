@@ -487,6 +487,80 @@ const VIEWPORT_FIELDS: &[PortableBuiltinField] = &[
     },
 ];
 
+const REALTIME_QUALITY_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "target_fps",
+        ty: TyAtom(Atom::U32),
+    },
+    PortableBuiltinField {
+        name: "allow_dynamic_resolution",
+        ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "primary_max_steps",
+        ty: TyAtom(Atom::I32),
+    },
+    PortableBuiltinField {
+        name: "allow_radiance",
+        ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "allow_media",
+        ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "allow_half_res_participants",
+        ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "allow_hit_compaction",
+        ty: TyAtom(Atom::Bool),
+    },
+];
+
+const FRAME_OUTPUTS_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "color",
+        ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "depth",
+        ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "normal",
+        ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "motion",
+        ty: TyAtom(Atom::Bool),
+    },
+];
+
+const TEMPORAL_HISTORY_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField {
+    name: "color",
+    ty: TyAtom(Atom::Bool),
+}];
+
+const PRESENTATION_LIGHTING_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "light",
+        ty: TyNamed("Light"),
+    },
+    PortableBuiltinField {
+        name: "fill_direction",
+        ty: TyAtom(Atom::Vec3),
+    },
+    PortableBuiltinField {
+        name: "fill_strength",
+        ty: TyAtom(Atom::F32),
+    },
+    PortableBuiltinField {
+        name: "ambient_color",
+        ty: TyAtom(Atom::Vec3),
+    },
+];
+
 const VIEW_STATE_FIELDS: &[PortableBuiltinField] = &[
     PortableBuiltinField {
         name: "camera",
@@ -771,9 +845,33 @@ const BUILTIN_RECORDS: &[PortableBuiltinRecord] = &[
     },
     PortableBuiltinRecord {
         name: "Viewport",
-        function_name: None,
+        function_name: Some("viewport"),
         constructible: true,
         fields: VIEWPORT_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "RealtimeQuality",
+        function_name: Some("realtime_quality"),
+        constructible: true,
+        fields: REALTIME_QUALITY_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "FrameOutputs",
+        function_name: Some("frame_outputs"),
+        constructible: true,
+        fields: FRAME_OUTPUTS_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "TemporalHistory",
+        function_name: Some("temporal_history"),
+        constructible: true,
+        fields: TEMPORAL_HISTORY_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "PresentationLighting",
+        function_name: Some("key_light"),
+        constructible: true,
+        fields: PRESENTATION_LIGHTING_FIELDS,
     },
     PortableBuiltinRecord {
         name: "ViewState",

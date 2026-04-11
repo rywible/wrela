@@ -328,7 +328,10 @@ fn default_motion_vector_value() -> KernelValue {
         name: SmolStr::new("MotionVector"),
         fields: vec![
             (SmolStr::new("delta_pixels"), KernelValue::Vec2([0.0, 0.0])),
-            (SmolStr::new("previous_sample"), KernelValue::Vec2([0.0, 0.0])),
+            (
+                SmolStr::new("previous_sample"),
+                KernelValue::Vec2([0.0, 0.0]),
+            ),
             (SmolStr::new("valid"), KernelValue::Bool(false)),
             (SmolStr::new("disoccluded"), KernelValue::Bool(false)),
         ],

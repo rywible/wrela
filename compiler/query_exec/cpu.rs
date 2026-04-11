@@ -2523,8 +2523,13 @@ impl<'a> DirectQueryOps<'a> {
                 let Some(target) = record.target.as_ref() else {
                     return Ok(None);
                 };
-                let target_scene = self.shape_scene(target)?;
-                self.shape_support_bounds(target_scene, target_scene.root_support_id)
+                if let Some(target_scene) = self.ctx.scene.shapes.get(target) {
+                    self.shape_support_bounds(target_scene, target_scene.root_support_id)
+                } else if let Some(target_scene) = self.ctx.scene.fields.get(target) {
+                    self.field_support_bounds(target_scene, target_scene.root_support_id)
+                } else {
+                    Ok(None)
+                }
             }
             SupportNodeKindSummary::Aabb
             | SupportNodeKindSummary::Sphere
@@ -2599,6 +2604,31 @@ impl<'a> DirectQueryOps<'a> {
             }
             _ => Ok(None),
         }
+    }
+
+    pub(crate) fn shape_support_bounds_world(
+        &self,
+        shape: &SmolStr,
+    ) -> Result<Option<([f32; 3], [f32; 3])>, QueryExecError> {
+        let scene = self.shape_scene(shape)?;
+        Ok(self
+            .shape_support_bounds(scene, scene.root_support_id)?
+            .map(|bounds| (bounds.min, bounds.max)))
+    }
+
+    pub(crate) fn region_shape_support_bounds(
+        &self,
+        capture: &SmolStr,
+        detail: i32,
+    ) -> Result<Vec<(SmolStr, [f32; 3], [f32; 3])>, QueryExecError> {
+        let shapes = self.resolve_world_shapes(capture, detail, None)?;
+        let mut bounds = Vec::new();
+        for shape in shapes {
+            if let Some((min, max)) = self.shape_support_bounds_world(&shape)? {
+                bounds.push((shape, min, max));
+            }
+        }
+        Ok(bounds)
     }
 
     fn field_support_children_bounds(

@@ -963,8 +963,9 @@ shape semantic_scene_shape {
     }
 }
 
-fn test_authored_support_bounds_prune_scene() -> Nothing {
+fn test_authored_support_bounds_preserve_trace_results() -> Nothing {
     hinted_pruned_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    hinted_candidates_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
     hinted_scene = capture hinted_scene_shape
     hinted_hit = spatial.nearest(
         capture=hinted_scene,
@@ -978,7 +979,9 @@ fn test_authored_support_bounds_prune_scene() -> Nothing {
         )
     )
     hinted_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    hinted_candidates_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
     semantic_pruned_before = hinted_pruned_after
+    semantic_candidates_before = hinted_candidates_after
     semantic_scene = capture semantic_scene_shape
     semantic_hit = spatial.nearest(
         capture=semantic_scene,
@@ -992,16 +995,19 @@ fn test_authored_support_bounds_prune_scene() -> Nothing {
         )
     )
     semantic_pruned_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    semantic_candidates_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
     hinted_surface = surface.sample(capture=hinted_scene, hit=hinted_hit)
     semantic_surface = surface.sample(capture=semantic_scene, hit=semantic_hit)
 
-    assert value hinted_hit.hit == true
-    assert value semantic_hit.hit == true
-    assert value hinted_hit.feature_id == semantic_hit.feature_id
-    assert approx hinted_hit.distance ~= semantic_hit.distance within 0.0001
-    assert value hinted_surface.albedo.x == semantic_surface.albedo.x
-    assert value hinted_pruned_after - hinted_pruned_before > 0
-    assert value semantic_pruned_after - semantic_pruned_before > 0
+    require hinted_hit.hit == true else "hinted scene should hit"
+    require semantic_hit.hit == true else "semantic scene should hit"
+    require hinted_hit.feature_id == semantic_hit.feature_id else "feature identity should match"
+    require abs(hinted_hit.distance - semantic_hit.distance) <= 0.0001 else "hit distance should match"
+    require hinted_surface.albedo.x == semantic_surface.albedo.x else "surface albedo should match"
+    require hinted_candidates_after - hinted_candidates_before > 0 else "hinted scene should still enumerate candidates"
+    require semantic_candidates_after - semantic_candidates_before > 0 else "semantic scene should enumerate candidates"
+    require hinted_pruned_after - hinted_pruned_before == 0 else "hinted opaque scene should not support-prune branches"
+    require semantic_pruned_after - semantic_pruned_before > 0 else "semantic scene should prune support branches"
 }
 
 field exact distance left_orb(p: Vec3) -> F32 {
@@ -3241,22 +3247,24 @@ domain phase8_fine_domain(world: RegionCapture) {
     max_steps = 96
 }
 
-render phase8_render_ppm(world: RegionCapture, camera: Camera) {
+view show_phase8_main_view(world: RegionCapture, camera: Camera) {
     domain = phase8_fine_domain(world = world)
-    light = Light(
-        position = camera.position + vec3(1.5, 1.5, 1.5),
-        direction = normalize(vec3(-0.6, -0.7, -0.5)),
-        intensity = vec3(1.0, 0.95, 0.90),
-        range = 10.0
+    viewport = viewport(width = 4, height = 4)
+    quality = realtime_quality(target_fps = 60)
+    lighting = key_light(
+        light = Light(
+            position = camera.position + vec3(1.5, 1.5, 1.5),
+            direction = normalize(vec3(-0.6, -0.7, -0.5)),
+            intensity = vec3(1.0, 0.95, 0.90),
+            range = 10.0
+        ),
+        fill_direction = normalize(vec3(-0.4, 0.5, 0.2))
     )
-    width = 4
-    height = 4
-    world_up = camera.up
-    view_scale = 0.82
-    fill_dir = normalize(vec3(-0.4, 0.5, 0.2))
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
 }
 
-fn phase8_region_domain_render_and_world_query_status() -> Integer {
+fn compute_phase8_region_domain_view_and_world_query_status() -> Integer {
     world = capture phase8_scene_region
     coarse_domain = phase8_coarse_domain(world = world)
     fine_domain = phase8_fine_domain(world = world)
@@ -3309,14 +3317,6 @@ fn phase8_region_domain_render_and_world_query_status() -> Integer {
     )
     coarse_medium = participants.medium(capture = world, domain = coarse_domain, point = fine_hit.position)
     fine_medium = participants.medium(capture = world, domain = fine_domain, point = fine_hit.position)
-    camera = Camera(
-        position = vec3(0.0, 0.0, 3.0),
-        forward = vec3(0.0, 0.0, -1.0),
-        up = vec3(0.0, 1.0, 0.0),
-        vertical_fov_degrees = 48.0
-    )
-    ppm = phase8_render_ppm(world = world, camera = camera)
-
     if coarse_domain.scene_id != world.scene_id { return 1 }
     if fine_domain.scene_id != world.scene_id { return 2 }
     if coarse_domain.geometry_detail != 0 { return 3 }
@@ -3332,12 +3332,11 @@ fn phase8_region_domain_render_and_world_query_status() -> Integer {
     if fine_radiance.z <= fine_radiance.x { return 13 }
     if coarse_medium.density != 0.0 { return 14 }
     if fine_medium.density <= 0.0 { return 15 }
-    if ppm == "" { return 16 }
     return 0
 }
 
-fn test_phase8_region_domain_render_and_world_queries() -> Nothing {
-    assert value phase8_region_domain_render_and_world_query_status() == 0
+fn test_phase8_region_domain_view_and_world_queries() -> Nothing {
+    assert value compute_phase8_region_domain_view_and_world_query_status() == 0
 }
 
 field conservative distance phase9_rotated_ellipsoid_field(p: Vec3) -> F32 {

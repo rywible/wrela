@@ -2683,6 +2683,48 @@ pub(super) fn load_benchmark_manifest(path: &Path) -> Result<BenchmarkManifest, 
                 scenario.id, scenario.test_name, expected_suffix
             ));
         }
+        if let Some(presentation) = scenario.presentation.as_ref() {
+            if presentation.view.trim().is_empty() {
+                return Err(format!(
+                    "scenario `{}` presentation.view must not be empty",
+                    scenario.id
+                ));
+            }
+            if presentation.region.trim().is_empty() {
+                return Err(format!(
+                    "scenario `{}` presentation.region must not be empty",
+                    scenario.id
+                ));
+            }
+            if presentation
+                .entry
+                .as_ref()
+                .is_some_and(|entry| entry.trim().is_empty())
+            {
+                return Err(format!(
+                    "scenario `{}` presentation.entry must not be empty when provided",
+                    scenario.id
+                ));
+            }
+            if presentation.width == Some(0) {
+                return Err(format!(
+                    "scenario `{}` presentation.width must be greater than zero",
+                    scenario.id
+                ));
+            }
+            if presentation.height == Some(0) {
+                return Err(format!(
+                    "scenario `{}` presentation.height must be greater than zero",
+                    scenario.id
+                ));
+            }
+            if presentation.frames == Some(0) {
+                return Err(format!(
+                    "scenario `{}` presentation.frames must be greater than zero",
+                    scenario.id
+                ));
+            }
+        }
     }
     Ok(manifest)
 }

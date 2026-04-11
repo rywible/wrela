@@ -4848,7 +4848,7 @@ fn main() -> Integer {
 }
 
 #[test]
-fn native_v2_phase8_region_domain_render_world_queries_smoke() {
+fn native_v2_phase8_region_domain_view_world_queries_smoke() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
         return;
     }
@@ -4943,19 +4943,21 @@ domain phase8_fine_domain(world: RegionCapture) {
     max_steps = 96
 }
 
-render phase8_render_ppm(world: RegionCapture, camera: Camera) {
+view show_phase8_main_view(world: RegionCapture, camera: Camera) {
     domain = phase8_fine_domain(world = world)
-    light = Light(
-        position = camera.position + vec3(1.5, 1.5, 1.5),
-        direction = normalize(vec3(-0.6, -0.7, -0.5)),
-        intensity = vec3(1.0, 0.95, 0.90),
-        range = 10.0
+    viewport = viewport(width = 4, height = 4)
+    quality = realtime_quality(target_fps = 60)
+    lighting = key_light(
+        light = Light(
+            position = camera.position + vec3(1.5, 1.5, 1.5),
+            direction = normalize(vec3(-0.6, -0.7, -0.5)),
+            intensity = vec3(1.0, 0.95, 0.90),
+            range = 10.0
+        ),
+        fill_direction = normalize(vec3(-0.4, 0.5, 0.2))
     )
-    width = 4
-    height = 4
-    world_up = camera.up
-    view_scale = 0.82
-    fill_dir = normalize(vec3(-0.4, 0.5, 0.2))
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
 }
 
 fn main() -> Integer {
@@ -5037,14 +5039,6 @@ fn main() -> Integer {
     )
     coarse_medium = participants.medium(capture = world, domain = coarse_domain, point = fine_hit.position)
     fine_medium = participants.medium(capture = world, domain = fine_domain, point = fine_hit.position)
-    camera = Camera(
-        position = vec3(0.0, 0.0, 3.0),
-        forward = vec3(0.0, 0.0, -1.0),
-        up = vec3(0.0, 1.0, 0.0),
-        vertical_fov_degrees = 48.0
-    )
-    ppm = phase8_render_ppm(world = world, camera = camera)
-
     if coarse_domain.scene_id != world.scene_id { return 1 }
     if fine_domain.scene_id != world.scene_id { return 2 }
     if coarse_domain.geometry_detail != 0 { return 3 }
@@ -5060,18 +5054,15 @@ fn main() -> Integer {
     if fine_radiance.z <= fine_radiance.x { return 13 }
     if coarse_medium.density != 0.0 { return 14 }
     if fine_medium.density <= 0.0 { return 15 }
-    if ppm == "" { return 16 }
     if not fine_occlusion_hit.occluded { return 17 }
     if fine_occlusion_miss.occluded { return 18 }
-
-    __wr_print(ppm)
     return 0
 }
 "#;
 
     let output = compile_and_run_native_inline_source(
         source,
-        "wr_v2_phase8_region_domain_render_world_queries_smoke",
+        "wr_v2_phase8_region_domain_view_world_queries_smoke",
     );
     let expected = expected_int_exit(0);
     assert_eq!(
@@ -5081,17 +5072,10 @@ fn main() -> Integer {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.starts_with("P3\n4 4\n255\n"),
-        "expected compiler-owned render ppm prefix, got:\n{}\nstderr={}",
-        stdout,
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 #[test]
-fn native_v2_phase10_wgsl_world_queries_and_render_smoke() {
+fn native_v2_phase10_wgsl_world_queries_and_view_smoke() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
         return;
     }
@@ -5153,19 +5137,21 @@ domain scene_domain(world: RegionCapture) {
     max_steps = 96
 }
 
-render render_ppm(world: RegionCapture, camera: Camera) {
+view show_primary_view(world: RegionCapture, camera: Camera) {
     domain = scene_domain(world = world)
-    light = Light(
-        position = camera.position + vec3(1.0, 1.25, 1.0),
-        direction = normalize(vec3(-0.5, -0.8, -0.4)),
-        intensity = vec3(1.0, 0.95, 0.90),
-        range = 8.0
+    viewport = viewport(width = 4, height = 4)
+    quality = realtime_quality(target_fps = 60)
+    lighting = key_light(
+        light = Light(
+            position = camera.position + vec3(1.0, 1.25, 1.0),
+            direction = normalize(vec3(-0.5, -0.8, -0.4)),
+            intensity = vec3(1.0, 0.95, 0.90),
+            range = 8.0
+        ),
+        fill_direction = normalize(vec3(-0.4, 0.5, 0.2))
     )
-    width = 4
-    height = 4
-    world_up = camera.up
-    view_scale = 0.82
-    fill_dir = normalize(vec3(-0.4, 0.5, 0.2))
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
 }
 
 fn main() -> Integer {
@@ -5243,14 +5229,6 @@ fn main() -> Integer {
         backend=dispatch_backend_cpu()
     )
     auto_medium = medium_world(capture=world, domain=domain, point=auto_hit.position)
-    camera = Camera(
-        position=vec3(0.0, 0.0, 3.0),
-        forward=vec3(0.0, 0.0, -1.0),
-        up=vec3(0.0, 1.0, 0.0),
-        vertical_fov_degrees=48.0
-    )
-    ppm = render_ppm(world=world, camera=camera)
-
     if abs(cpu_distance - auto_distance) > 0.01 { return 1 }
     if abs(cpu_normal.z - auto_normal.z) > 0.01 { return 2 }
     if cpu_hit.hit != auto_hit.hit { return 3 }
@@ -5259,16 +5237,13 @@ fn main() -> Integer {
     if abs(cpu_surface.albedo.z - auto_surface.albedo.z) > 0.01 { return 6 }
     if abs(cpu_radiance.z - auto_radiance.z) > 0.01 { return 7 }
     if abs(cpu_medium.density - auto_medium.density) > 0.01 { return 8 }
-    if ppm == "" { return 9 }
-
-    __wr_print(ppm)
     return 0
 }
 "#;
 
     let output = compile_and_run_native_inline_source_with_backend(
         source,
-        "wr_v2_phase10_wgsl_world_queries_and_render_smoke",
+        "wr_v2_phase10_wgsl_world_queries_and_view_smoke",
         DispatchBackend::Wgsl,
     );
     let expected = expected_int_exit(0);
@@ -5277,13 +5252,6 @@ fn main() -> Integer {
         expected,
         "stdout={}\nstderr={}",
         String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.starts_with("P3\n4 4\n255\n"),
-        "expected WGSL world/render ppm prefix, got:\n{}\nstderr={}",
-        stdout,
         String::from_utf8_lossy(&output.stderr)
     );
 }

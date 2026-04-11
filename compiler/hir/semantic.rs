@@ -2220,6 +2220,11 @@ fn world_metadata_binding(role: FunctionRole, name: &str) -> bool {
                 | "lights"
                 | "width"
                 | "height"
+                | "viewport"
+                | "quality"
+                | "outputs"
+                | "history"
+                | "lighting"
                 // Compatibility-only projection metadata; canonical view
                 // projection comes from Camera.vertical_fov_degrees.
                 | "world_up"

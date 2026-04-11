@@ -688,9 +688,9 @@ fn f() -> Nothing {
     assert approx surface.albedo.x ~= 1.0 within 0.001
 }
 "#;
-    let errors = check_source(input);
-    assert!(errors.is_empty(), "{errors:?}");
-}
+        let errors = check_source(input);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
 
     #[test]
     fn test_family_query_namespaces_typecheck_on_host() {
@@ -813,10 +813,9 @@ fn f() -> Nothing {
 "#;
         let errors = check_source(input);
         assert!(
-            errors.iter().any(|err| matches!(
-                err,
-                TypeError::CaptureTargetMustBeFieldOrShape { .. }
-            )),
+            errors
+                .iter()
+                .any(|err| matches!(err, TypeError::CaptureTargetMustBeFieldOrShape { .. })),
             "expected CaptureTargetMustBeFieldOrShape, got: {errors:?}"
         );
     }
@@ -867,7 +866,7 @@ fn f() -> Nothing {
     }
 
     #[test]
-    fn test_domain_and_render_accept_region_world_queries() {
+    fn test_domain_and_view_accept_region_world_queries() {
         let input = r#"region Highlands() {
 }
 
@@ -875,7 +874,8 @@ domain Combat(world: RegionCapture) {
     geometry_detail = 0
 }
 
-render View(world: RegionCapture, camera: Camera) {
+view View(world: RegionCapture, camera: Camera) {
+    viewport = viewport(width = 4, height = 4)
 }
 
 fn run() -> Nothing {
@@ -972,11 +972,11 @@ domain Combat(world: RegionCapture) {
     }
 
     #[test]
-    fn test_render_lights_metadata_is_rejected() {
+    fn test_view_lights_metadata_is_rejected() {
         let input = r#"region Highlands() {
 }
 
-render View(world: RegionCapture, camera: Camera) {
+view View(world: RegionCapture, camera: Camera) {
     lights = Light(
         position=vec3(0.0, 1.0, 2.0),
         direction=vec3(0.0, -1.0, 0.0),
@@ -990,14 +990,14 @@ render View(world: RegionCapture, camera: Camera) {
             errors.iter().any(|err| matches!(
                 err,
                 TypeError::PortableConstructForbidden { construct, .. }
-                    if construct == "render lights metadata"
+                    if construct == "view lights metadata"
             )),
-            "expected render lights metadata to be rejected, got: {errors:?}"
+            "expected view lights metadata to be rejected, got: {errors:?}"
         );
     }
 
     #[test]
-    fn test_domain_and_render_reject_executable_statements() {
+    fn test_domain_and_view_reject_executable_statements() {
         let input = r#"region Highlands() {
 }
 
@@ -1005,7 +1005,7 @@ domain Combat(world: RegionCapture) {
     return 1
 }
 
-render View(world: RegionCapture, camera: Camera) {
+view View(world: RegionCapture, camera: Camera) {
     while true {
     }
 }
@@ -1016,7 +1016,7 @@ render View(world: RegionCapture, camera: Camera) {
                 err,
                 TypeError::PortableConstructForbidden { construct, .. }
                     if construct.contains("domain declaration executable statement")
-                        || construct.contains("render declaration executable statement")
+                        || construct.contains("view declaration executable statement")
             )),
             "expected executable world declarations to be rejected, got: {errors:?}"
         );
@@ -5303,13 +5303,15 @@ fn render() -> Nothing {
         let errors = check_source(input);
         let rejection_count = errors
             .iter()
-            .filter(|err| matches!(
-                err,
-                TypeError::ArgumentTypeMismatch { name, expected, found, .. }
-                    if name.as_str() == "capture"
-                        && expected == "ShapeCapture"
-                        && found == "FieldCapture"
-            ))
+            .filter(|err| {
+                matches!(
+                    err,
+                    TypeError::ArgumentTypeMismatch { name, expected, found, .. }
+                        if name.as_str() == "capture"
+                            && expected == "ShapeCapture"
+                            && found == "FieldCapture"
+                )
+            })
             .count();
         assert_eq!(
             rejection_count, 2,

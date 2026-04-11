@@ -1908,6 +1908,15 @@ fn validate_render_declaration(
 ) {
     let is_view = func.role == FunctionRole::View;
     let declaration_label = if is_view { "view" } else { "render" };
+    if func.role == FunctionRole::Render {
+        errors.push(TypeError::PortableConstructForbidden {
+            function: func.name.clone(),
+            construct: "legacy render declaration".to_string(),
+            span: span_from_option_range(func.name_span),
+            help: "Legacy `render` presentation declarations were removed. Rewrite this authored surface as `view`, then use typed helpers such as `viewport = viewport(...)`, `quality = realtime_quality(...)`, `outputs = frame_outputs(...)`, `history = temporal_history(...)`, and `lighting = key_light(...)`.".to_string(),
+        });
+        return;
+    }
     if func.render.is_none() {
         errors.push(TypeError::PortableConstructForbidden {
             function: func.name.clone(),
@@ -2090,7 +2099,10 @@ fn validate_world_decl_body(
             "width",
             "height",
             "viewport",
+            "quality",
             "outputs",
+            "history",
+            "lighting",
             "fill_dir",
             "fill_direction",
             "fill_strength",

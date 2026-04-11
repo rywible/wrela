@@ -609,6 +609,30 @@ fn infer_expr(
                         valid_callee = true;
                     }
                 }
+                if !valid_callee
+                    && let Some(record) = crate::portable::builtin_record_by_function(name.as_str())
+                {
+                    let class_name = SmolStr::new(record.name);
+                    if let Some(class) = classes.get(&class_name) {
+                        check_class_init_args(
+                            body,
+                            expr_id,
+                            args,
+                            class,
+                            &[],
+                            ctx,
+                            classes,
+                            enums,
+                            interfaces,
+                            functions,
+                            errors,
+                            allow_result,
+                            in_result_fn,
+                        );
+                        ret_ty = Some(Type::Named(class_name, Vec::new()));
+                        valid_callee = true;
+                    }
+                }
                 if !valid_callee && let Some(function) = functions.get(name) {
                     if ctx.in_portable_lane()
                         && !functions.is_portable(name)

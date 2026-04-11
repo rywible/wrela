@@ -3,12 +3,11 @@ use wrela::hir::lower as hir_lower;
 use wrela::parser::ast;
 use wrela::parser::ast::AstNode;
 use wrela::parser::parse;
-use wrela::presentation_binding::resolve_execution_binding;
 use wrela::presentation_contract::{
     AttachmentClearPolicy, AttachmentLifetime, CanonicalCameraInput, CanonicalRayBudget,
     CanonicalViewportInput, DepthAttachmentSemantics, FrameAttachmentKind,
-    LightingInputBindingSource, TemporalHistoryRole, TemporalReuseMode,
-    canonical_screen_sample_query,
+    LightingInputBindingSource, QualityDegradationStep, RealtimeQualityContract,
+    RealtimeQualityTier, TemporalHistoryRole, TemporalReuseMode, canonical_screen_sample_query,
 };
 use wrela::presentation_plan::{PresentationPassKind, PresentationPlan};
 use wrela::query_contract;
@@ -20,15 +19,6 @@ fn lower_inline_module(source: &str) -> hir::Module {
     hir_lower::lower(root)
 }
 
-fn render_function<'a>(module: &'a hir::Module, name: &str) -> &'a hir::Function {
-    module
-        .functions
-        .iter()
-        .find(|(_, func)| func.name == name)
-        .map(|(_, func)| func)
-        .unwrap_or_else(|| panic!("missing render function '{name}'"))
-}
-
 fn presentation_function<'a>(module: &'a hir::Module, name: &str) -> &'a hir::Function {
     module
         .functions
@@ -38,127 +28,87 @@ fn presentation_function<'a>(module: &'a hir::Module, name: &str) -> &'a hir::Fu
         .unwrap_or_else(|| panic!("missing presentation function '{name}'"))
 }
 
-fn render_plan_source() -> &'static str {
-    r#"
-render preview_ppm(world: RegionCapture, camera: Camera) {
-    width = 4
-    height = 3
-    world_up = camera.up
-    view_scale = 0.82
-    fill_dir = normalize(vec3(-0.4, 0.5, 0.2))
-}
-"#
-}
-
 fn view_plan_source() -> &'static str {
     r#"
 view primary_view(world: RegionCapture, camera: Camera) {
     domain = primary_domain(world = world)
-    width = 4
-    height = 3
-    key_light = Light(
-        position = camera.position,
-        direction = normalize(vec3(0.0, -1.0, 0.0)),
-        intensity = vec3(1.0, 1.0, 1.0),
-        range = 8.0
+    viewport = viewport(width = 4, height = 3)
+    quality = realtime_quality(target_fps = 60)
+    lighting = key_light(
+        light = Light(
+            position = camera.position,
+            direction = normalize(vec3(0.0, -1.0, 0.0)),
+            intensity = vec3(1.0, 1.0, 1.0),
+            range = 8.0
+        ),
+        fill_direction = normalize(vec3(-0.25, 0.6, 0.4)),
+        fill_strength = 0.35,
+        ambient_color = vec3(0.08, 0.11, 0.14)
     )
-    fill_direction = normalize(vec3(-0.25, 0.6, 0.4))
-    fill_strength = 0.35
-    ambient_color = vec3(0.08, 0.11, 0.14)
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
 }
 "#
 }
 
 #[test]
-fn render_metadata_is_split_into_view_frame_lighting_and_compatibility_buckets() {
-    let module = lower_inline_module(render_plan_source());
-    let render = render_function(&module, "preview_ppm");
-    let metadata = render.render.as_ref().expect("render metadata");
+fn view_metadata_is_split_into_view_frame_lighting_and_contract_buckets() {
+    let module = lower_inline_module(view_plan_source());
+    let view = presentation_function(&module, "primary_view");
+    let metadata = view.render.as_ref().expect("view metadata");
 
     assert_eq!(
         metadata.view.projection.source,
         hir::RenderProjectionSource::CameraVerticalFovDegrees
     );
-    assert!(metadata.view.width.is_some());
-    assert!(metadata.view.height.is_some());
-    assert!(metadata.frame.domain.is_none());
-    assert!(metadata.lighting.fill_dir.is_some());
+    assert!(metadata.view.width.is_none());
+    assert!(metadata.view.height.is_none());
+    assert!(metadata.view.viewport.is_some());
+    assert!(metadata.frame.domain.is_some());
+    assert!(metadata.frame.quality.is_some());
+    assert!(metadata.frame.outputs.is_some());
+    assert!(metadata.frame.history.is_some());
+    assert!(metadata.lighting.grouped.is_some());
+    assert!(metadata.lighting.light.is_none());
+    assert!(metadata.lighting.fill_dir.is_none());
     assert!(metadata.lighting.fill_strength.is_none());
     assert!(metadata.lighting.ambient_color.is_none());
     assert!(!metadata.lighting.light_compatibility_alias);
-    assert!(metadata.lighting.fill_dir_compatibility_alias);
-    assert!(metadata.compatibility.world_up.is_some());
-    assert!(metadata.compatibility.view_scale.is_some());
+    assert!(!metadata.lighting.fill_dir_compatibility_alias);
+    assert!(metadata.compatibility.world_up.is_none());
+    assert!(metadata.compatibility.view_scale.is_none());
 }
 
 #[test]
-fn legacy_render_plan_separates_semantic_contracts_from_execution_binding() {
-    let module = lower_inline_module(render_plan_source());
-    let render = render_function(&module, "preview_ppm");
-    let plan = PresentationPlan::from_render_function(render, DispatchBackend::Auto).expect("plan");
+fn canonical_view_plan_separates_semantic_contracts_from_execution_binding() {
+    let module = lower_inline_module(view_plan_source());
+    let view = presentation_function(&module, "primary_view");
+    let plan = PresentationPlan::from_render_function(view, DispatchBackend::Auto).expect("plan");
 
     assert!(plan.validate().is_empty());
     assert!(plan.view.canonical_projection);
-    assert!(plan.view.compatibility_projection.legacy_path_active);
+    assert!(!plan.view.compatibility_projection.legacy_path_active);
     assert!(
-        plan.view
+        !plan
+            .view
             .compatibility_projection
             .authored_world_up_override
     );
     assert!(
-        plan.view
+        !plan
+            .view
             .compatibility_projection
             .authored_view_scale_override
     );
-    assert_eq!(plan.frame.outputs.len(), 8);
-    assert_eq!(
-        plan.frame
-            .outputs
-            .last()
-            .expect("exported color attachment")
-            .kind,
-        FrameAttachmentKind::Color
-    );
-    assert_eq!(
-        plan.frame
-            .outputs
-            .last()
-            .expect("exported color attachment")
-            .lifetime,
-        AttachmentLifetime::Exported
-    );
-    assert_eq!(
-        plan.frame.lighting.key_light.source,
-        LightingInputBindingSource::DefaultCompatibilityRecipe
-    );
-    assert!(!plan.frame.lighting.key_light.temporary_compatibility_alias);
-    assert_eq!(
-        plan.frame.lighting.fill_direction.source,
-        LightingInputBindingSource::AuthoredMetadata
-    );
-    assert!(
-        plan.frame
-            .lighting
-            .fill_direction
-            .temporary_compatibility_alias
-    );
-    assert_eq!(
-        plan.frame.lighting.fill_strength.source,
-        LightingInputBindingSource::DefaultCompatibilityRecipe
-    );
-    assert_eq!(
-        plan.frame.lighting.ambient_color.source,
-        LightingInputBindingSource::DefaultCompatibilityRecipe
-    );
-    assert_eq!(plan.passes.len(), 7);
-    assert_eq!(
-        plan.passes
-            .iter()
-            .find(|pass| matches!(pass.kind, PresentationPassKind::PrimaryVisibility { .. }))
-            .expect("primary visibility pass")
-            .query_dependencies,
-        vec![query_contract::SPATIAL_NEAREST_BATCH_WORLD]
-    );
+    assert!(plan.frame.outputs.iter().any(|attachment| {
+        attachment.name == "color"
+            && attachment.kind == FrameAttachmentKind::Color
+            && attachment.lifetime == AttachmentLifetime::Exported
+    }));
+    assert!(plan.passes.iter().any(|pass| {
+        matches!(pass.kind, PresentationPassKind::PrimaryVisibility { .. })
+            && pass.query_dependencies == vec![query_contract::SPATIAL_NEAREST_BATCH_WORLD]
+    }));
     assert!(
         plan.passes
             .iter()
@@ -177,22 +127,21 @@ fn legacy_render_plan_separates_semantic_contracts_from_execution_binding() {
     assert!(
         plan.passes
             .iter()
-            .any(|pass| matches!(pass.kind, PresentationPassKind::CompositeColor { .. }))
+            .any(|pass| matches!(pass.kind, PresentationPassKind::MotionResolve { .. }))
     );
     assert!(
         plan.passes
             .iter()
-            .any(|pass| matches!(pass.kind, PresentationPassKind::ExportAttachment { .. }))
+            .any(|pass| matches!(pass.kind, PresentationPassKind::TemporalResolve { .. }))
     );
-
-    let binding_summary = plan.export_binding().expect("ppm export binding");
-    assert_eq!(binding_summary.id.as_str(), "attachment.export.ppm");
+    assert!(
+        plan.export_binding().is_none(),
+        "canonical view plans should leave attachment export to the host/runtime entry point"
+    );
     assert!(
         !format!("{:?}", plan.bindings).contains("__wr_render_capture_to_ppm"),
         "presentation plan should keep helper names behind execution binding resolution"
     );
-    let binding = resolve_execution_binding(binding_summary).expect("execution binding");
-    assert_eq!(binding.helper_name, Some("__wr_render_capture_to_ppm"));
 
     assert!(
         !format!("{:?}", plan.view).contains("__wr_render_capture_to_ppm"),
@@ -218,8 +167,11 @@ fn canonical_view_plan_materializes_primary_visibility_and_semantic_attachments(
     assert!(plan.validate().is_empty());
     assert!(plan.view.canonical_projection);
     assert!(!plan.view.compatibility_projection.legacy_path_active);
-    assert_eq!(plan.view.screen_lattice.width_source, "view.width");
-    assert_eq!(plan.view.screen_lattice.height_source, "view.height");
+    assert_eq!(plan.view.screen_lattice.width_source, "view.viewport.width");
+    assert_eq!(
+        plan.view.screen_lattice.height_source,
+        "view.viewport.height"
+    );
     assert!(plan.view.canonical_view_ray.normalized_direction);
 
     let primary_hit = plan.frame.primary_hit.as_ref().expect("primary hit schema");
@@ -320,7 +272,7 @@ fn canonical_view_plan_materializes_primary_visibility_and_semantic_attachments(
     assert_eq!(contract.samples_per_pixel, 1);
     assert_eq!(
         contract.item_count_expression,
-        "view.width * view.height * 1"
+        "view.viewport.width * view.viewport.height * 1"
     );
     let primary_visibility = plan
         .passes
@@ -529,7 +481,9 @@ fn presentation_plan_validation_rejects_broken_temporal_history_and_motion_wirin
     let module = lower_inline_module(view_plan_source());
     let view = presentation_function(&module, "primary_view");
     let mut plan = PresentationPlan::from_render_function(view, DispatchBackend::Wgsl).unwrap();
-    plan.frame.outputs.retain(|attachment| attachment.name != "motion");
+    plan.frame
+        .outputs
+        .retain(|attachment| attachment.name != "motion");
     plan.frame.temporal.as_mut().unwrap().history_slots[0].attachment = "surface".into();
     plan.frame
         .temporal
@@ -560,9 +514,9 @@ fn presentation_plan_validation_rejects_broken_temporal_history_and_motion_wirin
 
     let errors = plan.validate();
     assert!(
-        errors.iter().any(|err| err
-            .message
-            .contains("ReprojectColorAndMotion requires both a motion attachment and a motion resolve pass")),
+        errors.iter().any(|err| err.message.contains(
+            "ReprojectColorAndMotion requires both a motion attachment and a motion resolve pass"
+        )),
         "expected motion-history validation error, got {errors:?}"
     );
     assert!(
@@ -594,6 +548,54 @@ fn presentation_plan_validation_rejects_broken_temporal_history_and_motion_wirin
             .message
             .contains("temporal resolve pass 'temporal_resolve' must preserve continuation primary-hit history for ReprojectColorAndMotion")),
         "expected temporal continuation wiring error, got {errors:?}"
+    );
+}
+
+#[test]
+fn canonical_view_plan_carries_named_realtime_quality_contract_and_order() {
+    let module = lower_inline_module(view_plan_source());
+    let view = presentation_function(&module, "primary_view");
+    let plan = PresentationPlan::from_render_function(view, DispatchBackend::Wgsl).expect("plan");
+
+    assert_eq!(plan.frame.quality.tier, RealtimeQualityTier::Realtime60);
+    assert_eq!(plan.frame.quality.target_fps, 60);
+    assert!(plan.frame.quality.allow_dynamic_resolution);
+    assert_eq!(
+        plan.frame.quality.temporal_mode,
+        TemporalReuseMode::ReprojectColorAndMotion
+    );
+    assert_eq!(
+        plan.frame.quality.degradation_order,
+        vec![
+            QualityDegradationStep::ReduceInternalResolution,
+            QualityDegradationStep::EnableHitCompaction,
+            QualityDegradationStep::LowerPrimarySteps,
+            QualityDegradationStep::DisableMedia,
+            QualityDegradationStep::LowerRadianceQuality,
+            QualityDegradationStep::DisableRadiance,
+            QualityDegradationStep::HalfResolutionParticipants,
+        ]
+    );
+}
+
+#[test]
+fn realtime_quality_contract_validation_rejects_invalid_scale_and_step_budget() {
+    let mut contract = RealtimeQualityContract::named(RealtimeQualityTier::Realtime60);
+    contract.internal_resolution_scale = 0.3;
+    contract.primary_max_steps = 0;
+
+    let errors = contract.validate();
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.contains("internal resolution scale must be one of 1.0, 0.5, or 0.25")),
+        "expected supported-scale validation error, got {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.contains("primary_max_steps must be greater than zero")),
+        "expected primary step validation error, got {errors:?}"
     );
 }
 

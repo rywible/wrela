@@ -372,37 +372,24 @@ domain hard_fine_domain(world: RegionCapture) {
     max_steps = 96
 }
 
-render render_hard_ppm(
+view show_hard_primary_view(
     world: RegionCapture,
     camera: Camera
 ) {
     domain = hard_fine_domain(world = world)
-    light = Light(
-        position=vec3(-1.8, 3.0, 2.8),
-        direction=normalize(vec3(-0.9, -0.85, -0.8)),
-        intensity=vec3(1.0, 0.98, 0.96),
-        range=18.0
+    viewport = viewport(width = 6, height = 6)
+    quality = realtime_quality(target_fps = 60)
+    lighting = key_light(
+        light = Light(
+            position=vec3(-1.8, 3.0, 2.8),
+            direction=normalize(vec3(-0.9, -0.85, -0.8)),
+            intensity=vec3(1.0, 0.98, 0.96),
+            range=18.0
+        ),
+        fill_direction = normalize(vec3(-0.5, 0.42, 0.25))
     )
-    width = 6
-    height = 6
-    world_up = camera.up
-    view_scale = 0.74
-    fill_dir = normalize(vec3(-0.5, 0.42, 0.25))
-}
-
-view render_hard_primary_view(
-    world: RegionCapture,
-    camera: Camera
-) {
-    domain = hard_fine_domain(world = world)
-    light = Light(
-        position=vec3(-1.8, 3.0, 2.8),
-        direction=normalize(vec3(-0.9, -0.85, -0.8)),
-        intensity=vec3(1.0, 0.98, 0.96),
-        range=18.0
-    )
-    width = 6
-    height = 6
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
 }
 
 fn test_field_repetition_identity_stability_ops_120000() -> Nothing {
@@ -683,14 +670,6 @@ fn test_field_region_domain_media_radiance_ops_60000() -> Nothing {
     )
     coarse_medium = participants.medium(capture = world, domain = coarse_domain, point = fine_hit.position)
     fine_medium = participants.medium(capture = world, domain = fine_domain, point = fine_hit.position)
-    camera = Camera(
-        position = vec3(0.0, 0.0, 3.0),
-        forward = vec3(0.0, 0.0, -1.0),
-        up = vec3(0.0, 1.0, 0.0),
-        vertical_fov_degrees = 48.0
-    )
-    ppm = render_hard_ppm(world = world, camera = camera)
-
     assert value world.scene_id == coarse_domain.scene_id
     assert value world.scene_id == fine_domain.scene_id
     assert value coarse_domain.geometry_detail == 0
@@ -708,7 +687,6 @@ fn test_field_region_domain_media_radiance_ops_60000() -> Nothing {
     assert value fine_radiance.z > fine_radiance.x
     assert value coarse_medium.density == 0.0
     assert value fine_medium.density > 0.0
-    assert value ppm != ""
 
     mutable checksum = 0
     for i in 1...60000 {
@@ -836,15 +814,6 @@ fn test_field_presentation_dense_screen_vs_semantic_pruning_ops_1024() -> Nothin
     fine_domain = hard_fine_domain(world = world)
     support_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
     candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
-
-    camera = Camera(
-        position = vec3(0.0, 0.0, 3.0),
-        forward = vec3(0.0, 0.0, -1.0),
-        up = vec3(0.0, 1.0, 0.0),
-        vertical_fov_degrees = 48.0
-    )
-    ppm = render_hard_ppm(world = world, camera = camera)
-    require ppm != "" else "legacy render stays available beside canonical view plan"
 
     mutable rays = []
     mutable points = []

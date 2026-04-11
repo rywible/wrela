@@ -1,3 +1,5 @@
+pub mod controller;
+pub mod cost;
 mod cpu;
 pub mod debug;
 pub mod resources;
@@ -6,23 +8,31 @@ mod wgsl;
 
 use crate::kernel::{KernelStructValue, KernelValue, lower_batch_query_plan};
 use crate::presentation_contract::{
-    CanonicalCameraInput, CanonicalLightInput, CanonicalRayBudget, CanonicalViewportInput,
-    FrameContract, HistoryCompatibilityKey, LegacyCompatibilityProjectionInput,
-    PresentationLightingInputs, canonical_screen_sample_query,
-    legacy_preview_screen_sample_query,
+    AttachmentLifetime, AttachmentResolutionClass, AttachmentResolutionScale, CanonicalCameraInput,
+    CanonicalLightInput, CanonicalRayBudget, CanonicalViewportInput, FrameAttachmentContract,
+    FrameAttachmentKind, FrameContract, HistoryCompatibilityKey,
+    LegacyCompatibilityProjectionInput, PresentationLightingInputs, RealtimeQualityContract,
+    RealtimeQualityState, canonical_screen_sample_query, legacy_preview_screen_sample_query,
 };
 use crate::presentation_plan::{PresentationPlan, PrimaryVisibilityPassContract};
+use crate::query_exec::cpu::DirectQueryEvaluator;
 use crate::query_exec::{
     BatchQueryExecutionTrace, QueryExecContext, QueryExecError, execute_batch_query_with_trace_on,
 };
 use crate::query_plan::{BatchQueryPlan, DispatchBackend};
-use crate::query_solver::{RaySolverDiagnosticSummary, RaySolverMethod};
+use crate::query_solver::{RaySolverDiagnosticSummary, RaySolverMethod, ray_solver_method_name};
 use resources::{
     AttachmentResourceSet, PresentationResourceError, allocate_attachment_resources_without_history,
 };
 use smol_str::SmolStr;
+use std::collections::BTreeMap;
 use thiserror::Error;
 
+pub use self::controller::AdaptivePresentationController;
+pub use cost::{
+    PresentationAttachmentBytes, PresentationFrameCostReport, PresentationPassCost,
+    PresentationQualityReport, quality_report, radiance_mode_name, render_frame_cost_report,
+};
 pub use resources::{
     AttachmentResource, FrameAttachmentLayout, PresentationResourceError as ResourceError,
     allocate_attachment_resources as allocate_frame_attachment_resources,
@@ -58,6 +68,7 @@ pub struct PresentationExecutionInput {
     pub lighting: PresentationLightingInputs,
     pub compatibility_projection: Option<LegacyCompatibilityProjectionInput>,
     pub ray_budget: CanonicalRayBudget,
+    pub quality_override: Option<RealtimeQualityState>,
     pub backend: DispatchBackend,
 }
 
@@ -117,7 +128,46 @@ pub struct PresentationExecutionResult {
     pub attachments: AttachmentResourceSet,
     pub history: Option<PresentationTemporalHistory>,
     pub metrics: PresentationMetrics,
+    pub frame_cost: PresentationFrameCostReport,
     pub query_trace: BatchQueryExecutionTrace,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdaptivePresentationSession {
+    controller: AdaptivePresentationController,
+    history: Option<PresentationTemporalHistory>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PassRuntimeStats {
+    pub pass_id: String,
+    pub pass_kind: String,
+    pub work_items: u32,
+    pub elapsed_micros: u128,
+    pub dispatch_count: u32,
+    pub attachment_bytes_read: u64,
+    pub attachment_bytes_written: u64,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TileCullingStats {
+    pub total_tiles: u32,
+    pub active_tiles: u32,
+    pub skipped_samples: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ParticipantQueryWorkItem {
+    pub target_index: usize,
+    pub point_query: KernelValue,
+    pub point_direction_query: KernelValue,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TileCullingMask {
+    pub active_samples: Vec<usize>,
+    pub stats: TileCullingStats,
 }
 
 pub fn execute_plan(
@@ -131,6 +181,354 @@ pub fn execute_plan(
             cpu::execute_plan(ctx, plan, input)
         }
     }
+}
+
+pub fn resolved_quality_state(
+    plan: &PresentationPlan,
+    input: &PresentationExecutionInput,
+) -> RealtimeQualityState {
+    input
+        .quality_override
+        .clone()
+        .unwrap_or_else(|| plan.frame.quality.initial_state())
+}
+
+impl AdaptivePresentationSession {
+    pub fn new(contract: RealtimeQualityContract) -> Self {
+        Self {
+            controller: AdaptivePresentationController::new(contract),
+            history: None,
+        }
+    }
+
+    pub fn with_window(mut self, moving_average_window: usize) -> Self {
+        self.controller = self.controller.clone().with_window(moving_average_window);
+        self
+    }
+
+    pub fn controller(&self) -> &AdaptivePresentationController {
+        &self.controller
+    }
+
+    pub fn history(&self) -> Option<&PresentationTemporalHistory> {
+        self.history.as_ref()
+    }
+
+    pub fn execute_frame(
+        &mut self,
+        ctx: &QueryExecContext,
+        plan: &PresentationPlan,
+        input: &PresentationExecutionInput,
+    ) -> Result<PresentationExecutionResult, PresentationExecError> {
+        let mut frame_input = input.clone();
+        frame_input.history = self.history.clone();
+        frame_input.quality_override = Some(self.controller.quality().clone());
+        let result = execute_plan(ctx, plan, &frame_input)?;
+        self.history = result.history.clone();
+        let _ = self.controller.observe_frame(&result.frame_cost);
+        Ok(result)
+    }
+}
+
+pub(crate) fn effective_plan_for_quality(
+    plan: &PresentationPlan,
+    quality: &RealtimeQualityState,
+) -> PresentationPlan {
+    let mut effective = plan.clone();
+    effective.apply_participant_policy(quality.radiance_enabled(), quality.media_enabled);
+    let internal_divisor = internal_resolution_divisor(quality.internal_resolution_scale);
+    if internal_divisor > 1 {
+        for attachment in &mut effective.frame.outputs {
+            if matches!(
+                attachment.kind,
+                FrameAttachmentKind::Surface
+                    | FrameAttachmentKind::Radiance
+                    | FrameAttachmentKind::Medium
+            ) {
+                apply_attachment_divisor(attachment, internal_divisor);
+            }
+        }
+    }
+    if quality.half_res_participants {
+        for attachment in &mut effective.frame.outputs {
+            if matches!(
+                attachment.kind,
+                FrameAttachmentKind::Radiance | FrameAttachmentKind::Medium
+            ) {
+                apply_attachment_divisor(attachment, 2);
+            }
+        }
+    }
+    effective
+}
+
+pub(crate) fn adjusted_ray_budget(
+    budget: CanonicalRayBudget,
+    quality: &RealtimeQualityState,
+) -> CanonicalRayBudget {
+    CanonicalRayBudget {
+        max_steps: budget.max_steps.min(quality.primary_max_steps),
+        ..budget
+    }
+}
+
+pub(crate) fn full_attachment_byte_size(attachments: &AttachmentResourceSet, name: &str) -> u64 {
+    attachments
+        .attachment(name)
+        .map(|attachment| attachment.bytes.len() as u64)
+        .unwrap_or_default()
+}
+
+pub(crate) fn attachment_byte_reports(
+    attachments: &AttachmentResourceSet,
+) -> Vec<PresentationAttachmentBytes> {
+    attachments
+        .attachments
+        .iter()
+        .map(|(name, attachment)| PresentationAttachmentBytes {
+            attachment: name.to_string(),
+            width: attachment.layout.width,
+            height: attachment.layout.height,
+            total_size_bytes: attachment.bytes.len() as u64,
+        })
+        .collect()
+}
+
+pub(crate) fn encode_values_at_indices(
+    attachments: &mut AttachmentResourceSet,
+    name: &str,
+    indices: &[usize],
+    values: &[KernelValue],
+) -> Result<(), PresentationExecError> {
+    let Some(attachment) = attachments.attachment_mut(name) else {
+        return Ok(());
+    };
+    for (index, value) in indices.iter().zip(values) {
+        attachment.encode(*index, value)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn shade_lookup_value(
+    attachments: &AttachmentResourceSet,
+    name: &str,
+    full_index: usize,
+    fallback: &KernelValue,
+) -> Result<KernelValue, PresentationExecError> {
+    let Some(attachment) = attachments.attachment(name) else {
+        return Ok(fallback.clone());
+    };
+    if attachment.layout.width == attachments.width
+        && attachment.layout.height == attachments.height
+    {
+        return attachment
+            .decode(full_index)
+            .map_err(PresentationExecError::Resource);
+    }
+    let x = (full_index as u32) % attachments.width.max(1);
+    let y = (full_index as u32) / attachments.width.max(1);
+    let scaled_x = x / attachment.layout.attachment.scale.divisor_x.max(1);
+    let scaled_y = y / attachment.layout.attachment.scale.divisor_y.max(1);
+    let scaled_index = (scaled_y * attachment.layout.width + scaled_x) as usize;
+    attachment
+        .decode(scaled_index)
+        .map_err(PresentationExecError::Resource)
+}
+
+pub(crate) fn participant_query_work_items(
+    input: &PresentationExecutionInput,
+    screen_samples: &[KernelValue],
+    hits: &[KernelValue],
+    attachments: &AttachmentResourceSet,
+    attachment_name: &str,
+    miss_sample_distance: f32,
+    include_misses: bool,
+) -> Result<Vec<ParticipantQueryWorkItem>, PresentationExecError> {
+    let frame = expect_struct(&input.frame_state, "FrameState")?;
+    let view = expect_struct(field(frame, "view")?, "ViewState")?;
+    let camera = expect_struct(field(view, "camera")?, "Camera")?;
+    let camera_position = expect_vec3(field(camera, "position")?)?;
+    let Some(attachment) = attachments.attachment(attachment_name) else {
+        return Ok(Vec::new());
+    };
+    let scaled = attachment.layout.width != attachments.width
+        || attachment.layout.height != attachments.height;
+    let mut items = Vec::new();
+    let mut scaled_cells = BTreeMap::new();
+    for (index, (sample, hit)) in screen_samples.iter().zip(hits).enumerate() {
+        let is_hit = hit_flag(hit)?;
+        if !include_misses && !is_hit {
+            continue;
+        }
+        let ray = expect_struct(
+            field(expect_struct(sample, "ScreenSampleQuery")?, "ray")?,
+            "RayQuery",
+        )?;
+        let ray_direction = expect_vec3(field(ray, "direction")?)?;
+        let point = if is_hit {
+            hit_position(hit)?
+        } else {
+            [
+                camera_position[0] + ray_direction[0] * miss_sample_distance,
+                camera_position[1] + ray_direction[1] * miss_sample_distance,
+                camera_position[2] + ray_direction[2] * miss_sample_distance,
+            ]
+        };
+        let target_index = attachment_target_index(attachments, attachment, index);
+        let item = ParticipantQueryWorkItem {
+            target_index,
+            point_query: point_query_value(point),
+            point_direction_query: point_direction_query_value(point, ray_direction),
+        };
+        if scaled {
+            scaled_cells.entry(target_index).or_insert(item);
+        } else {
+            items.push(item);
+        }
+    }
+    if scaled {
+        items.extend(scaled_cells.into_values());
+    }
+    Ok(items)
+}
+
+pub(crate) fn tile_culling_mask(
+    ctx: &QueryExecContext,
+    input: &PresentationExecutionInput,
+    camera: CanonicalCameraInput,
+    viewport: CanonicalViewportInput,
+    legacy_projection: bool,
+) -> Result<Option<TileCullingMask>, PresentationExecError> {
+    if legacy_projection {
+        return Ok(None);
+    }
+    let evaluator = DirectQueryEvaluator::new(ctx);
+    let detail = frame_domain_geometry_detail(&input.frame_domain).unwrap_or(0);
+    let bounds = evaluator.region_shape_support_bounds(&input.region_capture, detail)?;
+    if bounds.is_empty() {
+        return Ok(None);
+    }
+    let tile_size = 8u32;
+    let tiles_x = viewport.width.div_ceil(tile_size);
+    let tiles_y = viewport.height.div_ceil(tile_size);
+    let mut active = vec![false; (tiles_x * tiles_y) as usize];
+    for (_, min, max) in bounds {
+        if !mark_projected_bounds_tiles(
+            &mut active,
+            tiles_x,
+            tiles_y,
+            tile_size,
+            camera,
+            viewport,
+            min,
+            max,
+        ) {
+            return Ok(None);
+        }
+    }
+    let mut active_samples = Vec::new();
+    let mut skipped_samples = Vec::new();
+    for y in 0..viewport.height {
+        for x in 0..viewport.width {
+            let tile_x = x / tile_size;
+            let tile_y = y / tile_size;
+            let tile_index = (tile_y * tiles_x + tile_x) as usize;
+            let sample_index = (y * viewport.width + x) as usize;
+            if active.get(tile_index).copied().unwrap_or(true) {
+                active_samples.push(sample_index);
+            } else {
+                skipped_samples.push(sample_index);
+            }
+        }
+    }
+    let active_tiles = active.iter().filter(|tile| **tile).count() as u32;
+    Ok(Some(TileCullingMask {
+        active_samples,
+        stats: TileCullingStats {
+            total_tiles: tiles_x * tiles_y,
+            active_tiles,
+            skipped_samples: skipped_samples.len() as u32,
+        },
+    }))
+}
+
+fn mark_projected_bounds_tiles(
+    active: &mut [bool],
+    tiles_x: u32,
+    tiles_y: u32,
+    tile_size: u32,
+    camera: CanonicalCameraInput,
+    viewport: CanonicalViewportInput,
+    min: [f32; 3],
+    max: [f32; 3],
+) -> bool {
+    let corners = [
+        [min[0], min[1], min[2]],
+        [min[0], min[1], max[2]],
+        [min[0], max[1], min[2]],
+        [min[0], max[1], max[2]],
+        [max[0], min[1], min[2]],
+        [max[0], min[1], max[2]],
+        [max[0], max[1], min[2]],
+        [max[0], max[1], max[2]],
+    ];
+    let forward = normalize3(camera.forward, [0.0, 0.0, -1.0]);
+    let right = normalize3(cross3(forward, camera.up), [1.0, 0.0, 0.0]);
+    let up = normalize3(cross3(right, forward), [0.0, 1.0, 0.0]);
+    let aspect = viewport.width.max(1) as f32 / viewport.height.max(1) as f32;
+    let vertical_scale = (camera.vertical_fov_degrees.to_radians() * 0.5).tan();
+    let horizontal_scale = aspect * vertical_scale;
+    let mut projected = Vec::new();
+    for corner in corners {
+        let rel = [
+            corner[0] - camera.position[0],
+            corner[1] - camera.position[1],
+            corner[2] - camera.position[2],
+        ];
+        let depth = rel[0] * forward[0] + rel[1] * forward[1] + rel[2] * forward[2];
+        if depth <= 0.0 {
+            return false;
+        }
+        let x = (rel[0] * right[0] + rel[1] * right[1] + rel[2] * right[2])
+            / (depth * horizontal_scale);
+        let y = (rel[0] * up[0] + rel[1] * up[1] + rel[2] * up[2]) / (depth * vertical_scale);
+        projected.push([x, y]);
+    }
+    let min_ndc_x = projected.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
+    let max_ndc_x = projected
+        .iter()
+        .map(|p| p[0])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_ndc_y = projected.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+    let max_ndc_y = projected
+        .iter()
+        .map(|p| p[1])
+        .fold(f32::NEG_INFINITY, f32::max);
+    if min_ndc_x > 1.0 || max_ndc_x < -1.0 || min_ndc_y > 1.0 || max_ndc_y < -1.0 {
+        return true;
+    }
+    let min_px = (((min_ndc_x.clamp(-1.0, 1.0) + 1.0) * 0.5) * viewport.width as f32)
+        .floor()
+        .max(0.0) as u32;
+    let max_px = (((max_ndc_x.clamp(-1.0, 1.0) + 1.0) * 0.5) * viewport.width as f32).ceil() as u32;
+    let min_py = (((1.0 - max_ndc_y.clamp(-1.0, 1.0)) * 0.5) * viewport.height as f32)
+        .floor()
+        .max(0.0) as u32;
+    let max_py =
+        (((1.0 - min_ndc_y.clamp(-1.0, 1.0)) * 0.5) * viewport.height as f32).ceil() as u32;
+    let min_tile_x = (min_px / tile_size).min(tiles_x.saturating_sub(1));
+    let max_tile_x = (max_px.div_ceil(tile_size)).min(tiles_x).saturating_sub(1);
+    let min_tile_y = (min_py / tile_size).min(tiles_y.saturating_sub(1));
+    let max_tile_y = (max_py.div_ceil(tile_size)).min(tiles_y).saturating_sub(1);
+    for tile_y in min_tile_y..=max_tile_y {
+        for tile_x in min_tile_x..=max_tile_x {
+            let index = (tile_y * tiles_x + tile_x) as usize;
+            if let Some(slot) = active.get_mut(index) {
+                *slot = true;
+            }
+        }
+    }
+    true
 }
 
 pub fn frame_state_value(
@@ -403,10 +801,15 @@ fn presentation_metrics(
         }
     }
     let observability = &query_trace.observability;
+    let hit_count = hits
+        .iter()
+        .filter(|hit| hit_flag(hit).unwrap_or(false))
+        .count() as u32;
+    let miss_count = hits.len() as u32 - hit_count;
     PresentationMetrics {
         sample_count: hits.len() as u32,
-        hit_count: observability.hit_count,
-        miss_count: observability.miss_count,
+        hit_count,
+        miss_count,
         candidate_count: observability.candidate_count,
         candidates_before_pruning: observability.candidates_before_pruning,
         candidates_after_pruning: observability.candidates_after_pruning,
@@ -430,6 +833,135 @@ fn presentation_metrics(
         continuation_consumed_count: observability.solver_continuation_consumed,
         continuation_rejected_count: observability.solver_continuation_rejected,
         continuation_unavailable_count: observability.solver_continuation_unavailable,
+    }
+}
+
+pub(crate) fn build_frame_cost_report(
+    width: u32,
+    height: u32,
+    quality: &RealtimeQualityState,
+    metrics: &PresentationMetrics,
+    tile_cull: TileCullingStats,
+    surface_resolve_count: u32,
+    participant_resolve_count: u32,
+    attachments: &AttachmentResourceSet,
+    passes: Vec<PassRuntimeStats>,
+    mut active_acceleration_artifacts: Vec<String>,
+) -> PresentationFrameCostReport {
+    let radiance_mode = quality.radiance_mode;
+    let half_res_participants = quality.half_res_participants;
+    let hit_compaction_enabled = quality.hit_compaction_enabled;
+    let active_degradations_empty = quality.active_degradations.is_empty();
+    let quality = quality_report(quality, width, height);
+    let primary_hit_rate = if metrics.sample_count == 0 {
+        0.0
+    } else {
+        metrics.hit_count as f32 / metrics.sample_count as f32
+    };
+    let average_trace_steps = if metrics.sample_count == 0 {
+        0.0
+    } else {
+        metrics.trace_steps_total as f32 / metrics.sample_count as f32
+    };
+    let support_prune_effectiveness = if metrics.candidates_before_pruning == 0 {
+        0.0
+    } else {
+        metrics.candidate_reduction as f32 / metrics.candidates_before_pruning as f32
+    };
+    let tile_cull_efficiency = if tile_cull.total_tiles == 0 {
+        0.0
+    } else {
+        1.0 - (tile_cull.active_tiles as f32 / tile_cull.total_tiles as f32)
+    };
+    let history_reuse_total = metrics.continuation_available_count
+        + metrics.continuation_consumed_count
+        + metrics.continuation_rejected_count
+        + metrics.continuation_unavailable_count;
+    let history_reuse_rate = if history_reuse_total == 0 {
+        0.0
+    } else {
+        metrics.continuation_consumed_count as f32 / history_reuse_total as f32
+    };
+    if metrics.candidate_reduction > 0 {
+        active_acceleration_artifacts.push("support_pruning".to_string());
+    }
+    if hit_compaction_enabled {
+        active_acceleration_artifacts.push("hit_compaction".to_string());
+    }
+    if quality.internal_resolution_scale < 1.0 {
+        active_acceleration_artifacts.push("dynamic_resolution".to_string());
+    }
+    if tile_cull.total_tiles > 0 && tile_cull.active_tiles < tile_cull.total_tiles {
+        active_acceleration_artifacts.push("view_tile_culling".to_string());
+    }
+    if half_res_participants {
+        active_acceleration_artifacts.push("half_res_participants".to_string());
+    }
+    if radiance_mode == crate::presentation_contract::RealtimeRadianceMode::Reduced {
+        active_acceleration_artifacts.push("reduced_radiance_queries".to_string());
+    }
+    active_acceleration_artifacts.extend(
+        metrics
+            .solver_methods
+            .iter()
+            .map(|method| ray_solver_method_name(*method).to_string()),
+    );
+    let mut deduped_artifacts = BTreeMap::new();
+    for artifact in active_acceleration_artifacts {
+        deduped_artifacts
+            .entry(artifact.clone())
+            .or_insert(artifact);
+    }
+    let passes = passes
+        .into_iter()
+        .map(|pass| PresentationPassCost {
+            pass_id: pass.pass_id,
+            pass_kind: pass.pass_kind,
+            work_items: pass.work_items,
+            elapsed_micros: pass.elapsed_micros,
+            dispatch_count: pass.dispatch_count,
+            attachment_bytes_read: pass.attachment_bytes_read,
+            attachment_bytes_written: pass.attachment_bytes_written,
+            notes: pass.notes,
+        })
+        .collect::<Vec<_>>();
+    let bottleneck_pass = passes
+        .iter()
+        .max_by_key(|pass| (pass.elapsed_micros, pass.work_items))
+        .map(|pass| pass.pass_id.clone());
+    let mut performance_gain_sources = Vec::new();
+    if support_prune_effectiveness > 0.0 || tile_cull_efficiency > 0.0 {
+        performance_gain_sources.push("less_semantic_work".to_string());
+    }
+    if !active_degradations_empty {
+        performance_gain_sources.push("quality_degradation".to_string());
+    }
+    if performance_gain_sources.is_empty() {
+        performance_gain_sources.push("backend_speed".to_string());
+    }
+    PresentationFrameCostReport {
+        output_width: width,
+        output_height: height,
+        internal_width: quality.internal_width,
+        internal_height: quality.internal_height,
+        quality,
+        primary_hit_rate,
+        average_trace_steps,
+        max_trace_steps: metrics.trace_steps_max,
+        candidate_count_before_pruning: metrics.candidates_before_pruning,
+        candidate_count_after_pruning: metrics.candidates_after_pruning,
+        support_prune_effectiveness,
+        tile_cull_total_tiles: tile_cull.total_tiles,
+        tile_cull_active_tiles: tile_cull.active_tiles,
+        tile_cull_efficiency,
+        surface_resolve_count,
+        participant_resolve_count,
+        history_reuse_rate,
+        attachment_bytes: attachment_byte_reports(attachments),
+        passes,
+        active_acceleration_artifacts: deduped_artifacts.into_values().collect(),
+        bottleneck_pass,
+        performance_gain_sources,
     }
 }
 
@@ -535,6 +1067,80 @@ fn generate_screen_samples(
     samples
 }
 
+pub(crate) fn internal_resolution_divisor(scale: f32) -> u32 {
+    if scale <= 0.25 + f32::EPSILON {
+        4
+    } else if scale <= 0.5 + f32::EPSILON {
+        2
+    } else {
+        1
+    }
+}
+
+pub(crate) fn internal_resolution_viewport(
+    viewport: CanonicalViewportInput,
+    quality: &RealtimeQualityState,
+) -> CanonicalViewportInput {
+    let divisor = internal_resolution_divisor(quality.internal_resolution_scale);
+    CanonicalViewportInput {
+        width: viewport.width.div_ceil(divisor),
+        height: viewport.height.div_ceil(divisor),
+    }
+}
+
+pub(crate) fn expand_internal_hits(
+    internal_hits: &[KernelValue],
+    output_viewport: CanonicalViewportInput,
+    internal_viewport: CanonicalViewportInput,
+) -> Vec<KernelValue> {
+    if output_viewport == internal_viewport {
+        return internal_hits.to_vec();
+    }
+    let mut hits =
+        Vec::with_capacity(output_viewport.width.saturating_mul(output_viewport.height) as usize);
+    for index in 0..output_viewport.width.saturating_mul(output_viewport.height) as usize {
+        let x = index as u32 % output_viewport.width.max(1);
+        let y = index as u32 / output_viewport.width.max(1);
+        let internal_x = (x.saturating_mul(internal_viewport.width)) / output_viewport.width.max(1);
+        let internal_y =
+            (y.saturating_mul(internal_viewport.height)) / output_viewport.height.max(1);
+        let internal_index = (internal_y * internal_viewport.width + internal_x) as usize;
+        hits.push(
+            internal_hits
+                .get(internal_index)
+                .cloned()
+                .unwrap_or_else(primary_hit_miss_value),
+        );
+    }
+    hits
+}
+
+pub(crate) fn attachment_hit_work_items(
+    attachments: &AttachmentResourceSet,
+    attachment_name: &str,
+    hits: &[KernelValue],
+    compact_hits: bool,
+) -> Result<Vec<(usize, KernelValue)>, PresentationExecError> {
+    let Some(attachment) = attachments.attachment(attachment_name) else {
+        return Ok(Vec::new());
+    };
+    if !compact_hits
+        && attachment.layout.width == attachments.width
+        && attachment.layout.height == attachments.height
+    {
+        return Ok(hits.iter().cloned().enumerate().collect());
+    }
+    let mut deduped = BTreeMap::new();
+    for (index, hit) in hits.iter().enumerate() {
+        if compact_hits && !hit_flag(hit)? {
+            continue;
+        }
+        let target_index = attachment_target_index(attachments, attachment, index);
+        deduped.entry(target_index).or_insert_with(|| hit.clone());
+    }
+    Ok(deduped.into_iter().collect())
+}
+
 fn screen_sample_ray(sample: &KernelValue) -> Result<KernelValue, PresentationExecError> {
     let sample = expect_struct(sample, "ScreenSampleQuery")?;
     Ok(field(sample, "ray")?.clone())
@@ -627,6 +1233,15 @@ fn viewport_value(viewport: CanonicalViewportInput) -> KernelValue {
     })
 }
 
+fn frame_domain_geometry_detail(frame_domain: &KernelValue) -> Result<i32, PresentationExecError> {
+    let frame_domain = expect_struct(frame_domain, "SceneDomain")?;
+    let spatial = expect_struct(field(frame_domain, "spatial")?, "SpatialDomainContract")?;
+    match field(spatial, "geometry_detail")? {
+        KernelValue::I32(value) => Ok(*value),
+        other => Err(type_mismatch("I32", other)),
+    }
+}
+
 fn expect_array(value: &KernelValue) -> Result<&[KernelValue], PresentationExecError> {
     match value {
         KernelValue::Array(values) => Ok(values),
@@ -697,6 +1312,11 @@ fn expect_bool(value: &KernelValue) -> Result<bool, PresentationExecError> {
     }
 }
 
+fn hit_flag(value: &KernelValue) -> Result<bool, PresentationExecError> {
+    let hit = expect_struct(value, "Hit3")?;
+    expect_bool(field(hit, "hit")?)
+}
+
 fn hit_depth(hit: &KernelValue) -> Result<f32, PresentationExecError> {
     let hit = expect_struct(hit, "Hit3")?;
     let did_hit = match field(hit, "hit")? {
@@ -708,6 +1328,11 @@ fn hit_depth(hit: &KernelValue) -> Result<f32, PresentationExecError> {
     } else {
         Ok(f32::INFINITY)
     }
+}
+
+fn hit_position(hit: &KernelValue) -> Result<[f32; 3], PresentationExecError> {
+    let hit = expect_struct(hit, "Hit3")?;
+    expect_vec3(field(hit, "position")?)
 }
 
 fn hit_world_normal(hit: &KernelValue) -> Result<[f32; 3], PresentationExecError> {
@@ -745,6 +1370,54 @@ fn normalize_hit_for_attachment(hit: &KernelValue) -> Result<KernelValue, Presen
     }))
 }
 
+pub(crate) fn primary_hit_miss_value() -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("Hit3"),
+        fields: vec![
+            (SmolStr::new("hit"), KernelValue::Bool(false)),
+            (SmolStr::new("distance"), KernelValue::F32(f32::INFINITY)),
+            (SmolStr::new("position"), KernelValue::Vec3([0.0, 0.0, 0.0])),
+            (SmolStr::new("normal"), KernelValue::Vec3([0.0, 0.0, 0.0])),
+            (
+                SmolStr::new("local_position"),
+                KernelValue::Vec3([0.0, 0.0, 0.0]),
+            ),
+            (
+                SmolStr::new("local_normal"),
+                KernelValue::Vec3([0.0, 0.0, 0.0]),
+            ),
+            (
+                SmolStr::new("shading_frame"),
+                KernelValue::Struct(KernelStructValue {
+                    name: SmolStr::new("Transform3"),
+                    fields: vec![
+                        (
+                            SmolStr::new("matrix"),
+                            KernelValue::Mat4([
+                                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                                0.0, 0.0, 1.0,
+                            ]),
+                        ),
+                        (
+                            SmolStr::new("inverse"),
+                            KernelValue::Mat4([
+                                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                                0.0, 0.0, 1.0,
+                            ]),
+                        ),
+                    ],
+                }),
+            ),
+            (SmolStr::new("steps"), KernelValue::I32(0)),
+            (SmolStr::new("feature_id"), KernelValue::U32(0)),
+            (SmolStr::new("instance_id"), KernelValue::U32(0)),
+            (SmolStr::new("repeat_id"), KernelValue::U32(0)),
+            (SmolStr::new("root_shape_id"), KernelValue::U32(0)),
+            (SmolStr::new("payload"), default_payload_value()),
+        ],
+    })
+}
+
 fn default_payload_value() -> KernelValue {
     KernelValue::Struct(KernelStructValue {
         name: SmolStr::new("Payload"),
@@ -763,6 +1436,67 @@ fn default_payload_value() -> KernelValue {
             ),
         ],
     })
+}
+
+fn attachment_target_index(
+    attachments: &AttachmentResourceSet,
+    attachment: &crate::presentation_exec::resources::AttachmentResource,
+    full_index: usize,
+) -> usize {
+    if attachment.layout.width == attachments.width
+        && attachment.layout.height == attachments.height
+    {
+        return full_index;
+    }
+    let x = (full_index as u32) % attachments.width.max(1);
+    let y = (full_index as u32) / attachments.width.max(1);
+    let scaled_x = x / attachment.layout.attachment.scale.divisor_x.max(1);
+    let scaled_y = y / attachment.layout.attachment.scale.divisor_y.max(1);
+    (scaled_y * attachment.layout.width + scaled_x) as usize
+}
+
+fn apply_attachment_divisor(attachment: &mut FrameAttachmentContract, requested_divisor: u32) {
+    if matches!(attachment.lifetime, AttachmentLifetime::HistorySlot(_)) {
+        return;
+    }
+    let combined_divisor = attachment
+        .scale
+        .divisor_x
+        .max(attachment.scale.divisor_y)
+        .saturating_mul(requested_divisor)
+        .clamp(1, 4);
+    attachment.scale = match combined_divisor {
+        4 => AttachmentResolutionScale::quarter(),
+        2 => AttachmentResolutionScale::half(),
+        _ => AttachmentResolutionScale::full(),
+    };
+    attachment.resolution = match combined_divisor {
+        4 => AttachmentResolutionClass::QuarterViewport,
+        2 => AttachmentResolutionClass::HalfViewport,
+        _ => AttachmentResolutionClass::Viewport,
+    };
+}
+
+fn cross3(lhs: [f32; 3], rhs: [f32; 3]) -> [f32; 3] {
+    [
+        lhs[1] * rhs[2] - lhs[2] * rhs[1],
+        lhs[2] * rhs[0] - lhs[0] * rhs[2],
+        lhs[0] * rhs[1] - lhs[1] * rhs[0],
+    ]
+}
+
+fn dot3(lhs: [f32; 3], rhs: [f32; 3]) -> f32 {
+    lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2]
+}
+
+fn normalize3(value: [f32; 3], fallback: [f32; 3]) -> [f32; 3] {
+    let len_sq = dot3(value, value);
+    if len_sq <= f32::EPSILON {
+        fallback
+    } else {
+        let inv_len = len_sq.sqrt().recip();
+        [value[0] * inv_len, value[1] * inv_len, value[2] * inv_len]
+    }
 }
 
 fn type_mismatch(expected: &str, found: &KernelValue) -> PresentationExecError {

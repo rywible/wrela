@@ -78,6 +78,62 @@ pub enum TemporalHistoryRole {
     ContinuationPrimaryHit,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RealtimeQualityTier {
+    Realtime60,
+    Realtime120,
+    High,
+    Ultra,
+    Debug,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RealtimeRadianceMode {
+    Full,
+    Reduced,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum QualityDegradationStep {
+    ReduceInternalResolution,
+    EnableHitCompaction,
+    LowerPrimarySteps,
+    DisableMedia,
+    LowerRadianceQuality,
+    DisableRadiance,
+    HalfResolutionParticipants,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RealtimeQualityContract {
+    pub tier: RealtimeQualityTier,
+    pub target_fps: u32,
+    pub internal_resolution_scale: f32,
+    pub allow_dynamic_resolution: bool,
+    pub primary_max_steps: i32,
+    pub allow_radiance: bool,
+    pub allow_media: bool,
+    pub temporal_mode: TemporalReuseMode,
+    pub allow_half_res_participants: bool,
+    pub allow_hit_compaction: bool,
+    pub degradation_order: Vec<QualityDegradationStep>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RealtimeQualityState {
+    pub tier: RealtimeQualityTier,
+    pub target_fps: u32,
+    pub internal_resolution_scale: f32,
+    pub primary_max_steps: i32,
+    pub radiance_mode: RealtimeRadianceMode,
+    pub media_enabled: bool,
+    pub temporal_mode: TemporalReuseMode,
+    pub half_res_participants: bool,
+    pub hit_compaction_enabled: bool,
+    pub active_degradations: Vec<QualityDegradationStep>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HistoryCompatibilityKey {
     pub element_schema: AttachmentElementSchema,
@@ -224,11 +280,12 @@ pub struct PresentationObservabilityProfile {
     pub future_acceleration_hooks: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FrameContract {
     pub outputs: Vec<FrameAttachmentContract>,
     pub primary_hit: Option<PrimaryHitAttachmentContract>,
     pub temporal: Option<TemporalContract>,
+    pub quality: RealtimeQualityContract,
     pub lighting: LightingContract,
     pub observability: PresentationObservabilityProfile,
 }
@@ -589,6 +646,278 @@ impl FrameContract {
         self.outputs
             .iter()
             .find(|attachment| attachment.name == name)
+    }
+}
+
+impl RealtimeQualityContract {
+    pub fn named(tier: RealtimeQualityTier) -> Self {
+        match tier {
+            RealtimeQualityTier::Realtime60 => Self {
+                tier,
+                target_fps: 60,
+                internal_resolution_scale: 1.0,
+                allow_dynamic_resolution: true,
+                primary_max_steps: 128,
+                allow_radiance: true,
+                allow_media: true,
+                temporal_mode: TemporalReuseMode::ReprojectColorAndMotion,
+                allow_half_res_participants: true,
+                allow_hit_compaction: true,
+                degradation_order: vec![
+                    QualityDegradationStep::ReduceInternalResolution,
+                    QualityDegradationStep::EnableHitCompaction,
+                    QualityDegradationStep::LowerPrimarySteps,
+                    QualityDegradationStep::DisableMedia,
+                    QualityDegradationStep::LowerRadianceQuality,
+                    QualityDegradationStep::DisableRadiance,
+                    QualityDegradationStep::HalfResolutionParticipants,
+                ],
+            },
+            RealtimeQualityTier::Realtime120 => Self {
+                tier,
+                target_fps: 120,
+                internal_resolution_scale: 1.0,
+                allow_dynamic_resolution: true,
+                primary_max_steps: 96,
+                allow_radiance: true,
+                allow_media: false,
+                temporal_mode: TemporalReuseMode::ReprojectColorAndMotion,
+                allow_half_res_participants: true,
+                allow_hit_compaction: true,
+                degradation_order: vec![
+                    QualityDegradationStep::ReduceInternalResolution,
+                    QualityDegradationStep::EnableHitCompaction,
+                    QualityDegradationStep::LowerPrimarySteps,
+                    QualityDegradationStep::LowerRadianceQuality,
+                    QualityDegradationStep::DisableRadiance,
+                    QualityDegradationStep::HalfResolutionParticipants,
+                ],
+            },
+            RealtimeQualityTier::High => Self {
+                tier,
+                target_fps: 60,
+                internal_resolution_scale: 1.0,
+                allow_dynamic_resolution: false,
+                primary_max_steps: 160,
+                allow_radiance: true,
+                allow_media: true,
+                temporal_mode: TemporalReuseMode::ReprojectColorAndMotion,
+                allow_half_res_participants: true,
+                allow_hit_compaction: true,
+                degradation_order: vec![
+                    QualityDegradationStep::EnableHitCompaction,
+                    QualityDegradationStep::LowerPrimarySteps,
+                    QualityDegradationStep::DisableMedia,
+                    QualityDegradationStep::LowerRadianceQuality,
+                    QualityDegradationStep::DisableRadiance,
+                    QualityDegradationStep::HalfResolutionParticipants,
+                ],
+            },
+            RealtimeQualityTier::Ultra => Self {
+                tier,
+                target_fps: 60,
+                internal_resolution_scale: 1.0,
+                allow_dynamic_resolution: false,
+                primary_max_steps: 224,
+                allow_radiance: true,
+                allow_media: true,
+                temporal_mode: TemporalReuseMode::ReprojectColorAndMotion,
+                allow_half_res_participants: true,
+                allow_hit_compaction: true,
+                degradation_order: vec![
+                    QualityDegradationStep::EnableHitCompaction,
+                    QualityDegradationStep::LowerPrimarySteps,
+                    QualityDegradationStep::DisableMedia,
+                    QualityDegradationStep::LowerRadianceQuality,
+                    QualityDegradationStep::DisableRadiance,
+                    QualityDegradationStep::HalfResolutionParticipants,
+                ],
+            },
+            RealtimeQualityTier::Debug => Self {
+                tier,
+                target_fps: 30,
+                internal_resolution_scale: 1.0,
+                allow_dynamic_resolution: false,
+                primary_max_steps: 256,
+                allow_radiance: true,
+                allow_media: true,
+                temporal_mode: TemporalReuseMode::ReprojectColorAndMotion,
+                allow_half_res_participants: false,
+                allow_hit_compaction: false,
+                degradation_order: vec![
+                    QualityDegradationStep::LowerPrimarySteps,
+                    QualityDegradationStep::DisableMedia,
+                    QualityDegradationStep::DisableRadiance,
+                ],
+            },
+        }
+    }
+
+    pub fn with_temporal_mode(mut self, temporal_mode: TemporalReuseMode) -> Self {
+        self.temporal_mode = temporal_mode;
+        self
+    }
+
+    pub fn validate(&self) -> Vec<SmolStr> {
+        let mut errors = Vec::new();
+        if self.target_fps == 0 {
+            errors.push(SmolStr::new(
+                "realtime quality contract must target a non-zero FPS",
+            ));
+        }
+        if !(0.25..=1.0).contains(&self.internal_resolution_scale) {
+            errors.push(SmolStr::new(format!(
+                "internal resolution scale {} must be within [0.25, 1.0]",
+                self.internal_resolution_scale
+            )));
+        }
+        if self.internal_resolution_scale != 1.0
+            && (self.internal_resolution_scale - 0.5).abs() > f32::EPSILON
+            && (self.internal_resolution_scale - 0.25).abs() > f32::EPSILON
+        {
+            errors.push(SmolStr::new(
+                "internal resolution scale must be one of 1.0, 0.5, or 0.25",
+            ));
+        }
+        if !self.allow_dynamic_resolution
+            && (self.internal_resolution_scale - 1.0).abs() > f32::EPSILON
+        {
+            errors.push(SmolStr::new(
+                "internal resolution scale below 1.0 requires allow_dynamic_resolution",
+            ));
+        }
+        if self.primary_max_steps <= 0 {
+            errors.push(SmolStr::new("primary_max_steps must be greater than zero"));
+        }
+        if self.degradation_order.is_empty() {
+            errors.push(SmolStr::new(
+                "realtime quality contract must define an explicit degradation order",
+            ));
+        }
+        errors
+    }
+
+    pub fn initial_state(&self) -> RealtimeQualityState {
+        RealtimeQualityState {
+            tier: self.tier,
+            target_fps: self.target_fps,
+            internal_resolution_scale: self.internal_resolution_scale,
+            primary_max_steps: self.primary_max_steps,
+            radiance_mode: if self.allow_radiance {
+                RealtimeRadianceMode::Full
+            } else {
+                RealtimeRadianceMode::Disabled
+            },
+            media_enabled: self.allow_media,
+            temporal_mode: self.temporal_mode,
+            half_res_participants: false,
+            hit_compaction_enabled: false,
+            active_degradations: Vec::new(),
+        }
+    }
+}
+
+impl RealtimeQualityState {
+    pub fn radiance_enabled(&self) -> bool {
+        self.radiance_mode != RealtimeRadianceMode::Disabled
+    }
+
+    pub fn step_down(&mut self, contract: &RealtimeQualityContract) -> bool {
+        for step in &contract.degradation_order {
+            if self.active_degradations.contains(step) {
+                continue;
+            }
+            if self.apply_step(contract, *step) {
+                self.active_degradations.push(*step);
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn step_up(&mut self, contract: &RealtimeQualityContract) -> bool {
+        if self.active_degradations.pop().is_none() {
+            return false;
+        }
+        let retained = self.active_degradations.clone();
+        *self = contract.initial_state();
+        for step in retained {
+            let _ = self.apply_step(contract, step);
+            self.active_degradations.push(step);
+        }
+        true
+    }
+
+    fn apply_step(
+        &mut self,
+        contract: &RealtimeQualityContract,
+        step: QualityDegradationStep,
+    ) -> bool {
+        match step {
+            QualityDegradationStep::ReduceInternalResolution => {
+                if !contract.allow_dynamic_resolution {
+                    return false;
+                }
+                let next_scale = if self.internal_resolution_scale > 0.5 {
+                    0.5
+                } else if self.internal_resolution_scale > 0.25 {
+                    0.25
+                } else {
+                    self.internal_resolution_scale
+                };
+                if (next_scale - self.internal_resolution_scale).abs() <= f32::EPSILON {
+                    false
+                } else {
+                    self.internal_resolution_scale = next_scale;
+                    true
+                }
+            }
+            QualityDegradationStep::EnableHitCompaction => {
+                if !contract.allow_hit_compaction || self.hit_compaction_enabled {
+                    return false;
+                }
+                self.hit_compaction_enabled = true;
+                true
+            }
+            QualityDegradationStep::LowerPrimarySteps => {
+                let next_steps = (self.primary_max_steps * 3) / 4;
+                let next_steps = next_steps.max(16);
+                if next_steps >= self.primary_max_steps {
+                    false
+                } else {
+                    self.primary_max_steps = next_steps;
+                    true
+                }
+            }
+            QualityDegradationStep::DisableMedia => {
+                if !self.media_enabled {
+                    return false;
+                }
+                self.media_enabled = false;
+                true
+            }
+            QualityDegradationStep::LowerRadianceQuality => {
+                if self.radiance_mode != RealtimeRadianceMode::Full {
+                    return false;
+                }
+                self.radiance_mode = RealtimeRadianceMode::Reduced;
+                true
+            }
+            QualityDegradationStep::DisableRadiance => {
+                if !self.radiance_enabled() {
+                    return false;
+                }
+                self.radiance_mode = RealtimeRadianceMode::Disabled;
+                true
+            }
+            QualityDegradationStep::HalfResolutionParticipants => {
+                if !contract.allow_half_res_participants || self.half_res_participants {
+                    return false;
+                }
+                self.half_res_participants = true;
+                true
+            }
+        }
     }
 }
 

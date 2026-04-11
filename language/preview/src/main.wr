@@ -1,5 +1,3 @@
-use print_line from host/io
-
 field conservative distance plinth(p: Vec3) -> F32 {
     translate = vec3(0.0, -0.78, 0.0) {
         extrude = f32(0.34) {
@@ -215,32 +213,22 @@ domain scene_domain(world: RegionCapture) {
     max_steps = 96
 }
 
-render render_ppm(
+view main_view(
     world: RegionCapture,
     camera: Camera
 ) {
     domain = scene_domain(world = world)
-    light = Light(
-        position=vec3(2.4, 2.8, 2.4),
-        direction=normalize(vec3(-0.8, -0.9, -0.9)),
-        intensity=vec3(1.0, 0.98, 0.95),
-        range=12.0
+    viewport = viewport(width = 40, height = 40)
+    quality = realtime_quality(target_fps = 60)
+    lighting = key_light(
+        light = Light(
+            position=vec3(2.4, 2.8, 2.4),
+            direction=normalize(vec3(-0.8, -0.9, -0.9)),
+            intensity=vec3(1.0, 0.98, 0.95),
+            range=12.0
+        ),
+        fill_direction = normalize(vec3(-0.9, 0.45, 0.2))
     )
-    width = 40
-    height = 40
-    world_up = camera.up
-    view_scale = 0.72
-    fill_dir = normalize(vec3(-0.9, 0.45, 0.2))
-}
-
-fn run() -> Integer {
-    camera = Camera(
-        position=vec3(0.0, 0.1, 2.7),
-        forward=normalize(vec3(0.0, 0.0, -1.0)),
-        up=vec3(0.0, 1.0, 0.0),
-        vertical_fov_degrees=46.0
-    )
-    world = capture scene_region
-    print_line(text=render_ppm(world=world, camera=camera))
-    return 0
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
 }

@@ -7,11 +7,12 @@ use wrela::parser::ast::AstNode;
 use wrela::parser::parse;
 use wrela::presentation_contract::{
     CanonicalCameraInput, CanonicalLightInput, CanonicalRayBudget, CanonicalViewportInput,
-    PresentationLightingInputs,
+    PresentationLightingInputs, QualityDegradationStep, RealtimeQualityContract,
+    RealtimeQualityTier,
 };
 use wrela::presentation_exec::{
-    PresentationExecutionInput, execute_plan, frame_state_value, frame_state_value_with_history,
-    scene_domain_value,
+    AdaptivePresentationController, AdaptivePresentationSession, PresentationExecutionInput,
+    execute_plan, frame_state_value, frame_state_value_with_history, scene_domain_value,
 };
 use wrela::presentation_plan::{PresentationPassKind, PresentationPlan};
 use wrela::query_exec::{QueryExecContext, stable_region_scene_capture_id};
@@ -161,6 +162,7 @@ fn presentation_fixture(
             hit_epsilon: 0.0005,
             max_steps: 128,
         },
+        quality_override: None,
         backend,
     };
     (plan, ctx, input)
@@ -226,6 +228,7 @@ fn presentation_fixture_with_state(
             hit_epsilon: 0.0005,
             max_steps: 128,
         },
+        quality_override: None,
         backend,
     };
     (plan, ctx, input)
@@ -707,9 +710,18 @@ fn slow_camera_motion_reuses_history_and_wgsl_matches_cpu_temporal_resolve() {
         execute_plan(&cpu_ctx2, &cpu_plan2, &cpu_input2).expect("cpu fallback current frame");
 
     let frame0_color = cpu_frame0.attachments.decode_attachment("color").unwrap();
-    let motion = cpu_with_history.attachments.decode_attachment("motion").unwrap();
-    let with_history_color = cpu_with_history.attachments.decode_attachment("color").unwrap();
-    let without_history_color = cpu_without_history.attachments.decode_attachment("color").unwrap();
+    let motion = cpu_with_history
+        .attachments
+        .decode_attachment("motion")
+        .unwrap();
+    let with_history_color = cpu_with_history
+        .attachments
+        .decode_attachment("color")
+        .unwrap();
+    let without_history_color = cpu_without_history
+        .attachments
+        .decode_attachment("color")
+        .unwrap();
     let with_history_delta = mean_color_delta(&frame0_color, &with_history_color);
     let without_history_delta = mean_color_delta(&frame0_color, &without_history_color);
     assert!(
@@ -751,7 +763,10 @@ fn slow_camera_motion_reuses_history_and_wgsl_matches_cpu_temporal_resolve() {
         execute_plan(&wgsl_ctx1, &wgsl_plan1, &wgsl_input1).expect("wgsl temporal reuse");
     assert_attachment_vec3_approx_eq(
         &with_history_color,
-        &wgsl_with_history.attachments.decode_attachment("color").unwrap(),
+        &wgsl_with_history
+            .attachments
+            .decode_attachment("color")
+            .unwrap(),
         1.0e-2,
         "temporal color",
     );
@@ -804,7 +819,10 @@ fn motion_resolve_marks_newly_visible_pixels_as_disoccluded() {
     let frame1 = execute_plan(&ctx1, &plan1, &input1).expect("reprojected frame");
     let motion = frame1.attachments.decode_attachment("motion").unwrap();
     let valid_count = motion.iter().filter(|value| motion_valid(value)).count();
-    let disoccluded_count = motion.iter().filter(|value| motion_disoccluded(value)).count();
+    let disoccluded_count = motion
+        .iter()
+        .filter(|value| motion_disoccluded(value))
+        .count();
 
     assert!(
         disoccluded_count > 0,
@@ -877,7 +895,10 @@ fn camera_cut_invalidates_history_and_falls_back_to_current_color() {
 
     assert_eq!(
         with_history.attachments.decode_attachment("color").unwrap(),
-        without_history.attachments.decode_attachment("color").unwrap()
+        without_history
+            .attachments
+            .decode_attachment("color")
+            .unwrap()
     );
     assert!(with_history.metrics.continuation_rejected_count > 0);
     assert_eq!(with_history.metrics.continuation_consumed_count, 0);
@@ -902,6 +923,246 @@ fn participants_resolve_can_be_disabled_when_frame_contract_does_not_request_it(
     assert!(result.attachments.attachment("radiance").is_none());
     assert!(result.attachments.attachment("medium").is_none());
     assert!(result.attachments.attachment("color").is_some());
+}
+
+#[test]
+fn quality_override_enables_hit_compaction_and_half_res_participants_with_cpu_wgsl_parity() {
+    let (cpu_plan, cpu_ctx, mut cpu_input) = presentation_fixture(DispatchBackend::Cpu);
+    let (wgsl_plan, wgsl_ctx, mut wgsl_input) = presentation_fixture(DispatchBackend::Wgsl);
+    let mut quality = cpu_plan.frame.quality.initial_state();
+    quality.hit_compaction_enabled = true;
+    quality.half_res_participants = true;
+    quality.active_degradations = vec![
+        QualityDegradationStep::EnableHitCompaction,
+        QualityDegradationStep::HalfResolutionParticipants,
+    ];
+
+    cpu_input.quality_override = Some(quality.clone());
+    wgsl_input.quality_override = Some(quality);
+
+    let cpu = execute_plan(&cpu_ctx, &cpu_plan, &cpu_input).expect("cpu quality override");
+    let wgsl = execute_plan(&wgsl_ctx, &wgsl_plan, &wgsl_input).expect("wgsl quality override");
+
+    let cpu_color = cpu
+        .attachments
+        .decode_attachment("color")
+        .expect("cpu color attachment");
+    let wgsl_color = wgsl
+        .attachments
+        .decode_attachment("color")
+        .expect("wgsl color attachment");
+    assert_attachment_vec3_approx_eq(&cpu_color, &wgsl_color, 0.05, "quality color parity");
+
+    let cpu_radiance = cpu
+        .attachments
+        .attachment("radiance")
+        .expect("cpu radiance");
+    let cpu_medium = cpu.attachments.attachment("medium").expect("cpu medium");
+    assert_eq!(cpu_radiance.layout.width, 2);
+    assert_eq!(cpu_radiance.layout.height, 2);
+    assert_eq!(cpu_medium.layout.width, 2);
+    assert_eq!(cpu_medium.layout.height, 2);
+
+    assert!(cpu.frame_cost.quality.hit_compaction_enabled);
+    assert!(cpu.frame_cost.quality.half_res_participants);
+    assert_eq!(cpu.frame_cost.surface_resolve_count, cpu.metrics.hit_count);
+    assert_eq!(cpu.frame_cost.participant_resolve_count, 8);
+    assert!(
+        cpu.frame_cost
+            .active_acceleration_artifacts
+            .iter()
+            .any(|artifact| artifact == "hit_compaction")
+    );
+    assert!(
+        cpu.frame_cost
+            .active_acceleration_artifacts
+            .iter()
+            .any(|artifact| artifact == "half_res_participants")
+    );
+    assert_eq!(cpu.frame_cost.quality, wgsl.frame_cost.quality);
+}
+
+#[test]
+fn quality_override_reduces_primary_work_and_scales_surface_attachment() {
+    let (cpu_plan, cpu_ctx, mut cpu_input) = presentation_fixture(DispatchBackend::Cpu);
+    let (wgsl_plan, wgsl_ctx, mut wgsl_input) = presentation_fixture(DispatchBackend::Wgsl);
+    let mut quality = cpu_plan.frame.quality.initial_state();
+    quality.internal_resolution_scale = 0.5;
+    quality.active_degradations = vec![QualityDegradationStep::ReduceInternalResolution];
+
+    cpu_input.quality_override = Some(quality.clone());
+    wgsl_input.quality_override = Some(quality);
+
+    let cpu = execute_plan(&cpu_ctx, &cpu_plan, &cpu_input).expect("cpu dynamic resolution");
+    let wgsl = execute_plan(&wgsl_ctx, &wgsl_plan, &wgsl_input).expect("wgsl dynamic resolution");
+
+    let cpu_color = cpu
+        .attachments
+        .decode_attachment("color")
+        .expect("cpu color attachment");
+    let wgsl_color = wgsl
+        .attachments
+        .decode_attachment("color")
+        .expect("wgsl color attachment");
+    assert_attachment_vec3_approx_eq(&cpu_color, &wgsl_color, 0.05, "dynamic resolution parity");
+
+    let cpu_surface = cpu.attachments.attachment("surface").expect("cpu surface");
+    let cpu_radiance = cpu
+        .attachments
+        .attachment("radiance")
+        .expect("cpu radiance");
+    let cpu_medium = cpu.attachments.attachment("medium").expect("cpu medium");
+    assert_eq!(cpu_surface.layout.width, 2);
+    assert_eq!(cpu_surface.layout.height, 2);
+    assert_eq!(cpu_radiance.layout.width, 2);
+    assert_eq!(cpu_radiance.layout.height, 2);
+    assert_eq!(cpu_medium.layout.width, 2);
+    assert_eq!(cpu_medium.layout.height, 2);
+    assert_eq!(cpu.attachments.attachment("color").unwrap().layout.width, 4);
+    assert!(cpu.frame_cost.quality.reconstructed_output);
+    assert_eq!(cpu.frame_cost.quality.internal_width, 2);
+    assert_eq!(cpu.frame_cost.quality.internal_height, 2);
+    assert!(
+        cpu.frame_cost
+            .active_acceleration_artifacts
+            .iter()
+            .any(|artifact| artifact == "dynamic_resolution")
+    );
+    assert!(
+        cpu.frame_cost
+            .passes
+            .iter()
+            .any(|pass| { pass.pass_kind == "primary_visibility" && pass.work_items == 4 }),
+        "expected internal-resolution primary visibility work items, got {:?}",
+        cpu.frame_cost.passes
+    );
+    assert!(
+        cpu.frame_cost
+            .passes
+            .iter()
+            .any(|pass| pass.pass_kind == "surface_resolve" && pass.work_items == 4)
+    );
+}
+
+#[test]
+fn quarter_scale_reports_divisor_aligned_internal_dimensions_for_odd_viewports() {
+    let (plan, ctx, mut input) = presentation_fixture(DispatchBackend::Cpu);
+    let camera = CanonicalCameraInput {
+        position: [0.0, 0.0, 2.0],
+        forward: [0.0, 0.0, -1.0],
+        up: [0.0, 1.0, 0.0],
+        vertical_fov_degrees: 75.0,
+    };
+    let viewport = CanonicalViewportInput {
+        width: 5,
+        height: 5,
+    };
+    input.frame_state = frame_state_value(camera, camera, viewport, [0.0, 0.0], 0, 1.0 / 60.0);
+    let mut quality = plan.frame.quality.initial_state();
+    quality.internal_resolution_scale = 0.25;
+    quality.active_degradations = vec![QualityDegradationStep::ReduceInternalResolution];
+    input.quality_override = Some(quality);
+
+    let result = execute_plan(&ctx, &plan, &input).expect("cpu odd viewport quarter scale");
+
+    assert_eq!(result.frame_cost.quality.internal_width, 2);
+    assert_eq!(result.frame_cost.quality.internal_height, 2);
+    assert!(result.frame_cost.quality.reconstructed_output);
+    let surface = result
+        .attachments
+        .attachment("surface")
+        .expect("surface attachment");
+    assert_eq!(surface.layout.width, 2);
+    assert_eq!(surface.layout.height, 2);
+}
+
+#[test]
+fn frame_cost_reports_tile_culling_when_support_bounds_shrink_screen_work() {
+    let viewport = CanonicalViewportInput {
+        width: 32,
+        height: 16,
+    };
+    let camera = CanonicalCameraInput {
+        position: [0.0, 0.0, 4.0],
+        forward: [0.0, 0.0, -1.0],
+        up: [0.0, 1.0, 0.0],
+        vertical_fov_degrees: 75.0,
+    };
+    let (plan, ctx, input) = presentation_fixture_with_state(
+        presentation_exec_source(),
+        "exec_view",
+        "exec_region",
+        DispatchBackend::Cpu,
+        viewport,
+        camera,
+        camera,
+        0,
+        0,
+        false,
+        None,
+    );
+
+    let result = execute_plan(&ctx, &plan, &input).expect("cpu culling execution");
+    assert!(result.frame_cost.tile_cull_total_tiles > 0);
+    assert!(result.frame_cost.tile_cull_active_tiles > 0);
+    assert!(result.frame_cost.tile_cull_active_tiles < result.frame_cost.tile_cull_total_tiles);
+    assert!(
+        result
+            .frame_cost
+            .active_acceleration_artifacts
+            .iter()
+            .any(|artifact| artifact == "view_tile_culling")
+    );
+}
+
+#[test]
+fn adaptive_controller_steps_down_and_recovers_deterministically() {
+    let contract = RealtimeQualityContract::named(RealtimeQualityTier::Realtime60);
+    let mut controller = AdaptivePresentationController::new(contract).with_window(1);
+
+    assert!(controller.observe_frame_time_ms(19.0));
+    assert!(controller.quality().internal_resolution_scale < 1.0);
+    assert_eq!(
+        controller.quality().active_degradations,
+        vec![QualityDegradationStep::ReduceInternalResolution]
+    );
+
+    assert!(!controller.observe_frame_time_ms(10.0));
+    assert!(!controller.observe_frame_time_ms(10.0));
+    assert!(controller.observe_frame_time_ms(10.0));
+    assert_eq!(controller.quality().internal_resolution_scale, 1.0);
+    assert!(controller.quality().active_degradations.is_empty());
+}
+
+#[test]
+fn adaptive_session_uses_frame_cost_feedback_to_degrade_next_frame() {
+    let (mut plan, ctx, input) = presentation_fixture(DispatchBackend::Cpu);
+    let mut contract = RealtimeQualityContract::named(RealtimeQualityTier::Realtime60);
+    contract.target_fps = 100_000;
+    plan.frame.quality = contract.clone();
+
+    let mut session = AdaptivePresentationSession::new(contract).with_window(1);
+    let frame0 = session
+        .execute_frame(&ctx, &plan, &input)
+        .expect("adaptive session frame0");
+    assert_eq!(frame0.frame_cost.quality.internal_resolution_scale, 1.0);
+
+    let frame1 = session
+        .execute_frame(&ctx, &plan, &input)
+        .expect("adaptive session frame1");
+    assert!(session.controller().quality().internal_resolution_scale < 1.0);
+    assert!(frame1.frame_cost.quality.internal_resolution_scale < 1.0);
+}
+
+#[test]
+fn adaptive_controller_only_uses_degradations_allowed_by_contract() {
+    let contract = RealtimeQualityContract::named(RealtimeQualityTier::Debug);
+    let mut controller = AdaptivePresentationController::new(contract.clone()).with_window(1);
+
+    assert!(controller.observe_frame_time_ms(50.0));
+    assert!(!controller.quality().hit_compaction_enabled);
+    assert!(!controller.quality().half_res_participants);
+    assert!(controller.quality().primary_max_steps < contract.primary_max_steps);
 }
 
 fn hit_flag(value: &KernelValue) -> bool {

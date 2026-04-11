@@ -17,10 +17,41 @@ measure_pairs = 18
 coverage = "all"
 
 [[scenarios]]
-id = "presentation_cpu_wgsl_screen_batch_parity"
-test_name = "tests/realtime_presentation::test_realtime_presentation_cpu_wgsl_screen_batch_parity_ops_256"
+id = "presentation_dense_constructive_geometry"
+test_name = "tests/realtime_presentation::test_realtime_presentation_dense_constructive_geometry_ops_256"
 ops = 256
 class = "critical"
-min_runtime_ms = 200
+min_runtime_ms = 250
 timeout_ms = 180000
 allow_unstable = false
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_dense_constructive_view", region = "dense_constructive_region", domain = "dense_constructive_domain", width = 64, height = 64, frames = 4, camera_position = [0.0, 0.0, 3.4], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 46.0 }
+
+[[scenarios]]
+id = "presentation_repetition_heavy_scene"
+test_name = "tests/realtime_presentation::test_realtime_presentation_repetition_heavy_scene_ops_512"
+ops = 512
+class = "critical"
+min_runtime_ms = 500
+timeout_ms = 180000
+allow_unstable = false
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_repetition_view", region = "repetition_region", domain = "repetition_domain", width = 64, height = 64, frames = 4, camera_position = [0.0, 0.0, 3.0], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 48.0 }
+
+[[scenarios]]
+id = "presentation_thin_stack_alias_prone"
+test_name = "tests/realtime_presentation::test_realtime_presentation_thin_stack_alias_prone_ops_384"
+ops = 384
+class = "critical"
+min_runtime_ms = 300
+timeout_ms = 180000
+allow_unstable = false
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_thin_stack_view", region = "thin_stack_region", domain = "thin_stack_domain", width = 64, height = 64, frames = 4, camera_position = [0.0, 0.0, 2.8], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 44.0 }
+
+[[scenarios]]
+id = "presentation_media_radiance_scene"
+test_name = "tests/realtime_presentation::test_realtime_presentation_media_radiance_scene_ops_256"
+ops = 256
+class = "critical"
+min_runtime_ms = 300
+timeout_ms = 180000
+allow_unstable = false
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_media_radiance_view", region = "media_region", domain = "media_domain", width = 64, height = 64, frames = 4, camera_position = [0.0, 0.0, 3.2], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 48.0 }

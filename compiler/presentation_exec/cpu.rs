@@ -1,15 +1,19 @@
 use crate::kernel::{KernelValue, lower_batch_query_plan};
+use crate::presentation_contract::RealtimeRadianceMode;
 use crate::presentation_exec::resources::AttachmentResourceSet;
 use crate::presentation_exec::temporal::{
     motion_resolve, temporal_resolve_cpu, update_query_trace_continuation,
 };
 use crate::presentation_exec::{
-    PresentationExecError, PresentationExecutionInput, PresentationExecutionResult,
-    allocate_execution_attachments, build_temporal_history, execute_batch_contract, expect_array,
-    expect_f32, expect_struct, expect_vec3, field, frame_state_components,
-    generate_screen_samples, hit_world_normal,
-    materialize_primary_visibility_attachments, point_direction_query_value, point_query_value,
-    presentation_metrics, screen_sample_ray,
+    PassRuntimeStats, PresentationExecError, PresentationExecutionInput,
+    PresentationExecutionResult, TileCullingStats, adjusted_ray_budget,
+    allocate_execution_attachments, attachment_hit_work_items, build_frame_cost_report,
+    build_temporal_history, effective_plan_for_quality, encode_values_at_indices,
+    execute_batch_contract, expand_internal_hits, expect_array, expect_f32, expect_struct,
+    expect_vec3, field, frame_state_components, full_attachment_byte_size, generate_screen_samples,
+    hit_world_normal, internal_resolution_viewport, materialize_primary_visibility_attachments,
+    participant_query_work_items, presentation_metrics, primary_hit_miss_value,
+    resolved_quality_state, screen_sample_ray, shade_lookup_value, tile_culling_mask,
 };
 use crate::presentation_plan::{
     CompositeColorPassContract, ParticipantsResolvePassContract, PresentationPassKind,
@@ -18,6 +22,7 @@ use crate::presentation_plan::{
 use crate::query_exec::cpu::{default_medium, default_surface};
 use crate::query_exec::{QueryExecContext, execute_batch_query_with_trace_on};
 use crate::query_plan::{BatchQueryPlan, DispatchBackend};
+use std::time::Instant;
 
 pub(super) fn execute_plan(
     ctx: &QueryExecContext,
@@ -25,26 +30,70 @@ pub(super) fn execute_plan(
     input: &PresentationExecutionInput,
 ) -> Result<PresentationExecutionResult, PresentationExecError> {
     let (camera, viewport, jitter_pixels) = frame_state_components(&input.frame_state)?;
+    let quality = resolved_quality_state(plan, input);
+    let effective_plan = effective_plan_for_quality(plan, &quality);
+    let ray_budget = adjusted_ray_budget(input.ray_budget, &quality);
     let screen_samples = generate_screen_samples(
-        plan,
+        &effective_plan,
         input,
         camera,
         viewport,
         jitter_pixels,
-        input.ray_budget,
+        ray_budget,
     );
-    let mut attachments =
-        allocate_execution_attachments(&plan.frame, viewport.width, viewport.height, input.history.as_ref())?;
+    let primary_viewport = internal_resolution_viewport(viewport, &quality);
+    let primary_screen_samples = if primary_viewport == viewport {
+        screen_samples.clone()
+    } else {
+        generate_screen_samples(
+            &effective_plan,
+            input,
+            camera,
+            primary_viewport,
+            jitter_pixels,
+            ray_budget,
+        )
+    };
+    let mut attachments = allocate_execution_attachments(
+        &effective_plan.frame,
+        viewport.width,
+        viewport.height,
+        input.history.as_ref(),
+    )?;
     let mut primary_hits = None;
     let mut primary_trace = None;
     let mut primary_solver_summary = None;
     let mut continuation_counts = crate::presentation_exec::temporal::ContinuationCounts::default();
+    let mut tile_cull = TileCullingStats::default();
+    let mut surface_resolve_count = 0;
+    let mut participant_resolve_count = 0;
+    let mut pass_stats = Vec::new();
 
-    for pass in &plan.passes {
+    for pass in &effective_plan.passes {
         match &pass.kind {
             PresentationPassKind::GenerateScreenSamples { .. } => {}
             PresentationPassKind::PrimaryVisibility { contract } => {
-                let rays = screen_samples
+                let pass_start = Instant::now();
+                let mut runtime = PassRuntimeStats {
+                    pass_id: pass.id.to_string(),
+                    pass_kind: "primary_visibility".to_string(),
+                    work_items: primary_screen_samples.len() as u32,
+                    attachment_bytes_written: full_attachment_byte_size(
+                        &attachments,
+                        contract.primary_hit_attachment.as_str(),
+                    ) + contract
+                        .depth_attachment
+                        .as_ref()
+                        .map(|name| full_attachment_byte_size(&attachments, name))
+                        .unwrap_or_default()
+                        + contract
+                            .world_normal_attachment
+                            .as_ref()
+                            .map(|name| full_attachment_byte_size(&attachments, name))
+                            .unwrap_or_default(),
+                    ..PassRuntimeStats::default()
+                };
+                let rays = primary_screen_samples
                     .iter()
                     .map(screen_sample_ray)
                     .collect::<Result<Vec<_>, _>>()?;
@@ -60,17 +109,76 @@ pub(super) fn execute_plan(
                         }
                     })?,
                 );
-                let (hits, query_trace) = execute_batch_query_with_trace_on(
+                let cull_mask = tile_culling_mask(
                     ctx,
-                    DispatchBackend::Cpu,
-                    &batch_plan,
-                    &[
-                        KernelValue::Capture(input.region_capture.clone()),
-                        input.frame_domain.clone(),
-                        KernelValue::Array(rays),
-                    ],
+                    input,
+                    camera,
+                    primary_viewport,
+                    effective_plan
+                        .view
+                        .compatibility_projection
+                        .legacy_path_active,
                 )?;
-                let hits = expect_array(&hits)?.to_vec();
+                let (hits, query_trace) = if let Some(mask) = cull_mask {
+                    tile_cull = mask.stats;
+                    if mask.active_samples.len() < primary_screen_samples.len() {
+                        runtime.work_items = mask.active_samples.len() as u32;
+                        runtime.notes.push(format!(
+                            "tile_cull active_tiles={}/{} skipped_samples={}",
+                            mask.stats.active_tiles,
+                            mask.stats.total_tiles,
+                            mask.stats.skipped_samples
+                        ));
+                    }
+                    let active_rays = mask
+                        .active_samples
+                        .iter()
+                        .map(|index| rays[*index].clone())
+                        .collect::<Vec<_>>();
+                    let (active_hits, mut query_trace) = execute_batch_query_with_trace_on(
+                        ctx,
+                        DispatchBackend::Cpu,
+                        &batch_plan,
+                        &[
+                            KernelValue::Capture(input.region_capture.clone()),
+                            input.frame_domain.clone(),
+                            KernelValue::Array(active_rays),
+                        ],
+                    )?;
+                    query_trace.observability.screen_sample_count = screen_samples.len() as u32;
+                    query_trace.observability.miss_count = query_trace
+                        .observability
+                        .miss_count
+                        .saturating_add(mask.stats.skipped_samples);
+                    let active_hits = expect_array(&active_hits)?.to_vec();
+                    let mut hits = vec![primary_hit_miss_value(); primary_screen_samples.len()];
+                    for (index, hit) in mask.active_samples.iter().zip(active_hits) {
+                        hits[*index] = hit;
+                    }
+                    (
+                        expand_internal_hits(&hits, viewport, primary_viewport),
+                        query_trace,
+                    )
+                } else {
+                    let (hits, query_trace) = execute_batch_query_with_trace_on(
+                        ctx,
+                        DispatchBackend::Cpu,
+                        &batch_plan,
+                        &[
+                            KernelValue::Capture(input.region_capture.clone()),
+                            input.frame_domain.clone(),
+                            KernelValue::Array(rays),
+                        ],
+                    )?;
+                    (
+                        expand_internal_hits(
+                            &expect_array(&hits)?.to_vec(),
+                            viewport,
+                            primary_viewport,
+                        ),
+                        query_trace,
+                    )
+                };
                 materialize_primary_visibility_attachments(&mut attachments, &hits, contract)?;
                 primary_solver_summary = batch_plan
                     .ray_solver
@@ -78,29 +186,73 @@ pub(super) fn execute_plan(
                     .map(|solver| solver.diagnostic_summary());
                 primary_trace = Some(query_trace);
                 primary_hits = Some(hits);
+                runtime.dispatch_count = 1;
+                runtime.elapsed_micros = pass_start.elapsed().as_micros();
+                pass_stats.push(runtime);
             }
             PresentationPassKind::SurfaceResolve { contract } => {
                 let hits = primary_hits.as_ref().ok_or_else(|| {
                     PresentationExecError::MissingPrimaryVisibilityPass {
-                        plan: plan.name.clone(),
+                        plan: effective_plan.name.clone(),
                     }
                 })?;
-                execute_surface_resolve(
+                let pass_start = Instant::now();
+                let mut runtime = PassRuntimeStats {
+                    pass_id: pass.id.to_string(),
+                    pass_kind: "surface_resolve".to_string(),
+                    attachment_bytes_read: full_attachment_byte_size(
+                        &attachments,
+                        contract.primary_hit_attachment.as_str(),
+                    ),
+                    attachment_bytes_written: full_attachment_byte_size(
+                        &attachments,
+                        contract.surface_attachment.as_str(),
+                    ),
+                    ..PassRuntimeStats::default()
+                };
+                let (count, notes) = execute_surface_resolve(
                     ctx,
                     input,
                     &mut attachments,
                     hits,
                     contract,
                     DispatchBackend::Cpu,
+                    quality.hit_compaction_enabled,
                 )?;
+                surface_resolve_count = count;
+                runtime.work_items = count;
+                runtime.dispatch_count = u32::from(count > 0);
+                runtime.notes = notes;
+                runtime.elapsed_micros = pass_start.elapsed().as_micros();
+                pass_stats.push(runtime);
             }
             PresentationPassKind::ParticipantsResolve { contract } => {
                 let hits = primary_hits.as_ref().ok_or_else(|| {
                     PresentationExecError::MissingPrimaryVisibilityPass {
-                        plan: plan.name.clone(),
+                        plan: effective_plan.name.clone(),
                     }
                 })?;
-                execute_participants_resolve(
+                let pass_start = Instant::now();
+                let mut runtime = PassRuntimeStats {
+                    pass_id: pass.id.to_string(),
+                    pass_kind: "participants_resolve".to_string(),
+                    attachment_bytes_read: full_attachment_byte_size(
+                        &attachments,
+                        contract.primary_hit_attachment.as_str(),
+                    ),
+                    attachment_bytes_written: contract
+                        .radiance_attachment
+                        .as_ref()
+                        .map(|name| full_attachment_byte_size(&attachments, name))
+                        .unwrap_or_default()
+                        + contract
+                            .medium_attachment
+                            .as_ref()
+                            .map(|name| full_attachment_byte_size(&attachments, name))
+                            .unwrap_or_default(),
+                    ..PassRuntimeStats::default()
+                };
+                let (radiance_count, medium_count, notes) = execute_participants_resolve(
                     ctx,
                     input,
                     &screen_samples,
@@ -108,9 +260,18 @@ pub(super) fn execute_plan(
                     hits,
                     contract,
                     DispatchBackend::Cpu,
+                    quality.radiance_mode,
                 )?;
+                participant_resolve_count = radiance_count + medium_count;
+                runtime.work_items = participant_resolve_count;
+                runtime.dispatch_count =
+                    u32::from(radiance_count > 0) + u32::from(medium_count > 0);
+                runtime.notes = notes;
+                runtime.elapsed_micros = pass_start.elapsed().as_micros();
+                pass_stats.push(runtime);
             }
             PresentationPassKind::ShadePrimary { contract } => {
+                let pass_start = Instant::now();
                 shade_primary_cpu(
                     &screen_samples,
                     &mut attachments,
@@ -118,28 +279,128 @@ pub(super) fn execute_plan(
                     camera.position,
                     contract,
                 )?;
+                pass_stats.push(PassRuntimeStats {
+                    pass_id: pass.id.to_string(),
+                    pass_kind: "shade_primary".to_string(),
+                    work_items: screen_samples.len() as u32,
+                    attachment_bytes_read: full_attachment_byte_size(
+                        &attachments,
+                        contract.primary_hit_attachment.as_str(),
+                    ) + full_attachment_byte_size(
+                        &attachments,
+                        contract.surface_attachment.as_str(),
+                    ) + contract
+                        .radiance_attachment
+                        .as_ref()
+                        .map(|name| full_attachment_byte_size(&attachments, name))
+                        .unwrap_or_default()
+                        + contract
+                            .medium_attachment
+                            .as_ref()
+                            .map(|name| full_attachment_byte_size(&attachments, name))
+                            .unwrap_or_default(),
+                    attachment_bytes_written: full_attachment_byte_size(
+                        &attachments,
+                        contract.output_attachment.as_str(),
+                    ),
+                    elapsed_micros: pass_start.elapsed().as_micros(),
+                    ..PassRuntimeStats::default()
+                });
             }
             PresentationPassKind::MotionResolve { contract } => {
                 let hits = primary_hits.as_ref().ok_or_else(|| {
                     PresentationExecError::MissingPrimaryVisibilityPass {
-                        plan: plan.name.clone(),
+                        plan: effective_plan.name.clone(),
                     }
                 })?;
+                let pass_start = Instant::now();
                 continuation_counts = motion_resolve(
-                    plan,
+                    &effective_plan,
                     input,
                     &mut attachments,
                     &screen_samples,
                     hits,
                     contract,
                 )?;
+                pass_stats.push(PassRuntimeStats {
+                    pass_id: pass.id.to_string(),
+                    pass_kind: "motion_resolve".to_string(),
+                    work_items: screen_samples.len() as u32,
+                    attachment_bytes_read: full_attachment_byte_size(
+                        &attachments,
+                        contract.primary_hit_attachment.as_str(),
+                    ),
+                    attachment_bytes_written: full_attachment_byte_size(
+                        &attachments,
+                        contract.output_attachment.as_str(),
+                    ) + contract
+                        .history_primary_hit_attachment
+                        .as_ref()
+                        .map(|name| full_attachment_byte_size(&attachments, name))
+                        .unwrap_or_default(),
+                    elapsed_micros: pass_start.elapsed().as_micros(),
+                    ..PassRuntimeStats::default()
+                });
             }
             PresentationPassKind::TemporalResolve { contract } => {
-                continuation_counts.consumed +=
-                    temporal_resolve_cpu(&mut attachments, viewport.width, viewport.height, contract)?;
+                let pass_start = Instant::now();
+                continuation_counts.consumed += temporal_resolve_cpu(
+                    &mut attachments,
+                    viewport.width,
+                    viewport.height,
+                    contract,
+                )?;
+                pass_stats.push(PassRuntimeStats {
+                    pass_id: pass.id.to_string(),
+                    pass_kind: "temporal_resolve".to_string(),
+                    work_items: screen_samples.len() as u32,
+                    attachment_bytes_read: full_attachment_byte_size(
+                        &attachments,
+                        contract.input_attachment.as_str(),
+                    ) + full_attachment_byte_size(
+                        &attachments,
+                        contract.history_color_attachment.as_str(),
+                    ) + full_attachment_byte_size(
+                        &attachments,
+                        contract.motion_attachment.as_str(),
+                    ) + contract
+                        .history_primary_hit_attachment
+                        .as_ref()
+                        .map(|name| full_attachment_byte_size(&attachments, name))
+                        .unwrap_or_default(),
+                    attachment_bytes_written: full_attachment_byte_size(
+                        &attachments,
+                        contract.output_attachment.as_str(),
+                    ) + full_attachment_byte_size(
+                        &attachments,
+                        contract.history_color_attachment.as_str(),
+                    ) + contract
+                        .history_primary_hit_attachment
+                        .as_ref()
+                        .map(|name| full_attachment_byte_size(&attachments, name))
+                        .unwrap_or_default(),
+                    elapsed_micros: pass_start.elapsed().as_micros(),
+                    ..PassRuntimeStats::default()
+                });
             }
             PresentationPassKind::CompositeColor { contract } => {
+                let pass_start = Instant::now();
                 composite_color_cpu(&mut attachments, contract)?;
+                pass_stats.push(PassRuntimeStats {
+                    pass_id: pass.id.to_string(),
+                    pass_kind: "composite_color".to_string(),
+                    work_items: screen_samples.len() as u32,
+                    attachment_bytes_read: full_attachment_byte_size(
+                        &attachments,
+                        contract.input_attachment.as_str(),
+                    ),
+                    attachment_bytes_written: full_attachment_byte_size(
+                        &attachments,
+                        contract.output_attachment.as_str(),
+                    ),
+                    elapsed_micros: pass_start.elapsed().as_micros(),
+                    ..PassRuntimeStats::default()
+                });
             }
             PresentationPassKind::ExportAttachment { .. } => {}
             other => {
@@ -152,15 +413,27 @@ pub(super) fn execute_plan(
 
     let primary_hits =
         primary_hits.ok_or_else(|| PresentationExecError::MissingPrimaryVisibilityPass {
-            plan: plan.name.clone(),
+            plan: effective_plan.name.clone(),
         })?;
     let mut primary_trace =
         primary_trace.ok_or_else(|| PresentationExecError::MissingPrimaryVisibilityPass {
-            plan: plan.name.clone(),
+            plan: effective_plan.name.clone(),
         })?;
     update_query_trace_continuation(&mut primary_trace, continuation_counts);
     let metrics = presentation_metrics(&primary_hits, &primary_trace, primary_solver_summary);
-    let history = build_temporal_history(plan, &input.frame_state, &attachments)?;
+    let history = build_temporal_history(&effective_plan, &input.frame_state, &attachments)?;
+    let frame_cost = build_frame_cost_report(
+        viewport.width,
+        viewport.height,
+        &quality,
+        &metrics,
+        tile_cull,
+        surface_resolve_count,
+        participant_resolve_count,
+        &attachments,
+        pass_stats,
+        Vec::new(),
+    );
     Ok(PresentationExecutionResult {
         plan_name: plan.name.clone(),
         backend: DispatchBackend::Cpu,
@@ -170,6 +443,7 @@ pub(super) fn execute_plan(
         attachments,
         history,
         metrics,
+        frame_cost,
         query_trace: primary_trace,
     })
 }
@@ -181,7 +455,84 @@ fn execute_surface_resolve(
     hits: &[KernelValue],
     contract: &SurfaceResolvePassContract,
     backend: DispatchBackend,
-) -> Result<(), PresentationExecError> {
+    compact_hits: bool,
+) -> Result<(u32, Vec<String>), PresentationExecError> {
+    let Some(_) = attachments.attachment(contract.surface_attachment.as_str()) else {
+        return Ok((0, Vec::new()));
+    };
+    let default_surface = default_surface();
+    let mut notes = Vec::new();
+    if contract.explicit_miss_default {
+        notes.push("explicit_miss_default".to_string());
+    }
+    let scaled_attachment = attachments
+        .attachment(contract.surface_attachment.as_str())
+        .is_some_and(|attachment| {
+            attachment.layout.width != attachments.width
+                || attachment.layout.height != attachments.height
+        });
+    let work_items = attachment_hit_work_items(
+        attachments,
+        contract.surface_attachment.as_str(),
+        hits,
+        compact_hits,
+    )?;
+    if compact_hits && work_items.len() < hits.len() {
+        notes.push(format!(
+            "hit_compaction {} of {} samples",
+            work_items.len(),
+            hits.len()
+        ));
+    }
+    if scaled_attachment {
+        notes.push(format!("scaled_attachment={}", contract.surface_attachment));
+    }
+    if compact_hits || scaled_attachment {
+        if work_items.is_empty() {
+            return Ok((0, notes));
+        }
+        let hit_indices = work_items
+            .iter()
+            .map(|(index, _)| *index)
+            .collect::<Vec<_>>();
+        let hit_values = work_items
+            .iter()
+            .map(|(_, hit)| hit.clone())
+            .collect::<Vec<_>>();
+        let (surfaces, _) = execute_batch_contract(
+            ctx,
+            backend,
+            contract.query_contract,
+            &[
+                KernelValue::Capture(input.region_capture.clone()),
+                input.frame_domain.clone(),
+                KernelValue::Array(hit_values),
+            ],
+        )?;
+        if compact_hits {
+            encode_values_at_indices(
+                attachments,
+                contract.surface_attachment.as_str(),
+                &hit_indices,
+                &surfaces,
+            )?;
+        } else {
+            let Some(surface_attachment) =
+                attachments.attachment_mut(contract.surface_attachment.as_str())
+            else {
+                return Ok((0, notes));
+            };
+            for ((index, hit), surface) in work_items.iter().zip(surfaces.iter()) {
+                if hit_flag(hit)? {
+                    surface_attachment.encode(*index, surface)?;
+                } else {
+                    surface_attachment.encode(*index, &default_surface)?;
+                }
+            }
+        }
+        return Ok((hit_indices.len() as u32, notes));
+    }
+
     let (surfaces, _) = execute_batch_contract(
         ctx,
         backend,
@@ -194,9 +545,8 @@ fn execute_surface_resolve(
     )?;
     let Some(surface_attachment) = attachments.attachment_mut(contract.surface_attachment.as_str())
     else {
-        return Ok(());
+        return Ok((0, notes));
     };
-    let default_surface = default_surface();
     for (index, (hit, surface)) in hits.iter().zip(surfaces.iter()).enumerate() {
         if hit_flag(hit)? {
             surface_attachment.encode(index, surface)?;
@@ -204,7 +554,7 @@ fn execute_surface_resolve(
             surface_attachment.encode(index, &default_surface)?;
         }
     }
-    Ok(())
+    Ok((hits.len() as u32, notes))
 }
 
 fn execute_participants_resolve(
@@ -215,74 +565,109 @@ fn execute_participants_resolve(
     hits: &[KernelValue],
     contract: &ParticipantsResolvePassContract,
     backend: DispatchBackend,
-) -> Result<(), PresentationExecError> {
-    let (point_queries, point_direction_queries) =
-        build_participant_query_items(input, screen_samples, hits, contract)?;
+    radiance_mode: RealtimeRadianceMode,
+) -> Result<(u32, u32, Vec<String>), PresentationExecError> {
+    let mut radiance_count = 0;
+    let mut medium_count = 0;
+    let mut notes = Vec::new();
+
     if let (Some(query_contract), Some(attachment_name)) = (
         contract.radiance_query_contract,
         contract.radiance_attachment.as_deref(),
     ) {
-        let (radiance, _) = execute_batch_contract(
-            ctx,
-            backend,
-            query_contract,
-            &[
-                KernelValue::Capture(input.region_capture.clone()),
-                input.frame_domain.clone(),
-                KernelValue::Array(point_direction_queries.clone()),
-            ],
+        let include_misses = radiance_mode == RealtimeRadianceMode::Full;
+        let radiance_items = participant_query_work_items(
+            input,
+            screen_samples,
+            hits,
+            attachments,
+            attachment_name,
+            contract.miss_sample_distance,
+            include_misses,
         )?;
-        encode_attachment_values(attachments, attachment_name, &radiance)?;
+        radiance_count = radiance_items.len() as u32;
+        if radiance_mode == RealtimeRadianceMode::Reduced {
+            notes.push(format!("radiance_mode=reduced items={radiance_count}"));
+        }
+        if attachments
+            .attachment(attachment_name)
+            .is_some_and(|attachment| {
+                attachment.layout.width != attachments.width
+                    || attachment.layout.height != attachments.height
+            })
+        {
+            notes.push(format!("scaled_attachment={attachment_name}"));
+        }
+        if !radiance_items.is_empty() {
+            let target_indices = radiance_items
+                .iter()
+                .map(|item| item.target_index)
+                .collect::<Vec<_>>();
+            let query_items = radiance_items
+                .iter()
+                .map(|item| item.point_direction_query.clone())
+                .collect::<Vec<_>>();
+            let (radiance, _) = execute_batch_contract(
+                ctx,
+                backend,
+                query_contract,
+                &[
+                    KernelValue::Capture(input.region_capture.clone()),
+                    input.frame_domain.clone(),
+                    KernelValue::Array(query_items),
+                ],
+            )?;
+            encode_values_at_indices(attachments, attachment_name, &target_indices, &radiance)?;
+        }
     }
+
     if let (Some(query_contract), Some(attachment_name)) = (
         contract.medium_query_contract,
         contract.medium_attachment.as_deref(),
     ) {
-        let (medium, _) = execute_batch_contract(
-            ctx,
-            backend,
-            query_contract,
-            &[
-                KernelValue::Capture(input.region_capture.clone()),
-                input.frame_domain.clone(),
-                KernelValue::Array(point_queries),
-            ],
+        let medium_items = participant_query_work_items(
+            input,
+            screen_samples,
+            hits,
+            attachments,
+            attachment_name,
+            contract.miss_sample_distance,
+            true,
         )?;
-        encode_attachment_values(attachments, attachment_name, &medium)?;
+        medium_count = medium_items.len() as u32;
+        if attachments
+            .attachment(attachment_name)
+            .is_some_and(|attachment| {
+                attachment.layout.width != attachments.width
+                    || attachment.layout.height != attachments.height
+            })
+        {
+            notes.push(format!("scaled_attachment={attachment_name}"));
+        }
+        if !medium_items.is_empty() {
+            let target_indices = medium_items
+                .iter()
+                .map(|item| item.target_index)
+                .collect::<Vec<_>>();
+            let query_items = medium_items
+                .iter()
+                .map(|item| item.point_query.clone())
+                .collect::<Vec<_>>();
+            let (medium, _) = execute_batch_contract(
+                ctx,
+                backend,
+                query_contract,
+                &[
+                    KernelValue::Capture(input.region_capture.clone()),
+                    input.frame_domain.clone(),
+                    KernelValue::Array(query_items),
+                ],
+            )?;
+            encode_values_at_indices(attachments, attachment_name, &target_indices, &medium)?;
+        }
     }
-    Ok(())
-}
 
-fn build_participant_query_items(
-    input: &PresentationExecutionInput,
-    screen_samples: &[KernelValue],
-    hits: &[KernelValue],
-    contract: &ParticipantsResolvePassContract,
-) -> Result<(Vec<KernelValue>, Vec<KernelValue>), PresentationExecError> {
-    let frame = expect_struct(&input.frame_state, "FrameState")?;
-    let view = expect_struct(field(frame, "view")?, "ViewState")?;
-    let camera = expect_struct(field(view, "camera")?, "Camera")?;
-    let camera_position = expect_vec3(field(camera, "position")?)?;
-    let mut point_queries = Vec::with_capacity(hits.len());
-    let mut point_direction_queries = Vec::with_capacity(hits.len());
-    for (sample, hit) in screen_samples.iter().zip(hits) {
-        let ray = expect_struct(
-            field(expect_struct(sample, "ScreenSampleQuery")?, "ray")?,
-            "RayQuery",
-        )?;
-        let ray_direction = expect_vec3(field(ray, "direction")?)?;
-        let point = if hit_flag(hit)? {
-            hit_position(hit)?
-        } else {
-            add3(
-                camera_position,
-                mul3(ray_direction, contract.miss_sample_distance),
-            )
-        };
-        point_queries.push(point_query_value(point));
-        point_direction_queries.push(point_direction_query_value(point, ray_direction));
-    }
-    Ok((point_queries, point_direction_queries))
+    Ok((radiance_count, medium_count, notes))
 }
 
 fn encode_attachment_values(
@@ -307,22 +692,8 @@ fn shade_primary_cpu(
     contract: &ShadePrimaryPassContract,
 ) -> Result<(), PresentationExecError> {
     let primary_hits = attachments.decode_attachment(contract.primary_hit_attachment.as_str())?;
-    let surfaces = attachments.decode_attachment(contract.surface_attachment.as_str())?;
-    let radiance = contract
-        .radiance_attachment
-        .as_ref()
-        .map(|name| attachments.decode_attachment(name))
-        .transpose()?;
-    let medium = contract
-        .medium_attachment
-        .as_ref()
-        .map(|name| attachments.decode_attachment(name))
-        .transpose()?;
+    let default_surface = default_surface();
     let default_medium = default_medium();
-    let Some(output_attachment) = attachments.attachment_mut(contract.output_attachment.as_str())
-    else {
-        return Ok(());
-    };
     for index in 0..primary_hits.len() {
         let sample =
             screen_samples
@@ -335,22 +706,39 @@ fn shade_primary_cpu(
             "RayQuery",
         )?;
         let ray_direction = expect_vec3(field(ray, "direction")?)?;
+        let default_radiance = KernelValue::Vec3([0.0, 0.0, 0.0]);
+        let radiance = contract
+            .radiance_attachment
+            .as_ref()
+            .map(|name| shade_lookup_value(attachments, name, index, &default_radiance))
+            .transpose()?
+            .unwrap_or(default_radiance);
+        let medium = contract
+            .medium_attachment
+            .as_ref()
+            .map(|name| shade_lookup_value(attachments, name, index, &default_medium))
+            .transpose()?
+            .unwrap_or_else(|| default_medium.clone());
+        let surface = shade_lookup_value(
+            attachments,
+            contract.surface_attachment.as_str(),
+            index,
+            &default_surface,
+        )?;
         let color = shade_compatibility_color(
             &primary_hits[index],
-            &surfaces[index],
-            radiance
-                .as_ref()
-                .and_then(|values| values.get(index))
-                .unwrap_or(&KernelValue::Vec3([0.0, 0.0, 0.0])),
-            medium
-                .as_ref()
-                .and_then(|values| values.get(index))
-                .unwrap_or(&default_medium),
+            &surface,
+            &radiance,
+            &medium,
             ray_direction,
             camera_position,
             lighting,
         )?;
-        output_attachment.encode(index, &KernelValue::Vec3(color))?;
+        if let Some(output_attachment) =
+            attachments.attachment_mut(contract.output_attachment.as_str())
+        {
+            output_attachment.encode(index, &KernelValue::Vec3(color))?;
+        }
     }
     Ok(())
 }

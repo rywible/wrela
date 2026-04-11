@@ -16,6 +16,14 @@ Run spec-lane checks from the project root:
 - `cargo run -p wrela -- check /Users/ryanwible/projects/wrela/language/spec`
 - `cargo run -p wrela -- test /Users/ryanwible/projects/wrela/language/spec --lane=spec`
 
+Inspect the canonical presentation surface from the sample project:
+
+- `cargo run -p wrela -- frame-contracts /Users/ryanwible/projects/wrela/language/view_basic`
+- `cargo run -p wrela -- preview /Users/ryanwible/projects/wrela/language/view_basic --view main_view`
+- `cargo run -p wrela -- frame /Users/ryanwible/projects/wrela/language/view_basic --view main_view --attachment depth --attachment-format=ppm`
+- `cargo run -p wrela -- presentation-debug /Users/ryanwible/projects/wrela/language/view_basic --view main_view --frames 2 --json`
+- `cargo run -p wrela -- preview /Users/ryanwible/projects/wrela/language/view_basic --view main_view --query-backend=wgsl --json-report --json`
+
 Current executable coverage includes:
 
 - literals/strings/interpolation/escapes
@@ -28,6 +36,8 @@ Current executable coverage includes:
 - Result workflows (`error`, `??`, `ignore result`, `capture`)
 - `require ... else`
 - family query calls (`spatial.distance`, `spatial.normal`, `spatial.nearest`, `surface.sample`, `participants.radiance`, `participants.medium`, `support.summary`) over capture, world, and batch surfaces
+- canonical `view` declarations with typed `viewport`, `realtime_quality`, `key_light`, `frame_outputs`, and `temporal_history` helpers
+- presentation inspection through `frame-contracts`, `preview`, `frame`, and pass-level `presentation-debug`
 
 ## New Question Checklist
 

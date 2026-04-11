@@ -10,7 +10,8 @@ use wrela::portable::{
 };
 use wrela::presentation_contract::{
     AttachmentClearPolicy, AttachmentLifetime, FrameAttachmentContract, FrameContract,
-    LightingContract, PresentationObservabilityProfile,
+    LightingContract, PresentationObservabilityProfile, RealtimeQualityContract,
+    RealtimeQualityTier,
 };
 use wrela::presentation_exec::{
     allocate_frame_attachment_resources, allocate_frame_attachment_resources_with_history,
@@ -18,6 +19,10 @@ use wrela::presentation_exec::{
 };
 use wrela::query_plan;
 use wrela::scene_ir;
+
+fn test_quality_contract() -> RealtimeQualityContract {
+    RealtimeQualityContract::named(RealtimeQualityTier::Realtime60)
+}
 
 #[test]
 fn portable_abi_matches_wgsl_layout_rules_for_scalars_and_matrices() {
@@ -320,6 +325,7 @@ fn presentation_attachment_layouts_use_portable_row_major_storage() {
         ],
         primary_hit: None,
         temporal: None,
+        quality: test_quality_contract(),
         lighting: LightingContract::legacy_preview(false),
         observability: PresentationObservabilityProfile::preview_compatibility(),
     };
@@ -353,6 +359,7 @@ fn presentation_attachment_resources_allocate_dense_buffers_for_all_declared_out
         ],
         primary_hit: None,
         temporal: None,
+        quality: test_quality_contract(),
         lighting: LightingContract::legacy_preview(false),
         observability: PresentationObservabilityProfile::preview_compatibility(),
     };
@@ -392,6 +399,7 @@ fn presentation_attachment_layouts_apply_resolution_scale_to_physical_dimensions
         outputs: vec![half_depth.clone()],
         primary_hit: None,
         temporal: None,
+        quality: test_quality_contract(),
         lighting: LightingContract::legacy_preview(false),
         observability: PresentationObservabilityProfile::preview_compatibility(),
     };
@@ -416,6 +424,7 @@ fn presentation_attachment_resources_seed_semantic_defaults_and_preserve_history
         }],
         primary_hit: None,
         temporal: None,
+        quality: test_quality_contract(),
         lighting: LightingContract::legacy_preview(false),
         observability: PresentationObservabilityProfile::preview_compatibility(),
     };
@@ -431,6 +440,7 @@ fn presentation_attachment_resources_seed_semantic_defaults_and_preserve_history
         outputs: vec![primary_hit.clone(), history_depth.clone()],
         primary_hit: None,
         temporal: None,
+        quality: test_quality_contract(),
         lighting: LightingContract::legacy_preview(false),
         observability: PresentationObservabilityProfile::preview_compatibility(),
     };

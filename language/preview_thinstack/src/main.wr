@@ -1,5 +1,3 @@
-use print_line from host/io
-
 field exact distance ground(p: Vec3) -> F32 {
     plane(normal=vec3(0.0, 1.0, 0.0), offset=1.0)
 }
@@ -213,32 +211,22 @@ domain scene_domain(world: RegionCapture) {
     max_steps = 88
 }
 
-render render_ppm(
+view main_view(
     world: RegionCapture,
     camera: Camera
 ) {
     domain = scene_domain(world = world)
-    light = Light(
-        position=vec3(-1.8, 3.0, 2.8),
-        direction=normalize(vec3(-0.9, -0.85, -0.8)),
-        intensity=vec3(1.0, 0.98, 0.96),
-        range=18.0
+    viewport = viewport(width = 40, height = 40)
+    quality = realtime_quality(target_fps = 60)
+    lighting = key_light(
+        light = Light(
+            position=vec3(-1.8, 3.0, 2.8),
+            direction=normalize(vec3(-0.9, -0.85, -0.8)),
+            intensity=vec3(1.0, 0.98, 0.96),
+            range=18.0
+        ),
+        fill_direction = normalize(vec3(-0.5, 0.42, 0.25))
     )
-    width = 40
-    height = 40
-    world_up = camera.up
-    view_scale = 0.74
-    fill_dir = normalize(vec3(-0.5, 0.42, 0.25))
-}
-
-fn run() -> Integer {
-    camera = Camera(
-        position=vec3(-0.15, 0.55, 4.4),
-        forward=normalize(vec3(0.10, -0.10, -1.0)),
-        up=vec3(0.0, 1.0, 0.0),
-        vertical_fov_degrees=46.0
-    )
-    world = capture scene_region
-    print_line(text=render_ppm(world=world, camera=camera))
-    return 0
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
 }

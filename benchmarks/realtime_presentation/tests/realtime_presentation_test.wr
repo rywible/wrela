@@ -1,26 +1,204 @@
-fn update_checksum(current: Integer, value: Integer) -> Integer {
+fn update_scene_checksum(current: Integer, value: Integer) -> Integer {
     return ((current * 41) + value) % 2147483647
 }
 
-field exact distance screen_batch_sphere(p: Vec3) -> F32 {
-    sphere(radius = 0.82)
+field conservative distance dense_constructive_shell(p: Vec3) -> F32 {
+    loft = f32(0.92) {
+        from rounded_rect2(half = vec2(0.34, 0.22), radius = 0.10)
+        to rounded_rect2(half = vec2(0.48, 0.30), radius = 0.12)
+    }
 }
 
-material screen_batch_surface(hit: Hit3) -> Surface {
+field conservative distance dense_constructive_bridge(p: Vec3) -> F32 {
+    bend = vec3(0.0, 0.18, 0.0) {
+        sweep = vec3(0.68, 0.0, 0.0) {
+            circle2(radius = 0.06)
+        }
+    }
+}
+
+field conservative distance dense_constructive_cap(p: Vec3) -> F32 {
+    displace = vec3(0.02, 0.0, 0.0) {
+        extrude = f32(0.20) {
+            rounded_rect2(half = vec2(0.22, 0.12), radius = 0.05)
+        }
+    }
+}
+
+field conservative distance dense_constructive_field(p: Vec3) -> F32 {
+    union {
+        provenance_policy = nearest
+        use dense_constructive_shell
+        use dense_constructive_bridge
+        use dense_constructive_cap
+    }
+}
+
+field conservative distance repetition_cell(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.0, 0.0) {
+        extrude = f32(0.16) {
+            rounded_rect2(half = vec2(0.12, 0.06), radius = 0.02)
+        }
+    }
+}
+
+field conservative distance repetition_row(p: Vec3) -> F32 {
+    repeat_linear = vec3(0.78, 0.0, 0.0) {
+        use repetition_cell
+    }
+}
+
+field conservative distance repetition_field(p: Vec3) -> F32 {
+    instance_array = Transform3(
+        matrix=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(1.08, 0.0, 0.0, 1.0)
+        ),
+        inverse=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(-1.08, 0.0, 0.0, 1.0)
+        )
+    ) {
+        repeat_linear = vec3(0.0, 0.62, 0.0) {
+            use repetition_row
+        }
+    }
+}
+
+field conservative distance thin_stack_plate(p: Vec3) -> F32 {
+    sweep = vec3(0.0, 0.90, 0.0) {
+        rect2(half = vec2(0.05, 0.14))
+    }
+}
+
+field conservative distance thin_stack_layer_a(p: Vec3) -> F32 {
+    translate = vec3(0.06, 0.00, 0.0) {
+        use thin_stack_plate
+    }
+}
+
+field conservative distance thin_stack_layer_b(p: Vec3) -> F32 {
+    translate = vec3(-0.04, 0.05, 0.0) {
+        use thin_stack_plate
+    }
+}
+
+field conservative distance thin_stack_edge(p: Vec3) -> F32 {
+    translate = vec3(0.0, -0.02, 0.0) {
+        extrude = f32(0.08) {
+            rounded_rect2(half = vec2(0.22, 0.09), radius = 0.02)
+        }
+    }
+}
+
+field conservative distance thin_stack_field(p: Vec3) -> F32 {
+    union {
+        provenance_policy = nearest
+        use thin_stack_layer_a
+        use thin_stack_layer_b
+        use thin_stack_edge
+    }
+}
+
+field exact distance media_core(p: Vec3) -> F32 {
+    sphere(radius = 0.72)
+}
+
+field conservative distance media_shell(p: Vec3) -> F32 {
+    translate = vec3(0.0, -0.16, 0.0) {
+        loft = f32(0.76) {
+            from rounded_rect2(half = vec2(0.16, 0.12), radius = 0.04)
+            to rounded_rect2(half = vec2(0.28, 0.20), radius = 0.06)
+        }
+    }
+}
+
+field conservative distance media_field(p: Vec3) -> F32 {
+    smooth_union {
+        smoothing = f32(0.10)
+        use media_core
+        use media_shell
+    }
+}
+
+material dense_constructive_surface(hit: Hit3) -> Surface {
+    contour = clamp(abs(hit.local_position.x) * 0.32 + abs(hit.local_normal.y) * 0.24, 0.0, 1.0)
     return Surface(
-        albedo=vec3(0.42, 0.56, 0.74),
-        roughness=0.45,
-        metalness=0.0,
-        clearcoat=0.0,
-        clearcoat_roughness=0.0,
-        sheen=0.0,
-        emissive=vec3(0.0, 0.0, 0.0) + hit.normal * 0.0
+        albedo=vec3(148.0, 104.0, 184.0) + vec3(18.0, 16.0, 20.0) * contour,
+        roughness=0.16 + contour * 0.20,
+        metalness=0.08 + abs(hit.local_normal.x) * 0.10,
+        clearcoat=0.14 + abs(hit.local_normal.z) * 0.12,
+        clearcoat_roughness=0.08 + abs(hit.local_position.y) * 0.10,
+        sheen=0.10 + contour * 0.08,
+        emissive=vec3(0.0, 0.0, 0.0)
     )
 }
 
-shape screen_batch_sphere_shape {
-    field = screen_batch_sphere
-    material = screen_batch_surface
+material repetition_surface(hit: Hit3) -> Surface {
+    rib = clamp(abs(hit.local_position.x) * 0.28 + abs(hit.local_position.y) * 0.22, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(104.0, 156.0, 132.0) + vec3(14.0, 12.0, 16.0) * rib,
+        roughness=0.18 + rib * 0.16,
+        metalness=0.10 + abs(hit.local_normal.z) * 0.10,
+        clearcoat=0.10 + abs(hit.local_normal.y) * 0.12,
+        clearcoat_roughness=0.08 + abs(hit.local_position.x) * 0.08,
+        sheen=0.06 + abs(hit.local_normal.x) * 0.10,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+material thin_stack_surface(hit: Hit3) -> Surface {
+    edge = clamp(abs(hit.local_position.z) * 0.52 + abs(hit.local_normal.x) * 0.30, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(116.0, 142.0, 196.0) + vec3(16.0, 12.0, 18.0) * edge,
+        roughness=0.14 + edge * 0.18,
+        metalness=0.10 + edge * 0.12,
+        clearcoat=0.12 + abs(hit.local_normal.y) * 0.14,
+        clearcoat_roughness=0.08 + abs(hit.local_position.x) * 0.06,
+        sheen=0.08 + abs(hit.local_normal.z) * 0.12,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+material media_surface(hit: Hit3) -> Surface {
+    crest = clamp(0.48 + hit.local_position.y * 0.38 + abs(hit.local_normal.x) * 0.16, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(94.0, 118.0, 176.0) + vec3(12.0, 18.0, 24.0) * crest,
+        roughness=0.12 + abs(hit.local_position.z) * 0.10,
+        metalness=0.12 + crest * 0.10,
+        clearcoat=0.16 + crest * 0.16,
+        clearcoat_roughness=0.10 + (1.0 - crest) * 0.12,
+        sheen=0.08 + abs(hit.local_normal.y) * 0.14,
+        emissive=vec3(1.4, 1.8, 2.8) * clamp(hit.local_normal.y, 0.0, 1.0)
+    )
+}
+
+radiance field media_radiance(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
+    sky_t = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
+    halo = clamp(0.24 - abs(p.y + 0.08) * 0.12 - abs(p.x) * 0.05, 0.0, 0.24) / 0.24
+    return vec3(7.0, 10.0, 16.0) * (1.0 - sky_t)
+        + vec3(52.0, 78.0, 128.0) * sky_t
+        + vec3(5.0, 7.0, 9.0) * halo
+}
+
+volume field media_volume(p: Vec3, surface_distance: F32) -> Medium {
+    band = clamp((0.68 - abs(p.y)) * 0.78, 0.0, 0.68) / 0.68
+    near_surface = clamp((0.16 - abs(surface_distance)) * 5.5, 0.0, 1.0)
+    density = clamp(0.012 + band * 0.020 + near_surface * 0.016, 0.0, 0.09)
+    return Medium(
+        density=density,
+        emission=vec3(2.0, 2.8, 4.4) * density + vec3(0.0, 0.01, 0.02) * near_surface,
+        anisotropy=0.12
+    )
+}
+
+shape dense_constructive_shape {
+    field = dense_constructive_field
+    material = dense_constructive_surface
     payload = Payload(
         entity_id=u32(41),
         material_id=u32(41),
@@ -28,129 +206,445 @@ shape screen_batch_sphere_shape {
     )
 }
 
-region screen_batch_region() {
-    place primary = screen_batch_sphere_shape
+shape repetition_shape {
+    field = repetition_field
+    material = repetition_surface
+    payload = Payload(
+        entity_id=u32(42),
+        material_id=u32(42),
+        actor=ActorHandle(id=u32(42), generation=u32(0))
+    )
 }
 
-domain screen_batch_domain(world: RegionCapture) {
-    geometry_detail = 0
-    material = false
+shape thin_stack_shape {
+    field = thin_stack_field
+    material = thin_stack_surface
+    payload = Payload(
+        entity_id=u32(43),
+        material_id=u32(43),
+        actor=ActorHandle(id=u32(43), generation=u32(0))
+    )
+}
+
+shape media_shape {
+    field = media_field
+    material = media_surface
+    radiance = media_radiance
+    volume = media_volume
+    payload = Payload(
+        entity_id=u32(44),
+        material_id=u32(44),
+        actor=ActorHandle(id=u32(44), generation=u32(0))
+    )
+}
+
+region dense_constructive_region() {
+    place primary = dense_constructive_shape
+}
+
+region repetition_region() {
+    place primary = repetition_shape
+}
+
+region thin_stack_region() {
+    place primary = thin_stack_shape
+}
+
+region media_region() {
+    place primary = media_shape
+}
+
+domain dense_constructive_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
     radiance = false
     media = false
-    max_distance = 8.0
+    max_distance = 14.0
     min_step = 0.04
     hit_epsilon = 0.001
-    max_steps = 96
+    max_steps = 128
 }
 
-view render_screen_batch_view(
+domain repetition_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = false
+    media = false
+    max_distance = 12.0
+    min_step = 0.04
+    hit_epsilon = 0.001
+    max_steps = 128
+}
+
+domain thin_stack_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = false
+    media = false
+    max_distance = 10.0
+    min_step = 0.02
+    hit_epsilon = 0.0005
+    max_steps = 128
+}
+
+domain media_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = true
+    media = true
+    max_distance = 12.0
+    min_step = 0.04
+    hit_epsilon = 0.001
+    max_steps = 128
+}
+
+view show_dense_constructive_view(
     world: RegionCapture,
     camera: Camera
 ) {
-    domain = screen_batch_domain(world = world)
-    width = 16
-    height = 16
+    domain = dense_constructive_domain(world = world)
+    viewport = viewport(width = 6, height = 6)
+    quality = realtime_quality(target_fps = 60)
+    lighting = key_light(
+        light = Light(
+            position=vec3(-1.8, 3.0, 2.8),
+            direction=normalize(vec3(-0.9, -0.85, -0.8)),
+            intensity=vec3(1.0, 0.98, 0.96),
+            range=14.0
+        ),
+        fill_direction = normalize(vec3(-0.5, 0.42, 0.25))
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
 }
 
-fn test_realtime_presentation_cpu_wgsl_screen_batch_parity_ops_256() -> Nothing {
-    world = capture screen_batch_region
-    domain = screen_batch_domain(world = world)
+view show_repetition_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = repetition_domain(world = world)
+    viewport = viewport(width = 6, height = 6)
+    quality = realtime_quality(target_fps = 60)
+    lighting = key_light(
+        light = Light(
+            position=vec3(-1.2, 2.6, 2.4),
+            direction=normalize(vec3(-0.8, -0.75, -0.8)),
+            intensity=vec3(1.0, 0.96, 0.90),
+            range=12.0
+        ),
+        fill_direction = normalize(vec3(-0.4, 0.35, 0.18))
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
+}
 
+view show_thin_stack_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = thin_stack_domain(world = world)
+    viewport = viewport(width = 6, height = 6)
+    quality = realtime_quality(target_fps = 60)
+    lighting = key_light(
+        light = Light(
+            position=vec3(-1.4, 2.2, 2.6),
+            direction=normalize(vec3(-0.75, -0.72, -0.82)),
+            intensity=vec3(0.98, 0.96, 1.0),
+            range=10.0
+        ),
+        fill_direction = normalize(vec3(-0.42, 0.36, 0.2))
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
+}
+
+view show_media_radiance_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = media_domain(world = world)
+    viewport = viewport(width = 6, height = 6)
+    quality = realtime_quality(target_fps = 60)
+    lighting = key_light(
+        light = Light(
+            position=vec3(-1.6, 3.2, 3.1),
+            direction=normalize(vec3(-0.82, -0.80, -0.78)),
+            intensity=vec3(1.0, 0.98, 0.95),
+            range=12.0
+        ),
+        fill_direction = normalize(vec3(-0.46, 0.38, 0.22))
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
+}
+
+fn test_realtime_presentation_dense_constructive_geometry_ops_256() -> Nothing {
+    world = capture dense_constructive_region
+    domain = dense_constructive_domain(world = world)
     mutable rays = []
     mutable points = []
     for i in 1...257 {
-        px = (f32(i % 16) / 15.0 - 0.5) * 2.4
-        py = (f32((i / 16) % 16) / 15.0 - 0.5) * 2.0
-        ray_dir = normalize(vec3(-px * 0.04, -py * 0.04, -1.0))
+        px = f32(i % 16) / 15.0 - 0.5
+        py = f32((i / 16) % 16) / 15.0 - 0.5
+        origin = vec3(px * 1.4, py * 1.2, 3.4)
         __wr_list_push(
             rays,
             ray_query(
-                origin=vec3(px, py, 3.0),
-                direction=ray_dir,
-                max_distance=8.0,
+                origin=origin,
+                direction=normalize(vec3(-px * 0.10, -py * 0.10, -1.0)),
+                max_distance=14.0,
                 min_step=0.04,
                 hit_epsilon=0.001,
-                max_steps=96
+                max_steps=128
             )
         )
         __wr_list_push(
             points,
-            PointQuery(point=normalize(vec3(px * 0.4, py * 0.4, 1.0)) * 0.82)
+            PointQuery(point=origin + vec3(0.0, 0.0, -1.0))
         )
     }
 
-    cpu_hits = spatial.nearest_batch(
+    hits = spatial.nearest_batch(
         capture=world,
         domain=domain,
         rays=rays,
         backend=dispatch_backend_cpu()
     )
-    wgsl_hits = spatial.nearest_batch(
-        capture=world,
-        domain=domain,
-        rays=rays,
-        backend=dispatch_backend_wgsl()
-    )
-    cpu_normals = spatial.normal_batch(
+    normals = spatial.normal_batch(
         capture=world,
         domain=domain,
         points=points,
         backend=dispatch_backend_cpu()
-    )
-    wgsl_normals = spatial.normal_batch(
-        capture=world,
-        domain=domain,
-        points=points,
-        backend=dispatch_backend_wgsl()
     )
 
-    mutable cpu_hit_count = 0
-    mutable wgsl_hit_count = 0
-    mutable cpu_miss_count = 0
-    mutable wgsl_miss_count = 0
-    mutable cpu_step_signal = 0
-    mutable wgsl_step_signal = 0
-    mutable parity_checksum = 0
+    mutable checksum = 0
+    mutable hit_count = 0
+    mutable miss_count = 0
     for sample_i in 0...64 {
         sample_index = sample_i * 4
-        cpu_hit = cpu_hits[sample_index]
-        wgsl_hit = wgsl_hits[sample_index]
-        require cpu_hit.hit == wgsl_hit.hit else "cpu/wgsl nearest hit density parity"
-        if cpu_hit.hit {
-            cpu_hit_count += 1
-            require abs(cpu_hit.distance - wgsl_hit.distance) < 0.04 else "cpu/wgsl nearest distance parity"
+        hit = hits[sample_index]
+        normal = normals[sample_index].normal
+        if hit.hit {
+            hit_count += 1
         } else {
-            cpu_miss_count += 1
+            miss_count += 1
         }
-        if wgsl_hit.hit {
-            wgsl_hit_count += 1
-        } else {
-            wgsl_miss_count += 1
-        }
-        cpu_step_signal += cpu_hit.steps
-        wgsl_step_signal += wgsl_hit.steps
-
-        cpu_normal = cpu_normals[sample_index].normal
-        wgsl_normal = wgsl_normals[sample_index].normal
-        normal_delta = abs(cpu_normal.x - wgsl_normal.x)
-            + abs(cpu_normal.y - wgsl_normal.y)
-            + abs(cpu_normal.z - wgsl_normal.z)
-        require normal_delta < 0.05 else "cpu/wgsl normal batch parity"
-
-        parity_checksum = update_checksum(
-            current=parity_checksum,
-            value=cpu_hit.steps
-                + wgsl_hit.steps
-                + i32(abs(cpu_hit.distance - wgsl_hit.distance) * 1000.0)
-                + i32(normal_delta * 1000.0)
+        checksum = update_scene_checksum(
+            current=checksum,
+            value=i32(hit.steps)
+                + i32(abs(hit.distance) * 100.0)
+                + i32(abs(normal.x + normal.y + normal.z) * 100.0)
         )
     }
 
-    require cpu_hit_count > 0 else "cpu/wgsl benchmark has hits"
-    require cpu_miss_count > 0 else "cpu/wgsl benchmark has misses"
-    require cpu_hit_count == wgsl_hit_count else "cpu/wgsl hit count parity"
-    require cpu_miss_count == wgsl_miss_count else "cpu/wgsl miss count parity"
-    require cpu_step_signal > 0 else "cpu step signal nonzero"
-    require wgsl_step_signal > 0 else "wgsl step signal nonzero"
-    require parity_checksum != 0 else "cpu/wgsl parity checksum nonzero"
+    require hit_count > 0 else "dense constructive hits present"
+    require miss_count > 0 else "dense constructive misses present"
+    require checksum != 0 else "dense constructive checksum nonzero"
+}
+
+fn test_realtime_presentation_repetition_heavy_scene_ops_512() -> Nothing {
+    repeat_scene = capture repetition_region
+    repeat_scene_again = capture repetition_region
+    domain = repetition_domain(world = repeat_scene)
+    require repeat_scene.scene_id == repeat_scene_again.scene_id else "repeat scene_id stable"
+    require repeat_scene.root_feature_id == repeat_scene_again.root_feature_id else "repeat root_feature_id stable"
+
+    mutable rays = []
+    for i in 1...513 {
+        px = f32(i % 24) * 0.20 - 2.3
+        py = f32((i / 24) % 8) * 0.11 - 0.24
+        __wr_list_push(
+            rays,
+            ray_query(
+                origin=vec3(px, py, 2.8),
+                direction=vec3(0.0, 0.0, -1.0),
+                max_distance=12.0,
+                min_step=0.04,
+                hit_epsilon=0.001,
+                max_steps=128
+            )
+        )
+    }
+
+    hits = spatial.nearest_batch(
+        capture=repeat_scene,
+        domain=domain,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+
+    mutable checksum = 0
+    mutable hit_count = 0
+    for sample_i in 0...64 {
+        sample_index = sample_i * 8
+        hit = hits[sample_index]
+        if hit.hit {
+            hit_count += 1
+        }
+        checksum = update_scene_checksum(
+            current=checksum,
+            value=i32(hit.steps)
+                + i32(abs(hit.distance) * 100.0)
+                + i32(hit.repeat_id % u32(17))
+                + i32(hit.instance_id % u32(19))
+        )
+    }
+
+    require hit_count > 0 else "repeat-heavy hits present"
+    require checksum != 0 else "repeat-heavy checksum nonzero"
+}
+
+fn test_realtime_presentation_thin_stack_alias_prone_ops_384() -> Nothing {
+    thin_scene = capture thin_stack_region
+    domain = thin_stack_domain(world = thin_scene)
+    mutable rays = []
+    mutable points = []
+    for i in 1...385 {
+        px = f32(i % 16) * 0.08 - 0.60
+        py = f32((i / 16) % 16) * 0.07 - 0.52
+        origin = vec3(px, py, 2.6)
+        __wr_list_push(
+            rays,
+            ray_query(
+                origin=origin,
+                direction=normalize(vec3(-0.04 - px * 0.03, 0.03 - py * 0.02, -1.0)),
+                max_distance=10.0,
+                min_step=0.02,
+                hit_epsilon=0.0005,
+                max_steps=128
+            )
+        )
+        __wr_list_push(
+            points,
+            PointQuery(point=origin + vec3(0.0, 0.0, -0.7))
+        )
+    }
+
+    hits = spatial.nearest_batch(
+        capture=thin_scene,
+        domain=domain,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    normals = spatial.normal_batch(
+        capture=thin_scene,
+        domain=domain,
+        points=points,
+        backend=dispatch_backend_cpu()
+    )
+
+    mutable checksum = 0
+    mutable hit_count = 0
+    mutable miss_count = 0
+    for sample_i in 0...48 {
+        sample_index = sample_i * 8
+        hit = hits[sample_index]
+        normal = normals[sample_index].normal
+        if hit.hit {
+            hit_count += 1
+        } else {
+            miss_count += 1
+        }
+        checksum = update_scene_checksum(
+            current=checksum,
+            value=i32(hit.steps)
+                + i32(abs(hit.distance) * 100.0)
+                + i32(abs(normal.x + normal.y + normal.z) * 100.0)
+        )
+    }
+
+    require hit_count > 0 else "thin-stack hits present"
+    require miss_count > 0 else "thin-stack misses present"
+    require checksum != 0 else "thin-stack checksum nonzero"
+}
+
+fn test_realtime_presentation_media_radiance_scene_ops_256() -> Nothing {
+    media_scene = capture media_region
+    domain = media_domain(world = media_scene)
+    probe = vec3(0.0, 0.02, 0.84)
+    coarse_distance = spatial.distance(capture=media_scene, domain=domain, point=probe)
+    fine_hit = spatial.nearest(
+        capture=media_scene,
+        domain=domain,
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=12.0,
+            min_step=0.04,
+            hit_epsilon=0.001,
+            max_steps=128
+        )
+    )
+    fine_surface = surface.sample(capture=media_scene, domain=domain, hit=fine_hit)
+    fine_radiance = participants.radiance(
+        capture=media_scene,
+        domain=domain,
+        sample=point_direction_query(
+            point=fine_hit.position,
+            direction=normalize(vec3(0.0, 1.0, 1.0))
+        )
+    )
+    fine_medium = participants.medium(capture=media_scene, domain=domain, point=fine_hit.position)
+
+    media_signal = i32(abs(coarse_distance) * 100.0)
+        + i32(fine_surface.clearcoat * 100.0)
+        + i32(fine_radiance.z * 10.0)
+        + i32(fine_medium.density * 1000.0)
+
+    mutable rays = []
+    mutable points = []
+    for i in 1...257 {
+        px = f32(i % 16) / 15.0 - 0.5
+        py = f32((i / 16) % 16) / 15.0 - 0.5
+        origin = vec3(px * 1.2, py * 1.0, 3.0)
+        __wr_list_push(
+            rays,
+            ray_query(
+                origin=origin,
+                direction=normalize(vec3(-px * 0.08, -py * 0.08, -1.0)),
+                max_distance=12.0,
+                min_step=0.04,
+                hit_epsilon=0.001,
+                max_steps=128
+            )
+        )
+        __wr_list_push(
+            points,
+            PointQuery(point=origin + vec3(0.0, 0.0, -1.0))
+        )
+    }
+
+    hits = spatial.nearest_batch(
+        capture=media_scene,
+        domain=domain,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    normals = spatial.normal_batch(
+        capture=media_scene,
+        domain=domain,
+        points=points,
+        backend=dispatch_backend_cpu()
+    )
+
+    mutable checksum = 0
+    mutable hit_count = 0
+    for sample_i in 0...64 {
+        sample_index = sample_i * 4
+        hit = hits[sample_index]
+        normal = normals[sample_index].normal
+        if hit.hit {
+            hit_count += 1
+        }
+        checksum = update_scene_checksum(
+            current=checksum,
+            value=i32(hit.steps)
+                + i32(abs(hit.distance) * 100.0)
+                + i32(abs(normal.x + normal.y + normal.z) * 100.0)
+        )
+    }
+
+    require hit_count > 0 else "media radiance hits present"
+    require media_signal != 0 else "media radiance signal nonzero"
+    require checksum != 0 else "media radiance checksum nonzero"
 }

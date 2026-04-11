@@ -10,6 +10,7 @@ The repo now focuses on the compiler, the core runtime, and the language librari
 - `runtime/`: value/runtime ABI, actor/reactor support, host filesystem/HTTP cassettes, metrics, and native runtime exports.
 - `language/stdlib/`: thin-core standard library modules used by authored world programs.
 - `language/spec/`: language snapshots, RFCs, and surface integrity references.
+- `language/view_basic/`: minimal canonical `view` sample with typed viewport, quality, lighting, outputs, and history helpers.
 - `benchmarks/micro/`: low-level benchmark scenarios.
 - `benchmarks/field_engine/`: world/field-engine benchmark scenarios.
 
@@ -20,8 +21,16 @@ cargo test --workspace
 cargo run -p wrela -- --help
 cargo run -p wrela -- query-contracts
 cargo run -p wrela -- build path/to/main.wr
-cargo run -p wrela -- preview language/preview
+cargo run -p wrela -- frame-contracts language/view_basic
+cargo run -p wrela -- preview language/view_basic --view main_view
+cargo run -p wrela -- frame language/view_basic --view main_view --attachment depth --attachment-format=ppm
+cargo run -p wrela -- presentation-debug language/view_basic --view main_view --frames 2 --json
+cargo run -p wrela -- preview language/view_basic --view main_view --json-report --json
 ```
+
+Presentation is now authored through canonical `view` declarations with typed helpers such as `viewport(...)`, `realtime_quality(...)`, `key_light(...)`, `frame_outputs(...)`, and `temporal_history(...)`. The CLI exposes those compiled views directly through `preview`, `frame`, `frame-contracts`, `presentation-plan`, and `presentation-debug` rather than through legacy authored `render` declarations.
+
+`presentation-debug` is the pass-level inspection entrypoint: it runs a named view for one or more frames, reports frame-cost/quality state, and can export the same color, depth, and normal attachments that `preview` and `frame` expose through narrower host flows.
 
 The `justfile` mirrors the common development loop:
 

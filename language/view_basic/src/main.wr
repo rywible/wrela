@@ -1,0 +1,93 @@
+field exact distance sample_sphere(p: Vec3) -> F32 {
+    sphere(radius = 0.55)
+}
+
+field exact distance sample_ground(p: Vec3) -> F32 {
+    plane(normal = vec3(0.0, 1.0, 0.0), offset = 0.9)
+}
+
+material sample_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo = vec3(52.0, 112.0, 196.0),
+        roughness = 0.22,
+        metalness = 0.12,
+        clearcoat = 0.10,
+        clearcoat_roughness = 0.08,
+        sheen = 0.04,
+        emissive = vec3(0.0, 0.0, 0.0)
+    )
+}
+
+material ground_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo = vec3(86.0, 82.0, 76.0),
+        roughness = 0.90,
+        metalness = 0.0,
+        clearcoat = 0.02,
+        clearcoat_roughness = 0.20,
+        sheen = 0.0,
+        emissive = vec3(0.0, 0.0, 0.0)
+    )
+}
+
+radiance field sample_sky(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
+    sky_t = clamp(0.5 + direction.y * 0.5, 0.0, 1.0)
+    return vec3(8.0, 10.0, 16.0) * (1.0 - sky_t) + vec3(48.0, 80.0, 132.0) * sky_t
+}
+
+shape sphere_shape {
+    field = sample_sphere
+    material = sample_surface
+    radiance = sample_sky
+}
+
+shape ground_shape {
+    field = sample_ground
+    material = ground_surface
+    radiance = sample_sky
+}
+
+shape scene_shape {
+    union {
+        provenance_policy = nearest
+        use sphere_shape
+        use ground_shape
+    }
+}
+
+region scene_region() {
+    place scene = scene_shape
+}
+
+domain scene_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = true
+    media = false
+    max_distance = 10.0
+    min_step = 0.03
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+
+view main_view(world: RegionCapture, camera: Camera) {
+    domain = scene_domain(world = world)
+    viewport = viewport(width = 64, height = 64)
+    quality = realtime_quality(
+        target_fps = 60,
+        allow_dynamic_resolution = false
+    )
+    lighting = key_light(
+        light = Light(
+            position = vec3(1.5, 2.0, 2.0),
+            direction = normalize(vec3(-0.5, -0.8, -0.6)),
+            intensity = vec3(1.0, 0.98, 0.95),
+            range = 10.0
+        ),
+        fill_direction = normalize(vec3(-0.35, 0.55, 0.2)),
+        fill_strength = 0.28,
+        ambient_color = vec3(0.08, 0.10, 0.12)
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
+}

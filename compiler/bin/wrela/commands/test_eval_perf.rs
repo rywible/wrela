@@ -816,6 +816,8 @@ pub(super) struct PerfReport {
     pub(super) cv: PerfCv,
     pub(super) summary: PerfSummary,
     pub(super) samples: Vec<PerfSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) presentation_reports: Option<Vec<PresentationBenchmarkReport>>,
 }
 
 #[derive(Debug, Clone)]
@@ -891,6 +893,50 @@ pub(super) struct BenchmarkScenario {
     pub(super) timeout_ms: Option<u64>,
     #[serde(default)]
     pub(super) allow_unstable: bool,
+    #[serde(default)]
+    pub(super) presentation: Option<BenchmarkPresentationSpec>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub(super) struct BenchmarkPresentationSpec {
+    pub(super) view: String,
+    pub(super) region: String,
+    #[serde(default)]
+    pub(super) entry: Option<String>,
+    #[serde(default)]
+    pub(super) domain: Option<String>,
+    #[serde(default)]
+    pub(super) width: Option<u32>,
+    #[serde(default)]
+    pub(super) height: Option<u32>,
+    #[serde(default)]
+    pub(super) frames: Option<u32>,
+    pub(super) camera_position: [f32; 3],
+    pub(super) camera_forward: [f32; 3],
+    pub(super) camera_up: [f32; 3],
+    pub(super) vertical_fov_degrees: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(super) struct PresentationBenchmarkReport {
+    pub(super) scenario_id: String,
+    pub(super) test_name: String,
+    pub(super) view: String,
+    pub(super) region: String,
+    pub(super) domain: String,
+    pub(super) backend: String,
+    pub(super) frames_executed: u32,
+    pub(super) frame_time_ns: u128,
+    pub(super) quality_tier: String,
+    pub(super) target_fps: u32,
+    pub(super) internal_resolution_scale: f32,
+    pub(super) reconstructed_output: bool,
+    pub(super) quality_history: Vec<String>,
+    pub(super) internal_resolution_history: Vec<f32>,
+    pub(super) bottleneck_pass: Option<String>,
+    pub(super) active_acceleration_artifacts: Vec<String>,
+    pub(super) performance_gain_sources: Vec<String>,
+    pub(super) frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
 }
 
 impl BenchmarkManifest {
@@ -2164,6 +2210,42 @@ fn build_perf_summary(
         cases: None,
         metrics: metrics_totals.clone(),
     }
+}
+
+pub(super) fn overlay_perf_summary_runtime_cases(
+    base: &PerfSummary,
+    cases: &[(String, String, u128)],
+) -> PerfSummary {
+    let mut summary = base.clone();
+    let mut runtime_sorted: Vec<u128> = cases.iter().map(|(_, _, runtime_ns)| *runtime_ns).collect();
+    runtime_sorted.sort_unstable();
+    summary.sample_count = runtime_sorted.len();
+    if runtime_sorted.is_empty() {
+        summary.runtime_p50_ns = 0;
+        summary.runtime_p95_ns = 0;
+        summary.runtime_p99_ns = 0;
+    } else {
+        summary.runtime_p50_ns = percentile(&runtime_sorted, 0.50);
+        summary.runtime_p95_ns = percentile(&runtime_sorted, 0.95);
+        summary.runtime_p99_ns = percentile(&runtime_sorted, 0.99);
+    }
+    summary.cases = Some(
+        cases
+            .iter()
+            .map(|(id, name, runtime_ns)| PerfCaseSample {
+                id: id.clone(),
+                name: name.clone(),
+                compile_ns: 0,
+                runtime_ns: *runtime_ns,
+                metrics: None,
+            })
+            .collect(),
+    );
+    summary
+}
+
+pub(super) fn emit_perf_summary(summary: &PerfSummary, perf_debug: bool) {
+    print_perf_summary(summary, perf_debug);
 }
 
 fn print_perf_summary(summary: &PerfSummary, perf_debug: bool) {

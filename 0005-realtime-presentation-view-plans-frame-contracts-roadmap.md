@@ -3551,6 +3551,26 @@ Candidate pieces to record:
 - The roadmap records which pieces are candidates for future query-program extraction.
 - No generic query-program layer is created without a second concrete observer.
 
+**Phase 24C2 revalidation record**
+
+The implemented `PresentationPlan` proved useful as the first concrete query program, but several parts remain presentation-specific and should stay that way until another observer exists:
+
+- screen-lattice generation and canonical camera-to-pixel ray construction
+- frame attachment semantics for color, depth, world normal, motion, and history slots
+- presentation lighting/composite policy such as key-light defaults and shaded-color composition
+- temporal reuse policy tied to frame-to-frame continuity, motion vectors, and history compatibility
+- export-oriented attachment selection such as PPM over color/depth/normal attachments
+
+The work also exposed pieces that are plausible future query-program extraction candidates once collision/traversal or another observer needs the same machinery:
+
+- pass graph validation and dependency ordering
+- materialized artifact contracts and lifetime validation
+- query dependency reporting and backend dispatch summaries
+- semantic-acceleration artifact reporting and solver observability aggregation
+- CPU oracle comparison hooks, plan diagnostics, and cost-report aggregation
+
+No generic query-program layer should be extracted yet. Presentation is still the only concrete observer using this full stack, so the compiler should keep these pieces recorded rather than generalized until a second observer demonstrates the same boundary.
+
 ### Phase 24 Exit Criteria
 
 - The canonical authored `view` surface is complete for the first real-time slice.

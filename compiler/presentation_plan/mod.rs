@@ -4,7 +4,8 @@ use crate::presentation_contract::{
     AttachmentClearPolicy, AttachmentElementSchema, AttachmentLifetime, AttachmentResolutionClass,
     AttachmentResolutionScale, FrameAttachmentContract, FrameAttachmentKind, FrameContract,
     LightingContract, PresentationObservabilityProfile, PrimaryHitAttachmentContract,
-    TemporalContract, TemporalHistoryRole, TemporalReuseMode, ViewContract,
+    QualityDegradationStep, RealtimeQualityContract, RealtimeQualityTier, TemporalContract,
+    TemporalHistoryRole, TemporalReuseMode, ViewContract,
 };
 use crate::query_plan::{DispatchBackend, QueryContractId};
 use smol_str::SmolStr;
@@ -167,6 +168,38 @@ pub struct PresentationObservability {
     pub future_acceleration_hooks: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AuthoredOutputSelection {
+    color: bool,
+    depth: bool,
+    world_normal: bool,
+    motion: bool,
+}
+
+impl Default for AuthoredOutputSelection {
+    fn default() -> Self {
+        Self {
+            color: true,
+            depth: true,
+            world_normal: true,
+            motion: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AuthoredTemporalHistorySelection {
+    color: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AuthoredLightingSelection {
+    key_light: bool,
+    fill_direction: bool,
+    fill_strength: bool,
+    ambient_color: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresentationPlanValidationError {
     pub message: SmolStr,
@@ -179,11 +212,6 @@ impl PresentationPlan {
     ) -> Option<Self> {
         let metadata = func.render.as_ref()?;
         match func.role {
-            hir::FunctionRole::Render => Some(Self::legacy_ppm_from_render_metadata(
-                func.name.clone(),
-                metadata,
-                default_backend,
-            )),
             hir::FunctionRole::View => Some(Self::canonical_view_from_metadata(
                 func.name.clone(),
                 metadata,
@@ -234,27 +262,51 @@ impl PresentationPlan {
         export_color: bool,
         enable_temporal: bool,
     ) -> Self {
+        let viewport_sources = authored_viewport_sources(metadata);
+        let temporal_history = authored_temporal_history_selection(metadata).unwrap_or(
+            AuthoredTemporalHistorySelection {
+                color: enable_temporal,
+            },
+        );
+        let enable_temporal = enable_temporal && temporal_history.color;
+        let authored_outputs = authored_output_selection(metadata);
+        let authored_lighting = authored_lighting_selection(metadata);
+        let mut view = view;
+        view.screen_lattice.width_source = SmolStr::new(viewport_sources.0);
+        view.screen_lattice.height_source = SmolStr::new(viewport_sources.1);
+
         let primary_hit_attachment = FrameAttachmentContract::primary_hit("primary_hit");
-        let depth_attachment = FrameAttachmentContract::depth("depth");
-        let world_normal_attachment = FrameAttachmentContract::world_normal("world_normal");
+        let depth_attachment = authored_outputs
+            .depth
+            .then(|| FrameAttachmentContract::depth("depth"));
+        let world_normal_attachment = authored_outputs
+            .world_normal
+            .then(|| FrameAttachmentContract::world_normal("world_normal"));
         let surface_attachment = FrameAttachmentContract::surface("surface");
         let radiance_attachment = FrameAttachmentContract::radiance("radiance");
         let medium_attachment = FrameAttachmentContract::medium("medium");
         let shaded_color_attachment = FrameAttachmentContract::transient_color("shaded_color");
-        let motion_attachment = enable_temporal.then(|| FrameAttachmentContract::motion("motion"));
+        let motion_attachment = (enable_temporal || authored_outputs.motion)
+            .then(|| FrameAttachmentContract::motion("motion"));
         let history_color_attachment =
             enable_temporal.then(|| FrameAttachmentContract::history_color("history_color", 0));
         let history_primary_hit_attachment = enable_temporal
             .then(|| FrameAttachmentContract::history_primary_hit("history_primary_hit", 1));
         let color_attachment = FrameAttachmentContract::exported_color("color");
         let primary_hit_name = primary_hit_attachment.name.clone();
-        let depth_name = depth_attachment.name.clone();
-        let world_normal_name = world_normal_attachment.name.clone();
+        let depth_name = depth_attachment
+            .as_ref()
+            .map(|attachment| attachment.name.clone());
+        let world_normal_name = world_normal_attachment
+            .as_ref()
+            .map(|attachment| attachment.name.clone());
         let surface_name = surface_attachment.name.clone();
         let radiance_name = radiance_attachment.name.clone();
         let medium_name = medium_attachment.name.clone();
         let shaded_color_name = shaded_color_attachment.name.clone();
-        let motion_name = motion_attachment.as_ref().map(|attachment| attachment.name.clone());
+        let motion_name = motion_attachment
+            .as_ref()
+            .map(|attachment| attachment.name.clone());
         let history_color_name = history_color_attachment
             .as_ref()
             .map(|attachment| attachment.name.clone());
@@ -272,7 +324,9 @@ impl PresentationPlan {
         ];
         if enable_temporal {
             bindings.push(PresentationBindingSummary::motion_resolve(default_backend));
-            bindings.push(PresentationBindingSummary::temporal_resolve(default_backend));
+            bindings.push(PresentationBindingSummary::temporal_resolve(
+                default_backend,
+            ));
         } else {
             bindings.push(PresentationBindingSummary::composite_color(default_backend));
         }
@@ -306,16 +360,21 @@ impl PresentationPlan {
                     contract: PrimaryVisibilityPassContract {
                         query_contract: crate::query_contract::SPATIAL_NEAREST_BATCH_WORLD,
                         primary_hit_attachment: primary_hit_name.clone(),
-                        depth_attachment: Some(depth_name.clone()),
-                        world_normal_attachment: Some(world_normal_name.clone()),
+                        depth_attachment: depth_name.clone(),
+                        world_normal_attachment: world_normal_name.clone(),
                     },
                 },
                 consumes: vec![SmolStr::new("screen_samples"), SmolStr::new("frame.domain")],
-                materializes: vec![
-                    primary_hit_name.clone(),
-                    depth_name.clone(),
-                    world_normal_name.clone(),
-                ],
+                materializes: {
+                    let mut attachments = vec![primary_hit_name.clone()];
+                    if let Some(depth_name) = &depth_name {
+                        attachments.push(depth_name.clone());
+                    }
+                    if let Some(world_normal_name) = &world_normal_name {
+                        attachments.push(world_normal_name.clone());
+                    }
+                    attachments
+                },
                 binding: Some(bindings[1].id.clone()),
                 query_dependencies: vec![crate::query_contract::SPATIAL_NEAREST_BATCH_WORLD],
                 future_acceleration_hooks: vec![
@@ -435,10 +494,12 @@ impl PresentationPlan {
                     vec![shaded_color_name.clone()]
                 },
                 materializes: if enable_temporal {
-                    vec![motion_name
-                        .as_ref()
-                        .expect("temporal motion attachment")
-                        .clone()]
+                    vec![
+                        motion_name
+                            .as_ref()
+                            .expect("temporal motion attachment")
+                            .clone(),
+                    ]
                 } else {
                     vec![color_name.clone()]
                 },
@@ -529,14 +590,18 @@ impl PresentationPlan {
 
         let mut outputs = vec![
             primary_hit_attachment,
-            depth_attachment,
-            world_normal_attachment,
             surface_attachment,
             radiance_attachment,
             medium_attachment,
             shaded_color_attachment,
             color_attachment,
         ];
+        if let Some(depth_attachment) = depth_attachment {
+            outputs.push(depth_attachment);
+        }
+        if let Some(world_normal_attachment) = world_normal_attachment {
+            outputs.push(world_normal_attachment);
+        }
         if let Some(motion_attachment) = motion_attachment {
             outputs.push(motion_attachment);
         }
@@ -561,23 +626,18 @@ impl PresentationPlan {
         } else {
             None
         };
+        let quality = authored_quality_contract(
+            metadata,
+            temporal
+                .as_ref()
+                .map(|contract| contract.reuse)
+                .unwrap_or(TemporalReuseMode::Disabled),
+        );
 
         let mut frame_artifacts = vec![
             FrameArtifactContract {
                 id: SmolStr::new("artifact.primary_hit"),
                 attachment: primary_hit_name.clone(),
-                producer_pass: SmolStr::new("primary_visibility"),
-                materialized: true,
-            },
-            FrameArtifactContract {
-                id: SmolStr::new("artifact.depth"),
-                attachment: depth_name,
-                producer_pass: SmolStr::new("primary_visibility"),
-                materialized: true,
-            },
-            FrameArtifactContract {
-                id: SmolStr::new("artifact.world_normal"),
-                attachment: world_normal_name,
                 producer_pass: SmolStr::new("primary_visibility"),
                 materialized: true,
             },
@@ -606,12 +666,26 @@ impl PresentationPlan {
                 materialized: true,
             },
         ];
+        if let Some(depth_name) = depth_name.clone() {
+            frame_artifacts.push(FrameArtifactContract {
+                id: SmolStr::new("artifact.depth"),
+                attachment: depth_name,
+                producer_pass: SmolStr::new("primary_visibility"),
+                materialized: true,
+            });
+        }
+        if let Some(world_normal_name) = world_normal_name.clone() {
+            frame_artifacts.push(FrameArtifactContract {
+                id: SmolStr::new("artifact.world_normal"),
+                attachment: world_normal_name,
+                producer_pass: SmolStr::new("primary_visibility"),
+                materialized: true,
+            });
+        }
         if enable_temporal {
             frame_artifacts.push(FrameArtifactContract {
                 id: SmolStr::new("artifact.motion"),
-                attachment: motion_name
-                    .clone()
-                    .expect("temporal motion attachment"),
+                attachment: motion_name.clone().expect("temporal motion attachment"),
                 producer_pass: SmolStr::new("motion_resolve"),
                 materialized: true,
             });
@@ -650,13 +724,16 @@ impl PresentationPlan {
                 outputs,
                 primary_hit: Some(PrimaryHitAttachmentContract::hit3(primary_hit_name.clone())),
                 temporal,
+                quality,
                 lighting: LightingContract::first_color_path(
-                    metadata.lighting.light.is_some(),
-                    metadata.lighting.light_compatibility_alias,
-                    metadata.lighting.fill_dir.is_some(),
-                    metadata.lighting.fill_dir_compatibility_alias,
-                    metadata.lighting.fill_strength.is_some(),
-                    metadata.lighting.ambient_color.is_some(),
+                    authored_lighting.key_light,
+                    metadata.lighting.light_compatibility_alias
+                        && metadata.lighting.grouped.is_none(),
+                    authored_lighting.fill_direction,
+                    metadata.lighting.fill_dir_compatibility_alias
+                        && metadata.lighting.grouped.is_none(),
+                    authored_lighting.fill_strength,
+                    authored_lighting.ambient_color,
                     metadata.lighting.lights.is_some(),
                 ),
                 observability: PresentationObservabilityProfile::preview_compatibility(),
@@ -774,6 +851,188 @@ impl PresentationObservability {
             future_acceleration_hooks: true,
         }
     }
+}
+
+fn authored_viewport_sources(metadata: &hir::RenderMetadata) -> (&'static str, &'static str) {
+    if metadata
+        .view
+        .viewport
+        .as_ref()
+        .and_then(|body| body_terminal_call(body))
+        .is_some_and(|(callee, _)| matches!(callee.as_str(), "viewport" | "Viewport"))
+    {
+        ("view.viewport.width", "view.viewport.height")
+    } else {
+        ("view.width", "view.height")
+    }
+}
+
+fn authored_output_selection(metadata: &hir::RenderMetadata) -> AuthoredOutputSelection {
+    let mut selection = AuthoredOutputSelection::default();
+    let Some(body) = metadata.frame.outputs.as_ref() else {
+        return selection;
+    };
+    let Some((callee, args)) = body_terminal_call(body) else {
+        return selection;
+    };
+    if !matches!(callee.as_str(), "frame_outputs" | "FrameOutputs") {
+        return selection;
+    }
+    if let Some(value) = call_named_arg_bool(body, args, "color") {
+        selection.color = value;
+    }
+    if let Some(value) = call_named_arg_bool(body, args, "depth") {
+        selection.depth = value;
+    }
+    if let Some(value) = call_named_arg_bool(body, args, "normal") {
+        selection.world_normal = value;
+    }
+    if let Some(value) = call_named_arg_bool(body, args, "motion") {
+        selection.motion = value;
+    }
+    selection
+}
+
+fn authored_temporal_history_selection(
+    metadata: &hir::RenderMetadata,
+) -> Option<AuthoredTemporalHistorySelection> {
+    let body = metadata.frame.history.as_ref()?;
+    let (callee, args) = body_terminal_call(body)?;
+    if !matches!(callee.as_str(), "temporal_history" | "TemporalHistory") {
+        return None;
+    }
+    Some(AuthoredTemporalHistorySelection {
+        color: call_named_arg_bool(body, args, "color").unwrap_or(true),
+    })
+}
+
+fn authored_quality_contract(
+    metadata: &hir::RenderMetadata,
+    temporal_mode: TemporalReuseMode,
+) -> RealtimeQualityContract {
+    let Some(body) = metadata.frame.quality.as_ref() else {
+        return RealtimeQualityContract::named(RealtimeQualityTier::Realtime60)
+            .with_temporal_mode(temporal_mode);
+    };
+    let Some((callee, args)) = body_terminal_call(body) else {
+        return RealtimeQualityContract::named(RealtimeQualityTier::Realtime60)
+            .with_temporal_mode(temporal_mode);
+    };
+    if !matches!(callee.as_str(), "realtime_quality" | "RealtimeQuality") {
+        return RealtimeQualityContract::named(RealtimeQualityTier::Realtime60)
+            .with_temporal_mode(temporal_mode);
+    }
+
+    let target_fps = call_named_arg_u32(body, args, "target_fps").unwrap_or(60);
+    let mut contract = RealtimeQualityContract::named(quality_tier_for_target_fps(target_fps))
+        .with_temporal_mode(temporal_mode);
+    contract.target_fps = target_fps;
+    if let Some(value) = call_named_arg_bool(body, args, "allow_dynamic_resolution") {
+        contract.allow_dynamic_resolution = value;
+        if !value {
+            contract.internal_resolution_scale = 1.0;
+        }
+    }
+    if let Some(value) = call_named_arg_i32(body, args, "primary_max_steps") {
+        contract.primary_max_steps = value;
+    }
+    if let Some(value) = call_named_arg_bool(body, args, "allow_radiance") {
+        contract.allow_radiance = value;
+    }
+    if let Some(value) = call_named_arg_bool(body, args, "allow_media") {
+        contract.allow_media = value;
+    }
+    if let Some(value) = call_named_arg_bool(body, args, "allow_half_res_participants") {
+        contract.allow_half_res_participants = value;
+    }
+    if let Some(value) = call_named_arg_bool(body, args, "allow_hit_compaction") {
+        contract.allow_hit_compaction = value;
+    }
+    contract
+}
+
+fn quality_tier_for_target_fps(target_fps: u32) -> RealtimeQualityTier {
+    match target_fps {
+        120.. => RealtimeQualityTier::Realtime120,
+        0..=30 => RealtimeQualityTier::Debug,
+        _ => RealtimeQualityTier::Realtime60,
+    }
+}
+
+fn authored_lighting_selection(metadata: &hir::RenderMetadata) -> AuthoredLightingSelection {
+    let mut selection = AuthoredLightingSelection {
+        key_light: metadata.lighting.light.is_some(),
+        fill_direction: metadata.lighting.fill_dir.is_some(),
+        fill_strength: metadata.lighting.fill_strength.is_some(),
+        ambient_color: metadata.lighting.ambient_color.is_some(),
+    };
+    let Some(body) = metadata.lighting.grouped.as_ref() else {
+        return selection;
+    };
+    let Some((callee, args)) = body_terminal_call(body) else {
+        return selection;
+    };
+    if !matches!(callee.as_str(), "key_light" | "PresentationLighting") {
+        return selection;
+    }
+    selection.key_light = call_named_arg_expr(args, "light").is_some() || selection.key_light;
+    selection.fill_direction =
+        call_named_arg_expr(args, "fill_direction").is_some() || selection.fill_direction;
+    selection.fill_strength =
+        call_named_arg_expr(args, "fill_strength").is_some() || selection.fill_strength;
+    selection.ambient_color =
+        call_named_arg_expr(args, "ambient_color").is_some() || selection.ambient_color;
+    selection
+}
+
+fn body_terminal_call<'a>(body: &'a hir::Body) -> Option<(&'a SmolStr, &'a [hir::Arg])> {
+    let stmt = body.root_stmts.last()?;
+    let expr_id = match &body.stmts[*stmt] {
+        hir::Stmt::Expr(expr) => *expr,
+        hir::Stmt::Return(Some(expr)) => *expr,
+        _ => return None,
+    };
+    let hir::Expr::Call { callee, args, .. } = &body.exprs[expr_id] else {
+        return None;
+    };
+    let hir::Expr::Variable(name) = &body.exprs[*callee] else {
+        return None;
+    };
+    Some((name, args.as_slice()))
+}
+
+fn call_named_arg_expr(args: &[hir::Arg], name: &str) -> Option<hir::Idx<hir::Expr>> {
+    args.iter().find_map(|arg| match arg {
+        hir::Arg::Named {
+            name: arg_name,
+            value,
+            ..
+        } if arg_name == name => Some(*value),
+        _ => None,
+    })
+}
+
+fn call_named_arg_bool(body: &hir::Body, args: &[hir::Arg], name: &str) -> Option<bool> {
+    call_named_arg_expr(args, name).and_then(|expr| match &body.exprs[expr] {
+        hir::Expr::Literal(hir::Literal::Boolean(value)) => Some(*value),
+        _ => None,
+    })
+}
+
+fn call_named_arg_u32(body: &hir::Body, args: &[hir::Arg], name: &str) -> Option<u32> {
+    call_named_arg_expr(args, name).and_then(|expr| match &body.exprs[expr] {
+        hir::Expr::Literal(hir::Literal::Integer(value)) => Some(*value as u32),
+        hir::Expr::Literal(hir::Literal::Float(value)) => Some(*value as u32),
+        _ => None,
+    })
+}
+
+fn call_named_arg_i32(body: &hir::Body, args: &[hir::Arg], name: &str) -> Option<i32> {
+    call_named_arg_expr(args, name).and_then(|expr| match &body.exprs[expr] {
+        hir::Expr::Literal(hir::Literal::Integer(value)) => Some(*value as i32),
+        hir::Expr::Literal(hir::Literal::Float(value)) => Some(*value as i32),
+        _ => None,
+    })
 }
 
 impl ScreenSampleGenerationContract {
@@ -929,7 +1188,9 @@ pub fn validate_plan(plan: &PresentationPlan) -> Vec<PresentationPlanValidationE
         .passes
         .iter()
         .find_map(|pass| match &pass.kind {
-            PresentationPassKind::GenerateScreenSamples { contract } => Some(contract.samples_per_pixel),
+            PresentationPassKind::GenerateScreenSamples { contract } => {
+                Some(contract.samples_per_pixel)
+            }
             _ => None,
         })
         .unwrap_or(1);
@@ -938,9 +1199,11 @@ pub fn validate_plan(plan: &PresentationPlan) -> Vec<PresentationPlanValidationE
         .outputs
         .iter()
         .any(|attachment| attachment.kind == FrameAttachmentKind::Motion);
-    let has_history_attachment = plan.frame.outputs.iter().any(|attachment| {
-        matches!(attachment.lifetime, AttachmentLifetime::HistorySlot(_))
-    });
+    let has_history_attachment = plan
+        .frame
+        .outputs
+        .iter()
+        .any(|attachment| matches!(attachment.lifetime, AttachmentLifetime::HistorySlot(_)));
     let has_motion_pass = plan
         .passes
         .iter()
@@ -949,6 +1212,21 @@ pub fn validate_plan(plan: &PresentationPlan) -> Vec<PresentationPlanValidationE
         .passes
         .iter()
         .any(|pass| matches!(pass.kind, PresentationPassKind::TemporalResolve { .. }));
+    for error in plan.frame.quality.validate() {
+        errors.push(validation_error(error));
+    }
+    if plan.frame.quality.temporal_mode
+        != plan
+            .frame
+            .temporal
+            .as_ref()
+            .map(|temporal| temporal.reuse)
+            .unwrap_or(TemporalReuseMode::Disabled)
+    {
+        errors.push(validation_error(
+            "frame quality temporal_mode must match the frame temporal contract",
+        ));
+    }
     if let Some(temporal) = &plan.frame.temporal {
         if matches!(temporal.reuse, TemporalReuseMode::Disabled) {
             errors.push(validation_error(
@@ -1001,11 +1279,12 @@ pub fn validate_plan(plan: &PresentationPlan) -> Vec<PresentationPlanValidationE
                     history_slot.attachment, history_slot.slot
                 )));
             }
-            let expected_key = crate::presentation_contract::HistoryCompatibilityKey::from_attachment(
-                &plan.view,
-                attachment,
-                screen_samples_per_pixel,
-            );
+            let expected_key =
+                crate::presentation_contract::HistoryCompatibilityKey::from_attachment(
+                    &plan.view,
+                    attachment,
+                    screen_samples_per_pixel,
+                );
             if history_slot.compatibility != expected_key {
                 errors.push(validation_error(format!(
                     "temporal history attachment '{}' must preserve the canonical compatibility key",
@@ -1233,14 +1512,9 @@ pub fn validate_plan(plan: &PresentationPlan) -> Vec<PresentationPlanValidationE
                         pass.id, contract.output_attachment
                     ))),
                 }
-                if plan
-                    .frame
-                    .temporal
-                    .as_ref()
-                    .is_some_and(|temporal| {
-                        matches!(temporal.reuse, TemporalReuseMode::ReprojectColorAndMotion)
-                    })
-                    && contract.history_primary_hit_attachment.is_none()
+                if plan.frame.temporal.as_ref().is_some_and(|temporal| {
+                    matches!(temporal.reuse, TemporalReuseMode::ReprojectColorAndMotion)
+                }) && contract.history_primary_hit_attachment.is_none()
                 {
                     errors.push(validation_error(format!(
                         "motion resolve pass '{}' must preserve continuation primary-hit history for ReprojectColorAndMotion",
@@ -1286,14 +1560,9 @@ pub fn validate_plan(plan: &PresentationPlan) -> Vec<PresentationPlanValidationE
                         pass.id
                     )));
                 }
-                if plan
-                    .frame
-                    .temporal
-                    .as_ref()
-                    .is_some_and(|temporal| {
-                        matches!(temporal.reuse, TemporalReuseMode::ReprojectColorAndMotion)
-                    })
-                    && contract.history_primary_hit_attachment.is_none()
+                if plan.frame.temporal.as_ref().is_some_and(|temporal| {
+                    matches!(temporal.reuse, TemporalReuseMode::ReprojectColorAndMotion)
+                }) && contract.history_primary_hit_attachment.is_none()
                 {
                     errors.push(validation_error(format!(
                         "temporal resolve pass '{}' must preserve continuation primary-hit history for ReprojectColorAndMotion",
@@ -1348,6 +1617,28 @@ fn expected_scale_for_resolution(
         AttachmentResolutionClass::Viewport => AttachmentResolutionScale::full(),
         AttachmentResolutionClass::HalfViewport => AttachmentResolutionScale::half(),
         AttachmentResolutionClass::QuarterViewport => AttachmentResolutionScale::quarter(),
+    }
+}
+
+pub fn quality_tier_name(tier: RealtimeQualityTier) -> &'static str {
+    match tier {
+        RealtimeQualityTier::Realtime60 => "realtime_60",
+        RealtimeQualityTier::Realtime120 => "realtime_120",
+        RealtimeQualityTier::High => "high",
+        RealtimeQualityTier::Ultra => "ultra",
+        RealtimeQualityTier::Debug => "debug",
+    }
+}
+
+pub fn quality_degradation_step_name(step: QualityDegradationStep) -> &'static str {
+    match step {
+        QualityDegradationStep::ReduceInternalResolution => "reduce_internal_resolution",
+        QualityDegradationStep::EnableHitCompaction => "enable_hit_compaction",
+        QualityDegradationStep::LowerPrimarySteps => "lower_primary_steps",
+        QualityDegradationStep::DisableMedia => "disable_media",
+        QualityDegradationStep::LowerRadianceQuality => "lower_radiance_quality",
+        QualityDegradationStep::DisableRadiance => "disable_radiance",
+        QualityDegradationStep::HalfResolutionParticipants => "half_res_participants",
     }
 }
 

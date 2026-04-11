@@ -1,6 +1,11 @@
 use crate::kernel::KernelValue;
-use crate::presentation_contract::FrameAttachmentKind;
-use crate::presentation_exec::{PresentationExecError, PresentationExecutionResult};
+use crate::presentation_contract::{
+    AttachmentElementSchema, FrameAttachmentContract, FrameAttachmentKind,
+};
+use crate::presentation_exec::{
+    PresentationExecError, PresentationExecutionResult, render_frame_cost_report,
+};
+use serde_json::{Map, Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -80,7 +85,7 @@ pub fn render_primary_visibility_stats(result: &PresentationExecutionResult) -> 
             )
         })
         .unwrap_or_else(|| "none".to_string());
-    format!(
+    let mut out = format!(
         "backend={:?}\nresolution={}x{}\nsamples={}\nhits={}\nmisses={}\nhit_rate={:.3}\nmiss_rate={:.3}\ncandidates_before_pruning={}\ncandidates_after_pruning={}\ncandidate_reduction={}\ntrace_steps_avg={:.3}\ntrace_steps_max={}\nray_steps_zero={}\nray_steps_short={}\nray_steps_medium={}\nray_steps_long={}\nray_steps_extreme={}\ndispatch_items={}\ndispatch_workgroups={},{},{}\ndense_fallback_count={}\nsolver={}\n",
         result.backend,
         result.width,
@@ -106,7 +111,10 @@ pub fn render_primary_visibility_stats(result: &PresentationExecutionResult) -> 
         metrics.dispatch_workgroups[2],
         metrics.dense_fallback_count,
         solver,
-    )
+    );
+    out.push('\n');
+    out.push_str(&render_frame_cost_report(&result.frame_cost));
+    out
 }
 
 pub fn write_depth_ppm(
@@ -114,9 +122,27 @@ pub fn write_depth_ppm(
     path: &Path,
 ) -> Result<(), PresentationExecError> {
     let depth_name = attachment_name_for_kind(result, FrameAttachmentKind::Depth)?;
+    write_named_depth_ppm(result, depth_name, path)
+}
+
+pub fn write_named_depth_ppm(
+    result: &PresentationExecutionResult,
+    attachment_name: &str,
+    path: &Path,
+) -> Result<(), PresentationExecError> {
+    let data = render_depth_ppm_string(result, attachment_name)?;
+    fs::write(path, data).map_err(|err| PresentationExecError::UnsupportedPlan {
+        message: err.to_string(),
+    })
+}
+
+pub fn render_depth_ppm_string(
+    result: &PresentationExecutionResult,
+    attachment_name: &str,
+) -> Result<String, PresentationExecError> {
     let depths = result
         .attachments
-        .decode_attachment(depth_name)?
+        .decode_attachment(attachment_name)?
         .into_iter()
         .map(|value| match value {
             KernelValue::F32(depth) => depth,
@@ -150,7 +176,7 @@ pub fn write_depth_ppm(
             }
         })
         .collect::<Vec<_>>();
-    write_ppm(path, result.width, result.height, &pixels)
+    Ok(render_ppm_string(result.width, result.height, &pixels))
 }
 
 pub fn write_color_ppm(
@@ -167,9 +193,16 @@ pub fn render_color_ppm_string(
     result: &PresentationExecutionResult,
 ) -> Result<String, PresentationExecError> {
     let color_name = attachment_name_for_kind(result, FrameAttachmentKind::Color)?;
+    render_named_color_ppm_string(result, color_name)
+}
+
+pub fn render_named_color_ppm_string(
+    result: &PresentationExecutionResult,
+    attachment_name: &str,
+) -> Result<String, PresentationExecError> {
     let pixels = result
         .attachments
-        .decode_attachment(color_name)?
+        .decode_attachment(attachment_name)?
         .into_iter()
         .map(|value| match value {
             KernelValue::Vec3(color) => [
@@ -188,9 +221,27 @@ pub fn write_world_normal_ppm(
     path: &Path,
 ) -> Result<(), PresentationExecError> {
     let world_normal_name = attachment_name_for_kind(result, FrameAttachmentKind::WorldNormal)?;
+    write_named_world_normal_ppm(result, world_normal_name, path)
+}
+
+pub fn write_named_world_normal_ppm(
+    result: &PresentationExecutionResult,
+    attachment_name: &str,
+    path: &Path,
+) -> Result<(), PresentationExecError> {
+    let data = render_world_normal_ppm_string(result, attachment_name)?;
+    fs::write(path, data).map_err(|err| PresentationExecError::UnsupportedPlan {
+        message: err.to_string(),
+    })
+}
+
+pub fn render_world_normal_ppm_string(
+    result: &PresentationExecutionResult,
+    attachment_name: &str,
+) -> Result<String, PresentationExecError> {
     let pixels = result
         .attachments
-        .decode_attachment(world_normal_name)?
+        .decode_attachment(attachment_name)?
         .into_iter()
         .map(|value| match value {
             KernelValue::Vec3(normal) => normal,
@@ -204,7 +255,86 @@ pub fn write_world_normal_ppm(
             ]
         })
         .collect::<Vec<_>>();
-    write_ppm(path, result.width, result.height, &pixels)
+    Ok(render_ppm_string(result.width, result.height, &pixels))
+}
+
+pub fn render_attachment_ppm_string(
+    result: &PresentationExecutionResult,
+    attachment_name: &str,
+) -> Result<String, PresentationExecError> {
+    let attachment = result
+        .attachments
+        .attachment(attachment_name)
+        .ok_or_else(|| PresentationExecError::UnsupportedPlan {
+            message: format!("missing attachment '{attachment_name}'"),
+        })?;
+    match attachment.layout.attachment.kind {
+        FrameAttachmentKind::Color => render_named_color_ppm_string(result, attachment_name),
+        FrameAttachmentKind::Depth => render_depth_ppm_string(result, attachment_name),
+        FrameAttachmentKind::WorldNormal => render_world_normal_ppm_string(result, attachment_name),
+        kind => Err(PresentationExecError::UnsupportedPlan {
+            message: format!(
+                "attachment '{attachment_name}' of kind {:?} does not have a PPM export",
+                kind
+            ),
+        }),
+    }
+}
+
+pub fn attachment_json(
+    result: &PresentationExecutionResult,
+    attachment_name: &str,
+) -> Result<Value, PresentationExecError> {
+    let attachment = result
+        .attachments
+        .attachment(attachment_name)
+        .ok_or_else(|| PresentationExecError::UnsupportedPlan {
+            message: format!("missing attachment '{attachment_name}'"),
+        })?;
+    let values = result
+        .attachments
+        .decode_attachment(attachment_name)?
+        .into_iter()
+        .map(|value| kernel_value_json(&value))
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "name": attachment_name,
+        "kind": format!("{:?}", attachment.layout.attachment.kind),
+        "element_schema": attachment_element_schema_json(&attachment.layout.attachment),
+        "lifetime": format!("{:?}", attachment.layout.attachment.lifetime),
+        "clear_policy": format!("{:?}", attachment.layout.attachment.clear_policy),
+        "resolution": format!("{:?}", attachment.layout.attachment.resolution),
+        "scale": {
+            "divisor_x": attachment.layout.attachment.scale.divisor_x,
+            "divisor_y": attachment.layout.attachment.scale.divisor_y,
+        },
+        "width": attachment.layout.width,
+        "height": attachment.layout.height,
+        "values": values,
+    }))
+}
+
+pub fn attachment_name_for_selector<'a>(
+    result: &'a PresentationExecutionResult,
+    selector: &str,
+) -> Result<&'a str, PresentationExecError> {
+    let normalized = selector.trim();
+    let kind = match normalized {
+        "color" => Some(FrameAttachmentKind::Color),
+        "depth" => Some(FrameAttachmentKind::Depth),
+        "normal" | "world_normal" => Some(FrameAttachmentKind::WorldNormal),
+        "motion" => Some(FrameAttachmentKind::Motion),
+        _ => None,
+    };
+    if let Some(kind) = kind {
+        return attachment_name_for_kind(result, kind);
+    }
+    if let Some((name, _)) = result.attachments.attachments.get_key_value(normalized) {
+        return Ok(name.as_str());
+    }
+    Err(PresentationExecError::UnsupportedPlan {
+        message: format!("unknown frame attachment selector '{selector}'"),
+    })
 }
 
 fn encode_normal_lane(value: f32) -> u8 {
@@ -215,18 +345,6 @@ fn encode_color_lane(value: f32) -> u8 {
     value.clamp(0.0, 255.0).round() as u8
 }
 
-fn write_ppm(
-    path: &Path,
-    width: u32,
-    height: u32,
-    pixels: &[[u8; 3]],
-) -> Result<(), PresentationExecError> {
-    let data = render_ppm_string(width, height, pixels);
-    fs::write(path, data).map_err(|err| PresentationExecError::UnsupportedPlan {
-        message: err.to_string(),
-    })
-}
-
 fn render_ppm_string(width: u32, height: u32, pixels: &[[u8; 3]]) -> String {
     let mut data = format!("P3\n{} {}\n255\n", width, height);
     for pixel in pixels {
@@ -235,7 +353,7 @@ fn render_ppm_string(width: u32, height: u32, pixels: &[[u8; 3]]) -> String {
     data
 }
 
-fn attachment_name_for_kind(
+pub fn attachment_name_for_kind(
     result: &PresentationExecutionResult,
     kind: FrameAttachmentKind,
 ) -> Result<&str, PresentationExecError> {
@@ -249,4 +367,50 @@ fn attachment_name_for_kind(
         .ok_or_else(|| PresentationExecError::UnsupportedPlan {
             message: format!("missing {:?} attachment for debug export", kind),
         })
+}
+
+fn attachment_element_schema_json(attachment: &FrameAttachmentContract) -> Value {
+    match &attachment.element_schema {
+        AttachmentElementSchema::NamedRecord(name) => json!({
+            "kind": "record",
+            "name": name.to_string(),
+        }),
+        AttachmentElementSchema::ScalarF32 => json!({ "kind": "scalar_f32" }),
+        AttachmentElementSchema::Vec2F32 => json!({ "kind": "vec2_f32" }),
+        AttachmentElementSchema::Vec3F32 => json!({ "kind": "vec3_f32" }),
+        AttachmentElementSchema::Vec4F32 => json!({ "kind": "vec4_f32" }),
+    }
+}
+
+fn kernel_value_json(value: &KernelValue) -> Value {
+    match value {
+        KernelValue::Nothing => Value::Null,
+        KernelValue::Bool(value) => Value::Bool(*value),
+        KernelValue::I32(value) => json!(value),
+        KernelValue::U32(value) => json!(value),
+        KernelValue::F32(value) => json!(value),
+        KernelValue::Vec2(value) => json!(value),
+        KernelValue::Vec3(value) => json!(value),
+        KernelValue::Vec4(value) => json!(value),
+        KernelValue::Mat3(value) => json!(value),
+        KernelValue::Mat4(value) => json!(value),
+        KernelValue::Quat(value) => json!(value),
+        KernelValue::Array(values) => Value::Array(values.iter().map(kernel_value_json).collect()),
+        KernelValue::Struct(value) => {
+            let mut fields = Map::new();
+            fields.insert(
+                "__record".to_string(),
+                Value::String(value.name.to_string()),
+            );
+            for (name, value) in &value.fields {
+                fields.insert(name.to_string(), kernel_value_json(value));
+            }
+            Value::Object(fields)
+        }
+        KernelValue::Capture(value) => json!({ "capture": value.to_string() }),
+        KernelValue::DispatchBackend(value) => json!(format!("{value:?}")),
+        KernelValue::GpuBuffer(handle) => json!({ "gpu_buffer": handle }),
+        KernelValue::GpuAtomicI32(handle) => json!({ "gpu_atomic_i32": handle }),
+        KernelValue::GpuAtomicU32(handle) => json!({ "gpu_atomic_u32": handle }),
+    }
 }

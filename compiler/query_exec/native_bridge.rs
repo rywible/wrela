@@ -789,7 +789,7 @@ mod tests {
     use super::*;
     use crate::hir;
     use crate::hir::lower as hir_lower;
-    use crate::hir::project::load_project;
+    use crate::hir::project::load_project_with_entrypoint;
     use crate::kernel::{KernelValue, lower_batch_query_plan, lower_world_query_plan};
     use crate::parser::ast;
     use crate::parser::ast::AstNode;
@@ -812,7 +812,8 @@ mod tests {
 
     fn preview_context() -> QueryExecContext {
         let entry_path = repo_root().join("language/preview/src/main.wr");
-        let project = load_project(&entry_path).expect("load preview project");
+        let project =
+            load_project_with_entrypoint(&entry_path, false).expect("load preview project");
         let module = project.module;
         let semantic = hir::semantic::check_module(&module);
         assert!(

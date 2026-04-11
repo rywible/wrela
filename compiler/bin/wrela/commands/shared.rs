@@ -151,11 +151,57 @@ struct PresentationDebugDump {
     region: String,
     domain: String,
     backend: String,
+    frames_executed: u32,
     color_ppm: String,
     depth_ppm: String,
     world_normal_ppm: String,
     stats_path: String,
     stats: String,
+    frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
+    frame_cost_history: Vec<wrela::presentation_exec::PresentationFrameCostReport>,
+}
+
+#[derive(Serialize)]
+struct FrameContractsDump {
+    schema_version: u32,
+    entry_path: String,
+    views: Vec<FrameContractsDumpItem>,
+}
+
+#[derive(Serialize)]
+struct FrameContractsDumpItem {
+    name: String,
+    frame: PresentationFrameDump,
+    frame_artifacts: Vec<PresentationFrameArtifactDump>,
+    bindings: Vec<PresentationBindingDump>,
+}
+
+#[derive(Serialize)]
+struct PreviewReportDump {
+    schema_version: u32,
+    view: String,
+    region: String,
+    domain: String,
+    attachment: String,
+    backend: String,
+    width: u32,
+    height: u32,
+    stats: String,
+    frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
+}
+
+#[derive(Serialize)]
+struct FrameBundleDump {
+    schema_version: u32,
+    view: String,
+    region: String,
+    domain: String,
+    backend: String,
+    width: u32,
+    height: u32,
+    frame_index: u32,
+    attachments: Vec<serde_json::Value>,
+    frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
 }
 
 #[derive(Serialize)]
@@ -207,8 +253,24 @@ struct PresentationFrameDump {
     outputs: Vec<PresentationAttachmentDump>,
     primary_hit: Option<PresentationPrimaryHitDump>,
     temporal_reuse: Option<String>,
+    quality: PresentationQualityDump,
     lighting: PresentationLightingDump,
     observability: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct PresentationQualityDump {
+    tier: String,
+    target_fps: u32,
+    internal_resolution_scale: f32,
+    allow_dynamic_resolution: bool,
+    primary_max_steps: i32,
+    allow_radiance: bool,
+    allow_media: bool,
+    temporal_mode: String,
+    allow_half_res_participants: bool,
+    allow_hit_compaction: bool,
+    degradation_order: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -362,6 +424,47 @@ struct PresentationDebugOptions {
     vertical_fov_degrees: f32,
     frame_index: u32,
     delta_seconds: f32,
+    frames: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameAttachmentFormat {
+    Json,
+    Ppm,
+}
+
+#[derive(Debug)]
+struct PreviewCommandOptions {
+    view: Option<String>,
+    region: Option<String>,
+    domain: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    camera_position: [f32; 3],
+    camera_forward: [f32; 3],
+    camera_up: [f32; 3],
+    vertical_fov_degrees: f32,
+    frame_index: u32,
+    delta_seconds: f32,
+    attachment: String,
+    json_report: bool,
+}
+
+#[derive(Debug)]
+struct FrameCommandOptions {
+    view: Option<String>,
+    region: Option<String>,
+    domain: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    camera_position: [f32; 3],
+    camera_forward: [f32; 3],
+    camera_up: [f32; 3],
+    vertical_fov_degrees: f32,
+    frame_index: u32,
+    delta_seconds: f32,
+    attachments: Vec<String>,
+    attachment_format: FrameAttachmentFormat,
 }
 
 struct CompiledPresentationBundle {
@@ -374,13 +477,15 @@ struct CompiledPresentationBundle {
 struct PreparedPresentationExecution {
     plan: wrela::presentation_plan::PresentationPlan,
     input: wrela::presentation_exec::PresentationExecutionInput,
+    camera: wrela::presentation_contract::CanonicalCameraInput,
+    viewport: wrela::presentation_contract::CanonicalViewportInput,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct PreviewRunRequest {
-    plan_name: SmolStr,
+struct ReadyPresentationExecution {
+    bundle: CompiledPresentationBundle,
+    prepared: PreparedPresentationExecution,
     region_name: SmolStr,
-    camera: wrela::presentation_contract::CanonicalCameraInput,
+    domain_name: SmolStr,
 }
 
 fn execute_presentation_debug_command(
@@ -461,17 +566,32 @@ fn execute_presentation_debug_command(
             std::process::exit(EXIT_USAGE);
         }
     };
-    let result = match wrela::presentation_exec::execute_plan(
-        &bundle.query_ctx,
-        &prepared.plan,
-        &prepared.input,
-    ) {
-        Ok(result) => result,
-        Err(err) => {
-            eprintln!("presentation execution error: {err}");
-            std::process::exit(EXIT_CODEGEN);
-        }
-    };
+    let mut session =
+        wrela::presentation_exec::AdaptivePresentationSession::new(prepared.plan.frame.quality.clone());
+    let mut frame_cost_history = Vec::new();
+    let mut result = None;
+    for frame_offset in 0..options.frames.max(1) {
+        let mut frame_input = prepared.input.clone();
+        frame_input.frame_state = wrela::presentation_exec::frame_state_value(
+            prepared.camera,
+            prepared.camera,
+            prepared.viewport,
+            [0.0, 0.0],
+            options.frame_index.saturating_add(frame_offset),
+            options.delta_seconds,
+        );
+        let frame_result =
+            match session.execute_frame(&bundle.query_ctx, &prepared.plan, &frame_input) {
+                Ok(result) => result,
+                Err(err) => {
+                    eprintln!("presentation execution error: {err}");
+                    std::process::exit(EXIT_CODEGEN);
+                }
+            };
+        frame_cost_history.push(frame_result.frame_cost.clone());
+        result = Some(frame_result);
+    }
+    let result = result.expect("presentation debug should execute at least one frame");
     let out_dir = options.out_dir.unwrap_or_else(|| {
         entry_path
             .parent()
@@ -492,11 +612,14 @@ fn execute_presentation_debug_command(
         region: region_name.to_string(),
         domain: domain_name.to_string(),
         backend: dispatch_backend_name(result.backend).to_string(),
+        frames_executed: frame_cost_history.len() as u32,
         color_ppm: artifacts.color_ppm.display().to_string(),
         depth_ppm: artifacts.depth_ppm.display().to_string(),
         world_normal_ppm: artifacts.world_normal_ppm.display().to_string(),
         stats_path: artifacts.stats_path.display().to_string(),
         stats,
+        frame_cost: result.frame_cost.clone(),
+        frame_cost_history,
     };
     if matches!(output_format, OutputFormat::Json) {
         println!(
@@ -510,12 +633,453 @@ fn execute_presentation_debug_command(
         );
         println!("  region: {}", dump.region);
         println!("  domain: {}", dump.domain);
+        println!("  frames: {}", dump.frames_executed);
         println!("  color ppm: {}", dump.color_ppm);
         println!("  depth ppm: {}", dump.depth_ppm);
         println!("  world normal ppm: {}", dump.world_normal_ppm);
         println!("  stats: {}", dump.stats_path);
         println!("{}", dump.stats.trim_end());
     }
+}
+
+fn execute_preview_command(
+    output_format: OutputFormat,
+    path_arg: Option<String>,
+    program_args: Vec<String>,
+    query_backend: wrela::query_plan::DispatchBackend,
+) {
+    let entry_path = match resolve_entry_path(path_arg.as_deref()) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(EXIT_USAGE);
+        }
+    };
+    let options = match parse_preview_command_options(&program_args) {
+        Ok(options) => options,
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(EXIT_USAGE);
+        }
+    };
+    if matches!(output_format, OutputFormat::Json) && !options.json_report {
+        eprintln!("error: `preview --json` requires `--json-report`; use `frame --json` for typed attachment bundles");
+        std::process::exit(EXIT_USAGE);
+    }
+    let ready = match load_prepared_presentation_execution(
+        &entry_path,
+        output_format,
+        query_backend,
+        options.view.as_deref(),
+        options.region.as_deref(),
+        options.domain.as_deref(),
+        wrela::presentation_contract::CanonicalCameraInput {
+            position: options.camera_position,
+            forward: options.camera_forward,
+            up: options.camera_up,
+            vertical_fov_degrees: options.vertical_fov_degrees,
+        },
+        options.width,
+        options.height,
+        options.frame_index,
+        options.delta_seconds,
+    ) {
+        Ok(ready) => ready,
+        Err(code) => std::process::exit(code),
+    };
+    let result = match wrela::presentation_exec::execute_plan(
+        &ready.bundle.query_ctx,
+        &ready.prepared.plan,
+        &ready.prepared.input,
+    ) {
+        Ok(result) => result,
+        Err(err) => {
+            eprintln!("presentation execution error: {err}");
+            std::process::exit(EXIT_CODEGEN);
+        }
+    };
+    let attachment_name = match wrela::presentation_exec::debug::attachment_name_for_selector(
+        &result,
+        &options.attachment,
+    ) {
+        Ok(name) => name.to_string(),
+        Err(err) => {
+            eprintln!("preview export error: {err}");
+            std::process::exit(EXIT_USAGE);
+        }
+    };
+    if options.json_report {
+        let dump = PreviewReportDump {
+            schema_version: 1,
+            view: ready.prepared.plan.name.to_string(),
+            region: ready.region_name.to_string(),
+            domain: ready.domain_name.to_string(),
+            attachment: attachment_name.clone(),
+            backend: dispatch_backend_name(result.backend).to_string(),
+            width: result.width,
+            height: result.height,
+            stats: wrela::presentation_exec::debug::render_primary_visibility_stats(&result),
+            frame_cost: result.frame_cost.clone(),
+        };
+        if matches!(output_format, OutputFormat::Json) {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&dump).unwrap_or_else(|_| "{}".to_string())
+            );
+        } else {
+            println!("preview report view={} backend={}", dump.view, dump.backend);
+            println!("  region: {}", dump.region);
+            println!("  domain: {}", dump.domain);
+            println!("  attachment: {}", dump.attachment);
+            println!("  resolution: {}x{}", dump.width, dump.height);
+            println!("{}", dump.stats.trim_end());
+        }
+        return;
+    }
+    let ppm = match wrela::presentation_exec::debug::render_attachment_ppm_string(
+        &result,
+        attachment_name.as_str(),
+    ) {
+        Ok(ppm) => ppm,
+        Err(err) => {
+            eprintln!("preview export error: {err}");
+            std::process::exit(EXIT_CODEGEN);
+        }
+    };
+    print!("{ppm}");
+}
+
+fn execute_frame_command(
+    output_format: OutputFormat,
+    path_arg: Option<String>,
+    program_args: Vec<String>,
+    query_backend: wrela::query_plan::DispatchBackend,
+) {
+    let entry_path = match resolve_entry_path(path_arg.as_deref()) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(EXIT_USAGE);
+        }
+    };
+    let options = match parse_frame_command_options(&program_args) {
+        Ok(options) => options,
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(EXIT_USAGE);
+        }
+    };
+    let ready = match load_prepared_presentation_execution(
+        &entry_path,
+        output_format,
+        query_backend,
+        options.view.as_deref(),
+        options.region.as_deref(),
+        options.domain.as_deref(),
+        wrela::presentation_contract::CanonicalCameraInput {
+            position: options.camera_position,
+            forward: options.camera_forward,
+            up: options.camera_up,
+            vertical_fov_degrees: options.vertical_fov_degrees,
+        },
+        options.width,
+        options.height,
+        options.frame_index,
+        options.delta_seconds,
+    ) {
+        Ok(ready) => ready,
+        Err(code) => std::process::exit(code),
+    };
+    let result = match wrela::presentation_exec::execute_plan(
+        &ready.bundle.query_ctx,
+        &ready.prepared.plan,
+        &ready.prepared.input,
+    ) {
+        Ok(result) => result,
+        Err(err) => {
+            eprintln!("presentation execution error: {err}");
+            std::process::exit(EXIT_CODEGEN);
+        }
+    };
+    let attachment_names = match selected_frame_attachment_names(&result, &options.attachments) {
+        Ok(names) => names,
+        Err(err) => {
+            eprintln!("frame export error: {err}");
+            std::process::exit(EXIT_USAGE);
+        }
+    };
+    if options.attachment_format == FrameAttachmentFormat::Ppm {
+        if matches!(output_format, OutputFormat::Json) {
+            eprintln!("error: `frame --json` cannot be combined with `--attachment-format=ppm`");
+            std::process::exit(EXIT_USAGE);
+        }
+        if attachment_names.len() != 1 {
+            eprintln!(
+                "error: `frame --attachment-format=ppm` requires exactly one selected attachment"
+            );
+            std::process::exit(EXIT_USAGE);
+        }
+        let ppm = match wrela::presentation_exec::debug::render_attachment_ppm_string(
+            &result,
+            attachment_names[0].as_str(),
+        ) {
+            Ok(ppm) => ppm,
+            Err(err) => {
+                eprintln!("frame export error: {err}");
+                std::process::exit(EXIT_CODEGEN);
+            }
+        };
+        print!("{ppm}");
+        return;
+    }
+
+    let attachments = attachment_names
+        .iter()
+        .map(|name| wrela::presentation_exec::debug::attachment_json(&result, name.as_str()))
+        .collect::<Result<Vec<_>, _>>();
+    let attachments = match attachments {
+        Ok(attachments) => attachments,
+        Err(err) => {
+            eprintln!("frame export error: {err}");
+            std::process::exit(EXIT_CODEGEN);
+        }
+    };
+    let dump = FrameBundleDump {
+        schema_version: 1,
+        view: ready.prepared.plan.name.to_string(),
+        region: ready.region_name.to_string(),
+        domain: ready.domain_name.to_string(),
+        backend: dispatch_backend_name(result.backend).to_string(),
+        width: result.width,
+        height: result.height,
+        frame_index: options.frame_index,
+        attachments,
+        frame_cost: result.frame_cost.clone(),
+    };
+    if matches!(output_format, OutputFormat::Json) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&dump).unwrap_or_else(|_| "{}".to_string())
+        );
+    } else {
+        println!("frame bundle view={} backend={}", dump.view, dump.backend);
+        println!("  region: {}", dump.region);
+        println!("  domain: {}", dump.domain);
+        println!("  resolution: {}x{}", dump.width, dump.height);
+        println!("  attachments:");
+        for attachment in &dump.attachments {
+            let name = attachment
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("<unknown>");
+            let kind = attachment
+                .get("kind")
+                .and_then(|value| value.as_str())
+                .unwrap_or("<unknown>");
+            let width = attachment
+                .get("width")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let height = attachment
+                .get("height")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            println!("    {} kind={} {}x{}", name, kind, width, height);
+        }
+        println!(
+            "{}",
+            wrela::presentation_exec::render_frame_cost_report(&dump.frame_cost).trim_end()
+        );
+    }
+}
+
+fn execute_frame_contracts_command(
+    output_format: OutputFormat,
+    path_arg: Option<String>,
+    program_args: Vec<String>,
+    query_backend: wrela::query_plan::DispatchBackend,
+) {
+    let entry_path = match resolve_entry_path(path_arg.as_deref()) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(EXIT_USAGE);
+        }
+    };
+    let requested_view = match parse_frame_contracts_view(&program_args) {
+        Ok(view) => view,
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(EXIT_USAGE);
+        }
+    };
+    let plans = match compile_presentation_plans(&entry_path, output_format, query_backend) {
+        Ok(plans) => plans,
+        Err(code) => std::process::exit(code),
+    };
+    let mut views = plans
+        .iter()
+        .map(presentation_plan_dump_item)
+        .filter(|item| {
+            requested_view
+                .as_deref()
+                .map_or(true, |requested| item.name == requested)
+        })
+        .map(|item| FrameContractsDumpItem {
+            name: item.name,
+            frame: item.frame,
+            frame_artifacts: item.frame_artifacts,
+            bindings: item.bindings,
+        })
+        .collect::<Vec<_>>();
+    if let Some(requested_view) = requested_view.as_deref()
+        && views.is_empty()
+    {
+        eprintln!("error: missing view `{requested_view}`");
+        std::process::exit(EXIT_USAGE);
+    }
+    views.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
+    let dump = FrameContractsDump {
+        schema_version: 1,
+        entry_path: entry_path.display().to_string(),
+        views,
+    };
+    if matches!(output_format, OutputFormat::Json) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&dump).unwrap_or_else(|_| "{}".to_string())
+        );
+    } else {
+        println!("frame contracts schema v{}", dump.schema_version);
+        println!("entry: {}", dump.entry_path);
+        for view in &dump.views {
+            println!("view {}", view.name);
+            let outputs = view
+                .frame
+                .outputs
+                .iter()
+                .map(|output| {
+                    format!(
+                        "{}({},{},{},{},{},{})",
+                        output.name,
+                        output.kind,
+                        output.element_schema,
+                        output.lifetime,
+                        output.resolution,
+                        output.scale,
+                        output.clear_policy
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("  frame outputs: {}", outputs);
+            println!(
+                "  temporal reuse: {}",
+                view.frame
+                    .temporal_reuse
+                    .clone()
+                    .unwrap_or_else(|| "Disabled".to_string())
+            );
+            println!(
+                "  quality: tier={} target_fps={}",
+                view.frame.quality.tier, view.frame.quality.target_fps
+            );
+            println!("  bindings:");
+            for binding in &view.bindings {
+                println!(
+                    "    {} recipe={} backend={} execution={}",
+                    binding.id, binding.recipe, binding.default_backend, binding.execution
+                );
+            }
+        }
+    }
+}
+
+fn load_prepared_presentation_execution(
+    entry_path: &Path,
+    output_format: OutputFormat,
+    query_backend: wrela::query_plan::DispatchBackend,
+    requested_view: Option<&str>,
+    requested_region: Option<&str>,
+    requested_domain: Option<&str>,
+    camera: wrela::presentation_contract::CanonicalCameraInput,
+    width: Option<u32>,
+    height: Option<u32>,
+    frame_index: u32,
+    delta_seconds: f32,
+) -> Result<ReadyPresentationExecution, i32> {
+    let bundle = compile_presentation_bundle(entry_path, output_format, query_backend)?;
+    let plan = match select_view_plan(&bundle, requested_view) {
+        Ok(plan) => plan,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return Err(EXIT_USAGE);
+        }
+    };
+    let view_func = bundle
+        .module
+        .functions
+        .iter()
+        .find(|(_, func)| func.name == plan.name)
+        .map(|(_, func)| func)
+        .expect("selected presentation plan should map back to a function");
+    let region_name = match select_region_name(&bundle.module, requested_region) {
+        Ok(name) => name,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return Err(EXIT_USAGE);
+        }
+    };
+    let domain_name = match select_domain_name(&bundle.module, view_func, requested_domain) {
+        Ok(name) => name,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return Err(EXIT_USAGE);
+        }
+    };
+    let prepared = match prepare_presentation_execution(
+        &bundle.module,
+        plan,
+        view_func,
+        region_name.clone(),
+        domain_name.clone(),
+        camera,
+        width,
+        height,
+        frame_index,
+        delta_seconds,
+        query_backend,
+    ) {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return Err(EXIT_USAGE);
+        }
+    };
+    Ok(ReadyPresentationExecution {
+        bundle,
+        prepared,
+        region_name,
+        domain_name,
+    })
+}
+
+fn selected_frame_attachment_names(
+    result: &wrela::presentation_exec::PresentationExecutionResult,
+    requested: &[String],
+) -> Result<Vec<String>, wrela::presentation_exec::PresentationExecError> {
+    if requested.is_empty() {
+        return Ok(result.attachments.attachments.keys().map(ToString::to_string).collect());
+    }
+    let mut seen = HashSet::new();
+    let mut resolved = Vec::new();
+    for selector in requested {
+        let name = wrela::presentation_exec::debug::attachment_name_for_selector(result, selector)?;
+        if seen.insert(name.to_string()) {
+            resolved.push(name.to_string());
+        }
+    }
+    Ok(resolved)
 }
 
 fn compile_presentation_plans(
@@ -638,108 +1202,6 @@ fn compile_presentation_bundle(
 
 type PreviewEvalBindings = HashMap<SmolStr, wrela::kernel::KernelValue>;
 
-fn try_execute_presentation_preview(
-    entry_path: &Path,
-    output_format: OutputFormat,
-    query_backend: wrela::query_plan::DispatchBackend,
-    program_args: &[String],
-) -> Result<Option<i32>, i32> {
-    if !program_args.is_empty() {
-        return Ok(None);
-    }
-    let bundle = compile_presentation_bundle(entry_path, output_format, query_backend)?;
-    let request = match extract_presentation_preview_request(&bundle.module) {
-        Ok(Some(request)) => request,
-        Ok(None) => return Ok(None),
-        Err(err) => {
-            eprintln!("presentation preview error: {err}");
-            return Err(EXIT_CODEGEN);
-        }
-    };
-    let plan = match bundle
-        .plans
-        .iter()
-        .find(|plan| plan.name == request.plan_name)
-    {
-        Some(plan) => plan,
-        None => {
-            eprintln!(
-                "presentation preview error: missing presentation plan `{}`",
-                request.plan_name
-            );
-            return Err(EXIT_CODEGEN);
-        }
-    };
-    let view_func = match bundle
-        .module
-        .functions
-        .iter()
-        .find(|(_, func)| {
-            func.name == request.plan_name
-                && matches!(
-                    func.role,
-                    hir::FunctionRole::Render | hir::FunctionRole::View
-                )
-        })
-        .map(|(_, func)| func)
-    {
-        Some(func) => func,
-        None => {
-            eprintln!(
-                "presentation preview error: missing render/view function `{}`",
-                request.plan_name
-            );
-            return Err(EXIT_CODEGEN);
-        }
-    };
-    let domain_name = match select_domain_name(&bundle.module, view_func, None) {
-        Ok(name) => name,
-        Err(err) => {
-            eprintln!("presentation preview error: {err}");
-            return Err(EXIT_CODEGEN);
-        }
-    };
-    let prepared = match prepare_presentation_execution(
-        &bundle.module,
-        plan,
-        view_func,
-        request.region_name,
-        domain_name,
-        request.camera,
-        None,
-        None,
-        0,
-        1.0 / 60.0,
-        query_backend,
-    ) {
-        Ok(prepared) => prepared,
-        Err(err) => {
-            eprintln!("presentation preview error: {err}");
-            return Err(EXIT_CODEGEN);
-        }
-    };
-    let result = match wrela::presentation_exec::execute_plan(
-        &bundle.query_ctx,
-        &prepared.plan,
-        &prepared.input,
-    ) {
-        Ok(result) => result,
-        Err(err) => {
-            eprintln!("presentation preview error: {err}");
-            return Err(EXIT_CODEGEN);
-        }
-    };
-    let ppm = match wrela::presentation_exec::debug::render_color_ppm_string(&result) {
-        Ok(ppm) => ppm,
-        Err(err) => {
-            eprintln!("presentation preview error: {err}");
-            return Err(EXIT_CODEGEN);
-        }
-    };
-    print!("{ppm}");
-    Ok(Some(EXIT_OK))
-}
-
 fn prepare_presentation_execution(
     module: &hir::Module,
     base_plan: &wrela::presentation_plan::PresentationPlan,
@@ -802,127 +1264,12 @@ fn prepare_presentation_execution(
             lighting,
             compatibility_projection,
             ray_budget,
+            quality_override: None,
             backend: query_backend,
         },
-    })
-}
-
-fn extract_presentation_preview_request(
-    module: &hir::Module,
-) -> Result<Option<PreviewRunRequest>, String> {
-    let run_body = match module
-        .functions
-        .iter()
-        .find(|(_, func)| func.name == "run" && func.role == hir::FunctionRole::Function)
-        .and_then(|(_, func)| func.body.as_ref())
-    {
-        Some(body) => body,
-        None => return Ok(None),
-    };
-    let mut bindings = PreviewEvalBindings::new();
-    for stmt in &run_body.root_stmts {
-        match &run_body.stmts[*stmt] {
-            hir::Stmt::Let { name, value, .. } => {
-                let value = match preview_eval_expr(run_body, *value, &bindings, "preview run") {
-                    Ok(value) => value,
-                    Err(_) => return Ok(None),
-                };
-                bindings.insert(name.clone(), value);
-            }
-            hir::Stmt::Assign {
-                name,
-                op: hir::AssignOp::Assign,
-                value,
-                ..
-            } => {
-                let value = match preview_eval_expr(run_body, *value, &bindings, "preview run") {
-                    Ok(value) => value,
-                    Err(_) => return Ok(None),
-                };
-                bindings.insert(name.clone(), value);
-            }
-            hir::Stmt::Capture { name, value } => {
-                let Some(region_name) = preview_capture_region_name(run_body, *value) else {
-                    return Ok(None);
-                };
-                bindings.insert(
-                    name.clone(),
-                    wrela::kernel::KernelValue::Capture(region_name),
-                );
-            }
-            hir::Stmt::Expr(expr) | hir::Stmt::IgnoreResult { expr } => {
-                if let Some(request) =
-                    preview_request_from_print_call(module, run_body, *expr, &bindings)?
-                {
-                    return Ok(Some(request));
-                }
-            }
-            hir::Stmt::Return(_) => {}
-            _ => return Ok(None),
-        }
-    }
-    Ok(None)
-}
-
-fn preview_request_from_print_call(
-    module: &hir::Module,
-    body: &hir::Body,
-    expr_id: hir::Idx<hir::Expr>,
-    bindings: &PreviewEvalBindings,
-) -> Result<Option<PreviewRunRequest>, String> {
-    let hir::Expr::Call { callee, args, .. } = &body.exprs[expr_id] else {
-        return Ok(None);
-    };
-    let hir::Expr::Variable(name) = &body.exprs[*callee] else {
-        return Ok(None);
-    };
-    if name != "print_line" {
-        return Ok(None);
-    }
-    let Some(text_expr_id) = preview_named_or_pos_expr(args, "text", 0) else {
-        return Ok(None);
-    };
-    let hir::Expr::Call {
-        callee: render_callee,
-        args: render_args,
-        ..
-    } = &body.exprs[text_expr_id]
-    else {
-        return Ok(None);
-    };
-    let hir::Expr::Variable(plan_name) = &body.exprs[*render_callee] else {
-        return Ok(None);
-    };
-    let Some(target_func) = module
-        .functions
-        .iter()
-        .find(|(_, func)| {
-            func.name == *plan_name
-                && matches!(
-                    func.role,
-                    hir::FunctionRole::Render | hir::FunctionRole::View
-                )
-        })
-        .map(|(_, func)| func)
-    else {
-        return Ok(None);
-    };
-    let call_bindings = preview_bind_call_args(
-        target_func,
-        body,
-        render_args,
-        bindings,
-        &format!("preview call `{plan_name}`"),
-    )?;
-    let region_name = preview_region_capture_arg(target_func, &call_bindings)
-        .ok_or_else(|| format!("preview call `{plan_name}` is missing a RegionCapture argument"))?;
-    let camera = preview_camera_arg(target_func, &call_bindings)
-        .ok_or_else(|| format!("preview call `{plan_name}` is missing a Camera argument"))?;
-    Ok(Some(PreviewRunRequest {
-        plan_name: target_func.name.clone(),
-        region_name,
         camera,
-    }))
+        viewport: wrela::presentation_contract::CanonicalViewportInput { width, height },
+    })
 }
 
 fn bind_presentation_function_params(
@@ -964,30 +1311,70 @@ fn authored_presentation_lighting_inputs(
             view_func.name
         ));
     }
-    let key_light = match metadata.lighting.light.as_ref() {
-        Some(body) => preview_expect_light(
-            &preview_eval_body(body, bindings, "presentation lighting key_light")?,
+    let grouped = metadata.lighting.grouped.as_ref();
+    let key_light = match grouped
+        .and_then(|body| {
+            helper_call_named_expr_id(body, "key_light", "light").map(|expr_id| (body, expr_id))
+        })
+        .or_else(|| {
+            metadata
+                .lighting
+                .light
+                .as_ref()
+                .and_then(|body| body_terminal_expr_id(body).map(|expr_id| (body, expr_id)))
+        }) {
+        Some((body, expr_id)) => preview_expect_light(
+            &preview_eval_expr(body, expr_id, bindings, "presentation lighting key_light")?,
             "presentation lighting key_light",
         )?,
         None => default_preview_key_light(),
     };
-    let fill_direction = match metadata.lighting.fill_dir.as_ref() {
-        Some(body) => preview_expect_vec3(
-            &preview_eval_body(body, bindings, "presentation lighting fill_direction")?,
+    let fill_direction = match grouped
+        .and_then(|body| {
+            helper_call_named_expr_id(body, "key_light", "fill_direction")
+                .map(|expr_id| (body, expr_id))
+        })
+        .or_else(|| {
+            metadata
+                .lighting
+                .fill_dir
+                .as_ref()
+                .and_then(|body| body_terminal_expr_id(body).map(|expr_id| (body, expr_id)))
+        }) {
+        Some((body, expr_id)) => preview_expect_vec3(
+            &preview_eval_expr(body, expr_id, bindings, "presentation lighting fill_direction")?,
             "presentation lighting fill_direction",
         )?,
         None => normalize_preview_vec3([-0.9, 0.45, 0.2]),
     };
-    let fill_strength = match metadata.lighting.fill_strength.as_ref() {
-        Some(body) => preview_expect_f32(
-            &preview_eval_body(body, bindings, "presentation lighting fill_strength")?,
+    let fill_strength = match grouped
+        .and_then(|body| {
+            helper_call_named_expr_id(body, "key_light", "fill_strength")
+                .map(|expr_id| (body, expr_id))
+        })
+        .or_else(|| {
+            metadata.lighting.fill_strength.as_ref().and_then(|body| {
+                body_terminal_expr_id(body).map(|expr_id| (body, expr_id))
+            })
+        }) {
+        Some((body, expr_id)) => preview_expect_f32(
+            &preview_eval_expr(body, expr_id, bindings, "presentation lighting fill_strength")?,
             "presentation lighting fill_strength",
         )?,
         None => 0.22,
     };
-    let ambient_color = match metadata.lighting.ambient_color.as_ref() {
-        Some(body) => preview_expect_vec3(
-            &preview_eval_body(body, bindings, "presentation lighting ambient_color")?,
+    let ambient_color = match grouped
+        .and_then(|body| {
+            helper_call_named_expr_id(body, "key_light", "ambient_color")
+                .map(|expr_id| (body, expr_id))
+        })
+        .or_else(|| {
+            metadata.lighting.ambient_color.as_ref().and_then(|body| {
+                body_terminal_expr_id(body).map(|expr_id| (body, expr_id))
+            })
+        }) {
+        Some((body, expr_id)) => preview_expect_vec3(
+            &preview_eval_expr(body, expr_id, bindings, "presentation lighting ambient_color")?,
             "presentation lighting ambient_color",
         )?,
         None => [0.12, 0.12, 0.12],
@@ -1254,72 +1641,6 @@ fn preview_eval_call_arguments(
     Ok((positional, named))
 }
 
-fn preview_bind_call_args(
-    function: &hir::Function,
-    body: &hir::Body,
-    args: &[hir::Arg],
-    bindings: &PreviewEvalBindings,
-    context: &str,
-) -> Result<PreviewEvalBindings, String> {
-    let (mut positional, mut named) = preview_eval_call_arguments(body, args, bindings, context)?;
-    let mut resolved = PreviewEvalBindings::new();
-    for param in &function.params {
-        let value = if let Some(value) = named.remove(&param.name) {
-            value
-        } else if !positional.is_empty() {
-            positional.remove(0)
-        } else {
-            return Err(format!(
-                "{context} is missing argument `{}` for `{}`",
-                param.name, function.name
-            ));
-        };
-        resolved.insert(param.name.clone(), value);
-    }
-    if let Some(extra) = named.keys().next() {
-        return Err(format!(
-            "{context} passes unexpected named argument `{extra}` to `{}`",
-            function.name
-        ));
-    }
-    if !positional.is_empty() {
-        return Err(format!(
-            "{context} passes too many positional arguments to `{}`",
-            function.name
-        ));
-    }
-    Ok(resolved)
-}
-
-fn preview_region_capture_arg(
-    function: &hir::Function,
-    bindings: &PreviewEvalBindings,
-) -> Option<SmolStr> {
-    function
-        .params
-        .iter()
-        .find(|param| {
-            param
-                .ty
-                .as_ref()
-                .is_some_and(|ty| ty.name == "RegionCapture")
-        })
-        .and_then(|param| bindings.get(&param.name))
-        .and_then(preview_capture_name)
-}
-
-fn preview_camera_arg(
-    function: &hir::Function,
-    bindings: &PreviewEvalBindings,
-) -> Option<wrela::presentation_contract::CanonicalCameraInput> {
-    function
-        .params
-        .iter()
-        .find(|param| param.ty.as_ref().is_some_and(|ty| ty.name == "Camera"))
-        .and_then(|param| bindings.get(&param.name))
-        .and_then(|value| preview_expect_camera(value, "preview camera").ok())
-}
-
 fn preview_named_or_pos_expr(
     args: &[hir::Arg],
     name: &str,
@@ -1557,33 +1878,6 @@ fn preview_expect_light(
     })
 }
 
-fn preview_expect_camera(
-    value: &wrela::kernel::KernelValue,
-    context: &str,
-) -> Result<wrela::presentation_contract::CanonicalCameraInput, String> {
-    let position =
-        preview_expect_vec3(&preview_struct_field(value, "position", context)?, context)?;
-    let forward = preview_expect_vec3(&preview_struct_field(value, "forward", context)?, context)?;
-    let up = preview_expect_vec3(&preview_struct_field(value, "up", context)?, context)?;
-    let vertical_fov_degrees = preview_expect_f32(
-        &preview_struct_field(value, "vertical_fov_degrees", context)?,
-        context,
-    )?;
-    Ok(wrela::presentation_contract::CanonicalCameraInput {
-        position,
-        forward,
-        up,
-        vertical_fov_degrees,
-    })
-}
-
-fn preview_capture_name(value: &wrela::kernel::KernelValue) -> Option<SmolStr> {
-    match value {
-        wrela::kernel::KernelValue::Capture(name) => Some(name.clone()),
-        _ => None,
-    }
-}
-
 fn preview_camera_value(
     camera: wrela::presentation_contract::CanonicalCameraInput,
 ) -> wrela::kernel::KernelValue {
@@ -1642,6 +1936,7 @@ fn parse_presentation_debug_options(args: &[String]) -> Result<PresentationDebug
         vertical_fov_degrees: 60.0,
         frame_index: 0,
         delta_seconds: 1.0 / 60.0,
+        frames: 1,
     };
     let mut index = 0usize;
     while index < args.len() {
@@ -1710,11 +2005,239 @@ fn parse_presentation_debug_options(args: &[String]) -> Result<PresentationDebug
                     .parse()
                     .map_err(|_| "invalid --delta-seconds value".to_string())?
             }
+            "--frames" => {
+                options.frames = take_value(&inline_value, args, &mut index)?
+                    .parse()
+                    .map_err(|_| "invalid --frames value".to_string())?
+            }
             _ => return Err(format!("unexpected argument `{arg}`")),
         }
         index += 1;
     }
     Ok(options)
+}
+
+fn parse_preview_command_options(args: &[String]) -> Result<PreviewCommandOptions, String> {
+    let mut options = PreviewCommandOptions {
+        view: None,
+        region: None,
+        domain: None,
+        width: None,
+        height: None,
+        camera_position: [0.0, 0.0, 2.5],
+        camera_forward: [0.0, 0.0, -1.0],
+        camera_up: [0.0, 1.0, 0.0],
+        vertical_fov_degrees: 60.0,
+        frame_index: 0,
+        delta_seconds: 1.0 / 60.0,
+        attachment: "color".to_string(),
+        json_report: false,
+    };
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = &args[index];
+        let (flag, inline_value) = match arg.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--") => (flag, Some(value.to_string())),
+            _ => (arg.as_str(), None),
+        };
+        let take_value = |inline_value: &Option<String>,
+                          args: &[String],
+                          index: &mut usize|
+         -> Result<String, String> {
+            if let Some(value) = inline_value {
+                return Ok(value.clone());
+            }
+            *index += 1;
+            args.get(*index)
+                .cloned()
+                .ok_or_else(|| format!("missing value for {flag}"))
+        };
+        match flag {
+            "--view" => options.view = Some(take_value(&inline_value, args, &mut index)?),
+            "--region" => options.region = Some(take_value(&inline_value, args, &mut index)?),
+            "--domain" => options.domain = Some(take_value(&inline_value, args, &mut index)?),
+            "--width" => {
+                options.width = Some(
+                    take_value(&inline_value, args, &mut index)?
+                        .parse()
+                        .map_err(|_| "invalid --width value".to_string())?,
+                )
+            }
+            "--height" => {
+                options.height = Some(
+                    take_value(&inline_value, args, &mut index)?
+                        .parse()
+                        .map_err(|_| "invalid --height value".to_string())?,
+                )
+            }
+            "--camera-position" => {
+                options.camera_position =
+                    parse_vec3_flag(&take_value(&inline_value, args, &mut index)?, flag)?
+            }
+            "--camera-forward" => {
+                options.camera_forward =
+                    parse_vec3_flag(&take_value(&inline_value, args, &mut index)?, flag)?
+            }
+            "--camera-up" => {
+                options.camera_up =
+                    parse_vec3_flag(&take_value(&inline_value, args, &mut index)?, flag)?
+            }
+            "--fov" => {
+                options.vertical_fov_degrees = take_value(&inline_value, args, &mut index)?
+                    .parse()
+                    .map_err(|_| "invalid --fov value".to_string())?
+            }
+            "--frame-index" => {
+                options.frame_index = take_value(&inline_value, args, &mut index)?
+                    .parse()
+                    .map_err(|_| "invalid --frame-index value".to_string())?
+            }
+            "--delta-seconds" => {
+                options.delta_seconds = take_value(&inline_value, args, &mut index)?
+                    .parse()
+                    .map_err(|_| "invalid --delta-seconds value".to_string())?
+            }
+            "--attachment" => {
+                options.attachment = take_value(&inline_value, args, &mut index)?;
+            }
+            "--json-report" => options.json_report = true,
+            _ => return Err(format!("unexpected argument `{arg}`")),
+        }
+        index += 1;
+    }
+    Ok(options)
+}
+
+fn parse_frame_command_options(args: &[String]) -> Result<FrameCommandOptions, String> {
+    let mut options = FrameCommandOptions {
+        view: None,
+        region: None,
+        domain: None,
+        width: None,
+        height: None,
+        camera_position: [0.0, 0.0, 2.5],
+        camera_forward: [0.0, 0.0, -1.0],
+        camera_up: [0.0, 1.0, 0.0],
+        vertical_fov_degrees: 60.0,
+        frame_index: 0,
+        delta_seconds: 1.0 / 60.0,
+        attachments: Vec::new(),
+        attachment_format: FrameAttachmentFormat::Json,
+    };
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = &args[index];
+        let (flag, inline_value) = match arg.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--") => (flag, Some(value.to_string())),
+            _ => (arg.as_str(), None),
+        };
+        let take_value = |inline_value: &Option<String>,
+                          args: &[String],
+                          index: &mut usize|
+         -> Result<String, String> {
+            if let Some(value) = inline_value {
+                return Ok(value.clone());
+            }
+            *index += 1;
+            args.get(*index)
+                .cloned()
+                .ok_or_else(|| format!("missing value for {flag}"))
+        };
+        match flag {
+            "--view" => options.view = Some(take_value(&inline_value, args, &mut index)?),
+            "--region" => options.region = Some(take_value(&inline_value, args, &mut index)?),
+            "--domain" => options.domain = Some(take_value(&inline_value, args, &mut index)?),
+            "--width" => {
+                options.width = Some(
+                    take_value(&inline_value, args, &mut index)?
+                        .parse()
+                        .map_err(|_| "invalid --width value".to_string())?,
+                )
+            }
+            "--height" => {
+                options.height = Some(
+                    take_value(&inline_value, args, &mut index)?
+                        .parse()
+                        .map_err(|_| "invalid --height value".to_string())?,
+                )
+            }
+            "--camera-position" => {
+                options.camera_position =
+                    parse_vec3_flag(&take_value(&inline_value, args, &mut index)?, flag)?
+            }
+            "--camera-forward" => {
+                options.camera_forward =
+                    parse_vec3_flag(&take_value(&inline_value, args, &mut index)?, flag)?
+            }
+            "--camera-up" => {
+                options.camera_up =
+                    parse_vec3_flag(&take_value(&inline_value, args, &mut index)?, flag)?
+            }
+            "--fov" => {
+                options.vertical_fov_degrees = take_value(&inline_value, args, &mut index)?
+                    .parse()
+                    .map_err(|_| "invalid --fov value".to_string())?
+            }
+            "--frame-index" => {
+                options.frame_index = take_value(&inline_value, args, &mut index)?
+                    .parse()
+                    .map_err(|_| "invalid --frame-index value".to_string())?
+            }
+            "--delta-seconds" => {
+                options.delta_seconds = take_value(&inline_value, args, &mut index)?
+                    .parse()
+                    .map_err(|_| "invalid --delta-seconds value".to_string())?
+            }
+            "--attachment" => options
+                .attachments
+                .push(take_value(&inline_value, args, &mut index)?),
+            "--attachment-format" => {
+                options.attachment_format = match take_value(&inline_value, args, &mut index)?
+                    .as_str()
+                {
+                    "json" => FrameAttachmentFormat::Json,
+                    "ppm" => FrameAttachmentFormat::Ppm,
+                    other => {
+                        return Err(format!(
+                            "invalid --attachment-format value `{other}` (expected json or ppm)"
+                        ));
+                    }
+                }
+            }
+            _ => return Err(format!("unexpected argument `{arg}`")),
+        }
+        index += 1;
+    }
+    Ok(options)
+}
+
+fn parse_frame_contracts_view(args: &[String]) -> Result<Option<String>, String> {
+    let mut view = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = &args[index];
+        let (flag, inline_value) = match arg.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--") => (flag, Some(value.to_string())),
+            _ => (arg.as_str(), None),
+        };
+        match flag {
+            "--view" => {
+                if let Some(value) = inline_value {
+                    view = Some(value);
+                } else {
+                    index += 1;
+                    view = Some(
+                        args.get(index)
+                            .cloned()
+                            .ok_or_else(|| "missing value for --view".to_string())?,
+                    );
+                }
+            }
+            _ => return Err(format!("unexpected argument `{arg}`")),
+        }
+        index += 1;
+    }
+    Ok(view)
 }
 
 fn parse_vec3_flag(value: &str, flag: &str) -> Result<[f32; 3], String> {
@@ -1753,7 +2276,7 @@ fn select_view_plan<'a>(
     if candidates.len() == 1 {
         Ok(candidates.remove(0))
     } else {
-        Err("presentation-debug requires --view when multiple view plans exist".to_string())
+        Err("presentation execution requires --view when multiple view plans exist".to_string())
     }
 }
 
@@ -1773,7 +2296,7 @@ fn select_region_name(module: &hir::Module, requested: Option<&str>) -> Result<S
     if candidates.len() == 1 {
         Ok(candidates.remove(0))
     } else {
-        Err("presentation-debug requires --region when multiple regions exist".to_string())
+        Err("presentation execution requires --region when multiple regions exist".to_string())
     }
 }
 
@@ -1807,10 +2330,7 @@ fn select_domain_name(
     if candidates.len() == 1 {
         Ok(candidates.remove(0))
     } else {
-        Err(
-            "presentation-debug requires --domain when the view does not name a single domain"
-                .to_string(),
-        )
+        Err("presentation execution requires --domain when the view does not name a single domain".to_string())
     }
 }
 
@@ -1834,6 +2354,32 @@ fn body_terminal_expr_id(body: &hir::Body) -> Option<hir::Idx<hir::Expr>> {
     }
 }
 
+fn body_terminal_call_args<'a>(body: &'a hir::Body) -> Option<(&'a SmolStr, &'a [hir::Arg])> {
+    let expr_id = body_terminal_expr_id(body)?;
+    let hir::Expr::Call { callee, args, .. } = &body.exprs[expr_id] else {
+        return None;
+    };
+    let hir::Expr::Variable(name) = &body.exprs[*callee] else {
+        return None;
+    };
+    Some((name, args.as_slice()))
+}
+
+fn helper_call_named_expr_id(
+    body: &hir::Body,
+    helper_name: &str,
+    arg_name: &str,
+) -> Option<hir::Idx<hir::Expr>> {
+    let (callee, args) = body_terminal_call_args(body)?;
+    if callee != helper_name {
+        return None;
+    }
+    args.iter().find_map(|arg| match arg {
+        hir::Arg::Named { name, value, .. } if name == arg_name => Some(*value),
+        _ => None,
+    })
+}
+
 fn resolve_view_dimension(
     view: &hir::Function,
     override_value: Option<u32>,
@@ -1847,25 +2393,39 @@ fn resolve_view_dimension(
         .as_ref()
         .ok_or_else(|| "selected view is missing render metadata".to_string())?;
     let label = if width { "width" } else { "height" };
+    if let Some(viewport_body) = metadata.view.viewport.as_ref()
+        && let Some(value) = helper_call_named_expr_id(viewport_body, "viewport", label)
+    {
+        return eval_expr_u32(viewport_body, value).ok_or_else(|| {
+            format!(
+                "presentation execution cannot evaluate non-literal view {label}; pass --{label} explicitly"
+            )
+        });
+    }
     let body = if width {
         metadata.view.width.as_ref()
     } else {
         metadata.view.height.as_ref()
     }
-    .ok_or_else(|| format!("presentation-debug requires --{label} when the view omits {label}"))?;
+    .ok_or_else(|| format!("presentation execution requires --{label} when the view omits {label}"))?;
     eval_body_u32(body).ok_or_else(|| {
         format!(
-            "presentation-debug cannot evaluate non-literal view {label}; pass --{label} explicitly"
+            "presentation execution cannot evaluate non-literal view {label}; pass --{label} explicitly"
         )
     })
 }
 
 fn eval_body_u32(body: &hir::Body) -> Option<u32> {
-    eval_body_f32(body).map(|value| value.max(0.0) as u32)
+    let expr_id = body_terminal_expr_id(body)?;
+    eval_expr_u32(body, expr_id)
 }
 
 fn eval_body_i32(body: &hir::Body) -> Option<i32> {
     let expr_id = body_terminal_expr_id(body)?;
+    eval_expr_i32(body, expr_id)
+}
+
+fn eval_expr_i32(body: &hir::Body, expr_id: hir::Idx<hir::Expr>) -> Option<i32> {
     match &body.exprs[expr_id] {
         hir::Expr::Literal(hir::Literal::Integer(value)) => Some(*value as i32),
         hir::Expr::Literal(hir::Literal::Float(value)) => Some(*value as i32),
@@ -1875,6 +2435,14 @@ fn eval_body_i32(body: &hir::Body) -> Option<i32> {
 
 fn eval_body_f32(body: &hir::Body) -> Option<f32> {
     let expr_id = body_terminal_expr_id(body)?;
+    eval_expr_f32(body, expr_id)
+}
+
+fn eval_expr_u32(body: &hir::Body, expr_id: hir::Idx<hir::Expr>) -> Option<u32> {
+    eval_expr_f32(body, expr_id).map(|value| value.max(0.0) as u32)
+}
+
+fn eval_expr_f32(body: &hir::Body, expr_id: hir::Idx<hir::Expr>) -> Option<f32> {
     match &body.exprs[expr_id] {
         hir::Expr::Literal(hir::Literal::Integer(value)) => Some(*value as f32),
         hir::Expr::Literal(hir::Literal::Float(value)) => Some(*value as f32),
@@ -1922,7 +2490,7 @@ fn authored_domain_f32(body: Option<&hir::Body>, field: &str, default: f32) -> R
     match body {
         Some(body) => eval_body_f32(body).ok_or_else(|| {
             format!(
-                "presentation-debug cannot evaluate non-literal domain {field}; author a terminal numeric literal for now"
+                "presentation execution cannot evaluate non-literal domain {field}; author a terminal numeric literal for now"
             )
         }),
         None => Ok(default),
@@ -1933,7 +2501,7 @@ fn authored_domain_i32(body: Option<&hir::Body>, field: &str, default: i32) -> R
     match body {
         Some(body) => eval_body_i32(body).ok_or_else(|| {
             format!(
-                "presentation-debug cannot evaluate non-literal domain {field}; author a terminal numeric literal for now"
+                "presentation execution cannot evaluate non-literal domain {field}; author a terminal numeric literal for now"
             )
         }),
         None => Ok(default),
@@ -2019,6 +2587,28 @@ fn presentation_plan_dump_item(
                 .temporal
                 .as_ref()
                 .map(|temporal| temporal_reuse_name(temporal.reuse).to_string()),
+            quality: PresentationQualityDump {
+                tier: wrela::presentation_plan::quality_tier_name(plan.frame.quality.tier)
+                    .to_string(),
+                target_fps: plan.frame.quality.target_fps,
+                internal_resolution_scale: plan.frame.quality.internal_resolution_scale,
+                allow_dynamic_resolution: plan.frame.quality.allow_dynamic_resolution,
+                primary_max_steps: plan.frame.quality.primary_max_steps,
+                allow_radiance: plan.frame.quality.allow_radiance,
+                allow_media: plan.frame.quality.allow_media,
+                temporal_mode: temporal_reuse_name(plan.frame.quality.temporal_mode).to_string(),
+                allow_half_res_participants: plan.frame.quality.allow_half_res_participants,
+                allow_hit_compaction: plan.frame.quality.allow_hit_compaction,
+                degradation_order: plan
+                    .frame
+                    .quality
+                    .degradation_order
+                    .iter()
+                    .map(|step| {
+                        wrela::presentation_plan::quality_degradation_step_name(*step).to_string()
+                    })
+                    .collect(),
+            },
             lighting: PresentationLightingDump {
                 key_light: presentation_lighting_input_dump(&plan.frame.lighting.key_light),
                 fill_direction: presentation_lighting_input_dump(
@@ -2155,6 +2745,27 @@ fn print_presentation_plan_human(dump: &PresentationPlanDump) {
                 primary_hit.fields.join(",")
             );
         }
+        println!(
+            "  quality: tier={} target_fps={} internal_scale={:.2} dynamic_resolution={} primary_max_steps={} radiance={} media={} temporal_mode={} half_res_participants={} hit_compaction={}",
+            plan.frame.quality.tier,
+            plan.frame.quality.target_fps,
+            plan.frame.quality.internal_resolution_scale,
+            plan.frame.quality.allow_dynamic_resolution,
+            plan.frame.quality.primary_max_steps,
+            plan.frame.quality.allow_radiance,
+            plan.frame.quality.allow_media,
+            plan.frame.quality.temporal_mode,
+            plan.frame.quality.allow_half_res_participants,
+            plan.frame.quality.allow_hit_compaction
+        );
+        println!(
+            "  quality degradation order: {}",
+            if plan.frame.quality.degradation_order.is_empty() {
+                "none".to_string()
+            } else {
+                plan.frame.quality.degradation_order.join(", ")
+            }
+        );
         println!(
             "  lighting: key_light={} fill_direction={} fill_strength={} ambient_color={} legacy_plural_lights={}",
             format_lighting_input_dump(&plan.frame.lighting.key_light),
@@ -2899,6 +3510,24 @@ pub fn execute(spec: CommandSpec) {
             }
             execute_query_contracts_command(output_format, path_arg, program_args);
         }
+        "preview" => {
+            if trace {
+                eprintln!("build: command preview");
+            }
+            execute_preview_command(output_format, path_arg, program_args, query_backend);
+        }
+        "frame" => {
+            if trace {
+                eprintln!("build: command frame");
+            }
+            execute_frame_command(output_format, path_arg, program_args, query_backend);
+        }
+        "frame-contracts" => {
+            if trace {
+                eprintln!("build: command frame-contracts");
+            }
+            execute_frame_contracts_command(output_format, path_arg, program_args, query_backend);
+        }
         "presentation-plan" => {
             if trace {
                 eprintln!("build: command presentation-plan");
@@ -3427,18 +4056,6 @@ pub fn execute(spec: CommandSpec) {
                     std::process::exit(EXIT_USAGE);
                 }
             };
-            if !integration_mode {
-                match try_execute_presentation_preview(
-                    &entry_path,
-                    output_format,
-                    query_backend,
-                    &program_args,
-                ) {
-                    Ok(Some(code)) => std::process::exit(code),
-                    Ok(None) => {}
-                    Err(code) => std::process::exit(code),
-                }
-            }
             let mir_module = if integration_mode {
                 if !integration_mode_entry_path_is_allowed(&entry_path) {
                     eprintln!(
@@ -3646,87 +4263,40 @@ mod tests {
     }
 
     #[test]
-    fn preview_request_extraction_recognizes_render_ppm_runs() {
+    fn authored_lighting_follows_grouped_view_helpers() {
         let module = lower_inline_module(
             r#"
-render render_ppm(world: RegionCapture, camera: Camera) {
-    width = 4
-    height = 4
-}
-
-fn run() -> Integer {
-    camera = Camera(
-        position = vec3(0.0, 0.1, 2.7),
-        forward = normalize(vec3(0.0, 0.0, -1.0)),
-        up = vec3(0.0, 1.0, 0.0),
-        vertical_fov_degrees = 46.0
+view sample_view(world: RegionCapture, camera: Camera) {
+    viewport = viewport(width = 2, height = 2)
+    lighting = key_light(
+        light = Light(
+            position = camera.position + vec3(0.5, 1.0, 0.5),
+            direction = normalize(vec3(-0.4, -0.7, -0.2)),
+            intensity = vec3(1.0, 1.0, 1.0),
+            range = 8.0
+        ),
+        fill_direction = normalize(vec3(-0.2, 0.8, 0.4)),
+        fill_strength = 0.33,
+        ambient_color = vec3(0.08, 0.11, 0.14)
     )
-    world = capture scene_region
-    print_line(text = render_ppm(world = world, camera = camera))
-    return 0
 }
 "#,
         );
-
-        let request = extract_presentation_preview_request(&module)
-            .expect("preview extraction")
-            .expect("preview request");
-        assert_eq!(request.plan_name, "render_ppm");
-        assert_eq!(request.region_name, "scene_region");
-        assert_eq!(request.camera.position, [0.0, 0.1, 2.7]);
-        assert_eq!(request.camera.up, [0.0, 1.0, 0.0]);
-        assert_eq!(request.camera.vertical_fov_degrees, 46.0);
-    }
-
-    #[test]
-    fn authored_lighting_and_compatibility_projection_follow_render_metadata() {
-        let module = lower_inline_module(
-            r#"
-render sample_render(world: RegionCapture, camera: Camera) {
-    light = Light(
-        position = camera.position + vec3(0.5, 1.0, 0.5),
-        direction = normalize(vec3(-0.4, -0.7, -0.2)),
-        intensity = vec3(1.0, 1.0, 1.0),
-        range = 8.0
-    )
-    fill_dir = normalize(vec3(-0.2, 0.8, 0.4))
-    fill_strength = 0.33
-    ambient_color = vec3(0.08, 0.11, 0.14)
-    width = 2
-    height = 2
-    world_up = camera.up
-    view_scale = 0.82
-}
-"#,
-        );
-        let render = function(&module, "sample_render");
-        let plan = wrela::presentation_plan::PresentationPlan::from_render_function(
-            render,
-            wrela::query_plan::DispatchBackend::Auto,
-        )
-        .expect("plan");
+        let view = function(&module, "sample_view");
         let camera = wrela::presentation_contract::CanonicalCameraInput {
             position: [1.0, 2.0, 3.0],
             forward: [0.0, 0.0, -1.0],
             up: [0.0, 1.0, 0.0],
             vertical_fov_degrees: 46.0,
         };
-        let bindings =
-            bind_presentation_function_params(render, &SmolStr::new("scene_region"), camera);
+        let bindings = bind_presentation_function_params(view, &SmolStr::new("scene_region"), camera);
 
         let lighting =
-            authored_presentation_lighting_inputs(render, &bindings).expect("authored lighting");
+            authored_presentation_lighting_inputs(view, &bindings).expect("authored lighting");
         assert_eq!(lighting.key_light.position, [1.5, 3.0, 3.5]);
         assert_eq!(lighting.key_light.range, 8.0);
         assert!((lighting.fill_strength - 0.33).abs() <= 1e-6);
         assert_eq!(lighting.ambient_color, [0.08, 0.11, 0.14]);
-
-        let compatibility =
-            authored_compatibility_projection_input(&plan, render, &bindings, camera)
-                .expect("compatibility projection")
-                .expect("legacy compatibility projection");
-        assert_eq!(compatibility.world_up, [0.0, 1.0, 0.0]);
-        assert!((compatibility.view_scale - 0.82).abs() <= 1e-6);
     }
 
     #[test]
@@ -3744,23 +4314,22 @@ domain sample_domain(world: RegionCapture) {
     max_steps = 64
 }
 
-render sample_render(world: RegionCapture, camera: Camera) {
+view sample_view(world: RegionCapture, camera: Camera) {
     domain = sample_domain(world = world)
-    width = 2
-    height = 2
+    viewport = viewport(width = 2, height = 2)
 }
 "#,
         );
-        let render = function(&module, "sample_render");
+        let view = function(&module, "sample_view");
         let plan = wrela::presentation_plan::PresentationPlan::from_render_function(
-            render,
+            view,
             wrela::query_plan::DispatchBackend::Auto,
         )
         .expect("plan");
         let prepared = prepare_presentation_execution(
             &module,
             &plan,
-            render,
+            view,
             SmolStr::new("scene_region"),
             SmolStr::new("sample_domain"),
             wrela::presentation_contract::CanonicalCameraInput {
@@ -3792,96 +4361,5 @@ render sample_render(world: RegionCapture, camera: Camera) {
                 .iter()
                 .all(|attachment| attachment.name != "radiance" && attachment.name != "medium")
         );
-    }
-
-    #[test]
-    fn try_execute_presentation_preview_handles_supported_run_shape() {
-        let temp = tempfile::Builder::new()
-            .prefix("wrela-preview-fastpath")
-            .tempdir()
-            .expect("tempdir");
-        let src_dir = temp.path().join("src");
-        std::fs::create_dir_all(&src_dir).expect("src dir");
-        let entry = src_dir.join("main.wr");
-        std::fs::write(
-            &entry,
-            r#"
-use print_line from host/io
-
-field exact distance preview_field(p: Vec3) -> F32 {
-    sphere(radius = 0.5)
-}
-
-material preview_material(hit: Hit3) -> Surface {
-    return Surface(
-        albedo = vec3(0.4, 0.6, 0.8),
-        roughness = 0.25,
-        metalness = 0.0,
-        clearcoat = 0.0,
-        clearcoat_roughness = 0.0,
-        sheen = 0.0,
-        emissive = vec3(0.0, 0.0, 0.0)
-    )
-}
-
-shape preview_shape {
-    field = preview_field
-    material = preview_material
-}
-
-region scene_region() {
-    place scene = preview_shape
-}
-
-domain scene_domain(world: RegionCapture) {
-    geometry_detail = 1
-    material = true
-    radiance = false
-    media = false
-    max_distance = 6.0
-    min_step = 0.02
-    hit_epsilon = 0.0005
-    max_steps = 96
-}
-
-render render_ppm(world: RegionCapture, camera: Camera) {
-    domain = scene_domain(world = world)
-    light = Light(
-        position = vec3(1.8, 2.4, 2.2),
-        direction = normalize(vec3(-0.5, -0.8, -0.6)),
-        intensity = vec3(1.0, 0.98, 0.95),
-        range = 8.0
-    )
-    width = 2
-    height = 2
-    world_up = camera.up
-    view_scale = 0.75
-    fill_dir = normalize(vec3(-0.7, 0.45, 0.2))
-}
-
-fn run() -> Integer {
-    camera = Camera(
-        position = vec3(0.0, 0.0, 2.0),
-        forward = normalize(vec3(0.0, 0.0, -1.0)),
-        up = vec3(0.0, 1.0, 0.0),
-        vertical_fov_degrees = 46.0
-    )
-    world = capture scene_region
-    print_line(text = render_ppm(world = world, camera = camera))
-    return 0
-}
-"#,
-        )
-        .expect("write preview fixture");
-
-        let result = try_execute_presentation_preview(
-            &entry,
-            OutputFormat::Pretty,
-            wrela::query_plan::DispatchBackend::Cpu,
-            &[],
-        )
-        .expect("preview execution")
-        .expect("preview fast path should handle supported run shape");
-        assert_eq!(result, EXIT_OK);
     }
 }

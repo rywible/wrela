@@ -1624,12 +1624,16 @@ impl LoweringContext {
                 },
                 width: None,
                 height: None,
+                viewport: None,
             },
             frame: RenderFrameMetadata {
                 domain: None,
                 export: RenderFrameExportMetadata {
                     kind: RenderFrameExportKind::LegacyPpmString,
                 },
+                quality: None,
+                outputs: None,
+                history: None,
             },
             lighting: RenderLightingMetadata {
                 light: None,
@@ -1637,6 +1641,7 @@ impl LoweringContext {
                 fill_dir: None,
                 fill_strength: None,
                 ambient_color: None,
+                grouped: None,
                 light_compatibility_alias: false,
                 fill_dir_compatibility_alias: false,
             },
@@ -1657,6 +1662,9 @@ impl LoweringContext {
             };
             match name.as_str() {
                 "domain" => metadata.frame.domain = Some(self.lower_shape_payload(value)),
+                "quality" => metadata.frame.quality = Some(self.lower_shape_payload(value)),
+                "outputs" => metadata.frame.outputs = Some(self.lower_shape_payload(value)),
+                "history" => metadata.frame.history = Some(self.lower_shape_payload(value)),
                 "light" => {
                     metadata.lighting.light = Some(self.lower_shape_payload(value));
                     metadata.lighting.light_compatibility_alias = true;
@@ -1668,6 +1676,8 @@ impl LoweringContext {
                 "lights" => metadata.lighting.lights = Some(self.lower_shape_payload(value)),
                 "width" => metadata.view.width = Some(self.lower_shape_payload(value)),
                 "height" => metadata.view.height = Some(self.lower_shape_payload(value)),
+                "viewport" => metadata.view.viewport = Some(self.lower_shape_payload(value)),
+                "lighting" => metadata.lighting.grouped = Some(self.lower_shape_payload(value)),
                 "world_up" => {
                     metadata.compatibility.world_up = Some(self.lower_shape_payload(value))
                 }

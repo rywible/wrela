@@ -1,8 +1,8 @@
 use super::command_handlers::{
-    self, DifferentialPipeline, KpiThresholds, PerfCmpConfig, PerfGateConfig, PerfProfile,
-    PerfReport, TestSelection, TestTarget, budget_jobs_timeout, build_benchmark_selection,
-    load_benchmark_manifest, resolve_benchmark_manifest_path, resolve_budget_policy_v1,
-    resolve_test_target,
+    self, BenchmarkManifest, DifferentialPipeline, KpiThresholds, PerfCmpConfig, PerfGateConfig,
+    PerfProfile, PerfReport, PresentationBenchmarkReport, TestSelection, TestTarget,
+    budget_jobs_timeout, build_benchmark_selection, load_benchmark_manifest,
+    resolve_benchmark_manifest_path, resolve_budget_policy_v1, resolve_test_target,
 };
 use super::contracts::{EXIT_CODEGEN, EXIT_OK, EXIT_USAGE, OutputFormat};
 use serde::{Deserialize, Serialize};
@@ -63,6 +63,7 @@ pub(super) fn execute_perf_command(mut input: PerfCommandInput) -> i32 {
     }
 
     let manifest_path = resolve_benchmark_manifest_path(&target, input.benchmark_manifest_path);
+    let mut benchmark_manifest = None;
     let mut runtime_only_cv_gate = false;
     if let Some(path) = manifest_path.as_ref() {
         let manifest = match load_benchmark_manifest(path) {
@@ -80,6 +81,7 @@ pub(super) fn execute_perf_command(mut input: PerfCommandInput) -> i32 {
         if let Some(max_timeout_ms) = max_timeout_ms {
             timeout = timeout.max(std::time::Duration::from_millis(max_timeout_ms));
         }
+        benchmark_manifest = Some(manifest.clone());
         runtime_only_cv_gate = true;
         match build_benchmark_selection(&target, path, input.perf_profile) {
             Ok(selection_ids) => {
@@ -119,6 +121,8 @@ pub(super) fn execute_perf_command(mut input: PerfCommandInput) -> i32 {
         &input.test_selection,
         runtime_only_cv_gate,
         input.query_backend,
+        benchmark_manifest.as_ref(),
+        input.perf_profile,
     )
 }
 
@@ -136,8 +140,17 @@ pub(super) fn run_perf_harness(
     selection: &TestSelection,
     runtime_only_cv_gate: bool,
     query_backend: wrela::query_plan::DispatchBackend,
+    benchmark_manifest: Option<&BenchmarkManifest>,
+    perf_profile: PerfProfile,
 ) -> i32 {
+    let presentation_benchmarks_active = benchmark_manifest.is_some_and(|manifest| {
+        manifest
+            .scenarios_for_profile(perf_profile)
+            .iter()
+            .any(|scenario| scenario.presentation.is_some())
+    });
     let mut samples = Vec::new();
+    let mut latest_presentation_reports = None;
     for idx in 0..runs {
         println!("perf-run {}/{}", idx + 1, runs);
         let (exit, summary, _) = command_handlers::run_tests_once(
@@ -150,7 +163,7 @@ pub(super) fn run_perf_harness(
             true,
             selection,
             false,
-            true,
+            !presentation_benchmarks_active,
             command_handlers::HttpCassetteMode::Replay,
             None,
             query_backend,
@@ -163,7 +176,51 @@ pub(super) fn run_perf_harness(
             return exit;
         }
         if let Some(summary) = summary {
-            samples.push(summary);
+            if presentation_benchmarks_active {
+                let TestTarget::ProjectRoot(benchmark_root) = target else {
+                    eprintln!("perf harness error: presentation benchmarks require a project root");
+                    return EXIT_CODEGEN;
+                };
+                let Some(manifest) = benchmark_manifest else {
+                    eprintln!(
+                        "perf harness error: presentation benchmarks require a benchmark manifest"
+                    );
+                    return EXIT_CODEGEN;
+                };
+                let reports = match collect_presentation_benchmark_reports(
+                    benchmark_root,
+                    manifest,
+                    perf_profile,
+                ) {
+                    Ok(reports) => reports,
+                    Err(err) => {
+                        eprintln!(
+                            "perf harness error: failed to collect presentation reports: {err}"
+                        );
+                        return EXIT_CODEGEN;
+                    }
+                };
+                let runtime_cases = reports
+                    .iter()
+                    .map(|report| {
+                        (
+                            report.scenario_id.clone(),
+                            report.test_name.clone(),
+                            report.frame_time_ns,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let summary =
+                    command_handlers::overlay_perf_summary_runtime_cases(&summary, &runtime_cases);
+                if matches!(output_format, OutputFormat::Pretty) {
+                    command_handlers::emit_perf_summary(&summary, perf_debug);
+                    print_presentation_benchmark_reports(&reports);
+                }
+                latest_presentation_reports = Some(reports);
+                samples.push(summary);
+            } else {
+                samples.push(summary);
+            }
         }
     }
     if samples.is_empty() {
@@ -242,7 +299,7 @@ pub(super) fn run_perf_harness(
     }
 
     let report = PerfReport {
-        version: 1,
+        version: 2,
         generated_at_unix_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::from_secs(0))
@@ -251,6 +308,7 @@ pub(super) fn run_perf_harness(
         cv,
         summary,
         samples,
+        presentation_reports: latest_presentation_reports,
     };
     if let Some(parent) = baseline_out.parent()
         && let Err(err) = fs::create_dir_all(parent)
@@ -279,6 +337,206 @@ pub(super) fn run_perf_harness(
     }
     println!("perf baseline written: {}", baseline_out.display());
     EXIT_OK
+}
+
+#[derive(Debug, Deserialize)]
+struct PresentationDebugCommandOutput {
+    view: String,
+    region: String,
+    domain: String,
+    backend: String,
+    frames_executed: u32,
+    frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
+    #[serde(default)]
+    frame_cost_history: Vec<wrela::presentation_exec::PresentationFrameCostReport>,
+}
+
+fn collect_presentation_benchmark_reports(
+    benchmark_root: &Path,
+    manifest: &BenchmarkManifest,
+    profile: PerfProfile,
+) -> Result<Vec<PresentationBenchmarkReport>, String> {
+    let current_exe =
+        env::current_exe().map_err(|err| format!("failed to resolve current executable: {err}"))?;
+    let mut reports = Vec::new();
+    for scenario in manifest.scenarios_for_profile(profile) {
+        let Some(spec) = scenario.presentation.as_ref() else {
+            continue;
+        };
+        reports.push(run_presentation_benchmark_report(
+            &current_exe,
+            benchmark_root,
+            scenario,
+            spec,
+        )?);
+    }
+    Ok(reports)
+}
+
+fn run_presentation_benchmark_report(
+    current_exe: &Path,
+    benchmark_root: &Path,
+    scenario: &command_handlers::BenchmarkScenario,
+    spec: &command_handlers::BenchmarkPresentationSpec,
+) -> Result<PresentationBenchmarkReport, String> {
+    let presentation_target = spec
+        .entry
+        .as_ref()
+        .map(|entry| benchmark_root.join(entry))
+        .unwrap_or_else(|| benchmark_root.to_path_buf());
+    let output = Command::new(current_exe)
+        .arg("--json")
+        .arg("--query-backend=cpu")
+        .arg("presentation-debug")
+        .arg(presentation_target)
+        .args(presentation_debug_args(spec))
+        .output()
+        .map_err(|err| {
+            format!(
+                "failed to launch presentation-debug for scenario `{}`: {err}",
+                scenario.id
+            )
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "presentation-debug failed for scenario `{}`: stdout={} stderr={}",
+            scenario.id,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let dump: PresentationDebugCommandOutput =
+        serde_json::from_slice(&output.stdout).map_err(|err| {
+            format!(
+                "failed to parse presentation-debug JSON for scenario `{}`: {err}",
+                scenario.id
+            )
+        })?;
+    Ok(presentation_report_from_debug_output(scenario, dump))
+}
+
+fn presentation_report_from_debug_output(
+    scenario: &command_handlers::BenchmarkScenario,
+    dump: PresentationDebugCommandOutput,
+) -> PresentationBenchmarkReport {
+    let quality_history = if dump.frame_cost_history.is_empty() {
+        vec![dump.frame_cost.quality.tier.clone()]
+    } else {
+        dump.frame_cost_history
+            .iter()
+            .map(|frame| frame.quality.tier.clone())
+            .collect()
+    };
+    let internal_resolution_history = if dump.frame_cost_history.is_empty() {
+        vec![dump.frame_cost.quality.internal_resolution_scale]
+    } else {
+        dump.frame_cost_history
+            .iter()
+            .map(|frame| frame.quality.internal_resolution_scale)
+            .collect()
+    };
+    PresentationBenchmarkReport {
+        scenario_id: scenario.id.clone(),
+        test_name: scenario.test_name.clone(),
+        view: dump.view,
+        region: dump.region,
+        domain: dump.domain,
+        backend: dump.backend,
+        frames_executed: dump.frames_executed.max(1),
+        frame_time_ns: frame_cost_total_ns(&dump.frame_cost),
+        quality_tier: dump.frame_cost.quality.tier.clone(),
+        target_fps: dump.frame_cost.quality.target_fps,
+        internal_resolution_scale: dump.frame_cost.quality.internal_resolution_scale,
+        reconstructed_output: dump.frame_cost.quality.reconstructed_output,
+        quality_history,
+        internal_resolution_history,
+        bottleneck_pass: dump.frame_cost.bottleneck_pass.clone(),
+        active_acceleration_artifacts: dump.frame_cost.active_acceleration_artifacts.clone(),
+        performance_gain_sources: dump.frame_cost.performance_gain_sources.clone(),
+        frame_cost: dump.frame_cost,
+    }
+}
+
+fn presentation_debug_args(spec: &command_handlers::BenchmarkPresentationSpec) -> Vec<String> {
+    let mut args = vec![
+        "--view".to_string(),
+        spec.view.clone(),
+        "--region".to_string(),
+        spec.region.clone(),
+        "--width".to_string(),
+        spec.width.unwrap_or(64).to_string(),
+        "--height".to_string(),
+        spec.height.unwrap_or(64).to_string(),
+        "--frames".to_string(),
+        spec.frames.unwrap_or(1).max(1).to_string(),
+        "--camera-position".to_string(),
+        format_vec3(spec.camera_position),
+        "--camera-forward".to_string(),
+        format_vec3(spec.camera_forward),
+        "--camera-up".to_string(),
+        format_vec3(spec.camera_up),
+        "--fov".to_string(),
+        spec.vertical_fov_degrees.to_string(),
+    ];
+    if let Some(domain) = spec.domain.as_ref() {
+        args.push("--domain".to_string());
+        args.push(domain.clone());
+    }
+    args
+}
+
+fn format_vec3(value: [f32; 3]) -> String {
+    format!("{},{},{}", value[0], value[1], value[2])
+}
+
+fn frame_cost_total_ns(report: &wrela::presentation_exec::PresentationFrameCostReport) -> u128 {
+    report
+        .passes
+        .iter()
+        .map(|pass| pass.elapsed_micros)
+        .sum::<u128>()
+        * 1_000
+}
+
+fn print_presentation_benchmark_reports(reports: &[PresentationBenchmarkReport]) {
+    println!("presentation-benchmarks:");
+    for report in reports {
+        println!(
+            "presentation-scenario {} test={} backend={} frames={} frame_time_ns={} quality={} target_fps={} scale={:.2} scale_history={} reconstructed_output={} bottleneck_pass={} acceleration={} gain_sources={}",
+            report.scenario_id,
+            report.test_name,
+            report.backend,
+            report.frames_executed,
+            report.frame_time_ns,
+            report.quality_tier,
+            report.target_fps,
+            report.internal_resolution_scale,
+            report
+                .internal_resolution_history
+                .iter()
+                .map(|scale| format!("{scale:.2}"))
+                .collect::<Vec<_>>()
+                .join(","),
+            report.reconstructed_output,
+            report.bottleneck_pass.as_deref().unwrap_or("none"),
+            report.active_acceleration_artifacts.join(","),
+            report.performance_gain_sources.join(","),
+        );
+        for pass in &report.frame_cost.passes {
+            println!(
+                "presentation-pass {} {} kind={} items={} elapsed_us={} dispatches={} bytes_read={} bytes_written={} notes={}",
+                report.scenario_id,
+                pass.pass_id,
+                pass.pass_kind,
+                pass.work_items,
+                pass.elapsed_micros,
+                pass.dispatch_count,
+                pass.attachment_bytes_read,
+                pass.attachment_bytes_written,
+                pass.notes.join("|"),
+            );
+        }
+    }
 }
 
 pub(super) struct PerfcmpCommandInput {
@@ -2132,5 +2390,225 @@ mod tests {
         let ci_a = bootstrap_ci_percentile(&values, 95.0, 128, &mut seed_a);
         let ci_b = bootstrap_ci_percentile(&values, 95.0, 128, &mut seed_b);
         assert_eq!(ci_a, ci_b);
+    }
+
+    #[test]
+    fn presentation_debug_args_default_dimensions_to_64() {
+        let spec = command_handlers::BenchmarkPresentationSpec {
+            view: "bench_view".to_string(),
+            region: "bench_region".to_string(),
+            entry: Some("tests/bench_fixture.wr".to_string()),
+            domain: Some("bench_domain".to_string()),
+            width: None,
+            height: None,
+            frames: Some(4),
+            camera_position: [0.0, 1.0, 2.0],
+            camera_forward: [0.0, 0.0, -1.0],
+            camera_up: [0.0, 1.0, 0.0],
+            vertical_fov_degrees: 48.0,
+        };
+        let args = presentation_debug_args(&spec);
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--width" && pair[1] == "64")
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--height" && pair[1] == "64")
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--frames" && pair[1] == "4")
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--view" && pair[1] == "bench_view")
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--region" && pair[1] == "bench_region")
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--domain" && pair[1] == "bench_domain")
+        );
+    }
+
+    #[test]
+    fn presentation_report_from_debug_output_carries_quality_and_pass_data() {
+        let scenario = command_handlers::BenchmarkScenario {
+            id: "presentation_fixture".to_string(),
+            test_name: "tests/fixture::test_ops_64".to_string(),
+            ops: 64,
+            class: "critical".to_string(),
+            min_runtime_ms: None,
+            timeout_ms: None,
+            allow_unstable: false,
+            presentation: None,
+        };
+        let dump = PresentationDebugCommandOutput {
+            view: "bench_view".to_string(),
+            region: "bench_region".to_string(),
+            domain: "bench_domain".to_string(),
+            backend: "cpu".to_string(),
+            frames_executed: 2,
+            frame_cost: wrela::presentation_exec::PresentationFrameCostReport {
+                output_width: 64,
+                output_height: 64,
+                internal_width: 32,
+                internal_height: 32,
+                quality: wrela::presentation_exec::PresentationQualityReport {
+                    tier: "realtime_60".to_string(),
+                    target_fps: 60,
+                    output_width: 64,
+                    output_height: 64,
+                    internal_width: 32,
+                    internal_height: 32,
+                    internal_resolution_scale: 0.5,
+                    achieved_native_output: false,
+                    reconstructed_output: true,
+                    temporal_mode: "TemporalAA".to_string(),
+                    radiance_mode: "full".to_string(),
+                    media_enabled: true,
+                    half_res_participants: false,
+                    hit_compaction_enabled: true,
+                    active_degradations: vec!["reduce_internal_resolution".to_string()],
+                },
+                primary_hit_rate: 0.75,
+                average_trace_steps: 12.0,
+                max_trace_steps: 24,
+                candidate_count_before_pruning: 100,
+                candidate_count_after_pruning: 60,
+                support_prune_effectiveness: 0.4,
+                tile_cull_total_tiles: 16,
+                tile_cull_active_tiles: 9,
+                tile_cull_efficiency: 0.4375,
+                surface_resolve_count: 256,
+                participant_resolve_count: 128,
+                history_reuse_rate: 0.5,
+                attachment_bytes: vec![wrela::presentation_exec::PresentationAttachmentBytes {
+                    attachment: "color".to_string(),
+                    width: 64,
+                    height: 64,
+                    total_size_bytes: 16384,
+                }],
+                passes: vec![wrela::presentation_exec::PresentationPassCost {
+                    pass_id: "primary.visibility".to_string(),
+                    pass_kind: "primary_visibility".to_string(),
+                    work_items: 1024,
+                    elapsed_micros: 3300,
+                    dispatch_count: 1,
+                    attachment_bytes_read: 0,
+                    attachment_bytes_written: 8192,
+                    notes: vec!["dynamic_resolution".to_string()],
+                }],
+                active_acceleration_artifacts: vec!["dynamic_resolution".to_string()],
+                bottleneck_pass: Some("primary_visibility".to_string()),
+                performance_gain_sources: vec![
+                    "less_semantic_work".to_string(),
+                    "quality_degradation".to_string(),
+                ],
+            },
+            frame_cost_history: vec![
+                wrela::presentation_exec::PresentationFrameCostReport {
+                    output_width: 64,
+                    output_height: 64,
+                    internal_width: 64,
+                    internal_height: 64,
+                    quality: wrela::presentation_exec::PresentationQualityReport {
+                        tier: "realtime_60".to_string(),
+                        target_fps: 60,
+                        output_width: 64,
+                        output_height: 64,
+                        internal_width: 64,
+                        internal_height: 64,
+                        internal_resolution_scale: 1.0,
+                        achieved_native_output: true,
+                        reconstructed_output: false,
+                        temporal_mode: "TemporalAA".to_string(),
+                        radiance_mode: "full".to_string(),
+                        media_enabled: true,
+                        half_res_participants: false,
+                        hit_compaction_enabled: false,
+                        active_degradations: vec![],
+                    },
+                    primary_hit_rate: 0.8,
+                    average_trace_steps: 14.0,
+                    max_trace_steps: 24,
+                    candidate_count_before_pruning: 100,
+                    candidate_count_after_pruning: 60,
+                    support_prune_effectiveness: 0.4,
+                    tile_cull_total_tiles: 16,
+                    tile_cull_active_tiles: 9,
+                    tile_cull_efficiency: 0.4375,
+                    surface_resolve_count: 256,
+                    participant_resolve_count: 128,
+                    history_reuse_rate: 0.0,
+                    attachment_bytes: vec![],
+                    passes: vec![],
+                    active_acceleration_artifacts: vec![],
+                    bottleneck_pass: Some("primary_visibility".to_string()),
+                    performance_gain_sources: vec!["backend_speed".to_string()],
+                },
+                wrela::presentation_exec::PresentationFrameCostReport {
+                    output_width: 64,
+                    output_height: 64,
+                    internal_width: 32,
+                    internal_height: 32,
+                    quality: wrela::presentation_exec::PresentationQualityReport {
+                        tier: "realtime_60".to_string(),
+                        target_fps: 60,
+                        output_width: 64,
+                        output_height: 64,
+                        internal_width: 32,
+                        internal_height: 32,
+                        internal_resolution_scale: 0.5,
+                        achieved_native_output: false,
+                        reconstructed_output: true,
+                        temporal_mode: "TemporalAA".to_string(),
+                        radiance_mode: "full".to_string(),
+                        media_enabled: true,
+                        half_res_participants: false,
+                        hit_compaction_enabled: true,
+                        active_degradations: vec!["reduce_internal_resolution".to_string()],
+                    },
+                    primary_hit_rate: 0.75,
+                    average_trace_steps: 12.0,
+                    max_trace_steps: 24,
+                    candidate_count_before_pruning: 100,
+                    candidate_count_after_pruning: 60,
+                    support_prune_effectiveness: 0.4,
+                    tile_cull_total_tiles: 16,
+                    tile_cull_active_tiles: 9,
+                    tile_cull_efficiency: 0.4375,
+                    surface_resolve_count: 256,
+                    participant_resolve_count: 128,
+                    history_reuse_rate: 0.25,
+                    attachment_bytes: vec![],
+                    passes: vec![],
+                    active_acceleration_artifacts: vec!["dynamic_resolution".to_string()],
+                    bottleneck_pass: Some("primary_visibility".to_string()),
+                    performance_gain_sources: vec![
+                        "less_semantic_work".to_string(),
+                        "quality_degradation".to_string(),
+                    ],
+                },
+            ],
+        };
+
+        let report = presentation_report_from_debug_output(&scenario, dump);
+        assert_eq!(report.scenario_id, "presentation_fixture");
+        assert_eq!(report.frames_executed, 2);
+        assert_eq!(report.frame_time_ns, 3_300_000);
+        assert_eq!(report.quality_tier, "realtime_60");
+        assert_eq!(report.internal_resolution_scale, 0.5);
+        assert!(report.reconstructed_output);
+        assert_eq!(report.internal_resolution_history, vec![1.0, 0.5]);
+        assert_eq!(
+            report.bottleneck_pass.as_deref(),
+            Some("primary_visibility")
+        );
+        assert_eq!(report.frame_cost.passes.len(), 1);
+        assert_eq!(report.frame_cost.passes[0].pass_kind, "primary_visibility");
     }
 }

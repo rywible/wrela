@@ -1,10 +1,12 @@
 use crate::kernel::{KernelStructValue, KernelValue};
 use crate::presentation_contract::{CanonicalCameraInput, CanonicalViewportInput};
 use crate::presentation_exec::{
-    expect_bool, expect_struct, expect_u32, expect_vec2, expect_vec3, field,
-    frame_state_temporal_components, PresentationExecError, PresentationExecutionInput,
+    PresentationExecError, PresentationExecutionInput, expect_bool, expect_struct, expect_u32,
+    expect_vec2, expect_vec3, field, frame_state_temporal_components,
 };
-use crate::presentation_plan::{MotionResolvePassContract, PresentationPlan, TemporalResolvePassContract};
+use crate::presentation_plan::{
+    MotionResolvePassContract, PresentationPlan, TemporalResolvePassContract,
+};
 use crate::query_exec::BatchQueryExecutionTrace;
 use smol_str::SmolStr;
 
@@ -51,13 +53,19 @@ pub(super) fn motion_resolve(
     contract: &MotionResolvePassContract,
 ) -> Result<ContinuationCounts, PresentationExecError> {
     let components = frame_state_temporal_components(&input.frame_state)?;
-    let history_verdict = history_verdict(plan, input, components.frame_index, components.previous_frame_index)?;
+    let history_verdict = history_verdict(
+        plan,
+        input,
+        components.frame_index,
+        components.previous_frame_index,
+    )?;
     let previous_hits = contract
         .history_primary_hit_attachment
         .as_ref()
         .map(|name| attachments.decode_attachment(name))
         .transpose()?;
-    let Some(motion_attachment) = attachments.attachment_mut(contract.output_attachment.as_str()) else {
+    let Some(motion_attachment) = attachments.attachment_mut(contract.output_attachment.as_str())
+    else {
         return Ok(ContinuationCounts::default());
     };
     let mut counts = ContinuationCounts::default();
@@ -73,12 +81,17 @@ pub(super) fn motion_resolve(
             );
             if matches!(history_verdict, HistoryVerdict::Available) {
                 match previous_sample {
-                    Some(previous_sample) if sample_in_view(previous_sample, components.previous_viewport) => {
-                        let previous_index = previous_history_index(previous_sample, components.previous_viewport);
+                    Some(previous_sample)
+                        if sample_in_view(previous_sample, components.previous_viewport) =>
+                    {
+                        let previous_index =
+                            previous_history_index(previous_sample, components.previous_viewport);
                         if previous_hits
                             .as_ref()
                             .and_then(|hits| hits.get(previous_index))
-                            .is_some_and(|previous_hit| identities_match(hit, previous_hit).unwrap_or(false))
+                            .is_some_and(|previous_hit| {
+                                identities_match(hit, previous_hit).unwrap_or(false)
+                            })
                         {
                             counts.available += 1;
                             MotionSample {
@@ -106,7 +119,10 @@ pub(super) fn motion_resolve(
                     Some(previous_sample) => {
                         counts.rejected += 1;
                         MotionSample {
-                            delta_pixels: [previous_sample[0] - current_pixel[0], previous_sample[1] - current_pixel[1]],
+                            delta_pixels: [
+                                previous_sample[0] - current_pixel[0],
+                                previous_sample[1] - current_pixel[1],
+                            ],
                             previous_sample,
                             valid: false,
                             disoccluded: true,
@@ -156,19 +172,25 @@ pub(super) fn temporal_resolve_inputs(
     contract: &TemporalResolvePassContract,
 ) -> Result<Vec<TemporalResolveInputSample>, PresentationExecError> {
     let current_color = attachments.decode_attachment(contract.input_attachment.as_str())?;
-    let history_color = attachments.decode_attachment(contract.history_color_attachment.as_str())?;
+    let history_color =
+        attachments.decode_attachment(contract.history_color_attachment.as_str())?;
     let motion = attachments.decode_attachment(contract.motion_attachment.as_str())?;
     let mut inputs = Vec::with_capacity(current_color.len());
     for index in 0..current_color.len() {
         let current = color_value(&current_color[index])?;
         let motion = motion_sample(&motion[index])?;
-        let (clamp_min, clamp_max) = neighborhood_bounds(&current_color, width as usize, height as usize, index)?;
+        let (clamp_min, clamp_max) =
+            neighborhood_bounds(&current_color, width as usize, height as usize, index)?;
         let history = if motion.valid {
             let sample_index = previous_history_index(
                 motion.previous_sample,
                 CanonicalViewportInput { width, height },
             );
-            color_value(history_color.get(sample_index).unwrap_or(&KernelValue::Vec3([0.0, 0.0, 0.0])))?
+            color_value(
+                history_color
+                    .get(sample_index)
+                    .unwrap_or(&KernelValue::Vec3([0.0, 0.0, 0.0])),
+            )?
         } else {
             [0.0, 0.0, 0.0]
         };
@@ -196,15 +218,24 @@ pub(super) fn temporal_resolve_cpu(
         return Ok(consumed_count);
     };
     for (index, input) in inputs.iter().enumerate() {
-        output.encode(index, &KernelValue::Vec3(resolve_temporal_color(input, contract)))?;
+        output.encode(
+            index,
+            &KernelValue::Vec3(resolve_temporal_color(input, contract)),
+        )?;
     }
-    if let Some(history_color) = attachments.attachment_mut(contract.history_color_attachment.as_str()) {
+    if let Some(history_color) =
+        attachments.attachment_mut(contract.history_color_attachment.as_str())
+    {
         for (index, input) in inputs.iter().enumerate() {
-            history_color.encode(index, &KernelValue::Vec3(resolve_temporal_color(input, contract)))?;
+            history_color.encode(
+                index,
+                &KernelValue::Vec3(resolve_temporal_color(input, contract)),
+            )?;
         }
     }
     if let Some(history_primary_hit_attachment) = &contract.history_primary_hit_attachment
-        && let Some(history_primary_hit) = attachments.attachment_mut(history_primary_hit_attachment.as_str())
+        && let Some(history_primary_hit) =
+            attachments.attachment_mut(history_primary_hit_attachment.as_str())
     {
         for (index, hit) in primary_hits.iter().enumerate() {
             history_primary_hit.encode(index, hit)?;
@@ -227,11 +258,26 @@ pub(super) fn temporal_resolve_kernel_values(
             KernelValue::Struct(KernelStructValue {
                 name: SmolStr::new("TemporalResolveInput"),
                 fields: vec![
-                    (SmolStr::new("current_color"), KernelValue::Vec3(input.current_color)),
-                    (SmolStr::new("history_color"), KernelValue::Vec3(input.history_color)),
-                    (SmolStr::new("clamp_min"), KernelValue::Vec3(input.clamp_min)),
-                    (SmolStr::new("clamp_max"), KernelValue::Vec3(input.clamp_max)),
-                    (SmolStr::new("use_history"), KernelValue::Bool(input.use_history)),
+                    (
+                        SmolStr::new("current_color"),
+                        KernelValue::Vec3(input.current_color),
+                    ),
+                    (
+                        SmolStr::new("history_color"),
+                        KernelValue::Vec3(input.history_color),
+                    ),
+                    (
+                        SmolStr::new("clamp_min"),
+                        KernelValue::Vec3(input.clamp_min),
+                    ),
+                    (
+                        SmolStr::new("clamp_max"),
+                        KernelValue::Vec3(input.clamp_max),
+                    ),
+                    (
+                        SmolStr::new("use_history"),
+                        KernelValue::Bool(input.use_history),
+                    ),
                 ],
             })
         })
@@ -261,8 +307,8 @@ pub(super) fn resolve_temporal_color(
         input.history_color[1].clamp(input.clamp_min[1], input.clamp_max[1]),
         input.history_color[2].clamp(input.clamp_min[2], input.clamp_max[2]),
     ];
-    let history_weight =
-        contract.history_weight_numerator as f32 / contract.history_weight_denominator.max(1) as f32;
+    let history_weight = contract.history_weight_numerator as f32
+        / contract.history_weight_denominator.max(1) as f32;
     [
         (input.current_color[0] * (1.0 - history_weight)) + (clamped_history[0] * history_weight),
         (input.current_color[1] * (1.0 - history_weight)) + (clamped_history[1] * history_weight),
@@ -271,10 +317,7 @@ pub(super) fn resolve_temporal_color(
 }
 
 fn temporal_consumed_count(inputs: &[TemporalResolveInputSample]) -> u32 {
-    inputs
-        .iter()
-        .filter(|input| input.use_history)
-        .count() as u32
+    inputs.iter().filter(|input| input.use_history).count() as u32
 }
 
 fn history_verdict(
@@ -300,8 +343,10 @@ fn history_verdict(
     {
         return Ok(HistoryVerdict::Rejected);
     }
-    if matches!(temporal.validation, crate::presentation_contract::TemporalValidationStrictness::Strict)
-        && previous_frame_index != history.frame_index
+    if matches!(
+        temporal.validation,
+        crate::presentation_contract::TemporalValidationStrictness::Strict
+    ) && previous_frame_index != history.frame_index
     {
         return Ok(HistoryVerdict::Rejected);
     }
@@ -310,7 +355,11 @@ fn history_verdict(
         if age > slot.max_age_frames {
             return Ok(HistoryVerdict::Rejected);
         }
-        let Some(previous_slot) = history.slots.iter().find(|previous| previous.slot == slot.slot) else {
+        let Some(previous_slot) = history
+            .slots
+            .iter()
+            .find(|previous| previous.slot == slot.slot)
+        else {
             return Ok(HistoryVerdict::Rejected);
         };
         if previous_slot.compatibility != slot.compatibility
@@ -322,18 +371,22 @@ fn history_verdict(
     Ok(HistoryVerdict::Available)
 }
 
-fn identities_match(current: &KernelValue, previous: &KernelValue) -> Result<bool, PresentationExecError> {
+fn identities_match(
+    current: &KernelValue,
+    previous: &KernelValue,
+) -> Result<bool, PresentationExecError> {
     if !hit_flag(current)? || !hit_flag(previous)? {
         return Ok(false);
     }
     let current = expect_struct(current, "Hit3")?;
     let previous = expect_struct(previous, "Hit3")?;
-    Ok(
-        expect_u32(field(current, "root_shape_id")?)? == expect_u32(field(previous, "root_shape_id")?)?
-            && expect_u32(field(current, "feature_id")?)? == expect_u32(field(previous, "feature_id")?)?
-            && expect_u32(field(current, "instance_id")?)? == expect_u32(field(previous, "instance_id")?)?
-            && expect_u32(field(current, "repeat_id")?)? == expect_u32(field(previous, "repeat_id")?)?,
-    )
+    Ok(expect_u32(field(current, "root_shape_id")?)?
+        == expect_u32(field(previous, "root_shape_id")?)?
+        && expect_u32(field(current, "feature_id")?)?
+            == expect_u32(field(previous, "feature_id")?)?
+        && expect_u32(field(current, "instance_id")?)?
+            == expect_u32(field(previous, "instance_id")?)?
+        && expect_u32(field(current, "repeat_id")?)? == expect_u32(field(previous, "repeat_id")?)?)
 }
 
 fn hit_flag(hit: &KernelValue) -> Result<bool, PresentationExecError> {
@@ -367,7 +420,9 @@ fn project_to_previous_sample(
     let width = viewport.width.max(1) as f32;
     let height = viewport.height.max(1) as f32;
     let aspect = width / height;
-    let vertical_scale = (camera.vertical_fov_degrees.to_radians() * 0.5).tan().max(1.0e-4);
+    let vertical_scale = (camera.vertical_fov_degrees.to_radians() * 0.5)
+        .tan()
+        .max(1.0e-4);
     let screen_x = dot3(rel, right) / (depth * aspect * vertical_scale);
     let screen_y = dot3(rel, up) / (depth * vertical_scale);
     let uv = [(screen_x + 1.0) * 0.5, (1.0 - screen_y) * 0.5];
@@ -385,8 +440,12 @@ fn sample_in_view(sample: [f32; 2], viewport: CanonicalViewportInput) -> bool {
 }
 
 fn previous_history_index(sample: [f32; 2], viewport: CanonicalViewportInput) -> usize {
-    let x = sample[0].round().clamp(0.0, viewport.width.saturating_sub(1) as f32) as usize;
-    let y = sample[1].round().clamp(0.0, viewport.height.saturating_sub(1) as f32) as usize;
+    let x = sample[0]
+        .round()
+        .clamp(0.0, viewport.width.saturating_sub(1) as f32) as usize;
+    let y = sample[1]
+        .round()
+        .clamp(0.0, viewport.height.saturating_sub(1) as f32) as usize;
     y * viewport.width as usize + x
 }
 
@@ -394,7 +453,10 @@ fn motion_value(sample: MotionSample) -> KernelValue {
     KernelValue::Struct(KernelStructValue {
         name: SmolStr::new("MotionVector"),
         fields: vec![
-            (SmolStr::new("delta_pixels"), KernelValue::Vec2(sample.delta_pixels)),
+            (
+                SmolStr::new("delta_pixels"),
+                KernelValue::Vec2(sample.delta_pixels),
+            ),
             (
                 SmolStr::new("previous_sample"),
                 KernelValue::Vec2(sample.previous_sample),
