@@ -765,7 +765,12 @@ impl<'a> KernelExecutor<'a> {
                 ensure_matches_type(&value, ty)?;
                 Ok(value)
             }
-            KernelExpr::Capture { target, .. } => Ok(KernelValue::Capture(target.clone())),
+            KernelExpr::Capture { target, ty, .. } => {
+                Ok(self.typed_capture_value(target, ty).unwrap_or_else(|| {
+                    // Legacy fallback for callers that still rely on name-only capture values.
+                    KernelValue::Capture(target.clone())
+                }))
+            }
             KernelExpr::DispatchBackend { backend, .. } => {
                 Ok(KernelValue::DispatchBackend(*backend))
             }
@@ -1089,33 +1094,44 @@ impl<'a> KernelExecutor<'a> {
         name: &SmolStr,
         member: &SmolStr,
     ) -> Result<KernelValue, KernelExecError> {
+        let snapshot = self
+            .program
+            .query_exec
+            .snapshot_handle_for_capture_name(name);
         match member.as_str() {
-            "scene_id" => {
-                let scene_id = if self.program.query_exec.field_names.contains(name) {
-                    self.program.query_exec.field_scene_id(name)
-                } else if self.program.query_exec.shape_names.contains(name) {
-                    self.program.query_exec.shape_scene_id(name)
-                } else if self.program.query_exec.regions_by_name.contains_key(name) {
-                    self.program.query_exec.region_scene_id(name)
-                } else {
-                    0
-                };
-                Ok(KernelValue::U32(scene_id))
-            }
-            "epoch" => Ok(KernelValue::U32(0)),
-            "root_feature_id" => {
-                let feature_id = if self.program.query_exec.shape_names.contains(name) {
-                    self.program.query_exec.shape_root_feature_id(name)
-                } else {
-                    0
-                };
-                Ok(KernelValue::U32(feature_id))
-            }
+            "scene_id" => Ok(KernelValue::U32(
+                snapshot
+                    .map(|handle| handle.portable_scene_id())
+                    .unwrap_or_default(),
+            )),
+            "epoch" => Ok(KernelValue::U32(
+                snapshot
+                    .map(|handle| handle.portable_epoch())
+                    .unwrap_or_default(),
+            )),
+            "root_feature_id" => Ok(KernelValue::U32(
+                snapshot
+                    .map(|handle| handle.portable_root_feature_id())
+                    .unwrap_or_default(),
+            )),
             _ => Err(KernelExecError::UnknownField {
                 base: format!("Capture({name})"),
                 field: member.clone(),
             }),
         }
+    }
+
+    fn typed_capture_value(&self, target: &SmolStr, ty: &Type) -> Option<KernelValue> {
+        let Type::Named(name, _) = ty else {
+            return None;
+        };
+        let handle = match name.as_str() {
+            "FieldCapture" => self.program.query_exec.field_snapshot_handle(target),
+            "ShapeCapture" => self.program.query_exec.shape_snapshot_handle(target),
+            "RegionCapture" => self.program.query_exec.region_snapshot_handle(target),
+            _ => None,
+        }?;
+        Some(handle.capture_value())
     }
 
     fn lookup_local<'b>(

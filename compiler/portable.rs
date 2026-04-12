@@ -169,16 +169,10 @@ const DISPATCH_BACKEND_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField 
     ty: TyAtom(Atom::I32),
 }];
 
-const SPATIAL_DOMAIN_CONTRACT_FIELDS: &[PortableBuiltinField] = &[
-    PortableBuiltinField {
-        name: "geometry_detail",
-        ty: TyAtom(Atom::I32),
-    },
-    PortableBuiltinField {
-        name: "guarantee",
-        ty: TyAtom(Atom::U32),
-    },
-];
+const SPATIAL_DOMAIN_CONTRACT_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField {
+    name: "geometry_detail",
+    ty: TyAtom(Atom::I32),
+}];
 
 const SURFACE_DOMAIN_CONTRACT_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField {
     name: "material",
@@ -645,6 +639,73 @@ const MOTION_VECTOR_FIELDS: &[PortableBuiltinField] = &[
     },
 ];
 
+const REQUIRED_GUARANTEE_CLASS_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField {
+    name: "id",
+    ty: TyAtom(Atom::U32),
+}];
+
+const SELECTED_METHOD_CLASS_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField {
+    name: "id",
+    ty: TyAtom(Atom::U32),
+}];
+
+const RAY_BUDGET_POLICY_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "max_distance",
+        ty: TyAtom(Atom::F32),
+    },
+    PortableBuiltinField {
+        name: "min_step",
+        ty: TyAtom(Atom::F32),
+    },
+    PortableBuiltinField {
+        name: "hit_epsilon",
+        ty: TyAtom(Atom::F32),
+    },
+    PortableBuiltinField {
+        name: "max_steps",
+        ty: TyAtom(Atom::I32),
+    },
+];
+
+const QUERY_EXECUTION_POLICY_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "backend_preference",
+        ty: TyNamed("DispatchBackend"),
+    },
+    PortableBuiltinField {
+        name: "required_guarantee",
+        ty: TyNamed("RequiredGuaranteeClass"),
+    },
+    PortableBuiltinField {
+        name: "selected_method",
+        ty: TyNamed("SelectedMethodClass"),
+    },
+    PortableBuiltinField {
+        name: "ray_budget_enabled",
+        ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "ray_budget",
+        ty: TyNamed("RayBudgetPolicy"),
+    },
+];
+
+const PRESENTATION_EXECUTION_POLICY_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "required_guarantee",
+        ty: TyNamed("RequiredGuaranteeClass"),
+    },
+    PortableBuiltinField {
+        name: "selected_method",
+        ty: TyNamed("SelectedMethodClass"),
+    },
+    PortableBuiltinField {
+        name: "primary_rays",
+        ty: TyNamed("RayBudgetPolicy"),
+    },
+];
+
 const BUILTIN_RECORDS: &[PortableBuiltinRecord] = &[
     PortableBuiltinRecord {
         name: "Bounds2",
@@ -890,6 +951,36 @@ const BUILTIN_RECORDS: &[PortableBuiltinRecord] = &[
         function_name: None,
         constructible: true,
         fields: SCREEN_SAMPLE_QUERY_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "RequiredGuaranteeClass",
+        function_name: None,
+        constructible: false,
+        fields: REQUIRED_GUARANTEE_CLASS_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "SelectedMethodClass",
+        function_name: None,
+        constructible: false,
+        fields: SELECTED_METHOD_CLASS_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "RayBudgetPolicy",
+        function_name: None,
+        constructible: false,
+        fields: RAY_BUDGET_POLICY_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "QueryExecutionPolicy",
+        function_name: None,
+        constructible: false,
+        fields: QUERY_EXECUTION_POLICY_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "PresentationExecutionPolicy",
+        function_name: None,
+        constructible: false,
+        fields: PRESENTATION_EXECUTION_POLICY_FIELDS,
     },
 ];
 

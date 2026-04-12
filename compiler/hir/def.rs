@@ -1,5 +1,6 @@
 use crate::hir::arena::{Arena, Idx};
 use crate::hir::body::{Arg, Body, Literal, UseName};
+use crate::execution_policy::{RequiredGuaranteeClass, SelectedMethodClass};
 use miette::SourceSpan;
 use rowan::TextRange;
 use smol_str::SmolStr;
@@ -152,6 +153,13 @@ pub struct DomainMetadata {
     pub material: bool,
     pub radiance: bool,
     pub media: bool,
+    pub execution_policy: Option<DomainExecutionPolicyMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DomainExecutionPolicyMetadata {
+    pub required_guarantee: RequiredGuaranteeClass,
+    pub selected_method: SelectedMethodClass,
     pub max_distance: Option<Body>,
     pub min_step: Option<Body>,
     pub hit_epsilon: Option<Body>,

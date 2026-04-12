@@ -157,7 +157,7 @@ The long-term shape of Wrela should be:
 - typed questions over snapshots and transitions
 - evidence-aware planning
 - reusable artifacts and witnesses with explicit validity
-- concrete observer plans such as presentation, traversal, tooling, and future gameplay systems
+- concrete observer plans such as presentation, collision, tooling, and future gameplay systems
 - a shared query-program spine promoted from concrete observers only after the overlap is proven
 
 The engine is not best understood as:
@@ -211,6 +211,7 @@ This roadmap does not do the following:
 - a fully generic executable universal plan that replaces concrete observers immediately
 - public user-authored four-dimensional spacetime field syntax in the first phase
 - coupling simulation time to presentation cadence as one hard architectural identity
+- turning the collision observer into a full rigid-body physics, constraint, stacking, friction, or response system
 - backend-specific semantics that bypass CPU oracle behavior
 
 These may be revisited later, but they are not the right first cuts for the north-star architecture.
@@ -279,6 +280,10 @@ Artifact reuse is valid only if:
 1. the lookup key finds a candidate artifact
 2. the compatibility relation says the candidate is eligible for consideration
 3. the validity predicate says the artifact is still semantically legal to reuse
+
+The first cut of artifact validity should be a small typed declarative rule algebra.
+It should be serializable, inspectable, reportable, and testable.
+Do not start with arbitrary callback logic scattered through the codebase.
 
 ### Evidence Provenance Is First-Class
 
@@ -390,6 +395,9 @@ They should support an ordering that answers questions like:
 - does this planner or artifact accept any change up to some compatibility threshold?
 
 That means long-term change compatibility should behave like a partial order or lattice, not only like scattered enum matches.
+
+This lattice should have one obvious typed home.
+Presentation, artifacts, collision, and solver code should import it rather than quietly re-expressing their own severity ladders.
 
 ### Clock Family
 
@@ -508,6 +516,13 @@ pub struct QueryExecutionPolicy {
 
 **Evidence** is the compositional certificate object that planners and solvers reason from.
 
+It is not:
+
+- semantic policy
+- backend preference
+- runtime scheduling state
+- execution counters or telemetry
+
 It should subsume:
 
 - support facts
@@ -536,6 +551,7 @@ pub struct SemanticEvidence {
 Evidence origin matters.
 
 Static compile-time evidence, runtime-refined evidence, and artifact-derived evidence are not identical in planner trust or reuse semantics.
+`SemanticEvidence` should stay a certificate object, not a god-struct for every planner concern in the engine.
 
 ### Evidence Origin
 
@@ -602,6 +618,7 @@ An **artifact compatibility relation** answers whether a candidate artifact is e
 An **artifact validity rule** answers whether reuse is actually legal.
 
 These are separate on purpose.
+In the early architecture they should both remain typed declarative data, not opaque code.
 
 ### Concrete Observer Plan
 
@@ -610,7 +627,7 @@ A **concrete observer plan** is a domain-specific compiled plan that consumes qu
 Examples:
 
 - `PresentationPlan`
-- future `TraversalPlan`
+- future `CollisionPlan`
 - future `EditorInspectionPlan`
 
 ### Query-Program Spine
@@ -630,7 +647,7 @@ It should carry only the machinery that is truly shared:
 It should not immediately absorb:
 
 - presentation-specific shading rules
-- traversal-specific collision logic
+- collision-specific contact and sweep semantics
 - backend-specific execution kernels
 
 This shared layer arrives late in the roadmap on purpose.
@@ -644,21 +661,24 @@ The end state of this roadmap is:
 3. evidence is unified, compositional, and monotone
 4. temporal reuse and invalidation are engine-level semantics, not only presentation hacks
 5. artifacts are one runtime architecture with explicit logical and physical layers
-6. at least two concrete observers exist and lower into a shared non-executing spine
+6. presentation and collision exist as real concrete observers and lower into a shared non-executing spine
 7. solver planning uses evidence per subtree, artifact, and policy
 8. differential semantics are explicit enough to replace major finite-difference hot paths with certified alternatives where legal
 
 ## Phase Overview
 
-This RFC defines seven phases after the current directional Phase 24 horizon from RFC 0005.
+This RFC defines ten phases after the current directional Phase 24 horizon from RFC 0005.
 
 - **Phase 25:** Snapshot identity, epochs, and stable semantic IDs
 - **Phase 26:** Semantic domain, execution policy, and legal approximation
 - **Phase 27:** Unified semantic evidence and certificates
 - **Phase 28:** Temporal semantics, transition model, and multi-clock discipline
 - **Phase 29:** Artifact runtime, materialized semantic views, and physical layout planning
-- **Phase 30:** Second concrete observer and shared query-program spine
-- **Phase 31:** Differential semantics, mixed solver planning, and backend convergence
+- **Phase 30:** Collision observer foundation and static query families
+- **Phase 31:** Transition-aware collision observer, witnesses, and runtime integration
+- **Phase 32:** Shared observer vocabulary and query-program spine
+- **Phase 33:** Shared spine analyses, diagnostics, and cross-observer validation
+- **Phase 34:** Differential semantics, mixed solver planning, and backend convergence
 
 ## Phase 25: Snapshot Identity, Epochs, And Stable Semantic IDs
 
@@ -1234,11 +1254,15 @@ The first cut should subsume at least:
 - identity/provenance guarantees
 - temporal stability
 
+Keep the evidence object narrowly about certificates, trust, and validity horizon.
+Do not use it as a catch-all container for policy, backend preferences, runtime counters, or scheduling state.
+
 **Decision hooks**
 
 - `Design Rules 5-6` apply directly here. The first shape of `SemanticEvidence` must leave room for monotone refinement, provenance, and scope instead of forcing those in later as bolt-ons.
 - Treat "unknown," "conservative," and "not applicable" as meaningfully different states.
 - Even if Task 27A3 lands later in the phase, do not choose a container shape here that makes `origin` and `scope` awkward to add without churn.
+- If a concern does not behave like evidence or a certificate, do not put it in `SemanticEvidence` just because planners happen to read it.
 
 **Code sketch**
 
@@ -1505,6 +1529,7 @@ Introduce explicit types for simulation tick, presentation frame, wall-clock sta
 
 - `Key Architectural Definitions -> Clock Family` applies directly here. `SimulationTick`, `PresentationFrame`, `WallClockStamp`, and `SnapshotEpoch` must not alias each other in convenience code.
 - `Key Architectural Definitions -> Change Compatibility Lattice` means change classifications should be usable in ordered compatibility checks, not only equality matches.
+- Give the change-compatibility lattice a central typed home in this phase so later consumers reuse one model instead of growing local enum families.
 
 **Code sketch**
 
@@ -1526,6 +1551,7 @@ pub struct ChangeSummary {
 - The codebase no longer treats frame index, epoch, and tick as if they were the same concept.
 - Transition summaries have a real typed home.
 - Change compatibility is modeled as an ordering relation or lattice, not only as flat enum labels.
+- The change-compatibility lattice has one obvious module or type family that later phases can import.
 - Portable and presentation contracts can carry typed time/transition state where needed.
 
 #### Task 28A2 — Add internal transition-aware query and artifact terminology
@@ -1640,6 +1666,7 @@ These classes should support a compatibility ordering so planner and artifact lo
 
 - `Key Architectural Definitions -> Change Compatibility Lattice` applies directly here. Change reasoning should centralize the partial order instead of repeating ad hoc severity logic in each consumer.
 - Temporal evidence should compose with evidence scope: snapshot-local claims must not silently survive across incompatible transitions.
+- If a consumer needs a threshold or acceptance rule, it should reference the central change-compatibility types from Task 28A1 rather than inventing a local ordering.
 
 **Code sketch**
 
@@ -1829,6 +1856,7 @@ Recommended first compatibility dimensions:
 
 - `Decision: Artifact Validity Is Predicate-Based, Not Key-Equality-Based` applies directly here. Compatibility and validity belong in the contract, not only in store lookups.
 - Evidence origin and scope may affect artifact eligibility. Do not assume all evidence with the same shape is reusable the same way.
+- `ArtifactValidityRule` should start as a small typed declarative algebra that reports what it checked. Do not hide first-cut validity semantics behind arbitrary closures or adapter-specific code.
 
 **Acceptance criteria**
 
@@ -2035,20 +2063,269 @@ Its authority level must remain unchanged even if it lands early.
 - Reuse and invalidation are tested against explicit validity rules.
 - Logical and physical artifact layers are distinct.
 
-## Phase 30: Second Concrete Observer And Shared Query-Program Spine
+## Phase 30: Collision Observer Foundation And Static Query Families
 
 ### Goal
 
-Add a second concrete observer and extract only the truly shared non-executing machinery into a query-program spine.
+Make collision a real second concrete observer with explicit contracts, plans, witnesses, and CPU-oracle-checkable semantics over immutable snapshots.
 
 ### Why this is sixth
 
-This is the earliest phase where a shared query-program layer is justified without being premature.
+By this point snapshots, policies, evidence, temporal model, and artifact runtime exist.
+That is enough to build collision as a serious subsystem rather than as a bag of helper calls.
 
 ### Design Rule For This Phase
 
-Concrete observers stay concrete.
-The shared spine is descriptive first, not executable first.
+Collision questions must be first-class observer contracts, not ad hoc solver entrypoints hidden behind generic execution helpers.
+This observer is about contact and overlap semantics, not rigid-body simulation or response.
+
+### Decision Hooks For This Phase
+
+- `Design Rule 10`
+- `Key Architectural Definitions -> Concrete Observer Plan`
+- `Decisions Locked By This RFC -> Artifact Validity Is Predicate-Based, Not Key-Equality-Based`
+- `Design Rule 12`
+
+### Parallelization Notes
+
+- Workstream A owns collision contracts and witness schemas.
+- Workstream B owns collision plan construction and observer wiring.
+- Workstream C owns validation, CLI surfaces, and CPU-oracle fixtures.
+- Task 30A1 should land before 30B1.
+
+### Workstream A: Collision Contracts
+
+#### Task 30A1 — Add explicit `collision_contract` support for static collision questions
+
+**Description**
+
+Create a real collision contract surface instead of hiding collision under presentation-shaped or generic query helper APIs.
+
+Recommended initial scope:
+
+- point containment and occupancy classification
+- ray cast first-hit and miss-reason reporting
+- overlap or separation witness production for a narrow supported shape family
+
+**Files**
+
+- new `compiler/collision_contract/mod.rs`
+- `compiler/lib.rs`
+- `compiler/bin/wrela/commands/shared.rs`
+
+**Implementation notes**
+
+Keep the first cut static and snapshot-scoped.
+Do not blur transition-aware sweeps into this task; that belongs in Phase 31.
+Do not let collision scope quietly expand into constraints, impulses, stacking, friction, or response.
+
+**Decision hooks**
+
+- `Design Rule 10` applies directly here. The collision observer must be a serious concrete subsystem, not a disguised spine demo.
+- Contracts should declare witness schemas, guarantee classes, and required policy explicitly rather than burying them in execution code.
+
+**Acceptance criteria**
+
+- A real `collision_contract` surface exists.
+- Collision inputs, outputs, and witness shapes are typed and explicit.
+- Collision does not depend on presentation-specific contract records to exist.
+
+### Workstream B: Collision Plan Construction
+
+#### Task 30B1 — Add a concrete `CollisionPlan` and planner wiring
+
+**Description**
+
+Compile collision contracts into a concrete observer plan that can consume query primitives, evidence, and artifacts without losing collision ownership.
+
+**Files**
+
+- new `compiler/collision_plan/mod.rs`
+- `compiler/query_plan/mod.rs`
+- `compiler/lib.rs`
+
+**Implementation notes**
+
+The plan should own collision-specific passes such as candidate gathering, primitive evaluation, witness resolution, and output materialization.
+It should not be a lightly renamed presentation plan.
+
+**Code sketch**
+
+```rust
+pub struct CollisionPlan {
+    pub name: SmolStr,
+    pub inputs: Vec<CollisionInputBinding>,
+    pub passes: Vec<CollisionPass>,
+    pub artifacts: Vec<SemanticArtifactContract>,
+    pub outputs: Vec<CollisionOutputBinding>,
+}
+```
+
+**Acceptance criteria**
+
+- A second concrete observer exists as `CollisionPlan`.
+- It consumes query primitives and artifacts through explicit plan records.
+- CPU execution can remain the semantic oracle for static collision plans.
+
+### Workstream C: Validation, Fixtures, And CLI
+
+#### Task 30C1 — Add collision-plan validation, fixtures, and report surfaces
+
+**Description**
+
+Validate the collision observer as a real subsystem rather than as a sketch.
+
+**Decision hooks**
+
+- Validation should prove concrete ownership, explicit dependencies, witness declarations, and CPU-oracle-checkable semantics.
+- Do not accept tests that only show the observer can eventually project into a shared shape; it must stand on its own first.
+
+**Files**
+
+- new `compiler/tests/collision_plan.rs`
+- `compiler/bin/wrela/commands/shared.rs`
+
+**Tests**
+
+- collision plans validate their dependencies and witness declarations
+- point, ray, and overlap outputs remain CPU-oracle-checkable
+- diagnostics can report required guarantee versus selected method class
+
+### Phase 30 Exit Criteria
+
+- A real collision observer exists.
+- Static collision questions compile through explicit contracts and plans.
+- Collision can be reasoned about independently of any future shared spine.
+
+## Phase 31: Transition-Aware Collision Observer, Witnesses, And Runtime Integration
+
+### Goal
+
+Extend collision into a real gameplay-facing observer over snapshots and transitions, with explicit witness reuse and runtime integration.
+
+### Why this is seventh
+
+Once static collision is concrete, the temporal and artifact architecture can be exercised by a domain that genuinely needs it.
+
+### Design Rule For This Phase
+
+Transition-aware collision must state clearly whether it is answering a snapshot question or a change-over-time question.
+It still does not own rigid-body simulation, constraint solving, or gameplay response.
+
+### Decision Hooks For This Phase
+
+- `Design Rules 4, 8-9, 12`
+- `Key Architectural Definitions -> Artifact Compatibility Relation`
+- `Decisions Locked By This RFC -> Evidence Provenance Is First-Class`
+
+### Parallelization Notes
+
+- Workstream A owns transition-aware collision contracts.
+- Workstream B owns collision witness artifacts and reuse semantics.
+- Workstream C owns CPU execution, validation, and diagnostics.
+- Task 31A1 should land before 31C1.
+
+### Workstream A: Transition-Aware Collision Contracts
+
+#### Task 31A1 — Add sweep, time-of-impact, and transition-scoped collision questions
+
+**Description**
+
+Promote collision from static occupancy tests into explicit transition-aware queries that can answer movement and contact questions.
+
+Recommended scope:
+
+- segment or shape sweep
+- earliest legal contact or no-hit certificate
+- conservative versus exact collision guarantee classes
+
+**Files**
+
+- `compiler/collision_contract/mod.rs`
+- `compiler/collision_plan/mod.rs`
+
+**Implementation notes**
+
+Do not let conservative broadphase rejection masquerade as an exact time-of-impact witness.
+Transition-scoped contracts should declare the authority they require from transitions, snapshots, and evidence.
+
+**Acceptance criteria**
+
+- Transition-aware collision contracts exist.
+- Snapshot versus transition authority is explicit in the contract surface.
+- Witness schemas for contact, time fraction, and contact normal flavor are declared.
+
+### Workstream B: Collision Artifacts And Witness Reuse
+
+#### Task 31B1 — Add collision witness artifacts, continuation seeds, and reuse validity rules
+
+**Description**
+
+Treat collision support summaries, broadphase candidates, witness caches, and continuation seeds as first-class artifacts rather than hidden accelerators.
+
+**Decision hooks**
+
+- Collision reuse must go through the same compatibility and validity rules as the general artifact runtime.
+- Witness reuse should be justified by transition class, evidence scope, and declared legality, not by raw cache presence.
+
+**Files**
+
+- `compiler/collision_plan/mod.rs`
+- `compiler/artifact_key/mod.rs`
+- `compiler/artifact_store/mod.rs`
+- new `compiler/tests/collision_artifacts.rs`
+
+**Acceptance criteria**
+
+- Collision artifacts are declared and typed.
+- Reuse and invalidation rules are explicit and testable.
+- Plans can explain when witness reuse is legal or rejected.
+
+### Workstream C: CPU Oracle Execution And Diagnostics
+
+#### Task 31C1 — Add CPU collision execution, transition-aware validation, and witness diagnostics
+
+**Description**
+
+Make the collision observer executable and inspectable before asking it to justify any shared abstractions.
+
+**Files**
+
+- new `compiler/collision_exec/cpu.rs`
+- `compiler/lib.rs`
+- new `compiler/tests/collision_exec.rs`
+- `compiler/bin/wrela/commands/shared.rs`
+
+**Implementation notes**
+
+CPU must remain the semantic oracle here.
+GPU or WGSL specialization can wait until the observer semantics are trustworthy.
+
+**Acceptance criteria**
+
+- Static and transition-aware collision plans can execute on CPU.
+- Validation covers witness reuse and invalidation under temporal changes.
+- CLI and test fixtures can dump collision plans, witnesses, and reuse decisions.
+
+### Phase 31 Exit Criteria
+
+- Collision is a real observer over snapshots and transitions.
+- Collision witness artifacts and reuse semantics are explicit.
+- CPU oracle execution and diagnostics make collision independently inspectable.
+
+## Phase 32: Shared Observer Vocabulary And Query-Program Spine
+
+### Goal
+
+Extract an explicit shared observer vocabulary and non-executing query-program spine from presentation and collision without collapsing observer ownership.
+
+### Why this is eighth
+
+This is the earliest point where shared observer abstractions are justified by two serious concrete observers rather than by aspiration.
+
+### Design Rule For This Phase
+
+Unifying abstractions must be real typed outputs with named ownership boundaries, not hand-waved future cleanup.
 
 ### Decision Hooks For This Phase
 
@@ -2058,88 +2335,19 @@ The shared spine is descriptive first, not executable first.
 
 ### Parallelization Notes
 
-- Workstream A owns the second concrete observer plan.
-- Workstream B owns the shared spine extraction.
-- Workstream C owns shared analyses and validation over the spine.
-- Task 30A1 should land before 30B1.
+- Workstream A owns the shared observer vocabulary.
+- Workstream B owns projection from concrete observers into the spine.
+- Workstream C owns projection reports and regression fixtures.
+- Task 32A1 should land before 32B1.
 
-### Workstream A: Second Concrete Observer
+### Workstream A: Shared Observer Vocabulary
 
-#### Task 30A1 — Add a narrow traversal or collision observer plan
-
-**Description**
-
-Create a second real observer plan that is concrete enough to validate overlap with presentation.
-
-Recommended scope:
-
-- line-of-sight
-- ray- or sweep-shaped traversal
-- support-summary-assisted pruning
-- optional witness materialization
-
-**Files**
-
-- new `compiler/traversal_plan/mod.rs`
-- optionally new `compiler/traversal_contract/mod.rs`
-- `compiler/lib.rs`
-
-**Implementation notes**
-
-Keep this observer deliberately narrow.
-It exists to prove overlap, not to solve all gameplay.
-
-**Decision hooks**
-
-- `Design Rule 10` applies directly here. This observer should be a serious concrete subsystem, not a disguised generic spine demo.
-- The task is successful only if it exercises the earlier snapshot/policy/evidence/artifact decisions without weakening them.
-
-**Code sketch**
-
-```rust
-pub struct TraversalPlan {
-    pub name: SmolStr,
-    pub inputs: Vec<TraversalInputBinding>,
-    pub passes: Vec<TraversalPass>,
-    pub artifacts: Vec<SemanticArtifactContract>,
-}
-```
-
-**Acceptance criteria**
-
-- A second concrete observer exists.
-- It consumes query primitives and artifacts through explicit plan records.
-- It is not disguised presentation.
-
-#### Task 30A2 — Add observer-specific validation and test coverage
+#### Task 32A1 — Add a non-executing `query_program_spine` module with explicit shared types
 
 **Description**
 
-Validate the new observer as a real subsystem rather than as a sketch.
-
-**Decision hooks**
-
-- Validation should prove concrete ownership, explicit dependencies, and CPU-oracle-checkable semantics.
-- Do not accept tests that only show the observer can project into a shared shape; it must stand on its own first.
-
-**Files**
-
-- new `compiler/tests/traversal_plan.rs`
-- `compiler/bin/wrela/commands/shared.rs`
-
-**Tests**
-
-- traversal plans validate their dependencies
-- traversal artifacts and witnesses are explicitly declared
-- CPU oracle execution remains available
-
-### Workstream B: Shared Query-Program Spine
-
-#### Task 30B1 — Add a non-executing `query_program_spine` module
-
-**Description**
-
-Create the narrow shared layer extracted from both presentation and traversal.
+Create the real shared layer extracted from presentation and collision.
+This phase must produce a concrete vocabulary, not just a promise to generalize later.
 
 **Files**
 
@@ -2148,45 +2356,58 @@ Create the narrow shared layer extracted from both presentation and traversal.
 
 **Implementation notes**
 
-Recommended initial nodes:
+Required real outputs in the first cut:
+
+- `QueryProgramSpine`
+- `SpineNode`
+- `SpineDependencyEdge`
+- `ObserverProjection`
+- `SpineObservabilitySummary`
+
+Recommended initial node families:
 
 - `InputBinding`
 - `PrimitiveInvocation`
 - `ArtifactLoad`
 - `ArtifactStore`
 - `PolicyRequirement`
+- `DependencyEdge`
 - `OutputBinding`
+- `ObservabilitySummary`
 
 This module should not own backend kernels or observer-specific math.
 
 **Decision hooks**
 
-- `Key Architectural Definitions -> Query-Program Spine` and `Design Rule 10` both apply here. The spine owns shared description, not observer semantics or execution ownership.
+- The spine owns shared description, not observer semantics or execution ownership.
 - If a node shape is only needed by one observer, keep it out of the spine until real overlap proves otherwise.
 
 **Code sketch**
 
 ```rust
-pub enum QueryProgramNode {
-    InputBinding { id: SmolStr },
-    PrimitiveInvocation { contract_id: QueryContractId },
-    ArtifactLoad { artifact: SmolStr },
-    ArtifactStore { artifact: SmolStr },
-    OutputBinding { output: SmolStr },
+pub struct QueryProgramSpine {
+    pub observer_kind: ObserverKind,
+    pub inputs: Vec<SpineInputBinding>,
+    pub nodes: Vec<SpineNode>,
+    pub dependencies: Vec<SpineDependencyEdge>,
+    pub outputs: Vec<SpineOutputBinding>,
+    pub observability: SpineObservabilitySummary,
 }
 ```
 
 **Acceptance criteria**
 
 - The shared spine exists.
-- It is non-executing in the first cut.
-- It can represent both presentation and traversal dependencies without absorbing observer-specific semantics.
+- Its canonical vocabulary is explicit and named in code.
+- It can represent both presentation and collision dependencies without absorbing observer-specific semantics.
 
-#### Task 30B2 — Derive spine views from presentation and traversal plans
+### Workstream B: Observer Projection
+
+#### Task 32B1 — Derive deterministic spine projections from presentation and collision plans
 
 **Description**
 
-Add lowering or projection from concrete observer plans into the shared spine.
+Add projection from concrete observer plans into the shared spine.
 
 **Decision hooks**
 
@@ -2196,7 +2417,7 @@ Add lowering or projection from concrete observer plans into the shared spine.
 **Files**
 
 - `compiler/presentation_plan/mod.rs`
-- `compiler/traversal_plan/mod.rs`
+- `compiler/collision_plan/mod.rs`
 - `compiler/query_program_spine/mod.rs`
 
 **Acceptance criteria**
@@ -2205,9 +2426,62 @@ Add lowering or projection from concrete observer plans into the shared spine.
 - Projection is deterministic and testable.
 - Concrete observer plans remain the execution owners.
 
-### Workstream C: Shared Analyses And Observability
+### Workstream C: Shared Projection Reports
 
-#### Task 30C1 — Move dependency analysis, artifact lifetime checks, and backend summaries onto the spine
+#### Task 32C1 — Add shared dumps and regression fixtures for observer projections
+
+**Description**
+
+Make the new shared abstraction visible and testable so it proves its value immediately.
+
+**Files**
+
+- `compiler/query_program_spine/mod.rs`
+- `compiler/bin/wrela/commands/shared.rs`
+- new `compiler/tests/query_program_spine.rs`
+
+**Acceptance criteria**
+
+- Reports can show presentation and collision plans through one common vocabulary.
+- Projection fixtures lock down intentional lossy boundaries.
+- The shared vocabulary is inspectable without becoming executable.
+
+### Phase 32 Exit Criteria
+
+- A real shared observer vocabulary exists.
+- Presentation and collision project into one non-executing spine.
+- The unifying abstractions are explicit code outputs, not roadmap narration.
+
+## Phase 33: Shared Spine Analyses, Diagnostics, And Cross-Observer Validation
+
+### Goal
+
+Move the truly shared analyses and observability onto the spine and prove the new abstraction pays rent without swallowing observer semantics.
+
+### Why this is ninth
+
+Only after the vocabulary and projections are stable does it make sense to move shared reasoning upward.
+
+### Design Rule For This Phase
+
+Shared analyses may move upward only when they preserve observer ownership and reuse the validity semantics already established elsewhere.
+
+### Decision Hooks For This Phase
+
+- `Design Rules 8-13`
+- `Key Architectural Definitions -> Query-Program Spine`
+- `Decisions Locked By This RFC -> Artifact Validity Is Predicate-Based, Not Key-Equality-Based`
+
+### Parallelization Notes
+
+- Workstream A owns dependency and lifetime analysis.
+- Workstream B owns policy, backend, and observability summaries.
+- Workstream C owns cross-observer regression coverage and CLI diagnostics.
+- Task 33A1 and 33B1 can start in parallel once Phase 32 projections stabilize.
+
+### Workstream A: Dependency And Lifetime Analysis
+
+#### Task 33A1 — Move dependency analysis and artifact lifetime checks onto the spine
 
 **Description**
 
@@ -2216,8 +2490,7 @@ Promote only the analyses that are genuinely shared.
 **Files**
 
 - `compiler/query_program_spine/mod.rs`
-- optionally new `compiler/query_program_spine/validate.rs`
-- `compiler/bin/wrela/commands/shared.rs`
+- new `compiler/query_program_spine/validate.rs`
 
 **Implementation notes**
 
@@ -2232,20 +2505,59 @@ The point is to make shared reasoning live in one place.
 **Acceptance criteria**
 
 - Dependency graphs can be analyzed through the spine.
-- Artifact lifetime and policy validation can be shared.
-- Reports can show observer plans through a common vocabulary.
+- Artifact lifetime validation can be shared.
+- Observer-specific execution semantics remain outside the spine.
 
-### Phase 30 Exit Criteria
+### Workstream B: Shared Policy And Backend Summaries
 
-- A second concrete observer exists.
-- A shared non-executing query-program spine exists.
-- Shared analyses have moved upward without collapsing concrete observers into one giant executor.
+#### Task 33B1 — Add shared policy-legality, backend-summary, and observability analysis
 
-## Phase 31: Differential Semantics, Mixed Solver Planning, And Backend Convergence
+**Description**
+
+Centralize the summaries that both observers need when reporting, validating, or preparing backend work.
+
+**Files**
+
+- `compiler/query_program_spine/validate.rs`
+- optionally new `compiler/query_program_spine/report.rs`
+- `compiler/bin/wrela/commands/shared.rs`
+
+**Acceptance criteria**
+
+- Policy requirements can be summarized through the spine.
+- Backend summaries can be derived without rebuilding observer-specific execution tables.
+- Observability reports can use one common vocabulary.
+
+### Workstream C: Cross-Observer Validation
+
+#### Task 33C1 — Add cross-observer regression coverage and CLI diagnostics
+
+**Description**
+
+Prove the shared abstraction helps real observers without turning into a giant executor.
+
+**Files**
+
+- `compiler/tests/query_program_spine.rs`
+- `compiler/bin/wrela/commands/shared.rs`
+
+**Tests**
+
+- projection determinism across presentation and collision fixtures
+- shared validation for artifact lifetime and policy requirements
+- diagnostics that report common structure without erasing observer-specific meaning
+
+### Phase 33 Exit Criteria
+
+- Shared analyses have moved upward onto the spine where they truly belong.
+- Diagnostics can show observer plans through a common vocabulary.
+- No execution path depends on the spine becoming a generic universal executor.
+
+## Phase 34: Differential Semantics, Mixed Solver Planning, And Backend Convergence
 
 ### Goal
 
-Use snapshots, policy, evidence, temporal semantics, artifacts, and the shared spine to unlock the intended solver and backend architecture.
+Use snapshots, policy, evidence, temporal semantics, artifacts, the collision observer, and the shared spine to unlock the intended solver and backend architecture.
 
 ### Why this is last
 
@@ -2267,11 +2579,11 @@ Use the strongest legal method per subtree, policy, artifact, and transition con
 - Workstream A owns differential semantics and normal-role cleanup.
 - Workstream B owns mixed solver planning and evidence-driven method selection.
 - Workstream C owns backend convergence and parity.
-- Task 31A1 and 31B1 can start in parallel once Phase 27 evidence and Phase 29 artifacts are stable enough.
+- Task 34A1 and 34B1 can start in parallel once Phase 27 evidence, Phase 29 artifacts, and Phase 32 spine vocabulary are stable enough.
 
 ### Workstream A: Differential Semantics
 
-#### Task 31A1 — Add differential evidence and symbolic derivative propagation for the supported semantic core
+#### Task 34A1 — Add differential evidence and symbolic derivative propagation for the supported semantic core
 
 **Description**
 
@@ -2306,7 +2618,7 @@ Fallback to finite differences only where evidence says certified differential b
 - At least a useful semantic subset no longer requires central finite differences everywhere.
 - CPU oracle tests cover differential correctness.
 
-#### Task 31A2 — Split internal normal roles into certified field gradient, feature normal, and heuristic shading normal
+#### Task 34A2 — Split internal normal roles into certified field gradient, feature normal, and heuristic shading normal
 
 **Description**
 
@@ -2337,7 +2649,7 @@ Internally the engine should know which flavor it is producing.
 
 ### Workstream B: Mixed Solver Planning
 
-#### Task 31B1 — Upgrade `RaySolverPlan` to choose methods per subtree and candidate class
+#### Task 34B1 — Upgrade `RaySolverPlan` to choose methods per subtree and candidate class
 
 **Description**
 
@@ -2348,6 +2660,7 @@ Move from coarse whole-query portfolios toward evidence-driven mixed strategies.
 - `compiler/query_solver/mod.rs`
 - `compiler/query_plan/mod.rs`
 - `compiler/presentation_plan/mod.rs`
+- `compiler/collision_plan/mod.rs`
 
 **Implementation notes**
 
@@ -2384,7 +2697,7 @@ pub struct SolverSelection {
 - Selection cites evidence and policy, not only contract id.
 - CPU oracle fallback remains explicit.
 
-#### Task 31B2 — Integrate artifact reuse and transition-aware continuation into solver plans
+#### Task 34B2 — Integrate artifact reuse and transition-aware continuation into solver plans
 
 **Description**
 
@@ -2409,7 +2722,7 @@ Let solvers use compatible artifacts and temporal continuation explicitly when l
 
 ### Workstream C: Backend Convergence And Validation
 
-#### Task 31C1 — Stop rebuilding semantics from per-question matches in backend code where the new spine and solver plans can drive behavior
+#### Task 34C1 — Stop rebuilding semantics from per-question matches in backend code where the new spine and solver plans can drive behavior
 
 **Description**
 
@@ -2438,7 +2751,7 @@ Do not break CPU oracle clarity in the name of elegance.
 - Concrete observer semantics remain intact.
 - Validation coverage proves parity.
 
-#### Task 31C2 — Add end-to-end parity and performance-closure benchmarks for the new architecture
+#### Task 34C2 — Add end-to-end parity and performance-closure benchmarks for the new architecture
 
 **Description**
 
@@ -2454,6 +2767,7 @@ Prove the architecture works semantically and improves the right performance pat
 - `benchmarks/field_engine/`
 - `compiler/tests/query_exec.rs`
 - `compiler/tests/presentation_exec.rs`
+- `compiler/tests/collision_exec.rs`
 - new `compiler/tests/mixed_solver.rs`
 
 **Tests**
@@ -2463,7 +2777,7 @@ Prove the architecture works semantically and improves the right performance pat
 - mixed solver correctness vs dense oracle
 - performance harnesses for representative scenes and views
 
-### Phase 31 Exit Criteria
+### Phase 34 Exit Criteria
 
 - Differential semantics are first-class for a meaningful semantic subset.
 - Solver plans can select mixed strategies from evidence.
@@ -2479,20 +2793,23 @@ This roadmap intentionally lands in this order:
 3. unified evidence
 4. temporal semantics and transitions
 5. artifact runtime and logical/physical split
-6. second observer and shared spine
-7. differential semantics and mixed solver/backend convergence
+6. collision observer foundation and static query families
+7. transition-aware collision, witnesses, and runtime integration
+8. shared observer vocabulary and query-program spine
+9. shared spine analyses and diagnostics
+10. differential semantics and mixed solver/backend convergence
 
 ## Recommended Active Scheduling Window
 
 Treat this RFC as the north-star roadmap, but only actively schedule **Phases 25-27** at first.
 
-Treat **Phases 28-31** as committed direction rather than committed near-term execution until the earlier phases prove themselves in one real vertical slice.
+Treat **Phases 28-34** as committed direction rather than committed near-term execution until the earlier phases prove themselves in one real vertical slice.
 
 That posture keeps the roadmap useful without turning it into a rigid religious text.
 
 ## Vertical Slice Review Gate
 
-Before treating Phases 28-31 as active execution rather than directional commitment, run one explicit vertical-slice review over a concrete observer path.
+Before treating Phases 28-34 as active execution rather than directional commitment, run one explicit vertical-slice review over a concrete observer path.
 
 The vertical slice should prove at least:
 
@@ -2525,7 +2842,7 @@ For a small team, the cleanest ownership split is:
   Owns snapshot context, artifact store, layout planning, reuse/invalidation runtime.
 
 - **Track C: Concrete observers**
-  Owns presentation-plan migration, traversal observer, and eventual spine projection.
+  Owns presentation-plan migration, collision observer, and eventual shared observer projection/spine.
 
 - **Track D: Solvers and backends**
   Owns evidence-driven solver planning, CPU oracle parity, vGPU/WGSL convergence.

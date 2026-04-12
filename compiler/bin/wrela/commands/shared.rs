@@ -152,6 +152,9 @@ struct PresentationDebugDump {
     region: String,
     domain: String,
     backend: String,
+    semantic_domain: String,
+    execution_policy: String,
+    snapshot: wrela::world_identity::SnapshotIdentityReport,
     frames_executed: u32,
     color_ppm: Option<String>,
     depth_ppm: Option<String>,
@@ -185,6 +188,9 @@ struct PreviewReportDump {
     domain: String,
     attachment: String,
     backend: String,
+    semantic_domain: String,
+    execution_policy: String,
+    snapshot: wrela::world_identity::SnapshotIdentityReport,
     width: u32,
     height: u32,
     stats: String,
@@ -198,6 +204,9 @@ struct FrameBundleDump {
     region: String,
     domain: String,
     backend: String,
+    semantic_domain: String,
+    execution_policy: String,
+    snapshot: wrela::world_identity::SnapshotIdentityReport,
     width: u32,
     height: u32,
     frame_index: u32,
@@ -478,8 +487,17 @@ struct CompiledPresentationBundle {
 struct PreparedPresentationExecution {
     plan: wrela::presentation_plan::PresentationPlan,
     input: wrela::presentation_exec::PresentationExecutionInput,
+    semantic_domain: String,
+    execution_policy: wrela::presentation_exec::PresentationExecutionPolicy,
     camera: wrela::presentation_contract::CanonicalCameraInput,
     viewport: wrela::presentation_contract::CanonicalViewportInput,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct DomainExecutionInputs {
+    frame_domain: wrela::kernel::KernelValue,
+    semantic_domain: String,
+    execution_policy: wrela::presentation_exec::PresentationExecutionPolicy,
 }
 
 struct ReadyPresentationExecution {
@@ -550,6 +568,7 @@ fn execute_presentation_debug_command(
     };
     let prepared = match prepare_presentation_execution(
         &bundle.module,
+        &bundle.query_ctx,
         plan,
         view_func,
         region_name.clone(),
@@ -608,12 +627,19 @@ fn execute_presentation_debug_command(
         }
     };
     let stats = wrela::presentation_exec::debug::render_primary_visibility_stats(&result);
+    let snapshot = bundle
+        .query_ctx
+        .snapshot_report_for_capture_name(&region_name)
+        .expect("presentation debug region snapshot");
     let dump = PresentationDebugDump {
         schema_version: 1,
         view: plan.name.to_string(),
         region: region_name.to_string(),
         domain: domain_name.to_string(),
         backend: dispatch_backend_name(result.backend).to_string(),
+        semantic_domain: prepared.semantic_domain.clone(),
+        execution_policy: result.frame_cost.execution_policy.clone(),
+        snapshot,
         frames_executed: frame_cost_history.len() as u32,
         color_ppm: artifacts
             .color_ppm
@@ -645,6 +671,15 @@ fn execute_presentation_debug_command(
         );
         println!("  region: {}", dump.region);
         println!("  domain: {}", dump.domain);
+        println!("  semantic domain: {}", dump.semantic_domain);
+        println!("  execution policy: {}", dump.execution_policy);
+        println!(
+            "  snapshot: {} snapshot_id={} epoch={} portable_scene_id={}",
+            dump.snapshot.capture_name,
+            dump.snapshot.snapshot_id.0,
+            dump.snapshot.epoch.0,
+            dump.snapshot.portable_scene_id
+        );
         println!("  frames: {}", dump.frames_executed);
         println!(
             "  color ppm: {}",
@@ -732,6 +767,11 @@ fn execute_preview_command(
         }
     };
     if options.json_report {
+        let snapshot = ready
+            .bundle
+            .query_ctx
+            .snapshot_report_for_capture_name(&ready.region_name)
+            .expect("preview region snapshot");
         let dump = PreviewReportDump {
             schema_version: 1,
             view: ready.prepared.plan.name.to_string(),
@@ -739,6 +779,9 @@ fn execute_preview_command(
             domain: ready.domain_name.to_string(),
             attachment: attachment_name.clone(),
             backend: dispatch_backend_name(result.backend).to_string(),
+            semantic_domain: ready.prepared.semantic_domain.clone(),
+            execution_policy: result.frame_cost.execution_policy.clone(),
+            snapshot,
             width: result.width,
             height: result.height,
             stats: wrela::presentation_exec::debug::render_primary_visibility_stats(&result),
@@ -753,6 +796,15 @@ fn execute_preview_command(
             println!("preview report view={} backend={}", dump.view, dump.backend);
             println!("  region: {}", dump.region);
             println!("  domain: {}", dump.domain);
+            println!("  semantic domain: {}", dump.semantic_domain);
+            println!("  execution policy: {}", dump.execution_policy);
+            println!(
+                "  snapshot: {} snapshot_id={} epoch={} portable_scene_id={}",
+                dump.snapshot.capture_name,
+                dump.snapshot.snapshot_id.0,
+                dump.snapshot.epoch.0,
+                dump.snapshot.portable_scene_id
+            );
             println!("  attachment: {}", dump.attachment);
             println!("  resolution: {}x{}", dump.width, dump.height);
             println!("{}", dump.stats.trim_end());
@@ -873,6 +925,13 @@ fn execute_frame_command(
         region: ready.region_name.to_string(),
         domain: ready.domain_name.to_string(),
         backend: dispatch_backend_name(result.backend).to_string(),
+        semantic_domain: ready.prepared.semantic_domain.clone(),
+        execution_policy: result.frame_cost.execution_policy.clone(),
+        snapshot: ready
+            .bundle
+            .query_ctx
+            .snapshot_report_for_capture_name(&ready.region_name)
+            .expect("frame region snapshot"),
         width: result.width,
         height: result.height,
         frame_index: options.frame_index,
@@ -888,6 +947,15 @@ fn execute_frame_command(
         println!("frame bundle view={} backend={}", dump.view, dump.backend);
         println!("  region: {}", dump.region);
         println!("  domain: {}", dump.domain);
+        println!("  semantic domain: {}", dump.semantic_domain);
+        println!("  execution policy: {}", dump.execution_policy);
+        println!(
+            "  snapshot: {} snapshot_id={} epoch={} portable_scene_id={}",
+            dump.snapshot.capture_name,
+            dump.snapshot.snapshot_id.0,
+            dump.snapshot.epoch.0,
+            dump.snapshot.portable_scene_id
+        );
         println!("  resolution: {}x{}", dump.width, dump.height);
         println!("  attachments:");
         for attachment in &dump.attachments {
@@ -1062,6 +1130,7 @@ fn load_prepared_presentation_execution(
     };
     let prepared = match prepare_presentation_execution(
         &bundle.module,
+        &bundle.query_ctx,
         plan,
         view_func,
         region_name.clone(),
@@ -1227,6 +1296,7 @@ type PreviewEvalBindings = HashMap<SmolStr, wrela::kernel::KernelValue>;
 
 fn prepare_presentation_execution(
     module: &hir::Module,
+    query_ctx: &wrela::query_exec::QueryExecContext,
     base_plan: &wrela::presentation_plan::PresentationPlan,
     view_func: &hir::Function,
     region_name: SmolStr,
@@ -1238,6 +1308,10 @@ fn prepare_presentation_execution(
     delta_seconds: f32,
     query_backend: wrela::query_plan::DispatchBackend,
 ) -> Result<PreparedPresentationExecution, String> {
+    let region_snapshot = query_ctx
+        .region_snapshot_handle(&region_name)
+        .cloned()
+        .ok_or_else(|| format!("missing region snapshot for `{region_name}`"))?;
     let domain_func = module
         .functions
         .iter()
@@ -1246,7 +1320,8 @@ fn prepare_presentation_execution(
         .ok_or_else(|| format!("missing domain `{domain_name}`"))?;
     let width = resolve_view_dimension(view_func, width_override, true)?;
     let height = resolve_view_dimension(view_func, height_override, false)?;
-    let (frame_domain, ray_budget) = domain_execution_inputs(domain_func, &region_name)?;
+    let domain_inputs =
+        domain_execution_inputs(module, domain_func, &region_name, query_backend)?;
     let mut plan = base_plan.clone();
     let domain_metadata = domain_func
         .domain
@@ -1265,7 +1340,7 @@ fn prepare_presentation_execution(
                 .join("; ")
         ));
     }
-    let bindings = bind_presentation_function_params(view_func, &region_name, camera);
+    let bindings = bind_presentation_function_params(view_func, &region_snapshot, camera);
     let lighting = authored_presentation_lighting_inputs(view_func, &bindings)?;
     let compatibility_projection =
         authored_compatibility_projection_input(&plan, view_func, &bindings, camera)?;
@@ -1280,16 +1355,18 @@ fn prepare_presentation_execution(
     Ok(PreparedPresentationExecution {
         plan,
         input: wrela::presentation_exec::PresentationExecutionInput {
-            region_capture: region_name,
-            frame_domain,
+            region_snapshot,
+            frame_domain: domain_inputs.frame_domain,
             frame_state,
             history: None,
             lighting,
             compatibility_projection,
-            ray_budget,
+            execution_policy: domain_inputs.execution_policy,
             quality_override: None,
             backend: query_backend,
         },
+        semantic_domain: domain_inputs.semantic_domain,
+        execution_policy: domain_inputs.execution_policy,
         camera,
         viewport: wrela::presentation_contract::CanonicalViewportInput { width, height },
     })
@@ -1297,7 +1374,7 @@ fn prepare_presentation_execution(
 
 fn bind_presentation_function_params(
     function: &hir::Function,
-    region_name: &SmolStr,
+    region_snapshot: &wrela::world_identity::WorldSnapshotHandle,
     camera: wrela::presentation_contract::CanonicalCameraInput,
 ) -> PreviewEvalBindings {
     let mut bindings = PreviewEvalBindings::new();
@@ -1306,7 +1383,7 @@ fn bind_presentation_function_params(
             Some("RegionCapture") => {
                 bindings.insert(
                     param.name.clone(),
-                    wrela::kernel::KernelValue::Capture(region_name.clone()),
+                    region_snapshot.capture_value(),
                 );
             }
             Some("Camera") => {
@@ -2443,22 +2520,22 @@ fn eval_body_u32(body: &hir::Body) -> Option<u32> {
     eval_expr_u32(body, expr_id)
 }
 
-fn eval_body_i32(body: &hir::Body) -> Option<i32> {
+fn eval_body_i32_in_module(module: &hir::Module, body: &hir::Body) -> Option<i32> {
     let expr_id = body_terminal_expr_id(body)?;
-    eval_expr_i32(body, expr_id)
+    eval_expr_i32_in_module(module, body, expr_id)
 }
 
-fn eval_expr_i32(body: &hir::Body, expr_id: hir::Idx<hir::Expr>) -> Option<i32> {
-    match &body.exprs[expr_id] {
-        hir::Expr::Literal(hir::Literal::Integer(value)) => Some(*value as i32),
-        hir::Expr::Literal(hir::Literal::Float(value)) => Some(*value as i32),
-        _ => None,
-    }
+fn eval_expr_i32_in_module(
+    module: &hir::Module,
+    body: &hir::Body,
+    expr_id: hir::Idx<hir::Expr>,
+) -> Option<i32> {
+    eval_expr_f32_in_module(module, body, expr_id).map(|value| value as i32)
 }
 
-fn eval_body_f32(body: &hir::Body) -> Option<f32> {
+fn eval_body_f32_in_module(module: &hir::Module, body: &hir::Body) -> Option<f32> {
     let expr_id = body_terminal_expr_id(body)?;
-    eval_expr_f32(body, expr_id)
+    eval_expr_f32_in_module(module, body, expr_id)
 }
 
 fn eval_expr_u32(body: &hir::Body, expr_id: hir::Idx<hir::Expr>) -> Option<u32> {
@@ -2473,62 +2550,110 @@ fn eval_expr_f32(body: &hir::Body, expr_id: hir::Idx<hir::Expr>) -> Option<f32> 
     }
 }
 
+fn eval_expr_f32_in_module(
+    module: &hir::Module,
+    body: &hir::Body,
+    expr_id: hir::Idx<hir::Expr>,
+) -> Option<f32> {
+    fn eval(
+        module: &hir::Module,
+        body: &hir::Body,
+        expr_id: hir::Idx<hir::Expr>,
+        stack: &mut HashSet<SmolStr>,
+    ) -> Option<f32> {
+        match &body.exprs[expr_id] {
+            hir::Expr::Literal(hir::Literal::Integer(value)) => Some(*value as f32),
+            hir::Expr::Literal(hir::Literal::Float(value)) => Some(*value as f32),
+            hir::Expr::Unary {
+                op: hir::body::UnaryOp::Neg,
+                expr,
+                ..
+            } => eval(module, body, *expr, stack).map(|value| -value),
+            hir::Expr::Call {
+                callee,
+                args,
+                type_args,
+            } if args.is_empty() && type_args.is_empty() => {
+                let hir::Expr::Variable(name) = &body.exprs[*callee] else {
+                    return None;
+                };
+                if !stack.insert(name.clone()) {
+                    return None;
+                }
+                let value = module
+                    .functions
+                    .iter()
+                    .find(|(_, func)| func.name == *name && func.params.is_empty())
+                    .and_then(|(_, func)| func.body.as_ref())
+                    .and_then(|helper_body| {
+                        let helper_expr = body_terminal_expr_id(helper_body)?;
+                        eval(module, helper_body, helper_expr, stack)
+                    });
+                stack.remove(name);
+                value
+            }
+            _ => None,
+        }
+    }
+
+    let mut stack = HashSet::new();
+    eval(module, body, expr_id, &mut stack)
+}
+
 fn domain_execution_inputs(
+    module: &hir::Module,
     domain: &hir::Function,
     region_name: &SmolStr,
-) -> Result<
-    (
-        wrela::kernel::KernelValue,
-        wrela::presentation_contract::CanonicalRayBudget,
-    ),
-    String,
-> {
+    query_backend: wrela::query_plan::DispatchBackend,
+) -> Result<DomainExecutionInputs, String> {
     let metadata = domain.domain.as_ref().expect("domain metadata");
     let geometry_detail = match metadata.geometry_detail {
         hir::DomainGeometryDetail::Coarse => 0,
         hir::DomainGeometryDetail::Fine => 1,
     };
-    Ok((
-        wrela::presentation_exec::scene_domain_value(
+    let _ = query_backend;
+    let policy_metadata = metadata
+        .execution_policy
+        .as_ref()
+        .ok_or_else(|| format!("domain `{}` is missing execution policy metadata", domain.name))?;
+    let primary_rays = wrela::presentation_exec::RayBudgetPolicy {
+        max_distance: authored_domain_f32(module, policy_metadata.max_distance.as_ref())
+            .unwrap_or(16.0),
+        min_step: authored_domain_f32(module, policy_metadata.min_step.as_ref()).unwrap_or(0.01),
+        hit_epsilon: authored_domain_f32(module, policy_metadata.hit_epsilon.as_ref())
+            .unwrap_or(0.001),
+        max_steps: authored_domain_i32(module, policy_metadata.max_steps.as_ref()).unwrap_or(128),
+    };
+    let execution_policy = wrela::presentation_exec::PresentationExecutionPolicy::new(
+        policy_metadata.required_guarantee,
+        policy_metadata.selected_method,
+        primary_rays,
+    );
+    Ok(DomainExecutionInputs {
+        frame_domain: wrela::presentation_exec::scene_domain_value(
             wrela::query_exec::stable_region_scene_capture_id(region_name),
             geometry_detail,
             metadata.material,
             metadata.radiance,
             metadata.media,
         ),
-        wrela::presentation_contract::CanonicalRayBudget {
-            max_distance: authored_domain_f32(
-                metadata.max_distance.as_ref(),
-                "max_distance",
-                16.0,
-            )?,
-            min_step: authored_domain_f32(metadata.min_step.as_ref(), "min_step", 0.01)?,
-            hit_epsilon: authored_domain_f32(metadata.hit_epsilon.as_ref(), "hit_epsilon", 0.001)?,
-            max_steps: authored_domain_i32(metadata.max_steps.as_ref(), "max_steps", 128)?,
-        },
-    ))
+        semantic_domain: wrela::presentation_exec::render_semantic_domain_report(
+            wrela::query_exec::stable_region_scene_capture_id(region_name),
+            geometry_detail,
+            metadata.material,
+            metadata.radiance,
+            metadata.media,
+        ),
+        execution_policy,
+    })
 }
 
-fn authored_domain_f32(body: Option<&hir::Body>, field: &str, default: f32) -> Result<f32, String> {
-    match body {
-        Some(body) => eval_body_f32(body).ok_or_else(|| {
-            format!(
-                "presentation execution cannot evaluate non-literal domain {field}; author a terminal numeric literal for now"
-            )
-        }),
-        None => Ok(default),
-    }
+fn authored_domain_f32(module: &hir::Module, body: Option<&hir::Body>) -> Option<f32> {
+    body.and_then(|body| eval_body_f32_in_module(module, body))
 }
 
-fn authored_domain_i32(body: Option<&hir::Body>, field: &str, default: i32) -> Result<i32, String> {
-    match body {
-        Some(body) => eval_body_i32(body).ok_or_else(|| {
-            format!(
-                "presentation execution cannot evaluate non-literal domain {field}; author a terminal numeric literal for now"
-            )
-        }),
-        None => Ok(default),
-    }
+fn authored_domain_i32(module: &hir::Module, body: Option<&hir::Body>) -> Option<i32> {
+    body.and_then(|body| eval_body_i32_in_module(module, body))
 }
 
 fn presentation_plan_dump(
@@ -4303,7 +4428,11 @@ view sample_view(world: RegionCapture, camera: Camera) {
             up: [0.0, 1.0, 0.0],
             vertical_fov_degrees: 46.0,
         };
-        let bindings = bind_presentation_function_params(view, &SmolStr::new("scene_region"), camera);
+        let bindings = bind_presentation_function_params(
+            view,
+            &wrela::query_exec::stable_region_snapshot_handle(&SmolStr::new("scene_region")),
+            camera,
+        );
 
         let lighting =
             authored_presentation_lighting_inputs(view, &bindings).expect("authored lighting");
@@ -4334,6 +4463,8 @@ view sample_view(world: RegionCapture, camera: Camera) {
 }
 "#,
         );
+        let (_type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+        let query_ctx = wrela::query_exec::QueryExecContext::compile(&module, &type_info);
         let view = function(&module, "sample_view");
         let plan = wrela::presentation_plan::PresentationPlan::from_view_function(
             view,
@@ -4342,6 +4473,7 @@ view sample_view(world: RegionCapture, camera: Camera) {
         .expect("plan");
         let prepared = prepare_presentation_execution(
             &module,
+            &query_ctx,
             &plan,
             view,
             SmolStr::new("scene_region"),

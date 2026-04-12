@@ -1,10 +1,12 @@
 use self::DispatchBackend::{Auto, VirtualGpu, Wgsl};
+use crate::artifact_key::{ArtifactPolicyDigestMode, ArtifactReuseKey};
 use crate::query_contract::{
     self, ParticipantContractKind, QueryContractDescriptor, QueryExecutionBinding,
     QueryObservabilityProfile, QueryQuestionId,
 };
 use crate::query_solver::{RaySolverPlan, is_ray_shaped_spatial_contract};
 use crate::scene_ir::{DistanceSemantics, SupportClass};
+use crate::world_identity::WorldSnapshotHandle;
 use smol_str::SmolStr;
 
 pub use crate::query_contract::{
@@ -227,6 +229,39 @@ pub struct ArtifactContract {
     pub consumer: SmolStr,
     pub deterministic: bool,
     pub version: u32,
+}
+
+impl ArtifactContract {
+    pub fn logical_artifact_schema(&self) -> SmolStr {
+        SmolStr::new(format!("query-artifact::{}", self.id))
+    }
+
+    pub fn compatibility_hash(&self) -> u64 {
+        let schema = format!("{:?}", self.schema);
+        crate::query_exec::ids::stable_semantic_id(&[
+            self.id.as_bytes(),
+            schema.as_bytes(),
+            self.producer.as_bytes(),
+            self.consumer.as_bytes(),
+            &self.version.to_le_bytes(),
+        ])
+    }
+
+    pub fn reuse_key(
+        &self,
+        snapshot: &WorldSnapshotHandle,
+        policy_digest: Option<u64>,
+        policy_mode: ArtifactPolicyDigestMode,
+    ) -> ArtifactReuseKey {
+        ArtifactReuseKey::new(
+            snapshot,
+            Some(self.id.clone()),
+            self.logical_artifact_schema(),
+            self.compatibility_hash(),
+            policy_digest,
+            policy_mode,
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

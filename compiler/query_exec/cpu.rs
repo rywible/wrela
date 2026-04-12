@@ -12,10 +12,7 @@ use crate::portable;
 use crate::query_exec::QueryExecutionObservability;
 use crate::query_exec::capture::{self, CaptureQueryBackend, execute_batch_item_contract};
 use crate::query_exec::context::QueryExecContext;
-use crate::query_exec::ids::{
-    stable_field_scene_capture_id, stable_region_scene_capture_id, stable_shape_capture_id,
-    stable_shape_scene_capture_id,
-};
+use crate::query_exec::ids::stable_shape_capture_id;
 use crate::query_exec::region::{select_region_exec_case, world_domain_mismatch_message};
 use crate::query_exec::world::{
     WorldDistanceBackend, WorldMediumBackend, WorldNormalBackend, WorldQueryBackend,
@@ -23,6 +20,7 @@ use crate::query_exec::world::{
     execute_world_medium, execute_world_normal, execute_world_radiance, execute_world_ray,
     execute_world_surface, world_query_semantics, world_query_semantics_for_contract,
 };
+use crate::execution_policy::QueryExecutionPolicy;
 use crate::query_plan::{
     BatchQueryKind, WorldQueryKind, batch_query_kind_for_contract_id,
     world_query_kind_for_contract_id,
@@ -34,6 +32,7 @@ use crate::scene_ir::{
     ShapeSubtractProvenancePolicy, SmoothKind, SupportClass, SupportNodeId, SupportNodeKindSummary,
     SupportPayload, TransformKind,
 };
+use crate::world_identity::{SnapshotCaptureKind, WorldSnapshotHandle};
 use smol_str::SmolStr;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -55,6 +54,14 @@ use wrela_runtime::{
     wr_vec2_new, wr_vec3_new, wr_vec4_new, wr_warp,
 };
 
+fn snapshot_capture_kind(kind: crate::query_plan::CaptureKind) -> SnapshotCaptureKind {
+    match kind {
+        crate::query_plan::CaptureKind::Field => SnapshotCaptureKind::Field,
+        crate::query_plan::CaptureKind::Shape => SnapshotCaptureKind::Shape,
+        crate::query_plan::CaptureKind::Region => SnapshotCaptureKind::Region,
+    }
+}
+
 #[derive(Debug, Error, Clone, PartialEq)]
 pub enum QueryExecError {
     #[error("query execution expected {expected}, found {found}")]
@@ -67,6 +74,15 @@ pub enum QueryExecError {
     UnknownShapeCapture { name: SmolStr },
     #[error("unknown region capture '{name}'")]
     UnknownRegionCapture { name: SmolStr },
+    #[error(
+        "snapshot epoch mismatch for {kind} capture '{name}': expected {expected}, found {found}"
+    )]
+    SnapshotEpochMismatch {
+        kind: &'static str,
+        name: SmolStr,
+        expected: u32,
+        found: u32,
+    },
     #[error("missing scene field '{name}'")]
     MissingField { name: SmolStr },
     #[error("missing scene shape '{name}'")]
@@ -94,7 +110,9 @@ pub fn execute_world_query(
     plan: &KernelWorldQueryPlan,
     args: &[KernelValue],
 ) -> Result<KernelValue, QueryExecError> {
-    execute_world_query_with_observability(ctx, plan, args).map(|(value, _)| value)
+    let policy = QueryExecutionPolicy::conservative(plan.backend, None);
+    execute_world_query_with_policy_with_observability(ctx, &policy, plan, args)
+        .map(|(value, _)| value)
 }
 
 pub(crate) fn execute_batch_query(
@@ -110,7 +128,16 @@ pub(crate) fn execute_capture_query_with_observability(
     plan: &KernelCaptureQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
-    let ops = DirectQueryOps::new(ctx);
+    execute_capture_query_with_snapshot_observability(ctx, None, plan, args)
+}
+
+pub(crate) fn execute_capture_query_with_snapshot_observability(
+    ctx: &QueryExecContext,
+    snapshot: Option<&WorldSnapshotHandle>,
+    plan: &KernelCaptureQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let ops = DirectQueryOps::new_with_snapshot(ctx, snapshot);
     ops.note_dispatch();
     if let Err(errors) = validate_capture_query_plan(plan) {
         ops.note_contract_validation_failure();
@@ -125,7 +152,37 @@ pub(crate) fn execute_world_query_with_observability(
     plan: &KernelWorldQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
-    let evaluator = DirectQueryEvaluator::new(ctx);
+    let policy = QueryExecutionPolicy::conservative(plan.backend, None);
+    execute_world_query_with_policy_with_observability(ctx, &policy, plan, args)
+}
+
+pub(crate) fn execute_world_query_with_policy_with_observability(
+    ctx: &QueryExecContext,
+    policy: &QueryExecutionPolicy,
+    plan: &KernelWorldQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    execute_world_query_with_policy_with_snapshot_observability(ctx, None, policy, plan, args)
+}
+
+pub(crate) fn execute_world_query_with_snapshot_observability(
+    ctx: &QueryExecContext,
+    snapshot: Option<&WorldSnapshotHandle>,
+    plan: &KernelWorldQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let policy = QueryExecutionPolicy::conservative(plan.backend, None);
+    execute_world_query_with_policy_with_snapshot_observability(ctx, snapshot, &policy, plan, args)
+}
+
+pub(crate) fn execute_world_query_with_policy_with_snapshot_observability(
+    ctx: &QueryExecContext,
+    snapshot: Option<&WorldSnapshotHandle>,
+    _policy: &QueryExecutionPolicy,
+    plan: &KernelWorldQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let evaluator = DirectQueryEvaluator::new_with_snapshot(ctx, snapshot);
     evaluator.note_dispatch();
     if let Err(errors) = validate_world_query_plan(plan) {
         evaluator.note_contract_validation_failure();
@@ -140,7 +197,16 @@ pub(crate) fn execute_batch_query_with_observability(
     plan: &KernelBatchQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
-    let evaluator = DirectQueryEvaluator::new(ctx);
+    execute_batch_query_with_snapshot_observability(ctx, None, plan, args)
+}
+
+pub(crate) fn execute_batch_query_with_snapshot_observability(
+    ctx: &QueryExecContext,
+    snapshot: Option<&WorldSnapshotHandle>,
+    plan: &KernelBatchQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let evaluator = DirectQueryEvaluator::new_with_snapshot(ctx, snapshot);
     evaluator.note_dispatch();
     if let Err(errors) = validate_batch_query_plan(plan) {
         evaluator.note_contract_validation_failure();
@@ -171,6 +237,7 @@ pub(crate) fn resolve_batch_capture(
 
 pub(crate) struct DirectQueryOps<'a> {
     ctx: &'a QueryExecContext,
+    snapshot: Option<WorldSnapshotHandle>,
     observability: Rc<RefCell<QueryExecutionObservability>>,
 }
 
@@ -241,9 +308,16 @@ impl<'a> std::ops::Deref for DirectQueryEvaluator<'a> {
 
 impl<'a> DirectQueryEvaluator<'a> {
     pub(crate) fn new(ctx: &'a QueryExecContext) -> Self {
+        Self::new_with_snapshot(ctx, None)
+    }
+
+    pub(crate) fn new_with_snapshot(
+        ctx: &'a QueryExecContext,
+        snapshot: Option<&WorldSnapshotHandle>,
+    ) -> Self {
         let observability = Rc::new(RefCell::new(QueryExecutionObservability::default()));
         Self {
-            ops: DirectQueryOps::with_observability(ctx, observability),
+            ops: DirectQueryOps::with_observability_and_snapshot(ctx, snapshot, observability),
         }
     }
 
@@ -258,8 +332,16 @@ impl<'a> DirectQueryEvaluator<'a> {
 
 impl<'a> DirectQueryOps<'a> {
     pub(crate) fn new(ctx: &'a QueryExecContext) -> Self {
-        Self::with_observability(
+        Self::new_with_snapshot(ctx, None)
+    }
+
+    pub(crate) fn new_with_snapshot(
+        ctx: &'a QueryExecContext,
+        snapshot: Option<&WorldSnapshotHandle>,
+    ) -> Self {
+        Self::with_observability_and_snapshot(
             ctx,
+            snapshot,
             Rc::new(RefCell::new(QueryExecutionObservability::default())),
         )
     }
@@ -268,7 +350,19 @@ impl<'a> DirectQueryOps<'a> {
         ctx: &'a QueryExecContext,
         observability: Rc<RefCell<QueryExecutionObservability>>,
     ) -> Self {
-        Self { ctx, observability }
+        Self::with_observability_and_snapshot(ctx, None, observability)
+    }
+
+    pub(crate) fn with_observability_and_snapshot(
+        ctx: &'a QueryExecContext,
+        snapshot: Option<&WorldSnapshotHandle>,
+        observability: Rc<RefCell<QueryExecutionObservability>>,
+    ) -> Self {
+        Self {
+            ctx,
+            snapshot: snapshot.cloned(),
+            observability,
+        }
     }
 
     pub(crate) fn snapshot_observability(&self) -> QueryExecutionObservability {
@@ -277,6 +371,31 @@ impl<'a> DirectQueryOps<'a> {
 
     pub(crate) fn context(&self) -> &'a QueryExecContext {
         self.ctx
+    }
+
+    fn authoritative_snapshot(&self, kind: SnapshotCaptureKind) -> Option<&WorldSnapshotHandle> {
+        self.snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.kind() == kind)
+    }
+
+    fn ensure_snapshot_epoch(
+        &self,
+        kind: &'static str,
+        name: &SmolStr,
+        handle: &WorldSnapshotHandle,
+        found_epoch: u32,
+    ) -> Result<(), QueryExecError> {
+        let expected = handle.portable_epoch();
+        if expected == found_epoch {
+            return Ok(());
+        }
+        Err(QueryExecError::SnapshotEpochMismatch {
+            kind,
+            name: name.clone(),
+            expected,
+            found: found_epoch,
+        })
     }
 
     fn update_observability<F>(&self, update: F)
@@ -616,7 +735,7 @@ impl<'a> DirectQueryOps<'a> {
         domain: &KernelStructValue,
         query_name: &str,
     ) -> Result<i32, QueryExecError> {
-        let capture_scene_id = stable_region_scene_capture_id(capture);
+        let capture_scene_id = self.ctx.region_scene_id(capture);
         let domain_scene_id = expect_struct_u32(domain, "scene_id")?;
         if capture_scene_id != domain_scene_id {
             return Err(QueryExecError::Unsupported {
@@ -686,7 +805,12 @@ impl<'a> DirectQueryOps<'a> {
                 | crate::query_plan::PruningStrategy::ConservativeTraversal
         ));
         let mut out = Vec::with_capacity(items.len());
-        let capture_value = KernelValue::Capture(capture.clone());
+        let capture_value = args.first().cloned().unwrap_or_else(|| {
+            self.ctx
+                .snapshot_handle_for_kind(snapshot_capture_kind(plan.capture_kind), &capture)
+                .expect("resolved capture must have a snapshot handle")
+                .capture_value()
+        });
         for item in items {
             out.push(execute_batch_item_contract(
                 self,
@@ -718,7 +842,12 @@ impl<'a> DirectQueryOps<'a> {
                 message: "world-batch plans require a world-query item contract".to_string(),
             });
         };
-        let capture_value = KernelValue::Capture(capture);
+        let capture_value = args.first().cloned().unwrap_or_else(|| {
+            self.ctx
+                .region_snapshot_handle(&capture)
+                .expect("resolved region capture must have a snapshot handle")
+                .capture_value()
+        });
         let domain_value = KernelValue::Struct(domain);
         let mut out = Vec::with_capacity(items.len());
         for item in items {
@@ -736,6 +865,8 @@ impl<'a> DirectQueryOps<'a> {
     ) -> Result<SmolStr, QueryExecError> {
         self.note_artifact_load();
         match capture {
+            // Legacy compatibility: core execution now prefers typed capture structs, but
+            // name-only captures remain accepted for older callers and tests.
             Some(KernelValue::Capture(name)) => {
                 if self.ctx.field_names.contains(name) || self.ctx.shape_names.contains(name) {
                     Ok(name.clone())
@@ -747,25 +878,51 @@ impl<'a> DirectQueryOps<'a> {
             }
             Some(KernelValue::Struct(value)) if value.name.as_str() == "FieldCapture" => {
                 let scene_id = expect_struct_u32(value, "scene_id")?;
-                self.ctx
-                    .field_names
-                    .iter()
-                    .find(|name| stable_field_scene_capture_id(name) == scene_id)
+                let epoch = expect_struct_u32(value, "epoch")?;
+                let name = self
+                    .ctx
+                    .field_name_for_scene_id(scene_id)
                     .cloned()
                     .ok_or_else(|| QueryExecError::UnknownFieldCapture {
                         name: SmolStr::new(format!("{scene_id}")),
+                    })?;
+                let handle = self
+                    .authoritative_snapshot(SnapshotCaptureKind::Field)
+                    .filter(|handle| {
+                        handle.capture_name() == &name && handle.portable_scene_id() == scene_id
                     })
+                    .or_else(|| self.ctx.field_snapshot_handle(&name))
+                    .expect("field scene index must point at a snapshot handle");
+                self.ensure_snapshot_epoch("field", &name, handle, epoch)?;
+                Ok(name)
             }
             Some(KernelValue::Struct(value)) if value.name.as_str() == "ShapeCapture" => {
                 let scene_id = expect_struct_u32(value, "scene_id")?;
-                self.ctx
-                    .shape_names
-                    .iter()
-                    .find(|name| stable_shape_scene_capture_id(name) == scene_id)
+                let epoch = expect_struct_u32(value, "epoch")?;
+                let root_feature_id = expect_struct_u32(value, "root_feature_id")?;
+                let name = self
+                    .ctx
+                    .shape_name_for_scene_id(scene_id)
                     .cloned()
                     .ok_or_else(|| QueryExecError::UnknownShapeCapture {
                         name: SmolStr::new(format!("{scene_id}")),
+                    })?;
+                let handle = self
+                    .authoritative_snapshot(SnapshotCaptureKind::Shape)
+                    .filter(|handle| {
+                        handle.capture_name() == &name
+                            && handle.portable_scene_id() == scene_id
+                            && handle.portable_root_feature_id() == root_feature_id
                     })
+                    .or_else(|| self.ctx.shape_snapshot_handle(&name))
+                    .expect("shape scene index must point at a snapshot handle");
+                self.ensure_snapshot_epoch("shape", &name, handle, epoch)?;
+                if handle.portable_root_feature_id() != root_feature_id {
+                    return Err(QueryExecError::UnknownShapeCapture {
+                        name: SmolStr::new(format!("{scene_id}:{root_feature_id}")),
+                    });
+                }
+                Ok(name)
             }
             _ => Err(QueryExecError::MissingCaptureTarget {
                 kind: "field-or-shape capture",
@@ -839,19 +996,38 @@ impl<'a> DirectQueryOps<'a> {
     ) -> Result<SmolStr, QueryExecError> {
         self.note_artifact_load();
         match capture {
+            // Legacy compatibility: core execution now prefers typed capture structs, but
+            // name-only captures remain accepted for older callers and tests.
             Some(KernelValue::Capture(name)) if self.ctx.shape_names.contains(name) => {
                 Ok(name.clone())
             }
             Some(KernelValue::Struct(value)) if value.name.as_str() == "ShapeCapture" => {
+                let scene_id = expect_struct_u32(value, "scene_id")?;
+                let epoch = expect_struct_u32(value, "epoch")?;
                 let root_feature_id = expect_struct_u32(value, "root_feature_id")?;
-                self.ctx
-                    .shape_names
-                    .iter()
-                    .find(|name| stable_shape_capture_id(name) == root_feature_id)
+                let name = self
+                    .ctx
+                    .shape_name_for_root_feature_id(root_feature_id)
                     .cloned()
                     .ok_or_else(|| QueryExecError::UnknownShapeCapture {
                         name: SmolStr::new(format!("{root_feature_id}")),
+                    })?;
+                let handle = self
+                    .authoritative_snapshot(SnapshotCaptureKind::Shape)
+                    .filter(|handle| {
+                        handle.capture_name() == &name
+                            && handle.portable_scene_id() == scene_id
+                            && handle.portable_root_feature_id() == root_feature_id
                     })
+                    .or_else(|| self.ctx.shape_snapshot_handle(&name))
+                    .expect("shape root-feature index must point at a snapshot handle");
+                self.ensure_snapshot_epoch("shape", &name, handle, epoch)?;
+                if handle.portable_scene_id() != scene_id {
+                    return Err(QueryExecError::UnknownShapeCapture {
+                        name: SmolStr::new(format!("{scene_id}:{root_feature_id}")),
+                    });
+                }
+                Ok(name)
             }
             Some(KernelValue::Capture(name)) => {
                 Err(QueryExecError::UnknownShapeCapture { name: name.clone() })
@@ -868,19 +1044,30 @@ impl<'a> DirectQueryOps<'a> {
     ) -> Result<SmolStr, QueryExecError> {
         self.note_artifact_load();
         match capture {
+            // Legacy compatibility: core execution now prefers typed capture structs, but
+            // name-only captures remain accepted for older callers and tests.
             Some(KernelValue::Capture(name)) if self.ctx.regions_by_name.contains_key(name) => {
                 Ok(name.clone())
             }
             Some(KernelValue::Struct(value)) if value.name.as_str() == "RegionCapture" => {
                 let scene_id = expect_struct_u32(value, "scene_id")?;
-                self.ctx
-                    .regions_by_name
-                    .keys()
-                    .find(|name| stable_region_scene_capture_id(name) == scene_id)
+                let epoch = expect_struct_u32(value, "epoch")?;
+                let name = self
+                    .ctx
+                    .region_name_for_scene_id(scene_id)
                     .cloned()
                     .ok_or_else(|| QueryExecError::UnknownRegionCapture {
                         name: SmolStr::new(format!("{scene_id}")),
+                    })?;
+                let handle = self
+                    .authoritative_snapshot(SnapshotCaptureKind::Region)
+                    .filter(|handle| {
+                        handle.capture_name() == &name && handle.portable_scene_id() == scene_id
                     })
+                    .or_else(|| self.ctx.region_snapshot_handle(&name))
+                    .expect("region scene index must point at a snapshot handle");
+                self.ensure_snapshot_epoch("region", &name, handle, epoch)?;
+                Ok(name)
             }
             Some(KernelValue::Capture(name)) => {
                 Err(QueryExecError::UnknownRegionCapture { name: name.clone() })
@@ -2760,7 +2947,7 @@ impl<'a> DirectQueryOps<'a> {
         root_shape_id: Option<u32>,
     ) -> Result<Vec<SmolStr>, QueryExecError> {
         self.note_artifact_load();
-        let scene_id = stable_region_scene_capture_id(capture);
+        let scene_id = self.ctx.region_scene_id(capture);
         let Some(region_case) = select_region_exec_case(&self.ctx.region_cases, scene_id) else {
             return Err(QueryExecError::MissingRegion {
                 name: capture.clone(),
@@ -2772,7 +2959,7 @@ impl<'a> DirectQueryOps<'a> {
                 Some(root_shape_id) => {
                     let selected = shapes
                         .iter()
-                        .filter(|shape| stable_shape_capture_id(shape) == root_shape_id)
+                        .filter(|shape| self.ctx.shape_root_feature_id(shape) == root_shape_id)
                         .cloned()
                         .collect::<Vec<_>>();
                     self.note_support_pruned_candidates(
@@ -3801,7 +3988,7 @@ impl WorldSurfaceBackend for CpuWorldSurfaceBackend<'_, '_> {
 
     fn consider_world_surface_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
         self.evaluator.note_candidate_count(1);
-        if stable_shape_capture_id(shape) == self.root_shape_id {
+        if self.evaluator.ctx.shape_root_feature_id(shape) == self.root_shape_id {
             self.result = self.evaluator.surface_at(shape, &self.hit)?;
         }
         Ok(())

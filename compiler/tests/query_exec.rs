@@ -14,12 +14,14 @@ use wrela::parser::parse;
 use wrela::query_contract;
 use wrela::query_exec::{
     BatchQueryExecutionTrace, CostFidelity, DirectQueryExecutionTrace, DirectQueryExecutor,
-    QueryExecContext, SemanticCostCauseKind, SemanticCostUnit, SemanticStageKind,
+    QueryExecContext, QueryExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass,
+    SelectedMethodClass, SemanticCostCauseKind, SemanticCostUnit, SemanticStageKind,
     executable_region_shape_lists, execute_batch_query_with_trace,
     execute_batch_query_with_trace_on, execute_capture_query, execute_capture_query_on,
     execute_capture_query_with_trace_on, execute_world_query, execute_world_query_on,
-    execute_world_query_with_trace_on, render_semantic_cost_report, stable_field_scene_capture_id,
-    stable_region_scene_capture_id, stable_shape_capture_id, stable_shape_scene_capture_id,
+    execute_world_query_with_policy_with_trace_on, execute_world_query_with_trace_on,
+    render_semantic_cost_report, stable_field_scene_capture_id, stable_region_scene_capture_id,
+    stable_shape_capture_id, stable_shape_scene_capture_id,
 };
 use wrela::query_plan::{
     ArtifactSchema, BatchQueryKind, BatchQueryPlan, CaptureKind, CaptureQueryKind,
@@ -320,7 +322,6 @@ fn scene_domain_with_limits(
                     name: SmolStr::new("SpatialDomainContract"),
                     fields: vec![
                         (SmolStr::new("geometry_detail"), KernelValue::I32(detail)),
-                        (SmolStr::new("guarantee"), KernelValue::U32(0)),
                     ],
                 }),
             ),
@@ -1426,6 +1427,13 @@ fn query_exec_traces_report_observability_counters() {
     assert!(cpu_trace.observability.branch_visits > 0);
     assert!(cpu_trace.observability.artifact_loads > 0);
     assert_eq!(
+        cpu_trace
+            .snapshot
+            .as_ref()
+            .map(|snapshot| (snapshot.capture_name.as_str(), snapshot.epoch.0)),
+        Some(("scene_shape", 1))
+    );
+    assert_eq!(
         cpu_trace.cost_report.unit,
         SemanticCostUnit::CaptureCandidates
     );
@@ -1458,6 +1466,13 @@ fn query_exec_traces_report_observability_counters() {
     assert!(vgpu_world_trace.observability.artifact_loads > 0);
     assert!(vgpu_world_trace.observability.solver_plan_id.is_some());
     assert!(vgpu_world_trace.observability.solver_dense_fallback_rays > 0);
+    assert_eq!(
+        vgpu_world_trace
+            .snapshot
+            .as_ref()
+            .map(|snapshot| (snapshot.capture_name.as_str(), snapshot.epoch.0)),
+        Some(("scene_region", 1))
+    );
     assert!(
         vgpu_world_trace
             .cost_report
@@ -1563,6 +1578,98 @@ fn query_exec_traces_report_observability_counters() {
         wgsl_batch_trace.cost_report.fidelity,
         CostFidelity::StructuralApproximation
     );
+}
+
+#[test]
+fn query_exec_world_policy_is_reported_and_exact_oracle_is_rejected_on_wgsl() {
+    let (_, _, ctx) = typed_query_module(query_fixture_source());
+    let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("scene_region"));
+    let domain = scene_domain(region_scene_id, 1, true, true, true);
+    let ray = ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96);
+    let policy = QueryExecutionPolicy::new(
+        DispatchBackend::Cpu,
+        RequiredGuaranteeClass::Exact,
+        SelectedMethodClass::ExactOracle,
+        Some(RayBudgetPolicy {
+            max_distance: 6.0,
+            min_step: 0.05,
+            hit_epsilon: 0.001,
+            max_steps: 96,
+        }),
+    );
+    let plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(
+        WorldQueryKind::Trace,
+        DispatchBackend::Cpu,
+    ));
+
+    let (_hit, trace) = execute_world_query_with_policy_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &policy,
+        None,
+        &plan,
+        &[KernelValue::Capture(SmolStr::new("scene_region")), domain, ray],
+    )
+    .expect("cpu exact/oracle world trace");
+    let rendered = render_semantic_cost_report(&trace.cost_report);
+    assert!(rendered.contains("execution_policy=backend_preference=cpu"));
+    assert!(rendered.contains("required_guarantee=exact"));
+    assert!(rendered.contains("selected_method=exact_oracle"));
+    assert!(rendered.contains("degradations=none"));
+
+    let conservative_wgsl_policy = QueryExecutionPolicy::conservative(
+        DispatchBackend::Wgsl,
+        Some(RayBudgetPolicy {
+            max_distance: 6.0,
+            min_step: 0.05,
+            hit_epsilon: 0.001,
+            max_steps: 96,
+        }),
+    );
+    let (_wgsl_hit, wgsl_trace) = execute_world_query_with_policy_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &conservative_wgsl_policy,
+        None,
+        &plan,
+        &[
+            KernelValue::Capture(SmolStr::new("scene_region")),
+            scene_domain(region_scene_id, 1, true, true, true),
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
+        ],
+    )
+    .expect("wgsl conservative world trace");
+    let wgsl_rendered = render_semantic_cost_report(&wgsl_trace.cost_report);
+    assert!(wgsl_rendered.contains("execution_policy=backend_preference=wgsl"));
+    assert!(wgsl_rendered.contains("degradations=backend=wgsl runs without the CPU legality oracle"));
+
+    let wgsl_err = execute_world_query_with_policy_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &QueryExecutionPolicy::new(
+            DispatchBackend::Wgsl,
+            RequiredGuaranteeClass::Exact,
+            SelectedMethodClass::ExactOracle,
+            Some(RayBudgetPolicy {
+                max_distance: 6.0,
+                min_step: 0.05,
+                hit_epsilon: 0.001,
+                max_steps: 96,
+            }),
+        ),
+        None,
+        &plan,
+        &[
+            KernelValue::Capture(SmolStr::new("scene_region")),
+            scene_domain(region_scene_id, 1, true, true, true),
+            ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
+        ],
+    )
+    .expect_err("wgsl exact/oracle policy should be rejected");
+    let wgsl_err = wgsl_err.to_string();
+    assert!(wgsl_err.contains("backend cannot satisfy execution policy"), "{wgsl_err}");
+    assert!(wgsl_err.contains("required_guarantee=exact"), "{wgsl_err}");
+    assert!(wgsl_err.contains("selected_method=exact_oracle"), "{wgsl_err}");
 }
 
 #[test]

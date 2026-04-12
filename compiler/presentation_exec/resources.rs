@@ -215,6 +215,29 @@ impl AttachmentResource {
     }
 }
 
+impl FrameAttachmentLayout {
+    pub fn compatibility_signature(&self) -> u64 {
+        let kind = format!("{:?}", self.attachment.kind);
+        let element_schema = format!("{:?}", self.attachment.element_schema);
+        let lifetime = format!("{:?}", self.attachment.lifetime);
+        let resolution = format!("{:?}", self.attachment.resolution);
+        let element_abi = format!("{:?}", self.element_abi);
+        crate::query_exec::ids::stable_semantic_id(&[
+            kind.as_bytes(),
+            element_schema.as_bytes(),
+            lifetime.as_bytes(),
+            resolution.as_bytes(),
+            element_abi.as_bytes(),
+            &self.attachment.scale.divisor_x.to_le_bytes(),
+            &self.attachment.scale.divisor_y.to_le_bytes(),
+            &self.width.to_le_bytes(),
+            &self.height.to_le_bytes(),
+            &self.element_stride.to_le_bytes(),
+            &self.total_size.to_le_bytes(),
+        ])
+    }
+}
+
 fn initialize_attachment_bytes(
     attachment: &FrameAttachmentContract,
     layout: &FrameAttachmentLayout,

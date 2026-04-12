@@ -1,3 +1,8 @@
+use crate::artifact_key::{ArtifactPolicyDigestMode, ArtifactReuseKey};
+pub use crate::execution_policy::{
+    PresentationExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
+};
+use crate::world_identity::WorldSnapshotHandle;
 use smol_str::SmolStr;
 
 pub const PRESENTATION_CONTRACT_VERSION: u32 = 1;
@@ -937,6 +942,40 @@ impl HistoryCompatibilityKey {
             sample_origin: view.screen_lattice.origin,
             samples_per_pixel,
         }
+    }
+
+    pub fn compatibility_hash(&self) -> u64 {
+        let encoded = format!("{self:?}");
+        crate::query_exec::ids::stable_semantic_id(&[encoded.as_bytes()])
+    }
+}
+
+impl TemporalHistorySlotContract {
+    pub fn logical_artifact_schema(&self) -> SmolStr {
+        SmolStr::new(format!(
+            "presentation-history::{:?}::{}",
+            self.role, self.attachment
+        ))
+    }
+
+    pub fn reuse_key(
+        &self,
+        snapshot: &WorldSnapshotHandle,
+        layout_signature: u64,
+    ) -> ArtifactReuseKey {
+        let compatibility_hash = self.compatibility.compatibility_hash();
+        let combined_hash = crate::query_exec::ids::stable_semantic_id(&[
+            &compatibility_hash.to_le_bytes(),
+            &layout_signature.to_le_bytes(),
+        ]);
+        ArtifactReuseKey::new(
+            snapshot,
+            None,
+            self.logical_artifact_schema(),
+            combined_hash,
+            Some(compatibility_hash),
+            ArtifactPolicyDigestMode::CompatibleRange,
+        )
     }
 }
 

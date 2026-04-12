@@ -6,16 +6,18 @@ use wrela::parser::ast;
 use wrela::parser::ast::AstNode;
 use wrela::parser::parse;
 use wrela::presentation_contract::{
-    CanonicalCameraInput, CanonicalLightInput, CanonicalRayBudget, CanonicalViewportInput,
-    PresentationLightingInputs, QualityDegradationStep, RealtimeQualityContract,
-    RealtimeQualityTier,
+    CanonicalCameraInput, CanonicalLightInput, CanonicalViewportInput, PresentationLightingInputs,
+    QualityDegradationStep, RealtimeQualityContract, RealtimeQualityTier,
 };
 use wrela::presentation_exec::{
     AdaptivePresentationController, AdaptivePresentationSession, PresentationExecutionInput,
-    execute_plan, frame_state_value, frame_state_value_with_history, scene_domain_value,
+    PresentationExecutionPolicy, RayBudgetPolicy, execute_plan, frame_state_value,
+    frame_state_value_with_history, scene_domain_value,
 };
 use wrela::presentation_plan::{PresentationPassKind, PresentationPlan};
-use wrela::query_exec::{QueryExecContext, stable_region_scene_capture_id};
+use wrela::query_exec::{
+    QueryExecContext, stable_region_scene_capture_id, stable_region_snapshot_handle,
+};
 use wrela::query_plan::DispatchBackend;
 
 fn lower_inline_module(source: &str) -> hir::Module {
@@ -113,6 +115,15 @@ fn normalize_vec3(value: [f32; 3]) -> [f32; 3] {
     [value[0] * inv_len, value[1] * inv_len, value[2] * inv_len]
 }
 
+fn presentation_execution_policy(max_steps: i32) -> PresentationExecutionPolicy {
+    PresentationExecutionPolicy::conservative(RayBudgetPolicy {
+        max_distance: 8.0,
+        min_step: 0.02,
+        hit_epsilon: 0.0005,
+        max_steps,
+    })
+}
+
 fn presentation_fixture(
     backend: DispatchBackend,
 ) -> (
@@ -134,7 +145,7 @@ fn presentation_fixture(
         height: 4,
     };
     let input = PresentationExecutionInput {
-        region_capture: SmolStr::new("exec_region"),
+        region_snapshot: stable_region_snapshot_handle(&SmolStr::new("exec_region")),
         frame_domain: scene_domain_value(
             stable_region_scene_capture_id(&SmolStr::new("exec_region")),
             1,
@@ -156,12 +167,7 @@ fn presentation_fixture(
             ambient_color: [0.12, 0.12, 0.12],
         },
         compatibility_projection: None,
-        ray_budget: CanonicalRayBudget {
-            max_distance: 8.0,
-            min_step: 0.02,
-            hit_epsilon: 0.0005,
-            max_steps: 128,
-        },
+        execution_policy: presentation_execution_policy(128),
         quality_override: None,
         backend,
     };
@@ -189,7 +195,7 @@ fn presentation_fixture_with_state(
     let view = view_function(&module, view_name);
     let plan = PresentationPlan::from_view_function(view, backend).expect("presentation plan");
     let input = PresentationExecutionInput {
-        region_capture: SmolStr::new(region_name),
+        region_snapshot: stable_region_snapshot_handle(&SmolStr::new(region_name)),
         frame_domain: scene_domain_value(
             stable_region_scene_capture_id(&SmolStr::new(region_name)),
             1,
@@ -222,16 +228,40 @@ fn presentation_fixture_with_state(
             ambient_color: [0.12, 0.12, 0.12],
         },
         compatibility_projection: None,
-        ray_budget: CanonicalRayBudget {
-            max_distance: 8.0,
-            min_step: 0.02,
-            hit_epsilon: 0.0005,
-            max_steps: 128,
-        },
+        execution_policy: presentation_execution_policy(128),
         quality_override: None,
         backend,
     };
     (plan, ctx, input)
+}
+
+#[test]
+fn scene_domain_value_does_not_emit_placeholder_guarantee() {
+    let domain = scene_domain_value(7, 1, true, false, false);
+    let domain = match domain {
+        KernelValue::Struct(value) => value,
+        other => panic!("expected scene domain struct, found {:?}", other),
+    };
+    let spatial = match domain
+        .fields
+        .iter()
+        .find(|(name, _)| name.as_str() == "spatial")
+        .map(|(_, value)| value)
+    {
+        Some(KernelValue::Struct(value)) => value,
+        Some(other) => panic!("expected spatial struct, found {:?}", other),
+        None => panic!("missing spatial field"),
+    };
+    let field_names = spatial
+        .fields
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect::<Vec<_>>();
+    assert!(field_names.iter().any(|name| name == "geometry_detail"));
+    assert!(
+        !field_names.iter().any(|name| name == "guarantee"),
+        "scene_domain_value must not emit placeholder guarantee"
+    );
 }
 
 fn temporal_alias_source() -> &'static str {
@@ -368,6 +398,18 @@ fn cpu_first_color_path_materializes_surface_participants_and_color_attachments(
 
     assert_eq!(result.width, 4);
     assert_eq!(result.height, 4);
+    assert!(
+        result
+            .frame_cost
+            .execution_policy
+            .contains("required_guarantee=conservative_no_false_miss")
+    );
+    assert!(
+        result
+            .frame_cost
+            .execution_policy
+            .contains("selected_method=conservative_solver")
+    );
     assert_eq!(result.metrics.sample_count, 16);
     assert_eq!(result.metrics.hit_count + result.metrics.miss_count, 16);
     assert!(result.metrics.candidates_before_pruning >= 16);
@@ -438,6 +480,13 @@ fn cpu_first_color_path_materializes_surface_participants_and_color_attachments(
     assert_eq!(history_primary_hit.len(), 16);
     assert_eq!(color.len(), 16);
     assert!(result.history.is_some());
+    assert_eq!(
+        result.history.as_ref().map(|history| (
+            history.snapshot.capture_name.as_str(),
+            history.snapshot.epoch.0
+        )),
+        Some(("exec_region", 1))
+    );
     assert!(result.metrics.continuation_unavailable_count > 0);
 
     assert!(!hit_flag(&primary_hits[0]));

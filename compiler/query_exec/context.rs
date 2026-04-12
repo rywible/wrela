@@ -1,12 +1,12 @@
 use crate::hir;
 use crate::hir::typeck::TypeInfo;
 use crate::query_exec::ids::{
-    stable_field_scene_capture_id, stable_region_scene_capture_id, stable_shape_capture_id,
-    stable_shape_scene_capture_id,
+    stable_field_snapshot_handle, stable_region_snapshot_handle, stable_shape_snapshot_handle,
 };
 use crate::query_exec::region::{RegionExecCase, build_region_exec_cases};
 use crate::scene_ir;
 use crate::scene_ir::{ShapeLeafId, ShapeLeafRef, ShapeLeafScene};
+use crate::world_identity::{SnapshotCaptureKind, SnapshotIdentityReport, WorldSnapshotHandle};
 use smol_str::SmolStr;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -26,6 +26,13 @@ pub struct QueryExecContext {
     pub region_cases: Vec<RegionExecCase>,
     pub field_names: HashSet<SmolStr>,
     pub shape_names: HashSet<SmolStr>,
+    pub field_snapshots: BTreeMap<SmolStr, WorldSnapshotHandle>,
+    pub shape_snapshots: BTreeMap<SmolStr, WorldSnapshotHandle>,
+    pub region_snapshots: BTreeMap<SmolStr, WorldSnapshotHandle>,
+    field_scene_index: HashMap<u32, SmolStr>,
+    shape_scene_index: HashMap<u32, SmolStr>,
+    shape_root_feature_index: HashMap<u32, SmolStr>,
+    region_scene_index: HashMap<u32, SmolStr>,
 }
 
 impl QueryExecContext {
@@ -114,6 +121,34 @@ impl QueryExecContext {
             .iter()
             .map(|(_, shape)| shape.name.clone())
             .collect::<HashSet<_>>();
+        let field_snapshots = field_names
+            .iter()
+            .map(|name| (name.clone(), stable_field_snapshot_handle(name)))
+            .collect::<BTreeMap<_, _>>();
+        let shape_snapshots = shape_names
+            .iter()
+            .map(|name| (name.clone(), stable_shape_snapshot_handle(name)))
+            .collect::<BTreeMap<_, _>>();
+        let region_snapshots = regions_by_name
+            .keys()
+            .map(|name| (name.clone(), stable_region_snapshot_handle(name)))
+            .collect::<BTreeMap<_, _>>();
+        let field_scene_index = field_snapshots
+            .iter()
+            .map(|(name, snapshot)| (snapshot.portable_scene_id(), name.clone()))
+            .collect::<HashMap<_, _>>();
+        let shape_scene_index = shape_snapshots
+            .iter()
+            .map(|(name, snapshot)| (snapshot.portable_scene_id(), name.clone()))
+            .collect::<HashMap<_, _>>();
+        let shape_root_feature_index = shape_snapshots
+            .iter()
+            .map(|(name, snapshot)| (snapshot.portable_root_feature_id(), name.clone()))
+            .collect::<HashMap<_, _>>();
+        let region_scene_index = region_snapshots
+            .iter()
+            .map(|(name, snapshot)| (snapshot.portable_scene_id(), name.clone()))
+            .collect::<HashMap<_, _>>();
 
         Self {
             module,
@@ -134,23 +169,92 @@ impl QueryExecContext {
             region_cases,
             field_names,
             shape_names,
+            field_snapshots,
+            shape_snapshots,
+            region_snapshots,
+            field_scene_index,
+            shape_scene_index,
+            shape_root_feature_index,
+            region_scene_index,
         }
     }
 
+    pub fn field_snapshot_handle(&self, name: &SmolStr) -> Option<&WorldSnapshotHandle> {
+        self.field_snapshots.get(name)
+    }
+
+    pub fn shape_snapshot_handle(&self, name: &SmolStr) -> Option<&WorldSnapshotHandle> {
+        self.shape_snapshots.get(name)
+    }
+
+    pub fn region_snapshot_handle(&self, name: &SmolStr) -> Option<&WorldSnapshotHandle> {
+        self.region_snapshots.get(name)
+    }
+
+    pub fn snapshot_handle_for_capture_name(&self, name: &SmolStr) -> Option<&WorldSnapshotHandle> {
+        self.field_snapshot_handle(name)
+            .or_else(|| self.shape_snapshot_handle(name))
+            .or_else(|| self.region_snapshot_handle(name))
+    }
+
+    pub fn snapshot_handle_for_kind(
+        &self,
+        kind: SnapshotCaptureKind,
+        name: &SmolStr,
+    ) -> Option<&WorldSnapshotHandle> {
+        match kind {
+            SnapshotCaptureKind::Field => self.field_snapshot_handle(name),
+            SnapshotCaptureKind::Shape => self.shape_snapshot_handle(name),
+            SnapshotCaptureKind::Region => self.region_snapshot_handle(name),
+        }
+    }
+
+    pub fn snapshot_report_for_capture_name(
+        &self,
+        name: &SmolStr,
+    ) -> Option<SnapshotIdentityReport> {
+        self.snapshot_handle_for_capture_name(name)
+            .map(WorldSnapshotHandle::report)
+    }
+
+    pub fn field_name_for_scene_id(&self, scene_id: u32) -> Option<&SmolStr> {
+        self.field_scene_index.get(&scene_id)
+    }
+
+    pub fn shape_name_for_scene_id(&self, scene_id: u32) -> Option<&SmolStr> {
+        self.shape_scene_index.get(&scene_id)
+    }
+
+    pub fn shape_name_for_root_feature_id(&self, root_feature_id: u32) -> Option<&SmolStr> {
+        self.shape_root_feature_index.get(&root_feature_id)
+    }
+
+    pub fn region_name_for_scene_id(&self, scene_id: u32) -> Option<&SmolStr> {
+        self.region_scene_index.get(&scene_id)
+    }
+
     pub fn field_scene_id(&self, name: &SmolStr) -> u32 {
-        stable_field_scene_capture_id(name)
+        self.field_snapshot_handle(name)
+            .map(WorldSnapshotHandle::portable_scene_id)
+            .unwrap_or_default()
     }
 
     pub fn shape_scene_id(&self, name: &SmolStr) -> u32 {
-        stable_shape_scene_capture_id(name)
+        self.shape_snapshot_handle(name)
+            .map(WorldSnapshotHandle::portable_scene_id)
+            .unwrap_or_default()
     }
 
     pub fn shape_root_feature_id(&self, name: &SmolStr) -> u32 {
-        stable_shape_capture_id(name)
+        self.shape_snapshot_handle(name)
+            .map(WorldSnapshotHandle::portable_root_feature_id)
+            .unwrap_or_default()
     }
 
     pub fn region_scene_id(&self, name: &SmolStr) -> u32 {
-        stable_region_scene_capture_id(name)
+        self.region_snapshot_handle(name)
+            .map(WorldSnapshotHandle::portable_scene_id)
+            .unwrap_or_default()
     }
 
     pub fn shape_leaf_ref(&self, shape: &SmolStr, feature_id: u32) -> Option<&ShapeLeafRef> {

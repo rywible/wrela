@@ -20,6 +20,7 @@ use crate::query_contract::{
 };
 use crate::query_plan::DispatchBackend;
 use crate::query_solver::RaySolverMethod;
+use crate::world_identity::{SnapshotEpoch, SnapshotIdentityReport, WorldSnapshotHandle};
 use smol_str::SmolStr;
 
 pub use context::QueryExecContext;
@@ -27,10 +28,14 @@ pub use cost::{
     CostFidelity, SemanticCostCause, SemanticCostCauseKind, SemanticCostReport, SemanticCostStage,
     SemanticCostUnit, SemanticQueryScope, SemanticStageKind, render_semantic_cost_report,
 };
+pub use crate::execution_policy::{
+    QueryExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
+};
 pub use cpu::QueryExecError;
 pub use ids::{
-    stable_field_scene_capture_id, stable_region_scene_capture_id, stable_shape_capture_id,
-    stable_shape_scene_capture_id,
+    stable_field_scene_capture_id, stable_field_snapshot_handle, stable_region_scene_capture_id,
+    stable_region_snapshot_handle, stable_shape_capture_id, stable_shape_scene_capture_id,
+    stable_shape_snapshot_handle,
 };
 pub use region::{
     RegionExecCase, RegionShapeLists, build_region_exec_cases, executable_region_shape_lists,
@@ -46,6 +51,7 @@ pub struct BatchQueryExecutionTrace {
     pub surface: QuerySurfaceKind,
     pub contract_version: u32,
     pub backend: DispatchBackend,
+    pub snapshot: Option<SnapshotIdentityReport>,
     pub plan_trace: KernelBatchQueryTrace,
     pub observability: QueryExecutionObservability,
     pub cost_report: SemanticCostReport,
@@ -60,6 +66,7 @@ pub struct DirectQueryExecutionTrace {
     pub contract_version: u32,
     pub backend: DispatchBackend,
     pub executor: DirectQueryExecutor,
+    pub snapshot: Option<SnapshotIdentityReport>,
     pub observability: QueryExecutionObservability,
     pub cost_report: SemanticCostReport,
 }
@@ -152,23 +159,34 @@ pub fn execute_capture_query_with_trace_on(
     plan: &KernelCaptureQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, DirectQueryExecutionTrace), QueryExecError> {
+    execute_capture_query_with_snapshot_on(ctx, backend, None, plan, args)
+}
+
+pub fn execute_capture_query_with_snapshot_on(
+    ctx: &QueryExecContext,
+    backend: DispatchBackend,
+    snapshot: Option<&WorldSnapshotHandle>,
+    plan: &KernelCaptureQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, DirectQueryExecutionTrace), QueryExecError> {
     let identity = trace_identity(plan.contract_id)?;
     let backend = resolve_direct_backend(backend);
     ensure_backend_supported(identity, backend)?;
+    let snapshot_report = trace_snapshot_report(snapshot, ctx, args);
     let (value, executor, observability) = match backend {
         DispatchBackend::VirtualGpu => {
             let (value, observability) =
-                vgpu::execute_capture_query_with_observability(ctx, plan, args)?;
+                vgpu::execute_capture_query_with_snapshot_observability(ctx, snapshot, plan, args)?;
             (value, DirectQueryExecutor::VirtualGpu, observability)
         }
         DispatchBackend::Wgsl => {
             let (value, observability) =
-                wgsl::execute_capture_query_with_observability(ctx, plan, args)?;
+                wgsl::execute_capture_query_with_snapshot_observability(ctx, snapshot, plan, args)?;
             (value, DirectQueryExecutor::Wgsl, observability)
         }
         DispatchBackend::Cpu | DispatchBackend::Auto => {
             let (value, observability) =
-                cpu::execute_capture_query_with_observability(ctx, plan, args)?;
+                cpu::execute_capture_query_with_snapshot_observability(ctx, snapshot, plan, args)?;
             (value, DirectQueryExecutor::Cpu, observability)
         }
     };
@@ -182,6 +200,7 @@ pub fn execute_capture_query_with_trace_on(
             contract_version: identity.contract_version,
             backend,
             executor,
+            snapshot: snapshot_report,
             cost_report: cost::capture_cost_report(backend, plan, &observability),
             observability,
         },
@@ -211,23 +230,105 @@ pub fn execute_world_query_with_trace_on(
     plan: &KernelWorldQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, DirectQueryExecutionTrace), QueryExecError> {
+    let policy = QueryExecutionPolicy::conservative(requested_backend, None);
+    execute_world_query_with_policy_with_trace_on(ctx, requested_backend, &policy, None, plan, args)
+}
+
+pub fn execute_world_query_with_policy(
+    ctx: &QueryExecContext,
+    policy: &QueryExecutionPolicy,
+    plan: &KernelWorldQueryPlan,
+    args: &[KernelValue],
+) -> Result<KernelValue, QueryExecError> {
+    execute_world_query_with_policy_with_trace_on(ctx, policy.backend_preference, policy, None, plan, args)
+        .map(|(value, _)| value)
+}
+
+pub fn execute_world_query_on_with_policy(
+    ctx: &QueryExecContext,
+    requested_backend: DispatchBackend,
+    policy: &QueryExecutionPolicy,
+    plan: &KernelWorldQueryPlan,
+    args: &[KernelValue],
+) -> Result<KernelValue, QueryExecError> {
+    execute_world_query_with_policy_with_trace_on(ctx, requested_backend, policy, None, plan, args)
+        .map(|(value, _)| value)
+}
+
+pub fn execute_world_query_with_policy_with_trace_on(
+    ctx: &QueryExecContext,
+    requested_backend: DispatchBackend,
+    policy: &QueryExecutionPolicy,
+    snapshot: Option<&WorldSnapshotHandle>,
+    plan: &KernelWorldQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, DirectQueryExecutionTrace), QueryExecError> {
+    execute_world_query_with_policy_with_snapshot_on(ctx, requested_backend, snapshot, policy, plan, args)
+}
+
+pub fn execute_world_query_with_snapshot_on(
+    ctx: &QueryExecContext,
+    requested_backend: DispatchBackend,
+    snapshot: Option<&WorldSnapshotHandle>,
+    plan: &KernelWorldQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, DirectQueryExecutionTrace), QueryExecError> {
+    let policy = QueryExecutionPolicy::conservative(requested_backend, None);
+    execute_world_query_with_policy_with_snapshot_on(
+        ctx,
+        requested_backend,
+        snapshot,
+        &policy,
+        plan,
+        args,
+    )
+}
+
+pub fn execute_world_query_with_policy_with_snapshot_on(
+    ctx: &QueryExecContext,
+    requested_backend: DispatchBackend,
+    snapshot: Option<&WorldSnapshotHandle>,
+    policy: &QueryExecutionPolicy,
+    plan: &KernelWorldQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, DirectQueryExecutionTrace), QueryExecError> {
     let identity = trace_identity(plan.contract_id)?;
-    let backend = resolve_world_backend(requested_backend, plan);
+    let backend = resolve_world_backend(requested_backend, plan, policy);
     ensure_backend_supported(identity, backend)?;
+    ensure_world_policy_legal(backend, policy)?;
+    let snapshot_report = trace_snapshot_report(snapshot, ctx, args);
     let (value, executor, observability) = match backend {
         DispatchBackend::VirtualGpu => {
             let (value, observability) =
-                vgpu::execute_world_query_with_observability(ctx, plan, args)?;
+                vgpu::execute_world_query_with_policy_with_snapshot_observability(
+                    ctx,
+                    snapshot,
+                    policy,
+                    plan,
+                    args,
+                )?;
             (value, DirectQueryExecutor::VirtualGpu, observability)
         }
         DispatchBackend::Wgsl => {
             let (value, observability) =
-                wgsl::execute_world_query_with_observability(ctx, plan, args)?;
+                wgsl::execute_world_query_with_policy_with_snapshot_observability(
+                    ctx,
+                    snapshot,
+                    policy,
+                    plan,
+                    args,
+                )?;
             (value, DirectQueryExecutor::Wgsl, observability)
         }
         DispatchBackend::Cpu | DispatchBackend::Auto => {
             let (value, observability) =
-                cpu::execute_world_query_with_observability(ctx, plan, args)?;
+                cpu::execute_world_query_with_policy_with_snapshot_observability(
+                    ctx,
+                    snapshot,
+                    policy,
+                    plan,
+                    args,
+                )?;
             (value, DirectQueryExecutor::Cpu, observability)
         }
     };
@@ -241,7 +342,8 @@ pub fn execute_world_query_with_trace_on(
             contract_version: identity.contract_version,
             backend,
             executor,
-            cost_report: cost::world_cost_report(backend, plan, &observability),
+            snapshot: snapshot_report,
+            cost_report: cost::world_cost_report(backend, policy, plan, &observability),
             observability,
         },
     ))
@@ -278,20 +380,39 @@ pub fn execute_batch_query_with_trace_on(
     plan: &KernelBatchQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, BatchQueryExecutionTrace), QueryExecError> {
+    execute_batch_query_with_snapshot_on(ctx, requested_backend, None, plan, args)
+}
+
+pub fn execute_batch_query_with_snapshot_on(
+    ctx: &QueryExecContext,
+    requested_backend: DispatchBackend,
+    snapshot: Option<&WorldSnapshotHandle>,
+    plan: &KernelBatchQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, BatchQueryExecutionTrace), QueryExecError> {
     let identity = trace_identity(plan.contract_id)?;
     let item_count = batch_query_item_count(plan, args)?;
     let plan_trace = interpret_batch_query(plan, item_count);
     let backend = resolve_batch_backend(requested_backend, plan);
     ensure_backend_supported(identity, backend)?;
+    let snapshot_report = trace_snapshot_report(snapshot, ctx, args);
     let (value, observability) = match backend {
-        DispatchBackend::VirtualGpu => {
-            vgpu::execute_batch_query_with_observability(ctx, plan, args, &plan_trace)?
-        }
-        DispatchBackend::Wgsl => {
-            wgsl::execute_batch_query_with_observability(ctx, plan, args, &plan_trace)?
-        }
+        DispatchBackend::VirtualGpu => vgpu::execute_batch_query_with_snapshot_observability(
+            ctx,
+            snapshot,
+            plan,
+            args,
+            &plan_trace,
+        )?,
+        DispatchBackend::Wgsl => wgsl::execute_batch_query_with_snapshot_observability(
+            ctx,
+            snapshot,
+            plan,
+            args,
+            &plan_trace,
+        )?,
         DispatchBackend::Cpu | DispatchBackend::Auto => {
-            cpu::execute_batch_query_with_observability(ctx, plan, args)?
+            cpu::execute_batch_query_with_snapshot_observability(ctx, snapshot, plan, args)?
         }
     };
     let cost_report = cost::batch_cost_report(backend, plan, &plan_trace, &observability);
@@ -304,11 +425,101 @@ pub fn execute_batch_query_with_trace_on(
             surface: identity.surface,
             contract_version: identity.contract_version,
             backend,
+            snapshot: snapshot_report,
             plan_trace,
             cost_report,
             observability,
         },
     ))
+}
+
+fn trace_snapshot_report(
+    snapshot: Option<&WorldSnapshotHandle>,
+    ctx: &QueryExecContext,
+    args: &[KernelValue],
+) -> Option<SnapshotIdentityReport> {
+    if let Some(snapshot) = snapshot {
+        return Some(snapshot.report());
+    }
+    let capture = args.first()?;
+    match capture {
+        KernelValue::Capture(name) => ctx.snapshot_report_for_capture_name(name),
+        KernelValue::Struct(value) if value.name.as_str() == "FieldCapture" => value
+            .fields
+            .iter()
+            .find(|(field, _)| field.as_str() == "scene_id")
+            .and_then(|(_, value)| match value {
+                KernelValue::U32(scene_id) => ctx.field_name_for_scene_id(*scene_id),
+                _ => None,
+            })
+            .and_then(|name| {
+                report_for_struct_capture(
+                    ctx.field_snapshot_handle(name),
+                    expect_struct_u32_field(value, "epoch")
+                        .map(|epoch| SnapshotEpoch(u64::from(epoch))),
+                )
+            }),
+        KernelValue::Struct(value) if value.name.as_str() == "ShapeCapture" => value
+            .fields
+            .iter()
+            .find(|(field, _)| field.as_str() == "root_feature_id")
+            .and_then(|(_, value)| match value {
+                KernelValue::U32(root_feature_id) => {
+                    ctx.shape_name_for_root_feature_id(*root_feature_id)
+                }
+                _ => None,
+            })
+            .and_then(|name| {
+                report_for_struct_capture(
+                    ctx.shape_snapshot_handle(name),
+                    expect_struct_u32_field(value, "epoch")
+                        .map(|epoch| SnapshotEpoch(u64::from(epoch))),
+                )
+            }),
+        KernelValue::Struct(value) if value.name.as_str() == "RegionCapture" => value
+            .fields
+            .iter()
+            .find(|(field, _)| field.as_str() == "scene_id")
+            .and_then(|(_, value)| match value {
+                KernelValue::U32(scene_id) => ctx.region_name_for_scene_id(*scene_id),
+                _ => None,
+            })
+            .and_then(|name| {
+                report_for_struct_capture(
+                    ctx.region_snapshot_handle(name),
+                    expect_struct_u32_field(value, "epoch")
+                        .map(|epoch| SnapshotEpoch(u64::from(epoch))),
+                )
+            }),
+        _ => None,
+    }
+}
+
+fn report_for_struct_capture(
+    snapshot: Option<&WorldSnapshotHandle>,
+    epoch: Option<SnapshotEpoch>,
+) -> Option<SnapshotIdentityReport> {
+    let snapshot = snapshot?;
+    Some(
+        epoch
+            .map(|epoch| snapshot.with_epoch(epoch))
+            .unwrap_or_else(|| snapshot.clone())
+            .report(),
+    )
+}
+
+fn expect_struct_u32_field(
+    value: &crate::kernel::KernelStructValue,
+    field_name: &str,
+) -> Option<u32> {
+    value.fields.iter().find_map(|(field, value)| {
+        (field.as_str() == field_name)
+            .then_some(value)
+            .and_then(|value| match value {
+                KernelValue::U32(value) => Some(*value),
+                _ => None,
+            })
+    })
 }
 
 fn trace_identity(contract_id: QueryContractId) -> Result<QueryTraceIdentity, QueryExecError> {
@@ -357,17 +568,46 @@ fn resolve_direct_backend(backend: DispatchBackend) -> DispatchBackend {
 fn resolve_world_backend(
     requested_backend: DispatchBackend,
     plan: &KernelWorldQueryPlan,
+    policy: &QueryExecutionPolicy,
 ) -> DispatchBackend {
     match requested_backend {
         DispatchBackend::Cpu => DispatchBackend::Cpu,
         DispatchBackend::VirtualGpu => DispatchBackend::VirtualGpu,
         DispatchBackend::Wgsl => DispatchBackend::Wgsl,
-        DispatchBackend::Auto => match plan.backend {
-            DispatchBackend::Cpu | DispatchBackend::Auto => DispatchBackend::Cpu,
+        DispatchBackend::Auto => match policy.backend_preference {
+            DispatchBackend::Cpu => DispatchBackend::Cpu,
             DispatchBackend::VirtualGpu => DispatchBackend::VirtualGpu,
             DispatchBackend::Wgsl => DispatchBackend::Wgsl,
+            DispatchBackend::Auto => match plan.backend {
+                DispatchBackend::Cpu | DispatchBackend::Auto => DispatchBackend::Cpu,
+                DispatchBackend::VirtualGpu => DispatchBackend::VirtualGpu,
+                DispatchBackend::Wgsl => DispatchBackend::Wgsl,
+            },
         },
     }
+}
+
+fn ensure_world_policy_legal(
+    backend: DispatchBackend,
+    policy: &QueryExecutionPolicy,
+) -> Result<(), QueryExecError> {
+    if matches!(backend, DispatchBackend::Cpu | DispatchBackend::Auto) {
+        return Ok(());
+    }
+    if matches!(
+        policy.required_guarantee,
+        RequiredGuaranteeClass::Exact
+    ) || matches!(policy.selected_method, SelectedMethodClass::ExactOracle)
+    {
+        return Err(QueryExecError::Unsupported {
+            message: format!(
+                "{backend:?} backend cannot satisfy execution policy required_guarantee={} selected_method={}",
+                policy.required_guarantee.name(),
+                policy.selected_method.name()
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn resolve_batch_backend(

@@ -108,27 +108,37 @@ fn portable_builtin_catalog_matches_expected_surface() {
             "DispatchBackend",
             "DistanceResult",
             "FieldCapture",
+            "FrameOutputs",
             "FrameState",
             "Hit3",
             "Light",
             "Medium",
+            "MotionVector",
             "NormalResult",
             "OcclusionResult",
             "ParticipantDomainContract",
             "Payload",
             "PointDirectionQuery",
             "PointQuery",
+            "PresentationExecutionPolicy",
+            "PresentationLighting",
+            "QueryExecutionPolicy",
             "Ray3",
+            "RayBudgetPolicy",
             "RayQuery",
+            "RealtimeQuality",
             "RegionCapture",
+            "RequiredGuaranteeClass",
             "SceneDomain",
             "ScreenSampleQuery",
+            "SelectedMethodClass",
             "ShapeCapture",
             "SpatialDomainContract",
             "Support3",
             "SupportSummaryResult",
             "Surface",
             "SurfaceDomainContract",
+            "TemporalHistory",
             "Transform3",
             "UnitQuery",
             "ViewState",
@@ -296,7 +306,7 @@ fn portable_builtin_catalog_matches_expected_surface() {
             .iter()
             .map(|field| field.name)
             .collect::<Vec<_>>(),
-        vec!["geometry_detail", "guarantee"]
+        vec!["geometry_detail"]
     );
     let surface_domain =
         portable::builtin_record("SurfaceDomainContract").expect("SurfaceDomainContract");
@@ -317,6 +327,61 @@ fn portable_builtin_catalog_matches_expected_surface() {
             .map(|field| field.name)
             .collect::<Vec<_>>(),
         vec!["radiance", "media"]
+    );
+    let ray_budget = portable::builtin_record("RayBudgetPolicy").expect("RayBudgetPolicy");
+    assert_eq!(
+        ray_budget
+            .fields
+            .iter()
+            .map(|field| field.name)
+            .collect::<Vec<_>>(),
+        vec!["max_distance", "min_step", "hit_epsilon", "max_steps"]
+    );
+    let required_guarantee =
+        portable::builtin_record("RequiredGuaranteeClass").expect("RequiredGuaranteeClass");
+    assert_eq!(
+        required_guarantee
+            .fields
+            .iter()
+            .map(|field| field.name)
+            .collect::<Vec<_>>(),
+        vec!["id"]
+    );
+    let selected_method =
+        portable::builtin_record("SelectedMethodClass").expect("SelectedMethodClass");
+    assert_eq!(
+        selected_method
+            .fields
+            .iter()
+            .map(|field| field.name)
+            .collect::<Vec<_>>(),
+        vec!["id"]
+    );
+    let query_policy =
+        portable::builtin_record("QueryExecutionPolicy").expect("QueryExecutionPolicy");
+    assert_eq!(
+        query_policy
+            .fields
+            .iter()
+            .map(|field| field.name)
+            .collect::<Vec<_>>(),
+        vec![
+            "backend_preference",
+            "required_guarantee",
+            "selected_method",
+            "ray_budget_enabled",
+            "ray_budget"
+        ]
+    );
+    let presentation_policy = portable::builtin_record("PresentationExecutionPolicy")
+        .expect("PresentationExecutionPolicy");
+    assert_eq!(
+        presentation_policy
+            .fields
+            .iter()
+            .map(|field| field.name)
+            .collect::<Vec<_>>(),
+        vec!["required_guarantee", "selected_method", "primary_rays"]
     );
     let point_query = portable::builtin_record("PointQuery").expect("PointQuery");
     assert_eq!(
@@ -422,7 +487,14 @@ fn portable_builtin_catalog_matches_expected_surface() {
             .iter()
             .map(|field| field.name)
             .collect::<Vec<_>>(),
-        vec!["camera", "previous_camera", "viewport", "jitter"]
+        vec![
+            "camera",
+            "previous_camera",
+            "viewport",
+            "previous_viewport",
+            "jitter",
+            "previous_jitter"
+        ]
     );
     let frame_state = portable::builtin_record("FrameState").expect("FrameState");
     assert_eq!(
@@ -431,7 +503,13 @@ fn portable_builtin_catalog_matches_expected_surface() {
             .iter()
             .map(|field| field.name)
             .collect::<Vec<_>>(),
-        vec!["view", "frame_index", "delta_seconds"]
+        vec![
+            "view",
+            "frame_index",
+            "previous_frame_index",
+            "delta_seconds",
+            "history_reset"
+        ]
     );
     let light = portable::builtin_record("Light").expect("Light");
     assert_eq!(
@@ -454,14 +532,22 @@ kernel fn portable_entry() -> U32 {
         up=vec3(0.0, 1.0, 0.0),
         vertical_fov_degrees=f32(60.0)
     )
-    viewport = Viewport(width=u32(1920), height=u32(1080))
+    output_viewport = Viewport(width=u32(1920), height=u32(1080))
     view = ViewState(
         camera=camera,
         previous_camera=camera,
-        viewport=viewport,
-        jitter=vec2(0.25, 0.75)
+        viewport=output_viewport,
+        previous_viewport=output_viewport,
+        jitter=vec2(0.25, 0.75),
+        previous_jitter=vec2(0.25, 0.75)
     )
-    frame = FrameState(view=view, frame_index=u32(7), delta_seconds=0.016)
+    frame = FrameState(
+        view=view,
+        frame_index=u32(7),
+        previous_frame_index=u32(6),
+        delta_seconds=0.016,
+        history_reset=false
+    )
     return frame.view.viewport.width + frame.frame_index
 }
 "#;

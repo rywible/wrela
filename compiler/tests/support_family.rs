@@ -125,7 +125,6 @@ fn scene_domain(scene_id: u32, detail: i32) -> KernelValue {
                     name: SmolStr::new("SpatialDomainContract"),
                     fields: vec![
                         (SmolStr::new("geometry_detail"), KernelValue::I32(detail)),
-                        (SmolStr::new("guarantee"), KernelValue::U32(0)),
                     ],
                 }),
             ),

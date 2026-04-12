@@ -1,3 +1,4 @@
+use crate::execution_policy::{RequiredGuaranteeClass, SelectedMethodClass};
 use crate::hir::typeck::{WrapperOperandConstant, classify_wrapper_operand_constant};
 use crate::hir::*;
 use crate::parser::ast::{self, AstNode};
@@ -1303,7 +1304,8 @@ impl LoweringContext {
         let visibility = visibility_for_node_default(d.syntax());
         let params = d.params().map(|p| self.lower_param(p)).collect();
         let stmts: Vec<_> = d.statements().collect();
-        let metadata = self.lower_domain_metadata(&stmts);
+        let (mut metadata, execution_policy) = self.lower_domain_metadata_and_policy(&stmts);
+        metadata.execution_policy = Some(execution_policy);
         let body = self.lower_world_body(stmts);
 
         Function {
@@ -1573,12 +1575,20 @@ impl LoweringContext {
         })
     }
 
-    fn lower_domain_metadata(&mut self, stmts: &[ast::Stmt]) -> DomainMetadata {
+    fn lower_domain_metadata_and_policy(
+        &mut self,
+        stmts: &[ast::Stmt],
+    ) -> (DomainMetadata, DomainExecutionPolicyMetadata) {
         let mut metadata = DomainMetadata {
             geometry_detail: DomainGeometryDetail::Fine,
             material: true,
             radiance: true,
             media: true,
+            execution_policy: None,
+        };
+        let mut execution_policy = DomainExecutionPolicyMetadata {
+            required_guarantee: RequiredGuaranteeClass::ConservativeNoFalseMiss,
+            selected_method: SelectedMethodClass::ConservativeSolver,
             max_distance: None,
             min_step: None,
             hit_epsilon: None,
@@ -1606,14 +1616,14 @@ impl LoweringContext {
                 "material" => metadata.material = lower_bool_config_expr(&value).unwrap_or(true),
                 "radiance" => metadata.radiance = lower_bool_config_expr(&value).unwrap_or(true),
                 "media" => metadata.media = lower_bool_config_expr(&value).unwrap_or(true),
-                "max_distance" => metadata.max_distance = Some(self.lower_shape_payload(value)),
-                "min_step" => metadata.min_step = Some(self.lower_shape_payload(value)),
-                "hit_epsilon" => metadata.hit_epsilon = Some(self.lower_shape_payload(value)),
-                "max_steps" => metadata.max_steps = Some(self.lower_shape_payload(value)),
+                "max_distance" => execution_policy.max_distance = Some(self.lower_shape_payload(value)),
+                "min_step" => execution_policy.min_step = Some(self.lower_shape_payload(value)),
+                "hit_epsilon" => execution_policy.hit_epsilon = Some(self.lower_shape_payload(value)),
+                "max_steps" => execution_policy.max_steps = Some(self.lower_shape_payload(value)),
                 _ => {}
             }
         }
-        metadata
+        (metadata, execution_policy)
     }
 
     fn lower_presentation_metadata(&mut self, stmts: &[ast::Stmt]) -> PresentationMetadata {

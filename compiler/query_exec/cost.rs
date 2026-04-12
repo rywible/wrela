@@ -3,6 +3,9 @@ use crate::kernel::{
     KernelBatchQueryPlan, KernelBatchQueryTrace, KernelCaptureQueryPlan, KernelPlanStage,
     KernelWorldQueryPlan,
 };
+use crate::execution_policy::{
+    QueryExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
+};
 use crate::query_plan::{
     BatchQueryKind, CandidateStrategy, CaptureKind, CaptureQueryKind, DerivedArtifact,
     DispatchBackend, PlanExecutor, PruningStrategy, QueryItemKind, SceneDomainFlag, SceneSummary,
@@ -108,6 +111,8 @@ pub struct SemanticCostReport {
     pub scene: Option<SemanticSceneCostContext>,
     pub artifact_labels: Vec<String>,
     pub domain_flags: Vec<SceneDomainFlag>,
+    pub execution_policy: Option<QueryExecutionPolicy>,
+    pub execution_degradations: Vec<String>,
     pub dominant_stages: Vec<SemanticCostStage>,
     pub causes: Vec<SemanticCostCause>,
     pub counters: QueryExecutionObservability,
@@ -140,12 +145,15 @@ pub(crate) fn capture_cost_report(
         stages: &plan.stages,
         scene: plan.scene.as_ref(),
         counters: observability,
+        execution_policy: None,
+        execution_backend: backend,
     };
     build_report(context)
 }
 
 pub(crate) fn world_cost_report(
     backend: DispatchBackend,
+    policy: &QueryExecutionPolicy,
     plan: &KernelWorldQueryPlan,
     observability: &QueryExecutionObservability,
 ) -> SemanticCostReport {
@@ -170,6 +178,8 @@ pub(crate) fn world_cost_report(
         stages: &plan.stages,
         scene: None,
         counters: observability,
+        execution_policy: Some(*policy),
+        execution_backend: backend,
     };
     build_report(context)
 }
@@ -204,6 +214,8 @@ pub(crate) fn batch_cost_report(
         stages: &plan.stages,
         scene: plan.scene.as_ref(),
         counters: observability,
+        execution_policy: None,
+        execution_backend: backend,
     };
     build_report(context)
 }
@@ -248,6 +260,17 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
                 .map(|flag| domain_flag_label(*flag))
                 .collect::<Vec<_>>()
                 .join(", ")
+        ));
+    }
+    if let Some(policy) = report.execution_policy.as_ref() {
+        out.push_str(&format!(
+            "execution_policy={} degradations={}\n",
+            render_execution_policy(policy),
+            if report.execution_degradations.is_empty() {
+                "none".to_string()
+            } else {
+                report.execution_degradations.join(", ")
+            }
         ));
     }
     out.push_str("dominant_stages:\n");
@@ -341,6 +364,7 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
 struct SemanticCostContext<'a> {
     scope: SemanticQueryScope,
     backend: DispatchBackend,
+    execution_backend: DispatchBackend,
     executor: PlanExecutor,
     item_kind: QueryItemKind,
     item_count: u32,
@@ -353,6 +377,7 @@ struct SemanticCostContext<'a> {
     stages: &'a [KernelPlanStage],
     scene: Option<&'a SceneSummary>,
     counters: &'a QueryExecutionObservability,
+    execution_policy: Option<QueryExecutionPolicy>,
 }
 
 fn build_report(context: SemanticCostContext<'_>) -> SemanticCostReport {
@@ -372,6 +397,11 @@ fn build_report(context: SemanticCostContext<'_>) -> SemanticCostReport {
     });
     let dominant_stages = collect_dominant_stages(&context, &artifact_labels);
     let causes = collect_causes(&context, &artifact_labels, scene.as_ref());
+    let execution_degradations = context
+        .execution_policy
+        .as_ref()
+        .map(|policy| execution_degradations(policy, context.execution_backend))
+        .unwrap_or_default();
 
     SemanticCostReport {
         scope: context.scope,
@@ -386,6 +416,8 @@ fn build_report(context: SemanticCostContext<'_>) -> SemanticCostReport {
         scene,
         artifact_labels,
         domain_flags: context.domain_flags.to_vec(),
+        execution_policy: context.execution_policy,
+        execution_degradations,
         dominant_stages,
         causes,
         counters: context.counters.clone(),
@@ -1068,6 +1100,68 @@ fn domain_flag_label(flag: SceneDomainFlag) -> &'static str {
         SceneDomainFlag::Material => "material",
         SceneDomainFlag::Radiance => "radiance",
         SceneDomainFlag::Media => "media",
+    }
+}
+
+fn render_execution_policy(policy: &QueryExecutionPolicy) -> String {
+    let ray_budget = policy
+        .ray_budget
+        .map(format_ray_budget)
+        .unwrap_or_else(|| "none".to_string());
+    format!(
+        "backend_preference={} required_guarantee={} selected_method={} ray_budget={}",
+        backend_label(policy.backend_preference),
+        required_guarantee_class_name(policy.required_guarantee),
+        selected_method_class_name(policy.selected_method),
+        ray_budget
+    )
+}
+
+fn execution_degradations(
+    policy: &QueryExecutionPolicy,
+    backend: DispatchBackend,
+) -> Vec<String> {
+    let mut degradations = Vec::new();
+    if !matches!(backend, DispatchBackend::Cpu) {
+        degradations.push(format!(
+            "backend={} runs without the CPU legality oracle",
+            backend_label(backend)
+        ));
+    }
+    if !matches!(policy.backend_preference, DispatchBackend::Auto)
+        && policy.backend_preference != backend
+    {
+        degradations.push(format!(
+            "backend_preference={} resolved_backend={}",
+            backend_label(policy.backend_preference),
+            backend_label(backend)
+        ));
+    }
+    degradations
+}
+
+fn format_ray_budget(budget: RayBudgetPolicy) -> String {
+    format!(
+        "max_distance={:.6} min_step={:.6} hit_epsilon={:.6} max_steps={}",
+        budget.max_distance, budget.min_step, budget.hit_epsilon, budget.max_steps
+    )
+}
+
+fn required_guarantee_class_name(class: RequiredGuaranteeClass) -> &'static str {
+    match class {
+        RequiredGuaranteeClass::Exact => "exact",
+        RequiredGuaranteeClass::ConservativeNoFalseMiss => "conservative_no_false_miss",
+        RequiredGuaranteeClass::IntervalBounded => "interval_bounded",
+        RequiredGuaranteeClass::BestEffort => "best_effort",
+    }
+}
+
+fn selected_method_class_name(class: SelectedMethodClass) -> &'static str {
+    match class {
+        SelectedMethodClass::ExactOracle => "exact_oracle",
+        SelectedMethodClass::ConservativeSolver => "conservative_solver",
+        SelectedMethodClass::IntervalSolver => "interval_solver",
+        SelectedMethodClass::HeuristicSolver => "heuristic_solver",
     }
 }
 

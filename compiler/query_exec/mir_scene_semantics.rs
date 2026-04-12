@@ -91,6 +91,13 @@ impl FunctionLowerer {
     pub(crate) fn build_scene_capture_value(&mut self, shape_name: &SmolStr, span: TextRange) -> Value {
         let is_field = self.field_names.contains(shape_name);
         let is_shape = self.shape_names.contains(shape_name);
+        let snapshot = if is_field {
+            crate::query_exec::ids::stable_field_snapshot_handle(shape_name)
+        } else if is_shape {
+            crate::query_exec::ids::stable_shape_snapshot_handle(shape_name)
+        } else {
+            crate::query_exec::ids::stable_region_snapshot_handle(shape_name)
+        };
         let mut class = self.synthetic_class_target_info(if is_field {
             "FieldCapture"
         } else if is_shape {
@@ -101,25 +108,19 @@ impl FunctionLowerer {
         Self::set_class_field_value(
             &mut class,
             "scene_id",
-            Value::Const(Literal::Integer(if is_field {
-                stable_field_scene_capture_id(shape_name)
-            } else if is_shape {
-                stable_shape_scene_capture_id(shape_name)
-            } else {
-                stable_region_scene_capture_id(shape_name)
-            })),
+            Value::Const(Literal::Integer(i64::from(snapshot.portable_scene_id()))),
         );
-        Self::set_class_field_value(&mut class, "epoch", Value::Const(Literal::Integer(0)));
+        Self::set_class_field_value(
+            &mut class,
+            "epoch",
+            Value::Const(Literal::Integer(i64::from(snapshot.portable_epoch()))),
+        );
         Self::set_class_field_value(
             &mut class,
             "root_feature_id",
-            Value::Const(Literal::Integer(if is_field {
-                0
-            } else if is_shape {
-                stable_shape_capture_id(shape_name)
-            } else {
-                0
-            })),
+            Value::Const(Literal::Integer(i64::from(
+                snapshot.portable_root_feature_id(),
+            ))),
         );
         self.build_class_instance(&class, span)
     }

@@ -878,7 +878,6 @@ mod tests {
                         name: SmolStr::new("SpatialDomainContract"),
                         fields: vec![
                             (SmolStr::new("geometry_detail"), KernelValue::I32(1)),
-                            (SmolStr::new("guarantee"), KernelValue::U32(0)),
                         ],
                     }),
                 ),

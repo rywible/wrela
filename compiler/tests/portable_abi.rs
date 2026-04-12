@@ -1,3 +1,7 @@
+use wrela::execution_policy::{
+    PresentationExecutionPolicy, QueryExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass,
+    SelectedMethodClass,
+};
 use wrela::kernel::{KernelStructValue, KernelValue};
 use wrela::portable::{
     PortableAbiError, PortableAbiType, PortableBuiltinType, PortableStructField, builtin_records,
@@ -145,7 +149,7 @@ fn scene_domain_contract_layout_is_nested_and_budget_free() {
     let participants = portable_builtin_record_abi("ParticipantDomainContract").unwrap();
     let scene_domain = portable_builtin_record_abi("SceneDomain").unwrap();
 
-    assert_eq!(portable_abi_layout(&spatial).size, 8);
+    assert_eq!(portable_abi_layout(&spatial).size, 4);
     assert_eq!(portable_abi_layout(&surface).size, 4);
     assert_eq!(portable_abi_layout(&participants).size, 8);
 
@@ -161,12 +165,173 @@ fn scene_domain_contract_layout_is_nested_and_budget_free() {
     );
     assert_eq!(portable_abi_field_offset(fields, 0), 0);
     assert_eq!(portable_abi_field_offset(fields, 1), 4);
-    assert_eq!(portable_abi_field_offset(fields, 2), 12);
-    assert_eq!(portable_abi_field_offset(fields, 3), 16);
+    assert_eq!(portable_abi_field_offset(fields, 2), 8);
+    assert_eq!(portable_abi_field_offset(fields, 3), 12);
 
     let layout = portable_abi_layout(&scene_domain);
-    assert_eq!(layout.size, 24);
+    assert_eq!(layout.size, 20);
     assert_eq!(layout.align, 4);
+}
+
+#[test]
+fn execution_policy_records_have_stable_portable_layouts() {
+    let required_guarantee =
+        portable_builtin_record_abi("RequiredGuaranteeClass").expect("RequiredGuaranteeClass abi");
+    let selected_method =
+        portable_builtin_record_abi("SelectedMethodClass").expect("SelectedMethodClass abi");
+    let ray_budget = portable_builtin_record_abi("RayBudgetPolicy").expect("RayBudgetPolicy abi");
+    let query_policy =
+        portable_builtin_record_abi("QueryExecutionPolicy").expect("QueryExecutionPolicy abi");
+    let presentation_policy = portable_builtin_record_abi("PresentationExecutionPolicy")
+        .expect("PresentationExecutionPolicy abi");
+
+    let PortableAbiType::Struct {
+        fields: required_guarantee_fields,
+        ..
+    } = &required_guarantee
+    else {
+        panic!("RequiredGuaranteeClass should lower to a struct ABI");
+    };
+    assert_eq!(
+        required_guarantee_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["id"]
+    );
+    assert_eq!(portable_abi_layout(&required_guarantee).size, 4);
+    assert_eq!(portable_abi_layout(&required_guarantee).align, 4);
+
+    let PortableAbiType::Struct {
+        fields: selected_method_fields,
+        ..
+    } = &selected_method
+    else {
+        panic!("SelectedMethodClass should lower to a struct ABI");
+    };
+    assert_eq!(
+        selected_method_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["id"]
+    );
+    assert_eq!(portable_abi_layout(&selected_method).size, 4);
+    assert_eq!(portable_abi_layout(&selected_method).align, 4);
+
+    let PortableAbiType::Struct {
+        fields: ray_budget_fields,
+        ..
+    } = &ray_budget
+    else {
+        panic!("RayBudgetPolicy should lower to a struct ABI");
+    };
+    assert_eq!(
+        ray_budget_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["max_distance", "min_step", "hit_epsilon", "max_steps"]
+    );
+    assert_eq!(portable_abi_layout(&ray_budget).size, 16);
+    assert_eq!(portable_abi_layout(&ray_budget).align, 4);
+
+    let PortableAbiType::Struct {
+        fields: query_policy_fields,
+        ..
+    } = &query_policy
+    else {
+        panic!("QueryExecutionPolicy should lower to a struct ABI");
+    };
+    assert_eq!(
+        query_policy_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "backend_preference",
+            "required_guarantee",
+            "selected_method",
+            "ray_budget_enabled",
+            "ray_budget"
+        ]
+    );
+    assert_eq!(portable_abi_layout(&query_policy).size, 32);
+    assert_eq!(portable_abi_layout(&query_policy).align, 4);
+
+    let PortableAbiType::Struct {
+        fields: presentation_policy_fields,
+        ..
+    } = &presentation_policy
+    else {
+        panic!("PresentationExecutionPolicy should lower to a struct ABI");
+    };
+    assert_eq!(
+        presentation_policy_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["required_guarantee", "selected_method", "primary_rays"]
+    );
+    assert_eq!(portable_abi_layout(&presentation_policy).size, 24);
+    assert_eq!(portable_abi_layout(&presentation_policy).align, 4);
+
+    let query_policy = QueryExecutionPolicy {
+        backend_preference: wrela::query_contract::DispatchBackend::Cpu,
+        required_guarantee: RequiredGuaranteeClass::ConservativeNoFalseMiss,
+        selected_method: SelectedMethodClass::ConservativeSolver,
+        ray_budget: Some(RayBudgetPolicy {
+            max_distance: 10.0,
+            min_step: 0.5,
+            hit_epsilon: 0.25,
+            max_steps: 64,
+        }),
+    };
+    let query_policy_clone = query_policy;
+    assert_eq!(query_policy, query_policy_clone);
+    let query_hash = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        query_policy.hash(&mut hasher);
+        hasher.finish()
+    };
+    let query_clone_hash = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        query_policy_clone.hash(&mut hasher);
+        hasher.finish()
+    };
+    assert_eq!(query_hash, query_clone_hash);
+
+    let presentation_policy = PresentationExecutionPolicy {
+        required_guarantee: RequiredGuaranteeClass::Exact,
+        selected_method: SelectedMethodClass::ExactOracle,
+        primary_rays: RayBudgetPolicy {
+            max_distance: 8.0,
+            min_step: 0.02,
+            hit_epsilon: 0.0005,
+            max_steps: 96,
+        },
+    };
+    let presentation_policy_clone = presentation_policy;
+    assert_eq!(presentation_policy, presentation_policy_clone);
+    let presentation_hash = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        presentation_policy.hash(&mut hasher);
+        hasher.finish()
+    };
+    let presentation_clone_hash = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        presentation_policy_clone.hash(&mut hasher);
+        hasher.finish()
+    };
+    assert_eq!(presentation_hash, presentation_clone_hash);
+    assert_eq!(
+        SelectedMethodClass::ExactOracle,
+        SelectedMethodClass::ExactOracle
+    );
 }
 
 #[test]
@@ -848,6 +1013,15 @@ fn portable_abi_slice_roundtrips_dispatch_result_and_hit_records() {
 fn portable_abi_emits_deterministic_wgsl_structs_and_rejects_runtime_value() {
     let hit3 = portable_builtin_record_abi("Hit3").expect("Hit3 abi");
     let scene_domain = portable_builtin_record_abi("SceneDomain").expect("SceneDomain abi");
+    let required_guarantee =
+        portable_builtin_record_abi("RequiredGuaranteeClass").expect("RequiredGuaranteeClass abi");
+    let selected_method =
+        portable_builtin_record_abi("SelectedMethodClass").expect("SelectedMethodClass abi");
+    let ray_budget = portable_builtin_record_abi("RayBudgetPolicy").expect("RayBudgetPolicy abi");
+    let query_policy =
+        portable_builtin_record_abi("QueryExecutionPolicy").expect("QueryExecutionPolicy abi");
+    let presentation_policy = portable_builtin_record_abi("PresentationExecutionPolicy")
+        .expect("PresentationExecutionPolicy abi");
     let point_direction =
         portable_builtin_record_abi("PointDirectionQuery").expect("PointDirectionQuery abi");
     let unit_query = portable_builtin_record_abi("UnitQuery").expect("UnitQuery abi");
@@ -864,6 +1038,11 @@ fn portable_abi_emits_deterministic_wgsl_structs_and_rejects_runtime_value() {
         dispatch.clone(),
         hit3.clone(),
         scene_domain.clone(),
+        required_guarantee.clone(),
+        selected_method.clone(),
+        ray_budget.clone(),
+        query_policy.clone(),
+        presentation_policy.clone(),
         point_direction.clone(),
         unit_query.clone(),
         frame_state.clone(),
@@ -881,6 +1060,18 @@ fn portable_abi_emits_deterministic_wgsl_structs_and_rejects_runtime_value() {
     let dispatch_index = rendered
         .find("struct DispatchRecordContract")
         .expect("DispatchRecordContract in wgsl");
+    let guarantee_index = rendered
+        .find("struct RequiredGuaranteeClass")
+        .expect("RequiredGuaranteeClass in wgsl");
+    let ray_budget_index = rendered
+        .find("struct RayBudgetPolicy")
+        .expect("RayBudgetPolicy in wgsl");
+    let query_policy_index = rendered
+        .find("struct QueryExecutionPolicy")
+        .expect("QueryExecutionPolicy in wgsl");
+    let presentation_policy_index = rendered
+        .find("struct PresentationExecutionPolicy")
+        .expect("PresentationExecutionPolicy in wgsl");
     let spatial_index = rendered
         .find("struct SpatialDomainContract")
         .expect("SpatialDomainContract in wgsl");
@@ -914,6 +1105,11 @@ fn portable_abi_emits_deterministic_wgsl_structs_and_rejects_runtime_value() {
     assert!(actor_index < payload_index);
     assert!(payload_index < hit_index);
     assert!(hit_index < dispatch_index || dispatch_index < hit_index);
+    assert!(guarantee_index < query_policy_index);
+    assert!(guarantee_index < presentation_policy_index);
+    assert!(rendered.contains("struct SelectedMethodClass"));
+    assert!(ray_budget_index < query_policy_index);
+    assert!(query_policy_index < presentation_policy_index);
     assert!(spatial_index < scene_domain_index);
     assert!(surface_domain_index < scene_domain_index);
     assert!(participants_index < scene_domain_index);

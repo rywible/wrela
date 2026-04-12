@@ -1,3 +1,6 @@
+pub use crate::execution_policy::{
+    QueryExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
+};
 use crate::scene_ir::SceneCaptureKind;
 use std::fmt;
 

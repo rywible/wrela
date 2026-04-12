@@ -839,6 +839,16 @@ fn cli_preview_json_report_summarizes_execution() {
         dump.get("backend").and_then(|value| value.as_str()),
         Some("cpu")
     );
+    assert_eq!(
+        dump.pointer("/snapshot/capture_name")
+            .and_then(|value| value.as_str()),
+        Some("cli_plan_region")
+    );
+    assert_eq!(
+        dump.pointer("/snapshot/epoch")
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
     assert!(
         dump.get("stats")
             .and_then(|value| value.as_str())
@@ -877,6 +887,16 @@ fn cli_frame_json_reports_typed_attachments() {
     assert_eq!(
         dump.get("view").and_then(|value| value.as_str()),
         Some("cli_plan_view")
+    );
+    assert_eq!(
+        dump.pointer("/snapshot/capture_name")
+            .and_then(|value| value.as_str()),
+        Some("cli_plan_region")
+    );
+    assert_eq!(
+        dump.pointer("/snapshot/epoch")
+            .and_then(|value| value.as_u64()),
+        Some(1)
     );
     let attachments = dump
         .get("attachments")
@@ -982,9 +1002,15 @@ fn cli_presentation_debug_exports_depth_normal_and_stats() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("presentation debug schema v1"));
     assert!(stdout.contains("presentation debug view=cli_plan_view backend=cpu"));
+    assert!(stdout.contains("snapshot_id="));
+    assert!(stdout.contains("epoch=1"));
     assert!(stdout.contains("color ppm:"));
     assert!(stdout.contains("depth ppm:"));
     assert!(stdout.contains("world normal ppm:"));
+    assert!(stdout.contains("semantic domain:"));
+    assert!(stdout.contains("execution policy:"));
+    assert!(stdout.contains("required_guarantee=conservative_no_false_miss"));
+    assert!(stdout.contains("selected_method=conservative_solver"));
     assert!(stdout.contains("hit_rate="));
     assert!(stdout.contains("quality tier=realtime_120"));
     assert!(out_dir.join("color.ppm").exists());
@@ -1037,6 +1063,30 @@ fn cli_presentation_debug_json_reports_frame_cost_and_quality() {
         dump.pointer("/frame_cost/quality/target_fps")
             .and_then(|value| value.as_u64()),
         Some(120)
+    );
+    assert_eq!(
+        dump.get("semantic_domain")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| value.contains("geometry_detail=1")),
+        true
+    );
+    assert_eq!(
+        dump.get("execution_policy")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| value.contains("backend=cpu")
+                && value.contains("required_guarantee=conservative_no_false_miss")
+                && value.contains("selected_method=conservative_solver")),
+        true
+    );
+    assert_eq!(
+        dump.pointer("/snapshot/capture_name")
+            .and_then(|value| value.as_str()),
+        Some("cli_plan_region")
+    );
+    assert_eq!(
+        dump.pointer("/snapshot/epoch")
+            .and_then(|value| value.as_u64()),
+        Some(1)
     );
     assert!(
         dump.pointer("/frame_cost/passes")
@@ -1178,7 +1228,7 @@ fn cli_presentation_debug_rejects_non_literal_view_dimensions_without_override()
 }
 
 #[test]
-fn cli_presentation_debug_rejects_non_literal_domain_budget() {
+fn cli_presentation_debug_accepts_non_literal_domain_budget_via_policy() {
     let temp = workspace_tempdir();
     write_presentation_debug_expression_fixture(temp.path());
 
@@ -1191,11 +1241,31 @@ fn cli_presentation_debug_rejects_non_literal_domain_budget() {
         .arg("4")
         .arg("--height")
         .arg("4")
+        .arg("--json")
         .output()
         .expect("run presentation-debug");
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("cannot evaluate non-literal domain max_distance"));
+    assert!(
+        output.status.success(),
+        "presentation-debug should accept non-literal domain budgets via policy: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let dump: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("presentation-debug json");
+    assert!(
+        dump.get("semantic_domain")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| value.contains("geometry_detail=1"))
+    );
+    assert!(
+        dump.get("execution_policy")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| {
+                value.contains("required_guarantee=conservative_no_false_miss")
+                    && value.contains("selected_method=conservative_solver")
+                    && value.contains("primary_rays=max_distance=8")
+            })
+    );
 }
 
 #[test]

@@ -200,6 +200,106 @@ fn compile_and_run_native_module_impl(
 }
 
 #[test]
+fn domain_lowering_separates_semantics_from_execution_policy() {
+    let module = lower_inline_module_from_source(
+        r#"
+domain exec_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = true
+    media = false
+    max_distance = 12.0
+    min_step = 0.02
+    hit_epsilon = 0.0008
+    max_steps = 96
+}
+"#,
+    );
+
+    let func = module
+        .functions
+        .iter()
+        .find(|(_, func)| func.name == "exec_domain")
+        .map(|(_, func)| func)
+        .expect("exec_domain function");
+    let domain = func.domain.as_ref().expect("domain metadata");
+    let execution_policy = domain.execution_policy.as_ref().expect("execution policy");
+
+    assert_eq!(domain.geometry_detail, hir::DomainGeometryDetail::Fine);
+    assert!(!domain.material);
+    assert!(domain.radiance);
+    assert!(!domain.media);
+    assert_eq!(
+        execution_policy.required_guarantee,
+        wrela::execution_policy::RequiredGuaranteeClass::ConservativeNoFalseMiss
+    );
+    assert_eq!(
+        execution_policy.selected_method,
+        wrela::execution_policy::SelectedMethodClass::ConservativeSolver
+    );
+
+    assert!(execution_policy.max_distance.is_some());
+    assert!(execution_policy.min_step.is_some());
+    assert!(execution_policy.hit_epsilon.is_some());
+    assert!(execution_policy.max_steps.is_some());
+}
+
+#[test]
+fn kernel_lowered_domain_body_does_not_emit_placeholder_guarantee() {
+    let module = lower_inline_module_from_source(
+        r#"
+domain exec_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = true
+    media = false
+    max_distance = 12.0
+    min_step = 0.02
+    hit_epsilon = 0.0008
+    max_steps = 96
+}
+"#,
+    );
+    let (_type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    let entry = module
+        .functions
+        .iter()
+        .find(|(_, func)| func.name == "exec_domain")
+        .map(|(idx, _)| idx)
+        .expect("exec_domain function");
+    let kernel_program =
+        wrela::kernel::lower_kernel_function(&module, &type_info, entry).expect("kernel lower");
+    let kernel_func = kernel_program
+        .module
+        .function("exec_domain")
+        .expect("kernel exec_domain");
+    let Some(wrela::kernel::KernelStmt::Return {
+        value:
+            Some(wrela::kernel::KernelExpr::StructLiteral { fields, .. }),
+        ..
+    }) = kernel_func.body.last()
+    else {
+        panic!("domain lowering should return a SceneDomain struct literal");
+    };
+    let spatial = fields
+        .iter()
+        .find(|(name, _)| name == "spatial")
+        .map(|(_, value)| value)
+        .expect("spatial contract");
+    let wrela::kernel::KernelExpr::StructLiteral {
+        fields: spatial_fields,
+        ..
+    } = spatial
+    else {
+        panic!("spatial contract should lower as a struct literal");
+    };
+    assert_eq!(
+        spatial_fields.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+        vec!["geometry_detail"]
+    );
+}
+
+#[test]
 fn native_v2_numeric_range_smoke() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
         return;

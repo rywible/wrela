@@ -16,6 +16,7 @@ use crate::query_exec::world::{
     execute_world_surface,
 };
 use crate::query_exec::{QueryExecContext, QueryExecError, QueryExecutionObservability};
+use crate::execution_policy::QueryExecutionPolicy;
 use crate::query_plan::{
     CaptureKind, PruningStrategy, WorldQueryKind, world_query_kind_for_contract_id,
 };
@@ -133,8 +134,15 @@ struct VirtualGpuRuntime<'a> {
 
 impl<'a> VirtualGpuRuntime<'a> {
     fn new(ctx: &'a QueryExecContext) -> Self {
+        Self::new_with_snapshot(ctx, None)
+    }
+
+    fn new_with_snapshot(
+        ctx: &'a QueryExecContext,
+        snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
+    ) -> Self {
         Self {
-            ops: DirectQueryOps::new(ctx),
+            ops: DirectQueryOps::new_with_snapshot(ctx, snapshot),
         }
     }
 
@@ -722,7 +730,16 @@ pub(crate) fn execute_capture_query_with_observability(
     plan: &KernelCaptureQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
-    let runtime = VirtualGpuRuntime::new(ctx);
+    execute_capture_query_with_snapshot_observability(ctx, None, plan, args)
+}
+
+pub(crate) fn execute_capture_query_with_snapshot_observability(
+    ctx: &QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
+    plan: &KernelCaptureQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let runtime = VirtualGpuRuntime::new_with_snapshot(ctx, snapshot);
     runtime.note_dispatch();
     if let Err(errors) = validate_capture_query_plan(plan) {
         runtime.note_contract_validation_failure();
@@ -741,7 +758,9 @@ pub(crate) fn execute_world_query(
     plan: &KernelWorldQueryPlan,
     args: &[KernelValue],
 ) -> Result<KernelValue, QueryExecError> {
-    execute_world_query_with_observability(ctx, plan, args).map(|(value, _)| value)
+    let policy = QueryExecutionPolicy::conservative(plan.backend, None);
+    execute_world_query_with_policy_with_observability(ctx, &policy, plan, args)
+        .map(|(value, _)| value)
 }
 
 pub(crate) fn execute_world_query_with_observability(
@@ -749,7 +768,37 @@ pub(crate) fn execute_world_query_with_observability(
     plan: &KernelWorldQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
-    let evaluator = VirtualGpuDirectQueryEvaluator::new(ctx);
+    let policy = QueryExecutionPolicy::conservative(plan.backend, None);
+    execute_world_query_with_policy_with_observability(ctx, &policy, plan, args)
+}
+
+pub(crate) fn execute_world_query_with_policy_with_observability(
+    ctx: &QueryExecContext,
+    policy: &QueryExecutionPolicy,
+    plan: &KernelWorldQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    execute_world_query_with_policy_with_snapshot_observability(ctx, None, policy, plan, args)
+}
+
+pub(crate) fn execute_world_query_with_snapshot_observability(
+    ctx: &QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
+    plan: &KernelWorldQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let policy = QueryExecutionPolicy::conservative(plan.backend, None);
+    execute_world_query_with_policy_with_snapshot_observability(ctx, snapshot, &policy, plan, args)
+}
+
+pub(crate) fn execute_world_query_with_policy_with_snapshot_observability(
+    ctx: &QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
+    _policy: &QueryExecutionPolicy,
+    plan: &KernelWorldQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let evaluator = VirtualGpuDirectQueryEvaluator::new_with_snapshot(ctx, snapshot);
     evaluator.runtime.note_dispatch();
     if let Err(errors) = validate_world_query_plan(plan) {
         evaluator.runtime.note_contract_validation_failure();
@@ -769,8 +818,15 @@ struct VirtualGpuCaptureBackend<'a> {
 
 impl<'a> VirtualGpuDirectQueryEvaluator<'a> {
     fn new(ctx: &'a QueryExecContext) -> Self {
+        Self::new_with_snapshot(ctx, None)
+    }
+
+    fn new_with_snapshot(
+        ctx: &'a QueryExecContext,
+        snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
+    ) -> Self {
         Self {
-            runtime: Box::new(VirtualGpuRuntime::new(ctx)),
+            runtime: Box::new(VirtualGpuRuntime::new_with_snapshot(ctx, snapshot)),
         }
     }
 
@@ -1516,7 +1572,17 @@ pub(crate) fn execute_batch_query_with_observability(
     args: &[KernelValue],
     trace: &KernelBatchQueryTrace,
 ) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
-    let runtime = VirtualGpuRuntime::new(ctx);
+    execute_batch_query_with_snapshot_observability(ctx, None, plan, args, trace)
+}
+
+pub(crate) fn execute_batch_query_with_snapshot_observability(
+    ctx: &QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
+    plan: &KernelBatchQueryPlan,
+    args: &[KernelValue],
+    trace: &KernelBatchQueryTrace,
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let runtime = VirtualGpuRuntime::new_with_snapshot(ctx, snapshot);
     runtime.note_dispatch();
     if let Err(errors) = validate_batch_query_plan(plan) {
         runtime.note_contract_validation_failure();

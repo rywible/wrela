@@ -10,8 +10,10 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::vec_init_then_push)]
 
+pub mod artifact_key;
 pub mod backend;
 pub mod diag;
+pub mod execution_policy;
 pub mod hir;
 pub mod kernel;
 pub mod lexer;
@@ -28,3 +30,4 @@ pub mod query_exec;
 pub mod query_plan;
 pub mod query_solver;
 pub mod scene_ir;
+pub mod world_identity;

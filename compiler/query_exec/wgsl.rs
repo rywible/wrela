@@ -19,6 +19,7 @@ use crate::query_exec::QueryExecutionObservability;
 use crate::query_exec::cpu::{DirectQueryOps, QueryExecError};
 use crate::query_exec::world::world_query_semantics_for_contract;
 use crate::query_plan::CaptureKind;
+use crate::execution_policy::QueryExecutionPolicy;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use smol_str::SmolStr;
 use std::borrow::Cow;
@@ -65,7 +66,16 @@ pub(crate) fn execute_capture_query_with_observability(
     plan: &KernelCaptureQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
-    let ops = DirectQueryOps::new(ctx);
+    execute_capture_query_with_snapshot_observability(ctx, None, plan, args)
+}
+
+pub(crate) fn execute_capture_query_with_snapshot_observability(
+    ctx: &crate::query_exec::context::QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
+    plan: &KernelCaptureQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let ops = DirectQueryOps::new_with_snapshot(ctx, snapshot);
     ops.note_dispatch();
     if let Err(errors) = validate_capture_query_plan(plan) {
         ops.note_contract_validation_failure();
@@ -88,7 +98,37 @@ pub(crate) fn execute_world_query_with_observability(
     plan: &KernelWorldQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
-    let ops = DirectQueryOps::new(ctx);
+    let policy = QueryExecutionPolicy::conservative(plan.backend, None);
+    execute_world_query_with_policy_with_observability(ctx, &policy, plan, args)
+}
+
+pub(crate) fn execute_world_query_with_policy_with_observability(
+    ctx: &crate::query_exec::context::QueryExecContext,
+    policy: &QueryExecutionPolicy,
+    plan: &KernelWorldQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    execute_world_query_with_policy_with_snapshot_observability(ctx, None, policy, plan, args)
+}
+
+pub(crate) fn execute_world_query_with_snapshot_observability(
+    ctx: &crate::query_exec::context::QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
+    plan: &KernelWorldQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let policy = QueryExecutionPolicy::conservative(plan.backend, None);
+    execute_world_query_with_policy_with_snapshot_observability(ctx, snapshot, &policy, plan, args)
+}
+
+pub(crate) fn execute_world_query_with_policy_with_snapshot_observability(
+    ctx: &crate::query_exec::context::QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
+    _policy: &QueryExecutionPolicy,
+    plan: &KernelWorldQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let ops = DirectQueryOps::new_with_snapshot(ctx, snapshot);
     ops.note_dispatch();
     if let Err(errors) = validate_world_query_plan(plan) {
         ops.note_contract_validation_failure();
@@ -113,7 +153,17 @@ pub(crate) fn execute_batch_query_with_observability(
     args: &[KernelValue],
     _trace: &KernelBatchQueryTrace,
 ) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
-    let ops = DirectQueryOps::new(ctx);
+    execute_batch_query_with_snapshot_observability(ctx, None, plan, args, _trace)
+}
+
+pub(crate) fn execute_batch_query_with_snapshot_observability(
+    ctx: &crate::query_exec::context::QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
+    plan: &KernelBatchQueryPlan,
+    args: &[KernelValue],
+    _trace: &KernelBatchQueryTrace,
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let ops = DirectQueryOps::new_with_snapshot(ctx, snapshot);
     ops.note_dispatch();
     if let Err(errors) = validate_batch_query_plan(plan) {
         ops.note_contract_validation_failure();

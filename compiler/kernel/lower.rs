@@ -426,14 +426,6 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
                         span,
                     },
                 ),
-                (
-                    SmolStr::new("guarantee"),
-                    KernelExpr::Literal {
-                        value: hir::Literal::Integer(0),
-                        ty: Type::U32,
-                        span,
-                    },
-                ),
             ],
             ty: Type::Named(SmolStr::new("SpatialDomainContract"), Vec::new()),
             span,

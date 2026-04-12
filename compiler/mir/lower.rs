@@ -1824,14 +1824,7 @@ fn build_scene_domain_contract_value(
     media: Value,
     span: TextRange,
 ) -> Value {
-    let mut spatial = lowerer.synthetic_class_target_info("SpatialDomainContract");
-    FunctionLowerer::set_class_field_value(&mut spatial, "geometry_detail", geometry_detail);
-    FunctionLowerer::set_class_field_value(
-        &mut spatial,
-        "guarantee",
-        Value::Const(Literal::Integer(0)),
-    );
-    let spatial = lowerer.build_class_instance(&spatial, span);
+    let spatial = build_spatial_domain_contract_value(lowerer, geometry_detail, span);
 
     let mut surface = lowerer.synthetic_class_target_info("SurfaceDomainContract");
     FunctionLowerer::set_class_field_value(&mut surface, "material", material);
@@ -1848,6 +1841,16 @@ fn build_scene_domain_contract_value(
     FunctionLowerer::set_class_field_value(&mut domain, "surface", surface);
     FunctionLowerer::set_class_field_value(&mut domain, "participants", participants);
     lowerer.build_class_instance(&domain, span)
+}
+
+fn build_spatial_domain_contract_value(
+    lowerer: &mut FunctionLowerer,
+    geometry_detail: Value,
+    span: TextRange,
+) -> Value {
+    let mut spatial = lowerer.synthetic_class_target_info("SpatialDomainContract");
+    FunctionLowerer::set_class_field_value(&mut spatial, "geometry_detail", geometry_detail);
+    lowerer.build_class_instance(&spatial, span)
 }
 
 fn declare_internal_param(lowerer: &mut FunctionLowerer, name: &str, ty: MirType) -> LocalId {

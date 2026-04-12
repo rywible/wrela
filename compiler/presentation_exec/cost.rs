@@ -1,7 +1,11 @@
 use crate::presentation_contract::{
     QualityDegradationStep, RealtimeQualityState, RealtimeRadianceMode,
 };
+use crate::execution_policy::{
+    PresentationExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
+};
 use crate::presentation_plan::quality_tier_name;
+use crate::query_plan::DispatchBackend;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -45,6 +49,9 @@ pub struct PresentationQualityReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PresentationFrameCostReport {
+    pub semantic_domain: String,
+    pub execution_policy: String,
+    pub legal_degradations: Vec<String>,
     pub output_width: u32,
     pub output_height: u32,
     pub internal_width: u32,
@@ -122,8 +129,78 @@ pub fn radiance_mode_name(mode: RealtimeRadianceMode) -> &'static str {
     }
 }
 
+pub fn required_guarantee_class_name(class: RequiredGuaranteeClass) -> &'static str {
+    match class {
+        RequiredGuaranteeClass::Exact => "exact",
+        RequiredGuaranteeClass::ConservativeNoFalseMiss => "conservative_no_false_miss",
+        RequiredGuaranteeClass::IntervalBounded => "interval_bounded",
+        RequiredGuaranteeClass::BestEffort => "best_effort",
+    }
+}
+
+pub fn selected_method_class_name(class: SelectedMethodClass) -> &'static str {
+    match class {
+        SelectedMethodClass::ExactOracle => "exact_oracle",
+        SelectedMethodClass::ConservativeSolver => "conservative_solver",
+        SelectedMethodClass::IntervalSolver => "interval_solver",
+        SelectedMethodClass::HeuristicSolver => "heuristic_solver",
+    }
+}
+
+fn format_ray_budget(budget: RayBudgetPolicy) -> String {
+    format!(
+        "max_distance={} min_step={} hit_epsilon={} max_steps={}",
+        budget.max_distance, budget.min_step, budget.hit_epsilon, budget.max_steps
+    )
+}
+
+pub fn render_semantic_domain_report(
+    scene_id: u32,
+    geometry_detail: i32,
+    material: bool,
+    radiance: bool,
+    media: bool,
+) -> String {
+    format!(
+        "scene_id={} geometry_detail={} material={} radiance={} media={}",
+        scene_id, geometry_detail, material, radiance, media
+    )
+}
+
+pub fn render_execution_policy_report(
+    policy: &PresentationExecutionPolicy,
+    backend: DispatchBackend,
+    legal_degradations: &[QualityDegradationStep],
+) -> String {
+    format!(
+        "backend={} required_guarantee={} selected_method={} primary_rays={} legal_degradations={}",
+        match backend {
+            DispatchBackend::Cpu => "cpu",
+            DispatchBackend::VirtualGpu => "virtual_gpu",
+            DispatchBackend::Wgsl => "wgsl",
+            DispatchBackend::Auto => "auto",
+        },
+        required_guarantee_class_name(policy.required_guarantee),
+        selected_method_class_name(policy.selected_method),
+        format_ray_budget(policy.primary_rays),
+        legal_degradations
+            .iter()
+            .map(|step| quality_degradation_name(*step))
+            .collect::<Vec<_>>()
+            .join("|")
+    )
+}
+
 pub fn render_frame_cost_report(report: &PresentationFrameCostReport) -> String {
     let mut out = String::new();
+    out.push_str(&format!("semantic_domain={}\n", report.semantic_domain));
+    out.push_str(&format!("execution_policy={}\n", report.execution_policy));
+    if !report.legal_degradations.is_empty() {
+        out.push_str(&format!(
+            "legal_degradations={}\n",
+            report.legal_degradations.join(",")
+        ));
+    }
     out.push_str(&format!(
         "quality tier={} target_fps={} output={}x{} internal={}x{} scale={:.2} native_output={} reconstructed_output={} radiance={} media={} half_res_participants={} hit_compaction={}\n",
         report.quality.tier,

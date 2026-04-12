@@ -6,6 +6,10 @@ pub mod resources;
 mod temporal;
 mod wgsl;
 
+use crate::artifact_key::ArtifactReuseKey;
+pub use crate::execution_policy::{
+    PresentationExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
+};
 use crate::kernel::{KernelStructValue, KernelValue, lower_batch_query_plan};
 use crate::presentation_contract::{
     AttachmentLifetime, AttachmentResolutionClass, AttachmentResolutionScale, CanonicalCameraInput,
@@ -17,10 +21,12 @@ use crate::presentation_contract::{
 use crate::presentation_plan::{PresentationPlan, PrimaryVisibilityPassContract};
 use crate::query_exec::cpu::DirectQueryEvaluator;
 use crate::query_exec::{
-    BatchQueryExecutionTrace, QueryExecContext, QueryExecError, execute_batch_query_with_trace_on,
+    BatchQueryExecutionTrace, QueryExecContext, QueryExecError,
+    execute_batch_query_with_snapshot_on,
 };
 use crate::query_plan::{BatchQueryPlan, DispatchBackend};
 use crate::query_solver::{RaySolverDiagnosticSummary, RaySolverMethod, ray_solver_method_name};
+use crate::world_identity::{SnapshotIdentityReport, WorldSnapshotHandle};
 use resources::{
     AttachmentResourceSet, PresentationResourceError, allocate_attachment_resources_without_history,
 };
@@ -31,7 +37,8 @@ use thiserror::Error;
 pub use self::controller::AdaptivePresentationController;
 pub use cost::{
     PresentationAttachmentBytes, PresentationFrameCostReport, PresentationPassCost,
-    PresentationQualityReport, quality_report, radiance_mode_name, render_frame_cost_report,
+    PresentationQualityReport, quality_report, radiance_mode_name, render_execution_policy_report,
+    render_frame_cost_report, render_semantic_domain_report,
 };
 pub use resources::{
     AttachmentResource, FrameAttachmentLayout, PresentationResourceError as ResourceError,
@@ -61,13 +68,13 @@ pub enum PresentationExecError {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PresentationExecutionInput {
-    pub region_capture: SmolStr,
+    pub region_snapshot: WorldSnapshotHandle,
     pub frame_domain: KernelValue,
     pub frame_state: KernelValue,
     pub history: Option<PresentationTemporalHistory>,
     pub lighting: PresentationLightingInputs,
     pub compatibility_projection: Option<LegacyCompatibilityProjectionInput>,
-    pub ray_budget: CanonicalRayBudget,
+    pub execution_policy: PresentationExecutionPolicy,
     pub quality_override: Option<RealtimeQualityState>,
     pub backend: DispatchBackend,
 }
@@ -77,13 +84,26 @@ pub struct PresentationTemporalHistorySlot {
     pub slot: u8,
     pub attachment: SmolStr,
     pub compatibility: HistoryCompatibilityKey,
+    pub reuse_key: ArtifactReuseKey,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PresentationTemporalHistory {
     pub frame_index: u32,
+    pub snapshot: SnapshotIdentityReport,
+    pub snapshot_handle: WorldSnapshotHandle,
     pub attachments: AttachmentResourceSet,
     pub slots: Vec<PresentationTemporalHistorySlot>,
+}
+
+impl PresentationExecutionInput {
+    pub fn region_capture_name(&self) -> &SmolStr {
+        self.region_snapshot.capture_name()
+    }
+
+    pub fn region_capture_value(&self) -> KernelValue {
+        self.region_snapshot.capture_value()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,12 +283,15 @@ pub(crate) fn effective_plan_for_quality(
 }
 
 pub(crate) fn adjusted_ray_budget(
-    budget: CanonicalRayBudget,
+    policy: PresentationExecutionPolicy,
     quality: &RealtimeQualityState,
 ) -> CanonicalRayBudget {
+    let budget = policy.primary_rays;
     CanonicalRayBudget {
         max_steps: budget.max_steps.min(quality.primary_max_steps),
-        ..budget
+        max_distance: budget.max_distance,
+        min_step: budget.min_step,
+        hit_epsilon: budget.hit_epsilon,
     }
 }
 
@@ -402,9 +425,9 @@ pub(crate) fn tile_culling_mask(
     if legacy_projection {
         return Ok(None);
     }
-    let evaluator = DirectQueryEvaluator::new(ctx);
+    let evaluator = DirectQueryEvaluator::new_with_snapshot(ctx, Some(&input.region_snapshot));
     let detail = frame_domain_geometry_detail(&input.frame_domain).unwrap_or(0);
-    let bounds = evaluator.region_shape_support_bounds(&input.region_capture, detail)?;
+    let bounds = evaluator.region_shape_support_bounds(input.region_capture_name(), detail)?;
     if bounds.is_empty() {
         return Ok(None);
     }
@@ -623,13 +646,10 @@ pub fn scene_domain_value(
                 SmolStr::new("spatial"),
                 KernelValue::Struct(KernelStructValue {
                     name: SmolStr::new("SpatialDomainContract"),
-                    fields: vec![
-                        (
-                            SmolStr::new("geometry_detail"),
-                            KernelValue::I32(geometry_detail),
-                        ),
-                        (SmolStr::new("guarantee"), KernelValue::U32(0)),
-                    ],
+                    fields: vec![(
+                        SmolStr::new("geometry_detail"),
+                        KernelValue::I32(geometry_detail),
+                    )],
                 }),
             ),
             (
@@ -695,6 +715,7 @@ pub fn lighting_inputs_value(lighting: PresentationLightingInputs) -> KernelValu
 fn execute_batch_contract(
     ctx: &QueryExecContext,
     backend: DispatchBackend,
+    snapshot: &WorldSnapshotHandle,
     contract_id: crate::query_contract::QueryContractId,
     args: &[KernelValue],
 ) -> Result<(Vec<KernelValue>, BatchQueryExecutionTrace), PresentationExecError> {
@@ -705,7 +726,8 @@ fn execute_batch_contract(
             }
         })?,
     );
-    let (values, trace) = execute_batch_query_with_trace_on(ctx, backend, &batch_plan, args)?;
+    let (values, trace) =
+        execute_batch_query_with_snapshot_on(ctx, backend, Some(snapshot), &batch_plan, args)?;
     Ok((expect_array(&values)?.to_vec(), trace))
 }
 
@@ -730,21 +752,24 @@ fn allocate_execution_attachments(
     frame: &FrameContract,
     width: u32,
     height: u32,
+    current_snapshot: &WorldSnapshotHandle,
     history: Option<&PresentationTemporalHistory>,
 ) -> Result<AttachmentResourceSet, PresentationExecError> {
     if let Some(history) = history {
-        match crate::presentation_exec::allocate_frame_attachment_resources_with_history(
-            frame,
-            width,
-            height,
-            Some(&history.attachments),
-        ) {
-            Ok(resources) => return Ok(resources),
-            Err(
-                PresentationResourceError::MissingHistoryAttachment { .. }
-                | PresentationResourceError::HistoryLayoutMismatch { .. },
-            ) => {}
-            Err(err) => return Err(PresentationExecError::Resource(err)),
+        if history_slots_match(frame, width, height, current_snapshot, history)? {
+            match crate::presentation_exec::allocate_frame_attachment_resources_with_history(
+                frame,
+                width,
+                height,
+                Some(&history.attachments),
+            ) {
+                Ok(resources) => return Ok(resources),
+                Err(
+                    PresentationResourceError::MissingHistoryAttachment { .. }
+                    | PresentationResourceError::HistoryLayoutMismatch { .. },
+                ) => {}
+                Err(err) => return Err(PresentationExecError::Resource(err)),
+            }
         }
     }
     allocate_attachment_resources_without_history(frame, width, height)
@@ -755,6 +780,7 @@ fn build_temporal_history(
     plan: &PresentationPlan,
     frame_state: &KernelValue,
     attachments: &AttachmentResourceSet,
+    current_snapshot: &WorldSnapshotHandle,
 ) -> Result<Option<PresentationTemporalHistory>, PresentationExecError> {
     let Some(temporal) = &plan.frame.temporal else {
         return Ok(None);
@@ -763,17 +789,75 @@ fn build_temporal_history(
     let frame_index = expect_u32(field(frame, "frame_index")?)?;
     Ok(Some(PresentationTemporalHistory {
         frame_index,
+        snapshot: current_snapshot.report(),
+        snapshot_handle: current_snapshot.clone(),
         attachments: attachments.clone(),
         slots: temporal
             .history_slots
             .iter()
-            .map(|slot| PresentationTemporalHistorySlot {
-                slot: slot.slot,
-                attachment: slot.attachment.clone(),
-                compatibility: slot.compatibility.clone(),
+            .map(|slot| {
+                let attachment = attachments
+                    .attachment(slot.attachment.as_str())
+                    .ok_or_else(|| PresentationExecError::UnsupportedPlan {
+                        message: format!(
+                            "temporal history slot '{}' references missing attachment '{}'",
+                            slot.slot, slot.attachment
+                        ),
+                    })?;
+                Ok::<PresentationTemporalHistorySlot, PresentationExecError>(
+                    PresentationTemporalHistorySlot {
+                        slot: slot.slot,
+                        attachment: slot.attachment.clone(),
+                        compatibility: slot.compatibility.clone(),
+                        reuse_key: slot.reuse_key(
+                            current_snapshot,
+                            attachment.layout.compatibility_signature(),
+                        ),
+                    },
+                )
             })
-            .collect(),
+            .collect::<Result<Vec<_>, _>>()?,
     }))
+}
+
+fn history_slots_match(
+    frame: &FrameContract,
+    width: u32,
+    height: u32,
+    current_snapshot: &WorldSnapshotHandle,
+    history: &PresentationTemporalHistory,
+) -> Result<bool, PresentationExecError> {
+    let Some(temporal) = &frame.temporal else {
+        return Ok(false);
+    };
+    for slot in &temporal.history_slots {
+        let Some(previous_slot) = history
+            .slots
+            .iter()
+            .find(|candidate| candidate.slot == slot.slot)
+        else {
+            return Ok(false);
+        };
+        if previous_slot.attachment != slot.attachment
+            || previous_slot.compatibility != slot.compatibility
+        {
+            return Ok(false);
+        }
+        let Some(attachment) = frame
+            .outputs
+            .iter()
+            .find(|candidate| candidate.name == slot.attachment)
+        else {
+            return Ok(false);
+        };
+        let layout = frame_attachment_layout(frame, attachment, width, height)
+            .map_err(PresentationExecError::Resource)?;
+        let current_key = slot.reuse_key(current_snapshot, layout.compatibility_signature());
+        if !previous_slot.reuse_key.compatible_with(&current_key) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn presentation_metrics(
@@ -837,6 +921,9 @@ fn presentation_metrics(
 }
 
 pub(crate) fn build_frame_cost_report(
+    frame_domain: &KernelValue,
+    execution_policy: PresentationExecutionPolicy,
+    backend: DispatchBackend,
     width: u32,
     height: u32,
     quality: &RealtimeQualityState,
@@ -848,6 +935,17 @@ pub(crate) fn build_frame_cost_report(
     passes: Vec<PassRuntimeStats>,
     mut active_acceleration_artifacts: Vec<String>,
 ) -> PresentationFrameCostReport {
+    let semantic_domain = semantic_domain_report(frame_domain);
+    let execution_policy = render_execution_policy_report(
+        &execution_policy,
+        backend,
+        &quality.active_degradations,
+    );
+    let legal_degradations = quality
+        .active_degradations
+        .iter()
+        .map(|step| cost::quality_degradation_name(*step).to_string())
+        .collect::<Vec<_>>();
     let radiance_mode = quality.radiance_mode;
     let half_res_participants = quality.half_res_participants;
     let hit_compaction_enabled = quality.hit_compaction_enabled;
@@ -940,6 +1038,9 @@ pub(crate) fn build_frame_cost_report(
         performance_gain_sources.push("backend_speed".to_string());
     }
     PresentationFrameCostReport {
+        semantic_domain,
+        execution_policy,
+        legal_degradations,
         output_width: width,
         output_height: height,
         internal_width: quality.internal_width,
@@ -963,6 +1064,45 @@ pub(crate) fn build_frame_cost_report(
         bottleneck_pass,
         performance_gain_sources,
     }
+}
+
+fn semantic_domain_report(frame_domain: &KernelValue) -> String {
+    let Ok(frame_domain) = expect_struct(frame_domain, "SceneDomain") else {
+        return "unavailable".to_string();
+    };
+    let scene_id = field(frame_domain, "scene_id")
+        .and_then(expect_u32)
+        .unwrap_or_default();
+    let geometry_detail = frame_domain_geometry_detail(&KernelValue::Struct(frame_domain.clone()))
+        .unwrap_or_default();
+    let material = frame_domain_flag(frame_domain, "surface", "SurfaceDomainContract", "material");
+    let radiance = frame_domain_flag(
+        frame_domain,
+        "participants",
+        "ParticipantDomainContract",
+        "radiance",
+    );
+    let media = frame_domain_flag(
+        frame_domain,
+        "participants",
+        "ParticipantDomainContract",
+        "media",
+    );
+    render_semantic_domain_report(scene_id, geometry_detail, material, radiance, media)
+}
+
+fn frame_domain_flag(
+    frame_domain: &KernelStructValue,
+    contract_field: &str,
+    contract_name: &str,
+    flag: &str,
+) -> bool {
+    let Ok(contract) = field(frame_domain, contract_field)
+        .and_then(|value| expect_struct(value, contract_name))
+    else {
+        return false;
+    };
+    field(contract, flag).and_then(expect_bool).unwrap_or(false)
 }
 
 fn materialize_primary_visibility_attachments(

@@ -29,7 +29,7 @@ use crate::query_exec::cpu::{default_medium, default_surface};
 use crate::query_exec::wgsl::{
     compiled_pipeline, encode_slice, encode_value, native_wgpu_context, readback_storage_buffer,
 };
-use crate::query_exec::{QueryExecContext, execute_batch_query_with_trace_on};
+use crate::query_exec::{QueryExecContext, execute_batch_query_with_snapshot_on};
 use crate::query_plan::{BatchQueryPlan, DispatchBackend};
 use smol_str::SmolStr;
 use std::time::Instant;
@@ -42,10 +42,11 @@ pub(super) fn execute_plan(
     plan: &PresentationPlan,
     input: &PresentationExecutionInput,
 ) -> Result<PresentationExecutionResult, PresentationExecError> {
+    let current_snapshot = &input.region_snapshot;
     let (camera, viewport, jitter_pixels) = frame_state_components(&input.frame_state)?;
     let quality = resolved_quality_state(plan, input);
     let effective_plan = effective_plan_for_quality(plan, &quality);
-    let ray_budget = adjusted_ray_budget(input.ray_budget, &quality);
+    let ray_budget = adjusted_ray_budget(input.execution_policy, &quality);
     let screen_samples = generate_screen_samples(
         &effective_plan,
         input,
@@ -71,6 +72,7 @@ pub(super) fn execute_plan(
         &effective_plan.frame,
         viewport.width,
         viewport.height,
+        current_snapshot,
         input.history.as_ref(),
     )?;
     let mut primary_hits = None;
@@ -148,12 +150,13 @@ pub(super) fn execute_plan(
                         .iter()
                         .map(|index| rays[*index].clone())
                         .collect::<Vec<_>>();
-                    let (active_hits, mut query_trace) = execute_batch_query_with_trace_on(
+                    let (active_hits, mut query_trace) = execute_batch_query_with_snapshot_on(
                         ctx,
                         DispatchBackend::Wgsl,
+                        Some(current_snapshot),
                         &batch_plan,
                         &[
-                            KernelValue::Capture(input.region_capture.clone()),
+                            input.region_capture_value(),
                             input.frame_domain.clone(),
                             KernelValue::Array(active_rays),
                         ],
@@ -173,12 +176,13 @@ pub(super) fn execute_plan(
                         query_trace,
                     )
                 } else {
-                    let (hits, query_trace) = execute_batch_query_with_trace_on(
+                    let (hits, query_trace) = execute_batch_query_with_snapshot_on(
                         ctx,
                         DispatchBackend::Wgsl,
+                        Some(current_snapshot),
                         &batch_plan,
                         &[
-                            KernelValue::Capture(input.region_capture.clone()),
+                            input.region_capture_value(),
                             input.frame_domain.clone(),
                             KernelValue::Array(rays),
                         ],
@@ -225,6 +229,7 @@ pub(super) fn execute_plan(
                 };
                 let (count, notes) = execute_surface_resolve(
                     ctx,
+                    current_snapshot,
                     input,
                     &mut attachments,
                     hits,
@@ -267,6 +272,7 @@ pub(super) fn execute_plan(
                 };
                 let (radiance_count, medium_count, notes) = execute_participants_resolve(
                     ctx,
+                    current_snapshot,
                     input,
                     &screen_samples,
                     &mut attachments,
@@ -437,8 +443,16 @@ pub(super) fn execute_plan(
         })?;
     update_query_trace_continuation(&mut primary_trace, continuation_counts);
     let metrics = presentation_metrics(&primary_hits, &primary_trace, primary_solver_summary);
-    let history = build_temporal_history(&effective_plan, &input.frame_state, &attachments)?;
+    let history = build_temporal_history(
+        &effective_plan,
+        &input.frame_state,
+        &attachments,
+        current_snapshot,
+    )?;
     let frame_cost = build_frame_cost_report(
+        &input.frame_domain,
+        input.execution_policy,
+        DispatchBackend::Wgsl,
         viewport.width,
         viewport.height,
         &quality,
@@ -466,6 +480,7 @@ pub(super) fn execute_plan(
 
 fn execute_surface_resolve(
     ctx: &QueryExecContext,
+    current_snapshot: &crate::world_identity::WorldSnapshotHandle,
     input: &PresentationExecutionInput,
     attachments: &mut AttachmentResourceSet,
     hits: &[KernelValue],
@@ -515,9 +530,10 @@ fn execute_surface_resolve(
         let (surfaces, _) = execute_batch_contract(
             ctx,
             backend,
+            current_snapshot,
             contract.query_contract,
             &[
-                KernelValue::Capture(input.region_capture.clone()),
+                input.region_capture_value(),
                 input.frame_domain.clone(),
                 KernelValue::Array(hit_values),
             ],
@@ -549,9 +565,10 @@ fn execute_surface_resolve(
     let (surfaces, _) = execute_batch_contract(
         ctx,
         backend,
+        current_snapshot,
         contract.query_contract,
         &[
-            KernelValue::Capture(input.region_capture.clone()),
+            input.region_capture_value(),
             input.frame_domain.clone(),
             KernelValue::Array(hits.to_vec()),
         ],
@@ -572,6 +589,7 @@ fn execute_surface_resolve(
 
 fn execute_participants_resolve(
     ctx: &QueryExecContext,
+    current_snapshot: &crate::world_identity::WorldSnapshotHandle,
     input: &PresentationExecutionInput,
     screen_samples: &[KernelValue],
     attachments: &mut AttachmentResourceSet,
@@ -622,9 +640,10 @@ fn execute_participants_resolve(
             let (radiance, _) = execute_batch_contract(
                 ctx,
                 backend,
+                current_snapshot,
                 query_contract,
                 &[
-                    KernelValue::Capture(input.region_capture.clone()),
+                    input.region_capture_value(),
                     input.frame_domain.clone(),
                     KernelValue::Array(query_items),
                 ],
@@ -667,9 +686,10 @@ fn execute_participants_resolve(
             let (medium, _) = execute_batch_contract(
                 ctx,
                 backend,
+                current_snapshot,
                 query_contract,
                 &[
-                    KernelValue::Capture(input.region_capture.clone()),
+                    input.region_capture_value(),
                     input.frame_domain.clone(),
                     KernelValue::Array(query_items),
                 ],
