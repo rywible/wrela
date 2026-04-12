@@ -389,6 +389,7 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "local_position",
                 "local_normal",
                 "fill_direction = normalize(vec3(-0.9, 0.45, 0.2))",
+                "fn run()",
             ][..],
             &[
                 "use render_ppm from render",
@@ -413,7 +414,6 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "while x <",
                 "mutable ppm",
                 "render render_ppm(",
-                "fn run()",
             ][..],
             &["feature_bias"][..],
         ),
@@ -441,6 +441,7 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "local_position",
                 "local_normal",
                 "fill_direction = normalize(vec3(-0.7, 0.4, 0.2))",
+                "fn run()",
             ][..],
             &[
                 "use render_ppm from render",
@@ -465,7 +466,6 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "while x <",
                 "mutable ppm",
                 "render render_ppm(",
-                "fn run()",
             ][..],
             &["feature_bias"][..],
         ),
@@ -493,6 +493,7 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "local_position",
                 "local_normal",
                 "fill_direction = normalize(vec3(-0.55, 0.42, 0.28))",
+                "fn run()",
             ][..],
             &[
                 "use render_ppm from render",
@@ -517,7 +518,6 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "while x <",
                 "mutable ppm",
                 "render render_ppm(",
-                "fn run()",
             ][..],
             &["feature_bias"][..],
         ),
@@ -545,6 +545,7 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "local_position",
                 "local_normal",
                 "fill_direction = normalize(vec3(-0.5, 0.42, 0.25))",
+                "fn run()",
             ][..],
             &[
                 "use render_ppm from render",
@@ -569,7 +570,6 @@ fn preview_project_phase8_semantic_region_domain_render_exists() {
                 "while x <",
                 "mutable ppm",
                 "render render_ppm(",
-                "fn run()",
             ][..],
             &["feature_bias"][..],
         ),

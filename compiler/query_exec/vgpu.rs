@@ -1,3 +1,4 @@
+use crate::execution_policy::QueryExecutionPolicy;
 use crate::kernel::interp::KernelBatchQueryTrace;
 use crate::kernel::{
     KernelBatchItemContract, KernelBatchQueryPlan, KernelCaptureQueryPlan, KernelWorldQueryPlan,
@@ -16,7 +17,6 @@ use crate::query_exec::world::{
     execute_world_surface,
 };
 use crate::query_exec::{QueryExecContext, QueryExecError, QueryExecutionObservability};
-use crate::execution_policy::QueryExecutionPolicy;
 use crate::query_plan::{
     CaptureKind, PruningStrategy, WorldQueryKind, world_query_kind_for_contract_id,
 };

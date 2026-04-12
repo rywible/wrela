@@ -936,11 +936,8 @@ pub(crate) fn build_frame_cost_report(
     mut active_acceleration_artifacts: Vec<String>,
 ) -> PresentationFrameCostReport {
     let semantic_domain = semantic_domain_report(frame_domain);
-    let execution_policy = render_execution_policy_report(
-        &execution_policy,
-        backend,
-        &quality.active_degradations,
-    );
+    let execution_policy =
+        render_execution_policy_report(&execution_policy, backend, &quality.active_degradations);
     let legal_degradations = quality
         .active_degradations
         .iter()
@@ -1097,8 +1094,8 @@ fn frame_domain_flag(
     contract_name: &str,
     flag: &str,
 ) -> bool {
-    let Ok(contract) = field(frame_domain, contract_field)
-        .and_then(|value| expect_struct(value, contract_name))
+    let Ok(contract) =
+        field(frame_domain, contract_field).and_then(|value| expect_struct(value, contract_name))
     else {
         return false;
     };

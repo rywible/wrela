@@ -1,8 +1,8 @@
-use crate::presentation_contract::{
-    QualityDegradationStep, RealtimeQualityState, RealtimeRadianceMode,
-};
 use crate::execution_policy::{
     PresentationExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
+};
+use crate::presentation_contract::{
+    QualityDegradationStep, RealtimeQualityState, RealtimeRadianceMode,
 };
 use crate::presentation_plan::quality_tier_name;
 use crate::query_plan::DispatchBackend;

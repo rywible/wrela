@@ -1,10 +1,10 @@
 use super::QueryExecutionObservability;
+use crate::execution_policy::{
+    QueryExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
+};
 use crate::kernel::{
     KernelBatchQueryPlan, KernelBatchQueryTrace, KernelCaptureQueryPlan, KernelPlanStage,
     KernelWorldQueryPlan,
-};
-use crate::execution_policy::{
-    QueryExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
 };
 use crate::query_plan::{
     BatchQueryKind, CandidateStrategy, CaptureKind, CaptureQueryKind, DerivedArtifact,
@@ -1117,10 +1117,7 @@ fn render_execution_policy(policy: &QueryExecutionPolicy) -> String {
     )
 }
 
-fn execution_degradations(
-    policy: &QueryExecutionPolicy,
-    backend: DispatchBackend,
-) -> Vec<String> {
+fn execution_degradations(policy: &QueryExecutionPolicy, backend: DispatchBackend) -> Vec<String> {
     let mut degradations = Vec::new();
     if !matches!(backend, DispatchBackend::Cpu) {
         degradations.push(format!(

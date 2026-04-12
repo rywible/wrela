@@ -150,6 +150,151 @@ fn abi_field(name: &str, ty: PortableAbiType) -> PortableStructField {
     }
 }
 
+const PORTABLE_SEMANTIC_TEXT_CAPACITY: usize = 64;
+const PORTABLE_REFINEMENT_PATH_CAPACITY: usize = 16;
+
+fn portable_semantic_text_abi() -> PortableAbiType {
+    PortableAbiType::Struct {
+        name: SmolStr::new("PortableSemanticText"),
+        class_id: 0,
+        fields: vec![
+            abi_field("len", PortableAbiType::U32),
+            abi_field(
+                "code_units",
+                PortableAbiType::Array(
+                    Box::new(PortableAbiType::U32),
+                    PORTABLE_SEMANTIC_TEXT_CAPACITY,
+                ),
+            ),
+        ],
+    }
+}
+
+fn portable_distance_evidence_summary_abi() -> PortableAbiType {
+    PortableAbiType::Struct {
+        name: SmolStr::new("PortableDistanceEvidenceSummary"),
+        class_id: 0,
+        fields: vec![
+            abi_field("semantics", PortableAbiType::U32),
+            abi_field("lipschitz", PortableAbiType::U32),
+            abi_field("interval_bounds", PortableAbiType::U32),
+            abi_field("analytic_intersection", PortableAbiType::U32),
+            abi_field("origin", PortableAbiType::U32),
+            abi_field("scope", PortableAbiType::U32),
+            abi_field("refinement_path", portable_evidence_refinement_path_abi()),
+        ],
+    }
+}
+
+fn portable_support_evidence_summary_abi() -> PortableAbiType {
+    PortableAbiType::Struct {
+        name: SmolStr::new("PortableSupportEvidenceSummary"),
+        class_id: 0,
+        fields: vec![
+            abi_field("support_class", PortableAbiType::U32),
+            abi_field("semantics", PortableAbiType::U32),
+            abi_field("conservative_bounds", PortableAbiType::U32),
+            abi_field("lower_bound_pruning", PortableAbiType::U32),
+            abi_field("can_coarse_prune", PortableAbiType::Bool),
+            abi_field("opaque_boundary", PortableAbiType::Bool),
+            abi_field("origin", PortableAbiType::U32),
+            abi_field("scope", PortableAbiType::U32),
+            abi_field("refinement_path", portable_evidence_refinement_path_abi()),
+        ],
+    }
+}
+
+fn portable_differential_evidence_summary_abi() -> PortableAbiType {
+    PortableAbiType::Struct {
+        name: SmolStr::new("PortableDifferentialEvidenceSummary"),
+        class_id: 0,
+        fields: vec![
+            abi_field("derivative", PortableAbiType::U32),
+            abi_field("primitive", PortableAbiType::U32),
+            abi_field("transform", PortableAbiType::U32),
+            abi_field("repetition", PortableAbiType::U32),
+            abi_field("origin", PortableAbiType::U32),
+            abi_field("scope", PortableAbiType::U32),
+            abi_field("refinement_path", portable_evidence_refinement_path_abi()),
+        ],
+    }
+}
+
+fn portable_identity_evidence_summary_abi() -> PortableAbiType {
+    PortableAbiType::Struct {
+        name: SmolStr::new("PortableIdentityEvidenceSummary"),
+        class_id: 0,
+        fields: vec![
+            abi_field("stable_feature_id", PortableAbiType::Bool),
+            abi_field("stable_instance_id", PortableAbiType::Bool),
+            abi_field("stable_repeat_id", PortableAbiType::Bool),
+            abi_field("origin", PortableAbiType::U32),
+            abi_field("scope", PortableAbiType::U32),
+            abi_field("refinement_path", portable_evidence_refinement_path_abi()),
+        ],
+    }
+}
+
+fn portable_temporal_evidence_summary_abi() -> PortableAbiType {
+    PortableAbiType::Struct {
+        name: SmolStr::new("PortableTemporalEvidenceSummary"),
+        class_id: 0,
+        fields: vec![
+            abi_field("stability", PortableAbiType::U32),
+            abi_field("origin", PortableAbiType::U32),
+            abi_field("scope", PortableAbiType::U32),
+            abi_field("refinement_path", portable_evidence_refinement_path_abi()),
+        ],
+    }
+}
+
+fn portable_evidence_refinement_step_abi() -> PortableAbiType {
+    PortableAbiType::Struct {
+        name: SmolStr::new("PortableEvidenceRefinementStep"),
+        class_id: 0,
+        fields: vec![
+            abi_field("class", PortableAbiType::U32),
+            abi_field("kind", PortableAbiType::U32),
+            abi_field("detail", portable_semantic_text_abi()),
+        ],
+    }
+}
+
+fn portable_evidence_refinement_path_abi() -> PortableAbiType {
+    PortableAbiType::Struct {
+        name: SmolStr::new("PortableEvidenceRefinementPath"),
+        class_id: 0,
+        fields: vec![
+            abi_field("len", PortableAbiType::U32),
+            abi_field(
+                "entries",
+                PortableAbiType::Array(
+                    Box::new(portable_evidence_refinement_step_abi()),
+                    PORTABLE_REFINEMENT_PATH_CAPACITY,
+                ),
+            ),
+        ],
+    }
+}
+
+fn portable_semantic_evidence_summary_abi() -> PortableAbiType {
+    PortableAbiType::Struct {
+        name: SmolStr::new("SemanticEvidenceSummary"),
+        class_id: 0,
+        fields: vec![
+            abi_field("subject", portable_semantic_text_abi()),
+            abi_field("distance", portable_distance_evidence_summary_abi()),
+            abi_field("support", portable_support_evidence_summary_abi()),
+            abi_field("differential", portable_differential_evidence_summary_abi()),
+            abi_field("identity", portable_identity_evidence_summary_abi()),
+            abi_field("temporal", portable_temporal_evidence_summary_abi()),
+            abi_field("origin", PortableAbiType::U32),
+            abi_field("scope", PortableAbiType::U32),
+            abi_field("refinement_path", portable_evidence_refinement_path_abi()),
+        ],
+    }
+}
+
 pub fn portable_dispatch_contract_abi(contract: &DispatchRecordContract) -> PortableAbiType {
     let _ = contract;
     PortableAbiType::Struct {
@@ -236,6 +381,7 @@ pub fn portable_artifact_contract_abi(contract: &ArtifactContract) -> PortableAb
         abi_field("schema_kind", PortableAbiType::U32),
         abi_field("version", PortableAbiType::U32),
         abi_field("deterministic", PortableAbiType::Bool),
+        abi_field("evidence_summary", portable_semantic_evidence_summary_abi()),
     ];
     match &contract.schema {
         ArtifactSchema::SupportSummary {

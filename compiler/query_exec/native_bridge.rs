@@ -876,9 +876,7 @@ mod tests {
                     SmolStr::new("spatial"),
                     KernelValue::Struct(KernelStructValue {
                         name: SmolStr::new("SpatialDomainContract"),
-                        fields: vec![
-                            (SmolStr::new("geometry_detail"), KernelValue::I32(1)),
-                        ],
+                        fields: vec![(SmolStr::new("geometry_detail"), KernelValue::I32(1))],
                     }),
                 ),
                 (

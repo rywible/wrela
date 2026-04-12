@@ -2453,6 +2453,10 @@ mod tests {
             backend: "cpu".to_string(),
             frames_executed: 2,
             frame_cost: wrela::presentation_exec::PresentationFrameCostReport {
+                semantic_domain: "bench_domain".to_string(),
+                execution_policy: "required=best-effort selected=heuristic-solver backend=cpu"
+                    .to_string(),
+                legal_degradations: vec!["reduce_internal_resolution".to_string()],
                 output_width: 64,
                 output_height: 64,
                 internal_width: 32,
@@ -2511,6 +2515,10 @@ mod tests {
             },
             frame_cost_history: vec![
                 wrela::presentation_exec::PresentationFrameCostReport {
+                    semantic_domain: "bench_domain".to_string(),
+                    execution_policy: "required=best-effort selected=heuristic-solver backend=cpu"
+                        .to_string(),
+                    legal_degradations: vec![],
                     output_width: 64,
                     output_height: 64,
                     internal_width: 64,
@@ -2551,6 +2559,10 @@ mod tests {
                     performance_gain_sources: vec!["backend_speed".to_string()],
                 },
                 wrela::presentation_exec::PresentationFrameCostReport {
+                    semantic_domain: "bench_domain".to_string(),
+                    execution_policy: "required=best-effort selected=heuristic-solver backend=cpu"
+                        .to_string(),
+                    legal_degradations: vec!["reduce_internal_resolution".to_string()],
                     output_width: 64,
                     output_height: 64,
                     internal_width: 32,

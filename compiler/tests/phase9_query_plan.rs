@@ -467,6 +467,7 @@ fn main() -> Integer {
         support_node_count: 1,
         leaf_count: 1,
         identity_source_count: 0,
+        ..Default::default()
     };
     let distance_plan = query_plan::BatchQueryPlan::for_field(
         query_plan::FieldBatchPlanKind::Distance,
@@ -777,6 +778,7 @@ fn phase9_query_plan_matrix_covers_every_batch_family() {
         support_node_count: 1,
         leaf_count: 0,
         identity_source_count: 0,
+        ..Default::default()
     };
     let shape_summary = query_plan::SceneSummary {
         name: Some("shape_scene".into()),
@@ -790,6 +792,7 @@ fn phase9_query_plan_matrix_covers_every_batch_family() {
         support_node_count: 2,
         leaf_count: 1,
         identity_source_count: 0,
+        ..Default::default()
     };
     let opaque_summary = query_plan::SceneSummary {
         name: Some("opaque_shape_scene".into()),
@@ -803,6 +806,7 @@ fn phase9_query_plan_matrix_covers_every_batch_family() {
         support_node_count: 2,
         leaf_count: 1,
         identity_source_count: 0,
+        ..Default::default()
     };
 
     let cases = [
@@ -1102,25 +1106,167 @@ fn phase9_query_plan_matrix_covers_every_batch_family() {
 
 #[test]
 fn phase9_contract_accessors_follow_explicit_contracts() {
+    let mut evidence_summary =
+        query_plan::SemanticEvidenceSummary::compiled_scene("shape_scene", false);
+    evidence_summary.distance.semantics = scene_ir::DistanceSemantics::ConservativeLowerBound;
+    evidence_summary.distance.lipschitz = wrela::query_solver::LipschitzStatus::ConservativeKnown;
+    evidence_summary.distance.analytic_intersection =
+        wrela::query_solver::AnalyticIntersectionStatus::CandidateOnly;
+    evidence_summary.support.support_class = scene_ir::SupportClass::Bounded;
+    evidence_summary.support.semantics = scene_ir::DistanceSemantics::ConservativeLowerBound;
+    evidence_summary.support.conservative_bounds = wrela::query_solver::FactAvailability::Available;
+    evidence_summary.support.lower_bound_pruning = wrela::query_solver::FactAvailability::Available;
+    evidence_summary.support.can_coarse_prune = true;
+    evidence_summary.differential.derivative = wrela::query_solver::FactAvailability::Available;
     let summary = query_plan::SceneSummary {
         name: Some("shape_scene".into()),
         semantics: scene_ir::DistanceSemantics::ConservativeLowerBound,
         support_class: scene_ir::SupportClass::Bounded,
         can_coarse_support_pruning: true,
         opaque_boundary: false,
+        evidence_summary: evidence_summary.clone(),
         semantic_root: 1,
         support_root: 1,
         node_count: 2,
         support_node_count: 2,
         leaf_count: 1,
         identity_source_count: 0,
+        ..Default::default()
     };
     let mut batch_plan = query_plan::BatchQueryPlan::for_shape_query(
         query_plan::BatchQueryKind::Trace,
         query_plan::DispatchBackend::VirtualGpu,
         Some(summary.clone()),
     );
+    assert_eq!(batch_plan.evidence_summary, summary.evidence_summary);
+    assert_eq!(
+        batch_plan.evidence_summary.origin,
+        query_plan::SemanticEvidenceOrigin::StaticCompiled
+    );
+    assert_eq!(
+        batch_plan.evidence_summary.scope,
+        query_plan::SemanticEvidenceScope::CompileInvariant
+    );
+    assert!(
+        batch_plan
+            .evidence_summary
+            .refinement_path
+            .iter()
+            .any(|step| step.kind == query_plan::EvidenceRefinementKind::RuntimeObservation)
+    );
     assert!(batch_plan.requests_culling_table());
+    let culling_artifact = batch_plan
+        .artifact_contracts
+        .iter()
+        .find(|artifact| {
+            matches!(
+                artifact.schema,
+                query_plan::ArtifactSchema::CullingTable { .. }
+            )
+        })
+        .expect("culling table artifact");
+    assert_eq!(
+        culling_artifact.evidence_summary.distance.semantics,
+        batch_plan.evidence_summary.distance.semantics
+    );
+    assert_eq!(
+        culling_artifact.evidence_summary.support.support_class,
+        batch_plan.evidence_summary.support.support_class
+    );
+    assert_eq!(
+        culling_artifact
+            .evidence_summary
+            .support
+            .lower_bound_pruning,
+        batch_plan.evidence_summary.support.lower_bound_pruning
+    );
+    assert_eq!(
+        culling_artifact.evidence_summary.origin,
+        query_plan::SemanticEvidenceOrigin::ArtifactDerived
+    );
+    assert_eq!(
+        culling_artifact.evidence_summary.scope,
+        query_plan::SemanticEvidenceScope::ArtifactBound
+    );
+    assert!(
+        culling_artifact
+            .evidence_summary
+            .refinement_path
+            .iter()
+            .any(|step| step.kind == query_plan::EvidenceRefinementKind::ArtifactBinding)
+    );
+    assert_eq!(
+        culling_artifact.evidence_summary.refinement_path.len(),
+        batch_plan.evidence_summary.refinement_path.len() + 1
+    );
+    assert_eq!(
+        &culling_artifact.evidence_summary.refinement_path
+            [..batch_plan.evidence_summary.refinement_path.len()],
+        batch_plan.evidence_summary.refinement_path.as_slice()
+    );
+    assert_eq!(
+        culling_artifact
+            .evidence_summary
+            .refinement_path
+            .last()
+            .expect("artifact refinement step")
+            .kind,
+        query_plan::EvidenceRefinementKind::ArtifactBinding
+    );
+    assert_eq!(
+        culling_artifact
+            .evidence_summary
+            .distance
+            .refinement_path
+            .len(),
+        batch_plan.evidence_summary.distance.refinement_path.len() + 1
+    );
+    assert_eq!(
+        &culling_artifact.evidence_summary.distance.refinement_path
+            [..batch_plan.evidence_summary.distance.refinement_path.len()],
+        batch_plan
+            .evidence_summary
+            .distance
+            .refinement_path
+            .as_slice()
+    );
+    assert_eq!(
+        culling_artifact
+            .evidence_summary
+            .distance
+            .refinement_path
+            .last()
+            .expect("distance artifact refinement step")
+            .kind,
+        query_plan::EvidenceRefinementKind::ArtifactBinding
+    );
+    assert_eq!(
+        culling_artifact
+            .evidence_summary
+            .support
+            .refinement_path
+            .len(),
+        batch_plan.evidence_summary.support.refinement_path.len() + 1
+    );
+    assert_eq!(
+        &culling_artifact.evidence_summary.support.refinement_path
+            [..batch_plan.evidence_summary.support.refinement_path.len()],
+        batch_plan
+            .evidence_summary
+            .support
+            .refinement_path
+            .as_slice()
+    );
+    assert_eq!(
+        culling_artifact
+            .evidence_summary
+            .support
+            .refinement_path
+            .last()
+            .expect("support artifact refinement step")
+            .kind,
+        query_plan::EvidenceRefinementKind::ArtifactBinding
+    );
 
     batch_plan.candidate_contract.candidate_strategy =
         query_plan::CandidateStrategy::ShapeBranchTraversal;
@@ -1150,6 +1296,7 @@ fn phase9_contract_accessors_follow_explicit_contracts() {
         query_plan::PruningStrategy::OpaquePessimizationBoundary;
     capture_plan.artifact_contracts = vec![query_plan::ArtifactContract {
         id: "opaque-boundary".into(),
+        evidence_summary: query_plan::SemanticEvidenceSummary::artifact_bound(false),
         schema: query_plan::ArtifactSchema::OpaquePessimizationBoundary {
             support_root: 1,
             support_node_count: 1,
@@ -1160,6 +1307,21 @@ fn phase9_contract_accessors_follow_explicit_contracts() {
         version: query_plan::QUERY_PLAN_CONTRACT_VERSION,
     }];
     assert_eq!(
+        capture_plan.artifact_contracts[0].evidence_summary.origin,
+        query_plan::SemanticEvidenceOrigin::ArtifactDerived
+    );
+    assert_eq!(
+        capture_plan.artifact_contracts[0].evidence_summary.scope,
+        query_plan::SemanticEvidenceScope::ArtifactBound
+    );
+    assert!(
+        capture_plan.artifact_contracts[0]
+            .evidence_summary
+            .refinement_path
+            .iter()
+            .any(|step| step.kind == query_plan::EvidenceRefinementKind::ArtifactBinding)
+    );
+    assert_eq!(
         capture_plan.candidate_strategy(),
         query_plan::CandidateStrategy::OpaqueFallback
     );
@@ -1168,6 +1330,23 @@ fn phase9_contract_accessors_follow_explicit_contracts() {
         query_plan::PruningStrategy::OpaquePessimizationBoundary
     );
     assert!(capture_plan.has_opaque_pessimization_boundary());
+
+    let world_trace = query_plan::WorldQueryPlan::for_query(query_plan::WorldQueryKind::Trace);
+    let solver_summary = world_trace
+        .ray_solver
+        .as_ref()
+        .expect("world trace ray solver")
+        .diagnostic_summary()
+        .evidence_summary;
+    assert_eq!(solver_summary, world_trace.evidence_summary);
+    assert_eq!(
+        solver_summary.distance.refinement_path,
+        world_trace.evidence_summary.distance.refinement_path
+    );
+    assert_eq!(
+        solver_summary.support.refinement_path,
+        world_trace.evidence_summary.support.refinement_path
+    );
 }
 
 #[test]
@@ -1187,6 +1366,7 @@ fn phase9_shape_trace_plan_captures_support_pruning_when_scene_summary_allows_it
             support_node_count: 2,
             leaf_count: 1,
             identity_source_count: 0,
+            ..Default::default()
         }),
     );
 
@@ -1243,6 +1423,7 @@ fn phase9_capture_query_plans_cover_field_shape_and_participant_paths() {
         support_node_count: 1,
         leaf_count: 0,
         identity_source_count: 0,
+        ..Default::default()
     };
     let shape_summary = query_plan::SceneSummary {
         name: Some("shape_scene".into()),
@@ -1256,6 +1437,7 @@ fn phase9_capture_query_plans_cover_field_shape_and_participant_paths() {
         support_node_count: 2,
         leaf_count: 1,
         identity_source_count: 0,
+        ..Default::default()
     };
     let opaque_summary = query_plan::SceneSummary {
         name: Some("opaque_shape_scene".into()),
@@ -1269,6 +1451,7 @@ fn phase9_capture_query_plans_cover_field_shape_and_participant_paths() {
         support_node_count: 2,
         leaf_count: 1,
         identity_source_count: 0,
+        ..Default::default()
     };
 
     let field_distance = query_plan::CaptureQueryPlan::for_query(

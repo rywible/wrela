@@ -232,3 +232,7 @@ view main_view(
     outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
     history = temporal_history(color = true)
 }
+
+fn run() -> Integer {
+    return 0
+}

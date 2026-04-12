@@ -1,3 +1,4 @@
+use crate::execution_policy::QueryExecutionPolicy;
 use crate::hir;
 use crate::hir::body::{BinaryOp, Expr, Literal, UnaryOp};
 use crate::kernel::ir::{
@@ -20,12 +21,13 @@ use crate::query_exec::world::{
     execute_world_medium, execute_world_normal, execute_world_radiance, execute_world_ray,
     execute_world_surface, world_query_semantics, world_query_semantics_for_contract,
 };
-use crate::execution_policy::QueryExecutionPolicy;
 use crate::query_plan::{
     BatchQueryKind, WorldQueryKind, batch_query_kind_for_contract_id,
     world_query_kind_for_contract_id,
 };
-use crate::query_solver::{FieldFacts, RaySolverFallbackReason, RaySolverMethod, RaySolverPlan};
+use crate::query_solver::{
+    RaySolverFallbackReason, RaySolverMethod, RaySolverPlan, SemanticEvidence,
+};
 use crate::scene_ir::{
     DistanceSemantics, FieldNode, RepeatKind, SceneArgExpr, SceneProfileExpr, SceneValueExpr,
     ShapeLeafRef, ShapeMergeProvenancePolicy, ShapeNode, ShapeProvenanceExpr,
@@ -2162,20 +2164,20 @@ impl<'a> DirectQueryOps<'a> {
         shape: &SmolStr,
     ) -> Result<RaySolverPlan, QueryExecError> {
         let scene = self.shape_scene(shape)?;
-        let facts = match &scene.root {
+        let evidence = match &scene.root {
             ShapeNode::Leaf(leaf) => {
-                let mut facts = FieldFacts::for_field_scene(self.field_scene(&leaf.field)?);
-                facts.subject = shape.clone();
-                facts.provenance.hit3_identity_required = true;
-                facts.provenance.stable_feature_id = true;
-                facts.provenance.stable_instance_id = true;
-                facts.provenance.stable_repeat_id = true;
-                facts.provenance.payload_required = true;
-                facts
+                let field_evidence =
+                    SemanticEvidence::for_field_scene(self.field_scene(&leaf.field)?)
+                        .with_subject(shape.clone());
+                let shape_evidence = SemanticEvidence::for_shape_scene(scene);
+                field_evidence.refine_identity_with(
+                    shape_evidence.identity.clone(),
+                    "shape leaf identity overlay",
+                )
             }
-            _ => FieldFacts::for_shape_scene(scene),
+            _ => SemanticEvidence::for_shape_scene(scene),
         };
-        RaySolverPlan::for_contract(solver_plan.contract_id, Some(facts)).ok_or_else(|| {
+        RaySolverPlan::for_contract(solver_plan.contract_id, Some(evidence)).ok_or_else(|| {
             QueryExecError::Unsupported {
                 message: format!(
                     "contract '{}' is not a ray-shaped spatial solver contract",

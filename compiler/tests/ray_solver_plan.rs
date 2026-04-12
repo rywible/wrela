@@ -7,10 +7,11 @@ use wrela::parser::parse;
 use wrela::query_contract;
 use wrela::query_plan::{self, BatchQueryKind, DispatchBackend, WorldQueryKind};
 use wrela::query_solver::{
-    AnalyticIntersectionStatus, FactAvailability, FieldFacts, LipschitzStatus, PrimitiveFact,
-    RaySolverFallbackKind, RaySolverMethod, is_ray_shaped_spatial_contract,
+    AnalyticIntersectionStatus, EvidenceOrigin, EvidenceScope, FactAvailability, LipschitzStatus,
+    PrimitiveFact, RaySolverFallbackKind, RaySolverMethod, is_ray_shaped_spatial_contract,
 };
 use wrela::scene_ir;
+use wrela::semantic_evidence::SemanticEvidence;
 
 fn lower_inline_module_from_source(source: &str) -> hir::Module {
     let node = parse(source);
@@ -39,46 +40,73 @@ field conservative distance opaque_field(p: Vec3) -> F32 {
 }
 
 #[test]
-fn field_facts_make_available_and_unavailable_solver_inputs_explicit() {
+fn semantic_evidence_make_available_and_unavailable_solver_inputs_explicit() {
     let module = lower_inline_module_from_source(fact_fixture_source());
     let scene = scene_ir::lower_module(&module);
     let sphere = scene.fields.get("sphere_field").expect("sphere field");
-    let sphere_facts = FieldFacts::for_field_scene(sphere);
+    let sphere_evidence = SemanticEvidence::for_field_scene(sphere);
     assert_eq!(
-        sphere_facts.primitive,
+        sphere_evidence.differential.primitive,
         PrimitiveFact::Single(hir::FieldPrimitive::Sphere)
     );
     assert_eq!(
-        sphere_facts.support.semantics,
+        sphere_evidence.support.semantics,
         scene_ir::DistanceSemantics::ExactSignedDistance
     );
     assert_eq!(
-        sphere_facts.support.conservative_bounds,
+        sphere_evidence.support.conservative_bounds,
         FactAvailability::Available
     );
-    assert_eq!(sphere_facts.derivative, FactAvailability::Available);
-    assert_eq!(sphere_facts.lipschitz, LipschitzStatus::ExactKnown);
     assert_eq!(
-        sphere_facts.analytic_intersection,
+        sphere_evidence.differential.derivative,
+        FactAvailability::Available
+    );
+    assert_eq!(
+        sphere_evidence.distance.lipschitz,
+        LipschitzStatus::ExactKnown
+    );
+    assert_eq!(
+        sphere_evidence.distance.analytic_intersection,
         AnalyticIntersectionStatus::CandidateOnly
     );
-    assert_eq!(sphere_facts.interval_bounds, FactAvailability::Unavailable);
-    assert!(sphere_facts.unavailable_labels().contains(&"interval"));
+    assert_eq!(
+        sphere_evidence.distance.interval_bounds,
+        FactAvailability::Unavailable
+    );
+    assert_eq!(
+        sphere_evidence.summary().origin,
+        EvidenceOrigin::StaticCompiled
+    );
+    assert_eq!(
+        sphere_evidence.summary().scope,
+        EvidenceScope::CompileInvariant
+    );
+    assert_eq!(
+        sphere_evidence.support.lower_bound_pruning,
+        FactAvailability::Available
+    );
+    assert!(sphere_evidence.unavailable_labels().contains(&"interval"));
 
     let opaque = scene.fields.get("opaque_field").expect("opaque field");
-    let opaque_facts = FieldFacts::for_field_scene(opaque);
+    let opaque_evidence = SemanticEvidence::for_field_scene(opaque);
     assert_eq!(
-        opaque_facts.support.semantics,
+        opaque_evidence.support.semantics,
         scene_ir::DistanceSemantics::UnknownOpaque
     );
     assert_eq!(
-        opaque_facts.support.lower_bound_pruning,
+        opaque_evidence.support.lower_bound_pruning,
         FactAvailability::Unavailable
     );
-    assert_eq!(opaque_facts.derivative, FactAvailability::Unavailable);
-    assert_eq!(opaque_facts.lipschitz, LipschitzStatus::Unavailable);
+    assert_eq!(
+        opaque_evidence.differential.derivative,
+        FactAvailability::Unavailable
+    );
+    assert_eq!(
+        opaque_evidence.distance.lipschitz,
+        LipschitzStatus::Unavailable
+    );
     assert!(
-        opaque_facts.unavailable_labels().contains(&"analytic"),
+        opaque_evidence.unavailable_labels().contains(&"analytic"),
         "unavailable analytic facts must be visible in reports"
     );
 }
@@ -107,6 +135,14 @@ fn ray_solver_plans_attach_only_to_ray_shaped_world_spatial_contracts() {
     assert!(solver.correctness.preserve_hit3_identity);
     assert!(solver.correctness.dense_cpu_oracle_required);
     assert_eq!(
+        solver.evidence.summary().origin,
+        EvidenceOrigin::RuntimeObserved
+    );
+    assert_eq!(
+        solver.evidence.summary().scope,
+        EvidenceScope::SnapshotLocal
+    );
+    assert_eq!(
         solver.fallback.kind,
         RaySolverFallbackKind::ExactDenseSphereTracing
     );
@@ -115,6 +151,11 @@ fn ray_solver_plans_attach_only_to_ray_shaped_world_spatial_contracts() {
         "dense marching must be an explicit solver fallback method"
     );
     let summary = solver.diagnostic_summary();
+    assert_eq!(
+        summary.evidence_summary.origin,
+        EvidenceOrigin::RuntimeObserved
+    );
+    assert_eq!(summary.evidence_summary.scope, EvidenceScope::SnapshotLocal);
     assert!(
         summary
             .methods

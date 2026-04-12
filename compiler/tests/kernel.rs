@@ -85,6 +85,7 @@ fn batch_query_plan_lowers_into_kernel_contract_and_traces_iterations() {
     assert_eq!(kernel_plan.contract_id, plan.contract_id);
     assert_eq!(kernel_plan.family, plan.family);
     assert_eq!(kernel_plan.surface, plan.surface);
+    assert_eq!(kernel_plan.evidence_summary, plan.evidence_summary);
     assert!(kernel_plan.requires_virtual_gpu_dispatch());
     assert!(matches!(
         kernel_plan.item_contract,

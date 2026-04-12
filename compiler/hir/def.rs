@@ -1,6 +1,6 @@
+use crate::execution_policy::{RequiredGuaranteeClass, SelectedMethodClass};
 use crate::hir::arena::{Arena, Idx};
 use crate::hir::body::{Arg, Body, Literal, UseName};
-use crate::execution_policy::{RequiredGuaranteeClass, SelectedMethodClass};
 use miette::SourceSpan;
 use rowan::TextRange;
 use smol_str::SmolStr;

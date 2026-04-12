@@ -30,4 +30,5 @@ pub mod query_exec;
 pub mod query_plan;
 pub mod query_solver;
 pub mod scene_ir;
+pub mod semantic_evidence;
 pub mod world_identity;

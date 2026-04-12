@@ -6,6 +6,10 @@ use crate::query_contract::{
 };
 use crate::query_solver::{RaySolverPlan, is_ray_shaped_spatial_contract};
 use crate::scene_ir::{DistanceSemantics, SupportClass};
+use crate::semantic_evidence::{
+    EvidenceOrigin, EvidenceRefinementKind as SemanticEvidenceRefinementKind,
+    EvidenceRefinementStep, EvidenceScope, FactAvailability,
+};
 use crate::world_identity::WorldSnapshotHandle;
 use smol_str::SmolStr;
 
@@ -15,6 +19,46 @@ pub use crate::query_contract::{
     QueryFamilyId, QueryItemKind, QueryResultKind, QuerySurfaceKind, QueryTargetKind,
     SceneDomainFlag,
 };
+pub use crate::semantic_evidence::{
+    EvidenceOrigin as SemanticEvidenceOrigin, EvidenceRefinementKind,
+    EvidenceRefinementStep as SemanticEvidenceRefinementStep,
+    EvidenceScope as SemanticEvidenceScope, SemanticEvidenceSummary,
+};
+
+pub fn semantic_evidence_origin_name(origin: EvidenceOrigin) -> &'static str {
+    match origin {
+        EvidenceOrigin::StaticCompiled => "static-compiled",
+        EvidenceOrigin::RuntimeObserved => "runtime-observed",
+        EvidenceOrigin::ArtifactDerived => "artifact-derived",
+        EvidenceOrigin::ImportedCompatibility => "imported-compatibility",
+    }
+}
+
+pub fn semantic_evidence_scope_name(scope: EvidenceScope) -> &'static str {
+    match scope {
+        EvidenceScope::CompileInvariant => "compile-invariant",
+        EvidenceScope::TransitionCompatible => "transition-compatible",
+        EvidenceScope::SnapshotLocal => "snapshot-local",
+        EvidenceScope::ArtifactBound => "artifact-bound",
+    }
+}
+
+pub fn semantic_evidence_refinement_step_name(step: &EvidenceRefinementStep) -> &'static str {
+    match step.kind {
+        SemanticEvidenceRefinementKind::WarpWeakening => "warp-weakening",
+        SemanticEvidenceRefinementKind::RuntimeBounds => "runtime-bounds",
+        SemanticEvidenceRefinementKind::RuntimeObservation => "runtime-observation",
+        SemanticEvidenceRefinementKind::IdentityOverlay => "identity-overlay",
+        SemanticEvidenceRefinementKind::ArtifactBinding => "artifact-binding",
+        SemanticEvidenceRefinementKind::ImportedCompatibility => "imported-compatibility",
+    }
+}
+
+pub fn semantic_evidence_summary_from_evidence(
+    evidence: &crate::semantic_evidence::SemanticEvidence,
+) -> SemanticEvidenceSummary {
+    evidence.summary()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BatchQueryKind {
@@ -229,6 +273,7 @@ pub struct ArtifactContract {
     pub consumer: SmolStr,
     pub deterministic: bool,
     pub version: u32,
+    pub evidence_summary: SemanticEvidenceSummary,
 }
 
 impl ArtifactContract {
@@ -238,11 +283,13 @@ impl ArtifactContract {
 
     pub fn compatibility_hash(&self) -> u64 {
         let schema = format!("{:?}", self.schema);
+        let evidence_summary = format!("{:?}", self.evidence_summary);
         crate::query_exec::ids::stable_semantic_id(&[
             self.id.as_bytes(),
             schema.as_bytes(),
             self.producer.as_bytes(),
             self.consumer.as_bytes(),
+            evidence_summary.as_bytes(),
             &self.version.to_le_bytes(),
         ])
     }
@@ -290,12 +337,66 @@ pub struct SceneSummary {
     pub support_class: SupportClass,
     pub can_coarse_support_pruning: bool,
     pub opaque_boundary: bool,
+    pub evidence_summary: SemanticEvidenceSummary,
     pub semantic_root: u32,
     pub support_root: u32,
     pub node_count: u32,
     pub support_node_count: u32,
     pub leaf_count: u32,
     pub identity_source_count: u32,
+}
+
+impl Default for SceneSummary {
+    fn default() -> Self {
+        Self {
+            name: None,
+            semantics: DistanceSemantics::ConservativeLowerBound,
+            support_class: SupportClass::Unknown,
+            can_coarse_support_pruning: false,
+            opaque_boundary: false,
+            evidence_summary: SemanticEvidenceSummary::contract_bound(),
+            semantic_root: 0,
+            support_root: 0,
+            node_count: 0,
+            support_node_count: 0,
+            leaf_count: 0,
+            identity_source_count: 0,
+        }
+    }
+}
+
+impl SceneSummary {
+    fn effective_evidence_summary(&self) -> SemanticEvidenceSummary {
+        let mut summary = self.evidence_summary.clone();
+        let has_bounds = matches!(
+            self.support_class,
+            SupportClass::Bounded | SupportClass::Periodic
+        );
+        summary.distance.semantics = self.semantics;
+        summary.support.support_class = self.support_class;
+        summary.support.semantics = self.semantics;
+        summary.support.can_coarse_prune = self.can_coarse_support_pruning;
+        summary.support.opaque_boundary = self.opaque_boundary;
+        summary.support.conservative_bounds = if has_bounds {
+            FactAvailability::Available
+        } else if matches!(
+            self.support_class,
+            SupportClass::Unknown | SupportClass::Unbounded
+        ) {
+            FactAvailability::Unknown
+        } else {
+            FactAvailability::Unavailable
+        };
+        summary.support.lower_bound_pruning =
+            if self.can_coarse_support_pruning && has_bounds && !self.opaque_boundary {
+                FactAvailability::Available
+            } else if self.opaque_boundary {
+                FactAvailability::Unavailable
+            } else {
+                FactAvailability::Unknown
+            };
+        summary
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,6 +416,7 @@ pub struct BatchQueryPlan {
     pub result_kind: QueryResultKind,
     pub executor: PlanExecutor,
     pub scene: Option<SceneSummary>,
+    pub evidence_summary: SemanticEvidenceSummary,
     pub candidate_strategy: CandidateStrategy,
     pub pruning_strategy: PruningStrategy,
     pub stages: Vec<PlanStage>,
@@ -346,6 +448,7 @@ pub struct CaptureQueryPlan {
     pub result_kind: QueryResultKind,
     pub executor: PlanExecutor,
     pub scene: Option<SceneSummary>,
+    pub evidence_summary: SemanticEvidenceSummary,
     pub candidate_strategy: CandidateStrategy,
     pub pruning_strategy: PruningStrategy,
     pub stages: Vec<PlanStage>,
@@ -372,6 +475,7 @@ pub struct WorldQueryPlan {
     pub backend: DispatchBackend,
     pub result_kind: QueryResultKind,
     pub executor: PlanExecutor,
+    pub evidence_summary: SemanticEvidenceSummary,
     pub candidate_strategy: CandidateStrategy,
     pub pruning_strategy: PruningStrategy,
     pub stages: Vec<PlanStage>,
@@ -810,16 +914,21 @@ impl BatchQueryPlan {
         );
         let result_contract = build_result_contract(result_kind, preserves_local_hit_context);
         let hit_context_contract = preserves_local_hit_context.then(hit_context_contract);
+        let evidence_summary = scene
+            .as_ref()
+            .map(SceneSummary::effective_evidence_summary)
+            .unwrap_or_else(|| default_evidence_summary(descriptor.id));
         let artifact_contracts = derive_artifact_contracts(
             &derived_artifacts,
             scene.as_ref(),
+            &evidence_summary,
             item_kind,
             result_kind,
             preserves_local_hit_context,
             helper_name,
         );
         let item_contract = batch_item_contract_for_descriptor(descriptor, scene.clone())?;
-        let ray_solver = ray_solver_for_descriptor(descriptor);
+        let ray_solver = ray_solver_for_descriptor(descriptor, &evidence_summary);
 
         Ok(Self {
             contract_version: QUERY_PLAN_CONTRACT_VERSION,
@@ -837,6 +946,7 @@ impl BatchQueryPlan {
             result_kind,
             executor,
             scene,
+            evidence_summary,
             candidate_strategy,
             pruning_strategy,
             stages,
@@ -1056,9 +1166,14 @@ impl CaptureQueryPlan {
         let result_contract = build_result_contract(result_kind, preserves_local_hit_context);
         let hit_context_contract = preserves_local_hit_context.then(hit_context_contract);
         let participant_contract = descriptor.participant_kind.map(build_participant_contract);
+        let evidence_summary = scene
+            .as_ref()
+            .map(SceneSummary::effective_evidence_summary)
+            .unwrap_or_else(|| default_evidence_summary(descriptor.id));
         let artifact_contracts = derive_artifact_contracts(
             &derived_artifacts,
             scene.as_ref(),
+            &evidence_summary,
             candidate_contract.item_kind,
             result_kind,
             preserves_local_hit_context,
@@ -1077,6 +1192,7 @@ impl CaptureQueryPlan {
             result_kind,
             executor,
             scene,
+            evidence_summary,
             candidate_strategy,
             pruning_strategy,
             stages,
@@ -1216,6 +1332,7 @@ impl WorldQueryPlan {
             },
             true,
         );
+        let evidence_summary = default_evidence_summary(descriptor.id);
         Ok(Self {
             contract_version: QUERY_PLAN_CONTRACT_VERSION,
             contract_id: descriptor.id,
@@ -1228,6 +1345,7 @@ impl WorldQueryPlan {
             backend,
             result_kind,
             executor,
+            evidence_summary: evidence_summary.clone(),
             candidate_strategy,
             pruning_strategy,
             stages,
@@ -1241,12 +1359,13 @@ impl WorldQueryPlan {
             artifact_contracts: derive_artifact_contracts(
                 &derived_artifacts,
                 None,
+                &evidence_summary,
                 dispatch_contract.item_kind,
                 result_kind,
                 preserves_local_hit_context,
                 helper_name,
             ),
-            ray_solver: ray_solver_for_descriptor(descriptor),
+            ray_solver: ray_solver_for_descriptor(descriptor, &evidence_summary),
             observability: planning_observability(descriptor.observability, pruning_strategy),
             preserves_local_hit_context,
         })
@@ -1487,15 +1606,30 @@ fn derive_world_artifacts(
     artifacts
 }
 
-fn ray_solver_for_descriptor(descriptor: &QueryContractDescriptor) -> Option<RaySolverPlan> {
+fn default_evidence_summary(contract_id: QueryContractId) -> SemanticEvidenceSummary {
+    SemanticEvidenceSummary::runtime_unknown(format!("{}::runtime", contract_id.as_str()))
+}
+
+fn ray_solver_for_descriptor(
+    descriptor: &QueryContractDescriptor,
+    evidence_summary: &SemanticEvidenceSummary,
+) -> Option<RaySolverPlan> {
     is_ray_shaped_spatial_contract(descriptor.id)
-        .then(|| RaySolverPlan::for_contract(descriptor.id, None))
+        .then(|| {
+            RaySolverPlan::for_contract(
+                descriptor.id,
+                Some(crate::semantic_evidence::SemanticEvidence::from_summary(
+                    evidence_summary,
+                )),
+            )
+        })
         .flatten()
 }
 
 fn derive_artifact_contracts(
     artifacts: &[DerivedArtifact],
     scene: Option<&SceneSummary>,
+    evidence_summary: &SemanticEvidenceSummary,
     item_kind: QueryItemKind,
     result_kind: QueryResultKind,
     preserves_local_hit_context: bool,
@@ -1506,6 +1640,8 @@ fn derive_artifact_contracts(
         .enumerate()
         .map(|(index, artifact)| ArtifactContract {
             id: SmolStr::new(format!("{producer}::artifact::{index}")),
+            evidence_summary: evidence_summary
+                .with_artifact_binding(format!("{producer}::artifact::{index}")),
             schema: match artifact {
                 DerivedArtifact::SupportSummary {
                     semantics,
@@ -1578,6 +1714,7 @@ fn derive_artifact_contracts(
         .collect::<Vec<_>>();
     out.push(ArtifactContract {
         id: SmolStr::new(format!("{producer}::dispatch")),
+        evidence_summary: evidence_summary.with_artifact_binding(format!("{producer}::dispatch")),
         schema: ArtifactSchema::DispatchRecord {
             item_kind,
             result_kind,
@@ -1589,6 +1726,7 @@ fn derive_artifact_contracts(
     });
     out.push(ArtifactContract {
         id: SmolStr::new(format!("{producer}::result")),
+        evidence_summary: evidence_summary.with_artifact_binding(format!("{producer}::result")),
         schema: ArtifactSchema::HitResultBuffer {
             result_kind,
             preserves_local_hit_context,
@@ -1622,11 +1760,12 @@ fn candidate_strategy_for_shape_query(
             let Some(scene) = scene else {
                 return CandidateStrategy::ShapeBranchTraversal;
             };
-            if scene.opaque_boundary {
+            let evidence_summary = scene.effective_evidence_summary();
+            if evidence_summary.support.opaque_boundary {
                 CandidateStrategy::OpaqueFallback
-            } else if scene.can_coarse_support_pruning
+            } else if evidence_summary.support.can_coarse_prune
                 && matches!(
-                    scene.support_class,
+                    evidence_summary.support.support_class,
                     SupportClass::Bounded | SupportClass::Periodic
                 )
             {
@@ -1660,6 +1799,7 @@ fn pruning_strategy_for_plan(
             let Some(scene) = scene else {
                 return PruningStrategy::ConservativeTraversal;
             };
+            let evidence_summary = scene.effective_evidence_summary();
             if matches!(
                 candidate_strategy,
                 CandidateStrategy::SupportAcceleratedShapeTraversal
@@ -1667,8 +1807,11 @@ fn pruning_strategy_for_plan(
                 return PruningStrategy::CullingTable;
             }
             if matches!(candidate_strategy, CandidateStrategy::ShapeBranchTraversal)
-                && scene.can_coarse_support_pruning
-                && matches!(scene.support_class, SupportClass::Bounded)
+                && evidence_summary.support.can_coarse_prune
+                && matches!(
+                    evidence_summary.support.support_class,
+                    SupportClass::Bounded
+                )
             {
                 return PruningStrategy::SupportLowerBound;
             }
@@ -1699,6 +1842,7 @@ mod tests {
             support_node_count: 1,
             leaf_count: 1,
             identity_source_count: 0,
+            ..Default::default()
         };
         let left = BatchQueryPlan::for_shape_query(
             BatchQueryKind::Trace,
@@ -1736,6 +1880,7 @@ mod tests {
                 support_node_count: 1,
                 leaf_count: 1,
                 identity_source_count: 0,
+                ..Default::default()
             }),
         );
         assert_eq!(plan.kernel, InternalKernelKind::ShapeTraceCapture);

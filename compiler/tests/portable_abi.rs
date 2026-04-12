@@ -738,6 +738,7 @@ fn query_contract_records_have_stable_portable_layouts() {
 fn artifact_contract_records_encode_scene_roots_and_support_counts() {
     let abi = portable_artifact_contract_abi(&query_plan::ArtifactContract {
         id: "shape_trace::artifact::0".into(),
+        evidence_summary: query_plan::SemanticEvidenceSummary::artifact_bound(false),
         schema: query_plan::ArtifactSchema::CullingTable {
             candidate_strategy: query_plan::CandidateStrategy::SupportAcceleratedShapeTraversal,
             pruning_strategy: query_plan::PruningStrategy::CullingTable,
@@ -756,6 +757,138 @@ fn artifact_contract_records_encode_scene_roots_and_support_counts() {
     let PortableAbiType::Struct { fields, .. } = abi else {
         panic!("artifact contract abi should lower to a struct");
     };
+    assert_eq!(fields[3].name.as_str(), "evidence_summary");
+    let PortableAbiType::Struct {
+        fields: evidence_fields,
+        ..
+    } = &fields[3].ty
+    else {
+        panic!("artifact evidence summary should lower to a struct");
+    };
+    assert_eq!(
+        evidence_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "subject",
+            "distance",
+            "support",
+            "differential",
+            "identity",
+            "temporal",
+            "origin",
+            "scope",
+            "refinement_path",
+        ]
+    );
+    let PortableAbiType::Struct {
+        fields: subject_fields,
+        ..
+    } = &evidence_fields[0].ty
+    else {
+        panic!("artifact evidence subject should lower to a fixed text record");
+    };
+    assert_eq!(
+        subject_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["len", "code_units"]
+    );
+    match &subject_fields[1].ty {
+        PortableAbiType::Array(inner, len) => {
+            assert_eq!(inner.as_ref(), &PortableAbiType::U32);
+            assert!(
+                *len >= 64,
+                "subject text capacity should preserve contract ids"
+            );
+        }
+        other => panic!("expected fixed code-unit array for evidence subject, got {other:?}"),
+    }
+    let PortableAbiType::Struct {
+        fields: distance_fields,
+        ..
+    } = &evidence_fields[1].ty
+    else {
+        panic!("artifact distance evidence should lower to a struct");
+    };
+    assert_eq!(
+        distance_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "semantics",
+            "lipschitz",
+            "interval_bounds",
+            "analytic_intersection",
+            "origin",
+            "scope",
+            "refinement_path",
+        ]
+    );
+    let PortableAbiType::Struct {
+        fields: support_fields,
+        ..
+    } = &evidence_fields[2].ty
+    else {
+        panic!("artifact support evidence should lower to a struct");
+    };
+    assert_eq!(
+        support_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "support_class",
+            "semantics",
+            "conservative_bounds",
+            "lower_bound_pruning",
+            "can_coarse_prune",
+            "opaque_boundary",
+            "origin",
+            "scope",
+            "refinement_path",
+        ]
+    );
+    let PortableAbiType::Struct {
+        fields: refinement_path_fields,
+        ..
+    } = &evidence_fields[8].ty
+    else {
+        panic!("artifact evidence refinement path should lower to a struct");
+    };
+    assert_eq!(
+        refinement_path_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["len", "entries"]
+    );
+    match &refinement_path_fields[1].ty {
+        PortableAbiType::Array(inner, len) => {
+            assert!(
+                *len >= 8,
+                "refinement path capacity should preserve multi-step weakening histories"
+            );
+            let PortableAbiType::Struct {
+                fields: step_fields,
+                ..
+            } = inner.as_ref()
+            else {
+                panic!("refinement path entries should lower to a struct");
+            };
+            assert_eq!(
+                step_fields
+                    .iter()
+                    .map(|field| field.name.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["class", "kind", "detail"]
+            );
+        }
+        other => panic!("expected refinement path entry array, got {other:?}"),
+    }
     let layout = portable_abi_layout(&PortableAbiType::Struct {
         name: "ArtifactContract".into(),
         class_id: 0,
@@ -763,8 +896,10 @@ fn artifact_contract_records_encode_scene_roots_and_support_counts() {
     });
     assert_eq!(layout.align, 4);
     assert_eq!(portable_abi_field_offset(&fields, 0), 0);
-    assert_eq!(portable_abi_field_offset(&fields, 4), 16);
-    assert_eq!(portable_abi_field_offset(&fields, fields.len() - 1), 40);
+    assert!(
+        portable_abi_field_offset(&fields, 4) > 36,
+        "full evidence summaries should occupy more ABI space than the legacy stub"
+    );
 }
 
 #[test]

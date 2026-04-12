@@ -274,8 +274,7 @@ domain exec_domain(world: RegionCapture) {
         .function("exec_domain")
         .expect("kernel exec_domain");
     let Some(wrela::kernel::KernelStmt::Return {
-        value:
-            Some(wrela::kernel::KernelExpr::StructLiteral { fields, .. }),
+        value: Some(wrela::kernel::KernelExpr::StructLiteral { fields, .. }),
         ..
     }) = kernel_func.body.last()
     else {
@@ -294,7 +293,10 @@ domain exec_domain(world: RegionCapture) {
         panic!("spatial contract should lower as a struct literal");
     };
     assert_eq!(
-        spatial_fields.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+        spatial_fields
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
         vec!["geometry_detail"]
     );
 }
@@ -5364,7 +5366,6 @@ fn native_v2_phase10_wgsl_preview_project_sampled_queries_match_cpu() {
 
     let run_source = r#"
 fn fail(code: Integer) -> Integer {
-    print_line(text="{code}")
     return code
 }
 

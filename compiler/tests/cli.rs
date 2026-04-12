@@ -675,6 +675,38 @@ fn cli_presentation_plan_json_reports_passes_bindings_and_query_dependencies() {
                         dep.pointer("/solver_diagnostics/fallback")
                             .and_then(|value| value.as_str())
                             == Some("exact-dense-sphere-tracing")
+                    }) && deps.iter().any(|dep| {
+                        dep.pointer("/evidence/origin")
+                            .and_then(|value| value.as_str())
+                            == Some("runtime-observed")
+                            && dep
+                                .pointer("/evidence/subject")
+                                .and_then(|value| value.as_str())
+                                == Some("spatial.nearest.batch.world::runtime")
+                            && dep
+                                .pointer("/evidence/scope")
+                                .and_then(|value| value.as_str())
+                                == Some("snapshot-local")
+                            && dep
+                                .pointer("/evidence/distance_semantics")
+                                .and_then(|value| value.as_str())
+                                == Some("conservative-lower-bound")
+                            && dep
+                                .pointer("/evidence/distance_refinement_path/0")
+                                .and_then(|value| value.as_str())
+                                == Some("runtime-observation(runtime planner placeholder)")
+                            && dep
+                                .pointer("/evidence/temporal_refinement_path/0")
+                                .and_then(|value| value.as_str())
+                                == Some("runtime-observation(runtime planner placeholder)")
+                            && dep
+                                .pointer("/evidence/support_class")
+                                .and_then(|value| value.as_str())
+                                == Some("unknown")
+                            && dep
+                                .pointer("/evidence/support_lower_bound_pruning")
+                                .and_then(|value| value.as_str())
+                                == Some("unknown")
                     })
                 })
     }));

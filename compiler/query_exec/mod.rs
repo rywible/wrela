@@ -23,13 +23,13 @@ use crate::query_solver::RaySolverMethod;
 use crate::world_identity::{SnapshotEpoch, SnapshotIdentityReport, WorldSnapshotHandle};
 use smol_str::SmolStr;
 
+pub use crate::execution_policy::{
+    QueryExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
+};
 pub use context::QueryExecContext;
 pub use cost::{
     CostFidelity, SemanticCostCause, SemanticCostCauseKind, SemanticCostReport, SemanticCostStage,
     SemanticCostUnit, SemanticQueryScope, SemanticStageKind, render_semantic_cost_report,
-};
-pub use crate::execution_policy::{
-    QueryExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
 };
 pub use cpu::QueryExecError;
 pub use ids::{
@@ -240,8 +240,15 @@ pub fn execute_world_query_with_policy(
     plan: &KernelWorldQueryPlan,
     args: &[KernelValue],
 ) -> Result<KernelValue, QueryExecError> {
-    execute_world_query_with_policy_with_trace_on(ctx, policy.backend_preference, policy, None, plan, args)
-        .map(|(value, _)| value)
+    execute_world_query_with_policy_with_trace_on(
+        ctx,
+        policy.backend_preference,
+        policy,
+        None,
+        plan,
+        args,
+    )
+    .map(|(value, _)| value)
 }
 
 pub fn execute_world_query_on_with_policy(
@@ -263,7 +270,14 @@ pub fn execute_world_query_with_policy_with_trace_on(
     plan: &KernelWorldQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, DirectQueryExecutionTrace), QueryExecError> {
-    execute_world_query_with_policy_with_snapshot_on(ctx, requested_backend, snapshot, policy, plan, args)
+    execute_world_query_with_policy_with_snapshot_on(
+        ctx,
+        requested_backend,
+        snapshot,
+        policy,
+        plan,
+        args,
+    )
 }
 
 pub fn execute_world_query_with_snapshot_on(
@@ -301,33 +315,21 @@ pub fn execute_world_query_with_policy_with_snapshot_on(
         DispatchBackend::VirtualGpu => {
             let (value, observability) =
                 vgpu::execute_world_query_with_policy_with_snapshot_observability(
-                    ctx,
-                    snapshot,
-                    policy,
-                    plan,
-                    args,
+                    ctx, snapshot, policy, plan, args,
                 )?;
             (value, DirectQueryExecutor::VirtualGpu, observability)
         }
         DispatchBackend::Wgsl => {
             let (value, observability) =
                 wgsl::execute_world_query_with_policy_with_snapshot_observability(
-                    ctx,
-                    snapshot,
-                    policy,
-                    plan,
-                    args,
+                    ctx, snapshot, policy, plan, args,
                 )?;
             (value, DirectQueryExecutor::Wgsl, observability)
         }
         DispatchBackend::Cpu | DispatchBackend::Auto => {
             let (value, observability) =
                 cpu::execute_world_query_with_policy_with_snapshot_observability(
-                    ctx,
-                    snapshot,
-                    policy,
-                    plan,
-                    args,
+                    ctx, snapshot, policy, plan, args,
                 )?;
             (value, DirectQueryExecutor::Cpu, observability)
         }
@@ -594,10 +596,8 @@ fn ensure_world_policy_legal(
     if matches!(backend, DispatchBackend::Cpu | DispatchBackend::Auto) {
         return Ok(());
     }
-    if matches!(
-        policy.required_guarantee,
-        RequiredGuaranteeClass::Exact
-    ) || matches!(policy.selected_method, SelectedMethodClass::ExactOracle)
+    if matches!(policy.required_guarantee, RequiredGuaranteeClass::Exact)
+        || matches!(policy.selected_method, SelectedMethodClass::ExactOracle)
     {
         return Err(QueryExecError::Unsupported {
             message: format!(

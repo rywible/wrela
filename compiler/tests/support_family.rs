@@ -16,9 +16,10 @@ use wrela::query_exec::{
 use wrela::query_plan::{
     ArtifactSchema, CandidateSource, CandidateStrategy, CaptureKind, CaptureQueryKind,
     CaptureQueryPlan, DerivedArtifact, DispatchBackend, PlanExecutor, PlanStage, PruningStrategy,
-    QueryItemKind, QueryResultKind, SceneSummary, WinnerSelectionMode, WorldQueryKind,
-    WorldQueryPlan,
+    QueryItemKind, QueryResultKind, SceneSummary, SemanticEvidenceOrigin, SemanticEvidenceScope,
+    WinnerSelectionMode, WorldQueryKind, WorldQueryPlan,
 };
+use wrela::semantic_evidence::{EvidenceRefinementKind, SemanticEvidence};
 
 const SUPPORT_CLASS_UNKNOWN: u32 = 0;
 const SUPPORT_CLASS_BOUNDED: u32 = 1;
@@ -123,9 +124,7 @@ fn scene_domain(scene_id: u32, detail: i32) -> KernelValue {
                 SmolStr::new("spatial"),
                 KernelValue::Struct(KernelStructValue {
                     name: SmolStr::new("SpatialDomainContract"),
-                    fields: vec![
-                        (SmolStr::new("geometry_detail"), KernelValue::I32(detail)),
-                    ],
+                    fields: vec![(SmolStr::new("geometry_detail"), KernelValue::I32(detail))],
                 }),
             ),
             (
@@ -157,6 +156,7 @@ fn field_scene_summary(ctx: &QueryExecContext, name: &str) -> SceneSummary {
         support_class: scene.support_class,
         can_coarse_support_pruning: scene.can_coarse_support_pruning,
         opaque_boundary: scene.opaque_boundary,
+        evidence_summary: SemanticEvidence::for_field_scene(scene).summary(),
         semantic_root: scene.root_node_id.0,
         support_root: scene.root_support_id.0,
         node_count: scene.node_records.len() as u32,
@@ -240,6 +240,15 @@ fn assert_summary(
 fn support_summary_contracts_are_unit_queries_and_semantic_plans() {
     let ctx = typed_query_module(support_fixture_source());
     let scene_summary = field_scene_summary(&ctx, "sphere_field");
+    assert_eq!(
+        scene_summary.evidence_summary.origin,
+        SemanticEvidenceOrigin::StaticCompiled
+    );
+    assert_eq!(
+        scene_summary.evidence_summary.scope,
+        SemanticEvidenceScope::CompileInvariant
+    );
+    assert!(scene_summary.evidence_summary.refinement_path.is_empty());
     let plan = CaptureQueryPlan::for_query(
         CaptureQueryKind::SupportSummary,
         CaptureKind::Field,
@@ -323,6 +332,98 @@ fn support_summary_contracts_are_unit_queries_and_semantic_plans() {
         }
         other => panic!("expected support summary artifact, got {other:?}"),
     }
+    assert_eq!(
+        plan.artifact_contracts[0]
+            .evidence_summary
+            .distance
+            .semantics,
+        scene_summary.evidence_summary.distance.semantics
+    );
+    assert_eq!(
+        plan.artifact_contracts[0]
+            .evidence_summary
+            .support
+            .support_class,
+        scene_summary.evidence_summary.support.support_class
+    );
+    assert_eq!(
+        plan.artifact_contracts[0]
+            .evidence_summary
+            .support
+            .lower_bound_pruning,
+        scene_summary.evidence_summary.support.lower_bound_pruning
+    );
+    assert_eq!(
+        plan.artifact_contracts[0].evidence_summary.origin,
+        SemanticEvidenceOrigin::ArtifactDerived
+    );
+    assert_eq!(
+        plan.artifact_contracts[0].evidence_summary.scope,
+        SemanticEvidenceScope::ArtifactBound
+    );
+    assert_eq!(
+        plan.artifact_contracts[0]
+            .evidence_summary
+            .refinement_path
+            .len(),
+        1
+    );
+    assert_eq!(
+        plan.artifact_contracts[0]
+            .evidence_summary
+            .refinement_path
+            .last()
+            .expect("artifact refinement step")
+            .kind,
+        EvidenceRefinementKind::ArtifactBinding
+    );
+    assert_eq!(
+        plan.artifact_contracts[0]
+            .evidence_summary
+            .distance
+            .refinement_path
+            .len(),
+        scene_summary
+            .evidence_summary
+            .distance
+            .refinement_path
+            .len()
+            + 1
+    );
+    assert_eq!(
+        &plan.artifact_contracts[0]
+            .evidence_summary
+            .distance
+            .refinement_path[..scene_summary
+            .evidence_summary
+            .distance
+            .refinement_path
+            .len()],
+        scene_summary
+            .evidence_summary
+            .distance
+            .refinement_path
+            .as_slice()
+    );
+    assert_eq!(
+        plan.artifact_contracts[0]
+            .evidence_summary
+            .support
+            .refinement_path
+            .len(),
+        scene_summary.evidence_summary.support.refinement_path.len() + 1
+    );
+    assert_eq!(
+        &plan.artifact_contracts[0]
+            .evidence_summary
+            .support
+            .refinement_path[..scene_summary.evidence_summary.support.refinement_path.len()],
+        scene_summary
+            .evidence_summary
+            .support
+            .refinement_path
+            .as_slice()
+    );
 
     let world_plan = WorldQueryPlan::for_query_with_backend(
         WorldQueryKind::SupportSummary,

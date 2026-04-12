@@ -320,9 +320,7 @@ fn scene_domain_with_limits(
                 SmolStr::new("spatial"),
                 KernelValue::Struct(KernelStructValue {
                     name: SmolStr::new("SpatialDomainContract"),
-                    fields: vec![
-                        (SmolStr::new("geometry_detail"), KernelValue::I32(detail)),
-                    ],
+                    fields: vec![(SmolStr::new("geometry_detail"), KernelValue::I32(detail))],
                 }),
             ),
             (
@@ -1608,7 +1606,11 @@ fn query_exec_world_policy_is_reported_and_exact_oracle_is_rejected_on_wgsl() {
         &policy,
         None,
         &plan,
-        &[KernelValue::Capture(SmolStr::new("scene_region")), domain, ray],
+        &[
+            KernelValue::Capture(SmolStr::new("scene_region")),
+            domain,
+            ray,
+        ],
     )
     .expect("cpu exact/oracle world trace");
     let rendered = render_semantic_cost_report(&trace.cost_report);
@@ -1641,7 +1643,9 @@ fn query_exec_world_policy_is_reported_and_exact_oracle_is_rejected_on_wgsl() {
     .expect("wgsl conservative world trace");
     let wgsl_rendered = render_semantic_cost_report(&wgsl_trace.cost_report);
     assert!(wgsl_rendered.contains("execution_policy=backend_preference=wgsl"));
-    assert!(wgsl_rendered.contains("degradations=backend=wgsl runs without the CPU legality oracle"));
+    assert!(
+        wgsl_rendered.contains("degradations=backend=wgsl runs without the CPU legality oracle")
+    );
 
     let wgsl_err = execute_world_query_with_policy_with_trace_on(
         &ctx,
@@ -1667,9 +1671,15 @@ fn query_exec_world_policy_is_reported_and_exact_oracle_is_rejected_on_wgsl() {
     )
     .expect_err("wgsl exact/oracle policy should be rejected");
     let wgsl_err = wgsl_err.to_string();
-    assert!(wgsl_err.contains("backend cannot satisfy execution policy"), "{wgsl_err}");
+    assert!(
+        wgsl_err.contains("backend cannot satisfy execution policy"),
+        "{wgsl_err}"
+    );
     assert!(wgsl_err.contains("required_guarantee=exact"), "{wgsl_err}");
-    assert!(wgsl_err.contains("selected_method=exact_oracle"), "{wgsl_err}");
+    assert!(
+        wgsl_err.contains("selected_method=exact_oracle"),
+        "{wgsl_err}"
+    );
 }
 
 #[test]

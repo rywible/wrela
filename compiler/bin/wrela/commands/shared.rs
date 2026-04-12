@@ -360,7 +360,33 @@ struct PresentationQueryDependencyDump {
     #[serde(skip_serializing_if = "Option::is_none")]
     call: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    evidence: Option<PresentationEvidenceDump>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     solver_diagnostics: Option<PresentationRaySolverDump>,
+}
+
+#[derive(Serialize)]
+struct PresentationEvidenceDump {
+    subject: String,
+    origin: String,
+    scope: String,
+    refinement_path: Vec<String>,
+    distance_refinement_path: Vec<String>,
+    support_refinement_path: Vec<String>,
+    differential_refinement_path: Vec<String>,
+    identity_refinement_path: Vec<String>,
+    temporal_refinement_path: Vec<String>,
+    distance_semantics: String,
+    support_class: String,
+    support_lower_bound_pruning: String,
+    support_conservative_bounds: String,
+    lipschitz: String,
+    analytic_intersection: String,
+    derivative: String,
+    stable_feature_id: bool,
+    stable_instance_id: bool,
+    stable_repeat_id: bool,
+    temporal_stability: String,
 }
 
 #[derive(Serialize)]
@@ -2934,6 +2960,27 @@ fn print_presentation_plan_human(dump: &PresentationPlanDump) {
                 .query_dependencies
                 .iter()
                 .map(|query| {
+                    let evidence = query
+                        .evidence
+                        .as_ref()
+                        .map(|evidence| {
+                            let path = if evidence.refinement_path.is_empty() {
+                                "none".to_string()
+                            } else {
+                                evidence.refinement_path.join(" -> ")
+                            };
+                            format!(
+                                " [evidence={} scope={} distance={} support={} lower_bound={} analytic={} path={}]",
+                                evidence.origin,
+                                evidence.scope,
+                                evidence.distance_semantics,
+                                evidence.support_class,
+                                evidence.support_lower_bound_pruning,
+                                evidence.analytic_intersection,
+                                path
+                            )
+                        })
+                        .unwrap_or_default();
                     let solver = query
                         .solver_diagnostics
                         .as_ref()
@@ -2941,7 +2988,7 @@ fn print_presentation_plan_human(dump: &PresentationPlanDump) {
                             format!(" [solver={} fallback={}]", solver.plan_id, solver.fallback)
                         })
                         .unwrap_or_default();
-                    format!("{}{}", query.contract_id, solver)
+                    format!("{}{}{}", query.contract_id, evidence, solver)
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -3355,29 +3402,181 @@ fn acceleration_hook_name(
     }
 }
 
+fn distance_semantics_name(semantics: wrela::scene_ir::DistanceSemantics) -> &'static str {
+    match semantics {
+        wrela::scene_ir::DistanceSemantics::ExactSignedDistance => "exact-signed-distance",
+        wrela::scene_ir::DistanceSemantics::ConservativeLowerBound => {
+            "conservative-lower-bound"
+        }
+        wrela::scene_ir::DistanceSemantics::UnknownOpaque => "unknown-opaque",
+    }
+}
+
+fn support_class_name(class: wrela::scene_ir::SupportClass) -> &'static str {
+    match class {
+        wrela::scene_ir::SupportClass::Unknown => "unknown",
+        wrela::scene_ir::SupportClass::Bounded => "bounded",
+        wrela::scene_ir::SupportClass::Periodic => "periodic",
+        wrela::scene_ir::SupportClass::Unbounded => "unbounded",
+    }
+}
+
+fn fact_availability_name(value: wrela::query_solver::FactAvailability) -> &'static str {
+    match value {
+        wrela::query_solver::FactAvailability::Available => "available",
+        wrela::query_solver::FactAvailability::Unavailable => "unavailable",
+        wrela::query_solver::FactAvailability::Unknown => "unknown",
+    }
+}
+
+fn lipschitz_status_name(value: wrela::query_solver::LipschitzStatus) -> &'static str {
+    match value {
+        wrela::query_solver::LipschitzStatus::ExactKnown => "exact-known",
+        wrela::query_solver::LipschitzStatus::ConservativeKnown => "conservative-known",
+        wrela::query_solver::LipschitzStatus::Unknown => "unknown",
+        wrela::query_solver::LipschitzStatus::Unavailable => "unavailable",
+    }
+}
+
+fn analytic_status_name(value: wrela::query_solver::AnalyticIntersectionStatus) -> &'static str {
+    match value {
+        wrela::query_solver::AnalyticIntersectionStatus::Available => "available",
+        wrela::query_solver::AnalyticIntersectionStatus::CandidateOnly => "candidate-only",
+        wrela::query_solver::AnalyticIntersectionStatus::Unavailable => "unavailable",
+        wrela::query_solver::AnalyticIntersectionStatus::Unknown => "unknown",
+    }
+}
+
+fn temporal_stability_name(value: wrela::query_solver::TemporalStability) -> &'static str {
+    match value {
+        wrela::query_solver::TemporalStability::CompileInvariant => "compile-invariant",
+        wrela::query_solver::TemporalStability::TransitionCompatible => {
+            "transition-compatible"
+        }
+        wrela::query_solver::TemporalStability::SnapshotLocal => "snapshot-local",
+        wrela::query_solver::TemporalStability::ArtifactBound => "artifact-bound",
+        wrela::query_solver::TemporalStability::Unknown => "unknown",
+    }
+}
+
+fn presentation_refinement_path_dump(
+    steps: &[wrela::query_plan::SemanticEvidenceRefinementStep],
+) -> Vec<String> {
+    steps.iter()
+        .map(|step| {
+            let name = wrela::query_plan::semantic_evidence_refinement_step_name(step);
+            if step.detail.is_empty() {
+                name.to_string()
+            } else {
+                format!("{}({})", name, step.detail)
+            }
+        })
+        .collect()
+}
+
+fn presentation_evidence_dump_from_summary(
+    summary: &wrela::query_plan::SemanticEvidenceSummary,
+) -> PresentationEvidenceDump {
+    PresentationEvidenceDump {
+        subject: summary.subject.to_string(),
+        origin: wrela::query_plan::semantic_evidence_origin_name(summary.origin).to_string(),
+        scope: wrela::query_plan::semantic_evidence_scope_name(summary.scope).to_string(),
+        refinement_path: presentation_refinement_path_dump(&summary.refinement_path),
+        distance_refinement_path: presentation_refinement_path_dump(
+            &summary.distance.refinement_path,
+        ),
+        support_refinement_path: presentation_refinement_path_dump(&summary.support.refinement_path),
+        differential_refinement_path: presentation_refinement_path_dump(
+            &summary.differential.refinement_path,
+        ),
+        identity_refinement_path: presentation_refinement_path_dump(
+            &summary.identity.refinement_path,
+        ),
+        temporal_refinement_path: presentation_refinement_path_dump(
+            &summary.temporal.refinement_path,
+        ),
+        distance_semantics: distance_semantics_name(summary.distance.semantics).to_string(),
+        support_class: support_class_name(summary.support.support_class).to_string(),
+        support_lower_bound_pruning: fact_availability_name(summary.support.lower_bound_pruning)
+            .to_string(),
+        support_conservative_bounds: fact_availability_name(summary.support.conservative_bounds)
+            .to_string(),
+        lipschitz: lipschitz_status_name(summary.distance.lipschitz).to_string(),
+        analytic_intersection: analytic_status_name(summary.distance.analytic_intersection)
+            .to_string(),
+        derivative: fact_availability_name(summary.differential.derivative).to_string(),
+        stable_feature_id: summary.identity.stable_feature_id,
+        stable_instance_id: summary.identity.stable_instance_id,
+        stable_repeat_id: summary.identity.stable_repeat_id,
+        temporal_stability: temporal_stability_name(summary.temporal.stability).to_string(),
+    }
+}
+
+fn presentation_solver_dump(
+    summary: &wrela::query_solver::RaySolverDiagnosticSummary,
+) -> PresentationRaySolverDump {
+    PresentationRaySolverDump {
+        plan_id: summary.plan_id.to_string(),
+        methods: summary
+            .methods
+            .iter()
+            .map(|method| wrela::query_solver::ray_solver_method_name(*method).to_string())
+            .collect(),
+        fallback: wrela::query_solver::ray_solver_fallback_name(summary.fallback).to_string(),
+        unavailable_facts: summary
+            .unavailable_facts
+            .iter()
+            .map(|fact| fact.to_string())
+            .collect(),
+    }
+}
+
+fn presentation_query_dependency_metadata(
+    contract_id: wrela::query_plan::QueryContractId,
+) -> (
+    Option<PresentationEvidenceDump>,
+    Option<PresentationRaySolverDump>,
+) {
+    if let Ok(plan) = wrela::query_plan::BatchQueryPlan::for_contract(
+        contract_id,
+        wrela::query_plan::DispatchBackend::Auto,
+        None,
+    ) {
+        return (
+            Some(presentation_evidence_dump_from_summary(&plan.evidence_summary)),
+            plan.ray_solver
+                .as_ref()
+                .map(|solver| presentation_solver_dump(&solver.diagnostic_summary())),
+        );
+    }
+
+    if let Ok(plan) = wrela::query_plan::CaptureQueryPlan::for_contract(contract_id, None) {
+        return (
+            Some(presentation_evidence_dump_from_summary(&plan.evidence_summary)),
+            None,
+        );
+    }
+
+    if let Ok(plan) = wrela::query_plan::WorldQueryPlan::for_contract_with_backend(
+        contract_id,
+        wrela::query_plan::DispatchBackend::Auto,
+    ) {
+        return (
+            Some(presentation_evidence_dump_from_summary(&plan.evidence_summary)),
+            plan.ray_solver
+                .as_ref()
+                .map(|solver| presentation_solver_dump(&solver.diagnostic_summary())),
+        );
+    }
+
+    (None, None)
+}
+
 fn presentation_query_dependency_dump(
     contract_id: wrela::query_plan::QueryContractId,
 ) -> PresentationQueryDependencyDump {
     let descriptor = wrela::query_contract::query_contract(contract_id);
-    let solver_diagnostics = wrela::query_solver::RaySolverPlan::for_contract(contract_id, None)
-        .map(|solver| {
-            let summary = solver.diagnostic_summary();
-            PresentationRaySolverDump {
-                plan_id: summary.plan_id.to_string(),
-                methods: summary
-                    .methods
-                    .iter()
-                    .map(|method| wrela::query_solver::ray_solver_method_name(*method).to_string())
-                    .collect(),
-                fallback: wrela::query_solver::ray_solver_fallback_name(summary.fallback)
-                    .to_string(),
-                unavailable_facts: summary
-                    .unavailable_facts
-                    .iter()
-                    .map(|fact| fact.to_string())
-                    .collect(),
-            }
-        });
+    let (evidence, solver_diagnostics) = presentation_query_dependency_metadata(contract_id);
     PresentationQueryDependencyDump {
         contract_id: contract_id.as_str().to_string(),
         family: descriptor.map(|descriptor| {
@@ -3402,6 +3601,7 @@ fn presentation_query_dependency_dump(
                 wrela::query_contract::query_family_member_name(descriptor)
             )
         }),
+        evidence,
         solver_diagnostics,
     }
 }
@@ -4446,6 +4646,23 @@ view sample_view(world: RegionCapture, camera: Camera) {
     fn prepared_execution_applies_domain_participant_policy() {
         let module = lower_inline_module(
             r#"
+field exact distance scene_field(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+material scene_material(hit: Hit3) -> Surface {
+    return diffuse(color = vec3(0.7, 0.7, 0.7))
+}
+
+shape scene_shape {
+    field = scene_field
+    material = scene_material
+}
+
+region scene_region() {
+    place scene = scene_shape
+}
+
 domain sample_domain(world: RegionCapture) {
     geometry_detail = 1
     material = true

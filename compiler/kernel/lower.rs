@@ -17,6 +17,7 @@ use crate::query_plan::{
     batch_query_kind_for_contract_id,
 };
 use crate::scene_ir::{self, FieldScene, ShapeScene};
+use crate::semantic_evidence::SemanticEvidence;
 use rowan::TextRange;
 use smol_str::SmolStr;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -217,6 +218,7 @@ pub fn lower_batch_query_plan(plan: &BatchQueryPlan) -> KernelBatchQueryPlan {
         result_kind: plan.result_kind,
         executor: plan.executor,
         scene: plan.scene.clone(),
+        evidence_summary: plan.evidence_summary.clone(),
         candidate_strategy: plan.candidate_contract.candidate_strategy,
         pruning_strategy: plan.candidate_contract.pruning_strategy,
         stages: plan.stages.iter().map(KernelPlanStage::from).collect(),
@@ -414,19 +416,17 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
         };
         let spatial = KernelExpr::StructLiteral {
             name: SmolStr::new("SpatialDomainContract"),
-            fields: vec![
-                (
-                    SmolStr::new("geometry_detail"),
-                    KernelExpr::Literal {
-                        value: hir::Literal::Integer(match metadata.geometry_detail {
-                            hir::DomainGeometryDetail::Coarse => 0,
-                            hir::DomainGeometryDetail::Fine => 1,
-                        }),
-                        ty: Type::I32,
-                        span,
-                    },
-                ),
-            ],
+            fields: vec![(
+                SmolStr::new("geometry_detail"),
+                KernelExpr::Literal {
+                    value: hir::Literal::Integer(match metadata.geometry_detail {
+                        hir::DomainGeometryDetail::Coarse => 0,
+                        hir::DomainGeometryDetail::Fine => 1,
+                    }),
+                    ty: Type::I32,
+                    span,
+                },
+            )],
             ty: Type::Named(SmolStr::new("SpatialDomainContract"), Vec::new()),
             span,
         };
@@ -1261,6 +1261,7 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
             support_class: scene.support_class,
             can_coarse_support_pruning: scene.can_coarse_support_pruning,
             opaque_boundary: scene.opaque_boundary,
+            evidence_summary: SemanticEvidence::for_field_scene(scene).summary(),
             semantic_root: scene.root_node_id.0,
             support_root: scene.root_support_id.0,
             node_count: scene.node_records.len() as u32,
@@ -1294,6 +1295,7 @@ impl<'a, 'b> KernelFunctionLowerer<'a, 'b> {
             support_class: scene.support_class,
             can_coarse_support_pruning: scene.can_coarse_support_pruning,
             opaque_boundary: scene.opaque_boundary,
+            evidence_summary: SemanticEvidence::for_shape_scene(scene).summary(),
             semantic_root: scene.root_node_id.0,
             support_root: scene.root_support_id.0,
             node_count: scene.node_records.len() as u32,

@@ -433,6 +433,8 @@ impl FunctionLowerer {
             support_class: scene.support_class,
             can_coarse_support_pruning: scene.can_coarse_support_pruning,
             opaque_boundary: scene.opaque_boundary,
+            evidence_summary: crate::semantic_evidence::SemanticEvidence::for_field_scene(scene)
+                .summary(),
             semantic_root: scene.root_node_id.0,
             support_root: scene.root_support_id.0,
             node_count: scene.node_records.len() as u32,
@@ -464,6 +466,8 @@ impl FunctionLowerer {
             support_class: scene.support_class,
             can_coarse_support_pruning: scene.can_coarse_support_pruning,
             opaque_boundary: scene.opaque_boundary,
+            evidence_summary: crate::semantic_evidence::SemanticEvidence::for_shape_scene(scene)
+                .summary(),
             semantic_root: scene.root_node_id.0,
             support_root: scene.root_support_id.0,
             node_count: scene.node_records.len() as u32,

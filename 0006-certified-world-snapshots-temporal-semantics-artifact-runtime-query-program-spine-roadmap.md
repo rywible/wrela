@@ -1480,6 +1480,33 @@ Make evidence visible to implementors and test it explicitly.
 - Planners, solvers, and artifacts can consume the same evidence structure.
 - Regression tests prove preservation and weakening behavior.
 
+### Phase 27 Re-evaluation Before Phase 28
+
+Phase 27 should trigger a deliberate re-read of the architecture before temporal work expands.
+
+The main lessons to preserve are:
+
+- the repo wants one rich internal evidence object plus narrower summary forms at observer, artifact, ABI, and report boundaries
+- evidence scope and validity horizon are proving useful and should remain distinct from policy and scheduling concerns
+- presentation history and query artifacts are already converging on one compatibility-and-validity architecture, but they are not yet the full artifact runtime
+- temporal reuse logic is still presentation-shaped in several places, which is precisely why Phase 28 should land before artifact-runtime generalization
+
+This re-evaluation should not reorder the roadmap to pull artifact runtime or shared spine work forward.
+It should tighten the next cut.
+
+Specifically, Phase 28 should treat the following as separate concerns:
+
+- typed clocks and authoritative transition records
+- evidence scope and validity horizon
+- semantic change classes and transition compatibility
+
+Do not let "temporal evidence" become a grab-bag that conflates all three.
+If a fact answers how long a claim can be trusted, it belongs with evidence scope and validity horizon.
+If it answers what changed between snapshots and what reuse thresholds are legal, it belongs with transition and change semantics.
+
+Phase 28 should also make explicit that `SemanticEvidenceSummary`-style summary records are the intended wire shape across plans, ABI surfaces, and diagnostics whenever the full internal evidence object is not required.
+That boundary is already architecturally useful and should be preserved deliberately rather than treated as temporary convenience.
+
 ## Phase 28: Temporal Semantics, Transition Model, And Multi-Clock Discipline
 
 ### Goal
@@ -1530,6 +1557,7 @@ Introduce explicit types for simulation tick, presentation frame, wall-clock sta
 - `Key Architectural Definitions -> Clock Family` applies directly here. `SimulationTick`, `PresentationFrame`, `WallClockStamp`, and `SnapshotEpoch` must not alias each other in convenience code.
 - `Key Architectural Definitions -> Change Compatibility Lattice` means change classifications should be usable in ordered compatibility checks, not only equality matches.
 - Give the change-compatibility lattice a central typed home in this phase so later consumers reuse one model instead of growing local enum families.
+- Keep observer-local frame/view state distinct from engine temporal state. If a record is carrying authoritative snapshot-transition context, do not hide it inside view-only naming or frame-only compatibility shims.
 
 **Code sketch**
 
@@ -1641,7 +1669,7 @@ pub struct WorldTransitionRecord {
 
 **Description**
 
-Extend evidence to describe temporal stability and change.
+Extend the architecture so it can describe both temporal validity horizon and semantic change, without collapsing them into one notion.
 
 **Files**
 
@@ -1662,10 +1690,19 @@ Recommended first change classes:
 
 These classes should support a compatibility ordering so planner and artifact logic can ask whether one class is acceptable wherever another class is allowed.
 
+The important architectural split for this task is:
+
+- evidence scope / validity horizon answers how long a claim may be trusted
+- change classes / transition compatibility answer what changed and what reuse rules may legally survive that change
+
+The implementation may keep these concepts near each other.
+It must not let one quietly stand in for the other.
+
 **Decision hooks**
 
 - `Key Architectural Definitions -> Change Compatibility Lattice` applies directly here. Change reasoning should centralize the partial order instead of repeating ad hoc severity logic in each consumer.
-- Temporal evidence should compose with evidence scope: snapshot-local claims must not silently survive across incompatible transitions.
+- Temporal validity-horizon facts should compose with evidence scope: snapshot-local claims must not silently survive across incompatible transitions.
+- If current temporal evidence fields are only mirroring evidence scope categories, treat that as scaffolding to refine rather than as the final semantic model for change.
 - If a consumer needs a threshold or acceptance rule, it should reference the central change-compatibility types from Task 28A1 rather than inventing a local ordering.
 
 **Code sketch**
@@ -1681,6 +1718,7 @@ pub struct TemporalEvidence {
 
 **Acceptance criteria**
 
+- The architecture can express temporal validity horizon separately from transition/change compatibility.
 - Evidence can express temporal stability.
 - Change classes can drive reuse legality.
 - Tests validate invalidation on topology-breaking changes.
@@ -1707,6 +1745,7 @@ What changes is the reason it is valid.
 
 - `Decision: Artifact Validity Is Predicate-Based, Not Key-Equality-Based` applies directly here. Reuse should be legal because the transition-validity rule says so, not because two frame counters happen to line up.
 - Use change compatibility thresholds and snapshot lineage checks explicitly rather than hand-coded "same previous frame" assumptions.
+- Existing frame-continuity and camera-cut heuristics may remain as compatibility scaffolding during migration, but the destination of this task is transition-aware legality, not better heuristics with the same hidden semantics.
 
 **Acceptance criteria**
 
@@ -1730,13 +1769,15 @@ Update frame input/state so observer execution can reason about both current and
 
 **Implementation notes**
 
-`FrameState` should be able to talk about:
+`FrameState` and any adjacent transition-context record should be able to talk about:
 
 - current snapshot epoch
 - previous snapshot epoch
 - simulation tick
 - presentation frame
 - optional change summary
+
+If this phase discovers that observer-facing view/frame data and engine temporal state want different records, split them cleanly rather than forcing one overloaded struct to carry both forever.
 
 **Decision hooks**
 
@@ -1775,6 +1816,7 @@ Make continuation and motion semantics visible in reports so engineers can debug
 - Typed clock concepts exist.
 - Internal authoritative state-advance contract exists.
 - Transition and change summaries are real architectural objects.
+- Temporal validity horizon and change compatibility are both explicit and distinct.
 - Temporal evidence can drive reuse validity.
 - Frame and observer state can carry snapshot-transition context.
 

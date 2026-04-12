@@ -1,6 +1,7 @@
 pub(crate) mod codegen;
 
 use self::codegen::{ShaderPlan, generate_shader};
+use crate::execution_policy::QueryExecutionPolicy;
 use crate::kernel::KernelBatchQueryTrace;
 use crate::kernel::ir::{KernelBatchQueryPlan, KernelCaptureQueryPlan, KernelWorldQueryPlan};
 use crate::kernel::{
@@ -19,7 +20,6 @@ use crate::query_exec::QueryExecutionObservability;
 use crate::query_exec::cpu::{DirectQueryOps, QueryExecError};
 use crate::query_exec::world::world_query_semantics_for_contract;
 use crate::query_plan::CaptureKind;
-use crate::execution_policy::QueryExecutionPolicy;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use smol_str::SmolStr;
 use std::borrow::Cow;

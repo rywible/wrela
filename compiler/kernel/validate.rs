@@ -13,10 +13,11 @@ use crate::query_contract::{
 use crate::query_plan::{
     ArtifactContract, ArtifactSchema, BatchQueryKind, CaptureQueryKind, DerivedArtifact,
     DispatchRecordContract, QueryItemKind, QueryResultKind, ResultRecordContract, SceneDomainFlag,
-    WorldQueryKind, batch_query_kind_for_descriptor, capture_query_kind_for_descriptor,
-    world_query_kind_for_descriptor,
+    SemanticEvidenceOrigin, SemanticEvidenceScope, WorldQueryKind, batch_query_kind_for_descriptor,
+    capture_query_kind_for_descriptor, world_query_kind_for_descriptor,
 };
 use crate::query_solver::is_ray_shaped_spatial_contract;
+use crate::semantic_evidence::EvidenceRefinementKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelValidationError {
@@ -809,6 +810,41 @@ fn validate_artifact_contracts(
             errors.push(KernelValidationError {
                 message: context.message(format!(
                     "artifact contract '{}' must have a non-zero version",
+                    artifact.id
+                )),
+            });
+        }
+        if !matches!(
+            artifact.evidence_summary.origin,
+            SemanticEvidenceOrigin::ArtifactDerived
+        ) {
+            errors.push(KernelValidationError {
+                message: context.message(format!(
+                    "artifact contract '{}' must report artifact-derived evidence origin",
+                    artifact.id
+                )),
+            });
+        }
+        if !matches!(
+            artifact.evidence_summary.scope,
+            SemanticEvidenceScope::ArtifactBound
+        ) {
+            errors.push(KernelValidationError {
+                message: context.message(format!(
+                    "artifact contract '{}' must report artifact-bound evidence scope",
+                    artifact.id
+                )),
+            });
+        }
+        if !artifact
+            .evidence_summary
+            .refinement_path
+            .iter()
+            .any(|step| matches!(step.kind, EvidenceRefinementKind::ArtifactBinding))
+        {
+            errors.push(KernelValidationError {
+                message: context.message(format!(
+                    "artifact contract '{}' must preserve scene-derived artifact refinement path",
                     artifact.id
                 )),
             });

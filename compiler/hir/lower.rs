@@ -1616,9 +1616,13 @@ impl LoweringContext {
                 "material" => metadata.material = lower_bool_config_expr(&value).unwrap_or(true),
                 "radiance" => metadata.radiance = lower_bool_config_expr(&value).unwrap_or(true),
                 "media" => metadata.media = lower_bool_config_expr(&value).unwrap_or(true),
-                "max_distance" => execution_policy.max_distance = Some(self.lower_shape_payload(value)),
+                "max_distance" => {
+                    execution_policy.max_distance = Some(self.lower_shape_payload(value))
+                }
                 "min_step" => execution_policy.min_step = Some(self.lower_shape_payload(value)),
-                "hit_epsilon" => execution_policy.hit_epsilon = Some(self.lower_shape_payload(value)),
+                "hit_epsilon" => {
+                    execution_policy.hit_epsilon = Some(self.lower_shape_payload(value))
+                }
                 "max_steps" => execution_policy.max_steps = Some(self.lower_shape_payload(value)),
                 _ => {}
             }
