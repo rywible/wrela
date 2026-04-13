@@ -1337,6 +1337,10 @@ fn cli_presentation_plan_json_reports_passes_bindings_and_query_dependencies() {
                         dep.get("contract_id").and_then(|value| value.as_str())
                             == Some("spatial.nearest.batch.world")
                     }) && deps.iter().any(|dep| {
+                        dep.pointer("/solver_diagnostics/subject")
+                            .and_then(|value| value.as_str())
+                            == Some("spatial.nearest.batch.world")
+                    }) && deps.iter().any(|dep| {
                         dep.pointer("/solver_diagnostics/fallback")
                             .and_then(|value| value.as_str())
                             == Some("exact-dense-sphere-tracing")

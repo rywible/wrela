@@ -1936,6 +1936,13 @@ fn query_exec_ray_solver_cpu_oracle_covers_analytic_dense_miss_and_provenance() 
             .expect("capture trace plan"),
     );
     let world_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Nearest));
+    assert!(world_plan.normalized_behavior.requires_trace());
+    assert!(world_plan.normalized_behavior.requires_root_shape_lookup());
+    assert_eq!(
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Nearest))
+            .normalized_behavior,
+        world_plan.normalized_behavior
+    );
     let hit_ray = ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96);
     let dense_oracle = execute_capture_query(
         &ctx,
@@ -1953,6 +1960,11 @@ fn query_exec_ray_solver_cpu_oracle_covers_analytic_dense_miss_and_provenance() 
     assert_hit3_approx_eq(&dense_oracle, &solver_hit);
     assert_eq!(solver_trace.observability.solver_analytic_hits, 1);
     assert_eq!(solver_trace.observability.solver_dense_fallback_rays, 0);
+    assert!(solver_trace.observability.solver_subject.is_some());
+    assert_ne!(
+        solver_trace.observability.solver_subject.as_deref(),
+        Some(world_plan.contract_id.as_str())
+    );
     let hit_ref = expect_struct(&solver_hit, "Hit3");
     assert_eq!(expect_u32(field(hit_ref, "feature_id")), 1);
     assert_eq!(

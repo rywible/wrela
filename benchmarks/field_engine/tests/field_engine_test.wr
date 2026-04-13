@@ -726,6 +726,131 @@ fn test_field_mixed_solver_differential_normals_ops_72000() -> Nothing {
     assert value field_samples_after > field_samples_before
 }
 
+fn test_field_mixed_solver_dense_oracle_closure_ops_54000() -> Nothing {
+    world = capture hard_scene_shape
+    world_again = capture hard_scene_shape
+    assert value world.scene_id == world_again.scene_id
+
+    candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    field_samples_before = __wr_metrics_get(__wr_metrics_field_sample_id())
+
+    ground_hit = spatial.nearest(
+        capture=world,
+        ray=ray_query(
+            origin=vec3(7.0, 3.0, 0.0),
+            direction=vec3(0.0, -1.0, 0.0),
+            max_distance=8.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+    support_hit = spatial.nearest(
+        capture=world,
+        ray=ray_query(
+            origin=vec3(0.72, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=8.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+    fallback_hit = spatial.nearest(
+        capture=world,
+        ray=ray_query(
+            origin=vec3(0.0, -0.82, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=8.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+
+    ground_normal = spatial.normal(capture=world, point=ground_hit.position)
+    support_normal = spatial.normal(capture=world, point=support_hit.position)
+    fallback_normal = spatial.normal(capture=world, point=fallback_hit.position)
+
+    assert value ground_hit.hit == true
+    assert value support_hit.hit == true
+    assert value fallback_hit.hit == true
+    assert value ground_normal.y > 0.5
+    assert value support_normal.x > 0.5
+    assert value abs(fallback_normal.z) > 0.5
+
+    mutable checksum = 0
+    mutable dense_oracle_signal = 0
+    for i in 1...54000 {
+        branch = i % 3
+        if branch == 0 {
+            sampled_hit = spatial.nearest(
+                capture=world,
+                ray=ray_query(
+                    origin=vec3(7.0, 3.0, 0.0),
+                    direction=vec3(0.0, -1.0, 0.0),
+                    max_distance=8.0,
+                    min_step=0.05,
+                    hit_epsilon=0.001,
+                    max_steps=96
+                )
+            )
+            checksum = update_checksum(
+                current=checksum,
+                value=sampled_hit.steps + i32(abs(sampled_hit.distance) * 100.0)
+            )
+        } else if branch == 1 {
+            sampled_hit = spatial.nearest(
+                capture=world,
+                ray=ray_query(
+                    origin=vec3(0.72, 0.0, 3.0),
+                    direction=vec3(0.0, 0.0, -1.0),
+                    max_distance=8.0,
+                    min_step=0.05,
+                    hit_epsilon=0.001,
+                    max_steps=96
+                )
+            )
+            checksum = update_checksum(
+                current=checksum,
+                value=sampled_hit.steps + i32(abs(sampled_hit.distance) * 100.0)
+            )
+        } else {
+            sampled_hit = spatial.nearest(
+                capture=world,
+                ray=ray_query(
+                    origin=vec3(0.0, -0.82, 3.0),
+                    direction=vec3(0.0, 0.0, -1.0),
+                    max_distance=8.0,
+                    min_step=0.05,
+                    hit_epsilon=0.001,
+                    max_steps=96
+                )
+            )
+            checksum = update_checksum(
+                current=checksum,
+                value=sampled_hit.steps + i32(abs(sampled_hit.distance) * 100.0)
+            )
+        }
+        dense_oracle_signal += i32(branch)
+        if i % 18000 == 0 {
+            probe_normal = spatial.normal(capture=world, point=ground_hit.position)
+            checksum = update_checksum(
+                current=checksum,
+                value=i32(abs(probe_normal.x + probe_normal.y + probe_normal.z) * 1000.0)
+            )
+        }
+    }
+
+    candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    field_samples_after = __wr_metrics_get(__wr_metrics_field_sample_id())
+
+    require checksum != 0 else "mixed solver dense oracle checksum nonzero"
+    require dense_oracle_signal > 0 else "mixed solver dense oracle signal nonzero"
+    require candidate_after > candidate_before else "mixed solver candidate path observed"
+    require field_samples_after > field_samples_before else "mixed solver field samples observed"
+}
+
 @serial
 fn test_field_region_domain_media_radiance_ops_60000() -> Nothing {
     world = capture hard_scene_region

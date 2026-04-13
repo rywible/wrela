@@ -224,13 +224,14 @@ fn ray_solver_plans_attach_only_to_ray_shaped_world_spatial_contracts() {
         solver.method_enabled(RaySolverMethod::DenseSphereTracing),
         "dense marching must be an explicit solver fallback method"
     );
+    assert_eq!(solver.subject.as_str(), solver.contract_id.as_str());
     assert_eq!(solver.mixed_selections().len(), 4);
     assert!(
         solver
             .mixed_selections()
             .iter()
-            .all(|selection| selection.subject == solver.contract_id),
-        "mixed selections must remain anchored to the contract subject"
+            .all(|selection| selection.subject.as_str() == solver.subject.as_str()),
+        "mixed selections must remain anchored to the solver subject"
     );
     assert!(solver.mixed_selections().iter().any(|selection| {
         selection.method == RaySolverMethod::DenseSphereTracing
@@ -263,6 +264,7 @@ fn ray_solver_plans_attach_only_to_ray_shaped_world_spatial_contracts() {
     assert_eq!(solver.artifact_reuse_intents().len(), 1);
     assert_eq!(solver.continuation_intents().len(), 1);
     let summary = solver.diagnostic_summary();
+    assert_eq!(summary.subject.as_str(), solver.subject.as_str());
     assert_eq!(
         summary.evidence_summary.origin,
         EvidenceOrigin::RuntimeObserved

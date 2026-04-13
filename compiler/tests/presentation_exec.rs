@@ -188,6 +188,8 @@ fn presentation_fixture_with_state(
     frame_index: u32,
     previous_frame_index: u32,
     history_reset: bool,
+    current_snapshot_epoch: SnapshotEpoch,
+    previous_snapshot_epoch: SnapshotEpoch,
     history: Option<wrela::presentation_exec::PresentationTemporalHistory>,
 ) -> (
     PresentationPlan,
@@ -217,6 +219,8 @@ fn presentation_fixture_with_state(
             previous_frame_index,
             1.0 / 60.0,
             history_reset,
+            current_snapshot_epoch,
+            previous_snapshot_epoch,
         ),
         history,
         lighting: PresentationLightingInputs {
@@ -265,6 +269,46 @@ fn scene_domain_value_does_not_emit_placeholder_guarantee() {
         !field_names.iter().any(|name| name == "guarantee"),
         "scene_domain_value must not emit placeholder guarantee"
     );
+}
+
+#[test]
+fn frame_state_value_with_history_uses_explicit_snapshot_epochs() {
+    let camera = CanonicalCameraInput {
+        position: [0.0, 0.0, 2.0],
+        forward: [0.0, 0.0, -1.0],
+        up: [0.0, 1.0, 0.0],
+        vertical_fov_degrees: 75.0,
+    };
+    let viewport = CanonicalViewportInput {
+        width: 4,
+        height: 4,
+    };
+    let value = frame_state_value_with_history(
+        camera,
+        camera,
+        viewport,
+        viewport,
+        [0.0, 0.0],
+        [0.0, 0.0],
+        4,
+        3,
+        1.0 / 60.0,
+        false,
+        SnapshotEpoch(7),
+        SnapshotEpoch(3),
+    );
+    let frame = expect_struct(&value, "FrameState");
+    let transition = expect_struct(
+        field(frame, "snapshot_transition"),
+        "SnapshotTransitionContext",
+    );
+    let current = expect_struct(field(transition, "current_snapshot_epoch"), "SnapshotEpoch");
+    let previous = expect_struct(
+        field(transition, "previous_snapshot_epoch"),
+        "SnapshotEpoch",
+    );
+    assert_eq!(u32_field(current, "epoch"), 7);
+    assert_eq!(u32_field(previous, "epoch"), 3);
 }
 
 fn temporal_alias_source() -> &'static str {
@@ -671,6 +715,8 @@ fn static_repeated_frames_reuse_history_deterministically() {
         0,
         0,
         true,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
         None,
     );
     let frame0 = execute_plan(&ctx0, &plan0, &input0).expect("first temporal frame");
@@ -686,6 +732,8 @@ fn static_repeated_frames_reuse_history_deterministically() {
         1,
         0,
         false,
+        SnapshotEpoch(2),
+        SnapshotEpoch(1),
         frame0.history.clone(),
     );
     let frame1 = execute_plan(&ctx1, &plan1, &input1).expect("second temporal frame");
@@ -755,6 +803,8 @@ fn epoch_compatible_transition_reuses_history_when_previous_snapshot_matches() {
         0,
         0,
         true,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
         None,
     );
     input0.region_snapshot = stable_region_snapshot_handle(&SmolStr::new("exec_region"));
@@ -771,6 +821,8 @@ fn epoch_compatible_transition_reuses_history_when_previous_snapshot_matches() {
         1,
         0,
         false,
+        SnapshotEpoch(2),
+        SnapshotEpoch(1),
         frame0.history.clone(),
     );
     input1.region_snapshot =
@@ -835,6 +887,8 @@ fn topology_change_rejects_history_even_when_snapshot_epochs_line_up() {
         0,
         0,
         true,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
         None,
     );
     input0.region_snapshot = stable_region_snapshot_handle(&SmolStr::new("exec_region"));
@@ -851,6 +905,8 @@ fn topology_change_rejects_history_even_when_snapshot_epochs_line_up() {
         1,
         0,
         false,
+        SnapshotEpoch(2),
+        SnapshotEpoch(1),
         frame0.history.clone(),
     );
     input1.region_snapshot =
@@ -912,6 +968,8 @@ fn typed_presentation_frame_history_age_ignores_legacy_frame_index() {
         0,
         0,
         true,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
         None,
     );
     let frame0 = execute_plan(&ctx0, &plan0, &input0).expect("seed typed frame history");
@@ -927,6 +985,8 @@ fn typed_presentation_frame_history_age_ignores_legacy_frame_index() {
         100,
         99,
         false,
+        SnapshotEpoch(2),
+        SnapshotEpoch(1),
         frame0.history.clone(),
     );
     input1.frame_state = frame_state_value_with_temporal_context(
@@ -989,6 +1049,8 @@ fn authoritative_incompatible_transition_summary_rejects_history() {
         0,
         0,
         true,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
         None,
     );
     let frame0 = execute_plan(&ctx0, &plan0, &input0).expect("seed authoritative compatibility");
@@ -1004,6 +1066,8 @@ fn authoritative_incompatible_transition_summary_rejects_history() {
         1,
         0,
         false,
+        SnapshotEpoch(2),
+        SnapshotEpoch(1),
         frame0.history.clone(),
     );
     input1.frame_state = frame_state_value_with_temporal_context(
@@ -1063,6 +1127,8 @@ fn temporal_evidence_requirements_reject_otherwise_compatible_camera_motion() {
         0,
         0,
         true,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
         None,
     );
     plan0
@@ -1085,6 +1151,8 @@ fn temporal_evidence_requirements_reject_otherwise_compatible_camera_motion() {
         1,
         0,
         false,
+        SnapshotEpoch(2),
+        SnapshotEpoch(1),
         frame0.history.clone(),
     );
     plan1
@@ -1154,6 +1222,8 @@ fn temporal_evidence_requirements_apply_without_change_summary() {
         0,
         0,
         true,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
         None,
     );
     plan0
@@ -1176,6 +1246,8 @@ fn temporal_evidence_requirements_apply_without_change_summary() {
         1,
         0,
         false,
+        SnapshotEpoch(2),
+        SnapshotEpoch(1),
         frame0.history.clone(),
     );
     plan1
@@ -1222,6 +1294,8 @@ fn slow_camera_motion_reuses_history_and_wgsl_matches_cpu_temporal_resolve() {
         0,
         0,
         true,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
         None,
     );
     let cpu_frame0 = execute_plan(&cpu_ctx0, &cpu_plan0, &cpu_input0).expect("cpu temporal seed");
@@ -1237,6 +1311,8 @@ fn slow_camera_motion_reuses_history_and_wgsl_matches_cpu_temporal_resolve() {
         1,
         0,
         false,
+        SnapshotEpoch(2),
+        SnapshotEpoch(1),
         cpu_frame0.history.clone(),
     );
     let cpu_with_history =
@@ -1253,6 +1329,8 @@ fn slow_camera_motion_reuses_history_and_wgsl_matches_cpu_temporal_resolve() {
         1,
         0,
         false,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
         None,
     );
     let cpu_without_history =
@@ -1300,6 +1378,8 @@ fn slow_camera_motion_reuses_history_and_wgsl_matches_cpu_temporal_resolve() {
         0,
         0,
         true,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
         None,
     );
     let wgsl_frame0 = execute_plan(&wgsl_ctx0, &wgsl_plan0, &wgsl_input0).expect("wgsl seed");
@@ -1314,6 +1394,8 @@ fn slow_camera_motion_reuses_history_and_wgsl_matches_cpu_temporal_resolve() {
         1,
         0,
         false,
+        SnapshotEpoch(2),
+        SnapshotEpoch(1),
         wgsl_frame0.history.clone(),
     );
     let wgsl_with_history =
@@ -1356,6 +1438,8 @@ fn motion_resolve_marks_newly_visible_pixels_as_disoccluded() {
         0,
         0,
         true,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
         None,
     );
     let frame0 = execute_plan(&ctx0, &plan0, &input0).expect("seed frame");
@@ -1371,6 +1455,8 @@ fn motion_resolve_marks_newly_visible_pixels_as_disoccluded() {
         1,
         0,
         false,
+        SnapshotEpoch(2),
+        SnapshotEpoch(1),
         frame0.history.clone(),
     );
     let frame1 = execute_plan(&ctx1, &plan1, &input1).expect("reprojected frame");
@@ -1416,6 +1502,8 @@ fn camera_cut_invalidates_history_and_falls_back_to_current_color() {
         0,
         0,
         true,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
         None,
     );
     let frame0 = execute_plan(&ctx0, &plan0, &input0).expect("seed frame");
@@ -1431,6 +1519,8 @@ fn camera_cut_invalidates_history_and_falls_back_to_current_color() {
         1,
         0,
         true,
+        SnapshotEpoch(2),
+        SnapshotEpoch(1),
         frame0.history.clone(),
     );
     let with_history = execute_plan(&ctx1, &plan1, &input1).expect("cut with history");
@@ -1446,6 +1536,8 @@ fn camera_cut_invalidates_history_and_falls_back_to_current_color() {
         1,
         0,
         true,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
         None,
     );
     let without_history = execute_plan(&ctx2, &plan2, &input2).expect("cut without history");
@@ -1664,6 +1756,8 @@ fn frame_cost_reports_tile_culling_when_support_bounds_shrink_screen_work() {
         0,
         0,
         false,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
         None,
     );
 
@@ -1868,6 +1962,13 @@ fn field<'a>(value: &'a KernelStructValue, name: &str) -> &'a KernelValue {
         .iter()
         .find_map(|(field_name, field_value)| (field_name == name).then_some(field_value))
         .unwrap_or_else(|| panic!("missing field {name} on {}", value.name))
+}
+
+fn u32_field(value: &KernelStructValue, name: &str) -> u32 {
+    match field(value, name) {
+        KernelValue::U32(value) => *value,
+        other => panic!("expected u32 field {name}, got {other:?}"),
+    }
 }
 
 fn payload_value<'a>(value: &'a KernelValue) -> &'a KernelValue {

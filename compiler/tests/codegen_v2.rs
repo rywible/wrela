@@ -223,12 +223,16 @@ domain exec_domain(world: RegionCapture) {
         .map(|(_, func)| func)
         .expect("exec_domain function");
     let domain = func.domain.as_ref().expect("domain metadata");
-    let execution_policy = domain.execution_policy.as_ref().expect("execution policy");
+    let execution_policy = func
+        .domain_execution_policy
+        .as_ref()
+        .expect("execution policy");
 
     assert_eq!(domain.geometry_detail, hir::DomainGeometryDetail::Fine);
     assert!(!domain.material);
     assert!(domain.radiance);
     assert!(!domain.media);
+    assert!(func.domain_execution_policy.is_some());
     assert_eq!(
         execution_policy.required_guarantee,
         wrela::execution_policy::RequiredGuaranteeClass::ConservativeNoFalseMiss

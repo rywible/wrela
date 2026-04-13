@@ -53,6 +53,15 @@ timeout_ms = 180000
 allow_unstable = false
 
 [[scenarios]]
+id = "mixed_solver_dense_oracle_closure"
+test_name = "tests/field_engine::test_field_mixed_solver_dense_oracle_closure_ops_54000"
+ops = 54000
+class = "critical"
+min_runtime_ms = 1200
+timeout_ms = 180000
+allow_unstable = false
+
+[[scenarios]]
 id = "region_domain_media_radiance"
 test_name = "tests/field_engine::test_field_region_domain_media_radiance_ops_60000"
 ops = 60000

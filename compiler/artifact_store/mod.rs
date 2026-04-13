@@ -2,7 +2,7 @@ use crate::artifact_contract::{
     ArtifactSnapshotRelation, ArtifactUseSource, ArtifactValidityPredicate, ArtifactValidityRule,
     SemanticArtifactContract,
 };
-use crate::artifact_key::ArtifactReuseKey;
+use crate::artifact_key::{ArtifactPolicyDigestMode, ArtifactReuseKey};
 use crate::semantic_evidence::SemanticEvidenceSummary;
 use crate::state_advance::ChangeClass;
 use crate::world_identity::{SnapshotEpoch, WorldSnapshotHandle};
@@ -30,6 +30,7 @@ pub struct StoredArtifact<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactLookupRequest {
     pub contract: SemanticArtifactContract,
+    pub reuse_key: Option<ArtifactReuseKey>,
     pub current_snapshot: WorldSnapshotHandle,
     pub previous_snapshot_epoch: Option<SnapshotEpoch>,
     pub change_class: Option<ChangeClass>,
@@ -86,12 +87,15 @@ pub struct ArtifactStoreReport {
 pub struct ArtifactStoreBucketReport {
     pub contract_id: SmolStr,
     pub logical_schema: SmolStr,
+    pub compatibility_hash: u64,
+    pub policy_digest: Option<u64>,
+    pub policy_mode: ArtifactPolicyDigestMode,
     pub entry_count: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct ArtifactStore<T> {
-    entries: BTreeMap<ArtifactIndexKey, Vec<StoredArtifact<T>>>,
+    entries: BTreeMap<ArtifactReuseFamilyKey, Vec<StoredArtifact<T>>>,
 }
 
 impl<T> Default for ArtifactStore<T> {
@@ -103,15 +107,18 @@ impl<T> Default for ArtifactStore<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct ArtifactIndexKey {
-    contract_id: SmolStr,
-    logical_schema: SmolStr,
+struct ArtifactReuseFamilyKey {
+    contract_id: Option<String>,
+    logical_schema: String,
+    compatibility_hash: u64,
+    policy_digest: Option<u64>,
+    policy_mode: ArtifactPolicyDigestMode,
 }
 
 impl<T> ArtifactStore<T> {
     pub fn insert(&mut self, artifact: StoredArtifact<T>) {
         self.entries
-            .entry(index_key(&artifact.contract))
+            .entry(index_key(&artifact.metadata.reuse_key))
             .or_default()
             .push(artifact);
     }
@@ -120,7 +127,7 @@ impl<T> ArtifactStore<T> {
         &'a self,
         request: &ArtifactLookupRequest,
     ) -> (Option<&'a StoredArtifact<T>>, ArtifactLookupReport) {
-        let key = index_key(&request.contract);
+        let key = request_index_key(request);
         let candidates = self.entries.get(&key).map(Vec::as_slice).unwrap_or(&[]);
         let mut compatibility_rejections = Vec::new();
         let mut validity_reports = Vec::new();
@@ -174,8 +181,15 @@ impl<T> ArtifactStore<T> {
                 .entries
                 .iter()
                 .map(|(key, entries)| ArtifactStoreBucketReport {
-                    contract_id: key.contract_id.clone(),
-                    logical_schema: key.logical_schema.clone(),
+                    contract_id: key
+                        .contract_id
+                        .as_ref()
+                        .map(|value| SmolStr::new(value.as_str()))
+                        .unwrap_or_default(),
+                    logical_schema: SmolStr::new(key.logical_schema.as_str()),
+                    compatibility_hash: key.compatibility_hash,
+                    policy_digest: key.policy_digest,
+                    policy_mode: key.policy_mode,
                     entry_count: entries.len(),
                 })
                 .collect(),
@@ -197,10 +211,26 @@ pub fn store_backed_use(
     }
 }
 
-fn index_key(contract: &SemanticArtifactContract) -> ArtifactIndexKey {
-    ArtifactIndexKey {
-        contract_id: contract.id.clone(),
-        logical_schema: contract.logical_schema.describe(),
+fn index_key(reuse_key: &ArtifactReuseKey) -> ArtifactReuseFamilyKey {
+    ArtifactReuseFamilyKey {
+        contract_id: reuse_key.contract_id.clone(),
+        logical_schema: reuse_key.logical_schema.clone(),
+        compatibility_hash: reuse_key.compatibility_hash,
+        policy_digest: reuse_key.policy_digest,
+        policy_mode: reuse_key.policy_mode,
+    }
+}
+
+fn request_index_key(request: &ArtifactLookupRequest) -> ArtifactReuseFamilyKey {
+    if let Some(reuse_key) = &request.reuse_key {
+        return index_key(reuse_key);
+    }
+    ArtifactReuseFamilyKey {
+        contract_id: Some(request.contract.id.to_string()),
+        logical_schema: request.contract.logical_schema.describe().to_string(),
+        compatibility_hash: request.contract.logical_schema.stable_hash(),
+        policy_digest: request.policy_digest,
+        policy_mode: request.contract.compatibility.policy.mode,
     }
 }
 

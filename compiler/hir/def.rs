@@ -153,9 +153,10 @@ pub struct DomainMetadata {
     pub material: bool,
     pub radiance: bool,
     pub media: bool,
-    pub execution_policy: Option<DomainExecutionPolicyMetadata>,
 }
 
+/// Lowering-only policy extracted from authored domain statements.
+/// Keep this separate from the semantic domain payload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DomainExecutionPolicyMetadata {
     pub required_guarantee: RequiredGuaranteeClass,
@@ -569,6 +570,7 @@ pub struct Function {
     pub field: Option<FieldMetadata>,
     pub region: Option<RegionMetadata>,
     pub domain: Option<DomainMetadata>,
+    pub domain_execution_policy: Option<DomainExecutionPolicyMetadata>,
     pub presentation: Option<PresentationMetadata>,
     pub field_graph: Option<FieldGraph>,
     pub system_metadata: Option<SystemMetadata>,

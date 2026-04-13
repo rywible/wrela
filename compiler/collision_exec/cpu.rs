@@ -20,6 +20,7 @@ use crate::collision_plan::{
 use crate::execution_policy::QueryExecutionPolicy;
 use crate::kernel::{KernelStructValue, KernelValue, lower_world_query_plan};
 use crate::query_contract::{self, DispatchBackend, QueryContractId};
+use crate::query_exec::cpu::DirectQueryOps;
 use crate::query_exec::{
     DirectQueryExecutionTrace, QueryExecContext, execute_world_query_with_policy_with_snapshot_on,
     execute_world_query_with_snapshot_on,
@@ -31,10 +32,20 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CollisionArtifactPayload {
-    SupportSummary,
-    BroadphaseCandidates { candidate_count: u32 },
+    SupportSummary(CollisionSupportSummary),
+    BroadphaseCandidates(CollisionBroadphaseCandidates),
     WitnessCache(CollisionStoredWitness),
     ContinuationSeed(CollisionContinuationSeed),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollisionSupportSummary {
+    pub candidate_shape_names: Vec<SmolStr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollisionBroadphaseCandidates {
+    pub candidate_shape_names: Vec<SmolStr>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -48,6 +59,7 @@ pub struct CollisionStoredWitness {
 pub struct CollisionContinuationSeed {
     pub fraction_hint: f32,
     pub no_hit_certificate: bool,
+    pub normal_flavor: CollisionContactNormalFlavor,
 }
 
 pub type CollisionArtifactStore = ArtifactStore<CollisionArtifactPayload>;
@@ -103,7 +115,7 @@ pub fn execute_with_store(
         plan,
         crate::collision_contract::CollisionInputKind::SceneDomain,
     )?;
-    let (capture, snapshot) = resolve_region_capture(ctx, args.get(world_index))?;
+    let (capture, capture_name, snapshot) = resolve_region_capture(ctx, args.get(world_index))?;
     let domain = args
         .get(domain_index)
         .cloned()
@@ -158,46 +170,60 @@ pub fn execute_with_store(
     for pass in &plan.passes {
         match &pass.kind {
             CollisionPassKind::GatherCandidates {
-                support_summary_contract,
-                support_artifact,
+                support_artifact, ..
             } => {
                 let artifact = artifact_binding_by_id(plan, support_artifact)?;
-                let (_support_value, trace) = execute_world_query_contract(
-                    ctx,
-                    backend,
-                    None,
-                    &snapshot,
-                    *support_summary_contract,
-                    &[capture.clone(), domain.clone()],
-                )?;
-                executed_query_contracts.push(trace.contract_id);
+                let support_summary = build_broadphase_candidates(ctx, &capture_name, &domain)?;
                 insert_artifact(
                     store,
                     artifact,
                     &snapshot,
                     collision_policy_digest(plan.policy),
                     None,
-                    CollisionArtifactPayload::SupportSummary,
+                    CollisionArtifactPayload::SupportSummary(CollisionSupportSummary {
+                        candidate_shape_names: support_summary.candidate_shape_names,
+                    }),
                 );
             }
             CollisionPassKind::BuildBroadphaseCandidates {
                 support_artifact,
                 artifact_id,
             } => {
-                ensure_current_artifact_available(
+                let artifact = artifact_binding_by_id(plan, artifact_id)?;
+                let support_payload = current_artifact_payload(
                     store,
                     artifact_binding_by_id(plan, support_artifact)?,
                     &snapshot,
                     collision_policy_digest(plan.policy),
                 )?;
-                let artifact = artifact_binding_by_id(plan, artifact_id)?;
+                let support_summary = match support_payload {
+                    CollisionArtifactPayload::SupportSummary(payload) => payload.clone(),
+                    other => {
+                        return Err(CollisionExecError::TypeMismatch {
+                            expected: "SupportSummary".to_string(),
+                            found: format!("{other:?}"),
+                        });
+                    }
+                };
+                let expected = build_broadphase_candidates(ctx, &capture_name, &domain)?;
+                if support_summary.candidate_shape_names != expected.candidate_shape_names {
+                    return Err(CollisionExecError::InvalidPass {
+                        pass_id: artifact.id.clone(),
+                        message: format!(
+                            "support summary payload mismatch: expected {:?}, found {:?}",
+                            expected, support_summary
+                        ),
+                    });
+                }
                 insert_artifact(
                     store,
                     artifact,
                     &snapshot,
                     collision_policy_digest(plan.policy),
                     None,
-                    CollisionArtifactPayload::BroadphaseCandidates { candidate_count: 1 },
+                    CollisionArtifactPayload::BroadphaseCandidates(CollisionBroadphaseCandidates {
+                        candidate_shape_names: support_summary.candidate_shape_names,
+                    }),
                 );
             }
             CollisionPassKind::EvaluatePointOccupancy {
@@ -391,6 +417,15 @@ pub fn execute_with_store(
                     &mut reuse_metrics,
                     &mut reuse_decisions,
                 )?;
+                let broadphase = load_broadphase_candidates(
+                    ctx,
+                    plan,
+                    store,
+                    &snapshot,
+                    &capture_name,
+                    &domain,
+                    broadphase_artifact,
+                )?;
                 let outcome = sweep_outcome(
                     ctx,
                     backend,
@@ -403,6 +438,7 @@ pub fn execute_with_store(
                     *normal_contract,
                     seed_fraction,
                     normal_flavor,
+                    broadphase.candidate_shape_names.len() as u32,
                     &mut executed_query_contracts,
                 )?;
                 store_transition_artifacts(
@@ -462,6 +498,15 @@ pub fn execute_with_store(
                     &mut reuse_metrics,
                     &mut reuse_decisions,
                 )?;
+                let broadphase = load_broadphase_candidates(
+                    ctx,
+                    plan,
+                    store,
+                    &snapshot,
+                    &capture_name,
+                    &domain,
+                    broadphase_artifact,
+                )?;
                 let outcome = sweep_outcome(
                     ctx,
                     backend,
@@ -474,6 +519,7 @@ pub fn execute_with_store(
                     *normal_contract,
                     seed_fraction,
                     normal_flavor,
+                    broadphase.candidate_shape_names.len() as u32,
                     &mut executed_query_contracts,
                 )?;
                 store_transition_artifacts(
@@ -619,7 +665,7 @@ fn artifact_binding_by_id<'a>(
 fn resolve_region_capture(
     ctx: &QueryExecContext,
     value: Option<&KernelValue>,
-) -> Result<(KernelValue, WorldSnapshotHandle), CollisionExecError> {
+) -> Result<(KernelValue, SmolStr, WorldSnapshotHandle), CollisionExecError> {
     let value = value.ok_or(CollisionExecError::MissingRegionCapture)?;
     match value {
         KernelValue::Capture(name) => {
@@ -627,7 +673,7 @@ fn resolve_region_capture(
                 .region_snapshot_handle(name)
                 .cloned()
                 .ok_or(CollisionExecError::MissingSnapshotHandle)?;
-            Ok((KernelValue::Capture(name.clone()), snapshot))
+            Ok((KernelValue::Capture(name.clone()), name.clone(), snapshot))
         }
         KernelValue::Struct(struct_value) if struct_value.name.as_str() == "RegionCapture" => {
             let scene_id = expect_u32(field(struct_value, "scene_id")?)?;
@@ -642,7 +688,11 @@ fn resolve_region_capture(
                     snapshot.with_epoch(crate::world_identity::SnapshotEpoch(u64::from(epoch)))
                 })
                 .ok_or(CollisionExecError::MissingSnapshotHandle)?;
-            Ok((KernelValue::Struct(struct_value.clone()), snapshot))
+            Ok((
+                KernelValue::Struct(struct_value.clone()),
+                name.clone(),
+                snapshot,
+            ))
         }
         other => Err(type_mismatch("RegionCapture", kernel_value_kind(other))),
     }
@@ -765,6 +815,7 @@ fn ensure_current_artifact_available(
 ) -> Result<(), CollisionExecError> {
     let request = ArtifactLookupRequest {
         contract: artifact.contract.clone(),
+        reuse_key: None,
         current_snapshot: snapshot.clone(),
         previous_snapshot_epoch: None,
         change_class: None,
@@ -784,6 +835,92 @@ fn ensure_current_artifact_available(
     }
 }
 
+fn current_artifact_payload<'a>(
+    store: &'a CollisionArtifactStore,
+    artifact: &CollisionArtifactBinding,
+    snapshot: &WorldSnapshotHandle,
+    policy_digest: u64,
+) -> Result<&'a CollisionArtifactPayload, CollisionExecError> {
+    let request = ArtifactLookupRequest {
+        contract: artifact.contract.clone(),
+        reuse_key: None,
+        current_snapshot: snapshot.clone(),
+        previous_snapshot_epoch: None,
+        change_class: None,
+        policy_digest: Some(policy_digest),
+        presentation_frame: None,
+        layout_signature: None,
+        history_compatibility_hash: None,
+        evidence_summary: Some(artifact.contract.evidence_summary.clone()),
+    };
+    let (artifact, _) = store.lookup(&request);
+    artifact
+        .map(|artifact| &artifact.payload)
+        .ok_or_else(|| CollisionExecError::MissingArtifact {
+            artifact_id: request.contract.id.clone(),
+        })
+}
+
+fn build_broadphase_candidates(
+    ctx: &QueryExecContext,
+    capture: &SmolStr,
+    domain: &KernelValue,
+) -> Result<CollisionBroadphaseCandidates, CollisionExecError> {
+    let domain = expect_struct(domain, "SceneDomain")?;
+    let ops = DirectQueryOps::new(ctx);
+    let detail = ops
+        .validate_world_domain(capture, domain, "collision broadphase")
+        .map_err(|error| CollisionExecError::ExecutionUnavailable {
+            message: error.to_string(),
+        })?;
+    let candidate_shape_names =
+        ops.resolve_world_shapes(capture, detail, None)
+            .map_err(|error| CollisionExecError::ExecutionUnavailable {
+                message: error.to_string(),
+            })?;
+    Ok(CollisionBroadphaseCandidates {
+        candidate_shape_names,
+    })
+}
+
+fn load_broadphase_candidates(
+    ctx: &QueryExecContext,
+    plan: &CollisionPlan,
+    store: &CollisionArtifactStore,
+    snapshot: &WorldSnapshotHandle,
+    capture: &SmolStr,
+    domain: &KernelValue,
+    artifact_id: &SmolStr,
+) -> Result<CollisionBroadphaseCandidates, CollisionExecError> {
+    let artifact = artifact_binding_by_id(plan, artifact_id)?;
+    let payload = current_artifact_payload(
+        store,
+        artifact,
+        snapshot,
+        collision_policy_digest(plan.policy),
+    )?;
+    let broadphase = match payload {
+        CollisionArtifactPayload::BroadphaseCandidates(payload) => payload.clone(),
+        other => {
+            return Err(CollisionExecError::TypeMismatch {
+                expected: "BroadphaseCandidates".to_string(),
+                found: format!("{other:?}"),
+            });
+        }
+    };
+    let expected = build_broadphase_candidates(ctx, capture, domain)?;
+    if broadphase != expected {
+        return Err(CollisionExecError::InvalidPass {
+            pass_id: artifact.id.clone(),
+            message: format!(
+                "broadphase payload mismatch: expected {:?}, found {:?}",
+                expected, broadphase
+            ),
+        });
+    }
+    Ok(broadphase)
+}
+
 fn load_transition_reuse(
     plan: &CollisionPlan,
     store: &CollisionArtifactStore,
@@ -798,14 +935,16 @@ fn load_transition_reuse(
     let mut normal_flavor = CollisionContactNormalFlavor::ConservativeUpperBound;
     for artifact_id in [witness_artifact, continuation_artifact] {
         let artifact = artifact_binding_by_id(plan, artifact_id)?;
+        let expected_flavor = transition_reuse_normal_flavor(artifact.kind);
         let decision = if let Some(transition) = transition {
             let history_hash = Some(collision_history_compatibility_hash(
                 plan.contract_id,
                 artifact.kind,
-                None,
+                expected_flavor,
             ));
             let request = ArtifactLookupRequest {
                 contract: artifact.contract.clone(),
+                reuse_key: None,
                 current_snapshot: snapshot.clone(),
                 previous_snapshot_epoch: Some(crate::world_identity::SnapshotEpoch(u64::from(
                     transition.previous_snapshot_epoch,
@@ -818,7 +957,7 @@ fn load_transition_reuse(
                 evidence_summary: Some(artifact.contract.evidence_summary.clone()),
             };
             let (candidate, report) = store.lookup(&request);
-            let (verdict, reason) = if candidate.is_some() {
+            let mut verdict = if candidate.is_some() {
                 (CollisionReuseVerdict::Consumed, CollisionReuseReason::None)
             } else if report.index_candidates == 0 {
                 (
@@ -841,27 +980,45 @@ fn load_transition_reuse(
                     CollisionReuseReason::ValidityRejected,
                 )
             };
+            let mut detail = report
+                .primary_rejection_reason()
+                .unwrap_or_else(|| SmolStr::new("accepted"));
             if let Some(candidate) = candidate {
                 match &candidate.payload {
                     CollisionArtifactPayload::WitnessCache(payload) => {
-                        seed_fraction = payload.contact_fraction_upper_bound;
-                        normal_flavor = payload.normal_flavor;
+                        if expected_flavor != Some(payload.normal_flavor) {
+                            verdict = (
+                                CollisionReuseVerdict::Rejected,
+                                CollisionReuseReason::CompatibilityRejected,
+                            );
+                            detail = SmolStr::new("normal-flavor-mismatch");
+                        } else {
+                            seed_fraction = payload.contact_fraction_upper_bound;
+                            normal_flavor = payload.normal_flavor;
+                        }
                     }
                     CollisionArtifactPayload::ContinuationSeed(payload) => {
-                        seed_fraction = Some(payload.fraction_hint);
+                        if expected_flavor != Some(payload.normal_flavor) {
+                            verdict = (
+                                CollisionReuseVerdict::Rejected,
+                                CollisionReuseReason::CompatibilityRejected,
+                            );
+                            detail = SmolStr::new("normal-flavor-mismatch");
+                        } else {
+                            seed_fraction = Some(payload.fraction_hint);
+                            normal_flavor = payload.normal_flavor;
+                        }
                     }
-                    CollisionArtifactPayload::SupportSummary
-                    | CollisionArtifactPayload::BroadphaseCandidates { .. } => {}
+                    CollisionArtifactPayload::SupportSummary(_)
+                    | CollisionArtifactPayload::BroadphaseCandidates(_) => {}
                 }
             }
             CollisionReuseDecision {
                 artifact_id: artifact.id.clone(),
                 artifact_kind: artifact.kind,
-                verdict,
-                reason,
-                detail: report
-                    .primary_rejection_reason()
-                    .unwrap_or_else(|| SmolStr::new("accepted")),
+                verdict: verdict.0,
+                reason: verdict.1,
+                detail,
                 lookup: Some(report),
             }
         } else {
@@ -914,12 +1071,12 @@ fn store_transition_artifacts(
     let history_hash_witness = Some(collision_history_compatibility_hash(
         plan.contract_id,
         CollisionArtifactKind::WitnessCache,
-        None,
+        Some(outcome.normal_flavor),
     ));
     let history_hash_seed = Some(collision_history_compatibility_hash(
         plan.contract_id,
         CollisionArtifactKind::ContinuationSeed,
-        None,
+        Some(outcome.normal_flavor),
     ));
     insert_artifact(
         store,
@@ -942,6 +1099,7 @@ fn store_transition_artifacts(
         CollisionArtifactPayload::ContinuationSeed(CollisionContinuationSeed {
             fraction_hint: outcome.fraction_upper_bound.unwrap_or(1.0),
             no_hit_certificate: outcome.no_hit_certificate.is_some(),
+            normal_flavor: outcome.normal_flavor,
         }),
     );
     Ok(())
@@ -960,8 +1118,23 @@ fn sweep_outcome(
     normal_contract: QueryContractId,
     seed_fraction: Option<f32>,
     seed_normal_flavor: CollisionContactNormalFlavor,
+    broadphase_candidate_count: u32,
     executed_query_contracts: &mut Vec<QueryContractId>,
 ) -> Result<SweepOutcome, CollisionExecError> {
+    if broadphase_candidate_count == 0 {
+        return Ok(SweepOutcome {
+            hit: false,
+            fraction_upper_bound: None,
+            point_on_probe: None,
+            point_on_world: None,
+            contact_normal: None,
+            normal_flavor: seed_normal_flavor,
+            no_hit_certificate: Some(CollisionNoHitCertificate {
+                valid_through_fraction: 1.0,
+                guarantee: plan_no_hit_guarantee(policy),
+            }),
+        });
+    }
     let travel = subtract(sweep.end_center, sweep.start_center);
     let length = magnitude(travel);
     if length <= f32::EPSILON {
@@ -1062,6 +1235,17 @@ fn sweep_outcome(
         sweep.contact_tolerance,
         executed_query_contracts,
     )
+}
+
+fn transition_reuse_normal_flavor(
+    artifact_kind: CollisionArtifactKind,
+) -> Option<CollisionContactNormalFlavor> {
+    match artifact_kind {
+        CollisionArtifactKind::WitnessCache | CollisionArtifactKind::ContinuationSeed => {
+            Some(CollisionContactNormalFlavor::ConservativeUpperBound)
+        }
+        CollisionArtifactKind::SupportSummary | CollisionArtifactKind::BroadphaseCandidates => None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

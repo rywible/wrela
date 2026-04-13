@@ -3,11 +3,11 @@ use crate::query_plan::{
     ArtifactContract, BatchItemContract, BatchQueryKind, CandidateRecordContract,
     CandidateStrategy, CaptureKind, CaptureQueryKind, CaptureQueryPlan, DerivedArtifact,
     DispatchBackend, DispatchRecordContract, HitContextContract, InternalKernelKind,
-    ParticipantSelectionContract, PlanExecutor, PlanStage, PlanningObservability, PruningStrategy,
-    QueryCardinality, QueryContractId, QueryFamilyId, QueryItemKind, QueryResultKind,
-    QuerySurfaceKind, QueryTargetKind, ResultRecordContract, SceneDomainFlag, SceneSummary,
-    SemanticEvidenceSummary, WorldQueryKind, WorldQueryPlan, capture_query_kind_for_contract_id,
-    world_query_kind_for_contract_id,
+    NormalizedQueryBehavior, ParticipantSelectionContract, PlanExecutor, PlanStage,
+    PlanningObservability, PruningStrategy, QueryCardinality, QueryContractId, QueryFamilyId,
+    QueryItemKind, QueryResultKind, QuerySurfaceKind, QueryTargetKind, ResultRecordContract,
+    SceneDomainFlag, SceneSummary, SemanticEvidenceSummary, WorldQueryKind, WorldQueryPlan,
+    capture_query_kind_for_contract_id, world_query_kind_for_contract_id,
 };
 use crate::query_solver::RaySolverPlan;
 use rowan::TextRange;
@@ -320,6 +320,7 @@ pub struct KernelBatchQueryPlan {
     pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: BatchQueryKind,
+    pub normalized_behavior: NormalizedQueryBehavior,
     pub capture_kind: CaptureKind,
     pub backend: DispatchBackend,
     pub kernel: InternalKernelKind,
@@ -363,6 +364,7 @@ pub struct KernelCaptureQueryPlan {
     pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: CaptureQueryKind,
+    pub normalized_behavior: NormalizedQueryBehavior,
     pub capture_kind: CaptureKind,
     pub result_kind: QueryResultKind,
     pub executor: PlanExecutor,
@@ -391,6 +393,7 @@ pub struct KernelWorldQueryPlan {
     pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: WorldQueryKind,
+    pub normalized_behavior: NormalizedQueryBehavior,
     pub backend: DispatchBackend,
     pub result_kind: QueryResultKind,
     pub executor: PlanExecutor,
@@ -436,6 +439,7 @@ impl From<&CaptureQueryPlan> for KernelCaptureQueryPlan {
             helper_name: plan.helper_name.clone(),
             kind: capture_query_kind_for_contract_id(plan.contract_id)
                 .expect("capture query plan contract id must resolve"),
+            normalized_behavior: plan.normalized_behavior.clone(),
             capture_kind: plan.capture_kind,
             result_kind: plan.result_kind,
             executor: plan.executor,
@@ -468,6 +472,7 @@ impl From<&WorldQueryPlan> for KernelWorldQueryPlan {
             helper_name: plan.helper_name.clone(),
             kind: world_query_kind_for_contract_id(plan.contract_id)
                 .expect("world query plan contract id must resolve"),
+            normalized_behavior: plan.normalized_behavior.clone(),
             backend: plan.backend,
             result_kind: plan.result_kind,
             executor: plan.executor,

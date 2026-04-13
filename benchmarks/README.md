@@ -3,7 +3,7 @@
 The benchmark harness now focuses on the world-language surface that remains in the repo:
 
 - `micro`: low-level primitives and hot loops.
-- `field_engine`: authored field/scene query cases for repetition, thin features, local frames, radiance/media, and opaque-pessimization regressions.
+- `field_engine`: authored field/scene query cases for repetition, thin features, local frames, mixed-solver dense-oracle closure, radiance/media, and opaque-pessimization regressions.
 - `realtime_presentation`: presentation-oriented scene-shape benchmarks for dense constructive geometry, repetition-heavy layouts, thin-stack aliasing, and media/radiance scenes.
 
 ## Manifests

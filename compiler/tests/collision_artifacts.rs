@@ -3,7 +3,9 @@ use wrela::artifact_key::ArtifactReuseKey;
 use wrela::artifact_store::{
     ArtifactInstanceMetadata, ArtifactLookupRequest, ArtifactStore, StoredArtifact,
 };
-use wrela::collision_exec::cpu::{CollisionArtifactPayload, CollisionStoredWitness};
+use wrela::collision_exec::cpu::{
+    CollisionArtifactPayload, CollisionContinuationSeed, CollisionStoredWitness,
+};
 use wrela::collision_plan::{
     CollisionArtifactBinding, CollisionArtifactKind, CollisionPlan, CollisionQueryKind,
     collision_history_compatibility_hash,
@@ -69,16 +71,20 @@ fn transition_reuse_keys_match_previous_epoch_contract_and_policy() {
 fn witness_reuse_validity_accepts_presentation_change_and_rejects_topology_change() {
     let plan = CollisionPlan::for_query(CollisionQueryKind::SphereSweepTransition);
     let witness = artifact_by_kind(&plan, CollisionArtifactKind::WitnessCache);
+    let continuation = artifact_by_kind(&plan, CollisionArtifactKind::ContinuationSeed);
     let previous_snapshot =
         stable_region_snapshot_handle(&SmolStr::new("collision_history_region"))
             .with_epoch(SnapshotEpoch(1));
     let current_snapshot = stable_region_snapshot_handle(&SmolStr::new("collision_history_region"))
         .with_epoch(SnapshotEpoch(2));
     let policy_digest = policy_digest(plan.policy);
+    let conservative_flavor =
+        wrela::collision_contract::CollisionContactNormalFlavor::ConservativeUpperBound;
+    let gradient_flavor = wrela::collision_contract::CollisionContactNormalFlavor::SurfaceGradient;
     let history_hash = collision_history_compatibility_hash(
         plan.contract_id,
         CollisionArtifactKind::WitnessCache,
-        None,
+        Some(conservative_flavor),
     );
     let mut store = ArtifactStore::<CollisionArtifactPayload>::default();
     store.insert(StoredArtifact {
@@ -102,13 +108,41 @@ fn witness_reuse_validity_accepts_presentation_change_and_rejects_topology_chang
         payload: CollisionArtifactPayload::WitnessCache(CollisionStoredWitness {
             hit: true,
             contact_fraction_upper_bound: Some(0.3125),
-            normal_flavor:
-                wrela::collision_contract::CollisionContactNormalFlavor::ConservativeUpperBound,
+            normal_flavor: conservative_flavor,
+        }),
+    });
+    store.insert(StoredArtifact {
+        contract: continuation.contract.clone(),
+        metadata: ArtifactInstanceMetadata {
+            snapshot: previous_snapshot.clone(),
+            reuse_key: ArtifactReuseKey::new(
+                &previous_snapshot,
+                Some(continuation.id.clone()),
+                continuation.contract.logical_schema.describe(),
+                continuation.contract.logical_schema.stable_hash(),
+                Some(policy_digest),
+                continuation.contract.compatibility.policy.mode,
+            ),
+            policy_digest: Some(policy_digest),
+            presentation_frame: None,
+            layout_signature: None,
+            history_compatibility_hash: Some(collision_history_compatibility_hash(
+                plan.contract_id,
+                CollisionArtifactKind::ContinuationSeed,
+                Some(conservative_flavor),
+            )),
+            evidence_summary: continuation.contract.evidence_summary.clone(),
+        },
+        payload: CollisionArtifactPayload::ContinuationSeed(CollisionContinuationSeed {
+            fraction_hint: 0.3125,
+            no_hit_certificate: true,
+            normal_flavor: conservative_flavor,
         }),
     });
 
     let accepted_request = ArtifactLookupRequest {
         contract: witness.contract.clone(),
+        reuse_key: None,
         current_snapshot: current_snapshot.clone(),
         previous_snapshot_epoch: Some(SnapshotEpoch(1)),
         change_class: Some(ChangeClass::Presentation),
@@ -124,9 +158,57 @@ fn witness_reuse_validity_accepts_presentation_change_and_rejects_topology_chang
         "expected accepted reuse lookup: {report:?}"
     );
 
+    let flavor_mismatch_request = ArtifactLookupRequest {
+        history_compatibility_hash: Some(collision_history_compatibility_hash(
+            plan.contract_id,
+            CollisionArtifactKind::WitnessCache,
+            Some(gradient_flavor),
+        )),
+        ..accepted_request.clone()
+    };
+    let (artifact, report) = store.lookup(&flavor_mismatch_request);
+    assert!(artifact.is_none());
+    assert_eq!(
+        report.primary_rejection_reason().as_deref(),
+        Some("HistoryCompatibilityMatches")
+    );
+
+    let continuation_request = ArtifactLookupRequest {
+        contract: continuation.contract.clone(),
+        history_compatibility_hash: Some(collision_history_compatibility_hash(
+            plan.contract_id,
+            CollisionArtifactKind::ContinuationSeed,
+            Some(conservative_flavor),
+        )),
+        evidence_summary: Some(continuation.contract.evidence_summary.clone()),
+        ..accepted_request.clone()
+    };
+    let (artifact, report) = store.lookup(&continuation_request);
+    assert!(
+        artifact.is_some(),
+        "expected continuation reuse lookup: {report:?}"
+    );
+
+    let continuation_mismatch_request = ArtifactLookupRequest {
+        contract: continuation.contract.clone(),
+        history_compatibility_hash: Some(collision_history_compatibility_hash(
+            plan.contract_id,
+            CollisionArtifactKind::ContinuationSeed,
+            Some(gradient_flavor),
+        )),
+        evidence_summary: Some(continuation.contract.evidence_summary.clone()),
+        ..accepted_request
+    };
+    let (artifact, report) = store.lookup(&continuation_mismatch_request);
+    assert!(artifact.is_none());
+    assert_eq!(
+        report.primary_rejection_reason().as_deref(),
+        Some("HistoryCompatibilityMatches")
+    );
+
     let rejected_request = ArtifactLookupRequest {
         change_class: Some(ChangeClass::Topology),
-        ..accepted_request
+        ..continuation_request
     };
     let (artifact, report) = store.lookup(&rejected_request);
     assert!(artifact.is_none());

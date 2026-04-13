@@ -74,6 +74,7 @@ pub struct DirectQueryExecutionTrace {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueryExecutionObservability {
     pub solver_plan_id: Option<SmolStr>,
+    pub solver_subject: Option<SmolStr>,
     pub normal_role: Option<SmolStr>,
     pub solver_methods: Vec<RaySolverMethod>,
     pub dispatch_count: u32,

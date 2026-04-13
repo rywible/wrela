@@ -474,6 +474,7 @@ impl<'a> DirectQueryOps<'a> {
     pub(crate) fn note_solver_plan(&self, plan: &RaySolverPlan) {
         self.update_observability(|observability| {
             observability.solver_plan_id = Some(plan.id.clone());
+            observability.solver_subject = Some(plan.subject.clone());
             for method in plan.diagnostic_summary().methods {
                 if !observability.solver_methods.contains(&method) {
                     observability.solver_methods.push(method);
@@ -2444,13 +2445,17 @@ impl<'a> DirectQueryOps<'a> {
             }
             _ => SemanticEvidence::for_shape_scene(scene),
         };
-        let plan = RaySolverPlan::for_contract(solver_plan.contract_id, Some(evidence))
-            .ok_or_else(|| QueryExecError::Unsupported {
-                message: format!(
-                    "contract '{}' is not a ray-shaped spatial solver contract",
-                    solver_plan.contract_id.as_str()
-                ),
-            })?;
+        let plan = RaySolverPlan::for_contract_with_subject(
+            solver_plan.contract_id,
+            shape.clone(),
+            Some(evidence),
+        )
+        .ok_or_else(|| QueryExecError::Unsupported {
+            message: format!(
+                "contract '{}' is not a ray-shaped spatial solver contract",
+                solver_plan.contract_id.as_str()
+            ),
+        })?;
         Ok(plan.with_artifact_reuse_resolution(
             Self::artifact_reuse_resolution_for_query_artifacts(artifact_contracts),
         ))

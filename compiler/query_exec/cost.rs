@@ -306,6 +306,12 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
         .as_ref()
         .map(|id| id.as_str())
         .unwrap_or("none");
+    let solver_subject = report
+        .counters
+        .solver_subject
+        .as_ref()
+        .map(|subject| subject.as_str())
+        .unwrap_or("none");
     let solver_methods = if report.counters.solver_methods.is_empty() {
         "none".to_string()
     } else {
@@ -318,7 +324,7 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
             .join("|")
     };
     out.push_str(&format!(
-        "counters dispatch={} dispatch_items={} workgroups={}x{}x{} screen_samples={} world_batch_items={} candidates={} candidates_before={} candidates_after={} pruned={} trace_steps={} trace_steps_avg={:.2} trace_steps_max={} hits={} misses={} field_samples={} artifacts={} opaque_fallbacks={} dense_batches={} semantic_pruned_batches={} solver_plan={} solver_methods={} solver_analytic_hits={} solver_support_rejections={} solver_interval_skips={} solver_packet_tile_rejections={} solver_newton_refinements={} solver_lipschitz_steps={} solver_adaptive_epsilon={} solver_dense_fallback_rays={} solver_generated_dense_fallback_rays={} solver_fallback_contract_dense={} solver_fallback_missing_facts={} solver_fallback_analytic_unsupported={} solver_fallback_verification_failed={} solver_fallback_unsupported_backend={} solver_certificate_failures={}",
+        "counters dispatch={} dispatch_items={} workgroups={}x{}x{} screen_samples={} world_batch_items={} candidates={} candidates_before={} candidates_after={} pruned={} trace_steps={} trace_steps_avg={:.2} trace_steps_max={} hits={} misses={} field_samples={} artifacts={} opaque_fallbacks={} dense_batches={} semantic_pruned_batches={} solver_plan={} solver_subject={} solver_methods={} solver_analytic_hits={} solver_support_rejections={} solver_interval_skips={} solver_packet_tile_rejections={} solver_newton_refinements={} solver_lipschitz_steps={} solver_adaptive_epsilon={} solver_dense_fallback_rays={} solver_generated_dense_fallback_rays={} solver_fallback_contract_dense={} solver_fallback_missing_facts={} solver_fallback_analytic_unsupported={} solver_fallback_verification_failed={} solver_fallback_unsupported_backend={} solver_certificate_failures={}",
         report.counters.dispatch_count,
         report.counters.dispatch_items,
         report.counters.dispatch_workgroups_x,
@@ -341,6 +347,7 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
         report.counters.dense_compatibility_batches,
         report.counters.semantic_pruned_batches,
         solver_plan,
+        solver_subject,
         solver_methods,
         report.counters.solver_analytic_hits,
         report.counters.solver_support_rejections,

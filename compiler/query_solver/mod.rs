@@ -47,7 +47,7 @@ pub struct RaySolverPortfolio {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RaySolverMixedSelection {
-    pub subject: QueryContractId,
+    pub subject: SmolStr,
     pub candidate_class: SmolStr,
     pub method: RaySolverMethod,
     pub required_guarantee: RequiredGuaranteeClass,
@@ -147,6 +147,7 @@ pub struct RaySolverCertificateShape {
 pub struct RaySolverPlan {
     pub id: SmolStr,
     pub contract_id: QueryContractId,
+    pub subject: SmolStr,
     pub correctness: RaySolverCorrectnessPolicy,
     pub evidence: SemanticEvidence,
     pub portfolio: RaySolverPortfolio,
@@ -160,6 +161,7 @@ pub struct RaySolverPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RaySolverDiagnosticSummary {
     pub plan_id: SmolStr,
+    pub subject: SmolStr,
     pub methods: Vec<RaySolverMethod>,
     pub mixed_selections: Vec<RaySolverMixedSelection>,
     pub artifact_reuse_intents: Vec<RaySolverArtifactReuseIntent>,
@@ -174,10 +176,19 @@ impl RaySolverPlan {
         contract_id: QueryContractId,
         evidence: Option<SemanticEvidence>,
     ) -> Option<Self> {
+        Self::for_contract_with_subject(contract_id, contract_id.as_str(), evidence)
+    }
+
+    pub fn for_contract_with_subject(
+        contract_id: QueryContractId,
+        subject: impl Into<SmolStr>,
+        evidence: Option<SemanticEvidence>,
+    ) -> Option<Self> {
         if !is_ray_shaped_spatial_contract(contract_id) {
             return None;
         }
         let descriptor = query_contract(contract_id)?;
+        let subject = subject.into();
         let evidence =
             evidence.unwrap_or_else(|| SemanticEvidence::runtime_unknown("world.region.runtime"));
         let evidence_summary = evidence.summary();
@@ -243,6 +254,7 @@ impl RaySolverPlan {
         Some(Self {
             id: SmolStr::new(format!("ray-solver:{}:v1", contract_id.as_str())),
             contract_id,
+            subject,
             correctness: RaySolverCorrectnessPolicy {
                 contract_id,
                 question: descriptor.question,
@@ -278,6 +290,7 @@ impl RaySolverPlan {
     pub fn diagnostic_summary(&self) -> RaySolverDiagnosticSummary {
         RaySolverDiagnosticSummary {
             plan_id: self.id.clone(),
+            subject: self.subject.clone(),
             methods: self
                 .portfolio
                 .entries
@@ -341,6 +354,28 @@ impl RaySolverPlan {
         for intent in &mut plan.continuation_intents {
             intent.disposition = resolution.disposition;
             intent.reasons = resolution.reasons.clone();
+        }
+        plan
+    }
+
+    pub fn with_subject(&self, subject: impl Into<SmolStr>) -> Self {
+        let subject = subject.into();
+        let mut plan = self.clone();
+        plan.subject = subject.clone();
+        for selection in &mut plan.mixed_selections {
+            selection.subject = subject.clone();
+            selection.evidence_policy_summary =
+                rewrite_selection_subject(&selection.evidence_policy_summary, &subject);
+        }
+        for intent in &mut plan.artifact_reuse_intents {
+            intent.selection.subject = subject.clone();
+            intent.selection.evidence_policy_summary =
+                rewrite_selection_subject(&intent.selection.evidence_policy_summary, &subject);
+        }
+        for intent in &mut plan.continuation_intents {
+            intent.selection.subject = subject.clone();
+            intent.selection.evidence_policy_summary =
+                rewrite_selection_subject(&intent.selection.evidence_policy_summary, &subject);
         }
         plan
     }
@@ -439,13 +474,14 @@ fn mixed_selection_for_entry(
     let required_guarantee = required_guarantee_for_method(entry.method);
     let selected_method_class = selected_method_class_for_method(entry.method);
     Some(RaySolverMixedSelection {
-        subject: contract_id,
+        subject: SmolStr::new(contract_id.as_str()),
         candidate_class: SmolStr::new(candidate_class_for_method(entry.method)),
         method: entry.method,
         required_guarantee,
         selected_method_class,
         evidence_policy_summary: SmolStr::new(format!(
-            "candidate_class={} method={} guarantee={} class={} evidence-origin={:?} evidence-scope={:?} support-pruning={:?} analytic={:?} lipschitz={:?}; {}",
+            "subject={} candidate_class={} method={} guarantee={} class={} evidence-origin={:?} evidence-scope={:?} support-pruning={:?} analytic={:?} lipschitz={:?}; {}",
+            contract_id.as_str(),
             candidate_class_for_method(entry.method),
             ray_solver_method_name(entry.method),
             required_guarantee.name(),
@@ -465,13 +501,14 @@ fn artifact_reuse_intent(
     evidence_summary: &SemanticEvidenceSummary,
 ) -> RaySolverArtifactReuseIntent {
     let selection = RaySolverMixedSelection {
-        subject: contract_id,
+        subject: SmolStr::new(contract_id.as_str()),
         candidate_class: SmolStr::new("artifact-reuse"),
         method: RaySolverMethod::SupportBoundCandidateRejection,
         required_guarantee: RequiredGuaranteeClass::ConservativeNoFalseMiss,
         selected_method_class: SelectedMethodClass::ConservativeSolver,
         evidence_policy_summary: SmolStr::new(format!(
-            "artifact reuse candidate; evidence-origin={:?} evidence-scope={:?} support-pruning={:?} analytic={:?}",
+            "subject={} artifact reuse candidate; evidence-origin={:?} evidence-scope={:?} support-pruning={:?} analytic={:?}",
+            contract_id.as_str(),
             evidence_summary.origin,
             evidence_summary.scope,
             evidence_summary.support.lower_bound_pruning,
@@ -525,13 +562,14 @@ fn continuation_intent(
     evidence_summary: &SemanticEvidenceSummary,
 ) -> RaySolverContinuationIntent {
     let selection = RaySolverMixedSelection {
-        subject: contract_id,
+        subject: SmolStr::new(contract_id.as_str()),
         candidate_class: SmolStr::new("temporal-continuation"),
         method: RaySolverMethod::NeighborFrameContinuation,
         required_guarantee: RequiredGuaranteeClass::ConservativeNoFalseMiss,
         selected_method_class: SelectedMethodClass::HeuristicSolver,
         evidence_policy_summary: SmolStr::new(format!(
-            "continuation candidate; temporal-stability={:?} change-class={:?} stationary={:?} rigid-over-interval={:?}",
+            "subject={} continuation candidate; temporal-stability={:?} change-class={:?} stationary={:?} rigid-over-interval={:?}",
+            contract_id.as_str(),
             evidence_summary.temporal.stability,
             evidence_summary.temporal.change_class,
             evidence_summary.temporal.stationary,
@@ -629,6 +667,17 @@ fn candidate_class_for_method(method: RaySolverMethod) -> &'static str {
         RaySolverMethod::TilePacketSolving => "tile-packet-candidates",
         RaySolverMethod::NeighborFrameContinuation => "temporal-continuation",
     }
+}
+
+fn rewrite_selection_subject(summary: &SmolStr, subject: &SmolStr) -> SmolStr {
+    let Some(rest) = summary.as_str().strip_prefix("subject=") else {
+        return summary.clone();
+    };
+    let rewritten = match rest.split_once(' ') {
+        Some((_, suffix)) => format!("subject={} {}", subject, suffix),
+        None => format!("subject={}", subject),
+    };
+    SmolStr::new(rewritten)
 }
 
 pub fn ray_solver_method_name(method: RaySolverMethod) -> &'static str {

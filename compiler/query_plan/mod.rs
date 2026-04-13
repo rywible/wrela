@@ -156,6 +156,191 @@ pub enum DerivedArtifact {
     OpaquePessimizationBoundary,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NormalizedQueryValuePath {
+    SupportSummary,
+    CaptureDistance,
+    CaptureNormal,
+    CaptureTrace,
+    CaptureOcclusion,
+    CaptureSurface,
+    CaptureRadiance,
+    CaptureMedium,
+    WorldDistance,
+    WorldNormal,
+    WorldTrace,
+    WorldOcclusion,
+    WorldSurface,
+    WorldRadiance,
+    WorldMedium,
+}
+
+impl NormalizedQueryValuePath {
+    pub const fn requires_trace(self) -> bool {
+        matches!(
+            self,
+            Self::CaptureTrace | Self::CaptureOcclusion | Self::WorldTrace | Self::WorldOcclusion
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedQueryBehavior {
+    pub target: QueryTargetKind,
+    pub cardinality: QueryCardinality,
+    pub item_kind: QueryItemKind,
+    pub result_kind: QueryResultKind,
+    pub value_path: NormalizedQueryValuePath,
+    pub requires_material: bool,
+    pub requires_radiance: bool,
+    pub requires_volume: bool,
+    pub requires_trace: bool,
+    pub requires_root_shape_lookup: bool,
+}
+
+impl NormalizedQueryBehavior {
+    pub fn from_descriptor(descriptor: &QueryContractDescriptor) -> Result<Self, &'static str> {
+        let target = descriptor.target;
+        let cardinality = descriptor.cardinality;
+        let item_kind = descriptor.item_kind;
+        let result_kind = descriptor.result_kind;
+        let question = match descriptor.question {
+            QueryQuestionId::Trace => QueryQuestionId::Nearest,
+            other => other,
+        };
+        let value_path = match (target, question, item_kind, result_kind) {
+            (
+                QueryTargetKind::Capture,
+                QueryQuestionId::Summary,
+                QueryItemKind::Unit,
+                QueryResultKind::SupportSummaryResult,
+            ) => NormalizedQueryValuePath::SupportSummary,
+            (
+                QueryTargetKind::Capture,
+                QueryQuestionId::Distance,
+                QueryItemKind::PointQuery,
+                QueryResultKind::DistanceResult,
+            ) => NormalizedQueryValuePath::CaptureDistance,
+            (
+                QueryTargetKind::Capture,
+                QueryQuestionId::Normal,
+                QueryItemKind::PointQuery,
+                QueryResultKind::NormalResult,
+            ) => NormalizedQueryValuePath::CaptureNormal,
+            (
+                QueryTargetKind::Capture,
+                QueryQuestionId::Nearest,
+                QueryItemKind::RayQuery,
+                QueryResultKind::Hit3,
+            ) => NormalizedQueryValuePath::CaptureTrace,
+            (
+                QueryTargetKind::Capture,
+                QueryQuestionId::Occluded,
+                QueryItemKind::RayQuery,
+                QueryResultKind::OcclusionResult,
+            ) => NormalizedQueryValuePath::CaptureOcclusion,
+            (
+                QueryTargetKind::Capture,
+                QueryQuestionId::Sample,
+                QueryItemKind::Hit3,
+                QueryResultKind::Surface,
+            ) => NormalizedQueryValuePath::CaptureSurface,
+            (
+                QueryTargetKind::Capture,
+                QueryQuestionId::Radiance,
+                QueryItemKind::PointDirectionQuery,
+                QueryResultKind::RadianceResult,
+            ) => NormalizedQueryValuePath::CaptureRadiance,
+            (
+                QueryTargetKind::Capture,
+                QueryQuestionId::Medium,
+                QueryItemKind::PointQuery,
+                QueryResultKind::MediumResult,
+            ) => NormalizedQueryValuePath::CaptureMedium,
+            (
+                QueryTargetKind::World,
+                QueryQuestionId::Summary,
+                QueryItemKind::Unit,
+                QueryResultKind::SupportSummaryResult,
+            ) => NormalizedQueryValuePath::SupportSummary,
+            (
+                QueryTargetKind::World,
+                QueryQuestionId::Distance,
+                QueryItemKind::PointQuery,
+                QueryResultKind::DistanceResult,
+            ) => NormalizedQueryValuePath::WorldDistance,
+            (
+                QueryTargetKind::World,
+                QueryQuestionId::Normal,
+                QueryItemKind::PointQuery,
+                QueryResultKind::NormalResult,
+            ) => NormalizedQueryValuePath::WorldNormal,
+            (
+                QueryTargetKind::World,
+                QueryQuestionId::Nearest,
+                QueryItemKind::RayQuery,
+                QueryResultKind::Hit3,
+            ) => NormalizedQueryValuePath::WorldTrace,
+            (
+                QueryTargetKind::World,
+                QueryQuestionId::Occluded,
+                QueryItemKind::RayQuery,
+                QueryResultKind::OcclusionResult,
+            ) => NormalizedQueryValuePath::WorldOcclusion,
+            (
+                QueryTargetKind::World,
+                QueryQuestionId::Sample,
+                QueryItemKind::Hit3,
+                QueryResultKind::Surface,
+            ) => NormalizedQueryValuePath::WorldSurface,
+            (
+                QueryTargetKind::World,
+                QueryQuestionId::Radiance,
+                QueryItemKind::PointDirectionQuery,
+                QueryResultKind::RadianceResult,
+            ) => NormalizedQueryValuePath::WorldRadiance,
+            (
+                QueryTargetKind::World,
+                QueryQuestionId::Medium,
+                QueryItemKind::PointQuery,
+                QueryResultKind::MediumResult,
+            ) => NormalizedQueryValuePath::WorldMedium,
+            _ => {
+                return Err("query descriptor does not map to a normalized behavior");
+            }
+        };
+        let requires_material = descriptor.result_kind == QueryResultKind::Surface;
+        let requires_radiance =
+            descriptor.participant_kind == Some(ParticipantContractKind::Radiance);
+        let requires_volume = descriptor.participant_kind == Some(ParticipantContractKind::Medium);
+        let requires_trace = value_path.requires_trace();
+        Ok(Self {
+            target,
+            cardinality,
+            item_kind,
+            result_kind,
+            value_path,
+            requires_material,
+            requires_radiance,
+            requires_volume,
+            requires_trace,
+            requires_root_shape_lookup: requires_trace || requires_material,
+        })
+    }
+
+    pub const fn uses_world_shapes(&self) -> bool {
+        matches!(self.target, QueryTargetKind::World)
+    }
+
+    pub const fn requires_trace(&self) -> bool {
+        self.requires_trace
+    }
+
+    pub const fn requires_root_shape_lookup(&self) -> bool {
+        self.requires_root_shape_lookup
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanStage {
     SelectBackend,
@@ -514,6 +699,7 @@ pub struct BatchQueryPlan {
     pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: BatchQueryKind,
+    pub normalized_behavior: NormalizedQueryBehavior,
     pub capture_kind: CaptureKind,
     pub backend: DispatchBackend,
     pub kernel: InternalKernelKind,
@@ -549,6 +735,7 @@ pub struct CaptureQueryPlan {
     pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: CaptureQueryKind,
+    pub normalized_behavior: NormalizedQueryBehavior,
     pub capture_kind: CaptureKind,
     pub result_kind: QueryResultKind,
     pub executor: PlanExecutor,
@@ -577,6 +764,7 @@ pub struct WorldQueryPlan {
     pub surface: QuerySurfaceKind,
     pub helper_name: SmolStr,
     pub kind: WorldQueryKind,
+    pub normalized_behavior: NormalizedQueryBehavior,
     pub backend: DispatchBackend,
     pub result_kind: QueryResultKind,
     pub executor: PlanExecutor,
@@ -948,6 +1136,7 @@ impl BatchQueryPlan {
         let kernel = bound_kernel(binding);
         let kind = batch_query_kind_for_descriptor(descriptor)
             .ok_or("batch query descriptor does not map to a batch question kind")?;
+        let normalized_behavior = NormalizedQueryBehavior::from_descriptor(descriptor)?;
         let capture_kind = descriptor.capture_kind;
         let item_kind = descriptor.item_kind;
         let result_kind = descriptor.result_kind;
@@ -1055,6 +1244,7 @@ impl BatchQueryPlan {
             surface: descriptor.surface,
             helper_name: SmolStr::new(helper_name),
             kind,
+            normalized_behavior,
             capture_kind,
             backend,
             kernel,
@@ -1220,6 +1410,7 @@ impl CaptureQueryPlan {
         let preserves_local_hit_context = descriptor.preserves_local_hit_context;
         let kind = capture_query_kind_for_descriptor(descriptor)
             .ok_or("capture query descriptor does not map to a capture question kind")?;
+        let normalized_behavior = NormalizedQueryBehavior::from_descriptor(descriptor)?;
         let capture_kind = descriptor.capture_kind;
         let candidate_strategy = match kind {
             CaptureQueryKind::SupportSummary => CandidateStrategy::SemanticSupportSummary,
@@ -1315,6 +1506,7 @@ impl CaptureQueryPlan {
             surface: descriptor.surface,
             helper_name: SmolStr::new(helper_name),
             kind,
+            normalized_behavior,
             capture_kind,
             result_kind,
             executor,
@@ -1423,6 +1615,7 @@ impl WorldQueryPlan {
         let item_kind = descriptor.item_kind;
         let kind = world_query_kind_for_descriptor(descriptor)
             .ok_or("world query descriptor does not map to a world question kind")?;
+        let normalized_behavior = NormalizedQueryBehavior::from_descriptor(descriptor)?;
         let candidate_strategy = world_candidate_strategy(kind);
         let pruning_strategy = world_pruning_strategy(kind, candidate_strategy);
         let derived_artifacts = derive_world_artifacts(candidate_strategy, pruning_strategy);
@@ -1480,6 +1673,7 @@ impl WorldQueryPlan {
             surface: descriptor.surface,
             helper_name: SmolStr::new(helper_name),
             kind,
+            normalized_behavior,
             backend,
             result_kind,
             executor,

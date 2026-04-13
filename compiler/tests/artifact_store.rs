@@ -74,6 +74,183 @@ fn stored_artifact(
 }
 
 #[test]
+fn query_artifact_requests_can_supply_their_exact_reuse_family() {
+    let artifact =
+        BatchQueryPlan::for_shape_query(BatchQueryKind::Trace, DispatchBackend::Cpu, None)
+            .artifact_contracts
+            .into_iter()
+            .find(|artifact| {
+                matches!(
+                    artifact.schema,
+                    wrela::query_plan::ArtifactSchema::SupportSummary { .. }
+                )
+            })
+            .expect("support summary");
+    let contract = artifact.semantic_artifact_contract();
+    let snapshot = stable_region_snapshot_handle(&SmolStr::new("query_artifact_region"))
+        .with_epoch(SnapshotEpoch(2));
+    let reuse_key = artifact.reuse_key(&snapshot, Some(21), contract.compatibility.policy.mode);
+    let mut store = ArtifactStore::default();
+    store.insert(StoredArtifact {
+        contract: contract.clone(),
+        metadata: ArtifactInstanceMetadata {
+            snapshot: snapshot.clone(),
+            reuse_key: reuse_key.clone(),
+            policy_digest: Some(21),
+            presentation_frame: None,
+            layout_signature: None,
+            history_compatibility_hash: None,
+            evidence_summary: contract.evidence_summary.clone(),
+        },
+        payload: "query-payload",
+    });
+
+    let (found, lookup) = store.lookup(&ArtifactLookupRequest {
+        contract: contract.clone(),
+        reuse_key: Some(reuse_key.clone()),
+        current_snapshot: snapshot,
+        previous_snapshot_epoch: None,
+        change_class: Some(ChangeClass::Presentation),
+        policy_digest: Some(21),
+        presentation_frame: None,
+        layout_signature: None,
+        history_compatibility_hash: None,
+        evidence_summary: Some(contract.evidence_summary.clone()),
+    });
+
+    assert!(
+        found.is_some(),
+        "expected query artifact lookup to reuse the supplied family key: {lookup:?}"
+    );
+    assert_eq!(lookup.index_candidates, 1);
+    assert_eq!(
+        store.report().buckets[0].compatibility_hash,
+        reuse_key.compatibility_hash
+    );
+}
+
+#[test]
+fn presentation_history_requests_can_supply_their_exact_reuse_family() {
+    let compatibility = wrela::presentation_contract::HistoryCompatibilityKey {
+        element_schema: wrela::presentation_contract::AttachmentElementSchema::Vec4F32,
+        resolution: wrela::presentation_contract::AttachmentResolutionClass::Viewport,
+        scale: wrela::presentation_contract::AttachmentResolutionScale {
+            divisor_x: 1,
+            divisor_y: 1,
+        },
+        projection_input:
+            wrela::presentation_contract::CanonicalProjectionInput::CameraVerticalFovDegrees,
+        ray_space: wrela::presentation_contract::CanonicalViewRaySpace::World,
+        sample_position: wrela::presentation_contract::ScreenLatticeSamplePosition::PixelCenter,
+        sample_origin: wrela::presentation_contract::ScreenLatticeOrigin::TopLeft,
+        samples_per_pixel: 1,
+    };
+    let slot = wrela::presentation_contract::TemporalHistorySlotContract {
+        slot: 0,
+        attachment: SmolStr::new("history_color"),
+        role: wrela::presentation_contract::TemporalHistoryRole::ReprojectedColor,
+        compatibility: compatibility.clone(),
+        max_age_frames: 2,
+    };
+    let history_hash = compatibility.compatibility_hash();
+    let evidence_summary = SemanticEvidenceSummary::contract_bound();
+    let contract = SemanticArtifactContract {
+        id: SmolStr::new("artifact.history_color"),
+        kind: SemanticArtifactKind::PresentationHistory,
+        logical_schema: ArtifactLogicalSchema {
+            namespace: SmolStr::new("presentation"),
+            name: SmolStr::new("history-slot"),
+            fields: vec![
+                ArtifactLogicalField::new("attachment", "history_color"),
+                ArtifactLogicalField::new("kind", "Color"),
+                ArtifactLogicalField::new("element_schema", "Vec4F32"),
+                ArtifactLogicalField::new("history_slot", "0"),
+                ArtifactLogicalField::new("history_role", "ReprojectedColor"),
+                ArtifactLogicalField::new("history_compatibility_hash", history_hash.to_string()),
+            ],
+        },
+        compatibility: ArtifactCompatibilityRelation {
+            snapshot: ArtifactSnapshotRelation::PreviousSnapshotEpoch,
+            transition: ArtifactTransitionRelation {
+                compatibility: Some(ChangeCompatibility::new(ChangeClass::Presentation)),
+                requires_previous_snapshot: true,
+            },
+            policy: ArtifactPolicyCompatibility {
+                mode: ArtifactPolicyDigestMode::CompatibleRange,
+            },
+            evidence: ArtifactEvidenceCompatibility {
+                origin: evidence_summary.origin,
+                scope: evidence_summary.scope,
+            },
+        },
+        validity: ArtifactValidityRule::all(vec![
+            ArtifactValidityRule::predicate(
+                ArtifactValidityPredicate::PreviousSnapshotMatchesStored,
+            ),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::LayoutSignatureMatches),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::HistoryCompatibilityMatches),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::CompatibleChange(
+                ChangeCompatibility::new(ChangeClass::Presentation),
+            )),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::MaxPresentationFrameAge(2)),
+            ArtifactValidityRule::predicate(
+                ArtifactValidityPredicate::SnapshotLineageMatchesCurrent,
+            ),
+        ]),
+        producer: SmolStr::new("temporal_resolve"),
+        consumer: SmolStr::new("presentation.frame"),
+        deterministic: true,
+        version: wrela::presentation_contract::PRESENTATION_CONTRACT_VERSION,
+        transition: None,
+        evidence_summary: evidence_summary.clone(),
+    };
+    let previous_snapshot =
+        stable_region_snapshot_handle(&SmolStr::new("history_region")).with_epoch(SnapshotEpoch(1));
+    let current_snapshot =
+        stable_region_snapshot_handle(&SmolStr::new("history_region")).with_epoch(SnapshotEpoch(2));
+    let layout_signature = 41;
+    let stored_reuse_key = slot.reuse_key(&previous_snapshot, layout_signature);
+    let request_reuse_key = slot.reuse_key(&current_snapshot, layout_signature);
+    let mut store = ArtifactStore::default();
+    store.insert(StoredArtifact {
+        contract: contract.clone(),
+        metadata: ArtifactInstanceMetadata {
+            snapshot: previous_snapshot,
+            reuse_key: stored_reuse_key.clone(),
+            policy_digest: Some(history_hash),
+            presentation_frame: Some(7),
+            layout_signature: Some(layout_signature),
+            history_compatibility_hash: Some(history_hash),
+            evidence_summary: evidence_summary.clone(),
+        },
+        payload: "history-payload",
+    });
+
+    let (found, lookup) = store.lookup(&ArtifactLookupRequest {
+        contract,
+        reuse_key: Some(request_reuse_key.clone()),
+        current_snapshot,
+        previous_snapshot_epoch: Some(SnapshotEpoch(1)),
+        change_class: Some(ChangeClass::Presentation),
+        policy_digest: Some(history_hash),
+        presentation_frame: Some(8),
+        layout_signature: Some(layout_signature),
+        history_compatibility_hash: Some(history_hash),
+        evidence_summary: Some(evidence_summary),
+    });
+
+    assert!(
+        found.is_some(),
+        "expected history artifact lookup to reuse the supplied family key: {lookup:?}"
+    );
+    assert_eq!(lookup.index_candidates, 1);
+    assert_eq!(
+        store.report().buckets[0].logical_schema,
+        SmolStr::new(request_reuse_key.logical_schema)
+    );
+}
+
+#[test]
 fn support_summaries_reuse_across_compatible_snapshots_and_store_reports_entries() {
     let base_artifact =
         BatchQueryPlan::for_shape_query(BatchQueryKind::Trace, DispatchBackend::Cpu, None)
@@ -135,6 +312,7 @@ fn support_summaries_reuse_across_compatible_snapshots_and_store_reports_entries
 
     let (found, lookup) = store.lookup(&ArtifactLookupRequest {
         contract: contract.clone(),
+        reuse_key: None,
         current_snapshot,
         previous_snapshot_epoch: None,
         change_class: Some(ChangeClass::Presentation),
@@ -155,6 +333,102 @@ fn support_summaries_reuse_across_compatible_snapshots_and_store_reports_entries
         "expected invalidation to remove the stored artifact"
     );
     assert_eq!(store.report().entries, 0);
+}
+
+#[test]
+fn store_indexes_reuse_families_by_policy_digest() {
+    let base_artifact =
+        BatchQueryPlan::for_shape_query(BatchQueryKind::Trace, DispatchBackend::Cpu, None)
+            .artifact_contracts
+            .into_iter()
+            .find(|artifact| {
+                matches!(
+                    artifact.schema,
+                    wrela::query_plan::ArtifactSchema::SupportSummary { .. }
+                )
+            })
+            .expect("support summary")
+            .semantic_artifact_contract();
+    let evidence = base_artifact.evidence_summary.clone();
+    let compatibility = ArtifactCompatibilityRelation {
+        snapshot: ArtifactSnapshotRelation::CaptureLineage,
+        transition: ArtifactTransitionRelation {
+            compatibility: Some(ChangeCompatibility::new(ChangeClass::Presentation)),
+            requires_previous_snapshot: false,
+        },
+        policy: ArtifactPolicyCompatibility {
+            mode: ArtifactPolicyDigestMode::CompatibleRange,
+        },
+        evidence: ArtifactEvidenceCompatibility {
+            origin: evidence.origin,
+            scope: evidence.scope,
+        },
+    };
+    let contract = SemanticArtifactContract {
+        validity: ArtifactValidityRule::all(vec![
+            ArtifactValidityRule::predicate(
+                ArtifactValidityPredicate::SnapshotLineageMatchesCurrent,
+            ),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::CompatibleChange(
+                ChangeCompatibility::new(ChangeClass::Presentation),
+            )),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::PolicyDigestMatches),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::EvidenceSummaryMatches),
+        ]),
+        compatibility,
+        ..base_artifact
+    };
+    let evidence_summary = evidence.clone();
+    let mut store = ArtifactStore::default();
+    store.insert(stored_artifact(
+        contract.clone(),
+        "artifact_store_region",
+        2,
+        Some(11),
+        evidence_summary.clone(),
+    ));
+    store.insert(stored_artifact(
+        contract.clone(),
+        "artifact_store_region",
+        2,
+        Some(22),
+        evidence_summary.clone(),
+    ));
+
+    let current_snapshot = stable_region_snapshot_handle(&SmolStr::new("artifact_store_region"))
+        .with_epoch(SnapshotEpoch(2));
+    let (found, lookup) = store.lookup(&ArtifactLookupRequest {
+        contract: contract.clone(),
+        reuse_key: None,
+        current_snapshot,
+        previous_snapshot_epoch: None,
+        change_class: Some(ChangeClass::Presentation),
+        policy_digest: Some(22),
+        presentation_frame: None,
+        layout_signature: None,
+        history_compatibility_hash: None,
+        evidence_summary: Some(evidence_summary),
+    });
+
+    assert!(
+        found.is_some(),
+        "expected policy-aware reuse lookup to find the matching bucket: {lookup:?}"
+    );
+    assert_eq!(lookup.index_candidates, 1);
+    let report = store.report();
+    assert_eq!(report.buckets.len(), 2);
+    assert!(
+        report
+            .buckets
+            .iter()
+            .any(|bucket| bucket.policy_digest == Some(11) && bucket.entry_count == 1)
+    );
+    assert!(
+        report
+            .buckets
+            .iter()
+            .any(|bucket| bucket.policy_digest == Some(22) && bucket.entry_count == 1)
+    );
 }
 
 #[test]
@@ -201,6 +475,7 @@ fn history_like_artifacts_are_invalidated_on_incompatible_transitions() {
         stable_region_snapshot_handle(&SmolStr::new("history_region")).with_epoch(SnapshotEpoch(2));
     let (found, lookup) = store.lookup(&ArtifactLookupRequest {
         contract,
+        reuse_key: None,
         current_snapshot,
         previous_snapshot_epoch: Some(SnapshotEpoch(1)),
         change_class: Some(ChangeClass::Topology),
@@ -264,6 +539,7 @@ fn culling_tables_are_rejected_when_required_evidence_changes() {
         stable_region_snapshot_handle(&SmolStr::new("culling_region")).with_epoch(SnapshotEpoch(2));
     let (found, lookup) = store.lookup(&ArtifactLookupRequest {
         contract,
+        reuse_key: None,
         current_snapshot,
         previous_snapshot_epoch: None,
         change_class: Some(ChangeClass::Presentation),
@@ -319,6 +595,7 @@ fn store_rejects_artifacts_when_contract_version_changes_even_if_ids_match() {
         .with_epoch(SnapshotEpoch(1));
     let (found, lookup) = store.lookup(&ArtifactLookupRequest {
         contract: requested_contract,
+        reuse_key: None,
         current_snapshot,
         previous_snapshot_epoch: None,
         change_class: Some(ChangeClass::Presentation),
@@ -383,6 +660,7 @@ fn store_rejects_artifacts_when_requested_validity_changes() {
         .with_epoch(SnapshotEpoch(1));
     let (found, lookup) = store.lookup(&ArtifactLookupRequest {
         contract: requested_contract,
+        reuse_key: None,
         current_snapshot,
         previous_snapshot_epoch: None,
         change_class: None,

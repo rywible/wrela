@@ -784,6 +784,7 @@ struct PresentationEvidenceDump {
 #[derive(Serialize)]
 struct PresentationRaySolverDump {
     plan_id: String,
+    subject: String,
     methods: Vec<String>,
     mixed_selections: Vec<PresentationRaySolverSelectionDump>,
     artifact_reuse_intents: Vec<PresentationRaySolverIntentDump>,
@@ -4359,9 +4360,9 @@ fn domain_execution_inputs(
         hir::DomainGeometryDetail::Fine => 1,
     };
     let _ = query_backend;
-    let policy_metadata = metadata.execution_policy.as_ref().ok_or_else(|| {
+    let policy_metadata = domain.domain_execution_policy.as_ref().ok_or_else(|| {
         format!(
-            "domain `{}` is missing execution policy metadata",
+            "domain `{}` is missing lowered execution policy metadata",
             domain.name
         )
     })?;
@@ -5363,6 +5364,7 @@ fn presentation_solver_dump(
 ) -> PresentationRaySolverDump {
     PresentationRaySolverDump {
         plan_id: summary.plan_id.to_string(),
+        subject: summary.subject.to_string(),
         methods: summary
             .methods
             .iter()

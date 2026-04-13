@@ -1,4 +1,5 @@
 use smol_str::SmolStr;
+use wrela::artifact_store::ArtifactLookupRequest;
 use wrela::collision_exec::cpu::{CollisionArtifactStore, execute_with_store};
 use wrela::collision_plan::{CollisionPlan, CollisionQueryKind};
 use wrela::hir;
@@ -160,6 +161,20 @@ fn collision_sweep_input(start_center: [f32; 3], end_center: [f32; 3], radius: f
     })
 }
 
+fn policy_digest(policy: wrela::collision_contract::CollisionExecutionPolicy) -> u64 {
+    let backend_tag = [match policy.backend_preference {
+        wrela::query_contract::DispatchBackend::Cpu => 0,
+        wrela::query_contract::DispatchBackend::VirtualGpu => 1,
+        wrela::query_contract::DispatchBackend::Wgsl => 2,
+        wrela::query_contract::DispatchBackend::Auto => 3,
+    }];
+    wrela::query_exec::ids::stable_semantic_id(&[
+        &policy.required_guarantee.id().to_le_bytes(),
+        &policy.selected_method.id().to_le_bytes(),
+        &backend_tag,
+    ])
+}
+
 fn assert_approx_eq(lhs: f32, rhs: f32) {
     assert!(
         (lhs - rhs).abs() < 0.02,
@@ -213,6 +228,66 @@ fn static_and_transition_collision_plans_execute_on_cpu() {
             assert_approx_eq(value.time_fraction_upper_bound.expect("toi"), 0.3125);
         }
         other => panic!("expected time-of-impact result, got {other:?}"),
+    }
+}
+
+#[test]
+fn transition_collision_materializes_a_typed_broadphase_payload() {
+    let ctx = typed_query_module(collision_fixture_source());
+    let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_region"));
+    let domain = scene_domain(scene_id);
+    let transition = collision_transition_input(2, 1, ChangeClass::Presentation);
+    let sweep = collision_sweep_input([0.0, 0.0, 2.0], [0.0, 0.0, -2.0], 0.25);
+    let plan = CollisionPlan::for_query(CollisionQueryKind::SphereSweepTransition);
+    let mut store = CollisionArtifactStore::default();
+
+    let (_, trace) = execute_with_store(
+        &plan,
+        &ctx,
+        &[
+            region_capture(scene_id, 2),
+            domain.clone(),
+            transition,
+            sweep,
+        ],
+        &mut store,
+    )
+    .expect("transition sweep with store");
+    assert_eq!(trace.artifact_store.entries, 4);
+
+    let broadphase_artifact = plan
+        .artifacts
+        .iter()
+        .find(|artifact| {
+            artifact.kind == wrela::collision_plan::CollisionArtifactKind::BroadphaseCandidates
+        })
+        .expect("broadphase artifact");
+    let current_snapshot =
+        wrela::query_exec::stable_region_snapshot_handle(&SmolStr::new("collision_region"))
+            .with_epoch(wrela::world_identity::SnapshotEpoch(2));
+    let (artifact, report) = store.lookup(&ArtifactLookupRequest {
+        contract: broadphase_artifact.contract.clone(),
+        reuse_key: None,
+        current_snapshot,
+        previous_snapshot_epoch: None,
+        change_class: None,
+        policy_digest: Some(policy_digest(plan.policy)),
+        presentation_frame: None,
+        layout_signature: None,
+        history_compatibility_hash: None,
+        evidence_summary: Some(broadphase_artifact.contract.evidence_summary.clone()),
+    });
+    let artifact = artifact.expect("broadphase artifact lookup");
+    assert_eq!(report.index_candidates, 1);
+    match &artifact.payload {
+        wrela::collision_exec::cpu::CollisionArtifactPayload::BroadphaseCandidates(payload) => {
+            assert_eq!(payload.candidate_shape_names.len(), 1);
+            assert_eq!(
+                payload.candidate_shape_names[0],
+                SmolStr::new("collision_shape")
+            );
+        }
+        other => panic!("expected typed broadphase payload, got {other:?}"),
     }
 }
 

@@ -354,6 +354,8 @@ pub struct RuntimeBoundsEvidence {
     pub lipschitz: Option<LipschitzStatus>,
 }
 
+/// Migration-only scaffolding retained while support/provenance facts are
+/// phased out in favor of `SemanticEvidence`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupportFacts {
     pub support_class: SupportClass,
@@ -364,6 +366,8 @@ pub struct SupportFacts {
     pub opaque_boundary: bool,
 }
 
+/// Migration-only scaffolding retained while support/provenance facts are
+/// phased out in favor of `SemanticEvidence`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProvenanceFacts {
     pub hit3_identity_required: bool,

@@ -587,6 +587,8 @@ pub fn frame_state_value(
         frame_index.saturating_sub(1),
         delta_seconds,
         frame_index == 0,
+        SnapshotEpoch::INITIAL,
+        SnapshotEpoch::INITIAL,
     )
 }
 
@@ -601,6 +603,8 @@ pub fn frame_state_value_with_history(
     previous_frame_index: u32,
     delta_seconds: f32,
     history_reset: bool,
+    current_snapshot_epoch: SnapshotEpoch,
+    previous_snapshot_epoch: SnapshotEpoch,
 ) -> KernelValue {
     frame_state_value_with_temporal_context(
         camera,
@@ -617,8 +621,8 @@ pub fn frame_state_value_with_history(
         previous_frame_index,
         frame_index,
         frame_index as f32 * delta_seconds.max(0.0),
-        SnapshotEpoch::INITIAL,
-        SnapshotEpoch::INITIAL,
+        current_snapshot_epoch,
+        previous_snapshot_epoch,
         false,
         0,
         true,
@@ -1088,8 +1092,10 @@ fn history_slots_match(
         let layout = frame_attachment_layout(frame, attachment, width, height)
             .map_err(PresentationExecError::Resource)?;
         let contract = presentation_history_artifact_contract(temporal, slot, attachment);
+        let reuse_key = slot.reuse_key(&current_snapshot, layout.compatibility_signature());
         let (artifact, _) = store.lookup(&ArtifactLookupRequest {
             contract,
+            reuse_key: Some(reuse_key),
             current_snapshot: current_snapshot.clone(),
             previous_snapshot_epoch: Some(components.previous_snapshot_epoch),
             change_class: Some(change_budget),

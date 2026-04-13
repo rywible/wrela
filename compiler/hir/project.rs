@@ -3273,6 +3273,7 @@ fn make_main_wrapper() -> crate::hir::Function {
         field: None,
         region: None,
         domain: None,
+        domain_execution_policy: None,
         presentation: None,
         field_graph: None,
         system_metadata: None,

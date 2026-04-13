@@ -49,12 +49,14 @@ fn ray_solver_plan_exposes_mixed_selection_and_intent_summary_surface() {
     .expect("ray solver plan");
     let summary = solver.diagnostic_summary();
 
+    assert_eq!(solver.subject.as_str(), solver.contract_id.as_str());
+    assert_eq!(summary.subject, solver.subject);
     assert_eq!(summary.mixed_selections.len(), 4);
     assert!(
         summary
             .mixed_selections
             .iter()
-            .all(|selection| selection.subject == solver.contract_id)
+            .all(|selection| selection.subject == solver.subject)
     );
     assert!(summary.mixed_selections.iter().any(|selection| {
         selection.method == RaySolverMethod::DenseSphereTracing
@@ -106,5 +108,28 @@ fn ray_solver_plan_exposes_mixed_selection_and_intent_summary_surface() {
             .selection
             .evidence_policy_summary
             .contains("continuation candidate")
+    );
+
+    let subtree_solver = solver.with_subject("shape.scene_branch");
+    let subtree_summary = subtree_solver.diagnostic_summary();
+    assert_eq!(subtree_solver.subject.as_str(), "shape.scene_branch");
+    assert_eq!(subtree_summary.subject.as_str(), "shape.scene_branch");
+    assert!(
+        subtree_solver
+            .mixed_selections()
+            .iter()
+            .all(|selection| selection.subject.as_str() == "shape.scene_branch")
+    );
+    assert!(
+        subtree_summary
+            .artifact_reuse_intents
+            .iter()
+            .all(|intent| intent.selection.subject.as_str() == "shape.scene_branch")
+    );
+    assert!(
+        subtree_summary
+            .continuation_intents
+            .iter()
+            .all(|intent| intent.selection.subject.as_str() == "shape.scene_branch")
     );
 }

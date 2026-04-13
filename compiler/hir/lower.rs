@@ -1100,6 +1100,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
+            domain_execution_policy: None,
             presentation: None,
             field_graph: None,
             system_metadata: None,
@@ -1136,6 +1137,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
+            domain_execution_policy: None,
             presentation: None,
             field_graph: None,
             system_metadata: parse_system_metadata(f.syntax()),
@@ -1172,6 +1174,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
+            domain_execution_policy: None,
             presentation: None,
             field_graph: None,
             system_metadata: None,
@@ -1253,6 +1256,7 @@ impl LoweringContext {
             field,
             region: None,
             domain: None,
+            domain_execution_policy: None,
             presentation: None,
             field_graph,
             system_metadata: None,
@@ -1284,6 +1288,7 @@ impl LoweringContext {
             field: None,
             region: Some(RegionMetadata { layers, items }),
             domain: None,
+            domain_execution_policy: None,
             presentation: None,
             field_graph: None,
             system_metadata: None,
@@ -1304,8 +1309,7 @@ impl LoweringContext {
         let visibility = visibility_for_node_default(d.syntax());
         let params = d.params().map(|p| self.lower_param(p)).collect();
         let stmts: Vec<_> = d.statements().collect();
-        let (mut metadata, execution_policy) = self.lower_domain_metadata_and_policy(&stmts);
-        metadata.execution_policy = Some(execution_policy);
+        let (metadata, execution_policy) = self.lower_domain_metadata_and_execution_policy(&stmts);
         let body = self.lower_world_body(stmts);
 
         Function {
@@ -1318,6 +1322,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: Some(metadata),
+            domain_execution_policy: Some(execution_policy),
             presentation: None,
             field_graph: None,
             system_metadata: None,
@@ -1356,6 +1361,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
+            domain_execution_policy: None,
             presentation: Some(metadata),
             field_graph: None,
             system_metadata: None,
@@ -1390,6 +1396,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
+            domain_execution_policy: None,
             presentation: Some(metadata),
             field_graph: None,
             system_metadata: None,
@@ -1424,6 +1431,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
+            domain_execution_policy: None,
             presentation: None,
             field_graph: None,
             system_metadata: None,
@@ -1458,6 +1466,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
+            domain_execution_policy: None,
             presentation: None,
             field_graph: None,
             system_metadata: None,
@@ -1492,6 +1501,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
+            domain_execution_policy: None,
             presentation: None,
             field_graph: None,
             system_metadata: None,
@@ -1575,7 +1585,7 @@ impl LoweringContext {
         })
     }
 
-    fn lower_domain_metadata_and_policy(
+    fn lower_domain_metadata_and_execution_policy(
         &mut self,
         stmts: &[ast::Stmt],
     ) -> (DomainMetadata, DomainExecutionPolicyMetadata) {
@@ -1584,7 +1594,6 @@ impl LoweringContext {
             material: true,
             radiance: true,
             media: true,
-            execution_policy: None,
         };
         let mut execution_policy = DomainExecutionPolicyMetadata {
             required_guarantee: RequiredGuaranteeClass::ConservativeNoFalseMiss,
@@ -2653,6 +2662,7 @@ impl LoweringContext {
             field: None,
             region: None,
             domain: None,
+            domain_execution_policy: None,
             presentation: None,
             field_graph: None,
             system_metadata: None,

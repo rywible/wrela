@@ -211,6 +211,7 @@ pub fn lower_batch_query_plan(plan: &BatchQueryPlan) -> KernelBatchQueryPlan {
         helper_name: plan.helper_name.clone(),
         kind: batch_query_kind_for_contract_id(plan.contract_id)
             .expect("batch query plan contract id must resolve"),
+        normalized_behavior: plan.normalized_behavior.clone(),
         capture_kind: plan.capture_kind,
         backend: plan.backend,
         kernel: plan.kernel,

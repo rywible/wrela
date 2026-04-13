@@ -9,11 +9,11 @@ use crate::portable::{
     portable_any_builtin_record_abi, portable_query_item_abi, portable_query_result_abi,
 };
 use crate::query_contract::{
-    self, ParticipantContractKind, QueryCardinality, QueryContractDescriptor,
-    QueryExecutionBinding, QueryItemKind, QueryQuestionId, QueryResultKind, QueryTargetKind,
+    self, QueryCardinality, QueryContractDescriptor, QueryExecutionBinding, QueryResultKind,
 };
 use crate::query_exec::QueryExecContext;
 use crate::query_exec::cpu::{DirectQueryOps, QueryExecError};
+use crate::query_plan::{NormalizedQueryBehavior, NormalizedQueryValuePath};
 use crate::query_solver::{RaySolverPlan, ray_solver_method_name};
 use crate::scene_ir::{
     FieldNodeKindSummary, FieldNodeRecord, RepeatKind, SceneOperatorPayload, SceneProfileExpr,
@@ -42,182 +42,93 @@ pub(crate) struct GeneratedShader {
     pub(crate) result_abi: PortableAbiType,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ShaderValuePath {
-    CaptureDistance,
-    CaptureNormal,
-    CaptureTrace,
-    CaptureOcclusion,
-    CaptureSurface,
-    CaptureRadiance,
-    CaptureMedium,
-    WorldDistance,
-    WorldNormal,
-    WorldTrace,
-    WorldOcclusion,
-    WorldSurface,
-    WorldRadiance,
-    WorldMedium,
-}
-
 #[derive(Debug, Clone)]
 struct NormalizedShaderBehavior {
-    target: QueryTargetKind,
     cardinality: QueryCardinality,
-    item_kind: QueryItemKind,
     result_kind: QueryResultKind,
     requires_material: bool,
     requires_radiance: bool,
     requires_volume: bool,
-    value_path: ShaderValuePath,
+    requires_trace: bool,
+    requires_root_shape_lookup: bool,
+    value_path: NormalizedQueryValuePath,
     ray_solver: Option<RaySolverPlan>,
 }
 
 impl NormalizedShaderBehavior {
-    fn from_plan(
-        descriptor: &QueryContractDescriptor,
-        plan: ShaderPlan<'_>,
-    ) -> Result<Self, QueryExecError> {
-        let (target, cardinality, item_kind, result_kind, ray_solver) = match plan {
-            ShaderPlan::Capture(plan) => (
-                plan.target,
-                plan.cardinality,
-                plan.candidate_contract.item_kind,
-                plan.result_kind,
-                None,
-            ),
-            ShaderPlan::World(plan) => (
-                plan.target,
-                plan.cardinality,
-                plan.dispatch_contract.item_kind,
-                plan.result_kind,
-                plan.ray_solver.clone(),
-            ),
-            ShaderPlan::Batch(plan) => (
-                plan.target,
-                plan.cardinality,
-                plan.item_kind,
-                plan.result_kind,
-                plan.ray_solver.clone(),
-            ),
+    fn from_plan(plan: ShaderPlan<'_>) -> Result<Self, QueryExecError> {
+        let (normalized_behavior, ray_solver) = match plan {
+            ShaderPlan::Capture(plan) => (plan.normalized_behavior.clone(), None),
+            ShaderPlan::World(plan) => (plan.normalized_behavior.clone(), plan.ray_solver.clone()),
+            ShaderPlan::Batch(plan) => (plan.normalized_behavior.clone(), plan.ray_solver.clone()),
         };
-        let value_path = match (target, item_kind, result_kind) {
-            (
-                QueryTargetKind::Capture,
-                QueryItemKind::PointQuery,
-                QueryResultKind::DistanceResult,
-            ) => ShaderValuePath::CaptureDistance,
-            (
-                QueryTargetKind::Capture,
-                QueryItemKind::PointQuery,
-                QueryResultKind::NormalResult,
-            ) => ShaderValuePath::CaptureNormal,
-            (QueryTargetKind::Capture, QueryItemKind::RayQuery, QueryResultKind::Hit3) => {
-                ShaderValuePath::CaptureTrace
-            }
-            (
-                QueryTargetKind::Capture,
-                QueryItemKind::RayQuery,
-                QueryResultKind::OcclusionResult,
-            ) => ShaderValuePath::CaptureOcclusion,
-            (QueryTargetKind::Capture, QueryItemKind::Hit3, QueryResultKind::Surface) => {
-                ShaderValuePath::CaptureSurface
-            }
-            (
-                QueryTargetKind::Capture,
-                QueryItemKind::PointDirectionQuery,
-                QueryResultKind::RadianceResult,
-            ) => ShaderValuePath::CaptureRadiance,
-            (
-                QueryTargetKind::Capture,
-                QueryItemKind::PointQuery,
-                QueryResultKind::MediumResult,
-            ) => ShaderValuePath::CaptureMedium,
-            (
-                QueryTargetKind::World,
-                QueryItemKind::PointQuery,
-                QueryResultKind::DistanceResult,
-            ) => ShaderValuePath::WorldDistance,
-            (QueryTargetKind::World, QueryItemKind::PointQuery, QueryResultKind::NormalResult) => {
-                ShaderValuePath::WorldNormal
-            }
-            (QueryTargetKind::World, QueryItemKind::RayQuery, QueryResultKind::Hit3) => {
-                ShaderValuePath::WorldTrace
-            }
-            (QueryTargetKind::World, QueryItemKind::RayQuery, QueryResultKind::OcclusionResult) => {
-                ShaderValuePath::WorldOcclusion
-            }
-            (QueryTargetKind::World, QueryItemKind::Hit3, QueryResultKind::Surface) => {
-                ShaderValuePath::WorldSurface
-            }
-            (
-                QueryTargetKind::World,
-                QueryItemKind::PointDirectionQuery,
-                QueryResultKind::RadianceResult,
-            ) => ShaderValuePath::WorldRadiance,
-            (QueryTargetKind::World, QueryItemKind::PointQuery, QueryResultKind::MediumResult) => {
-                ShaderValuePath::WorldMedium
-            }
-            _ => {
-                return Err(QueryExecError::Unsupported {
-                    message: format!(
-                        "WGSL backend does not support normalized behavior target={target:?} item={item_kind:?} result={result_kind:?}"
-                    ),
-                });
-            }
-        };
-        Ok(Self {
-            target,
+        let NormalizedQueryBehavior {
             cardinality,
-            item_kind,
             result_kind,
-            requires_material: descriptor.result_kind == QueryResultKind::Surface,
-            requires_radiance: descriptor.participant_kind
-                == Some(ParticipantContractKind::Radiance),
-            requires_volume: descriptor.participant_kind == Some(ParticipantContractKind::Medium),
+            requires_material,
+            requires_radiance,
+            requires_volume,
+            requires_trace,
+            requires_root_shape_lookup,
+            value_path,
+            ..
+        } = normalized_behavior;
+        Ok(Self {
+            cardinality,
+            result_kind,
+            requires_material,
+            requires_radiance,
+            requires_volume,
+            requires_trace,
+            requires_root_shape_lookup,
             value_path,
             ray_solver,
         })
     }
 
-    fn uses_world_shapes(&self) -> bool {
-        matches!(self.target, QueryTargetKind::World)
-    }
-
     fn requires_trace(&self) -> bool {
-        matches!(
-            self.value_path,
-            ShaderValuePath::CaptureTrace
-                | ShaderValuePath::CaptureOcclusion
-                | ShaderValuePath::WorldTrace
-                | ShaderValuePath::WorldOcclusion
-        )
+        self.requires_trace
     }
 
     fn requires_root_shape_lookup(&self) -> bool {
-        self.requires_trace() || self.requires_material
+        self.requires_root_shape_lookup
     }
 
     fn scalar_eval_expr(&self, item_expr: &str) -> String {
         match self.value_path {
-            ShaderValuePath::CaptureDistance => format!("capture_distance_point({item_expr})"),
-            ShaderValuePath::CaptureNormal => format!("capture_normal_point({item_expr})"),
-            ShaderValuePath::CaptureTrace => format!("capture_trace_ray({item_expr})"),
-            ShaderValuePath::CaptureOcclusion => {
+            NormalizedQueryValuePath::SupportSummary => {
+                panic!(
+                    "WGSL portable lowering does not support support.summary normalized behavior"
+                )
+            }
+            NormalizedQueryValuePath::CaptureDistance => {
+                format!("capture_distance_point({item_expr})")
+            }
+            NormalizedQueryValuePath::CaptureNormal => {
+                format!("capture_normal_point({item_expr})")
+            }
+            NormalizedQueryValuePath::CaptureTrace => format!("capture_trace_ray({item_expr})"),
+            NormalizedQueryValuePath::CaptureOcclusion => {
                 format!("wr_occlusion_result_from_hit(capture_trace_ray({item_expr}))")
             }
-            ShaderValuePath::CaptureSurface => format!("capture_surface_hit({item_expr})"),
-            ShaderValuePath::CaptureRadiance => format!("capture_radiance_query({item_expr})"),
-            ShaderValuePath::CaptureMedium => format!("capture_medium_point({item_expr})"),
-            ShaderValuePath::WorldDistance => format!("world_distance_point({item_expr}.point)"),
-            ShaderValuePath::WorldNormal => format!("world_normal_point({item_expr}.point)"),
-            ShaderValuePath::WorldTrace => format!("world_trace_ray({item_expr})"),
-            ShaderValuePath::WorldOcclusion => {
+            NormalizedQueryValuePath::CaptureSurface => format!("capture_surface_hit({item_expr})"),
+            NormalizedQueryValuePath::CaptureRadiance => {
+                format!("capture_radiance_query({item_expr})")
+            }
+            NormalizedQueryValuePath::CaptureMedium => format!("capture_medium_point({item_expr})"),
+            NormalizedQueryValuePath::WorldDistance => {
+                format!("world_distance_point({item_expr}.point)")
+            }
+            NormalizedQueryValuePath::WorldNormal => {
+                format!("world_normal_point({item_expr}.point)")
+            }
+            NormalizedQueryValuePath::WorldTrace => format!("world_trace_ray({item_expr})"),
+            NormalizedQueryValuePath::WorldOcclusion => {
                 format!("wr_occlusion_result_from_hit(world_trace_ray({item_expr}))")
             }
-            ShaderValuePath::WorldSurface => format!("world_surface_hit({item_expr})"),
-            ShaderValuePath::WorldRadiance => format!("world_radiance_query({item_expr})"),
-            ShaderValuePath::WorldMedium => format!("world_medium_point({item_expr})"),
+            NormalizedQueryValuePath::WorldSurface => format!("world_surface_hit({item_expr})"),
+            NormalizedQueryValuePath::WorldRadiance => format!("world_radiance_query({item_expr})"),
+            NormalizedQueryValuePath::WorldMedium => format!("world_medium_point({item_expr})"),
         }
     }
 
@@ -282,7 +193,7 @@ pub(crate) fn generate_shader(
     plan: ShaderPlan<'_>,
 ) -> Result<GeneratedShader, QueryExecError> {
     let (descriptor, _binding) = shader_contract(plan.clone())?;
-    let behavior = NormalizedShaderBehavior::from_plan(descriptor, plan)?;
+    let behavior = NormalizedShaderBehavior::from_plan(plan)?;
 
     let type_tags = build_type_tags(ctx);
     let dispatch_abi = wgsl_dispatch_config_abi();
@@ -294,7 +205,7 @@ pub(crate) fn generate_shader(
     rendered.push_str("// Generated by wr query_exec::wgsl\n");
     if matches!(
         behavior.value_path,
-        ShaderValuePath::WorldTrace | ShaderValuePath::WorldOcclusion
+        NormalizedQueryValuePath::WorldTrace | NormalizedQueryValuePath::WorldOcclusion
     ) {
         rendered.push_str("// ray_solver: generated_dense_fallback\n");
         rendered.push_str("const WR_RAY_SOLVER_GENERATED_DENSE_FALLBACK: u32 = 1u;\n");
@@ -328,7 +239,7 @@ pub(crate) fn generate_shader(
     rendered.push('\n');
     rendered.push_str(&emit_scene_functions(ctx, &scene_index, &behavior)?);
     rendered.push('\n');
-    rendered.push_str(&emit_portable_functions(ctx, descriptor)?);
+    rendered.push_str(&emit_portable_functions(ctx, &behavior)?);
     rendered.push('\n');
     rendered.push_str(&emit_bindings(&dispatch_abi, &item_abi, &result_abi)?);
     rendered.push('\n');
@@ -945,21 +856,21 @@ fn emit_polyline_helper(out: &mut String, arity: usize) -> Result<(), QueryExecE
 
 fn emit_portable_functions(
     ctx: &QueryExecContext,
-    descriptor: &QueryContractDescriptor,
+    behavior: &NormalizedShaderBehavior,
 ) -> Result<String, QueryExecError> {
     let mut lowered = BTreeMap::<SmolStr, pir::ir::PirFunction>::new();
     let mut roots = BTreeSet::new();
     for scene in ctx.scene.shapes.values() {
         for leaf in scene.leaves.values() {
-            if contract_requires_material(descriptor) {
+            if behavior.requires_material {
                 roots.insert(leaf.material.clone());
             }
-            if contract_requires_radiance(descriptor)
+            if behavior.requires_radiance
                 && let Some(radiance) = &leaf.radiance
             {
                 roots.insert(radiance.clone());
             }
-            if contract_requires_volume(descriptor)
+            if behavior.requires_volume
                 && let Some(volume) = &leaf.volume
             {
                 roots.insert(volume.clone());
@@ -987,29 +898,6 @@ fn emit_portable_functions(
         out.push('\n');
     }
     Ok(out)
-}
-
-fn contract_requires_material(descriptor: &QueryContractDescriptor) -> bool {
-    descriptor.result_kind == QueryResultKind::Surface
-}
-
-fn contract_requires_radiance(descriptor: &QueryContractDescriptor) -> bool {
-    descriptor.participant_kind == Some(ParticipantContractKind::Radiance)
-}
-
-fn contract_requires_volume(descriptor: &QueryContractDescriptor) -> bool {
-    descriptor.participant_kind == Some(ParticipantContractKind::Medium)
-}
-
-fn contract_requires_trace(descriptor: &QueryContractDescriptor) -> bool {
-    matches!(
-        descriptor.question,
-        QueryQuestionId::Nearest | QueryQuestionId::Occluded
-    )
-}
-
-fn contract_requires_root_shape_lookup(descriptor: &QueryContractDescriptor) -> bool {
-    contract_requires_trace(descriptor) || contract_requires_material(descriptor)
 }
 
 fn emit_query_helpers(
@@ -1133,7 +1021,7 @@ fn emit_query_helpers(
 
     if matches!(
         behavior.value_path,
-        ShaderValuePath::WorldTrace | ShaderValuePath::WorldOcclusion
+        NormalizedQueryValuePath::WorldTrace | NormalizedQueryValuePath::WorldOcclusion
     ) {
         writeln!(out, "fn world_trace_ray(ray: RayQuery) -> Hit3 {{").ok();
         writeln!(out, "  var best = wr_default_hit(ray.origin);").ok();
@@ -1154,7 +1042,7 @@ fn emit_query_helpers(
         writeln!(out, "}}\n").ok();
     }
 
-    if matches!(behavior.value_path, ShaderValuePath::WorldSurface) {
+    if matches!(behavior.value_path, NormalizedQueryValuePath::WorldSurface) {
         writeln!(out, "fn world_surface_hit(hit: Hit3) -> Surface {{").ok();
         out.push_str(
             "  if (dispatch_config.material_enabled == 0u) { return wr_default_surface(); }\n",
@@ -1169,7 +1057,7 @@ fn emit_query_helpers(
         writeln!(out, "}}\n").ok();
     }
 
-    if matches!(behavior.value_path, ShaderValuePath::WorldRadiance) {
+    if matches!(behavior.value_path, NormalizedQueryValuePath::WorldRadiance) {
         writeln!(
             out,
             "fn world_radiance_query(query: PointDirectionQuery) -> vec3<f32> {{"
@@ -1190,7 +1078,7 @@ fn emit_query_helpers(
         writeln!(out, "}}\n").ok();
     }
 
-    if matches!(behavior.value_path, ShaderValuePath::WorldMedium) {
+    if matches!(behavior.value_path, NormalizedQueryValuePath::WorldMedium) {
         writeln!(out, "fn world_medium_point(point: PointQuery) -> Medium {{").ok();
         out.push_str(
             "  if (dispatch_config.media_enabled == 0u) { return wr_default_medium(); }\n",
@@ -1235,20 +1123,26 @@ fn emit_query_helpers(
 
     if matches!(
         behavior.value_path,
-        ShaderValuePath::CaptureTrace | ShaderValuePath::CaptureOcclusion
+        NormalizedQueryValuePath::CaptureTrace | NormalizedQueryValuePath::CaptureOcclusion
     ) {
         out.push_str("fn capture_trace_ray(ray: RayQuery) -> Hit3 { return trace_shape_for_index(dispatch_config.capture_index, ray.origin, ray.direction, ray.max_distance, ray.min_step, ray.hit_epsilon, ray.max_steps); }\n\n");
     }
 
-    if matches!(behavior.value_path, ShaderValuePath::CaptureSurface) {
+    if matches!(
+        behavior.value_path,
+        NormalizedQueryValuePath::CaptureSurface
+    ) {
         out.push_str("fn capture_surface_hit(hit: Hit3) -> Surface { return surface_at_shape_dispatch(dispatch_config.capture_index, hit); }\n\n");
     }
 
-    if matches!(behavior.value_path, ShaderValuePath::CaptureRadiance) {
+    if matches!(
+        behavior.value_path,
+        NormalizedQueryValuePath::CaptureRadiance
+    ) {
         out.push_str("fn capture_radiance_query(query: PointDirectionQuery) -> vec3<f32> { return radiance_at_shape_dispatch(dispatch_config.capture_index, query.point, query.direction); }\n\n");
     }
 
-    if matches!(behavior.value_path, ShaderValuePath::CaptureMedium) {
+    if matches!(behavior.value_path, NormalizedQueryValuePath::CaptureMedium) {
         out.push_str("fn capture_medium_point(point: PointQuery) -> Medium { return medium_at_shape_dispatch(dispatch_config.capture_index, point.point); }\n\n");
     }
 

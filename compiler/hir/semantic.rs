@@ -4802,6 +4802,7 @@ system updater[stage=fixed, writes=[Velocity]]() -> Nothing {
             field_graph: None,
             region: None,
             domain: None,
+            domain_execution_policy: None,
             presentation: None,
             system_metadata: Some(SystemMetadata {
                 stage: Some(SmolStr::new("fixed")),
@@ -4826,6 +4827,7 @@ system updater[stage=fixed, writes=[Velocity]]() -> Nothing {
             field_graph: None,
             region: None,
             domain: None,
+            domain_execution_policy: None,
             presentation: None,
             system_metadata: Some(SystemMetadata {
                 stage: Some(SmolStr::new("fixed")),
