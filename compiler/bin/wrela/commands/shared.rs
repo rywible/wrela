@@ -481,6 +481,7 @@ struct CollisionPlanDumpItem {
     artifacts: Vec<CollisionArtifactBindingDump>,
     artifact_uses: Vec<ObserverArtifactUseDump>,
     outputs: Vec<CollisionPlanOutputDump>,
+    observer_projection: query_program_debug::ObserverProjectionDump,
     validation: ObserverValidationSummaryDump,
 }
 
@@ -603,7 +604,7 @@ struct PresentationPlanDumpItem {
     semantic_artifacts: Vec<ObserverSemanticArtifactDump>,
     artifact_uses: Vec<ObserverArtifactUseDump>,
     bindings: Vec<PresentationBindingDump>,
-    candidate_query_program_concepts: Vec<String>,
+    observer_projection: query_program_debug::ObserverProjectionDump,
     normalized_projection: query_program_debug::NormalizedCurrentPlanProjection,
     validation: ObserverValidationSummaryDump,
 }
@@ -888,6 +889,110 @@ mod observer_report_tests {
     }
 }
 
+fn print_observer_projection_human(projection: &query_program_debug::ObserverProjectionDump) {
+    println!(
+        "  shared spine: observer={} owner={} inputs={} nodes={} dependencies={} outputs={} lossy_boundaries={}",
+        projection.observer_kind,
+        projection.execution_owner,
+        projection.spine.inputs.len(),
+        projection.spine.nodes.len(),
+        projection.spine.dependencies.len(),
+        projection.spine.outputs.len(),
+        projection.lossy_boundaries.len()
+    );
+    println!(
+        "  shared spine inputs: {}",
+        format_spine_bindings(&projection.spine.inputs)
+    );
+    println!(
+        "  shared spine primitive nodes: {}",
+        format_spine_node_labels(&projection.spine.nodes, "primitive_invocation")
+    );
+    println!(
+        "  shared spine artifacts: {}",
+        format_spine_artifacts(&projection.spine.nodes)
+    );
+    println!(
+        "  shared spine outputs: {}",
+        format_spine_bindings(&projection.spine.outputs)
+    );
+    println!(
+        "  shared spine observability: graph_structure={} artifact_lifecycle={} query_dependencies={} backend_dispatch={} output_bindings={} runtime_trace_local_only={}",
+        projection.spine.observability.graph_structure,
+        projection.spine.observability.artifact_lifecycle,
+        projection.spine.observability.query_dependencies,
+        projection.spine.observability.backend_dispatch,
+        projection.spine.observability.output_bindings,
+        projection.spine.observability.runtime_trace_local_only
+    );
+    println!(
+        "  shared spine lossy boundaries: {}",
+        format_spine_lossy_boundaries(&projection.lossy_boundaries)
+    );
+}
+
+fn format_spine_bindings(bindings: &[query_program_debug::SpineBindingDump]) -> String {
+    if bindings.is_empty() {
+        "none".to_string()
+    } else {
+        bindings
+            .iter()
+            .map(|binding| format!("{}:{}({})", binding.binding, binding.schema, binding.role))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn format_spine_node_labels(
+    nodes: &[query_program_debug::SpineNodeDump],
+    family: &str,
+) -> String {
+    let labels = nodes
+        .iter()
+        .filter(|node| node.family == family)
+        .map(|node| node.label.as_str())
+        .collect::<Vec<_>>();
+    if labels.is_empty() {
+        "none".to_string()
+    } else {
+        labels.join(", ")
+    }
+}
+
+fn format_spine_artifacts(nodes: &[query_program_debug::SpineNodeDump]) -> String {
+    let artifacts = nodes
+        .iter()
+        .filter(|node| node.family == "artifact_store")
+        .map(|node| {
+            let artifact_id = node
+                .artifact_ids
+                .first()
+                .map(String::as_str)
+                .unwrap_or("none");
+            format!("{}[{artifact_id}]", node.label)
+        })
+        .collect::<Vec<_>>();
+    if artifacts.is_empty() {
+        "none".to_string()
+    } else {
+        artifacts.join(", ")
+    }
+}
+
+fn format_spine_lossy_boundaries(
+    boundaries: &[query_program_debug::SpineLossyBoundaryDump],
+) -> String {
+    if boundaries.is_empty() {
+        "none".to_string()
+    } else {
+        boundaries
+            .iter()
+            .map(|boundary| format!("{}({})", boundary.node_id, boundary.reason))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 fn execute_presentation_plan_command(
     output_format: OutputFormat,
     path_arg: Option<String>,
@@ -1067,6 +1172,7 @@ fn print_collision_plan_human(dump: &CollisionPlanCatalogDump) {
                 }
             );
         }
+        print_observer_projection_human(&plan.observer_projection);
         println!(
             "  validation: {}",
             plan.validation.status
@@ -1173,6 +1279,7 @@ fn collision_plan_dump_item(
                     .map(collision_witness_schema_dump),
             })
             .collect(),
+        observer_projection: query_program_debug::observer_projection_for_collision_plan(plan),
         validation,
     }
 }
@@ -4290,7 +4397,7 @@ fn presentation_plan_dump_item(
                 execution: presentation_binding_execution_name(binding).to_string(),
             })
             .collect(),
-        candidate_query_program_concepts: pass_observability_names(&plan.observability),
+        observer_projection: query_program_debug::observer_projection_for_presentation_plan(plan),
         normalized_projection: query_program_debug::projection_for_presentation_plan(plan),
         validation,
     }
@@ -4502,12 +4609,9 @@ fn print_presentation_plan_human(dump: &PresentationPlanDump) {
         for error in &plan.validation.errors {
             println!("    {}", error);
         }
+        print_observer_projection_human(&plan.observer_projection);
         println!(
-            "  candidate query-program concepts: {}",
-            plan.candidate_query_program_concepts.join(", ")
-        );
-        println!(
-            "  normalized projection: family={} mode={} passes={} queries={} artifacts={}",
+            "  normalized projection (compat): family={} mode={} passes={} queries={} artifacts={}",
             plan.normalized_projection.family,
             plan.normalized_projection.execution_mode,
             if plan.normalized_projection.pass_kinds.is_empty() {

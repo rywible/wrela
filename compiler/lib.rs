@@ -34,6 +34,7 @@ pub mod presentation_plan;
 pub mod query_contract;
 pub mod query_exec;
 pub mod query_plan;
+pub mod query_program_spine;
 pub mod query_solver;
 pub mod scene_ir;
 pub mod semantic_evidence;

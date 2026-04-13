@@ -621,6 +621,51 @@ fn cli_collision_plan_json_reports_validation_and_policy() {
             .and_then(|value| value.as_str()),
         Some("sweep_sphere_first_contact")
     );
+    assert_eq!(
+        sweep
+            .pointer("/observer_projection/observer_kind")
+            .and_then(|value| value.as_str()),
+        Some("collision")
+    );
+    assert_eq!(
+        sweep
+            .pointer("/observer_projection/spine/observer_kind")
+            .and_then(|value| value.as_str()),
+        Some("collision")
+    );
+    assert_eq!(
+        sweep
+            .pointer("/observer_projection/spine/inputs/0/binding")
+            .and_then(|value| value.as_str()),
+        Some("world")
+    );
+    assert!(
+        sweep
+            .pointer("/observer_projection/spine/nodes")
+            .and_then(|value| value.as_array())
+            .is_some_and(|nodes| nodes.iter().any(|node| {
+                node.pointer("/family").and_then(|value| value.as_str())
+                    == Some("policy_requirement")
+            }) && nodes.iter().any(|node| {
+                node.pointer("/label").and_then(|value| value.as_str())
+                    == Some("sweep_sphere_first_contact")
+            }))
+    );
+    assert_eq!(
+        sweep
+            .pointer("/observer_projection/spine/outputs/0/binding")
+            .and_then(|value| value.as_str()),
+        Some("sweep_contact")
+    );
+    assert!(
+        sweep
+            .pointer("/observer_projection/lossy_boundaries")
+            .and_then(|value| value.as_array())
+            .is_some_and(|boundaries| boundaries.iter().any(|boundary| {
+                boundary.pointer("/reason").and_then(|value| value.as_str())
+                    == Some("runtime_trace")
+            }))
+    );
 }
 
 #[test]
@@ -642,6 +687,8 @@ fn cli_collision_plan_wgsl_reports_invalid_exact_oracle_validation() {
     assert!(stdout.contains("authority_scope: transition"));
     assert!(stdout.contains("required_guarantee=exact"));
     assert!(stdout.contains("selected_method=exact_oracle"));
+    assert!(stdout.contains("shared spine: observer=collision owner=CollisionPlan"));
+    assert!(stdout.contains("shared spine primitive nodes:"));
 }
 
 #[test]
@@ -840,8 +887,15 @@ fn cli_presentation_plan_human_shows_contracts_without_helper_names() {
     assert!(stdout.contains("motion(Motion,MotionVector,Transient,Viewport,1x1,SemanticDefault)"));
     assert!(stdout.contains("materializes: motion"));
     assert!(stdout.contains("materializes: color, history_color, history_primary_hit"));
-    assert!(stdout.contains("normalized projection: family=presentation mode=temporal"));
-    assert!(stdout.contains("normalized projection: family=presentation mode=composite"));
+    assert!(stdout.contains("shared spine: observer=presentation owner=PresentationPlan"));
+    assert!(
+        stdout
+            .contains("shared spine primitive nodes: generate_screen_samples, primary_visibility")
+    );
+    assert!(stdout.contains("shared spine artifacts:"));
+    assert!(stdout.contains("history_color[artifact.history_color]"));
+    assert!(stdout.contains("normalized projection (compat): family=presentation mode=temporal"));
+    assert!(stdout.contains("normalized projection (compat): family=presentation mode=composite"));
     assert!(stdout.contains("passes=generate_screen_samples, primary_visibility"));
     assert!(stdout.contains(
         "queries=participants.medium.batch.world, participants.radiance.batch.world, spatial.nearest.batch.world, surface.sample.batch.world"
@@ -921,6 +975,50 @@ fn cli_presentation_plan_json_reports_passes_bindings_and_query_dependencies() {
             .pointer("/view/compatibility_projection/legacy_path_active")
             .and_then(|value| value.as_bool()),
         Some(false)
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/observer_projection/observer_kind")
+            .and_then(|value| value.as_str()),
+        Some("presentation")
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/observer_projection/spine/observer_kind")
+            .and_then(|value| value.as_str()),
+        Some("presentation")
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/observer_projection/spine/inputs/0/binding")
+            .and_then(|value| value.as_str()),
+        Some("world")
+    );
+    assert!(
+        view_plan
+            .pointer("/observer_projection/spine/nodes")
+            .and_then(|value| value.as_array())
+            .is_some_and(|nodes| nodes.iter().any(|node| {
+                node.pointer("/family").and_then(|value| value.as_str())
+                    == Some("primitive_invocation")
+                    && node.pointer("/label").and_then(|value| value.as_str())
+                        == Some("temporal_resolve")
+            }))
+    );
+    assert!(
+        view_plan
+            .pointer("/observer_projection/lossy_boundaries")
+            .and_then(|value| value.as_array())
+            .is_some_and(|boundaries| boundaries.iter().any(|boundary| {
+                boundary.pointer("/reason").and_then(|value| value.as_str())
+                    == Some("temporal_detail")
+            }))
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/observer_projection/spine/observability/runtime_trace_local_only")
+            .and_then(|value| value.as_bool()),
+        Some(true)
     );
     assert_eq!(
         view_plan
