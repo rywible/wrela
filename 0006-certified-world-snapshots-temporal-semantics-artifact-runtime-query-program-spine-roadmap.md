@@ -2385,6 +2385,15 @@ Unifying abstractions must be real typed outputs with named ownership boundaries
 - `Key Architectural Definitions -> Query-Program Spine`
 - `Key Architectural Definitions -> Concrete Observer Plan`
 
+### Architecture Notes Entering This Phase
+
+- The shared seam justified by presentation and collision is a descriptive projection layer, not a shared authored observer-plan type.
+- The strongest existing shared substrate is the semantic artifact vocabulary and artifact-store reuse/validity reporting; phase 32 should reuse that real substrate instead of inventing a parallel one.
+- Shared node vocabulary should stay broad and graph-oriented. Concrete pass enums, runtime metrics, backend kernels, and observer-specific math remain observer-local.
+- Shared reporting is the first concrete consumer. The current presentation-only normalized projection should be treated as a precursor to the real shared spine rather than as a separate long-term surface.
+- Runtime observability overlaps only at summary level. Raw execution traces and per-observer runtime metrics must remain owned by their concrete observers.
+- Validation helper extraction is allowed only for graph-shape and dependency invariants, not for collision authority/policy semantics or presentation view/frame semantics.
+
 ### Parallelization Notes
 
 - Workstream A owns the shared observer vocabulary.
@@ -2400,6 +2409,7 @@ Unifying abstractions must be real typed outputs with named ownership boundaries
 
 Create the real shared layer extracted from presentation and collision.
 This phase must produce a concrete vocabulary, not just a promise to generalize later.
+This shared layer is a non-executing plan envelope over broad observer graph concepts, not a new common authored plan representation.
 
 **Files**
 
@@ -2427,12 +2437,16 @@ Recommended initial node families:
 - `OutputBinding`
 - `ObservabilitySummary`
 
-This module should not own backend kernels or observer-specific math.
+These node families should capture broad graph roles rather than mirroring observer-specific pass enums.
+This module should reuse the existing semantic artifact vocabulary wherever possible, including semantic artifact contracts, artifact uses, and artifact-store reuse/validity descriptions.
+This module should not own backend kernels, observer-specific math, or raw runtime trace payloads.
 
 **Decision hooks**
 
 - The spine owns shared description, not observer semantics or execution ownership.
+- The spine is the projection/report surface for concrete observers, not a replacement for `PresentationPlan` or `CollisionPlan`.
 - If a node shape is only needed by one observer, keep it out of the spine until real overlap proves otherwise.
+- Shared observability should be summarized at the spine boundary; detailed execution traces stay observer-local.
 
 **Code sketch**
 
@@ -2452,6 +2466,8 @@ pub struct QueryProgramSpine {
 - The shared spine exists.
 - Its canonical vocabulary is explicit and named in code.
 - It can represent both presentation and collision dependencies without absorbing observer-specific semantics.
+- It reuses the existing shared artifact substrate instead of defining a second artifact abstraction stack.
+- It is clearly non-executing and cannot be mistaken for a shared observer runtime.
 
 ### Workstream B: Observer Projection
 
@@ -2460,11 +2476,14 @@ pub struct QueryProgramSpine {
 **Description**
 
 Add projection from concrete observer plans into the shared spine.
+Projection is where the common abstraction pays rent: concrete plans stay semantically rich and execution-owning, while the spine exposes the shared graph and artifact vocabulary.
 
 **Decision hooks**
 
 - Concrete observer plans remain the semantic owners. Projection should be deterministic and lossy only where the shared vocabulary is intentionally narrower.
 - If projection pressure suggests the spine needs more nodes, add them only when both observers truly need them.
+- Projection should prefer broad node families plus shared artifact/reuse vocabulary over observer-specific enum mirroring.
+- Do not force presentation and collision into a shared native plan trait unless the trait only describes the projection boundary.
 
 **Files**
 
@@ -2477,6 +2496,8 @@ Add projection from concrete observer plans into the shared spine.
 - Both concrete observers can project into one shared spine representation.
 - Projection is deterministic and testable.
 - Concrete observer plans remain the execution owners.
+- Projection makes shared inputs, dependency edges, query invocations, artifact lifecycle, and output bindings inspectable through one vocabulary.
+- Intentional lossy boundaries are explicit where presentation or collision carries observer-local semantics that do not belong in the spine.
 
 ### Workstream C: Shared Projection Reports
 
@@ -2485,11 +2506,13 @@ Add projection from concrete observer plans into the shared spine.
 **Description**
 
 Make the new shared abstraction visible and testable so it proves its value immediately.
+The first consumer of the spine should be reporting and fixtures rather than execution.
 
 **Files**
 
 - `compiler/query_program_spine/mod.rs`
 - `compiler/bin/wrela/commands/shared.rs`
+- `compiler/query_program_debug/mod.rs`
 - new `compiler/tests/query_program_spine.rs`
 
 **Acceptance criteria**
@@ -2497,11 +2520,15 @@ Make the new shared abstraction visible and testable so it proves its value imme
 - Reports can show presentation and collision plans through one common vocabulary.
 - Projection fixtures lock down intentional lossy boundaries.
 - The shared vocabulary is inspectable without becoming executable.
+- Shared reports cover the common graph/artifact/observability surface without forcing a fake shared runtime-trace schema.
+- The old presentation-only normalized projection is either folded into the spine or explicitly reduced to a thin compatibility adapter.
 
 ### Phase 32 Exit Criteria
 
-- A real shared observer vocabulary exists.
+- A real shared observer vocabulary exists as a descriptive, non-executing spine rather than as a shared authored plan.
 - Presentation and collision project into one non-executing spine.
+- The shared abstraction reuses common artifact/reporting vocabulary instead of duplicating it.
+- Concrete execution, authority, policy, temporal, and runtime-trace ownership remain local to their observers.
 - The unifying abstractions are explicit code outputs, not roadmap narration.
 
 ## Phase 33: Shared Spine Analyses, Diagnostics, And Cross-Observer Validation
