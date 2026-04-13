@@ -251,10 +251,10 @@ impl RaySolverPlan {
             .collect();
         let artifact_reuse_intents = vec![artifact_reuse_intent(contract_id, &evidence_summary)];
         let continuation_intents = vec![continuation_intent(contract_id, &evidence_summary)];
-        Some(Self {
+        let plan = Self {
             id: SmolStr::new(format!("ray-solver:{}:v1", contract_id.as_str())),
             contract_id,
-            subject,
+            subject: subject.clone(),
             correctness: RaySolverCorrectnessPolicy {
                 contract_id,
                 question: descriptor.question,
@@ -284,7 +284,8 @@ impl RaySolverPlan {
                 no_closer_hit_proof: RaySolverNoCloserHitProof::Unavailable,
                 fallback_reason: Some(RaySolverFallbackReason::ContractRequiresDenseOracle),
             },
-        })
+        };
+        Some(plan.with_subject(subject))
     }
 
     pub fn diagnostic_summary(&self) -> RaySolverDiagnosticSummary {

@@ -38,9 +38,15 @@ pub enum CollisionArtifactPayload {
     ContinuationSeed(CollisionContinuationSeed),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CollisionSupportSummary {
-    pub candidate_shape_names: Vec<SmolStr>,
+    pub support_class: u32,
+    pub semantics: u32,
+    pub has_bounds: bool,
+    pub opaque_boundary: bool,
+    pub can_coarse_support_prune: bool,
+    pub min: [f32; 3],
+    pub max: [f32; 3],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,19 +176,28 @@ pub fn execute_with_store(
     for pass in &plan.passes {
         match &pass.kind {
             CollisionPassKind::GatherCandidates {
-                support_artifact, ..
+                support_summary_contract,
+                support_artifact,
             } => {
                 let artifact = artifact_binding_by_id(plan, support_artifact)?;
-                let support_summary = build_broadphase_candidates(ctx, &capture_name, &domain)?;
+                let (support_summary, trace) = execute_world_query_contract(
+                    ctx,
+                    backend,
+                    None,
+                    &snapshot,
+                    *support_summary_contract,
+                    &[capture.clone(), domain.clone()],
+                )?;
+                executed_query_contracts.push(trace.contract_id);
                 insert_artifact(
                     store,
                     artifact,
                     &snapshot,
                     collision_policy_digest(plan.policy),
                     None,
-                    CollisionArtifactPayload::SupportSummary(CollisionSupportSummary {
-                        candidate_shape_names: support_summary.candidate_shape_names,
-                    }),
+                    CollisionArtifactPayload::SupportSummary(parse_collision_support_summary(
+                        &support_summary,
+                    )?),
                 );
             }
             CollisionPassKind::BuildBroadphaseCandidates {
@@ -205,25 +220,20 @@ pub fn execute_with_store(
                         });
                     }
                 };
-                let expected = build_broadphase_candidates(ctx, &capture_name, &domain)?;
-                if support_summary.candidate_shape_names != expected.candidate_shape_names {
-                    return Err(CollisionExecError::InvalidPass {
-                        pass_id: artifact.id.clone(),
-                        message: format!(
-                            "support summary payload mismatch: expected {:?}, found {:?}",
-                            expected, support_summary
-                        ),
-                    });
-                }
+                let broadphase = build_broadphase_candidates(
+                    ctx,
+                    &capture_name,
+                    &domain,
+                    collision_input,
+                    &support_summary,
+                )?;
                 insert_artifact(
                     store,
                     artifact,
                     &snapshot,
                     collision_policy_digest(plan.policy),
                     None,
-                    CollisionArtifactPayload::BroadphaseCandidates(CollisionBroadphaseCandidates {
-                        candidate_shape_names: support_summary.candidate_shape_names,
-                    }),
+                    CollisionArtifactPayload::BroadphaseCandidates(broadphase),
                 );
             }
             CollisionPassKind::EvaluatePointOccupancy {
@@ -424,6 +434,8 @@ pub fn execute_with_store(
                     &snapshot,
                     &capture_name,
                     &domain,
+                    collision_input,
+                    support_artifact,
                     broadphase_artifact,
                 )?;
                 let outcome = sweep_outcome(
@@ -505,6 +517,8 @@ pub fn execute_with_store(
                     &snapshot,
                     &capture_name,
                     &domain,
+                    collision_input,
+                    support_artifact,
                     broadphase_artifact,
                 )?;
                 let outcome = sweep_outcome(
@@ -865,6 +879,8 @@ fn build_broadphase_candidates(
     ctx: &QueryExecContext,
     capture: &SmolStr,
     domain: &KernelValue,
+    collision_input: &KernelValue,
+    support_summary: &CollisionSupportSummary,
 ) -> Result<CollisionBroadphaseCandidates, CollisionExecError> {
     let domain = expect_struct(domain, "SceneDomain")?;
     let ops = DirectQueryOps::new(ctx);
@@ -878,6 +894,39 @@ fn build_broadphase_candidates(
             .map_err(|error| CollisionExecError::ExecutionUnavailable {
                 message: error.to_string(),
             })?;
+    if !support_summary.can_coarse_support_prune || !support_summary.has_bounds {
+        return Ok(CollisionBroadphaseCandidates {
+            candidate_shape_names,
+        });
+    }
+    let Some((query_min, query_max)) = collision_query_bounds(collision_input)? else {
+        return Ok(CollisionBroadphaseCandidates {
+            candidate_shape_names,
+        });
+    };
+    if !aabb_intersects(
+        (support_summary.min, support_summary.max),
+        (query_min, query_max),
+    ) {
+        return Ok(CollisionBroadphaseCandidates {
+            candidate_shape_names: Vec::new(),
+        });
+    }
+    let bounded_shapes = ops
+        .region_shape_support_bounds(capture, detail)
+        .map_err(|error| CollisionExecError::ExecutionUnavailable {
+            message: error.to_string(),
+        })?
+        .into_iter()
+        .map(|(shape, min, max)| (shape, (min, max)))
+        .collect::<BTreeMap<_, _>>();
+    let candidate_shape_names = candidate_shape_names
+        .into_iter()
+        .filter(|shape| match bounded_shapes.get(shape) {
+            Some(bounds) => aabb_intersects(*bounds, (query_min, query_max)),
+            None => true,
+        })
+        .collect();
     Ok(CollisionBroadphaseCandidates {
         candidate_shape_names,
     })
@@ -890,6 +939,8 @@ fn load_broadphase_candidates(
     snapshot: &WorldSnapshotHandle,
     capture: &SmolStr,
     domain: &KernelValue,
+    collision_input: &KernelValue,
+    support_artifact_id: &SmolStr,
     artifact_id: &SmolStr,
 ) -> Result<CollisionBroadphaseCandidates, CollisionExecError> {
     let artifact = artifact_binding_by_id(plan, artifact_id)?;
@@ -908,7 +959,23 @@ fn load_broadphase_candidates(
             });
         }
     };
-    let expected = build_broadphase_candidates(ctx, capture, domain)?;
+    let support_payload = current_artifact_payload(
+        store,
+        artifact_binding_by_id(plan, support_artifact_id)?,
+        snapshot,
+        collision_policy_digest(plan.policy),
+    )?;
+    let support_summary = match support_payload {
+        CollisionArtifactPayload::SupportSummary(payload) => payload.clone(),
+        other => {
+            return Err(CollisionExecError::TypeMismatch {
+                expected: "SupportSummary".to_string(),
+                found: format!("{other:?}"),
+            });
+        }
+    };
+    let expected =
+        build_broadphase_candidates(ctx, capture, domain, collision_input, &support_summary)?;
     if broadphase != expected {
         return Err(CollisionExecError::InvalidPass {
             pass_id: artifact.id.clone(),
@@ -1448,6 +1515,75 @@ fn collision_sweep_input(
         contact_tolerance: expect_f32(field(sweep, "contact_tolerance")?)?,
         max_iterations: expect_i32(field(sweep, "max_iterations")?)?,
     })
+}
+
+fn parse_collision_support_summary(
+    value: &KernelValue,
+) -> Result<CollisionSupportSummary, CollisionExecError> {
+    let summary = expect_struct(value, "SupportSummaryResult")?;
+    Ok(CollisionSupportSummary {
+        support_class: expect_u32(field(summary, "support_class")?)?,
+        semantics: expect_u32(field(summary, "semantics")?)?,
+        has_bounds: expect_bool(field(summary, "has_bounds")?)?,
+        opaque_boundary: expect_bool(field(summary, "opaque_boundary")?)?,
+        can_coarse_support_prune: expect_bool(field(summary, "can_coarse_support_prune")?)?,
+        min: expect_vec3(field(summary, "min")?)?,
+        max: expect_vec3(field(summary, "max")?)?,
+    })
+}
+
+fn collision_query_bounds(
+    collision_input: &KernelValue,
+) -> Result<Option<([f32; 3], [f32; 3])>, CollisionExecError> {
+    if let Ok(point) = collision_point_input(collision_input) {
+        return Ok(Some((point.point, point.point)));
+    }
+    if let Ok(ray) = collision_ray_input(collision_input) {
+        let end = [
+            ray.origin[0] + ray.direction[0] * ray.max_distance,
+            ray.origin[1] + ray.direction[1] * ray.max_distance,
+            ray.origin[2] + ray.direction[2] * ray.max_distance,
+        ];
+        return Ok(Some((
+            component_min(ray.origin, end),
+            component_max(ray.origin, end),
+        )));
+    }
+    if let Ok(probe) = collision_sphere_input(collision_input) {
+        let radius = [probe.radius; 3];
+        return Ok(Some((
+            subtract(probe.center, radius),
+            [
+                probe.center[0] + radius[0],
+                probe.center[1] + radius[1],
+                probe.center[2] + radius[2],
+            ],
+        )));
+    }
+    if let Ok(sweep) = collision_sweep_input(collision_input) {
+        let radius = [sweep.radius; 3];
+        let min = subtract(component_min(sweep.start_center, sweep.end_center), radius);
+        let extent = component_max(sweep.start_center, sweep.end_center);
+        let max = [
+            extent[0] + radius[0],
+            extent[1] + radius[1],
+            extent[2] + radius[2],
+        ];
+        return Ok(Some((min, max)));
+    }
+    Ok(None)
+}
+
+fn aabb_intersects(lhs: ([f32; 3], [f32; 3]), rhs: ([f32; 3], [f32; 3])) -> bool {
+    (0..3).all(|axis| lhs.0[axis] <= rhs.1[axis] && rhs.0[axis] <= lhs.1[axis])
+}
+
+fn component_min(lhs: [f32; 3], rhs: [f32; 3]) -> [f32; 3] {
+    [lhs[0].min(rhs[0]), lhs[1].min(rhs[1]), lhs[2].min(rhs[2])]
+}
+
+fn component_max(lhs: [f32; 3], rhs: [f32; 3]) -> [f32; 3] {
+    [lhs[0].max(rhs[0]), lhs[1].max(rhs[1]), lhs[2].max(rhs[2])]
 }
 
 fn ray_query_value(ray: CollisionRayInput) -> KernelValue {

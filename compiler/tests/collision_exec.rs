@@ -206,8 +206,14 @@ fn static_and_transition_collision_plans_execute_on_cpu() {
         .expect("sphere sweep");
     assert_eq!(trace.reuse_metrics.unavailable_count, 2);
     assert!(
+        trace
+            .executed_query_contracts
+            .contains(&wrela::query_contract::SUPPORT_SUMMARY_WORLD),
+        "expected transition sweep trace to execute the support summary query: {trace:?}"
+    );
+    assert!(
         trace.executed_query_contracts.len() >= 3,
-        "expected transition sweep trace to record candidate, distance, and normal queries: {trace:?}"
+        "expected transition sweep trace to record support, distance, and normal queries: {trace:?}"
     );
     match result {
         wrela::collision_contract::CollisionResult::Sweep(value) => {

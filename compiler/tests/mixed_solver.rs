@@ -132,4 +132,43 @@ fn ray_solver_plan_exposes_mixed_selection_and_intent_summary_surface() {
             .iter()
             .all(|intent| intent.selection.subject.as_str() == "shape.scene_branch")
     );
+
+    let constructor_solver = wrela::query_solver::RaySolverPlan::for_contract_with_subject(
+        query_contract::SPATIAL_NEAREST_WORLD,
+        "shape.scene_branch",
+        Some(SemanticEvidence::for_field_scene(sphere)),
+    )
+    .expect("subject-aware constructor");
+    let constructor_summary = constructor_solver.diagnostic_summary();
+    assert_eq!(constructor_solver.subject.as_str(), "shape.scene_branch");
+    assert!(
+        constructor_solver
+            .mixed_selections()
+            .iter()
+            .all(|selection| selection.subject.as_str() == "shape.scene_branch")
+    );
+    assert!(
+        constructor_summary
+            .artifact_reuse_intents
+            .iter()
+            .all(|intent| {
+                intent.selection.subject.as_str() == "shape.scene_branch"
+                    && intent
+                        .selection
+                        .evidence_policy_summary
+                        .contains("subject=shape.scene_branch")
+            })
+    );
+    assert!(
+        constructor_summary
+            .continuation_intents
+            .iter()
+            .all(|intent| {
+                intent.selection.subject.as_str() == "shape.scene_branch"
+                    && intent
+                        .selection
+                        .evidence_policy_summary
+                        .contains("subject=shape.scene_branch")
+            })
+    );
 }
