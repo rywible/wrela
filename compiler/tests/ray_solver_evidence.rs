@@ -5,7 +5,8 @@ use wrela::parser::ast::AstNode;
 use wrela::parser::parse;
 use wrela::query_contract;
 use wrela::query_solver::{
-    FactAvailability, RaySolverFallbackReason, RaySolverMethod, is_ray_shaped_spatial_contract,
+    FactAvailability, RaySolverFallbackReason, RaySolverIntentDisposition, RaySolverMethod,
+    RequiredGuaranteeClass, SelectedMethodClass, is_ray_shaped_spatial_contract,
 };
 use wrela::scene_ir;
 use wrela::semantic_evidence::{EvidenceOrigin, EvidenceScope, SemanticEvidence};
@@ -66,6 +67,17 @@ fn ray_solver_plan_uses_semantic_evidence_for_fallbacks() {
         FactAvailability::Available
     );
     assert!(solver.method_enabled(RaySolverMethod::DenseSphereTracing));
+    assert!(
+        solver
+            .mixed_selections()
+            .iter()
+            .any(
+                |selection| selection.method == RaySolverMethod::DenseSphereTracing
+                    && selection.candidate_class == "dense-oracle"
+                    && selection.required_guarantee == RequiredGuaranteeClass::Exact
+                    && selection.selected_method_class == SelectedMethodClass::ExactOracle
+            )
+    );
     let summary = solver.diagnostic_summary();
     assert_eq!(
         summary.evidence_summary.origin,
@@ -76,6 +88,11 @@ fn ray_solver_plan_uses_semantic_evidence_for_fallbacks() {
         EvidenceScope::CompileInvariant
     );
     assert!(!summary.unavailable_facts.contains(&"analytic"));
+    assert_eq!(summary.mixed_selections, solver.mixed_selections().to_vec());
+    assert_eq!(
+        summary.artifact_reuse_intents[0].disposition,
+        RaySolverIntentDisposition::Unavailable
+    );
 
     let opaque_solver = wrela::query_solver::RaySolverPlan::for_contract(
         query_contract::SPATIAL_OCCLUDED_WORLD,
@@ -93,6 +110,16 @@ fn ray_solver_plan_uses_semantic_evidence_for_fallbacks() {
             .dense_fallback_reasons()
             .contains(&RaySolverFallbackReason::AnalyticUnsupported),
         "opaque evidence must keep the analytic fallback reason visible"
+    );
+    assert_eq!(
+        opaque_solver.artifact_reuse_intents()[0].disposition,
+        RaySolverIntentDisposition::Rejected
+    );
+    assert!(
+        opaque_solver.artifact_reuse_intents()[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("does not justify artifact reuse"))
     );
 
     let runtime_solver = wrela::query_solver::RaySolverPlan::for_contract(

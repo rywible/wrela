@@ -1,7 +1,8 @@
 use crate::hir;
 use crate::scene_ir::{
-    DistanceSemantics, FieldNodeKindSummary, FieldScene, RepeatKind, SceneIdentitySourceKind,
-    ShapeNodeKindSummary, ShapeScene, SupportClass, SupportNodeKindSummary, TransformKind,
+    DistanceSemantics, FieldNodeKindSummary, FieldScene, RepeatKind, SceneDifferentialSupport,
+    SceneIdentitySourceKind, ShapeNodeKindSummary, ShapeScene, SupportClass,
+    SupportNodeKindSummary, TransformKind,
 };
 use smol_str::SmolStr;
 
@@ -541,7 +542,7 @@ impl SemanticEvidence {
         let primitive = primitive_fact_for_field(scene);
         let transform = transform_fact_for_field(scene);
         let repetition = repetition_fact_for_field(scene);
-        let derivative = derivative_availability(primitive, transform, repetition);
+        let derivative = derivative_availability_for_scene(scene.analysis.differential_support);
         let lipschitz = lipschitz_for_scene(scene.semantics, transform, repetition);
         let analytic_intersection = analytic_status(primitive, transform, repetition);
         let provenance = EvidenceProvenance::static_compiled();
@@ -594,7 +595,7 @@ impl SemanticEvidence {
         let primitive = primitive_fact_for_shape(scene);
         let transform = transform_fact_for_shape(scene);
         let repetition = repetition_fact_for_shape(scene);
-        let derivative = derivative_availability(primitive, transform, repetition);
+        let derivative = derivative_availability_for_scene(scene.analysis.differential_support);
         let lipschitz = lipschitz_for_scene(scene.semantics, transform, repetition);
         let analytic_intersection = analytic_status(primitive, transform, repetition);
         let stable_repeat_id = scene.leaves.values().any(|leaf| {
@@ -1165,21 +1166,10 @@ fn repetition_fact_for_shape(_scene: &ShapeScene) -> RepetitionFact {
     RepetitionFact::Unknown
 }
 
-fn derivative_availability(
-    primitive: PrimitiveFact,
-    transform: TransformFact,
-    repetition: RepetitionFact,
-) -> FactAvailability {
-    if matches!(primitive, PrimitiveFact::Single(_))
-        && matches!(
-            transform,
-            TransformFact::None | TransformFact::Rigid | TransformFact::UniformScale
-        )
-        && matches!(repetition, RepetitionFact::None)
-    {
-        FactAvailability::Available
-    } else {
-        FactAvailability::Unavailable
+fn derivative_availability_for_scene(support: SceneDifferentialSupport) -> FactAvailability {
+    match support {
+        SceneDifferentialSupport::CertifiedGradient => FactAvailability::Available,
+        SceneDifferentialSupport::FiniteDifferenceFallback => FactAvailability::Unavailable,
     }
 }
 

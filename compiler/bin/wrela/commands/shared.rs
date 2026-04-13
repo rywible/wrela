@@ -164,7 +164,10 @@ fn execute_collision_contracts_command(
         );
         return;
     }
-    println!("collision contract catalog schema v{}", catalog.schema_version);
+    println!(
+        "collision contract catalog schema v{}",
+        catalog.schema_version
+    );
     for contract in &catalog.contracts {
         let backends = if contract.backends.is_empty() {
             "none".to_string()
@@ -782,8 +785,28 @@ struct PresentationEvidenceDump {
 struct PresentationRaySolverDump {
     plan_id: String,
     methods: Vec<String>,
+    mixed_selections: Vec<PresentationRaySolverSelectionDump>,
+    artifact_reuse_intents: Vec<PresentationRaySolverIntentDump>,
+    continuation_intents: Vec<PresentationRaySolverIntentDump>,
     fallback: String,
     unavailable_facts: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct PresentationRaySolverSelectionDump {
+    subject: String,
+    candidate_class: String,
+    method: String,
+    required_guarantee: String,
+    selected_method_class: String,
+    evidence_policy_summary: String,
+}
+
+#[derive(Serialize)]
+struct PresentationRaySolverIntentDump {
+    selection: PresentationRaySolverSelectionDump,
+    disposition: String,
+    reasons: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -917,17 +940,72 @@ fn print_observer_projection_human(projection: &query_program_debug::ObserverPro
         format_spine_bindings(&projection.spine.outputs)
     );
     println!(
-        "  shared spine observability: graph_structure={} artifact_lifecycle={} query_dependencies={} backend_dispatch={} output_bindings={} runtime_trace_local_only={}",
+        "  shared spine observability: graph_structure={} artifact_lifecycle={} query_dependencies={} backend_dispatch={} output_bindings={} validation_summary={} runtime_trace_local_only={} observer_metrics_local_only={}",
         projection.spine.observability.graph_structure,
         projection.spine.observability.artifact_lifecycle,
         projection.spine.observability.query_dependencies,
         projection.spine.observability.backend_dispatch,
         projection.spine.observability.output_bindings,
-        projection.spine.observability.runtime_trace_local_only
+        projection.spine.observability.validation_summary,
+        projection.spine.observability.runtime_trace_local_only,
+        projection.spine.observability.observer_metrics_local_only
     );
     println!(
         "  shared spine lossy boundaries: {}",
         format_spine_lossy_boundaries(&projection.lossy_boundaries)
+    );
+    println!(
+        "  shared dependency graph: status={} roots={} leaves={} cycles={} artifact_edges={} policy_edges={} output_edges={}",
+        projection.analysis.dependency.status,
+        format_shared_nodes(&projection.analysis.dependency.root_nodes),
+        format_shared_nodes(&projection.analysis.dependency.leaf_nodes),
+        format_shared_nodes(&projection.analysis.dependency.cycle_nodes),
+        projection.analysis.dependency.artifact_edge_count,
+        projection.analysis.dependency.policy_edge_count,
+        projection.analysis.dependency.output_edge_count,
+    );
+    println!(
+        "  shared artifact lifetimes: status={} explicit={} store_backed={} preserved={}",
+        projection.analysis.artifact_lifetimes.status,
+        format_shared_nodes(&projection.analysis.artifact_lifetimes.explicit_artifacts),
+        format_shared_store_backed_loads(
+            &projection.analysis.artifact_lifetimes.store_backed_loads
+        ),
+        format_shared_nodes(&projection.analysis.artifact_lifetimes.preserved_artifacts),
+    );
+    print_shared_issues(
+        "shared artifact lifetime issues",
+        &projection.analysis.artifact_lifetimes.issues,
+    );
+    println!(
+        "  shared policy summary: status={} requirements={}",
+        projection.analysis.policy.status,
+        format_shared_policy_requirements(&projection.analysis.policy.requirements),
+    );
+    print_shared_issues("shared policy issues", &projection.analysis.policy.issues);
+    println!(
+        "  shared backend summary: status={} active={} supported={} bindings={} dispatch_nodes={} backend_dispatch_enabled={}",
+        projection.analysis.backend.status,
+        format_shared_nodes(&projection.analysis.backend.active_backends),
+        format_shared_nodes(&projection.analysis.backend.supported_backends),
+        projection
+            .analysis
+            .backend
+            .binding_count
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        format_shared_nodes(&projection.analysis.backend.dispatch_nodes),
+        projection.analysis.backend.backend_dispatch_enabled,
+    );
+    println!(
+        "  shared observability report: common={} local_only={} lossy={}",
+        format_shared_nodes(&projection.analysis.observability.common_channels),
+        format_shared_nodes(&projection.analysis.observability.local_only_channels),
+        format_shared_observability_boundaries(&projection.analysis.observability.lossy_boundaries),
+    );
+    print_shared_issues(
+        "shared dependency issues",
+        &projection.analysis.dependency.issues,
     );
 }
 
@@ -943,10 +1021,7 @@ fn format_spine_bindings(bindings: &[query_program_debug::SpineBindingDump]) -> 
     }
 }
 
-fn format_spine_node_labels(
-    nodes: &[query_program_debug::SpineNodeDump],
-    family: &str,
-) -> String {
+fn format_spine_node_labels(nodes: &[query_program_debug::SpineNodeDump], family: &str) -> String {
     let labels = nodes
         .iter()
         .filter(|node| node.family == family)
@@ -990,6 +1065,98 @@ fn format_spine_lossy_boundaries(
             .map(|boundary| format!("{}({})", boundary.node_id, boundary.reason))
             .collect::<Vec<_>>()
             .join(", ")
+    }
+}
+
+fn format_shared_nodes(values: &[String]) -> String {
+    if values.is_empty() {
+        "none".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn format_shared_store_backed_loads(
+    loads: &[query_program_debug::SpineArtifactAccessSummaryDump],
+) -> String {
+    if loads.is_empty() {
+        "none".to_string()
+    } else {
+        loads
+            .iter()
+            .map(|load| {
+                format!(
+                    "{}->{}({})",
+                    load.actor,
+                    load.artifact_id,
+                    load.required_validity.as_deref().unwrap_or("none")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn format_shared_policy_requirements(
+    requirements: &[query_program_debug::SpinePolicyRequirementSummaryDump],
+) -> String {
+    if requirements.is_empty() {
+        "none".to_string()
+    } else {
+        requirements
+            .iter()
+            .map(|requirement| {
+                let backends = if requirement.backends.is_empty() {
+                    "none".to_string()
+                } else {
+                    requirement.backends.join("|")
+                };
+                let supported = if requirement.supported_backends.is_empty() {
+                    "none".to_string()
+                } else {
+                    requirement.supported_backends.join("|")
+                };
+                format!(
+                    "{}[legal={} backends={} supported={} required_guarantee={} selected_method={}]",
+                    requirement.label,
+                    requirement.legal,
+                    backends,
+                    supported,
+                    requirement.required_guarantee.as_deref().unwrap_or("none"),
+                    requirement.selected_method.as_deref().unwrap_or("none"),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn format_shared_observability_boundaries(
+    boundaries: &[query_program_debug::SpineObservabilityBoundaryReportDump],
+) -> String {
+    if boundaries.is_empty() {
+        "none".to_string()
+    } else {
+        boundaries
+            .iter()
+            .map(|boundary| {
+                format!(
+                    "{}({}:{})",
+                    boundary.node_id, boundary.reason, boundary.dropped_field_count
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn print_shared_issues(label: &str, issues: &[query_program_debug::SharedSpineIssueDump]) {
+    if issues.is_empty() {
+        return;
+    }
+    println!("  {}:", label);
+    for issue in issues {
+        println!("    {}: {}", issue.scope, issue.message);
     }
 }
 
@@ -1061,10 +1228,7 @@ fn print_collision_plan_human(dump: &CollisionPlanCatalogDump) {
             "  contract: {} v{} family={} question={} target={}",
             plan.contract_id, plan.contract_version, plan.family, plan.question, plan.target
         );
-        println!(
-            "  authority_scope: {}",
-            plan.authority_scope
-        );
+        println!("  authority_scope: {}", plan.authority_scope);
         println!(
             "  policy: backend_preference={} required_guarantee={} selected_method={}",
             plan.policy.backend_preference,
@@ -1143,7 +1307,10 @@ fn print_collision_plan_human(dump: &CollisionPlanCatalogDump) {
                             .as_ref()
                             .map(|schema| schema.name.as_str())
                             .unwrap_or("none");
-                        format!("{}:{}({}) witness={}", output.name, output.kind, output.record, witness)
+                        format!(
+                            "{}:{}({}) witness={}",
+                            output.name, output.kind, output.record, witness
+                        )
                     })
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -1173,10 +1340,7 @@ fn print_collision_plan_human(dump: &CollisionPlanCatalogDump) {
             );
         }
         print_observer_projection_human(&plan.observer_projection);
-        println!(
-            "  validation: {}",
-            plan.validation.status
-        );
+        println!("  validation: {}", plan.validation.status);
         for err in &plan.validation.errors {
             println!("    - {}", err);
         }
@@ -1211,9 +1375,7 @@ fn collision_contract_dump(
     }
 }
 
-fn collision_plan_dump_item(
-    plan: &wrela::collision_plan::CollisionPlan,
-) -> CollisionPlanDumpItem {
+fn collision_plan_dump_item(plan: &wrela::collision_plan::CollisionPlan) -> CollisionPlanDumpItem {
     let validation = observer_validation_summary(
         plan.validate()
             .into_iter()
@@ -1226,8 +1388,10 @@ fn collision_plan_dump_item(
         family: wrela::collision_contract::collision_family_name(plan.family).to_string(),
         question: wrela::collision_contract::collision_question_name(plan.question).to_string(),
         target: wrela::collision_contract::collision_target_name(plan.target).to_string(),
-        authority_scope: wrela::collision_contract::collision_authority_scope_name(plan.authority_scope)
-            .to_string(),
+        authority_scope: wrela::collision_contract::collision_authority_scope_name(
+            plan.authority_scope,
+        )
+        .to_string(),
         backend: dispatch_backend_name(plan.backend).to_string(),
         policy: collision_execution_policy_dump(plan.policy),
         inputs: plan
@@ -1274,9 +1438,7 @@ fn collision_plan_dump_item(
                 kind: wrela::collision_contract::collision_output_kind_name(output.kind)
                     .to_string(),
                 record: output.record.to_string(),
-                witness_schema: output
-                    .witness_schema
-                    .map(collision_witness_schema_dump),
+                witness_schema: output.witness_schema.map(collision_witness_schema_dump),
             })
             .collect(),
         observer_projection: query_program_debug::observer_projection_for_collision_plan(plan),
@@ -1340,9 +1502,8 @@ fn collision_run_report(
     backend: wrela::query_plan::DispatchBackend,
 ) -> Result<CollisionRunReport, String> {
     let query_ctx = collision_demo_context()?;
-    let scene_id = wrela::query_exec::stable_region_scene_capture_id(&SmolStr::new(
-        "collision_region",
-    ));
+    let scene_id =
+        wrela::query_exec::stable_region_scene_capture_id(&SmolStr::new("collision_region"));
     let domain = collision_demo_domain(scene_id);
     let point = collision_demo_point([0.0, 0.0, 0.25]);
     let sweep = collision_demo_sweep([0.0, 0.0, 2.0], [0.0, 0.0, -2.0], 0.25);
@@ -1456,17 +1617,21 @@ fn collision_result_dump(
     result: wrela::collision_contract::CollisionResult,
 ) -> CollisionResultDump {
     match result {
-        wrela::collision_contract::CollisionResult::Occupancy(value) => CollisionResultDump::Occupancy {
-            occupied: value.occupied,
-            classification: format!("{:?}", value.classification),
-            signed_distance: value.signed_distance,
-            witness: collision_point_witness_dump(value.witness),
-        },
-        wrela::collision_contract::CollisionResult::RayCast(value) => CollisionResultDump::RayCast {
-            hit: value.hit,
-            miss_reason: format!("{:?}", value.miss_reason),
-            witness: value.witness.map(collision_ray_witness_dump),
-        },
+        wrela::collision_contract::CollisionResult::Occupancy(value) => {
+            CollisionResultDump::Occupancy {
+                occupied: value.occupied,
+                classification: format!("{:?}", value.classification),
+                signed_distance: value.signed_distance,
+                witness: collision_point_witness_dump(value.witness),
+            }
+        }
+        wrela::collision_contract::CollisionResult::RayCast(value) => {
+            CollisionResultDump::RayCast {
+                hit: value.hit,
+                miss_reason: format!("{:?}", value.miss_reason),
+                witness: value.witness.map(collision_ray_witness_dump),
+            }
+        }
         wrela::collision_contract::CollisionResult::SphereOverlap(value) => {
             CollisionResultDump::SphereOverlap {
                 overlaps: value.overlaps,
@@ -1477,14 +1642,18 @@ fn collision_result_dump(
         wrela::collision_contract::CollisionResult::Sweep(value) => CollisionResultDump::Sweep {
             hit: value.hit,
             witness: value.witness.map(collision_sweep_witness_dump),
-            no_hit_certificate: value.no_hit_certificate.map(collision_no_hit_certificate_dump),
+            no_hit_certificate: value
+                .no_hit_certificate
+                .map(collision_no_hit_certificate_dump),
         },
         wrela::collision_contract::CollisionResult::TimeOfImpact(value) => {
             CollisionResultDump::TimeOfImpact {
                 hit: value.hit,
                 time_fraction_upper_bound: value.time_fraction_upper_bound,
                 witness: value.witness.map(collision_toi_witness_dump),
-                no_hit_certificate: value.no_hit_certificate.map(collision_no_hit_certificate_dump),
+                no_hit_certificate: value
+                    .no_hit_certificate
+                    .map(collision_no_hit_certificate_dump),
             }
         }
     }
@@ -1596,10 +1765,8 @@ fn collision_execution_trace_dump(
             .into_iter()
             .map(|decision| CollisionReuseDecisionDump {
                 artifact_id: decision.artifact_id.to_string(),
-                kind: wrela::collision_plan::collision_artifact_kind_name(
-                    decision.artifact_kind,
-                )
-                .to_string(),
+                kind: wrela::collision_plan::collision_artifact_kind_name(decision.artifact_kind)
+                    .to_string(),
                 verdict: wrela::collision_plan::collision_reuse_verdict_name(decision.verdict)
                     .to_string(),
                 reason: wrela::collision_plan::collision_reuse_reason_name(decision.reason)
@@ -1690,11 +1857,7 @@ fn collision_result_human(result: &CollisionResultDump) -> String {
             witness,
         } => format!(
             "occupancy occupied={} classification={} signed_distance={} witness=sample_point={:?} world_normal={:?}",
-            occupied,
-            classification,
-            signed_distance,
-            witness.sample_point,
-            witness.world_normal
+            occupied, classification, signed_distance, witness.sample_point, witness.world_normal
         ),
         CollisionResultDump::RayCast {
             hit,
@@ -1706,7 +1869,10 @@ fn collision_result_human(result: &CollisionResultDump) -> String {
             miss_reason,
             witness
                 .as_ref()
-                .map(|w| format!("travel_distance={} position={:?}", w.travel_distance, w.position))
+                .map(|w| format!(
+                    "travel_distance={} position={:?}",
+                    w.travel_distance, w.position
+                ))
                 .unwrap_or_else(|| "none".to_string())
         ),
         CollisionResultDump::SphereOverlap {
@@ -1715,10 +1881,7 @@ fn collision_result_human(result: &CollisionResultDump) -> String {
             witness,
         } => format!(
             "sphere_overlap overlaps={} signed_separation={} witness=point_on_probe={:?} world_normal={:?}",
-            overlaps,
-            signed_separation,
-            witness.point_on_probe,
-            witness.world_normal
+            overlaps, signed_separation, witness.point_on_probe, witness.world_normal
         ),
         CollisionResultDump::Sweep {
             hit,
@@ -1771,11 +1934,15 @@ fn collision_result_human(result: &CollisionResultDump) -> String {
 
 fn collision_demo_context() -> Result<wrela::query_exec::QueryExecContext, String> {
     let node = parser::parse(collision_demo_source());
-    let root = ast::Root::cast(node).ok_or_else(|| "collision demo source did not parse".to_string())?;
+    let root =
+        ast::Root::cast(node).ok_or_else(|| "collision demo source did not parse".to_string())?;
     let module = hir_lower::lower(root);
     let semantic = hir::semantic::check_module(&module);
     if !semantic.errors.is_empty() {
-        return Err(format!("collision demo semantic errors: {:?}", semantic.errors));
+        return Err(format!(
+            "collision demo semantic errors: {:?}",
+            semantic.errors
+        ));
     }
     let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
     if !type_errors.is_empty() {
@@ -1830,19 +1997,28 @@ fn collision_demo_domain(scene_id: u32) -> wrela::kernel::KernelValue {
     wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
         name: SmolStr::new("SceneDomain"),
         fields: vec![
-            (SmolStr::new("scene_id"), wrela::kernel::KernelValue::U32(scene_id)),
+            (
+                SmolStr::new("scene_id"),
+                wrela::kernel::KernelValue::U32(scene_id),
+            ),
             (
                 SmolStr::new("spatial"),
                 wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
                     name: SmolStr::new("SpatialDomainContract"),
-                    fields: vec![(SmolStr::new("geometry_detail"), wrela::kernel::KernelValue::I32(1))],
+                    fields: vec![(
+                        SmolStr::new("geometry_detail"),
+                        wrela::kernel::KernelValue::I32(1),
+                    )],
                 }),
             ),
             (
                 SmolStr::new("surface"),
                 wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
                     name: SmolStr::new("SurfaceDomainContract"),
-                    fields: vec![(SmolStr::new("material"), wrela::kernel::KernelValue::Bool(true))],
+                    fields: vec![(
+                        SmolStr::new("material"),
+                        wrela::kernel::KernelValue::Bool(true),
+                    )],
                 }),
             ),
             (
@@ -1850,8 +2026,14 @@ fn collision_demo_domain(scene_id: u32) -> wrela::kernel::KernelValue {
                 wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
                     name: SmolStr::new("ParticipantDomainContract"),
                     fields: vec![
-                        (SmolStr::new("radiance"), wrela::kernel::KernelValue::Bool(false)),
-                        (SmolStr::new("media"), wrela::kernel::KernelValue::Bool(false)),
+                        (
+                            SmolStr::new("radiance"),
+                            wrela::kernel::KernelValue::Bool(false),
+                        ),
+                        (
+                            SmolStr::new("media"),
+                            wrela::kernel::KernelValue::Bool(false),
+                        ),
                     ],
                 }),
             ),
@@ -1910,7 +2092,10 @@ fn collision_demo_capture(scene_id: u32, epoch: u32) -> wrela::kernel::KernelVal
 fn collision_demo_point(point: [f32; 3]) -> wrela::kernel::KernelValue {
     wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
         name: SmolStr::new("CollisionPointInput"),
-        fields: vec![(SmolStr::new("point"), wrela::kernel::KernelValue::Vec3(point))],
+        fields: vec![(
+            SmolStr::new("point"),
+            wrela::kernel::KernelValue::Vec3(point),
+        )],
     })
 }
 
@@ -1930,7 +2115,10 @@ fn collision_demo_sweep(
                 SmolStr::new("end_center"),
                 wrela::kernel::KernelValue::Vec3(end_center),
             ),
-            (SmolStr::new("radius"), wrela::kernel::KernelValue::F32(radius)),
+            (
+                SmolStr::new("radius"),
+                wrela::kernel::KernelValue::F32(radius),
+            ),
             (
                 SmolStr::new("contact_tolerance"),
                 wrela::kernel::KernelValue::F32(0.001),
@@ -5180,12 +5368,84 @@ fn presentation_solver_dump(
             .iter()
             .map(|method| wrela::query_solver::ray_solver_method_name(*method).to_string())
             .collect(),
+        mixed_selections: summary
+            .mixed_selections
+            .iter()
+            .map(presentation_ray_solver_selection_dump)
+            .collect(),
+        artifact_reuse_intents: summary
+            .artifact_reuse_intents
+            .iter()
+            .map(presentation_ray_solver_artifact_reuse_intent_dump)
+            .collect(),
+        continuation_intents: summary
+            .continuation_intents
+            .iter()
+            .map(presentation_ray_solver_continuation_intent_dump)
+            .collect(),
         fallback: wrela::query_solver::ray_solver_fallback_name(summary.fallback).to_string(),
         unavailable_facts: summary
             .unavailable_facts
             .iter()
             .map(|fact| fact.to_string())
             .collect(),
+    }
+}
+
+fn presentation_ray_solver_selection_dump(
+    selection: &wrela::query_solver::RaySolverMixedSelection,
+) -> PresentationRaySolverSelectionDump {
+    PresentationRaySolverSelectionDump {
+        subject: selection.subject.to_string(),
+        candidate_class: selection.candidate_class.to_string(),
+        method: wrela::query_solver::ray_solver_method_name(selection.method).to_string(),
+        required_guarantee: wrela::presentation_exec::cost::required_guarantee_class_name(
+            selection.required_guarantee,
+        )
+        .to_string(),
+        selected_method_class: wrela::presentation_exec::cost::selected_method_class_name(
+            selection.selected_method_class,
+        )
+        .to_string(),
+        evidence_policy_summary: selection.evidence_policy_summary.to_string(),
+    }
+}
+
+fn presentation_ray_solver_artifact_reuse_intent_dump(
+    intent: &wrela::query_solver::RaySolverArtifactReuseIntent,
+) -> PresentationRaySolverIntentDump {
+    PresentationRaySolverIntentDump {
+        selection: presentation_ray_solver_selection_dump(&intent.selection),
+        disposition: ray_solver_intent_disposition_name(intent.disposition).to_string(),
+        reasons: intent
+            .reasons
+            .iter()
+            .map(|reason| reason.to_string())
+            .collect(),
+    }
+}
+
+fn presentation_ray_solver_continuation_intent_dump(
+    intent: &wrela::query_solver::RaySolverContinuationIntent,
+) -> PresentationRaySolverIntentDump {
+    PresentationRaySolverIntentDump {
+        selection: presentation_ray_solver_selection_dump(&intent.selection),
+        disposition: ray_solver_intent_disposition_name(intent.disposition).to_string(),
+        reasons: intent
+            .reasons
+            .iter()
+            .map(|reason| reason.to_string())
+            .collect(),
+    }
+}
+
+fn ray_solver_intent_disposition_name(
+    disposition: wrela::query_solver::RaySolverIntentDisposition,
+) -> &'static str {
+    match disposition {
+        wrela::query_solver::RaySolverIntentDisposition::Used => "used",
+        wrela::query_solver::RaySolverIntentDisposition::Rejected => "rejected",
+        wrela::query_solver::RaySolverIntentDisposition::Unavailable => "unavailable",
     }
 }
 
@@ -5523,12 +5783,7 @@ pub fn execute(spec: CommandSpec) {
             if trace {
                 eprintln!("build: command collision-plan");
             }
-            execute_collision_plan_command(
-                output_format,
-                path_arg,
-                program_args,
-                query_backend,
-            );
+            execute_collision_plan_command(output_format, path_arg, program_args, query_backend);
         }
         "collision-run" => {
             if trace {

@@ -8,7 +8,8 @@ use wrela::query_contract;
 use wrela::query_plan::{self, BatchQueryKind, DispatchBackend, WorldQueryKind};
 use wrela::query_solver::{
     AnalyticIntersectionStatus, EvidenceOrigin, EvidenceScope, FactAvailability, LipschitzStatus,
-    PrimitiveFact, RaySolverFallbackKind, RaySolverMethod, is_ray_shaped_spatial_contract,
+    PrimitiveFact, RaySolverFallbackKind, RaySolverIntentDisposition, RaySolverMethod,
+    RequiredGuaranteeClass, SelectedMethodClass, is_ray_shaped_spatial_contract,
 };
 use wrela::scene_ir;
 use wrela::semantic_evidence::SemanticEvidence;
@@ -23,6 +24,38 @@ fn fact_fixture_source() -> &'static str {
     r#"
 field exact distance sphere_field(p: Vec3) -> F32 {
     sphere(radius = 1.0)
+}
+
+field exact distance translated_sphere_field(p: Vec3) -> F32 {
+    translate = vec3(1.5, 0.0, 0.0) {
+        sphere(radius = 1.0)
+    }
+}
+
+field conservative distance smooth_field(p: Vec3) -> F32 {
+    smooth_union {
+        smoothing = f32(0.35)
+        use translated_sphere_field
+        translate = vec3(2.1, 0.0, 0.0) {
+            sphere(radius = 1.0)
+        }
+    }
+}
+
+field conservative distance zero_smooth_field(p: Vec3) -> F32 {
+    smooth_union {
+        smoothing = f32(0.0)
+        use translated_sphere_field
+        translate = vec3(2.1, 0.0, 0.0) {
+            sphere(radius = 1.0)
+        }
+    }
+}
+
+field conservative distance repeated_field(p: Vec3) -> F32 {
+    repeat_linear = vec3(2.5, 0.0, 0.0) {
+        sphere(radius = 1.0)
+    }
 }
 
 field conservative distance opaque_field(p: Vec3) -> F32 {
@@ -112,6 +145,47 @@ fn semantic_evidence_make_available_and_unavailable_solver_inputs_explicit() {
 }
 
 #[test]
+fn differential_evidence_tracks_supported_smooth_propagation_and_repeat_fallbacks() {
+    let module = lower_inline_module_from_source(fact_fixture_source());
+    let scene = scene_ir::lower_module(&module);
+    let smooth = scene.fields.get("smooth_field").expect("smooth field");
+    let smooth_evidence = SemanticEvidence::for_field_scene(smooth);
+    assert_eq!(
+        smooth.analysis.differential_support,
+        scene_ir::SceneDifferentialSupport::CertifiedGradient
+    );
+    assert_eq!(
+        smooth_evidence.differential.derivative,
+        FactAvailability::Available
+    );
+
+    let zero_smooth = scene
+        .fields
+        .get("zero_smooth_field")
+        .expect("zero smooth field");
+    let zero_smooth_evidence = SemanticEvidence::for_field_scene(zero_smooth);
+    assert_eq!(
+        zero_smooth.analysis.differential_support,
+        scene_ir::SceneDifferentialSupport::FiniteDifferenceFallback
+    );
+    assert_eq!(
+        zero_smooth_evidence.differential.derivative,
+        FactAvailability::Unavailable
+    );
+
+    let repeated = scene.fields.get("repeated_field").expect("repeated field");
+    let repeated_evidence = SemanticEvidence::for_field_scene(repeated);
+    assert_eq!(
+        repeated.analysis.differential_support,
+        scene_ir::SceneDifferentialSupport::FiniteDifferenceFallback
+    );
+    assert_eq!(
+        repeated_evidence.differential.derivative,
+        FactAvailability::Unavailable
+    );
+}
+
+#[test]
 fn ray_solver_plans_attach_only_to_ray_shaped_world_spatial_contracts() {
     assert!(is_ray_shaped_spatial_contract(
         query_contract::SPATIAL_NEAREST_WORLD
@@ -150,6 +224,44 @@ fn ray_solver_plans_attach_only_to_ray_shaped_world_spatial_contracts() {
         solver.method_enabled(RaySolverMethod::DenseSphereTracing),
         "dense marching must be an explicit solver fallback method"
     );
+    assert_eq!(solver.mixed_selections().len(), 4);
+    assert!(
+        solver
+            .mixed_selections()
+            .iter()
+            .all(|selection| selection.subject == solver.contract_id),
+        "mixed selections must remain anchored to the contract subject"
+    );
+    assert!(solver.mixed_selections().iter().any(|selection| {
+        selection.method == RaySolverMethod::DenseSphereTracing
+            && selection.candidate_class == "dense-oracle"
+            && selection.required_guarantee == RequiredGuaranteeClass::Exact
+            && selection.selected_method_class == SelectedMethodClass::ExactOracle
+    }));
+    assert!(solver.mixed_selections().iter().any(|selection| {
+        selection.method == RaySolverMethod::SupportBoundCandidateRejection
+            && selection.candidate_class == "support-bounded-candidates"
+            && selection.required_guarantee == RequiredGuaranteeClass::ConservativeNoFalseMiss
+            && selection.selected_method_class == SelectedMethodClass::ConservativeSolver
+    }));
+    assert!(solver.mixed_selections().iter().any(|selection| {
+        selection.method == RaySolverMethod::AnalyticPrimitiveIntersection
+            && selection.candidate_class == "analytic-primitive-candidates"
+            && selection.selected_method_class == SelectedMethodClass::ExactOracle
+    }));
+    assert!(solver.mixed_selections().iter().any(|selection| {
+        selection.method == RaySolverMethod::LipschitzSafeStepping
+            && selection.candidate_class == "lipschitz-safe-candidates"
+            && selection.selected_method_class == SelectedMethodClass::IntervalSolver
+    }));
+    assert!(
+        !solver
+            .mixed_selections()
+            .iter()
+            .any(|selection| selection.evidence_policy_summary.is_empty())
+    );
+    assert_eq!(solver.artifact_reuse_intents().len(), 1);
+    assert_eq!(solver.continuation_intents().len(), 1);
     let summary = solver.diagnostic_summary();
     assert_eq!(
         summary.evidence_summary.origin,
@@ -161,6 +273,37 @@ fn ray_solver_plans_attach_only_to_ray_shaped_world_spatial_contracts() {
             .methods
             .contains(&RaySolverMethod::AnalyticPrimitiveIntersection),
         "runtime-unknown world plans should report conditional analytic hooks"
+    );
+    assert_eq!(summary.mixed_selections, solver.mixed_selections().to_vec());
+    assert_eq!(
+        summary.artifact_reuse_intents,
+        solver.artifact_reuse_intents().to_vec()
+    );
+    assert_eq!(
+        summary.continuation_intents,
+        solver.continuation_intents().to_vec()
+    );
+    assert_eq!(
+        summary.artifact_reuse_intents[0].disposition,
+        RaySolverIntentDisposition::Unavailable
+    );
+    assert_eq!(
+        summary.continuation_intents[0].disposition,
+        RaySolverIntentDisposition::Unavailable
+    );
+    assert!(
+        summary.artifact_reuse_intents[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("runtime artifact instance")),
+        "artifact reuse diagnostics should explain the missing compatible runtime artifact"
+    );
+    assert!(
+        summary.continuation_intents[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("runtime transition context")),
+        "continuation diagnostics should explain the missing compatible runtime context"
     );
     assert!(
         !summary.unavailable_facts.contains(&"analytic"),

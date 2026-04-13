@@ -79,6 +79,14 @@ fn assert_batch_trace_contract(
     assert_eq!(trace.plan_trace.contract_version, descriptor.version);
 }
 
+fn assert_normal_role(trace: &DirectQueryExecutionTrace, expected: &str) {
+    assert_eq!(trace.observability.normal_role.as_deref(), Some(expected));
+}
+
+fn assert_batch_normal_role(trace: &BatchQueryExecutionTrace, expected: &str) {
+    assert_eq!(trace.observability.normal_role.as_deref(), Some(expected));
+}
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -2932,6 +2940,10 @@ fn query_exec_wgsl_batch_queries_match_cpu_results() {
             expect_vec3(field(expect_struct(wgsl, "NormalResult"), "normal")),
         );
     }
+    assert_batch_normal_role(
+        &wgsl_field_normal_trace,
+        "normal_role::certified_field_gradient",
+    );
     assert_batch_trace_contract(
         &wgsl_field_normal_trace,
         query_contract::SPATIAL_NORMAL_BATCH_FIELD,
@@ -2974,6 +2986,7 @@ fn query_exec_wgsl_batch_queries_match_cpu_results() {
             expect_vec3(field(expect_struct(wgsl, "NormalResult"), "normal")),
         );
     }
+    assert_batch_normal_role(&wgsl_shape_normal_trace, "normal_role::feature_normal");
     assert_batch_trace_contract(
         &wgsl_shape_normal_trace,
         query_contract::SPATIAL_NORMAL_BATCH_SHAPE,
@@ -3730,6 +3743,179 @@ fn query_exec_opaque_fallback_updates_observability_counters() {
 }
 
 #[test]
+fn query_exec_cpu_certified_normals_record_roles_without_sampling_fallbacks() {
+    let (_, _, ctx) = typed_query_module(certified_normal_source());
+    let field_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Normal, CaptureKind::Field, None)
+            .expect("field normal plan"),
+    );
+    let shape_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Normal, CaptureKind::Shape, None)
+            .expect("shape normal plan"),
+    );
+    let world_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Normal));
+
+    let (plane_normal, plane_trace) = execute_capture_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &field_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("exact_plane_field")),
+            KernelValue::Vec3([0.0, 2.0, 0.0]),
+        ],
+    )
+    .expect("plane normal");
+    assert_eq!(expect_vec3(&plane_normal), [0.0, 1.0, 0.0]);
+    assert_normal_role(&plane_trace, "normal_role::certified_field_gradient");
+    assert_eq!(plane_trace.observability.field_samples, 0);
+
+    let (translated_normal, translated_trace) = execute_capture_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &field_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("translated_sphere_field")),
+            KernelValue::Vec3([1.5, 0.0, 2.0]),
+        ],
+    )
+    .expect("translated sphere normal");
+    assert_eq!(expect_vec3(&translated_normal), [0.0, 0.0, 1.0]);
+    assert_normal_role(&translated_trace, "normal_role::certified_field_gradient");
+    assert_eq!(translated_trace.observability.field_samples, 0);
+
+    let (rotated_normal, rotated_trace) = execute_capture_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &field_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("rotated_sphere_field")),
+            KernelValue::Vec3([0.0, 0.0, 2.0]),
+        ],
+    )
+    .expect("rotated sphere normal");
+    assert_eq!(expect_vec3(&rotated_normal), [0.0, 0.0, 1.0]);
+    assert_normal_role(&rotated_trace, "normal_role::certified_field_gradient");
+    assert_eq!(rotated_trace.observability.field_samples, 0);
+
+    let (scaled_normal, scaled_trace) = execute_capture_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &field_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("scaled_sphere_field")),
+            KernelValue::Vec3([0.0, 0.0, 2.0]),
+        ],
+    )
+    .expect("scaled sphere normal");
+    assert_eq!(expect_vec3(&scaled_normal), [0.0, 0.0, 1.0]);
+    assert_normal_role(&scaled_trace, "normal_role::certified_field_gradient");
+    assert_eq!(scaled_trace.observability.field_samples, 0);
+
+    let (shape_normal, shape_trace) = execute_capture_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &shape_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("translated_sphere_shape")),
+            KernelValue::Vec3([1.5, 0.0, 2.0]),
+        ],
+    )
+    .expect("shape normal");
+    assert_eq!(expect_vec3(&shape_normal), [0.0, 0.0, 1.0]);
+    assert_normal_role(&shape_trace, "normal_role::feature_normal");
+    assert_eq!(shape_trace.observability.field_samples, 0);
+
+    let region_id = stable_region_scene_capture_id(&SmolStr::new("translated_region"));
+    let world_domain = scene_domain(region_id, 1, true, true, true);
+    let (world_normal, world_trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &world_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("translated_region")),
+            world_domain.clone(),
+            KernelValue::Vec3([1.5, 0.0, 2.0]),
+        ],
+    )
+    .expect("world normal");
+    assert_eq!(expect_vec3(&world_normal), [0.0, 0.0, 1.0]);
+    assert_normal_role(&world_trace, "normal_role::feature_normal");
+    assert_eq!(world_trace.observability.field_samples, 0);
+
+    let (wgsl_world_normal, wgsl_world_trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &world_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("translated_region")),
+            world_domain,
+            KernelValue::Vec3([1.5, 0.0, 2.0]),
+        ],
+    )
+    .expect("wgsl world normal");
+    assert_eq!(expect_vec3(&wgsl_world_normal), [0.0, 0.0, 1.0]);
+    assert_normal_role(&wgsl_world_trace, "normal_role::feature_normal");
+}
+
+#[test]
+fn query_exec_cpu_certifies_supported_smooth_normals_and_falls_back_for_repetition() {
+    let (_, _, ctx) = typed_query_module(certified_normal_source());
+    let field_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Normal, CaptureKind::Field, None)
+            .expect("field normal plan"),
+    );
+    let world_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Normal));
+
+    let (smooth_normal, smooth_trace) = execute_capture_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &field_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("smooth_certified_field")),
+            KernelValue::Vec3([0.25, 0.0, 0.0]),
+        ],
+    )
+    .expect("smooth certified normal");
+    assert!(length3(expect_vec3(&smooth_normal)) > 0.0);
+    assert_normal_role(&smooth_trace, "normal_role::certified_field_gradient");
+    assert!(smooth_trace.observability.field_samples <= 1);
+
+    let (fallback_normal, fallback_trace) = execute_capture_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &field_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("repeated_fallback_field")),
+            KernelValue::Vec3([0.4, 0.0, 0.0]),
+        ],
+    )
+    .expect("repeated fallback normal");
+    assert!(length3(expect_vec3(&fallback_normal)) > 0.0);
+    assert_normal_role(&fallback_trace, "normal_role::heuristic_shading_normal");
+    assert!(fallback_trace.observability.field_samples > smooth_trace.observability.field_samples);
+
+    let region_id = stable_region_scene_capture_id(&SmolStr::new("repeated_region"));
+    let world_domain = scene_domain(region_id, 1, true, true, true);
+    let (world_fallback_normal, world_fallback_trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &world_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("repeated_region")),
+            world_domain,
+            KernelValue::Vec3([0.4, 0.0, 0.0]),
+        ],
+    )
+    .expect("repeated world fallback normal");
+    assert!(length3(expect_vec3(&world_fallback_normal)) > 0.0);
+    assert_normal_role(
+        &world_fallback_trace,
+        "normal_role::heuristic_shading_normal",
+    );
+    assert!(world_fallback_trace.observability.field_samples > 0);
+}
+
+#[test]
 fn query_exec_virtual_gpu_rejects_invalid_batch_contracts_before_execution() {
     let (_, _, ctx) = typed_query_module(query_fixture_source());
     let capture = KernelValue::Capture(SmolStr::new("scene_shape"));
@@ -4303,6 +4489,86 @@ field conservative distance lofted_form(p: Vec3) -> F32 {
         from circle2(radius = 0.32)
         to rounded_rect2(half = vec2(0.42, 0.28), radius = 0.08)
     }
+}
+"#
+}
+
+fn certified_normal_source() -> &'static str {
+    r#"
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.2, 0.3, 0.4),
+        roughness=0.4,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+field exact distance exact_plane_field(p: Vec3) -> F32 {
+    plane(normal = vec3(0.0, 1.0, 0.0), offset = 0.0)
+}
+
+field exact distance translated_sphere_field(p: Vec3) -> F32 {
+    translate = vec3(1.5, 0.0, 0.0) {
+        sphere(radius = 1.0)
+    }
+}
+
+field exact distance rotated_sphere_field(p: Vec3) -> F32 {
+    rotate = vec3(0.0, 0.0, 1.5707963) {
+        sphere(radius = 1.0)
+    }
+}
+
+field exact distance scaled_sphere_field(p: Vec3) -> F32 {
+    uniform_scale = f32(2.0) {
+        sphere(radius = 1.0)
+    }
+}
+
+field conservative distance smooth_certified_field(p: Vec3) -> F32 {
+    smooth_union {
+        smoothing = f32(0.35)
+        use translated_sphere_field
+        translate = vec3(2.1, 0.0, 0.0) {
+            sphere(radius = 1.0)
+        }
+    }
+}
+
+field conservative distance repeated_fallback_field(p: Vec3) -> F32 {
+    repeat_linear = vec3(2.5, 0.0, 0.0) {
+        sphere(radius = 1.0)
+    }
+}
+
+shape translated_sphere_shape {
+    field = translated_sphere_field
+    material = shade
+    payload = Payload()
+}
+
+shape smooth_certified_shape {
+    field = smooth_certified_field
+    material = shade
+    payload = Payload()
+}
+
+shape repeated_fallback_shape {
+    field = repeated_fallback_field
+    material = shade
+    payload = Payload()
+}
+
+region translated_region() {
+    place translated = translated_sphere_shape
+}
+
+region repeated_region() {
+    place repeated = repeated_fallback_shape
 }
 "#
 }

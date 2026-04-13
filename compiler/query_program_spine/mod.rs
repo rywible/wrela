@@ -2,7 +2,8 @@ use crate::artifact_contract::{
     ArtifactUse, ArtifactUseKind, ArtifactUseSource, ArtifactValidityRule, SemanticArtifactContract,
 };
 use crate::collision_contract::{
-    collision_authority_scope_name, collision_input_kind_name, collision_output_kind_name,
+    collision_authority_scope_name, collision_backend_support_names, collision_contract,
+    collision_input_kind_name, collision_output_kind_name,
 };
 use crate::collision_plan::{CollisionPassKind, CollisionPlan, collision_artifact_kind_name};
 use crate::presentation_contract::{
@@ -13,6 +14,22 @@ use crate::presentation_contract::{
 use crate::presentation_plan::{PresentationPassKind, PresentationPlan};
 use smol_str::SmolStr;
 use std::collections::{BTreeMap, BTreeSet};
+
+pub mod report;
+pub mod validate;
+
+pub use report::{
+    SharedQueryProgramSpineReport, SharedSpineReport, SpineBackendSummary,
+    SpineObservabilityBoundaryReport, SpineObservabilityReport,
+    build_shared_query_program_spine_report, shared_spine_report,
+};
+pub use validate::{
+    SharedDiagnosticStatus, SharedSpineIssue, SpineAnalysisStatus, SpineArtifactAccessSummary,
+    SpineArtifactLifetimeValidation, SpineBackend, SpineDependencyAnalysis,
+    SpinePolicyLegalitySummary, SpinePolicyRequirementSummary, analyze_dependency_graph,
+    shared_diagnostic_status_name, spine_analysis_status_name, spine_backend_name,
+    summarize_policy_legality, validate_artifact_lifetime, validate_artifact_lifetimes,
+};
 
 pub const QUERY_PROGRAM_SPINE_SCHEMA_VERSION: u32 = 1;
 
@@ -539,6 +556,7 @@ pub fn project_presentation_plan(plan: &PresentationPlan) -> ObserverProjection 
 pub fn project_collision_plan(plan: &CollisionPlan) -> ObserverProjection {
     let semantic_artifacts = plan.semantic_artifact_contracts();
     let artifact_uses = plan.artifact_uses();
+    let descriptor = collision_contract(plan.contract_id).expect("collision contract descriptor");
     let outputs = plan
         .outputs
         .iter()
@@ -584,6 +602,18 @@ pub fn project_collision_plan(plan: &CollisionPlan) -> ObserverProjection {
         required_validity: None,
         notes: vec![
             SmolStr::new(format!("backend={}", dispatch_backend_name(plan.backend))),
+            SmolStr::new(format!(
+                "backend_preference={}",
+                dispatch_backend_name(plan.policy.backend_preference)
+            )),
+            SmolStr::new(format!(
+                "supported_backends={}",
+                join_display(
+                    collision_backend_support_names(descriptor.supported_backends)
+                        .iter()
+                        .copied()
+                )
+            )),
             SmolStr::new(format!(
                 "authority_scope={}",
                 collision_authority_scope_name(plan.authority_scope)

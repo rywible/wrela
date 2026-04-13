@@ -16,17 +16,18 @@ use crate::query_exec::context::QueryExecContext;
 use crate::query_exec::ids::stable_shape_capture_id;
 use crate::query_exec::region::{select_region_exec_case, world_domain_mismatch_message};
 use crate::query_exec::world::{
-    WorldDistanceBackend, WorldMediumBackend, WorldNormalBackend, WorldQueryBackend,
+    NormalRole, WorldDistanceBackend, WorldMediumBackend, WorldNormalBackend, WorldQueryBackend,
     WorldRadianceBackend, WorldSurfaceBackend, WorldTraceBackend, execute_world_distance,
     execute_world_medium, execute_world_normal, execute_world_radiance, execute_world_ray,
     execute_world_surface, world_query_semantics, world_query_semantics_for_contract,
 };
 use crate::query_plan::{
-    BatchQueryKind, WorldQueryKind, batch_query_kind_for_contract_id,
-    world_query_kind_for_contract_id,
+    ArtifactContract, ArtifactSchema, BatchQueryKind, WorldQueryKind,
+    batch_query_kind_for_contract_id, world_query_kind_for_contract_id,
 };
 use crate::query_solver::{
-    RaySolverFallbackReason, RaySolverMethod, RaySolverPlan, SemanticEvidence,
+    RaySolverArtifactReuseResolution, RaySolverFallbackReason, RaySolverIntentDisposition,
+    RaySolverMethod, RaySolverPlan, SemanticEvidence,
 };
 use crate::scene_ir::{
     DistanceSemantics, FieldNode, RepeatKind, SceneArgExpr, SceneProfileExpr, SceneValueExpr,
@@ -62,6 +63,12 @@ fn snapshot_capture_kind(kind: crate::query_plan::CaptureKind) -> SnapshotCaptur
         crate::query_plan::CaptureKind::Shape => SnapshotCaptureKind::Shape,
         crate::query_plan::CaptureKind::Region => SnapshotCaptureKind::Region,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct NormalEvaluation {
+    normal: [f32; 3],
+    role: NormalRole,
 }
 
 #[derive(Debug, Error, Clone, PartialEq)]
@@ -627,6 +634,12 @@ impl<'a> DirectQueryOps<'a> {
         self.update_observability(|observability| observability.field_samples += 1);
     }
 
+    pub(crate) fn note_normal_role(&self, role: NormalRole) {
+        self.update_observability(|observability| {
+            observability.normal_role = Some(SmolStr::new(role.observability_tag()));
+        });
+    }
+
     pub(crate) fn note_contract_validation_failure(&self) {
         self.update_observability(|observability| observability.contract_validation_failures += 1);
     }
@@ -949,7 +962,6 @@ impl<'a> DirectQueryOps<'a> {
                     plan.contract_id.as_str()
                 ),
             })?;
-        self.note_solver_plan(solver_plan);
         let origin = expect_struct_vec3(ray, "origin")?;
         let direction = expect_struct_vec3(ray, "direction")?;
         let max_distance = expect_struct_f32(ray, "max_distance")?;
@@ -967,6 +979,7 @@ impl<'a> DirectQueryOps<'a> {
             hit_epsilon,
             max_steps,
             solver_plan,
+            artifact_contracts: &plan.artifact_contracts,
             result: default_hit(origin),
             best_distance: f32::INFINITY,
         };
@@ -1101,13 +1114,21 @@ impl<'a> DirectQueryOps<'a> {
         point: [f32; 3],
         capture_kind: crate::query_plan::CaptureKind,
     ) -> Result<[f32; 3], QueryExecError> {
-        match capture_kind {
-            crate::query_plan::CaptureKind::Field => self.eval_field_normal(capture, point),
-            crate::query_plan::CaptureKind::Shape => self.eval_shape_normal(capture, point),
-            crate::query_plan::CaptureKind::Region => Err(QueryExecError::Unsupported {
-                message: "region captures are only valid for world queries".to_string(),
-            }),
-        }
+        let evaluation = match capture_kind {
+            crate::query_plan::CaptureKind::Field => {
+                self.eval_field_normal_with_role(capture, point)?
+            }
+            crate::query_plan::CaptureKind::Shape => {
+                self.eval_shape_normal_with_role(capture, point)?
+            }
+            crate::query_plan::CaptureKind::Region => {
+                return Err(QueryExecError::Unsupported {
+                    message: "region captures are only valid for world queries".to_string(),
+                });
+            }
+        };
+        self.note_normal_role(evaluation.role);
+        Ok(evaluation.normal)
     }
 
     pub(crate) fn support_summary_for_capture(
@@ -1193,14 +1214,7 @@ impl<'a> DirectQueryOps<'a> {
         field: &SmolStr,
         point: [f32; 3],
     ) -> Result<[f32; 3], QueryExecError> {
-        let eps = 0.001f32;
-        let dx = self.eval_field_distance(field, [point[0] + eps, point[1], point[2]])?
-            - self.eval_field_distance(field, [point[0] - eps, point[1], point[2]])?;
-        let dy = self.eval_field_distance(field, [point[0], point[1] + eps, point[2]])?
-            - self.eval_field_distance(field, [point[0], point[1] - eps, point[2]])?;
-        let dz = self.eval_field_distance(field, [point[0], point[1], point[2] + eps])?
-            - self.eval_field_distance(field, [point[0], point[1], point[2] - eps])?;
-        Ok(normalize3([dx, dy, dz]))
+        Ok(self.eval_field_normal_with_role(field, point)?.normal)
     }
 
     pub(crate) fn eval_shape_distance(
@@ -1225,14 +1239,264 @@ impl<'a> DirectQueryOps<'a> {
         shape: &SmolStr,
         point: [f32; 3],
     ) -> Result<[f32; 3], QueryExecError> {
+        Ok(self.eval_shape_normal_with_role(shape, point)?.normal)
+    }
+
+    fn eval_field_normal_with_role(
+        &self,
+        field: &SmolStr,
+        point: [f32; 3],
+    ) -> Result<NormalEvaluation, QueryExecError> {
+        if let Some(normal) = self.try_certified_field_normal(field, point)? {
+            return Ok(normal);
+        }
+        Ok(NormalEvaluation {
+            normal: self.finite_difference_normal(point, |sample_point| {
+                self.eval_field_distance(field, sample_point)
+            })?,
+            role: NormalRole::HeuristicShadingNormal,
+        })
+    }
+
+    fn eval_shape_normal_with_role(
+        &self,
+        shape: &SmolStr,
+        point: [f32; 3],
+    ) -> Result<NormalEvaluation, QueryExecError> {
+        if let Some(normal) = self.try_certified_shape_normal(shape, point)? {
+            return Ok(normal);
+        }
+        Ok(NormalEvaluation {
+            normal: self.finite_difference_normal(point, |sample_point| {
+                self.eval_shape_distance(shape, sample_point)
+            })?,
+            role: NormalRole::HeuristicShadingNormal,
+        })
+    }
+
+    fn finite_difference_normal<F>(
+        &self,
+        point: [f32; 3],
+        mut sample: F,
+    ) -> Result<[f32; 3], QueryExecError>
+    where
+        F: FnMut([f32; 3]) -> Result<f32, QueryExecError>,
+    {
         let eps = 0.001f32;
-        let dx = self.eval_shape_distance(shape, [point[0] + eps, point[1], point[2]])?
-            - self.eval_shape_distance(shape, [point[0] - eps, point[1], point[2]])?;
-        let dy = self.eval_shape_distance(shape, [point[0], point[1] + eps, point[2]])?
-            - self.eval_shape_distance(shape, [point[0], point[1] - eps, point[2]])?;
-        let dz = self.eval_shape_distance(shape, [point[0], point[1], point[2] + eps])?
-            - self.eval_shape_distance(shape, [point[0], point[1], point[2] - eps])?;
+        let dx = sample([point[0] + eps, point[1], point[2]])?
+            - sample([point[0] - eps, point[1], point[2]])?;
+        let dy = sample([point[0], point[1] + eps, point[2]])?
+            - sample([point[0], point[1] - eps, point[2]])?;
+        let dz = sample([point[0], point[1], point[2] + eps])?
+            - sample([point[0], point[1], point[2] - eps])?;
         Ok(normalize3([dx, dy, dz]))
+    }
+
+    fn try_certified_field_normal(
+        &self,
+        field: &SmolStr,
+        point: [f32; 3],
+    ) -> Result<Option<NormalEvaluation>, QueryExecError> {
+        let scene = self.field_scene(field)?;
+        if scene.opaque_boundary
+            || !matches!(
+                scene.analysis.differential_support,
+                crate::scene_ir::SceneDifferentialSupport::CertifiedGradient
+            )
+        {
+            return Ok(None);
+        }
+        self.try_certified_field_normal_node(&scene.root, point)
+    }
+
+    fn try_certified_field_normal_node(
+        &self,
+        node: &FieldNode,
+        point: [f32; 3],
+    ) -> Result<Option<NormalEvaluation>, QueryExecError> {
+        match node {
+            FieldNode::Use { target } => self.try_certified_field_normal(target, point),
+            FieldNode::Primitive { primitive, args } => match primitive {
+                hir::FieldPrimitive::Sphere => Ok(Some(NormalEvaluation {
+                    normal: normalize3(point),
+                    role: NormalRole::CertifiedFieldGradient,
+                })),
+                hir::FieldPrimitive::Plane => {
+                    let Some(normal) =
+                        self.eval_scene_named_arg_opt(args.as_deref().unwrap_or(&[]), "normal")?
+                    else {
+                        return Ok(None);
+                    };
+                    let normal = expect_vec3(Some(&normal), "plane normal")?;
+                    if dot3(normal, normal).sqrt() <= f32::EPSILON {
+                        return Ok(None);
+                    }
+                    Ok(Some(NormalEvaluation {
+                        normal: normalize3(normal),
+                        role: NormalRole::CertifiedFieldGradient,
+                    }))
+                }
+                _ => Ok(None),
+            },
+            FieldNode::Transform { kind, param, inner } => {
+                let Some(param) = param else {
+                    return self.try_certified_field_normal_node(inner, point);
+                };
+                match kind {
+                    TransformKind::Translate
+                    | TransformKind::Rotate
+                    | TransformKind::UniformScale => {
+                        let local_point = self.eval_wrapped_point(*kind, param, point)?;
+                        let Some(mut inner) =
+                            self.try_certified_field_normal_node(inner, local_point)?
+                        else {
+                            return Ok(None);
+                        };
+                        let config = self.eval_scene_value_expr(param, &HashMap::new())?;
+                        inner.normal = transform_certified_normal(*kind, &config, inner.normal)?;
+                        Ok(Some(NormalEvaluation {
+                            normal: normalize3(inner.normal),
+                            role: inner.role,
+                        }))
+                    }
+                    _ => Ok(None),
+                }
+            }
+            FieldNode::Smooth {
+                kind,
+                smoothing,
+                items,
+            } => {
+                let Some(first) = items.first() else {
+                    return Ok(None);
+                };
+                let smoothing_value = smoothing
+                    .as_ref()
+                    .map(|expr| self.eval_scene_value_expr(expr, &HashMap::new()))
+                    .transpose()?
+                    .unwrap_or(KernelValue::F32(0.0));
+                let smoothing = expect_f32(Some(&smoothing_value), "smoothing")?;
+                if smoothing <= 0.0 {
+                    return Ok(None);
+                }
+                let Some(first_normal) = self.try_certified_field_normal_node(first, point)? else {
+                    return Ok(None);
+                };
+                let mut current_distance = self.eval_field_node(first, point)?;
+                let mut current_normal = first_normal.normal;
+                match kind {
+                    SmoothKind::Union | SmoothKind::Intersection => {
+                        for item in items.iter().skip(1) {
+                            let Some(rhs_normal) =
+                                self.try_certified_field_normal_node(item, point)?
+                            else {
+                                return Ok(None);
+                            };
+                            let rhs_distance = self.eval_field_node(item, point)?;
+                            current_normal = smooth_blended_normal(
+                                *kind,
+                                smoothing,
+                                current_distance,
+                                current_normal,
+                                rhs_distance,
+                                rhs_normal.normal,
+                            );
+                            current_distance = match kind {
+                                SmoothKind::Union => runtime_ternary_f32(
+                                    smoothing,
+                                    current_distance,
+                                    rhs_distance,
+                                    wr_smooth_union,
+                                )?,
+                                SmoothKind::Intersection => runtime_ternary_f32(
+                                    smoothing,
+                                    current_distance,
+                                    rhs_distance,
+                                    wr_smooth_intersection,
+                                )?,
+                                SmoothKind::Subtract => unreachable!(),
+                            };
+                        }
+                    }
+                    SmoothKind::Subtract => {
+                        let Some(rhs) = items.get(1) else {
+                            return Ok(None);
+                        };
+                        let Some(rhs_normal) = self.try_certified_field_normal_node(rhs, point)?
+                        else {
+                            return Ok(None);
+                        };
+                        let rhs_distance = self.eval_field_node(rhs, point)?;
+                        current_normal = smooth_blended_normal(
+                            *kind,
+                            smoothing,
+                            current_distance,
+                            current_normal,
+                            rhs_distance,
+                            rhs_normal.normal,
+                        );
+                    }
+                }
+                Ok(Some(NormalEvaluation {
+                    normal: normalize3(current_normal),
+                    role: NormalRole::CertifiedFieldGradient,
+                }))
+            }
+            FieldNode::Repeat { .. }
+            | FieldNode::Union { .. }
+            | FieldNode::Intersection { .. }
+            | FieldNode::Subtract { .. }
+            | FieldNode::Extrude { .. }
+            | FieldNode::Revolve { .. }
+            | FieldNode::Sweep { .. }
+            | FieldNode::Loft { .. }
+            | FieldNode::OpaqueLeaf => Ok(None),
+        }
+    }
+
+    fn try_certified_shape_normal(
+        &self,
+        shape: &SmolStr,
+        point: [f32; 3],
+    ) -> Result<Option<NormalEvaluation>, QueryExecError> {
+        let scene = self.shape_scene(shape)?;
+        if scene.opaque_boundary
+            || !matches!(
+                scene.analysis.differential_support,
+                crate::scene_ir::SceneDifferentialSupport::CertifiedGradient
+            )
+        {
+            return Ok(None);
+        }
+        match &scene.root {
+            ShapeNode::Use { target } => self.try_certified_shape_normal(target, point),
+            ShapeNode::Leaf(leaf) => {
+                let Some(mut field_normal) = self.try_certified_field_normal(&leaf.field, point)?
+                else {
+                    return Ok(None);
+                };
+                field_normal.role = NormalRole::FeatureNormal;
+                Ok(Some(field_normal))
+            }
+            ShapeNode::Union { .. }
+            | ShapeNode::Intersection { .. }
+            | ShapeNode::Subtract { .. } => Ok(None),
+        }
+    }
+
+    fn try_certified_world_normal(
+        &self,
+        capture: &SmolStr,
+        detail: i32,
+        point: [f32; 3],
+    ) -> Result<Option<NormalEvaluation>, QueryExecError> {
+        let shapes = self.resolve_world_shapes(capture, detail, None)?;
+        // Keep the certified world path conservative: only single-shape regions
+        // with a certifiable shape leaf can skip finite differences.
+        let [shape] = shapes.as_slice() else {
+            return Ok(None);
+        };
+        self.try_certified_shape_normal(shape, point)
     }
 
     pub(crate) fn eval_field_node(
@@ -2108,6 +2372,7 @@ impl<'a> DirectQueryOps<'a> {
     pub(crate) fn solve_shape_ray(
         &self,
         solver_plan: &RaySolverPlan,
+        artifact_contracts: &[ArtifactContract],
         shape: &SmolStr,
         origin: [f32; 3],
         direction: [f32; 3],
@@ -2116,7 +2381,8 @@ impl<'a> DirectQueryOps<'a> {
         hit_epsilon: f32,
         max_steps: i32,
     ) -> Result<KernelValue, QueryExecError> {
-        let runtime_plan = self.runtime_shape_solver_plan(solver_plan, shape)?;
+        let runtime_plan =
+            self.runtime_shape_solver_plan(solver_plan, artifact_contracts, shape)?;
         self.note_solver_plan(&runtime_plan);
         let mut dense_fallback_recorded = false;
         if runtime_plan.method_enabled(RaySolverMethod::AnalyticPrimitiveIntersection) {
@@ -2161,6 +2427,7 @@ impl<'a> DirectQueryOps<'a> {
     fn runtime_shape_solver_plan(
         &self,
         solver_plan: &RaySolverPlan,
+        artifact_contracts: &[ArtifactContract],
         shape: &SmolStr,
     ) -> Result<RaySolverPlan, QueryExecError> {
         let scene = self.shape_scene(shape)?;
@@ -2177,14 +2444,50 @@ impl<'a> DirectQueryOps<'a> {
             }
             _ => SemanticEvidence::for_shape_scene(scene),
         };
-        RaySolverPlan::for_contract(solver_plan.contract_id, Some(evidence)).ok_or_else(|| {
-            QueryExecError::Unsupported {
+        let plan = RaySolverPlan::for_contract(solver_plan.contract_id, Some(evidence))
+            .ok_or_else(|| QueryExecError::Unsupported {
                 message: format!(
                     "contract '{}' is not a ray-shaped spatial solver contract",
                     solver_plan.contract_id.as_str()
                 ),
-            }
-        })
+            })?;
+        Ok(plan.with_artifact_reuse_resolution(
+            Self::artifact_reuse_resolution_for_query_artifacts(artifact_contracts),
+        ))
+    }
+
+    fn artifact_reuse_resolution_for_query_artifacts(
+        artifact_contracts: &[ArtifactContract],
+    ) -> RaySolverArtifactReuseResolution {
+        let compatible_artifacts = artifact_contracts
+            .iter()
+            .filter_map(|artifact| match artifact.schema {
+                ArtifactSchema::SupportSummary { .. } => Some("support-summary"),
+                ArtifactSchema::CaptureCache { .. } => Some("capture-cache"),
+                ArtifactSchema::CullingTable { .. } => Some("culling-table"),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if compatible_artifacts.is_empty() {
+            return RaySolverArtifactReuseResolution {
+                disposition: RaySolverIntentDisposition::Rejected,
+                reasons: vec![SmolStr::new(
+                    "query plan exposes no compatible solver artifacts for reuse",
+                )],
+            };
+        }
+        RaySolverArtifactReuseResolution {
+            disposition: RaySolverIntentDisposition::Used,
+            reasons: vec![
+                SmolStr::new(format!(
+                    "query plan requested compatible artifacts: {}",
+                    compatible_artifacts.join(", ")
+                )),
+                SmolStr::new(
+                    "artifact validity remains enforced by the query plan compatibility contract",
+                ),
+            ],
+        }
     }
 
     fn try_analytic_sphere_hit(
@@ -3850,6 +4153,19 @@ impl WorldNormalBackend for CpuWorldNormalBackend<'_, '_> {
     fn normalize_normal(&mut self, normal: Self::Normal) -> Result<Self::Normal, Self::Error> {
         Ok(normalize3(normal))
     }
+
+    fn certified_world_normal(
+        &mut self,
+    ) -> Result<Option<(Self::Normal, NormalRole)>, Self::Error> {
+        self.evaluator
+            .try_certified_world_normal(self.capture, self.detail, self.point)
+            .map(|result| result.map(|evaluation| (evaluation.normal, evaluation.role)))
+    }
+
+    fn record_world_normal_role(&mut self, role: NormalRole) -> Result<(), Self::Error> {
+        self.evaluator.note_normal_role(role);
+        Ok(())
+    }
 }
 
 struct CpuWorldTraceBackend<'a, 'ctx> {
@@ -3863,6 +4179,7 @@ struct CpuWorldTraceBackend<'a, 'ctx> {
     hit_epsilon: f32,
     max_steps: i32,
     solver_plan: &'a RaySolverPlan,
+    artifact_contracts: &'a [ArtifactContract],
     result: KernelValue,
     best_distance: f32,
 }
@@ -3920,6 +4237,7 @@ impl WorldTraceBackend for CpuWorldTraceBackend<'_, '_> {
         self.evaluator.note_candidate_count(1);
         let hit = self.evaluator.solve_shape_ray(
             self.solver_plan,
+            self.artifact_contracts,
             shape,
             self.origin,
             self.direction,
@@ -5114,6 +5432,54 @@ fn add3(lhs: [f32; 3], rhs: [f32; 3]) -> [f32; 3] {
 
 fn mul3_scalar(value: [f32; 3], scalar: f32) -> [f32; 3] {
     [value[0] * scalar, value[1] * scalar, value[2] * scalar]
+}
+
+fn transform_certified_normal(
+    kind: TransformKind,
+    config: &KernelValue,
+    normal: [f32; 3],
+) -> Result<[f32; 3], QueryExecError> {
+    match kind {
+        TransformKind::Translate | TransformKind::UniformScale => Ok(normal),
+        TransformKind::Rotate => {
+            let rotation = match config {
+                KernelValue::F32(angle) => KernelValue::F32(-angle),
+                KernelValue::Vec3(rotation) => {
+                    KernelValue::Vec3([-rotation[0], -rotation[1], -rotation[2]])
+                }
+                other => {
+                    return Err(QueryExecError::TypeMismatch {
+                        expected: "rotate normal parameter: Float or Vec3".to_string(),
+                        found: value_label(other),
+                    });
+                }
+            };
+            let transformed = runtime_binary_value(rotation, KernelValue::Vec3(normal), wr_rotate)?;
+            expect_vec3(Some(&transformed), "transformed normal")
+        }
+        other => Err(QueryExecError::Unsupported {
+            message: format!("certified normal transform does not support {other:?}"),
+        }),
+    }
+}
+
+fn smooth_blended_normal(
+    kind: SmoothKind,
+    smoothing: f32,
+    left_distance: f32,
+    left_normal: [f32; 3],
+    right_distance: f32,
+    right_normal: [f32; 3],
+) -> [f32; 3] {
+    if smoothing <= 0.0 {
+        return left_normal;
+    }
+    let h = (0.5 + 0.5 * (right_distance - left_distance) / smoothing).clamp(0.0, 1.0);
+    let rhs = match kind {
+        SmoothKind::Subtract => mul3_scalar(right_normal, -1.0),
+        SmoothKind::Union | SmoothKind::Intersection => right_normal,
+    };
+    normalize3(add3(mul3_scalar(left_normal, h), mul3_scalar(rhs, 1.0 - h)))
 }
 
 fn empty_support_bounds() -> SupportBounds {

@@ -18,7 +18,7 @@ use crate::query_contract::{
 };
 use crate::query_exec::QueryExecutionObservability;
 use crate::query_exec::cpu::{DirectQueryOps, QueryExecError};
-use crate::query_exec::world::world_query_semantics_for_contract;
+use crate::query_exec::world::{NormalRole, world_query_semantics_for_contract};
 use crate::query_plan::CaptureKind;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use smol_str::SmolStr;
@@ -235,10 +235,12 @@ fn build_capture_request(
     let (capture_kind, capture_index) = match descriptor.capture_kind {
         CaptureKind::Field => {
             let capture = ops.resolve_field_or_shape_capture(args.first())?;
+            note_wgsl_normal_role_for_capture(ops, descriptor, &capture);
             (0u32, field_index(ops.context(), &capture)?)
         }
         CaptureKind::Shape => {
             let capture = ops.resolve_shape_capture(args.first())?;
+            note_wgsl_normal_role_for_capture(ops, descriptor, &capture);
             (1u32, shape_index(ops.context(), &capture)?)
         }
         CaptureKind::Region => {
@@ -306,6 +308,143 @@ fn note_wgsl_solver_fallback(
     };
     for _ in 0..count {
         ops.note_solver_generated_dense_fallback(solver);
+    }
+}
+
+fn note_wgsl_normal_role_for_capture(
+    ops: &DirectQueryOps<'_>,
+    descriptor: &QueryContractDescriptor,
+    capture: &SmolStr,
+) {
+    if descriptor.result_kind != QueryResultKind::NormalResult {
+        return;
+    }
+    let role = match descriptor.capture_kind {
+        CaptureKind::Field => field_normal_role_for_capture(ops.context(), capture),
+        CaptureKind::Shape => shape_normal_role_for_capture(ops.context(), capture),
+        CaptureKind::Region => None,
+    }
+    .unwrap_or(NormalRole::HeuristicShadingNormal);
+    ops.note_normal_role(role);
+}
+
+fn note_wgsl_normal_role_for_world(
+    ops: &DirectQueryOps<'_>,
+    descriptor: &QueryContractDescriptor,
+    world_shapes: &[SmolStr],
+) {
+    if descriptor.result_kind != QueryResultKind::NormalResult {
+        return;
+    }
+    let role = if world_shapes.len() == 1 {
+        shape_normal_role_for_capture(ops.context(), &world_shapes[0])
+    } else {
+        None
+    }
+    .unwrap_or(NormalRole::HeuristicShadingNormal);
+    ops.note_normal_role(role);
+}
+
+fn field_normal_role_for_capture(
+    ctx: &crate::query_exec::context::QueryExecContext,
+    capture: &SmolStr,
+) -> Option<NormalRole> {
+    let scene = ctx.scene.fields.get(capture)?;
+    if scene.opaque_boundary
+        || !matches!(
+            scene.analysis.differential_support,
+            crate::scene_ir::SceneDifferentialSupport::CertifiedGradient
+        )
+    {
+        return None;
+    }
+    field_normal_role_for_node(ctx, &scene.root)
+}
+
+fn field_normal_role_for_node(
+    ctx: &crate::query_exec::context::QueryExecContext,
+    node: &crate::scene_ir::FieldNode,
+) -> Option<NormalRole> {
+    match node {
+        crate::scene_ir::FieldNode::Use { target } => field_normal_role_for_capture(ctx, target),
+        crate::scene_ir::FieldNode::Primitive { primitive, .. } => match primitive {
+            crate::hir::FieldPrimitive::Sphere | crate::hir::FieldPrimitive::Plane => {
+                Some(NormalRole::CertifiedFieldGradient)
+            }
+            _ => None,
+        },
+        crate::scene_ir::FieldNode::Transform { kind, inner, .. } => match kind {
+            crate::scene_ir::TransformKind::Translate
+            | crate::scene_ir::TransformKind::Rotate
+            | crate::scene_ir::TransformKind::UniformScale => {
+                field_normal_role_for_node(ctx, inner)
+            }
+            _ => None,
+        },
+        crate::scene_ir::FieldNode::Smooth {
+            smoothing, items, ..
+        } => {
+            let smoothing = smoothing
+                .as_ref()
+                .and_then(|expr| eval_scene_constant_f32(ctx, expr))
+                .unwrap_or(0.0);
+            if smoothing <= 0.0 {
+                return None;
+            }
+            let first = items.first()?;
+            field_normal_role_for_node(ctx, first)?;
+            for item in items.iter().skip(1) {
+                field_normal_role_for_node(ctx, item)?;
+            }
+            Some(NormalRole::CertifiedFieldGradient)
+        }
+        crate::scene_ir::FieldNode::Repeat { .. }
+        | crate::scene_ir::FieldNode::Union { .. }
+        | crate::scene_ir::FieldNode::Intersection { .. }
+        | crate::scene_ir::FieldNode::Subtract { .. }
+        | crate::scene_ir::FieldNode::Extrude { .. }
+        | crate::scene_ir::FieldNode::Revolve { .. }
+        | crate::scene_ir::FieldNode::Sweep { .. }
+        | crate::scene_ir::FieldNode::Loft { .. }
+        | crate::scene_ir::FieldNode::OpaqueLeaf => None,
+    }
+}
+
+fn shape_normal_role_for_capture(
+    ctx: &crate::query_exec::context::QueryExecContext,
+    capture: &SmolStr,
+) -> Option<NormalRole> {
+    let scene = ctx.scene.shapes.get(capture)?;
+    if scene.opaque_boundary
+        || !matches!(
+            scene.analysis.differential_support,
+            crate::scene_ir::SceneDifferentialSupport::CertifiedGradient
+        )
+    {
+        return None;
+    }
+    match &scene.root {
+        crate::scene_ir::ShapeNode::Use { target } => shape_normal_role_for_capture(ctx, target),
+        crate::scene_ir::ShapeNode::Leaf(leaf) => {
+            field_normal_role_for_capture(ctx, &leaf.field)?;
+            Some(NormalRole::FeatureNormal)
+        }
+        crate::scene_ir::ShapeNode::Union { .. }
+        | crate::scene_ir::ShapeNode::Intersection { .. }
+        | crate::scene_ir::ShapeNode::Subtract { .. } => None,
+    }
+}
+
+fn eval_scene_constant_f32(
+    ctx: &crate::query_exec::context::QueryExecContext,
+    expr: &crate::scene_ir::SceneValueExpr,
+) -> Option<f32> {
+    let ops = DirectQueryOps::new(ctx);
+    match ops.eval_scene_constant(expr).ok()? {
+        KernelValue::F32(value) => Some(value),
+        KernelValue::I32(value) => Some(value as f32),
+        KernelValue::U32(value) => Some(value as f32),
+        _ => None,
     }
 }
 
@@ -408,6 +547,7 @@ fn build_world_request(
         .iter()
         .map(|shape| shape_index(ops.context(), shape))
         .collect::<Result<Vec<_>, _>>()?;
+    note_wgsl_normal_role_for_world(ops, descriptor, &world_shapes);
     let item = scalar_item_arg(descriptor, args.get(2))?;
 
     Ok(GpuDispatchRequest {
@@ -448,8 +588,16 @@ fn build_batch_request(
         return build_world_batch_request(ops, plan, descriptor, args);
     }
     let capture = match descriptor.capture_kind {
-        CaptureKind::Field => ops.resolve_field_or_shape_capture(args.first())?,
-        CaptureKind::Shape => ops.resolve_shape_capture(args.first())?,
+        CaptureKind::Field => {
+            let capture = ops.resolve_field_or_shape_capture(args.first())?;
+            note_wgsl_normal_role_for_capture(ops, descriptor, &capture);
+            capture
+        }
+        CaptureKind::Shape => {
+            let capture = ops.resolve_shape_capture(args.first())?;
+            note_wgsl_normal_role_for_capture(ops, descriptor, &capture);
+            capture
+        }
         CaptureKind::Region => {
             return Err(QueryExecError::Unsupported {
                 message: "region captures are only valid for world queries".to_string(),
@@ -511,6 +659,7 @@ fn build_world_batch_request(
         .iter()
         .map(|shape| shape_index(ops.context(), shape))
         .collect::<Result<Vec<_>, _>>()?;
+    note_wgsl_normal_role_for_world(ops, descriptor, &world_shapes);
 
     Ok(GpuDispatchRequest {
         dispatch: dispatch_config(

@@ -8,6 +8,23 @@ pub struct WorldQuerySemantics {
     pub domain_flag: Option<&'static str>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NormalRole {
+    CertifiedFieldGradient,
+    FeatureNormal,
+    HeuristicShadingNormal,
+}
+
+impl NormalRole {
+    pub(crate) const fn observability_tag(self) -> &'static str {
+        match self {
+            Self::CertifiedFieldGradient => "normal_role::certified_field_gradient",
+            Self::FeatureNormal => "normal_role::feature_normal",
+            Self::HeuristicShadingNormal => "normal_role::heuristic_shading_normal",
+        }
+    }
+}
+
 pub fn world_query_semantics(kind: WorldQueryKind) -> WorldQuerySemantics {
     let contract_id = world_query_contract_id(kind);
     let mut semantics = world_query_semantics_for_contract(contract_id);
@@ -117,6 +134,14 @@ pub(crate) trait WorldNormalBackend {
         z: Self::Distance,
     ) -> Result<Self::Normal, Self::Error>;
     fn normalize_normal(&mut self, normal: Self::Normal) -> Result<Self::Normal, Self::Error>;
+    fn certified_world_normal(
+        &mut self,
+    ) -> Result<Option<(Self::Normal, NormalRole)>, Self::Error> {
+        Ok(None)
+    }
+    fn record_world_normal_role(&mut self, _role: NormalRole) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
 pub(crate) fn execute_world_distance<B: WorldDistanceBackend>(
@@ -170,6 +195,11 @@ pub(crate) fn walk_world_trace_shapes<B: WorldTraceBackend>(
 pub(crate) fn execute_world_normal<B: WorldNormalBackend>(
     backend: &mut B,
 ) -> Result<B::Normal, B::Error> {
+    if let Some((normal, role)) = backend.certified_world_normal()? {
+        let normal = backend.normalize_normal(normal)?;
+        backend.record_world_normal_role(role)?;
+        return Ok(normal);
+    }
     let point = backend.base_point()?;
     let px = backend.offset_point(&point, 0, 0.001)?;
     let nx = backend.offset_point(&point, 0, -0.001)?;
@@ -188,7 +218,9 @@ pub(crate) fn execute_world_normal<B: WorldNormalBackend>(
     let dz_neg = backend.sample_world_distance(nz)?;
     let dz = backend.subtract_distance(dz_pos, dz_neg)?;
     let normal = backend.compose_normal(dx, dy, dz)?;
-    backend.normalize_normal(normal)
+    let normal = backend.normalize_normal(normal)?;
+    backend.record_world_normal_role(NormalRole::HeuristicShadingNormal)?;
+    Ok(normal)
 }
 
 pub(crate) fn execute_world_surface<B: WorldSurfaceBackend>(

@@ -9,11 +9,12 @@ use crate::portable::{
     portable_any_builtin_record_abi, portable_query_item_abi, portable_query_result_abi,
 };
 use crate::query_contract::{
-    self, ParticipantContractKind, QueryContractDescriptor, QueryExecutionBinding, QueryItemKind,
-    QueryQuestionId, QueryResultKind, QuerySurfaceKind, QueryTargetKind,
+    self, ParticipantContractKind, QueryCardinality, QueryContractDescriptor,
+    QueryExecutionBinding, QueryItemKind, QueryQuestionId, QueryResultKind, QueryTargetKind,
 };
 use crate::query_exec::QueryExecContext;
 use crate::query_exec::cpu::{DirectQueryOps, QueryExecError};
+use crate::query_solver::{RaySolverPlan, ray_solver_method_name};
 use crate::scene_ir::{
     FieldNodeKindSummary, FieldNodeRecord, RepeatKind, SceneOperatorPayload, SceneProfileExpr,
     SceneValueExpr, ShapeMergeProvenancePolicy, ShapeNodeKindSummary, ShapeNodeProvenancePolicy,
@@ -39,6 +40,198 @@ pub(crate) struct GeneratedShader {
     pub(crate) dispatch_abi: PortableAbiType,
     pub(crate) item_abi: PortableAbiType,
     pub(crate) result_abi: PortableAbiType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShaderValuePath {
+    CaptureDistance,
+    CaptureNormal,
+    CaptureTrace,
+    CaptureOcclusion,
+    CaptureSurface,
+    CaptureRadiance,
+    CaptureMedium,
+    WorldDistance,
+    WorldNormal,
+    WorldTrace,
+    WorldOcclusion,
+    WorldSurface,
+    WorldRadiance,
+    WorldMedium,
+}
+
+#[derive(Debug, Clone)]
+struct NormalizedShaderBehavior {
+    target: QueryTargetKind,
+    cardinality: QueryCardinality,
+    item_kind: QueryItemKind,
+    result_kind: QueryResultKind,
+    requires_material: bool,
+    requires_radiance: bool,
+    requires_volume: bool,
+    value_path: ShaderValuePath,
+    ray_solver: Option<RaySolverPlan>,
+}
+
+impl NormalizedShaderBehavior {
+    fn from_plan(
+        descriptor: &QueryContractDescriptor,
+        plan: ShaderPlan<'_>,
+    ) -> Result<Self, QueryExecError> {
+        let (target, cardinality, item_kind, result_kind, ray_solver) = match plan {
+            ShaderPlan::Capture(plan) => (
+                plan.target,
+                plan.cardinality,
+                plan.candidate_contract.item_kind,
+                plan.result_kind,
+                None,
+            ),
+            ShaderPlan::World(plan) => (
+                plan.target,
+                plan.cardinality,
+                plan.dispatch_contract.item_kind,
+                plan.result_kind,
+                plan.ray_solver.clone(),
+            ),
+            ShaderPlan::Batch(plan) => (
+                plan.target,
+                plan.cardinality,
+                plan.item_kind,
+                plan.result_kind,
+                plan.ray_solver.clone(),
+            ),
+        };
+        let value_path = match (target, item_kind, result_kind) {
+            (
+                QueryTargetKind::Capture,
+                QueryItemKind::PointQuery,
+                QueryResultKind::DistanceResult,
+            ) => ShaderValuePath::CaptureDistance,
+            (
+                QueryTargetKind::Capture,
+                QueryItemKind::PointQuery,
+                QueryResultKind::NormalResult,
+            ) => ShaderValuePath::CaptureNormal,
+            (QueryTargetKind::Capture, QueryItemKind::RayQuery, QueryResultKind::Hit3) => {
+                ShaderValuePath::CaptureTrace
+            }
+            (
+                QueryTargetKind::Capture,
+                QueryItemKind::RayQuery,
+                QueryResultKind::OcclusionResult,
+            ) => ShaderValuePath::CaptureOcclusion,
+            (QueryTargetKind::Capture, QueryItemKind::Hit3, QueryResultKind::Surface) => {
+                ShaderValuePath::CaptureSurface
+            }
+            (
+                QueryTargetKind::Capture,
+                QueryItemKind::PointDirectionQuery,
+                QueryResultKind::RadianceResult,
+            ) => ShaderValuePath::CaptureRadiance,
+            (
+                QueryTargetKind::Capture,
+                QueryItemKind::PointQuery,
+                QueryResultKind::MediumResult,
+            ) => ShaderValuePath::CaptureMedium,
+            (
+                QueryTargetKind::World,
+                QueryItemKind::PointQuery,
+                QueryResultKind::DistanceResult,
+            ) => ShaderValuePath::WorldDistance,
+            (QueryTargetKind::World, QueryItemKind::PointQuery, QueryResultKind::NormalResult) => {
+                ShaderValuePath::WorldNormal
+            }
+            (QueryTargetKind::World, QueryItemKind::RayQuery, QueryResultKind::Hit3) => {
+                ShaderValuePath::WorldTrace
+            }
+            (QueryTargetKind::World, QueryItemKind::RayQuery, QueryResultKind::OcclusionResult) => {
+                ShaderValuePath::WorldOcclusion
+            }
+            (QueryTargetKind::World, QueryItemKind::Hit3, QueryResultKind::Surface) => {
+                ShaderValuePath::WorldSurface
+            }
+            (
+                QueryTargetKind::World,
+                QueryItemKind::PointDirectionQuery,
+                QueryResultKind::RadianceResult,
+            ) => ShaderValuePath::WorldRadiance,
+            (QueryTargetKind::World, QueryItemKind::PointQuery, QueryResultKind::MediumResult) => {
+                ShaderValuePath::WorldMedium
+            }
+            _ => {
+                return Err(QueryExecError::Unsupported {
+                    message: format!(
+                        "WGSL backend does not support normalized behavior target={target:?} item={item_kind:?} result={result_kind:?}"
+                    ),
+                });
+            }
+        };
+        Ok(Self {
+            target,
+            cardinality,
+            item_kind,
+            result_kind,
+            requires_material: descriptor.result_kind == QueryResultKind::Surface,
+            requires_radiance: descriptor.participant_kind
+                == Some(ParticipantContractKind::Radiance),
+            requires_volume: descriptor.participant_kind == Some(ParticipantContractKind::Medium),
+            value_path,
+            ray_solver,
+        })
+    }
+
+    fn uses_world_shapes(&self) -> bool {
+        matches!(self.target, QueryTargetKind::World)
+    }
+
+    fn requires_trace(&self) -> bool {
+        matches!(
+            self.value_path,
+            ShaderValuePath::CaptureTrace
+                | ShaderValuePath::CaptureOcclusion
+                | ShaderValuePath::WorldTrace
+                | ShaderValuePath::WorldOcclusion
+        )
+    }
+
+    fn requires_root_shape_lookup(&self) -> bool {
+        self.requires_trace() || self.requires_material
+    }
+
+    fn scalar_eval_expr(&self, item_expr: &str) -> String {
+        match self.value_path {
+            ShaderValuePath::CaptureDistance => format!("capture_distance_point({item_expr})"),
+            ShaderValuePath::CaptureNormal => format!("capture_normal_point({item_expr})"),
+            ShaderValuePath::CaptureTrace => format!("capture_trace_ray({item_expr})"),
+            ShaderValuePath::CaptureOcclusion => {
+                format!("wr_occlusion_result_from_hit(capture_trace_ray({item_expr}))")
+            }
+            ShaderValuePath::CaptureSurface => format!("capture_surface_hit({item_expr})"),
+            ShaderValuePath::CaptureRadiance => format!("capture_radiance_query({item_expr})"),
+            ShaderValuePath::CaptureMedium => format!("capture_medium_point({item_expr})"),
+            ShaderValuePath::WorldDistance => format!("world_distance_point({item_expr}.point)"),
+            ShaderValuePath::WorldNormal => format!("world_normal_point({item_expr}.point)"),
+            ShaderValuePath::WorldTrace => format!("world_trace_ray({item_expr})"),
+            ShaderValuePath::WorldOcclusion => {
+                format!("wr_occlusion_result_from_hit(world_trace_ray({item_expr}))")
+            }
+            ShaderValuePath::WorldSurface => format!("world_surface_hit({item_expr})"),
+            ShaderValuePath::WorldRadiance => format!("world_radiance_query({item_expr})"),
+            ShaderValuePath::WorldMedium => format!("world_medium_point({item_expr})"),
+        }
+    }
+
+    fn batch_eval_expr(&self, item_expr: &str) -> String {
+        match self.result_kind {
+            QueryResultKind::DistanceResult => {
+                format!("DistanceResult({})", self.scalar_eval_expr(item_expr))
+            }
+            QueryResultKind::NormalResult => {
+                format!("NormalResult({})", self.scalar_eval_expr(item_expr))
+            }
+            _ => self.scalar_eval_expr(item_expr),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -88,7 +281,8 @@ pub(crate) fn generate_shader(
     ctx: &QueryExecContext,
     plan: ShaderPlan<'_>,
 ) -> Result<GeneratedShader, QueryExecError> {
-    let (descriptor, _binding) = shader_contract(plan)?;
+    let (descriptor, _binding) = shader_contract(plan.clone())?;
+    let behavior = NormalizedShaderBehavior::from_plan(descriptor, plan)?;
 
     let type_tags = build_type_tags(ctx);
     let dispatch_abi = wgsl_dispatch_config_abi();
@@ -98,11 +292,22 @@ pub(crate) fn generate_shader(
     let mut rendered = String::new();
 
     rendered.push_str("// Generated by wr query_exec::wgsl\n");
-    if descriptor.target == QueryTargetKind::World
-        && descriptor.item_kind == QueryItemKind::RayQuery
-    {
+    if matches!(
+        behavior.value_path,
+        ShaderValuePath::WorldTrace | ShaderValuePath::WorldOcclusion
+    ) {
         rendered.push_str("// ray_solver: generated_dense_fallback\n");
         rendered.push_str("const WR_RAY_SOLVER_GENERATED_DENSE_FALLBACK: u32 = 1u;\n");
+        if let Some(solver) = &behavior.ray_solver {
+            let methods = solver
+                .diagnostic_summary()
+                .methods
+                .iter()
+                .map(|method| ray_solver_method_name(*method))
+                .collect::<Vec<_>>()
+                .join("|");
+            rendered.push_str(&format!("// ray_solver_methods={methods}\n"));
+        }
     }
     rendered.push_str("override WG_SIZE: u32 = 64u;\n\n");
     rendered.push_str(&emit_value_and_abi_structs(
@@ -113,21 +318,23 @@ pub(crate) fn generate_shader(
     rendered.push('\n');
     rendered.push_str(WGSL_PRELUDE);
     rendered.push('\n');
+    rendered.push_str(&emit_normal_sample_support()?);
+    rendered.push('\n');
     rendered.push_str(&emit_struct_conversions(
         ctx,
         &type_tags,
         &[dispatch_abi.clone(), item_abi.clone(), result_abi.clone()],
     )?);
     rendered.push('\n');
-    rendered.push_str(&emit_scene_functions(ctx, &scene_index, descriptor)?);
+    rendered.push_str(&emit_scene_functions(ctx, &scene_index, &behavior)?);
     rendered.push('\n');
     rendered.push_str(&emit_portable_functions(ctx, descriptor)?);
     rendered.push('\n');
     rendered.push_str(&emit_bindings(&dispatch_abi, &item_abi, &result_abi)?);
     rendered.push('\n');
-    rendered.push_str(&emit_query_helpers(ctx, &scene_index, descriptor)?);
+    rendered.push_str(&emit_query_helpers(ctx, &scene_index, &behavior)?);
     rendered.push('\n');
-    rendered.push_str(&emit_main(descriptor, &item_abi, &result_abi)?);
+    rendered.push_str(&emit_main(&behavior, &item_abi, &result_abi)?);
 
     Ok(GeneratedShader {
         source: rendered,
@@ -578,14 +785,14 @@ fn emit_bindings(
 fn emit_scene_functions(
     ctx: &QueryExecContext,
     scene_index: &ShaderSceneIndex,
-    descriptor: &QueryContractDescriptor,
+    behavior: &NormalizedShaderBehavior,
 ) -> Result<String, QueryExecError> {
     let ops = DirectQueryOps::new(ctx);
     let mut out = String::new();
     emit_profile_helper_functions(ctx, &mut out)?;
     emit_field_scene_functions(ctx, scene_index, &ops, &mut out)?;
-    emit_shape_scene_functions(ctx, scene_index, &ops, descriptor, &mut out)?;
-    emit_scene_dispatch_functions(ctx, scene_index, descriptor, &mut out)?;
+    emit_shape_scene_functions(ctx, scene_index, &ops, behavior, &mut out)?;
+    emit_scene_dispatch_functions(ctx, scene_index, behavior, &mut out)?;
     Ok(out)
 }
 
@@ -805,35 +1012,15 @@ fn contract_requires_root_shape_lookup(descriptor: &QueryContractDescriptor) -> 
     contract_requires_trace(descriptor) || contract_requires_material(descriptor)
 }
 
-fn contract_is_world_question(
-    descriptor: &QueryContractDescriptor,
-    question: QueryQuestionId,
-) -> bool {
-    matches!(
-        descriptor.surface,
-        QuerySurfaceKind::WorldScalar | QuerySurfaceKind::WorldBatch
-    ) && descriptor.question == question
-}
-
-fn contract_is_capture_or_batch_question(
-    descriptor: &QueryContractDescriptor,
-    question: QueryQuestionId,
-) -> bool {
-    matches!(
-        descriptor.surface,
-        QuerySurfaceKind::CaptureScalar | QuerySurfaceKind::CaptureBatch
-    ) && descriptor.question == question
-}
-
 fn emit_query_helpers(
     ctx: &QueryExecContext,
     scene_index: &ShaderSceneIndex,
-    descriptor: &QueryContractDescriptor,
+    behavior: &NormalizedShaderBehavior,
 ) -> Result<String, QueryExecError> {
     let ops = DirectQueryOps::new(ctx);
     let mut out = String::new();
 
-    if contract_requires_trace(descriptor) {
+    if behavior.requires_trace() {
         emit_payload_lookup_function(ctx, scene_index, &ops, &mut out)?;
 
         writeln!(
@@ -921,6 +1108,10 @@ fn emit_query_helpers(
         "fn world_normal_point(point: vec3<f32>) -> vec3<f32> {{"
     )
     .ok();
+    out.push_str("  if (dispatch_config.shape_count == 1u) {\n");
+    out.push_str("    let sample = shape_normal_dispatch_sample(world_shapes.values[0], point);\n");
+    out.push_str("    if (sample.available != 0u) { return wr_normalize3(sample.normal); }\n");
+    out.push_str("  }\n");
     writeln!(out, "  let eps: f32 = 0.001;").ok();
     writeln!(
         out,
@@ -940,9 +1131,10 @@ fn emit_query_helpers(
     writeln!(out, "  return wr_normalize3(vec3<f32>(dx, dy, dz));").ok();
     writeln!(out, "}}\n").ok();
 
-    if contract_is_world_question(descriptor, QueryQuestionId::Nearest)
-        || contract_is_world_question(descriptor, QueryQuestionId::Occluded)
-    {
+    if matches!(
+        behavior.value_path,
+        ShaderValuePath::WorldTrace | ShaderValuePath::WorldOcclusion
+    ) {
         writeln!(out, "fn world_trace_ray(ray: RayQuery) -> Hit3 {{").ok();
         writeln!(out, "  var best = wr_default_hit(ray.origin);").ok();
         writeln!(out, "  var best_distance: f32 = 1e30;").ok();
@@ -962,7 +1154,7 @@ fn emit_query_helpers(
         writeln!(out, "}}\n").ok();
     }
 
-    if contract_is_world_question(descriptor, QueryQuestionId::Sample) {
+    if matches!(behavior.value_path, ShaderValuePath::WorldSurface) {
         writeln!(out, "fn world_surface_hit(hit: Hit3) -> Surface {{").ok();
         out.push_str(
             "  if (dispatch_config.material_enabled == 0u) { return wr_default_surface(); }\n",
@@ -977,7 +1169,7 @@ fn emit_query_helpers(
         writeln!(out, "}}\n").ok();
     }
 
-    if contract_is_world_question(descriptor, QueryQuestionId::Radiance) {
+    if matches!(behavior.value_path, ShaderValuePath::WorldRadiance) {
         writeln!(
             out,
             "fn world_radiance_query(query: PointDirectionQuery) -> vec3<f32> {{"
@@ -998,7 +1190,7 @@ fn emit_query_helpers(
         writeln!(out, "}}\n").ok();
     }
 
-    if contract_is_world_question(descriptor, QueryQuestionId::Medium) {
+    if matches!(behavior.value_path, ShaderValuePath::WorldMedium) {
         writeln!(out, "fn world_medium_point(point: PointQuery) -> Medium {{").ok();
         out.push_str(
             "  if (dispatch_config.media_enabled == 0u) { return wr_default_medium(); }\n",
@@ -1041,25 +1233,22 @@ fn emit_query_helpers(
     .ok();
     writeln!(out, "}}\n").ok();
 
-    if contract_is_capture_or_batch_question(descriptor, QueryQuestionId::Nearest)
-        || contract_is_capture_or_batch_question(descriptor, QueryQuestionId::Occluded)
-    {
+    if matches!(
+        behavior.value_path,
+        ShaderValuePath::CaptureTrace | ShaderValuePath::CaptureOcclusion
+    ) {
         out.push_str("fn capture_trace_ray(ray: RayQuery) -> Hit3 { return trace_shape_for_index(dispatch_config.capture_index, ray.origin, ray.direction, ray.max_distance, ray.min_step, ray.hit_epsilon, ray.max_steps); }\n\n");
     }
 
-    if contract_is_capture_or_batch_question(descriptor, QueryQuestionId::Sample) {
+    if matches!(behavior.value_path, ShaderValuePath::CaptureSurface) {
         out.push_str("fn capture_surface_hit(hit: Hit3) -> Surface { return surface_at_shape_dispatch(dispatch_config.capture_index, hit); }\n\n");
     }
 
-    if descriptor.surface == QuerySurfaceKind::CaptureScalar
-        && descriptor.question == QueryQuestionId::Radiance
-    {
+    if matches!(behavior.value_path, ShaderValuePath::CaptureRadiance) {
         out.push_str("fn capture_radiance_query(query: PointDirectionQuery) -> vec3<f32> { return radiance_at_shape_dispatch(dispatch_config.capture_index, query.point, query.direction); }\n\n");
     }
 
-    if descriptor.surface == QuerySurfaceKind::CaptureScalar
-        && descriptor.question == QueryQuestionId::Medium
-    {
+    if matches!(behavior.value_path, ShaderValuePath::CaptureMedium) {
         out.push_str("fn capture_medium_point(point: PointQuery) -> Medium { return medium_at_shape_dispatch(dispatch_config.capture_index, point.point); }\n\n");
     }
 
@@ -1067,105 +1256,14 @@ fn emit_query_helpers(
 }
 
 fn emit_main(
-    descriptor: &QueryContractDescriptor,
+    behavior: &NormalizedShaderBehavior,
     item_abi: &PortableAbiType,
     result_abi: &PortableAbiType,
 ) -> Result<String, QueryExecError> {
     let item_expr = from_abi_expr(item_abi, "input_items.values[index]")?;
-    let eval_expr = match (
-        descriptor.surface,
-        descriptor.question,
-        descriptor.result_kind,
-    ) {
-        (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Distance, _) => {
-            format!("capture_distance_point({item_expr})")
-        }
-        (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Normal, _) => {
-            format!("capture_normal_point({item_expr})")
-        }
-        (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Nearest, _) => {
-            format!("capture_trace_ray({item_expr})")
-        }
-        (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Occluded, _) => {
-            format!("wr_occlusion_result_from_hit(capture_trace_ray({item_expr}))")
-        }
-        (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Sample, QueryResultKind::Surface) => {
-            format!("capture_surface_hit({item_expr})")
-        }
-        (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Radiance, _) => {
-            format!("capture_radiance_query({item_expr})")
-        }
-        (QuerySurfaceKind::CaptureScalar, QueryQuestionId::Medium, _) => {
-            format!("capture_medium_point({item_expr})")
-        }
-        (QuerySurfaceKind::WorldScalar, QueryQuestionId::Distance, _) => {
-            format!("world_distance_point({item_expr}.point)")
-        }
-        (QuerySurfaceKind::WorldScalar, QueryQuestionId::Normal, _) => {
-            format!("world_normal_point({item_expr}.point)")
-        }
-        (QuerySurfaceKind::WorldScalar, QueryQuestionId::Nearest, _) => {
-            format!("world_trace_ray({item_expr})")
-        }
-        (QuerySurfaceKind::WorldScalar, QueryQuestionId::Occluded, _) => {
-            format!("wr_occlusion_result_from_hit(world_trace_ray({item_expr}))")
-        }
-        (QuerySurfaceKind::WorldScalar, QueryQuestionId::Sample, QueryResultKind::Surface) => {
-            format!("world_surface_hit({item_expr})")
-        }
-        (QuerySurfaceKind::WorldScalar, QueryQuestionId::Radiance, _) => {
-            format!("world_radiance_query({item_expr})")
-        }
-        (QuerySurfaceKind::WorldScalar, QueryQuestionId::Medium, _) => {
-            format!("world_medium_point({item_expr})")
-        }
-        (QuerySurfaceKind::WorldBatch, QueryQuestionId::Distance, _) => {
-            format!("DistanceResult(world_distance_point({item_expr}.point))")
-        }
-        (QuerySurfaceKind::WorldBatch, QueryQuestionId::Normal, _) => {
-            format!("NormalResult(world_normal_point({item_expr}.point))")
-        }
-        (QuerySurfaceKind::WorldBatch, QueryQuestionId::Nearest, _) => {
-            format!("world_trace_ray({item_expr})")
-        }
-        (QuerySurfaceKind::WorldBatch, QueryQuestionId::Occluded, _) => {
-            format!("wr_occlusion_result_from_hit(world_trace_ray({item_expr}))")
-        }
-        (QuerySurfaceKind::WorldBatch, QueryQuestionId::Sample, QueryResultKind::Surface) => {
-            format!("world_surface_hit({item_expr})")
-        }
-        (QuerySurfaceKind::WorldBatch, QueryQuestionId::Radiance, _) => {
-            format!("world_radiance_query({item_expr})")
-        }
-        (QuerySurfaceKind::WorldBatch, QueryQuestionId::Medium, _) => {
-            format!("world_medium_point({item_expr})")
-        }
-        (QuerySurfaceKind::CaptureBatch, QueryQuestionId::Distance, _) => {
-            format!("DistanceResult(capture_distance_point({item_expr}))")
-        }
-        (QuerySurfaceKind::CaptureBatch, QueryQuestionId::Normal, _) => {
-            format!("NormalResult(capture_normal_point({item_expr}))")
-        }
-        (QuerySurfaceKind::CaptureBatch, QueryQuestionId::Nearest, _) => {
-            format!("capture_trace_ray({item_expr})")
-        }
-        (QuerySurfaceKind::CaptureBatch, QueryQuestionId::Sample, QueryResultKind::Surface) => {
-            format!("capture_surface_hit({item_expr})")
-        }
-        (QuerySurfaceKind::CaptureBatch, QueryQuestionId::Occluded, _) => {
-            format!("wr_occlusion_result_from_hit(capture_trace_ray({item_expr}))")
-        }
-        _ => {
-            return Err(QueryExecError::Unsupported {
-                message: format!(
-                    "WGSL does not support query contract '{}' ({:?}/{:?}/{:?})",
-                    descriptor.id.as_str(),
-                    descriptor.surface,
-                    descriptor.question,
-                    descriptor.result_kind
-                ),
-            });
-        }
+    let eval_expr = match behavior.cardinality {
+        QueryCardinality::Scalar => behavior.scalar_eval_expr(&item_expr),
+        QueryCardinality::Batch => behavior.batch_eval_expr(&item_expr),
     };
     let store_expr = to_abi_expr(result_abi, "result")?;
     let mut out = String::new();
@@ -1224,6 +1322,37 @@ fn emit_payload_lookup_function(
 
 const WGSL_PRELUDE: &str = include_str!("prelude.wgsl");
 
+fn emit_normal_sample_support() -> Result<String, QueryExecError> {
+    let mut out = String::new();
+    out.push_str("const WR_NORMAL_ROLE_UNKNOWN: u32 = 0u;\n");
+    out.push_str("const WR_NORMAL_ROLE_CERTIFIED_FIELD_GRADIENT: u32 = 1u;\n");
+    out.push_str("const WR_NORMAL_ROLE_FEATURE_NORMAL: u32 = 2u;\n");
+    out.push_str("const WR_NORMAL_ROLE_HEURISTIC_SHADING_NORMAL: u32 = 3u;\n\n");
+    out.push_str("struct CertifiedNormalSample {\n");
+    out.push_str("  normal: vec3<f32>,\n");
+    out.push_str("  available: u32,\n");
+    out.push_str("  role: u32,\n");
+    out.push_str("}\n\n");
+    out.push_str(
+        "fn wr_unavailable_normal_sample() -> CertifiedNormalSample { return CertifiedNormalSample(vec3<f32>(0.0, 0.0, 0.0), 0u, WR_NORMAL_ROLE_UNKNOWN); }\n",
+    );
+    out.push_str(
+        "fn wr_certified_field_gradient_sample(normal: vec3<f32>) -> CertifiedNormalSample { return CertifiedNormalSample(wr_safe_normalize3(normal), 1u, WR_NORMAL_ROLE_CERTIFIED_FIELD_GRADIENT); }\n",
+    );
+    out.push_str(
+        "fn wr_feature_normal_sample(normal: vec3<f32>) -> CertifiedNormalSample { return CertifiedNormalSample(wr_safe_normalize3(normal), 1u, WR_NORMAL_ROLE_FEATURE_NORMAL); }\n",
+    );
+    out.push_str(
+        "fn wr_smooth_blend_weight(left_distance: f32, right_distance: f32, smoothing: f32) -> f32 {\n",
+    );
+    out.push_str("  if (smoothing <= 0.0) { return 1.0; }\n");
+    out.push_str(
+        "  return clamp(0.5 + 0.5 * (right_distance - left_distance) / smoothing, 0.0, 1.0);\n",
+    );
+    out.push_str("}\n\n");
+    Ok(out)
+}
+
 fn emit_field_scene_functions(
     ctx: &QueryExecContext,
     scene_index: &ShaderSceneIndex,
@@ -1234,6 +1363,15 @@ fn emit_field_scene_functions(
         let field_index = scene_index.field(field_name)?;
         for record in &scene.node_records {
             emit_field_node_function(ctx, scene_index, ops, field_name, field_index, record, out)?;
+            emit_field_normal_function(
+                ctx,
+                scene_index,
+                ops,
+                field_name,
+                field_index,
+                record,
+                out,
+            )?;
         }
         emit_field_local_frame_functions(ctx, scene_index, ops, field_name, field_index, out)?;
     }
@@ -1594,6 +1732,236 @@ fn emit_field_node_function(
     Ok(())
 }
 
+fn emit_field_normal_function(
+    ctx: &QueryExecContext,
+    scene_index: &ShaderSceneIndex,
+    ops: &DirectQueryOps<'_>,
+    field_name: &SmolStr,
+    field_index: u32,
+    record: &FieldNodeRecord,
+    out: &mut String,
+) -> Result<(), QueryExecError> {
+    let fn_name = field_normal_function_name(field_index, record.id.0);
+    writeln!(
+        out,
+        "fn {fn_name}(point: vec3<f32>) -> CertifiedNormalSample {{"
+    )
+    .ok();
+    match record.kind {
+        FieldNodeKindSummary::Use => {
+            let target = record.target.as_ref().expect("use target");
+            let target_scene = ctx.scene.fields.get(target).expect("field use scene");
+            writeln!(
+                out,
+                "  return {}(point);",
+                field_normal_function_name(scene_index.field(target)?, target_scene.root_node_id.0)
+            )
+            .ok();
+        }
+        FieldNodeKindSummary::Primitive(kind) => {
+            let payload = match record.payload.as_ref() {
+                Some(SceneOperatorPayload::Primitive { args }) => args.as_deref().unwrap_or(&[]),
+                _ => &[],
+            };
+            match kind {
+                hir::FieldPrimitive::Sphere => {
+                    writeln!(out, "  return wr_certified_field_gradient_sample(point);").ok();
+                }
+                hir::FieldPrimitive::Plane => {
+                    writeln!(
+                        out,
+                        "  return wr_certified_field_gradient_sample({});",
+                        scene_named_arg_literal(ops, payload, "normal")?
+                    )
+                    .ok();
+                }
+                _ => {
+                    writeln!(out, "  return wr_unavailable_normal_sample();").ok();
+                }
+            }
+        }
+        FieldNodeKindSummary::Transform(kind) => {
+            let inner = record.children.first().copied();
+            let param = match record.payload.as_ref() {
+                Some(SceneOperatorPayload::Transform { param }) => param.as_ref(),
+                _ => None,
+            };
+            if let (Some(inner), Some(param)) = (inner, param) {
+                let value = ops.eval_scene_constant(param)?;
+                let rendered = kernel_value_literal(&value)?;
+                if matches!(
+                    kind,
+                    TransformKind::Translate | TransformKind::Rotate | TransformKind::UniformScale
+                ) {
+                    writeln!(
+                        out,
+                        "  let local_point = {}({}, point);",
+                        transform_helper_name_for_value(kind, &value)?,
+                        rendered
+                    )
+                    .ok();
+                    writeln!(
+                        out,
+                        "  let inner = {}(local_point);",
+                        field_normal_function_name(field_index, inner.0)
+                    )
+                    .ok();
+                    writeln!(out, "  if (inner.available == 0u) {{ return inner; }}").ok();
+                    writeln!(
+                        out,
+                        "  return CertifiedNormalSample(wr_safe_normalize3({}), 1u, inner.role);",
+                        transform_normal_expr_for_value(kind, &value, &rendered, "inner.normal")?
+                    )
+                    .ok();
+                } else {
+                    writeln!(out, "  return wr_unavailable_normal_sample();").ok();
+                }
+            } else if let Some(inner) = inner {
+                writeln!(
+                    out,
+                    "  return {}(point);",
+                    field_normal_function_name(field_index, inner.0)
+                )
+                .ok();
+            } else {
+                writeln!(out, "  return wr_unavailable_normal_sample();").ok();
+            }
+        }
+        FieldNodeKindSummary::Smooth(kind) => {
+            let smoothing = match record.payload.as_ref() {
+                Some(SceneOperatorPayload::Smooth { smoothing }) => smoothing.as_ref(),
+                _ => None,
+            };
+            if let Some(first) = record.children.first() {
+                let smoothing = smoothing
+                    .map(|value| scene_constant_literal(ops, value))
+                    .transpose()?
+                    .unwrap_or_else(|| "0.0".to_string());
+                writeln!(
+                    out,
+                    "  if ({smoothing} <= 0.0) {{ return wr_unavailable_normal_sample(); }}"
+                )
+                .ok();
+                writeln!(
+                    out,
+                    "  let first_sample = {}(point);",
+                    field_normal_function_name(field_index, first.0)
+                )
+                .ok();
+                writeln!(
+                    out,
+                    "  if (first_sample.available == 0u) {{ return first_sample; }}"
+                )
+                .ok();
+                writeln!(
+                    out,
+                    "  var current_distance: f32 = {}(point);",
+                    field_node_function_name(field_index, first.0)
+                )
+                .ok();
+                writeln!(out, "  var current_normal = first_sample.normal;").ok();
+                match kind {
+                    SmoothKind::Union | SmoothKind::Intersection => {
+                        for child in record.children.iter().skip(1) {
+                            writeln!(
+                                out,
+                                "  let rhs_sample = {}(point);",
+                                field_normal_function_name(field_index, child.0)
+                            )
+                            .ok();
+                            writeln!(
+                                out,
+                                "  if (rhs_sample.available == 0u) {{ return rhs_sample; }}"
+                            )
+                            .ok();
+                            writeln!(
+                                out,
+                                "  let rhs_distance: f32 = {}(point);",
+                                field_node_function_name(field_index, child.0)
+                            )
+                            .ok();
+                            writeln!(
+                                out,
+                                "  let h = wr_smooth_blend_weight(current_distance, rhs_distance, {smoothing});"
+                            )
+                            .ok();
+                            writeln!(
+                                out,
+                                "  current_normal = wr_safe_normalize3(current_normal * h + rhs_sample.normal * (1.0 - h));"
+                            )
+                            .ok();
+                            writeln!(
+                                out,
+                                "  current_distance = {}(current_distance, rhs_distance, {smoothing});",
+                                match kind {
+                                    SmoothKind::Union => "wr_smooth_union",
+                                    SmoothKind::Intersection => "wr_smooth_intersection",
+                                    SmoothKind::Subtract => unreachable!(),
+                                }
+                            )
+                            .ok();
+                        }
+                    }
+                    SmoothKind::Subtract => {
+                        if let Some(second) = record.children.get(1) {
+                            writeln!(
+                                out,
+                                "  let rhs_sample = {}(point);",
+                                field_normal_function_name(field_index, second.0)
+                            )
+                            .ok();
+                            writeln!(
+                                out,
+                                "  if (rhs_sample.available == 0u) {{ return rhs_sample; }}"
+                            )
+                            .ok();
+                            writeln!(
+                                out,
+                                "  let rhs_distance: f32 = {}(point);",
+                                field_node_function_name(field_index, second.0)
+                            )
+                            .ok();
+                            writeln!(
+                                out,
+                                "  let h = wr_smooth_blend_weight(current_distance, rhs_distance, {smoothing});"
+                            )
+                            .ok();
+                            writeln!(
+                                out,
+                                "  current_normal = wr_safe_normalize3(current_normal * h + (-rhs_sample.normal) * (1.0 - h));"
+                            )
+                            .ok();
+                        } else {
+                            writeln!(out, "  return wr_unavailable_normal_sample();").ok();
+                        }
+                    }
+                }
+                writeln!(
+                    out,
+                    "  return wr_certified_field_gradient_sample(current_normal);"
+                )
+                .ok();
+            } else {
+                writeln!(out, "  return wr_unavailable_normal_sample();").ok();
+            }
+        }
+        FieldNodeKindSummary::Repeat(_)
+        | FieldNodeKindSummary::Union
+        | FieldNodeKindSummary::Intersection
+        | FieldNodeKindSummary::Subtract
+        | FieldNodeKindSummary::Extrude
+        | FieldNodeKindSummary::Revolve
+        | FieldNodeKindSummary::Sweep
+        | FieldNodeKindSummary::Loft
+        | FieldNodeKindSummary::OpaqueLeaf => {
+            let _ = field_name;
+            writeln!(out, "  return wr_unavailable_normal_sample();").ok();
+        }
+    }
+    writeln!(out, "}}\n").ok();
+    Ok(())
+}
+
 fn emit_field_local_frame_functions(
     ctx: &QueryExecContext,
     scene_index: &ShaderSceneIndex,
@@ -1803,6 +2171,35 @@ fn emit_field_local_frame_functions(
     writeln!(out, "  }}").ok();
     writeln!(out, "}}\n").ok();
 
+    writeln!(
+        out,
+        "fn {}(terminal_node_id: u32, point: vec3<f32>) -> CertifiedNormalSample {{",
+        field_terminal_normal_function_name(field_index)
+    )
+    .ok();
+    writeln!(out, "  switch terminal_node_id {{").ok();
+    for record in &scene.node_records {
+        writeln!(out, "    case {}u: {{", record.id.0).ok();
+        if matches!(record.kind, FieldNodeKindSummary::OpaqueLeaf) {
+            writeln!(out, "      return wr_unavailable_normal_sample();").ok();
+        } else {
+            writeln!(
+                out,
+                "      return {}(point);",
+                field_normal_function_name(field_index, record.id.0)
+            )
+            .ok();
+        }
+        writeln!(out, "    }}").ok();
+    }
+    writeln!(
+        out,
+        "    default: {{ return wr_unavailable_normal_sample(); }}"
+    )
+    .ok();
+    writeln!(out, "  }}").ok();
+    writeln!(out, "}}\n").ok();
+
     Ok(())
 }
 
@@ -1810,17 +2207,18 @@ fn emit_shape_scene_functions(
     ctx: &QueryExecContext,
     scene_index: &ShaderSceneIndex,
     ops: &DirectQueryOps<'_>,
-    descriptor: &QueryContractDescriptor,
+    behavior: &NormalizedShaderBehavior,
     out: &mut String,
 ) -> Result<(), QueryExecError> {
     for (shape_name, scene) in &ctx.scene.shapes {
         let shape_index = scene_index.shape(shape_name)?;
         for record in &scene.node_records {
             emit_shape_distance_function(ctx, scene_index, shape_name, shape_index, record, out)?;
-            if contract_requires_trace(descriptor) {
+            emit_shape_normal_function(ctx, scene_index, shape_name, shape_index, record, out)?;
+            if behavior.requires_trace() {
                 emit_shape_winner_function(ctx, scene_index, shape_name, shape_index, record, out)?;
             }
-            if contract_requires_radiance(descriptor) {
+            if behavior.requires_radiance {
                 emit_shape_radiance_function(
                     ctx,
                     scene_index,
@@ -1830,7 +2228,7 @@ fn emit_shape_scene_functions(
                     out,
                 )?;
             }
-            if contract_requires_volume(descriptor) {
+            if behavior.requires_volume {
                 emit_shape_medium_function(
                     ctx,
                     scene_index,
@@ -1842,7 +2240,7 @@ fn emit_shape_scene_functions(
                 )?;
             }
         }
-        if contract_requires_material(descriptor) {
+        if behavior.requires_material {
             emit_shape_surface_function(ctx, scene_index, shape_name, shape_index, out)?;
         }
     }
@@ -1852,11 +2250,11 @@ fn emit_shape_scene_functions(
 fn emit_scene_dispatch_functions(
     ctx: &QueryExecContext,
     scene_index: &ShaderSceneIndex,
-    descriptor: &QueryContractDescriptor,
+    behavior: &NormalizedShaderBehavior,
     out: &mut String,
 ) -> Result<(), QueryExecError> {
     emit_field_dispatch_functions(ctx, scene_index, out)?;
-    emit_shape_dispatch_functions(ctx, scene_index, descriptor, out)?;
+    emit_shape_dispatch_functions(ctx, scene_index, behavior, out)?;
     Ok(())
 }
 
@@ -1930,30 +2328,6 @@ fn emit_field_dispatch_functions(
 
     writeln!(
         out,
-        "fn field_local_normal_dispatch(field_index: u32, frame: FieldLocalFrame) -> vec3<f32> {{"
-    )
-    .ok();
-    writeln!(out, "  let eps: f32 = 0.001;").ok();
-    writeln!(
-        out,
-        "  let dx = field_terminal_distance_dispatch(field_index, frame.terminal_node_id, frame.point + vec3<f32>(eps, 0.0, 0.0)) - field_terminal_distance_dispatch(field_index, frame.terminal_node_id, frame.point - vec3<f32>(eps, 0.0, 0.0));"
-    )
-    .ok();
-    writeln!(
-        out,
-        "  let dy = field_terminal_distance_dispatch(field_index, frame.terminal_node_id, frame.point + vec3<f32>(0.0, eps, 0.0)) - field_terminal_distance_dispatch(field_index, frame.terminal_node_id, frame.point - vec3<f32>(0.0, eps, 0.0));"
-    )
-    .ok();
-    writeln!(
-        out,
-        "  let dz = field_terminal_distance_dispatch(field_index, frame.terminal_node_id, frame.point + vec3<f32>(0.0, 0.0, eps)) - field_terminal_distance_dispatch(field_index, frame.terminal_node_id, frame.point - vec3<f32>(0.0, 0.0, eps));"
-    )
-    .ok();
-    writeln!(out, "  return wr_normalize3(vec3<f32>(dx, dy, dz));").ok();
-    writeln!(out, "}}\n").ok();
-
-    writeln!(
-        out,
         "fn field_terminal_distance_dispatch(field_index: u32, terminal_node_id: u32, point: vec3<f32>) -> f32 {{"
     )
     .ok();
@@ -1973,7 +2347,63 @@ fn emit_field_dispatch_functions(
 
     writeln!(
         out,
+        "fn field_terminal_normal_dispatch_sample(field_index: u32, terminal_node_id: u32, point: vec3<f32>) -> CertifiedNormalSample {{"
+    )
+    .ok();
+    writeln!(out, "  switch field_index {{").ok();
+    for (field_name, _scene) in &ctx.scene.fields {
+        let field_index = scene_index.field(field_name)?;
+        writeln!(
+            out,
+            "    case {field_index}u: {{ return {}(terminal_node_id, point); }}",
+            field_terminal_normal_function_name(field_index)
+        )
+        .ok();
+    }
+    writeln!(
+        out,
+        "    default: {{ return wr_unavailable_normal_sample(); }}"
+    )
+    .ok();
+    writeln!(out, "  }}").ok();
+    writeln!(out, "}}\n").ok();
+
+    writeln!(
+        out,
+        "fn field_normal_dispatch_sample(field_index: u32, point: vec3<f32>) -> CertifiedNormalSample {{"
+    )
+    .ok();
+    writeln!(out, "  switch field_index {{").ok();
+    for (field_name, scene) in &ctx.scene.fields {
+        let field_index = scene_index.field(field_name)?;
+        writeln!(
+            out,
+            "    case {field_index}u: {{ return {}(point); }}",
+            field_normal_function_name(field_index, scene.root_node_id.0)
+        )
+        .ok();
+    }
+    writeln!(
+        out,
+        "    default: {{ return wr_unavailable_normal_sample(); }}"
+    )
+    .ok();
+    writeln!(out, "  }}").ok();
+    writeln!(out, "}}\n").ok();
+
+    writeln!(
+        out,
         "fn field_normal_dispatch(field_index: u32, point: vec3<f32>) -> vec3<f32> {{"
+    )
+    .ok();
+    writeln!(
+        out,
+        "  let sample = field_normal_dispatch_sample(field_index, point);"
+    )
+    .ok();
+    writeln!(
+        out,
+        "  if (sample.available != 0u) {{ return wr_normalize3(sample.normal); }}"
     )
     .ok();
     writeln!(out, "  let eps: f32 = 0.001;").ok();
@@ -1995,13 +2425,47 @@ fn emit_field_dispatch_functions(
     writeln!(out, "  return wr_normalize3(vec3<f32>(dx, dy, dz));").ok();
     writeln!(out, "}}\n").ok();
 
+    writeln!(
+        out,
+        "fn field_local_normal_dispatch(field_index: u32, frame: FieldLocalFrame) -> vec3<f32> {{"
+    )
+    .ok();
+    writeln!(
+        out,
+        "  let sample = field_terminal_normal_dispatch_sample(field_index, frame.terminal_node_id, frame.point);"
+    )
+    .ok();
+    writeln!(
+        out,
+        "  if (sample.available != 0u) {{ return wr_normalize3(sample.normal); }}"
+    )
+    .ok();
+    writeln!(out, "  let eps: f32 = 0.001;").ok();
+    writeln!(
+        out,
+        "  let dx = field_terminal_distance_dispatch(field_index, frame.terminal_node_id, frame.point + vec3<f32>(eps, 0.0, 0.0)) - field_terminal_distance_dispatch(field_index, frame.terminal_node_id, frame.point - vec3<f32>(eps, 0.0, 0.0));"
+    )
+    .ok();
+    writeln!(
+        out,
+        "  let dy = field_terminal_distance_dispatch(field_index, frame.terminal_node_id, frame.point + vec3<f32>(0.0, eps, 0.0)) - field_terminal_distance_dispatch(field_index, frame.terminal_node_id, frame.point - vec3<f32>(0.0, eps, 0.0));"
+    )
+    .ok();
+    writeln!(
+        out,
+        "  let dz = field_terminal_distance_dispatch(field_index, frame.terminal_node_id, frame.point + vec3<f32>(0.0, 0.0, eps)) - field_terminal_distance_dispatch(field_index, frame.terminal_node_id, frame.point - vec3<f32>(0.0, 0.0, eps));"
+    )
+    .ok();
+    writeln!(out, "  return wr_normalize3(vec3<f32>(dx, dy, dz));").ok();
+    writeln!(out, "}}\n").ok();
+
     Ok(())
 }
 
 fn emit_shape_dispatch_functions(
     ctx: &QueryExecContext,
     scene_index: &ShaderSceneIndex,
-    descriptor: &QueryContractDescriptor,
+    behavior: &NormalizedShaderBehavior,
     out: &mut String,
 ) -> Result<(), QueryExecError> {
     writeln!(
@@ -2023,7 +2487,7 @@ fn emit_shape_dispatch_functions(
     writeln!(out, "  }}").ok();
     writeln!(out, "}}\n").ok();
 
-    if contract_requires_trace(descriptor) {
+    if behavior.requires_trace() {
         writeln!(
             out,
             "fn shape_winner_dispatch(shape_index: u32, point: vec3<f32>) -> ShapeWinner {{"
@@ -2046,7 +2510,40 @@ fn emit_shape_dispatch_functions(
 
     writeln!(
         out,
+        "fn shape_normal_dispatch_sample(shape_index: u32, point: vec3<f32>) -> CertifiedNormalSample {{"
+    )
+    .ok();
+    writeln!(out, "  switch shape_index {{").ok();
+    for (shape_name, scene) in &ctx.scene.shapes {
+        let shape_index = scene_index.shape(shape_name)?;
+        writeln!(
+            out,
+            "    case {shape_index}u: {{ return {}(point); }}",
+            shape_normal_function_name(shape_index, scene.root_node_id.0)
+        )
+        .ok();
+    }
+    writeln!(
+        out,
+        "    default: {{ return wr_unavailable_normal_sample(); }}"
+    )
+    .ok();
+    writeln!(out, "  }}").ok();
+    writeln!(out, "}}\n").ok();
+
+    writeln!(
+        out,
         "fn shape_normal_dispatch(shape_index: u32, point: vec3<f32>) -> vec3<f32> {{"
+    )
+    .ok();
+    writeln!(
+        out,
+        "  let sample = shape_normal_dispatch_sample(shape_index, point);"
+    )
+    .ok();
+    writeln!(
+        out,
+        "  if (sample.available != 0u) {{ return wr_normalize3(sample.normal); }}"
     )
     .ok();
     writeln!(out, "  let eps: f32 = 0.001;").ok();
@@ -2068,7 +2565,7 @@ fn emit_shape_dispatch_functions(
     writeln!(out, "  return wr_normalize3(vec3<f32>(dx, dy, dz));").ok();
     writeln!(out, "}}\n").ok();
 
-    if contract_requires_material(descriptor) {
+    if behavior.requires_material {
         writeln!(
             out,
             "fn surface_at_shape_dispatch(shape_index: u32, hit: Hit3) -> Surface {{"
@@ -2089,7 +2586,7 @@ fn emit_shape_dispatch_functions(
         writeln!(out, "}}\n").ok();
     }
 
-    if contract_requires_radiance(descriptor) {
+    if behavior.requires_radiance {
         writeln!(out, "fn radiance_at_shape_dispatch(shape_index: u32, point: vec3<f32>, direction: vec3<f32>) -> vec3<f32> {{").ok();
         writeln!(out, "  switch shape_index {{").ok();
         for (shape_name, scene) in &ctx.scene.shapes {
@@ -2106,7 +2603,7 @@ fn emit_shape_dispatch_functions(
         writeln!(out, "}}\n").ok();
     }
 
-    if contract_requires_volume(descriptor) {
+    if behavior.requires_volume {
         writeln!(
             out,
             "fn medium_at_shape_dispatch(shape_index: u32, point: vec3<f32>) -> Medium {{"
@@ -2127,7 +2624,7 @@ fn emit_shape_dispatch_functions(
         writeln!(out, "}}\n").ok();
     }
 
-    if contract_requires_trace(descriptor) {
+    if behavior.requires_trace() {
         writeln!(
             out,
             "fn root_shape_id_for_shape(shape_index: u32) -> u32 {{"
@@ -2148,7 +2645,7 @@ fn emit_shape_dispatch_functions(
         writeln!(out, "}}\n").ok();
     }
 
-    if contract_requires_root_shape_lookup(descriptor) {
+    if behavior.requires_root_shape_lookup() {
         writeln!(
             out,
             "fn shape_index_from_root_shape_id(root_shape_id: u32) -> u32 {{"
@@ -2184,12 +2681,24 @@ fn field_terminal_distance_function_name(field_index: u32) -> String {
     format!("wr_field_{field_index}_terminal_distance")
 }
 
+fn field_terminal_normal_function_name(field_index: u32) -> String {
+    format!("wr_field_{field_index}_terminal_normal")
+}
+
+fn field_normal_function_name(field_index: u32, node_id: u32) -> String {
+    format!("wr_field_{field_index}_normal_{node_id}")
+}
+
 fn field_opaque_distance_function_name(field_index: u32) -> String {
     format!("wr_field_{field_index}_opaque_distance")
 }
 
 fn shape_distance_function_name(shape_index: u32, node_id: u32) -> String {
     format!("wr_shape_{shape_index}_distance_{node_id}")
+}
+
+fn shape_normal_function_name(shape_index: u32, node_id: u32) -> String {
+    format!("wr_shape_{shape_index}_normal_{node_id}")
 }
 
 fn shape_winner_function_name(shape_index: u32, node_id: u32) -> String {
@@ -2557,6 +3066,36 @@ fn rotate_helper_name(value: &KernelValue) -> Result<&'static str, QueryExecErro
     }
 }
 
+fn transform_normal_expr_for_value(
+    kind: TransformKind,
+    value: &KernelValue,
+    rendered_value: &str,
+    normal_expr: &str,
+) -> Result<String, QueryExecError> {
+    match kind {
+        TransformKind::Translate | TransformKind::UniformScale => Ok(normal_expr.to_string()),
+        TransformKind::Rotate => Ok(match value {
+            KernelValue::F32(_) => format!("wr_rotate_angle(-({rendered_value}), {normal_expr})"),
+            KernelValue::Vec3(_) => format!("wr_rotate_euler(-({rendered_value}), {normal_expr})"),
+            KernelValue::Quat(_) | KernelValue::Vec4(_) => {
+                format!("wr_rotate_vec3_by_quat({normal_expr}, {rendered_value})")
+            }
+            KernelValue::Mat3(_) => format!("({rendered_value} * {normal_expr})"),
+            KernelValue::Struct(value) if value.name.as_str() == "Transform3" => {
+                format!("wr_transform_vector({rendered_value}, {normal_expr})")
+            }
+            other => {
+                return Err(QueryExecError::Unsupported {
+                    message: format!("WGSL rotate normal lowering does not support {other:?}"),
+                });
+            }
+        }),
+        _ => Err(QueryExecError::Unsupported {
+            message: format!("WGSL normal transform lowering does not support {:?}", kind),
+        }),
+    }
+}
+
 fn emit_profile_expr(
     ops: &DirectQueryOps<'_>,
     profile: &SceneProfileExpr,
@@ -2836,6 +3375,78 @@ fn emit_shape_distance_function(
             } else {
                 writeln!(out, "  return 1000000.0;").ok();
             }
+        }
+    }
+    writeln!(out, "}}\n").ok();
+    Ok(())
+}
+
+fn emit_shape_normal_function(
+    ctx: &QueryExecContext,
+    scene_index: &ShaderSceneIndex,
+    shape_name: &SmolStr,
+    shape_index: u32,
+    record: &crate::scene_ir::ShapeNodeRecord,
+    out: &mut String,
+) -> Result<(), QueryExecError> {
+    let fn_name = shape_normal_function_name(shape_index, record.id.0);
+    writeln!(
+        out,
+        "fn {fn_name}(point: vec3<f32>) -> CertifiedNormalSample {{"
+    )
+    .ok();
+    match record.kind {
+        ShapeNodeKindSummary::Use => {
+            let target = record.target.as_ref().expect("shape use target");
+            let target_index = scene_index.shape(target)?;
+            let target_scene =
+                ctx.scene
+                    .shapes
+                    .get(target)
+                    .ok_or_else(|| QueryExecError::Unsupported {
+                        message: format!(
+                            "shape '{}' is missing target '{}' during WGSL emission",
+                            shape_name, target
+                        ),
+                    })?;
+            writeln!(
+                out,
+                "  return {}(point);",
+                shape_normal_function_name(target_index, target_scene.root_node_id.0)
+            )
+            .ok();
+        }
+        ShapeNodeKindSummary::Leaf => {
+            let leaf_id = record.leaf.expect("shape leaf id");
+            let leaf =
+                ctx.shape_leaf(shape_name, leaf_id)
+                    .ok_or_else(|| QueryExecError::Unsupported {
+                        message: format!(
+                            "shape '{}' is missing leaf {} during WGSL emission",
+                            shape_name, leaf_id.0
+                        ),
+                    })?;
+            writeln!(
+                out,
+                "  let field_sample = field_normal_dispatch_sample({}, point);",
+                scene_index.field(&leaf.field)?
+            )
+            .ok();
+            writeln!(
+                out,
+                "  if (field_sample.available == 0u) {{ return field_sample; }}"
+            )
+            .ok();
+            writeln!(
+                out,
+                "  return wr_feature_normal_sample(field_sample.normal);"
+            )
+            .ok();
+        }
+        ShapeNodeKindSummary::Union
+        | ShapeNodeKindSummary::Intersection
+        | ShapeNodeKindSummary::Subtract => {
+            writeln!(out, "  return wr_unavailable_normal_sample();").ok();
         }
     }
     writeln!(out, "}}\n").ok();

@@ -2,6 +2,7 @@ use crate::query_contract::{
     QueryCardinality, QueryContractId, QueryFamilyId, QueryItemKind, QueryQuestionId,
     QueryResultKind, QueryTargetKind, query_contract,
 };
+pub use crate::query_contract::{RequiredGuaranteeClass, SelectedMethodClass};
 pub use crate::semantic_evidence::{
     AnalyticIntersectionStatus, EvidenceClass, EvidenceOrigin, EvidenceRefinementKind,
     EvidenceRefinementStep, EvidenceScope, FactAvailability, LipschitzStatus, PrimitiveFact,
@@ -42,6 +43,49 @@ pub struct RaySolverPortfolioEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RaySolverPortfolio {
     pub entries: Vec<RaySolverPortfolioEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RaySolverMixedSelection {
+    pub subject: QueryContractId,
+    pub candidate_class: SmolStr,
+    pub method: RaySolverMethod,
+    pub required_guarantee: RequiredGuaranteeClass,
+    pub selected_method_class: SelectedMethodClass,
+    pub evidence_policy_summary: SmolStr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RaySolverIntentDisposition {
+    Used,
+    Rejected,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RaySolverArtifactReuseIntent {
+    pub selection: RaySolverMixedSelection,
+    pub disposition: RaySolverIntentDisposition,
+    pub reasons: Vec<SmolStr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RaySolverContinuationIntent {
+    pub selection: RaySolverMixedSelection,
+    pub disposition: RaySolverIntentDisposition,
+    pub reasons: Vec<SmolStr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RaySolverArtifactReuseResolution {
+    pub disposition: RaySolverIntentDisposition,
+    pub reasons: Vec<SmolStr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RaySolverContinuationResolution {
+    pub disposition: RaySolverIntentDisposition,
+    pub reasons: Vec<SmolStr>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -106,6 +150,9 @@ pub struct RaySolverPlan {
     pub correctness: RaySolverCorrectnessPolicy,
     pub evidence: SemanticEvidence,
     pub portfolio: RaySolverPortfolio,
+    pub mixed_selections: Vec<RaySolverMixedSelection>,
+    pub artifact_reuse_intents: Vec<RaySolverArtifactReuseIntent>,
+    pub continuation_intents: Vec<RaySolverContinuationIntent>,
     pub fallback: RaySolverFallback,
     pub certificate: RaySolverCertificateShape,
 }
@@ -114,6 +161,9 @@ pub struct RaySolverPlan {
 pub struct RaySolverDiagnosticSummary {
     pub plan_id: SmolStr,
     pub methods: Vec<RaySolverMethod>,
+    pub mixed_selections: Vec<RaySolverMixedSelection>,
+    pub artifact_reuse_intents: Vec<RaySolverArtifactReuseIntent>,
+    pub continuation_intents: Vec<RaySolverContinuationIntent>,
     pub fallback: RaySolverFallbackKind,
     pub unavailable_facts: Vec<&'static str>,
     pub evidence_summary: SemanticEvidenceSummary,
@@ -130,6 +180,7 @@ impl RaySolverPlan {
         let descriptor = query_contract(contract_id)?;
         let evidence =
             evidence.unwrap_or_else(|| SemanticEvidence::runtime_unknown("world.region.runtime"));
+        let evidence_summary = evidence.summary();
         let mut entries = vec![
             RaySolverPortfolioEntry {
                 method: RaySolverMethod::DenseSphereTracing,
@@ -183,6 +234,12 @@ impl RaySolverPlan {
         ) {
             reasons.push(RaySolverFallbackReason::MissingFieldFacts);
         }
+        let mixed_selections = entries
+            .iter()
+            .filter_map(|entry| mixed_selection_for_entry(contract_id, &evidence_summary, entry))
+            .collect();
+        let artifact_reuse_intents = vec![artifact_reuse_intent(contract_id, &evidence_summary)];
+        let continuation_intents = vec![continuation_intent(contract_id, &evidence_summary)];
         Some(Self {
             id: SmolStr::new(format!("ray-solver:{}:v1", contract_id.as_str())),
             contract_id,
@@ -200,6 +257,9 @@ impl RaySolverPlan {
             },
             evidence,
             portfolio: RaySolverPortfolio { entries },
+            mixed_selections,
+            artifact_reuse_intents,
+            continuation_intents,
             fallback: RaySolverFallback {
                 kind: RaySolverFallbackKind::ExactDenseSphereTracing,
                 reasons,
@@ -230,6 +290,9 @@ impl RaySolverPlan {
                 })
                 .map(|entry| entry.method)
                 .collect(),
+            mixed_selections: self.mixed_selections.clone(),
+            artifact_reuse_intents: self.artifact_reuse_intents.clone(),
+            continuation_intents: self.continuation_intents.clone(),
             fallback: self.fallback.kind,
             unavailable_facts: self.evidence.unavailable_labels(),
             evidence_summary: self.evidence.summary(),
@@ -244,6 +307,42 @@ impl RaySolverPlan {
 
     pub fn dense_fallback_reasons(&self) -> &[RaySolverFallbackReason] {
         &self.fallback.reasons
+    }
+
+    pub fn mixed_selections(&self) -> &[RaySolverMixedSelection] {
+        &self.mixed_selections
+    }
+
+    pub fn artifact_reuse_intents(&self) -> &[RaySolverArtifactReuseIntent] {
+        &self.artifact_reuse_intents
+    }
+
+    pub fn continuation_intents(&self) -> &[RaySolverContinuationIntent] {
+        &self.continuation_intents
+    }
+
+    pub fn with_artifact_reuse_resolution(
+        &self,
+        resolution: RaySolverArtifactReuseResolution,
+    ) -> Self {
+        let mut plan = self.clone();
+        for intent in &mut plan.artifact_reuse_intents {
+            intent.disposition = resolution.disposition;
+            intent.reasons = resolution.reasons.clone();
+        }
+        plan
+    }
+
+    pub fn with_continuation_resolution(
+        &self,
+        resolution: RaySolverContinuationResolution,
+    ) -> Self {
+        let mut plan = self.clone();
+        for intent in &mut plan.continuation_intents {
+            intent.disposition = resolution.disposition;
+            intent.reasons = resolution.reasons.clone();
+        }
+        plan
     }
 }
 
@@ -324,6 +423,212 @@ fn lipschitz_method_status(evidence: &SemanticEvidence) -> RaySolverMethodStatus
 fn compile_trust(origin: &EvidenceOrigin, scope: &EvidenceScope) -> bool {
     matches!(origin, EvidenceOrigin::StaticCompiled)
         && matches!(scope, EvidenceScope::CompileInvariant)
+}
+
+fn mixed_selection_for_entry(
+    contract_id: QueryContractId,
+    evidence_summary: &SemanticEvidenceSummary,
+    entry: &RaySolverPortfolioEntry,
+) -> Option<RaySolverMixedSelection> {
+    if !matches!(
+        entry.status,
+        RaySolverMethodStatus::Enabled | RaySolverMethodStatus::Available
+    ) {
+        return None;
+    }
+    let required_guarantee = required_guarantee_for_method(entry.method);
+    let selected_method_class = selected_method_class_for_method(entry.method);
+    Some(RaySolverMixedSelection {
+        subject: contract_id,
+        candidate_class: SmolStr::new(candidate_class_for_method(entry.method)),
+        method: entry.method,
+        required_guarantee,
+        selected_method_class,
+        evidence_policy_summary: SmolStr::new(format!(
+            "candidate_class={} method={} guarantee={} class={} evidence-origin={:?} evidence-scope={:?} support-pruning={:?} analytic={:?} lipschitz={:?}; {}",
+            candidate_class_for_method(entry.method),
+            ray_solver_method_name(entry.method),
+            required_guarantee.name(),
+            selected_method_class.name(),
+            evidence_summary.origin,
+            evidence_summary.scope,
+            evidence_summary.support.lower_bound_pruning,
+            evidence_summary.distance.analytic_intersection,
+            evidence_summary.distance.lipschitz,
+            entry.reason.as_str()
+        )),
+    })
+}
+
+fn artifact_reuse_intent(
+    contract_id: QueryContractId,
+    evidence_summary: &SemanticEvidenceSummary,
+) -> RaySolverArtifactReuseIntent {
+    let selection = RaySolverMixedSelection {
+        subject: contract_id,
+        candidate_class: SmolStr::new("artifact-reuse"),
+        method: RaySolverMethod::SupportBoundCandidateRejection,
+        required_guarantee: RequiredGuaranteeClass::ConservativeNoFalseMiss,
+        selected_method_class: SelectedMethodClass::ConservativeSolver,
+        evidence_policy_summary: SmolStr::new(format!(
+            "artifact reuse candidate; evidence-origin={:?} evidence-scope={:?} support-pruning={:?} analytic={:?}",
+            evidence_summary.origin,
+            evidence_summary.scope,
+            evidence_summary.support.lower_bound_pruning,
+            evidence_summary.distance.analytic_intersection
+        )),
+    };
+    let has_reusable_evidence = matches!(
+        evidence_summary.support.lower_bound_pruning,
+        FactAvailability::Available | FactAvailability::Unknown
+    ) || matches!(
+        evidence_summary.distance.analytic_intersection,
+        AnalyticIntersectionStatus::Available
+            | AnalyticIntersectionStatus::CandidateOnly
+            | AnalyticIntersectionStatus::Unknown
+    );
+    let (disposition, reasons) = if has_reusable_evidence {
+        (
+            RaySolverIntentDisposition::Unavailable,
+            vec![
+                SmolStr::new(
+                    "compatible runtime artifact instance is required before reuse becomes legal",
+                ),
+                SmolStr::new(format!(
+                    "evidence origin={:?} scope={:?} constrains which artifacts may be reused",
+                    evidence_summary.origin, evidence_summary.scope
+                )),
+            ],
+        )
+    } else {
+        (
+            RaySolverIntentDisposition::Rejected,
+            vec![
+                SmolStr::new("evidence does not justify artifact reuse for this contract"),
+                SmolStr::new(format!(
+                    "support-pruning={:?} analytic={:?}",
+                    evidence_summary.support.lower_bound_pruning,
+                    evidence_summary.distance.analytic_intersection
+                )),
+            ],
+        )
+    };
+    RaySolverArtifactReuseIntent {
+        selection,
+        disposition,
+        reasons,
+    }
+}
+
+fn continuation_intent(
+    contract_id: QueryContractId,
+    evidence_summary: &SemanticEvidenceSummary,
+) -> RaySolverContinuationIntent {
+    let selection = RaySolverMixedSelection {
+        subject: contract_id,
+        candidate_class: SmolStr::new("temporal-continuation"),
+        method: RaySolverMethod::NeighborFrameContinuation,
+        required_guarantee: RequiredGuaranteeClass::ConservativeNoFalseMiss,
+        selected_method_class: SelectedMethodClass::HeuristicSolver,
+        evidence_policy_summary: SmolStr::new(format!(
+            "continuation candidate; temporal-stability={:?} change-class={:?} stationary={:?} rigid-over-interval={:?}",
+            evidence_summary.temporal.stability,
+            evidence_summary.temporal.change_class,
+            evidence_summary.temporal.stationary,
+            evidence_summary.temporal.rigid_over_interval
+        )),
+    };
+    let has_continuation_evidence = matches!(
+        evidence_summary.temporal.stability,
+        TemporalStability::CompileInvariant
+            | TemporalStability::TransitionCompatible
+            | TemporalStability::SnapshotLocal
+            | TemporalStability::ArtifactBound
+    ) && matches!(
+        evidence_summary.temporal.rigid_over_interval,
+        FactAvailability::Available | FactAvailability::Unknown
+    );
+    let (disposition, reasons) = if has_continuation_evidence {
+        (
+            RaySolverIntentDisposition::Unavailable,
+            vec![
+                SmolStr::new(
+                    "compatible runtime transition context is required before continuation is legal",
+                ),
+                SmolStr::new(format!(
+                    "temporal stability={:?} change class={:?} constrains which prior frames may continue",
+                    evidence_summary.temporal.stability, evidence_summary.temporal.change_class
+                )),
+            ],
+        )
+    } else {
+        (
+            RaySolverIntentDisposition::Rejected,
+            vec![
+                SmolStr::new("temporal evidence does not justify continuation for this contract"),
+                SmolStr::new(format!(
+                    "stability={:?} stationary={:?} rigid-over-interval={:?} topology-stable={:?}",
+                    evidence_summary.temporal.stability,
+                    evidence_summary.temporal.stationary,
+                    evidence_summary.temporal.rigid_over_interval,
+                    evidence_summary.temporal.topology_stable
+                )),
+            ],
+        )
+    };
+    RaySolverContinuationIntent {
+        selection,
+        disposition,
+        reasons,
+    }
+}
+
+fn required_guarantee_for_method(method: RaySolverMethod) -> RequiredGuaranteeClass {
+    match method {
+        RaySolverMethod::DenseSphereTracing => RequiredGuaranteeClass::Exact,
+        RaySolverMethod::SupportBoundCandidateRejection => {
+            RequiredGuaranteeClass::ConservativeNoFalseMiss
+        }
+        RaySolverMethod::AnalyticPrimitiveIntersection => RequiredGuaranteeClass::Exact,
+        RaySolverMethod::LipschitzSafeStepping => RequiredGuaranteeClass::IntervalBounded,
+        RaySolverMethod::IntervalNewtonIsolation
+        | RaySolverMethod::SafeguardedNewtonRefinement
+        | RaySolverMethod::AffineArithmeticBounds => RequiredGuaranteeClass::IntervalBounded,
+        RaySolverMethod::RepeatAwareTraversal
+        | RaySolverMethod::TilePacketSolving
+        | RaySolverMethod::NeighborFrameContinuation => RequiredGuaranteeClass::BestEffort,
+    }
+}
+
+fn selected_method_class_for_method(method: RaySolverMethod) -> SelectedMethodClass {
+    match method {
+        RaySolverMethod::DenseSphereTracing | RaySolverMethod::AnalyticPrimitiveIntersection => {
+            SelectedMethodClass::ExactOracle
+        }
+        RaySolverMethod::SupportBoundCandidateRejection => SelectedMethodClass::ConservativeSolver,
+        RaySolverMethod::LipschitzSafeStepping
+        | RaySolverMethod::IntervalNewtonIsolation
+        | RaySolverMethod::SafeguardedNewtonRefinement
+        | RaySolverMethod::AffineArithmeticBounds => SelectedMethodClass::IntervalSolver,
+        RaySolverMethod::RepeatAwareTraversal
+        | RaySolverMethod::TilePacketSolving
+        | RaySolverMethod::NeighborFrameContinuation => SelectedMethodClass::HeuristicSolver,
+    }
+}
+
+fn candidate_class_for_method(method: RaySolverMethod) -> &'static str {
+    match method {
+        RaySolverMethod::DenseSphereTracing => "dense-oracle",
+        RaySolverMethod::SupportBoundCandidateRejection => "support-bounded-candidates",
+        RaySolverMethod::AnalyticPrimitiveIntersection => "analytic-primitive-candidates",
+        RaySolverMethod::LipschitzSafeStepping => "lipschitz-safe-candidates",
+        RaySolverMethod::IntervalNewtonIsolation => "interval-isolation-candidates",
+        RaySolverMethod::SafeguardedNewtonRefinement => "newton-refinement-candidates",
+        RaySolverMethod::AffineArithmeticBounds => "affine-bounds-candidates",
+        RaySolverMethod::RepeatAwareTraversal => "repeat-aware-candidates",
+        RaySolverMethod::TilePacketSolving => "tile-packet-candidates",
+        RaySolverMethod::NeighborFrameContinuation => "temporal-continuation",
+    }
 }
 
 pub fn ray_solver_method_name(method: RaySolverMethod) -> &'static str {

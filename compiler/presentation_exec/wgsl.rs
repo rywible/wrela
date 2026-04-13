@@ -17,8 +17,8 @@ use crate::presentation_exec::{
     frame_state_components, full_attachment_byte_size, generate_screen_samples,
     internal_resolution_viewport, lighting_inputs_value,
     materialize_primary_visibility_attachments, participant_query_work_items, presentation_metrics,
-    primary_hit_miss_value, resolved_quality_state, screen_sample_ray, shade_lookup_value,
-    tile_culling_mask,
+    primary_hit_miss_value, resolved_quality_state, runtime_primary_solver_summary,
+    screen_sample_ray, shade_lookup_value, tile_culling_mask,
 };
 use crate::presentation_plan::{
     CompositeColorPassContract, ParticipantsResolvePassContract, PresentationPassKind,
@@ -78,7 +78,7 @@ pub(super) fn execute_plan(
     )?;
     let mut primary_hits = None;
     let mut primary_trace = None;
-    let mut primary_solver_summary = None;
+    let mut primary_solver_context = None;
     let mut continuation_counts = crate::presentation_exec::temporal::ContinuationCounts::default();
     let mut tile_cull = TileCullingStats::default();
     let mut surface_resolve_count = 0;
@@ -198,10 +198,10 @@ pub(super) fn execute_plan(
                     )
                 };
                 materialize_primary_visibility_attachments(&mut attachments, &hits, contract)?;
-                primary_solver_summary = batch_plan
+                primary_solver_context = batch_plan
                     .ray_solver
                     .as_ref()
-                    .map(|solver| solver.diagnostic_summary());
+                    .map(|solver| (solver.clone(), batch_plan.artifact_contracts.clone()));
                 primary_trace = Some(query_trace);
                 primary_hits = Some(hits);
                 runtime.dispatch_count = 1;
@@ -443,6 +443,8 @@ pub(super) fn execute_plan(
             plan: effective_plan.name.clone(),
         })?;
     let continuation_diagnostics = continuation_counts.diagnostics.clone();
+    let primary_solver_summary =
+        runtime_primary_solver_summary(primary_solver_context.as_ref(), &continuation_counts);
     update_query_trace_continuation(&mut primary_trace, continuation_counts);
     let metrics = presentation_metrics(
         &primary_hits,

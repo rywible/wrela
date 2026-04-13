@@ -1,4 +1,7 @@
-use wrela::artifact_contract::{ArtifactUseKind, ArtifactUseSource, SemanticArtifactKind};
+use smol_str::SmolStr;
+use wrela::artifact_contract::{
+    ArtifactSnapshotRelation, ArtifactUseKind, ArtifactUseSource, SemanticArtifactKind,
+};
 use wrela::collision_plan::{CollisionPlan, CollisionQueryKind};
 use wrela::hir;
 use wrela::hir::lower as hir_lower;
@@ -8,8 +11,9 @@ use wrela::parser::parse;
 use wrela::presentation_plan::PresentationPlan;
 use wrela::query_plan::DispatchBackend;
 use wrela::query_program_spine::{
-    ObserverKind, SpineEdgeKind, SpineLossyReason, SpineNodeFamily, project_collision_plan,
-    project_presentation_plan,
+    ObserverKind, QueryProgramSpine, SpineAnalysisStatus, SpineDependencyEdge, SpineEdgeKind,
+    SpineLossyReason, SpineNodeFamily, project_collision_plan, project_presentation_plan,
+    shared_spine_report,
 };
 
 fn lower_inline_module(source: &str) -> hir::Module {
@@ -83,6 +87,33 @@ fn composite_presentation_plan() -> PresentationPlan {
     let module = lower_inline_module(composite_view_source());
     let view = presentation_function(&module, "composite_view");
     PresentationPlan::from_view_function(view, DispatchBackend::Auto).expect("presentation plan")
+}
+
+fn rename_spine_node_id(spine: &mut QueryProgramSpine, old: &str, new: &str) {
+    let new_id = SmolStr::new(new);
+    for input in &mut spine.inputs {
+        if input.node_id == old {
+            input.node_id = new_id.clone();
+        }
+    }
+    for output in &mut spine.outputs {
+        if output.node_id == old {
+            output.node_id = new_id.clone();
+        }
+    }
+    for node in &mut spine.nodes {
+        if node.id == old {
+            node.id = new_id.clone();
+        }
+    }
+    for edge in &mut spine.dependencies {
+        if edge.from == old {
+            edge.from = new_id.clone();
+        }
+        if edge.to == old {
+            edge.to = new_id.clone();
+        }
+    }
 }
 
 #[test]
@@ -411,5 +442,239 @@ fn presentation_and_collision_share_the_same_broad_spine_vocabulary() {
     assert_ne!(
         presentation.spine.observer_kind,
         collision.spine.observer_kind
+    );
+}
+
+#[test]
+fn shared_spine_report_proves_dependency_and_lifetime_analysis_for_presentation() {
+    let projection = project_presentation_plan(&temporal_presentation_plan());
+    let report = shared_spine_report(&projection);
+
+    assert_eq!(report.status, SpineAnalysisStatus::Valid);
+    assert_eq!(report.dependency.status, SpineAnalysisStatus::Valid);
+    assert!(report.dependency.missing_node_edges.is_empty());
+    assert!(report.dependency.cycles.iter().any(|cycle| {
+        cycle
+            .nodes
+            .iter()
+            .any(|node_id| node_id == "load:temporal_resolve:artifact.history_color")
+            && cycle
+                .nodes
+                .iter()
+                .any(|node_id| node_id == "artifact:artifact.history_color")
+    }));
+    assert!(
+        report
+            .dependency
+            .roots
+            .iter()
+            .any(|node_id| node_id == "policy:presentation_backend_dispatch")
+    );
+    assert!(
+        report
+            .dependency
+            .leaves
+            .iter()
+            .any(|node_id| node_id == "output:color")
+    );
+    assert_eq!(report.artifact_lifetime.status, SpineAnalysisStatus::Valid);
+    assert!(
+        report
+            .artifact_lifetime
+            .contract_checks
+            .iter()
+            .any(|check| {
+                check.artifact_id == "artifact.history_color"
+                    && check.status == SpineAnalysisStatus::Valid
+                    && check
+                        .load_node_ids
+                        .iter()
+                        .any(|node_id| node_id == "load:temporal_resolve:artifact.history_color")
+            })
+    );
+    assert!(report.backend.dispatch_observable);
+    assert!(report.observability.local_only.runtime_trace_local_only);
+    assert!(report.observability.local_only.observer_metrics_local_only);
+}
+
+#[test]
+fn shared_spine_policy_summary_flags_illegal_collision_backends() {
+    let exact_projection = project_collision_plan(&CollisionPlan::for_query_with_backend(
+        CollisionQueryKind::PointOccupancyWorld,
+        DispatchBackend::Wgsl,
+    ));
+    let exact_report = shared_spine_report(&exact_projection);
+    let unsupported_projection = project_collision_plan(&CollisionPlan::for_query_with_backend(
+        CollisionQueryKind::SphereSweepTransition,
+        DispatchBackend::Wgsl,
+    ));
+    let unsupported_report = shared_spine_report(&unsupported_projection);
+
+    assert_eq!(exact_report.observer_kind, ObserverKind::Collision);
+    assert_eq!(exact_report.execution_owner, "CollisionPlan");
+    assert_eq!(exact_report.policy.status, SpineAnalysisStatus::Invalid);
+    assert!(
+        exact_report
+            .policy
+            .illegal_combinations
+            .iter()
+            .any(|reason| {
+                reason.contains("backend=wgsl")
+                    && (reason.contains("method=exact_oracle")
+                        || reason.contains("supported_backends=cpu"))
+            })
+    );
+    assert!(exact_report.backend.dispatch_observable);
+    assert_eq!(
+        unsupported_report.policy.status,
+        SpineAnalysisStatus::Invalid
+    );
+    assert!(
+        unsupported_report
+            .policy
+            .illegal_combinations
+            .iter()
+            .any(|reason| reason.contains("supported_backends=cpu"))
+    );
+    assert!(
+        exact_report
+            .observability
+            .lossy_boundaries
+            .iter()
+            .any(|boundary| boundary.reason == "policy_authority")
+    );
+}
+
+#[test]
+fn shared_spine_lifetime_validation_rejects_missing_store_load_edges() {
+    let mut projection = project_presentation_plan(&temporal_presentation_plan());
+    projection.spine.dependencies.retain(|edge| {
+        !(edge.kind == SpineEdgeKind::LoadsArtifact
+            && edge
+                .subject
+                .as_ref()
+                .is_some_and(|subject| subject == "artifact.history_color"))
+    });
+
+    let report = shared_spine_report(&projection);
+
+    assert_eq!(
+        report.artifact_lifetime.status,
+        SpineAnalysisStatus::Invalid
+    );
+    assert!(report.artifact_lifetime.use_checks.iter().any(|check| {
+        check.artifact_id == "artifact.history_color"
+            && check.actor == "temporal_resolve"
+            && check
+                .notes
+                .iter()
+                .any(|note| note == "missing_store_load_edge")
+    }));
+}
+
+#[test]
+fn shared_spine_dependency_rejects_mixed_temporal_feedback_cycle() {
+    let mut projection = project_collision_plan(&CollisionPlan::for_query_with_backend(
+        CollisionQueryKind::SphereSweepTransition,
+        DispatchBackend::Auto,
+    ));
+    projection.spine.dependencies.push(SpineDependencyEdge {
+        from: SmolStr::new("invoke:materialize_output"),
+        to: SmolStr::new("invoke:sphere_sweep"),
+        kind: SpineEdgeKind::ConsumesValue,
+        subject: Some(SmolStr::new("unexpected_feedback")),
+        required_validity: None,
+        lossy: false,
+    });
+
+    let report = shared_spine_report(&projection);
+
+    assert_eq!(report.dependency.status, SpineAnalysisStatus::Invalid);
+    assert!(report.dependency.cycles.iter().any(|cycle| {
+        cycle
+            .nodes
+            .iter()
+            .any(|node_id| node_id == "invoke:materialize_output")
+            && cycle
+                .nodes
+                .iter()
+                .any(|node_id| node_id == "invoke:sphere_sweep")
+    }));
+}
+
+#[test]
+fn shared_spine_lifetime_validation_uses_spine_structure_not_generated_ids() {
+    let mut projection = project_presentation_plan(&temporal_presentation_plan());
+    rename_spine_node_id(
+        &mut projection.spine,
+        "invoke:temporal_resolve",
+        "primitive:temporal_resolve",
+    );
+    rename_spine_node_id(
+        &mut projection.spine,
+        "artifact:artifact.history_color",
+        "cache:history_color",
+    );
+    rename_spine_node_id(
+        &mut projection.spine,
+        "load:temporal_resolve:artifact.history_color",
+        "artifact_load:history_color",
+    );
+
+    let report = shared_spine_report(&projection);
+
+    assert_eq!(report.status, SpineAnalysisStatus::Valid);
+    assert_eq!(report.dependency.status, SpineAnalysisStatus::Valid);
+    assert_eq!(report.artifact_lifetime.status, SpineAnalysisStatus::Valid);
+    assert!(report.artifact_lifetime.use_checks.iter().any(|check| {
+        check.artifact_id == "artifact.history_color"
+            && check.actor == "temporal_resolve"
+            && check.status == SpineAnalysisStatus::Valid
+    }));
+}
+
+#[test]
+fn shared_spine_collision_contract_validation_uses_semantic_metadata_not_labels() {
+    let mut projection = project_collision_plan(&CollisionPlan::for_query_with_backend(
+        CollisionQueryKind::SphereSweepTransition,
+        DispatchBackend::Auto,
+    ));
+    let artifact_id = SmolStr::new("artifact.witness_cache.sphere_sweep");
+    projection
+        .spine
+        .nodes
+        .iter_mut()
+        .find(|node| {
+            node.family == SpineNodeFamily::ArtifactStore
+                && node.artifact_ids.first() == Some(&artifact_id)
+        })
+        .expect("witness cache node")
+        .label = SmolStr::new("renamed_transition_artifact");
+    projection
+        .spine
+        .semantic_artifacts
+        .iter_mut()
+        .find(|contract| contract.id == artifact_id)
+        .expect("witness cache contract")
+        .compatibility
+        .snapshot = ArtifactSnapshotRelation::ExactSnapshot;
+
+    let report = shared_spine_report(&projection);
+
+    assert_eq!(
+        report.artifact_lifetime.status,
+        SpineAnalysisStatus::Invalid
+    );
+    assert!(
+        report
+            .artifact_lifetime
+            .contract_checks
+            .iter()
+            .any(|check| {
+                check.artifact_id == artifact_id
+                    && check.notes.iter().any(|note| {
+                        note == "collision_transition_artifact_requires_previous_snapshot_scope"
+                    })
+            })
     );
 }

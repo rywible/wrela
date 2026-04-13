@@ -19,6 +19,7 @@ use wrela::query_exec::{
     QueryExecContext, stable_region_scene_capture_id, stable_region_snapshot_handle,
 };
 use wrela::query_plan::DispatchBackend;
+use wrela::query_solver::RaySolverIntentDisposition;
 use wrela::semantic_evidence::FactAvailability;
 use wrela::world_identity::SnapshotEpoch;
 
@@ -695,6 +696,31 @@ fn static_repeated_frames_reuse_history_deterministically() {
     );
     assert!(frame1.metrics.continuation_available_count > 0);
     assert!(frame1.metrics.continuation_consumed_count > 0);
+    let solver_summary = frame1
+        .metrics
+        .solver_summary
+        .as_ref()
+        .expect("solver summary");
+    assert_eq!(
+        solver_summary.artifact_reuse_intents[0].disposition,
+        RaySolverIntentDisposition::Used
+    );
+    assert_eq!(
+        solver_summary.continuation_intents[0].disposition,
+        RaySolverIntentDisposition::Used
+    );
+    assert!(
+        solver_summary.artifact_reuse_intents[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("capture-cache") || reason.contains("support-summary"))
+    );
+    assert!(
+        solver_summary.continuation_intents[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("verdict=available"))
+    );
     assert!(
         frame1
             .metrics

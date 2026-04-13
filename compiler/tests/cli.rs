@@ -666,6 +666,71 @@ fn cli_collision_plan_json_reports_validation_and_policy() {
                     == Some("runtime_trace")
             }))
     );
+    assert_eq!(
+        sweep
+            .pointer("/observer_projection/analysis/dependency/status")
+            .and_then(|value| value.as_str()),
+        Some("valid")
+    );
+    assert_eq!(
+        sweep
+            .pointer("/observer_projection/analysis/artifact_lifetimes/status")
+            .and_then(|value| value.as_str()),
+        Some("valid")
+    );
+    assert_eq!(
+        sweep
+            .pointer("/observer_projection/analysis/policy/status")
+            .and_then(|value| value.as_str()),
+        Some("valid")
+    );
+    assert_eq!(
+        sweep
+            .pointer("/observer_projection/analysis/backend/status")
+            .and_then(|value| value.as_str()),
+        Some("valid")
+    );
+    assert_eq!(
+        sweep
+            .pointer("/observer_projection/analysis/dependency/policy_edge_count")
+            .and_then(|value| value.as_u64()),
+        Some(4)
+    );
+    assert_eq!(
+        sweep
+            .pointer("/observer_projection/analysis/dependency/output_edge_count")
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        sweep
+            .pointer("/observer_projection/analysis/policy/requirements/0/backend_preference")
+            .and_then(|value| value.as_str()),
+        Some("cpu")
+    );
+    assert_eq!(
+        sweep
+            .pointer("/observer_projection/analysis/policy/requirements/0/authority_scope")
+            .and_then(|value| value.as_str()),
+        Some("transition")
+    );
+    assert_eq!(
+        sweep
+            .pointer("/observer_projection/analysis/policy/requirements/0/supported_backends/0")
+            .and_then(|value| value.as_str()),
+        Some("cpu")
+    );
+    assert!(
+        sweep
+            .pointer("/observer_projection/analysis/observability/local_only_channels")
+            .and_then(|value| value.as_array())
+            .is_some_and(|channels| channels
+                .iter()
+                .any(|channel| { channel.as_str() == Some("runtime_trace") })
+                && channels
+                    .iter()
+                    .any(|channel| { channel.as_str() == Some("observer_metrics") }))
+    );
 }
 
 #[test]
@@ -689,6 +754,8 @@ fn cli_collision_plan_wgsl_reports_invalid_exact_oracle_validation() {
     assert!(stdout.contains("selected_method=exact_oracle"));
     assert!(stdout.contains("shared spine: observer=collision owner=CollisionPlan"));
     assert!(stdout.contains("shared spine primitive nodes:"));
+    assert!(stdout.contains("shared policy summary: status=invalid"));
+    assert!(stdout.contains("shared observability report: common="));
 }
 
 #[test]
@@ -894,6 +961,14 @@ fn cli_presentation_plan_human_shows_contracts_without_helper_names() {
     );
     assert!(stdout.contains("shared spine artifacts:"));
     assert!(stdout.contains("history_color[artifact.history_color]"));
+    assert!(stdout.contains("validation_summary=true"));
+    assert!(stdout.contains("observer_metrics_local_only=true"));
+    assert!(stdout.contains("shared dependency graph: status=valid"));
+    assert!(stdout.contains("shared artifact lifetimes: status=valid"));
+    assert!(stdout.contains("shared backend summary: status=valid active="));
+    assert!(stdout.contains("shared observability report: common="));
+    assert!(!stdout.contains("shared artifact lifetime issues:"));
+    assert!(!stdout.contains("shared dependency issues:"));
     assert!(stdout.contains("normalized projection (compat): family=presentation mode=temporal"));
     assert!(stdout.contains("normalized projection (compat): family=presentation mode=composite"));
     assert!(stdout.contains("passes=generate_screen_samples, primary_visibility"));
@@ -1019,6 +1094,71 @@ fn cli_presentation_plan_json_reports_passes_bindings_and_query_dependencies() {
             .pointer("/observer_projection/spine/observability/runtime_trace_local_only")
             .and_then(|value| value.as_bool()),
         Some(true)
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/observer_projection/analysis/dependency/status")
+            .and_then(|value| value.as_str()),
+        Some("valid")
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/observer_projection/analysis/artifact_lifetimes/status")
+            .and_then(|value| value.as_str()),
+        Some("valid")
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/observer_projection/analysis/policy/status")
+            .and_then(|value| value.as_str()),
+        Some("valid")
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/observer_projection/analysis/backend/status")
+            .and_then(|value| value.as_str()),
+        Some("valid")
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/observer_projection/analysis/backend/binding_count")
+            .and_then(|value| value.as_u64()),
+        Some(7)
+    );
+    assert!(
+        view_plan
+            .pointer("/observer_projection/analysis/artifact_lifetimes/store_backed_loads")
+            .and_then(|value| value.as_array())
+            .is_some_and(|loads| loads.iter().any(|load| {
+                load.pointer("/artifact_id")
+                    .and_then(|value| value.as_str())
+                    == Some("artifact.history_color")
+            }))
+    );
+    assert!(
+        view_plan
+            .pointer("/observer_projection/analysis/observability/local_only_channels")
+            .and_then(|value| value.as_array())
+            .is_some_and(|channels| channels
+                .iter()
+                .any(|channel| { channel.as_str() == Some("runtime_trace") })
+                && channels
+                    .iter()
+                    .any(|channel| { channel.as_str() == Some("observer_metrics") }))
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/observer_projection/analysis/artifact_lifetimes/issues")
+            .and_then(|value| value.as_array())
+            .map(|issues| issues.len()),
+        Some(0)
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/observer_projection/analysis/dependency/issues")
+            .and_then(|value| value.as_array())
+            .map(|issues| issues.len()),
+        Some(0)
     );
     assert_eq!(
         view_plan

@@ -33,8 +33,11 @@ use crate::query_exec::{
     BatchQueryExecutionTrace, QueryExecContext, QueryExecError,
     execute_batch_query_with_snapshot_on,
 };
-use crate::query_plan::{BatchQueryPlan, DispatchBackend};
-use crate::query_solver::{RaySolverDiagnosticSummary, RaySolverMethod, ray_solver_method_name};
+use crate::query_plan::{ArtifactContract, ArtifactSchema, BatchQueryPlan, DispatchBackend};
+use crate::query_solver::{
+    RaySolverArtifactReuseResolution, RaySolverContinuationResolution, RaySolverDiagnosticSummary,
+    RaySolverIntentDisposition, RaySolverMethod, RaySolverPlan, ray_solver_method_name,
+};
 use crate::semantic_evidence::SemanticEvidenceSummary;
 use crate::world_identity::{SnapshotEpoch, SnapshotIdentityReport, WorldSnapshotHandle};
 use resources::{
@@ -1231,6 +1234,85 @@ fn presentation_metrics(
         continuation_rejected_count: observability.solver_continuation_rejected,
         continuation_unavailable_count: observability.solver_continuation_unavailable,
         continuation_diagnostics,
+    }
+}
+
+fn runtime_primary_solver_summary(
+    solver_context: Option<&(RaySolverPlan, Vec<ArtifactContract>)>,
+    continuation_counts: &temporal::ContinuationCounts,
+) -> Option<RaySolverDiagnosticSummary> {
+    let (solver_plan, artifact_contracts) = solver_context?;
+    Some(
+        solver_plan
+            .with_artifact_reuse_resolution(presentation_artifact_reuse_resolution(
+                artifact_contracts,
+            ))
+            .with_continuation_resolution(presentation_continuation_resolution(continuation_counts))
+            .diagnostic_summary(),
+    )
+}
+
+fn presentation_artifact_reuse_resolution(
+    artifact_contracts: &[ArtifactContract],
+) -> RaySolverArtifactReuseResolution {
+    let compatible_artifacts = artifact_contracts
+        .iter()
+        .filter_map(|artifact| match artifact.schema {
+            ArtifactSchema::SupportSummary { .. } => Some("support-summary"),
+            ArtifactSchema::CaptureCache { .. } => Some("capture-cache"),
+            ArtifactSchema::CullingTable { .. } => Some("culling-table"),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if compatible_artifacts.is_empty() {
+        return RaySolverArtifactReuseResolution {
+            disposition: RaySolverIntentDisposition::Rejected,
+            reasons: vec![SmolStr::new(
+                "primary visibility plan exposes no compatible solver artifacts",
+            )],
+        };
+    }
+    RaySolverArtifactReuseResolution {
+        disposition: RaySolverIntentDisposition::Used,
+        reasons: vec![
+            SmolStr::new(format!(
+                "primary visibility reused compatible artifacts: {}",
+                compatible_artifacts.join(", ")
+            )),
+            SmolStr::new(
+                "artifact compatibility stays governed by the primary visibility query plan",
+            ),
+        ],
+    }
+}
+
+fn presentation_continuation_resolution(
+    continuation_counts: &temporal::ContinuationCounts,
+) -> RaySolverContinuationResolution {
+    let disposition = if continuation_counts.consumed > 0 {
+        RaySolverIntentDisposition::Used
+    } else if continuation_counts.rejected > 0 {
+        RaySolverIntentDisposition::Rejected
+    } else {
+        RaySolverIntentDisposition::Unavailable
+    };
+    let mut reasons = continuation_counts
+        .diagnostics
+        .iter()
+        .map(|entry| SmolStr::new(entry.as_str()))
+        .collect::<Vec<_>>();
+    if reasons.is_empty() {
+        reasons.push(SmolStr::new(format!(
+            "continuation counts available={} consumed={} rejected={} unavailable={}",
+            continuation_counts.available,
+            continuation_counts.consumed,
+            continuation_counts.rejected,
+            continuation_counts.unavailable
+        )));
+    }
+    RaySolverContinuationResolution {
+        disposition,
+        reasons,
     }
 }
 

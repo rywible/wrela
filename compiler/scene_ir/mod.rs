@@ -39,8 +39,15 @@ pub enum SceneTraceSafety {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SceneDifferentialSupport {
+    CertifiedGradient,
+    FiniteDifferenceFallback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SceneAnalysis {
     pub trace_safety: SceneTraceSafety,
+    pub differential_support: SceneDifferentialSupport,
     pub support_class: SupportClass,
     pub opaque_boundary: bool,
     pub can_coarse_support_pruning: bool,
@@ -743,6 +750,7 @@ struct ShapeSceneDraft {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CapabilitySummary {
     semantics: DistanceSemantics,
+    differential_support: SceneDifferentialSupport,
     support_class: SupportClass,
     opaque_boundary: bool,
     can_coarse_support_pruning: bool,
@@ -758,6 +766,7 @@ fn build_scene_analysis(
             DistanceSemantics::ConservativeLowerBound => SceneTraceSafety::Conservative,
             DistanceSemantics::UnknownOpaque => SceneTraceSafety::Opaque,
         },
+        differential_support: summary.differential_support,
         support_class: summary.support_class,
         opaque_boundary: summary.opaque_boundary,
         can_coarse_support_pruning: summary.can_coarse_support_pruning,
@@ -1358,6 +1367,7 @@ pub fn lower_shape_scenes(
 fn conservative_unknown_support() -> CapabilitySummary {
     CapabilitySummary {
         semantics: DistanceSemantics::ConservativeLowerBound,
+        differential_support: SceneDifferentialSupport::FiniteDifferenceFallback,
         support_class: SupportClass::Unknown,
         opaque_boundary: false,
         can_coarse_support_pruning: false,
@@ -1367,6 +1377,7 @@ fn conservative_unknown_support() -> CapabilitySummary {
 fn opaque_capabilities(support_class: SupportClass) -> CapabilitySummary {
     CapabilitySummary {
         semantics: DistanceSemantics::UnknownOpaque,
+        differential_support: SceneDifferentialSupport::FiniteDifferenceFallback,
         support_class,
         opaque_boundary: true,
         can_coarse_support_pruning: false,
@@ -1383,18 +1394,27 @@ fn primitive_capabilities(primitive: hir::FieldPrimitive) -> CapabilitySummary {
         Sphere | Box | Capsule | Cylinder | Torus | RoundedBox | CappedCone | BoxFrame
         | TrianglePrism | HexPrism => CapabilitySummary {
             semantics: DistanceSemantics::ExactSignedDistance,
+            differential_support: match primitive {
+                Sphere => SceneDifferentialSupport::CertifiedGradient,
+                _ => SceneDifferentialSupport::FiniteDifferenceFallback,
+            },
             support_class: SupportClass::Bounded,
             opaque_boundary: false,
             can_coarse_support_pruning: true,
         },
         Ellipsoid => CapabilitySummary {
             semantics: DistanceSemantics::ConservativeLowerBound,
+            differential_support: SceneDifferentialSupport::FiniteDifferenceFallback,
             support_class: SupportClass::Bounded,
             opaque_boundary: false,
             can_coarse_support_pruning: true,
         },
         Plane | Cone | Slab => CapabilitySummary {
             semantics: DistanceSemantics::ExactSignedDistance,
+            differential_support: match primitive {
+                Plane => SceneDifferentialSupport::CertifiedGradient,
+                _ => SceneDifferentialSupport::FiniteDifferenceFallback,
+            },
             support_class: SupportClass::Unbounded,
             opaque_boundary: false,
             can_coarse_support_pruning: false,
@@ -1405,6 +1425,7 @@ fn primitive_capabilities(primitive: hir::FieldPrimitive) -> CapabilitySummary {
 fn profile_op_capabilities() -> CapabilitySummary {
     CapabilitySummary {
         semantics: DistanceSemantics::ConservativeLowerBound,
+        differential_support: SceneDifferentialSupport::FiniteDifferenceFallback,
         support_class: SupportClass::Bounded,
         opaque_boundary: false,
         can_coarse_support_pruning: true,
@@ -1495,11 +1516,61 @@ fn merge_boolean_capabilities(
     }
     CapabilitySummary {
         semantics: DistanceSemantics::ConservativeLowerBound,
+        differential_support: SceneDifferentialSupport::FiniteDifferenceFallback,
         support_class,
         opaque_boundary: false,
         can_coarse_support_pruning: matches!(support_class, SupportClass::Bounded)
             && items.iter().all(|item| item.can_coarse_support_pruning),
     }
+}
+
+fn scene_arg_constant_f32(arg: &SceneArgExpr) -> Option<f32> {
+    match arg {
+        SceneArgExpr::Positional(value) => scene_value_constant_f32(value),
+        SceneArgExpr::Named { value, .. } => scene_value_constant_f32(value),
+    }
+}
+
+fn scene_value_constant_f32(expr: &SceneValueExpr) -> Option<f32> {
+    match expr {
+        SceneValueExpr::Literal(hir::Literal::Float(value)) => Some(*value as f32),
+        SceneValueExpr::Literal(hir::Literal::Integer(value)) => Some(*value as f32),
+        SceneValueExpr::Unary {
+            op: hir::UnaryOp::Neg,
+            expr,
+        } => scene_value_constant_f32(expr).map(|value| -value),
+        SceneValueExpr::Binary { lhs, op, rhs } => {
+            let lhs = scene_value_constant_f32(lhs)?;
+            let rhs = scene_value_constant_f32(rhs)?;
+            match op {
+                hir::BinaryOp::Add => Some(lhs + rhs),
+                hir::BinaryOp::Sub => Some(lhs - rhs),
+                hir::BinaryOp::Mul => Some(lhs * rhs),
+                hir::BinaryOp::Div if rhs != 0.0 => Some(lhs / rhs),
+                _ => None,
+            }
+        }
+        SceneValueExpr::Call { callee, args } if callee.as_str() == "f32" && args.len() == 1 => {
+            scene_arg_constant_f32(&args[0])
+        }
+        _ => None,
+    }
+}
+
+fn smooth_support_is_certified(
+    smoothing: Option<&SceneValueExpr>,
+    items: &[CapabilitySummary],
+) -> bool {
+    matches!(
+        smoothing.and_then(scene_value_constant_f32),
+        Some(smoothing) if smoothing > 0.0
+    ) && !items.is_empty()
+        && items.iter().all(|item| {
+            matches!(
+                item.differential_support,
+                SceneDifferentialSupport::CertifiedGradient
+            )
+        })
 }
 
 fn transform_capabilities(kind: TransformKind, inner: CapabilitySummary) -> CapabilitySummary {
@@ -1517,6 +1588,17 @@ fn transform_capabilities(kind: TransformKind, inner: CapabilitySummary) -> Capa
         | TransformKind::Taper
         | TransformKind::Displace => DistanceSemantics::ConservativeLowerBound,
     };
+    let differential_support = match kind {
+        TransformKind::Translate | TransformKind::Rotate | TransformKind::UniformScale => {
+            inner.differential_support
+        }
+        TransformKind::AffineTransform
+        | TransformKind::Warp
+        | TransformKind::Bend
+        | TransformKind::Twist
+        | TransformKind::Taper
+        | TransformKind::Displace => SceneDifferentialSupport::FiniteDifferenceFallback,
+    };
     let can_coarse_support_pruning = matches!(
         kind,
         TransformKind::Translate | TransformKind::Rotate | TransformKind::UniformScale
@@ -1524,6 +1606,7 @@ fn transform_capabilities(kind: TransformKind, inner: CapabilitySummary) -> Capa
         && matches!(inner.support_class, SupportClass::Bounded);
     CapabilitySummary {
         semantics,
+        differential_support,
         support_class: inner.support_class,
         opaque_boundary: false,
         can_coarse_support_pruning,
@@ -1553,6 +1636,7 @@ fn repeat_capabilities(kind: RepeatKind, inner: CapabilitySummary) -> Capability
     };
     CapabilitySummary {
         semantics: DistanceSemantics::ConservativeLowerBound,
+        differential_support: SceneDifferentialSupport::FiniteDifferenceFallback,
         support_class,
         opaque_boundary: false,
         can_coarse_support_pruning,
@@ -1619,6 +1703,7 @@ fn analyze_field_node(
             } else {
                 CapabilitySummary {
                     semantics: DistanceSemantics::ConservativeLowerBound,
+                    differential_support: SceneDifferentialSupport::FiniteDifferenceFallback,
                     support_class: left.support_class,
                     opaque_boundary: false,
                     can_coarse_support_pruning: matches!(left.support_class, SupportClass::Bounded)
@@ -1632,7 +1717,11 @@ fn analyze_field_node(
         FieldNode::Repeat { kind, inner, .. } => {
             repeat_capabilities(*kind, analyze_field_node(inner, drafts, cache, visiting))
         }
-        FieldNode::Smooth { kind, items, .. } => {
+        FieldNode::Smooth {
+            kind,
+            smoothing,
+            items,
+        } => {
             let items = items
                 .iter()
                 .map(|item| analyze_field_node(item, drafts, cache, visiting))
@@ -1645,7 +1734,11 @@ fn analyze_field_node(
                     .map(|item| item.support_class)
                     .unwrap_or(SupportClass::Unknown),
             };
-            merge_boolean_capabilities(&items, support_class)
+            let mut summary = merge_boolean_capabilities(&items, support_class);
+            if !summary.opaque_boundary && smooth_support_is_certified(smoothing.as_ref(), &items) {
+                summary.differential_support = SceneDifferentialSupport::CertifiedGradient;
+            }
+            summary
         }
         FieldNode::Extrude { .. }
         | FieldNode::Revolve { .. }
@@ -1692,6 +1785,7 @@ fn analyze_shape_node(
                 .get(&leaf.field)
                 .map_or_else(conservative_unknown_support, |field| CapabilitySummary {
                     semantics: field.semantics,
+                    differential_support: field.analysis.differential_support,
                     support_class: field.support_class,
                     opaque_boundary: field.opaque_boundary,
                     can_coarse_support_pruning: field.can_coarse_support_pruning,
@@ -1719,6 +1813,7 @@ fn analyze_shape_node(
             } else {
                 CapabilitySummary {
                     semantics: DistanceSemantics::ConservativeLowerBound,
+                    differential_support: SceneDifferentialSupport::FiniteDifferenceFallback,
                     support_class: left.support_class,
                     opaque_boundary: false,
                     can_coarse_support_pruning: matches!(left.support_class, SupportClass::Bounded)
