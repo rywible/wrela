@@ -10,6 +10,8 @@ fmt <path>            canonical formatting pass (idempotent)
 build <path>          run certification, then compile executable on success only
 compile <path>        alias for build (also certification-gated)
 query-contracts       list family/question query contracts and compatibility aliases
+collision-contracts   list collision contracts and witness schemas
+collision-plan        list collision plans and validation summaries
 preview <path>        emit a named view attachment (default: color) as PPM
 frame <path>          evaluate a named view and emit typed frame attachments or PPM
 frame-contracts <path>  inspect compiled frame contracts for named views

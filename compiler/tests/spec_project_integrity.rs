@@ -483,10 +483,7 @@ fn phase7_authored_surface_contains_radiance_and_volume_names() {
                 "history = temporal_history(color = true)",
                 "fn run()",
             ][..],
-            &[
-                "render render_ppm(",
-                "use print_line from host/io",
-            ][..],
+            &["render render_ppm(", "use print_line from host/io"][..],
         ),
         (
             "compiler/tests/codegen_v2.rs",

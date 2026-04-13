@@ -1,4 +1,11 @@
 use self::DispatchBackend::{Auto, VirtualGpu, Wgsl};
+use crate::artifact_contract::{
+    ArtifactCompatibilityRelation, ArtifactEvidenceCompatibility, ArtifactLogicalField,
+    ArtifactLogicalSchema, ArtifactPolicyCompatibility, ArtifactSnapshotRelation,
+    ArtifactTransitionRelation, ArtifactUse, ArtifactUseKind, ArtifactUseSource,
+    ArtifactValidityPredicate, ArtifactValidityRule, SemanticArtifactContract,
+    SemanticArtifactKind,
+};
 use crate::artifact_key::{ArtifactPolicyDigestMode, ArtifactReuseKey};
 use crate::query_contract::{
     self, ParticipantContractKind, QueryContractDescriptor, QueryExecutionBinding,
@@ -10,14 +17,15 @@ use crate::semantic_evidence::{
     EvidenceOrigin, EvidenceRefinementKind as SemanticEvidenceRefinementKind,
     EvidenceRefinementStep, EvidenceScope, FactAvailability,
 };
+use crate::state_advance::ChangeClass;
 use crate::world_identity::WorldSnapshotHandle;
 use smol_str::SmolStr;
 
 pub use crate::query_contract::{
     CaptureKind, DispatchBackend, InternalKernelKind, PlanExecutor,
-    QUERY_CONTRACT_VERSION as QUERY_PLAN_CONTRACT_VERSION, QueryCardinality, QueryContractId,
-    QueryFamilyId, QueryItemKind, QueryResultKind, QuerySurfaceKind, QueryTargetKind,
-    SceneDomainFlag,
+    QUERY_CONTRACT_VERSION as QUERY_PLAN_CONTRACT_VERSION, QueryArtifactDescriptor,
+    QueryArtifactKind, QueryCardinality, QueryContractId, QueryFamilyId, QueryItemKind,
+    QueryResultKind, QuerySurfaceKind, QueryTargetKind, QueryTransitionRecord, SceneDomainFlag,
 };
 pub use crate::semantic_evidence::{
     EvidenceOrigin as SemanticEvidenceOrigin, EvidenceRefinementKind,
@@ -273,6 +281,7 @@ pub struct ArtifactContract {
     pub consumer: SmolStr,
     pub deterministic: bool,
     pub version: u32,
+    pub transition: Option<crate::state_advance::QueryTransitionContract>,
     pub evidence_summary: SemanticEvidenceSummary,
 }
 
@@ -281,15 +290,42 @@ impl ArtifactContract {
         SmolStr::new(format!("query-artifact::{}", self.id))
     }
 
+    pub fn query_artifact_kind(&self) -> query_contract::QueryArtifactKind {
+        match self.schema {
+            ArtifactSchema::SupportSummary { .. } => QueryArtifactKind::SupportSummary,
+            ArtifactSchema::CaptureCache { .. } => QueryArtifactKind::CaptureCache,
+            ArtifactSchema::CullingTable { .. } => QueryArtifactKind::CullingTable,
+            ArtifactSchema::DispatchRecord { .. } => QueryArtifactKind::DispatchRecord,
+            ArtifactSchema::HitResultBuffer { .. } => QueryArtifactKind::HitResultBuffer,
+            ArtifactSchema::OpaquePessimizationBoundary { .. } => {
+                QueryArtifactKind::OpaquePessimizationBoundary
+            }
+        }
+    }
+
+    pub fn query_artifact_descriptor(&self) -> QueryArtifactDescriptor {
+        QueryArtifactDescriptor {
+            id: self.id.clone(),
+            kind: self.query_artifact_kind(),
+            producer: self.producer.clone(),
+            consumer: self.consumer.clone(),
+            deterministic: self.deterministic,
+            version: self.version,
+            transition: self.transition.clone(),
+        }
+    }
+
     pub fn compatibility_hash(&self) -> u64 {
         let schema = format!("{:?}", self.schema);
         let evidence_summary = format!("{:?}", self.evidence_summary);
+        let transition = format!("{:?}", self.transition);
         crate::query_exec::ids::stable_semantic_id(&[
             self.id.as_bytes(),
             schema.as_bytes(),
             self.producer.as_bytes(),
             self.consumer.as_bytes(),
             evidence_summary.as_bytes(),
+            transition.as_bytes(),
             &self.version.to_le_bytes(),
         ])
     }
@@ -308,6 +344,75 @@ impl ArtifactContract {
             policy_digest,
             policy_mode,
         )
+    }
+
+    pub fn semantic_artifact_contract(&self) -> SemanticArtifactContract {
+        let snapshot = match self.evidence_summary.scope {
+            EvidenceScope::CompileInvariant | EvidenceScope::TransitionCompatible => {
+                ArtifactSnapshotRelation::CaptureLineage
+            }
+            EvidenceScope::SnapshotLocal | EvidenceScope::ArtifactBound => {
+                ArtifactSnapshotRelation::ExactSnapshot
+            }
+        };
+        let compatibility = self
+            .transition
+            .as_ref()
+            .map(|transition| transition.compatibility)
+            .unwrap_or_else(|| {
+                crate::state_advance::ChangeCompatibility::new(ChangeClass::Presentation)
+            });
+        let validity = match self.evidence_summary.scope {
+            EvidenceScope::CompileInvariant => {
+                ArtifactValidityRule::predicate(ArtifactValidityPredicate::PolicyDigestMatches)
+            }
+            EvidenceScope::TransitionCompatible => ArtifactValidityRule::all(vec![
+                ArtifactValidityRule::predicate(
+                    ArtifactValidityPredicate::SnapshotLineageMatchesCurrent,
+                ),
+                ArtifactValidityRule::predicate(ArtifactValidityPredicate::CompatibleChange(
+                    compatibility,
+                )),
+                ArtifactValidityRule::predicate(ArtifactValidityPredicate::PolicyDigestMatches),
+            ]),
+            EvidenceScope::SnapshotLocal | EvidenceScope::ArtifactBound => {
+                ArtifactValidityRule::all(vec![
+                    ArtifactValidityRule::predicate(
+                        ArtifactValidityPredicate::CurrentSnapshotMatchesStored,
+                    ),
+                    ArtifactValidityRule::predicate(ArtifactValidityPredicate::PolicyDigestMatches),
+                ])
+            }
+        };
+        SemanticArtifactContract {
+            id: self.id.clone(),
+            kind: SemanticArtifactKind::Query,
+            logical_schema: query_artifact_logical_schema(&self.schema),
+            compatibility: ArtifactCompatibilityRelation {
+                snapshot,
+                transition: ArtifactTransitionRelation {
+                    compatibility: self
+                        .transition
+                        .as_ref()
+                        .map(|transition| transition.compatibility),
+                    requires_previous_snapshot: self.transition.is_some(),
+                },
+                policy: ArtifactPolicyCompatibility {
+                    mode: ArtifactPolicyDigestMode::CompatibleRange,
+                },
+                evidence: ArtifactEvidenceCompatibility {
+                    origin: self.evidence_summary.origin,
+                    scope: self.evidence_summary.scope,
+                },
+            },
+            validity,
+            producer: self.producer.clone(),
+            consumer: self.consumer.clone(),
+            deterministic: self.deterministic,
+            version: self.version,
+            transition: self.transition.clone(),
+            evidence_summary: self.evidence_summary.clone(),
+        }
     }
 }
 
@@ -765,6 +870,17 @@ fn batch_item_contract_for_descriptor(
 }
 
 impl BatchQueryPlan {
+    pub fn semantic_artifact_contracts(&self) -> Vec<SemanticArtifactContract> {
+        self.artifact_contracts
+            .iter()
+            .map(ArtifactContract::semantic_artifact_contract)
+            .collect()
+    }
+
+    pub fn artifact_uses(&self) -> Vec<ArtifactUse> {
+        query_artifact_uses(&self.artifact_contracts)
+    }
+
     pub fn new<K>(capture_kind: CaptureKind, kind: K) -> Self
     where
         K: Into<BatchQueryKind>,
@@ -1065,6 +1181,17 @@ impl BatchQueryPlan {
 }
 
 impl CaptureQueryPlan {
+    pub fn semantic_artifact_contracts(&self) -> Vec<SemanticArtifactContract> {
+        self.artifact_contracts
+            .iter()
+            .map(ArtifactContract::semantic_artifact_contract)
+            .collect()
+    }
+
+    pub fn artifact_uses(&self) -> Vec<ArtifactUse> {
+        query_artifact_uses(&self.artifact_contracts)
+    }
+
     pub fn for_contract(
         contract_id: QueryContractId,
         scene: Option<SceneSummary>,
@@ -1245,6 +1372,17 @@ impl CaptureQueryPlan {
 }
 
 impl WorldQueryPlan {
+    pub fn semantic_artifact_contracts(&self) -> Vec<SemanticArtifactContract> {
+        self.artifact_contracts
+            .iter()
+            .map(ArtifactContract::semantic_artifact_contract)
+            .collect()
+    }
+
+    pub fn artifact_uses(&self) -> Vec<ArtifactUse> {
+        query_artifact_uses(&self.artifact_contracts)
+    }
+
     pub fn for_query(kind: WorldQueryKind) -> Self {
         Self::for_query_with_backend(kind, DispatchBackend::Auto)
     }
@@ -1409,6 +1547,144 @@ impl From<ShapeBatchPlanKind> for BatchQueryKind {
             ShapeBatchPlanKind::Occluded => BatchQueryKind::Occluded,
         }
     }
+}
+
+fn query_artifact_logical_schema(schema: &ArtifactSchema) -> ArtifactLogicalSchema {
+    match schema {
+        ArtifactSchema::SupportSummary {
+            semantics,
+            support_class,
+            can_coarse_support_pruning,
+            semantic_root,
+            support_root,
+            node_count,
+            support_node_count,
+            leaf_count,
+            identity_source_count,
+        } => ArtifactLogicalSchema {
+            namespace: SmolStr::new("query"),
+            name: SmolStr::new("support-summary"),
+            fields: vec![
+                ArtifactLogicalField::new("semantics", format!("{semantics:?}")),
+                ArtifactLogicalField::new("support_class", format!("{support_class:?}")),
+                ArtifactLogicalField::new(
+                    "can_coarse_support_pruning",
+                    can_coarse_support_pruning.to_string(),
+                ),
+                ArtifactLogicalField::new("semantic_root", semantic_root.to_string()),
+                ArtifactLogicalField::new("support_root", support_root.to_string()),
+                ArtifactLogicalField::new("node_count", node_count.to_string()),
+                ArtifactLogicalField::new("support_node_count", support_node_count.to_string()),
+                ArtifactLogicalField::new("leaf_count", leaf_count.to_string()),
+                ArtifactLogicalField::new(
+                    "identity_source_count",
+                    identity_source_count.to_string(),
+                ),
+            ],
+        },
+        ArtifactSchema::CaptureCache {
+            capture_kind,
+            semantic_root,
+        } => ArtifactLogicalSchema {
+            namespace: SmolStr::new("query"),
+            name: SmolStr::new("capture-cache"),
+            fields: vec![
+                ArtifactLogicalField::new("capture_kind", format!("{capture_kind:?}")),
+                ArtifactLogicalField::new("semantic_root", semantic_root.to_string()),
+            ],
+        },
+        ArtifactSchema::CullingTable {
+            candidate_strategy,
+            pruning_strategy,
+            support_class,
+            semantics,
+            support_root,
+            support_node_count,
+            leaf_count,
+            identity_source_count,
+        } => ArtifactLogicalSchema {
+            namespace: SmolStr::new("query"),
+            name: SmolStr::new("culling-table"),
+            fields: vec![
+                ArtifactLogicalField::new("candidate_strategy", format!("{candidate_strategy:?}")),
+                ArtifactLogicalField::new("pruning_strategy", format!("{pruning_strategy:?}")),
+                ArtifactLogicalField::new("support_class", format!("{support_class:?}")),
+                ArtifactLogicalField::new("semantics", format!("{semantics:?}")),
+                ArtifactLogicalField::new("support_root", support_root.to_string()),
+                ArtifactLogicalField::new("support_node_count", support_node_count.to_string()),
+                ArtifactLogicalField::new("leaf_count", leaf_count.to_string()),
+                ArtifactLogicalField::new(
+                    "identity_source_count",
+                    identity_source_count.to_string(),
+                ),
+            ],
+        },
+        ArtifactSchema::DispatchRecord {
+            item_kind,
+            result_kind,
+        } => ArtifactLogicalSchema {
+            namespace: SmolStr::new("query"),
+            name: SmolStr::new("dispatch-record"),
+            fields: vec![
+                ArtifactLogicalField::new("item_kind", format!("{item_kind:?}")),
+                ArtifactLogicalField::new("result_kind", format!("{result_kind:?}")),
+            ],
+        },
+        ArtifactSchema::HitResultBuffer {
+            result_kind,
+            preserves_local_hit_context,
+        } => ArtifactLogicalSchema {
+            namespace: SmolStr::new("query"),
+            name: SmolStr::new("hit-result-buffer"),
+            fields: vec![
+                ArtifactLogicalField::new("result_kind", format!("{result_kind:?}")),
+                ArtifactLogicalField::new(
+                    "preserves_local_hit_context",
+                    preserves_local_hit_context.to_string(),
+                ),
+            ],
+        },
+        ArtifactSchema::OpaquePessimizationBoundary {
+            support_root,
+            support_node_count,
+        } => ArtifactLogicalSchema {
+            namespace: SmolStr::new("query"),
+            name: SmolStr::new("opaque-pessimization-boundary"),
+            fields: vec![
+                ArtifactLogicalField::new("support_root", support_root.to_string()),
+                ArtifactLogicalField::new("support_node_count", support_node_count.to_string()),
+            ],
+        },
+    }
+}
+
+fn query_artifact_uses(artifact_contracts: &[ArtifactContract]) -> Vec<ArtifactUse> {
+    let mut uses = Vec::new();
+    for contract in artifact_contracts {
+        uses.push(ArtifactUse {
+            actor: contract.producer.clone(),
+            artifact_id: contract.id.clone(),
+            kind: ArtifactUseKind::Produce,
+            source: ArtifactUseSource::Plan,
+            required_validity: None,
+        });
+        if matches!(
+            contract.schema,
+            ArtifactSchema::SupportSummary { .. }
+                | ArtifactSchema::CaptureCache { .. }
+                | ArtifactSchema::CullingTable { .. }
+                | ArtifactSchema::OpaquePessimizationBoundary { .. }
+        ) {
+            uses.push(ArtifactUse {
+                actor: contract.consumer.clone(),
+                artifact_id: contract.id.clone(),
+                kind: ArtifactUseKind::Load,
+                source: ArtifactUseSource::ArtifactStore,
+                required_validity: Some(contract.semantic_artifact_contract().validity),
+            });
+        }
+    }
+    uses
 }
 
 fn load_artifact_stages(artifacts: &[DerivedArtifact]) -> Vec<PlanStage> {
@@ -1710,6 +1986,7 @@ fn derive_artifact_contracts(
             consumer: SmolStr::new(producer),
             deterministic: true,
             version: QUERY_PLAN_CONTRACT_VERSION,
+            transition: None,
         })
         .collect::<Vec<_>>();
     out.push(ArtifactContract {
@@ -1723,6 +2000,7 @@ fn derive_artifact_contracts(
         consumer: SmolStr::new(producer),
         deterministic: true,
         version: QUERY_PLAN_CONTRACT_VERSION,
+        transition: None,
     });
     out.push(ArtifactContract {
         id: SmolStr::new(format!("{producer}::result")),
@@ -1735,6 +2013,7 @@ fn derive_artifact_contracts(
         consumer: SmolStr::new(producer),
         deterministic: true,
         version: QUERY_PLAN_CONTRACT_VERSION,
+        transition: None,
     });
     out
 }

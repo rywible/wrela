@@ -2,6 +2,8 @@ pub use crate::execution_policy::{
     QueryExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
 };
 use crate::scene_ir::SceneCaptureKind;
+use crate::state_advance::QueryTransitionContract;
+use smol_str::SmolStr;
 use std::fmt;
 
 pub type CaptureKind = SceneCaptureKind;
@@ -135,6 +137,30 @@ pub enum QueryFamilyId {
     Participants,
     Support,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum QueryArtifactKind {
+    SupportSummary,
+    CaptureCache,
+    CullingTable,
+    DispatchRecord,
+    HitResultBuffer,
+    OpaquePessimizationBoundary,
+    TransitionRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryArtifactDescriptor {
+    pub id: SmolStr,
+    pub kind: QueryArtifactKind,
+    pub producer: SmolStr,
+    pub consumer: SmolStr,
+    pub deterministic: bool,
+    pub version: u32,
+    pub transition: Option<QueryTransitionContract>,
+}
+
+pub type QueryTransitionRecord = crate::state_advance::QueryTransitionRecord;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum QueryQuestionId {

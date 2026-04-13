@@ -12,6 +12,7 @@ pub mod domain_abi;
 mod host;
 mod kernel;
 pub mod reactor;
+pub mod state_advance;
 mod unsafe_primitives;
 mod virtual_gpu;
 pub mod wasm_runtime;

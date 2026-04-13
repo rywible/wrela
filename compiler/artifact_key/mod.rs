@@ -55,6 +55,13 @@ impl ArtifactReuseKey {
             && self.policy_is_compatible(candidate)
     }
 
+    pub fn compatible_contract_with(&self, candidate: &Self) -> bool {
+        self.contract_id == candidate.contract_id
+            && self.logical_schema == candidate.logical_schema
+            && self.compatibility_hash == candidate.compatibility_hash
+            && self.policy_is_compatible(candidate)
+    }
+
     fn policy_is_compatible(&self, candidate: &Self) -> bool {
         self.policy_mode == candidate.policy_mode && self.policy_digest == candidate.policy_digest
     }

@@ -10,8 +10,13 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::vec_init_then_push)]
 
+pub mod artifact_contract;
 pub mod artifact_key;
+pub mod artifact_layout;
+pub mod artifact_store;
 pub mod backend;
+pub mod collision_contract;
+pub mod collision_plan;
 pub mod diag;
 pub mod execution_policy;
 pub mod hir;
@@ -31,4 +36,6 @@ pub mod query_plan;
 pub mod query_solver;
 pub mod scene_ir;
 pub mod semantic_evidence;
+pub mod state_advance;
+pub mod time_semantics;
 pub mod world_identity;

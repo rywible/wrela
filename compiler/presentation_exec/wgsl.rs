@@ -4,7 +4,7 @@ use crate::portable::{
     portable_builtin_record_abi,
 };
 use crate::presentation_contract::RealtimeRadianceMode;
-use crate::presentation_exec::resources::AttachmentResourceSet;
+use crate::presentation_exec::resources::{AttachmentResourceSet, FrameAttachmentLayoutPlan};
 use crate::presentation_exec::temporal::{
     motion_resolve, temporal_resolve_kernel_values, update_query_trace_continuation,
 };
@@ -70,6 +70,7 @@ pub(super) fn execute_plan(
     };
     let mut attachments = allocate_execution_attachments(
         &effective_plan.frame,
+        &input.frame_state,
         viewport.width,
         viewport.height,
         current_snapshot,
@@ -441,8 +442,14 @@ pub(super) fn execute_plan(
         primary_trace.ok_or_else(|| PresentationExecError::MissingPrimaryVisibilityPass {
             plan: effective_plan.name.clone(),
         })?;
+    let continuation_diagnostics = continuation_counts.diagnostics.clone();
     update_query_trace_continuation(&mut primary_trace, continuation_counts);
-    let metrics = presentation_metrics(&primary_hits, &primary_trace, primary_solver_summary);
+    let metrics = presentation_metrics(
+        &primary_hits,
+        &primary_trace,
+        primary_solver_summary,
+        continuation_diagnostics,
+    );
     let history = build_temporal_history(
         &effective_plan,
         &input.frame_state,
@@ -772,6 +779,17 @@ fn shade_primary_wgsl(
         })
         .collect::<Result<Vec<_>, PresentationExecError>>()?;
 
+    let output_layout = attachments
+        .attachment(contract.output_attachment.as_str())
+        .ok_or_else(|| PresentationExecError::UnsupportedPlan {
+            message: format!(
+                "missing shade output attachment '{}'",
+                contract.output_attachment
+            ),
+        })?
+        .layout
+        .plan
+        .clone();
     let output_attachment = attachments
         .attachment_mut(contract.output_attachment.as_str())
         .ok_or_else(|| PresentationExecError::UnsupportedPlan {
@@ -784,7 +802,7 @@ fn shade_primary_wgsl(
         &shade_primary_shader_source()?,
         &shade_primary_input_abi(),
         &shade_inputs,
-        output_attachment.bytes.len() as u64,
+        &output_layout,
     )?;
     Ok(())
 }
@@ -794,6 +812,17 @@ fn composite_color_wgsl(
     contract: &CompositeColorPassContract,
 ) -> Result<(), PresentationExecError> {
     let input_values = attachments.decode_attachment(contract.input_attachment.as_str())?;
+    let output_layout = attachments
+        .attachment(contract.output_attachment.as_str())
+        .ok_or_else(|| PresentationExecError::UnsupportedPlan {
+            message: format!(
+                "missing composite output attachment '{}'",
+                contract.output_attachment
+            ),
+        })?
+        .layout
+        .plan
+        .clone();
     let output_attachment = attachments
         .attachment_mut(contract.output_attachment.as_str())
         .ok_or_else(|| PresentationExecError::UnsupportedPlan {
@@ -806,7 +835,7 @@ fn composite_color_wgsl(
         &copy_vec3_shader_source()?,
         &PortableAbiType::Vec3,
         &input_values,
-        output_attachment.bytes.len() as u64,
+        &output_layout,
     )?;
     Ok(())
 }
@@ -819,7 +848,7 @@ fn temporal_resolve_wgsl(
 ) -> Result<u32, PresentationExecError> {
     let (input_values, consumed_count) =
         temporal_resolve_kernel_values(attachments, width, height, contract)?;
-    let output_size = attachments
+    let output_layout = attachments
         .attachment(contract.output_attachment.as_str())
         .ok_or_else(|| PresentationExecError::UnsupportedPlan {
             message: format!(
@@ -827,8 +856,9 @@ fn temporal_resolve_wgsl(
                 contract.output_attachment
             ),
         })?
-        .bytes
-        .len() as u64;
+        .layout
+        .plan
+        .clone();
     if input_values.is_empty() {
         return Ok(consumed_count);
     }
@@ -836,7 +866,7 @@ fn temporal_resolve_wgsl(
         &temporal_resolve_shader_source(contract)?,
         &temporal_resolve_input_abi(),
         &input_values,
-        output_size,
+        &output_layout,
     )?;
     attachments
         .attachment_mut(contract.output_attachment.as_str())
@@ -865,11 +895,12 @@ fn dispatch_linear_shader(
     source: &str,
     input_abi: &PortableAbiType,
     input_values: &[KernelValue],
-    output_size: u64,
+    output_layout: &FrameAttachmentLayoutPlan,
 ) -> Result<Vec<u8>, PresentationExecError> {
     if input_values.is_empty() {
         return Ok(Vec::new());
     }
+    let dense_output_size = output_layout.dense_output_size() as u64;
     let native = native_wgpu_context()?;
     let dispatch_abi = crate::query_exec::wgsl::codegen::wgsl_dispatch_config_abi();
     let dispatch_buffer = native
@@ -893,7 +924,7 @@ fn dispatch_linear_shader(
         });
     let output_buffer = native.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("wrela.presentation.output"),
-        size: output_size.max(4),
+        size: dense_output_size.max(4),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
@@ -953,7 +984,11 @@ fn dispatch_linear_shader(
         );
     }
     native.queue.submit(Some(encoder.finish()));
-    readback_storage_buffer(&output_buffer, output_size).map_err(PresentationExecError::Query)
+    let dense_bytes = readback_storage_buffer(&output_buffer, dense_output_size)
+        .map_err(PresentationExecError::Query)?;
+    output_layout
+        .pack_dense_output_bytes(&dense_bytes)
+        .map_err(PresentationExecError::Resource)
 }
 
 fn presentation_dispatch_config(item_count: u32) -> KernelValue {
@@ -1298,5 +1333,86 @@ fn hit_flag(value: &KernelValue) -> Result<bool, PresentationExecError> {
             expected: "Boolean".to_string(),
             found: format!("{other:?}"),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::artifact_layout::PhysicalLayoutStrategy;
+    use crate::presentation_contract::{
+        FrameAttachmentContract, FrameContract, LightingContract, PresentationObservabilityProfile,
+        RealtimeQualityContract, RealtimeQualityTier,
+    };
+    use crate::presentation_exec::resources::{
+        AttachmentResource, frame_attachment_layout_plan_with_strategy,
+    };
+
+    fn test_frame_for_color() -> FrameContract {
+        FrameContract {
+            outputs: vec![FrameAttachmentContract::transient_color("color")],
+            primary_hit: None,
+            temporal: None,
+            quality: RealtimeQualityContract::named(RealtimeQualityTier::Realtime60),
+            lighting: LightingContract::legacy_preview(false),
+            observability: PresentationObservabilityProfile::preview_compatibility(),
+        }
+    }
+
+    #[test]
+    fn row_aligned_output_layout_packs_wgsl_results_into_attachment_plan() {
+        let frame = test_frame_for_color();
+        let layout = frame_attachment_layout_plan_with_strategy(
+            &frame,
+            &frame.outputs[0],
+            3,
+            2,
+            PhysicalLayoutStrategy::RowAligned { row_alignment: 32 },
+        )
+        .expect("row-aligned layout plan");
+        let input_values = vec![
+            KernelValue::Vec3([1.0, 0.0, 0.0]),
+            KernelValue::Vec3([0.0, 1.0, 0.0]),
+            KernelValue::Vec3([0.0, 0.0, 1.0]),
+            KernelValue::Vec3([1.0, 1.0, 0.0]),
+            KernelValue::Vec3([1.0, 0.0, 1.0]),
+            KernelValue::Vec3([0.0, 1.0, 1.0]),
+        ];
+
+        let bytes = dispatch_linear_shader(
+            &copy_vec3_shader_source().expect("copy vec3 shader"),
+            &PortableAbiType::Vec3,
+            &input_values,
+            &layout,
+        )
+        .expect("row-aligned wgsl dispatch");
+        let resource = AttachmentResource {
+            layout: layout.materialize(),
+            bytes,
+        };
+
+        assert_eq!(
+            resource.bytes.len(),
+            layout.physical.total_size as usize,
+            "packed output should honor the physical layout plan"
+        );
+        for (index, expected) in input_values.iter().enumerate() {
+            assert_eq!(
+                resource.decode(index).expect("decode row-aligned output"),
+                *expected
+            );
+        }
+        for row in 0..layout.physical.height as usize {
+            let row_start = row * layout.physical.row_stride as usize;
+            let padding_start = row_start
+                + layout.physical.width as usize * layout.physical.element_stride as usize;
+            let padding_end = row_start + layout.physical.row_stride as usize;
+            assert!(
+                resource.bytes[padding_start..padding_end]
+                    .iter()
+                    .all(|byte| *byte == 0),
+                "row padding should remain untouched by dense shader output"
+            );
+        }
     }
 }

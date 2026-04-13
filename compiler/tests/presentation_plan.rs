@@ -1,3 +1,4 @@
+use wrela::artifact_contract::{ArtifactUseKind, ArtifactUseSource, SemanticArtifactKind};
 use wrela::hir;
 use wrela::hir::lower as hir_lower;
 use wrela::parser::ast;
@@ -7,11 +8,14 @@ use wrela::presentation_contract::{
     AttachmentClearPolicy, AttachmentLifetime, CanonicalCameraInput, CanonicalRayBudget,
     CanonicalViewportInput, DepthAttachmentSemantics, FrameAttachmentKind,
     LightingInputBindingSource, QualityDegradationStep, RealtimeQualityContract,
-    RealtimeQualityTier, TemporalHistoryRole, TemporalReuseMode, canonical_screen_sample_query,
+    RealtimeQualityTier, TemporalChangeClass, TemporalHistoryRole, TemporalReuseMode,
+    canonical_screen_sample_query,
 };
 use wrela::presentation_plan::{PresentationPassKind, PresentationPlan};
 use wrela::query_contract;
 use wrela::query_plan::DispatchBackend;
+use wrela::semantic_evidence::FactAvailability;
+use wrela::state_advance::ChangeClass;
 
 fn lower_inline_module(source: &str) -> hir::Module {
     let node = parse(source);
@@ -154,6 +158,35 @@ fn canonical_view_plan_separates_semantic_contracts_from_execution_binding() {
 }
 
 #[test]
+fn presentation_plan_exposes_semantic_artifacts_and_store_backed_history_uses() {
+    let module = lower_inline_module(view_plan_source());
+    let view = presentation_function(&module, "primary_view");
+    let plan = PresentationPlan::from_view_function(view, DispatchBackend::Auto).expect("plan");
+
+    let semantic_artifacts = plan.semantic_artifact_contracts();
+    assert!(semantic_artifacts.iter().any(|artifact| {
+        artifact.id == "artifact.primary_hit"
+            && artifact.kind == SemanticArtifactKind::PresentationAttachment
+    }));
+    assert!(semantic_artifacts.iter().any(|artifact| {
+        artifact.id == "artifact.history_color"
+            && artifact.kind == SemanticArtifactKind::PresentationHistory
+            && artifact.validity.is_explicit()
+    }));
+
+    let artifact_uses = plan.artifact_uses();
+    assert!(artifact_uses.iter().any(|use_record| {
+        use_record.artifact_id == "artifact.history_color"
+            && use_record.kind == ArtifactUseKind::Load
+            && use_record.source == ArtifactUseSource::ArtifactStore
+    }));
+    assert!(artifact_uses.iter().any(|use_record| {
+        use_record.artifact_id == "artifact.history_color"
+            && use_record.kind == ArtifactUseKind::Preserve
+    }));
+}
+
+#[test]
 fn canonical_view_plan_materializes_primary_visibility_and_semantic_attachments() {
     let module = lower_inline_module(view_plan_source());
     let view = presentation_function(&module, "primary_view");
@@ -237,6 +270,28 @@ fn canonical_view_plan_materializes_primary_visibility_and_semantic_attachments(
     );
     let temporal = plan.frame.temporal.as_ref().expect("temporal contract");
     assert_eq!(temporal.reuse, TemporalReuseMode::ReprojectColorAndMotion);
+    assert_eq!(temporal.change_class, TemporalChangeClass::CameraMotion);
+    assert_eq!(
+        temporal.transition_compatibility.maximum,
+        ChangeClass::Presentation
+    );
+    assert_eq!(
+        temporal.required_evidence.stationary,
+        FactAvailability::Unavailable
+    );
+    assert_eq!(
+        temporal.required_evidence.rigid_over_interval,
+        FactAvailability::Available
+    );
+    assert_eq!(
+        temporal.required_evidence.topology_stable,
+        FactAvailability::Available
+    );
+    assert_eq!(
+        temporal.required_evidence.bounded_velocity,
+        FactAvailability::Unknown
+    );
+    assert!(temporal.requires_snapshot_lineage_match);
     assert_eq!(temporal.history_slots.len(), 2);
     assert!(temporal.history_slots.iter().any(|slot| {
         slot.attachment == "history_color" && slot.role == TemporalHistoryRole::ReprojectedColor
@@ -548,6 +603,23 @@ fn presentation_plan_validation_rejects_broken_temporal_history_and_motion_wirin
             .message
             .contains("temporal resolve pass 'temporal_resolve' must preserve continuation primary-hit history for ReprojectColorAndMotion")),
         "expected temporal continuation wiring error, got {errors:?}"
+    );
+}
+
+#[test]
+fn presentation_plan_validation_rejects_missing_artifact_producers() {
+    let module = lower_inline_module(view_plan_source());
+    let view = presentation_function(&module, "primary_view");
+    let mut plan = PresentationPlan::from_view_function(view, DispatchBackend::Auto).expect("plan");
+
+    plan.frame_artifacts[0].producer_pass = "missing_pass".into();
+    let errors = plan.validate();
+
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("producer pass 'missing_pass'")),
+        "expected missing producer validation error, got {errors:?}"
     );
 }
 

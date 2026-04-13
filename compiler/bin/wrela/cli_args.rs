@@ -803,6 +803,8 @@ fn is_command(arg: &str) -> bool {
             | "build"
             | "compile"
             | "query-contracts"
+            | "collision-contracts"
+            | "collision-plan"
             | "preview"
             | "frame"
             | "frame-contracts"
@@ -1128,6 +1130,8 @@ mod tests {
             "build",
             "compile",
             "query-contracts",
+            "collision-contracts",
+            "collision-plan",
             "preview",
             "frame",
             "frame-contracts",

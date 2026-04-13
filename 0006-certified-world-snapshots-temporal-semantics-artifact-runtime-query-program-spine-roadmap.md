@@ -2105,6 +2105,13 @@ Its authority level must remain unchanged even if it lands early.
 - Reuse and invalidation are tested against explicit validity rules.
 - Logical and physical artifact layers are distinct.
 
+### Lessons Carried Forward From Phase 29
+
+- The stable seam is semantic contract plus explicit validity plus physical layout, not helper-shaped caches or byte-oriented shortcuts.
+- Later observers should reuse the artifact substrate directly through explicit contracts, artifact uses, and validity rules while preserving concrete observer ownership.
+- The debug normalized projection remains diagnostic-only until real overlap between presentation and collision justifies a shared spine.
+- CLI and report surfaces may share observer-neutral helpers for semantic artifact, artifact-use, and validation reporting, but those helpers must not become execution ownership or substitute for concrete observer semantics.
+
 ## Phase 30: Collision Observer Foundation And Static Query Families
 
 ### Goal
@@ -2160,6 +2167,7 @@ Recommended initial scope:
 Keep the first cut static and snapshot-scoped.
 Do not blur transition-aware sweeps into this task; that belongs in Phase 31.
 Do not let collision scope quietly expand into constraints, impulses, stacking, friction, or response.
+Prefer the Phase 29 artifact vocabulary for witness and cacheable outputs instead of inventing collision-local cache languages.
 
 **Decision hooks**
 
@@ -2190,6 +2198,7 @@ Compile collision contracts into a concrete observer plan that can consume query
 
 The plan should own collision-specific passes such as candidate gathering, primitive evaluation, witness resolution, and output materialization.
 It should not be a lightly renamed presentation plan.
+If collision needs reusable intermediate state, describe it through `SemanticArtifactContract`, `ArtifactUse`, and explicit validity rules rather than hidden executor-local caches.
 
 **Code sketch**
 
@@ -2216,6 +2225,7 @@ pub struct CollisionPlan {
 **Description**
 
 Validate the collision observer as a real subsystem rather than as a sketch.
+Report surfaces should reuse observer-neutral helpers for semantic artifacts, artifact uses, and validation summaries where helpful, without promoting a shared execution abstraction early.
 
 **Decision hooks**
 

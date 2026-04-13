@@ -19,6 +19,8 @@ use wrela::diag::{DiagFix, DiagRecord, DiagSeverity, DiagSpan, DiagStage, dedupe
 use wrela::hir;
 use wrela::mir;
 use wrela::parser;
+#[path = "../../../query_program_debug/mod.rs"]
+mod query_program_debug;
 #[path = "../repro.rs"]
 mod repro;
 
@@ -138,6 +140,171 @@ fn execute_query_contracts_command(
     }
 }
 
+fn execute_collision_contracts_command(
+    output_format: OutputFormat,
+    path_arg: Option<String>,
+    program_args: Vec<String>,
+) {
+    if path_arg.is_some() {
+        eprintln!("error: collision-contracts does not take a path");
+        std::process::exit(EXIT_USAGE);
+    }
+    if !program_args.is_empty() {
+        eprintln!("error: unexpected extra arguments");
+        std::process::exit(EXIT_USAGE);
+    }
+    let catalog = collision_contract_catalog_snapshot();
+    if matches!(output_format, OutputFormat::Json) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&catalog).unwrap_or_else(|_| "{}".to_string())
+        );
+        return;
+    }
+    println!("collision contract catalog schema v{}", catalog.schema_version);
+    for contract in &catalog.contracts {
+        let backends = if contract.backends.is_empty() {
+            "none".to_string()
+        } else {
+            contract.backends.join(",")
+        };
+        println!(
+            "{} v{} family={} question={} target={} input={}({}) output={}({}) witness={} backends={} policy=backend_preference={} required_guarantee={} selected_method={}",
+            contract.contract_id,
+            contract.contract_version,
+            contract.family,
+            contract.question,
+            contract.target,
+            contract.input_kind,
+            contract.input_record,
+            contract.output_kind,
+            contract.output_record,
+            contract.witness_schema.name,
+            backends,
+            contract.policy.backend_preference,
+            contract.policy.required_guarantee,
+            contract.policy.selected_method,
+        );
+    }
+}
+
+fn execute_collision_plan_command(
+    output_format: OutputFormat,
+    path_arg: Option<String>,
+    program_args: Vec<String>,
+    query_backend: wrela::query_plan::DispatchBackend,
+) {
+    if path_arg.is_some() {
+        eprintln!("error: collision-plan does not take a path");
+        std::process::exit(EXIT_USAGE);
+    }
+    if !program_args.is_empty() {
+        eprintln!("error: unexpected extra arguments");
+        std::process::exit(EXIT_USAGE);
+    }
+    let dump = collision_plan_dump(query_backend);
+    if matches!(output_format, OutputFormat::Json) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&dump).unwrap_or_else(|_| "{}".to_string())
+        );
+        return;
+    }
+    print_collision_plan_human(&dump);
+}
+
+#[derive(Serialize)]
+struct CollisionContractCatalogDump {
+    schema_version: u32,
+    contracts: Vec<CollisionContractCatalogItemDump>,
+}
+
+#[derive(Serialize)]
+struct CollisionContractCatalogItemDump {
+    contract_id: String,
+    contract_version: u32,
+    family: String,
+    question: String,
+    target: String,
+    input_kind: String,
+    input_record: String,
+    output_kind: String,
+    output_record: String,
+    witness_schema: CollisionWitnessSchemaDump,
+    policy: CollisionExecutionPolicyDump,
+    backends: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct CollisionWitnessSchemaDump {
+    name: String,
+    kind: String,
+    fields: Vec<CollisionWitnessFieldDump>,
+}
+
+#[derive(Serialize)]
+struct CollisionWitnessFieldDump {
+    name: String,
+    ty: String,
+}
+
+#[derive(Serialize)]
+struct CollisionExecutionPolicyDump {
+    backend_preference: String,
+    required_guarantee: String,
+    selected_method: String,
+}
+
+#[derive(Serialize)]
+struct CollisionPlanCatalogDump {
+    schema_version: u32,
+    backend: String,
+    plans: Vec<CollisionPlanDumpItem>,
+}
+
+#[derive(Serialize)]
+struct CollisionPlanDumpItem {
+    name: String,
+    contract_id: String,
+    contract_version: u32,
+    family: String,
+    question: String,
+    target: String,
+    backend: String,
+    policy: CollisionExecutionPolicyDump,
+    inputs: Vec<CollisionPlanInputDump>,
+    passes: Vec<CollisionPlanPassDump>,
+    artifacts: Vec<ObserverSemanticArtifactDump>,
+    artifact_uses: Vec<ObserverArtifactUseDump>,
+    outputs: Vec<CollisionPlanOutputDump>,
+    validation: ObserverValidationSummaryDump,
+}
+
+#[derive(Serialize)]
+struct CollisionPlanInputDump {
+    name: String,
+    kind: String,
+    record: String,
+}
+
+#[derive(Serialize)]
+struct CollisionPlanOutputDump {
+    name: String,
+    kind: String,
+    record: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    witness_schema: Option<CollisionWitnessSchemaDump>,
+}
+
+#[derive(Serialize)]
+struct CollisionPlanPassDump {
+    id: String,
+    kind: String,
+    consumes: Vec<String>,
+    materializes: Vec<String>,
+    query_dependencies: Vec<String>,
+}
+
 #[derive(Serialize)]
 struct PresentationPlanDump {
     schema_version: u32,
@@ -221,9 +388,12 @@ struct PresentationPlanDumpItem {
     frame: PresentationFrameDump,
     passes: Vec<PresentationPassDump>,
     frame_artifacts: Vec<PresentationFrameArtifactDump>,
+    semantic_artifacts: Vec<ObserverSemanticArtifactDump>,
+    artifact_uses: Vec<ObserverArtifactUseDump>,
     bindings: Vec<PresentationBindingDump>,
     candidate_query_program_concepts: Vec<String>,
-    validation_errors: Vec<String>,
+    normalized_projection: query_program_debug::NormalizedCurrentPlanProjection,
+    validation: ObserverValidationSummaryDump,
 }
 
 #[derive(Serialize)]
@@ -263,6 +433,7 @@ struct PresentationFrameDump {
     outputs: Vec<PresentationAttachmentDump>,
     primary_hit: Option<PresentationPrimaryHitDump>,
     temporal_reuse: Option<String>,
+    temporal_change_class: Option<String>,
     quality: PresentationQualityDump,
     lighting: PresentationLightingDump,
     observability: Vec<String>,
@@ -387,6 +558,11 @@ struct PresentationEvidenceDump {
     stable_instance_id: bool,
     stable_repeat_id: bool,
     temporal_stability: String,
+    temporal_change_class: String,
+    temporal_stationary: String,
+    temporal_rigid_over_interval: String,
+    temporal_topology_stable: String,
+    temporal_bounded_velocity: String,
 }
 
 #[derive(Serialize)]
@@ -406,12 +582,98 @@ struct PresentationFrameArtifactDump {
 }
 
 #[derive(Serialize)]
+struct ObserverSemanticArtifactDump {
+    id: String,
+    kind: String,
+    logical_schema: String,
+    snapshot_relation: String,
+    validity: String,
+    producer: String,
+    consumer: String,
+}
+
+#[derive(Serialize)]
+struct ObserverArtifactUseDump {
+    actor: String,
+    artifact_id: String,
+    kind: String,
+    source: String,
+    required_validity: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ObserverValidationSummaryDump {
+    status: String,
+    errors: Vec<String>,
+}
+
+#[derive(Serialize)]
 struct PresentationBindingDump {
     id: String,
     pass_kind: String,
     recipe: String,
     default_backend: String,
     execution: String,
+}
+
+fn observer_semantic_artifact_dump(
+    artifact: wrela::artifact_contract::SemanticArtifactContract,
+) -> ObserverSemanticArtifactDump {
+    ObserverSemanticArtifactDump {
+        id: artifact.id.to_string(),
+        kind: format!("{:?}", artifact.kind),
+        logical_schema: artifact.logical_schema.describe().to_string(),
+        snapshot_relation: wrela::artifact_contract::snapshot_relation_name(
+            artifact.compatibility.snapshot,
+        )
+        .to_string(),
+        validity: format!("{:?}", artifact.validity),
+        producer: artifact.producer.to_string(),
+        consumer: artifact.consumer.to_string(),
+    }
+}
+
+fn observer_artifact_use_dump(
+    use_record: wrela::artifact_contract::ArtifactUse,
+) -> ObserverArtifactUseDump {
+    ObserverArtifactUseDump {
+        actor: use_record.actor.to_string(),
+        artifact_id: use_record.artifact_id.to_string(),
+        kind: wrela::artifact_contract::artifact_use_kind_name(use_record.kind).to_string(),
+        source: wrela::artifact_contract::artifact_use_source_name(use_record.source).to_string(),
+        required_validity: use_record
+            .required_validity
+            .map(|validity| format!("{validity:?}")),
+    }
+}
+
+fn observer_validation_summary(
+    errors: impl IntoIterator<Item = String>,
+) -> ObserverValidationSummaryDump {
+    let errors = errors.into_iter().collect::<Vec<_>>();
+    ObserverValidationSummaryDump {
+        status: if errors.is_empty() {
+            "ok".to_string()
+        } else {
+            "invalid".to_string()
+        },
+        errors,
+    }
+}
+
+#[cfg(test)]
+mod observer_report_tests {
+    use super::observer_validation_summary;
+
+    #[test]
+    fn observer_validation_summary_marks_errors_invalid() {
+        let summary = observer_validation_summary([String::from("missing artifact producer")]);
+        assert_eq!(summary.status, "invalid");
+        assert_eq!(
+            summary.errors,
+            vec![String::from("missing artifact producer")]
+        );
+    }
 }
 
 fn execute_presentation_plan_command(
@@ -443,6 +705,234 @@ fn execute_presentation_plan_command(
         );
     } else {
         print_presentation_plan_human(&dump);
+    }
+}
+
+fn collision_contract_catalog_snapshot() -> CollisionContractCatalogDump {
+    let contracts = wrela::collision_contract::collision_contracts()
+        .iter()
+        .map(collision_contract_dump)
+        .collect();
+    CollisionContractCatalogDump {
+        schema_version: wrela::collision_contract::COLLISION_CONTRACT_VERSION,
+        contracts,
+    }
+}
+
+fn collision_plan_dump(backend: wrela::query_plan::DispatchBackend) -> CollisionPlanCatalogDump {
+    let plans = wrela::collision_plan::collision_plans_with_backend(backend)
+        .iter()
+        .map(collision_plan_dump_item)
+        .collect();
+    CollisionPlanCatalogDump {
+        schema_version: wrela::collision_plan::COLLISION_PLAN_SCHEMA_VERSION,
+        backend: dispatch_backend_name(backend).to_string(),
+        plans,
+    }
+}
+
+fn print_collision_plan_human(dump: &CollisionPlanCatalogDump) {
+    println!("collision plan schema v{}", dump.schema_version);
+    println!("backend: {}", dump.backend);
+    if dump.plans.is_empty() {
+        println!("plans: none");
+        return;
+    }
+    for plan in &dump.plans {
+        println!("plan {}", plan.name);
+        println!(
+            "  contract: {} v{} family={} question={} target={}",
+            plan.contract_id, plan.contract_version, plan.family, plan.question, plan.target
+        );
+        println!(
+            "  policy: backend_preference={} required_guarantee={} selected_method={}",
+            plan.policy.backend_preference, plan.policy.required_guarantee, plan.policy.selected_method
+        );
+        println!(
+            "  inputs: {}",
+            if plan.inputs.is_empty() {
+                "none".to_string()
+            } else {
+                plan.inputs
+                    .iter()
+                    .map(|input| format!("{}:{}({})", input.name, input.kind, input.record))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        );
+        println!(
+            "  outputs: {}",
+            if plan.outputs.is_empty() {
+                "none".to_string()
+            } else {
+                plan.outputs
+                    .iter()
+                    .map(|output| {
+                        let witness = output
+                            .witness_schema
+                            .as_ref()
+                            .map(|schema| schema.name.as_str())
+                            .unwrap_or("none");
+                        format!("{}:{}({}) witness={}", output.name, output.kind, output.record, witness)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        );
+        println!("  passes:");
+        for pass in &plan.passes {
+            println!(
+                "    {} kind={} consumes={} materializes={} queries={}",
+                pass.id,
+                pass.kind,
+                if pass.consumes.is_empty() {
+                    "none".to_string()
+                } else {
+                    pass.consumes.join(", ")
+                },
+                if pass.materializes.is_empty() {
+                    "none".to_string()
+                } else {
+                    pass.materializes.join(", ")
+                },
+                if pass.query_dependencies.is_empty() {
+                    "none".to_string()
+                } else {
+                    pass.query_dependencies.join(", ")
+                }
+            );
+        }
+        println!(
+            "  validation: {}",
+            plan.validation.status
+        );
+        for err in &plan.validation.errors {
+            println!("    - {}", err);
+        }
+    }
+}
+
+fn collision_contract_dump(
+    descriptor: &wrela::collision_contract::CollisionContractDescriptor,
+) -> CollisionContractCatalogItemDump {
+    CollisionContractCatalogItemDump {
+        contract_id: descriptor.id.as_str().to_string(),
+        contract_version: descriptor.version,
+        family: wrela::collision_contract::collision_family_name(descriptor.family).to_string(),
+        question: wrela::collision_contract::collision_question_name(descriptor.question)
+            .to_string(),
+        target: wrela::collision_contract::collision_target_name(descriptor.target).to_string(),
+        input_kind: wrela::collision_contract::collision_input_kind_name(descriptor.input_kind)
+            .to_string(),
+        input_record: descriptor.input_record.to_string(),
+        output_kind: wrela::collision_contract::collision_output_kind_name(descriptor.output_kind)
+            .to_string(),
+        output_record: descriptor.output_record.to_string(),
+        witness_schema: collision_witness_schema_dump(descriptor.witness_schema),
+        policy: collision_execution_policy_dump(descriptor.policy),
+        backends: wrela::collision_contract::collision_backend_support_names(
+            descriptor.supported_backends,
+        )
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+    }
+}
+
+fn collision_plan_dump_item(
+    plan: &wrela::collision_plan::CollisionPlan,
+) -> CollisionPlanDumpItem {
+    let validation = observer_validation_summary(
+        plan.validate()
+            .into_iter()
+            .map(|err| err.message.to_string()),
+    );
+    CollisionPlanDumpItem {
+        name: plan.name.to_string(),
+        contract_id: plan.contract_id.as_str().to_string(),
+        contract_version: plan.contract_version,
+        family: wrela::collision_contract::collision_family_name(plan.family).to_string(),
+        question: wrela::collision_contract::collision_question_name(plan.question).to_string(),
+        target: wrela::collision_contract::collision_target_name(plan.target).to_string(),
+        backend: dispatch_backend_name(plan.backend).to_string(),
+        policy: collision_execution_policy_dump(plan.policy),
+        inputs: plan
+            .inputs
+            .iter()
+            .map(|input| CollisionPlanInputDump {
+                name: input.name.to_string(),
+                kind: wrela::collision_contract::collision_input_kind_name(input.kind).to_string(),
+                record: input.record.to_string(),
+            })
+            .collect(),
+        passes: plan
+            .passes
+            .iter()
+            .map(|pass| CollisionPlanPassDump {
+                id: pass.id.to_string(),
+                kind: collision_pass_kind_name(&pass.kind),
+                consumes: pass.consumes.iter().map(ToString::to_string).collect(),
+                materializes: pass.materializes.iter().map(ToString::to_string).collect(),
+                query_dependencies: pass
+                    .kind
+                    .query_dependencies()
+                    .iter()
+                    .map(|dependency| dependency.as_str().to_string())
+                    .collect(),
+            })
+            .collect(),
+        artifacts: plan
+            .artifacts
+            .iter()
+            .cloned()
+            .map(observer_semantic_artifact_dump)
+            .collect(),
+        artifact_uses: plan
+            .artifact_uses()
+            .into_iter()
+            .map(observer_artifact_use_dump)
+            .collect(),
+        outputs: plan
+            .outputs
+            .iter()
+            .map(|output| CollisionPlanOutputDump {
+                name: output.name.to_string(),
+                kind: wrela::collision_contract::collision_output_kind_name(output.kind)
+                    .to_string(),
+                record: output.record.to_string(),
+                witness_schema: output
+                    .witness_schema
+                    .map(collision_witness_schema_dump),
+            })
+            .collect(),
+        validation,
+    }
+}
+
+fn collision_witness_schema_dump(
+    schema: &wrela::collision_contract::CollisionWitnessSchema,
+) -> CollisionWitnessSchemaDump {
+    CollisionWitnessSchemaDump {
+        name: schema.name.to_string(),
+        kind: wrela::collision_contract::collision_witness_kind_name(schema.kind).to_string(),
+        fields: schema
+            .fields
+            .iter()
+            .map(|field| CollisionWitnessFieldDump {
+                name: field.name.to_string(),
+                ty: field.ty.to_string(),
+            })
+            .collect(),
+    }
+}
+
+fn collision_execution_policy_dump(
+    policy: wrela::collision_contract::CollisionExecutionPolicy,
+) -> CollisionExecutionPolicyDump {
+    CollisionExecutionPolicyDump {
+        backend_preference: dispatch_backend_name(policy.backend_preference).to_string(),
+        required_guarantee: policy.required_guarantee.name().to_string(),
+        selected_method: policy.selected_method.name().to_string(),
     }
 }
 
@@ -612,8 +1102,9 @@ fn execute_presentation_debug_command(
             std::process::exit(EXIT_USAGE);
         }
     };
-    let mut session =
-        wrela::presentation_exec::AdaptivePresentationSession::new(prepared.plan.frame.quality.clone());
+    let mut session = wrela::presentation_exec::AdaptivePresentationSession::new(
+        prepared.plan.frame.quality.clone(),
+    );
     let mut frame_cost_history = Vec::new();
     let mut result = None;
     for frame_offset in 0..options.frames.max(1) {
@@ -747,7 +1238,9 @@ fn execute_preview_command(
         }
     };
     if matches!(output_format, OutputFormat::Json) && !options.json_report {
-        eprintln!("error: `preview --json` requires `--json-report`; use `frame --json` for typed attachment bundles");
+        eprintln!(
+            "error: `preview --json` requires `--json-report`; use `frame --json` for typed attachment bundles"
+        );
         std::process::exit(EXIT_USAGE);
     }
     let ready = match load_prepared_presentation_execution(
@@ -1098,6 +1591,13 @@ fn execute_frame_contracts_command(
                     .unwrap_or_else(|| "Disabled".to_string())
             );
             println!(
+                "  temporal change class: {}",
+                view.frame
+                    .temporal_change_class
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string())
+            );
+            println!(
                 "  quality: tier={} target_fps={}",
                 view.frame.quality.tier, view.frame.quality.target_fps
             );
@@ -1187,7 +1687,12 @@ fn selected_frame_attachment_names(
     requested: &[String],
 ) -> Result<Vec<String>, wrela::presentation_exec::PresentationExecError> {
     if requested.is_empty() {
-        return Ok(result.attachments.attachments.keys().map(ToString::to_string).collect());
+        return Ok(result
+            .attachments
+            .attachments
+            .keys()
+            .map(ToString::to_string)
+            .collect());
     }
     let mut seen = HashSet::new();
     let mut resolved = Vec::new();
@@ -1346,8 +1851,7 @@ fn prepare_presentation_execution(
         .ok_or_else(|| format!("missing domain `{domain_name}`"))?;
     let width = resolve_view_dimension(view_func, width_override, true)?;
     let height = resolve_view_dimension(view_func, height_override, false)?;
-    let domain_inputs =
-        domain_execution_inputs(module, domain_func, &region_name, query_backend)?;
+    let domain_inputs = domain_execution_inputs(module, domain_func, &region_name, query_backend)?;
     let mut plan = base_plan.clone();
     let domain_metadata = domain_func
         .domain
@@ -1407,10 +1911,7 @@ fn bind_presentation_function_params(
     for param in &function.params {
         match param.ty.as_ref().map(|ty| ty.name.as_str()) {
             Some("RegionCapture") => {
-                bindings.insert(
-                    param.name.clone(),
-                    region_snapshot.capture_value(),
-                );
+                bindings.insert(param.name.clone(), region_snapshot.capture_value());
             }
             Some("Camera") => {
                 bindings.insert(param.name.clone(), preview_camera_value(camera));
@@ -1468,7 +1969,12 @@ fn authored_presentation_lighting_inputs(
                 .and_then(|body| body_terminal_expr_id(body).map(|expr_id| (body, expr_id)))
         }) {
         Some((body, expr_id)) => preview_expect_vec3(
-            &preview_eval_expr(body, expr_id, bindings, "presentation lighting fill_direction")?,
+            &preview_eval_expr(
+                body,
+                expr_id,
+                bindings,
+                "presentation lighting fill_direction",
+            )?,
             "presentation lighting fill_direction",
         )?,
         None => normalize_preview_vec3([-0.9, 0.45, 0.2]),
@@ -1479,12 +1985,19 @@ fn authored_presentation_lighting_inputs(
                 .map(|expr_id| (body, expr_id))
         })
         .or_else(|| {
-            metadata.lighting.fill_strength.as_ref().and_then(|body| {
-                body_terminal_expr_id(body).map(|expr_id| (body, expr_id))
-            })
+            metadata
+                .lighting
+                .fill_strength
+                .as_ref()
+                .and_then(|body| body_terminal_expr_id(body).map(|expr_id| (body, expr_id)))
         }) {
         Some((body, expr_id)) => preview_expect_f32(
-            &preview_eval_expr(body, expr_id, bindings, "presentation lighting fill_strength")?,
+            &preview_eval_expr(
+                body,
+                expr_id,
+                bindings,
+                "presentation lighting fill_strength",
+            )?,
             "presentation lighting fill_strength",
         )?,
         None => 0.22,
@@ -1495,12 +2008,19 @@ fn authored_presentation_lighting_inputs(
                 .map(|expr_id| (body, expr_id))
         })
         .or_else(|| {
-            metadata.lighting.ambient_color.as_ref().and_then(|body| {
-                body_terminal_expr_id(body).map(|expr_id| (body, expr_id))
-            })
+            metadata
+                .lighting
+                .ambient_color
+                .as_ref()
+                .and_then(|body| body_terminal_expr_id(body).map(|expr_id| (body, expr_id)))
         }) {
         Some((body, expr_id)) => preview_expect_vec3(
-            &preview_eval_expr(body, expr_id, bindings, "presentation lighting ambient_color")?,
+            &preview_eval_expr(
+                body,
+                expr_id,
+                bindings,
+                "presentation lighting ambient_color",
+            )?,
             "presentation lighting ambient_color",
         )?,
         None => [0.12, 0.12, 0.12],
@@ -2314,21 +2834,22 @@ fn parse_frame_command_options(args: &[String]) -> Result<FrameCommandOptions, S
                     .parse()
                     .map_err(|_| "invalid --delta-seconds value".to_string())?
             }
-            "--attachment" => options
-                .attachments
-                .push(take_value(&inline_value, args, &mut index)?),
+            "--attachment" => {
+                options
+                    .attachments
+                    .push(take_value(&inline_value, args, &mut index)?)
+            }
             "--attachment-format" => {
-                options.attachment_format = match take_value(&inline_value, args, &mut index)?
-                    .as_str()
-                {
-                    "json" => FrameAttachmentFormat::Json,
-                    "ppm" => FrameAttachmentFormat::Ppm,
-                    other => {
-                        return Err(format!(
-                            "invalid --attachment-format value `{other}` (expected json or ppm)"
-                        ));
+                options.attachment_format =
+                    match take_value(&inline_value, args, &mut index)?.as_str() {
+                        "json" => FrameAttachmentFormat::Json,
+                        "ppm" => FrameAttachmentFormat::Ppm,
+                        other => {
+                            return Err(format!(
+                                "invalid --attachment-format value `{other}` (expected json or ppm)"
+                            ));
+                        }
                     }
-                }
             }
             _ => return Err(format!("unexpected argument `{arg}`")),
         }
@@ -2456,7 +2977,10 @@ fn select_domain_name(
     if candidates.len() == 1 {
         Ok(candidates.remove(0))
     } else {
-        Err("presentation execution requires --domain when the view does not name a single domain".to_string())
+        Err(
+            "presentation execution requires --domain when the view does not name a single domain"
+                .to_string(),
+        )
     }
 }
 
@@ -2533,7 +3057,9 @@ fn resolve_view_dimension(
     } else {
         metadata.view.height.as_ref()
     }
-    .ok_or_else(|| format!("presentation execution requires --{label} when the view omits {label}"))?;
+    .ok_or_else(|| {
+        format!("presentation execution requires --{label} when the view omits {label}")
+    })?;
     eval_body_u32(body).ok_or_else(|| {
         format!(
             "presentation execution cannot evaluate non-literal view {label}; pass --{label} explicitly"
@@ -2638,10 +3164,12 @@ fn domain_execution_inputs(
         hir::DomainGeometryDetail::Fine => 1,
     };
     let _ = query_backend;
-    let policy_metadata = metadata
-        .execution_policy
-        .as_ref()
-        .ok_or_else(|| format!("domain `{}` is missing execution policy metadata", domain.name))?;
+    let policy_metadata = metadata.execution_policy.as_ref().ok_or_else(|| {
+        format!(
+            "domain `{}` is missing execution policy metadata",
+            domain.name
+        )
+    })?;
     let primary_rays = wrela::presentation_exec::RayBudgetPolicy {
         max_distance: authored_domain_f32(module, policy_metadata.max_distance.as_ref())
             .unwrap_or(16.0),
@@ -2696,6 +3224,11 @@ fn presentation_plan_dump(
 fn presentation_plan_dump_item(
     plan: &wrela::presentation_plan::PresentationPlan,
 ) -> PresentationPlanDumpItem {
+    let validation = observer_validation_summary(
+        plan.validate()
+            .into_iter()
+            .map(|err| err.message.to_string()),
+    );
     PresentationPlanDumpItem {
         name: plan.name.to_string(),
         view: PresentationViewDump {
@@ -2761,6 +3294,9 @@ fn presentation_plan_dump_item(
                 .temporal
                 .as_ref()
                 .map(|temporal| temporal_reuse_name(temporal.reuse).to_string()),
+            temporal_change_class: plan.frame.temporal.as_ref().map(|temporal| {
+                presentation_temporal_change_class_name(temporal.change_class).to_string()
+            }),
             quality: PresentationQualityDump {
                 tier: wrela::presentation_plan::quality_tier_name(plan.frame.quality.tier)
                     .to_string(),
@@ -2833,6 +3369,16 @@ fn presentation_plan_dump_item(
                 materialized: artifact.materialized,
             })
             .collect(),
+        semantic_artifacts: plan
+            .semantic_artifact_contracts()
+            .into_iter()
+            .map(observer_semantic_artifact_dump)
+            .collect(),
+        artifact_uses: plan
+            .artifact_uses()
+            .into_iter()
+            .map(observer_artifact_use_dump)
+            .collect(),
         bindings: plan
             .bindings
             .iter()
@@ -2845,11 +3391,8 @@ fn presentation_plan_dump_item(
             })
             .collect(),
         candidate_query_program_concepts: pass_observability_names(&plan.observability),
-        validation_errors: plan
-            .validate()
-            .into_iter()
-            .map(|err| err.message.to_string())
-            .collect(),
+        normalized_projection: query_program_debug::projection_for_presentation_plan(plan),
+        validation,
     }
 }
 
@@ -3031,9 +3574,57 @@ fn print_presentation_plan_human(dump: &PresentationPlanDump) {
                 binding.id, binding.recipe, binding.default_backend, binding.execution
             );
         }
+        println!("  semantic artifacts:");
+        for artifact in &plan.semantic_artifacts {
+            println!(
+                "    {} kind={} snapshot_relation={} producer={} consumer={} schema={} validity={}",
+                artifact.id,
+                artifact.kind,
+                artifact.snapshot_relation,
+                artifact.producer,
+                artifact.consumer,
+                artifact.logical_schema,
+                artifact.validity
+            );
+        }
+        println!("  artifact uses:");
+        for use_record in &plan.artifact_uses {
+            println!(
+                "    actor={} artifact={} kind={} source={} validity={}",
+                use_record.actor,
+                use_record.artifact_id,
+                use_record.kind,
+                use_record.source,
+                use_record.required_validity.as_deref().unwrap_or("none")
+            );
+        }
+        println!("  validation: {}", plan.validation.status);
+        for error in &plan.validation.errors {
+            println!("    {}", error);
+        }
         println!(
             "  candidate query-program concepts: {}",
             plan.candidate_query_program_concepts.join(", ")
+        );
+        println!(
+            "  normalized projection: family={} mode={} passes={} queries={} artifacts={}",
+            plan.normalized_projection.family,
+            plan.normalized_projection.execution_mode,
+            if plan.normalized_projection.pass_kinds.is_empty() {
+                "none".to_string()
+            } else {
+                plan.normalized_projection.pass_kinds.join(", ")
+            },
+            if plan.normalized_projection.query_contracts.is_empty() {
+                "none".to_string()
+            } else {
+                plan.normalized_projection.query_contracts.join(", ")
+            },
+            if plan.normalized_projection.frame_artifacts.is_empty() {
+                "none".to_string()
+            } else {
+                plan.normalized_projection.frame_artifacts.join(", ")
+            }
         );
     }
 }
@@ -3310,6 +3901,26 @@ fn presentation_screen_sample_pass_dump(
     }
 }
 
+fn collision_pass_kind_name(kind: &wrela::collision_plan::CollisionPassKind) -> String {
+    match kind {
+        wrela::collision_plan::CollisionPassKind::GatherCandidates { .. } => {
+            "gather_candidates".to_string()
+        }
+        wrela::collision_plan::CollisionPassKind::EvaluatePointOccupancy { .. } => {
+            "evaluate_point_occupancy".to_string()
+        }
+        wrela::collision_plan::CollisionPassKind::CastRayFirstHit { .. } => {
+            "cast_ray_first_hit".to_string()
+        }
+        wrela::collision_plan::CollisionPassKind::ResolveSphereOverlap { .. } => {
+            "resolve_sphere_overlap".to_string()
+        }
+        wrela::collision_plan::CollisionPassKind::MaterializeOutput { .. } => {
+            "materialize_output".to_string()
+        }
+    }
+}
+
 fn presentation_recipe_name(
     recipe: wrela::presentation_binding::PresentationPassRecipeKind,
 ) -> &'static str {
@@ -3360,9 +3971,7 @@ fn presentation_binding_execution_name(
         wrela::presentation_binding::PresentationPassRecipeKind::CompositeColor => {
             "composite_color"
         }
-        wrela::presentation_binding::PresentationPassRecipeKind::MotionResolve => {
-            "motion_resolve"
-        }
+        wrela::presentation_binding::PresentationPassRecipeKind::MotionResolve => "motion_resolve",
         wrela::presentation_binding::PresentationPassRecipeKind::TemporalResolve => {
             "temporal_resolve"
         }
@@ -3405,9 +4014,7 @@ fn acceleration_hook_name(
 fn distance_semantics_name(semantics: wrela::scene_ir::DistanceSemantics) -> &'static str {
     match semantics {
         wrela::scene_ir::DistanceSemantics::ExactSignedDistance => "exact-signed-distance",
-        wrela::scene_ir::DistanceSemantics::ConservativeLowerBound => {
-            "conservative-lower-bound"
-        }
+        wrela::scene_ir::DistanceSemantics::ConservativeLowerBound => "conservative-lower-bound",
         wrela::scene_ir::DistanceSemantics::UnknownOpaque => "unknown-opaque",
     }
 }
@@ -3450,19 +4057,46 @@ fn analytic_status_name(value: wrela::query_solver::AnalyticIntersectionStatus) 
 fn temporal_stability_name(value: wrela::query_solver::TemporalStability) -> &'static str {
     match value {
         wrela::query_solver::TemporalStability::CompileInvariant => "compile-invariant",
-        wrela::query_solver::TemporalStability::TransitionCompatible => {
-            "transition-compatible"
-        }
+        wrela::query_solver::TemporalStability::TransitionCompatible => "transition-compatible",
         wrela::query_solver::TemporalStability::SnapshotLocal => "snapshot-local",
         wrela::query_solver::TemporalStability::ArtifactBound => "artifact-bound",
         wrela::query_solver::TemporalStability::Unknown => "unknown",
     }
 }
 
+fn presentation_temporal_change_class_name(
+    value: wrela::presentation_contract::TemporalChangeClass,
+) -> &'static str {
+    match value {
+        wrela::presentation_contract::TemporalChangeClass::Stable => "stable",
+        wrela::presentation_contract::TemporalChangeClass::CameraMotion => "camera-motion",
+        wrela::presentation_contract::TemporalChangeClass::ViewportShift => "viewport-shift",
+        wrela::presentation_contract::TemporalChangeClass::TopologyShift => "topology-shift",
+        wrela::presentation_contract::TemporalChangeClass::IdentityShift => "identity-shift",
+        wrela::presentation_contract::TemporalChangeClass::HistoryReset => "history-reset",
+        wrela::presentation_contract::TemporalChangeClass::Unknown => "unknown",
+    }
+}
+
+fn semantic_temporal_change_class_name(
+    value: wrela::semantic_evidence::TemporalChangeClass,
+) -> &'static str {
+    match value {
+        wrela::semantic_evidence::TemporalChangeClass::Stable => "stable",
+        wrela::semantic_evidence::TemporalChangeClass::CameraMotion => "camera-motion",
+        wrela::semantic_evidence::TemporalChangeClass::ViewportShift => "viewport-shift",
+        wrela::semantic_evidence::TemporalChangeClass::TopologyShift => "topology-shift",
+        wrela::semantic_evidence::TemporalChangeClass::IdentityShift => "identity-shift",
+        wrela::semantic_evidence::TemporalChangeClass::HistoryReset => "history-reset",
+        wrela::semantic_evidence::TemporalChangeClass::Unknown => "unknown",
+    }
+}
+
 fn presentation_refinement_path_dump(
     steps: &[wrela::query_plan::SemanticEvidenceRefinementStep],
 ) -> Vec<String> {
-    steps.iter()
+    steps
+        .iter()
         .map(|step| {
             let name = wrela::query_plan::semantic_evidence_refinement_step_name(step);
             if step.detail.is_empty() {
@@ -3485,7 +4119,9 @@ fn presentation_evidence_dump_from_summary(
         distance_refinement_path: presentation_refinement_path_dump(
             &summary.distance.refinement_path,
         ),
-        support_refinement_path: presentation_refinement_path_dump(&summary.support.refinement_path),
+        support_refinement_path: presentation_refinement_path_dump(
+            &summary.support.refinement_path,
+        ),
         differential_refinement_path: presentation_refinement_path_dump(
             &summary.differential.refinement_path,
         ),
@@ -3509,6 +4145,15 @@ fn presentation_evidence_dump_from_summary(
         stable_instance_id: summary.identity.stable_instance_id,
         stable_repeat_id: summary.identity.stable_repeat_id,
         temporal_stability: temporal_stability_name(summary.temporal.stability).to_string(),
+        temporal_change_class: semantic_temporal_change_class_name(summary.temporal.change_class)
+            .to_string(),
+        temporal_stationary: fact_availability_name(summary.temporal.stationary).to_string(),
+        temporal_rigid_over_interval: fact_availability_name(summary.temporal.rigid_over_interval)
+            .to_string(),
+        temporal_topology_stable: fact_availability_name(summary.temporal.topology_stable)
+            .to_string(),
+        temporal_bounded_velocity: fact_availability_name(summary.temporal.bounded_velocity)
+            .to_string(),
     }
 }
 
@@ -3543,7 +4188,9 @@ fn presentation_query_dependency_metadata(
         None,
     ) {
         return (
-            Some(presentation_evidence_dump_from_summary(&plan.evidence_summary)),
+            Some(presentation_evidence_dump_from_summary(
+                &plan.evidence_summary,
+            )),
             plan.ray_solver
                 .as_ref()
                 .map(|solver| presentation_solver_dump(&solver.diagnostic_summary())),
@@ -3552,7 +4199,9 @@ fn presentation_query_dependency_metadata(
 
     if let Ok(plan) = wrela::query_plan::CaptureQueryPlan::for_contract(contract_id, None) {
         return (
-            Some(presentation_evidence_dump_from_summary(&plan.evidence_summary)),
+            Some(presentation_evidence_dump_from_summary(
+                &plan.evidence_summary,
+            )),
             None,
         );
     }
@@ -3562,7 +4211,9 @@ fn presentation_query_dependency_metadata(
         wrela::query_plan::DispatchBackend::Auto,
     ) {
         return (
-            Some(presentation_evidence_dump_from_summary(&plan.evidence_summary)),
+            Some(presentation_evidence_dump_from_summary(
+                &plan.evidence_summary,
+            )),
             plan.ray_solver
                 .as_ref()
                 .map(|solver| presentation_solver_dump(&solver.diagnostic_summary())),
@@ -3848,6 +4499,23 @@ pub fn execute(spec: CommandSpec) {
                 eprintln!("build: command query-contracts");
             }
             execute_query_contracts_command(output_format, path_arg, program_args);
+        }
+        "collision-contracts" => {
+            if trace {
+                eprintln!("build: command collision-contracts");
+            }
+            execute_collision_contracts_command(output_format, path_arg, program_args);
+        }
+        "collision-plan" => {
+            if trace {
+                eprintln!("build: command collision-plan");
+            }
+            execute_collision_plan_command(
+                output_format,
+                path_arg,
+                program_args,
+                query_backend,
+            );
         }
         "preview" => {
             if trace {

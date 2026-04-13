@@ -330,6 +330,8 @@ fn cli_help() {
     assert!(stdout.contains("--integration-mode"));
     assert!(stdout.contains("run certification"));
     assert!(stdout.contains("query-contracts"));
+    assert!(stdout.contains("collision-contracts"));
+    assert!(stdout.contains("collision-plan"));
     assert!(stdout.contains("preview <path>"));
     assert!(stdout.contains("frame <path>"));
     assert!(stdout.contains("frame-contracts <path>"));
@@ -432,6 +434,156 @@ fn cli_query_contracts_json_lists_family_catalog() {
 }
 
 #[test]
+fn cli_collision_contracts_human_lists_collision_catalog() {
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("collision-contracts")
+        .output()
+        .expect("run collision-contracts");
+    assert!(
+        output.status.success(),
+        "collision-contracts failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("collision contract catalog schema v1"));
+    assert!(stdout.contains("collision.point_occupancy.world"));
+    assert!(stdout.contains("collision.ray_cast.world"));
+    assert!(stdout.contains("collision.sphere_overlap.world"));
+    assert!(stdout.contains(
+        "policy=backend_preference=cpu required_guarantee=exact selected_method=exact_oracle"
+    ));
+    assert!(stdout.contains("witness=CollisionPointWitness"));
+    assert!(stdout.contains("witness=CollisionRayWitness"));
+    assert!(stdout.contains("witness=CollisionSphereWitness"));
+}
+
+#[test]
+fn cli_collision_contracts_json_lists_collision_catalog() {
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("collision-contracts")
+        .arg("--json")
+        .output()
+        .expect("run collision-contracts json");
+    assert!(
+        output.status.success(),
+        "collision-contracts --json failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let catalog: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("collision contract catalog json");
+    assert_eq!(
+        catalog.get("schema_version").and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    let contracts = catalog
+        .get("contracts")
+        .and_then(|value| value.as_array())
+        .expect("contracts array");
+    assert_eq!(contracts.len(), 3);
+    let point = contracts
+        .iter()
+        .find(|contract| {
+            contract
+                .get("contract_id")
+                .and_then(|value| value.as_str())
+                .is_some_and(|id| id == "collision.point_occupancy.world")
+        })
+        .expect("point occupancy contract");
+    assert_eq!(
+        point
+            .pointer("/policy/backend_preference")
+            .and_then(|value| value.as_str()),
+        Some("cpu")
+    );
+    assert_eq!(
+        point.pointer("/backends").and_then(|value| value.as_array()).map(|arr| arr.len()),
+        Some(1)
+    );
+    assert_eq!(
+        point
+            .pointer("/witness_schema/name")
+            .and_then(|value| value.as_str()),
+        Some("CollisionPointWitness")
+    );
+}
+
+#[test]
+fn cli_collision_plan_json_reports_validation_and_policy() {
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("collision-plan")
+        .arg("--json")
+        .output()
+        .expect("run collision-plan json");
+    assert!(
+        output.status.success(),
+        "collision-plan --json failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let dump: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("collision plan json");
+    assert_eq!(
+        dump.get("schema_version").and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        dump.get("backend").and_then(|value| value.as_str()),
+        Some("auto")
+    );
+    let plans = dump
+        .get("plans")
+        .and_then(|value| value.as_array())
+        .expect("plans array");
+    assert_eq!(plans.len(), 3);
+    let point = plans
+        .iter()
+        .find(|plan| {
+            plan.get("name")
+                .and_then(|value| value.as_str())
+                .is_some_and(|name| name == "collision.point_occupancy.world")
+        })
+        .expect("point occupancy collision plan");
+    assert_eq!(
+        point.pointer("/validation/status").and_then(|value| value.as_str()),
+        Some("ok")
+    );
+    assert_eq!(
+        point
+            .pointer("/policy/required_guarantee")
+            .and_then(|value| value.as_str()),
+        Some("exact")
+    );
+    assert_eq!(
+        point
+            .pointer("/policy/selected_method")
+            .and_then(|value| value.as_str()),
+        Some("exact_oracle")
+    );
+}
+
+#[test]
+fn cli_collision_plan_wgsl_reports_invalid_exact_oracle_validation() {
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("collision-plan")
+        .arg("--query-backend=wgsl")
+        .output()
+        .expect("run collision-plan wgsl");
+    assert!(
+        output.status.success(),
+        "collision-plan --query-backend=wgsl failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("backend: wgsl"));
+    assert!(stdout.contains("validation: invalid"));
+    assert!(stdout.contains("required_guarantee=exact"));
+    assert!(stdout.contains("selected_method=exact_oracle"));
+}
+
+#[test]
 fn cli_presentation_plan_human_shows_contracts_without_helper_names() {
     let temp = workspace_tempdir();
     write_presentation_plan_fixture(temp.path());
@@ -513,7 +665,21 @@ fn cli_presentation_plan_human_shows_contracts_without_helper_names() {
     assert!(stdout.contains("motion(Motion,MotionVector,Transient,Viewport,1x1,SemanticDefault)"));
     assert!(stdout.contains("materializes: motion"));
     assert!(stdout.contains("materializes: color, history_color, history_primary_hit"));
+    assert!(stdout.contains("normalized projection: family=presentation mode=temporal"));
+    assert!(stdout.contains("normalized projection: family=presentation mode=composite"));
+    assert!(stdout.contains("passes=generate_screen_samples, primary_visibility"));
+    assert!(stdout.contains(
+        "queries=participants.medium.batch.world, participants.radiance.batch.world, spatial.nearest.batch.world, surface.sample.batch.world"
+    ));
     assert!(stdout.contains("future acceleration hooks: TemporalHistory"));
+    assert!(stdout.contains("semantic artifacts:"));
+    assert!(stdout.contains("artifact.history_color kind=PresentationHistory"));
+    assert!(stdout.contains("artifact uses:"));
+    assert!(stdout.contains("actor=temporal_resolve artifact=artifact.history_color kind=produce"));
+    assert!(
+        stdout.contains("actor=temporal_resolve artifact=artifact.history_color kind=preserve")
+    );
+    assert!(stdout.contains("validation: ok"));
     assert!(
         stdout
             .contains("motion.resolve recipe=MotionResolve backend=auto execution=motion_resolve")
@@ -580,6 +746,92 @@ fn cli_presentation_plan_json_reports_passes_bindings_and_query_dependencies() {
             .pointer("/view/compatibility_projection/legacy_path_active")
             .and_then(|value| value.as_bool()),
         Some(false)
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/normalized_projection/schema_version")
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/normalized_projection/source_plan")
+            .and_then(|value| value.as_str()),
+        Some("cli_plan_view")
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/normalized_projection/family")
+            .and_then(|value| value.as_str()),
+        Some("presentation")
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/normalized_projection/execution_mode")
+            .and_then(|value| value.as_str()),
+        Some("temporal")
+    );
+    assert!(
+        view_plan
+            .pointer("/normalized_projection/pass_kinds")
+            .and_then(|value| value.as_array())
+            .is_some_and(|values| values
+                .iter()
+                .any(|value| value.as_str() == Some("primary_visibility")))
+    );
+    assert!(
+        view_plan
+            .pointer("/normalized_projection/query_contracts")
+            .and_then(|value| value.as_array())
+            .is_some_and(|values| {
+                values
+                    .iter()
+                    .any(|value| value.as_str() == Some("spatial.nearest.batch.world"))
+            })
+    );
+    assert!(
+        view_plan
+            .pointer("/normalized_projection/frame_artifacts")
+            .and_then(|value| value.as_array())
+            .is_some_and(|values| values
+                .iter()
+                .any(|value| value.as_str() == Some("history_color")))
+    );
+    assert!(
+        view_plan
+            .pointer("/semantic_artifacts")
+            .and_then(|value| value.as_array())
+            .is_some_and(|values| values.iter().any(|value| {
+                value.pointer("/id").and_then(|field| field.as_str())
+                    == Some("artifact.history_color")
+                    && value.pointer("/kind").and_then(|field| field.as_str())
+                        == Some("PresentationHistory")
+            }))
+    );
+    assert!(
+        view_plan
+            .pointer("/artifact_uses")
+            .and_then(|value| value.as_array())
+            .is_some_and(|values| values.iter().any(|value| {
+                value
+                    .pointer("/artifact_id")
+                    .and_then(|field| field.as_str())
+                    == Some("artifact.history_color")
+                    && value.pointer("/source").and_then(|field| field.as_str())
+                        == Some("artifact-store")
+            }))
+    );
+    assert_eq!(
+        view_plan
+            .pointer("/validation/status")
+            .and_then(|value| value.as_str()),
+        Some("ok")
+    );
+    assert!(
+        view_plan
+            .pointer("/validation/errors")
+            .and_then(|value| value.as_array())
+            .is_some_and(|values| values.is_empty())
     );
     assert_eq!(
         view_plan
@@ -808,6 +1060,7 @@ fn cli_frame_contracts_reports_named_view_contracts() {
     assert!(stdout.contains("view cli_plan_view"));
     assert!(stdout.contains("view cli_plan_fast_view"));
     assert!(stdout.contains("temporal reuse: ReprojectColorAndMotion"));
+    assert!(stdout.contains("temporal change class: camera-motion"));
     assert!(stdout.contains("temporal reuse: Disabled"));
     assert!(stdout.contains("motion.resolve recipe=MotionResolve"));
     assert!(stdout.contains("composite.color recipe=CompositeColor"));
@@ -1045,6 +1298,10 @@ fn cli_presentation_debug_exports_depth_normal_and_stats() {
     assert!(stdout.contains("selected_method=conservative_solver"));
     assert!(stdout.contains("hit_rate="));
     assert!(stdout.contains("quality tier=realtime_120"));
+    assert!(stdout.contains("continuation_diagnostics="));
+    assert!(
+        stdout.contains("change_class=camera-motion") || stdout.contains("change_class=stable")
+    );
     assert!(out_dir.join("color.ppm").exists());
     assert!(out_dir.join("depth.ppm").exists());
     assert!(out_dir.join("world_normal.ppm").exists());
@@ -1090,6 +1347,11 @@ fn cli_presentation_debug_json_reports_frame_cost_and_quality() {
         dump.pointer("/frame_cost/quality/tier")
             .and_then(|value| value.as_str()),
         Some("realtime_120")
+    );
+    assert!(
+        dump.pointer("/frame_cost/continuation_diagnostics")
+            .and_then(|value| value.as_array())
+            .is_some_and(|entries| !entries.is_empty())
     );
     assert_eq!(
         dump.pointer("/frame_cost/quality/target_fps")

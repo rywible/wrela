@@ -2490,6 +2490,10 @@ mod tests {
                 surface_resolve_count: 256,
                 participant_resolve_count: 128,
                 history_reuse_rate: 0.5,
+                continuation_diagnostics: vec![
+                    "continuation verdict=available reason=none change_class=stable accepted_change_class=camera-motion"
+                        .to_string()
+                ],
                 attachment_bytes: vec![wrela::presentation_exec::PresentationAttachmentBytes {
                     attachment: "color".to_string(),
                     width: 64,
@@ -2552,6 +2556,7 @@ mod tests {
                     surface_resolve_count: 256,
                     participant_resolve_count: 128,
                     history_reuse_rate: 0.0,
+                    continuation_diagnostics: vec![],
                     attachment_bytes: vec![],
                     passes: vec![],
                     active_acceleration_artifacts: vec![],
@@ -2596,6 +2601,7 @@ mod tests {
                     surface_resolve_count: 256,
                     participant_resolve_count: 128,
                     history_reuse_rate: 0.25,
+                    continuation_diagnostics: vec![],
                     attachment_bytes: vec![],
                     passes: vec![],
                     active_acceleration_artifacts: vec!["dynamic_resolution".to_string()],

@@ -115,12 +115,14 @@ fn portable_builtin_catalog_matches_expected_surface() {
             "Medium",
             "MotionVector",
             "NormalResult",
+            "ObserverTime",
             "OcclusionResult",
             "ParticipantDomainContract",
             "Payload",
             "PointDirectionQuery",
             "PointQuery",
             "PresentationExecutionPolicy",
+            "PresentationFrame",
             "PresentationLighting",
             "QueryExecutionPolicy",
             "Ray3",
@@ -133,6 +135,9 @@ fn portable_builtin_catalog_matches_expected_surface() {
             "ScreenSampleQuery",
             "SelectedMethodClass",
             "ShapeCapture",
+            "SimulationTick",
+            "SnapshotEpoch",
+            "SnapshotTransitionContext",
             "SpatialDomainContract",
             "Support3",
             "SupportSummaryResult",
@@ -140,9 +145,11 @@ fn portable_builtin_catalog_matches_expected_surface() {
             "SurfaceDomainContract",
             "TemporalHistory",
             "Transform3",
+            "TransitionChangeSummary",
             "UnitQuery",
             "ViewState",
             "Viewport",
+            "WallClockStamp",
         ]
     );
     assert_eq!(
@@ -508,7 +515,9 @@ fn portable_builtin_catalog_matches_expected_surface() {
             "frame_index",
             "previous_frame_index",
             "delta_seconds",
-            "history_reset"
+            "history_reset",
+            "observer_time",
+            "snapshot_transition"
         ]
     );
     let light = portable::builtin_record("Light").expect("Light");
@@ -546,7 +555,25 @@ kernel fn portable_entry() -> U32 {
         frame_index=u32(7),
         previous_frame_index=u32(6),
         delta_seconds=0.016,
-        history_reset=false
+        history_reset=false,
+        observer_time=ObserverTime(
+            presentation_frame=PresentationFrame(index=u32(7)),
+            previous_presentation_frame=PresentationFrame(index=u32(6)),
+            simulation_tick=SimulationTick(tick=u32(7)),
+            wall_clock_stamp=WallClockStamp(seconds=0.112),
+            delta_seconds=0.016
+        ),
+        snapshot_transition=SnapshotTransitionContext(
+            current_snapshot_epoch=SnapshotEpoch(epoch=u32(8)),
+            previous_snapshot_epoch=SnapshotEpoch(epoch=u32(7)),
+            has_change_summary=true,
+            change_summary=TransitionChangeSummary(
+                change_class=u32(0),
+                compatible=true,
+                topology_changed=false,
+                identity_changed=false
+            )
+        )
     )
     return frame.view.viewport.width + frame.frame_index
 }

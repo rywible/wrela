@@ -12,13 +12,15 @@ use wrela::presentation_contract::{
 use wrela::presentation_exec::{
     AdaptivePresentationController, AdaptivePresentationSession, PresentationExecutionInput,
     PresentationExecutionPolicy, RayBudgetPolicy, execute_plan, frame_state_value,
-    frame_state_value_with_history, scene_domain_value,
+    frame_state_value_with_history, frame_state_value_with_temporal_context, scene_domain_value,
 };
 use wrela::presentation_plan::{PresentationPassKind, PresentationPlan};
 use wrela::query_exec::{
     QueryExecContext, stable_region_scene_capture_id, stable_region_snapshot_handle,
 };
 use wrela::query_plan::DispatchBackend;
+use wrela::semantic_evidence::FactAvailability;
+use wrela::world_identity::SnapshotEpoch;
 
 fn lower_inline_module(source: &str) -> hir::Module {
     let node = parse(source);
@@ -693,6 +695,478 @@ fn static_repeated_frames_reuse_history_deterministically() {
     );
     assert!(frame1.metrics.continuation_available_count > 0);
     assert!(frame1.metrics.continuation_consumed_count > 0);
+    assert!(
+        frame1
+            .metrics
+            .continuation_diagnostics
+            .iter()
+            .any(|entry| entry.contains("verdict=available")
+                && entry.contains("change_class=stable"))
+    );
+}
+
+#[test]
+fn epoch_compatible_transition_reuses_history_when_previous_snapshot_matches() {
+    let camera = CanonicalCameraInput {
+        position: [0.0, 0.0, 2.0],
+        forward: [0.0, 0.0, -1.0],
+        up: [0.0, 1.0, 0.0],
+        vertical_fov_degrees: 75.0,
+    };
+    let viewport = CanonicalViewportInput {
+        width: 4,
+        height: 4,
+    };
+
+    let (plan0, ctx0, mut input0) = presentation_fixture_with_state(
+        presentation_exec_source(),
+        "exec_view",
+        "exec_region",
+        DispatchBackend::Cpu,
+        viewport,
+        camera,
+        camera,
+        0,
+        0,
+        true,
+        None,
+    );
+    input0.region_snapshot = stable_region_snapshot_handle(&SmolStr::new("exec_region"));
+    let frame0 = execute_plan(&ctx0, &plan0, &input0).expect("seed epoch frame");
+
+    let (plan1, ctx1, mut input1) = presentation_fixture_with_state(
+        presentation_exec_source(),
+        "exec_view",
+        "exec_region",
+        DispatchBackend::Cpu,
+        viewport,
+        camera,
+        camera,
+        1,
+        0,
+        false,
+        frame0.history.clone(),
+    );
+    input1.region_snapshot =
+        stable_region_snapshot_handle(&SmolStr::new("exec_region")).with_epoch(SnapshotEpoch(2));
+    input1.frame_state = frame_state_value_with_temporal_context(
+        camera,
+        camera,
+        viewport,
+        viewport,
+        [0.0, 0.0],
+        [0.0, 0.0],
+        1,
+        0,
+        1.0 / 60.0,
+        false,
+        1,
+        0,
+        1,
+        1.0 / 60.0,
+        SnapshotEpoch(2),
+        SnapshotEpoch(1),
+        true,
+        0,
+        true,
+        false,
+        false,
+    );
+    let frame1 = execute_plan(&ctx1, &plan1, &input1).expect("epoch-compatible reuse");
+
+    assert!(frame1.metrics.continuation_available_count > 0);
+    assert!(frame1.metrics.continuation_consumed_count > 0);
+    assert!(
+        frame1
+            .metrics
+            .continuation_diagnostics
+            .iter()
+            .any(|entry| entry.contains("expected_previous_epoch=1 history_epoch=1"))
+    );
+}
+
+#[test]
+fn topology_change_rejects_history_even_when_snapshot_epochs_line_up() {
+    let camera = CanonicalCameraInput {
+        position: [0.0, 0.0, 2.0],
+        forward: [0.0, 0.0, -1.0],
+        up: [0.0, 1.0, 0.0],
+        vertical_fov_degrees: 75.0,
+    };
+    let viewport = CanonicalViewportInput {
+        width: 4,
+        height: 4,
+    };
+
+    let (plan0, ctx0, mut input0) = presentation_fixture_with_state(
+        presentation_exec_source(),
+        "exec_view",
+        "exec_region",
+        DispatchBackend::Cpu,
+        viewport,
+        camera,
+        camera,
+        0,
+        0,
+        true,
+        None,
+    );
+    input0.region_snapshot = stable_region_snapshot_handle(&SmolStr::new("exec_region"));
+    let frame0 = execute_plan(&ctx0, &plan0, &input0).expect("seed topology frame");
+
+    let (plan1, ctx1, mut input1) = presentation_fixture_with_state(
+        presentation_exec_source(),
+        "exec_view",
+        "exec_region",
+        DispatchBackend::Cpu,
+        viewport,
+        camera,
+        camera,
+        1,
+        0,
+        false,
+        frame0.history.clone(),
+    );
+    input1.region_snapshot =
+        stable_region_snapshot_handle(&SmolStr::new("exec_region")).with_epoch(SnapshotEpoch(2));
+    input1.frame_state = frame_state_value_with_temporal_context(
+        camera,
+        camera,
+        viewport,
+        viewport,
+        [0.0, 0.0],
+        [0.0, 0.0],
+        1,
+        0,
+        1.0 / 60.0,
+        false,
+        1,
+        0,
+        1,
+        1.0 / 60.0,
+        SnapshotEpoch(2),
+        SnapshotEpoch(1),
+        true,
+        3,
+        false,
+        true,
+        false,
+    );
+    let frame1 = execute_plan(&ctx1, &plan1, &input1).expect("topology rejection");
+
+    assert_eq!(frame1.metrics.continuation_consumed_count, 0);
+    assert!(frame1.metrics.continuation_rejected_count > 0);
+    assert!(frame1.metrics.continuation_diagnostics.iter().any(|entry| {
+        entry.contains("reason=change-compatibility-mismatch")
+            && entry.contains("expected_previous_epoch=1 history_epoch=1")
+    }));
+}
+
+#[test]
+fn typed_presentation_frame_history_age_ignores_legacy_frame_index() {
+    let camera = CanonicalCameraInput {
+        position: [0.0, 0.0, 2.0],
+        forward: [0.0, 0.0, -1.0],
+        up: [0.0, 1.0, 0.0],
+        vertical_fov_degrees: 75.0,
+    };
+    let viewport = CanonicalViewportInput {
+        width: 4,
+        height: 4,
+    };
+
+    let (plan0, ctx0, input0) = presentation_fixture_with_state(
+        presentation_exec_source(),
+        "exec_view",
+        "exec_region",
+        DispatchBackend::Cpu,
+        viewport,
+        camera,
+        camera,
+        0,
+        0,
+        true,
+        None,
+    );
+    let frame0 = execute_plan(&ctx0, &plan0, &input0).expect("seed typed frame history");
+
+    let (plan1, ctx1, mut input1) = presentation_fixture_with_state(
+        presentation_exec_source(),
+        "exec_view",
+        "exec_region",
+        DispatchBackend::Cpu,
+        viewport,
+        camera,
+        camera,
+        100,
+        99,
+        false,
+        frame0.history.clone(),
+    );
+    input1.frame_state = frame_state_value_with_temporal_context(
+        camera,
+        camera,
+        viewport,
+        viewport,
+        [0.0, 0.0],
+        [0.0, 0.0],
+        100,
+        99,
+        1.0 / 60.0,
+        false,
+        1,
+        0,
+        1,
+        1.0 / 60.0,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
+        true,
+        0,
+        true,
+        false,
+        false,
+    );
+    let frame1 = execute_plan(&ctx1, &plan1, &input1).expect("typed presentation frame reuse");
+
+    assert!(frame1.metrics.continuation_available_count > 0);
+    assert!(frame1.metrics.continuation_consumed_count > 0);
+    assert!(
+        frame1
+            .metrics
+            .continuation_diagnostics
+            .iter()
+            .any(|entry| entry.contains("verdict=available"))
+    );
+}
+
+#[test]
+fn authoritative_incompatible_transition_summary_rejects_history() {
+    let camera = CanonicalCameraInput {
+        position: [0.0, 0.0, 2.0],
+        forward: [0.0, 0.0, -1.0],
+        up: [0.0, 1.0, 0.0],
+        vertical_fov_degrees: 75.0,
+    };
+    let viewport = CanonicalViewportInput {
+        width: 4,
+        height: 4,
+    };
+
+    let (plan0, ctx0, input0) = presentation_fixture_with_state(
+        presentation_exec_source(),
+        "exec_view",
+        "exec_region",
+        DispatchBackend::Cpu,
+        viewport,
+        camera,
+        camera,
+        0,
+        0,
+        true,
+        None,
+    );
+    let frame0 = execute_plan(&ctx0, &plan0, &input0).expect("seed authoritative compatibility");
+
+    let (plan1, ctx1, mut input1) = presentation_fixture_with_state(
+        presentation_exec_source(),
+        "exec_view",
+        "exec_region",
+        DispatchBackend::Cpu,
+        viewport,
+        camera,
+        camera,
+        1,
+        0,
+        false,
+        frame0.history.clone(),
+    );
+    input1.frame_state = frame_state_value_with_temporal_context(
+        camera,
+        camera,
+        viewport,
+        viewport,
+        [0.0, 0.0],
+        [0.0, 0.0],
+        1,
+        0,
+        1.0 / 60.0,
+        false,
+        1,
+        0,
+        1,
+        1.0 / 60.0,
+        SnapshotEpoch(2),
+        SnapshotEpoch(1),
+        true,
+        1,
+        false,
+        false,
+        false,
+    );
+    let frame1 = execute_plan(&ctx1, &plan1, &input1).expect("authoritative incompatibility");
+
+    assert_eq!(frame1.metrics.continuation_consumed_count, 0);
+    assert!(frame1.metrics.continuation_rejected_count > 0);
+    assert!(frame1.metrics.continuation_diagnostics.iter().any(|entry| {
+        entry.contains("reason=change-compatibility-mismatch")
+            && entry.contains("change_class=camera-motion")
+    }));
+}
+
+#[test]
+fn temporal_evidence_requirements_reject_otherwise_compatible_camera_motion() {
+    let camera = CanonicalCameraInput {
+        position: [0.0, 0.0, 2.0],
+        forward: [0.0, 0.0, -1.0],
+        up: [0.0, 1.0, 0.0],
+        vertical_fov_degrees: 75.0,
+    };
+    let viewport = CanonicalViewportInput {
+        width: 4,
+        height: 4,
+    };
+
+    let (mut plan0, ctx0, input0) = presentation_fixture_with_state(
+        presentation_exec_source(),
+        "exec_view",
+        "exec_region",
+        DispatchBackend::Cpu,
+        viewport,
+        camera,
+        camera,
+        0,
+        0,
+        true,
+        None,
+    );
+    plan0
+        .frame
+        .temporal
+        .as_mut()
+        .expect("temporal contract")
+        .required_evidence
+        .stationary = FactAvailability::Available;
+    let frame0 = execute_plan(&ctx0, &plan0, &input0).expect("seed evidence gate");
+
+    let (mut plan1, ctx1, mut input1) = presentation_fixture_with_state(
+        presentation_exec_source(),
+        "exec_view",
+        "exec_region",
+        DispatchBackend::Cpu,
+        viewport,
+        camera,
+        camera,
+        1,
+        0,
+        false,
+        frame0.history.clone(),
+    );
+    plan1
+        .frame
+        .temporal
+        .as_mut()
+        .expect("temporal contract")
+        .required_evidence
+        .stationary = FactAvailability::Available;
+    input1.frame_state = frame_state_value_with_temporal_context(
+        camera,
+        camera,
+        viewport,
+        viewport,
+        [0.0, 0.0],
+        [0.0, 0.0],
+        1,
+        0,
+        1.0 / 60.0,
+        false,
+        1,
+        0,
+        1,
+        1.0 / 60.0,
+        SnapshotEpoch(2),
+        SnapshotEpoch(1),
+        true,
+        1,
+        true,
+        false,
+        false,
+    );
+    let frame1 = execute_plan(&ctx1, &plan1, &input1).expect("evidence mismatch rejection");
+
+    assert_eq!(frame1.metrics.continuation_consumed_count, 0);
+    assert!(frame1.metrics.continuation_rejected_count > 0);
+    assert!(frame1.metrics.continuation_diagnostics.iter().any(|entry| {
+        entry.contains("reason=temporal-evidence-mismatch")
+            && entry.contains("change_class=camera-motion")
+    }));
+}
+
+#[test]
+fn temporal_evidence_requirements_apply_without_change_summary() {
+    let camera_a = CanonicalCameraInput {
+        position: [0.0, 0.0, 2.0],
+        forward: [0.0, 0.0, -1.0],
+        up: [0.0, 1.0, 0.0],
+        vertical_fov_degrees: 75.0,
+    };
+    let mut camera_b = camera_a;
+    camera_b.position = [0.18, 0.0, 2.0];
+    camera_b.forward = normalize_vec3([-0.09, 0.0, -1.0]);
+    let viewport = CanonicalViewportInput {
+        width: 4,
+        height: 4,
+    };
+
+    let (mut plan0, ctx0, input0) = presentation_fixture_with_state(
+        presentation_exec_source(),
+        "exec_view",
+        "exec_region",
+        DispatchBackend::Cpu,
+        viewport,
+        camera_a,
+        camera_a,
+        0,
+        0,
+        true,
+        None,
+    );
+    plan0
+        .frame
+        .temporal
+        .as_mut()
+        .expect("temporal contract")
+        .required_evidence
+        .stationary = FactAvailability::Available;
+    let frame0 = execute_plan(&ctx0, &plan0, &input0).expect("seed heuristic evidence gate");
+
+    let (mut plan1, ctx1, input1) = presentation_fixture_with_state(
+        presentation_exec_source(),
+        "exec_view",
+        "exec_region",
+        DispatchBackend::Cpu,
+        viewport,
+        camera_b,
+        camera_a,
+        1,
+        0,
+        false,
+        frame0.history.clone(),
+    );
+    plan1
+        .frame
+        .temporal
+        .as_mut()
+        .expect("temporal contract")
+        .required_evidence
+        .stationary = FactAvailability::Available;
+    let frame1 = execute_plan(&ctx1, &plan1, &input1).expect("heuristic evidence mismatch");
+
+    assert_eq!(frame1.metrics.continuation_consumed_count, 0);
+    assert!(frame1.metrics.continuation_rejected_count > 0);
+    assert!(frame1.metrics.continuation_diagnostics.iter().any(|entry| {
+        entry.contains("reason=temporal-evidence-mismatch")
+            && entry.contains("change_class=camera-motion")
+    }));
 }
 
 #[test]
@@ -779,6 +1253,14 @@ fn slow_camera_motion_reuses_history_and_wgsl_matches_cpu_temporal_resolve() {
     );
     assert!(cpu_with_history.metrics.continuation_available_count > 0);
     assert!(cpu_with_history.metrics.continuation_consumed_count > 0);
+    assert!(
+        cpu_with_history
+            .metrics
+            .continuation_diagnostics
+            .iter()
+            .any(|entry| entry.contains("verdict=available")
+                && entry.contains("change_class=camera-motion"))
+    );
     assert!(motion.iter().any(motion_valid));
 
     let (wgsl_plan0, wgsl_ctx0, wgsl_input0) = presentation_fixture_with_state(
@@ -951,6 +1433,14 @@ fn camera_cut_invalidates_history_and_falls_back_to_current_color() {
     );
     assert!(with_history.metrics.continuation_rejected_count > 0);
     assert_eq!(with_history.metrics.continuation_consumed_count, 0);
+    assert!(
+        with_history
+            .metrics
+            .continuation_diagnostics
+            .iter()
+            .any(|entry| entry.contains("reason=history-reset")
+                && entry.contains("change_class=history-reset"))
+    );
 }
 
 #[test]

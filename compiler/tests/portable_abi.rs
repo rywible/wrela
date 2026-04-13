@@ -1,3 +1,4 @@
+use wrela::artifact_layout::PhysicalLayoutStrategy;
 use wrela::execution_policy::{
     PresentationExecutionPolicy, QueryExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass,
     SelectedMethodClass,
@@ -16,6 +17,10 @@ use wrela::presentation_contract::{
     AttachmentClearPolicy, AttachmentLifetime, FrameAttachmentContract, FrameContract,
     LightingContract, PresentationObservabilityProfile, RealtimeQualityContract,
     RealtimeQualityTier,
+};
+use wrela::presentation_exec::resources::{
+    allocate_attachment_resources_with_history_and_strategy,
+    frame_attachment_layout_plan_with_strategy,
 };
 use wrela::presentation_exec::{
     allocate_frame_attachment_resources, allocate_frame_attachment_resources_with_history,
@@ -338,6 +343,14 @@ fn execution_policy_records_have_stable_portable_layouts() {
 fn view_and_frame_state_records_have_stable_portable_layouts() {
     let viewport = portable_builtin_record_abi("Viewport").unwrap();
     let view_state = portable_builtin_record_abi("ViewState").unwrap();
+    let snapshot_epoch = portable_builtin_record_abi("SnapshotEpoch").unwrap();
+    let presentation_frame = portable_builtin_record_abi("PresentationFrame").unwrap();
+    let simulation_tick = portable_builtin_record_abi("SimulationTick").unwrap();
+    let wall_clock_stamp = portable_builtin_record_abi("WallClockStamp").unwrap();
+    let transition_change_summary = portable_builtin_record_abi("TransitionChangeSummary").unwrap();
+    let observer_time = portable_builtin_record_abi("ObserverTime").unwrap();
+    let snapshot_transition_context =
+        portable_builtin_record_abi("SnapshotTransitionContext").unwrap();
     let frame_state = portable_builtin_record_abi("FrameState").unwrap();
 
     let PortableAbiType::Struct {
@@ -390,6 +403,170 @@ fn view_and_frame_state_records_have_stable_portable_layouts() {
     assert_eq!(portable_abi_layout(&view_state).align, 16);
 
     let PortableAbiType::Struct {
+        fields: snapshot_epoch_fields,
+        ..
+    } = &snapshot_epoch
+    else {
+        panic!("SnapshotEpoch should lower to a struct ABI");
+    };
+    assert_eq!(
+        snapshot_epoch_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["epoch"]
+    );
+    assert_eq!(portable_abi_field_offset(snapshot_epoch_fields, 0), 0);
+    assert_eq!(portable_abi_layout(&snapshot_epoch).size, 4);
+    assert_eq!(portable_abi_layout(&snapshot_epoch).align, 4);
+
+    let PortableAbiType::Struct {
+        fields: presentation_frame_fields,
+        ..
+    } = &presentation_frame
+    else {
+        panic!("PresentationFrame should lower to a struct ABI");
+    };
+    assert_eq!(
+        presentation_frame_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["index"]
+    );
+    assert_eq!(portable_abi_field_offset(presentation_frame_fields, 0), 0);
+    assert_eq!(portable_abi_layout(&presentation_frame).size, 4);
+    assert_eq!(portable_abi_layout(&presentation_frame).align, 4);
+
+    let PortableAbiType::Struct {
+        fields: simulation_tick_fields,
+        ..
+    } = &simulation_tick
+    else {
+        panic!("SimulationTick should lower to a struct ABI");
+    };
+    assert_eq!(
+        simulation_tick_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["tick"]
+    );
+    assert_eq!(portable_abi_field_offset(simulation_tick_fields, 0), 0);
+    assert_eq!(portable_abi_layout(&simulation_tick).size, 4);
+    assert_eq!(portable_abi_layout(&simulation_tick).align, 4);
+
+    let PortableAbiType::Struct {
+        fields: wall_clock_stamp_fields,
+        ..
+    } = &wall_clock_stamp
+    else {
+        panic!("WallClockStamp should lower to a struct ABI");
+    };
+    assert_eq!(
+        wall_clock_stamp_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["seconds"]
+    );
+    assert_eq!(portable_abi_field_offset(wall_clock_stamp_fields, 0), 0);
+    assert_eq!(portable_abi_layout(&wall_clock_stamp).size, 4);
+    assert_eq!(portable_abi_layout(&wall_clock_stamp).align, 4);
+
+    let PortableAbiType::Struct {
+        fields: transition_change_summary_fields,
+        ..
+    } = &transition_change_summary
+    else {
+        panic!("TransitionChangeSummary should lower to a struct ABI");
+    };
+    assert_eq!(
+        transition_change_summary_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "change_class",
+            "compatible",
+            "topology_changed",
+            "identity_changed"
+        ]
+    );
+    assert_eq!(
+        portable_abi_field_offset(transition_change_summary_fields, 0),
+        0
+    );
+    assert_eq!(
+        portable_abi_field_offset(transition_change_summary_fields, 1),
+        4
+    );
+    assert_eq!(
+        portable_abi_field_offset(transition_change_summary_fields, 2),
+        8
+    );
+    assert_eq!(
+        portable_abi_field_offset(transition_change_summary_fields, 3),
+        12
+    );
+    assert_eq!(portable_abi_layout(&transition_change_summary).size, 16);
+    assert_eq!(portable_abi_layout(&transition_change_summary).align, 4);
+
+    let PortableAbiType::Struct {
+        fields: observer_time_fields,
+        ..
+    } = &observer_time
+    else {
+        panic!("ObserverTime should lower to a struct ABI");
+    };
+    assert_eq!(
+        observer_time_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "presentation_frame",
+            "previous_presentation_frame",
+            "simulation_tick",
+            "wall_clock_stamp",
+            "delta_seconds"
+        ]
+    );
+    assert_eq!(portable_abi_field_offset(observer_time_fields, 0), 0);
+    assert_eq!(portable_abi_field_offset(observer_time_fields, 1), 4);
+    assert_eq!(portable_abi_field_offset(observer_time_fields, 2), 8);
+    assert_eq!(portable_abi_field_offset(observer_time_fields, 3), 12);
+    assert_eq!(portable_abi_field_offset(observer_time_fields, 4), 16);
+    assert_eq!(portable_abi_layout(&observer_time).size, 20);
+    assert_eq!(portable_abi_layout(&observer_time).align, 4);
+
+    let PortableAbiType::Struct {
+        fields: snapshot_transition_fields,
+        ..
+    } = &snapshot_transition_context
+    else {
+        panic!("SnapshotTransitionContext should lower to a struct ABI");
+    };
+    assert_eq!(
+        snapshot_transition_fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "current_snapshot_epoch",
+            "previous_snapshot_epoch",
+            "has_change_summary",
+            "change_summary"
+        ]
+    );
+    assert_eq!(portable_abi_field_offset(snapshot_transition_fields, 0), 0);
+    assert_eq!(portable_abi_field_offset(snapshot_transition_fields, 1), 4);
+    assert_eq!(portable_abi_field_offset(snapshot_transition_fields, 2), 8);
+    assert_eq!(portable_abi_field_offset(snapshot_transition_fields, 3), 12);
+    assert_eq!(portable_abi_layout(&snapshot_transition_context).size, 28);
+    assert_eq!(portable_abi_layout(&snapshot_transition_context).align, 4);
+
+    let PortableAbiType::Struct {
         fields: frame_fields,
         ..
     } = &frame_state
@@ -406,7 +583,9 @@ fn view_and_frame_state_records_have_stable_portable_layouts() {
             "frame_index",
             "previous_frame_index",
             "delta_seconds",
-            "history_reset"
+            "history_reset",
+            "observer_time",
+            "snapshot_transition"
         ]
     );
     assert_eq!(portable_abi_field_offset(frame_fields, 0), 0);
@@ -414,7 +593,9 @@ fn view_and_frame_state_records_have_stable_portable_layouts() {
     assert_eq!(portable_abi_field_offset(frame_fields, 2), 132);
     assert_eq!(portable_abi_field_offset(frame_fields, 3), 136);
     assert_eq!(portable_abi_field_offset(frame_fields, 4), 140);
-    assert_eq!(portable_abi_layout(&frame_state).size, 144);
+    assert_eq!(portable_abi_field_offset(frame_fields, 5), 144);
+    assert_eq!(portable_abi_field_offset(frame_fields, 6), 164);
+    assert_eq!(portable_abi_layout(&frame_state).size, 192);
     assert_eq!(portable_abi_layout(&frame_state).align, 16);
 }
 
@@ -631,6 +812,53 @@ fn presentation_attachment_resources_seed_semantic_defaults_and_preserve_history
 }
 
 #[test]
+fn presentation_attachment_resources_can_materialize_a_row_aligned_layout_plan() {
+    let frame = FrameContract {
+        outputs: vec![FrameAttachmentContract::depth("depth")],
+        primary_hit: None,
+        temporal: None,
+        quality: test_quality_contract(),
+        lighting: LightingContract::legacy_preview(false),
+        observability: PresentationObservabilityProfile::preview_compatibility(),
+    };
+
+    let plan = frame_attachment_layout_plan_with_strategy(
+        &frame,
+        &frame.outputs[0],
+        3,
+        2,
+        PhysicalLayoutStrategy::RowAligned { row_alignment: 32 },
+    )
+    .unwrap();
+    assert_eq!(
+        plan.physical.strategy,
+        PhysicalLayoutStrategy::RowAligned { row_alignment: 32 }
+    );
+    assert_eq!(plan.physical.width, 3);
+    assert_eq!(plan.physical.height, 2);
+    assert_eq!(plan.physical.row_stride, 32);
+    assert_eq!(plan.physical.total_size, 64);
+
+    let resources = allocate_attachment_resources_with_history_and_strategy(
+        &frame,
+        3,
+        2,
+        None,
+        PhysicalLayoutStrategy::RowAligned { row_alignment: 32 },
+    )
+    .unwrap();
+    let depth = resources.attachment("depth").unwrap();
+    assert_eq!(
+        depth.layout.plan.physical.strategy,
+        PhysicalLayoutStrategy::RowAligned { row_alignment: 32 }
+    );
+    assert_eq!(depth.bytes.len(), 64);
+    assert_eq!(depth.element_count(), 6);
+    assert_eq!(depth.decode(0).unwrap(), KernelValue::F32(f32::INFINITY));
+    assert_eq!(depth.decode(5).unwrap(), KernelValue::F32(f32::INFINITY));
+}
+
+#[test]
 fn unit_query_layout_is_a_stable_empty_public_record() {
     let unit = portable_builtin_record_abi("UnitQuery").unwrap();
     let PortableAbiType::Struct { fields, .. } = &unit else {
@@ -753,6 +981,7 @@ fn artifact_contract_records_encode_scene_roots_and_support_counts() {
         consumer: "shape_trace".into(),
         deterministic: true,
         version: query_plan::QUERY_PLAN_CONTRACT_VERSION,
+        transition: None,
     });
     let PortableAbiType::Struct { fields, .. } = abi else {
         panic!("artifact contract abi should lower to a struct");
@@ -1230,6 +1459,12 @@ fn portable_abi_emits_deterministic_wgsl_structs_and_rejects_runtime_value() {
     let view_state_index = rendered
         .find("struct ViewState")
         .expect("ViewState in wgsl");
+    let observer_time_index = rendered
+        .find("struct ObserverTime")
+        .expect("ObserverTime in wgsl");
+    let snapshot_transition_index = rendered
+        .find("struct SnapshotTransitionContext")
+        .expect("SnapshotTransitionContext in wgsl");
     let frame_state_index = rendered
         .find("struct FrameState")
         .expect("FrameState in wgsl");
@@ -1253,6 +1488,8 @@ fn portable_abi_emits_deterministic_wgsl_structs_and_rejects_runtime_value() {
     assert!(camera_index < view_state_index);
     assert!(viewport_index < view_state_index);
     assert!(view_state_index < frame_state_index);
+    assert!(observer_time_index < frame_state_index);
+    assert!(snapshot_transition_index < frame_state_index);
     assert!(screen_sample_index < rendered.len());
     assert!(rendered.contains("ray: RayQuery"));
     assert!(rendered.contains("hit: u32,") || rendered.contains("hit: u32"));

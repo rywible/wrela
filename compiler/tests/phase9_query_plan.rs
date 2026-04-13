@@ -1305,6 +1305,7 @@ fn phase9_contract_accessors_follow_explicit_contracts() {
         consumer: "test".into(),
         deterministic: true,
         version: query_plan::QUERY_PLAN_CONTRACT_VERSION,
+        transition: None,
     }];
     assert_eq!(
         capture_plan.artifact_contracts[0].evidence_summary.origin,

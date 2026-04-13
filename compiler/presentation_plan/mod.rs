@@ -1,13 +1,21 @@
+use crate::artifact_contract::{
+    ArtifactCompatibilityRelation, ArtifactEvidenceCompatibility, ArtifactLogicalField,
+    ArtifactLogicalSchema, ArtifactPolicyCompatibility, ArtifactSnapshotRelation,
+    ArtifactTransitionRelation, ArtifactUse, ArtifactUseKind, ArtifactUseSource,
+    ArtifactValidityPredicate, ArtifactValidityRule, SemanticArtifactContract,
+    SemanticArtifactKind,
+};
 use crate::hir;
 use crate::presentation_binding::{PresentationBindingId, PresentationBindingSummary};
 use crate::presentation_contract::{
     AttachmentClearPolicy, AttachmentElementSchema, AttachmentLifetime, AttachmentResolutionClass,
     AttachmentResolutionScale, FrameAttachmentContract, FrameAttachmentKind, FrameContract,
-    LightingContract, PresentationObservabilityProfile, PrimaryHitAttachmentContract,
-    QualityDegradationStep, RealtimeQualityContract, RealtimeQualityTier, TemporalContract,
-    TemporalHistoryRole, TemporalReuseMode, ViewContract,
+    LightingContract, PRESENTATION_CONTRACT_VERSION, PresentationObservabilityProfile,
+    PrimaryHitAttachmentContract, QualityDegradationStep, RealtimeQualityContract,
+    RealtimeQualityTier, TemporalContract, TemporalHistoryRole, TemporalReuseMode, ViewContract,
 };
 use crate::query_plan::{DispatchBackend, QueryContractId};
+use crate::semantic_evidence::SemanticEvidenceSummary;
 use smol_str::SmolStr;
 use std::collections::BTreeSet;
 
@@ -738,6 +746,92 @@ impl PresentationPlan {
             .and_then(|id| self.binding(id))
     }
 
+    pub fn semantic_artifact_contracts(&self) -> Vec<SemanticArtifactContract> {
+        self.frame_artifacts
+            .iter()
+            .filter_map(|artifact| presentation_semantic_artifact_contract(self, artifact))
+            .collect()
+    }
+
+    pub fn artifact_uses(&self) -> Vec<ArtifactUse> {
+        let contracts = self
+            .semantic_artifact_contracts()
+            .into_iter()
+            .map(|contract| (contract.id.clone(), contract))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut uses = Vec::new();
+        for artifact in &self.frame_artifacts {
+            uses.push(ArtifactUse {
+                actor: artifact.producer_pass.clone(),
+                artifact_id: artifact.id.clone(),
+                kind: ArtifactUseKind::Produce,
+                source: ArtifactUseSource::Plan,
+                required_validity: None,
+            });
+        }
+        for pass in &self.passes {
+            for attachment in &pass.consumes {
+                let Some(artifact) = self
+                    .frame_artifacts
+                    .iter()
+                    .find(|artifact| artifact.attachment == *attachment)
+                else {
+                    continue;
+                };
+                let Some(attachment_contract) = self.frame.attachment(attachment.as_str()) else {
+                    continue;
+                };
+                let (source, required_validity) = if matches!(
+                    attachment_contract.lifetime,
+                    AttachmentLifetime::HistorySlot(_)
+                ) {
+                    (
+                        ArtifactUseSource::ArtifactStore,
+                        contracts
+                            .get(&artifact.id)
+                            .map(|contract| contract.validity.clone()),
+                    )
+                } else {
+                    (ArtifactUseSource::Plan, None)
+                };
+                uses.push(ArtifactUse {
+                    actor: pass.id.clone(),
+                    artifact_id: artifact.id.clone(),
+                    kind: ArtifactUseKind::Load,
+                    source,
+                    required_validity,
+                });
+            }
+            for attachment in &pass.materializes {
+                let Some(artifact) = self
+                    .frame_artifacts
+                    .iter()
+                    .find(|artifact| artifact.attachment == *attachment)
+                else {
+                    continue;
+                };
+                let Some(attachment_contract) = self.frame.attachment(attachment.as_str()) else {
+                    continue;
+                };
+                if matches!(
+                    attachment_contract.lifetime,
+                    AttachmentLifetime::HistorySlot(_)
+                ) {
+                    uses.push(ArtifactUse {
+                        actor: pass.id.clone(),
+                        artifact_id: artifact.id.clone(),
+                        kind: ArtifactUseKind::Preserve,
+                        source: ArtifactUseSource::Plan,
+                        required_validity: contracts
+                            .get(&artifact.id)
+                            .map(|contract| contract.validity.clone()),
+                    });
+                }
+            }
+        }
+        uses
+    }
+
     pub fn apply_participant_policy(&mut self, radiance_enabled: bool, medium_enabled: bool) {
         if !radiance_enabled {
             self.frame
@@ -831,6 +925,139 @@ impl PresentationObservability {
             backend_dispatch: true,
             future_acceleration_hooks: true,
         }
+    }
+}
+
+fn presentation_semantic_artifact_contract(
+    plan: &PresentationPlan,
+    artifact: &FrameArtifactContract,
+) -> Option<SemanticArtifactContract> {
+    let attachment = plan.frame.attachment(artifact.attachment.as_str())?;
+    let history_slot = plan.frame.temporal.as_ref().and_then(|temporal| {
+        temporal
+            .history_slots
+            .iter()
+            .find(|slot| slot.attachment == artifact.attachment)
+            .map(|slot| (temporal, slot))
+    });
+    let kind = if history_slot.is_some() {
+        SemanticArtifactKind::PresentationHistory
+    } else {
+        SemanticArtifactKind::PresentationAttachment
+    };
+    let compatibility = if let Some((temporal, _)) = history_slot {
+        ArtifactCompatibilityRelation {
+            snapshot: ArtifactSnapshotRelation::PreviousSnapshotEpoch,
+            transition: ArtifactTransitionRelation {
+                compatibility: Some(temporal.transition_compatibility),
+                requires_previous_snapshot: true,
+            },
+            policy: ArtifactPolicyCompatibility {
+                mode: crate::artifact_key::ArtifactPolicyDigestMode::CompatibleRange,
+            },
+            evidence: ArtifactEvidenceCompatibility {
+                origin: SemanticEvidenceSummary::contract_bound().origin,
+                scope: SemanticEvidenceSummary::contract_bound().scope,
+            },
+        }
+    } else {
+        ArtifactCompatibilityRelation {
+            snapshot: ArtifactSnapshotRelation::ExactSnapshot,
+            transition: ArtifactTransitionRelation {
+                compatibility: None,
+                requires_previous_snapshot: false,
+            },
+            policy: ArtifactPolicyCompatibility {
+                mode: crate::artifact_key::ArtifactPolicyDigestMode::Exact,
+            },
+            evidence: ArtifactEvidenceCompatibility {
+                origin: SemanticEvidenceSummary::contract_bound().origin,
+                scope: SemanticEvidenceSummary::contract_bound().scope,
+            },
+        }
+    };
+    let validity = if let Some((temporal, slot)) = history_slot {
+        let mut predicates = vec![
+            ArtifactValidityRule::predicate(
+                ArtifactValidityPredicate::PreviousSnapshotMatchesStored,
+            ),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::LayoutSignatureMatches),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::HistoryCompatibilityMatches),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::CompatibleChange(
+                temporal.transition_compatibility,
+            )),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::MaxPresentationFrameAge(
+                u64::from(slot.max_age_frames),
+            )),
+        ];
+        if temporal.requires_snapshot_lineage_match {
+            predicates.push(ArtifactValidityRule::predicate(
+                ArtifactValidityPredicate::SnapshotLineageMatchesCurrent,
+            ));
+        }
+        ArtifactValidityRule::all(predicates)
+    } else {
+        ArtifactValidityRule::Always
+    };
+    Some(SemanticArtifactContract {
+        id: artifact.id.clone(),
+        kind,
+        logical_schema: presentation_artifact_logical_schema(
+            attachment,
+            history_slot.map(|(_, slot)| slot),
+        ),
+        compatibility,
+        validity,
+        producer: artifact.producer_pass.clone(),
+        consumer: SmolStr::new("presentation.frame"),
+        deterministic: true,
+        version: PRESENTATION_CONTRACT_VERSION,
+        transition: None,
+        evidence_summary: SemanticEvidenceSummary::contract_bound(),
+    })
+}
+
+fn presentation_artifact_logical_schema(
+    attachment: &FrameAttachmentContract,
+    history_slot: Option<&crate::presentation_contract::TemporalHistorySlotContract>,
+) -> ArtifactLogicalSchema {
+    let mut fields = vec![
+        ArtifactLogicalField::new("attachment", attachment.name.clone()),
+        ArtifactLogicalField::new("kind", format!("{:?}", attachment.kind)),
+        ArtifactLogicalField::new("element_schema", format!("{:?}", attachment.element_schema)),
+        ArtifactLogicalField::new("lifetime", format!("{:?}", attachment.lifetime)),
+        ArtifactLogicalField::new("resolution", format!("{:?}", attachment.resolution)),
+        ArtifactLogicalField::new(
+            "scale",
+            format!(
+                "{}x{}",
+                attachment.scale.divisor_x, attachment.scale.divisor_y
+            ),
+        ),
+        ArtifactLogicalField::new("clear_policy", format!("{:?}", attachment.clear_policy)),
+    ];
+    if let Some(slot) = history_slot {
+        fields.push(ArtifactLogicalField::new(
+            "history_slot",
+            slot.slot.to_string(),
+        ));
+        fields.push(ArtifactLogicalField::new(
+            "history_role",
+            format!("{:?}", slot.role),
+        ));
+        fields.push(ArtifactLogicalField::new(
+            "history_compatibility_hash",
+            slot.compatibility.compatibility_hash().to_string(),
+        ));
+    }
+    ArtifactLogicalSchema {
+        namespace: SmolStr::new("presentation"),
+        name: SmolStr::new(if history_slot.is_some() {
+            "history-slot"
+        } else {
+            "attachment"
+        }),
+        fields,
     }
 }
 
@@ -1365,6 +1592,92 @@ pub fn validate_plan(plan: &PresentationPlan) -> Vec<PresentationPlanValidationE
                 "frame artifact '{}' references missing attachment '{}'",
                 artifact.id, artifact.attachment
             )));
+        }
+    }
+    let semantic_artifacts = plan
+        .semantic_artifact_contracts()
+        .into_iter()
+        .map(|contract| (contract.id.clone(), contract))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let produced_by = plan
+        .frame_artifacts
+        .iter()
+        .map(|artifact| (artifact.id.clone(), artifact.producer_pass.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for artifact in &plan.frame_artifacts {
+        if !plan
+            .passes
+            .iter()
+            .any(|pass| pass.id == artifact.producer_pass)
+        {
+            errors.push(validation_error(format!(
+                "frame artifact '{}' producer pass '{}' is missing from the plan",
+                artifact.id, artifact.producer_pass
+            )));
+        }
+    }
+    for use_record in plan.artifact_uses() {
+        match (use_record.kind, use_record.source) {
+            (ArtifactUseKind::Load, ArtifactUseSource::Plan) => {
+                if !produced_by.contains_key(&use_record.artifact_id) {
+                    errors.push(validation_error(format!(
+                        "artifact '{}' is loaded by '{}' without a producer in the plan",
+                        use_record.artifact_id, use_record.actor
+                    )));
+                }
+            }
+            (ArtifactUseKind::Load, ArtifactUseSource::ArtifactStore) => {
+                let Some(contract) = semantic_artifacts.get(&use_record.artifact_id) else {
+                    errors.push(validation_error(format!(
+                        "artifact '{}' is loaded from the artifact store by '{}' but is not declared",
+                        use_record.artifact_id, use_record.actor
+                    )));
+                    continue;
+                };
+                if !contract.validity.is_explicit() {
+                    errors.push(validation_error(format!(
+                        "artifact '{}' is reused by '{}' without an explicit validity rule",
+                        use_record.artifact_id, use_record.actor
+                    )));
+                }
+                let Some(frame_artifact) = plan
+                    .frame_artifacts
+                    .iter()
+                    .find(|artifact| artifact.id == use_record.artifact_id)
+                else {
+                    continue;
+                };
+                let Some(attachment) = plan.frame.attachment(frame_artifact.attachment.as_str())
+                else {
+                    continue;
+                };
+                if !matches!(attachment.lifetime, AttachmentLifetime::HistorySlot(_)) {
+                    errors.push(validation_error(format!(
+                        "artifact '{}' is marked as store-reused by '{}' but is not a history slot",
+                        use_record.artifact_id, use_record.actor
+                    )));
+                }
+            }
+            (ArtifactUseKind::Preserve, _) => {
+                let Some(frame_artifact) = plan
+                    .frame_artifacts
+                    .iter()
+                    .find(|artifact| artifact.id == use_record.artifact_id)
+                else {
+                    continue;
+                };
+                let Some(attachment) = plan.frame.attachment(frame_artifact.attachment.as_str())
+                else {
+                    continue;
+                };
+                if !matches!(attachment.lifetime, AttachmentLifetime::HistorySlot(_)) {
+                    errors.push(validation_error(format!(
+                        "artifact '{}' is preserved by '{}' but is not declared as a history slot",
+                        use_record.artifact_id, use_record.actor
+                    )));
+                }
+            }
+            _ => {}
         }
     }
     for pass in &plan.passes {

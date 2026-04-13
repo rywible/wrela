@@ -1,3 +1,4 @@
+use crate::artifact_layout::{PhysicalLayoutPlan, PhysicalLayoutStrategy};
 use crate::kernel::{KernelStructValue, KernelValue};
 use crate::portable::{
     PortableAbiError, PortableAbiType, portable_abi_array_stride, portable_abi_decode_value,
@@ -11,6 +12,7 @@ use crate::presentation_contract::{
 use crate::query_exec::cpu::{default_medium, default_surface};
 use smol_str::SmolStr;
 use std::collections::BTreeMap;
+use std::ops::Range;
 use thiserror::Error;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -26,6 +28,14 @@ pub enum PresentationResourceError {
     MissingHistoryAttachment { attachment: SmolStr },
     #[error("history attachment '{attachment}' does not match prior layout")]
     HistoryLayoutMismatch { attachment: SmolStr },
+    #[error(
+        "attachment '{attachment}' expected dense shader output of {expected} bytes but received {actual}"
+    )]
+    DenseOutputSizeMismatch {
+        attachment: SmolStr,
+        expected: usize,
+        actual: usize,
+    },
     #[error("attachment '{attachment}' index {index} is out of bounds for {len} elements")]
     IndexOutOfBounds {
         attachment: SmolStr,
@@ -34,6 +44,98 @@ pub enum PresentationResourceError {
     },
     #[error(transparent)]
     Portable(#[from] PortableAbiError),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameAttachmentLayoutMeaning {
+    pub attachment: FrameAttachmentContract,
+    pub element_abi: PortableAbiType,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameAttachmentLayoutPlan {
+    pub meaning: FrameAttachmentLayoutMeaning,
+    pub physical: PhysicalLayoutPlan,
+    pub element_size: u32,
+    pub wgsl_storage_type: String,
+}
+
+impl FrameAttachmentLayoutPlan {
+    pub fn materialize(&self) -> FrameAttachmentLayout {
+        FrameAttachmentLayout {
+            attachment: self.meaning.attachment.clone(),
+            width: self.physical.width,
+            height: self.physical.height,
+            element_abi: self.meaning.element_abi.clone(),
+            element_size: self.element_size,
+            element_stride: self.physical.element_stride,
+            total_size: self.physical.total_size,
+            wgsl_storage_type: self.wgsl_storage_type.clone(),
+            plan: self.clone(),
+        }
+    }
+
+    pub fn dense_output_size(&self) -> usize {
+        self.physical.element_count as usize * self.physical.element_stride as usize
+    }
+
+    pub fn compatibility_signature(&self) -> u64 {
+        let kind = format!("{:?}", self.meaning.attachment.kind);
+        let element_schema = format!("{:?}", self.meaning.attachment.element_schema);
+        let lifetime = format!("{:?}", self.meaning.attachment.lifetime);
+        let resolution = format!("{:?}", self.meaning.attachment.resolution);
+        let element_abi = format!("{:?}", self.meaning.element_abi);
+        let strategy = format!("{:?}", self.physical.strategy);
+        crate::query_exec::ids::stable_semantic_id(&[
+            kind.as_bytes(),
+            element_schema.as_bytes(),
+            lifetime.as_bytes(),
+            resolution.as_bytes(),
+            element_abi.as_bytes(),
+            &self.meaning.attachment.scale.divisor_x.to_le_bytes(),
+            &self.meaning.attachment.scale.divisor_y.to_le_bytes(),
+            &self.meaning.width.to_le_bytes(),
+            &self.meaning.height.to_le_bytes(),
+            &self.physical.element_stride.to_le_bytes(),
+            &self.physical.row_stride.to_le_bytes(),
+            &self.physical.total_size.to_le_bytes(),
+            strategy.as_bytes(),
+        ])
+    }
+
+    pub fn pack_dense_output_bytes(
+        &self,
+        dense_bytes: &[u8],
+    ) -> Result<Vec<u8>, PresentationResourceError> {
+        let expected = self.dense_output_size();
+        if dense_bytes.len() != expected {
+            return Err(PresentationResourceError::DenseOutputSizeMismatch {
+                attachment: self.meaning.attachment.name.clone(),
+                expected,
+                actual: dense_bytes.len(),
+            });
+        }
+        if self.physical.row_stride
+            == self
+                .physical
+                .width
+                .saturating_mul(self.physical.element_stride)
+        {
+            return Ok(dense_bytes.to_vec());
+        }
+
+        let mut bytes = vec![0; self.physical.total_size as usize];
+        let stride = self.physical.element_stride as usize;
+        for index in 0..self.physical.element_count as usize {
+            let dense_start = index * stride;
+            let dense_end = dense_start + stride;
+            let range = layout_element_range(self, index)?;
+            bytes[range].copy_from_slice(&dense_bytes[dense_start..dense_end]);
+        }
+        Ok(bytes)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,6 +148,7 @@ pub struct FrameAttachmentLayout {
     pub element_stride: u32,
     pub total_size: u32,
     pub wgsl_storage_type: String,
+    pub plan: FrameAttachmentLayoutPlan,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -89,13 +192,33 @@ pub fn allocate_attachment_resources_with_history(
     height: u32,
     previous: Option<&AttachmentResourceSet>,
 ) -> Result<AttachmentResourceSet, PresentationResourceError> {
+    allocate_attachment_resources_with_history_and_strategy(
+        frame,
+        width,
+        height,
+        previous,
+        PhysicalLayoutStrategy::DenseBuffer,
+    )
+}
+
+pub fn allocate_attachment_resources_with_history_and_strategy(
+    frame: &FrameContract,
+    width: u32,
+    height: u32,
+    previous: Option<&AttachmentResourceSet>,
+    strategy: PhysicalLayoutStrategy,
+) -> Result<AttachmentResourceSet, PresentationResourceError> {
     let mut attachments = BTreeMap::new();
     for attachment in &frame.outputs {
-        let layout = frame_attachment_layout(frame, attachment, width, height)?;
-        let bytes = initialize_attachment_bytes(attachment, &layout, previous)?;
+        let layout_plan =
+            frame_attachment_layout_plan_with_strategy(frame, attachment, width, height, strategy)?;
+        let bytes = initialize_attachment_bytes(attachment, &layout_plan, previous)?;
         attachments.insert(
             attachment.name.clone(),
-            AttachmentResource { bytes, layout },
+            AttachmentResource {
+                bytes,
+                layout: layout_plan.materialize(),
+            },
         );
     }
     Ok(AttachmentResourceSet {
@@ -111,22 +234,58 @@ pub fn frame_attachment_layout(
     width: u32,
     height: u32,
 ) -> Result<FrameAttachmentLayout, PresentationResourceError> {
-    let _ = frame;
+    frame_attachment_layout_plan(frame, attachment, width, height).map(|plan| plan.materialize())
+}
+
+pub fn frame_attachment_layout_plan(
+    frame: &FrameContract,
+    attachment: &FrameAttachmentContract,
+    width: u32,
+    height: u32,
+) -> Result<FrameAttachmentLayoutPlan, PresentationResourceError> {
+    frame_attachment_layout_plan_with_strategy(
+        frame,
+        attachment,
+        width,
+        height,
+        PhysicalLayoutStrategy::DenseBuffer,
+    )
+}
+
+pub fn frame_attachment_layout_plan_with_strategy(
+    frame: &FrameContract,
+    attachment: &FrameAttachmentContract,
+    width: u32,
+    height: u32,
+    strategy: PhysicalLayoutStrategy,
+) -> Result<FrameAttachmentLayoutPlan, PresentationResourceError> {
     let element_abi = attachment_element_abi(frame, attachment)?;
     let element_size = portable_abi_layout(&element_abi).size;
     let element_stride = portable_abi_array_stride(&element_abi);
     let scaled_width = width.div_ceil(attachment.scale.divisor_x.max(1));
     let scaled_height = height.div_ceil(attachment.scale.divisor_y.max(1));
-    let element_count = scaled_width.saturating_mul(scaled_height);
-    Ok(FrameAttachmentLayout {
-        attachment: attachment.clone(),
-        width: scaled_width,
-        height: scaled_height,
+    let wgsl_storage_type = portable_abi_wgsl_type_name(&element_abi)?;
+    let physical = match strategy {
+        PhysicalLayoutStrategy::DenseBuffer => {
+            PhysicalLayoutPlan::dense_buffer(scaled_width, scaled_height, element_stride)
+        }
+        PhysicalLayoutStrategy::RowAligned { row_alignment } => PhysicalLayoutPlan::row_aligned(
+            scaled_width,
+            scaled_height,
+            element_stride,
+            row_alignment,
+        ),
+    };
+    Ok(FrameAttachmentLayoutPlan {
+        meaning: FrameAttachmentLayoutMeaning {
+            attachment: attachment.clone(),
+            element_abi,
+            width: scaled_width,
+            height: scaled_height,
+        },
+        physical,
         element_size,
-        element_stride,
-        total_size: element_stride.saturating_mul(element_count),
-        wgsl_storage_type: portable_abi_wgsl_type_name(&element_abi)?,
-        element_abi,
+        wgsl_storage_type,
     })
 }
 
@@ -176,7 +335,7 @@ impl AttachmentResourceSet {
 
 impl AttachmentResource {
     pub fn element_count(&self) -> usize {
-        self.layout.width.saturating_mul(self.layout.height) as usize
+        self.layout.plan.physical.element_count as usize
     }
 
     pub fn encode(
@@ -202,61 +361,34 @@ impl AttachmentResource {
         &self,
         index: usize,
     ) -> Result<std::ops::Range<usize>, PresentationResourceError> {
-        if index >= self.element_count() {
-            return Err(PresentationResourceError::IndexOutOfBounds {
-                attachment: self.layout.attachment.name.clone(),
-                index,
-                len: self.element_count(),
-            });
-        }
-        let start = index * self.layout.element_stride as usize;
-        let end = start + self.layout.element_stride as usize;
-        Ok(start..end)
+        layout_element_range(&self.layout.plan, index)
     }
 }
 
 impl FrameAttachmentLayout {
     pub fn compatibility_signature(&self) -> u64 {
-        let kind = format!("{:?}", self.attachment.kind);
-        let element_schema = format!("{:?}", self.attachment.element_schema);
-        let lifetime = format!("{:?}", self.attachment.lifetime);
-        let resolution = format!("{:?}", self.attachment.resolution);
-        let element_abi = format!("{:?}", self.element_abi);
-        crate::query_exec::ids::stable_semantic_id(&[
-            kind.as_bytes(),
-            element_schema.as_bytes(),
-            lifetime.as_bytes(),
-            resolution.as_bytes(),
-            element_abi.as_bytes(),
-            &self.attachment.scale.divisor_x.to_le_bytes(),
-            &self.attachment.scale.divisor_y.to_le_bytes(),
-            &self.width.to_le_bytes(),
-            &self.height.to_le_bytes(),
-            &self.element_stride.to_le_bytes(),
-            &self.total_size.to_le_bytes(),
-        ])
+        self.plan.compatibility_signature()
     }
 }
 
 fn initialize_attachment_bytes(
     attachment: &FrameAttachmentContract,
-    layout: &FrameAttachmentLayout,
+    layout: &FrameAttachmentLayoutPlan,
     previous: Option<&AttachmentResourceSet>,
 ) -> Result<Vec<u8>, PresentationResourceError> {
     match attachment.clear_policy {
-        AttachmentClearPolicy::Zero => Ok(vec![0; layout.total_size as usize]),
+        AttachmentClearPolicy::Zero => Ok(vec![0; layout.physical.total_size as usize]),
         AttachmentClearPolicy::SemanticDefault => {
-            let mut bytes = vec![0; layout.total_size as usize];
+            let mut bytes = vec![0; layout.physical.total_size as usize];
             let encoded = portable_abi_encode_value(
-                &layout.element_abi,
+                &layout.meaning.element_abi,
                 &semantic_default_value(attachment),
             )?;
-            for index in 0..layout.width.saturating_mul(layout.height) as usize {
-                let start = index * layout.element_stride as usize;
-                let end = start + layout.element_stride as usize;
-                bytes[start..end].fill(0);
-                let copy_len = encoded.len().min(layout.element_stride as usize);
-                bytes[start..start + copy_len].copy_from_slice(&encoded[..copy_len]);
+            for index in 0..layout.physical.element_count as usize {
+                let range = layout_element_range(layout, index)?;
+                bytes[range.clone()].fill(0);
+                let copy_len = encoded.len().min(range.len());
+                bytes[range.start..range.start + copy_len].copy_from_slice(&encoded[..copy_len]);
             }
             Ok(bytes)
         }
@@ -266,11 +398,7 @@ fn initialize_attachment_bytes(
                 .ok_or_else(|| PresentationResourceError::MissingHistoryAttachment {
                     attachment: attachment.name.clone(),
                 })?;
-            if prior.layout.width != layout.width
-                || prior.layout.height != layout.height
-                || prior.layout.element_abi != layout.element_abi
-                || prior.layout.element_stride != layout.element_stride
-            {
+            if prior.layout.plan.compatibility_signature() != layout.compatibility_signature() {
                 return Err(PresentationResourceError::HistoryLayoutMismatch {
                     attachment: attachment.name.clone(),
                 });
@@ -278,6 +406,31 @@ fn initialize_attachment_bytes(
             Ok(prior.bytes.clone())
         }
     }
+}
+
+fn layout_element_range(
+    layout: &FrameAttachmentLayoutPlan,
+    index: usize,
+) -> Result<Range<usize>, PresentationResourceError> {
+    if index >= layout.physical.element_count as usize {
+        return Err(PresentationResourceError::IndexOutOfBounds {
+            attachment: layout.meaning.attachment.name.clone(),
+            index,
+            len: layout.physical.element_count as usize,
+        });
+    }
+
+    let width = layout.physical.width as usize;
+    if width == 0 {
+        return Ok(0..0);
+    }
+
+    let row = index / width;
+    let column = index % width;
+    let start = row * layout.physical.row_stride as usize
+        + column * layout.physical.element_stride as usize;
+    let end = start + layout.physical.element_stride as usize;
+    Ok(start..end)
 }
 
 fn semantic_default_value(attachment: &FrameAttachmentContract) -> KernelValue {

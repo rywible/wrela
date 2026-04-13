@@ -69,6 +69,7 @@ pub struct PresentationFrameCostReport {
     pub surface_resolve_count: u32,
     pub participant_resolve_count: u32,
     pub history_reuse_rate: f32,
+    pub continuation_diagnostics: Vec<String>,
     pub attachment_bytes: Vec<PresentationAttachmentBytes>,
     pub passes: Vec<PresentationPassCost>,
     pub active_acceleration_artifacts: Vec<String>,
@@ -221,6 +222,12 @@ pub fn render_frame_cost_report(report: &PresentationFrameCostReport) -> String 
         out.push_str(&format!(
             "active_degradations={}\n",
             report.quality.active_degradations.join(",")
+        ));
+    }
+    if !report.continuation_diagnostics.is_empty() {
+        out.push_str(&format!(
+            "continuation_diagnostics={}\n",
+            report.continuation_diagnostics.join(" | ")
         ));
     }
     out.push_str(&format!(

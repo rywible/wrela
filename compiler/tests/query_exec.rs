@@ -1,5 +1,6 @@
 use smol_str::SmolStr;
 use std::path::PathBuf;
+use wrela::artifact_contract::{ArtifactUseKind, ArtifactUseSource};
 use wrela::hir;
 use wrela::hir::lower as hir_lower;
 use wrela::hir::project::load_project;
@@ -1575,6 +1576,64 @@ fn query_exec_traces_report_observability_counters() {
     assert_eq!(
         wgsl_batch_trace.cost_report.fidelity,
         CostFidelity::StructuralApproximation
+    );
+}
+
+#[test]
+fn query_plans_declare_store_backed_artifact_dependencies_with_explicit_validity_rules() {
+    let plan =
+        BatchQueryPlan::for_shape_query(BatchQueryKind::Trace, DispatchBackend::VirtualGpu, None);
+    let semantic_artifacts = plan
+        .semantic_artifact_contracts()
+        .into_iter()
+        .map(|contract| (contract.id.clone(), contract))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let store_loads = plan
+        .artifact_uses()
+        .into_iter()
+        .filter(|use_record| use_record.source == ArtifactUseSource::ArtifactStore)
+        .collect::<Vec<_>>();
+
+    assert!(
+        !store_loads.is_empty(),
+        "shape trace plans should declare store-backed query artifacts"
+    );
+    for use_record in &store_loads {
+        assert_eq!(use_record.kind, ArtifactUseKind::Load);
+        let contract = semantic_artifacts
+            .get(&use_record.artifact_id)
+            .expect("semantic artifact contract for store-backed use");
+        assert!(
+            contract.validity.is_explicit(),
+            "store-backed artifact '{}' must declare explicit validity",
+            contract.id
+        );
+        assert_eq!(
+            use_record.required_validity.as_ref(),
+            Some(&contract.validity),
+            "artifact use should preserve the contract validity rule for '{}'",
+            contract.id
+        );
+    }
+
+    let store_backed_schema_names = store_loads
+        .iter()
+        .map(|use_record| {
+            semantic_artifacts
+                .get(&use_record.artifact_id)
+                .expect("store-backed semantic artifact")
+                .logical_schema
+                .name
+                .clone()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        store_backed_schema_names.contains("support-summary"),
+        "support summaries should remain store-backed query artifacts"
+    );
+    assert!(
+        store_backed_schema_names.contains("capture-cache"),
+        "capture caches should remain store-backed query artifacts"
     );
 }
 

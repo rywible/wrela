@@ -1,5 +1,8 @@
 use crate::kernel::{KernelStructValue, KernelValue};
-use crate::presentation_contract::{CanonicalCameraInput, CanonicalViewportInput};
+use crate::presentation_contract::TemporalChangeClass;
+use crate::presentation_contract::{
+    CanonicalCameraInput, CanonicalViewportInput, TemporalContract,
+};
 use crate::presentation_exec::{
     PresentationExecError, PresentationExecutionInput, expect_bool, expect_struct, expect_u32,
     expect_vec2, expect_vec3, field, frame_state_temporal_components,
@@ -8,16 +11,49 @@ use crate::presentation_plan::{
     MotionResolvePassContract, PresentationPlan, TemporalResolvePassContract,
 };
 use crate::query_exec::BatchQueryExecutionTrace;
+use crate::semantic_evidence::FactAvailability;
+use crate::state_advance::ChangeClass;
 use smol_str::SmolStr;
 
 use super::resources::AttachmentResourceSet;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct ContinuationCounts {
     pub available: u32,
     pub consumed: u32,
     pub rejected: u32,
     pub unavailable: u32,
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContinuationVerdict {
+    Available,
+    Rejected,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContinuationRejectReason {
+    NoHistory,
+    HistoryReset,
+    SnapshotEpochMismatch,
+    SnapshotLineageMismatch,
+    StrictFrameContinuityMismatch,
+    AgeExceeded,
+    SlotMismatch,
+    ChangeCompatibilityMismatch,
+    TemporalEvidenceMismatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ContinuationAssessment {
+    verdict: ContinuationVerdict,
+    reason: Option<ContinuationRejectReason>,
+    change_class: TemporalChangeClass,
+    accepted_change_class: TemporalChangeClass,
+    expected_previous_epoch: Option<u64>,
+    history_epoch: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -27,13 +63,6 @@ pub(super) struct TemporalResolveInputSample {
     pub clamp_min: [f32; 3],
     pub clamp_max: [f32; 3],
     pub use_history: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HistoryVerdict {
-    Available,
-    Rejected,
-    Unavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -53,12 +82,7 @@ pub(super) fn motion_resolve(
     contract: &MotionResolvePassContract,
 ) -> Result<ContinuationCounts, PresentationExecError> {
     let components = frame_state_temporal_components(&input.frame_state)?;
-    let history_verdict = history_verdict(
-        plan,
-        input,
-        components.frame_index,
-        components.previous_frame_index,
-    )?;
+    let assessment = history_assessment(plan, input, &components)?;
     let previous_hits = contract
         .history_primary_hit_attachment
         .as_ref()
@@ -79,7 +103,7 @@ pub(super) fn motion_resolve(
                 components.previous_jitter,
                 hit_position(hit)?,
             );
-            if matches!(history_verdict, HistoryVerdict::Available) {
+            if matches!(assessment.verdict, ContinuationVerdict::Available) {
                 match previous_sample {
                     Some(previous_sample)
                         if sample_in_view(previous_sample, components.previous_viewport) =>
@@ -139,10 +163,10 @@ pub(super) fn motion_resolve(
                     }
                 }
             } else {
-                match history_verdict {
-                    HistoryVerdict::Rejected => counts.rejected += 1,
-                    HistoryVerdict::Unavailable => counts.unavailable += 1,
-                    HistoryVerdict::Available => {}
+                match assessment.verdict {
+                    ContinuationVerdict::Rejected => counts.rejected += 1,
+                    ContinuationVerdict::Unavailable => counts.unavailable += 1,
+                    ContinuationVerdict::Available => {}
                 }
                 MotionSample {
                     delta_pixels: [0.0, 0.0],
@@ -162,6 +186,9 @@ pub(super) fn motion_resolve(
         };
         motion_attachment.encode(index, &motion_value(motion))?;
     }
+    counts
+        .diagnostics
+        .push(continuation_diagnostic(&assessment));
     Ok(counts)
 }
 
@@ -320,19 +347,35 @@ fn temporal_consumed_count(inputs: &[TemporalResolveInputSample]) -> u32 {
     inputs.iter().filter(|input| input.use_history).count() as u32
 }
 
-fn history_verdict(
+fn history_assessment(
     plan: &PresentationPlan,
     input: &PresentationExecutionInput,
-    frame_index: u32,
-    previous_frame_index: u32,
-) -> Result<HistoryVerdict, PresentationExecError> {
+    components: &crate::presentation_exec::FrameStateTemporalComponents,
+) -> Result<ContinuationAssessment, PresentationExecError> {
     let Some(temporal) = &plan.frame.temporal else {
-        return Ok(HistoryVerdict::Unavailable);
+        return Ok(ContinuationAssessment {
+            verdict: ContinuationVerdict::Unavailable,
+            reason: Some(ContinuationRejectReason::NoHistory),
+            change_class: TemporalChangeClass::Unknown,
+            accepted_change_class: TemporalChangeClass::Unknown,
+            expected_previous_epoch: None,
+            history_epoch: None,
+        });
     };
     let Some(history) = &input.history else {
-        return Ok(HistoryVerdict::Unavailable);
+        return Ok(ContinuationAssessment {
+            verdict: ContinuationVerdict::Unavailable,
+            reason: Some(ContinuationRejectReason::NoHistory),
+            change_class: frame_change_class(components),
+            accepted_change_class: temporal.change_class,
+            expected_previous_epoch: Some(components.previous_snapshot_epoch.0),
+            history_epoch: None,
+        });
     };
     let frame = expect_struct(&input.frame_state, "FrameState")?;
+    let change_class = frame_change_class(components);
+    let expected_previous_epoch = Some(components.previous_snapshot_epoch.0);
+    let history_epoch = Some(history.snapshot_handle.epoch().0);
     if expect_bool(field(frame, "history_reset")?)?
         && matches!(
             temporal.invalidation,
@@ -341,34 +384,282 @@ fn history_verdict(
                 | crate::presentation_contract::TemporalInvalidationPolicy::CameraCutHistoryMismatchOrDisocclusion
         )
     {
-        return Ok(HistoryVerdict::Rejected);
+        return Ok(ContinuationAssessment {
+            verdict: ContinuationVerdict::Rejected,
+            reason: Some(ContinuationRejectReason::HistoryReset),
+            change_class,
+            accepted_change_class: temporal.change_class,
+            expected_previous_epoch,
+            history_epoch,
+        });
+    }
+    if history.snapshot_handle.epoch() != components.previous_snapshot_epoch {
+        return Ok(ContinuationAssessment {
+            verdict: ContinuationVerdict::Rejected,
+            reason: Some(ContinuationRejectReason::SnapshotEpochMismatch),
+            change_class,
+            accepted_change_class: temporal.change_class,
+            expected_previous_epoch,
+            history_epoch,
+        });
+    }
+    if temporal.requires_snapshot_lineage_match
+        && history.snapshot_handle.root_entity().lineage_id()
+            != input.region_snapshot.root_entity().lineage_id()
+    {
+        return Ok(ContinuationAssessment {
+            verdict: ContinuationVerdict::Rejected,
+            reason: Some(ContinuationRejectReason::SnapshotLineageMismatch),
+            change_class,
+            accepted_change_class: temporal.change_class,
+            expected_previous_epoch,
+            history_epoch,
+        });
     }
     if matches!(
         temporal.validation,
         crate::presentation_contract::TemporalValidationStrictness::Strict
-    ) && previous_frame_index != history.frame_index
+    ) && components.previous_presentation_frame != history.presentation_frame
     {
-        return Ok(HistoryVerdict::Rejected);
+        return Ok(ContinuationAssessment {
+            verdict: ContinuationVerdict::Rejected,
+            reason: Some(ContinuationRejectReason::StrictFrameContinuityMismatch),
+            change_class,
+            accepted_change_class: temporal.change_class,
+            expected_previous_epoch,
+            history_epoch,
+        });
     }
-    let age = frame_index.saturating_sub(history.frame_index);
+    let age = components
+        .presentation_frame
+        .saturating_sub(history.presentation_frame);
     for slot in &temporal.history_slots {
         if age > slot.max_age_frames {
-            return Ok(HistoryVerdict::Rejected);
+            return Ok(ContinuationAssessment {
+                verdict: ContinuationVerdict::Rejected,
+                reason: Some(ContinuationRejectReason::AgeExceeded),
+                change_class,
+                accepted_change_class: temporal.change_class,
+                expected_previous_epoch,
+                history_epoch,
+            });
         }
         let Some(previous_slot) = history
             .slots
             .iter()
             .find(|previous| previous.slot == slot.slot)
         else {
-            return Ok(HistoryVerdict::Rejected);
+            return Ok(ContinuationAssessment {
+                verdict: ContinuationVerdict::Rejected,
+                reason: Some(ContinuationRejectReason::SlotMismatch),
+                change_class,
+                accepted_change_class: temporal.change_class,
+                expected_previous_epoch,
+                history_epoch,
+            });
         };
         if previous_slot.compatibility != slot.compatibility
             || previous_slot.attachment != slot.attachment
         {
-            return Ok(HistoryVerdict::Rejected);
+            return Ok(ContinuationAssessment {
+                verdict: ContinuationVerdict::Rejected,
+                reason: Some(ContinuationRejectReason::SlotMismatch),
+                change_class,
+                accepted_change_class: temporal.change_class,
+                expected_previous_epoch,
+                history_epoch,
+            });
+        }
+        if previous_slot.reuse_key.snapshot_id != history.snapshot_handle.snapshot_id()
+            || previous_slot.reuse_key.epoch != history.snapshot_handle.epoch()
+        {
+            return Ok(ContinuationAssessment {
+                verdict: ContinuationVerdict::Rejected,
+                reason: Some(ContinuationRejectReason::SlotMismatch),
+                change_class,
+                accepted_change_class: temporal.change_class,
+                expected_previous_epoch,
+                history_epoch,
+            });
         }
     }
-    Ok(HistoryVerdict::Available)
+    if !temporal
+        .transition_compatibility
+        .allows(frame_change_budget_class(components))
+    {
+        return Ok(ContinuationAssessment {
+            verdict: ContinuationVerdict::Rejected,
+            reason: Some(ContinuationRejectReason::ChangeCompatibilityMismatch),
+            change_class,
+            accepted_change_class: temporal.change_class,
+            expected_previous_epoch,
+            history_epoch,
+        });
+    }
+    if required_temporal_evidence_failure(temporal, components).is_some() {
+        return Ok(ContinuationAssessment {
+            verdict: ContinuationVerdict::Rejected,
+            reason: Some(ContinuationRejectReason::TemporalEvidenceMismatch),
+            change_class,
+            accepted_change_class: temporal.change_class,
+            expected_previous_epoch,
+            history_epoch,
+        });
+    }
+    Ok(ContinuationAssessment {
+        verdict: ContinuationVerdict::Available,
+        reason: None,
+        change_class,
+        accepted_change_class: temporal.change_class,
+        expected_previous_epoch,
+        history_epoch,
+    })
+}
+
+pub(super) fn frame_change_class(
+    components: &crate::presentation_exec::FrameStateTemporalComponents,
+) -> TemporalChangeClass {
+    if components.history_reset {
+        TemporalChangeClass::HistoryReset
+    } else if components.change_summary_present {
+        if components.change_identity_changed {
+            TemporalChangeClass::IdentityShift
+        } else if components.change_topology_changed {
+            TemporalChangeClass::TopologyShift
+        } else {
+            match components.change_class {
+                0 => TemporalChangeClass::Stable,
+                1 => TemporalChangeClass::CameraMotion,
+                2 => TemporalChangeClass::ViewportShift,
+                3 => TemporalChangeClass::TopologyShift,
+                4 => TemporalChangeClass::IdentityShift,
+                _ => TemporalChangeClass::Unknown,
+            }
+        }
+    } else if components.previous_viewport != components.viewport {
+        TemporalChangeClass::ViewportShift
+    } else if components.previous_camera != components.camera
+        || components.previous_jitter != components.jitter
+    {
+        TemporalChangeClass::CameraMotion
+    } else {
+        TemporalChangeClass::Stable
+    }
+}
+
+pub(super) fn frame_change_budget_class(
+    components: &crate::presentation_exec::FrameStateTemporalComponents,
+) -> ChangeClass {
+    if components.change_summary_present && !components.change_compatible {
+        return ChangeClass::Incompatible;
+    }
+    match frame_change_class(components) {
+        TemporalChangeClass::Stable => ChangeClass::None,
+        TemporalChangeClass::CameraMotion => ChangeClass::Presentation,
+        TemporalChangeClass::ViewportShift => ChangeClass::Structural,
+        TemporalChangeClass::TopologyShift => ChangeClass::Topology,
+        TemporalChangeClass::IdentityShift => ChangeClass::Identity,
+        TemporalChangeClass::HistoryReset | TemporalChangeClass::Unknown => {
+            ChangeClass::Incompatible
+        }
+    }
+}
+
+pub(super) fn required_temporal_evidence_failure(
+    temporal: &TemporalContract,
+    components: &crate::presentation_exec::FrameStateTemporalComponents,
+) -> Option<&'static str> {
+    let change_class = frame_change_class(components);
+    if temporal.required_evidence.stationary == FactAvailability::Available
+        && !matches!(change_class, TemporalChangeClass::Stable)
+    {
+        return Some("stationary");
+    }
+    if temporal.required_evidence.rigid_over_interval == FactAvailability::Available
+        && matches!(
+            change_class,
+            TemporalChangeClass::TopologyShift
+                | TemporalChangeClass::IdentityShift
+                | TemporalChangeClass::HistoryReset
+                | TemporalChangeClass::Unknown
+        )
+    {
+        return Some("rigid-over-interval");
+    }
+    if temporal.required_evidence.topology_stable == FactAvailability::Available
+        && (components.change_topology_changed
+            || matches!(
+                change_class,
+                TemporalChangeClass::TopologyShift | TemporalChangeClass::IdentityShift
+            ))
+    {
+        return Some("topology-stable");
+    }
+    if temporal.required_evidence.bounded_velocity == FactAvailability::Available
+        && matches!(
+            change_class,
+            TemporalChangeClass::TopologyShift
+                | TemporalChangeClass::IdentityShift
+                | TemporalChangeClass::HistoryReset
+                | TemporalChangeClass::Unknown
+        )
+    {
+        return Some("bounded-velocity");
+    }
+    None
+}
+
+fn continuation_diagnostic(assessment: &ContinuationAssessment) -> String {
+    let verdict = match assessment.verdict {
+        ContinuationVerdict::Available => "available",
+        ContinuationVerdict::Rejected => "rejected",
+        ContinuationVerdict::Unavailable => "unavailable",
+    };
+    let reason = assessment
+        .reason
+        .map(continuation_reject_reason_name)
+        .unwrap_or("none");
+    format!(
+        "continuation verdict={verdict} reason={reason} change_class={} accepted_change_class={} expected_previous_epoch={} history_epoch={}",
+        temporal_change_class_name(assessment.change_class),
+        temporal_change_class_name(assessment.accepted_change_class),
+        assessment
+            .expected_previous_epoch
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        assessment
+            .history_epoch
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+    )
+}
+
+fn continuation_reject_reason_name(reason: ContinuationRejectReason) -> &'static str {
+    match reason {
+        ContinuationRejectReason::NoHistory => "no-history",
+        ContinuationRejectReason::HistoryReset => "history-reset",
+        ContinuationRejectReason::SnapshotEpochMismatch => "snapshot-epoch-mismatch",
+        ContinuationRejectReason::SnapshotLineageMismatch => "snapshot-lineage-mismatch",
+        ContinuationRejectReason::StrictFrameContinuityMismatch => {
+            "strict-frame-continuity-mismatch"
+        }
+        ContinuationRejectReason::AgeExceeded => "age-exceeded",
+        ContinuationRejectReason::SlotMismatch => "slot-mismatch",
+        ContinuationRejectReason::ChangeCompatibilityMismatch => "change-compatibility-mismatch",
+        ContinuationRejectReason::TemporalEvidenceMismatch => "temporal-evidence-mismatch",
+    }
+}
+
+fn temporal_change_class_name(value: TemporalChangeClass) -> &'static str {
+    match value {
+        TemporalChangeClass::Stable => "stable",
+        TemporalChangeClass::CameraMotion => "camera-motion",
+        TemporalChangeClass::ViewportShift => "viewport-shift",
+        TemporalChangeClass::TopologyShift => "topology-shift",
+        TemporalChangeClass::IdentityShift => "identity-shift",
+        TemporalChangeClass::HistoryReset => "history-reset",
+        TemporalChangeClass::Unknown => "unknown",
+    }
 }
 
 fn identities_match(

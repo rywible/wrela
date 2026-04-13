@@ -582,6 +582,87 @@ const VIEW_STATE_FIELDS: &[PortableBuiltinField] = &[
     },
 ];
 
+const SNAPSHOT_EPOCH_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField {
+    name: "epoch",
+    ty: TyAtom(Atom::U32),
+}];
+
+const PRESENTATION_FRAME_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField {
+    name: "index",
+    ty: TyAtom(Atom::U32),
+}];
+
+const SIMULATION_TICK_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField {
+    name: "tick",
+    ty: TyAtom(Atom::U32),
+}];
+
+const WALL_CLOCK_STAMP_FIELDS: &[PortableBuiltinField] = &[PortableBuiltinField {
+    name: "seconds",
+    ty: TyAtom(Atom::F32),
+}];
+
+const TRANSITION_CHANGE_SUMMARY_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "change_class",
+        ty: TyAtom(Atom::U32),
+    },
+    PortableBuiltinField {
+        name: "compatible",
+        ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "topology_changed",
+        ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "identity_changed",
+        ty: TyAtom(Atom::Bool),
+    },
+];
+
+const SNAPSHOT_TRANSITION_CONTEXT_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "current_snapshot_epoch",
+        ty: TyNamed("SnapshotEpoch"),
+    },
+    PortableBuiltinField {
+        name: "previous_snapshot_epoch",
+        ty: TyNamed("SnapshotEpoch"),
+    },
+    PortableBuiltinField {
+        name: "has_change_summary",
+        ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "change_summary",
+        ty: TyNamed("TransitionChangeSummary"),
+    },
+];
+
+const OBSERVER_TIME_FIELDS: &[PortableBuiltinField] = &[
+    PortableBuiltinField {
+        name: "presentation_frame",
+        ty: TyNamed("PresentationFrame"),
+    },
+    PortableBuiltinField {
+        name: "previous_presentation_frame",
+        ty: TyNamed("PresentationFrame"),
+    },
+    PortableBuiltinField {
+        name: "simulation_tick",
+        ty: TyNamed("SimulationTick"),
+    },
+    PortableBuiltinField {
+        name: "wall_clock_stamp",
+        ty: TyNamed("WallClockStamp"),
+    },
+    PortableBuiltinField {
+        name: "delta_seconds",
+        ty: TyAtom(Atom::F32),
+    },
+];
+
 const FRAME_STATE_FIELDS: &[PortableBuiltinField] = &[
     PortableBuiltinField {
         name: "view",
@@ -602,6 +683,14 @@ const FRAME_STATE_FIELDS: &[PortableBuiltinField] = &[
     PortableBuiltinField {
         name: "history_reset",
         ty: TyAtom(Atom::Bool),
+    },
+    PortableBuiltinField {
+        name: "observer_time",
+        ty: TyNamed("ObserverTime"),
+    },
+    PortableBuiltinField {
+        name: "snapshot_transition",
+        ty: TyNamed("SnapshotTransitionContext"),
     },
 ];
 
@@ -939,6 +1028,48 @@ const BUILTIN_RECORDS: &[PortableBuiltinRecord] = &[
         function_name: None,
         constructible: true,
         fields: VIEW_STATE_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "SnapshotEpoch",
+        function_name: None,
+        constructible: true,
+        fields: SNAPSHOT_EPOCH_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "PresentationFrame",
+        function_name: None,
+        constructible: true,
+        fields: PRESENTATION_FRAME_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "SimulationTick",
+        function_name: None,
+        constructible: true,
+        fields: SIMULATION_TICK_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "WallClockStamp",
+        function_name: None,
+        constructible: true,
+        fields: WALL_CLOCK_STAMP_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "TransitionChangeSummary",
+        function_name: None,
+        constructible: true,
+        fields: TRANSITION_CHANGE_SUMMARY_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "SnapshotTransitionContext",
+        function_name: None,
+        constructible: true,
+        fields: SNAPSHOT_TRANSITION_CONTEXT_FIELDS,
+    },
+    PortableBuiltinRecord {
+        name: "ObserverTime",
+        function_name: None,
+        constructible: true,
+        fields: OBSERVER_TIME_FIELDS,
     },
     PortableBuiltinRecord {
         name: "FrameState",

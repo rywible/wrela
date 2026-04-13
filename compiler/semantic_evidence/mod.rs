@@ -243,9 +243,25 @@ impl TemporalStability {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TemporalChangeClass {
+    Stable,
+    CameraMotion,
+    ViewportShift,
+    TopologyShift,
+    IdentityShift,
+    HistoryReset,
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemporalEvidence {
     pub stability: TemporalStability,
+    pub change_class: TemporalChangeClass,
+    pub stationary: FactAvailability,
+    pub rigid_over_interval: FactAvailability,
+    pub topology_stable: FactAvailability,
+    pub bounded_velocity: FactAvailability,
     pub provenance: EvidenceProvenance,
 }
 
@@ -307,6 +323,11 @@ pub struct IdentityEvidenceSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemporalEvidenceSummary {
     pub stability: TemporalStability,
+    pub change_class: TemporalChangeClass,
+    pub stationary: FactAvailability,
+    pub rigid_over_interval: FactAvailability,
+    pub topology_stable: FactAvailability,
+    pub bounded_velocity: FactAvailability,
     pub origin: EvidenceOrigin,
     pub scope: EvidenceScope,
     pub refinement_path: Vec<EvidenceRefinementStep>,
@@ -402,6 +423,11 @@ impl SemanticEvidence {
             },
             temporal: TemporalEvidence {
                 stability: summary.temporal.stability,
+                change_class: summary.temporal.change_class,
+                stationary: summary.temporal.stationary,
+                rigid_over_interval: summary.temporal.rigid_over_interval,
+                topology_stable: summary.temporal.topology_stable,
+                bounded_velocity: summary.temporal.bounded_velocity,
                 provenance: EvidenceProvenance {
                     origin: summary.temporal.origin,
                     scope: summary.temporal.scope,
@@ -451,6 +477,11 @@ impl SemanticEvidence {
             },
             temporal: TemporalEvidence {
                 stability: TemporalStability::SnapshotLocal,
+                change_class: TemporalChangeClass::Unknown,
+                stationary: FactAvailability::Unknown,
+                rigid_over_interval: FactAvailability::Unknown,
+                topology_stable: FactAvailability::Unknown,
+                bounded_velocity: FactAvailability::Unknown,
                 provenance,
             },
         }
@@ -496,6 +527,11 @@ impl SemanticEvidence {
             },
             temporal: TemporalEvidence {
                 stability: TemporalStability::CompileInvariant,
+                change_class: TemporalChangeClass::Unknown,
+                stationary: FactAvailability::Unknown,
+                rigid_over_interval: FactAvailability::Unknown,
+                topology_stable: FactAvailability::Unknown,
+                bounded_velocity: FactAvailability::Unknown,
                 provenance,
             },
         }
@@ -544,6 +580,11 @@ impl SemanticEvidence {
             },
             temporal: TemporalEvidence {
                 stability: TemporalStability::CompileInvariant,
+                change_class: TemporalChangeClass::Stable,
+                stationary: FactAvailability::Available,
+                rigid_over_interval: FactAvailability::Available,
+                topology_stable: FactAvailability::Available,
+                bounded_velocity: FactAvailability::Available,
                 provenance,
             },
         }
@@ -598,6 +639,11 @@ impl SemanticEvidence {
             },
             temporal: TemporalEvidence {
                 stability: TemporalStability::CompileInvariant,
+                change_class: TemporalChangeClass::Stable,
+                stationary: FactAvailability::Available,
+                rigid_over_interval: FactAvailability::Available,
+                topology_stable: FactAvailability::Available,
+                bounded_velocity: FactAvailability::Available,
                 provenance,
             },
         }
@@ -696,6 +742,7 @@ impl SemanticEvidence {
             detail.clone(),
         );
         out.temporal.stability = TemporalStability::SnapshotLocal;
+        out.temporal.change_class = self.temporal.change_class;
         out.temporal.provenance = out.temporal.provenance.retag(
             EvidenceOrigin::RuntimeObserved,
             EvidenceScope::SnapshotLocal,
@@ -713,6 +760,34 @@ impl SemanticEvidence {
             EvidenceRefinementKind::ImportedCompatibility,
             detail,
         )
+    }
+
+    pub fn refine_with_temporal_stability(
+        &self,
+        stationary: FactAvailability,
+        rigid_over_interval: FactAvailability,
+        topology_stable: FactAvailability,
+        bounded_velocity: FactAvailability,
+        detail: impl Into<SmolStr>,
+    ) -> Self {
+        let detail = detail.into();
+        let mut out = self.clone();
+        out.temporal.stability = TemporalStability::TransitionCompatible;
+        out.temporal.stationary = refine_availability(self.temporal.stationary, stationary);
+        out.temporal.rigid_over_interval =
+            refine_availability(self.temporal.rigid_over_interval, rigid_over_interval);
+        out.temporal.topology_stable =
+            refine_availability(self.temporal.topology_stable, topology_stable);
+        out.temporal.bounded_velocity =
+            refine_availability(self.temporal.bounded_velocity, bounded_velocity);
+        out.temporal.provenance = out.temporal.provenance.retag(
+            EvidenceOrigin::RuntimeObserved,
+            EvidenceScope::TransitionCompatible,
+            EvidenceClass::Temporal,
+            EvidenceRefinementKind::RuntimeObservation,
+            detail,
+        );
+        out
     }
 
     pub fn artifact_bound(&self, detail: impl Into<SmolStr>) -> Self {
@@ -762,6 +837,7 @@ impl SemanticEvidence {
             detail.clone(),
         );
         out.temporal.stability = TemporalStability::for_scope(scope);
+        out.temporal.change_class = self.temporal.change_class;
         out.temporal.provenance =
             out.temporal
                 .provenance
@@ -843,6 +919,11 @@ impl SemanticEvidence {
             },
             temporal: TemporalEvidenceSummary {
                 stability: self.temporal.stability,
+                change_class: self.temporal.change_class,
+                stationary: self.temporal.stationary,
+                rigid_over_interval: self.temporal.rigid_over_interval,
+                topology_stable: self.temporal.topology_stable,
+                bounded_velocity: self.temporal.bounded_velocity,
                 origin: self.temporal.provenance.origin,
                 scope: self.temporal.provenance.scope,
                 refinement_path: self.temporal.provenance.refinement_path.clone(),

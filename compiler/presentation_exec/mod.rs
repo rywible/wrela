@@ -6,7 +6,16 @@ pub mod resources;
 mod temporal;
 mod wgsl;
 
+use crate::artifact_contract::{
+    ArtifactCompatibilityRelation, ArtifactEvidenceCompatibility, ArtifactLogicalField,
+    ArtifactLogicalSchema, ArtifactPolicyCompatibility, ArtifactSnapshotRelation,
+    ArtifactTransitionRelation, ArtifactValidityPredicate, ArtifactValidityRule,
+    SemanticArtifactContract, SemanticArtifactKind,
+};
 use crate::artifact_key::ArtifactReuseKey;
+use crate::artifact_store::{
+    ArtifactInstanceMetadata, ArtifactLookupRequest, ArtifactStore, StoredArtifact,
+};
 pub use crate::execution_policy::{
     PresentationExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
 };
@@ -26,7 +35,8 @@ use crate::query_exec::{
 };
 use crate::query_plan::{BatchQueryPlan, DispatchBackend};
 use crate::query_solver::{RaySolverDiagnosticSummary, RaySolverMethod, ray_solver_method_name};
-use crate::world_identity::{SnapshotIdentityReport, WorldSnapshotHandle};
+use crate::semantic_evidence::SemanticEvidenceSummary;
+use crate::world_identity::{SnapshotEpoch, SnapshotIdentityReport, WorldSnapshotHandle};
 use resources::{
     AttachmentResourceSet, PresentationResourceError, allocate_attachment_resources_without_history,
 };
@@ -89,7 +99,7 @@ pub struct PresentationTemporalHistorySlot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PresentationTemporalHistory {
-    pub frame_index: u32,
+    pub presentation_frame: u32,
     pub snapshot: SnapshotIdentityReport,
     pub snapshot_handle: WorldSnapshotHandle,
     pub attachments: AttachmentResourceSet,
@@ -136,6 +146,7 @@ pub struct PresentationMetrics {
     pub continuation_consumed_count: u32,
     pub continuation_rejected_count: u32,
     pub continuation_unavailable_count: u32,
+    pub continuation_diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -588,6 +599,70 @@ pub fn frame_state_value_with_history(
     delta_seconds: f32,
     history_reset: bool,
 ) -> KernelValue {
+    frame_state_value_with_temporal_context(
+        camera,
+        previous_camera,
+        viewport,
+        previous_viewport,
+        jitter_pixels,
+        previous_jitter_pixels,
+        frame_index,
+        previous_frame_index,
+        delta_seconds,
+        history_reset,
+        frame_index,
+        previous_frame_index,
+        frame_index,
+        frame_index as f32 * delta_seconds.max(0.0),
+        SnapshotEpoch::INITIAL,
+        SnapshotEpoch::INITIAL,
+        false,
+        0,
+        true,
+        false,
+        false,
+    )
+}
+
+pub fn frame_state_value_with_temporal_context(
+    camera: CanonicalCameraInput,
+    previous_camera: CanonicalCameraInput,
+    viewport: CanonicalViewportInput,
+    previous_viewport: CanonicalViewportInput,
+    jitter_pixels: [f32; 2],
+    previous_jitter_pixels: [f32; 2],
+    frame_index: u32,
+    previous_frame_index: u32,
+    delta_seconds: f32,
+    history_reset: bool,
+    presentation_frame: u32,
+    previous_presentation_frame: u32,
+    simulation_tick: u32,
+    wall_clock_seconds: f32,
+    current_snapshot_epoch: SnapshotEpoch,
+    previous_snapshot_epoch: SnapshotEpoch,
+    change_summary_present: bool,
+    change_class: u32,
+    change_compatible: bool,
+    change_topology_changed: bool,
+    change_identity_changed: bool,
+) -> KernelValue {
+    let observer_time = observer_time_value(
+        presentation_frame,
+        previous_presentation_frame,
+        simulation_tick,
+        wall_clock_seconds,
+        delta_seconds,
+    );
+    let snapshot_transition = snapshot_transition_context_value(
+        current_snapshot_epoch,
+        previous_snapshot_epoch,
+        change_summary_present,
+        change_class,
+        change_compatible,
+        change_topology_changed,
+        change_identity_changed,
+    );
     KernelValue::Struct(KernelStructValue {
         name: SmolStr::new("FrameState"),
         fields: vec![
@@ -626,6 +701,133 @@ pub fn frame_state_value_with_history(
             (
                 SmolStr::new("history_reset"),
                 KernelValue::Bool(history_reset),
+            ),
+            (SmolStr::new("observer_time"), observer_time),
+            (SmolStr::new("snapshot_transition"), snapshot_transition),
+        ],
+    })
+}
+
+fn observer_time_value(
+    presentation_frame: u32,
+    previous_presentation_frame: u32,
+    simulation_tick: u32,
+    wall_clock_seconds: f32,
+    delta_seconds: f32,
+) -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("ObserverTime"),
+        fields: vec![
+            (
+                SmolStr::new("presentation_frame"),
+                presentation_frame_value(presentation_frame),
+            ),
+            (
+                SmolStr::new("previous_presentation_frame"),
+                presentation_frame_value(previous_presentation_frame),
+            ),
+            (
+                SmolStr::new("simulation_tick"),
+                simulation_tick_value(simulation_tick),
+            ),
+            (
+                SmolStr::new("wall_clock_stamp"),
+                wall_clock_stamp_value(wall_clock_seconds),
+            ),
+            (
+                SmolStr::new("delta_seconds"),
+                KernelValue::F32(delta_seconds),
+            ),
+        ],
+    })
+}
+
+fn presentation_frame_value(index: u32) -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("PresentationFrame"),
+        fields: vec![(SmolStr::new("index"), KernelValue::U32(index))],
+    })
+}
+
+fn simulation_tick_value(tick: u32) -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("SimulationTick"),
+        fields: vec![(SmolStr::new("tick"), KernelValue::U32(tick))],
+    })
+}
+
+fn wall_clock_stamp_value(seconds: f32) -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("WallClockStamp"),
+        fields: vec![(SmolStr::new("seconds"), KernelValue::F32(seconds))],
+    })
+}
+
+fn snapshot_epoch_value(epoch: SnapshotEpoch) -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("SnapshotEpoch"),
+        fields: vec![(
+            SmolStr::new("epoch"),
+            KernelValue::U32(epoch.portable_projection()),
+        )],
+    })
+}
+
+fn transition_change_summary_value(
+    change_class: u32,
+    compatible: bool,
+    topology_changed: bool,
+    identity_changed: bool,
+) -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("TransitionChangeSummary"),
+        fields: vec![
+            (SmolStr::new("change_class"), KernelValue::U32(change_class)),
+            (SmolStr::new("compatible"), KernelValue::Bool(compatible)),
+            (
+                SmolStr::new("topology_changed"),
+                KernelValue::Bool(topology_changed),
+            ),
+            (
+                SmolStr::new("identity_changed"),
+                KernelValue::Bool(identity_changed),
+            ),
+        ],
+    })
+}
+
+fn snapshot_transition_context_value(
+    current_snapshot_epoch: SnapshotEpoch,
+    previous_snapshot_epoch: SnapshotEpoch,
+    has_change_summary: bool,
+    change_class: u32,
+    compatible: bool,
+    topology_changed: bool,
+    identity_changed: bool,
+) -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("SnapshotTransitionContext"),
+        fields: vec![
+            (
+                SmolStr::new("current_snapshot_epoch"),
+                snapshot_epoch_value(current_snapshot_epoch),
+            ),
+            (
+                SmolStr::new("previous_snapshot_epoch"),
+                snapshot_epoch_value(previous_snapshot_epoch),
+            ),
+            (
+                SmolStr::new("has_change_summary"),
+                KernelValue::Bool(has_change_summary),
+            ),
+            (
+                SmolStr::new("change_summary"),
+                transition_change_summary_value(
+                    change_class,
+                    compatible,
+                    topology_changed,
+                    identity_changed,
+                ),
             ),
         ],
     })
@@ -750,13 +952,14 @@ fn point_direction_query_value(point: [f32; 3], direction: [f32; 3]) -> KernelVa
 
 fn allocate_execution_attachments(
     frame: &FrameContract,
+    frame_state: &KernelValue,
     width: u32,
     height: u32,
     current_snapshot: &WorldSnapshotHandle,
     history: Option<&PresentationTemporalHistory>,
 ) -> Result<AttachmentResourceSet, PresentationExecError> {
     if let Some(history) = history {
-        if history_slots_match(frame, width, height, current_snapshot, history)? {
+        if history_slots_match(frame, frame_state, width, height, current_snapshot, history)? {
             match crate::presentation_exec::allocate_frame_attachment_resources_with_history(
                 frame,
                 width,
@@ -785,10 +988,9 @@ fn build_temporal_history(
     let Some(temporal) = &plan.frame.temporal else {
         return Ok(None);
     };
-    let frame = expect_struct(frame_state, "FrameState")?;
-    let frame_index = expect_u32(field(frame, "frame_index")?)?;
+    let frame = frame_state_temporal_components(frame_state)?;
     Ok(Some(PresentationTemporalHistory {
-        frame_index,
+        presentation_frame: frame.presentation_frame,
         snapshot: current_snapshot.report(),
         snapshot_handle: current_snapshot.clone(),
         attachments: attachments.clone(),
@@ -822,6 +1024,7 @@ fn build_temporal_history(
 
 fn history_slots_match(
     frame: &FrameContract,
+    frame_state: &KernelValue,
     width: u32,
     height: u32,
     current_snapshot: &WorldSnapshotHandle,
@@ -830,19 +1033,48 @@ fn history_slots_match(
     let Some(temporal) = &frame.temporal else {
         return Ok(false);
     };
-    for slot in &temporal.history_slots {
-        let Some(previous_slot) = history
-            .slots
+    let components = frame_state_temporal_components(frame_state)?;
+    let change_budget = crate::presentation_exec::temporal::frame_change_budget_class(&components);
+    if !temporal.transition_compatibility.allows(change_budget) {
+        return Ok(false);
+    }
+    if crate::presentation_exec::temporal::required_temporal_evidence_failure(temporal, &components)
+        .is_some()
+    {
+        return Ok(false);
+    }
+    let mut store = ArtifactStore::default();
+    for slot in &history.slots {
+        let Some(attachment) = history.attachments.attachment(slot.attachment.as_str()) else {
+            return Ok(false);
+        };
+        let Some(current_attachment) = frame.attachment(slot.attachment.as_str()) else {
+            return Ok(false);
+        };
+        let Some(current_slot) = temporal
+            .history_slots
             .iter()
             .find(|candidate| candidate.slot == slot.slot)
         else {
             return Ok(false);
         };
-        if previous_slot.attachment != slot.attachment
-            || previous_slot.compatibility != slot.compatibility
-        {
-            return Ok(false);
-        }
+        let contract =
+            presentation_history_artifact_contract(temporal, current_slot, current_attachment);
+        store.insert(StoredArtifact {
+            contract,
+            metadata: ArtifactInstanceMetadata {
+                snapshot: history.snapshot_handle.clone(),
+                reuse_key: slot.reuse_key.clone(),
+                policy_digest: slot.reuse_key.policy_digest,
+                presentation_frame: Some(history.presentation_frame),
+                layout_signature: Some(attachment.layout.compatibility_signature()),
+                history_compatibility_hash: Some(slot.compatibility.compatibility_hash()),
+                evidence_summary: SemanticEvidenceSummary::contract_bound(),
+            },
+            payload: (),
+        });
+    }
+    for slot in &temporal.history_slots {
         let Some(attachment) = frame
             .outputs
             .iter()
@@ -852,18 +1084,99 @@ fn history_slots_match(
         };
         let layout = frame_attachment_layout(frame, attachment, width, height)
             .map_err(PresentationExecError::Resource)?;
-        let current_key = slot.reuse_key(current_snapshot, layout.compatibility_signature());
-        if !previous_slot.reuse_key.compatible_with(&current_key) {
+        let contract = presentation_history_artifact_contract(temporal, slot, attachment);
+        let (artifact, _) = store.lookup(&ArtifactLookupRequest {
+            contract,
+            current_snapshot: current_snapshot.clone(),
+            previous_snapshot_epoch: Some(components.previous_snapshot_epoch),
+            change_class: Some(change_budget),
+            policy_digest: Some(slot.compatibility.compatibility_hash()),
+            presentation_frame: Some(components.presentation_frame),
+            layout_signature: Some(layout.compatibility_signature()),
+            history_compatibility_hash: Some(slot.compatibility.compatibility_hash()),
+            evidence_summary: Some(SemanticEvidenceSummary::contract_bound()),
+        });
+        if artifact.is_none() {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
+fn presentation_history_artifact_contract(
+    temporal: &crate::presentation_contract::TemporalContract,
+    slot: &crate::presentation_contract::TemporalHistorySlotContract,
+    attachment: &FrameAttachmentContract,
+) -> SemanticArtifactContract {
+    SemanticArtifactContract {
+        id: SmolStr::new(format!("artifact.{}", attachment.name)),
+        kind: SemanticArtifactKind::PresentationHistory,
+        logical_schema: ArtifactLogicalSchema {
+            namespace: SmolStr::new("presentation"),
+            name: SmolStr::new("history-slot"),
+            fields: vec![
+                ArtifactLogicalField::new("attachment", attachment.name.clone()),
+                ArtifactLogicalField::new("kind", format!("{:?}", attachment.kind)),
+                ArtifactLogicalField::new(
+                    "element_schema",
+                    format!("{:?}", attachment.element_schema),
+                ),
+                ArtifactLogicalField::new("history_slot", slot.slot.to_string()),
+                ArtifactLogicalField::new("history_role", format!("{:?}", slot.role)),
+                ArtifactLogicalField::new(
+                    "history_compatibility_hash",
+                    slot.compatibility.compatibility_hash().to_string(),
+                ),
+            ],
+        },
+        compatibility: ArtifactCompatibilityRelation {
+            snapshot: ArtifactSnapshotRelation::PreviousSnapshotEpoch,
+            transition: ArtifactTransitionRelation {
+                compatibility: Some(temporal.transition_compatibility),
+                requires_previous_snapshot: true,
+            },
+            policy: ArtifactPolicyCompatibility {
+                mode: crate::artifact_key::ArtifactPolicyDigestMode::CompatibleRange,
+            },
+            evidence: ArtifactEvidenceCompatibility {
+                origin: SemanticEvidenceSummary::contract_bound().origin,
+                scope: SemanticEvidenceSummary::contract_bound().scope,
+            },
+        },
+        validity: ArtifactValidityRule::all(vec![
+            ArtifactValidityRule::predicate(
+                ArtifactValidityPredicate::PreviousSnapshotMatchesStored,
+            ),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::LayoutSignatureMatches),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::HistoryCompatibilityMatches),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::CompatibleChange(
+                temporal.transition_compatibility,
+            )),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::MaxPresentationFrameAge(
+                u64::from(slot.max_age_frames),
+            )),
+            if temporal.requires_snapshot_lineage_match {
+                ArtifactValidityRule::predicate(
+                    ArtifactValidityPredicate::SnapshotLineageMatchesCurrent,
+                )
+            } else {
+                ArtifactValidityRule::Always
+            },
+        ]),
+        producer: SmolStr::new("temporal_resolve"),
+        consumer: SmolStr::new("presentation.frame"),
+        deterministic: true,
+        version: crate::presentation_contract::PRESENTATION_CONTRACT_VERSION,
+        transition: None,
+        evidence_summary: SemanticEvidenceSummary::contract_bound(),
+    }
+}
+
 fn presentation_metrics(
     hits: &[KernelValue],
     query_trace: &BatchQueryExecutionTrace,
     solver_summary: Option<RaySolverDiagnosticSummary>,
+    continuation_diagnostics: Vec<String>,
 ) -> PresentationMetrics {
     let mut distribution = PresentationRayStepDistribution {
         zero: 0,
@@ -917,6 +1230,7 @@ fn presentation_metrics(
         continuation_consumed_count: observability.solver_continuation_consumed,
         continuation_rejected_count: observability.solver_continuation_rejected,
         continuation_unavailable_count: observability.solver_continuation_unavailable,
+        continuation_diagnostics,
     }
 }
 
@@ -1055,6 +1369,7 @@ pub(crate) fn build_frame_cost_report(
         surface_resolve_count,
         participant_resolve_count,
         history_reuse_rate,
+        continuation_diagnostics: metrics.continuation_diagnostics.clone(),
         attachment_bytes: attachment_byte_reports(attachments),
         passes,
         active_acceleration_artifacts: deduped_artifacts.into_values().collect(),
@@ -1295,6 +1610,17 @@ pub(super) struct FrameStateTemporalComponents {
     pub previous_frame_index: u32,
     pub delta_seconds: f32,
     pub history_reset: bool,
+    pub presentation_frame: u32,
+    pub previous_presentation_frame: u32,
+    pub simulation_tick: u32,
+    pub wall_clock_seconds: f32,
+    pub current_snapshot_epoch: SnapshotEpoch,
+    pub previous_snapshot_epoch: SnapshotEpoch,
+    pub change_summary_present: bool,
+    pub change_class: u32,
+    pub change_compatible: bool,
+    pub change_topology_changed: bool,
+    pub change_identity_changed: bool,
 }
 
 fn frame_state_components(
@@ -1315,6 +1641,39 @@ pub(super) fn frame_state_temporal_components(
     let previous_viewport = expect_struct(field(view, "previous_viewport")?, "Viewport")?;
     let jitter = expect_vec2(field(view, "jitter")?)?;
     let previous_jitter = expect_vec2(field(view, "previous_jitter")?)?;
+    let frame_index = expect_u32(field(frame, "frame_index")?)?;
+    let previous_frame_index = expect_u32(field(frame, "previous_frame_index")?)?;
+    let delta_seconds = expect_f32(field(frame, "delta_seconds")?)?;
+    let history_reset = expect_bool(field(frame, "history_reset")?)?;
+    let observer_time = expect_struct(field(frame, "observer_time")?, "ObserverTime")?;
+    let presentation_frame = expect_struct(
+        field(observer_time, "presentation_frame")?,
+        "PresentationFrame",
+    )?;
+    let previous_presentation_frame = expect_struct(
+        field(observer_time, "previous_presentation_frame")?,
+        "PresentationFrame",
+    )?;
+    let simulation_tick =
+        expect_struct(field(observer_time, "simulation_tick")?, "SimulationTick")?;
+    let wall_clock_stamp =
+        expect_struct(field(observer_time, "wall_clock_stamp")?, "WallClockStamp")?;
+    let snapshot_transition = expect_struct(
+        field(frame, "snapshot_transition")?,
+        "SnapshotTransitionContext",
+    )?;
+    let current_snapshot_epoch = expect_struct(
+        field(snapshot_transition, "current_snapshot_epoch")?,
+        "SnapshotEpoch",
+    )?;
+    let previous_snapshot_epoch = expect_struct(
+        field(snapshot_transition, "previous_snapshot_epoch")?,
+        "SnapshotEpoch",
+    )?;
+    let change_summary = expect_struct(
+        field(snapshot_transition, "change_summary")?,
+        "TransitionChangeSummary",
+    )?;
     Ok(FrameStateTemporalComponents {
         camera: CanonicalCameraInput {
             position: expect_vec3(field(camera, "position")?)?,
@@ -1338,10 +1697,27 @@ pub(super) fn frame_state_temporal_components(
         },
         jitter,
         previous_jitter,
-        frame_index: expect_u32(field(frame, "frame_index")?)?,
-        previous_frame_index: expect_u32(field(frame, "previous_frame_index")?)?,
-        delta_seconds: expect_f32(field(frame, "delta_seconds")?)?,
-        history_reset: expect_bool(field(frame, "history_reset")?)?,
+        frame_index,
+        previous_frame_index,
+        delta_seconds,
+        history_reset,
+        presentation_frame: expect_u32(field(presentation_frame, "index")?)?,
+        previous_presentation_frame: expect_u32(field(previous_presentation_frame, "index")?)?,
+        simulation_tick: expect_u32(field(simulation_tick, "tick")?)?,
+        wall_clock_seconds: expect_f32(field(wall_clock_stamp, "seconds")?)?,
+        current_snapshot_epoch: SnapshotEpoch(u64::from(expect_u32(field(
+            current_snapshot_epoch,
+            "epoch",
+        )?)?)),
+        previous_snapshot_epoch: SnapshotEpoch(u64::from(expect_u32(field(
+            previous_snapshot_epoch,
+            "epoch",
+        )?)?)),
+        change_summary_present: expect_bool(field(snapshot_transition, "has_change_summary")?)?,
+        change_class: expect_u32(field(change_summary, "change_class")?)?,
+        change_compatible: expect_bool(field(change_summary, "compatible")?)?,
+        change_topology_changed: expect_bool(field(change_summary, "topology_changed")?)?,
+        change_identity_changed: expect_bool(field(change_summary, "identity_changed")?)?,
     })
 }
 

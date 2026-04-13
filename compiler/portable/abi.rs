@@ -241,6 +241,11 @@ fn portable_temporal_evidence_summary_abi() -> PortableAbiType {
         class_id: 0,
         fields: vec![
             abi_field("stability", PortableAbiType::U32),
+            abi_field("change_class", PortableAbiType::U32),
+            abi_field("stationary", PortableAbiType::U32),
+            abi_field("rigid_over_interval", PortableAbiType::U32),
+            abi_field("topology_stable", PortableAbiType::U32),
+            abi_field("bounded_velocity", PortableAbiType::U32),
             abi_field("origin", PortableAbiType::U32),
             abi_field("scope", PortableAbiType::U32),
             abi_field("refinement_path", portable_evidence_refinement_path_abi()),

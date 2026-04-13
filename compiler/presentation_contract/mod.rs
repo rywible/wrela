@@ -2,6 +2,8 @@ use crate::artifact_key::{ArtifactPolicyDigestMode, ArtifactReuseKey};
 pub use crate::execution_policy::{
     PresentationExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
 };
+use crate::semantic_evidence::FactAvailability;
+use crate::state_advance::{ChangeClass, ChangeCompatibility};
 use crate::world_identity::WorldSnapshotHandle;
 use smol_str::SmolStr;
 
@@ -78,9 +80,28 @@ pub enum TemporalValidationStrictness {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TemporalChangeClass {
+    Stable,
+    CameraMotion,
+    ViewportShift,
+    TopologyShift,
+    IdentityShift,
+    HistoryReset,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TemporalHistoryRole {
     ReprojectedColor,
     ContinuationPrimaryHit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TemporalEvidenceRequirements {
+    pub stationary: FactAvailability,
+    pub rigid_over_interval: FactAvailability,
+    pub topology_stable: FactAvailability,
+    pub bounded_velocity: FactAvailability,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -207,6 +228,10 @@ pub struct TemporalContract {
     pub reuse: TemporalReuseMode,
     pub invalidation: TemporalInvalidationPolicy,
     pub validation: TemporalValidationStrictness,
+    pub change_class: TemporalChangeClass,
+    pub transition_compatibility: ChangeCompatibility,
+    pub required_evidence: TemporalEvidenceRequirements,
+    pub requires_snapshot_lineage_match: bool,
     pub history_slots: Vec<TemporalHistorySlotContract>,
 }
 
@@ -990,6 +1015,10 @@ impl TemporalContract {
             reuse: TemporalReuseMode::ReprojectColorAndMotion,
             invalidation: TemporalInvalidationPolicy::CameraCutHistoryMismatchOrDisocclusion,
             validation: TemporalValidationStrictness::Strict,
+            change_class: TemporalChangeClass::CameraMotion,
+            transition_compatibility: ChangeCompatibility::new(ChangeClass::Presentation),
+            required_evidence: TemporalEvidenceRequirements::first_color_path(),
+            requires_snapshot_lineage_match: true,
             history_slots: vec![
                 TemporalHistorySlotContract {
                     slot: 0,
@@ -1014,6 +1043,17 @@ impl TemporalContract {
                     max_age_frames: 8,
                 },
             ],
+        }
+    }
+}
+
+impl TemporalEvidenceRequirements {
+    pub const fn first_color_path() -> Self {
+        Self {
+            stationary: FactAvailability::Unavailable,
+            rigid_over_interval: FactAvailability::Available,
+            topology_stable: FactAvailability::Available,
+            bounded_velocity: FactAvailability::Unknown,
         }
     }
 }

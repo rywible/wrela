@@ -177,6 +177,8 @@ commands:\n\
   build <path>          run certification, then compile executable on success only\n\
   compile <path>        alias for build (also certification-gated)\n\
   query-contracts       list family/question query contracts and compatibility aliases\n\
+  collision-contracts   list collision contracts and witness schemas\n\
+  collision-plan        list collision plans and validation summaries\n\
   preview <path>        emit a named view attachment (default: color) as PPM\n\
   frame <path>          evaluate a named view and emit typed frame attachments or PPM\n\
   frame-contracts <path>  inspect compiled frame contracts for named views\n\
@@ -709,5 +711,7 @@ mod tests {
         assert!(help.contains("--allow-review-fixes"));
         assert!(help.contains("--query-backend=NAME"));
         assert!(help.contains("--strict-naming"));
+        assert!(help.contains("collision-contracts"));
+        assert!(help.contains("collision-plan"));
     }
 }

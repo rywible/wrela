@@ -57,6 +57,7 @@ pub(super) fn execute_plan(
     };
     let mut attachments = allocate_execution_attachments(
         &effective_plan.frame,
+        &input.frame_state,
         viewport.width,
         viewport.height,
         current_snapshot,
@@ -425,8 +426,14 @@ pub(super) fn execute_plan(
         primary_trace.ok_or_else(|| PresentationExecError::MissingPrimaryVisibilityPass {
             plan: effective_plan.name.clone(),
         })?;
+    let continuation_diagnostics = continuation_counts.diagnostics.clone();
     update_query_trace_continuation(&mut primary_trace, continuation_counts);
-    let metrics = presentation_metrics(&primary_hits, &primary_trace, primary_solver_summary);
+    let metrics = presentation_metrics(
+        &primary_hits,
+        &primary_trace,
+        primary_solver_summary,
+        continuation_diagnostics,
+    );
     let history = build_temporal_history(
         &effective_plan,
         &input.frame_state,

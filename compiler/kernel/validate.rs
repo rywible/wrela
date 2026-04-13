@@ -849,6 +849,21 @@ fn validate_artifact_contracts(
                 )),
             });
         }
+        if matches!(
+            artifact.schema,
+            ArtifactSchema::SupportSummary { .. }
+                | ArtifactSchema::CaptureCache { .. }
+                | ArtifactSchema::CullingTable { .. }
+                | ArtifactSchema::OpaquePessimizationBoundary { .. }
+        ) && !artifact.semantic_artifact_contract().validity.is_explicit()
+        {
+            errors.push(KernelValidationError {
+                message: context.message(format!(
+                    "artifact contract '{}' must declare an explicit validity rule for store-backed reuse",
+                    artifact.id
+                )),
+            });
+        }
     }
 
     if let Some(dispatch) = dispatch {
