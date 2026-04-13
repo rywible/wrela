@@ -332,6 +332,7 @@ fn cli_help() {
     assert!(stdout.contains("query-contracts"));
     assert!(stdout.contains("collision-contracts"));
     assert!(stdout.contains("collision-plan"));
+    assert!(stdout.contains("collision-run"));
     assert!(stdout.contains("preview <path>"));
     assert!(stdout.contains("frame <path>"));
     assert!(stdout.contains("frame-contracts <path>"));
@@ -446,16 +447,22 @@ fn cli_collision_contracts_human_lists_collision_catalog() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("collision contract catalog schema v1"));
+    assert!(stdout.contains("collision contract catalog schema v2"));
     assert!(stdout.contains("collision.point_occupancy.world"));
     assert!(stdout.contains("collision.ray_cast.world"));
     assert!(stdout.contains("collision.sphere_overlap.world"));
+    assert!(stdout.contains("collision.sphere_sweep.transition"));
+    assert!(stdout.contains("collision.time_of_impact.transition"));
+    assert!(stdout.contains("authority=scope=snapshot"));
+    assert!(stdout.contains("authority=scope=transition"));
     assert!(stdout.contains(
         "policy=backend_preference=cpu required_guarantee=exact selected_method=exact_oracle"
     ));
     assert!(stdout.contains("witness=CollisionPointWitness"));
     assert!(stdout.contains("witness=CollisionRayWitness"));
     assert!(stdout.contains("witness=CollisionSphereWitness"));
+    assert!(stdout.contains("witness=CollisionSweepWitness"));
+    assert!(stdout.contains("witness=CollisionTimeOfImpactWitness"));
 }
 
 #[test]
@@ -474,14 +481,16 @@ fn cli_collision_contracts_json_lists_collision_catalog() {
     let catalog: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("collision contract catalog json");
     assert_eq!(
-        catalog.get("schema_version").and_then(|value| value.as_u64()),
-        Some(1)
+        catalog
+            .get("schema_version")
+            .and_then(|value| value.as_u64()),
+        Some(2)
     );
     let contracts = catalog
         .get("contracts")
         .and_then(|value| value.as_array())
         .expect("contracts array");
-    assert_eq!(contracts.len(), 3);
+    assert_eq!(contracts.len(), 5);
     let point = contracts
         .iter()
         .find(|contract| {
@@ -498,7 +507,10 @@ fn cli_collision_contracts_json_lists_collision_catalog() {
         Some("cpu")
     );
     assert_eq!(
-        point.pointer("/backends").and_then(|value| value.as_array()).map(|arr| arr.len()),
+        point
+            .pointer("/backends")
+            .and_then(|value| value.as_array())
+            .map(|arr| arr.len()),
         Some(1)
     );
     assert_eq!(
@@ -506,6 +518,19 @@ fn cli_collision_contracts_json_lists_collision_catalog() {
             .pointer("/witness_schema/name")
             .and_then(|value| value.as_str()),
         Some("CollisionPointWitness")
+    );
+    assert_eq!(
+        contracts
+            .iter()
+            .find(|contract| {
+                contract
+                    .get("contract_id")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|id| id == "collision.sphere_sweep.transition")
+            })
+            .and_then(|contract| contract.pointer("/authority/scope"))
+            .and_then(|value| value.as_str()),
+        Some("transition")
     );
 }
 
@@ -526,7 +551,7 @@ fn cli_collision_plan_json_reports_validation_and_policy() {
         serde_json::from_slice(&output.stdout).expect("collision plan json");
     assert_eq!(
         dump.get("schema_version").and_then(|value| value.as_u64()),
-        Some(1)
+        Some(2)
     );
     assert_eq!(
         dump.get("backend").and_then(|value| value.as_str()),
@@ -536,7 +561,7 @@ fn cli_collision_plan_json_reports_validation_and_policy() {
         .get("plans")
         .and_then(|value| value.as_array())
         .expect("plans array");
-    assert_eq!(plans.len(), 3);
+    assert_eq!(plans.len(), 5);
     let point = plans
         .iter()
         .find(|plan| {
@@ -546,7 +571,9 @@ fn cli_collision_plan_json_reports_validation_and_policy() {
         })
         .expect("point occupancy collision plan");
     assert_eq!(
-        point.pointer("/validation/status").and_then(|value| value.as_str()),
+        point
+            .pointer("/validation/status")
+            .and_then(|value| value.as_str()),
         Some("ok")
     );
     assert_eq!(
@@ -560,6 +587,39 @@ fn cli_collision_plan_json_reports_validation_and_policy() {
             .pointer("/policy/selected_method")
             .and_then(|value| value.as_str()),
         Some("exact_oracle")
+    );
+    let sweep = plans
+        .iter()
+        .find(|plan| {
+            plan.get("name")
+                .and_then(|value| value.as_str())
+                .is_some_and(|name| name == "collision.sphere_sweep.transition")
+        })
+        .expect("sphere sweep transition collision plan");
+    assert_eq!(
+        sweep
+            .pointer("/authority_scope")
+            .and_then(|value| value.as_str()),
+        Some("transition")
+    );
+    assert_eq!(
+        sweep
+            .pointer("/artifacts")
+            .and_then(|value| value.as_array())
+            .map(|arr| arr.len()),
+        Some(4)
+    );
+    assert_eq!(
+        sweep
+            .pointer("/passes/1/kind")
+            .and_then(|value| value.as_str()),
+        Some("build_broadphase_candidates")
+    );
+    assert_eq!(
+        sweep
+            .pointer("/passes/2/kind")
+            .and_then(|value| value.as_str()),
+        Some("sweep_sphere_first_contact")
     );
 }
 
@@ -579,8 +639,123 @@ fn cli_collision_plan_wgsl_reports_invalid_exact_oracle_validation() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("backend: wgsl"));
     assert!(stdout.contains("validation: invalid"));
+    assert!(stdout.contains("authority_scope: transition"));
     assert!(stdout.contains("required_guarantee=exact"));
     assert!(stdout.contains("selected_method=exact_oracle"));
+}
+
+#[test]
+fn cli_collision_run_human_reports_runtime_results_and_reuse_trace() {
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("collision-run")
+        .output()
+        .expect("run collision-run");
+    assert!(
+        output.status.success(),
+        "collision-run failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("collision run schema v1"));
+    assert!(stdout.contains("backend: cpu"));
+    assert!(stdout.contains("execution point-occupancy"));
+    assert!(stdout.contains("execution sphere-sweep-first"));
+    assert!(stdout.contains("execution sphere-sweep-reused"));
+    assert!(stdout.contains("execution sphere-sweep-rejected"));
+    assert!(stdout.contains("result: occupancy occupied="));
+    assert!(stdout.contains("result: sweep hit=true"));
+    assert!(stdout.contains("trace: contract=collision.point_occupancy.world"));
+    assert!(stdout.contains("trace: contract=collision.sphere_sweep.transition"));
+    assert!(stdout.contains("reuse metrics: available=0 consumed=0 rejected=0 unavailable=2"));
+    assert!(stdout.contains("reuse metrics: available=2 consumed=2 rejected=0 unavailable=0"));
+    assert!(stdout.contains("reuse metrics: available=0 consumed=0 rejected=2 unavailable=0"));
+    assert!(stdout.contains("verdict=consumed"));
+    assert!(stdout.contains("verdict=rejected"));
+}
+
+#[test]
+fn cli_collision_run_json_reports_results_and_reuse_diagnostics() {
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("collision-run")
+        .arg("--json")
+        .output()
+        .expect("run collision-run json");
+    assert!(
+        output.status.success(),
+        "collision-run --json failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let dump: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("collision run json");
+    assert_eq!(
+        dump.get("schema_version").and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        dump.get("backend").and_then(|value| value.as_str()),
+        Some("cpu")
+    );
+    let executions = dump
+        .get("executions")
+        .and_then(|value| value.as_array())
+        .expect("executions array");
+    assert_eq!(executions.len(), 4);
+    let reused = executions
+        .iter()
+        .find(|execution| {
+            execution
+                .get("name")
+                .and_then(|value| value.as_str())
+                .is_some_and(|name| name == "sphere-sweep-reused")
+        })
+        .expect("reused execution");
+    assert_eq!(
+        reused
+            .pointer("/trace/reuse_metrics/consumed_count")
+            .and_then(|value| value.as_u64()),
+        Some(2)
+    );
+    assert_eq!(
+        reused
+            .pointer("/trace/reuse_decisions/0/verdict")
+            .and_then(|value| value.as_str()),
+        Some("consumed")
+    );
+    assert_eq!(
+        reused
+            .pointer("/result/kind")
+            .and_then(|value| value.as_str()),
+        Some("sweep")
+    );
+    let rejected = executions
+        .iter()
+        .find(|execution| {
+            execution
+                .get("name")
+                .and_then(|value| value.as_str())
+                .is_some_and(|name| name == "sphere-sweep-rejected")
+        })
+        .expect("rejected execution");
+    assert_eq!(
+        rejected
+            .pointer("/trace/reuse_metrics/rejected_count")
+            .and_then(|value| value.as_u64()),
+        Some(2)
+    );
+    assert_eq!(
+        rejected
+            .pointer("/trace/reuse_decisions/0/reason")
+            .and_then(|value| value.as_str()),
+        Some("validity_rejected")
+    );
+    assert_eq!(
+        rejected
+            .pointer("/trace/transition/change_class")
+            .and_then(|value| value.as_str()),
+        Some("Presentation")
+    );
 }
 
 #[test]

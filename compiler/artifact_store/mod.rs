@@ -47,6 +47,21 @@ pub struct ArtifactLookupReport {
     pub validity_reports: Vec<ArtifactValidityReport>,
 }
 
+impl ArtifactLookupReport {
+    pub fn primary_rejection_reason(&self) -> Option<SmolStr> {
+        self.validity_reports
+            .iter()
+            .find_map(|report| {
+                report
+                    .checks
+                    .iter()
+                    .find(|check| !check.accepted)
+                    .map(|check| check.predicate.clone())
+            })
+            .or_else(|| self.compatibility_rejections.first().cloned())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactValidityReport {
     pub artifact_id: SmolStr,
@@ -74,9 +89,17 @@ pub struct ArtifactStoreBucketReport {
     pub entry_count: usize,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct ArtifactStore<T> {
     entries: BTreeMap<ArtifactIndexKey, Vec<StoredArtifact<T>>>,
+}
+
+impl<T> Default for ArtifactStore<T> {
+    fn default() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

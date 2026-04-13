@@ -1,4 +1,0 @@
-fn test_runtime_deterministic_env() -> Nothing {
-    mode = __wr_env_get("WRELA_RUNTIME_DETERMINISTIC")
-    assert value mode == "1"
-}

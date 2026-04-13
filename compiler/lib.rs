@@ -16,6 +16,7 @@ pub mod artifact_layout;
 pub mod artifact_store;
 pub mod backend;
 pub mod collision_contract;
+pub mod collision_exec;
 pub mod collision_plan;
 pub mod diag;
 pub mod execution_policy;

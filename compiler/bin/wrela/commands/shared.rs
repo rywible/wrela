@@ -17,8 +17,11 @@ use wrela::diag::catalog::{mir_descriptor, project_descriptor};
 use wrela::diag::suppress::suppress_cascades;
 use wrela::diag::{DiagFix, DiagRecord, DiagSeverity, DiagSpan, DiagStage, dedupe_records};
 use wrela::hir;
+use wrela::hir::lower as hir_lower;
 use wrela::mir;
 use wrela::parser;
+use wrela::parser::ast;
+use wrela::parser::ast::AstNode;
 #[path = "../../../query_program_debug/mod.rs"]
 mod query_program_debug;
 #[path = "../repro.rs"]
@@ -169,12 +172,20 @@ fn execute_collision_contracts_command(
             contract.backends.join(",")
         };
         println!(
-            "{} v{} family={} question={} target={} input={}({}) output={}({}) witness={} backends={} policy=backend_preference={} required_guarantee={} selected_method={}",
+            "{} v{} family={} question={} target={} authority=scope={} requires_previous_snapshot={} evidence_scope={} transition_compatibility={} input={}({}) output={}({}) witness={} backends={} policy=backend_preference={} required_guarantee={} selected_method={}",
             contract.contract_id,
             contract.contract_version,
             contract.family,
             contract.question,
             contract.target,
+            contract.authority.scope,
+            contract.authority.requires_previous_snapshot,
+            contract.authority.required_evidence_scope,
+            contract
+                .authority
+                .transition_compatibility
+                .as_deref()
+                .unwrap_or("none"),
             contract.input_kind,
             contract.input_record,
             contract.output_kind,
@@ -213,6 +224,49 @@ fn execute_collision_plan_command(
     print_collision_plan_human(&dump);
 }
 
+fn execute_collision_run_command(
+    output_format: OutputFormat,
+    path_arg: Option<String>,
+    program_args: Vec<String>,
+    query_backend: wrela::query_plan::DispatchBackend,
+) {
+    if path_arg.is_some() {
+        eprintln!("error: collision-run does not take a path");
+        std::process::exit(EXIT_USAGE);
+    }
+    if !program_args.is_empty() {
+        eprintln!("error: unexpected extra arguments");
+        std::process::exit(EXIT_USAGE);
+    }
+    let backend = match query_backend {
+        wrela::query_plan::DispatchBackend::Cpu | wrela::query_plan::DispatchBackend::Auto => {
+            wrela::query_plan::DispatchBackend::Cpu
+        }
+        other => {
+            eprintln!(
+                "error: collision-run only supports cpu or auto query backends, not {:?}",
+                other
+            );
+            std::process::exit(EXIT_USAGE);
+        }
+    };
+    let report = match collision_run_report(backend) {
+        Ok(report) => report,
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(EXIT_CODEGEN);
+        }
+    };
+    if matches!(output_format, OutputFormat::Json) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
+        );
+    } else {
+        print_collision_run_human(&report);
+    }
+}
+
 #[derive(Serialize)]
 struct CollisionContractCatalogDump {
     schema_version: u32,
@@ -226,6 +280,7 @@ struct CollisionContractCatalogItemDump {
     family: String,
     question: String,
     target: String,
+    authority: CollisionAuthorityRequirementDump,
     input_kind: String,
     input_record: String,
     output_kind: String,
@@ -256,10 +311,158 @@ struct CollisionExecutionPolicyDump {
 }
 
 #[derive(Serialize)]
+struct CollisionAuthorityRequirementDump {
+    scope: String,
+    requires_previous_snapshot: bool,
+    required_evidence_scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transition_compatibility: Option<String>,
+}
+
+#[derive(Serialize)]
 struct CollisionPlanCatalogDump {
     schema_version: u32,
     backend: String,
     plans: Vec<CollisionPlanDumpItem>,
+}
+
+#[derive(Serialize)]
+struct CollisionRunReport {
+    schema_version: u32,
+    backend: String,
+    executions: Vec<CollisionExecutionDump>,
+}
+
+#[derive(Serialize)]
+struct CollisionExecutionDump {
+    name: String,
+    plan_name: String,
+    contract_id: String,
+    target: String,
+    authority_scope: String,
+    result: CollisionResultDump,
+    trace: CollisionExecutionTraceDump,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum CollisionResultDump {
+    Occupancy {
+        occupied: bool,
+        classification: String,
+        signed_distance: f32,
+        witness: CollisionPointWitnessDump,
+    },
+    RayCast {
+        hit: bool,
+        miss_reason: String,
+        witness: Option<CollisionRayWitnessDump>,
+    },
+    SphereOverlap {
+        overlaps: bool,
+        signed_separation: f32,
+        witness: CollisionSphereWitnessDump,
+    },
+    Sweep {
+        hit: bool,
+        witness: Option<CollisionSweepWitnessDump>,
+        no_hit_certificate: Option<CollisionNoHitCertificateDump>,
+    },
+    TimeOfImpact {
+        hit: bool,
+        time_fraction_upper_bound: Option<f32>,
+        witness: Option<CollisionTimeOfImpactWitnessDump>,
+        no_hit_certificate: Option<CollisionNoHitCertificateDump>,
+    },
+}
+
+#[derive(Serialize)]
+struct CollisionPointWitnessDump {
+    sample_point: [f32; 3],
+    nearest_point_on_world: [f32; 3],
+    world_normal: [f32; 3],
+    signed_distance: f32,
+}
+
+#[derive(Serialize)]
+struct CollisionRayWitnessDump {
+    travel_distance: f32,
+    position: [f32; 3],
+    normal: [f32; 3],
+    root_shape_id: u32,
+    feature_id: u32,
+}
+
+#[derive(Serialize)]
+struct CollisionSphereWitnessDump {
+    point_on_probe: [f32; 3],
+    point_on_world: [f32; 3],
+    world_normal: [f32; 3],
+    signed_separation: f32,
+}
+
+#[derive(Serialize)]
+struct CollisionSweepWitnessDump {
+    contact_fraction_upper_bound: f32,
+    point_on_probe: [f32; 3],
+    point_on_world: [f32; 3],
+    contact_normal: [f32; 3],
+    normal_flavor: String,
+}
+
+#[derive(Serialize)]
+struct CollisionTimeOfImpactWitnessDump {
+    time_fraction_upper_bound: f32,
+    point_on_probe: [f32; 3],
+    point_on_world: [f32; 3],
+    contact_normal: [f32; 3],
+    normal_flavor: String,
+}
+
+#[derive(Serialize)]
+struct CollisionNoHitCertificateDump {
+    valid_through_fraction: f32,
+    guarantee: String,
+}
+
+#[derive(Serialize)]
+struct CollisionExecutionTraceDump {
+    contract_id: String,
+    family: String,
+    question: String,
+    backend: String,
+    snapshot: Option<wrela::world_identity::SnapshotIdentityReport>,
+    transition: Option<CollisionTransitionDump>,
+    required_guarantee: String,
+    selected_method: String,
+    executed_query_contracts: Vec<String>,
+    reuse_metrics: CollisionReuseMetricsDump,
+    reuse_decisions: Vec<CollisionReuseDecisionDump>,
+}
+
+#[derive(Serialize)]
+struct CollisionTransitionDump {
+    current_snapshot_epoch: u32,
+    previous_snapshot_epoch: u32,
+    change_class: String,
+}
+
+#[derive(Serialize)]
+struct CollisionReuseMetricsDump {
+    available_count: u32,
+    consumed_count: u32,
+    rejected_count: u32,
+    unavailable_count: u32,
+    diagnostics: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct CollisionReuseDecisionDump {
+    artifact_id: String,
+    kind: String,
+    verdict: String,
+    reason: String,
+    detail: String,
 }
 
 #[derive(Serialize)]
@@ -270,14 +473,23 @@ struct CollisionPlanDumpItem {
     family: String,
     question: String,
     target: String,
+    authority_scope: String,
     backend: String,
     policy: CollisionExecutionPolicyDump,
     inputs: Vec<CollisionPlanInputDump>,
     passes: Vec<CollisionPlanPassDump>,
-    artifacts: Vec<ObserverSemanticArtifactDump>,
+    artifacts: Vec<CollisionArtifactBindingDump>,
     artifact_uses: Vec<ObserverArtifactUseDump>,
     outputs: Vec<CollisionPlanOutputDump>,
     validation: ObserverValidationSummaryDump,
+}
+
+#[derive(Serialize)]
+struct CollisionArtifactBindingDump {
+    id: String,
+    kind: String,
+    record: String,
+    contract: ObserverSemanticArtifactDump,
 }
 
 #[derive(Serialize)]
@@ -745,8 +957,14 @@ fn print_collision_plan_human(dump: &CollisionPlanCatalogDump) {
             plan.contract_id, plan.contract_version, plan.family, plan.question, plan.target
         );
         println!(
+            "  authority_scope: {}",
+            plan.authority_scope
+        );
+        println!(
             "  policy: backend_preference={} required_guarantee={} selected_method={}",
-            plan.policy.backend_preference, plan.policy.required_guarantee, plan.policy.selected_method
+            plan.policy.backend_preference,
+            plan.policy.required_guarantee,
+            plan.policy.selected_method
         );
         println!(
             "  inputs: {}",
@@ -756,6 +974,53 @@ fn print_collision_plan_human(dump: &CollisionPlanCatalogDump) {
                 plan.inputs
                     .iter()
                     .map(|input| format!("{}:{}({})", input.name, input.kind, input.record))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        );
+        println!(
+            "  artifacts: {}",
+            if plan.artifacts.is_empty() {
+                "none".to_string()
+            } else {
+                plan.artifacts
+                    .iter()
+                    .map(|artifact| format!(
+                        "{} kind={} record={} contract={} contract_kind={} schema={} snapshot={} validity={}",
+                        artifact.id,
+                        artifact.kind,
+                        artifact.record,
+                        artifact.contract.id,
+                        artifact.contract.kind,
+                        artifact.contract.logical_schema,
+                        artifact.contract.snapshot_relation,
+                        artifact.contract.validity,
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        );
+        println!(
+            "  artifact uses: {}",
+            if plan.artifact_uses.is_empty() {
+                "none".to_string()
+            } else {
+                plan.artifact_uses
+                    .iter()
+                    .map(|use_record| {
+                        let required_validity = use_record
+                            .required_validity
+                            .clone()
+                            .unwrap_or_else(|| "none".to_string());
+                        format!(
+                            "{}:{} kind={} source={} required_validity={}",
+                            use_record.actor,
+                            use_record.artifact_id,
+                            use_record.kind,
+                            use_record.source,
+                            required_validity
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join(", ")
             }
@@ -822,6 +1087,7 @@ fn collision_contract_dump(
         question: wrela::collision_contract::collision_question_name(descriptor.question)
             .to_string(),
         target: wrela::collision_contract::collision_target_name(descriptor.target).to_string(),
+        authority: collision_authority_requirement_dump(descriptor.authority),
         input_kind: wrela::collision_contract::collision_input_kind_name(descriptor.input_kind)
             .to_string(),
         input_record: descriptor.input_record.to_string(),
@@ -854,6 +1120,8 @@ fn collision_plan_dump_item(
         family: wrela::collision_contract::collision_family_name(plan.family).to_string(),
         question: wrela::collision_contract::collision_question_name(plan.question).to_string(),
         target: wrela::collision_contract::collision_target_name(plan.target).to_string(),
+        authority_scope: wrela::collision_contract::collision_authority_scope_name(plan.authority_scope)
+            .to_string(),
         backend: dispatch_backend_name(plan.backend).to_string(),
         policy: collision_execution_policy_dump(plan.policy),
         inputs: plan
@@ -885,7 +1153,7 @@ fn collision_plan_dump_item(
             .artifacts
             .iter()
             .cloned()
-            .map(observer_semantic_artifact_dump)
+            .map(collision_artifact_binding_dump)
             .collect(),
         artifact_uses: plan
             .artifact_uses()
@@ -906,6 +1174,17 @@ fn collision_plan_dump_item(
             })
             .collect(),
         validation,
+    }
+}
+
+fn collision_artifact_binding_dump(
+    binding: wrela::collision_plan::CollisionArtifactBinding,
+) -> CollisionArtifactBindingDump {
+    CollisionArtifactBindingDump {
+        id: binding.id.to_string(),
+        kind: wrela::collision_plan::collision_artifact_kind_name(binding.kind).to_string(),
+        record: binding.record.to_string(),
+        contract: observer_semantic_artifact_dump(binding.contract),
     }
 }
 
@@ -934,6 +1213,627 @@ fn collision_execution_policy_dump(
         required_guarantee: policy.required_guarantee.name().to_string(),
         selected_method: policy.selected_method.name().to_string(),
     }
+}
+
+fn collision_authority_requirement_dump(
+    authority: wrela::collision_contract::CollisionAuthorityRequirement,
+) -> CollisionAuthorityRequirementDump {
+    CollisionAuthorityRequirementDump {
+        scope: wrela::collision_contract::collision_authority_scope_name(authority.scope)
+            .to_string(),
+        requires_previous_snapshot: authority.requires_previous_snapshot,
+        required_evidence_scope: format!("{:?}", authority.required_evidence_scope),
+        transition_compatibility: authority
+            .transition_compatibility
+            .map(|compatibility| format!("{compatibility:?}")),
+    }
+}
+
+fn collision_run_report(
+    backend: wrela::query_plan::DispatchBackend,
+) -> Result<CollisionRunReport, String> {
+    let query_ctx = collision_demo_context()?;
+    let scene_id = wrela::query_exec::stable_region_scene_capture_id(&SmolStr::new(
+        "collision_region",
+    ));
+    let domain = collision_demo_domain(scene_id);
+    let point = collision_demo_point([0.0, 0.0, 0.25]);
+    let sweep = collision_demo_sweep([0.0, 0.0, 2.0], [0.0, 0.0, -2.0], 0.25);
+
+    let point_plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
+        wrela::collision_plan::CollisionQueryKind::PointOccupancyWorld,
+        backend,
+    );
+    let sweep_plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
+        wrela::collision_plan::CollisionQueryKind::SphereSweepTransition,
+        backend,
+    );
+    let mut store = wrela::collision_exec::cpu::CollisionArtifactStore::default();
+
+    let point_result = point_plan
+        .execute(
+            &query_ctx,
+            &[collision_demo_capture(scene_id, 2), domain.clone(), point],
+        )
+        .map_err(|err| err.to_string())?;
+    let first_transition_result = wrela::collision_exec::cpu::execute_with_store(
+        &sweep_plan,
+        &query_ctx,
+        &[
+            collision_demo_capture(scene_id, 1),
+            domain.clone(),
+            collision_demo_transition(1, 0, wrela::state_advance::ChangeClass::Presentation),
+            sweep.clone(),
+        ],
+        &mut store,
+    )
+    .map_err(|err| err.to_string())?;
+    let second_transition_result = wrela::collision_exec::cpu::execute_with_store(
+        &sweep_plan,
+        &query_ctx,
+        &[
+            collision_demo_capture(scene_id, 2),
+            domain.clone(),
+            collision_demo_transition(2, 1, wrela::state_advance::ChangeClass::Presentation),
+            sweep.clone(),
+        ],
+        &mut store,
+    )
+    .map_err(|err| err.to_string())?;
+    let third_transition_result = wrela::collision_exec::cpu::execute_with_store(
+        &sweep_plan,
+        &query_ctx,
+        &[
+            collision_demo_capture(scene_id, 3),
+            domain,
+            collision_demo_transition(3, 1, wrela::state_advance::ChangeClass::Presentation),
+            sweep,
+        ],
+        &mut store,
+    )
+    .map_err(|err| err.to_string())?;
+
+    Ok(CollisionRunReport {
+        schema_version: 1,
+        backend: dispatch_backend_name(backend).to_string(),
+        executions: vec![
+            collision_execution_dump(
+                "point-occupancy",
+                &point_plan,
+                point_result.0,
+                point_result.1,
+            ),
+            collision_execution_dump(
+                "sphere-sweep-first",
+                &sweep_plan,
+                first_transition_result.0,
+                first_transition_result.1,
+            ),
+            collision_execution_dump(
+                "sphere-sweep-reused",
+                &sweep_plan,
+                second_transition_result.0,
+                second_transition_result.1,
+            ),
+            collision_execution_dump(
+                "sphere-sweep-rejected",
+                &sweep_plan,
+                third_transition_result.0,
+                third_transition_result.1,
+            ),
+        ],
+    })
+}
+
+fn collision_execution_dump(
+    name: &str,
+    plan: &wrela::collision_plan::CollisionPlan,
+    result: wrela::collision_contract::CollisionResult,
+    trace: wrela::collision_plan::CollisionExecutionTrace,
+) -> CollisionExecutionDump {
+    CollisionExecutionDump {
+        name: name.to_string(),
+        plan_name: plan.name.to_string(),
+        contract_id: plan.contract_id.as_str().to_string(),
+        target: wrela::collision_contract::collision_target_name(plan.target).to_string(),
+        authority_scope: wrela::collision_contract::collision_authority_scope_name(
+            plan.authority_scope,
+        )
+        .to_string(),
+        result: collision_result_dump(result),
+        trace: collision_execution_trace_dump(trace),
+    }
+}
+
+fn collision_result_dump(
+    result: wrela::collision_contract::CollisionResult,
+) -> CollisionResultDump {
+    match result {
+        wrela::collision_contract::CollisionResult::Occupancy(value) => CollisionResultDump::Occupancy {
+            occupied: value.occupied,
+            classification: format!("{:?}", value.classification),
+            signed_distance: value.signed_distance,
+            witness: collision_point_witness_dump(value.witness),
+        },
+        wrela::collision_contract::CollisionResult::RayCast(value) => CollisionResultDump::RayCast {
+            hit: value.hit,
+            miss_reason: format!("{:?}", value.miss_reason),
+            witness: value.witness.map(collision_ray_witness_dump),
+        },
+        wrela::collision_contract::CollisionResult::SphereOverlap(value) => {
+            CollisionResultDump::SphereOverlap {
+                overlaps: value.overlaps,
+                signed_separation: value.signed_separation,
+                witness: collision_sphere_witness_dump(value.witness),
+            }
+        }
+        wrela::collision_contract::CollisionResult::Sweep(value) => CollisionResultDump::Sweep {
+            hit: value.hit,
+            witness: value.witness.map(collision_sweep_witness_dump),
+            no_hit_certificate: value.no_hit_certificate.map(collision_no_hit_certificate_dump),
+        },
+        wrela::collision_contract::CollisionResult::TimeOfImpact(value) => {
+            CollisionResultDump::TimeOfImpact {
+                hit: value.hit,
+                time_fraction_upper_bound: value.time_fraction_upper_bound,
+                witness: value.witness.map(collision_toi_witness_dump),
+                no_hit_certificate: value.no_hit_certificate.map(collision_no_hit_certificate_dump),
+            }
+        }
+    }
+}
+
+fn collision_point_witness_dump(
+    witness: wrela::collision_contract::CollisionPointWitness,
+) -> CollisionPointWitnessDump {
+    CollisionPointWitnessDump {
+        sample_point: witness.sample_point,
+        nearest_point_on_world: witness.nearest_point_on_world,
+        world_normal: witness.world_normal,
+        signed_distance: witness.signed_distance,
+    }
+}
+
+fn collision_ray_witness_dump(
+    witness: wrela::collision_contract::CollisionRayWitness,
+) -> CollisionRayWitnessDump {
+    CollisionRayWitnessDump {
+        travel_distance: witness.travel_distance,
+        position: witness.position,
+        normal: witness.normal,
+        root_shape_id: witness.root_shape_id,
+        feature_id: witness.feature_id,
+    }
+}
+
+fn collision_sphere_witness_dump(
+    witness: wrela::collision_contract::CollisionSphereWitness,
+) -> CollisionSphereWitnessDump {
+    CollisionSphereWitnessDump {
+        point_on_probe: witness.point_on_probe,
+        point_on_world: witness.point_on_world,
+        world_normal: witness.world_normal,
+        signed_separation: witness.signed_separation,
+    }
+}
+
+fn collision_sweep_witness_dump(
+    witness: wrela::collision_contract::CollisionSweepWitness,
+) -> CollisionSweepWitnessDump {
+    CollisionSweepWitnessDump {
+        contact_fraction_upper_bound: witness.contact_fraction_upper_bound,
+        point_on_probe: witness.point_on_probe,
+        point_on_world: witness.point_on_world,
+        contact_normal: witness.contact_normal,
+        normal_flavor: wrela::collision_contract::collision_contact_normal_flavor_name(
+            witness.normal_flavor,
+        )
+        .to_string(),
+    }
+}
+
+fn collision_toi_witness_dump(
+    witness: wrela::collision_contract::CollisionTimeOfImpactWitness,
+) -> CollisionTimeOfImpactWitnessDump {
+    CollisionTimeOfImpactWitnessDump {
+        time_fraction_upper_bound: witness.time_fraction_upper_bound,
+        point_on_probe: witness.point_on_probe,
+        point_on_world: witness.point_on_world,
+        contact_normal: witness.contact_normal,
+        normal_flavor: wrela::collision_contract::collision_contact_normal_flavor_name(
+            witness.normal_flavor,
+        )
+        .to_string(),
+    }
+}
+
+fn collision_no_hit_certificate_dump(
+    certificate: wrela::collision_contract::CollisionNoHitCertificate,
+) -> CollisionNoHitCertificateDump {
+    CollisionNoHitCertificateDump {
+        valid_through_fraction: certificate.valid_through_fraction,
+        guarantee: certificate.guarantee.name().to_string(),
+    }
+}
+
+fn collision_execution_trace_dump(
+    trace: wrela::collision_plan::CollisionExecutionTrace,
+) -> CollisionExecutionTraceDump {
+    CollisionExecutionTraceDump {
+        contract_id: trace.contract_id.as_str().to_string(),
+        family: wrela::collision_contract::collision_family_name(trace.family).to_string(),
+        question: wrela::collision_contract::collision_question_name(trace.question).to_string(),
+        backend: dispatch_backend_name(trace.backend).to_string(),
+        snapshot: trace.snapshot,
+        transition: trace.transition.map(|transition| CollisionTransitionDump {
+            current_snapshot_epoch: transition.current_snapshot_epoch,
+            previous_snapshot_epoch: transition.previous_snapshot_epoch,
+            change_class: format!("{:?}", transition.change_class),
+        }),
+        required_guarantee: trace.required_guarantee.name().to_string(),
+        selected_method: trace.selected_method.name().to_string(),
+        executed_query_contracts: trace
+            .executed_query_contracts
+            .iter()
+            .map(|contract| contract.as_str().to_string())
+            .collect(),
+        reuse_metrics: CollisionReuseMetricsDump {
+            available_count: trace.reuse_metrics.available_count,
+            consumed_count: trace.reuse_metrics.consumed_count,
+            rejected_count: trace.reuse_metrics.rejected_count,
+            unavailable_count: trace.reuse_metrics.unavailable_count,
+            diagnostics: trace.reuse_metrics.diagnostics,
+        },
+        reuse_decisions: trace
+            .reuse_decisions
+            .into_iter()
+            .map(|decision| CollisionReuseDecisionDump {
+                artifact_id: decision.artifact_id.to_string(),
+                kind: wrela::collision_plan::collision_artifact_kind_name(
+                    decision.artifact_kind,
+                )
+                .to_string(),
+                verdict: wrela::collision_plan::collision_reuse_verdict_name(decision.verdict)
+                    .to_string(),
+                reason: wrela::collision_plan::collision_reuse_reason_name(decision.reason)
+                    .to_string(),
+                detail: decision.detail.to_string(),
+            })
+            .collect(),
+    }
+}
+
+fn print_collision_run_human(report: &CollisionRunReport) {
+    println!("collision run schema v{}", report.schema_version);
+    println!("backend: {}", report.backend);
+    for execution in &report.executions {
+        println!("execution {}", execution.name);
+        println!(
+            "  plan: {} target={} authority_scope={} contract={}",
+            execution.plan_name, execution.target, execution.authority_scope, execution.contract_id
+        );
+        println!("  result: {}", collision_result_human(&execution.result));
+        println!(
+            "  trace: contract={} family={} question={} backend={} required_guarantee={} selected_method={}",
+            execution.trace.contract_id,
+            execution.trace.family,
+            execution.trace.question,
+            execution.trace.backend,
+            execution.trace.required_guarantee,
+            execution.trace.selected_method
+        );
+        if let Some(snapshot) = &execution.trace.snapshot {
+            println!(
+                "    snapshot: {} snapshot_id={} epoch={} portable_scene_id={}",
+                snapshot.capture_name,
+                snapshot.snapshot_id.0,
+                snapshot.epoch.0,
+                snapshot.portable_scene_id
+            );
+        }
+        if let Some(transition) = &execution.trace.transition {
+            println!(
+                "    transition: current_epoch={} previous_epoch={} change_class={}",
+                transition.current_snapshot_epoch,
+                transition.previous_snapshot_epoch,
+                transition.change_class
+            );
+        }
+        if !execution.trace.executed_query_contracts.is_empty() {
+            println!(
+                "    query contracts: {}",
+                execution.trace.executed_query_contracts.join(", ")
+            );
+        }
+        println!(
+            "    reuse metrics: available={} consumed={} rejected={} unavailable={}",
+            execution.trace.reuse_metrics.available_count,
+            execution.trace.reuse_metrics.consumed_count,
+            execution.trace.reuse_metrics.rejected_count,
+            execution.trace.reuse_metrics.unavailable_count
+        );
+        if !execution.trace.reuse_metrics.diagnostics.is_empty() {
+            println!("    reuse diagnostics:");
+            for diagnostic in &execution.trace.reuse_metrics.diagnostics {
+                println!("      - {}", diagnostic);
+            }
+        }
+        if !execution.trace.reuse_decisions.is_empty() {
+            println!("    reuse decisions:");
+            for decision in &execution.trace.reuse_decisions {
+                println!(
+                    "      - artifact={} kind={} verdict={} reason={} detail={}",
+                    decision.artifact_id,
+                    decision.kind,
+                    decision.verdict,
+                    decision.reason,
+                    decision.detail
+                );
+            }
+        }
+    }
+}
+
+fn collision_result_human(result: &CollisionResultDump) -> String {
+    match result {
+        CollisionResultDump::Occupancy {
+            occupied,
+            classification,
+            signed_distance,
+            witness,
+        } => format!(
+            "occupancy occupied={} classification={} signed_distance={} witness=sample_point={:?} world_normal={:?}",
+            occupied,
+            classification,
+            signed_distance,
+            witness.sample_point,
+            witness.world_normal
+        ),
+        CollisionResultDump::RayCast {
+            hit,
+            miss_reason,
+            witness,
+        } => format!(
+            "ray_cast hit={} miss_reason={} witness={}",
+            hit,
+            miss_reason,
+            witness
+                .as_ref()
+                .map(|w| format!("travel_distance={} position={:?}", w.travel_distance, w.position))
+                .unwrap_or_else(|| "none".to_string())
+        ),
+        CollisionResultDump::SphereOverlap {
+            overlaps,
+            signed_separation,
+            witness,
+        } => format!(
+            "sphere_overlap overlaps={} signed_separation={} witness=point_on_probe={:?} world_normal={:?}",
+            overlaps,
+            signed_separation,
+            witness.point_on_probe,
+            witness.world_normal
+        ),
+        CollisionResultDump::Sweep {
+            hit,
+            witness,
+            no_hit_certificate,
+        } => format!(
+            "sweep hit={} witness={} no_hit_certificate={}",
+            hit,
+            witness
+                .as_ref()
+                .map(|w| format!(
+                    "fraction={} normal_flavor={} point_on_probe={:?}",
+                    w.contact_fraction_upper_bound, w.normal_flavor, w.point_on_probe
+                ))
+                .unwrap_or_else(|| "none".to_string()),
+            no_hit_certificate
+                .as_ref()
+                .map(|certificate| format!(
+                    "valid_through_fraction={} guarantee={}",
+                    certificate.valid_through_fraction, certificate.guarantee
+                ))
+                .unwrap_or_else(|| "none".to_string())
+        ),
+        CollisionResultDump::TimeOfImpact {
+            hit,
+            time_fraction_upper_bound,
+            witness,
+            no_hit_certificate,
+        } => format!(
+            "time_of_impact hit={} upper_bound={:?} witness={} no_hit_certificate={}",
+            hit,
+            time_fraction_upper_bound,
+            witness
+                .as_ref()
+                .map(|w| format!(
+                    "fraction={} normal_flavor={} point_on_probe={:?}",
+                    w.time_fraction_upper_bound, w.normal_flavor, w.point_on_probe
+                ))
+                .unwrap_or_else(|| "none".to_string()),
+            no_hit_certificate
+                .as_ref()
+                .map(|certificate| format!(
+                    "valid_through_fraction={} guarantee={}",
+                    certificate.valid_through_fraction, certificate.guarantee
+                ))
+                .unwrap_or_else(|| "none".to_string())
+        ),
+    }
+}
+
+fn collision_demo_context() -> Result<wrela::query_exec::QueryExecContext, String> {
+    let node = parser::parse(collision_demo_source());
+    let root = ast::Root::cast(node).ok_or_else(|| "collision demo source did not parse".to_string())?;
+    let module = hir_lower::lower(root);
+    let semantic = hir::semantic::check_module(&module);
+    if !semantic.errors.is_empty() {
+        return Err(format!("collision demo semantic errors: {:?}", semantic.errors));
+    }
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    if !type_errors.is_empty() {
+        return Err(format!("collision demo type errors: {type_errors:?}"));
+    }
+    Ok(wrela::query_exec::QueryExecContext::compile(
+        &module, &type_info,
+    ))
+}
+
+fn collision_demo_source() -> &'static str {
+    r#"
+field exact distance collision_field(p: Vec3) -> F32 {
+    sphere(radius = 0.5)
+}
+
+material collision_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.8, 0.3, 0.2),
+        roughness=0.2,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape collision_shape {
+    field = collision_field
+    material = collision_surface
+}
+
+region collision_region() {
+    place sample = collision_shape
+}
+
+domain collision_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = false
+    media = false
+    max_distance = 6.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+"#
+}
+
+fn collision_demo_domain(scene_id: u32) -> wrela::kernel::KernelValue {
+    wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
+        name: SmolStr::new("SceneDomain"),
+        fields: vec![
+            (SmolStr::new("scene_id"), wrela::kernel::KernelValue::U32(scene_id)),
+            (
+                SmolStr::new("spatial"),
+                wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
+                    name: SmolStr::new("SpatialDomainContract"),
+                    fields: vec![(SmolStr::new("geometry_detail"), wrela::kernel::KernelValue::I32(1))],
+                }),
+            ),
+            (
+                SmolStr::new("surface"),
+                wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
+                    name: SmolStr::new("SurfaceDomainContract"),
+                    fields: vec![(SmolStr::new("material"), wrela::kernel::KernelValue::Bool(true))],
+                }),
+            ),
+            (
+                SmolStr::new("participants"),
+                wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
+                    name: SmolStr::new("ParticipantDomainContract"),
+                    fields: vec![
+                        (SmolStr::new("radiance"), wrela::kernel::KernelValue::Bool(false)),
+                        (SmolStr::new("media"), wrela::kernel::KernelValue::Bool(false)),
+                    ],
+                }),
+            ),
+        ],
+    })
+}
+
+fn collision_demo_transition(
+    current_epoch: u32,
+    previous_epoch: u32,
+    change_class: wrela::state_advance::ChangeClass,
+) -> wrela::kernel::KernelValue {
+    let change_class_id = match change_class {
+        wrela::state_advance::ChangeClass::None => 0,
+        wrela::state_advance::ChangeClass::Presentation => 1,
+        wrela::state_advance::ChangeClass::Structural => 2,
+        wrela::state_advance::ChangeClass::Topology => 3,
+        wrela::state_advance::ChangeClass::Identity => 4,
+        wrela::state_advance::ChangeClass::Incompatible => 5,
+    };
+    wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
+        name: SmolStr::new("CollisionSnapshotTransitionInput"),
+        fields: vec![
+            (
+                SmolStr::new("current_snapshot_epoch"),
+                wrela::kernel::KernelValue::U32(current_epoch),
+            ),
+            (
+                SmolStr::new("previous_snapshot_epoch"),
+                wrela::kernel::KernelValue::U32(previous_epoch),
+            ),
+            (
+                SmolStr::new("change_class"),
+                wrela::kernel::KernelValue::U32(change_class_id),
+            ),
+        ],
+    })
+}
+
+fn collision_demo_capture(scene_id: u32, epoch: u32) -> wrela::kernel::KernelValue {
+    wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
+        name: SmolStr::new("RegionCapture"),
+        fields: vec![
+            (
+                SmolStr::new("scene_id"),
+                wrela::kernel::KernelValue::U32(scene_id),
+            ),
+            (
+                SmolStr::new("epoch"),
+                wrela::kernel::KernelValue::U32(epoch),
+            ),
+        ],
+    })
+}
+
+fn collision_demo_point(point: [f32; 3]) -> wrela::kernel::KernelValue {
+    wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
+        name: SmolStr::new("CollisionPointInput"),
+        fields: vec![(SmolStr::new("point"), wrela::kernel::KernelValue::Vec3(point))],
+    })
+}
+
+fn collision_demo_sweep(
+    start_center: [f32; 3],
+    end_center: [f32; 3],
+    radius: f32,
+) -> wrela::kernel::KernelValue {
+    wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
+        name: SmolStr::new("CollisionSphereSweepInput"),
+        fields: vec![
+            (
+                SmolStr::new("start_center"),
+                wrela::kernel::KernelValue::Vec3(start_center),
+            ),
+            (
+                SmolStr::new("end_center"),
+                wrela::kernel::KernelValue::Vec3(end_center),
+            ),
+            (SmolStr::new("radius"), wrela::kernel::KernelValue::F32(radius)),
+            (
+                SmolStr::new("contact_tolerance"),
+                wrela::kernel::KernelValue::F32(0.001),
+            ),
+            (
+                SmolStr::new("max_iterations"),
+                wrela::kernel::KernelValue::I32(64),
+            ),
+        ],
+    })
 }
 
 #[derive(Debug)]
@@ -3906,6 +4806,9 @@ fn collision_pass_kind_name(kind: &wrela::collision_plan::CollisionPassKind) -> 
         wrela::collision_plan::CollisionPassKind::GatherCandidates { .. } => {
             "gather_candidates".to_string()
         }
+        wrela::collision_plan::CollisionPassKind::BuildBroadphaseCandidates { .. } => {
+            "build_broadphase_candidates".to_string()
+        }
         wrela::collision_plan::CollisionPassKind::EvaluatePointOccupancy { .. } => {
             "evaluate_point_occupancy".to_string()
         }
@@ -3914,6 +4817,12 @@ fn collision_pass_kind_name(kind: &wrela::collision_plan::CollisionPassKind) -> 
         }
         wrela::collision_plan::CollisionPassKind::ResolveSphereOverlap { .. } => {
             "resolve_sphere_overlap".to_string()
+        }
+        wrela::collision_plan::CollisionPassKind::SweepSphereFirstContact { .. } => {
+            "sweep_sphere_first_contact".to_string()
+        }
+        wrela::collision_plan::CollisionPassKind::ResolveSphereTimeOfImpact { .. } => {
+            "resolve_sphere_time_of_impact".to_string()
         }
         wrela::collision_plan::CollisionPassKind::MaterializeOutput { .. } => {
             "materialize_output".to_string()
@@ -4516,6 +5425,12 @@ pub fn execute(spec: CommandSpec) {
                 program_args,
                 query_backend,
             );
+        }
+        "collision-run" => {
+            if trace {
+                eprintln!("build: command collision-run");
+            }
+            execute_collision_run_command(output_format, path_arg, program_args, query_backend);
         }
         "preview" => {
             if trace {

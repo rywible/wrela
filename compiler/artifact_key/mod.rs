@@ -62,7 +62,21 @@ impl ArtifactReuseKey {
             && self.policy_is_compatible(candidate)
     }
 
+    pub fn transition_compatible_with(
+        &self,
+        candidate: &Self,
+        previous_epoch: SnapshotEpoch,
+    ) -> bool {
+        self.snapshot_id == candidate.snapshot_id
+            && candidate.epoch == previous_epoch
+            && self.compatible_contract_with(candidate)
+    }
+
     fn policy_is_compatible(&self, candidate: &Self) -> bool {
         self.policy_mode == candidate.policy_mode && self.policy_digest == candidate.policy_digest
     }
+}
+
+pub fn stable_history_compatibility_hash(chunks: &[&[u8]]) -> u64 {
+    crate::query_exec::ids::stable_semantic_id(chunks)
 }
