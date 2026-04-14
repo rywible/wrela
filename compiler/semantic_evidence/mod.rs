@@ -1204,11 +1204,17 @@ fn analytic_status(
     repetition: RepetitionFact,
 ) -> AnalyticIntersectionStatus {
     if matches!(repetition, RepetitionFact::None)
-        && matches!(transform, TransformFact::None | TransformFact::Rigid)
+        && matches!(
+            transform,
+            TransformFact::None | TransformFact::Rigid | TransformFact::UniformScale
+        )
     {
         match primitive {
             PrimitiveFact::Single(
                 hir::FieldPrimitive::Sphere
+                | hir::FieldPrimitive::Box
+                | hir::FieldPrimitive::Capsule
+                | hir::FieldPrimitive::Cylinder
                 | hir::FieldPrimitive::Plane
                 | hir::FieldPrimitive::Slab,
             ) => AnalyticIntersectionStatus::CandidateOnly,

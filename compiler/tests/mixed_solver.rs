@@ -5,7 +5,8 @@ use wrela::parser::ast::AstNode;
 use wrela::parser::parse;
 use wrela::query_contract;
 use wrela::query_solver::{
-    AccelerationRejectionClass, RaySolverIntentDisposition, RaySolverMethod,
+    AccelerationRejectionClass, RaySolverFallbackReason, RaySolverHitBracketStatus,
+    RaySolverIntentDisposition, RaySolverMethod, RaySolverMethodStatus, RaySolverNoCloserHitProof,
     RequiredGuaranteeClass, SelectedMethodClass,
 };
 use wrela::scene_ir;
@@ -101,7 +102,18 @@ fn ray_solver_plan_exposes_mixed_selection_and_intent_summary_surface() {
 
     assert_eq!(solver.subject.as_str(), solver.contract_id.as_str());
     assert_eq!(summary.subject, solver.subject);
-    assert_eq!(summary.mixed_selections.len(), 4);
+    assert_eq!(summary.mixed_selections.len(), 6);
+    assert_eq!(
+        summary.methods,
+        vec![
+            RaySolverMethod::DenseSphereTracing,
+            RaySolverMethod::SupportBoundCandidateRejection,
+            RaySolverMethod::AnalyticPrimitiveIntersection,
+            RaySolverMethod::LipschitzSafeStepping,
+            RaySolverMethod::IntervalNewtonIsolation,
+            RaySolverMethod::SafeguardedNewtonRefinement,
+        ]
+    );
     assert!(
         summary
             .mixed_selections
@@ -125,6 +137,18 @@ fn ray_solver_plan_exposes_mixed_selection_and_intent_summary_surface() {
             && selection.candidate_class == "lipschitz-safe-candidates"
             && selection.selected_method_class == SelectedMethodClass::IntervalSolver
     }));
+    assert!(summary.mixed_selections.iter().any(|selection| {
+        selection.method == RaySolverMethod::IntervalNewtonIsolation
+            && selection.candidate_class == "interval-isolation-candidates"
+            && selection.required_guarantee == RequiredGuaranteeClass::IntervalBounded
+            && selection.selected_method_class == SelectedMethodClass::IntervalSolver
+    }));
+    assert!(summary.mixed_selections.iter().any(|selection| {
+        selection.method == RaySolverMethod::SafeguardedNewtonRefinement
+            && selection.candidate_class == "newton-refinement-candidates"
+            && selection.required_guarantee == RequiredGuaranteeClass::IntervalBounded
+            && selection.selected_method_class == SelectedMethodClass::IntervalSolver
+    }));
     assert!(
         summary
             .acceleration_rejection_classes
@@ -132,6 +156,53 @@ fn ray_solver_plan_exposes_mixed_selection_and_intent_summary_surface() {
     );
     assert_eq!(summary.artifact_reuse_intents.len(), 1);
     assert_eq!(summary.continuation_intents.len(), 1);
+    assert_eq!(
+        solver.certificate.method,
+        RaySolverMethod::AnalyticPrimitiveIntersection
+    );
+    assert!(solver.certificate.hit_or_miss_recorded);
+    assert_eq!(
+        solver.certificate.hit_bracket,
+        RaySolverHitBracketStatus::Available
+    );
+    assert_eq!(
+        solver.certificate.no_closer_hit_proof,
+        RaySolverNoCloserHitProof::Available
+    );
+    assert_eq!(
+        solver.certificate.fallback_reason,
+        Some(RaySolverFallbackReason::ContractRequiresDenseOracle)
+    );
+    assert_eq!(solver.portfolio.entries.len(), 10);
+    assert_eq!(
+        solver
+            .portfolio
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry.status, RaySolverMethodStatus::Enabled))
+            .count(),
+        6
+    );
+    assert!(solver.portfolio.entries.iter().any(|entry| {
+        entry.method == RaySolverMethod::IntervalNewtonIsolation
+            && entry.status == RaySolverMethodStatus::Enabled
+    }));
+    assert!(solver.portfolio.entries.iter().any(|entry| {
+        entry.method == RaySolverMethod::SafeguardedNewtonRefinement
+            && entry.status == RaySolverMethodStatus::Enabled
+    }));
+    assert!(solver.portfolio.entries.iter().any(|entry| {
+        entry.method == RaySolverMethod::AffineArithmeticBounds
+            && entry.status == RaySolverMethodStatus::Reserved
+    }));
+    assert!(solver.portfolio.entries.iter().any(|entry| {
+        entry.method == RaySolverMethod::TilePacketSolving
+            && entry.status == RaySolverMethodStatus::Reserved
+    }));
+    assert!(solver.portfolio.entries.iter().any(|entry| {
+        entry.method == RaySolverMethod::NeighborFrameContinuation
+            && entry.status == RaySolverMethodStatus::Reserved
+    }));
     assert_eq!(
         summary.artifact_reuse_intents[0].disposition,
         RaySolverIntentDisposition::Unavailable

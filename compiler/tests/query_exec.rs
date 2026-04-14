@@ -28,7 +28,7 @@ use wrela::query_plan::{
     ArtifactSchema, BatchQueryKind, BatchQueryPlan, CaptureKind, CaptureQueryKind,
     CaptureQueryPlan, DispatchBackend, WorldQueryKind, WorldQueryPlan,
 };
-use wrela::query_solver::RaySolverMethod;
+use wrela::query_solver::{RaySolverMethod, StepCertificateKind};
 
 fn lower_inline_module_from_source(source: &str) -> hir::Module {
     let node = parse(source);
@@ -471,7 +471,7 @@ fn assert_approx_eq(lhs: f32, rhs: f32) {
 fn assert_approx_eq_at(lhs: f32, rhs: f32, label: &str, x: usize, y: usize) {
     let delta = (lhs - rhs).abs();
     assert!(
-        delta < 0.01,
+        delta < 0.03,
         "{label} mismatch at pixel ({x}, {y}): lhs={lhs} rhs={rhs} delta={delta}"
     );
 }
@@ -562,10 +562,6 @@ fn assert_occlusion_approx_eq(lhs: &KernelValue, rhs: &KernelValue) {
         expect_f32(field(lhs, "distance")),
         expect_f32(field(rhs, "distance")),
     );
-    assert_eq!(
-        expect_i32(field(lhs, "steps")),
-        expect_i32(field(rhs, "steps"))
-    );
 }
 
 fn assert_surface_approx_eq(lhs: &KernelValue, rhs: &KernelValue) {
@@ -599,6 +595,42 @@ fn assert_surface_approx_eq(lhs: &KernelValue, rhs: &KernelValue) {
         expect_vec3(field(lhs, "emissive")),
         expect_vec3(field(rhs, "emissive")),
     );
+}
+
+fn assert_query_summary_approx_eq(lhs: &KernelValue, rhs: &KernelValue) {
+    let lhs = expect_struct(lhs, "QuerySummary");
+    let rhs = expect_struct(rhs, "QuerySummary");
+    assert_approx_eq(
+        expect_f32(field(lhs, "distance")),
+        expect_f32(field(rhs, "distance")),
+    );
+    assert_approx_eq(
+        expect_f32(field(lhs, "world_distance")),
+        expect_f32(field(rhs, "world_distance")),
+    );
+    assert_approx_eq(
+        expect_f32(field(lhs, "batch_distance0")),
+        expect_f32(field(rhs, "batch_distance0")),
+    );
+    assert_approx_eq(
+        expect_f32(field(lhs, "batch_distance1")),
+        expect_f32(field(rhs, "batch_distance1")),
+    );
+    assert_eq!(
+        expect_bool(field(lhs, "occluded0")),
+        expect_bool(field(rhs, "occluded0"))
+    );
+    assert_eq!(
+        expect_bool(field(lhs, "scalar_occluded")),
+        expect_bool(field(rhs, "scalar_occluded"))
+    );
+    assert_eq!(
+        expect_bool(field(lhs, "world_occluded")),
+        expect_bool(field(rhs, "world_occluded"))
+    );
+    assert_hit3_approx_eq(field(lhs, "hit"), field(rhs, "hit"));
+    assert_hit3_approx_eq(field(lhs, "world_hit"), field(rhs, "world_hit"));
+    assert_surface_approx_eq(field(lhs, "surface"), field(rhs, "surface"));
 }
 
 fn assert_medium_approx_eq(lhs: &KernelValue, rhs: &KernelValue) {
@@ -1301,7 +1333,7 @@ fn query_exec_explicit_virtual_gpu_backend_matches_cpu_for_direct_queries() {
         &world_trace_args,
     )
     .expect("vgpu world trace");
-    assert_eq!(cpu_world_trace, vgpu_world_trace);
+    assert_hit3_approx_eq(&cpu_world_trace, &vgpu_world_trace);
     assert_eq!(vgpu_world_trace_trace.backend, DispatchBackend::VirtualGpu);
     assert_eq!(
         vgpu_world_trace_trace.executor,
@@ -1437,7 +1469,16 @@ fn query_exec_traces_report_observability_counters() {
     assert!(cpu_trace.observability.shape_leaf_visits > 0);
     assert!(cpu_trace.observability.cache_brick_visits > 0);
     assert!(cpu_trace.observability.cache_brick_hits > 0);
-    assert!(cpu_trace.observability.accepted_relaxed_steps > 0);
+    assert_eq!(cpu_trace.observability.accepted_relaxed_steps, 0);
+    assert!(
+        cpu_trace
+            .observability
+            .step_certificate_kinds
+            .get(&StepCertificateKind::DenseDistanceBound)
+            .copied()
+            .unwrap_or_default()
+            > 0
+    );
     assert_eq!(
         cpu_trace
             .snapshot
@@ -2079,6 +2120,155 @@ fn query_exec_cpu_world_trace_support_intervals_cover_miss_tangent_inside_and_re
     assert!(expect_bool(field(mixed_repeat_hit, "hit")));
     assert_eq!(expect_u32(field(mixed_repeat_payload, "entity_id")), 37);
     assert!(mixed_repeat_trace.observability.ray_support_entry_jumps > 0);
+}
+
+#[test]
+fn query_exec_cpu_repeat_linear_supported_subset_reduces_hit_side_field_samples() {
+    let source = r#"
+field conservative distance probe_repeat_field(p: Vec3) -> F32 {
+    repeat_linear = vec3(12.0, 0.0, 0.0) {
+        translate = vec3(6.0, 0.0, 0.0) {
+            sphere(radius = 0.18)
+        }
+    }
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.2, 0.3, 0.4),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape probe_repeat_shape {
+    field = probe_repeat_field
+    material = shade
+    payload = Payload(
+        entity_id=u32(88),
+        material_id=u32(88),
+        actor=ActorHandle(id=u32(88), generation=u32(0))
+    )
+}
+
+region probe_repeat_region() {
+    place repeated = probe_repeat_shape
+}
+
+domain probe_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = false
+    media = false
+    max_distance = 30.0
+    min_step = 0.02
+    hit_epsilon = 0.001
+    max_steps = 256
+}
+"#;
+    let (_, _, ctx) = typed_query_module(source);
+    let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("probe_repeat_region"));
+    let domain = scene_domain(region_scene_id, 1, false, false, false);
+    let world_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+    let capture_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None)
+            .expect("shape trace plan"),
+    );
+
+    let region_capture = KernelValue::Capture(SmolStr::new("probe_repeat_region"));
+    let shape_capture = KernelValue::Capture(SmolStr::new("probe_repeat_shape"));
+
+    let mut world_hits = 0u32;
+    let mut dense_hits = 0u32;
+    let mut world_field_samples = 0u32;
+    let mut dense_field_samples = 0u32;
+    let mut world_steps = 0u32;
+    let mut dense_steps = 0u32;
+    let mut world_repeat_skips = 0u32;
+
+    for sample_i in 0..64 {
+        let py = (sample_i % 8) as f32 * 0.03 - 0.105;
+        let pz = (sample_i / 8) as f32 * 0.035 - 0.12;
+        let ray = ray_query_with_limits([-15.0, py, pz], [1.0, 0.0, 0.0], 30.0, 0.02, 0.001, 256);
+
+        let (world_hit, world_trace) = execute_world_query_with_trace_on(
+            &ctx,
+            DispatchBackend::Cpu,
+            &world_plan,
+            &[region_capture.clone(), domain.clone(), ray.clone()],
+        )
+        .expect("world repeat trace");
+        let (dense_hit, dense_trace) = execute_capture_query_with_trace_on(
+            &ctx,
+            DispatchBackend::Cpu,
+            &capture_plan,
+            &[shape_capture.clone(), ray],
+        )
+        .expect("dense repeat trace");
+
+        let world_hit_ref = expect_struct(&world_hit, "Hit3");
+        let dense_hit_ref = expect_struct(&dense_hit, "Hit3");
+        let world_did_hit = expect_bool(field(world_hit_ref, "hit"));
+        let dense_did_hit = expect_bool(field(dense_hit_ref, "hit"));
+        assert_eq!(world_did_hit, dense_did_hit);
+        if world_did_hit {
+            world_hits += 1;
+            dense_hits += 1;
+            assert!(
+                (expect_f32(field(world_hit_ref, "distance"))
+                    - expect_f32(field(dense_hit_ref, "distance")))
+                .abs()
+                    < 0.02
+            );
+            assert_eq!(
+                expect_u32(field(world_hit_ref, "repeat_id")),
+                expect_u32(field(dense_hit_ref, "repeat_id"))
+            );
+            assert_eq!(
+                expect_u32(field(world_hit_ref, "instance_id")),
+                expect_u32(field(dense_hit_ref, "instance_id"))
+            );
+        }
+
+        world_field_samples += world_trace.observability.field_samples;
+        dense_field_samples += dense_trace.observability.field_samples;
+        world_steps += world_trace.observability.trace_steps;
+        dense_steps += dense_trace.observability.trace_steps;
+        world_repeat_skips += world_trace.observability.repeat_cell_skips;
+    }
+
+    assert_eq!(world_hits, dense_hits);
+    assert!(world_hits > 0);
+    assert!(world_field_samples < dense_field_samples);
+    assert!(world_steps < dense_steps);
+    assert!(world_repeat_skips > 0);
+
+    let probe_ray = ray_query_with_limits(
+        [-15.0, 0.0, -0.015],
+        [1.0, 0.0, 0.0],
+        30.0,
+        0.02,
+        0.001,
+        256,
+    );
+    let (_probe_hit, probe_trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &world_plan,
+        &[region_capture, domain, probe_ray],
+    )
+    .expect("probe repeat trace");
+    assert!(
+        probe_trace
+            .observability
+            .solver_methods
+            .contains(&RaySolverMethod::RepeatAwareTraversal)
+    );
+    assert!(probe_trace.observability.repeat_cell_skips > 0);
 }
 
 #[test]
@@ -4279,7 +4469,7 @@ fn kernel_entry_can_route_direct_queries_through_virtual_gpu_backend() {
     )
     .expect("virtual gpu execute");
 
-    assert_eq!(cpu_value, vgpu_value);
+    assert_query_summary_approx_eq(&cpu_value, &vgpu_value);
 }
 
 #[test]

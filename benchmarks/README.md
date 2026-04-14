@@ -4,7 +4,7 @@ The benchmark harness now focuses on the world-language surface that remains in 
 
 - `micro`: low-level primitives and hot loops.
 - `field_engine`: authored field/scene query cases for repetition, thin features, local frames, mixed-solver dense-oracle closure, radiance/media, opaque-pessimization regressions, and a collision-heavy transition proxy lane for the closure protocol.
-- `realtime_presentation`: presentation-oriented scene-shape benchmarks for dense constructive geometry, repetition-heavy layouts, thin-stack aliasing, transformed primitive galleries, mixed opaque/conservative scenes, media/radiance scenes, cache-stress motion paths, and camera-motion temporal-reuse / clipmap-churn coverage. The explicit `1080p120` closure lane now adds fixed scenarios for each of those representative stresses.
+- `realtime_presentation`: presentation-oriented scene-shape benchmarks for dense constructive geometry, repetition-heavy layouts, a dedicated repeat-aware solver proof lane, thin-stack aliasing, relaxed exact-torus solver coverage, transformed primitive galleries, mixed opaque/conservative scenes, media/radiance scenes, cache-stress motion paths, and camera-motion temporal-reuse / clipmap-churn coverage. The explicit `1080p120` closure lane now adds fixed scenarios for each of those representative stresses.
 - `1080p120` closure profiles: fixed 1920x1080, 120 FPS protocol manifests for the frame and collision lanes. `wrela perf --profile=1080p120` automatically selects the companion `1080p120_closure.toml` file when it exists.
 
 ## Manifests
@@ -57,6 +57,7 @@ The scene queries in this suite are pinned to `dispatch_backend_cpu()` so the be
 
 - `presentation_dense_constructive_geometry`: dense constructive solids built from lofts, sweeps, bends, and unions. This stresses candidate selection, hit resolution, and normal stability on heavily composed geometry.
 - `presentation_repetition_heavy_scene`: repetition-heavy structure built from nested linear repetition and instancing. This measures repeat identity, instance stability, and traversal behavior in tiled layouts.
+- `presentation_repeat_linear_solver_scene`: direct axis-aligned `repeat_linear` evidence lane. This keeps dense-parity and repeat-identity checks in the benchmark fixture while the phase-37 CPU solver regression and presentation report counters prove repeat-aware traversal reduction and skipped repeated cells on the supported subset.
 - `presentation_thin_stack_alias_prone`: thin stacked layers and near-touching surfaces. This exercises alias-prone rays, epsilon sensitivity, and shallow-angle normal consistency.
 - `presentation_media_radiance_scene`: radiance- and media-enabled presentation content. This covers surface sampling, radiance lookup, medium evaluation, and the frame path for volumetric scenes.
 

@@ -7690,6 +7690,131 @@ allow_unstable = false
 }
 
 #[test]
+fn cli_perf_realtime_presentation_smoke_records_phase37_solver_counters() {
+    let dir = workspace_tempdir();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .to_path_buf();
+    let bench_root = repo_root.join("benchmarks/realtime_presentation");
+    let manifest = dir.path().join("realtime_presentation_phase37_smoke.toml");
+    let baseline = dir.path().join("realtime_presentation_phase37_smoke.json");
+    write_fixture_file(
+        &manifest,
+        r#"
+version = 1
+suite = "realtime_presentation_phase37_smoke"
+
+[profiles.smoke]
+warmup_pairs = 1
+measure_pairs = 1
+coverage = "all"
+
+[[scenarios]]
+id = "presentation_relaxed_torus_scene"
+test_name = "tests/realtime_presentation::test_realtime_presentation_relaxed_torus_scene_ops_256"
+ops = 256
+class = "critical"
+min_runtime_ms = 1
+timeout_ms = 180000
+allow_unstable = false
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_relaxed_torus_view", region = "relaxed_torus_region", domain = "relaxed_torus_domain", width = 64, height = 64, frames = 4, camera_position = [0.0, 0.0, 3.2], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 46.0 }
+
+[[scenarios]]
+id = "presentation_repetition_heavy_scene"
+test_name = "tests/realtime_presentation::test_realtime_presentation_repetition_heavy_scene_ops_512"
+ops = 512
+class = "critical"
+min_runtime_ms = 1
+timeout_ms = 180000
+allow_unstable = false
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_repetition_view", region = "repetition_region", domain = "repetition_domain", width = 64, height = 64, frames = 4, camera_position = [0.0, 0.0, 3.0], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 48.0 }
+
+[[scenarios]]
+id = "presentation_repeat_linear_solver_scene"
+test_name = "tests/realtime_presentation::test_realtime_presentation_repeat_linear_solver_scene_ops_256"
+ops = 256
+class = "critical"
+min_runtime_ms = 1
+timeout_ms = 180000
+allow_unstable = false
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_repeat_linear_solver_view", region = "repeat_linear_solver_region", domain = "repeat_linear_solver_domain", width = 64, height = 64, frames = 4, camera_position = [-15.0, 0.0, 0.0], camera_forward = [1.0, 0.0, 0.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 12.0 }
+"#,
+    )
+    .expect("write realtime presentation phase37 smoke manifest");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(&repo_root)
+        .arg("perf")
+        .arg("--runs=1")
+        .arg("--profile=smoke")
+        .arg("--query-backend=cpu")
+        .arg(format!("--benchmark-manifest={}", manifest.display()))
+        .arg(format!("--baseline-out={}", baseline.display()))
+        .arg(&bench_root)
+        .output()
+        .expect("run realtime presentation phase37 perf smoke");
+    assert!(
+        output.status.success(),
+        "realtime presentation phase37 perf smoke failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(baseline.exists(), "expected realtime perf baseline");
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&baseline).expect("read realtime baseline"))
+            .expect("parse realtime baseline");
+    let presentation_reports = json
+        .get("presentation_reports")
+        .and_then(|value| value.as_array())
+        .expect("presentation reports array");
+    assert_eq!(presentation_reports.len(), 3);
+    let report_for = |scenario_id: &str| {
+        presentation_reports
+            .iter()
+            .find(|report| {
+                report.get("scenario_id").and_then(|value| value.as_str()) == Some(scenario_id)
+            })
+            .unwrap_or_else(|| panic!("missing presentation report for {scenario_id}"))
+    };
+    let relaxed_torus = report_for("presentation_relaxed_torus_scene");
+    assert!(
+        relaxed_torus
+            .pointer("/frame_cost/accepted_relaxed_steps")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            > 0,
+        "expected relaxed stepping evidence in relaxed torus benchmark"
+    );
+    assert!(
+        relaxed_torus
+            .pointer("/frame_cost/interval_proof_successes")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            > 0,
+        "expected interval proof evidence in relaxed torus benchmark"
+    );
+    assert!(
+        relaxed_torus
+            .pointer("/frame_cost/average_trace_steps")
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0)
+            > 0.0,
+        "expected average trace steps in relaxed torus benchmark report"
+    );
+    let repetition = report_for("presentation_repeat_linear_solver_scene");
+    assert!(
+        repetition
+            .pointer("/frame_cost/repeat_cell_skips")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            > 0,
+        "expected repeat-aware traversal to skip repeated cells"
+    );
+}
+
+#[test]
 fn cli_perf_runs_realtime_presentation_1080p120_closure_profile() {
     let dir = workspace_tempdir();
     let bench_root = dir.path().join("realtime_presentation_fixture");

@@ -27,8 +27,10 @@ use crate::query_plan::{
     batch_query_kind_for_contract_id, world_query_kind_for_contract_id,
 };
 use crate::query_solver::{
-    RaySolverArtifactReuseResolution, RaySolverFallbackReason, RaySolverIntentDisposition,
-    RaySolverMethod, RaySolverPlan, SemanticEvidence,
+    CertificateReuseClass, RaySolverArtifactReuseResolution, RaySolverFallbackReason,
+    RaySolverIntentDisposition, RaySolverMethod, RaySolverPlan, RayStepCertificate,
+    RayStepCertificateMetadata, RayStepCertificateSubjectKind, RequiredGuaranteeClass,
+    SemanticEvidence, StepCertificateKind,
 };
 use crate::scene_ir::{
     DistanceSemantics, FieldNode, RepeatKind, SceneArgExpr, SceneProfileExpr, SceneValueExpr,
@@ -531,9 +533,110 @@ fn push_ordered_ray_traversals(stack: &mut Vec<CpuRayTraversal>, mut items: Vec<
 
 #[derive(Debug, Clone)]
 enum AnalyticRayHit {
-    Hit(KernelValue),
+    Hit(RayStepCertificate),
     VerificationFailed,
     NotApplicable,
+}
+
+#[derive(Debug, Clone)]
+enum RepeatAwareTraceOutcome {
+    Finished(KernelValue),
+    Unsupported,
+}
+
+#[derive(Debug, Clone)]
+struct TraceLoopPolicy {
+    subject: SmolStr,
+    enabled_methods: Vec<RaySolverMethod>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TraceLoopState {
+    travel: f32,
+    point: [f32; 3],
+    distance: f32,
+    adaptive_epsilon: f32,
+    step_bound: f32,
+    step_index: i32,
+    previous_distance: Option<f32>,
+}
+
+#[derive(Debug, Clone)]
+enum TraceStepDecision {
+    Advance(RayStepCertificate),
+    Hit(RayStepCertificate),
+    Miss,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BracketRefinement {
+    lo: f32,
+    hi: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum IntervalProofOutcome {
+    NoRoot { end_t: f32 },
+    Bracket { bracket: BracketRefinement },
+    Unresolved,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AnalyticPrimitive {
+    Sphere {
+        radius: f32,
+    },
+    Plane {
+        normal: [f32; 3],
+        offset: f32,
+    },
+    Slab {
+        thickness: f32,
+    },
+    Box {
+        half: [f32; 3],
+    },
+    Capsule {
+        a: [f32; 3],
+        b: [f32; 3],
+        radius: f32,
+    },
+    Cylinder {
+        radius: f32,
+        half_height: f32,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AnalyticPrimitiveRay {
+    primitive: AnalyticPrimitive,
+    local_origin: [f32; 3],
+    local_direction: [f32; 3],
+}
+
+impl TraceLoopPolicy {
+    fn dense_only(subject: impl Into<SmolStr>) -> Self {
+        Self {
+            subject: subject.into(),
+            enabled_methods: vec![RaySolverMethod::DenseSphereTracing],
+        }
+    }
+
+    fn from_solver_plan(plan: &RaySolverPlan) -> Self {
+        Self {
+            subject: plan.subject.clone(),
+            enabled_methods: plan.diagnostic_summary().methods,
+        }
+    }
+
+    fn method_enabled(&self, method: RaySolverMethod) -> bool {
+        self.enabled_methods.contains(&method)
+    }
+
+    fn is_dense_only(&self) -> bool {
+        self.enabled_methods.len() == 1
+            && self.enabled_methods[0] == RaySolverMethod::DenseSphereTracing
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -733,6 +836,24 @@ impl<'a> DirectQueryOps<'a> {
         });
     }
 
+    pub(crate) fn note_step_certificate(&self, certificate: &RayStepCertificate) {
+        self.update_observability(|observability| {
+            *observability
+                .step_certificate_kinds
+                .entry(certificate.kind)
+                .or_insert(0) += 1;
+            if observability.step_certificate_metadata.len() < 16
+                && !observability
+                    .step_certificate_metadata
+                    .contains(&certificate.metadata)
+            {
+                observability
+                    .step_certificate_metadata
+                    .push(certificate.metadata.clone());
+            }
+        });
+    }
+
     pub(crate) fn note_acceleration_node_visit(&self) {
         self.update_observability(|observability| observability.acceleration_node_visits += 1);
     }
@@ -893,6 +1014,47 @@ impl<'a> DirectQueryOps<'a> {
                 observability
                     .solver_methods
                     .push(RaySolverMethod::LipschitzSafeStepping);
+            }
+        });
+    }
+
+    pub(crate) fn note_solver_interval_skip(&self) {
+        self.update_observability(|observability| {
+            observability.solver_interval_skips += 1;
+            if !observability
+                .solver_methods
+                .contains(&RaySolverMethod::IntervalNewtonIsolation)
+            {
+                observability
+                    .solver_methods
+                    .push(RaySolverMethod::IntervalNewtonIsolation);
+            }
+        });
+    }
+
+    pub(crate) fn note_solver_newton_refinement(&self) {
+        self.update_observability(|observability| {
+            observability.solver_newton_refinements += 1;
+            if !observability
+                .solver_methods
+                .contains(&RaySolverMethod::SafeguardedNewtonRefinement)
+            {
+                observability
+                    .solver_methods
+                    .push(RaySolverMethod::SafeguardedNewtonRefinement);
+            }
+        });
+    }
+
+    pub(crate) fn note_solver_repeat_aware_traversal(&self) {
+        self.update_observability(|observability| {
+            if !observability
+                .solver_methods
+                .contains(&RaySolverMethod::RepeatAwareTraversal)
+            {
+                observability
+                    .solver_methods
+                    .push(RaySolverMethod::RepeatAwareTraversal);
             }
         });
     }
@@ -2775,7 +2937,7 @@ impl<'a> DirectQueryOps<'a> {
         hit_epsilon: f32,
         max_steps: i32,
     ) -> Result<KernelValue, QueryExecError> {
-        self.trace_shape_from(
+        self.trace_shape_with_policy(
             shape,
             origin,
             direction,
@@ -2784,10 +2946,12 @@ impl<'a> DirectQueryOps<'a> {
             min_step,
             hit_epsilon,
             max_steps,
+            &TraceLoopPolicy::dense_only(shape.clone()),
+            None,
         )
     }
 
-    fn trace_shape_from(
+    fn trace_shape_dense_certificate_only(
         &self,
         shape: &SmolStr,
         origin: [f32; 3],
@@ -2797,31 +2961,177 @@ impl<'a> DirectQueryOps<'a> {
         min_step: f32,
         hit_epsilon: f32,
         max_steps: i32,
+        policy: &TraceLoopPolicy,
+        runtime_plan: Option<&RaySolverPlan>,
     ) -> Result<KernelValue, QueryExecError> {
-        if !self.ctx.shape_names.contains(shape) {
-            return Ok(default_hit(origin));
-        }
         let mut travel = start_travel.max(0.0);
         let mut steps = 0i32;
+        let mut dense_fallback_recorded = false;
+
+        if start_travel > 0.0 {
+            let certificate = self.support_entry_jump_certificate(policy, shape, 0.0, start_travel);
+            self.note_step_certificate(&certificate);
+        }
+
         while steps < max_steps && travel <= max_distance {
             self.note_trace_step();
-            self.note_interval_subdivision();
             let point = [
                 origin[0] + direction[0] * travel,
                 origin[1] + direction[1] * travel,
                 origin[2] + direction[2] * travel,
             ];
             let distance = self.eval_shape_distance(shape, point)?;
+            let state = TraceLoopState {
+                travel,
+                point,
+                distance,
+                adaptive_epsilon: hit_epsilon,
+                step_bound: distance.max(min_step),
+                step_index: steps,
+                previous_distance: None,
+            };
             if distance <= hit_epsilon {
-                self.note_accepted_relaxed_step();
-                self.note_interval_proof_success();
+                if !dense_fallback_recorded && runtime_plan.is_some() {
+                    self.note_solver_dense_fallback_reasons(
+                        runtime_plan.expect("runtime plan").dense_fallback_reasons(),
+                    );
+                }
+                let certificate = self.dense_distance_hit_certificate(policy, shape, &state);
+                self.note_step_certificate(&certificate);
                 return self.shape_hit_value(shape, travel, point, steps);
             }
-            travel += distance.max(min_step);
-            self.note_accepted_relaxed_step();
+
+            if !dense_fallback_recorded && runtime_plan.is_some() {
+                self.note_solver_dense_fallback_reasons(
+                    runtime_plan.expect("runtime plan").dense_fallback_reasons(),
+                );
+                dense_fallback_recorded = true;
+            }
+            let certificate = self.dense_distance_advance_certificate(policy, shape, &state);
+            self.note_step_certificate(&certificate);
+            travel = certificate.t_end;
             steps += 1;
         }
-        self.note_rejected_relaxed_step();
+
+        Ok(default_hit(origin))
+    }
+
+    fn trace_shape_with_policy(
+        &self,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        start_travel: f32,
+        max_distance: f32,
+        min_step: f32,
+        hit_epsilon: f32,
+        max_steps: i32,
+        policy: &TraceLoopPolicy,
+        runtime_plan: Option<&RaySolverPlan>,
+    ) -> Result<KernelValue, QueryExecError> {
+        if !self.ctx.shape_names.contains(shape) {
+            return Ok(default_hit(origin));
+        }
+        if policy.is_dense_only() {
+            return self.trace_shape_dense_certificate_only(
+                shape,
+                origin,
+                direction,
+                start_travel,
+                max_distance,
+                min_step,
+                hit_epsilon,
+                max_steps,
+                policy,
+                runtime_plan,
+            );
+        }
+        let mut travel = start_travel.max(0.0);
+        let mut steps = 0i32;
+        let mut previous_distance = None;
+        let mut dense_fallback_recorded = false;
+
+        if start_travel > 0.0 {
+            let certificate = self.support_entry_jump_certificate(policy, shape, 0.0, start_travel);
+            self.note_step_certificate(&certificate);
+        }
+
+        while steps < max_steps && travel <= max_distance {
+            self.note_trace_step();
+            let point = [
+                origin[0] + direction[0] * travel,
+                origin[1] + direction[1] * travel,
+                origin[2] + direction[2] * travel,
+            ];
+            let distance = self.eval_shape_distance(shape, point)?;
+            let adaptive_epsilon =
+                self.shape_adaptive_hit_epsilon(shape, travel, point, hit_epsilon)?;
+            let state = TraceLoopState {
+                travel,
+                point,
+                distance,
+                adaptive_epsilon,
+                step_bound: distance.max(min_step),
+                step_index: steps,
+                previous_distance,
+            };
+            let decision = self.next_shape_trace_certificate(
+                shape,
+                origin,
+                direction,
+                max_distance,
+                min_step,
+                hit_epsilon,
+                &state,
+                policy,
+            )?;
+
+            match decision {
+                TraceStepDecision::Advance(certificate) => {
+                    if !dense_fallback_recorded
+                        && matches!(certificate.kind, StepCertificateKind::DenseDistanceBound)
+                        && runtime_plan.is_some()
+                    {
+                        self.note_solver_dense_fallback_reasons(
+                            runtime_plan.expect("runtime plan").dense_fallback_reasons(),
+                        );
+                        dense_fallback_recorded = true;
+                    }
+                    self.note_step_certificate(&certificate);
+                    previous_distance = Some(distance);
+                    let next_travel = certificate.t_end.max(travel);
+                    if next_travel <= travel + f32::EPSILON {
+                        self.note_solver_certificate_failure();
+                        break;
+                    }
+                    travel = next_travel;
+                    steps += 1;
+                }
+                TraceStepDecision::Hit(certificate) => {
+                    if !dense_fallback_recorded
+                        && matches!(certificate.kind, StepCertificateKind::DenseDistanceBound)
+                        && runtime_plan.is_some()
+                    {
+                        self.note_solver_dense_fallback_reasons(
+                            runtime_plan.expect("runtime plan").dense_fallback_reasons(),
+                        );
+                    }
+                    self.note_step_certificate(&certificate);
+                    if matches!(certificate.kind, StepCertificateKind::AnalyticHit) {
+                        self.note_solver_analytic_hit();
+                    }
+                    let hit_point = [
+                        origin[0] + direction[0] * certificate.t_end,
+                        origin[1] + direction[1] * certificate.t_end,
+                        origin[2] + direction[2] * certificate.t_end,
+                    ];
+                    return self.shape_hit_value(shape, certificate.t_end, hit_point, steps);
+                }
+                TraceStepDecision::Miss => {
+                    break;
+                }
+            }
+        }
         Ok(default_hit(origin))
     }
 
@@ -2838,39 +3148,40 @@ impl<'a> DirectQueryOps<'a> {
         hit_epsilon: f32,
         max_steps: i32,
     ) -> Result<KernelValue, QueryExecError> {
-        let runtime_plan =
+        let mut runtime_plan =
             self.runtime_shape_solver_plan(solver_plan, artifact_contracts, shape)?;
         self.note_solver_plan(&runtime_plan);
-        let mut dense_fallback_recorded = false;
-        if runtime_plan.method_enabled(RaySolverMethod::AnalyticPrimitiveIntersection) {
-            match self.try_analytic_sphere_hit(
+        if runtime_plan.method_enabled(RaySolverMethod::RepeatAwareTraversal) {
+            match self.try_repeat_linear_shape_hit(
                 shape,
                 origin,
                 direction,
+                start_travel,
                 max_distance,
+                min_step,
                 hit_epsilon,
+                max_steps,
+                &TraceLoopPolicy::from_solver_plan(&runtime_plan),
             )? {
-                AnalyticRayHit::Hit(hit) => {
-                    self.note_solver_analytic_hit();
+                RepeatAwareTraceOutcome::Finished(hit) => {
+                    self.note_solver_repeat_aware_traversal();
                     return Ok(hit);
                 }
-                AnalyticRayHit::VerificationFailed => {
-                    self.note_solver_certificate_failure();
-                    self.note_solver_dense_fallback_reasons(&[
-                        RaySolverFallbackReason::VerificationFailed,
-                    ]);
-                    dense_fallback_recorded = true;
+                RepeatAwareTraceOutcome::Unsupported => {
+                    if !runtime_plan
+                        .fallback
+                        .reasons
+                        .contains(&RaySolverFallbackReason::VerificationFailed)
+                    {
+                        runtime_plan
+                            .fallback
+                            .reasons
+                            .push(RaySolverFallbackReason::VerificationFailed);
+                    }
                 }
-                AnalyticRayHit::NotApplicable => {}
             }
         }
-        if !dense_fallback_recorded {
-            self.note_solver_dense_fallback_reasons(runtime_plan.dense_fallback_reasons());
-        }
-        if runtime_plan.method_enabled(RaySolverMethod::LipschitzSafeStepping) {
-            self.note_solver_lipschitz_step();
-        }
-        self.trace_shape_from(
+        self.trace_shape_with_policy(
             shape,
             origin,
             direction,
@@ -2879,6 +3190,8 @@ impl<'a> DirectQueryOps<'a> {
             min_step,
             hit_epsilon,
             max_steps,
+            &TraceLoopPolicy::from_solver_plan(&runtime_plan),
+            Some(&runtime_plan),
         )
     }
 
@@ -2952,75 +3265,835 @@ impl<'a> DirectQueryOps<'a> {
         }
     }
 
-    fn try_analytic_sphere_hit(
+    fn next_shape_trace_certificate(
         &self,
         shape: &SmolStr,
         origin: [f32; 3],
         direction: [f32; 3],
         max_distance: f32,
+        min_step: f32,
         hit_epsilon: f32,
+        state: &TraceLoopState,
+        policy: &TraceLoopPolicy,
+    ) -> Result<TraceStepDecision, QueryExecError> {
+        if policy.method_enabled(RaySolverMethod::AnalyticPrimitiveIntersection) {
+            match self.try_analytic_primitive_hit(
+                shape,
+                origin,
+                direction,
+                state.travel,
+                max_distance,
+                hit_epsilon,
+                policy,
+            )? {
+                AnalyticRayHit::Hit(certificate) => {
+                    self.note_analytic_transformed_hit();
+                    self.note_interval_proof_success();
+                    return Ok(TraceStepDecision::Hit(certificate));
+                }
+                AnalyticRayHit::VerificationFailed => {
+                    self.note_solver_certificate_failure();
+                }
+                AnalyticRayHit::NotApplicable => {}
+            }
+        }
+
+        if state.distance <= state.adaptive_epsilon {
+            self.note_interval_proof_success();
+            return Ok(TraceStepDecision::Hit(
+                self.dense_distance_hit_certificate(policy, shape, state),
+            ));
+        }
+
+        if let Some(decision) = self.try_relaxed_or_interval_certificate(
+            shape,
+            origin,
+            direction,
+            max_distance,
+            min_step,
+            hit_epsilon,
+            state,
+            policy,
+        )? {
+            return Ok(decision);
+        }
+
+        Ok(TraceStepDecision::Advance(
+            self.dense_distance_advance_certificate(policy, shape, state),
+        ))
+    }
+
+    fn try_analytic_primitive_hit(
+        &self,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        start_travel: f32,
+        max_distance: f32,
+        hit_epsilon: f32,
+        policy: &TraceLoopPolicy,
     ) -> Result<AnalyticRayHit, QueryExecError> {
-        let scene = self.shape_scene(shape)?;
-        let ShapeNode::Leaf(leaf) = &scene.root else {
-            return Ok(AnalyticRayHit::NotApplicable);
-        };
-        let field = self.field_scene(&leaf.field)?;
-        let FieldNode::Primitive {
-            primitive: hir::FieldPrimitive::Sphere,
-            args: Some(args),
-        } = &field.root
+        let Some(primitive_ray) = self.analytic_primitive_for_shape(shape, origin, direction)?
         else {
             return Ok(AnalyticRayHit::NotApplicable);
         };
-        let radius_value = self.eval_scene_named_arg(args, "radius")?;
-        let radius = expect_f32(Some(&radius_value), "sphere radius")?.abs();
-        if self.eval_shape_distance(shape, origin)? <= hit_epsilon {
-            self.note_trace_steps(1);
-            self.note_analytic_transformed_hit();
-            self.note_interval_proof_success();
-            return self
-                .shape_hit_value(shape, 0.0, origin, 0)
-                .map(AnalyticRayHit::Hit);
-        }
-        let a = dot3(direction, direction);
-        if a <= f32::EPSILON {
-            return Ok(AnalyticRayHit::NotApplicable);
-        }
-        let b = 2.0 * dot3(origin, direction);
-        let c = dot3(origin, origin) - radius * radius;
-        let discriminant = b * b - 4.0 * a * c;
-        if discriminant < 0.0 {
-            return Ok(AnalyticRayHit::NotApplicable);
-        }
-        let root = discriminant.sqrt();
-        let inv = 1.0 / (2.0 * a);
-        let near = (-b - root) * inv;
-        let travel = if near >= 0.0 {
-            near
-        } else {
-            return Ok(AnalyticRayHit::NotApplicable);
+        let travel = match primitive_ray.solve(start_travel, max_distance) {
+            Some(travel) => travel,
+            None => return Ok(AnalyticRayHit::NotApplicable),
         };
-        if !(0.0..=max_distance).contains(&travel) {
-            return Ok(AnalyticRayHit::NotApplicable);
-        }
         let point = [
             origin[0] + direction[0] * travel,
             origin[1] + direction[1] * travel,
             origin[2] + direction[2] * travel,
         ];
-        let adaptive_epsilon = adaptive_hit_epsilon(hit_epsilon, travel, radius);
-        self.note_solver_adaptive_epsilon();
+        let adaptive_epsilon =
+            self.shape_adaptive_hit_epsilon(shape, travel, point, hit_epsilon)?;
         let residual = self.eval_shape_distance(shape, point)?.abs();
         if residual > adaptive_epsilon {
-            self.note_rejected_relaxed_step();
             return Ok(AnalyticRayHit::VerificationFailed);
         }
-        let dense_compatible_steps = if travel <= hit_epsilon { 0 } else { 1 };
-        self.note_trace_steps(dense_compatible_steps.max(1) as u32);
-        self.note_analytic_transformed_hit();
-        self.note_interval_proof_success();
-        self.shape_hit_value(shape, travel, point, dense_compatible_steps)
-            .map(AnalyticRayHit::Hit)
+        let certificate = RayStepCertificate {
+            kind: StepCertificateKind::AnalyticHit,
+            metadata: self.certificate_metadata(
+                policy,
+                shape,
+                RayStepCertificateSubjectKind::Primitive,
+                "analytic-primitive-hit",
+                format!("hit_epsilon={hit_epsilon:.6}; adaptive_epsilon={adaptive_epsilon:.6}"),
+                CertificateReuseClass::RenderingAndCollision,
+                vec![
+                    SmolStr::new("primitive arguments changed"),
+                    SmolStr::new("safe transform chain changed"),
+                    SmolStr::new("shape semantic identity changed"),
+                ],
+            ),
+            t_start: start_travel.max(0.0),
+            t_end: travel,
+            no_hit_before_t_end: true,
+            bracket: None,
+            provenance: None,
+        };
+        self.note_trace_steps(1);
+        Ok(AnalyticRayHit::Hit(certificate))
+    }
+
+    fn support_entry_jump_certificate(
+        &self,
+        policy: &TraceLoopPolicy,
+        shape: &SmolStr,
+        t_start: f32,
+        t_end: f32,
+    ) -> RayStepCertificate {
+        RayStepCertificate {
+            kind: StepCertificateKind::SupportEntryJump,
+            metadata: self.certificate_metadata(
+                policy,
+                shape,
+                RayStepCertificateSubjectKind::SupportInterval,
+                "support-entry-jump",
+                "support-interval entry jump",
+                CertificateReuseClass::RenderingAndCollision,
+                vec![
+                    SmolStr::new("support bounds changed"),
+                    SmolStr::new("support semantics invalidated"),
+                ],
+            ),
+            t_start,
+            t_end,
+            no_hit_before_t_end: true,
+            bracket: None,
+            provenance: None,
+        }
+    }
+
+    fn dense_distance_hit_certificate(
+        &self,
+        policy: &TraceLoopPolicy,
+        shape: &SmolStr,
+        state: &TraceLoopState,
+    ) -> RayStepCertificate {
+        RayStepCertificate {
+            kind: StepCertificateKind::DenseDistanceBound,
+            metadata: self.certificate_metadata(
+                policy,
+                shape,
+                RayStepCertificateSubjectKind::Shape,
+                "dense-distance-bound",
+                format!(
+                    "dense hit within adaptive epsilon {:.6}",
+                    state.adaptive_epsilon
+                ),
+                CertificateReuseClass::RenderingAndCollision,
+                vec![SmolStr::new("distance semantics changed")],
+            ),
+            t_start: state.travel,
+            t_end: state.travel,
+            no_hit_before_t_end: false,
+            bracket: Some([state.travel, state.travel]),
+            provenance: None,
+        }
+    }
+
+    fn dense_distance_advance_certificate(
+        &self,
+        policy: &TraceLoopPolicy,
+        shape: &SmolStr,
+        state: &TraceLoopState,
+    ) -> RayStepCertificate {
+        RayStepCertificate {
+            kind: StepCertificateKind::DenseDistanceBound,
+            metadata: self.certificate_metadata(
+                policy,
+                shape,
+                RayStepCertificateSubjectKind::Shape,
+                "dense-distance-bound",
+                format!("dense step {:.6}", state.step_bound),
+                CertificateReuseClass::RenderingAndCollision,
+                vec![SmolStr::new("distance semantics changed")],
+            ),
+            t_start: state.travel,
+            t_end: state.travel + state.step_bound,
+            no_hit_before_t_end: true,
+            bracket: None,
+            provenance: None,
+        }
+    }
+
+    fn certificate_metadata(
+        &self,
+        policy: &TraceLoopPolicy,
+        shape: &SmolStr,
+        subject_kind: RayStepCertificateSubjectKind,
+        proof_family: impl Into<SmolStr>,
+        tolerance_context: impl Into<SmolStr>,
+        reusable_by: CertificateReuseClass,
+        invalidation_reasons: Vec<SmolStr>,
+    ) -> RayStepCertificateMetadata {
+        RayStepCertificateMetadata {
+            guarantee: policy.guarantee,
+            proof_family: proof_family.into(),
+            subject: shape.clone(),
+            subject_kind,
+            tolerance_context: tolerance_context.into(),
+            reusable_by,
+            invalidation_reasons,
+        }
+    }
+
+    fn analytic_primitive_for_shape(
+        &self,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+    ) -> Result<Option<AnalyticPrimitiveRay>, QueryExecError> {
+        let scene = self.shape_scene(shape)?;
+        let leaf = match &scene.root {
+            ShapeNode::Leaf(leaf) => leaf,
+            ShapeNode::Use { target } => {
+                let target_scene = self.shape_scene(target)?;
+                let ShapeNode::Leaf(leaf) = &target_scene.root else {
+                    return Ok(None);
+                };
+                leaf
+            }
+            _ => return Ok(None),
+        };
+        let field = self.field_scene(&leaf.field)?;
+        self.analytic_primitive_for_field_node(&field.root, origin, direction)
+    }
+
+    fn analytic_primitive_for_field_node(
+        &self,
+        node: &FieldNode,
+        origin: [f32; 3],
+        direction: [f32; 3],
+    ) -> Result<Option<AnalyticPrimitiveRay>, QueryExecError> {
+        match node {
+            FieldNode::Use { target } => {
+                let field = self.field_scene(target)?;
+                self.analytic_primitive_for_field_node(&field.root, origin, direction)
+            }
+            FieldNode::Transform { kind, param, inner } => {
+                let Some(param) = param else {
+                    return self.analytic_primitive_for_field_node(inner, origin, direction);
+                };
+                match kind {
+                    TransformKind::Translate
+                    | TransformKind::Rotate
+                    | TransformKind::UniformScale => {
+                        let local_origin = self.eval_wrapped_point(*kind, param, origin)?;
+                        let local_direction = self.eval_wrapped_vector(*kind, param, direction)?;
+                        self.analytic_primitive_for_field_node(inner, local_origin, local_direction)
+                    }
+                    _ => Ok(None),
+                }
+            }
+            FieldNode::Primitive { primitive, args } => {
+                let primitive = match primitive {
+                    hir::FieldPrimitive::Sphere => {
+                        let radius = self
+                            .eval_scene_named_arg_opt(args.as_deref().unwrap_or(&[]), "radius")?
+                            .map(|value| expect_f32(Some(&value), "sphere radius"))
+                            .transpose()?
+                            .unwrap_or(1.0)
+                            .abs();
+                        AnalyticPrimitive::Sphere { radius }
+                    }
+                    hir::FieldPrimitive::Plane => {
+                        let normal = self
+                            .eval_scene_named_arg_opt(args.as_deref().unwrap_or(&[]), "normal")?
+                            .map(|value| expect_vec3(Some(&value), "plane normal"))
+                            .transpose()?
+                            .unwrap_or([0.0, 1.0, 0.0]);
+                        let offset = self
+                            .eval_scene_named_arg_opt(args.as_deref().unwrap_or(&[]), "offset")?
+                            .map(|value| expect_f32(Some(&value), "plane offset"))
+                            .transpose()?
+                            .unwrap_or(0.0);
+                        AnalyticPrimitive::Plane { normal, offset }
+                    }
+                    hir::FieldPrimitive::Slab => {
+                        let thickness = self
+                            .eval_scene_named_arg_opt(args.as_deref().unwrap_or(&[]), "thickness")?
+                            .map(|value| expect_f32(Some(&value), "slab thickness"))
+                            .transpose()?
+                            .unwrap_or(0.0)
+                            .abs();
+                        AnalyticPrimitive::Slab { thickness }
+                    }
+                    hir::FieldPrimitive::Box => {
+                        let half = self
+                            .eval_scene_named_arg_opt(args.as_deref().unwrap_or(&[]), "half")?
+                            .map(|value| expect_vec3(Some(&value), "box half"))
+                            .transpose()?
+                            .unwrap_or([0.5, 0.5, 0.5]);
+                        AnalyticPrimitive::Box { half }
+                    }
+                    hir::FieldPrimitive::Capsule => {
+                        let a = self.eval_scene_named_arg(args.as_deref().unwrap_or(&[]), "a")?;
+                        let b = self.eval_scene_named_arg(args.as_deref().unwrap_or(&[]), "b")?;
+                        let radius =
+                            self.eval_scene_named_arg(args.as_deref().unwrap_or(&[]), "radius")?;
+                        AnalyticPrimitive::Capsule {
+                            a: expect_vec3(Some(&a), "capsule a")?,
+                            b: expect_vec3(Some(&b), "capsule b")?,
+                            radius: expect_f32(Some(&radius), "capsule radius")?.abs(),
+                        }
+                    }
+                    hir::FieldPrimitive::Cylinder => {
+                        let radius =
+                            self.eval_scene_named_arg(args.as_deref().unwrap_or(&[]), "radius")?;
+                        let half_height = self
+                            .eval_scene_named_arg(args.as_deref().unwrap_or(&[]), "half_height")?;
+                        AnalyticPrimitive::Cylinder {
+                            radius: expect_f32(Some(&radius), "cylinder radius")?.abs(),
+                            half_height: expect_f32(Some(&half_height), "cylinder half height")?
+                                .abs(),
+                        }
+                    }
+                    _ => return Ok(None),
+                };
+                Ok(Some(AnalyticPrimitiveRay {
+                    primitive,
+                    local_origin: origin,
+                    local_direction: direction,
+                }))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn try_repeat_linear_shape_hit(
+        &self,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        start_travel: f32,
+        max_distance: f32,
+        min_step: f32,
+        hit_epsilon: f32,
+        max_steps: i32,
+    ) -> Result<Option<KernelValue>, QueryExecError> {
+        let scene = self.shape_scene(shape)?;
+        let leaf = match &scene.root {
+            ShapeNode::Leaf(leaf) => leaf,
+            _ => return Ok(None),
+        };
+        let field = self.field_scene(&leaf.field)?;
+        let (period_expr, inner) = match &field.root {
+            FieldNode::Repeat {
+                kind: RepeatKind::RepeatLinear,
+                param: Some(param),
+                inner,
+            } => (param, inner.as_ref()),
+            _ => return Ok(None),
+        };
+        let period_value = self.eval_scene_constant(period_expr)?;
+        let period = expect_vec3(Some(&period_value), "repeat linear period")?;
+        let Some(axis) = axis_aligned_repeat_axis(period) else {
+            return Ok(None);
+        };
+        let root_support = field
+            .support_node_record(field.root_support_id)
+            .and_then(|record| record.children.first().copied());
+        let Some(child_support) = root_support else {
+            return Ok(None);
+        };
+        let Some(bounds) = self.field_support_bounds(field, child_support)? else {
+            return Ok(None);
+        };
+        let cells = axis_aligned_repeat_linear_cells(
+            bounds,
+            axis,
+            period[axis],
+            origin,
+            direction,
+            start_travel.max(0.0),
+            max_distance,
+        );
+        if cells.is_empty() {
+            return Ok(None);
+        }
+
+        for (offset, entry_t, exit_t) in cells {
+            let local_origin = [
+                origin[0] - offset[0],
+                origin[1] - offset[1],
+                origin[2] - offset[2],
+            ];
+            if let Some((travel, steps)) = self.trace_field_node_dense(
+                inner,
+                local_origin,
+                direction,
+                entry_t,
+                exit_t,
+                min_step,
+                hit_epsilon,
+                max_steps,
+            )? {
+                let point = [
+                    origin[0] + direction[0] * travel,
+                    origin[1] + direction[1] * travel,
+                    origin[2] + direction[2] * travel,
+                ];
+                return self.shape_hit_value(shape, travel, point, steps).map(Some);
+            }
+            self.note_repeat_cell_skip();
+        }
+
+        Ok(None)
+    }
+
+    fn trace_field_node_dense(
+        &self,
+        node: &FieldNode,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        start_travel: f32,
+        max_distance: f32,
+        min_step: f32,
+        hit_epsilon: f32,
+        max_steps: i32,
+    ) -> Result<Option<(f32, i32)>, QueryExecError> {
+        let mut travel = start_travel.max(0.0);
+        let mut steps = 0i32;
+        while steps < max_steps && travel <= max_distance {
+            self.note_trace_step();
+            let point = [
+                origin[0] + direction[0] * travel,
+                origin[1] + direction[1] * travel,
+                origin[2] + direction[2] * travel,
+            ];
+            let distance = self.eval_field_node(node, point)?;
+            if distance <= hit_epsilon {
+                return Ok(Some((travel, steps)));
+            }
+            travel += distance.max(min_step);
+            steps += 1;
+        }
+        Ok(None)
+    }
+
+    fn try_relaxed_or_interval_certificate(
+        &self,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+        min_step: f32,
+        hit_epsilon: f32,
+        state: &TraceLoopState,
+        policy: &TraceLoopPolicy,
+    ) -> Result<Option<TraceStepDecision>, QueryExecError> {
+        let allow_bracket = self.shape_is_exact(shape)?;
+        let lipschitz_bound = ray_parameter_lipschitz_bound(direction);
+
+        if allow_bracket && policy.method_enabled(RaySolverMethod::LipschitzSafeStepping) {
+            let factor = relaxed_step_factor(state.previous_distance, state.distance);
+            let candidate_end = (state.travel + state.step_bound * factor).min(max_distance);
+            if candidate_end > state.travel + state.step_bound + f32::EPSILON {
+                let relaxed_rejected = match self.prove_shape_interval(
+                    shape,
+                    origin,
+                    direction,
+                    state.travel,
+                    candidate_end,
+                    hit_epsilon,
+                    lipschitz_bound,
+                    allow_bracket,
+                    0,
+                )? {
+                    IntervalProofOutcome::NoRoot { end_t } => {
+                        self.note_solver_lipschitz_step();
+                        self.note_interval_proof_success();
+                        self.note_accepted_relaxed_step();
+                        return Ok(Some(TraceStepDecision::Advance(RayStepCertificate {
+                            kind: StepCertificateKind::RelaxedConservativeJump,
+                            metadata: self.certificate_metadata(
+                                policy,
+                                shape,
+                                RayStepCertificateSubjectKind::Interval,
+                                "lipschitz-relaxed-proof",
+                                format!("relaxed_factor={factor:.2}; lipschitz_bound={lipschitz_bound:.6}"),
+                                CertificateReuseClass::RenderingAndCollision,
+                                vec![
+                                    SmolStr::new("lipschitz evidence changed"),
+                                    SmolStr::new("distance semantics changed"),
+                                ],
+                            ),
+                            t_start: state.travel,
+                            t_end: end_t,
+                            no_hit_before_t_end: true,
+                            bracket: None,
+                            provenance: None,
+                        })));
+                    }
+                    IntervalProofOutcome::Bracket { bracket } => {
+                        if let Some(certificate) = self.refine_shape_bracket(
+                            shape,
+                            origin,
+                            direction,
+                            bracket,
+                            hit_epsilon,
+                            policy,
+                        )? {
+                            return Ok(Some(TraceStepDecision::Hit(certificate)));
+                        }
+                        true
+                    }
+                    IntervalProofOutcome::Unresolved => true,
+                };
+                if relaxed_rejected {
+                    self.note_rejected_relaxed_step();
+                }
+            }
+        }
+
+        let hard_ray = state.step_index >= 4
+            || state.distance <= (min_step * 4.0).max(state.adaptive_epsilon * 4.0);
+        if policy.method_enabled(RaySolverMethod::IntervalNewtonIsolation) && hard_ray {
+            let candidate_end = (state.travel + state.step_bound * 2.0).min(max_distance);
+            if candidate_end > state.travel + f32::EPSILON {
+                match self.prove_shape_interval(
+                    shape,
+                    origin,
+                    direction,
+                    state.travel,
+                    candidate_end,
+                    hit_epsilon,
+                    lipschitz_bound,
+                    allow_bracket,
+                    0,
+                )? {
+                    IntervalProofOutcome::NoRoot { end_t } => {
+                        self.note_solver_interval_skip();
+                        self.note_interval_proof_success();
+                        return Ok(Some(TraceStepDecision::Advance(RayStepCertificate {
+                            kind: StepCertificateKind::IntervalNoRootProof,
+                            metadata: self.certificate_metadata(
+                                policy,
+                                shape,
+                                RayStepCertificateSubjectKind::Interval,
+                                "interval-no-root-proof",
+                                format!("lipschitz_bound={lipschitz_bound:.6}; hard_ray=true"),
+                                CertificateReuseClass::RenderingAndCollision,
+                                vec![
+                                    SmolStr::new("interval evidence changed"),
+                                    SmolStr::new("distance semantics changed"),
+                                ],
+                            ),
+                            t_start: state.travel,
+                            t_end: end_t,
+                            no_hit_before_t_end: true,
+                            bracket: None,
+                            provenance: None,
+                        })));
+                    }
+                    IntervalProofOutcome::Bracket { bracket } => {
+                        if let Some(certificate) = self.refine_shape_bracket(
+                            shape,
+                            origin,
+                            direction,
+                            bracket,
+                            hit_epsilon,
+                            policy,
+                        )? {
+                            return Ok(Some(TraceStepDecision::Hit(certificate)));
+                        }
+                    }
+                    IntervalProofOutcome::Unresolved => {
+                        self.note_solver_certificate_failure();
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn prove_shape_interval(
+        &self,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        start_t: f32,
+        end_t: f32,
+        hit_epsilon: f32,
+        lipschitz_bound: f32,
+        allow_bracket: bool,
+        depth: u32,
+    ) -> Result<IntervalProofOutcome, QueryExecError> {
+        self.note_interval_subdivision();
+        if end_t <= start_t + f32::EPSILON {
+            return Ok(IntervalProofOutcome::Unresolved);
+        }
+        let mid_t = 0.5 * (start_t + end_t);
+        let mid_point = [
+            origin[0] + direction[0] * mid_t,
+            origin[1] + direction[1] * mid_t,
+            origin[2] + direction[2] * mid_t,
+        ];
+        let radius = 0.5 * (end_t - start_t);
+        let mid_distance = self.eval_shape_distance(shape, mid_point)?;
+        let adaptive_epsilon =
+            self.shape_adaptive_hit_epsilon(shape, mid_t, mid_point, hit_epsilon)?;
+        if mid_distance - lipschitz_bound * radius > adaptive_epsilon {
+            return Ok(IntervalProofOutcome::NoRoot { end_t });
+        }
+
+        if allow_bracket {
+            let end_point = [
+                origin[0] + direction[0] * end_t,
+                origin[1] + direction[1] * end_t,
+                origin[2] + direction[2] * end_t,
+            ];
+            let end_distance = self.eval_shape_distance(shape, end_point)?;
+            let end_epsilon =
+                self.shape_adaptive_hit_epsilon(shape, end_t, end_point, hit_epsilon)?;
+            if end_distance.abs() <= end_epsilon || end_distance < 0.0 {
+                return Ok(IntervalProofOutcome::Bracket {
+                    bracket: BracketRefinement {
+                        lo: start_t,
+                        hi: end_t,
+                    },
+                });
+            }
+        }
+
+        if depth >= 4 || radius <= hit_epsilon * 2.0 {
+            return Ok(IntervalProofOutcome::Unresolved);
+        }
+
+        let left = self.prove_shape_interval(
+            shape,
+            origin,
+            direction,
+            start_t,
+            mid_t,
+            hit_epsilon,
+            lipschitz_bound,
+            allow_bracket,
+            depth + 1,
+        )?;
+        match left {
+            IntervalProofOutcome::Bracket { .. } => return Ok(left),
+            IntervalProofOutcome::NoRoot { .. } => {}
+            IntervalProofOutcome::Unresolved => return Ok(IntervalProofOutcome::Unresolved),
+        }
+
+        let right = self.prove_shape_interval(
+            shape,
+            origin,
+            direction,
+            mid_t,
+            end_t,
+            hit_epsilon,
+            lipschitz_bound,
+            allow_bracket,
+            depth + 1,
+        )?;
+        match right {
+            IntervalProofOutcome::Bracket { .. } => Ok(right),
+            IntervalProofOutcome::NoRoot { .. } => Ok(IntervalProofOutcome::NoRoot { end_t }),
+            IntervalProofOutcome::Unresolved => Ok(IntervalProofOutcome::Unresolved),
+        }
+    }
+
+    fn refine_shape_bracket(
+        &self,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        bracket: BracketRefinement,
+        hit_epsilon: f32,
+        policy: &TraceLoopPolicy,
+    ) -> Result<Option<RayStepCertificate>, QueryExecError> {
+        if !policy.method_enabled(RaySolverMethod::SafeguardedNewtonRefinement) {
+            return Ok(None);
+        }
+        let mut lo = bracket.lo;
+        let mut hi = bracket.hi;
+        let mut current = hi;
+        let hi_point = [
+            origin[0] + direction[0] * hi,
+            origin[1] + direction[1] * hi,
+            origin[2] + direction[2] * hi,
+        ];
+        let mut hi_distance = self.eval_shape_distance(shape, hi_point)?;
+        let hi_epsilon = self.shape_adaptive_hit_epsilon(shape, hi, hi_point, hit_epsilon)?;
+        if hi_distance.abs() > hi_epsilon && hi_distance > 0.0 {
+            return Ok(None);
+        }
+
+        for _ in 0..8 {
+            let point = [
+                origin[0] + direction[0] * current,
+                origin[1] + direction[1] * current,
+                origin[2] + direction[2] * current,
+            ];
+            let value = self.eval_shape_distance(shape, point)?;
+            let adaptive = self.shape_adaptive_hit_epsilon(shape, current, point, hit_epsilon)?;
+            if value.abs() <= adaptive || (hi - lo).abs() <= adaptive {
+                self.note_solver_newton_refinement();
+                return Ok(Some(RayStepCertificate {
+                    kind: StepCertificateKind::RefinementBracket,
+                    metadata: self.certificate_metadata(
+                        policy,
+                        shape,
+                        RayStepCertificateSubjectKind::Interval,
+                        "safeguarded-newton-refinement",
+                        format!("adaptive_epsilon={adaptive:.6}"),
+                        CertificateReuseClass::RenderingAndCollision,
+                        vec![
+                            SmolStr::new("certified gradient changed"),
+                            SmolStr::new("distance semantics changed"),
+                        ],
+                    ),
+                    t_start: bracket.lo,
+                    t_end: current,
+                    no_hit_before_t_end: true,
+                    bracket: Some([lo, hi]),
+                    provenance: None,
+                }));
+            }
+
+            if value > 0.0 {
+                lo = current;
+            } else {
+                hi = current;
+                hi_distance = value;
+            }
+
+            let next = match self.certified_shape_directional_derivative(shape, point, direction)? {
+                Some((derivative, _gradient_mag)) if derivative.abs() > 1e-5 => {
+                    let candidate = current - value / derivative;
+                    if candidate > lo && candidate < hi {
+                        candidate
+                    } else {
+                        0.5 * (lo + hi)
+                    }
+                }
+                _ => return Ok(None),
+            };
+            current = next;
+        }
+
+        if hi_distance.abs() <= hit_epsilon {
+            self.note_solver_newton_refinement();
+            return Ok(Some(RayStepCertificate {
+                kind: StepCertificateKind::RefinementBracket,
+                metadata: self.certificate_metadata(
+                    policy,
+                    shape,
+                    RayStepCertificateSubjectKind::Interval,
+                    "safeguarded-newton-refinement",
+                    format!("adaptive_epsilon={hit_epsilon:.6}"),
+                    CertificateReuseClass::RenderingAndCollision,
+                    vec![
+                        SmolStr::new("certified gradient changed"),
+                        SmolStr::new("distance semantics changed"),
+                    ],
+                ),
+                t_start: bracket.lo,
+                t_end: hi,
+                no_hit_before_t_end: true,
+                bracket: Some([lo, hi]),
+                provenance: None,
+            }));
+        }
+
+        Ok(None)
+    }
+
+    fn shape_is_exact(&self, shape: &SmolStr) -> Result<bool, QueryExecError> {
+        Ok(matches!(
+            self.shape_scene(shape)?.semantics,
+            DistanceSemantics::ExactSignedDistance
+        ))
+    }
+
+    fn shape_scale_hint(&self, shape: &SmolStr) -> Result<f32, QueryExecError> {
+        let Some((min, max)) = self.shape_support_bounds_world(shape)? else {
+            return Ok(1.0);
+        };
+        Ok((0..3)
+            .map(|axis| (max[axis] - min[axis]).abs())
+            .fold(1.0f32, f32::max)
+            .max(1.0))
+    }
+
+    fn shape_adaptive_hit_epsilon(
+        &self,
+        shape: &SmolStr,
+        travel: f32,
+        point: [f32; 3],
+        base: f32,
+    ) -> Result<f32, QueryExecError> {
+        let gradient_mag = self
+            .try_certified_shape_normal(shape, point)?
+            .map(|evaluation| dot3(evaluation.normal, evaluation.normal).sqrt())
+            .unwrap_or(1.0);
+        let epsilon = adaptive_hit_epsilon_with_gradient(
+            base,
+            travel,
+            self.shape_scale_hint(shape)?,
+            gradient_mag,
+        );
+        self.note_solver_adaptive_epsilon();
+        Ok(epsilon)
+    }
+
+    fn certified_shape_directional_derivative(
+        &self,
+        shape: &SmolStr,
+        point: [f32; 3],
+        direction: [f32; 3],
+    ) -> Result<Option<(f32, f32)>, QueryExecError> {
+        let Some(evaluation) = self.try_certified_shape_normal(shape, point)? else {
+            return Ok(None);
+        };
+        let gradient_mag = dot3(evaluation.normal, evaluation.normal).sqrt().max(1e-5);
+        Ok(Some((dot3(evaluation.normal, direction), gradient_mag)))
     }
 
     fn shape_hit_value(
@@ -7360,9 +8433,389 @@ fn dot3(lhs: [f32; 3], rhs: [f32; 3]) -> f32 {
     lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2]
 }
 
+impl AnalyticPrimitiveRay {
+    fn solve(&self, start_t: f32, max_t: f32) -> Option<f32> {
+        match self.primitive {
+            AnalyticPrimitive::Sphere { radius } => solve_ray_sphere(
+                self.local_origin,
+                self.local_direction,
+                [0.0, 0.0, 0.0],
+                radius,
+                start_t,
+                max_t,
+            ),
+            AnalyticPrimitive::Plane { normal, offset } => solve_ray_plane(
+                self.local_origin,
+                self.local_direction,
+                normal,
+                offset,
+                start_t,
+                max_t,
+            ),
+            AnalyticPrimitive::Slab { thickness } => solve_ray_slab(
+                self.local_origin,
+                self.local_direction,
+                thickness,
+                start_t,
+                max_t,
+            ),
+            AnalyticPrimitive::Box { half } => solve_ray_aabb(
+                self.local_origin,
+                self.local_direction,
+                [-half[0].abs(), -half[1].abs(), -half[2].abs()],
+                [half[0].abs(), half[1].abs(), half[2].abs()],
+                start_t,
+                max_t,
+            ),
+            AnalyticPrimitive::Capsule { a, b, radius } => solve_ray_capsule(
+                self.local_origin,
+                self.local_direction,
+                a,
+                b,
+                radius,
+                start_t,
+                max_t,
+            ),
+            AnalyticPrimitive::Cylinder {
+                radius,
+                half_height,
+            } => solve_ray_cylinder(
+                self.local_origin,
+                self.local_direction,
+                radius,
+                half_height,
+                start_t,
+                max_t,
+            ),
+        }
+    }
+}
+
+fn solve_ray_sphere(
+    origin: [f32; 3],
+    direction: [f32; 3],
+    center: [f32; 3],
+    radius: f32,
+    start_t: f32,
+    max_t: f32,
+) -> Option<f32> {
+    let oc = [
+        origin[0] - center[0],
+        origin[1] - center[1],
+        origin[2] - center[2],
+    ];
+    let a = dot3(direction, direction);
+    if a <= f32::EPSILON {
+        return None;
+    }
+    let b = 2.0 * dot3(oc, direction);
+    let c = dot3(oc, oc) - radius * radius;
+    let discriminant = b * b - 4.0 * a * c;
+    if discriminant < 0.0 {
+        return None;
+    }
+    let root = discriminant.sqrt();
+    let inv = 1.0 / (2.0 * a);
+    select_first_valid_t([(-b - root) * inv, (-b + root) * inv], start_t, max_t)
+}
+
+fn solve_ray_plane(
+    origin: [f32; 3],
+    direction: [f32; 3],
+    normal: [f32; 3],
+    offset: f32,
+    start_t: f32,
+    max_t: f32,
+) -> Option<f32> {
+    let normal_len = dot3(normal, normal).sqrt();
+    if normal_len <= f32::EPSILON {
+        return None;
+    }
+    let unit = [
+        normal[0] / normal_len,
+        normal[1] / normal_len,
+        normal[2] / normal_len,
+    ];
+    let denom = dot3(unit, direction);
+    if denom.abs() <= f32::EPSILON {
+        return None;
+    }
+    let t = -(dot3(origin, unit) + offset) / denom;
+    (t >= start_t && t <= max_t).then_some(t)
+}
+
+fn solve_ray_slab(
+    origin: [f32; 3],
+    direction: [f32; 3],
+    thickness: f32,
+    start_t: f32,
+    max_t: f32,
+) -> Option<f32> {
+    let half = thickness.abs() * 0.5;
+    if direction[1].abs() <= f32::EPSILON {
+        return None;
+    }
+    select_first_valid_t(
+        [
+            (half - origin[1]) / direction[1],
+            (-half - origin[1]) / direction[1],
+        ],
+        start_t,
+        max_t,
+    )
+}
+
+fn solve_ray_aabb(
+    origin: [f32; 3],
+    direction: [f32; 3],
+    min: [f32; 3],
+    max: [f32; 3],
+    start_t: f32,
+    max_t: f32,
+) -> Option<f32> {
+    let mut entry = f32::NEG_INFINITY;
+    let mut exit = f32::INFINITY;
+    for axis in 0..3 {
+        if direction[axis].abs() <= f32::EPSILON {
+            if origin[axis] < min[axis] || origin[axis] > max[axis] {
+                return None;
+            }
+            continue;
+        }
+        let inv = 1.0 / direction[axis];
+        let mut axis_entry = (min[axis] - origin[axis]) * inv;
+        let mut axis_exit = (max[axis] - origin[axis]) * inv;
+        if axis_entry > axis_exit {
+            std::mem::swap(&mut axis_entry, &mut axis_exit);
+        }
+        entry = entry.max(axis_entry);
+        exit = exit.min(axis_exit);
+        if entry > exit {
+            return None;
+        }
+    }
+    let t = if entry >= start_t { entry } else { exit };
+    (t >= start_t && t <= max_t).then_some(t)
+}
+
+fn solve_ray_cylinder(
+    origin: [f32; 3],
+    direction: [f32; 3],
+    radius: f32,
+    half_height: f32,
+    start_t: f32,
+    max_t: f32,
+) -> Option<f32> {
+    let mut candidates = Vec::new();
+    let a = direction[0] * direction[0] + direction[2] * direction[2];
+    let b = origin[0] * direction[0] + origin[2] * direction[2];
+    let c = origin[0] * origin[0] + origin[2] * origin[2] - radius * radius;
+    if a > f32::EPSILON {
+        let discriminant = b * b - a * c;
+        if discriminant >= 0.0 {
+            let root = discriminant.sqrt();
+            for t in [(-b - root) / a, (-b + root) / a] {
+                let y = origin[1] + direction[1] * t;
+                if y.abs() <= half_height + 1e-4 {
+                    candidates.push(t);
+                }
+            }
+        }
+    }
+    if direction[1].abs() > f32::EPSILON {
+        for y in [-half_height, half_height] {
+            let t = (y - origin[1]) / direction[1];
+            let x = origin[0] + direction[0] * t;
+            let z = origin[2] + direction[2] * t;
+            if x * x + z * z <= radius * radius + 1e-4 {
+                candidates.push(t);
+            }
+        }
+    }
+    select_first_valid_t(candidates, start_t, max_t)
+}
+
+fn solve_ray_capsule(
+    origin: [f32; 3],
+    direction: [f32; 3],
+    a: [f32; 3],
+    b: [f32; 3],
+    radius: f32,
+    start_t: f32,
+    max_t: f32,
+) -> Option<f32> {
+    let ba = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let oa = [origin[0] - a[0], origin[1] - a[1], origin[2] - a[2]];
+    let baba = dot3(ba, ba);
+    let bard = dot3(ba, direction);
+    let baoa = dot3(ba, oa);
+    let rdoa = dot3(direction, oa);
+    let oaoa = dot3(oa, oa);
+    let a_coef = baba - bard * bard;
+    let b_coef = baba * rdoa - baoa * bard;
+    let c_coef = baba * oaoa - baoa * baoa - radius * radius * baba;
+    let mut candidates = Vec::new();
+    if a_coef.abs() > f32::EPSILON {
+        let discriminant = b_coef * b_coef - a_coef * c_coef;
+        if discriminant >= 0.0 {
+            let root = discriminant.sqrt();
+            for t in [(-b_coef - root) / a_coef, (-b_coef + root) / a_coef] {
+                let y = baoa + t * bard;
+                if y >= 0.0 && y <= baba {
+                    candidates.push(t);
+                }
+            }
+        }
+    }
+    candidates.extend(
+        [
+            solve_ray_sphere(origin, direction, a, radius, start_t, max_t),
+            solve_ray_sphere(origin, direction, b, radius, start_t, max_t),
+        ]
+        .into_iter()
+        .flatten(),
+    );
+    select_first_valid_t(candidates, start_t, max_t)
+}
+
+fn select_first_valid_t(
+    candidates: impl IntoIterator<Item = f32>,
+    start_t: f32,
+    max_t: f32,
+) -> Option<f32> {
+    candidates
+        .into_iter()
+        .filter(|t| t.is_finite() && *t >= start_t && *t <= max_t)
+        .min_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal))
+}
+
+fn ray_aabb_interval(
+    origin: [f32; 3],
+    direction: [f32; 3],
+    min: [f32; 3],
+    max: [f32; 3],
+    start_t: f32,
+    max_t: f32,
+) -> Option<(f32, f32)> {
+    let mut entry = start_t.max(0.0);
+    let mut exit = max_t;
+    for axis in 0..3 {
+        if direction[axis].abs() <= f32::EPSILON {
+            if origin[axis] < min[axis] || origin[axis] > max[axis] {
+                return None;
+            }
+            continue;
+        }
+        let inv = 1.0 / direction[axis];
+        let mut axis_entry = (min[axis] - origin[axis]) * inv;
+        let mut axis_exit = (max[axis] - origin[axis]) * inv;
+        if axis_entry > axis_exit {
+            std::mem::swap(&mut axis_entry, &mut axis_exit);
+        }
+        entry = entry.max(axis_entry);
+        exit = exit.min(axis_exit);
+        if entry > exit {
+            return None;
+        }
+    }
+    (entry <= exit).then_some((entry, exit))
+}
+
+fn axis_aligned_repeat_axis(period: [f32; 3]) -> Option<usize> {
+    const AXIS_EPSILON: f32 = 1e-5;
+    let active = (0..3)
+        .filter(|axis| period[*axis].abs() > AXIS_EPSILON)
+        .collect::<Vec<_>>();
+    (active.len() == 1).then_some(active[0])
+}
+
+fn axis_aligned_repeat_linear_cells(
+    bounds: SupportBounds,
+    axis: usize,
+    period: f32,
+    origin: [f32; 3],
+    direction: [f32; 3],
+    start_t: f32,
+    max_t: f32,
+) -> Vec<([f32; 3], f32, f32)> {
+    const MAX_REPEAT_CELLS: i32 = 256;
+    const SUPPORT_EPSILON: f32 = 1e-4;
+
+    let period_abs = period.abs();
+    if period_abs <= f32::EPSILON || axis > 2 {
+        return Vec::new();
+    }
+
+    let width = (bounds.max[axis] - bounds.min[axis]).abs();
+    if width > period_abs + SUPPORT_EPSILON {
+        return Vec::new();
+    }
+
+    let axis_start = origin[axis] + direction[axis] * start_t;
+    let axis_end = origin[axis] + direction[axis] * max_t;
+    let ray_min = axis_start.min(axis_end);
+    let ray_max = axis_start.max(axis_end);
+    let cell_min = ((ray_min - bounds.max[axis]) / period_abs).floor() as i32 - 1;
+    let cell_max = ((ray_max - bounds.min[axis]) / period_abs).ceil() as i32 + 1;
+    if cell_max < cell_min || cell_max - cell_min > MAX_REPEAT_CELLS {
+        return Vec::new();
+    }
+
+    let mut cells = Vec::new();
+    for cell in cell_min..=cell_max {
+        let offset_value = cell as f32 * period_abs;
+        let mut offset = [0.0; 3];
+        offset[axis] = offset_value;
+        let mut shifted_min = bounds.min;
+        let mut shifted_max = bounds.max;
+        shifted_min[axis] += offset_value;
+        shifted_max[axis] += offset_value;
+        if let Some((entry_t, exit_t)) =
+            ray_aabb_interval(origin, direction, shifted_min, shifted_max, start_t, max_t)
+        {
+            cells.push((offset, entry_t, exit_t));
+        }
+    }
+
+    cells.sort_by(|left, right| {
+        left.1
+            .partial_cmp(&right.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    cells
+}
+
+fn ray_parameter_lipschitz_bound(direction: [f32; 3]) -> f32 {
+    dot3(direction, direction).sqrt().max(1e-4)
+}
+
+fn relaxed_step_factor(previous_distance: Option<f32>, current_distance: f32) -> f32 {
+    match previous_distance {
+        Some(previous) if current_distance >= previous => 2.0,
+        Some(previous) if current_distance >= previous * 0.5 => 1.5,
+        Some(_) => 1.2,
+        None => 1.25,
+    }
+}
+
 fn adaptive_hit_epsilon(base: f32, travel: f32, scale: f32) -> f32 {
     base.max(travel.abs() * 0.000_01)
         .max(scale.abs() * 0.000_001)
+}
+
+fn adaptive_hit_epsilon_with_gradient(
+    base: f32,
+    travel: f32,
+    scale: f32,
+    gradient_mag: f32,
+) -> f32 {
+    let gradient_term = if gradient_mag > f32::EPSILON {
+        1.0 / gradient_mag
+    } else {
+        2.0
+    };
+    adaptive_hit_epsilon(base, travel, scale)
+        .max(base * (1.0 + scale.min(8.0) * 0.01 + gradient_term.min(4.0) * 0.02))
 }
 
 fn support_box_lower_bound(

@@ -12,7 +12,9 @@ use crate::query_plan::{
     WorldQueryKind, batch_query_kind_for_contract_id, capture_query_kind_for_contract_id,
     world_query_kind_for_contract_id,
 };
-use crate::query_solver::ray_solver_method_name;
+use crate::query_solver::{
+    certificate_reuse_class_name, ray_solver_method_name, ray_step_certificate_kind_name,
+};
 use crate::scene_ir::SupportClass;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,6 +291,36 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
             cause_label(cause.kind),
             cause.score,
             cause.detail
+        ));
+    }
+    if !report.counters.step_certificate_kinds.is_empty() {
+        out.push_str(&format!(
+            "step_certificate_kinds={}\n",
+            report
+                .counters
+                .step_certificate_kinds
+                .iter()
+                .map(|(kind, count)| format!("{}:{count}", ray_step_certificate_kind_name(*kind)))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
+    if !report.counters.step_certificate_metadata.is_empty() {
+        out.push_str(&format!(
+            "step_certificate_metadata={}\n",
+            report
+                .counters
+                .step_certificate_metadata
+                .iter()
+                .map(|metadata| format!(
+                    "{}:{}:{}:{}",
+                    metadata.subject,
+                    metadata.proof_family,
+                    metadata.guarantee.name(),
+                    certificate_reuse_class_name(metadata.reusable_by)
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
         ));
     }
     out.push_str(&format!(

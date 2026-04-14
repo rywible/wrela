@@ -19,9 +19,10 @@ use crate::query_contract::{
     self, QueryContractId, QueryFamilyId, QueryQuestionId, QuerySurfaceKind,
 };
 use crate::query_plan::DispatchBackend;
-use crate::query_solver::RaySolverMethod;
+use crate::query_solver::{RaySolverMethod, RayStepCertificateMetadata, StepCertificateKind};
 use crate::world_identity::{SnapshotEpoch, SnapshotIdentityReport, WorldSnapshotHandle};
 use smol_str::SmolStr;
+use std::collections::BTreeMap;
 
 pub use crate::execution_policy::{
     QueryExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
@@ -77,6 +78,8 @@ pub struct QueryExecutionObservability {
     pub solver_subject: Option<SmolStr>,
     pub normal_role: Option<SmolStr>,
     pub solver_methods: Vec<RaySolverMethod>,
+    pub step_certificate_kinds: BTreeMap<StepCertificateKind, u32>,
+    pub step_certificate_metadata: Vec<RayStepCertificateMetadata>,
     pub acceleration_node_visits: u32,
     pub shape_leaf_visits: u32,
     pub acceleration_pruned_nodes: u32,

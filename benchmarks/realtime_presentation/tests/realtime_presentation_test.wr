@@ -48,6 +48,14 @@ field conservative distance repetition_row(p: Vec3) -> F32 {
     }
 }
 
+field conservative distance repeat_linear_solver_field(p: Vec3) -> F32 {
+    repeat_linear = vec3(12.0, 0.0, 0.0) {
+        translate = vec3(6.0, 0.0, 0.0) {
+            sphere(radius = 0.18)
+        }
+    }
+}
+
 field conservative distance repetition_field(p: Vec3) -> F32 {
     instance_array = Transform3(
         matrix=mat4_cols(
@@ -106,6 +114,10 @@ field conservative distance thin_stack_field(p: Vec3) -> F32 {
 
 field exact distance media_core(p: Vec3) -> F32 {
     sphere(radius = 0.72)
+}
+
+field exact distance relaxed_torus_field(p: Vec3) -> F32 {
+    torus(major_radius = 0.72, minor_radius = 0.22)
 }
 
 field conservative distance media_shell(p: Vec3) -> F32 {
@@ -214,6 +226,19 @@ material repetition_surface(hit: Hit3) -> Surface {
     )
 }
 
+material relaxed_torus_surface(hit: Hit3) -> Surface {
+    rib = clamp(abs(hit.local_position.x) * 0.30 + abs(hit.local_normal.y) * 0.20, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(126.0, 154.0, 202.0) + vec3(12.0, 10.0, 8.0) * rib,
+        roughness=0.20 + rib * 0.15,
+        metalness=0.10,
+        clearcoat=0.08,
+        clearcoat_roughness=0.06,
+        sheen=0.04,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
 material thin_stack_surface(hit: Hit3) -> Surface {
     edge = clamp(abs(hit.local_position.z) * 0.52 + abs(hit.local_normal.x) * 0.30, 0.0, 1.0)
     return Surface(
@@ -305,6 +330,16 @@ shape repetition_shape {
     )
 }
 
+shape repeat_linear_solver_shape {
+    field = repeat_linear_solver_field
+    material = repetition_surface
+    payload = Payload(
+        entity_id=u32(48),
+        material_id=u32(48),
+        actor=ActorHandle(id=u32(48), generation=u32(0))
+    )
+}
+
 shape thin_stack_shape {
     field = thin_stack_field
     material = thin_stack_surface
@@ -324,6 +359,16 @@ shape media_shape {
         entity_id=u32(44),
         material_id=u32(44),
         actor=ActorHandle(id=u32(44), generation=u32(0))
+    )
+}
+
+shape relaxed_torus_shape {
+    field = relaxed_torus_field
+    material = relaxed_torus_surface
+    payload = Payload(
+        entity_id=u32(47),
+        material_id=u32(47),
+        actor=ActorHandle(id=u32(47), generation=u32(0))
     )
 }
 
@@ -355,12 +400,20 @@ region repetition_region() {
     place primary = repetition_shape
 }
 
+region repeat_linear_solver_region() {
+    place primary = repeat_linear_solver_shape
+}
+
 region thin_stack_region() {
     place primary = thin_stack_shape
 }
 
 region media_region() {
     place primary = media_shape
+}
+
+region relaxed_torus_region() {
+    place primary = relaxed_torus_shape
 }
 
 region transformed_gallery_region() {
@@ -393,6 +446,17 @@ domain repetition_domain(world: RegionCapture) {
     max_steps = 128
 }
 
+domain repeat_linear_solver_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = false
+    media = false
+    max_distance = 30.0
+    min_step = 0.02
+    hit_epsilon = 0.001
+    max_steps = 256
+}
+
 domain thin_stack_domain(world: RegionCapture) {
     geometry_detail = 1
     material = true
@@ -411,6 +475,17 @@ domain media_domain(world: RegionCapture) {
     media = true
     max_distance = 12.0
     min_step = 0.04
+    hit_epsilon = 0.001
+    max_steps = 128
+}
+
+domain relaxed_torus_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = false
+    media = false
+    max_distance = 10.0
+    min_step = 0.03
     hit_epsilon = 0.001
     max_steps = 128
 }
@@ -472,6 +547,26 @@ view show_repetition_view(
             range=12.0
         ),
         fill_direction = normalize(vec3(-0.4, 0.35, 0.18))
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
+}
+
+view show_repeat_linear_solver_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = repeat_linear_solver_domain(world = world)
+    viewport = viewport(width = 6, height = 6)
+    quality = realtime_quality(target_fps = 60)
+    lighting = key_light(
+        light = Light(
+            position=vec3(-14.0, 2.2, 1.6),
+            direction=normalize(vec3(1.0, -0.18, -0.12)),
+            intensity=vec3(1.0, 0.97, 0.92),
+            range=36.0
+        ),
+        fill_direction = normalize(vec3(0.12, 0.92, 0.34))
     )
     outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
     history = temporal_history(color = true)
@@ -565,6 +660,25 @@ view show_media_radiance_view(
     history = temporal_history(color = true)
 }
 
+view show_relaxed_torus_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = relaxed_torus_domain(world = world)
+    viewport = viewport(width = 64, height = 64)
+    quality = realtime_quality(target_fps = 60)
+    lighting = key_light(
+        light = Light(
+            position=vec3(-1.2, 2.2, 2.8),
+            direction=normalize(vec3(-0.6, -0.7, -0.8)),
+            intensity=vec3(1.0, 0.98, 0.94),
+            range=12.0
+        )
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
+}
+
 fn test_realtime_presentation_dense_constructive_geometry_ops_256() -> Nothing {
     world = capture dense_constructive_region
     domain = dense_constructive_domain(world = world)
@@ -632,6 +746,7 @@ fn test_realtime_presentation_dense_constructive_geometry_ops_256() -> Nothing {
 fn test_realtime_presentation_repetition_heavy_scene_ops_512() -> Nothing {
     repeat_scene = capture repetition_region
     repeat_scene_again = capture repetition_region
+    repeat_shape = capture repetition_shape
     domain = repetition_domain(world = repeat_scene)
     require repeat_scene.scene_id == repeat_scene_again.scene_id else "repeat scene_id stable"
     require repeat_scene.root_feature_id == repeat_scene_again.root_feature_id else "repeat root_feature_id stable"
@@ -662,11 +777,18 @@ fn test_realtime_presentation_repetition_heavy_scene_ops_512() -> Nothing {
 
     mutable checksum = 0
     mutable hit_count = 0
+    mutable repeat_identity_checksum = 0
     for sample_i in 0...64 {
         sample_index = sample_i * 8
         hit = hits[sample_index]
         if hit.hit {
             hit_count += 1
+            if sample_i < 16 {
+                repeat_identity_checksum = update_scene_checksum(
+                    current=repeat_identity_checksum,
+                    value=i32(hit.repeat_id % u32(23)) + i32(hit.instance_id % u32(29))
+                )
+            }
         }
         checksum = update_scene_checksum(
             current=checksum,
@@ -677,8 +799,130 @@ fn test_realtime_presentation_repetition_heavy_scene_ops_512() -> Nothing {
         )
     }
 
+    mutable comparison_rays = []
+    for sample_i in 0...64 {
+        py = f32(sample_i % 8) * 0.08 - 0.28
+        pz = f32(sample_i / 8) * 0.03 - 0.105
+        __wr_list_push(
+            comparison_rays,
+            ray_query(
+                origin=vec3(-6.0, py, pz),
+                direction=vec3(1.0, 0.0, 0.0),
+                max_distance=12.0,
+                min_step=0.04,
+                hit_epsilon=0.001,
+                max_steps=128
+            )
+        )
+    }
+
+    world_hit_count_before = __wr_metrics_get(__wr_metrics_scene_trace_hit_count_id())
+    world_hit_steps_before = __wr_metrics_get(__wr_metrics_scene_trace_hit_steps_total_id())
+    world_field_samples_before = __wr_metrics_get(__wr_metrics_scene_trace_hit_field_samples_total_id())
+    comparison_hits = spatial.nearest_batch(
+        capture=repeat_scene,
+        domain=domain,
+        rays=comparison_rays,
+        backend=dispatch_backend_cpu()
+    )
+    world_hit_count_after = __wr_metrics_get(__wr_metrics_scene_trace_hit_count_id())
+    world_hit_steps_after = __wr_metrics_get(__wr_metrics_scene_trace_hit_steps_total_id())
+    world_field_samples_after = __wr_metrics_get(__wr_metrics_scene_trace_hit_field_samples_total_id())
+
+    dense_hit_count_before = __wr_metrics_get(__wr_metrics_scene_trace_hit_count_id())
+    dense_hit_steps_before = __wr_metrics_get(__wr_metrics_scene_trace_hit_steps_total_id())
+    dense_field_samples_before = __wr_metrics_get(__wr_metrics_scene_trace_hit_field_samples_total_id())
+    mutable dense_hit_count = 0
+    for sample_i in 0...64 {
+        ray = comparison_rays[sample_i]
+        world_hit = comparison_hits[sample_i]
+        dense_hit = trace_shape(capture=repeat_shape, ray=ray)
+        require world_hit.hit == dense_hit.hit else "repeat-aware hit parity"
+        if world_hit.hit {
+            dense_hit_count += 1
+            require abs(world_hit.distance - dense_hit.distance) < 0.02 else "repeat-aware distance parity"
+            require world_hit.repeat_id == dense_hit.repeat_id else "repeat-aware repeat_id parity"
+            require world_hit.instance_id == dense_hit.instance_id else "repeat-aware instance_id parity"
+        }
+    }
+    dense_hit_count_after = __wr_metrics_get(__wr_metrics_scene_trace_hit_count_id())
+    dense_hit_steps_after = __wr_metrics_get(__wr_metrics_scene_trace_hit_steps_total_id())
+    dense_field_samples_after = __wr_metrics_get(__wr_metrics_scene_trace_hit_field_samples_total_id())
+
     require hit_count > 0 else "repeat-heavy hits present"
+    require world_hit_count_after - world_hit_count_before == dense_hit_count else "repeat-aware comparison hit count stable"
+    require dense_hit_count_after - dense_hit_count_before == dense_hit_count else "repeat-aware dense hit count stable"
+    require repeat_identity_checksum != 0 else "repeat-heavy repeat identity checksum nonzero"
     require checksum != 0 else "repeat-heavy checksum nonzero"
+}
+
+fn test_realtime_presentation_repeat_linear_solver_scene_ops_256() -> Nothing {
+    repeat_scene = capture repeat_linear_solver_region
+    repeat_scene_again = capture repeat_linear_solver_region
+    repeat_shape = capture repeat_linear_solver_shape
+    domain = repeat_linear_solver_domain(world = repeat_scene)
+    require repeat_scene.scene_id == repeat_scene_again.scene_id else "repeat-linear solver scene_id stable"
+    require repeat_scene.root_feature_id == repeat_scene_again.root_feature_id else "repeat-linear solver root_feature_id stable"
+
+    mutable rays = []
+    for sample_i in 0...64 {
+        py = f32(sample_i % 8) * 0.03 - 0.105
+        pz = f32(sample_i / 8) * 0.035 - 0.12
+        __wr_list_push(
+            rays,
+            ray_query(
+                origin=vec3(-15.0, py, pz),
+                direction=vec3(1.0, 0.0, 0.0),
+                max_distance=30.0,
+                min_step=0.02,
+                hit_epsilon=0.001,
+                max_steps=256
+            )
+        )
+    }
+
+    world_hit_count_before = __wr_metrics_get(__wr_metrics_scene_trace_hit_count_id())
+    world_hits = spatial.nearest_batch(
+        capture=repeat_scene,
+        domain=domain,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    world_hit_count_after = __wr_metrics_get(__wr_metrics_scene_trace_hit_count_id())
+
+    mutable dense_hit_count = 0
+    mutable checksum = 0
+    mutable repeat_identity_checksum = 0
+    for sample_i in 0...64 {
+        ray = rays[sample_i]
+        world_hit = world_hits[sample_i]
+        dense_hit = trace_shape(capture=repeat_shape, ray=ray)
+        require world_hit.hit == dense_hit.hit else "repeat-linear solver hit parity"
+        if world_hit.hit {
+            dense_hit_count += 1
+            require abs(world_hit.distance - dense_hit.distance) < 0.02 else "repeat-linear solver distance parity"
+            require world_hit.repeat_id == dense_hit.repeat_id else "repeat-linear solver repeat_id parity"
+            require world_hit.instance_id == dense_hit.instance_id else "repeat-linear solver instance_id parity"
+            repeat_identity_checksum = update_scene_checksum(
+                current=repeat_identity_checksum,
+                value=i32(world_hit.repeat_id % u32(23)) + i32(world_hit.instance_id % u32(29))
+            )
+            checksum = update_scene_checksum(
+                current=checksum,
+                value=i32(world_hit.steps)
+                    + i32(abs(world_hit.distance) * 100.0)
+                    + i32(world_hit.repeat_id % u32(17))
+                    + i32(world_hit.instance_id % u32(19))
+            )
+        }
+    }
+    dense_hit_count_after = __wr_metrics_get(__wr_metrics_scene_trace_hit_count_id())
+
+    require dense_hit_count > 0 else "repeat-linear solver hits present"
+    require world_hit_count_after - world_hit_count_before == dense_hit_count else "repeat-linear solver hit count stable"
+    require dense_hit_count_after - world_hit_count_after == dense_hit_count else "repeat-linear solver dense hit count stable"
+    require repeat_identity_checksum != 0 else "repeat-linear solver repeat identity checksum nonzero"
+    require checksum != 0 else "repeat-linear solver checksum nonzero"
 }
 
 fn test_realtime_presentation_repetition_heavy_1080p120_closure_ops_512() -> Nothing {
@@ -963,6 +1207,49 @@ fn test_realtime_presentation_media_radiance_scene_ops_256() -> Nothing {
     require hit_count > 0 else "media radiance hits present"
     require media_signal != 0 else "media radiance signal nonzero"
     require checksum != 0 else "media radiance checksum nonzero"
+}
+
+fn test_realtime_presentation_relaxed_torus_scene_ops_256() -> Nothing {
+    torus_scene = capture relaxed_torus_region
+    torus_scene_again = capture relaxed_torus_region
+    domain = relaxed_torus_domain(world = torus_scene)
+    require torus_scene.scene_id == torus_scene_again.scene_id else "relaxed torus scene_id stable"
+    require torus_scene.root_feature_id == torus_scene_again.root_feature_id else "relaxed torus root_feature_id stable"
+    mutable rays = []
+    for i in 1...257 {
+        px = f32(i % 16) / 15.0 - 0.5
+        py = f32((i / 16) % 16) / 15.0 - 0.5
+        __wr_list_push(
+            rays,
+            ray_query(
+                origin=vec3(px * 1.6, py * 1.4, 3.2),
+                direction=normalize(vec3(-px * 0.08, -py * 0.06, -1.0)),
+                max_distance=10.0,
+                min_step=0.03,
+                hit_epsilon=0.001,
+                max_steps=128
+            )
+        )
+    }
+
+    hits = spatial.nearest_batch(
+        capture=torus_scene,
+        domain=domain,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+
+    mutable checksum = 0
+    for sample_i in 0...64 {
+        sample_index = sample_i * 4
+        hit = hits[sample_index]
+        checksum = update_scene_checksum(
+            current=checksum,
+            value=i32(hit.steps) + i32(abs(hit.distance) * 100.0)
+        )
+    }
+
+    require checksum != 0 else "relaxed torus checksum nonzero"
 }
 
 fn compute_closure_camera_motion_offset(frame: Integer) -> Vec3 {

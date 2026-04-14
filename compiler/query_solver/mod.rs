@@ -1,4 +1,4 @@
-pub use crate::acceleration::AccelerationRejectionClass;
+pub use crate::acceleration::{AccelerationRejectionClass, CertificateProvenanceHandle};
 use crate::query_contract::{
     QueryCardinality, QueryContractId, QueryFamilyId, QueryItemKind, QueryQuestionId,
     QueryResultKind, QueryTargetKind, query_contract,
@@ -103,6 +103,54 @@ pub enum RaySolverFallbackReason {
     AnalyticUnsupported,
     VerificationFailed,
     UnsupportedBackend,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StepCertificateKind {
+    DenseDistanceBound,
+    SupportEntryJump,
+    AnalyticHit,
+    RelaxedConservativeJump,
+    LipschitzBoundedJump,
+    IntervalNoRootProof,
+    RefinementBracket,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CertificateReuseClass {
+    RenderingOnly,
+    RenderingAndCollision,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RayStepCertificateSubjectKind {
+    Shape,
+    Primitive,
+    SupportInterval,
+    RepeatCell,
+    Interval,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RayStepCertificateMetadata {
+    pub guarantee: RequiredGuaranteeClass,
+    pub proof_family: SmolStr,
+    pub subject: SmolStr,
+    pub subject_kind: RayStepCertificateSubjectKind,
+    pub tolerance_context: SmolStr,
+    pub reusable_by: CertificateReuseClass,
+    pub invalidation_reasons: Vec<SmolStr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RayStepCertificate {
+    pub kind: StepCertificateKind,
+    pub metadata: RayStepCertificateMetadata,
+    pub t_start: f32,
+    pub t_end: f32,
+    pub no_hit_before_t_end: bool,
+    pub bracket: Option<[f32; 2]>,
+    pub provenance: Option<CertificateProvenanceHandle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,12 +275,28 @@ impl RaySolverPlan {
                 status: lipschitz_method_status(&evidence),
                 reason: SmolStr::new("Lipschitz evidence chooses conservative ray steps"),
             },
+            RaySolverPortfolioEntry {
+                method: RaySolverMethod::IntervalNewtonIsolation,
+                status: interval_method_status(&evidence),
+                reason: SmolStr::new("interval no-root proofs isolate only the rays that stall"),
+            },
+            RaySolverPortfolioEntry {
+                method: RaySolverMethod::SafeguardedNewtonRefinement,
+                status: refinement_method_status(&evidence),
+                reason: SmolStr::new(
+                    "certified gradients may refine proven brackets with safeguarded Newton steps",
+                ),
+            },
+            RaySolverPortfolioEntry {
+                method: RaySolverMethod::RepeatAwareTraversal,
+                status: repeat_method_status(&evidence),
+                reason: SmolStr::new(
+                    "repeat-aware ray traversal may enumerate bounded repeated cells before tracing",
+                ),
+            },
         ];
         entries.extend([
-            reserved_entry(RaySolverMethod::IntervalNewtonIsolation),
-            reserved_entry(RaySolverMethod::SafeguardedNewtonRefinement),
             reserved_entry(RaySolverMethod::AffineArithmeticBounds),
-            reserved_entry(RaySolverMethod::RepeatAwareTraversal),
             reserved_entry(RaySolverMethod::TilePacketSolving),
             reserved_entry(RaySolverMethod::NeighborFrameContinuation),
         ]);
@@ -255,6 +319,33 @@ impl RaySolverPlan {
             .collect();
         let artifact_reuse_intents = vec![artifact_reuse_intent(contract_id, &evidence_summary)];
         let continuation_intents = vec![continuation_intent(contract_id, &evidence_summary)];
+        let certificate_method = primary_certificate_method(&entries);
+        let hit_bracket = if entries.iter().any(|entry| {
+            entry.method == RaySolverMethod::SafeguardedNewtonRefinement
+                && matches!(
+                    entry.status,
+                    RaySolverMethodStatus::Enabled | RaySolverMethodStatus::Available
+                )
+        }) {
+            RaySolverHitBracketStatus::Available
+        } else {
+            RaySolverHitBracketStatus::Unavailable
+        };
+        let no_closer_hit_proof = if entries.iter().any(|entry| {
+            matches!(
+                entry.method,
+                RaySolverMethod::SupportBoundCandidateRejection
+                    | RaySolverMethod::LipschitzSafeStepping
+                    | RaySolverMethod::IntervalNewtonIsolation
+            ) && matches!(
+                entry.status,
+                RaySolverMethodStatus::Enabled | RaySolverMethodStatus::Available
+            )
+        }) {
+            RaySolverNoCloserHitProof::Available
+        } else {
+            RaySolverNoCloserHitProof::Unavailable
+        };
         let plan = Self {
             id: SmolStr::new(format!("ray-solver:{}:v1", contract_id.as_str())),
             contract_id,
@@ -282,10 +373,10 @@ impl RaySolverPlan {
                 preserves_contract: true,
             },
             certificate: RaySolverCertificateShape {
-                method: RaySolverMethod::DenseSphereTracing,
+                method: certificate_method,
                 hit_or_miss_recorded: true,
-                hit_bracket: RaySolverHitBracketStatus::Unavailable,
-                no_closer_hit_proof: RaySolverNoCloserHitProof::Unavailable,
+                hit_bracket,
+                no_closer_hit_proof,
                 fallback_reason: Some(RaySolverFallbackReason::ContractRequiresDenseOracle),
             },
         };
@@ -459,6 +550,98 @@ fn lipschitz_method_status(evidence: &SemanticEvidence) -> RaySolverMethodStatus
         | LipschitzStatus::Unknown => RaySolverMethodStatus::Available,
         LipschitzStatus::Unavailable => RaySolverMethodStatus::Unavailable,
     }
+}
+
+fn interval_method_status(evidence: &SemanticEvidence) -> RaySolverMethodStatus {
+    let status = if matches!(
+        evidence.distance.interval_bounds,
+        FactAvailability::Available
+    ) || matches!(
+        evidence.distance.lipschitz,
+        LipschitzStatus::ExactKnown | LipschitzStatus::ConservativeKnown
+    ) {
+        FactAvailability::Available
+    } else {
+        evidence.distance.interval_bounds
+    };
+    match status {
+        FactAvailability::Available
+            if compile_trust(
+                &evidence.distance.provenance.origin,
+                &evidence.distance.provenance.scope,
+            ) =>
+        {
+            RaySolverMethodStatus::Enabled
+        }
+        FactAvailability::Available | FactAvailability::Unknown => RaySolverMethodStatus::Available,
+        FactAvailability::Unavailable => RaySolverMethodStatus::Unavailable,
+    }
+}
+
+fn refinement_method_status(evidence: &SemanticEvidence) -> RaySolverMethodStatus {
+    match evidence.differential.derivative {
+        FactAvailability::Available
+            if compile_trust(
+                &evidence.differential.provenance.origin,
+                &evidence.differential.provenance.scope,
+            ) =>
+        {
+            RaySolverMethodStatus::Enabled
+        }
+        FactAvailability::Available | FactAvailability::Unknown => RaySolverMethodStatus::Available,
+        FactAvailability::Unavailable => RaySolverMethodStatus::Unavailable,
+    }
+}
+
+fn repeat_method_status(evidence: &SemanticEvidence) -> RaySolverMethodStatus {
+    let availability = match evidence.differential.repetition {
+        RepetitionFact::Repeat(
+            crate::scene_ir::RepeatKind::RepeatLinear
+            | crate::scene_ir::RepeatKind::RepeatGrid
+            | crate::scene_ir::RepeatKind::RadialRepeat,
+        )
+        | RepetitionFact::IdentityAffecting(
+            crate::scene_ir::RepeatKind::RepeatLinear
+            | crate::scene_ir::RepeatKind::RepeatGrid
+            | crate::scene_ir::RepeatKind::RadialRepeat,
+        ) => FactAvailability::Available,
+        RepetitionFact::Unknown => FactAvailability::Unknown,
+        _ => FactAvailability::Unavailable,
+    };
+    match availability {
+        FactAvailability::Available
+            if compile_trust(
+                &evidence.differential.provenance.origin,
+                &evidence.differential.provenance.scope,
+            ) =>
+        {
+            RaySolverMethodStatus::Enabled
+        }
+        FactAvailability::Available | FactAvailability::Unknown => RaySolverMethodStatus::Available,
+        FactAvailability::Unavailable => RaySolverMethodStatus::Unavailable,
+    }
+}
+
+fn primary_certificate_method(entries: &[RaySolverPortfolioEntry]) -> RaySolverMethod {
+    for method in [
+        RaySolverMethod::AnalyticPrimitiveIntersection,
+        RaySolverMethod::SafeguardedNewtonRefinement,
+        RaySolverMethod::IntervalNewtonIsolation,
+        RaySolverMethod::LipschitzSafeStepping,
+        RaySolverMethod::RepeatAwareTraversal,
+        RaySolverMethod::DenseSphereTracing,
+    ] {
+        if entries.iter().any(|entry| {
+            entry.method == method
+                && matches!(
+                    entry.status,
+                    RaySolverMethodStatus::Enabled | RaySolverMethodStatus::Available
+                )
+        }) {
+            return method;
+        }
+    }
+    RaySolverMethod::DenseSphereTracing
 }
 
 fn compile_trust(origin: &EvidenceOrigin, scope: &EvidenceScope) -> bool {
@@ -719,9 +902,10 @@ fn required_guarantee_for_method(method: RaySolverMethod) -> RequiredGuaranteeCl
         RaySolverMethod::IntervalNewtonIsolation
         | RaySolverMethod::SafeguardedNewtonRefinement
         | RaySolverMethod::AffineArithmeticBounds => RequiredGuaranteeClass::IntervalBounded,
-        RaySolverMethod::RepeatAwareTraversal
-        | RaySolverMethod::TilePacketSolving
-        | RaySolverMethod::NeighborFrameContinuation => RequiredGuaranteeClass::BestEffort,
+        RaySolverMethod::RepeatAwareTraversal => RequiredGuaranteeClass::ConservativeNoFalseMiss,
+        RaySolverMethod::TilePacketSolving | RaySolverMethod::NeighborFrameContinuation => {
+            RequiredGuaranteeClass::BestEffort
+        }
     }
 }
 
@@ -730,14 +914,16 @@ fn selected_method_class_for_method(method: RaySolverMethod) -> SelectedMethodCl
         RaySolverMethod::DenseSphereTracing | RaySolverMethod::AnalyticPrimitiveIntersection => {
             SelectedMethodClass::ExactOracle
         }
-        RaySolverMethod::SupportBoundCandidateRejection => SelectedMethodClass::ConservativeSolver,
+        RaySolverMethod::SupportBoundCandidateRejection | RaySolverMethod::RepeatAwareTraversal => {
+            SelectedMethodClass::ConservativeSolver
+        }
         RaySolverMethod::LipschitzSafeStepping
         | RaySolverMethod::IntervalNewtonIsolation
         | RaySolverMethod::SafeguardedNewtonRefinement
         | RaySolverMethod::AffineArithmeticBounds => SelectedMethodClass::IntervalSolver,
-        RaySolverMethod::RepeatAwareTraversal
-        | RaySolverMethod::TilePacketSolving
-        | RaySolverMethod::NeighborFrameContinuation => SelectedMethodClass::HeuristicSolver,
+        RaySolverMethod::TilePacketSolving | RaySolverMethod::NeighborFrameContinuation => {
+            SelectedMethodClass::HeuristicSolver
+        }
     }
 }
 
@@ -779,6 +965,25 @@ pub fn ray_solver_method_name(method: RaySolverMethod) -> &'static str {
         RaySolverMethod::RepeatAwareTraversal => "repeat-aware-traversal",
         RaySolverMethod::TilePacketSolving => "tile-packet-solving",
         RaySolverMethod::NeighborFrameContinuation => "neighbor-frame-continuation",
+    }
+}
+
+pub fn ray_step_certificate_kind_name(kind: StepCertificateKind) -> &'static str {
+    match kind {
+        StepCertificateKind::DenseDistanceBound => "dense-distance-bound",
+        StepCertificateKind::SupportEntryJump => "support-entry-jump",
+        StepCertificateKind::AnalyticHit => "analytic-hit",
+        StepCertificateKind::RelaxedConservativeJump => "relaxed-conservative-jump",
+        StepCertificateKind::LipschitzBoundedJump => "lipschitz-bounded-jump",
+        StepCertificateKind::IntervalNoRootProof => "interval-no-root-proof",
+        StepCertificateKind::RefinementBracket => "refinement-bracket",
+    }
+}
+
+pub fn certificate_reuse_class_name(class: CertificateReuseClass) -> &'static str {
+    match class {
+        CertificateReuseClass::RenderingOnly => "rendering-only",
+        CertificateReuseClass::RenderingAndCollision => "rendering-and-collision",
     }
 }
 

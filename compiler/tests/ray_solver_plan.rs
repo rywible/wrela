@@ -8,7 +8,8 @@ use wrela::query_contract;
 use wrela::query_plan::{self, BatchQueryKind, DispatchBackend, WorldQueryKind};
 use wrela::query_solver::{
     AnalyticIntersectionStatus, EvidenceOrigin, EvidenceScope, FactAvailability, LipschitzStatus,
-    PrimitiveFact, RaySolverFallbackKind, RaySolverIntentDisposition, RaySolverMethod,
+    PrimitiveFact, RaySolverFallbackKind, RaySolverFallbackReason, RaySolverHitBracketStatus,
+    RaySolverIntentDisposition, RaySolverMethod, RaySolverMethodStatus, RaySolverNoCloserHitProof,
     RequiredGuaranteeClass, SelectedMethodClass, is_ray_shaped_spatial_contract,
 };
 use wrela::scene_ir;
@@ -220,12 +221,49 @@ fn ray_solver_plans_attach_only_to_ray_shaped_world_spatial_contracts() {
         solver.fallback.kind,
         RaySolverFallbackKind::ExactDenseSphereTracing
     );
+    assert_eq!(
+        solver.certificate.method,
+        RaySolverMethod::AnalyticPrimitiveIntersection
+    );
+    assert!(solver.certificate.hit_or_miss_recorded);
+    assert_eq!(
+        solver.certificate.hit_bracket,
+        RaySolverHitBracketStatus::Available
+    );
+    assert_eq!(
+        solver.certificate.no_closer_hit_proof,
+        RaySolverNoCloserHitProof::Available
+    );
+    assert_eq!(
+        solver.certificate.fallback_reason,
+        Some(RaySolverFallbackReason::ContractRequiresDenseOracle)
+    );
     assert!(
         solver.method_enabled(RaySolverMethod::DenseSphereTracing),
         "dense marching must be an explicit solver fallback method"
     );
+    for method in [
+        RaySolverMethod::SupportBoundCandidateRejection,
+        RaySolverMethod::AnalyticPrimitiveIntersection,
+        RaySolverMethod::LipschitzSafeStepping,
+        RaySolverMethod::IntervalNewtonIsolation,
+        RaySolverMethod::SafeguardedNewtonRefinement,
+        RaySolverMethod::RepeatAwareTraversal,
+    ] {
+        assert!(
+            solver.portfolio.entries.iter().any(|entry| {
+                entry.method == method && entry.status == RaySolverMethodStatus::Available
+            }),
+            "runtime-unknown plans should surface {method:?} as an available conditional method"
+        );
+    }
+    assert!(!solver.method_enabled(RaySolverMethod::RepeatAwareTraversal));
+    assert!(!solver.method_enabled(RaySolverMethod::AffineArithmeticBounds));
+    assert!(!solver.method_enabled(RaySolverMethod::TilePacketSolving));
+    assert!(!solver.method_enabled(RaySolverMethod::NeighborFrameContinuation));
     assert_eq!(solver.subject.as_str(), solver.contract_id.as_str());
-    assert_eq!(solver.mixed_selections().len(), 4);
+    assert_eq!(solver.portfolio.entries.len(), 10);
+    assert_eq!(solver.mixed_selections().len(), 7);
     assert!(
         solver
             .mixed_selections()
@@ -255,6 +293,18 @@ fn ray_solver_plans_attach_only_to_ray_shaped_world_spatial_contracts() {
             && selection.candidate_class == "lipschitz-safe-candidates"
             && selection.selected_method_class == SelectedMethodClass::IntervalSolver
     }));
+    assert!(solver.mixed_selections().iter().any(|selection| {
+        selection.method == RaySolverMethod::IntervalNewtonIsolation
+            && selection.candidate_class == "interval-isolation-candidates"
+            && selection.required_guarantee == RequiredGuaranteeClass::IntervalBounded
+            && selection.selected_method_class == SelectedMethodClass::IntervalSolver
+    }));
+    assert!(solver.mixed_selections().iter().any(|selection| {
+        selection.method == RaySolverMethod::SafeguardedNewtonRefinement
+            && selection.candidate_class == "newton-refinement-candidates"
+            && selection.required_guarantee == RequiredGuaranteeClass::IntervalBounded
+            && selection.selected_method_class == SelectedMethodClass::IntervalSolver
+    }));
     assert!(
         !solver
             .mixed_selections()
@@ -277,6 +327,18 @@ fn ray_solver_plans_attach_only_to_ray_shaped_world_spatial_contracts() {
         "runtime-unknown world plans should report conditional analytic hooks"
     );
     assert_eq!(summary.mixed_selections, solver.mixed_selections().to_vec());
+    assert_eq!(
+        summary.methods,
+        vec![
+            RaySolverMethod::DenseSphereTracing,
+            RaySolverMethod::SupportBoundCandidateRejection,
+            RaySolverMethod::AnalyticPrimitiveIntersection,
+            RaySolverMethod::LipschitzSafeStepping,
+            RaySolverMethod::IntervalNewtonIsolation,
+            RaySolverMethod::SafeguardedNewtonRefinement,
+            RaySolverMethod::RepeatAwareTraversal,
+        ]
+    );
     assert_eq!(
         summary.artifact_reuse_intents,
         solver.artifact_reuse_intents().to_vec()

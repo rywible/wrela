@@ -37,6 +37,16 @@ allow_unstable = false
 presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_repetition_view", region = "repetition_region", domain = "repetition_domain", width = 64, height = 64, frames = 4, camera_position = [0.0, 0.0, 3.0], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 48.0 }
 
 [[scenarios]]
+id = "presentation_repeat_linear_solver_scene"
+test_name = "tests/realtime_presentation::test_realtime_presentation_repeat_linear_solver_scene_ops_256"
+ops = 256
+class = "critical"
+min_runtime_ms = 250
+timeout_ms = 180000
+allow_unstable = false
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_repeat_linear_solver_view", region = "repeat_linear_solver_region", domain = "repeat_linear_solver_domain", width = 64, height = 64, frames = 4, camera_position = [-15.0, 0.0, 0.0], camera_forward = [1.0, 0.0, 0.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 12.0 }
+
+[[scenarios]]
 id = "presentation_thin_stack_alias_prone"
 test_name = "tests/realtime_presentation::test_realtime_presentation_thin_stack_alias_prone_ops_384"
 ops = 384
@@ -55,3 +65,13 @@ min_runtime_ms = 300
 timeout_ms = 180000
 allow_unstable = false
 presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_media_radiance_view", region = "media_region", domain = "media_domain", width = 64, height = 64, frames = 4, camera_position = [0.0, 0.0, 3.2], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 48.0 }
+
+[[scenarios]]
+id = "presentation_relaxed_torus_scene"
+test_name = "tests/realtime_presentation::test_realtime_presentation_relaxed_torus_scene_ops_256"
+ops = 256
+class = "critical"
+min_runtime_ms = 250
+timeout_ms = 180000
+allow_unstable = false
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_relaxed_torus_view", region = "relaxed_torus_region", domain = "relaxed_torus_domain", width = 64, height = 64, frames = 4, camera_position = [0.0, 0.0, 3.2], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 46.0 }
