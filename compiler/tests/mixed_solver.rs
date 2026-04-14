@@ -5,7 +5,8 @@ use wrela::parser::ast::AstNode;
 use wrela::parser::parse;
 use wrela::query_contract;
 use wrela::query_solver::{
-    RaySolverIntentDisposition, RaySolverMethod, RequiredGuaranteeClass, SelectedMethodClass,
+    AccelerationRejectionClass, RaySolverIntentDisposition, RaySolverMethod,
+    RequiredGuaranteeClass, SelectedMethodClass,
 };
 use wrela::scene_ir;
 use wrela::semantic_evidence::SemanticEvidence;
@@ -32,6 +33,55 @@ field conservative distance opaque_field(p: Vec3) -> F32 {
         max=vec3(1.0, 1.0, 1.0)
     )
     return length(p - vec3(3.0, 0.0, 0.0)) - 0.5
+}
+"#
+}
+
+fn acceleration_rejection_fixture_source() -> &'static str {
+    r#"
+field exact distance sphere_field(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+field conservative distance opaque_field(p: Vec3) -> F32 {
+    support = Support3(bounds=Bounds3(
+        min=vec3(-1.0, -1.0, -1.0),
+        max=vec3(1.0, 1.0, 1.0)
+    ))
+    bounds = Bounds3(
+        min=vec3(-1.0, -1.0, -1.0),
+        max=vec3(1.0, 1.0, 1.0)
+    )
+    return length(p - vec3(3.0, 0.0, 0.0)) - 0.5
+}
+
+field conservative distance repeat_linear_field(p: Vec3) -> F32 {
+    repeat_linear = vec3(2.0, 0.0, 0.0) {
+        sphere(radius = 1.0)
+    }
+}
+
+field conservative distance affine_field(p: Vec3) -> F32 {
+    affine_transform = Transform3(
+        matrix=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(1.5, 0.0, 0.0, 1.0)
+        ),
+        inverse=mat4_cols(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(-1.5, 0.0, 0.0, 1.0)
+        )
+    ) {
+        sphere(radius = 1.0)
+    }
+}
+
+field exact distance plane_field(p: Vec3) -> F32 {
+    plane(normal = vec3(0.0, 1.0, 0.0), offset = 0.0)
 }
 "#
 }
@@ -75,6 +125,11 @@ fn ray_solver_plan_exposes_mixed_selection_and_intent_summary_surface() {
             && selection.candidate_class == "lipschitz-safe-candidates"
             && selection.selected_method_class == SelectedMethodClass::IntervalSolver
     }));
+    assert!(
+        summary
+            .acceleration_rejection_classes
+            .contains(&AccelerationRejectionClass::ArtifactUnavailable)
+    );
     assert_eq!(summary.artifact_reuse_intents.len(), 1);
     assert_eq!(summary.continuation_intents.len(), 1);
     assert_eq!(
@@ -115,6 +170,11 @@ fn ray_solver_plan_exposes_mixed_selection_and_intent_summary_surface() {
     assert_eq!(subtree_solver.subject.as_str(), "shape.scene_branch");
     assert_eq!(subtree_summary.subject.as_str(), "shape.scene_branch");
     assert!(
+        subtree_summary
+            .acceleration_rejection_classes
+            .contains(&AccelerationRejectionClass::ArtifactUnavailable)
+    );
+    assert!(
         subtree_solver
             .mixed_selections()
             .iter()
@@ -149,6 +209,11 @@ fn ray_solver_plan_exposes_mixed_selection_and_intent_summary_surface() {
     );
     assert!(
         constructor_summary
+            .acceleration_rejection_classes
+            .contains(&AccelerationRejectionClass::ArtifactUnavailable)
+    );
+    assert!(
+        constructor_summary
             .artifact_reuse_intents
             .iter()
             .all(|intent| {
@@ -170,5 +235,114 @@ fn ray_solver_plan_exposes_mixed_selection_and_intent_summary_surface() {
                         .evidence_policy_summary
                         .contains("subject=shape.scene_branch")
             })
+    );
+}
+
+#[test]
+fn ray_solver_diagnostics_cover_major_acceleration_rejection_classes() {
+    let module = lower_inline_module_from_source(acceleration_rejection_fixture_source());
+    let scene = scene_ir::lower_module(&module);
+
+    let opaque_summary = wrela::query_solver::RaySolverPlan::for_contract(
+        query_contract::SPATIAL_NEAREST_WORLD,
+        Some(SemanticEvidence::for_field_scene(
+            scene.fields.get("opaque_field").expect("opaque field"),
+        )),
+    )
+    .expect("opaque solver plan")
+    .diagnostic_summary();
+    assert!(
+        opaque_summary
+            .acceleration_rejection_classes
+            .contains(&AccelerationRejectionClass::OpaqueBoundary)
+    );
+
+    let repeat_summary = wrela::query_solver::RaySolverPlan::for_contract(
+        query_contract::SPATIAL_NEAREST_WORLD,
+        Some(SemanticEvidence::for_field_scene(
+            scene
+                .fields
+                .get("repeat_linear_field")
+                .expect("repeat linear field"),
+        )),
+    )
+    .expect("repeat solver plan")
+    .diagnostic_summary();
+    assert!(
+        repeat_summary
+            .acceleration_rejection_classes
+            .contains(&AccelerationRejectionClass::UnsupportedRepeatForm)
+    );
+
+    let affine_summary = wrela::query_solver::RaySolverPlan::for_contract(
+        query_contract::SPATIAL_NEAREST_WORLD,
+        Some(SemanticEvidence::for_field_scene(
+            scene.fields.get("affine_field").expect("affine field"),
+        )),
+    )
+    .expect("affine solver plan")
+    .diagnostic_summary();
+    assert!(
+        affine_summary
+            .acceleration_rejection_classes
+            .contains(&AccelerationRejectionClass::UnsupportedTransform)
+    );
+
+    let runtime_unknown_summary = wrela::query_solver::RaySolverPlan::for_contract(
+        query_contract::SPATIAL_NEAREST_WORLD,
+        Some(SemanticEvidence::runtime_unknown("runtime.unknown")),
+    )
+    .expect("runtime unknown solver plan")
+    .diagnostic_summary();
+    assert!(
+        runtime_unknown_summary
+            .acceleration_rejection_classes
+            .contains(&AccelerationRejectionClass::UnboundedSupport)
+    );
+}
+
+#[test]
+fn ray_solver_diagnostics_surface_artifact_invalid_rejection_details() {
+    let module = lower_inline_module_from_source(fact_fixture_source());
+    let scene = scene_ir::lower_module(&module);
+    let sphere = scene.fields.get("sphere_field").expect("sphere field");
+
+    let artifact_bound = SemanticEvidence::for_field_scene(sphere)
+        .with_subject("shape.artifact_bound")
+        .artifact_bound("artifact cache");
+
+    let summary = wrela::query_solver::RaySolverPlan::for_contract(
+        query_contract::SPATIAL_NEAREST_WORLD,
+        Some(artifact_bound),
+    )
+    .expect("artifact-bound solver plan")
+    .diagnostic_summary();
+
+    assert!(
+        summary
+            .acceleration_rejection_classes
+            .contains(&AccelerationRejectionClass::ArtifactInvalid)
+    );
+    assert_eq!(
+        summary.artifact_reuse_intents[0].disposition,
+        RaySolverIntentDisposition::Rejected
+    );
+    assert!(
+        summary.artifact_reuse_intents[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("artifact-derived evidence"))
+    );
+    assert!(
+        summary.artifact_reuse_intents[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("artifact provenance"))
+    );
+    assert!(
+        summary.artifact_reuse_intents[0]
+            .selection
+            .evidence_policy_summary
+            .contains("ArtifactDerived")
     );
 }

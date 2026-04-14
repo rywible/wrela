@@ -1434,6 +1434,7 @@ fn query_exec_traces_report_observability_counters() {
     assert!(cpu_trace.observability.branch_visits > 0);
     assert!(cpu_trace.observability.artifact_loads > 0);
     assert!(cpu_trace.observability.acceleration_node_visits > 0);
+    assert!(cpu_trace.observability.shape_leaf_visits > 0);
     assert!(cpu_trace.observability.cache_brick_visits > 0);
     assert!(cpu_trace.observability.cache_brick_hits > 0);
     assert!(cpu_trace.observability.accepted_relaxed_steps > 0);
@@ -1458,6 +1459,8 @@ fn query_exec_traces_report_observability_counters() {
     );
     let rendered = render_semantic_cost_report(&cpu_trace.cost_report);
     assert!(rendered.contains("acceleration_node_visits="));
+    assert!(rendered.contains("shape_leaf_visits="));
+    assert!(rendered.contains("union_cluster_visits="));
     assert!(rendered.contains("cache_brick_visits="));
     assert!(rendered.contains("accepted_relaxed_steps="));
     assert!(rendered.contains("observer_continuation_seed_hits="));
@@ -1909,6 +1912,214 @@ fn query_exec_ray_solver_support_rejects_far_world_candidates() {
 }
 
 #[test]
+fn query_exec_cpu_world_trace_reports_support_entry_jumps_and_pruned_nodes() {
+    let (_, _, ctx) = typed_query_module(world_ray_support_interval_fixture_source());
+    let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("scene_region"));
+    let domain = scene_domain(region_scene_id, 1, true, false, false);
+    let plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(
+        WorldQueryKind::Trace,
+        DispatchBackend::Cpu,
+    ));
+    let (hit, trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &plan,
+        &[
+            KernelValue::Capture(SmolStr::new("scene_region")),
+            domain,
+            ray_query_with_limits([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 6.0, 0.05, 0.001, 96),
+        ],
+    )
+    .expect("cpu world trace with support interval jump");
+
+    let hit = expect_struct(&hit, "Hit3");
+    let payload = expect_struct(field(hit, "payload"), "Payload");
+    assert_eq!(expect_u32(field(payload, "entity_id")), 11);
+    assert!(trace.observability.candidate_count > 0);
+    assert!(trace.observability.support_pruned_candidates > 0);
+    assert!(trace.observability.ray_support_entry_jumps > 0);
+    assert!(trace.observability.shape_leaf_visits > 0);
+    assert!(trace.observability.acceleration_pruned_nodes > 0);
+    let rendered = render_semantic_cost_report(&trace.cost_report);
+    assert!(rendered.contains("acceleration_pruned_nodes="));
+    assert!(rendered.contains("shape_leaf_visits="));
+    assert!(rendered.contains("ray_support_entry_jumps="));
+    assert!(rendered.contains("ray_support_interval_rejections="));
+    assert!(
+        trace
+            .cost_report
+            .causes
+            .iter()
+            .any(|cause| { cause.kind == SemanticCostCauseKind::SupportTopology })
+    );
+}
+
+#[test]
+fn query_exec_cpu_world_trace_support_intervals_cover_miss_tangent_inside_and_repeat_cells() {
+    let (_, _, ctx) = typed_query_module(world_ray_support_interval_variants_fixture_source());
+    let plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(
+        WorldQueryKind::Trace,
+        DispatchBackend::Cpu,
+    ));
+    let world_trace = |capture: &str, origin: [f32; 3], direction: [f32; 3], max_distance: f32| {
+        execute_world_query_with_trace_on(
+            &ctx,
+            DispatchBackend::Cpu,
+            &plan,
+            &[
+                KernelValue::Capture(SmolStr::new(capture)),
+                scene_domain(
+                    stable_region_scene_capture_id(&SmolStr::new(capture)),
+                    1,
+                    true,
+                    false,
+                    false,
+                ),
+                ray_query_with_limits(origin, direction, max_distance, 0.05, 0.001, 96),
+            ],
+        )
+        .expect("cpu world trace")
+    };
+
+    let (inside_hit, inside_trace) =
+        world_trace("inside_region", [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 6.0);
+    let inside_hit = expect_struct(&inside_hit, "Hit3");
+    let inside_payload = expect_struct(field(inside_hit, "payload"), "Payload");
+    assert!(expect_bool(field(inside_hit, "hit")));
+    assert_eq!(expect_u32(field(inside_payload, "entity_id")), 31);
+    assert_eq!(inside_trace.observability.ray_support_entry_jumps, 0);
+    assert_eq!(
+        inside_trace.observability.ray_support_interval_rejections,
+        0
+    );
+
+    let (tangent_hit, tangent_trace) =
+        world_trace("tangent_region", [0.0, 0.5, 0.0], [1.0, 0.0, 0.0], 6.0);
+    let tangent_hit = expect_struct(&tangent_hit, "Hit3");
+    let tangent_payload = expect_struct(field(tangent_hit, "payload"), "Payload");
+    assert!(expect_bool(field(tangent_hit, "hit")));
+    assert_eq!(expect_u32(field(tangent_payload, "entity_id")), 32);
+    assert!(tangent_trace.observability.ray_support_entry_jumps > 0);
+
+    let (translated_hit, translated_trace) =
+        world_trace("translated_region", [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 6.0);
+    let translated_hit = expect_struct(&translated_hit, "Hit3");
+    let translated_payload = expect_struct(field(translated_hit, "payload"), "Payload");
+    assert!(expect_bool(field(translated_hit, "hit")));
+    assert_eq!(expect_u32(field(translated_payload, "entity_id")), 33);
+    assert!(translated_trace.observability.ray_support_entry_jumps > 0);
+
+    let (scaled_hit, scaled_trace) =
+        world_trace("scaled_region", [0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0);
+    let scaled_hit = expect_struct(&scaled_hit, "Hit3");
+    let scaled_payload = expect_struct(field(scaled_hit, "payload"), "Payload");
+    assert!(expect_bool(field(scaled_hit, "hit")));
+    assert_eq!(expect_u32(field(scaled_payload, "entity_id")), 36);
+    assert!(scaled_trace.observability.ray_support_entry_jumps > 0);
+
+    let (mirrored_hit, mirrored_trace) =
+        world_trace("mirrored_region", [-5.0, 0.0, 0.0], [1.0, 0.0, 0.0], 10.0);
+    let mirrored_hit = expect_struct(&mirrored_hit, "Hit3");
+    let mirrored_payload = expect_struct(field(mirrored_hit, "payload"), "Payload");
+    assert!(expect_bool(field(mirrored_hit, "hit")));
+    assert_eq!(expect_u32(field(mirrored_payload, "entity_id")), 34);
+    assert!(mirrored_trace.observability.ray_support_entry_jumps > 0);
+
+    let (repeat_linear_hit, repeat_linear_trace) = world_trace(
+        "repeat_linear_region",
+        [-6.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        12.0,
+    );
+    let repeat_linear_hit = expect_struct(&repeat_linear_hit, "Hit3");
+    let repeat_linear_payload = expect_struct(field(repeat_linear_hit, "payload"), "Payload");
+    assert!(expect_bool(field(repeat_linear_hit, "hit")));
+    assert_eq!(expect_u32(field(repeat_linear_payload, "entity_id")), 37);
+    assert!(repeat_linear_trace.observability.ray_support_entry_jumps > 0);
+
+    let (repeat_grid_hit, repeat_grid_trace) = world_trace(
+        "repeat_grid_region",
+        [-6.0, 0.25, 0.0],
+        [1.0, 0.0, 0.0],
+        12.0,
+    );
+    let repeat_grid_hit = expect_struct(&repeat_grid_hit, "Hit3");
+    let repeat_grid_payload = expect_struct(field(repeat_grid_hit, "payload"), "Payload");
+    assert!(expect_bool(field(repeat_grid_hit, "hit")));
+    assert_eq!(expect_u32(field(repeat_grid_payload, "entity_id")), 38);
+    assert!(repeat_grid_trace.observability.ray_support_entry_jumps > 0);
+
+    let (radial_repeat_hit, radial_repeat_trace) = world_trace(
+        "radial_repeat_region",
+        [0.0, 0.0, -5.0],
+        [0.0, 0.0, 1.0],
+        12.0,
+    );
+    let radial_repeat_hit = expect_struct(&radial_repeat_hit, "Hit3");
+    let radial_repeat_payload = expect_struct(field(radial_repeat_hit, "payload"), "Payload");
+    assert!(expect_bool(field(radial_repeat_hit, "hit")));
+    assert_eq!(expect_u32(field(radial_repeat_payload, "entity_id")), 39);
+    assert!(radial_repeat_trace.observability.ray_support_entry_jumps > 0);
+
+    let (miss_hit, miss_trace) = world_trace("miss_region", [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 6.0);
+    let miss_hit = expect_struct(&miss_hit, "Hit3");
+    assert!(!expect_bool(field(miss_hit, "hit")));
+    assert_eq!(miss_trace.observability.candidate_count, 0);
+    assert!(miss_trace.observability.support_pruned_candidates > 0);
+    assert!(miss_trace.observability.ray_support_interval_rejections > 0);
+
+    let (mixed_repeat_hit, mixed_repeat_trace) = world_trace(
+        "mixed_repeat_region",
+        [-6.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        12.0,
+    );
+    let mixed_repeat_hit = expect_struct(&mixed_repeat_hit, "Hit3");
+    let mixed_repeat_payload = expect_struct(field(mixed_repeat_hit, "payload"), "Payload");
+    assert!(expect_bool(field(mixed_repeat_hit, "hit")));
+    assert_eq!(expect_u32(field(mixed_repeat_payload, "entity_id")), 37);
+    assert!(mixed_repeat_trace.observability.ray_support_entry_jumps > 0);
+}
+
+#[test]
+fn query_exec_cpu_large_union_distance_uses_subtree_pruning() {
+    let (_, _, ctx) = typed_query_module(large_union_distance_fixture_source());
+    let plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Distance, CaptureKind::Shape, None)
+            .expect("shape capture distance plan"),
+    );
+
+    let (cpu_value, cpu_trace) = execute_capture_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &plan,
+        &[
+            KernelValue::Capture(SmolStr::new("large_union_shape")),
+            KernelValue::Vec3([0.5, 0.0, 0.0]),
+        ],
+    )
+    .expect("cpu large union distance");
+    let wgsl_value = execute_capture_query_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &plan,
+        &[
+            KernelValue::Capture(SmolStr::new("large_union_shape")),
+            KernelValue::Vec3([0.5, 0.0, 0.0]),
+        ],
+    )
+    .expect("wgsl large union distance");
+
+    assert_approx_eq(expect_f32(&cpu_value), expect_f32(&wgsl_value));
+    assert!(cpu_trace.observability.union_cluster_visits > 0);
+    assert!(cpu_trace.observability.shape_leaf_visits < 6);
+    assert!(cpu_trace.observability.acceleration_pruned_nodes > 0);
+    let rendered = render_semantic_cost_report(&cpu_trace.cost_report);
+    assert!(rendered.contains("shape_leaf_visits="));
+    assert!(rendered.contains("acceleration_pruned_nodes="));
+}
+
+#[test]
 fn query_exec_ray_solver_reports_specific_dense_fallback_reasons() {
     let (_, _, ctx) = typed_query_module(ray_solver_opaque_fixture_source());
     let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("scene_region"));
@@ -1999,8 +2210,9 @@ fn query_exec_ray_solver_cpu_oracle_covers_analytic_dense_miss_and_provenance() 
     .expect("solver world miss");
     assert!(!expect_bool(field(expect_struct(&miss, "Hit3"), "hit")));
     assert_eq!(miss_trace.observability.solver_analytic_hits, 0);
-    assert!(miss_trace.observability.solver_dense_fallback_rays > 0);
-    assert!(render_semantic_cost_report(&miss_trace.cost_report).contains("ray-solver-fallback"));
+    assert_eq!(miss_trace.observability.solver_dense_fallback_rays, 0);
+    assert!(miss_trace.observability.support_pruned_candidates > 0);
+    assert!(miss_trace.observability.ray_support_interval_rejections > 0);
 }
 
 #[test]
@@ -2431,7 +2643,12 @@ fn query_exec_scalar_occlusion_matches_cpu_virtual_gpu_and_wgsl_for_capture_and_
         assert_direct_trace_contract(&cpu_trace, query_contract::SPATIAL_OCCLUDED_WORLD);
         assert_direct_trace_contract(&vgpu_trace, query_contract::SPATIAL_OCCLUDED_WORLD);
         assert_direct_trace_contract(&wgsl_trace, query_contract::SPATIAL_OCCLUDED_WORLD);
-        assert!(cpu_trace.observability.trace_steps > 0);
+        if expected_occluded {
+            assert!(cpu_trace.observability.trace_steps > 0);
+        } else {
+            assert_eq!(cpu_trace.observability.trace_steps, 0);
+            assert!(cpu_trace.observability.ray_support_interval_rejections > 0);
+        }
         assert!(vgpu_trace.observability.trace_steps > 0);
         if expected_occluded {
             assert!(wgsl_trace.observability.trace_steps > 0);
@@ -4390,6 +4607,356 @@ domain scene_domain(world: RegionCapture) {
     min_step = 0.05
     hit_epsilon = 0.001
     max_steps = 96
+}
+"#
+}
+
+fn world_ray_support_interval_fixture_source() -> &'static str {
+    r#"
+field exact distance jump_field(p: Vec3) -> F32 {
+    translate = vec3(2.5, 0.0, 0.0) {
+        sphere(radius = 0.5)
+    }
+}
+
+field exact distance far_field(p: Vec3) -> F32 {
+    translate = vec3(12.0, 0.0, 0.0) {
+        sphere(radius = 0.75)
+    }
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.25, 0.35, 0.45),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape jump_shape {
+    field = jump_field
+    material = shade
+    payload = Payload(entity_id=u32(11), material_id=u32(11), actor=ActorHandle(id=u32(11), generation=u32(0)))
+}
+
+shape far_shape {
+    field = far_field
+    material = shade
+    payload = Payload(entity_id=u32(22), material_id=u32(22), actor=ActorHandle(id=u32(22), generation=u32(0)))
+}
+
+region scene_region() {
+    place jump = jump_shape
+    place far = far_shape
+}
+
+domain scene_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = false
+    media = false
+    max_distance = 6.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+"#
+}
+
+fn world_ray_support_interval_variants_fixture_source() -> &'static str {
+    r#"
+field exact distance inside_field(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+field exact distance tangent_field(p: Vec3) -> F32 {
+    translate = vec3(2.5, 0.5, 0.0) {
+        sphere(radius = 0.5)
+    }
+}
+
+field exact distance translated_field(p: Vec3) -> F32 {
+    translate = vec3(2.5, 0.0, 0.0) {
+        sphere(radius = 0.5)
+    }
+}
+
+field exact distance scaled_field(p: Vec3) -> F32 {
+    uniform_scale = f32(2.0) {
+        sphere(radius = 0.5)
+    }
+}
+
+field conservative distance mirrored_field(p: Vec3) -> F32 {
+    mirror_array = vec3(1.0, 0.0, 0.0) {
+        translate = vec3(2.5, 0.0, 0.0) {
+            sphere(radius = 0.5)
+        }
+    }
+}
+
+field conservative distance repeat_linear_field(p: Vec3) -> F32 {
+    repeat_linear = vec3(2.5, 0.0, 0.0) {
+        translate = vec3(0.25, 0.0, 0.0) {
+            sphere(radius = 0.5)
+        }
+    }
+}
+
+field conservative distance repeat_grid_field(p: Vec3) -> F32 {
+    repeat_grid = vec3(2.5, 2.5, 0.0) {
+        translate = vec3(0.25, 0.25, 0.0) {
+            sphere(radius = 0.4)
+        }
+    }
+}
+
+field conservative distance radial_repeat_field(p: Vec3) -> F32 {
+    radial_repeat = vec3(4.0, 0.0, 0.0) {
+        translate = vec3(2.5, 0.0, 0.0) {
+            sphere(radius = 0.5)
+        }
+    }
+}
+
+field exact distance miss_field(p: Vec3) -> F32 {
+    translate = vec3(0.0, 2.0, 0.0) {
+        sphere(radius = 0.5)
+    }
+}
+
+field exact distance distractor_field(p: Vec3) -> F32 {
+    translate = vec3(0.0, 3.0, 0.0) {
+        sphere(radius = 0.5)
+    }
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.25, 0.35, 0.45),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape inside_shape {
+    field = inside_field
+    material = shade
+    payload = Payload(entity_id=u32(31), material_id=u32(31), actor=ActorHandle(id=u32(31), generation=u32(0)))
+}
+
+shape tangent_shape {
+    field = tangent_field
+    material = shade
+    payload = Payload(entity_id=u32(32), material_id=u32(32), actor=ActorHandle(id=u32(32), generation=u32(0)))
+}
+
+shape translated_shape {
+    field = translated_field
+    material = shade
+    payload = Payload(entity_id=u32(33), material_id=u32(33), actor=ActorHandle(id=u32(33), generation=u32(0)))
+}
+
+shape scaled_shape {
+    field = scaled_field
+    material = shade
+    payload = Payload(entity_id=u32(36), material_id=u32(36), actor=ActorHandle(id=u32(36), generation=u32(0)))
+}
+
+shape mirrored_shape {
+    field = mirrored_field
+    material = shade
+    payload = Payload(entity_id=u32(34), material_id=u32(34), actor=ActorHandle(id=u32(34), generation=u32(0)))
+}
+
+shape repeat_linear_shape {
+    field = repeat_linear_field
+    material = shade
+    payload = Payload(entity_id=u32(37), material_id=u32(37), actor=ActorHandle(id=u32(37), generation=u32(0)))
+}
+
+shape repeat_grid_shape {
+    field = repeat_grid_field
+    material = shade
+    payload = Payload(entity_id=u32(38), material_id=u32(38), actor=ActorHandle(id=u32(38), generation=u32(0)))
+}
+
+shape radial_repeat_shape {
+    field = radial_repeat_field
+    material = shade
+    payload = Payload(entity_id=u32(39), material_id=u32(39), actor=ActorHandle(id=u32(39), generation=u32(0)))
+}
+
+shape miss_shape {
+    field = miss_field
+    material = shade
+    payload = Payload(entity_id=u32(35), material_id=u32(35), actor=ActorHandle(id=u32(35), generation=u32(0)))
+}
+
+shape distractor_shape {
+    field = distractor_field
+    material = shade
+    payload = Payload(entity_id=u32(40), material_id=u32(40), actor=ActorHandle(id=u32(40), generation=u32(0)))
+}
+
+region inside_region() {
+    place inside = inside_shape
+}
+
+region tangent_region() {
+    place tangent = tangent_shape
+}
+
+region translated_region() {
+    place translated = translated_shape
+}
+
+region scaled_region() {
+    place scaled = scaled_shape
+}
+
+region mirrored_region() {
+    place mirrored = mirrored_shape
+}
+
+region repeat_linear_region() {
+    place repeated = repeat_linear_shape
+}
+
+region repeat_grid_region() {
+    place repeated = repeat_grid_shape
+}
+
+region radial_repeat_region() {
+    place repeated = radial_repeat_shape
+}
+
+region miss_region() {
+    place miss = miss_shape
+}
+
+region mixed_repeat_region() {
+    place distractor = distractor_shape
+    place repeated = repeat_linear_shape
+}
+
+domain scene_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = false
+    media = false
+    max_distance = 10.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+"#
+}
+
+fn large_union_distance_fixture_source() -> &'static str {
+    r#"
+field exact distance leaf_0_field(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.0, 0.0) {
+        sphere(radius = 0.5)
+    }
+}
+
+field exact distance leaf_1_field(p: Vec3) -> F32 {
+    translate = vec3(5.0, 0.0, 0.0) {
+        sphere(radius = 0.5)
+    }
+}
+
+field exact distance leaf_2_field(p: Vec3) -> F32 {
+    translate = vec3(10.0, 0.0, 0.0) {
+        sphere(radius = 0.5)
+    }
+}
+
+field exact distance leaf_3_field(p: Vec3) -> F32 {
+    translate = vec3(15.0, 0.0, 0.0) {
+        sphere(radius = 0.5)
+    }
+}
+
+field exact distance leaf_4_field(p: Vec3) -> F32 {
+    translate = vec3(20.0, 0.0, 0.0) {
+        sphere(radius = 0.5)
+    }
+}
+
+field exact distance leaf_5_field(p: Vec3) -> F32 {
+    translate = vec3(25.0, 0.0, 0.0) {
+        sphere(radius = 0.5)
+    }
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.25, 0.35, 0.45),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape leaf_0_shape {
+    field = leaf_0_field
+    material = shade
+    payload = Payload(entity_id=u32(101), material_id=u32(101), actor=ActorHandle(id=u32(101), generation=u32(0)))
+}
+
+shape leaf_1_shape {
+    field = leaf_1_field
+    material = shade
+    payload = Payload(entity_id=u32(102), material_id=u32(102), actor=ActorHandle(id=u32(102), generation=u32(0)))
+}
+
+shape leaf_2_shape {
+    field = leaf_2_field
+    material = shade
+    payload = Payload(entity_id=u32(103), material_id=u32(103), actor=ActorHandle(id=u32(103), generation=u32(0)))
+}
+
+shape leaf_3_shape {
+    field = leaf_3_field
+    material = shade
+    payload = Payload(entity_id=u32(104), material_id=u32(104), actor=ActorHandle(id=u32(104), generation=u32(0)))
+}
+
+shape leaf_4_shape {
+    field = leaf_4_field
+    material = shade
+    payload = Payload(entity_id=u32(105), material_id=u32(105), actor=ActorHandle(id=u32(105), generation=u32(0)))
+}
+
+shape leaf_5_shape {
+    field = leaf_5_field
+    material = shade
+    payload = Payload(entity_id=u32(106), material_id=u32(106), actor=ActorHandle(id=u32(106), generation=u32(0)))
+}
+
+shape large_union_shape {
+    union {
+        provenance_policy = nearest
+        use leaf_0_shape
+        use leaf_1_shape
+        use leaf_2_shape
+        use leaf_3_shape
+        use leaf_4_shape
+        use leaf_5_shape
+    }
 }
 "#
 }

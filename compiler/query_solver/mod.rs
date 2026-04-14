@@ -1,8 +1,10 @@
+pub use crate::acceleration::AccelerationRejectionClass;
 use crate::query_contract::{
     QueryCardinality, QueryContractId, QueryFamilyId, QueryItemKind, QueryQuestionId,
     QueryResultKind, QueryTargetKind, query_contract,
 };
 pub use crate::query_contract::{RequiredGuaranteeClass, SelectedMethodClass};
+use crate::scene_ir::SupportClass;
 pub use crate::semantic_evidence::{
     AnalyticIntersectionStatus, EvidenceClass, EvidenceOrigin, EvidenceRefinementKind,
     EvidenceRefinementStep, EvidenceScope, FactAvailability, LipschitzStatus, PrimitiveFact,
@@ -10,6 +12,7 @@ pub use crate::semantic_evidence::{
     TemporalStability, TransformFact,
 };
 use smol_str::SmolStr;
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RaySolverMethod {
@@ -163,6 +166,7 @@ pub struct RaySolverDiagnosticSummary {
     pub plan_id: SmolStr,
     pub subject: SmolStr,
     pub methods: Vec<RaySolverMethod>,
+    pub acceleration_rejection_classes: Vec<AccelerationRejectionClass>,
     pub mixed_selections: Vec<RaySolverMixedSelection>,
     pub artifact_reuse_intents: Vec<RaySolverArtifactReuseIntent>,
     pub continuation_intents: Vec<RaySolverContinuationIntent>,
@@ -304,6 +308,7 @@ impl RaySolverPlan {
                 })
                 .map(|entry| entry.method)
                 .collect(),
+            acceleration_rejection_classes: major_acceleration_rejection_classes(&self.evidence),
             mixed_selections: self.mixed_selections.clone(),
             artifact_reuse_intents: self.artifact_reuse_intents.clone(),
             continuation_intents: self.continuation_intents.clone(),
@@ -461,6 +466,74 @@ fn compile_trust(origin: &EvidenceOrigin, scope: &EvidenceScope) -> bool {
         && matches!(scope, EvidenceScope::CompileInvariant)
 }
 
+fn major_acceleration_rejection_classes(
+    evidence: &SemanticEvidence,
+) -> Vec<AccelerationRejectionClass> {
+    let mut classes = BTreeSet::new();
+    if matches!(
+        evidence.distance.provenance.origin,
+        EvidenceOrigin::ArtifactDerived
+    ) || matches!(
+        evidence.support.provenance.origin,
+        EvidenceOrigin::ArtifactDerived
+    ) || matches!(
+        evidence.differential.provenance.origin,
+        EvidenceOrigin::ArtifactDerived
+    ) || matches!(
+        evidence.identity.provenance.origin,
+        EvidenceOrigin::ArtifactDerived
+    ) || matches!(
+        evidence.temporal.provenance.origin,
+        EvidenceOrigin::ArtifactDerived
+    ) {
+        classes.insert(AccelerationRejectionClass::ArtifactInvalid);
+    }
+    if evidence.support.opaque_boundary {
+        classes.insert(AccelerationRejectionClass::OpaqueBoundary);
+    }
+    if matches!(
+        evidence.support.lower_bound_pruning,
+        FactAvailability::Unavailable
+    ) || matches!(
+        evidence.support.conservative_bounds,
+        FactAvailability::Unavailable
+    ) || (matches!(
+        evidence.support.support_class,
+        SupportClass::Unknown | SupportClass::Unbounded | SupportClass::Periodic
+    ) && !matches!(
+        evidence.support.conservative_bounds,
+        FactAvailability::Available
+    )) {
+        classes.insert(AccelerationRejectionClass::UnboundedSupport);
+    }
+    if matches!(
+        evidence.differential.transform,
+        TransformFact::AffineOrWarp | TransformFact::Unknown
+    ) {
+        classes.insert(AccelerationRejectionClass::UnsupportedTransform);
+    }
+    if matches!(
+        evidence.differential.repetition,
+        RepetitionFact::Repeat(_) | RepetitionFact::IdentityAffecting(_) | RepetitionFact::Unknown
+    ) && !matches!(
+        evidence.support.lower_bound_pruning,
+        FactAvailability::Available
+    ) {
+        classes.insert(AccelerationRejectionClass::UnsupportedRepeatForm);
+    }
+    if matches!(
+        evidence.distance.interval_bounds,
+        FactAvailability::Unavailable
+    ) || matches!(
+        evidence.distance.analytic_intersection,
+        AnalyticIntersectionStatus::Unavailable
+    ) || matches!(evidence.distance.lipschitz, LipschitzStatus::Unavailable)
+    {
+        classes.insert(AccelerationRejectionClass::ArtifactUnavailable);
+    }
+    classes.into_iter().collect()
+}
+
 fn mixed_selection_for_entry(
     contract_id: QueryContractId,
     evidence_summary: &SemanticEvidenceSummary,
@@ -516,6 +589,8 @@ fn artifact_reuse_intent(
             evidence_summary.distance.analytic_intersection
         )),
     };
+    let has_artifact_binding = matches!(evidence_summary.origin, EvidenceOrigin::ArtifactDerived)
+        || matches!(evidence_summary.scope, EvidenceScope::ArtifactBound);
     let has_reusable_evidence = matches!(
         evidence_summary.support.lower_bound_pruning,
         FactAvailability::Available | FactAvailability::Unknown
@@ -525,7 +600,18 @@ fn artifact_reuse_intent(
             | AnalyticIntersectionStatus::CandidateOnly
             | AnalyticIntersectionStatus::Unknown
     );
-    let (disposition, reasons) = if has_reusable_evidence {
+    let (disposition, reasons) = if has_artifact_binding {
+        (
+            RaySolverIntentDisposition::Rejected,
+            vec![
+                SmolStr::new("artifact-derived evidence must be revalidated before reuse is legal"),
+                SmolStr::new(format!(
+                    "artifact provenance origin={:?} scope={:?} requires a fresh compatibility check",
+                    evidence_summary.origin, evidence_summary.scope
+                )),
+            ],
+        )
+    } else if has_reusable_evidence {
         (
             RaySolverIntentDisposition::Unavailable,
             vec![

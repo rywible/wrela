@@ -1,3 +1,4 @@
+use crate::acceleration::build::{SharedAccelerationCatalog, build_shared_acceleration_forests};
 use crate::hir;
 use crate::hir::typeck::TypeInfo;
 use crate::query_exec::ids::{
@@ -24,6 +25,7 @@ pub struct QueryExecContext {
     pub fields_by_name: HashMap<SmolStr, hir::Function>,
     pub regions_by_name: HashMap<SmolStr, hir::Function>,
     pub region_cases: Vec<RegionExecCase>,
+    pub shared_acceleration: SharedAccelerationCatalog,
     pub field_names: HashSet<SmolStr>,
     pub shape_names: HashSet<SmolStr>,
     pub field_snapshots: BTreeMap<SmolStr, WorldSnapshotHandle>,
@@ -150,7 +152,7 @@ impl QueryExecContext {
             .map(|(name, snapshot)| (snapshot.portable_scene_id(), name.clone()))
             .collect::<HashMap<_, _>>();
 
-        Self {
+        let mut context = Self {
             module,
             type_info: if rechecked_errors.is_empty() {
                 module_type_info
@@ -167,6 +169,7 @@ impl QueryExecContext {
             fields_by_name,
             regions_by_name,
             region_cases,
+            shared_acceleration: SharedAccelerationCatalog::default(),
             field_names,
             shape_names,
             field_snapshots,
@@ -176,7 +179,9 @@ impl QueryExecContext {
             shape_scene_index,
             shape_root_feature_index,
             region_scene_index,
-        }
+        };
+        context.shared_acceleration = build_shared_acceleration_forests(&context);
+        context
     }
 
     pub fn field_snapshot_handle(&self, name: &SmolStr) -> Option<&WorldSnapshotHandle> {
@@ -189,6 +194,21 @@ impl QueryExecContext {
 
     pub fn region_snapshot_handle(&self, name: &SmolStr) -> Option<&WorldSnapshotHandle> {
         self.region_snapshots.get(name)
+    }
+
+    pub fn world_acceleration_forest(
+        &self,
+        capture: &SmolStr,
+        detail: i32,
+    ) -> Option<&crate::acceleration::AccelerationForest> {
+        self.shared_acceleration.world(capture, detail)
+    }
+
+    pub fn union_acceleration_forest(
+        &self,
+        shape: &SmolStr,
+    ) -> Option<&crate::acceleration::AccelerationForest> {
+        self.shared_acceleration.union(shape)
     }
 
     pub fn snapshot_handle_for_capture_name(&self, name: &SmolStr) -> Option<&WorldSnapshotHandle> {

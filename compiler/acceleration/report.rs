@@ -1,5 +1,11 @@
-pub use super::{AccelerationForest, AccelerationNode, AccelerationReport};
-use super::{acceleration_cache_kind_name, acceleration_observer_name, cache_artifact_scope_name};
+pub use super::{
+    AccelerationChildSpan, AccelerationForest, AccelerationLeafPayload, AccelerationNode,
+    AccelerationRejectionClass, AccelerationRejectionRecord, AccelerationReport,
+};
+use super::{
+    acceleration_cache_kind_name, acceleration_observer_name, acceleration_rejection_class_name,
+    cache_artifact_scope_name,
+};
 use std::fmt::{self, Display, Formatter};
 
 fn sorted_nodes(forest: &AccelerationForest) -> Vec<&AccelerationNode> {
@@ -42,13 +48,37 @@ pub fn render_forest_debug_dump(forest: &AccelerationForest) -> String {
 
     for node in sorted_nodes(forest) {
         out.push_str(&format!(
-            "node id={} order={} kind={:?} candidate_class={:?} children={}\n",
+            "node id={} order={} kind={:?} candidate_class={:?} child_span={} children={}\n",
             node.id,
             node.stable_order,
             node.kind,
             node.candidate_class,
+            node.child_span
+                .map(|span| format!("{}..{}", span.start, span.start + span.len))
+                .unwrap_or_else(|| "none".to_string()),
             node.child_ids.join(",")
         ));
+        if let Some(payload) = node.leaf_payload.as_ref() {
+            out.push_str(&format!(
+                "  leaf semantic_id={} feature_id={} instance_id={} repeat_id={}\n",
+                payload.semantic_id,
+                payload
+                    .feature_id
+                    .as_ref()
+                    .map(|value| value.as_str())
+                    .unwrap_or("none"),
+                payload
+                    .instance_id
+                    .as_ref()
+                    .map(|value| value.as_str())
+                    .unwrap_or("none"),
+                payload
+                    .repeat_id
+                    .as_ref()
+                    .map(|value| value.as_str())
+                    .unwrap_or("none")
+            ));
+        }
         if let Some(support) = node.support.as_ref() {
             out.push_str(&format!(
                 "  support kind={:?} semantics={} opaque_boundary={} coarse_prune={}\n",
@@ -89,6 +119,24 @@ pub fn render_forest_debug_dump(forest: &AccelerationForest) -> String {
         }
         if !node.notes.is_empty() {
             out.push_str(&format!("  notes {}\n", node.notes.join(" | ")));
+        }
+    }
+
+    if !forest.rejection_reasons.is_empty() {
+        let mut rejection_reasons = forest.rejection_reasons.iter().collect::<Vec<_>>();
+        rejection_reasons.sort_by(|left, right| {
+            left.class
+                .cmp(&right.class)
+                .then(left.subject.cmp(&right.subject))
+                .then(left.detail.cmp(&right.detail))
+        });
+        for rejection in rejection_reasons {
+            out.push_str(&format!(
+                "rejection class={} subject={} detail={}\n",
+                acceleration_rejection_class_name(rejection.class),
+                rejection.subject,
+                rejection.detail
+            ));
         }
     }
 

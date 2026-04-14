@@ -1,3 +1,4 @@
+use crate::acceleration::{AccelerationForest, AccelerationLeafPayload, BoundDescriptorKind};
 use crate::execution_policy::QueryExecutionPolicy;
 use crate::hir;
 use crate::hir::body::{BinaryOp, Expr, Literal, UnaryOp};
@@ -248,6 +249,9 @@ pub(crate) struct DirectQueryOps<'a> {
     ctx: &'a QueryExecContext,
     snapshot: Option<WorldSnapshotHandle>,
     observability: Rc<RefCell<QueryExecutionObservability>>,
+    world_acceleration_cache:
+        Rc<RefCell<HashMap<(SmolStr, i32), Option<CpuAccelerationTree<SmolStr>>>>>,
+    shape_union_cache: Rc<RefCell<HashMap<SmolStr, Option<CpuAccelerationTree<usize>>>>>,
 }
 
 pub(crate) struct DirectQueryEvaluator<'a> {
@@ -282,6 +286,54 @@ struct SupportBounds {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+struct RaySupportInterval {
+    start_t: f32,
+    end_t: f32,
+    starts_inside: bool,
+    conservative: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RaySupportProbe {
+    Unavailable,
+    Rejected,
+    Interval(RaySupportInterval),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CpuChildSpan {
+    start: usize,
+    len: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CpuAccelerationNode<T> {
+    bounds: Option<SupportBounds>,
+    child_span: Option<CpuChildSpan>,
+    leaf: Option<T>,
+    leaf_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CpuAccelerationTree<T> {
+    root: usize,
+    nodes: Vec<CpuAccelerationNode<T>>,
+    children: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CpuPointTraversal {
+    node_index: usize,
+    lower_bound: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CpuRayTraversal {
+    node_index: usize,
+    start_t: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct SupportSummaryParts {
     support_class: SupportClass,
     semantics: DistanceSemantics,
@@ -289,6 +341,192 @@ struct SupportSummaryParts {
     opaque_boundary: bool,
     can_coarse_support_prune: bool,
     bounds: SupportBounds,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ShapeUnionAccelerationCandidate {
+    pub index: usize,
+    pub bounds: Option<([f32; 3], [f32; 3])>,
+}
+
+impl<T> CpuAccelerationTree<T> {
+    fn node(&self, index: usize) -> Option<&CpuAccelerationNode<T>> {
+        self.nodes.get(index)
+    }
+
+    fn children_of(&self, index: usize) -> &[usize] {
+        let Some(node) = self.node(index) else {
+            return &[];
+        };
+        let Some(span) = node.child_span else {
+            return &[];
+        };
+        &self.children[span.start..span.start + span.len]
+    }
+
+    fn leaf_count(&self, index: usize) -> u32 {
+        self.node(index).map(|node| node.leaf_count).unwrap_or(0)
+    }
+}
+
+fn build_cpu_acceleration_tree_from_forest<T>(
+    forest: &AccelerationForest,
+    parse_leaf: impl Fn(&AccelerationLeafPayload) -> Option<T>,
+) -> Option<CpuAccelerationTree<T>>
+where
+    T: Clone,
+{
+    let root_id = forest.root_nodes().first()?;
+    let node_lookup = forest
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node))
+        .collect::<HashMap<_, _>>();
+    let mut built = HashMap::<SmolStr, (usize, u32)>::new();
+    let mut nodes = Vec::new();
+    let mut children = Vec::new();
+    let root = build_cpu_acceleration_subtree_from_forest(
+        root_id,
+        &node_lookup,
+        &parse_leaf,
+        &mut built,
+        &mut nodes,
+        &mut children,
+    )?
+    .0;
+    Some(CpuAccelerationTree {
+        root,
+        nodes,
+        children,
+    })
+}
+
+fn build_cpu_acceleration_subtree_from_forest<T>(
+    id: &SmolStr,
+    node_lookup: &HashMap<SmolStr, &crate::acceleration::AccelerationNode>,
+    parse_leaf: &impl Fn(&AccelerationLeafPayload) -> Option<T>,
+    built: &mut HashMap<SmolStr, (usize, u32)>,
+    nodes: &mut Vec<CpuAccelerationNode<T>>,
+    children: &mut Vec<usize>,
+) -> Option<(usize, u32)>
+where
+    T: Clone,
+{
+    if let Some(existing) = built.get(id).copied() {
+        return Some(existing);
+    }
+    let source = node_lookup.get(id)?;
+    let mut built_children = Vec::new();
+    let mut leaf_count = 0u32;
+    for child_id in &source.child_ids {
+        let (child_index, child_leaf_count) = build_cpu_acceleration_subtree_from_forest(
+            child_id,
+            node_lookup,
+            parse_leaf,
+            built,
+            nodes,
+            children,
+        )?;
+        built_children.push(child_index);
+        leaf_count += child_leaf_count;
+    }
+    let leaf = source.leaf_payload.as_ref().and_then(parse_leaf);
+    if leaf.is_some() {
+        leaf_count = leaf_count.max(1);
+    }
+    let child_span = if built_children.is_empty() {
+        None
+    } else {
+        let start = children.len();
+        children.extend(built_children);
+        Some(CpuChildSpan {
+            start,
+            len: source.child_ids.len(),
+        })
+    };
+    let index = nodes.len();
+    nodes.push(CpuAccelerationNode {
+        bounds: forest_support_bounds(source),
+        child_span,
+        leaf,
+        leaf_count,
+    });
+    built.insert(id.clone(), (index, leaf_count));
+    Some((index, leaf_count))
+}
+
+fn forest_support_bounds(node: &crate::acceleration::AccelerationNode) -> Option<SupportBounds> {
+    node.bounds.iter().find_map(|bound| {
+        if !matches!(bound.kind, BoundDescriptorKind::AxisAlignedBounds) {
+            return None;
+        }
+        parse_support_bounds_summary(&bound.summary)
+    })
+}
+
+fn parse_support_bounds_summary(summary: &str) -> Option<SupportBounds> {
+    let (min, max) = summary.split_once("|max=")?;
+    let min = min.strip_prefix("min=")?;
+    Some(SupportBounds {
+        min: parse_summary_vec3(min)?,
+        max: parse_summary_vec3(max)?,
+    })
+}
+
+fn parse_summary_vec3(summary: &str) -> Option<[f32; 3]> {
+    let parts = summary
+        .split(',')
+        .map(|part| part.trim().parse::<f32>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    let [x, y, z] = parts.try_into().ok()?;
+    Some([x, y, z])
+}
+
+fn pop_best_point_traversal(stack: &mut Vec<CpuPointTraversal>) -> Option<CpuPointTraversal> {
+    let best_index = stack
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| {
+            left.lower_bound
+                .partial_cmp(&right.lower_bound)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(index, _)| index)?;
+    Some(stack.swap_remove(best_index))
+}
+
+fn push_ordered_point_traversals(
+    stack: &mut Vec<CpuPointTraversal>,
+    mut items: Vec<CpuPointTraversal>,
+) {
+    items.sort_by(|left, right| {
+        left.lower_bound
+            .partial_cmp(&right.lower_bound)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    stack.extend(items.into_iter().rev());
+}
+
+fn pop_best_ray_traversal(stack: &mut Vec<CpuRayTraversal>) -> Option<CpuRayTraversal> {
+    let best_index = stack
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| {
+            left.start_t
+                .partial_cmp(&right.start_t)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(index, _)| index)?;
+    Some(stack.swap_remove(best_index))
+}
+
+fn push_ordered_ray_traversals(stack: &mut Vec<CpuRayTraversal>, mut items: Vec<CpuRayTraversal>) {
+    items.sort_by(|left, right| {
+        left.start_t
+            .partial_cmp(&right.start_t)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    stack.extend(items.into_iter().rev());
 }
 
 #[derive(Debug, Clone)]
@@ -371,6 +609,8 @@ impl<'a> DirectQueryOps<'a> {
             ctx,
             snapshot: snapshot.cloned(),
             observability,
+            world_acceleration_cache: Rc::new(RefCell::new(HashMap::new())),
+            shape_union_cache: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -495,6 +735,14 @@ impl<'a> DirectQueryOps<'a> {
 
     pub(crate) fn note_acceleration_node_visit(&self) {
         self.update_observability(|observability| observability.acceleration_node_visits += 1);
+    }
+
+    pub(crate) fn note_shape_leaf_visit(&self) {
+        self.update_observability(|observability| observability.shape_leaf_visits += 1);
+    }
+
+    pub(crate) fn note_acceleration_pruned_node(&self) {
+        self.update_observability(|observability| observability.acceleration_pruned_nodes += 1);
     }
 
     pub(crate) fn note_union_cluster_visit(&self) {
@@ -1296,6 +1544,12 @@ impl<'a> DirectQueryOps<'a> {
                 .ok_or_else(|| QueryExecError::MissingShape {
                     name: shape.clone(),
                 })?;
+        if let ShapeNode::Union { items } = &scene.root
+            && let Some(tree) = self.shape_root_union_tree(shape)?
+        {
+            self.note_union_cluster_visit();
+            return self.eval_shape_union_tree(items, &tree, point);
+        }
         self.eval_shape_node(&scene.root, point)
     }
 
@@ -1746,7 +2000,10 @@ impl<'a> DirectQueryOps<'a> {
         self.note_cache_brick_hit();
         match node {
             ShapeNode::Use { target } => self.eval_shape_distance(target, point),
-            ShapeNode::Leaf(leaf) => self.eval_field_distance(&leaf.field, point),
+            ShapeNode::Leaf(leaf) => {
+                self.note_shape_leaf_visit();
+                self.eval_field_distance(&leaf.field, point)
+            }
             ShapeNode::Union { items } => {
                 self.note_union_cluster_visit();
                 let mut current = 1_000_000.0f32;
@@ -1783,6 +2040,66 @@ impl<'a> DirectQueryOps<'a> {
         }
     }
 
+    fn eval_shape_union_tree(
+        &self,
+        items: &[ShapeNode],
+        tree: &CpuAccelerationTree<usize>,
+        point: [f32; 3],
+    ) -> Result<f32, QueryExecError> {
+        let mut best = f32::INFINITY;
+        let mut stack = vec![CpuPointTraversal {
+            node_index: tree.root,
+            lower_bound: f32::NEG_INFINITY,
+        }];
+
+        while let Some(current) = pop_best_point_traversal(&mut stack) {
+            self.note_acceleration_node_visit();
+            if current.lower_bound > best {
+                self.note_acceleration_pruned_node();
+                self.note_support_pruned_candidates(tree.leaf_count(current.node_index));
+                continue;
+            }
+            let Some(node) = tree.node(current.node_index) else {
+                continue;
+            };
+            if let Some(child_index) = node.leaf {
+                let distance = self.eval_shape_node(&items[child_index], point)?;
+                if distance < best {
+                    best = distance;
+                }
+                continue;
+            }
+
+            let mut pending = Vec::new();
+            for child_index in tree.children_of(current.node_index) {
+                let Some(child) = tree.node(*child_index) else {
+                    continue;
+                };
+                let lower_bound = child
+                    .bounds
+                    .map(|bounds| support_box_lower_bound(bounds.min, bounds.max, point))
+                    .transpose()?
+                    .unwrap_or(f32::NEG_INFINITY);
+                if lower_bound > best {
+                    self.note_acceleration_pruned_node();
+                    self.note_support_pruned_candidates(child.leaf_count);
+                    continue;
+                }
+                pending.push(CpuPointTraversal {
+                    node_index: *child_index,
+                    lower_bound,
+                });
+            }
+            push_ordered_point_traversals(&mut stack, pending);
+        }
+
+        if best.is_finite() {
+            Ok(best)
+        } else {
+            Ok(1_000_000.0)
+        }
+    }
+
     pub(crate) fn eval_wrapped_point(
         &self,
         kind: TransformKind,
@@ -1807,6 +2124,34 @@ impl<'a> DirectQueryOps<'a> {
             TransformKind::Displace => runtime_binary_value(config, point_value, wr_displace)?,
         };
         expect_vec3(Some(&value), "wrapped point")
+    }
+
+    fn eval_wrapped_vector(
+        &self,
+        kind: TransformKind,
+        param: &SceneValueExpr,
+        vector: [f32; 3],
+    ) -> Result<[f32; 3], QueryExecError> {
+        let config = self.eval_scene_value_expr(param, &HashMap::new())?;
+        let vector_value = KernelValue::Vec3(vector);
+        let value = match kind {
+            TransformKind::Translate => return Ok(vector),
+            TransformKind::Rotate => runtime_binary_value(config, vector_value, wr_rotate)?,
+            TransformKind::UniformScale => {
+                runtime_binary_value(config, vector_value, wr_uniform_scale)?
+            }
+            TransformKind::AffineTransform
+            | TransformKind::Warp
+            | TransformKind::Bend
+            | TransformKind::Twist
+            | TransformKind::Taper
+            | TransformKind::Displace => {
+                return Err(QueryExecError::Unsupported {
+                    message: format!("ray support vector wrapper is unavailable for {kind:?}"),
+                });
+            }
+        };
+        expect_vec3(Some(&value), "wrapped vector")
     }
 
     pub(crate) fn eval_repeat_point(
@@ -2101,14 +2446,17 @@ impl<'a> DirectQueryOps<'a> {
                 let scene = self.shape_scene(target)?;
                 self.eval_shape_winner_node(target, &scene.root, scene.provenance.as_ref(), point)
             }
-            ShapeNode::Leaf(leaf) => Ok(ShapeWinner {
-                distance: self.eval_field_distance(&leaf.field, point)?,
-                feature_id: leaf.feature_id,
-                leaf: Some(ShapeLeafRef {
-                    scene: scene_name.clone(),
-                    leaf: leaf.id,
-                }),
-            }),
+            ShapeNode::Leaf(leaf) => {
+                self.note_shape_leaf_visit();
+                Ok(ShapeWinner {
+                    distance: self.eval_field_distance(&leaf.field, point)?,
+                    feature_id: leaf.feature_id,
+                    leaf: Some(ShapeLeafRef {
+                        scene: scene_name.clone(),
+                        leaf: leaf.id,
+                    }),
+                })
+            }
             ShapeNode::Union { items } => {
                 let merge_policy = match provenance {
                     Some(ShapeProvenanceExpr::Union { provenance, .. }) => *provenance,
@@ -2417,7 +2765,7 @@ impl<'a> DirectQueryOps<'a> {
         }
     }
 
-    pub(crate) fn trace_shape(
+    fn trace_shape_impl(
         &self,
         shape: &SmolStr,
         origin: [f32; 3],
@@ -2427,10 +2775,33 @@ impl<'a> DirectQueryOps<'a> {
         hit_epsilon: f32,
         max_steps: i32,
     ) -> Result<KernelValue, QueryExecError> {
+        self.trace_shape_from(
+            shape,
+            origin,
+            direction,
+            0.0,
+            max_distance,
+            min_step,
+            hit_epsilon,
+            max_steps,
+        )
+    }
+
+    fn trace_shape_from(
+        &self,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        start_travel: f32,
+        max_distance: f32,
+        min_step: f32,
+        hit_epsilon: f32,
+        max_steps: i32,
+    ) -> Result<KernelValue, QueryExecError> {
         if !self.ctx.shape_names.contains(shape) {
             return Ok(default_hit(origin));
         }
-        let mut travel = 0.0f32;
+        let mut travel = start_travel.max(0.0);
         let mut steps = 0i32;
         while steps < max_steps && travel <= max_distance {
             self.note_trace_step();
@@ -2461,6 +2832,7 @@ impl<'a> DirectQueryOps<'a> {
         shape: &SmolStr,
         origin: [f32; 3],
         direction: [f32; 3],
+        start_travel: f32,
         max_distance: f32,
         min_step: f32,
         hit_epsilon: f32,
@@ -2498,10 +2870,11 @@ impl<'a> DirectQueryOps<'a> {
         if runtime_plan.method_enabled(RaySolverMethod::LipschitzSafeStepping) {
             self.note_solver_lipschitz_step();
         }
-        self.trace_shape(
+        self.trace_shape_from(
             shape,
             origin,
             direction,
+            start_travel,
             max_distance,
             min_step,
             hit_epsilon,
@@ -3110,7 +3483,19 @@ impl<'a> DirectQueryOps<'a> {
                 self.note_ray_support_entry_jump();
                 self.transform_support_bounds(kind, param, bounds)
             }
-            SupportNodeKindSummary::Repeat(_) => Ok(None),
+            SupportNodeKindSummary::Repeat(kind) => {
+                let Some(child) = record.children.first().copied() else {
+                    return Ok(None);
+                };
+                let Some(bounds) = self.field_support_bounds(scene, child)? else {
+                    return Ok(None);
+                };
+                let param = match record.payload.as_ref() {
+                    Some(SupportPayload::Repeat { param }) => param.as_ref(),
+                    _ => None,
+                };
+                self.repeat_support_bounds(kind, param, bounds)
+            }
         }
     }
 
@@ -3172,7 +3557,19 @@ impl<'a> DirectQueryOps<'a> {
                 };
                 self.transform_support_bounds(kind, param, bounds)
             }
-            SupportNodeKindSummary::Repeat(_) => Ok(None),
+            SupportNodeKindSummary::Repeat(kind) => {
+                let Some(child) = record.children.first().copied() else {
+                    return Ok(None);
+                };
+                let Some(bounds) = self.shape_support_bounds(scene, child)? else {
+                    return Ok(None);
+                };
+                let param = match record.payload.as_ref() {
+                    Some(SupportPayload::Repeat { param }) => param.as_ref(),
+                    _ => None,
+                };
+                self.repeat_support_bounds(kind, param, bounds)
+            }
         }
     }
 
@@ -3221,6 +3618,563 @@ impl<'a> DirectQueryOps<'a> {
         Ok(self
             .shape_support_bounds(scene, scene.root_support_id)?
             .map(|bounds| (bounds.min, bounds.max)))
+    }
+
+    fn shape_node_support_bounds(
+        &self,
+        node: &ShapeNode,
+    ) -> Result<Option<SupportBounds>, QueryExecError> {
+        match node {
+            ShapeNode::Use { target } => {
+                let scene = self.shape_scene(target)?;
+                self.shape_support_bounds(scene, scene.root_support_id)
+            }
+            ShapeNode::Leaf(leaf) => {
+                let field = self.field_scene(&leaf.field)?;
+                self.field_support_bounds(field, field.root_support_id)
+            }
+            ShapeNode::Union { items } => {
+                let mut result = None;
+                for item in items {
+                    let Some(bounds) = self.shape_node_support_bounds(item)? else {
+                        return Ok(None);
+                    };
+                    result = Some(match result {
+                        Some(current) => merge_union_support_bounds(current, bounds),
+                        None => bounds,
+                    });
+                }
+                Ok(result)
+            }
+            ShapeNode::Intersection { items } => {
+                let mut result = None;
+                for item in items {
+                    let Some(bounds) = self.shape_node_support_bounds(item)? else {
+                        return Ok(None);
+                    };
+                    result = Some(match result {
+                        Some(current) => merge_intersection_support_bounds(current, bounds),
+                        None => bounds,
+                    });
+                }
+                Ok(result)
+            }
+            ShapeNode::Subtract { left, .. } => self.shape_node_support_bounds(left),
+        }
+    }
+
+    fn world_acceleration_tree(
+        &self,
+        capture: &SmolStr,
+        detail: i32,
+    ) -> Result<Option<CpuAccelerationTree<SmolStr>>, QueryExecError> {
+        if let Some(cached) = self
+            .world_acceleration_cache
+            .borrow()
+            .get(&(capture.clone(), detail))
+            .cloned()
+        {
+            return Ok(cached);
+        }
+        let tree = self
+            .ctx
+            .world_acceleration_forest(capture, detail)
+            .and_then(|forest| {
+                build_cpu_acceleration_tree_from_forest(forest, |payload| {
+                    Some(payload.semantic_id.clone())
+                })
+            });
+        self.world_acceleration_cache
+            .borrow_mut()
+            .insert((capture.clone(), detail), tree.clone());
+        Ok(tree)
+    }
+
+    pub(crate) fn shape_root_union_candidate_bounds(
+        &self,
+        shape: &SmolStr,
+    ) -> Result<Option<Vec<ShapeUnionAccelerationCandidate>>, QueryExecError> {
+        const LARGE_UNION_THRESHOLD: usize = 4;
+        let scene = self.shape_scene(shape)?;
+        let ShapeNode::Union { items } = &scene.root else {
+            return Ok(None);
+        };
+        if items.len() < LARGE_UNION_THRESHOLD {
+            return Ok(None);
+        }
+        Ok(Some(
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    Ok(ShapeUnionAccelerationCandidate {
+                        index,
+                        bounds: self
+                            .shape_node_support_bounds(item)?
+                            .map(|bounds| (bounds.min, bounds.max)),
+                    })
+                })
+                .collect::<Result<Vec<_>, QueryExecError>>()?,
+        ))
+    }
+
+    fn shape_root_union_tree(
+        &self,
+        shape: &SmolStr,
+    ) -> Result<Option<CpuAccelerationTree<usize>>, QueryExecError> {
+        if let Some(cached) = self.shape_union_cache.borrow().get(shape).cloned() {
+            return Ok(cached);
+        }
+        let tree = self
+            .ctx
+            .union_acceleration_forest(shape)
+            .and_then(|forest| {
+                build_cpu_acceleration_tree_from_forest(forest, |payload| {
+                    payload
+                        .feature_id
+                        .as_ref()
+                        .and_then(|index| index.parse::<usize>().ok())
+                })
+            });
+        self.shape_union_cache
+            .borrow_mut()
+            .insert(shape.clone(), tree.clone());
+        Ok(tree)
+    }
+
+    fn shape_ray_support_probe_world(
+        &self,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+    ) -> Result<RaySupportProbe, QueryExecError> {
+        let direct = self.shape_ray_support_probe(shape, origin, direction)?;
+        if !matches!(direct, RaySupportProbe::Unavailable) {
+            return Ok(direct);
+        }
+        let Some((min, max)) = self.shape_support_bounds_world(shape)? else {
+            return Ok(RaySupportProbe::Unavailable);
+        };
+        Ok(ray_support_interval_for_bounds(
+            SupportBounds { min, max },
+            origin,
+            direction,
+        ))
+    }
+
+    fn field_ray_support_probe(
+        &self,
+        field: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+    ) -> Result<RaySupportProbe, QueryExecError> {
+        let scene = self.field_scene(field)?;
+        self.field_ray_support_probe_record(scene, scene.root_support_id, origin, direction)
+    }
+
+    fn field_ray_support_probe_record(
+        &self,
+        scene: &crate::scene_ir::FieldScene,
+        id: SupportNodeId,
+        origin: [f32; 3],
+        direction: [f32; 3],
+    ) -> Result<RaySupportProbe, QueryExecError> {
+        let Some(record) = scene.support_node_record(id) else {
+            return Ok(RaySupportProbe::Unavailable);
+        };
+        match record.kind {
+            SupportNodeKindSummary::Unknown | SupportNodeKindSummary::Unbounded => {
+                Ok(RaySupportProbe::Unavailable)
+            }
+            SupportNodeKindSummary::Use => {
+                let Some(target) = record.target.as_ref() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                self.field_ray_support_probe(target, origin, direction)
+            }
+            SupportNodeKindSummary::Aabb
+            | SupportNodeKindSummary::Sphere
+            | SupportNodeKindSummary::OpaqueBoundary => {
+                self.support_leaf_ray_support_probe(record, origin, direction)
+            }
+            SupportNodeKindSummary::Union => {
+                let mut result = RaySupportProbe::Rejected;
+                for child in &record.children {
+                    result = merge_union_support_probe(
+                        result,
+                        self.field_ray_support_probe_record(scene, *child, origin, direction)?,
+                    );
+                    if matches!(result, RaySupportProbe::Unavailable) {
+                        break;
+                    }
+                }
+                Ok(result)
+            }
+            SupportNodeKindSummary::Intersection => {
+                let mut result = None;
+                for child in &record.children {
+                    let child_probe =
+                        self.field_ray_support_probe_record(scene, *child, origin, direction)?;
+                    if matches!(child_probe, RaySupportProbe::Rejected) {
+                        return Ok(RaySupportProbe::Rejected);
+                    }
+                    result = Some(match result {
+                        Some(current) => merge_intersection_support_probe(current, child_probe),
+                        None => child_probe,
+                    });
+                    if matches!(
+                        result,
+                        Some(RaySupportProbe::Rejected | RaySupportProbe::Unavailable)
+                    ) {
+                        break;
+                    }
+                }
+                Ok(result.unwrap_or(RaySupportProbe::Unavailable))
+            }
+            SupportNodeKindSummary::Difference => {
+                let Some(left) = record.children.first() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                self.field_ray_support_probe_record(scene, *left, origin, direction)
+            }
+            SupportNodeKindSummary::Transform(kind) => {
+                let Some(SupportPayload::Transform { param }) = record.payload.as_ref() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let Some(param) = param.as_ref() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let Some(child) = record.children.first() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let (origin, direction) = match kind {
+                    TransformKind::Translate
+                    | TransformKind::Rotate
+                    | TransformKind::UniformScale => (
+                        self.eval_wrapped_point(kind, param, origin)?,
+                        self.eval_wrapped_vector(kind, param, direction)?,
+                    ),
+                    TransformKind::AffineTransform
+                    | TransformKind::Warp
+                    | TransformKind::Bend
+                    | TransformKind::Twist
+                    | TransformKind::Taper
+                    | TransformKind::Displace => return Ok(RaySupportProbe::Unavailable),
+                };
+                self.field_ray_support_probe_record(scene, *child, origin, direction)
+            }
+            SupportNodeKindSummary::Periodic(kind) => {
+                let Some(SupportPayload::Periodic { period }) = record.payload.as_ref() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let Some(period) = period.as_ref() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let Some(child) = record.children.first().copied() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let Some(bounds) = self.field_support_bounds(scene, child)? else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let period = self.eval_scene_constant(period)?;
+                match kind {
+                    RepeatKind::RepeatLinear | RepeatKind::RepeatGrid => {
+                        Ok(ray_support_interval_for_periodic_bounds(
+                            bounds,
+                            expect_vec3(Some(&period), "periodic support period")?,
+                            origin,
+                            direction,
+                        ))
+                    }
+                    RepeatKind::RadialRepeat => Ok(ray_support_interval_for_radial_repeat_bounds(
+                        bounds,
+                        match &period {
+                            KernelValue::Vec3(value) => value[0].abs(),
+                            _ => expect_f32(Some(&period), "radial repeat period")?.abs(),
+                        },
+                        origin,
+                        direction,
+                    )),
+                    RepeatKind::MirrorArray | RepeatKind::InstanceArray => {
+                        Ok(RaySupportProbe::Unavailable)
+                    }
+                }
+            }
+            SupportNodeKindSummary::Repeat(kind) => {
+                let Some(SupportPayload::Repeat { param }) = record.payload.as_ref() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let Some(param) = param.as_ref() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let Some(child) = record.children.first() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                match kind {
+                    RepeatKind::MirrorArray => {
+                        let config = self.eval_scene_constant(param)?;
+                        let normal = expect_vec3(Some(&config), "mirror array support normal")?;
+                        let direct =
+                            self.field_ray_support_probe_record(scene, *child, origin, direction)?;
+                        let (mirrored_origin, mirrored_direction) =
+                            reflect_ray_across_plane(normal, origin, direction);
+                        let mirrored = self.field_ray_support_probe_record(
+                            scene,
+                            *child,
+                            mirrored_origin,
+                            mirrored_direction,
+                        )?;
+                        Ok(merge_union_support_probe(direct, mirrored))
+                    }
+                    RepeatKind::InstanceArray => {
+                        let config = self.eval_scene_constant(param)?;
+                        let Some((origin, direction)) =
+                            instance_array_local_ray(&config, origin, direction)?
+                        else {
+                            return Ok(RaySupportProbe::Unavailable);
+                        };
+                        self.field_ray_support_probe_record(scene, *child, origin, direction)
+                    }
+                    RepeatKind::RepeatLinear
+                    | RepeatKind::RepeatGrid
+                    | RepeatKind::RadialRepeat => Ok(RaySupportProbe::Unavailable),
+                }
+            }
+        }
+    }
+
+    fn shape_ray_support_probe(
+        &self,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+    ) -> Result<RaySupportProbe, QueryExecError> {
+        let scene = self.shape_scene(shape)?;
+        self.shape_ray_support_probe_record(scene, scene.root_support_id, origin, direction)
+    }
+
+    fn shape_ray_support_probe_record(
+        &self,
+        scene: &crate::scene_ir::ShapeScene,
+        id: SupportNodeId,
+        origin: [f32; 3],
+        direction: [f32; 3],
+    ) -> Result<RaySupportProbe, QueryExecError> {
+        let Some(record) = scene.support_node_record(id) else {
+            return Ok(RaySupportProbe::Unavailable);
+        };
+        match record.kind {
+            SupportNodeKindSummary::Unknown | SupportNodeKindSummary::Unbounded => {
+                Ok(RaySupportProbe::Unavailable)
+            }
+            SupportNodeKindSummary::Use => {
+                let Some(target) = record.target.as_ref() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                if self.ctx.shape_names.contains(target) {
+                    self.shape_ray_support_probe(target, origin, direction)
+                } else if self.ctx.field_names.contains(target) {
+                    self.field_ray_support_probe(target, origin, direction)
+                } else {
+                    Ok(RaySupportProbe::Unavailable)
+                }
+            }
+            SupportNodeKindSummary::Aabb
+            | SupportNodeKindSummary::Sphere
+            | SupportNodeKindSummary::OpaqueBoundary => {
+                self.support_leaf_ray_support_probe(record, origin, direction)
+            }
+            SupportNodeKindSummary::Union => {
+                let mut result = RaySupportProbe::Rejected;
+                for child in &record.children {
+                    result = merge_union_support_probe(
+                        result,
+                        self.shape_ray_support_probe_record(scene, *child, origin, direction)?,
+                    );
+                    if matches!(result, RaySupportProbe::Unavailable) {
+                        break;
+                    }
+                }
+                Ok(result)
+            }
+            SupportNodeKindSummary::Intersection => {
+                let mut result = None;
+                for child in &record.children {
+                    let child_probe =
+                        self.shape_ray_support_probe_record(scene, *child, origin, direction)?;
+                    if matches!(child_probe, RaySupportProbe::Rejected) {
+                        return Ok(RaySupportProbe::Rejected);
+                    }
+                    result = Some(match result {
+                        Some(current) => merge_intersection_support_probe(current, child_probe),
+                        None => child_probe,
+                    });
+                    if matches!(
+                        result,
+                        Some(RaySupportProbe::Rejected | RaySupportProbe::Unavailable)
+                    ) {
+                        break;
+                    }
+                }
+                Ok(result.unwrap_or(RaySupportProbe::Unavailable))
+            }
+            SupportNodeKindSummary::Difference => {
+                let Some(left) = record.children.first() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                self.shape_ray_support_probe_record(scene, *left, origin, direction)
+            }
+            SupportNodeKindSummary::Transform(kind) => {
+                let Some(SupportPayload::Transform { param }) = record.payload.as_ref() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let Some(param) = param.as_ref() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let Some(child) = record.children.first() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let (origin, direction) = match kind {
+                    TransformKind::Translate
+                    | TransformKind::Rotate
+                    | TransformKind::UniformScale => (
+                        self.eval_wrapped_point(kind, param, origin)?,
+                        self.eval_wrapped_vector(kind, param, direction)?,
+                    ),
+                    TransformKind::AffineTransform
+                    | TransformKind::Warp
+                    | TransformKind::Bend
+                    | TransformKind::Twist
+                    | TransformKind::Taper
+                    | TransformKind::Displace => return Ok(RaySupportProbe::Unavailable),
+                };
+                self.shape_ray_support_probe_record(scene, *child, origin, direction)
+            }
+            SupportNodeKindSummary::Periodic(kind) => {
+                let Some(SupportPayload::Periodic { period }) = record.payload.as_ref() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let Some(period) = period.as_ref() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let Some(child) = record.children.first().copied() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let Some(bounds) = self.shape_support_bounds(scene, child)? else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let period = self.eval_scene_constant(period)?;
+                match kind {
+                    RepeatKind::RepeatLinear | RepeatKind::RepeatGrid => {
+                        Ok(ray_support_interval_for_periodic_bounds(
+                            bounds,
+                            expect_vec3(Some(&period), "periodic support period")?,
+                            origin,
+                            direction,
+                        ))
+                    }
+                    RepeatKind::RadialRepeat => Ok(ray_support_interval_for_radial_repeat_bounds(
+                        bounds,
+                        match &period {
+                            KernelValue::Vec3(value) => value[0].abs(),
+                            _ => expect_f32(Some(&period), "radial repeat period")?.abs(),
+                        },
+                        origin,
+                        direction,
+                    )),
+                    RepeatKind::MirrorArray | RepeatKind::InstanceArray => {
+                        Ok(RaySupportProbe::Unavailable)
+                    }
+                }
+            }
+            SupportNodeKindSummary::Repeat(kind) => {
+                let Some(SupportPayload::Repeat { param }) = record.payload.as_ref() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let Some(param) = param.as_ref() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                let Some(child) = record.children.first() else {
+                    return Ok(RaySupportProbe::Unavailable);
+                };
+                match kind {
+                    RepeatKind::MirrorArray => {
+                        let config = self.eval_scene_constant(param)?;
+                        let normal = expect_vec3(Some(&config), "mirror array support normal")?;
+                        let direct =
+                            self.shape_ray_support_probe_record(scene, *child, origin, direction)?;
+                        let (mirrored_origin, mirrored_direction) =
+                            reflect_ray_across_plane(normal, origin, direction);
+                        let mirrored = self.shape_ray_support_probe_record(
+                            scene,
+                            *child,
+                            mirrored_origin,
+                            mirrored_direction,
+                        )?;
+                        Ok(merge_union_support_probe(direct, mirrored))
+                    }
+                    RepeatKind::InstanceArray => {
+                        let config = self.eval_scene_constant(param)?;
+                        let Some((origin, direction)) =
+                            instance_array_local_ray(&config, origin, direction)?
+                        else {
+                            return Ok(RaySupportProbe::Unavailable);
+                        };
+                        self.shape_ray_support_probe_record(scene, *child, origin, direction)
+                    }
+                    RepeatKind::RepeatLinear
+                    | RepeatKind::RepeatGrid
+                    | RepeatKind::RadialRepeat => Ok(RaySupportProbe::Unavailable),
+                }
+            }
+        }
+    }
+
+    fn support_leaf_ray_support_probe(
+        &self,
+        record: &crate::scene_ir::SupportNodeRecord,
+        origin: [f32; 3],
+        direction: [f32; 3],
+    ) -> Result<RaySupportProbe, QueryExecError> {
+        match record.payload.as_ref() {
+            Some(SupportPayload::Aabb { min, max }) => {
+                let min = self.eval_scene_constant(min)?;
+                let max = self.eval_scene_constant(max)?;
+                Ok(ray_support_interval_for_bounds(
+                    SupportBounds {
+                        min: expect_vec3(Some(&min), "support min")?,
+                        max: expect_vec3(Some(&max), "support max")?,
+                    },
+                    origin,
+                    direction,
+                ))
+            }
+            Some(SupportPayload::Sphere { center, radius }) => {
+                let center = self.eval_scene_constant(center)?;
+                let radius = self.eval_scene_constant(radius)?;
+                Ok(ray_support_interval_for_sphere(
+                    expect_vec3(Some(&center), "support center")?,
+                    expect_f32(Some(&radius), "support radius")?.abs(),
+                    origin,
+                    direction,
+                ))
+            }
+            Some(SupportPayload::OpaqueBoundary {
+                bounds: Some(bounds),
+            }) => {
+                let bounds = self.eval_scene_constant(bounds)?;
+                let bounds = expect_struct_ref(&bounds, "Bounds3")?;
+                Ok(ray_support_interval_for_bounds(
+                    SupportBounds {
+                        min: expect_struct_vec3(bounds, "min")?,
+                        max: expect_struct_vec3(bounds, "max")?,
+                    },
+                    origin,
+                    direction,
+                ))
+            }
+            _ => Ok(RaySupportProbe::Unavailable),
+        }
     }
 
     pub(crate) fn region_shape_support_bounds(
@@ -3317,6 +4271,31 @@ impl<'a> DirectQueryOps<'a> {
             | TransformKind::Twist
             | TransformKind::Taper
             | TransformKind::Displace => Ok(None),
+        }
+    }
+
+    fn repeat_support_bounds(
+        &self,
+        kind: RepeatKind,
+        param: Option<&SceneValueExpr>,
+        bounds: SupportBounds,
+    ) -> Result<Option<SupportBounds>, QueryExecError> {
+        let Some(param) = param else {
+            return Ok(Some(bounds));
+        };
+        let value = self.eval_scene_constant(param)?;
+        match kind {
+            RepeatKind::MirrorArray => {
+                let normal = expect_vec3(Some(&value), "mirror array support normal")?;
+                Ok(Some(merge_union_support_bounds(
+                    bounds,
+                    reflect_support_bounds(bounds, normal),
+                )))
+            }
+            RepeatKind::InstanceArray => transform_value_support_bounds(&value, bounds),
+            RepeatKind::RepeatLinear | RepeatKind::RepeatGrid | RepeatKind::RadialRepeat => {
+                Ok(None)
+            }
         }
     }
 
@@ -3981,7 +4960,7 @@ impl CaptureQueryBackend for DirectQueryOps<'_> {
         hit_epsilon: f32,
         max_steps: i32,
     ) -> Result<KernelValue, QueryExecError> {
-        DirectQueryOps::trace_shape(
+        DirectQueryOps::trace_shape_impl(
             self,
             shape,
             origin,
@@ -4160,6 +5139,57 @@ struct CpuWorldDistanceBackend<'a, 'ctx> {
     result: f32,
 }
 
+impl CpuWorldDistanceBackend<'_, '_> {
+    fn traverse_world_hierarchically(
+        &mut self,
+        tree: &CpuAccelerationTree<SmolStr>,
+    ) -> Result<(), QueryExecError> {
+        let mut stack = vec![CpuPointTraversal {
+            node_index: tree.root,
+            lower_bound: f32::NEG_INFINITY,
+        }];
+        while let Some(current) = pop_best_point_traversal(&mut stack) {
+            self.evaluator.note_acceleration_node_visit();
+            if current.lower_bound > self.result {
+                self.evaluator.note_acceleration_pruned_node();
+                self.evaluator
+                    .note_support_pruned_candidates(tree.leaf_count(current.node_index));
+                continue;
+            }
+            let Some(node) = tree.node(current.node_index) else {
+                continue;
+            };
+            if let Some(shape) = node.leaf.as_ref() {
+                self.accumulate_world_distance_shape(shape)?;
+                continue;
+            }
+            let mut pending = Vec::new();
+            for child_index in tree.children_of(current.node_index) {
+                let Some(child) = tree.node(*child_index) else {
+                    continue;
+                };
+                let lower_bound = child
+                    .bounds
+                    .map(|bounds| support_box_lower_bound(bounds.min, bounds.max, self.point))
+                    .transpose()?
+                    .unwrap_or(f32::NEG_INFINITY);
+                if lower_bound > self.result {
+                    self.evaluator.note_acceleration_pruned_node();
+                    self.evaluator
+                        .note_support_pruned_candidates(child.leaf_count);
+                    continue;
+                }
+                pending.push(CpuPointTraversal {
+                    node_index: *child_index,
+                    lower_bound,
+                });
+            }
+            push_ordered_point_traversals(&mut stack, pending);
+        }
+        Ok(())
+    }
+}
+
 impl WorldQueryBackend for CpuWorldDistanceBackend<'_, '_> {
     type Error = QueryExecError;
 
@@ -4172,6 +5202,12 @@ impl WorldQueryBackend for CpuWorldDistanceBackend<'_, '_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
+        if let Some(tree) = self
+            .evaluator
+            .world_acceleration_tree(self.capture, self.detail)?
+        {
+            return self.traverse_world_hierarchically(&tree);
+        }
         cpu_backend_with_world_shapes(
             self.evaluator,
             self.capture,
@@ -4299,6 +5335,166 @@ struct CpuWorldTraceBackend<'a, 'ctx> {
     best_distance: f32,
 }
 
+impl CpuWorldTraceBackend<'_, '_> {
+    fn trace_world_hierarchically(
+        &mut self,
+        tree: &CpuAccelerationTree<SmolStr>,
+    ) -> Result<(), QueryExecError> {
+        let root_start_t = match tree.node(tree.root).and_then(|node| node.bounds) {
+            Some(bounds) => {
+                match ray_support_interval_for_bounds(bounds, self.origin, self.direction) {
+                    RaySupportProbe::Rejected => {
+                        self.evaluator.note_acceleration_pruned_node();
+                        self.evaluator
+                            .note_support_pruned_candidates(tree.leaf_count(tree.root));
+                        self.evaluator.note_ray_support_interval_rejection();
+                        return Ok(());
+                    }
+                    RaySupportProbe::Interval(interval) => {
+                        if interval.end_t < 0.0 {
+                            self.evaluator.note_acceleration_pruned_node();
+                            self.evaluator
+                                .note_support_pruned_candidates(tree.leaf_count(tree.root));
+                            self.evaluator.note_ray_support_interval_rejection();
+                            return Ok(());
+                        }
+                        if interval.start_t > 0.0 {
+                            self.evaluator.note_ray_support_entry_jump();
+                        }
+                        interval.start_t.max(0.0)
+                    }
+                    RaySupportProbe::Unavailable => 0.0,
+                }
+            }
+            None => 0.0,
+        };
+        let mut stack = vec![CpuRayTraversal {
+            node_index: tree.root,
+            start_t: root_start_t,
+        }];
+        while let Some(current) = pop_best_ray_traversal(&mut stack) {
+            self.evaluator.note_acceleration_node_visit();
+            if current.start_t > self.best_distance.min(self.max_distance) {
+                self.evaluator.note_acceleration_pruned_node();
+                self.evaluator
+                    .note_support_pruned_candidates(tree.leaf_count(current.node_index));
+                continue;
+            }
+            let Some(node) = tree.node(current.node_index) else {
+                continue;
+            };
+            if let Some(shape) = node.leaf.as_ref() {
+                let prune_distance = self.best_distance.min(self.max_distance);
+                let mut start_travel = current.start_t;
+                if node.bounds.is_none() {
+                    match self.evaluator.shape_ray_support_probe_world(
+                        shape,
+                        self.origin,
+                        self.direction,
+                    )? {
+                        RaySupportProbe::Unavailable => {}
+                        RaySupportProbe::Rejected => {
+                            self.evaluator.note_acceleration_pruned_node();
+                            self.evaluator
+                                .note_support_pruned_candidates(node.leaf_count);
+                            self.evaluator.note_ray_support_interval_rejection();
+                            continue;
+                        }
+                        RaySupportProbe::Interval(interval) => {
+                            if interval.end_t < 0.0 || interval.start_t > prune_distance {
+                                self.evaluator.note_acceleration_pruned_node();
+                                self.evaluator
+                                    .note_support_pruned_candidates(node.leaf_count);
+                                self.evaluator.note_ray_support_interval_rejection();
+                                continue;
+                            }
+                            if interval.start_t > start_travel {
+                                self.evaluator.note_ray_support_entry_jump();
+                            }
+                            start_travel = start_travel.max(interval.start_t.max(0.0));
+                        }
+                    }
+                }
+                if start_travel > prune_distance {
+                    self.evaluator.note_acceleration_pruned_node();
+                    self.evaluator
+                        .note_support_pruned_candidates(node.leaf_count);
+                    continue;
+                }
+                self.evaluator.note_candidate_count(1);
+                let hit = self.evaluator.solve_shape_ray(
+                    self.solver_plan,
+                    self.artifact_contracts,
+                    shape,
+                    self.origin,
+                    self.direction,
+                    start_travel,
+                    self.max_distance,
+                    self.min_step,
+                    self.hit_epsilon,
+                    self.max_steps,
+                )?;
+                let hit_ref = expect_struct_ref(&hit, "Hit3")?;
+                if expect_struct_bool(hit_ref, "hit")? {
+                    let distance = expect_struct_f32(hit_ref, "distance")?;
+                    if distance < self.best_distance {
+                        self.best_distance = distance;
+                        self.result = hit;
+                    }
+                }
+                continue;
+            }
+
+            let mut pending = Vec::new();
+            for child_index in tree.children_of(current.node_index) {
+                let Some(child) = tree.node(*child_index) else {
+                    continue;
+                };
+                let start_t = match child.bounds {
+                    Some(bounds) => {
+                        match ray_support_interval_for_bounds(bounds, self.origin, self.direction) {
+                            RaySupportProbe::Rejected => {
+                                self.evaluator.note_acceleration_pruned_node();
+                                self.evaluator
+                                    .note_support_pruned_candidates(child.leaf_count);
+                                self.evaluator.note_ray_support_interval_rejection();
+                                continue;
+                            }
+                            RaySupportProbe::Interval(interval) => {
+                                if interval.end_t < 0.0 {
+                                    self.evaluator.note_acceleration_pruned_node();
+                                    self.evaluator
+                                        .note_support_pruned_candidates(child.leaf_count);
+                                    self.evaluator.note_ray_support_interval_rejection();
+                                    continue;
+                                }
+                                if interval.start_t > 0.0 {
+                                    self.evaluator.note_ray_support_entry_jump();
+                                }
+                                interval.start_t.max(0.0)
+                            }
+                            RaySupportProbe::Unavailable => 0.0,
+                        }
+                    }
+                    None => 0.0,
+                };
+                if start_t > self.best_distance.min(self.max_distance) {
+                    self.evaluator.note_acceleration_pruned_node();
+                    self.evaluator
+                        .note_support_pruned_candidates(child.leaf_count);
+                    continue;
+                }
+                pending.push(CpuRayTraversal {
+                    node_index: *child_index,
+                    start_t,
+                });
+            }
+            push_ordered_ray_traversals(&mut stack, pending);
+        }
+        Ok(())
+    }
+}
+
 impl WorldQueryBackend for CpuWorldTraceBackend<'_, '_> {
     type Error = QueryExecError;
 
@@ -4311,6 +5507,12 @@ impl WorldQueryBackend for CpuWorldTraceBackend<'_, '_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
+        if let Some(tree) = self
+            .evaluator
+            .world_acceleration_tree(self.capture, self.detail)?
+        {
+            return self.trace_world_hierarchically(&tree);
+        }
         cpu_backend_with_world_shapes(
             self.evaluator,
             self.capture,
@@ -4340,15 +5542,41 @@ impl WorldTraceBackend for CpuWorldTraceBackend<'_, '_> {
 
     fn consider_world_trace_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
         let prune_distance = self.best_distance.min(self.max_distance);
-        if let Some(lower_bound) = self
+        let mut start_travel = 0.0f32;
+        match self
             .evaluator
-            .eval_shape_support_lower_bound(shape, self.origin)?
-            && lower_bound > prune_distance
+            .shape_ray_support_probe_world(shape, self.origin, self.direction)?
         {
-            self.evaluator.note_support_pruned_candidates(1);
-            self.evaluator.note_solver_support_rejection();
-            self.evaluator.note_ray_support_interval_rejection();
-            return Ok(());
+            RaySupportProbe::Unavailable => {
+                if let Some(lower_bound) = self
+                    .evaluator
+                    .eval_shape_support_lower_bound(shape, self.origin)?
+                    && lower_bound > prune_distance
+                {
+                    self.evaluator.note_support_pruned_candidates(1);
+                    self.evaluator.note_solver_support_rejection();
+                    self.evaluator.note_ray_support_interval_rejection();
+                    return Ok(());
+                }
+            }
+            RaySupportProbe::Rejected => {
+                self.evaluator.note_support_pruned_candidates(1);
+                self.evaluator.note_solver_support_rejection();
+                self.evaluator.note_ray_support_interval_rejection();
+                return Ok(());
+            }
+            RaySupportProbe::Interval(interval) => {
+                if interval.end_t < 0.0 || interval.start_t > prune_distance {
+                    self.evaluator.note_support_pruned_candidates(1);
+                    self.evaluator.note_solver_support_rejection();
+                    self.evaluator.note_ray_support_interval_rejection();
+                    return Ok(());
+                }
+                if interval.start_t > 0.0 {
+                    self.evaluator.note_ray_support_entry_jump();
+                    start_travel = interval.start_t;
+                }
+            }
         }
         self.evaluator.note_candidate_count(1);
         let hit = self.evaluator.solve_shape_ray(
@@ -4357,6 +5585,7 @@ impl WorldTraceBackend for CpuWorldTraceBackend<'_, '_> {
             shape,
             self.origin,
             self.direction,
+            start_travel,
             self.max_distance,
             self.min_step,
             self.hit_epsilon,
@@ -5648,6 +6877,372 @@ fn merge_intersection_support_bounds(lhs: SupportBounds, rhs: SupportBounds) -> 
             lhs.max[2].min(rhs.max[2]),
         ],
     })
+}
+
+fn ray_support_interval_for_bounds(
+    bounds: SupportBounds,
+    origin: [f32; 3],
+    direction: [f32; 3],
+) -> RaySupportProbe {
+    let mut start_t = f32::NEG_INFINITY;
+    let mut end_t = f32::INFINITY;
+    for axis in 0..3 {
+        let direction_component = direction[axis];
+        if direction_component.abs() <= f32::EPSILON {
+            if origin[axis] < bounds.min[axis] || origin[axis] > bounds.max[axis] {
+                return RaySupportProbe::Rejected;
+            }
+            continue;
+        }
+        let inv_direction = 1.0 / direction_component;
+        let mut entry_t = (bounds.min[axis] - origin[axis]) * inv_direction;
+        let mut exit_t = (bounds.max[axis] - origin[axis]) * inv_direction;
+        if entry_t > exit_t {
+            std::mem::swap(&mut entry_t, &mut exit_t);
+        }
+        start_t = start_t.max(entry_t);
+        end_t = end_t.min(exit_t);
+        if start_t > end_t {
+            return RaySupportProbe::Rejected;
+        }
+    }
+    RaySupportProbe::Interval(RaySupportInterval {
+        start_t,
+        end_t,
+        starts_inside: start_t <= 0.0 && end_t >= 0.0,
+        conservative: true,
+    })
+}
+
+fn ray_support_interval_for_sphere(
+    center: [f32; 3],
+    radius: f32,
+    origin: [f32; 3],
+    direction: [f32; 3],
+) -> RaySupportProbe {
+    let oc = [
+        origin[0] - center[0],
+        origin[1] - center[1],
+        origin[2] - center[2],
+    ];
+    let a = dot3(direction, direction);
+    let c = dot3(oc, oc) - radius * radius;
+    if a <= f32::EPSILON {
+        return if c <= 0.0 {
+            RaySupportProbe::Interval(RaySupportInterval {
+                start_t: f32::NEG_INFINITY,
+                end_t: f32::INFINITY,
+                starts_inside: true,
+                conservative: true,
+            })
+        } else {
+            RaySupportProbe::Rejected
+        };
+    }
+    let b = dot3(oc, direction);
+    let discriminant = b * b - a * c;
+    if discriminant < 0.0 {
+        return RaySupportProbe::Rejected;
+    }
+    let sqrt_discriminant = discriminant.sqrt();
+    let mut start_t = (-b - sqrt_discriminant) / a;
+    let mut end_t = (-b + sqrt_discriminant) / a;
+    if start_t > end_t {
+        std::mem::swap(&mut start_t, &mut end_t);
+    }
+    RaySupportProbe::Interval(RaySupportInterval {
+        start_t,
+        end_t,
+        starts_inside: c <= 0.0,
+        conservative: true,
+    })
+}
+
+fn ray_support_interval_for_periodic_bounds(
+    bounds: SupportBounds,
+    period: [f32; 3],
+    origin: [f32; 3],
+    direction: [f32; 3],
+) -> RaySupportProbe {
+    let bounds = normalize_support_bounds(bounds);
+    let mut start_t = f32::NEG_INFINITY;
+    for axis in 0..3 {
+        let Some(axis_start_t) = periodic_axis_start_t(
+            bounds.min[axis],
+            bounds.max[axis],
+            period[axis].abs(),
+            origin[axis],
+            direction[axis],
+        ) else {
+            return RaySupportProbe::Rejected;
+        };
+        start_t = start_t.max(axis_start_t);
+    }
+    RaySupportProbe::Interval(RaySupportInterval {
+        start_t,
+        end_t: f32::INFINITY,
+        starts_inside: start_t <= 0.0,
+        conservative: true,
+    })
+}
+
+fn periodic_axis_start_t(
+    min: f32,
+    max: f32,
+    period: f32,
+    origin: f32,
+    direction: f32,
+) -> Option<f32> {
+    if period <= f32::EPSILON {
+        return axis_interval_start_t(min, max, origin, direction);
+    }
+    let width = (max - min).abs();
+    if width >= period - f32::EPSILON {
+        return Some(f32::NEG_INFINITY);
+    }
+    let midpoint = (min + max) * 0.5;
+    let local_origin = wrap_periodic_coordinate(origin, period, midpoint);
+    if direction.abs() <= f32::EPSILON {
+        return (local_origin >= min && local_origin <= max).then_some(f32::NEG_INFINITY);
+    }
+    if direction > 0.0 {
+        if local_origin < min {
+            Some((min - local_origin) / direction)
+        } else if local_origin <= max {
+            Some(f32::NEG_INFINITY)
+        } else {
+            Some((min + period - local_origin) / direction)
+        }
+    } else if local_origin > max {
+        Some((max - local_origin) / direction)
+    } else if local_origin >= min {
+        Some(f32::NEG_INFINITY)
+    } else {
+        Some((max - period - local_origin) / direction)
+    }
+}
+
+fn wrap_periodic_coordinate(coord: f32, period: f32, midpoint: f32) -> f32 {
+    coord - period * ((coord - midpoint) / period).round()
+}
+
+fn axis_interval_start_t(min: f32, max: f32, origin: f32, direction: f32) -> Option<f32> {
+    if direction.abs() <= f32::EPSILON {
+        return (origin >= min && origin <= max).then_some(f32::NEG_INFINITY);
+    }
+    let mut start_t = (min - origin) / direction;
+    let mut end_t = (max - origin) / direction;
+    if start_t > end_t {
+        std::mem::swap(&mut start_t, &mut end_t);
+    }
+    (start_t <= end_t).then_some(start_t)
+}
+
+fn ray_support_interval_for_radial_repeat_bounds(
+    bounds: SupportBounds,
+    period: f32,
+    origin: [f32; 3],
+    direction: [f32; 3],
+) -> RaySupportProbe {
+    if period <= f32::EPSILON {
+        return RaySupportProbe::Unavailable;
+    }
+    let bounds = normalize_support_bounds(bounds);
+    let max_radius = support_bounds_corners(bounds)
+        .iter()
+        .map(|corner| (corner[0] * corner[0] + corner[2] * corner[2]).sqrt())
+        .fold(0.0f32, f32::max);
+    if max_radius <= f32::EPSILON {
+        let collapsed = SupportBounds {
+            min: [0.0, bounds.min[1], 0.0],
+            max: [0.0, bounds.max[1], 0.0],
+        };
+        return ray_support_interval_for_bounds(collapsed, origin, direction);
+    }
+    ray_support_interval_for_bounds(
+        SupportBounds {
+            min: [-max_radius, bounds.min[1], -max_radius],
+            max: [max_radius, bounds.max[1], max_radius],
+        },
+        origin,
+        direction,
+    )
+}
+
+fn merge_union_support_probe(lhs: RaySupportProbe, rhs: RaySupportProbe) -> RaySupportProbe {
+    match (lhs, rhs) {
+        (RaySupportProbe::Unavailable, _) | (_, RaySupportProbe::Unavailable) => {
+            RaySupportProbe::Unavailable
+        }
+        (RaySupportProbe::Rejected, probe) | (probe, RaySupportProbe::Rejected) => probe,
+        (RaySupportProbe::Interval(lhs), RaySupportProbe::Interval(rhs)) => {
+            RaySupportProbe::Interval(RaySupportInterval {
+                start_t: lhs.start_t.min(rhs.start_t),
+                end_t: lhs.end_t.max(rhs.end_t),
+                starts_inside: lhs.starts_inside || rhs.starts_inside,
+                conservative: lhs.conservative || rhs.conservative,
+            })
+        }
+    }
+}
+
+fn merge_intersection_support_probe(lhs: RaySupportProbe, rhs: RaySupportProbe) -> RaySupportProbe {
+    match (lhs, rhs) {
+        (RaySupportProbe::Rejected, _) | (_, RaySupportProbe::Rejected) => {
+            RaySupportProbe::Rejected
+        }
+        (RaySupportProbe::Unavailable, _) | (_, RaySupportProbe::Unavailable) => {
+            RaySupportProbe::Unavailable
+        }
+        (RaySupportProbe::Interval(lhs), RaySupportProbe::Interval(rhs)) => {
+            let start_t = lhs.start_t.max(rhs.start_t);
+            let end_t = lhs.end_t.min(rhs.end_t);
+            if start_t > end_t {
+                RaySupportProbe::Rejected
+            } else {
+                RaySupportProbe::Interval(RaySupportInterval {
+                    start_t,
+                    end_t,
+                    starts_inside: lhs.starts_inside && rhs.starts_inside,
+                    conservative: lhs.conservative || rhs.conservative,
+                })
+            }
+        }
+    }
+}
+
+fn reflect_support_bounds(bounds: SupportBounds, normal: [f32; 3]) -> SupportBounds {
+    let mut reflected = None;
+    for corner in support_bounds_corners(bounds) {
+        let point = reflect_point_across_plane(normal, corner);
+        let point_bounds = SupportBounds {
+            min: point,
+            max: point,
+        };
+        reflected = Some(match reflected {
+            Some(current) => merge_union_support_bounds(current, point_bounds),
+            None => point_bounds,
+        });
+    }
+    reflected.unwrap_or(bounds)
+}
+
+fn transform_value_support_bounds(
+    value: &KernelValue,
+    bounds: SupportBounds,
+) -> Result<Option<SupportBounds>, QueryExecError> {
+    match value {
+        KernelValue::Vec3(offset) => Ok(Some(SupportBounds {
+            min: add3(bounds.min, *offset),
+            max: add3(bounds.max, *offset),
+        })),
+        KernelValue::Struct(transform) if transform.name.as_str() == "Transform3" => {
+            let matrix = expect_struct_mat4(transform, "matrix")?;
+            let mut transformed = None;
+            for corner in support_bounds_corners(bounds) {
+                let point = mat4_mul_point(matrix, corner);
+                let point_bounds = SupportBounds {
+                    min: point,
+                    max: point,
+                };
+                transformed = Some(match transformed {
+                    Some(current) => merge_union_support_bounds(current, point_bounds),
+                    None => point_bounds,
+                });
+            }
+            Ok(transformed)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn support_bounds_corners(bounds: SupportBounds) -> [[f32; 3]; 8] {
+    [
+        [bounds.min[0], bounds.min[1], bounds.min[2]],
+        [bounds.min[0], bounds.min[1], bounds.max[2]],
+        [bounds.min[0], bounds.max[1], bounds.min[2]],
+        [bounds.min[0], bounds.max[1], bounds.max[2]],
+        [bounds.max[0], bounds.min[1], bounds.min[2]],
+        [bounds.max[0], bounds.min[1], bounds.max[2]],
+        [bounds.max[0], bounds.max[1], bounds.min[2]],
+        [bounds.max[0], bounds.max[1], bounds.max[2]],
+    ]
+}
+
+fn reflect_point_across_plane(normal: [f32; 3], point: [f32; 3]) -> [f32; 3] {
+    let unit = normalize3(normal);
+    let distance = dot3(point, unit);
+    [
+        point[0] - 2.0 * distance * unit[0],
+        point[1] - 2.0 * distance * unit[1],
+        point[2] - 2.0 * distance * unit[2],
+    ]
+}
+
+fn reflect_vector_across_plane(normal: [f32; 3], vector: [f32; 3]) -> [f32; 3] {
+    let unit = normalize3(normal);
+    let distance = dot3(vector, unit);
+    [
+        vector[0] - 2.0 * distance * unit[0],
+        vector[1] - 2.0 * distance * unit[1],
+        vector[2] - 2.0 * distance * unit[2],
+    ]
+}
+
+fn reflect_ray_across_plane(
+    normal: [f32; 3],
+    origin: [f32; 3],
+    direction: [f32; 3],
+) -> ([f32; 3], [f32; 3]) {
+    (
+        reflect_point_across_plane(normal, origin),
+        reflect_vector_across_plane(normal, direction),
+    )
+}
+
+fn instance_array_local_ray(
+    config: &KernelValue,
+    origin: [f32; 3],
+    direction: [f32; 3],
+) -> Result<Option<([f32; 3], [f32; 3])>, QueryExecError> {
+    match config {
+        KernelValue::Vec3(translation) => Ok(Some((
+            [
+                origin[0] - translation[0],
+                origin[1] - translation[1],
+                origin[2] - translation[2],
+            ],
+            direction,
+        ))),
+        KernelValue::Struct(transform) if transform.name.as_str() == "Transform3" => {
+            let inverse = expect_struct_mat4(transform, "inverse")?;
+            Ok(Some((
+                mat4_mul_point(inverse, origin),
+                mat4_mul_vector(inverse, direction),
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn mat4_mul_point(matrix: [f32; 16], point: [f32; 3]) -> [f32; 3] {
+    let x = matrix[0] * point[0] + matrix[4] * point[1] + matrix[8] * point[2] + matrix[12];
+    let y = matrix[1] * point[0] + matrix[5] * point[1] + matrix[9] * point[2] + matrix[13];
+    let z = matrix[2] * point[0] + matrix[6] * point[1] + matrix[10] * point[2] + matrix[14];
+    let w = matrix[3] * point[0] + matrix[7] * point[1] + matrix[11] * point[2] + matrix[15];
+    if w.abs() > f32::EPSILON {
+        [x / w, y / w, z / w]
+    } else {
+        [x, y, z]
+    }
+}
+
+fn mat4_mul_vector(matrix: [f32; 16], vector: [f32; 3]) -> [f32; 3] {
+    [
+        matrix[0] * vector[0] + matrix[4] * vector[1] + matrix[8] * vector[2],
+        matrix[1] * vector[0] + matrix[5] * vector[1] + matrix[9] * vector[2],
+        matrix[2] * vector[0] + matrix[6] * vector[1] + matrix[10] * vector[2],
+    ]
 }
 
 fn merge_world_support_summaries(items: &[SupportSummaryParts]) -> SupportSummaryParts {

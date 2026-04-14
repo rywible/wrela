@@ -292,8 +292,10 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
         ));
     }
     out.push_str(&format!(
-        "acceleration_node_visits={} union_cluster_visits={} ray_support_interval_rejections={} ray_support_entry_jumps={} repeat_cell_skips={} cache_brick_visits={} cache_brick_hits={} cache_brick_misses={} accepted_relaxed_steps={} rejected_relaxed_steps={} analytic_transformed_hits={} interval_subdivisions={} interval_proof_successes={} observer_continuation_seed_hits={}\n",
+        "acceleration_node_visits={} shape_leaf_visits={} acceleration_pruned_nodes={} union_cluster_visits={} ray_support_interval_rejections={} ray_support_entry_jumps={} repeat_cell_skips={} cache_brick_visits={} cache_brick_hits={} cache_brick_misses={} accepted_relaxed_steps={} rejected_relaxed_steps={} analytic_transformed_hits={} interval_subdivisions={} interval_proof_successes={} observer_continuation_seed_hits={}\n",
         report.counters.acceleration_node_visits,
+        report.counters.shape_leaf_visits,
+        report.counters.acceleration_pruned_nodes,
         report.counters.union_cluster_visits,
         report.counters.ray_support_interval_rejections,
         report.counters.ray_support_entry_jumps,

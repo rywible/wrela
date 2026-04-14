@@ -1,3 +1,4 @@
+pub mod build;
 pub mod report;
 
 use crate::artifact_contract::{
@@ -96,6 +97,37 @@ pub enum FallbackExpectation {
     ExplicitSemanticWeakening,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AccelerationRejectionClass {
+    OpaqueBoundary,
+    UnboundedSupport,
+    UnsupportedTransform,
+    UnsupportedRepeatForm,
+    ArtifactUnavailable,
+    ArtifactInvalid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AccelerationChildSpan {
+    pub start: u32,
+    pub len: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccelerationLeafPayload {
+    pub semantic_id: SmolStr,
+    pub feature_id: Option<SmolStr>,
+    pub instance_id: Option<SmolStr>,
+    pub repeat_id: Option<SmolStr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccelerationRejectionRecord {
+    pub class: AccelerationRejectionClass,
+    pub subject: SmolStr,
+    pub detail: SmolStr,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupportDescriptor {
     pub kind: SupportDescriptorKind,
@@ -163,8 +195,10 @@ pub struct AccelerationNode {
     pub stable_order: u32,
     pub kind: AccelerationNodeKind,
     pub candidate_class: AccelerationCandidateClass,
+    pub child_span: Option<AccelerationChildSpan>,
     pub support: Option<SupportDescriptor>,
     pub bounds: Vec<BoundDescriptor>,
+    pub leaf_payload: Option<AccelerationLeafPayload>,
     pub lineage: Vec<LineageRecord>,
     pub certificate_handles: Vec<CertificateProvenanceHandle>,
     pub child_ids: Vec<SmolStr>,
@@ -187,6 +221,7 @@ pub struct AccelerationForest {
     pub nodes: Vec<AccelerationNode>,
     pub caches: Vec<AccelerationCacheDescriptor>,
     pub observer_usage: Vec<ObserverUsageSummary>,
+    pub rejection_reasons: Vec<AccelerationRejectionRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,12 +243,60 @@ impl AccelerationNode {
             stable_order,
             kind,
             candidate_class,
+            child_span: None,
             support: None,
             bounds: Vec::new(),
+            leaf_payload: None,
             lineage: Vec::new(),
             certificate_handles: Vec::new(),
             child_ids: Vec::new(),
             notes: Vec::new(),
+        }
+    }
+
+    pub fn with_child_span(mut self, child_span: AccelerationChildSpan) -> Self {
+        self.child_span = Some(child_span);
+        self
+    }
+
+    pub fn with_leaf_payload(mut self, leaf_payload: AccelerationLeafPayload) -> Self {
+        self.leaf_payload = Some(leaf_payload);
+        self
+    }
+}
+
+impl AccelerationChildSpan {
+    pub fn new(start: u32, len: u32) -> Self {
+        Self { start, len }
+    }
+}
+
+impl AccelerationLeafPayload {
+    pub fn new(
+        semantic_id: impl Into<SmolStr>,
+        feature_id: Option<impl Into<SmolStr>>,
+        instance_id: Option<impl Into<SmolStr>>,
+        repeat_id: Option<impl Into<SmolStr>>,
+    ) -> Self {
+        Self {
+            semantic_id: semantic_id.into(),
+            feature_id: feature_id.map(Into::into),
+            instance_id: instance_id.map(Into::into),
+            repeat_id: repeat_id.map(Into::into),
+        }
+    }
+}
+
+impl AccelerationRejectionRecord {
+    pub fn new(
+        class: AccelerationRejectionClass,
+        subject: impl Into<SmolStr>,
+        detail: impl Into<SmolStr>,
+    ) -> Self {
+        Self {
+            class,
+            subject: subject.into(),
+            detail: detail.into(),
         }
     }
 }
@@ -241,7 +324,30 @@ impl AccelerationForest {
             nodes,
             caches,
             observer_usage,
+            rejection_reasons: Vec::new(),
         }
+    }
+
+    pub fn with_rejection_reasons(
+        mut self,
+        mut rejection_reasons: Vec<AccelerationRejectionRecord>,
+    ) -> Self {
+        rejection_reasons.sort_by(|left, right| {
+            left.class
+                .cmp(&right.class)
+                .then(left.subject.cmp(&right.subject))
+                .then(left.detail.cmp(&right.detail))
+        });
+        self.rejection_reasons = rejection_reasons;
+        self
+    }
+
+    pub fn root_nodes(&self) -> &[SmolStr] {
+        &self.contract.root_nodes
+    }
+
+    pub fn rejection_reasons(&self) -> &[AccelerationRejectionRecord] {
+        &self.rejection_reasons
     }
 }
 
@@ -325,6 +431,17 @@ fn observer_artifact_kinds(observer: AccelerationObserver) -> &'static [Accelera
             AccelerationArtifactKind::RayCandidateTable,
             AccelerationArtifactKind::ContinuationSeedTable,
         ],
+    }
+}
+
+pub fn acceleration_rejection_class_name(class: AccelerationRejectionClass) -> &'static str {
+    match class {
+        AccelerationRejectionClass::OpaqueBoundary => "opaque_boundary",
+        AccelerationRejectionClass::UnboundedSupport => "unbounded_support",
+        AccelerationRejectionClass::UnsupportedTransform => "unsupported_transform",
+        AccelerationRejectionClass::UnsupportedRepeatForm => "unsupported_repeat_form",
+        AccelerationRejectionClass::ArtifactUnavailable => "artifact_unavailable",
+        AccelerationRejectionClass::ArtifactInvalid => "artifact_invalid",
     }
 }
 

@@ -78,6 +78,8 @@ pub struct QueryExecutionObservability {
     pub normal_role: Option<SmolStr>,
     pub solver_methods: Vec<RaySolverMethod>,
     pub acceleration_node_visits: u32,
+    pub shape_leaf_visits: u32,
+    pub acceleration_pruned_nodes: u32,
     pub union_cluster_visits: u32,
     pub ray_support_interval_rejections: u32,
     pub ray_support_entry_jumps: u32,
