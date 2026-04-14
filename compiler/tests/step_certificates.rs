@@ -1,15 +1,20 @@
 use smol_str::SmolStr;
 use wrela::hir;
 use wrela::hir::lower as hir_lower;
-use wrela::kernel::{KernelStructValue, KernelValue, lower_world_query_plan};
+use wrela::kernel::{
+    KernelStructValue, KernelValue, lower_capture_query_plan, lower_world_query_plan,
+};
 use wrela::parser::ast;
 use wrela::parser::ast::AstNode;
 use wrela::parser::parse;
 use wrela::query_exec::{
-    QueryExecContext, execute_world_query_with_trace_on, render_semantic_cost_report,
-    stable_region_scene_capture_id,
+    QueryExecContext, execute_capture_query_with_trace_on, execute_world_query_with_trace_on,
+    render_semantic_cost_report, stable_region_scene_capture_id,
 };
-use wrela::query_plan::{DispatchBackend, WorldQueryKind, WorldQueryPlan};
+use wrela::query_plan::{
+    CaptureKind, CaptureQueryKind, CaptureQueryPlan, DispatchBackend, WorldQueryKind,
+    WorldQueryPlan,
+};
 use wrela::query_solver::{
     CertificateReuseClass, RayStepCertificateSubjectKind, StepCertificateKind,
     certificate_reuse_class_name, ray_step_certificate_kind_name,
@@ -262,7 +267,10 @@ fn cpu_world_trace_records_step_certificate_kinds_and_metadata() {
                 && metadata.proof_family == "support-entry-jump"
         })
         .expect("support entry jump metadata");
-    assert_eq!(support_metadata.guarantee.name(), "exact");
+    assert_eq!(
+        support_metadata.guarantee.name(),
+        "conservative_no_false_miss"
+    );
     assert_eq!(
         support_metadata.reusable_by,
         CertificateReuseClass::RenderingAndCollision
@@ -308,4 +316,47 @@ fn cpu_world_trace_records_step_certificate_kinds_and_metadata() {
     let rendered = render_semantic_cost_report(&trace.cost_report);
     assert!(rendered.contains("step_certificate_kinds="));
     assert!(rendered.contains("step_certificate_metadata="));
+}
+
+#[test]
+fn cpu_capture_trace_preserves_dense_only_certificates_when_solver_methods_are_disabled() {
+    let (_module, _type_info, ctx) = typed_query_module(world_trace_fixture_source());
+    let plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None)
+            .expect("shape trace plan"),
+    );
+    let (hit, trace) = execute_capture_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &plan,
+        &[
+            KernelValue::Capture(SmolStr::new("translated_shape")),
+            ray_query_with_limits([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 6.0, 0.05, 0.001, 96),
+        ],
+    )
+    .expect("cpu capture trace");
+
+    let hit = expect_struct(&hit, "Hit3");
+    assert!(expect_bool(field(hit, "hit")));
+    assert_eq!(
+        trace.observability.step_certificate_kinds.len(),
+        1,
+        "dense-only capture traces should not surface mixed solver certificates"
+    );
+    assert!(
+        trace
+            .observability
+            .step_certificate_kinds
+            .contains_key(&StepCertificateKind::DenseDistanceBound)
+    );
+    assert_eq!(trace.observability.ray_support_entry_jumps, 0);
+    assert_eq!(trace.observability.analytic_transformed_hits, 0);
+    assert_eq!(trace.observability.solver_analytic_hits, 0);
+    assert!(
+        trace
+            .observability
+            .step_certificate_metadata
+            .iter()
+            .all(|metadata| metadata.guarantee.name() == "exact")
+    );
 }

@@ -11,7 +11,6 @@ use crate::kernel::{
     validate_world_query_plan,
 };
 use crate::portable;
-use crate::query_exec::QueryExecutionObservability;
 use crate::query_exec::capture::{self, CaptureQueryBackend, execute_batch_item_contract};
 use crate::query_exec::context::QueryExecContext;
 use crate::query_exec::ids::stable_shape_capture_id;
@@ -22,6 +21,7 @@ use crate::query_exec::world::{
     execute_world_medium, execute_world_normal, execute_world_radiance, execute_world_ray,
     execute_world_surface, world_query_semantics, world_query_semantics_for_contract,
 };
+use crate::query_exec::{QueryExecutionObservability, QueryTraceSolverMode};
 use crate::query_plan::{
     ArtifactContract, ArtifactSchema, BatchQueryKind, WorldQueryKind,
     batch_query_kind_for_contract_id, world_query_kind_for_contract_id,
@@ -218,7 +218,24 @@ pub(crate) fn execute_batch_query_with_snapshot_observability(
     plan: &KernelBatchQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
-    let evaluator = DirectQueryEvaluator::new_with_snapshot(ctx, snapshot);
+    execute_batch_query_with_solver_mode_with_snapshot_observability(
+        ctx,
+        snapshot,
+        plan,
+        args,
+        QueryTraceSolverMode::Hybrid,
+    )
+}
+
+pub(crate) fn execute_batch_query_with_solver_mode_with_snapshot_observability(
+    ctx: &QueryExecContext,
+    snapshot: Option<&WorldSnapshotHandle>,
+    plan: &KernelBatchQueryPlan,
+    args: &[KernelValue],
+    solver_mode: QueryTraceSolverMode,
+) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
+    let evaluator =
+        DirectQueryEvaluator::new_with_snapshot_and_solver_mode(ctx, snapshot, solver_mode);
     evaluator.note_dispatch();
     if let Err(errors) = validate_batch_query_plan(plan) {
         evaluator.note_contract_validation_failure();
@@ -250,6 +267,7 @@ pub(crate) fn resolve_batch_capture(
 pub(crate) struct DirectQueryOps<'a> {
     ctx: &'a QueryExecContext,
     snapshot: Option<WorldSnapshotHandle>,
+    trace_solver_mode: QueryTraceSolverMode,
     observability: Rc<RefCell<QueryExecutionObservability>>,
     world_acceleration_cache:
         Rc<RefCell<HashMap<(SmolStr, i32), Option<CpuAccelerationTree<SmolStr>>>>>,
@@ -541,7 +559,23 @@ enum AnalyticRayHit {
 #[derive(Debug, Clone)]
 enum RepeatAwareTraceOutcome {
     Finished(KernelValue),
-    Unsupported,
+    Inapplicable(KernelValue),
+    Unsupported(RepeatAwareUnsupportedReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepeatAwareUnsupportedReason {
+    Form,
+    Bounds,
+}
+
+#[derive(Debug, Clone)]
+struct RepeatLinearTraversal<'scene> {
+    inner: &'scene FieldNode,
+    local_origin: [f32; 3],
+    local_direction: [f32; 3],
+    bounds: SupportBounds,
+    period: [f32; 3],
 }
 
 #[derive(Debug, Clone)]
@@ -553,30 +587,44 @@ struct TraceLoopPolicy {
 #[derive(Debug, Clone, Copy)]
 struct TraceLoopState {
     travel: f32,
-    point: [f32; 3],
     distance: f32,
     adaptive_epsilon: f32,
+    sample: IntervalSample,
     step_bound: f32,
-    step_index: i32,
     previous_distance: Option<f32>,
+    consecutive_small_steps: u32,
+    non_improving_distance: bool,
 }
 
 #[derive(Debug, Clone)]
 enum TraceStepDecision {
-    Advance(RayStepCertificate),
+    Advance {
+        certificate: RayStepCertificate,
+        next_sample: Option<IntervalSample>,
+    },
     Hit(RayStepCertificate),
     Miss,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct BracketRefinement {
-    lo: f32,
-    hi: f32,
+    lo: IntervalSample,
+    hi: IntervalSample,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IntervalSample {
+    t: f32,
+    distance: f32,
+    adaptive_epsilon: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum IntervalProofOutcome {
-    NoRoot { end_t: f32 },
+    NoRoot {
+        end_t: f32,
+        end_sample: IntervalSample,
+    },
     Bracket { bracket: BracketRefinement },
     Unresolved,
 }
@@ -658,16 +706,29 @@ impl<'a> std::ops::Deref for DirectQueryEvaluator<'a> {
 
 impl<'a> DirectQueryEvaluator<'a> {
     pub(crate) fn new(ctx: &'a QueryExecContext) -> Self {
-        Self::new_with_snapshot(ctx, None)
+        Self::new_with_snapshot_and_solver_mode(ctx, None, QueryTraceSolverMode::Hybrid)
     }
 
     pub(crate) fn new_with_snapshot(
         ctx: &'a QueryExecContext,
         snapshot: Option<&WorldSnapshotHandle>,
     ) -> Self {
+        Self::new_with_snapshot_and_solver_mode(ctx, snapshot, QueryTraceSolverMode::Hybrid)
+    }
+
+    pub(crate) fn new_with_snapshot_and_solver_mode(
+        ctx: &'a QueryExecContext,
+        snapshot: Option<&WorldSnapshotHandle>,
+        solver_mode: QueryTraceSolverMode,
+    ) -> Self {
         let observability = Rc::new(RefCell::new(QueryExecutionObservability::default()));
         Self {
-            ops: DirectQueryOps::with_observability_and_snapshot(ctx, snapshot, observability),
+            ops: DirectQueryOps::with_observability_and_snapshot_and_solver_mode(
+                ctx,
+                snapshot,
+                observability,
+                solver_mode,
+            ),
         }
     }
 
@@ -682,17 +743,26 @@ impl<'a> DirectQueryEvaluator<'a> {
 
 impl<'a> DirectQueryOps<'a> {
     pub(crate) fn new(ctx: &'a QueryExecContext) -> Self {
-        Self::new_with_snapshot(ctx, None)
+        Self::new_with_snapshot_and_solver_mode(ctx, None, QueryTraceSolverMode::Hybrid)
     }
 
     pub(crate) fn new_with_snapshot(
         ctx: &'a QueryExecContext,
         snapshot: Option<&WorldSnapshotHandle>,
     ) -> Self {
-        Self::with_observability_and_snapshot(
+        Self::new_with_snapshot_and_solver_mode(ctx, snapshot, QueryTraceSolverMode::Hybrid)
+    }
+
+    pub(crate) fn new_with_snapshot_and_solver_mode(
+        ctx: &'a QueryExecContext,
+        snapshot: Option<&WorldSnapshotHandle>,
+        solver_mode: QueryTraceSolverMode,
+    ) -> Self {
+        Self::with_observability_and_snapshot_and_solver_mode(
             ctx,
             snapshot,
             Rc::new(RefCell::new(QueryExecutionObservability::default())),
+            solver_mode,
         )
     }
 
@@ -700,7 +770,12 @@ impl<'a> DirectQueryOps<'a> {
         ctx: &'a QueryExecContext,
         observability: Rc<RefCell<QueryExecutionObservability>>,
     ) -> Self {
-        Self::with_observability_and_snapshot(ctx, None, observability)
+        Self::with_observability_and_snapshot_and_solver_mode(
+            ctx,
+            None,
+            observability,
+            QueryTraceSolverMode::Hybrid,
+        )
     }
 
     pub(crate) fn with_observability_and_snapshot(
@@ -708,9 +783,24 @@ impl<'a> DirectQueryOps<'a> {
         snapshot: Option<&WorldSnapshotHandle>,
         observability: Rc<RefCell<QueryExecutionObservability>>,
     ) -> Self {
+        Self::with_observability_and_snapshot_and_solver_mode(
+            ctx,
+            snapshot,
+            observability,
+            QueryTraceSolverMode::Hybrid,
+        )
+    }
+
+    pub(crate) fn with_observability_and_snapshot_and_solver_mode(
+        ctx: &'a QueryExecContext,
+        snapshot: Option<&WorldSnapshotHandle>,
+        observability: Rc<RefCell<QueryExecutionObservability>>,
+        solver_mode: QueryTraceSolverMode,
+    ) -> Self {
         Self {
             ctx,
             snapshot: snapshot.cloned(),
+            trace_solver_mode: solver_mode,
             observability,
             world_acceleration_cache: Rc::new(RefCell::new(HashMap::new())),
             shape_union_cache: Rc::new(RefCell::new(HashMap::new())),
@@ -815,12 +905,20 @@ impl<'a> DirectQueryOps<'a> {
     }
 
     pub(crate) fn note_solver_plan(&self, plan: &RaySolverPlan) {
+        self.note_solver_plan_with_methods(plan, &plan.diagnostic_summary().methods);
+    }
+
+    pub(crate) fn note_solver_plan_with_methods(
+        &self,
+        plan: &RaySolverPlan,
+        methods: &[RaySolverMethod],
+    ) {
         self.update_observability(|observability| {
             observability.solver_plan_id = Some(plan.id.clone());
             observability.solver_subject = Some(plan.subject.clone());
-            for method in plan.diagnostic_summary().methods {
-                if !observability.solver_methods.contains(&method) {
-                    observability.solver_methods.push(method);
+            for method in methods {
+                if !observability.solver_methods.contains(method) {
+                    observability.solver_methods.push(*method);
                 }
             }
             observability.observer_continuation_seed_hits += plan
@@ -842,10 +940,12 @@ impl<'a> DirectQueryOps<'a> {
                 .step_certificate_kinds
                 .entry(certificate.kind)
                 .or_insert(0) += 1;
-            if observability.step_certificate_metadata.len() < 16
-                && !observability
-                    .step_certificate_metadata
-                    .contains(&certificate.metadata)
+            if !observability
+                .step_certificate_metadata
+                .iter()
+                .any(|metadata| {
+                    same_observability_certificate_metadata(metadata, &certificate.metadata)
+                })
             {
                 observability
                     .step_certificate_metadata
@@ -884,6 +984,49 @@ impl<'a> DirectQueryOps<'a> {
         self.update_observability(|observability| observability.repeat_cell_skips += 1);
     }
 
+    pub(crate) fn note_solver_repeat_attempt(&self) {
+        self.update_observability(|observability| {
+            observability.solver_repeat_attempts += 1;
+            if !observability
+                .solver_methods
+                .contains(&RaySolverMethod::RepeatAwareTraversal)
+            {
+                observability
+                    .solver_methods
+                    .push(RaySolverMethod::RepeatAwareTraversal);
+            }
+        });
+    }
+
+    pub(crate) fn note_solver_repeat_supported(&self) {
+        self.update_observability(|observability| observability.solver_repeat_supported += 1);
+    }
+
+    pub(crate) fn note_solver_repeat_inapplicable(&self) {
+        self.update_observability(|observability| observability.solver_repeat_inapplicable += 1);
+    }
+
+    pub(crate) fn note_solver_repeat_unsupported(&self) {
+        self.update_observability(|observability| observability.solver_repeat_unsupported += 1);
+    }
+
+    fn note_solver_repeat_unsupported_reason(&self, reason: RepeatAwareUnsupportedReason) {
+        self.update_observability(|observability| match reason {
+            RepeatAwareUnsupportedReason::Form => observability.solver_repeat_unsupported_form += 1,
+            RepeatAwareUnsupportedReason::Bounds => {
+                observability.solver_repeat_unsupported_bounds += 1
+            }
+        });
+    }
+
+    pub(crate) fn note_solver_repeat_cells_enumerated(&self, count: u32) {
+        self.update_observability(|observability| {
+            observability.solver_repeat_cells_enumerated = observability
+                .solver_repeat_cells_enumerated
+                .saturating_add(count);
+        });
+    }
+
     pub(crate) fn note_cache_brick_visit(&self) {
         self.update_observability(|observability| observability.cache_brick_visits += 1);
     }
@@ -904,6 +1047,38 @@ impl<'a> DirectQueryOps<'a> {
         self.update_observability(|observability| observability.rejected_relaxed_steps += 1);
     }
 
+    pub(crate) fn note_solver_relaxed_attempt(&self) {
+        self.update_observability(|observability| {
+            observability.solver_relaxed_attempts += 1;
+            if !observability
+                .solver_methods
+                .contains(&RaySolverMethod::LipschitzSafeStepping)
+            {
+                observability
+                    .solver_methods
+                    .push(RaySolverMethod::LipschitzSafeStepping);
+            }
+        });
+    }
+
+    pub(crate) fn note_solver_relaxed_no_root_advance(&self) {
+        self.update_observability(|observability| {
+            observability.solver_relaxed_no_root_advances += 1;
+        });
+    }
+
+    pub(crate) fn note_solver_relaxed_bracket(&self) {
+        self.update_observability(|observability| {
+            observability.solver_relaxed_brackets += 1;
+        });
+    }
+
+    pub(crate) fn note_solver_relaxed_unresolved(&self) {
+        self.update_observability(|observability| {
+            observability.solver_relaxed_unresolved += 1;
+        });
+    }
+
     pub(crate) fn note_analytic_transformed_hit(&self) {
         self.update_observability(|observability| observability.analytic_transformed_hits += 1);
     }
@@ -914,6 +1089,38 @@ impl<'a> DirectQueryOps<'a> {
 
     pub(crate) fn note_interval_proof_success(&self) {
         self.update_observability(|observability| observability.interval_proof_successes += 1);
+    }
+
+    pub(crate) fn note_solver_interval_attempt(&self) {
+        self.update_observability(|observability| {
+            observability.solver_interval_attempts += 1;
+            if !observability
+                .solver_methods
+                .contains(&RaySolverMethod::IntervalNewtonIsolation)
+            {
+                observability
+                    .solver_methods
+                    .push(RaySolverMethod::IntervalNewtonIsolation);
+            }
+        });
+    }
+
+    pub(crate) fn note_solver_interval_no_root_advance(&self) {
+        self.update_observability(|observability| {
+            observability.solver_interval_no_root_advances += 1;
+        });
+    }
+
+    pub(crate) fn note_solver_interval_bracket(&self) {
+        self.update_observability(|observability| {
+            observability.solver_interval_brackets += 1;
+        });
+    }
+
+    pub(crate) fn note_solver_interval_unresolved(&self) {
+        self.update_observability(|observability| {
+            observability.solver_interval_unresolved += 1;
+        });
     }
 
     pub(crate) fn note_solver_dense_fallback(&self, reason: RaySolverFallbackReason) {
@@ -1043,6 +1250,26 @@ impl<'a> DirectQueryOps<'a> {
                     .solver_methods
                     .push(RaySolverMethod::SafeguardedNewtonRefinement);
             }
+        });
+    }
+
+    pub(crate) fn note_solver_refinement_attempt(&self) {
+        self.update_observability(|observability| {
+            observability.solver_refinement_attempts += 1;
+            if !observability
+                .solver_methods
+                .contains(&RaySolverMethod::SafeguardedNewtonRefinement)
+            {
+                observability
+                    .solver_methods
+                    .push(RaySolverMethod::SafeguardedNewtonRefinement);
+            }
+        });
+    }
+
+    pub(crate) fn note_solver_refinement_failure(&self) {
+        self.update_observability(|observability| {
+            observability.solver_refinement_failures += 1;
         });
     }
 
@@ -1809,6 +2036,30 @@ impl<'a> DirectQueryOps<'a> {
                         return Ok(None);
                     };
                     let normal = expect_vec3(Some(&normal), "plane normal")?;
+                    if dot3(normal, normal).sqrt() <= f32::EPSILON {
+                        return Ok(None);
+                    }
+                    Ok(Some(NormalEvaluation {
+                        normal: normalize3(normal),
+                        role: NormalRole::CertifiedFieldGradient,
+                    }))
+                }
+                hir::FieldPrimitive::Torus => {
+                    let major_radius =
+                        self.eval_scene_named_arg(args.as_deref().unwrap_or(&[]), "major_radius")?;
+                    let minor_radius =
+                        self.eval_scene_named_arg(args.as_deref().unwrap_or(&[]), "minor_radius")?;
+                    let major_radius = expect_f32(Some(&major_radius), "torus major_radius")?;
+                    let minor_radius = expect_f32(Some(&minor_radius), "torus minor_radius")?;
+                    if minor_radius <= f32::EPSILON {
+                        return Ok(None);
+                    }
+                    let radial = (point[0] * point[0] + point[2] * point[2]).sqrt();
+                    if radial <= f32::EPSILON {
+                        return Ok(None);
+                    }
+                    let tube = radial - major_radius;
+                    let normal = [point[0] * tube / radial, point[1], point[2] * tube / radial];
                     if dot3(normal, normal).sqrt() <= f32::EPSILON {
                         return Ok(None);
                     }
@@ -2983,12 +3234,17 @@ impl<'a> DirectQueryOps<'a> {
             let distance = self.eval_shape_distance(shape, point)?;
             let state = TraceLoopState {
                 travel,
-                point,
                 distance,
                 adaptive_epsilon: hit_epsilon,
+                sample: IntervalSample {
+                    t: travel,
+                    distance,
+                    adaptive_epsilon: hit_epsilon,
+                },
                 step_bound: distance.max(min_step),
-                step_index: steps,
                 previous_distance: None,
+                consecutive_small_steps: 0,
+                non_improving_distance: false,
             };
             if distance <= hit_epsilon {
                 if !dense_fallback_recorded && runtime_plan.is_some() {
@@ -3049,7 +3305,9 @@ impl<'a> DirectQueryOps<'a> {
         let mut travel = start_travel.max(0.0);
         let mut steps = 0i32;
         let mut previous_distance = None;
+        let mut consecutive_small_steps = 0u32;
         let mut dense_fallback_recorded = false;
+        let mut cached_sample: Option<IntervalSample> = None;
 
         if start_travel > 0.0 {
             let certificate = self.support_entry_jump_certificate(policy, shape, 0.0, start_travel);
@@ -3058,22 +3316,24 @@ impl<'a> DirectQueryOps<'a> {
 
         while steps < max_steps && travel <= max_distance {
             self.note_trace_step();
-            let point = [
-                origin[0] + direction[0] * travel,
-                origin[1] + direction[1] * travel,
-                origin[2] + direction[2] * travel,
-            ];
-            let distance = self.eval_shape_distance(shape, point)?;
-            let adaptive_epsilon =
-                self.shape_adaptive_hit_epsilon(shape, travel, point, hit_epsilon)?;
+            let sample = match cached_sample.take() {
+                Some(sample) if (sample.t - travel).abs() <= f32::EPSILON => sample,
+                _ => self.interval_sample(shape, origin, direction, travel, hit_epsilon)?,
+            };
+            let distance = sample.distance;
+            let adaptive_epsilon = sample.adaptive_epsilon;
+            let non_improving_distance = previous_distance.is_some_and(|previous| {
+                distance >= previous - (adaptive_epsilon * 0.25).max(min_step * 0.05)
+            });
             let state = TraceLoopState {
                 travel,
-                point,
                 distance,
                 adaptive_epsilon,
+                sample,
                 step_bound: distance.max(min_step),
-                step_index: steps,
                 previous_distance,
+                consecutive_small_steps,
+                non_improving_distance,
             };
             let decision = self.next_shape_trace_certificate(
                 shape,
@@ -3087,7 +3347,10 @@ impl<'a> DirectQueryOps<'a> {
             )?;
 
             match decision {
-                TraceStepDecision::Advance(certificate) => {
+                TraceStepDecision::Advance {
+                    certificate,
+                    next_sample,
+                } => {
                     if !dense_fallback_recorded
                         && matches!(certificate.kind, StepCertificateKind::DenseDistanceBound)
                         && runtime_plan.is_some()
@@ -3104,6 +3367,16 @@ impl<'a> DirectQueryOps<'a> {
                         self.note_solver_certificate_failure();
                         break;
                     }
+                    let advance = next_travel - travel;
+                    let stall_threshold = (min_step * 1.5).max(adaptive_epsilon * 8.0);
+                    consecutive_small_steps = if advance <= stall_threshold {
+                        consecutive_small_steps.saturating_add(1)
+                    } else {
+                        0
+                    };
+                    cached_sample = next_sample.filter(|sample| {
+                        (sample.t - next_travel).abs() <= f32::EPSILON
+                    });
                     travel = next_travel;
                     steps += 1;
                 }
@@ -3148,10 +3421,20 @@ impl<'a> DirectQueryOps<'a> {
         hit_epsilon: f32,
         max_steps: i32,
     ) -> Result<KernelValue, QueryExecError> {
-        let mut runtime_plan =
-            self.runtime_shape_solver_plan(solver_plan, artifact_contracts, shape)?;
-        self.note_solver_plan(&runtime_plan);
-        if runtime_plan.method_enabled(RaySolverMethod::RepeatAwareTraversal) {
+        let runtime_plan = self.runtime_shape_solver_plan(solver_plan, artifact_contracts, shape)?;
+        let effective_methods = match self.trace_solver_mode {
+            QueryTraceSolverMode::Hybrid => runtime_plan.diagnostic_summary().methods,
+            QueryTraceSolverMode::DenseOnly => vec![RaySolverMethod::DenseSphereTracing],
+        };
+        let policy = match self.trace_solver_mode {
+            QueryTraceSolverMode::Hybrid => TraceLoopPolicy::from_solver_plan(&runtime_plan),
+            QueryTraceSolverMode::DenseOnly => {
+                TraceLoopPolicy::dense_only(runtime_plan.subject.clone())
+            }
+        };
+        self.note_solver_plan_with_methods(&runtime_plan, &effective_methods);
+        if policy.method_enabled(RaySolverMethod::RepeatAwareTraversal) {
+            self.note_solver_repeat_attempt();
             match self.try_repeat_linear_shape_hit(
                 shape,
                 origin,
@@ -3161,23 +3444,21 @@ impl<'a> DirectQueryOps<'a> {
                 min_step,
                 hit_epsilon,
                 max_steps,
-                &TraceLoopPolicy::from_solver_plan(&runtime_plan),
+                &policy,
             )? {
                 RepeatAwareTraceOutcome::Finished(hit) => {
+                    self.note_solver_repeat_supported();
                     self.note_solver_repeat_aware_traversal();
                     return Ok(hit);
                 }
-                RepeatAwareTraceOutcome::Unsupported => {
-                    if !runtime_plan
-                        .fallback
-                        .reasons
-                        .contains(&RaySolverFallbackReason::VerificationFailed)
-                    {
-                        runtime_plan
-                            .fallback
-                            .reasons
-                            .push(RaySolverFallbackReason::VerificationFailed);
-                    }
+                RepeatAwareTraceOutcome::Inapplicable(hit) => {
+                    self.note_solver_repeat_inapplicable();
+                    self.note_solver_repeat_aware_traversal();
+                    return Ok(hit);
+                }
+                RepeatAwareTraceOutcome::Unsupported(reason) => {
+                    self.note_solver_repeat_unsupported();
+                    self.note_solver_repeat_unsupported_reason(reason);
                 }
             }
         }
@@ -3190,7 +3471,7 @@ impl<'a> DirectQueryOps<'a> {
             min_step,
             hit_epsilon,
             max_steps,
-            &TraceLoopPolicy::from_solver_plan(&runtime_plan),
+            &policy,
             Some(&runtime_plan),
         )
     }
@@ -3318,9 +3599,10 @@ impl<'a> DirectQueryOps<'a> {
             return Ok(decision);
         }
 
-        Ok(TraceStepDecision::Advance(
-            self.dense_distance_advance_certificate(policy, shape, state),
-        ))
+        Ok(TraceStepDecision::Advance {
+            certificate: self.dense_distance_advance_certificate(policy, shape, state),
+            next_sample: None,
+        })
     }
 
     fn try_analytic_primitive_hit(
@@ -3355,6 +3637,7 @@ impl<'a> DirectQueryOps<'a> {
         let certificate = RayStepCertificate {
             kind: StepCertificateKind::AnalyticHit,
             metadata: self.certificate_metadata(
+                RequiredGuaranteeClass::Exact,
                 policy,
                 shape,
                 RayStepCertificateSubjectKind::Primitive,
@@ -3387,6 +3670,7 @@ impl<'a> DirectQueryOps<'a> {
         RayStepCertificate {
             kind: StepCertificateKind::SupportEntryJump,
             metadata: self.certificate_metadata(
+                RequiredGuaranteeClass::ConservativeNoFalseMiss,
                 policy,
                 shape,
                 RayStepCertificateSubjectKind::SupportInterval,
@@ -3415,6 +3699,7 @@ impl<'a> DirectQueryOps<'a> {
         RayStepCertificate {
             kind: StepCertificateKind::DenseDistanceBound,
             metadata: self.certificate_metadata(
+                RequiredGuaranteeClass::Exact,
                 policy,
                 shape,
                 RayStepCertificateSubjectKind::Shape,
@@ -3443,6 +3728,7 @@ impl<'a> DirectQueryOps<'a> {
         RayStepCertificate {
             kind: StepCertificateKind::DenseDistanceBound,
             metadata: self.certificate_metadata(
+                RequiredGuaranteeClass::Exact,
                 policy,
                 shape,
                 RayStepCertificateSubjectKind::Shape,
@@ -3461,6 +3747,7 @@ impl<'a> DirectQueryOps<'a> {
 
     fn certificate_metadata(
         &self,
+        guarantee: RequiredGuaranteeClass,
         policy: &TraceLoopPolicy,
         shape: &SmolStr,
         subject_kind: RayStepCertificateSubjectKind,
@@ -3470,9 +3757,13 @@ impl<'a> DirectQueryOps<'a> {
         invalidation_reasons: Vec<SmolStr>,
     ) -> RayStepCertificateMetadata {
         RayStepCertificateMetadata {
-            guarantee: policy.guarantee,
+            guarantee,
             proof_family: proof_family.into(),
-            subject: shape.clone(),
+            subject: if policy.subject.is_empty() {
+                shape.clone()
+            } else {
+                policy.subject.clone()
+            },
             subject_kind,
             tolerance_context: tolerance_context.into(),
             reusable_by,
@@ -3613,58 +3904,131 @@ impl<'a> DirectQueryOps<'a> {
         min_step: f32,
         hit_epsilon: f32,
         max_steps: i32,
-    ) -> Result<Option<KernelValue>, QueryExecError> {
+        _policy: &TraceLoopPolicy,
+    ) -> Result<RepeatAwareTraceOutcome, QueryExecError> {
         let scene = self.shape_scene(shape)?;
         let leaf = match &scene.root {
             ShapeNode::Leaf(leaf) => leaf,
-            _ => return Ok(None),
+            _ => {
+                return Ok(RepeatAwareTraceOutcome::Unsupported(
+                    RepeatAwareUnsupportedReason::Form,
+                ));
+            }
         };
         let field = self.field_scene(&leaf.field)?;
-        let (period_expr, inner) = match &field.root {
+        let traversal = match &field.root {
             FieldNode::Repeat {
                 kind: RepeatKind::RepeatLinear,
+                param: Some(period_expr),
+                inner,
+            } => {
+                let child_support = field
+                    .support_node_record(field.root_support_id)
+                    .and_then(|record| record.children.first().copied())
+                    .ok_or(RepeatAwareUnsupportedReason::Bounds);
+                let child_support = match child_support {
+                    Ok(child_support) => child_support,
+                    Err(reason) => return Ok(RepeatAwareTraceOutcome::Unsupported(reason)),
+                };
+                let Some(bounds) = self.field_support_bounds(field, child_support)? else {
+                    return Ok(RepeatAwareTraceOutcome::Unsupported(
+                        RepeatAwareUnsupportedReason::Bounds,
+                    ));
+                };
+                let period_value = self.eval_scene_constant(period_expr)?;
+                let period = expect_vec3(Some(&period_value), "repeat linear period")?;
+                RepeatLinearTraversal {
+                    inner: inner.as_ref(),
+                    local_origin: origin,
+                    local_direction: direction,
+                    bounds,
+                    period,
+                }
+            }
+            FieldNode::Transform {
+                kind,
                 param: Some(param),
                 inner,
-            } => (param, inner.as_ref()),
-            _ => return Ok(None),
+            } if matches!(kind, TransformKind::Translate | TransformKind::AffineTransform) => {
+                let Some((local_origin, local_direction)) =
+                    self.repeat_aware_local_ray(*kind, param, origin, direction)?
+                else {
+                    return Ok(RepeatAwareTraceOutcome::Unsupported(
+                        RepeatAwareUnsupportedReason::Form,
+                    ));
+                };
+                let FieldNode::Repeat {
+                    kind: RepeatKind::RepeatLinear,
+                    param: Some(period_expr),
+                    inner,
+                } = inner.as_ref()
+                else {
+                    return Ok(RepeatAwareTraceOutcome::Unsupported(
+                        RepeatAwareUnsupportedReason::Form,
+                    ));
+                };
+                let repeat_support = field
+                    .support_node_record(field.root_support_id)
+                    .and_then(|record| record.children.first().copied())
+                    .and_then(|repeat_id| {
+                        field.support_node_record(repeat_id)
+                            .and_then(|record| record.children.first().copied())
+                    });
+                let Some(child_support) = repeat_support else {
+                    return Ok(RepeatAwareTraceOutcome::Unsupported(
+                        RepeatAwareUnsupportedReason::Bounds,
+                    ));
+                };
+                let Some(bounds) = self.field_support_bounds(field, child_support)? else {
+                    return Ok(RepeatAwareTraceOutcome::Unsupported(
+                        RepeatAwareUnsupportedReason::Bounds,
+                    ));
+                };
+                let period_value = self.eval_scene_constant(period_expr)?;
+                let period = expect_vec3(Some(&period_value), "repeat linear period")?;
+                RepeatLinearTraversal {
+                    inner: inner.as_ref(),
+                    local_origin,
+                    local_direction,
+                    bounds,
+                    period,
+                }
+            }
+            _ => {
+                return Ok(RepeatAwareTraceOutcome::Unsupported(
+                    RepeatAwareUnsupportedReason::Form,
+                ));
+            }
         };
-        let period_value = self.eval_scene_constant(period_expr)?;
-        let period = expect_vec3(Some(&period_value), "repeat linear period")?;
-        let Some(axis) = axis_aligned_repeat_axis(period) else {
-            return Ok(None);
-        };
-        let root_support = field
-            .support_node_record(field.root_support_id)
-            .and_then(|record| record.children.first().copied());
-        let Some(child_support) = root_support else {
-            return Ok(None);
-        };
-        let Some(bounds) = self.field_support_bounds(field, child_support)? else {
-            return Ok(None);
+        let Some(axis) = axis_aligned_repeat_axis(traversal.period) else {
+            return Ok(RepeatAwareTraceOutcome::Unsupported(
+                RepeatAwareUnsupportedReason::Form,
+            ));
         };
         let cells = axis_aligned_repeat_linear_cells(
-            bounds,
+            traversal.bounds,
             axis,
-            period[axis],
-            origin,
-            direction,
+            traversal.period[axis],
+            traversal.local_origin,
+            traversal.local_direction,
             start_travel.max(0.0),
             max_distance,
         );
+        self.note_solver_repeat_cells_enumerated(cells.len().min(u32::MAX as usize) as u32);
         if cells.is_empty() {
-            return Ok(None);
+            return Ok(RepeatAwareTraceOutcome::Inapplicable(default_hit(origin)));
         }
 
         for (offset, entry_t, exit_t) in cells {
             let local_origin = [
-                origin[0] - offset[0],
-                origin[1] - offset[1],
-                origin[2] - offset[2],
+                traversal.local_origin[0] - offset[0],
+                traversal.local_origin[1] - offset[1],
+                traversal.local_origin[2] - offset[2],
             ];
             if let Some((travel, steps)) = self.trace_field_node_dense(
-                inner,
+                traversal.inner,
                 local_origin,
-                direction,
+                traversal.local_direction,
                 entry_t,
                 exit_t,
                 min_step,
@@ -3676,12 +4040,39 @@ impl<'a> DirectQueryOps<'a> {
                     origin[1] + direction[1] * travel,
                     origin[2] + direction[2] * travel,
                 ];
-                return self.shape_hit_value(shape, travel, point, steps).map(Some);
+                return self
+                    .shape_hit_value(shape, travel, point, steps)
+                    .map(RepeatAwareTraceOutcome::Finished);
             }
             self.note_repeat_cell_skip();
         }
 
-        Ok(None)
+        Ok(RepeatAwareTraceOutcome::Finished(default_hit(origin)))
+    }
+
+    fn repeat_aware_local_ray(
+        &self,
+        kind: TransformKind,
+        param: &SceneValueExpr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+    ) -> Result<Option<([f32; 3], [f32; 3])>, QueryExecError> {
+        let config = self.eval_scene_constant(param)?;
+        match kind {
+            TransformKind::Translate => {
+                let translation = expect_vec3(Some(&config), "repeat-aware translation")?;
+                Ok(Some((
+                    [
+                        origin[0] - translation[0],
+                        origin[1] - translation[1],
+                        origin[2] - translation[2],
+                    ],
+                    direction,
+                )))
+            }
+            TransformKind::AffineTransform => pure_translation_local_ray(&config, origin, direction),
+            _ => Ok(None),
+        }
     }
 
     fn trace_field_node_dense(
@@ -3731,105 +4122,59 @@ impl<'a> DirectQueryOps<'a> {
         if allow_bracket && policy.method_enabled(RaySolverMethod::LipschitzSafeStepping) {
             let factor = relaxed_step_factor(state.previous_distance, state.distance);
             let candidate_end = (state.travel + state.step_bound * factor).min(max_distance);
-            if candidate_end > state.travel + state.step_bound + f32::EPSILON {
-                let relaxed_rejected = match self.prove_shape_interval(
-                    shape,
-                    origin,
-                    direction,
-                    state.travel,
-                    candidate_end,
-                    hit_epsilon,
-                    lipschitz_bound,
-                    allow_bracket,
-                    0,
-                )? {
-                    IntervalProofOutcome::NoRoot { end_t } => {
-                        self.note_solver_lipschitz_step();
-                        self.note_interval_proof_success();
-                        self.note_accepted_relaxed_step();
-                        return Ok(Some(TraceStepDecision::Advance(RayStepCertificate {
-                            kind: StepCertificateKind::RelaxedConservativeJump,
-                            metadata: self.certificate_metadata(
-                                policy,
-                                shape,
-                                RayStepCertificateSubjectKind::Interval,
-                                "lipschitz-relaxed-proof",
-                                format!("relaxed_factor={factor:.2}; lipschitz_bound={lipschitz_bound:.6}"),
-                                CertificateReuseClass::RenderingAndCollision,
-                                vec![
-                                    SmolStr::new("lipschitz evidence changed"),
-                                    SmolStr::new("distance semantics changed"),
-                                ],
-                            ),
-                            t_start: state.travel,
-                            t_end: end_t,
-                            no_hit_before_t_end: true,
-                            bracket: None,
-                            provenance: None,
-                        })));
-                    }
-                    IntervalProofOutcome::Bracket { bracket } => {
-                        if let Some(certificate) = self.refine_shape_bracket(
-                            shape,
-                            origin,
-                            direction,
-                            bracket,
-                            hit_epsilon,
-                            policy,
-                        )? {
-                            return Ok(Some(TraceStepDecision::Hit(certificate)));
-                        }
-                        true
-                    }
-                    IntervalProofOutcome::Unresolved => true,
-                };
-                if relaxed_rejected {
-                    self.note_rejected_relaxed_step();
-                }
-            }
-        }
-
-        let hard_ray = state.step_index >= 4
-            || state.distance <= (min_step * 4.0).max(state.adaptive_epsilon * 4.0);
-        if policy.method_enabled(RaySolverMethod::IntervalNewtonIsolation) && hard_ray {
-            let candidate_end = (state.travel + state.step_bound * 2.0).min(max_distance);
-            if candidate_end > state.travel + f32::EPSILON {
+            let required_relaxed_end = state.travel + (state.step_bound * 1.5);
+            let relaxed_admission =
+                state.previous_distance.is_some()
+                    && (state.non_improving_distance || state.consecutive_small_steps >= 1);
+            if relaxed_admission
+                && candidate_end + f32::EPSILON >= required_relaxed_end
+            {
+                self.note_solver_relaxed_attempt();
                 match self.prove_shape_interval(
                     shape,
                     origin,
                     direction,
-                    state.travel,
+                    state.sample,
                     candidate_end,
+                    None,
                     hit_epsilon,
                     lipschitz_bound,
                     allow_bracket,
                     0,
+                    2,
                 )? {
-                    IntervalProofOutcome::NoRoot { end_t } => {
-                        self.note_solver_interval_skip();
+                    IntervalProofOutcome::NoRoot { end_t, end_sample } => {
+                        self.note_solver_relaxed_no_root_advance();
+                        self.note_solver_lipschitz_step();
                         self.note_interval_proof_success();
-                        return Ok(Some(TraceStepDecision::Advance(RayStepCertificate {
-                            kind: StepCertificateKind::IntervalNoRootProof,
-                            metadata: self.certificate_metadata(
-                                policy,
-                                shape,
-                                RayStepCertificateSubjectKind::Interval,
-                                "interval-no-root-proof",
-                                format!("lipschitz_bound={lipschitz_bound:.6}; hard_ray=true"),
-                                CertificateReuseClass::RenderingAndCollision,
-                                vec![
-                                    SmolStr::new("interval evidence changed"),
-                                    SmolStr::new("distance semantics changed"),
-                                ],
-                            ),
-                            t_start: state.travel,
-                            t_end: end_t,
-                            no_hit_before_t_end: true,
-                            bracket: None,
-                            provenance: None,
-                        })));
+                        self.note_accepted_relaxed_step();
+                        return Ok(Some(TraceStepDecision::Advance {
+                            certificate: RayStepCertificate {
+                                kind: StepCertificateKind::RelaxedConservativeJump,
+                                metadata: self.certificate_metadata(
+                                    RequiredGuaranteeClass::IntervalBounded,
+                                    policy,
+                                    shape,
+                                    RayStepCertificateSubjectKind::Interval,
+                                    "lipschitz-relaxed-proof",
+                                    format!("relaxed_factor={factor:.2}; lipschitz_bound={lipschitz_bound:.6}"),
+                                    CertificateReuseClass::RenderingAndCollision,
+                                    vec![
+                                        SmolStr::new("lipschitz evidence changed"),
+                                        SmolStr::new("distance semantics changed"),
+                                    ],
+                                ),
+                                t_start: state.travel,
+                                t_end: end_t,
+                                no_hit_before_t_end: true,
+                                bracket: None,
+                                provenance: None,
+                            },
+                            next_sample: Some(end_sample),
+                        }));
                     }
                     IntervalProofOutcome::Bracket { bracket } => {
+                        self.note_solver_relaxed_bracket();
                         if let Some(certificate) = self.refine_shape_bracket(
                             shape,
                             origin,
@@ -3840,9 +4185,87 @@ impl<'a> DirectQueryOps<'a> {
                         )? {
                             return Ok(Some(TraceStepDecision::Hit(certificate)));
                         }
+                        self.note_rejected_relaxed_step();
+                        self.note_solver_relaxed_unresolved();
+                        return Ok(None);
                     }
                     IntervalProofOutcome::Unresolved => {
+                        self.note_rejected_relaxed_step();
+                        self.note_solver_relaxed_unresolved();
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+
+        let stall_step_threshold = (min_step * 2.0).max(state.adaptive_epsilon * 8.0);
+        let hard_ray = state.consecutive_small_steps >= 2
+            || (state.non_improving_distance && state.step_bound <= stall_step_threshold);
+        if policy.method_enabled(RaySolverMethod::IntervalNewtonIsolation) && hard_ray {
+            let candidate_end = (state.travel + state.step_bound * 2.0).min(max_distance);
+            if candidate_end > state.travel + f32::EPSILON {
+                self.note_solver_interval_attempt();
+                match self.prove_shape_interval(
+                    shape,
+                    origin,
+                    direction,
+                    state.sample,
+                    candidate_end,
+                    None,
+                    hit_epsilon,
+                    lipschitz_bound,
+                    allow_bracket,
+                    0,
+                    4,
+                )? {
+                    IntervalProofOutcome::NoRoot { end_t, end_sample } => {
+                        self.note_solver_interval_no_root_advance();
+                        self.note_solver_interval_skip();
+                        self.note_interval_proof_success();
+                        return Ok(Some(TraceStepDecision::Advance {
+                            certificate: RayStepCertificate {
+                                kind: StepCertificateKind::IntervalNoRootProof,
+                                metadata: self.certificate_metadata(
+                                    RequiredGuaranteeClass::IntervalBounded,
+                                    policy,
+                                    shape,
+                                    RayStepCertificateSubjectKind::Interval,
+                                    "interval-no-root-proof",
+                                    format!("lipschitz_bound={lipschitz_bound:.6}; hard_ray=true"),
+                                    CertificateReuseClass::RenderingAndCollision,
+                                    vec![
+                                        SmolStr::new("interval evidence changed"),
+                                        SmolStr::new("distance semantics changed"),
+                                    ],
+                                ),
+                                t_start: state.travel,
+                                t_end: end_t,
+                                no_hit_before_t_end: true,
+                                bracket: None,
+                                provenance: None,
+                            },
+                            next_sample: Some(end_sample),
+                        }));
+                    }
+                    IntervalProofOutcome::Bracket { bracket } => {
+                        self.note_solver_interval_bracket();
+                        if let Some(certificate) = self.refine_shape_bracket(
+                            shape,
+                            origin,
+                            direction,
+                            bracket,
+                            hit_epsilon,
+                            policy,
+                        )? {
+                            return Ok(Some(TraceStepDecision::Hit(certificate)));
+                        }
+                        self.note_solver_interval_unresolved();
+                        return Ok(None);
+                    }
+                    IntervalProofOutcome::Unresolved => {
+                        self.note_solver_interval_unresolved();
                         self.note_solver_certificate_failure();
+                        return Ok(None);
                     }
                 }
             }
@@ -3856,51 +4279,53 @@ impl<'a> DirectQueryOps<'a> {
         shape: &SmolStr,
         origin: [f32; 3],
         direction: [f32; 3],
-        start_t: f32,
+        start_sample: IntervalSample,
         end_t: f32,
+        end_sample: Option<IntervalSample>,
         hit_epsilon: f32,
         lipschitz_bound: f32,
         allow_bracket: bool,
         depth: u32,
+        max_depth: u32,
     ) -> Result<IntervalProofOutcome, QueryExecError> {
         self.note_interval_subdivision();
-        if end_t <= start_t + f32::EPSILON {
+        if end_t <= start_sample.t + f32::EPSILON {
             return Ok(IntervalProofOutcome::Unresolved);
         }
-        let mid_t = 0.5 * (start_t + end_t);
-        let mid_point = [
-            origin[0] + direction[0] * mid_t,
-            origin[1] + direction[1] * mid_t,
-            origin[2] + direction[2] * mid_t,
-        ];
-        let radius = 0.5 * (end_t - start_t);
-        let mid_distance = self.eval_shape_distance(shape, mid_point)?;
-        let adaptive_epsilon =
-            self.shape_adaptive_hit_epsilon(shape, mid_t, mid_point, hit_epsilon)?;
-        if mid_distance - lipschitz_bound * radius > adaptive_epsilon {
-            return Ok(IntervalProofOutcome::NoRoot { end_t });
+        let span = end_t - start_sample.t;
+        let end_sample_value = match end_sample {
+            Some(sample) => sample,
+            None => self.interval_sample(shape, origin, direction, end_t, hit_epsilon)?,
+        };
+        if end_sample_value.distance - lipschitz_bound * span > end_sample_value.adaptive_epsilon {
+            return Ok(IntervalProofOutcome::NoRoot {
+                end_t,
+                end_sample: end_sample_value,
+            });
+        }
+        if allow_bracket
+            && (end_sample_value.distance.abs() <= end_sample_value.adaptive_epsilon
+                || end_sample_value.distance < 0.0)
+        {
+            return Ok(IntervalProofOutcome::Bracket {
+                bracket: BracketRefinement {
+                    lo: start_sample,
+                    hi: end_sample_value,
+                },
+            });
         }
 
-        if allow_bracket {
-            let end_point = [
-                origin[0] + direction[0] * end_t,
-                origin[1] + direction[1] * end_t,
-                origin[2] + direction[2] * end_t,
-            ];
-            let end_distance = self.eval_shape_distance(shape, end_point)?;
-            let end_epsilon =
-                self.shape_adaptive_hit_epsilon(shape, end_t, end_point, hit_epsilon)?;
-            if end_distance.abs() <= end_epsilon || end_distance < 0.0 {
-                return Ok(IntervalProofOutcome::Bracket {
-                    bracket: BracketRefinement {
-                        lo: start_t,
-                        hi: end_t,
-                    },
-                });
-            }
+        let mid_t = 0.5 * (start_sample.t + end_t);
+        let mid_sample = self.interval_sample(shape, origin, direction, mid_t, hit_epsilon)?;
+        let radius = 0.5 * span;
+        if mid_sample.distance - lipschitz_bound * radius > mid_sample.adaptive_epsilon {
+            return Ok(IntervalProofOutcome::NoRoot {
+                end_t,
+                end_sample: end_sample_value,
+            });
         }
 
-        if depth >= 4 || radius <= hit_epsilon * 2.0 {
+        if depth >= max_depth || radius <= hit_epsilon * 2.0 {
             return Ok(IntervalProofOutcome::Unresolved);
         }
 
@@ -3908,12 +4333,14 @@ impl<'a> DirectQueryOps<'a> {
             shape,
             origin,
             direction,
-            start_t,
+            start_sample,
             mid_t,
+            Some(mid_sample),
             hit_epsilon,
             lipschitz_bound,
             allow_bracket,
             depth + 1,
+            max_depth,
         )?;
         match left {
             IntervalProofOutcome::Bracket { .. } => return Ok(left),
@@ -3925,16 +4352,20 @@ impl<'a> DirectQueryOps<'a> {
             shape,
             origin,
             direction,
-            mid_t,
+            mid_sample,
             end_t,
+            Some(end_sample_value),
             hit_epsilon,
             lipschitz_bound,
             allow_bracket,
             depth + 1,
+            max_depth,
         )?;
         match right {
             IntervalProofOutcome::Bracket { .. } => Ok(right),
-            IntervalProofOutcome::NoRoot { .. } => Ok(IntervalProofOutcome::NoRoot { end_t }),
+            IntervalProofOutcome::NoRoot { end_sample, .. } => {
+                Ok(IntervalProofOutcome::NoRoot { end_t, end_sample })
+            }
             IntervalProofOutcome::Unresolved => Ok(IntervalProofOutcome::Unresolved),
         }
     }
@@ -3951,98 +4382,146 @@ impl<'a> DirectQueryOps<'a> {
         if !policy.method_enabled(RaySolverMethod::SafeguardedNewtonRefinement) {
             return Ok(None);
         }
+        self.note_solver_refinement_attempt();
         let mut lo = bracket.lo;
         let mut hi = bracket.hi;
-        let mut current = hi;
-        let hi_point = [
-            origin[0] + direction[0] * hi,
-            origin[1] + direction[1] * hi,
-            origin[2] + direction[2] * hi,
-        ];
-        let mut hi_distance = self.eval_shape_distance(shape, hi_point)?;
-        let hi_epsilon = self.shape_adaptive_hit_epsilon(shape, hi, hi_point, hit_epsilon)?;
-        if hi_distance.abs() > hi_epsilon && hi_distance > 0.0 {
+        if hi.distance.abs() > hi.adaptive_epsilon && hi.distance > 0.0 {
+            self.note_solver_refinement_failure();
             return Ok(None);
         }
-
-        for _ in 0..8 {
-            let point = [
-                origin[0] + direction[0] * current,
-                origin[1] + direction[1] * current,
-                origin[2] + direction[2] * current,
-            ];
-            let value = self.eval_shape_distance(shape, point)?;
-            let adaptive = self.shape_adaptive_hit_epsilon(shape, current, point, hit_epsilon)?;
-            if value.abs() <= adaptive || (hi - lo).abs() <= adaptive {
-                self.note_solver_newton_refinement();
-                return Ok(Some(RayStepCertificate {
-                    kind: StepCertificateKind::RefinementBracket,
-                    metadata: self.certificate_metadata(
-                        policy,
-                        shape,
-                        RayStepCertificateSubjectKind::Interval,
-                        "safeguarded-newton-refinement",
-                        format!("adaptive_epsilon={adaptive:.6}"),
-                        CertificateReuseClass::RenderingAndCollision,
-                        vec![
-                            SmolStr::new("certified gradient changed"),
-                            SmolStr::new("distance semantics changed"),
-                        ],
-                    ),
-                    t_start: bracket.lo,
-                    t_end: current,
-                    no_hit_before_t_end: true,
-                    bracket: Some([lo, hi]),
-                    provenance: None,
-                }));
-            }
-
-            if value > 0.0 {
-                lo = current;
-            } else {
-                hi = current;
-                hi_distance = value;
-            }
-
-            let next = match self.certified_shape_directional_derivative(shape, point, direction)? {
-                Some((derivative, _gradient_mag)) if derivative.abs() > 1e-5 => {
-                    let candidate = current - value / derivative;
-                    if candidate > lo && candidate < hi {
-                        candidate
-                    } else {
-                        0.5 * (lo + hi)
-                    }
-                }
-                _ => return Ok(None),
-            };
-            current = next;
-        }
-
-        if hi_distance.abs() <= hit_epsilon {
+        if hi.distance.abs() <= hi.adaptive_epsilon || (hi.t - lo.t).abs() <= hi.adaptive_epsilon {
             self.note_solver_newton_refinement();
             return Ok(Some(RayStepCertificate {
                 kind: StepCertificateKind::RefinementBracket,
                 metadata: self.certificate_metadata(
+                    RequiredGuaranteeClass::IntervalBounded,
                     policy,
                     shape,
                     RayStepCertificateSubjectKind::Interval,
                     "safeguarded-newton-refinement",
-                    format!("adaptive_epsilon={hit_epsilon:.6}"),
+                    format!("adaptive_epsilon={:.6}", hi.adaptive_epsilon),
                     CertificateReuseClass::RenderingAndCollision,
                     vec![
                         SmolStr::new("certified gradient changed"),
                         SmolStr::new("distance semantics changed"),
                     ],
                 ),
-                t_start: bracket.lo,
-                t_end: hi,
+                t_start: bracket.lo.t,
+                t_end: hi.t,
                 no_hit_before_t_end: true,
-                bracket: Some([lo, hi]),
+                bracket: Some([lo.t, hi.t]),
                 provenance: None,
             }));
         }
 
+        let mut current = hi;
+
+        for _ in 0..8 {
+            if current.distance.abs() <= current.adaptive_epsilon
+                || (hi.t - lo.t).abs() <= current.adaptive_epsilon
+            {
+                self.note_solver_newton_refinement();
+                return Ok(Some(RayStepCertificate {
+                    kind: StepCertificateKind::RefinementBracket,
+                    metadata: self.certificate_metadata(
+                        RequiredGuaranteeClass::IntervalBounded,
+                        policy,
+                        shape,
+                        RayStepCertificateSubjectKind::Interval,
+                        "safeguarded-newton-refinement",
+                        format!("adaptive_epsilon={:.6}", current.adaptive_epsilon),
+                        CertificateReuseClass::RenderingAndCollision,
+                        vec![
+                            SmolStr::new("certified gradient changed"),
+                            SmolStr::new("distance semantics changed"),
+                        ],
+                    ),
+                    t_start: bracket.lo.t,
+                    t_end: current.t,
+                    no_hit_before_t_end: true,
+                    bracket: Some([lo.t, hi.t]),
+                    provenance: None,
+                }));
+            }
+
+            if current.distance > 0.0 {
+                lo = current;
+            } else {
+                hi = current;
+            }
+
+            let point = [
+                origin[0] + direction[0] * current.t,
+                origin[1] + direction[1] * current.t,
+                origin[2] + direction[2] * current.t,
+            ];
+            let next = match self.certified_shape_directional_derivative(shape, point, direction)? {
+                Some((derivative, _gradient_mag)) if derivative.abs() > 1e-5 => {
+                    let candidate = current.t - current.distance / derivative;
+                    if candidate > lo.t && candidate < hi.t {
+                        candidate
+                    } else {
+                        0.5 * (lo.t + hi.t)
+                    }
+                }
+                _ => {
+                    self.note_solver_refinement_failure();
+                    return Ok(None);
+                }
+            };
+            current = self.interval_sample(shape, origin, direction, next, hit_epsilon)?;
+        }
+
+        if hi.distance.abs() <= hi.adaptive_epsilon {
+            self.note_solver_newton_refinement();
+            return Ok(Some(RayStepCertificate {
+                kind: StepCertificateKind::RefinementBracket,
+                metadata: self.certificate_metadata(
+                    RequiredGuaranteeClass::IntervalBounded,
+                    policy,
+                    shape,
+                    RayStepCertificateSubjectKind::Interval,
+                    "safeguarded-newton-refinement",
+                    format!("adaptive_epsilon={:.6}", hi.adaptive_epsilon),
+                    CertificateReuseClass::RenderingAndCollision,
+                    vec![
+                        SmolStr::new("certified gradient changed"),
+                        SmolStr::new("distance semantics changed"),
+                    ],
+                ),
+                t_start: bracket.lo.t,
+                t_end: hi.t,
+                no_hit_before_t_end: true,
+                bracket: Some([lo.t, hi.t]),
+                provenance: None,
+            }));
+        }
+
+        self.note_solver_refinement_failure();
         Ok(None)
+    }
+
+    fn interval_sample(
+        &self,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        travel: f32,
+        hit_epsilon: f32,
+    ) -> Result<IntervalSample, QueryExecError> {
+        let point = [
+            origin[0] + direction[0] * travel,
+            origin[1] + direction[1] * travel,
+            origin[2] + direction[2] * travel,
+        ];
+        let distance = self.eval_shape_distance(shape, point)?;
+        let adaptive_epsilon =
+            self.shape_adaptive_hit_epsilon(shape, travel, point, hit_epsilon)?;
+        Ok(IntervalSample {
+            t: travel,
+            distance,
+            adaptive_epsilon,
+        })
     }
 
     fn shape_is_exact(&self, shape: &SmolStr) -> Result<bool, QueryExecError> {
@@ -4822,17 +5301,19 @@ impl<'a> DirectQueryOps<'a> {
         direction: [f32; 3],
     ) -> Result<RaySupportProbe, QueryExecError> {
         let direct = self.shape_ray_support_probe(shape, origin, direction)?;
-        if !matches!(direct, RaySupportProbe::Unavailable) {
-            return Ok(direct);
-        }
         let Some((min, max)) = self.shape_support_bounds_world(shape)? else {
-            return Ok(RaySupportProbe::Unavailable);
+            return Ok(direct);
         };
-        Ok(ray_support_interval_for_bounds(
-            SupportBounds { min, max },
-            origin,
-            direction,
-        ))
+        let bounds_probe =
+            ray_support_interval_for_bounds(SupportBounds { min, max }, origin, direction);
+        Ok(match direct {
+            RaySupportProbe::Interval(_) => direct,
+            RaySupportProbe::Rejected => match bounds_probe {
+                RaySupportProbe::Interval(_) => bounds_probe,
+                _ => direct,
+            },
+            RaySupportProbe::Unavailable => bounds_probe,
+        })
     }
 
     fn field_ray_support_probe(
@@ -5337,9 +5818,29 @@ impl<'a> DirectQueryOps<'a> {
                 };
                 Ok(Some(normalize_support_bounds(scaled)))
             }
-            TransformKind::Rotate
-            | TransformKind::AffineTransform
-            | TransformKind::Warp
+            TransformKind::Rotate => {
+                let rotation = eval_unary_value(UnaryOp::Neg, value.clone())?;
+                let mut transformed = None;
+                for corner in support_bounds_corners(bounds) {
+                    let point = runtime_binary_value(
+                        rotation.clone(),
+                        KernelValue::Vec3(corner),
+                        wr_rotate,
+                    )?;
+                    let point = expect_vec3(Some(&point), "support rotate corner")?;
+                    let point_bounds = SupportBounds {
+                        min: point,
+                        max: point,
+                    };
+                    transformed = Some(match transformed {
+                        Some(current) => merge_union_support_bounds(current, point_bounds),
+                        None => point_bounds,
+                    });
+                }
+                Ok(transformed)
+            }
+            TransformKind::AffineTransform => transform_value_support_bounds(&value, bounds),
+            TransformKind::Warp
             | TransformKind::Bend
             | TransformKind::Twist
             | TransformKind::Taper
@@ -7532,6 +8033,32 @@ fn eval_unary_value(op: UnaryOp, value: KernelValue) -> Result<KernelValue, Quer
     match (op, value) {
         (UnaryOp::Neg, KernelValue::I32(value)) => Ok(KernelValue::I32(-value)),
         (UnaryOp::Neg, KernelValue::F32(value)) => Ok(KernelValue::F32(-value)),
+        (UnaryOp::Neg, KernelValue::Vec2([x, y])) => Ok(KernelValue::Vec2([-x, -y])),
+        (UnaryOp::Neg, KernelValue::Vec3([x, y, z])) => Ok(KernelValue::Vec3([-x, -y, -z])),
+        (UnaryOp::Neg, KernelValue::Vec4([x, y, z, w])) => Ok(KernelValue::Vec4([-x, -y, -z, -w])),
+        (UnaryOp::Neg, KernelValue::Quat([x, y, z, w])) => Ok(KernelValue::Quat([-x, -y, -z, -w])),
+        (UnaryOp::Neg, KernelValue::Mat3(values)) => Ok(KernelValue::Mat3([
+            -values[0], -values[1], -values[2], -values[3], -values[4], -values[5], -values[6],
+            -values[7], -values[8],
+        ])),
+        (UnaryOp::Neg, KernelValue::Mat4(values)) => Ok(KernelValue::Mat4([
+            -values[0],
+            -values[1],
+            -values[2],
+            -values[3],
+            -values[4],
+            -values[5],
+            -values[6],
+            -values[7],
+            -values[8],
+            -values[9],
+            -values[10],
+            -values[11],
+            -values[12],
+            -values[13],
+            -values[14],
+            -values[15],
+        ])),
         (UnaryOp::Not, KernelValue::Bool(value)) => Ok(KernelValue::Bool(!value)),
         (UnaryOp::BitNot, KernelValue::I32(value)) => Ok(KernelValue::I32(!value)),
         (UnaryOp::BitNot, KernelValue::U32(value)) => Ok(KernelValue::U32(!value)),
@@ -8298,6 +8825,66 @@ fn instance_array_local_ray(
     }
 }
 
+fn pure_translation_local_ray(
+    config: &KernelValue,
+    origin: [f32; 3],
+    direction: [f32; 3],
+) -> Result<Option<([f32; 3], [f32; 3])>, QueryExecError> {
+    match config {
+        KernelValue::Vec3(translation) => Ok(Some((
+            [
+                origin[0] - translation[0],
+                origin[1] - translation[1],
+                origin[2] - translation[2],
+            ],
+            direction,
+        ))),
+        KernelValue::Struct(transform) if transform.name.as_str() == "Transform3" => {
+            let matrix = expect_struct_mat4(transform, "matrix")?;
+            let inverse = expect_struct_mat4(transform, "inverse")?;
+            if !transform3_is_pure_translation(matrix, inverse) {
+                return Ok(None);
+            }
+            Ok(Some((
+                [
+                    origin[0] + inverse[12],
+                    origin[1] + inverse[13],
+                    origin[2] + inverse[14],
+                ],
+                direction,
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn transform3_is_pure_translation(matrix: [f32; 16], inverse: [f32; 16]) -> bool {
+    const EPSILON: f32 = 1e-5;
+    let identity_linear = [
+        (0, 1.0),
+        (1, 0.0),
+        (2, 0.0),
+        (3, 0.0),
+        (4, 0.0),
+        (5, 1.0),
+        (6, 0.0),
+        (7, 0.0),
+        (8, 0.0),
+        (9, 0.0),
+        (10, 1.0),
+        (11, 0.0),
+        (15, 1.0),
+    ];
+    let linear_ok = identity_linear.iter().all(|(index, expected)| {
+        (matrix[*index] - *expected).abs() <= EPSILON
+            && (inverse[*index] - *expected).abs() <= EPSILON
+    });
+    let inverse_translation_ok = (matrix[12] + inverse[12]).abs() <= EPSILON
+        && (matrix[13] + inverse[13]).abs() <= EPSILON
+        && (matrix[14] + inverse[14]).abs() <= EPSILON;
+    linear_ok && inverse_translation_ok
+}
+
 fn mat4_mul_point(matrix: [f32; 16], point: [f32; 3]) -> [f32; 3] {
     let x = matrix[0] * point[0] + matrix[4] * point[1] + matrix[8] * point[2] + matrix[12];
     let y = matrix[1] * point[0] + matrix[5] * point[1] + matrix[9] * point[2] + matrix[13];
@@ -8431,6 +9018,18 @@ fn support_summary_value(summary: SupportSummaryParts) -> KernelValue {
 
 fn dot3(lhs: [f32; 3], rhs: [f32; 3]) -> f32 {
     lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2]
+}
+
+fn same_observability_certificate_metadata(
+    lhs: &RayStepCertificateMetadata,
+    rhs: &RayStepCertificateMetadata,
+) -> bool {
+    lhs.guarantee == rhs.guarantee
+        && lhs.proof_family == rhs.proof_family
+        && lhs.subject == rhs.subject
+        && lhs.subject_kind == rhs.subject_kind
+        && lhs.reusable_by == rhs.reusable_by
+        && lhs.invalidation_reasons == rhs.invalidation_reasons
 }
 
 impl AnalyticPrimitiveRay {

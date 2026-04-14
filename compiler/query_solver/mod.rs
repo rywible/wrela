@@ -273,19 +273,17 @@ impl RaySolverPlan {
             RaySolverPortfolioEntry {
                 method: RaySolverMethod::LipschitzSafeStepping,
                 status: lipschitz_method_status(&evidence),
-                reason: SmolStr::new("Lipschitz evidence chooses conservative ray steps"),
+                reason: SmolStr::new(lipschitz_method_reason(&evidence)),
             },
             RaySolverPortfolioEntry {
                 method: RaySolverMethod::IntervalNewtonIsolation,
                 status: interval_method_status(&evidence),
-                reason: SmolStr::new("interval no-root proofs isolate only the rays that stall"),
+                reason: SmolStr::new(interval_method_reason(&evidence)),
             },
             RaySolverPortfolioEntry {
                 method: RaySolverMethod::SafeguardedNewtonRefinement,
                 status: refinement_method_status(&evidence),
-                reason: SmolStr::new(
-                    "certified gradients may refine proven brackets with safeguarded Newton steps",
-                ),
+                reason: SmolStr::new(refinement_method_reason(&evidence)),
             },
             RaySolverPortfolioEntry {
                 method: RaySolverMethod::RepeatAwareTraversal,
@@ -536,6 +534,9 @@ fn analytic_method_status(evidence: &SemanticEvidence) -> RaySolverMethodStatus 
 }
 
 fn lipschitz_method_status(evidence: &SemanticEvidence) -> RaySolverMethodStatus {
+    if prefers_dense_default_path(evidence) {
+        return RaySolverMethodStatus::Unavailable;
+    }
     match evidence.distance.lipschitz {
         LipschitzStatus::ExactKnown | LipschitzStatus::ConservativeKnown
             if compile_trust(
@@ -553,6 +554,9 @@ fn lipschitz_method_status(evidence: &SemanticEvidence) -> RaySolverMethodStatus
 }
 
 fn interval_method_status(evidence: &SemanticEvidence) -> RaySolverMethodStatus {
+    if prefers_dense_default_path(evidence) {
+        return RaySolverMethodStatus::Unavailable;
+    }
     let status = if matches!(
         evidence.distance.interval_bounds,
         FactAvailability::Available
@@ -579,6 +583,9 @@ fn interval_method_status(evidence: &SemanticEvidence) -> RaySolverMethodStatus 
 }
 
 fn refinement_method_status(evidence: &SemanticEvidence) -> RaySolverMethodStatus {
+    if prefers_dense_default_path(evidence) {
+        return RaySolverMethodStatus::Unavailable;
+    }
     match evidence.differential.derivative {
         FactAvailability::Available
             if compile_trust(
@@ -595,16 +602,10 @@ fn refinement_method_status(evidence: &SemanticEvidence) -> RaySolverMethodStatu
 
 fn repeat_method_status(evidence: &SemanticEvidence) -> RaySolverMethodStatus {
     let availability = match evidence.differential.repetition {
-        RepetitionFact::Repeat(
-            crate::scene_ir::RepeatKind::RepeatLinear
-            | crate::scene_ir::RepeatKind::RepeatGrid
-            | crate::scene_ir::RepeatKind::RadialRepeat,
-        )
-        | RepetitionFact::IdentityAffecting(
-            crate::scene_ir::RepeatKind::RepeatLinear
-            | crate::scene_ir::RepeatKind::RepeatGrid
-            | crate::scene_ir::RepeatKind::RadialRepeat,
-        ) => FactAvailability::Available,
+        RepetitionFact::Repeat(crate::scene_ir::RepeatKind::RepeatLinear)
+        | RepetitionFact::IdentityAffecting(crate::scene_ir::RepeatKind::RepeatLinear) => {
+            FactAvailability::Available
+        }
         RepetitionFact::Unknown => FactAvailability::Unknown,
         _ => FactAvailability::Unavailable,
     };
@@ -619,6 +620,37 @@ fn repeat_method_status(evidence: &SemanticEvidence) -> RaySolverMethodStatus {
         }
         FactAvailability::Available | FactAvailability::Unknown => RaySolverMethodStatus::Available,
         FactAvailability::Unavailable => RaySolverMethodStatus::Unavailable,
+    }
+}
+
+fn prefers_dense_default_path(evidence: &SemanticEvidence) -> bool {
+    matches!(
+        evidence.differential.primitive,
+        PrimitiveFact::Single(crate::hir::FieldPrimitive::Torus)
+    )
+}
+
+fn lipschitz_method_reason(evidence: &SemanticEvidence) -> &'static str {
+    if prefers_dense_default_path(evidence) {
+        "torus remains on the dense default path until a specialized solver is performance-qualified"
+    } else {
+        "Lipschitz evidence chooses conservative ray steps"
+    }
+}
+
+fn interval_method_reason(evidence: &SemanticEvidence) -> &'static str {
+    if prefers_dense_default_path(evidence) {
+        "torus remains on the dense default path instead of advertising generic interval proofs"
+    } else {
+        "interval no-root proofs isolate only the rays that stall"
+    }
+}
+
+fn refinement_method_reason(evidence: &SemanticEvidence) -> &'static str {
+    if prefers_dense_default_path(evidence) {
+        "torus remains on the dense default path instead of advertising generic Newton refinement"
+    } else {
+        "certified gradients may refine proven brackets with safeguarded Newton steps"
     }
 }
 

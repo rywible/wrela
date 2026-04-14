@@ -1395,7 +1395,7 @@ fn primitive_capabilities(primitive: hir::FieldPrimitive) -> CapabilitySummary {
         | TrianglePrism | HexPrism => CapabilitySummary {
             semantics: DistanceSemantics::ExactSignedDistance,
             differential_support: match primitive {
-                Sphere => SceneDifferentialSupport::CertifiedGradient,
+                Sphere | Torus => SceneDifferentialSupport::CertifiedGradient,
                 _ => SceneDifferentialSupport::FiniteDifferenceFallback,
             },
             support_class: SupportClass::Bounded,
@@ -2079,6 +2079,36 @@ fn literal_vec3(x: f32, y: f32, z: f32) -> SceneValueExpr {
     }
 }
 
+fn vec3_expr(x: SceneValueExpr, y: SceneValueExpr, z: SceneValueExpr) -> SceneValueExpr {
+    SceneValueExpr::Call {
+        callee: SmolStr::new("vec3"),
+        args: vec![
+            SceneArgExpr::Positional(x),
+            SceneArgExpr::Positional(y),
+            SceneArgExpr::Positional(z),
+        ],
+    }
+}
+
+fn splat_vec3_expr(value: SceneValueExpr) -> SceneValueExpr {
+    vec3_expr(value.clone(), value.clone(), value)
+}
+
+fn length_expr(value: SceneValueExpr) -> SceneValueExpr {
+    SceneValueExpr::Call {
+        callee: SmolStr::new("length"),
+        args: vec![SceneArgExpr::Positional(value)],
+    }
+}
+
+fn binary_expr(lhs: SceneValueExpr, op: hir::BinaryOp, rhs: SceneValueExpr) -> SceneValueExpr {
+    SceneValueExpr::Binary {
+        lhs: Box::new(lhs),
+        op,
+        rhs: Box::new(rhs),
+    }
+}
+
 fn negate_expr(value: SceneValueExpr) -> SceneValueExpr {
     SceneValueExpr::Unary {
         op: hir::UnaryOp::Neg,
@@ -2114,29 +2144,118 @@ fn lower_primitive_support_expr(
             center: literal_vec3(0.0, 0.0, 0.0),
             radius: get_named_scene_arg(args, body, "radius").unwrap_or_else(|| literal_f32(1.0)),
         },
-        hir::FieldPrimitive::Box
-        | hir::FieldPrimitive::RoundedBox
-        | hir::FieldPrimitive::BoxFrame => {
-            let half = get_named_scene_arg(args, body, "half_size")
+        hir::FieldPrimitive::Box | hir::FieldPrimitive::BoxFrame => {
+            let half = get_named_scene_arg(args, body, "half")
+                .or_else(|| get_named_scene_arg(args, body, "half_size"))
                 .unwrap_or_else(|| literal_vec3(1.0, 1.0, 1.0));
             SupportExpr::Aabb {
                 min: negate_expr(half.clone()),
                 max: half,
             }
         }
-        hir::FieldPrimitive::Capsule
-        | hir::FieldPrimitive::Cylinder
-        | hir::FieldPrimitive::CappedCone
-        | hir::FieldPrimitive::Ellipsoid
-        | hir::FieldPrimitive::Torus
-        | hir::FieldPrimitive::TrianglePrism
-        | hir::FieldPrimitive::HexPrism => {
-            let radius = get_named_scene_arg(args, body, "radius")
-                .or_else(|| get_named_scene_arg(args, body, "major_radius"))
+        hir::FieldPrimitive::RoundedBox => {
+            let half = get_named_scene_arg(args, body, "half")
+                .or_else(|| get_named_scene_arg(args, body, "half_size"))
+                .unwrap_or_else(|| literal_vec3(1.0, 1.0, 1.0));
+            let radius =
+                get_named_scene_arg(args, body, "radius").unwrap_or_else(|| literal_f32(1.0));
+            let extent = binary_expr(half.clone(), hir::BinaryOp::Add, splat_vec3_expr(radius));
+            SupportExpr::Aabb {
+                min: negate_expr(extent.clone()),
+                max: extent,
+            }
+        }
+        hir::FieldPrimitive::Capsule => {
+            let a =
+                get_named_scene_arg(args, body, "a").unwrap_or_else(|| literal_vec3(0.0, 0.0, 0.0));
+            let b =
+                get_named_scene_arg(args, body, "b").unwrap_or_else(|| literal_vec3(0.0, 0.0, 0.0));
+            let radius =
+                get_named_scene_arg(args, body, "radius").unwrap_or_else(|| literal_f32(1.0));
+            let radius_vec = splat_vec3_expr(radius);
+            let min = binary_expr(
+                SceneValueExpr::Call {
+                    callee: SmolStr::new("min"),
+                    args: vec![
+                        SceneArgExpr::Positional(a.clone()),
+                        SceneArgExpr::Positional(b.clone()),
+                    ],
+                },
+                hir::BinaryOp::Sub,
+                radius_vec.clone(),
+            );
+            let max = binary_expr(
+                SceneValueExpr::Call {
+                    callee: SmolStr::new("max"),
+                    args: vec![SceneArgExpr::Positional(a), SceneArgExpr::Positional(b)],
+                },
+                hir::BinaryOp::Add,
+                radius_vec,
+            );
+            SupportExpr::Aabb { min, max }
+        }
+        hir::FieldPrimitive::Cylinder => {
+            let radius =
+                get_named_scene_arg(args, body, "radius").unwrap_or_else(|| literal_f32(1.0));
+            let half_height =
+                get_named_scene_arg(args, body, "half_height").unwrap_or_else(|| literal_f32(1.0));
+            SupportExpr::Aabb {
+                min: vec3_expr(
+                    negate_expr(radius.clone()),
+                    negate_expr(half_height.clone()),
+                    negate_expr(radius.clone()),
+                ),
+                max: vec3_expr(radius.clone(), half_height, radius),
+            }
+        }
+        hir::FieldPrimitive::CappedCone => {
+            let radius_bottom = get_named_scene_arg(args, body, "radius_bottom")
                 .unwrap_or_else(|| literal_f32(1.0));
+            let radius_top =
+                get_named_scene_arg(args, body, "radius_top").unwrap_or_else(|| literal_f32(1.0));
+            let half_height =
+                get_named_scene_arg(args, body, "half_height").unwrap_or_else(|| literal_f32(1.0));
             SupportExpr::Sphere {
                 center: literal_vec3(0.0, 0.0, 0.0),
-                radius,
+                radius: binary_expr(
+                    binary_expr(radius_bottom, hir::BinaryOp::Add, radius_top),
+                    hir::BinaryOp::Add,
+                    half_height,
+                ),
+            }
+        }
+        hir::FieldPrimitive::Ellipsoid => {
+            let radii = get_named_scene_arg(args, body, "radii")
+                .unwrap_or_else(|| literal_vec3(1.0, 1.0, 1.0));
+            SupportExpr::Aabb {
+                min: negate_expr(radii.clone()),
+                max: radii,
+            }
+        }
+        hir::FieldPrimitive::Torus => {
+            let major_radius =
+                get_named_scene_arg(args, body, "major_radius").unwrap_or_else(|| literal_f32(1.0));
+            let minor_radius =
+                get_named_scene_arg(args, body, "minor_radius").unwrap_or_else(|| literal_f32(1.0));
+            let outer = binary_expr(major_radius, hir::BinaryOp::Add, minor_radius.clone());
+            SupportExpr::Aabb {
+                min: vec3_expr(
+                    negate_expr(outer.clone()),
+                    negate_expr(minor_radius.clone()),
+                    negate_expr(outer.clone()),
+                ),
+                max: vec3_expr(outer.clone(), minor_radius, outer),
+            }
+        }
+        hir::FieldPrimitive::TrianglePrism | hir::FieldPrimitive::HexPrism => {
+            let half = get_named_scene_arg(args, body, "half")
+                .or_else(|| get_named_scene_arg(args, body, "half_size"))
+                .unwrap_or_else(|| literal_vec3(1.0, 1.0, 1.0));
+            let half_height =
+                get_named_scene_arg(args, body, "half_height").unwrap_or_else(|| literal_f32(1.0));
+            SupportExpr::Sphere {
+                center: literal_vec3(0.0, 0.0, 0.0),
+                radius: binary_expr(length_expr(half), hir::BinaryOp::Add, half_height),
             }
         }
         hir::FieldPrimitive::Plane | hir::FieldPrimitive::Cone | hir::FieldPrimitive::Slab => {
@@ -2470,6 +2589,66 @@ mod tests {
         let node = parse(source);
         let root = ast::Root::cast(node).expect("root");
         hir_lower::lower(root)
+    }
+
+    fn eval_scene_vec3(expr: &SceneValueExpr) -> [f32; 3] {
+        match expr {
+            SceneValueExpr::Call { callee, args } if callee.as_str() == "vec3" => {
+                assert_eq!(args.len(), 3);
+                let mut values = [0.0; 3];
+                for (index, arg) in args.iter().enumerate() {
+                    let SceneArgExpr::Positional(value) = arg else {
+                        panic!("expected positional vec3 argument at {index}, got {arg:?}");
+                    };
+                    values[index] = scene_value_constant_f32(value).expect("constant vec3 lane");
+                }
+                values
+            }
+            SceneValueExpr::Unary {
+                op: hir::UnaryOp::Neg,
+                expr,
+            } => {
+                let value = eval_scene_vec3(expr);
+                [-value[0], -value[1], -value[2]]
+            }
+            SceneValueExpr::Binary {
+                lhs,
+                op: hir::BinaryOp::Add,
+                rhs,
+            } => {
+                let lhs = eval_scene_vec3(lhs);
+                let rhs = eval_scene_vec3(rhs);
+                [lhs[0] + rhs[0], lhs[1] + rhs[1], lhs[2] + rhs[2]]
+            }
+            SceneValueExpr::Binary {
+                lhs,
+                op: hir::BinaryOp::Sub,
+                rhs,
+            } => {
+                let lhs = eval_scene_vec3(lhs);
+                let rhs = eval_scene_vec3(rhs);
+                [lhs[0] - rhs[0], lhs[1] - rhs[1], lhs[2] - rhs[2]]
+            }
+            other => panic!("expected constant vec3 expression, got {other:?}"),
+        }
+    }
+
+    fn assert_scene_vec3(expr: &SceneValueExpr, expected: [f32; 3]) {
+        let actual = eval_scene_vec3(expr);
+        for index in 0..3 {
+            assert!(
+                (actual[index] - expected[index]).abs() <= 1e-6,
+                "expected {expected:?}, got {actual:?}"
+            );
+        }
+    }
+
+    fn assert_support_aabb(expr: &SupportExpr, expected_min: [f32; 3], expected_max: [f32; 3]) {
+        let SupportExpr::Aabb { min, max } = expr else {
+            panic!("expected Aabb support expr, got {expr:?}");
+        };
+        assert_scene_vec3(min, expected_min);
+        assert_scene_vec3(max, expected_max);
     }
 
     #[test]
@@ -2871,6 +3050,42 @@ field conservative distance instance_array_field(p: Vec3) -> F32 {
             )),
             other => panic!("expected instance array support node, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn lowers_conservative_primitive_support_bounds_for_torus_and_rounded_box() {
+        let source = r#"
+field exact distance torus_field(p: Vec3) -> F32 {
+    torus(major_radius = 2.0, minor_radius = 0.5)
+}
+
+field conservative distance rounded_box_field(p: Vec3) -> F32 {
+    rounded_box(half = vec3(1.0, 2.0, 3.0), radius = 0.25)
+}
+"#;
+        let module = lower_inline_module_from_source(source);
+        let scene = lower_module(&module);
+
+        let torus = scene.fields.get("torus_field").expect("torus field");
+        assert_eq!(torus.support_class, SupportClass::Bounded);
+        assert!(torus.can_coarse_support_pruning);
+        assert_eq!(
+            torus.analysis.differential_support,
+            SceneDifferentialSupport::CertifiedGradient
+        );
+        assert_support_aabb(&torus.support_expr, [-2.5, -0.5, -2.5], [2.5, 0.5, 2.5]);
+
+        let rounded_box = scene
+            .fields
+            .get("rounded_box_field")
+            .expect("rounded box field");
+        assert_eq!(rounded_box.support_class, SupportClass::Bounded);
+        assert!(rounded_box.can_coarse_support_pruning);
+        assert_support_aabb(
+            &rounded_box.support_expr,
+            [-1.25, -2.25, -3.25],
+            [1.25, 2.25, 3.25],
+        );
     }
 
     #[test]

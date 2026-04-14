@@ -16,7 +16,8 @@ use wrela::presentation_exec::{
 };
 use wrela::presentation_plan::{PresentationPassKind, PresentationPlan};
 use wrela::query_exec::{
-    QueryExecContext, stable_region_scene_capture_id, stable_region_snapshot_handle,
+    QueryExecContext, QueryTraceSolverMode, stable_region_scene_capture_id,
+    stable_region_snapshot_handle,
 };
 use wrela::query_plan::DispatchBackend;
 use wrela::query_solver::RaySolverIntentDisposition;
@@ -171,6 +172,7 @@ fn presentation_fixture(
         },
         compatibility_projection: None,
         execution_policy: presentation_execution_policy(128),
+        query_trace_solver_mode: QueryTraceSolverMode::Hybrid,
         quality_override: None,
         backend,
     };
@@ -236,6 +238,7 @@ fn presentation_fixture_with_state(
         },
         compatibility_projection: None,
         execution_policy: presentation_execution_policy(128),
+        query_trace_solver_mode: QueryTraceSolverMode::Hybrid,
         quality_override: None,
         backend,
     };
@@ -473,6 +476,9 @@ fn cpu_first_color_path_materializes_surface_participants_and_color_attachments(
     assert!(rendered_frame_cost.contains("acceleration_node_visits="));
     assert!(rendered_frame_cost.contains("cache_brick_visits="));
     assert!(rendered_frame_cost.contains("interval_subdivisions="));
+    assert!(rendered_frame_cost.contains("solver_relaxed_attempts="));
+    assert!(rendered_frame_cost.contains("solver_interval_attempts="));
+    assert!(rendered_frame_cost.contains("solver_repeat_cells_enumerated="));
     assert_eq!(
         result
             .metrics
@@ -571,6 +577,31 @@ fn cpu_first_color_path_materializes_surface_participants_and_color_attachments(
     assert!(max_lane(color_value(&color[5])) > 0.0);
     assert!(!motion_valid(&motion[5]));
     assert!(!motion_disoccluded(&motion[0]));
+}
+
+#[test]
+fn cpu_first_color_frame_cost_report_exposes_solver_counters() {
+    let (plan, ctx, input) = presentation_fixture(DispatchBackend::Cpu);
+    let result = execute_plan(&ctx, &plan, &input).expect("cpu presentation execution");
+    let rendered_frame_cost =
+        wrela::presentation_exec::render_frame_cost_report(&result.frame_cost);
+    assert!(rendered_frame_cost.contains("solver_relaxed_attempts="));
+    assert!(rendered_frame_cost.contains("solver_interval_attempts="));
+    assert!(rendered_frame_cost.contains("solver_repeat_cells_enumerated="));
+    let frame_cost_json =
+        serde_json::to_value(&result.frame_cost).expect("serialize frame cost report");
+    assert_eq!(
+        frame_cost_json
+            .pointer("/solver_relaxed_attempts")
+            .and_then(|value| value.as_u64()),
+        Some(0)
+    );
+    assert_eq!(
+        frame_cost_json
+            .pointer("/solver_repeat_cells_enumerated")
+            .and_then(|value| value.as_u64()),
+        Some(0)
+    );
 }
 
 #[test]

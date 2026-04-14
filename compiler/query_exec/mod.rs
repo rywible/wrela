@@ -44,6 +44,21 @@ pub use region::{
 };
 pub use world::{WorldQuerySemantics, world_query_semantics};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QueryTraceSolverMode {
+    Hybrid,
+    DenseOnly,
+}
+
+impl QueryTraceSolverMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Hybrid => "hybrid",
+            Self::DenseOnly => "dense-only",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchQueryExecutionTrace {
     pub contract_id: QueryContractId,
@@ -92,6 +107,23 @@ pub struct QueryExecutionObservability {
     pub cache_brick_misses: u32,
     pub accepted_relaxed_steps: u32,
     pub rejected_relaxed_steps: u32,
+    pub solver_relaxed_attempts: u32,
+    pub solver_relaxed_no_root_advances: u32,
+    pub solver_relaxed_brackets: u32,
+    pub solver_relaxed_unresolved: u32,
+    pub solver_interval_attempts: u32,
+    pub solver_interval_no_root_advances: u32,
+    pub solver_interval_brackets: u32,
+    pub solver_interval_unresolved: u32,
+    pub solver_refinement_attempts: u32,
+    pub solver_refinement_failures: u32,
+    pub solver_repeat_attempts: u32,
+    pub solver_repeat_supported: u32,
+    pub solver_repeat_inapplicable: u32,
+    pub solver_repeat_unsupported: u32,
+    pub solver_repeat_unsupported_form: u32,
+    pub solver_repeat_unsupported_bounds: u32,
+    pub solver_repeat_cells_enumerated: u32,
     pub analytic_transformed_hits: u32,
     pub interval_subdivisions: u32,
     pub interval_proof_successes: u32,
@@ -413,6 +445,24 @@ pub fn execute_batch_query_with_snapshot_on(
     plan: &KernelBatchQueryPlan,
     args: &[KernelValue],
 ) -> Result<(KernelValue, BatchQueryExecutionTrace), QueryExecError> {
+    execute_batch_query_with_solver_mode_with_snapshot_on(
+        ctx,
+        requested_backend,
+        snapshot,
+        plan,
+        args,
+        QueryTraceSolverMode::Hybrid,
+    )
+}
+
+pub fn execute_batch_query_with_solver_mode_with_snapshot_on(
+    ctx: &QueryExecContext,
+    requested_backend: DispatchBackend,
+    snapshot: Option<&WorldSnapshotHandle>,
+    plan: &KernelBatchQueryPlan,
+    args: &[KernelValue],
+    solver_mode: QueryTraceSolverMode,
+) -> Result<(KernelValue, BatchQueryExecutionTrace), QueryExecError> {
     let identity = trace_identity(plan.contract_id)?;
     let item_count = batch_query_item_count(plan, args)?;
     let plan_trace = interpret_batch_query(plan, item_count);
@@ -435,7 +485,13 @@ pub fn execute_batch_query_with_snapshot_on(
             &plan_trace,
         )?,
         DispatchBackend::Cpu | DispatchBackend::Auto => {
-            cpu::execute_batch_query_with_snapshot_observability(ctx, snapshot, plan, args)?
+            cpu::execute_batch_query_with_solver_mode_with_snapshot_observability(
+                ctx,
+                snapshot,
+                plan,
+                args,
+                solver_mode,
+            )?
         }
     };
     let cost_report = cost::batch_cost_report(backend, plan, &plan_trace, &observability);

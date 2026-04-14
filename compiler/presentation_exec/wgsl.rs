@@ -25,11 +25,12 @@ use crate::presentation_plan::{
     PresentationPlan, ShadePrimaryPassContract, SurfaceResolvePassContract,
     TemporalResolvePassContract,
 };
+use crate::query_exec::QueryExecContext;
 use crate::query_exec::cpu::{default_medium, default_surface};
+use crate::query_exec::execute_batch_query_with_solver_mode_with_snapshot_on;
 use crate::query_exec::wgsl::{
     compiled_pipeline, encode_slice, encode_value, native_wgpu_context, readback_storage_buffer,
 };
-use crate::query_exec::{QueryExecContext, execute_batch_query_with_snapshot_on};
 use crate::query_plan::{BatchQueryPlan, DispatchBackend};
 use smol_str::SmolStr;
 use std::time::Instant;
@@ -151,17 +152,19 @@ pub(super) fn execute_plan(
                         .iter()
                         .map(|index| rays[*index].clone())
                         .collect::<Vec<_>>();
-                    let (active_hits, mut query_trace) = execute_batch_query_with_snapshot_on(
-                        ctx,
-                        DispatchBackend::Wgsl,
-                        Some(current_snapshot),
-                        &batch_plan,
-                        &[
-                            input.region_capture_value(),
-                            input.frame_domain.clone(),
-                            KernelValue::Array(active_rays),
-                        ],
-                    )?;
+                    let (active_hits, mut query_trace) =
+                        execute_batch_query_with_solver_mode_with_snapshot_on(
+                            ctx,
+                            DispatchBackend::Wgsl,
+                            Some(current_snapshot),
+                            &batch_plan,
+                            &[
+                                input.region_capture_value(),
+                                input.frame_domain.clone(),
+                                KernelValue::Array(active_rays),
+                            ],
+                            input.query_trace_solver_mode,
+                        )?;
                     query_trace.observability.screen_sample_count = screen_samples.len() as u32;
                     query_trace.observability.miss_count = query_trace
                         .observability
@@ -177,17 +180,19 @@ pub(super) fn execute_plan(
                         query_trace,
                     )
                 } else {
-                    let (hits, query_trace) = execute_batch_query_with_snapshot_on(
-                        ctx,
-                        DispatchBackend::Wgsl,
-                        Some(current_snapshot),
-                        &batch_plan,
-                        &[
-                            input.region_capture_value(),
-                            input.frame_domain.clone(),
-                            KernelValue::Array(rays),
-                        ],
-                    )?;
+                    let (hits, query_trace) =
+                        execute_batch_query_with_solver_mode_with_snapshot_on(
+                            ctx,
+                            DispatchBackend::Wgsl,
+                            Some(current_snapshot),
+                            &batch_plan,
+                            &[
+                                input.region_capture_value(),
+                                input.frame_domain.clone(),
+                                KernelValue::Array(rays),
+                            ],
+                            input.query_trace_solver_mode,
+                        )?;
                     (
                         expand_internal_hits(
                             &expect_array(&hits)?.to_vec(),
@@ -540,6 +545,7 @@ fn execute_surface_resolve(
             ctx,
             backend,
             current_snapshot,
+            input.query_trace_solver_mode,
             contract.query_contract,
             &[
                 input.region_capture_value(),
@@ -575,6 +581,7 @@ fn execute_surface_resolve(
         ctx,
         backend,
         current_snapshot,
+        input.query_trace_solver_mode,
         contract.query_contract,
         &[
             input.region_capture_value(),
@@ -650,6 +657,7 @@ fn execute_participants_resolve(
                 ctx,
                 backend,
                 current_snapshot,
+                input.query_trace_solver_mode,
                 query_contract,
                 &[
                     input.region_capture_value(),
@@ -696,6 +704,7 @@ fn execute_participants_resolve(
                 ctx,
                 backend,
                 current_snapshot,
+                input.query_trace_solver_mode,
                 query_contract,
                 &[
                     input.region_capture_value(),

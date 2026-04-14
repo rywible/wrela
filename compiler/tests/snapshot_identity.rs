@@ -15,7 +15,7 @@ use wrela::presentation_exec::{
 };
 use wrela::presentation_plan::PresentationPlan;
 use wrela::query_exec::{
-    QueryExecContext, QueryExecError, execute_world_query_with_snapshot_on,
+    QueryExecContext, QueryExecError, QueryTraceSolverMode, execute_world_query_with_snapshot_on,
     execute_world_query_with_trace_on, stable_region_snapshot_handle, stable_shape_snapshot_handle,
 };
 use wrela::query_plan::{DispatchBackend, WorldQueryKind, WorldQueryPlan};
@@ -176,6 +176,7 @@ fn presentation_input(
         },
         compatibility_projection: None,
         execution_policy: presentation_execution_policy(),
+        query_trace_solver_mode: QueryTraceSolverMode::Hybrid,
         quality_override: None,
         backend: DispatchBackend::Cpu,
     }
@@ -261,6 +262,19 @@ fn query_traces_and_presentation_history_expose_snapshot_identity() {
     assert_eq!(
         history.snapshot_handle,
         stable_region_snapshot_handle(&region_name)
+    );
+    let frame_cost_json = serde_json::to_value(&result.frame_cost).expect("serialize frame cost");
+    assert_eq!(
+        frame_cost_json
+            .pointer("/solver_relaxed_attempts")
+            .and_then(|value| value.as_u64()),
+        Some(0)
+    );
+    assert_eq!(
+        frame_cost_json
+            .pointer("/solver_repeat_attempts")
+            .and_then(|value| value.as_u64()),
+        Some(0)
     );
 }
 

@@ -30,8 +30,8 @@ use crate::presentation_contract::{
 use crate::presentation_plan::{PresentationPlan, PrimaryVisibilityPassContract};
 use crate::query_exec::cpu::DirectQueryEvaluator;
 use crate::query_exec::{
-    BatchQueryExecutionTrace, QueryExecContext, QueryExecError,
-    execute_batch_query_with_snapshot_on,
+    BatchQueryExecutionTrace, QueryExecContext, QueryExecError, QueryTraceSolverMode,
+    execute_batch_query_with_solver_mode_with_snapshot_on,
 };
 use crate::query_plan::{ArtifactContract, ArtifactSchema, BatchQueryPlan, DispatchBackend};
 use crate::query_solver::{
@@ -88,6 +88,7 @@ pub struct PresentationExecutionInput {
     pub lighting: PresentationLightingInputs,
     pub compatibility_projection: Option<LegacyCompatibilityProjectionInput>,
     pub execution_policy: PresentationExecutionPolicy,
+    pub query_trace_solver_mode: QueryTraceSolverMode,
     pub quality_override: Option<RealtimeQualityState>,
     pub backend: DispatchBackend,
 }
@@ -160,10 +161,28 @@ pub struct PresentationMetrics {
     pub cache_brick_misses: u32,
     pub accepted_relaxed_steps: u32,
     pub rejected_relaxed_steps: u32,
+    pub solver_relaxed_attempts: u32,
+    pub solver_relaxed_no_root_advances: u32,
+    pub solver_relaxed_brackets: u32,
+    pub solver_relaxed_unresolved: u32,
+    pub solver_interval_attempts: u32,
+    pub solver_interval_no_root_advances: u32,
+    pub solver_interval_brackets: u32,
+    pub solver_interval_unresolved: u32,
+    pub solver_refinement_attempts: u32,
+    pub solver_refinement_failures: u32,
+    pub solver_repeat_attempts: u32,
+    pub solver_repeat_supported: u32,
+    pub solver_repeat_inapplicable: u32,
+    pub solver_repeat_unsupported: u32,
+    pub solver_repeat_unsupported_form: u32,
+    pub solver_repeat_unsupported_bounds: u32,
+    pub solver_repeat_cells_enumerated: u32,
     pub analytic_transformed_hits: u32,
     pub interval_subdivisions: u32,
     pub interval_proof_successes: u32,
     pub observer_continuation_seed_hits: u32,
+    pub field_samples: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -939,6 +958,7 @@ fn execute_batch_contract(
     ctx: &QueryExecContext,
     backend: DispatchBackend,
     snapshot: &WorldSnapshotHandle,
+    solver_mode: QueryTraceSolverMode,
     contract_id: crate::query_contract::QueryContractId,
     args: &[KernelValue],
 ) -> Result<(Vec<KernelValue>, BatchQueryExecutionTrace), PresentationExecError> {
@@ -949,8 +969,14 @@ fn execute_batch_contract(
             }
         })?,
     );
-    let (values, trace) =
-        execute_batch_query_with_snapshot_on(ctx, backend, Some(snapshot), &batch_plan, args)?;
+    let (values, trace) = execute_batch_query_with_solver_mode_with_snapshot_on(
+        ctx,
+        backend,
+        Some(snapshot),
+        &batch_plan,
+        args,
+        solver_mode,
+    )?;
     Ok((expect_array(&values)?.to_vec(), trace))
 }
 
@@ -1265,10 +1291,28 @@ fn presentation_metrics(
         cache_brick_misses: observability.cache_brick_misses,
         accepted_relaxed_steps: observability.accepted_relaxed_steps,
         rejected_relaxed_steps: observability.rejected_relaxed_steps,
+        solver_relaxed_attempts: observability.solver_relaxed_attempts,
+        solver_relaxed_no_root_advances: observability.solver_relaxed_no_root_advances,
+        solver_relaxed_brackets: observability.solver_relaxed_brackets,
+        solver_relaxed_unresolved: observability.solver_relaxed_unresolved,
+        solver_interval_attempts: observability.solver_interval_attempts,
+        solver_interval_no_root_advances: observability.solver_interval_no_root_advances,
+        solver_interval_brackets: observability.solver_interval_brackets,
+        solver_interval_unresolved: observability.solver_interval_unresolved,
+        solver_refinement_attempts: observability.solver_refinement_attempts,
+        solver_refinement_failures: observability.solver_refinement_failures,
+        solver_repeat_attempts: observability.solver_repeat_attempts,
+        solver_repeat_supported: observability.solver_repeat_supported,
+        solver_repeat_inapplicable: observability.solver_repeat_inapplicable,
+        solver_repeat_unsupported: observability.solver_repeat_unsupported,
+        solver_repeat_unsupported_form: observability.solver_repeat_unsupported_form,
+        solver_repeat_unsupported_bounds: observability.solver_repeat_unsupported_bounds,
+        solver_repeat_cells_enumerated: observability.solver_repeat_cells_enumerated,
         analytic_transformed_hits: observability.analytic_transformed_hits,
         interval_subdivisions: observability.interval_subdivisions,
         interval_proof_successes: observability.interval_proof_successes,
         observer_continuation_seed_hits: observability.observer_continuation_seed_hits,
+        field_samples: observability.field_samples,
     }
 }
 
@@ -1497,10 +1541,28 @@ pub(crate) fn build_frame_cost_report(
         cache_brick_misses: metrics.cache_brick_misses,
         accepted_relaxed_steps: metrics.accepted_relaxed_steps,
         rejected_relaxed_steps: metrics.rejected_relaxed_steps,
+        solver_relaxed_attempts: metrics.solver_relaxed_attempts,
+        solver_relaxed_no_root_advances: metrics.solver_relaxed_no_root_advances,
+        solver_relaxed_brackets: metrics.solver_relaxed_brackets,
+        solver_relaxed_unresolved: metrics.solver_relaxed_unresolved,
+        solver_interval_attempts: metrics.solver_interval_attempts,
+        solver_interval_no_root_advances: metrics.solver_interval_no_root_advances,
+        solver_interval_brackets: metrics.solver_interval_brackets,
+        solver_interval_unresolved: metrics.solver_interval_unresolved,
+        solver_refinement_attempts: metrics.solver_refinement_attempts,
+        solver_refinement_failures: metrics.solver_refinement_failures,
+        solver_repeat_attempts: metrics.solver_repeat_attempts,
+        solver_repeat_supported: metrics.solver_repeat_supported,
+        solver_repeat_inapplicable: metrics.solver_repeat_inapplicable,
+        solver_repeat_unsupported: metrics.solver_repeat_unsupported,
+        solver_repeat_unsupported_form: metrics.solver_repeat_unsupported_form,
+        solver_repeat_unsupported_bounds: metrics.solver_repeat_unsupported_bounds,
+        solver_repeat_cells_enumerated: metrics.solver_repeat_cells_enumerated,
         analytic_transformed_hits: metrics.analytic_transformed_hits,
         interval_subdivisions: metrics.interval_subdivisions,
         interval_proof_successes: metrics.interval_proof_successes,
         observer_continuation_seed_hits: metrics.observer_continuation_seed_hits,
+        field_samples: metrics.field_samples,
         attachment_bytes: attachment_byte_reports(attachments),
         passes,
         active_acceleration_artifacts: deduped_artifacts.into_values().collect(),

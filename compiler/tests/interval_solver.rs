@@ -23,6 +23,10 @@ field exact distance sphere_field(p: Vec3) -> F32 {
     sphere(radius = 1.0)
 }
 
+field exact distance torus_field(p: Vec3) -> F32 {
+    torus(major_radius = 0.72, minor_radius = 0.22)
+}
+
 field conservative distance opaque_field(p: Vec3) -> F32 {
     support = Support3(bounds=Bounds3(
         min=vec3(-1.0, -1.0, -1.0),
@@ -89,6 +93,53 @@ fn ray_solver_plan_reports_interval_certificate_shape_for_trusted_exact_sphere()
             RaySolverMethod::LipschitzSafeStepping,
             RaySolverMethod::IntervalNewtonIsolation,
             RaySolverMethod::SafeguardedNewtonRefinement,
+        ]
+    );
+}
+
+#[test]
+fn ray_solver_plan_keeps_torus_on_dense_default_path() {
+    let module = lower_inline_module_from_source(interval_fixture_source());
+    let scene = scene_ir::lower_module(&module);
+    let torus = scene.fields.get("torus_field").expect("torus field");
+
+    let solver = wrela::query_solver::RaySolverPlan::for_contract(
+        query_contract::SPATIAL_NEAREST_WORLD,
+        Some(SemanticEvidence::for_field_scene(torus)),
+    )
+    .expect("torus solver plan");
+
+    assert!(!solver.method_enabled(RaySolverMethod::LipschitzSafeStepping));
+    assert!(!solver.method_enabled(RaySolverMethod::IntervalNewtonIsolation));
+    assert!(!solver.method_enabled(RaySolverMethod::SafeguardedNewtonRefinement));
+    assert_eq!(
+        solver.certificate.method,
+        RaySolverMethod::DenseSphereTracing
+    );
+    assert_eq!(
+        solver.certificate.hit_bracket,
+        RaySolverHitBracketStatus::Unavailable
+    );
+    assert_eq!(
+        solver.certificate.no_closer_hit_proof,
+        RaySolverNoCloserHitProof::Available
+    );
+    assert!(
+        !solver.mixed_selections().iter().any(|selection| {
+            matches!(
+                selection.method,
+                RaySolverMethod::LipschitzSafeStepping
+                    | RaySolverMethod::IntervalNewtonIsolation
+                    | RaySolverMethod::SafeguardedNewtonRefinement
+            )
+        }),
+        "torus should not advertise the generic relaxed/interval/refinement stack by default"
+    );
+    assert_eq!(
+        solver.diagnostic_summary().methods,
+        vec![
+            RaySolverMethod::DenseSphereTracing,
+            RaySolverMethod::SupportBoundCandidateRejection,
         ]
     );
 }

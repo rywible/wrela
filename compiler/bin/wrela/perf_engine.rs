@@ -1,8 +1,8 @@
 use super::command_handlers::{
     self, BenchmarkManifest, DifferentialPipeline, KpiThresholds, PerfCmpConfig, PerfGateConfig,
-    PerfProfile, PerfReport, PresentationBenchmarkReport, TestSelection, TestTarget,
-    budget_jobs_timeout, build_benchmark_selection, load_benchmark_manifest,
-    resolve_budget_policy_v1, resolve_test_target,
+    PerfProfile, PerfReport, PresentationBenchmarkComparison, PresentationBenchmarkReport,
+    TestSelection, TestTarget, budget_jobs_timeout, build_benchmark_selection,
+    load_benchmark_manifest, resolve_budget_policy_v1, resolve_test_target,
 };
 use super::contracts::{EXIT_CODEGEN, EXIT_OK, EXIT_USAGE, OutputFormat};
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,7 @@ use wrela::perf_target::{
     PerfClosureLaneStatus, PerfClosureLaneStatusReport, PerfClosureProfile, PerfClosureReport,
     quality_degradation_step_name,
 };
+use wrela::query_exec::QueryTraceSolverMode;
 
 pub(super) struct PerfCommandInput {
     pub(super) trace: bool,
@@ -419,12 +420,13 @@ pub(super) fn run_perf_harness(
     EXIT_OK
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct PresentationDebugCommandOutput {
     view: String,
     region: String,
     domain: String,
     backend: String,
+    query_trace_solver_mode: String,
     frames_executed: u32,
     frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
     #[serde(default)]
@@ -434,6 +436,36 @@ struct PresentationDebugCommandOutput {
 struct PresentationBenchmarkReportCollection {
     reports: Vec<PresentationBenchmarkReport>,
     errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PresentationAggregatedMetrics {
+    frame_time_ns: u128,
+    field_samples: u32,
+    average_trace_steps: f32,
+    candidate_count_before_pruning: u32,
+    candidate_count_after_pruning: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PresentationAggregatedSolverCounters {
+    solver_relaxed_attempts: u64,
+    solver_relaxed_no_root_advances: u64,
+    solver_relaxed_brackets: u64,
+    solver_relaxed_unresolved: u64,
+    solver_interval_attempts: u64,
+    solver_interval_no_root_advances: u64,
+    solver_interval_brackets: u64,
+    solver_interval_unresolved: u64,
+    solver_refinement_attempts: u64,
+    solver_refinement_failures: u64,
+    solver_repeat_attempts: u64,
+    solver_repeat_supported: u64,
+    solver_repeat_inapplicable: u64,
+    solver_repeat_unsupported: u64,
+    solver_repeat_unsupported_form: u64,
+    solver_repeat_unsupported_bounds: u64,
+    solver_repeat_cells_enumerated: u64,
 }
 
 fn collect_presentation_benchmark_reports(
@@ -465,6 +497,35 @@ fn run_presentation_benchmark_report(
     scenario: &command_handlers::BenchmarkScenario,
     spec: &command_handlers::BenchmarkPresentationSpec,
 ) -> Result<PresentationBenchmarkReport, String> {
+    let hybrid = run_presentation_benchmark_report_for_mode(
+        current_exe,
+        benchmark_root,
+        scenario,
+        spec,
+        QueryTraceSolverMode::Hybrid,
+    )?;
+    let dense_only = run_presentation_benchmark_report_for_mode(
+        current_exe,
+        benchmark_root,
+        scenario,
+        spec,
+        QueryTraceSolverMode::DenseOnly,
+    )?;
+    let mut report = presentation_report_from_debug_output(scenario, hybrid);
+    report.ab_comparison = Some(presentation_comparison_from_debug_reports(
+        &report,
+        &dense_only,
+    ));
+    Ok(report)
+}
+
+fn run_presentation_benchmark_report_for_mode(
+    current_exe: &Path,
+    benchmark_root: &Path,
+    scenario: &command_handlers::BenchmarkScenario,
+    spec: &command_handlers::BenchmarkPresentationSpec,
+    query_trace_solver_mode: QueryTraceSolverMode,
+) -> Result<PresentationDebugCommandOutput, String> {
     let presentation_target = spec
         .entry
         .as_ref()
@@ -476,18 +537,20 @@ fn run_presentation_benchmark_report(
         .arg("--query-backend=cpu")
         .arg("presentation-debug")
         .arg(presentation_target)
-        .args(presentation_debug_args(spec));
+        .args(presentation_debug_args(spec, query_trace_solver_mode));
     let timeout = Duration::from_millis(scenario.timeout_ms.unwrap_or(60_000));
     let output = run_command_with_timeout(&mut command, timeout).map_err(|err| {
         format!(
-            "failed to launch presentation-debug for scenario `{}`: {err}",
-            scenario.id
+            "failed to launch presentation-debug for scenario `{}` in mode `{}`: {err}",
+            scenario.id,
+            query_trace_solver_mode.as_str()
         )
     })?;
     if !output.status.success() {
         return Err(format!(
-            "presentation-debug failed for scenario `{}`: stdout={} stderr={}",
+            "presentation-debug failed for scenario `{}` in mode `{}`: stdout={} stderr={}",
             scenario.id,
+            query_trace_solver_mode.as_str(),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         ));
@@ -495,11 +558,12 @@ fn run_presentation_benchmark_report(
     let dump: PresentationDebugCommandOutput =
         serde_json::from_slice(&output.stdout).map_err(|err| {
             format!(
-                "failed to parse presentation-debug JSON for scenario `{}`: {err}",
-                scenario.id
+                "failed to parse presentation-debug JSON for scenario `{}` in mode `{}`: {err}",
+                scenario.id,
+                query_trace_solver_mode.as_str()
             )
         })?;
-    Ok(presentation_report_from_debug_output(scenario, dump))
+    Ok(dump)
 }
 
 fn run_command_with_timeout(
@@ -552,11 +616,9 @@ fn presentation_report_from_debug_output(
     dump: PresentationDebugCommandOutput,
 ) -> PresentationBenchmarkReport {
     let frame_cost_history = dump.frame_cost_history.clone();
-    let effective_history = if frame_cost_history.is_empty() {
-        vec![dump.frame_cost.clone()]
-    } else {
-        frame_cost_history.clone()
-    };
+    let effective_history =
+        effective_presentation_frame_history(&dump.frame_cost, &frame_cost_history);
+    let aggregate = aggregate_presentation_frame_metrics(&effective_history);
     let quality_history = effective_history
         .iter()
         .map(|frame| frame.quality.tier.clone())
@@ -587,8 +649,10 @@ fn presentation_report_from_debug_output(
         region: dump.region,
         domain: dump.domain,
         backend: dump.backend,
+        query_trace_solver_mode: dump.query_trace_solver_mode,
         frames_executed: dump.frames_executed.max(1),
-        frame_time_ns: effective_history.iter().map(frame_cost_total_ns).sum(),
+        frame_time_ns: aggregate.frame_time_ns,
+        field_samples: aggregate.field_samples,
         quality_tier: dump.frame_cost.quality.tier.clone(),
         target_fps: dump.frame_cost.quality.target_fps,
         internal_resolution_scale: dump.frame_cost.quality.internal_resolution_scale,
@@ -600,12 +664,169 @@ fn presentation_report_from_debug_output(
         performance_gain_sources,
         frame_cost: dump.frame_cost,
         frame_cost_history,
+        ab_comparison: None,
     }
 }
 
-fn presentation_debug_args(spec: &command_handlers::BenchmarkPresentationSpec) -> Vec<String> {
+fn presentation_comparison_from_debug_reports(
+    hybrid: &PresentationBenchmarkReport,
+    dense_only: &PresentationDebugCommandOutput,
+) -> PresentationBenchmarkComparison {
+    let hybrid_metrics = aggregate_presentation_frame_metrics(
+        &effective_presentation_frame_history(&hybrid.frame_cost, &hybrid.frame_cost_history),
+    );
+    let dense_only_metrics =
+        aggregate_presentation_frame_metrics(&effective_presentation_frame_history(
+            &dense_only.frame_cost,
+            &dense_only.frame_cost_history,
+        ));
+    let frame_time_ns_delta_vs_dense_only =
+        hybrid_metrics.frame_time_ns as i128 - dense_only_metrics.frame_time_ns as i128;
+    let frame_time_ns_delta_vs_dense_only_pct = if dense_only_metrics.frame_time_ns == 0 {
+        0.0
+    } else {
+        (frame_time_ns_delta_vs_dense_only as f64 / dense_only_metrics.frame_time_ns as f64) * 100.0
+    };
+    PresentationBenchmarkComparison {
+        dense_only_query_trace_solver_mode: dense_only.query_trace_solver_mode.clone(),
+        dense_only_frame_time_ns: dense_only_metrics.frame_time_ns,
+        frame_time_ns_delta_vs_dense_only,
+        frame_time_ns_delta_vs_dense_only_pct,
+        dense_only_average_trace_steps: dense_only_metrics.average_trace_steps,
+        average_trace_steps_delta_vs_dense_only: hybrid_metrics.average_trace_steps
+            - dense_only_metrics.average_trace_steps,
+        dense_only_field_samples: dense_only_metrics.field_samples,
+        field_samples_delta_vs_dense_only: hybrid_metrics.field_samples as i64
+            - dense_only_metrics.field_samples as i64,
+        dense_only_candidate_count_before_pruning: dense_only_metrics
+            .candidate_count_before_pruning,
+        candidate_count_before_pruning_delta_vs_dense_only: hybrid_metrics
+            .candidate_count_before_pruning
+            as i64
+            - dense_only_metrics.candidate_count_before_pruning as i64,
+        dense_only_candidate_count_after_pruning: dense_only_metrics.candidate_count_after_pruning,
+        candidate_count_after_pruning_delta_vs_dense_only: hybrid_metrics
+            .candidate_count_after_pruning
+            as i64
+            - dense_only_metrics.candidate_count_after_pruning as i64,
+    }
+}
+
+fn effective_presentation_frame_history(
+    frame_cost: &wrela::presentation_exec::PresentationFrameCostReport,
+    frame_cost_history: &[wrela::presentation_exec::PresentationFrameCostReport],
+) -> Vec<wrela::presentation_exec::PresentationFrameCostReport> {
+    if frame_cost_history.is_empty() {
+        vec![frame_cost.clone()]
+    } else {
+        frame_cost_history.to_vec()
+    }
+}
+
+fn aggregate_presentation_frame_metrics(
+    frames: &[wrela::presentation_exec::PresentationFrameCostReport],
+) -> PresentationAggregatedMetrics {
+    let mut frame_time_ns = 0u128;
+    let mut field_samples = 0u64;
+    let mut candidate_count_before_pruning = 0u64;
+    let mut candidate_count_after_pruning = 0u64;
+    let mut weighted_trace_steps = 0.0f64;
+    let mut sample_weight = 0u64;
+    for frame in frames {
+        frame_time_ns = frame_time_ns.saturating_add(frame_cost_total_ns(frame));
+        field_samples = field_samples.saturating_add(u64::from(frame.field_samples));
+        candidate_count_before_pruning = candidate_count_before_pruning
+            .saturating_add(u64::from(frame.candidate_count_before_pruning));
+        candidate_count_after_pruning = candidate_count_after_pruning
+            .saturating_add(u64::from(frame.candidate_count_after_pruning));
+        let frame_samples =
+            u64::from(frame.output_width.max(1)) * u64::from(frame.output_height.max(1));
+        sample_weight = sample_weight.saturating_add(frame_samples);
+        weighted_trace_steps += frame.average_trace_steps as f64 * frame_samples as f64;
+    }
+    PresentationAggregatedMetrics {
+        frame_time_ns,
+        field_samples: field_samples.min(u64::from(u32::MAX)) as u32,
+        average_trace_steps: if sample_weight == 0 {
+            0.0
+        } else {
+            (weighted_trace_steps / sample_weight as f64) as f32
+        },
+        candidate_count_before_pruning: candidate_count_before_pruning.min(u64::from(u32::MAX))
+            as u32,
+        candidate_count_after_pruning: candidate_count_after_pruning.min(u64::from(u32::MAX))
+            as u32,
+    }
+}
+
+fn aggregate_presentation_solver_counters(
+    frames: &[wrela::presentation_exec::PresentationFrameCostReport],
+) -> PresentationAggregatedSolverCounters {
+    let mut counters = PresentationAggregatedSolverCounters::default();
+    for frame in frames {
+        counters.solver_relaxed_attempts = counters
+            .solver_relaxed_attempts
+            .saturating_add(u64::from(frame.solver_relaxed_attempts));
+        counters.solver_relaxed_no_root_advances = counters
+            .solver_relaxed_no_root_advances
+            .saturating_add(u64::from(frame.solver_relaxed_no_root_advances));
+        counters.solver_relaxed_brackets = counters
+            .solver_relaxed_brackets
+            .saturating_add(u64::from(frame.solver_relaxed_brackets));
+        counters.solver_relaxed_unresolved = counters
+            .solver_relaxed_unresolved
+            .saturating_add(u64::from(frame.solver_relaxed_unresolved));
+        counters.solver_interval_attempts = counters
+            .solver_interval_attempts
+            .saturating_add(u64::from(frame.solver_interval_attempts));
+        counters.solver_interval_no_root_advances = counters
+            .solver_interval_no_root_advances
+            .saturating_add(u64::from(frame.solver_interval_no_root_advances));
+        counters.solver_interval_brackets = counters
+            .solver_interval_brackets
+            .saturating_add(u64::from(frame.solver_interval_brackets));
+        counters.solver_interval_unresolved = counters
+            .solver_interval_unresolved
+            .saturating_add(u64::from(frame.solver_interval_unresolved));
+        counters.solver_refinement_attempts = counters
+            .solver_refinement_attempts
+            .saturating_add(u64::from(frame.solver_refinement_attempts));
+        counters.solver_refinement_failures = counters
+            .solver_refinement_failures
+            .saturating_add(u64::from(frame.solver_refinement_failures));
+        counters.solver_repeat_attempts = counters
+            .solver_repeat_attempts
+            .saturating_add(u64::from(frame.solver_repeat_attempts));
+        counters.solver_repeat_supported = counters
+            .solver_repeat_supported
+            .saturating_add(u64::from(frame.solver_repeat_supported));
+        counters.solver_repeat_inapplicable = counters
+            .solver_repeat_inapplicable
+            .saturating_add(u64::from(frame.solver_repeat_inapplicable));
+        counters.solver_repeat_unsupported = counters
+            .solver_repeat_unsupported
+            .saturating_add(u64::from(frame.solver_repeat_unsupported));
+        counters.solver_repeat_unsupported_form = counters
+            .solver_repeat_unsupported_form
+            .saturating_add(u64::from(frame.solver_repeat_unsupported_form));
+        counters.solver_repeat_unsupported_bounds = counters
+            .solver_repeat_unsupported_bounds
+            .saturating_add(u64::from(frame.solver_repeat_unsupported_bounds));
+        counters.solver_repeat_cells_enumerated = counters
+            .solver_repeat_cells_enumerated
+            .saturating_add(u64::from(frame.solver_repeat_cells_enumerated));
+    }
+    counters
+}
+
+fn presentation_debug_args(
+    spec: &command_handlers::BenchmarkPresentationSpec,
+    query_trace_solver_mode: QueryTraceSolverMode,
+) -> Vec<String> {
     let mut args = vec![
         "--no-export".to_string(),
+        "--solver-mode".to_string(),
+        query_trace_solver_mode.as_str().to_string(),
         "--view".to_string(),
         spec.view.clone(),
         "--region".to_string(),
@@ -1019,13 +1240,18 @@ fn percentile_f32(values: &[f32], quantile: f32) -> Option<f32> {
 fn print_presentation_benchmark_reports(reports: &[PresentationBenchmarkReport]) {
     println!("presentation-benchmarks:");
     for report in reports {
+        let effective_history =
+            effective_presentation_frame_history(&report.frame_cost, &report.frame_cost_history);
+        let solver_counters = aggregate_presentation_solver_counters(&effective_history);
         println!(
-            "presentation-scenario {} test={} backend={} frames={} frame_time_ns={} quality={} target_fps={} scale={:.2} scale_history={} reconstructed_output={} bottleneck_pass={} acceleration={} gain_sources={}",
+            "presentation-scenario {} test={} backend={} query_trace_solver_mode={} frames={} frame_time_ns={} field_samples={} quality={} target_fps={} scale={:.2} scale_history={} reconstructed_output={} bottleneck_pass={} acceleration={} gain_sources={}",
             report.scenario_id,
             report.test_name,
             report.backend,
+            report.query_trace_solver_mode,
             report.frames_executed,
             report.frame_time_ns,
+            report.field_samples,
             report.quality_tier,
             report.target_fps,
             report.internal_resolution_scale,
@@ -1039,6 +1265,42 @@ fn print_presentation_benchmark_reports(reports: &[PresentationBenchmarkReport])
             report.bottleneck_pass.as_deref().unwrap_or("none"),
             report.active_acceleration_artifacts.join(","),
             report.performance_gain_sources.join(","),
+        );
+        if let Some(comparison) = &report.ab_comparison {
+            println!(
+                "  ab hybrid-vs-dense-only frame_time_ns_delta={} ({:.2}%) average_trace_steps_delta={:.3} field_samples_delta={} candidate_count_before_pruning_delta={} candidate_count_after_pruning_delta={} dense_only_frame_time_ns={} dense_only_average_trace_steps={:.3} dense_only_field_samples={} dense_only_candidate_count_before_pruning={} dense_only_candidate_count_after_pruning={}",
+                comparison.frame_time_ns_delta_vs_dense_only,
+                comparison.frame_time_ns_delta_vs_dense_only_pct,
+                comparison.average_trace_steps_delta_vs_dense_only,
+                comparison.field_samples_delta_vs_dense_only,
+                comparison.candidate_count_before_pruning_delta_vs_dense_only,
+                comparison.candidate_count_after_pruning_delta_vs_dense_only,
+                comparison.dense_only_frame_time_ns,
+                comparison.dense_only_average_trace_steps,
+                comparison.dense_only_field_samples,
+                comparison.dense_only_candidate_count_before_pruning,
+                comparison.dense_only_candidate_count_after_pruning,
+            );
+        }
+        println!(
+            "  solver counters relaxed_attempts={} relaxed_no_root_advances={} relaxed_brackets={} relaxed_unresolved={} interval_attempts={} interval_no_root_advances={} interval_brackets={} interval_unresolved={} refinement_attempts={} refinement_failures={} repeat_attempts={} repeat_supported={} repeat_inapplicable={} repeat_unsupported={} repeat_unsupported_form={} repeat_unsupported_bounds={} repeat_cells_enumerated={}",
+            solver_counters.solver_relaxed_attempts,
+            solver_counters.solver_relaxed_no_root_advances,
+            solver_counters.solver_relaxed_brackets,
+            solver_counters.solver_relaxed_unresolved,
+            solver_counters.solver_interval_attempts,
+            solver_counters.solver_interval_no_root_advances,
+            solver_counters.solver_interval_brackets,
+            solver_counters.solver_interval_unresolved,
+            solver_counters.solver_refinement_attempts,
+            solver_counters.solver_refinement_failures,
+            solver_counters.solver_repeat_attempts,
+            solver_counters.solver_repeat_supported,
+            solver_counters.solver_repeat_inapplicable,
+            solver_counters.solver_repeat_unsupported,
+            solver_counters.solver_repeat_unsupported_form,
+            solver_counters.solver_repeat_unsupported_bounds,
+            solver_counters.solver_repeat_cells_enumerated,
         );
         for pass in &report.frame_cost.passes {
             println!(
@@ -3119,7 +3381,7 @@ mod tests {
             camera_up: [0.0, 1.0, 0.0],
             vertical_fov_degrees: 48.0,
         };
-        let args = presentation_debug_args(&spec);
+        let args = presentation_debug_args(&spec, QueryTraceSolverMode::Hybrid);
         assert!(
             args.windows(2)
                 .any(|pair| pair[0] == "--width" && pair[1] == "64")
@@ -3144,6 +3406,108 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair[0] == "--domain" && pair[1] == "bench_domain")
         );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--solver-mode" && pair[1] == "hybrid")
+        );
+    }
+
+    fn sample_presentation_frame_cost(
+        internal_width: u32,
+        internal_height: u32,
+        internal_resolution_scale: f32,
+        field_samples: u32,
+        average_trace_steps: f32,
+        candidate_count_before_pruning: u32,
+        candidate_count_after_pruning: u32,
+        elapsed_micros: u128,
+    ) -> wrela::presentation_exec::PresentationFrameCostReport {
+        wrela::presentation_exec::PresentationFrameCostReport {
+            semantic_domain: "bench_domain".to_string(),
+            execution_policy: "required=best-effort selected=heuristic-solver backend=cpu"
+                .to_string(),
+            legal_degradations: vec![],
+            output_width: 64,
+            output_height: 64,
+            internal_width,
+            internal_height,
+            quality: wrela::presentation_exec::PresentationQualityReport {
+                tier: "realtime_60".to_string(),
+                target_fps: 60,
+                output_width: 64,
+                output_height: 64,
+                internal_width,
+                internal_height,
+                internal_resolution_scale,
+                achieved_native_output: internal_width == 64 && internal_height == 64,
+                reconstructed_output: internal_width != 64 || internal_height != 64,
+                temporal_mode: "TemporalAA".to_string(),
+                radiance_mode: "full".to_string(),
+                media_enabled: true,
+                half_res_participants: false,
+                hit_compaction_enabled: internal_resolution_scale < 1.0,
+                active_degradations: Vec::new(),
+            },
+            primary_hit_rate: 0.75,
+            average_trace_steps,
+            max_trace_steps: 24,
+            candidate_count_before_pruning,
+            candidate_count_after_pruning,
+            support_prune_effectiveness: 0.4,
+            tile_cull_total_tiles: 16,
+            tile_cull_active_tiles: 9,
+            tile_cull_efficiency: 0.4375,
+            surface_resolve_count: 256,
+            participant_resolve_count: 128,
+            history_reuse_rate: 0.25,
+            continuation_diagnostics: vec![],
+            acceleration_node_visits: 0,
+            union_cluster_visits: 0,
+            ray_support_interval_rejections: 0,
+            ray_support_entry_jumps: 0,
+            repeat_cell_skips: 0,
+            cache_brick_visits: 0,
+            cache_brick_hits: 0,
+            cache_brick_misses: 0,
+            accepted_relaxed_steps: 0,
+            rejected_relaxed_steps: 0,
+            analytic_transformed_hits: 0,
+            interval_subdivisions: 0,
+            interval_proof_successes: 0,
+            observer_continuation_seed_hits: 0,
+            solver_relaxed_attempts: 0,
+            solver_relaxed_no_root_advances: 0,
+            solver_relaxed_brackets: 0,
+            solver_relaxed_unresolved: 0,
+            solver_interval_attempts: 0,
+            solver_interval_no_root_advances: 0,
+            solver_interval_brackets: 0,
+            solver_interval_unresolved: 0,
+            solver_refinement_attempts: 0,
+            solver_refinement_failures: 0,
+            solver_repeat_attempts: 0,
+            solver_repeat_supported: 0,
+            solver_repeat_inapplicable: 0,
+            solver_repeat_unsupported: 0,
+            solver_repeat_unsupported_form: 0,
+            solver_repeat_unsupported_bounds: 0,
+            solver_repeat_cells_enumerated: 0,
+            field_samples,
+            attachment_bytes: vec![],
+            passes: vec![wrela::presentation_exec::PresentationPassCost {
+                pass_id: "primary.visibility".to_string(),
+                pass_kind: "primary_visibility".to_string(),
+                work_items: 1024,
+                elapsed_micros,
+                dispatch_count: 1,
+                attachment_bytes_read: 0,
+                attachment_bytes_written: 8192,
+                notes: vec![],
+            }],
+            active_acceleration_artifacts: vec![],
+            bottleneck_pass: Some("primary_visibility".to_string()),
+            performance_gain_sources: vec!["backend_speed".to_string()],
+        }
     }
 
     #[test]
@@ -3163,6 +3527,7 @@ mod tests {
             region: "bench_region".to_string(),
             domain: "bench_domain".to_string(),
             backend: "cpu".to_string(),
+            query_trace_solver_mode: "hybrid".to_string(),
             frames_executed: 2,
             frame_cost: wrela::presentation_exec::PresentationFrameCostReport {
                 semantic_domain: "bench_domain".to_string(),
@@ -3173,6 +3538,7 @@ mod tests {
                 output_height: 64,
                 internal_width: 32,
                 internal_height: 32,
+                field_samples: 512,
                 quality: wrela::presentation_exec::PresentationQualityReport {
                     tier: "realtime_60".to_string(),
                     target_fps: 60,
@@ -3220,6 +3586,23 @@ mod tests {
                 interval_subdivisions: 0,
                 interval_proof_successes: 0,
                 observer_continuation_seed_hits: 0,
+                solver_relaxed_attempts: 0,
+                solver_relaxed_no_root_advances: 0,
+                solver_relaxed_brackets: 0,
+                solver_relaxed_unresolved: 0,
+                solver_interval_attempts: 0,
+                solver_interval_no_root_advances: 0,
+                solver_interval_brackets: 0,
+                solver_interval_unresolved: 0,
+                solver_refinement_attempts: 0,
+                solver_refinement_failures: 0,
+                solver_repeat_attempts: 0,
+                solver_repeat_supported: 0,
+                solver_repeat_inapplicable: 0,
+                solver_repeat_unsupported: 0,
+                solver_repeat_unsupported_form: 0,
+                solver_repeat_unsupported_bounds: 0,
+                solver_repeat_cells_enumerated: 0,
                 attachment_bytes: vec![wrela::presentation_exec::PresentationAttachmentBytes {
                     attachment: "color".to_string(),
                     width: 64,
@@ -3251,9 +3634,10 @@ mod tests {
                     legal_degradations: vec![],
                     output_width: 64,
                     output_height: 64,
-                    internal_width: 64,
-                    internal_height: 64,
-                    quality: wrela::presentation_exec::PresentationQualityReport {
+                internal_width: 64,
+                internal_height: 64,
+                field_samples: 512,
+                quality: wrela::presentation_exec::PresentationQualityReport {
                         tier: "realtime_60".to_string(),
                         target_fps: 60,
                         output_width: 64,
@@ -3297,6 +3681,23 @@ mod tests {
                     interval_subdivisions: 0,
                     interval_proof_successes: 0,
                     observer_continuation_seed_hits: 0,
+                    solver_relaxed_attempts: 0,
+                    solver_relaxed_no_root_advances: 0,
+                    solver_relaxed_brackets: 0,
+                    solver_relaxed_unresolved: 0,
+                    solver_interval_attempts: 0,
+                    solver_interval_no_root_advances: 0,
+                    solver_interval_brackets: 0,
+                    solver_interval_unresolved: 0,
+                    solver_refinement_attempts: 0,
+                    solver_refinement_failures: 0,
+                    solver_repeat_attempts: 0,
+                    solver_repeat_supported: 0,
+                    solver_repeat_inapplicable: 0,
+                    solver_repeat_unsupported: 0,
+                    solver_repeat_unsupported_form: 0,
+                    solver_repeat_unsupported_bounds: 0,
+                    solver_repeat_cells_enumerated: 0,
                     attachment_bytes: vec![],
                     passes: vec![wrela::presentation_exec::PresentationPassCost {
                         pass_id: "primary.visibility".to_string(),
@@ -3319,9 +3720,10 @@ mod tests {
                     legal_degradations: vec!["reduce_internal_resolution".to_string()],
                     output_width: 64,
                     output_height: 64,
-                    internal_width: 32,
-                    internal_height: 32,
-                    quality: wrela::presentation_exec::PresentationQualityReport {
+                internal_width: 32,
+                internal_height: 32,
+                field_samples: 512,
+                quality: wrela::presentation_exec::PresentationQualityReport {
                         tier: "realtime_60".to_string(),
                         target_fps: 60,
                         output_width: 64,
@@ -3365,6 +3767,23 @@ mod tests {
                     interval_subdivisions: 0,
                     interval_proof_successes: 0,
                     observer_continuation_seed_hits: 0,
+                    solver_relaxed_attempts: 0,
+                    solver_relaxed_no_root_advances: 0,
+                    solver_relaxed_brackets: 0,
+                    solver_relaxed_unresolved: 0,
+                    solver_interval_attempts: 0,
+                    solver_interval_no_root_advances: 0,
+                    solver_interval_brackets: 0,
+                    solver_interval_unresolved: 0,
+                    solver_refinement_attempts: 0,
+                    solver_refinement_failures: 0,
+                    solver_repeat_attempts: 0,
+                    solver_repeat_supported: 0,
+                    solver_repeat_inapplicable: 0,
+                    solver_repeat_unsupported: 0,
+                    solver_repeat_unsupported_form: 0,
+                    solver_repeat_unsupported_bounds: 0,
+                    solver_repeat_cells_enumerated: 0,
                     attachment_bytes: vec![],
                     passes: vec![wrela::presentation_exec::PresentationPassCost {
                         pass_id: "primary.visibility".to_string(),
@@ -3390,6 +3809,8 @@ mod tests {
         assert_eq!(report.scenario_id, "presentation_fixture");
         assert_eq!(report.frames_executed, 2);
         assert_eq!(report.frame_time_ns, 3_300_000);
+        assert_eq!(report.field_samples, 1024);
+        assert_eq!(report.query_trace_solver_mode, "hybrid");
         assert_eq!(report.quality_tier, "realtime_60");
         assert_eq!(report.internal_resolution_scale, 0.5);
         assert!(report.reconstructed_output);
@@ -3400,5 +3821,63 @@ mod tests {
         );
         assert_eq!(report.frame_cost.passes.len(), 1);
         assert_eq!(report.frame_cost.passes[0].pass_kind, "primary_visibility");
+    }
+
+    #[test]
+    fn presentation_comparison_aggregates_multi_frame_solver_metrics() {
+        let scenario = command_handlers::BenchmarkScenario {
+            id: "presentation_fixture".to_string(),
+            test_name: "tests/fixture::test_ops_64".to_string(),
+            ops: 64,
+            class: "critical".to_string(),
+            min_runtime_ms: None,
+            timeout_ms: None,
+            allow_unstable: false,
+            presentation: None,
+        };
+        let hybrid_dump = PresentationDebugCommandOutput {
+            view: "bench_view".to_string(),
+            region: "bench_region".to_string(),
+            domain: "bench_domain".to_string(),
+            backend: "cpu".to_string(),
+            query_trace_solver_mode: "hybrid".to_string(),
+            frames_executed: 2,
+            frame_cost: sample_presentation_frame_cost(32, 32, 0.5, 30, 4.0, 10, 7, 2_000),
+            frame_cost_history: vec![
+                sample_presentation_frame_cost(64, 64, 1.0, 10, 2.0, 6, 4, 1_000),
+                sample_presentation_frame_cost(32, 32, 0.5, 30, 4.0, 10, 7, 2_000),
+            ],
+        };
+        let dense_only_dump = PresentationDebugCommandOutput {
+            query_trace_solver_mode: "dense-only".to_string(),
+            frame_cost: sample_presentation_frame_cost(32, 32, 0.5, 40, 5.0, 12, 9, 2_500),
+            frame_cost_history: vec![
+                sample_presentation_frame_cost(64, 64, 1.0, 20, 3.0, 8, 6, 1_500),
+                sample_presentation_frame_cost(32, 32, 0.5, 40, 5.0, 12, 9, 2_500),
+            ],
+            ..hybrid_dump.clone()
+        };
+
+        let hybrid_report = presentation_report_from_debug_output(&scenario, hybrid_dump);
+        let comparison =
+            presentation_comparison_from_debug_reports(&hybrid_report, &dense_only_dump);
+
+        assert_eq!(hybrid_report.field_samples, 40);
+        assert_eq!(comparison.dense_only_field_samples, 60);
+        assert_eq!(comparison.field_samples_delta_vs_dense_only, -20);
+        assert_eq!(comparison.dense_only_candidate_count_before_pruning, 20);
+        assert_eq!(
+            comparison.candidate_count_before_pruning_delta_vs_dense_only,
+            -4
+        );
+        assert_eq!(comparison.dense_only_candidate_count_after_pruning, 15);
+        assert_eq!(
+            comparison.candidate_count_after_pruning_delta_vs_dense_only,
+            -4
+        );
+        assert!((comparison.dense_only_average_trace_steps - 4.0).abs() < f32::EPSILON);
+        assert!((comparison.average_trace_steps_delta_vs_dense_only + 1.0).abs() < f32::EPSILON);
+        assert_eq!(comparison.dense_only_frame_time_ns, 4_000_000);
+        assert_eq!(comparison.frame_time_ns_delta_vs_dense_only, -1_000_000);
     }
 }

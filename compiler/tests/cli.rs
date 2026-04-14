@@ -1723,8 +1723,10 @@ fn cli_presentation_debug_exports_depth_normal_and_stats() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("presentation debug schema v1"));
     assert!(stdout.contains("presentation debug view=cli_plan_view backend=cpu"));
+    assert!(stdout.contains("query trace solver mode: hybrid"));
     assert!(stdout.contains("snapshot_id="));
     assert!(stdout.contains("epoch=1"));
+    assert!(stdout.contains("field samples:"));
     assert!(stdout.contains("color ppm:"));
     assert!(stdout.contains("depth ppm:"));
     assert!(stdout.contains("world normal ppm:"));
@@ -1780,6 +1782,11 @@ fn cli_presentation_debug_json_reports_frame_cost_and_quality() {
         Some(1)
     );
     assert_eq!(
+        dump.get("query_trace_solver_mode")
+            .and_then(|value| value.as_str()),
+        Some("hybrid")
+    );
+    assert_eq!(
         dump.pointer("/frame_cost/quality/tier")
             .and_then(|value| value.as_str()),
         Some("realtime_120")
@@ -1830,9 +1837,62 @@ fn cli_presentation_debug_json_reports_frame_cost_and_quality() {
             })
     );
     assert!(
+        dump.pointer("/frame_cost/solver_relaxed_attempts")
+            .and_then(|value| value.as_u64())
+            .is_some()
+    );
+    assert_eq!(
+        dump.pointer("/frame_cost/solver_repeat_cells_enumerated")
+            .and_then(|value| value.as_u64()),
+        Some(0)
+    );
+    assert!(
         dump.get("stats")
             .and_then(|value| value.as_str())
-            .is_some_and(|stats| stats.contains("quality tier=realtime_120"))
+            .is_some_and(|stats| {
+                stats.contains("quality tier=realtime_120")
+                    && stats.contains("solver_relaxed_attempts=")
+                    && stats.contains("solver_repeat_attempts=")
+            })
+    );
+}
+
+#[test]
+fn cli_presentation_debug_json_accepts_dense_only_solver_mode() {
+    let temp = workspace_tempdir();
+    write_presentation_plan_fixture(temp.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("presentation-debug")
+        .arg(temp.path())
+        .arg("--view")
+        .arg("cli_plan_view")
+        .arg("--width")
+        .arg("4")
+        .arg("--height")
+        .arg("4")
+        .arg("--solver-mode")
+        .arg("dense-only")
+        .arg("--json")
+        .output()
+        .expect("run presentation-debug json dense-only");
+    assert!(
+        output.status.success(),
+        "presentation-debug --solver-mode dense-only --json failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let dump: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("presentation-debug dense-only json");
+    assert_eq!(
+        dump.get("query_trace_solver_mode")
+            .and_then(|value| value.as_str()),
+        Some("dense-only")
+    );
+    assert!(
+        dump.pointer("/frame_cost/field_samples")
+            .and_then(|value| value.as_u64())
+            .is_some_and(|samples| samples > 0)
     );
 }
 
@@ -7779,21 +7839,51 @@ presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_rep
             .unwrap_or_else(|| panic!("missing presentation report for {scenario_id}"))
     };
     let relaxed_torus = report_for("presentation_relaxed_torus_scene");
-    assert!(
+    assert_eq!(
         relaxed_torus
-            .pointer("/frame_cost/accepted_relaxed_steps")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0)
-            > 0,
-        "expected relaxed stepping evidence in relaxed torus benchmark"
+            .get("query_trace_solver_mode")
+            .and_then(|value| value.as_str()),
+        Some("hybrid")
     );
     assert!(
         relaxed_torus
-            .pointer("/frame_cost/interval_proof_successes")
+            .pointer("/frame_cost/field_samples")
             .and_then(|value| value.as_u64())
             .unwrap_or(0)
             > 0,
-        "expected interval proof evidence in relaxed torus benchmark"
+        "expected field samples in relaxed torus benchmark report"
+    );
+    assert!(
+        relaxed_torus
+            .get("ab_comparison")
+            .and_then(|value| value.as_object())
+            .is_some_and(|comparison| {
+                comparison
+                    .get("dense_only_query_trace_solver_mode")
+                    .and_then(|value| value.as_str())
+                    == Some("dense-only")
+                    && comparison
+                        .get("frame_time_ns_delta_vs_dense_only")
+                        .and_then(|value| value.as_i64())
+                        .is_some()
+                    && comparison
+                        .get("average_trace_steps_delta_vs_dense_only")
+                        .and_then(|value| value.as_f64())
+                        .is_some()
+                    && comparison
+                        .get("field_samples_delta_vs_dense_only")
+                        .and_then(|value| value.as_i64())
+                        .is_some()
+                    && comparison
+                        .get("candidate_count_before_pruning_delta_vs_dense_only")
+                        .and_then(|value| value.as_i64())
+                        .is_some()
+                    && comparison
+                        .get("candidate_count_after_pruning_delta_vs_dense_only")
+                        .and_then(|value| value.as_i64())
+                        .is_some()
+            }),
+        "expected dense-only comparison payload in relaxed torus benchmark report"
     );
     assert!(
         relaxed_torus
@@ -7801,7 +7891,44 @@ presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_rep
             .and_then(|value| value.as_f64())
             .unwrap_or(0.0)
             > 0.0,
-        "expected average trace steps in relaxed torus benchmark report"
+        "expected trace-step accounting in relaxed torus benchmark report"
+    );
+    assert_eq!(
+        relaxed_torus
+            .pointer("/frame_cost/accepted_relaxed_steps")
+            .and_then(|value| value.as_u64()),
+        Some(0)
+    );
+    assert_eq!(
+        relaxed_torus
+            .pointer("/frame_cost/solver_interval_attempts")
+            .and_then(|value| value.as_u64()),
+        Some(0)
+    );
+    assert_eq!(
+        relaxed_torus
+            .pointer("/frame_cost/solver_relaxed_attempts")
+            .and_then(|value| value.as_u64()),
+        Some(0)
+    );
+    assert_eq!(
+        relaxed_torus
+            .pointer("/frame_cost/solver_refinement_attempts")
+            .and_then(|value| value.as_u64()),
+        Some(0)
+    );
+    assert!(
+        relaxed_torus
+            .pointer("/ab_comparison/field_samples_delta_vs_dense_only")
+            .and_then(|value| value.as_i64())
+            .is_some_and(|delta| delta <= 0),
+        "torus should not exceed dense-only field sampling in default hybrid mode"
+    );
+    assert_eq!(
+        relaxed_torus
+            .pointer("/frame_cost/solver_repeat_cells_enumerated")
+            .and_then(|value| value.as_u64()),
+        Some(0)
     );
     let repetition = report_for("presentation_repeat_linear_solver_scene");
     assert!(
@@ -7811,6 +7938,15 @@ presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_rep
             .unwrap_or(0)
             > 0,
         "expected repeat-aware traversal to skip repeated cells"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("solver counters relaxed_attempts=")
+            && stdout.contains("relaxed_no_root_advances=")
+            && stdout.contains("repeat_unsupported_form=")
+            && stdout.contains("repeat_unsupported_bounds=")
+            && stdout.contains("repeat_cells_enumerated="),
+        "expected solver counter summary in perf stdout: {stdout}"
     );
 }
 

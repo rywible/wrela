@@ -934,8 +934,10 @@ pub(super) struct PresentationBenchmarkReport {
     pub(super) region: String,
     pub(super) domain: String,
     pub(super) backend: String,
+    pub(super) query_trace_solver_mode: String,
     pub(super) frames_executed: u32,
     pub(super) frame_time_ns: u128,
+    pub(super) field_samples: u32,
     pub(super) quality_tier: String,
     pub(super) target_fps: u32,
     pub(super) internal_resolution_scale: f32,
@@ -948,6 +950,24 @@ pub(super) struct PresentationBenchmarkReport {
     pub(super) frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) frame_cost_history: Vec<wrela::presentation_exec::PresentationFrameCostReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) ab_comparison: Option<PresentationBenchmarkComparison>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(super) struct PresentationBenchmarkComparison {
+    pub(super) dense_only_query_trace_solver_mode: String,
+    pub(super) dense_only_frame_time_ns: u128,
+    pub(super) frame_time_ns_delta_vs_dense_only: i128,
+    pub(super) frame_time_ns_delta_vs_dense_only_pct: f64,
+    pub(super) dense_only_average_trace_steps: f32,
+    pub(super) average_trace_steps_delta_vs_dense_only: f32,
+    pub(super) dense_only_field_samples: u32,
+    pub(super) field_samples_delta_vs_dense_only: i64,
+    pub(super) dense_only_candidate_count_before_pruning: u32,
+    pub(super) candidate_count_before_pruning_delta_vs_dense_only: i64,
+    pub(super) dense_only_candidate_count_after_pruning: u32,
+    pub(super) candidate_count_after_pruning_delta_vs_dense_only: i64,
 }
 
 impl BenchmarkManifest {

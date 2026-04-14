@@ -2077,6 +2077,28 @@ fn query_exec_cpu_world_trace_support_intervals_cover_miss_tangent_inside_and_re
     assert!(expect_bool(field(repeat_linear_hit, "hit")));
     assert_eq!(expect_u32(field(repeat_linear_payload, "entity_id")), 37);
     assert!(repeat_linear_trace.observability.ray_support_entry_jumps > 0);
+    assert!(
+        repeat_linear_trace
+            .observability
+            .solver_methods
+            .contains(&RaySolverMethod::RepeatAwareTraversal)
+    );
+    assert_eq!(repeat_linear_trace.observability.solver_repeat_attempts, 1);
+    assert_eq!(repeat_linear_trace.observability.solver_repeat_supported, 1);
+    assert_eq!(
+        repeat_linear_trace.observability.solver_repeat_inapplicable,
+        0
+    );
+    assert_eq!(
+        repeat_linear_trace.observability.solver_repeat_unsupported,
+        0
+    );
+    assert!(
+        repeat_linear_trace
+            .observability
+            .solver_repeat_cells_enumerated
+            > 0
+    );
 
     let (repeat_grid_hit, repeat_grid_trace) = world_trace(
         "repeat_grid_region",
@@ -2089,6 +2111,19 @@ fn query_exec_cpu_world_trace_support_intervals_cover_miss_tangent_inside_and_re
     assert!(expect_bool(field(repeat_grid_hit, "hit")));
     assert_eq!(expect_u32(field(repeat_grid_payload, "entity_id")), 38);
     assert!(repeat_grid_trace.observability.ray_support_entry_jumps > 0);
+    assert!(
+        !repeat_grid_trace
+            .observability
+            .solver_methods
+            .contains(&RaySolverMethod::RepeatAwareTraversal)
+    );
+    assert_eq!(repeat_grid_trace.observability.solver_repeat_attempts, 0);
+    assert_eq!(repeat_grid_trace.observability.solver_repeat_supported, 0);
+    assert_eq!(
+        repeat_grid_trace.observability.solver_repeat_inapplicable,
+        0
+    );
+    assert_eq!(repeat_grid_trace.observability.solver_repeat_unsupported, 0);
 
     let (radial_repeat_hit, radial_repeat_trace) = world_trace(
         "radial_repeat_region",
@@ -2101,6 +2136,22 @@ fn query_exec_cpu_world_trace_support_intervals_cover_miss_tangent_inside_and_re
     assert!(expect_bool(field(radial_repeat_hit, "hit")));
     assert_eq!(expect_u32(field(radial_repeat_payload, "entity_id")), 39);
     assert!(radial_repeat_trace.observability.ray_support_entry_jumps > 0);
+    assert!(
+        !radial_repeat_trace
+            .observability
+            .solver_methods
+            .contains(&RaySolverMethod::RepeatAwareTraversal)
+    );
+    assert_eq!(radial_repeat_trace.observability.solver_repeat_attempts, 0);
+    assert_eq!(radial_repeat_trace.observability.solver_repeat_supported, 0);
+    assert_eq!(
+        radial_repeat_trace.observability.solver_repeat_inapplicable,
+        0
+    );
+    assert_eq!(
+        radial_repeat_trace.observability.solver_repeat_unsupported,
+        0
+    );
 
     let (miss_hit, miss_trace) = world_trace("miss_region", [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 6.0);
     let miss_hit = expect_struct(&miss_hit, "Hit3");
@@ -2214,7 +2265,11 @@ domain probe_domain(world: RegionCapture) {
         let dense_hit_ref = expect_struct(&dense_hit, "Hit3");
         let world_did_hit = expect_bool(field(world_hit_ref, "hit"));
         let dense_did_hit = expect_bool(field(dense_hit_ref, "hit"));
-        assert_eq!(world_did_hit, dense_did_hit);
+        assert_eq!(
+            world_did_hit, dense_did_hit,
+            "world_hit={world_did_hit} dense_hit={dense_did_hit} world_obs={:?}",
+            world_trace.observability
+        );
         if world_did_hit {
             world_hits += 1;
             dense_hits += 1;
@@ -2403,6 +2458,436 @@ fn query_exec_ray_solver_cpu_oracle_covers_analytic_dense_miss_and_provenance() 
     assert_eq!(miss_trace.observability.solver_dense_fallback_rays, 0);
     assert!(miss_trace.observability.support_pruned_candidates > 0);
     assert!(miss_trace.observability.ray_support_interval_rejections > 0);
+}
+
+#[test]
+fn query_exec_cpu_transformed_analytic_primitives_match_dense_capture_oracles() {
+    let (_, _, ctx) = typed_query_module(transformed_analytic_primitives_fixture_source());
+    let capture_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None)
+            .expect("capture trace plan"),
+    );
+    let world_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+
+    for (shape_name, region_name, origin, entity_id) in [
+        (
+            "translated_box_shape",
+            "translated_box_region",
+            [1.25, -0.10, 3.0],
+            71u32,
+        ),
+        (
+            "rotated_capsule_shape",
+            "rotated_capsule_region",
+            [0.18, 0.55, 3.0],
+            72u32,
+        ),
+        (
+            "rotated_cylinder_shape",
+            "rotated_cylinder_region",
+            [0.22, 0.4, 3.0],
+            73u32,
+        ),
+        (
+            "scaled_sphere_shape",
+            "scaled_sphere_region",
+            [0.0, 0.0, 3.0],
+            74u32,
+        ),
+    ] {
+        let ray = ray_query_with_limits(origin, [0.0, 0.0, -1.0], 8.0, 0.02, 0.001, 128);
+        let dense_oracle = execute_capture_query(
+            &ctx,
+            &capture_plan,
+            &[KernelValue::Capture(SmolStr::new(shape_name)), ray.clone()],
+        )
+        .unwrap_or_else(|error| panic!("dense capture oracle for {shape_name}: {error:?}"));
+        let (solver_hit, solver_trace) = execute_world_query_with_trace_on(
+            &ctx,
+            DispatchBackend::Cpu,
+            &world_plan,
+            &[
+                KernelValue::Capture(SmolStr::new(region_name)),
+                scene_domain(
+                    stable_region_scene_capture_id(&SmolStr::new(region_name)),
+                    1,
+                    true,
+                    false,
+                    false,
+                ),
+                ray,
+            ],
+        )
+        .unwrap_or_else(|error| panic!("solver world hit for {region_name}: {error:?}"));
+
+        let dense_ref = expect_struct(&dense_oracle, "Hit3");
+        let solver_ref = expect_struct(&solver_hit, "Hit3");
+        assert_eq!(
+            expect_bool(field(dense_ref, "hit")),
+            expect_bool(field(solver_ref, "hit")),
+            "hit parity for {shape_name}"
+        );
+        assert!(
+            expect_bool(field(solver_ref, "hit")),
+            "expected transformed analytic world hit for {shape_name}"
+        );
+        let dense_distance = expect_f32(field(dense_ref, "distance"));
+        let solver_distance = expect_f32(field(solver_ref, "distance"));
+        assert!(
+            (dense_distance - solver_distance).abs() < 0.02,
+            "distance parity for {shape_name}: dense={dense_distance} solver={solver_distance}"
+        );
+        let solver_hit_ref = expect_struct(&solver_hit, "Hit3");
+        let solver_payload = expect_struct(field(solver_hit_ref, "payload"), "Payload");
+        assert_eq!(expect_u32(field(solver_payload, "entity_id")), entity_id);
+        assert_eq!(solver_trace.observability.solver_analytic_hits, 1);
+        assert!(solver_trace.observability.analytic_transformed_hits > 0);
+        assert_eq!(solver_trace.observability.solver_dense_fallback_rays, 0);
+        assert!(
+            solver_trace
+                .observability
+                .step_certificate_kinds
+                .get(&StepCertificateKind::AnalyticHit)
+                .copied()
+                .unwrap_or_default()
+                > 0
+        );
+    }
+}
+
+#[test]
+fn query_exec_cpu_torus_default_solver_stays_on_dense_certificate_path() {
+    let (_, _, ctx) = typed_query_module(relaxed_torus_solver_fixture_source());
+    let capture_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None)
+            .expect("capture trace plan"),
+    );
+    let world_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+    let region_capture = KernelValue::Capture(SmolStr::new("relaxed_torus_region"));
+    let shape_capture = KernelValue::Capture(SmolStr::new("relaxed_torus_shape"));
+    let domain = scene_domain(
+        stable_region_scene_capture_id(&SmolStr::new("relaxed_torus_region")),
+        1,
+        true,
+        false,
+        false,
+    );
+
+    let mut world_steps = 0u32;
+    let mut dense_steps = 0u32;
+    let mut world_field_samples = 0u32;
+    let mut dense_field_samples = 0u32;
+    let mut support_entry_jumps = 0u32;
+    let mut hit_count = 0u32;
+    let mut max_distance_delta = 0.0f32;
+
+    for sample_i in 1..257 {
+        let px = (sample_i % 16) as f32 / 15.0 - 0.5;
+        let py = ((sample_i / 16) % 16) as f32 / 15.0 - 0.5;
+        let ray = ray_query_with_limits(
+            [px * 1.6, py * 1.4, 3.2],
+            normalize3([-px * 0.08, -py * 0.06, -1.0]),
+            10.0,
+            0.03,
+            0.001,
+            128,
+        );
+        let (world_hit, world_trace) = execute_world_query_with_trace_on(
+            &ctx,
+            DispatchBackend::Cpu,
+            &world_plan,
+            &[region_capture.clone(), domain.clone(), ray.clone()],
+        )
+        .expect("world relaxed torus trace");
+        let (dense_hit, dense_trace) = execute_capture_query_with_trace_on(
+            &ctx,
+            DispatchBackend::Cpu,
+            &capture_plan,
+            &[shape_capture.clone(), ray],
+        )
+        .expect("dense relaxed torus trace");
+
+        let world_hit_ref = expect_struct(&world_hit, "Hit3");
+        let dense_hit_ref = expect_struct(&dense_hit, "Hit3");
+        let world_did_hit = expect_bool(field(world_hit_ref, "hit"));
+        let dense_did_hit = expect_bool(field(dense_hit_ref, "hit"));
+        assert_eq!(
+            world_did_hit, dense_did_hit,
+            "sample={sample_i} world_hit={world_did_hit} dense_hit={dense_did_hit}"
+        );
+        if world_did_hit {
+            hit_count += 1;
+            max_distance_delta = max_distance_delta.max(
+                (expect_f32(field(world_hit_ref, "distance"))
+                    - expect_f32(field(dense_hit_ref, "distance")))
+                .abs(),
+            );
+        }
+
+        world_steps += world_trace.observability.trace_steps;
+        dense_steps += dense_trace.observability.trace_steps;
+        world_field_samples += world_trace.observability.field_samples;
+        dense_field_samples += dense_trace.observability.field_samples;
+        support_entry_jumps += world_trace.observability.ray_support_entry_jumps;
+        assert!(
+            !world_trace
+                .observability
+                .solver_methods
+                .contains(&RaySolverMethod::LipschitzSafeStepping)
+        );
+        assert!(
+            !world_trace
+                .observability
+                .solver_methods
+                .contains(&RaySolverMethod::IntervalNewtonIsolation)
+        );
+        assert!(
+            !world_trace
+                .observability
+                .solver_methods
+                .contains(&RaySolverMethod::SafeguardedNewtonRefinement)
+        );
+    }
+
+    assert!(hit_count > 0);
+    assert!(world_steps <= dense_steps);
+    assert!(world_field_samples <= dense_field_samples);
+    assert!(support_entry_jumps > 0);
+    assert!(
+        max_distance_delta < 0.05,
+        "torus default path drifted too far from the dense oracle: {max_distance_delta}"
+    );
+}
+
+#[test]
+fn query_exec_cpu_translated_repeat_linear_supported_subset_reduces_hit_side_field_samples() {
+    let (_, _, ctx) = typed_query_module(translated_repeat_linear_solver_fixture_source());
+    let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("translated_repeat_region"));
+    let domain = scene_domain(region_scene_id, 1, false, false, false);
+    let world_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+    let capture_plan = lower_capture_query_plan(
+        &CaptureQueryPlan::for_query(CaptureQueryKind::Trace, CaptureKind::Shape, None)
+            .expect("shape trace plan"),
+    );
+
+    let region_capture = KernelValue::Capture(SmolStr::new("translated_repeat_region"));
+    let shape_capture = KernelValue::Capture(SmolStr::new("translated_repeat_shape"));
+
+    let mut world_hits = 0u32;
+    let mut dense_hits = 0u32;
+    let mut world_field_samples = 0u32;
+    let mut dense_field_samples = 0u32;
+    let mut world_steps = 0u32;
+    let mut dense_steps = 0u32;
+    let mut repeat_supported = 0u32;
+    let mut repeat_cells_enumerated = 0u32;
+
+    for sample_i in 0..64 {
+        let py = (sample_i % 8) as f32 * 0.03 - 0.105;
+        let pz = (sample_i / 8) as f32 * 0.035 - 0.12;
+        let ray = ray_query_with_limits([-15.0, py, pz], [1.0, 0.0, 0.0], 30.0, 0.02, 0.001, 256);
+
+        let (world_hit, world_trace) = execute_world_query_with_trace_on(
+            &ctx,
+            DispatchBackend::Cpu,
+            &world_plan,
+            &[region_capture.clone(), domain.clone(), ray.clone()],
+        )
+        .expect("world translated repeat trace");
+        let (dense_hit, dense_trace) = execute_capture_query_with_trace_on(
+            &ctx,
+            DispatchBackend::Cpu,
+            &capture_plan,
+            &[shape_capture.clone(), ray],
+        )
+        .expect("dense translated repeat trace");
+
+        let world_hit_ref = expect_struct(&world_hit, "Hit3");
+        let dense_hit_ref = expect_struct(&dense_hit, "Hit3");
+        let world_did_hit = expect_bool(field(world_hit_ref, "hit"));
+        let dense_did_hit = expect_bool(field(dense_hit_ref, "hit"));
+        assert_eq!(world_did_hit, dense_did_hit);
+        if world_did_hit {
+            world_hits += 1;
+            dense_hits += 1;
+            assert!(
+                (expect_f32(field(world_hit_ref, "distance"))
+                    - expect_f32(field(dense_hit_ref, "distance")))
+                .abs()
+                    < 0.02
+            );
+            assert_eq!(
+                expect_u32(field(world_hit_ref, "repeat_id")),
+                expect_u32(field(dense_hit_ref, "repeat_id"))
+            );
+            assert_eq!(
+                expect_u32(field(world_hit_ref, "instance_id")),
+                expect_u32(field(dense_hit_ref, "instance_id"))
+            );
+        }
+
+        world_field_samples += world_trace.observability.field_samples;
+        dense_field_samples += dense_trace.observability.field_samples;
+        world_steps += world_trace.observability.trace_steps;
+        dense_steps += dense_trace.observability.trace_steps;
+        repeat_supported += world_trace.observability.solver_repeat_supported;
+        repeat_cells_enumerated += world_trace.observability.solver_repeat_cells_enumerated;
+    }
+
+    assert_eq!(world_hits, dense_hits);
+    assert!(world_hits > 0);
+    assert!(world_field_samples < dense_field_samples);
+    assert!(world_steps < dense_steps);
+    assert!(repeat_supported > 0);
+    assert!(repeat_cells_enumerated > 0);
+}
+
+#[test]
+fn query_exec_cpu_repeat_linear_unbounded_child_reports_runtime_repeat_fallback() {
+    let source = r#"
+field conservative distance unbounded_repeat_field(p: Vec3) -> F32 {
+    repeat_linear = vec3(2.0, 0.0, 0.0) {
+        plane(normal = vec3(1.0, 0.0, 0.0), offset = -0.25)
+    }
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.2, 0.3, 0.4),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape unbounded_repeat_shape {
+    field = unbounded_repeat_field
+    material = shade
+    payload = Payload(
+        entity_id=u32(90),
+        material_id=u32(90),
+        actor=ActorHandle(id=u32(90), generation=u32(0))
+    )
+}
+
+region unbounded_repeat_region() {
+    place repeated = unbounded_repeat_shape
+}
+
+domain probe_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = false
+    media = false
+    max_distance = 6.0
+    min_step = 0.02
+    hit_epsilon = 0.001
+    max_steps = 128
+}
+"#;
+    let (_, _, ctx) = typed_query_module(source);
+    let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("unbounded_repeat_region"));
+    let domain = scene_domain(region_scene_id, 1, false, false, false);
+    let world_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+
+    let (hit, trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &world_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("unbounded_repeat_region")),
+            domain,
+            ray_query_with_limits([-4.0, 0.0, 0.0], [1.0, 0.0, 0.0], 6.0, 0.02, 0.001, 128),
+        ],
+    )
+    .expect("unbounded repeat trace");
+
+    assert!(expect_bool(field(expect_struct(&hit, "Hit3"), "hit")));
+    assert_eq!(trace.observability.solver_repeat_attempts, 1);
+    assert_eq!(trace.observability.solver_repeat_supported, 0);
+    assert_eq!(trace.observability.solver_repeat_inapplicable, 0);
+    assert_eq!(trace.observability.solver_repeat_unsupported, 1);
+    assert_eq!(trace.observability.solver_repeat_unsupported_form, 0);
+    assert_eq!(trace.observability.solver_repeat_unsupported_bounds, 1);
+    assert_eq!(trace.observability.solver_repeat_cells_enumerated, 0);
+}
+
+#[test]
+fn query_exec_cpu_repeat_linear_unsupported_form_reports_runtime_reason() {
+    let source = r#"
+field conservative distance rotated_repeat_field(p: Vec3) -> F32 {
+    rotate = vec3(0.0, 0.0, 0.5) {
+        repeat_linear = vec3(2.0, 0.0, 0.0) {
+            sphere(radius = 0.25)
+        }
+    }
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.2, 0.3, 0.4),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape rotated_repeat_shape {
+    field = rotated_repeat_field
+    material = shade
+    payload = Payload(
+        entity_id=u32(91),
+        material_id=u32(91),
+        actor=ActorHandle(id=u32(91), generation=u32(0))
+    )
+}
+
+region rotated_repeat_region() {
+    place repeated = rotated_repeat_shape
+}
+
+domain probe_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = false
+    media = false
+    max_distance = 6.0
+    min_step = 0.02
+    hit_epsilon = 0.001
+    max_steps = 128
+}
+"#;
+    let (_, _, ctx) = typed_query_module(source);
+    let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("rotated_repeat_region"));
+    let domain = scene_domain(region_scene_id, 1, false, false, false);
+    let world_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+
+    let (hit, trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &world_plan,
+        &[
+            KernelValue::Capture(SmolStr::new("rotated_repeat_region")),
+            domain,
+            ray_query_with_limits([0.0, 0.0, 2.0], [0.0, 0.0, -1.0], 6.0, 0.02, 0.001, 128),
+        ],
+    )
+    .expect("rotated repeat trace");
+
+    assert!(expect_bool(field(expect_struct(&hit, "Hit3"), "hit")));
+    assert_eq!(trace.observability.solver_repeat_attempts, 1);
+    assert_eq!(trace.observability.solver_repeat_supported, 0);
+    assert_eq!(trace.observability.solver_repeat_inapplicable, 0);
+    assert_eq!(trace.observability.solver_repeat_unsupported, 1);
+    assert_eq!(trace.observability.solver_repeat_unsupported_form, 1);
+    assert_eq!(trace.observability.solver_repeat_unsupported_bounds, 0);
+    assert_eq!(trace.observability.solver_repeat_cells_enumerated, 0);
 }
 
 #[test]
@@ -5047,6 +5532,189 @@ domain scene_domain(world: RegionCapture) {
     min_step = 0.05
     hit_epsilon = 0.001
     max_steps = 96
+}
+"#
+}
+
+fn transformed_analytic_primitives_fixture_source() -> &'static str {
+    r#"
+field exact distance translated_box_field(p: Vec3) -> F32 {
+    translate = vec3(1.25, -0.10, 0.0) {
+        box(half = vec3(0.35, 0.45, 0.25))
+    }
+}
+
+field exact distance rotated_capsule_field(p: Vec3) -> F32 {
+    rotate = vec3(0.55, 0.0, 0.0) {
+        capsule(a = vec3(0.0, -0.8, 0.0), b = vec3(0.0, 0.8, 0.0), radius = 0.35)
+    }
+}
+
+field exact distance rotated_cylinder_field(p: Vec3) -> F32 {
+    rotate = vec3(0.55, 0.0, 0.0) {
+        cylinder(radius = 0.45, half_height = 0.9)
+    }
+}
+
+field exact distance scaled_sphere_field(p: Vec3) -> F32 {
+    uniform_scale = f32(2.0) {
+        sphere(radius = 0.5)
+    }
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.25, 0.35, 0.45),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape translated_box_shape {
+    field = translated_box_field
+    material = shade
+    payload = Payload(entity_id=u32(71), material_id=u32(71), actor=ActorHandle(id=u32(71), generation=u32(0)))
+}
+
+shape rotated_capsule_shape {
+    field = rotated_capsule_field
+    material = shade
+    payload = Payload(entity_id=u32(72), material_id=u32(72), actor=ActorHandle(id=u32(72), generation=u32(0)))
+}
+
+shape rotated_cylinder_shape {
+    field = rotated_cylinder_field
+    material = shade
+    payload = Payload(entity_id=u32(73), material_id=u32(73), actor=ActorHandle(id=u32(73), generation=u32(0)))
+}
+
+shape scaled_sphere_shape {
+    field = scaled_sphere_field
+    material = shade
+    payload = Payload(entity_id=u32(74), material_id=u32(74), actor=ActorHandle(id=u32(74), generation=u32(0)))
+}
+
+region translated_box_region() {
+    place primary = translated_box_shape
+}
+
+region rotated_capsule_region() {
+    place primary = rotated_capsule_shape
+}
+
+region rotated_cylinder_region() {
+    place primary = rotated_cylinder_shape
+}
+
+region scaled_sphere_region() {
+    place primary = scaled_sphere_shape
+}
+
+domain scene_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = false
+    media = false
+    max_distance = 8.0
+    min_step = 0.02
+    hit_epsilon = 0.001
+    max_steps = 128
+}
+"#
+}
+
+fn relaxed_torus_solver_fixture_source() -> &'static str {
+    r#"
+field exact distance relaxed_torus_field(p: Vec3) -> F32 {
+    torus(major_radius = 0.72, minor_radius = 0.22)
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.25, 0.35, 0.45),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape relaxed_torus_shape {
+    field = relaxed_torus_field
+    material = shade
+    payload = Payload(entity_id=u32(81), material_id=u32(81), actor=ActorHandle(id=u32(81), generation=u32(0)))
+}
+
+region relaxed_torus_region() {
+    place primary = relaxed_torus_shape
+}
+
+domain scene_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = false
+    media = false
+    max_distance = 6.0
+    min_step = 0.01
+    hit_epsilon = 0.0005
+    max_steps = 192
+}
+"#
+}
+
+fn translated_repeat_linear_solver_fixture_source() -> &'static str {
+    r#"
+field conservative distance translated_repeat_field(p: Vec3) -> F32 {
+    translate = vec3(1.5, -0.10, 0.0) {
+        repeat_linear = vec3(12.0, 0.0, 0.0) {
+            translate = vec3(6.0, 0.0, 0.0) {
+                sphere(radius = 0.18)
+            }
+        }
+    }
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.2, 0.3, 0.4),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape translated_repeat_shape {
+    field = translated_repeat_field
+    material = shade
+    payload = Payload(
+        entity_id=u32(89),
+        material_id=u32(89),
+        actor=ActorHandle(id=u32(89), generation=u32(0))
+    )
+}
+
+region translated_repeat_region() {
+    place repeated = translated_repeat_shape
+}
+
+domain scene_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = false
+    media = false
+    max_distance = 30.0
+    min_step = 0.02
+    hit_epsilon = 0.001
+    max_steps = 256
 }
 "#
 }

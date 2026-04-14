@@ -538,6 +538,7 @@ struct PresentationDebugDump {
     view: String,
     region: String,
     domain: String,
+    query_trace_solver_mode: String,
     backend: String,
     semantic_domain: String,
     execution_policy: String,
@@ -2167,6 +2168,7 @@ struct PresentationDebugOptions {
     view: Option<String>,
     region: Option<String>,
     domain: Option<String>,
+    query_trace_solver_mode: wrela::query_exec::QueryTraceSolverMode,
     out_dir: Option<PathBuf>,
     skip_export: bool,
     width: Option<u32>,
@@ -2322,6 +2324,7 @@ fn execute_presentation_debug_command(
         options.frame_index,
         options.delta_seconds,
         query_backend,
+        options.query_trace_solver_mode,
     ) {
         Ok(prepared) => prepared,
         Err(err) => {
@@ -2389,6 +2392,7 @@ fn execute_presentation_debug_command(
         view: plan.name.to_string(),
         region: region_name.to_string(),
         domain: domain_name.to_string(),
+        query_trace_solver_mode: options.query_trace_solver_mode.as_str().to_string(),
         backend: dispatch_backend_name(result.backend).to_string(),
         semantic_domain: prepared.semantic_domain.clone(),
         execution_policy: result.frame_cost.execution_policy.clone(),
@@ -2422,6 +2426,10 @@ fn execute_presentation_debug_command(
             "presentation debug view={} backend={}",
             dump.view, dump.backend
         );
+        println!(
+            "  query trace solver mode: {}",
+            dump.query_trace_solver_mode
+        );
         println!("  region: {}", dump.region);
         println!("  domain: {}", dump.domain);
         println!("  semantic domain: {}", dump.semantic_domain);
@@ -2434,6 +2442,7 @@ fn execute_presentation_debug_command(
             dump.snapshot.portable_scene_id
         );
         println!("  frames: {}", dump.frames_executed);
+        println!("  field samples: {}", dump.frame_cost.field_samples);
         println!(
             "  color ppm: {}",
             dump.color_ppm.as_deref().unwrap_or("not materialized")
@@ -2496,6 +2505,7 @@ fn execute_preview_command(
         options.height,
         options.frame_index,
         options.delta_seconds,
+        wrela::query_exec::QueryTraceSolverMode::Hybrid,
     ) {
         Ok(ready) => ready,
         Err(code) => std::process::exit(code),
@@ -2616,6 +2626,7 @@ fn execute_frame_command(
         options.height,
         options.frame_index,
         options.delta_seconds,
+        wrela::query_exec::QueryTraceSolverMode::Hybrid,
     ) {
         Ok(ready) => ready,
         Err(code) => std::process::exit(code),
@@ -2860,6 +2871,7 @@ fn load_prepared_presentation_execution(
     height: Option<u32>,
     frame_index: u32,
     delta_seconds: f32,
+    query_trace_solver_mode: wrela::query_exec::QueryTraceSolverMode,
 ) -> Result<ReadyPresentationExecution, i32> {
     let bundle = compile_presentation_bundle(entry_path, output_format, query_backend)?;
     let plan = match select_view_plan(&bundle, requested_view) {
@@ -2903,6 +2915,7 @@ fn load_prepared_presentation_execution(
         frame_index,
         delta_seconds,
         query_backend,
+        query_trace_solver_mode,
     ) {
         Ok(prepared) => prepared,
         Err(err) => {
@@ -3074,6 +3087,7 @@ fn prepare_presentation_execution(
     frame_index: u32,
     delta_seconds: f32,
     query_backend: wrela::query_plan::DispatchBackend,
+    query_trace_solver_mode: wrela::query_exec::QueryTraceSolverMode,
 ) -> Result<PreparedPresentationExecution, String> {
     let region_snapshot = query_ctx
         .region_snapshot_handle(&region_name)
@@ -3128,6 +3142,7 @@ fn prepare_presentation_execution(
             lighting,
             compatibility_projection,
             execution_policy: domain_inputs.execution_policy,
+            query_trace_solver_mode,
             quality_override: None,
             backend: query_backend,
         },
@@ -3804,11 +3819,24 @@ fn normalize_preview_vec3(value: [f32; 3]) -> [f32; 3] {
     [value[0] * inv_len, value[1] * inv_len, value[2] * inv_len]
 }
 
+fn parse_query_trace_solver_mode(
+    value: &str,
+) -> Result<wrela::query_exec::QueryTraceSolverMode, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "hybrid" => Ok(wrela::query_exec::QueryTraceSolverMode::Hybrid),
+        "dense-only" | "dense_only" => Ok(wrela::query_exec::QueryTraceSolverMode::DenseOnly),
+        _ => Err(format!(
+            "invalid --solver-mode value `{value}`; expected `hybrid` or `dense-only`"
+        )),
+    }
+}
+
 fn parse_presentation_debug_options(args: &[String]) -> Result<PresentationDebugOptions, String> {
     let mut options = PresentationDebugOptions {
         view: None,
         region: None,
         domain: None,
+        query_trace_solver_mode: wrela::query_exec::QueryTraceSolverMode::Hybrid,
         out_dir: None,
         skip_export: false,
         width: None,
@@ -3844,6 +3872,10 @@ fn parse_presentation_debug_options(args: &[String]) -> Result<PresentationDebug
             "--view" => options.view = Some(take_value(&inline_value, args, &mut index)?),
             "--region" => options.region = Some(take_value(&inline_value, args, &mut index)?),
             "--domain" => options.domain = Some(take_value(&inline_value, args, &mut index)?),
+            "--solver-mode" => {
+                let mode = take_value(&inline_value, args, &mut index)?;
+                options.query_trace_solver_mode = parse_query_trace_solver_mode(&mode)?;
+            }
             "--out-dir" => {
                 options.out_dir = Some(PathBuf::from(take_value(&inline_value, args, &mut index)?))
             }
@@ -6712,6 +6744,7 @@ view sample_view(world: RegionCapture, camera: Camera) {
             0,
             1.0 / 60.0,
             wrela::query_plan::DispatchBackend::Auto,
+            wrela::query_exec::QueryTraceSolverMode::Hybrid,
         )
         .expect("prepared execution");
 
