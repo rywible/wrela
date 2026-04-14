@@ -10,6 +10,7 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::vec_init_then_push)]
 
+pub mod acceleration;
 pub mod artifact_contract;
 pub mod artifact_key;
 pub mod artifact_layout;
@@ -25,6 +26,7 @@ pub mod kernel;
 pub mod lexer;
 pub mod mir;
 pub mod parser;
+pub mod perf_target;
 pub mod pir;
 pub mod portable;
 pub mod presentation_binding;

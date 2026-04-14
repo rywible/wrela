@@ -291,6 +291,23 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
             cause.detail
         ));
     }
+    out.push_str(&format!(
+        "acceleration_node_visits={} union_cluster_visits={} ray_support_interval_rejections={} ray_support_entry_jumps={} repeat_cell_skips={} cache_brick_visits={} cache_brick_hits={} cache_brick_misses={} accepted_relaxed_steps={} rejected_relaxed_steps={} analytic_transformed_hits={} interval_subdivisions={} interval_proof_successes={} observer_continuation_seed_hits={}\n",
+        report.counters.acceleration_node_visits,
+        report.counters.union_cluster_visits,
+        report.counters.ray_support_interval_rejections,
+        report.counters.ray_support_entry_jumps,
+        report.counters.repeat_cell_skips,
+        report.counters.cache_brick_visits,
+        report.counters.cache_brick_hits,
+        report.counters.cache_brick_misses,
+        report.counters.accepted_relaxed_steps,
+        report.counters.rejected_relaxed_steps,
+        report.counters.analytic_transformed_hits,
+        report.counters.interval_subdivisions,
+        report.counters.interval_proof_successes,
+        report.counters.observer_continuation_seed_hits,
+    ));
     let traced_items = report
         .counters
         .hit_count
@@ -324,7 +341,7 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
             .join("|")
     };
     out.push_str(&format!(
-        "counters dispatch={} dispatch_items={} workgroups={}x{}x{} screen_samples={} world_batch_items={} candidates={} candidates_before={} candidates_after={} pruned={} trace_steps={} trace_steps_avg={:.2} trace_steps_max={} hits={} misses={} field_samples={} artifacts={} opaque_fallbacks={} dense_batches={} semantic_pruned_batches={} solver_plan={} solver_subject={} solver_methods={} solver_analytic_hits={} solver_support_rejections={} solver_interval_skips={} solver_packet_tile_rejections={} solver_newton_refinements={} solver_lipschitz_steps={} solver_adaptive_epsilon={} solver_dense_fallback_rays={} solver_generated_dense_fallback_rays={} solver_fallback_contract_dense={} solver_fallback_missing_facts={} solver_fallback_analytic_unsupported={} solver_fallback_verification_failed={} solver_fallback_unsupported_backend={} solver_certificate_failures={}",
+        "counters dispatch={} dispatch_items={} workgroups={}x{}x{} screen_samples={} world_batch_items={} candidates={} candidates_before={} candidates_after={} pruned={} trace_steps={} trace_steps_avg={:.2} trace_steps_max={} hits={} misses={} field_samples={} artifacts={} opaque_fallbacks={} dense_batches={} semantic_pruned_batches={} solver_plan={} solver_subject={} solver_methods={} solver_analytic_hits={} solver_support_rejections={} solver_interval_skips={} solver_packet_tile_rejections={} solver_newton_refinements={} solver_lipschitz_steps={} solver_adaptive_epsilon={} solver_dense_fallback_rays={} solver_generated_dense_fallback_rays={} solver_fallback_contract_dense={} solver_fallback_missing_facts={} solver_fallback_analytic_unsupported={} solver_fallback_verification_failed={} solver_fallback_unsupported_backend={} solver_certificate_failures={} observer_continuation_seed_hits={}",
         report.counters.dispatch_count,
         report.counters.dispatch_items,
         report.counters.dispatch_workgroups_x,
@@ -364,6 +381,7 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
         report.counters.solver_fallback_verification_failed,
         report.counters.solver_fallback_unsupported_backend,
         report.counters.solver_certificate_failures,
+        report.counters.observer_continuation_seed_hits,
     ));
     out
 }

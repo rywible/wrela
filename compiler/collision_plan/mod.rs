@@ -1,3 +1,4 @@
+use crate::acceleration::{self, AccelerationObserverKind};
 use crate::artifact_contract::{
     ArtifactCompatibilityRelation, ArtifactEvidenceCompatibility, ArtifactLogicalField,
     ArtifactLogicalSchema, ArtifactPolicyCompatibility, ArtifactSnapshotRelation,
@@ -192,6 +193,10 @@ pub struct CollisionExecutionTrace {
     pub selected_method: SelectedMethodClass,
     pub executed_query_contracts: Vec<QueryContractId>,
     pub artifact_store: ArtifactStoreReport,
+    pub broadphase_candidate_count: u32,
+    pub interval_subdivisions: u32,
+    pub interval_refinements: u32,
+    pub certificate_successes: u32,
     pub reuse_metrics: CollisionReuseMetrics,
     pub reuse_decisions: Vec<CollisionReuseDecision>,
 }
@@ -286,10 +291,16 @@ impl CollisionPlan {
     }
 
     pub fn semantic_artifact_contracts(&self) -> Vec<SemanticArtifactContract> {
-        self.artifacts
+        let mut out = self
+            .artifacts
             .iter()
             .map(|artifact| artifact.contract.clone())
-            .collect()
+            .collect::<Vec<_>>();
+        out.extend(acceleration::observer_acceleration_contracts(
+            AccelerationObserverKind::Collision,
+            self.name.as_str(),
+        ));
+        out
     }
 
     pub fn artifact_uses(&self) -> Vec<ArtifactUse> {
@@ -338,6 +349,20 @@ impl CollisionPlan {
                 | CollisionPassKind::MaterializeOutput { .. } => {}
             }
         }
+        uses.extend(
+            acceleration::observer_acceleration_contracts(
+                AccelerationObserverKind::Collision,
+                self.name.as_str(),
+            )
+            .into_iter()
+            .map(|contract| ArtifactUse {
+                actor: contract.producer.clone(),
+                artifact_id: contract.id,
+                kind: ArtifactUseKind::Produce,
+                source: ArtifactUseSource::Plan,
+                required_validity: None,
+            }),
+        );
         uses
     }
 
@@ -472,7 +497,6 @@ impl CollisionPlan {
                 )));
             }
         }
-
         let pass_ids = self
             .passes
             .iter()
@@ -792,7 +816,20 @@ impl CollisionPlan {
                 )));
             }
         }
+        errors.extend(
+            self.validate_acceleration_contracts()
+                .into_iter()
+                .map(|error| validation_error(error.to_string())),
+        );
         errors
+    }
+
+    pub fn validate_acceleration_contracts(&self) -> Vec<SmolStr> {
+        acceleration::validate_observer_acceleration_contracts(
+            AccelerationObserverKind::Collision,
+            self.name.as_str(),
+            &self.semantic_artifact_contracts(),
+        )
     }
 
     pub fn execute(
@@ -1345,6 +1382,7 @@ fn exact_snapshot_artifact_contract(
                 scope: evidence_summary.scope,
             },
         },
+        acceleration: None,
         validity: ArtifactValidityRule::all(vec![
             ArtifactValidityRule::predicate(
                 ArtifactValidityPredicate::CurrentSnapshotMatchesStored,
@@ -1397,6 +1435,7 @@ fn transition_history_artifact_contract(
                 scope: evidence_summary.scope,
             },
         },
+        acceleration: None,
         validity: ArtifactValidityRule::all(vec![
             ArtifactValidityRule::predicate(
                 ArtifactValidityPredicate::PreviousSnapshotMatchesStored,

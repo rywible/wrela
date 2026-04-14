@@ -205,6 +205,10 @@ fn static_and_transition_collision_plans_execute_on_cpu() {
         )
         .expect("sphere sweep");
     assert_eq!(trace.reuse_metrics.unavailable_count, 2);
+    assert!(trace.broadphase_candidate_count > 0);
+    assert!(trace.interval_subdivisions > 0);
+    assert!(trace.interval_refinements > 0);
+    assert!(trace.certificate_successes > 0);
     assert!(
         trace
             .executed_query_contracts
@@ -260,6 +264,10 @@ fn transition_collision_materializes_a_typed_broadphase_payload() {
     )
     .expect("transition sweep with store");
     assert_eq!(trace.artifact_store.entries, 4);
+    assert!(trace.broadphase_candidate_count > 0);
+    assert!(trace.interval_subdivisions > 0);
+    assert!(trace.interval_refinements > 0);
+    assert!(trace.certificate_successes > 0);
 
     let broadphase_artifact = plan
         .artifacts
@@ -351,6 +359,8 @@ fn transition_collision_reuse_decisions_report_consumed_and_rejected_paths() {
     )
     .expect("third sweep");
     assert!(third_trace.reuse_metrics.rejected_count >= 1);
+    assert!(third_trace.broadphase_candidate_count > 0);
+    assert!(third_trace.interval_subdivisions > 0);
     assert!(third_trace.reuse_metrics.diagnostics.iter().any(|entry| {
         entry.contains("verdict=rejected") && entry.contains("reason=validity_rejected")
     }));

@@ -2,7 +2,7 @@ use super::command_handlers::{
     self, BenchmarkManifest, DifferentialPipeline, KpiThresholds, PerfCmpConfig, PerfGateConfig,
     PerfProfile, PerfReport, PresentationBenchmarkReport, TestSelection, TestTarget,
     budget_jobs_timeout, build_benchmark_selection, load_benchmark_manifest,
-    resolve_benchmark_manifest_path, resolve_budget_policy_v1, resolve_test_target,
+    resolve_budget_policy_v1, resolve_test_target,
 };
 use super::contracts::{EXIT_CODEGEN, EXIT_OK, EXIT_USAGE, OutputFormat};
 use serde::{Deserialize, Serialize};
@@ -10,8 +10,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use wrela::perf_target::{
+    PerfClosureLaneStatus, PerfClosureLaneStatusReport, PerfClosureProfile, PerfClosureReport,
+    quality_degradation_step_name,
+};
 
 pub(super) struct PerfCommandInput {
     pub(super) trace: bool,
@@ -41,7 +46,20 @@ pub(super) fn execute_perf_command(mut input: PerfCommandInput) -> i32 {
         eprintln!("error: unexpected extra arguments");
         return EXIT_USAGE;
     }
-    let runs = input.perf_runs.unwrap_or(5).max(1);
+    let closure_protocol = matches!(input.perf_profile, PerfProfile::Closure1080p120)
+        .then(PerfClosureProfile::canonical_1080p120);
+    let use_canonical_counts =
+        closure_protocol.is_some() && input.perf_runs.is_none() && input.perf_gate_path.is_none();
+    let warmup_runs = closure_protocol
+        .as_ref()
+        .filter(|_| use_canonical_counts)
+        .map(|profile| profile.warmup_runs as usize)
+        .unwrap_or(0);
+    let runs = closure_protocol
+        .as_ref()
+        .filter(|_| use_canonical_counts)
+        .map(|profile| profile.measured_runs as usize)
+        .unwrap_or_else(|| input.perf_runs.unwrap_or(5).max(1));
     let budget_policy = resolve_budget_policy_v1(input.test_jobs, input.test_timeout_ms);
     let (jobs, mut timeout) = budget_jobs_timeout(&budget_policy);
     let target = match resolve_test_target(input.path_arg.as_deref()) {
@@ -62,7 +80,11 @@ pub(super) fn execute_perf_command(mut input: PerfCommandInput) -> i32 {
         return EXIT_USAGE;
     }
 
-    let manifest_path = resolve_benchmark_manifest_path(&target, input.benchmark_manifest_path);
+    let manifest_path = resolve_perf_benchmark_manifest_path(
+        &target,
+        input.benchmark_manifest_path,
+        input.perf_profile,
+    );
     let mut benchmark_manifest = None;
     let mut runtime_only_cv_gate = false;
     if let Some(path) = manifest_path.as_ref() {
@@ -114,6 +136,7 @@ pub(super) fn execute_perf_command(mut input: PerfCommandInput) -> i32 {
         timeout,
         input.output_format,
         input.perf_debug,
+        warmup_runs,
         runs,
         cv_max_pct,
         &baseline_out,
@@ -133,6 +156,7 @@ pub(super) fn run_perf_harness(
     timeout: Duration,
     output_format: OutputFormat,
     perf_debug: bool,
+    warmup_runs: usize,
     runs: usize,
     cv_max_pct: f64,
     baseline_out: &std::path::Path,
@@ -151,6 +175,33 @@ pub(super) fn run_perf_harness(
     });
     let mut samples = Vec::new();
     let mut latest_presentation_reports = None;
+    let mut presentation_report_samples = Vec::new();
+    let mut presentation_report_errors = Vec::new();
+    for idx in 0..warmup_runs {
+        println!("perf-warmup {}/{}", idx + 1, warmup_runs);
+        let (exit, _, _) = command_handlers::run_tests_once(
+            target,
+            budget_policy,
+            jobs,
+            timeout,
+            output_format,
+            perf_debug,
+            true,
+            selection,
+            false,
+            !presentation_benchmarks_active,
+            command_handlers::HttpCassetteMode::Replay,
+            None,
+            query_backend,
+            false,
+            DifferentialPipeline::Baseline,
+            None,
+            None,
+        );
+        if exit != EXIT_OK {
+            return exit;
+        }
+    }
     for idx in 0..runs {
         println!("perf-run {}/{}", idx + 1, runs);
         let (exit, summary, _) = command_handlers::run_tests_once(
@@ -187,12 +238,12 @@ pub(super) fn run_perf_harness(
                     );
                     return EXIT_CODEGEN;
                 };
-                let reports = match collect_presentation_benchmark_reports(
+                let report_collection = match collect_presentation_benchmark_reports(
                     benchmark_root,
                     manifest,
                     perf_profile,
                 ) {
-                    Ok(reports) => reports,
+                    Ok(collection) => collection,
                     Err(err) => {
                         eprintln!(
                             "perf harness error: failed to collect presentation reports: {err}"
@@ -200,7 +251,8 @@ pub(super) fn run_perf_harness(
                         return EXIT_CODEGEN;
                     }
                 };
-                let runtime_cases = reports
+                let runtime_cases = report_collection
+                    .reports
                     .iter()
                     .map(|report| {
                         (
@@ -210,13 +262,21 @@ pub(super) fn run_perf_harness(
                         )
                     })
                     .collect::<Vec<_>>();
-                let summary =
-                    command_handlers::overlay_perf_summary_runtime_cases(&summary, &runtime_cases);
+                let summary = if runtime_cases.is_empty() {
+                    summary
+                } else {
+                    command_handlers::overlay_perf_summary_runtime_cases(&summary, &runtime_cases)
+                };
                 if matches!(output_format, OutputFormat::Pretty) {
                     command_handlers::emit_perf_summary(&summary, perf_debug);
-                    print_presentation_benchmark_reports(&reports);
+                    print_presentation_benchmark_reports(&report_collection.reports);
+                    for error in &report_collection.errors {
+                        eprintln!("presentation-benchmark-error: {error}");
+                    }
                 }
-                latest_presentation_reports = Some(reports);
+                presentation_report_samples.extend(report_collection.reports.iter().cloned());
+                presentation_report_errors.extend(report_collection.errors.into_iter());
+                latest_presentation_reports = Some(report_collection.reports);
                 samples.push(summary);
             } else {
                 samples.push(summary);
@@ -298,6 +358,25 @@ pub(super) fn run_perf_harness(
         }
     }
 
+    let closure_profile = PerfClosureProfile::canonical_1080p120();
+    let closure_profile_errors = closure_profile.validate();
+    if !closure_profile_errors.is_empty() {
+        eprintln!("perf harness error: invalid canonical closure profile");
+        for error in closure_profile_errors {
+            eprintln!("  - {error}");
+        }
+        return EXIT_CODEGEN;
+    }
+    let closure_report = Some(build_closure_report(
+        &closure_profile,
+        benchmark_manifest,
+        &samples,
+        &presentation_report_samples,
+        &presentation_report_errors,
+        perf_profile,
+        warmup_runs,
+        samples.len(),
+    ));
     let report = PerfReport {
         version: 2,
         generated_at_unix_ms: SystemTime::now()
@@ -308,6 +387,7 @@ pub(super) fn run_perf_harness(
         cv,
         summary,
         samples,
+        closure: closure_report,
         presentation_reports: latest_presentation_reports,
     };
     if let Some(parent) = baseline_out.parent()
@@ -351,26 +431,32 @@ struct PresentationDebugCommandOutput {
     frame_cost_history: Vec<wrela::presentation_exec::PresentationFrameCostReport>,
 }
 
+struct PresentationBenchmarkReportCollection {
+    reports: Vec<PresentationBenchmarkReport>,
+    errors: Vec<String>,
+}
+
 fn collect_presentation_benchmark_reports(
     benchmark_root: &Path,
     manifest: &BenchmarkManifest,
     profile: PerfProfile,
-) -> Result<Vec<PresentationBenchmarkReport>, String> {
+) -> Result<PresentationBenchmarkReportCollection, String> {
     let current_exe =
         env::current_exe().map_err(|err| format!("failed to resolve current executable: {err}"))?;
-    let mut reports = Vec::new();
+    let mut collection = PresentationBenchmarkReportCollection {
+        reports: Vec::new(),
+        errors: Vec::new(),
+    };
     for scenario in manifest.scenarios_for_profile(profile) {
         let Some(spec) = scenario.presentation.as_ref() else {
             continue;
         };
-        reports.push(run_presentation_benchmark_report(
-            &current_exe,
-            benchmark_root,
-            scenario,
-            spec,
-        )?);
+        match run_presentation_benchmark_report(&current_exe, benchmark_root, scenario, spec) {
+            Ok(report) => collection.reports.push(report),
+            Err(err) => collection.errors.push(err),
+        }
     }
-    Ok(reports)
+    Ok(collection)
 }
 
 fn run_presentation_benchmark_report(
@@ -384,19 +470,20 @@ fn run_presentation_benchmark_report(
         .as_ref()
         .map(|entry| benchmark_root.join(entry))
         .unwrap_or_else(|| benchmark_root.to_path_buf());
-    let output = Command::new(current_exe)
+    let mut command = Command::new(current_exe);
+    command
         .arg("--json")
         .arg("--query-backend=cpu")
         .arg("presentation-debug")
         .arg(presentation_target)
-        .args(presentation_debug_args(spec))
-        .output()
-        .map_err(|err| {
-            format!(
-                "failed to launch presentation-debug for scenario `{}`: {err}",
-                scenario.id
-            )
-        })?;
+        .args(presentation_debug_args(spec));
+    let timeout = Duration::from_millis(scenario.timeout_ms.unwrap_or(60_000));
+    let output = run_command_with_timeout(&mut command, timeout).map_err(|err| {
+        format!(
+            "failed to launch presentation-debug for scenario `{}`: {err}",
+            scenario.id
+        )
+    })?;
     if !output.status.success() {
         return Err(format!(
             "presentation-debug failed for scenario `{}`: stdout={} stderr={}",
@@ -415,26 +502,84 @@ fn run_presentation_benchmark_report(
     Ok(presentation_report_from_debug_output(scenario, dump))
 }
 
+fn run_command_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("failed to spawn command: {err}"))?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|err| format!("failed to collect command output: {err}"));
+            }
+            Ok(None) => {}
+            Err(err) => return Err(format!("failed to poll command status: {err}")),
+        }
+        if started.elapsed() >= timeout {
+            #[cfg(unix)]
+            {
+                let process_group = child.id() as i32;
+                unsafe {
+                    libc::killpg(process_group, libc::SIGTERM);
+                }
+                thread::sleep(Duration::from_millis(100));
+                unsafe {
+                    libc::killpg(process_group, libc::SIGKILL);
+                }
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("command timed out after {:?}", timeout));
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn presentation_report_from_debug_output(
     scenario: &command_handlers::BenchmarkScenario,
     dump: PresentationDebugCommandOutput,
 ) -> PresentationBenchmarkReport {
-    let quality_history = if dump.frame_cost_history.is_empty() {
-        vec![dump.frame_cost.quality.tier.clone()]
+    let frame_cost_history = dump.frame_cost_history.clone();
+    let effective_history = if frame_cost_history.is_empty() {
+        vec![dump.frame_cost.clone()]
     } else {
-        dump.frame_cost_history
-            .iter()
-            .map(|frame| frame.quality.tier.clone())
-            .collect()
+        frame_cost_history.clone()
     };
-    let internal_resolution_history = if dump.frame_cost_history.is_empty() {
-        vec![dump.frame_cost.quality.internal_resolution_scale]
-    } else {
-        dump.frame_cost_history
-            .iter()
-            .map(|frame| frame.quality.internal_resolution_scale)
-            .collect()
-    };
+    let quality_history = effective_history
+        .iter()
+        .map(|frame| frame.quality.tier.clone())
+        .collect();
+    let internal_resolution_history = effective_history
+        .iter()
+        .map(|frame| frame.quality.internal_resolution_scale)
+        .collect();
+    let reconstructed_output = effective_history
+        .iter()
+        .any(|frame| frame.quality.reconstructed_output);
+    let active_acceleration_artifacts = effective_history
+        .iter()
+        .flat_map(|frame| frame.active_acceleration_artifacts.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let performance_gain_sources = effective_history
+        .iter()
+        .flat_map(|frame| frame.performance_gain_sources.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
     PresentationBenchmarkReport {
         scenario_id: scenario.id.clone(),
         test_name: scenario.test_name.clone(),
@@ -443,22 +588,24 @@ fn presentation_report_from_debug_output(
         domain: dump.domain,
         backend: dump.backend,
         frames_executed: dump.frames_executed.max(1),
-        frame_time_ns: frame_cost_total_ns(&dump.frame_cost),
+        frame_time_ns: effective_history.iter().map(frame_cost_total_ns).sum(),
         quality_tier: dump.frame_cost.quality.tier.clone(),
         target_fps: dump.frame_cost.quality.target_fps,
         internal_resolution_scale: dump.frame_cost.quality.internal_resolution_scale,
-        reconstructed_output: dump.frame_cost.quality.reconstructed_output,
+        reconstructed_output,
         quality_history,
         internal_resolution_history,
         bottleneck_pass: dump.frame_cost.bottleneck_pass.clone(),
-        active_acceleration_artifacts: dump.frame_cost.active_acceleration_artifacts.clone(),
-        performance_gain_sources: dump.frame_cost.performance_gain_sources.clone(),
+        active_acceleration_artifacts,
+        performance_gain_sources,
         frame_cost: dump.frame_cost,
+        frame_cost_history,
     }
 }
 
 fn presentation_debug_args(spec: &command_handlers::BenchmarkPresentationSpec) -> Vec<String> {
     let mut args = vec![
+        "--no-export".to_string(),
         "--view".to_string(),
         spec.view.clone(),
         "--region".to_string(),
@@ -489,6 +636,25 @@ fn format_vec3(value: [f32; 3]) -> String {
     format!("{},{},{}", value[0], value[1], value[2])
 }
 
+fn resolve_perf_benchmark_manifest_path(
+    target: &TestTarget,
+    override_path: Option<String>,
+    profile: PerfProfile,
+) -> Option<PathBuf> {
+    if let Some(path) = override_path {
+        return Some(PathBuf::from(path));
+    }
+    let TestTarget::ProjectRoot(root) = target else {
+        return None;
+    };
+    let closure_candidate = root.join("1080p120_closure.toml");
+    if matches!(profile, PerfProfile::Closure1080p120) && closure_candidate.is_file() {
+        return Some(closure_candidate);
+    }
+    let candidate = root.join("bench.toml");
+    candidate.is_file().then_some(candidate)
+}
+
 fn frame_cost_total_ns(report: &wrela::presentation_exec::PresentationFrameCostReport) -> u128 {
     report
         .passes
@@ -496,6 +662,358 @@ fn frame_cost_total_ns(report: &wrela::presentation_exec::PresentationFrameCostR
         .map(|pass| pass.elapsed_micros)
         .sum::<u128>()
         * 1_000
+}
+
+fn build_closure_report(
+    profile: &PerfClosureProfile,
+    manifest: Option<&BenchmarkManifest>,
+    samples: &[command_handlers::PerfSummary],
+    presentation_reports: &[PresentationBenchmarkReport],
+    presentation_report_errors: &[String],
+    perf_profile: PerfProfile,
+    observed_warmup_runs: usize,
+    observed_measured_runs: usize,
+) -> PerfClosureReport {
+    let sampled_suite = if matches!(perf_profile, PerfProfile::Closure1080p120) {
+        manifest.map(|manifest| manifest.suite.as_str())
+    } else {
+        None
+    };
+    let mut report = PerfClosureReport::unsampled(profile.clone());
+    if sampled_suite.is_some_and(|suite| suite.eq_ignore_ascii_case(profile.frame.suite.as_str())) {
+        report.frame = build_frame_closure_status(
+            profile,
+            presentation_reports,
+            presentation_report_errors,
+            observed_warmup_runs,
+            observed_measured_runs,
+        );
+    }
+    if sampled_suite
+        .is_some_and(|suite| suite.eq_ignore_ascii_case(profile.collision.suite.as_str()))
+    {
+        report.collision = build_collision_closure_status(
+            profile,
+            samples,
+            observed_warmup_runs,
+            observed_measured_runs,
+        );
+    }
+    report
+}
+
+fn build_frame_closure_status(
+    profile: &PerfClosureProfile,
+    presentation_reports: &[PresentationBenchmarkReport],
+    presentation_report_errors: &[String],
+    observed_warmup_runs: usize,
+    observed_measured_runs: usize,
+) -> PerfClosureLaneStatusReport {
+    let mut report = PerfClosureLaneStatusReport::unsampled(&profile.frame);
+    report.status = PerfClosureLaneStatus::Sampled;
+    report.notes.clear();
+    let mut violations = presentation_report_errors
+        .iter()
+        .map(|error| format!("presentation report collection failed: {error}"))
+        .collect::<Vec<_>>();
+    if presentation_reports.is_empty() {
+        if violations.is_empty() {
+            report.notes.push(
+                "frame closure suite ran without presentation frame-cost reports".to_string(),
+            );
+        } else {
+            report.status = PerfClosureLaneStatus::Violated;
+            report.notes.extend(violations);
+        }
+        return report;
+    }
+
+    let legal_degradations = profile
+        .legal_degradations
+        .iter()
+        .map(|step| quality_degradation_step_name(*step))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut total_ms = Vec::new();
+    let mut primary_ms = Vec::new();
+    let mut scales = Vec::new();
+    let mut reconstructed_output_detected = false;
+    let mut output_width = None;
+    let mut output_height = None;
+    let mut active_acceleration_artifacts = std::collections::BTreeSet::new();
+    let mut active_degradations = std::collections::BTreeSet::new();
+    let mut bottleneck_counts: HashMap<String, usize> = HashMap::new();
+
+    if observed_warmup_runs != profile.warmup_runs as usize
+        || observed_measured_runs != profile.measured_runs as usize
+    {
+        violations.push(format!(
+            "observed run protocol warmup={} measured={} does not match canonical warmup={} measured={}",
+            observed_warmup_runs,
+            observed_measured_runs,
+            profile.warmup_runs,
+            profile.measured_runs
+        ));
+    }
+
+    for sample in presentation_reports {
+        let frame_costs = if sample.frame_cost_history.is_empty() {
+            vec![&sample.frame_cost]
+        } else {
+            sample.frame_cost_history.iter().collect::<Vec<_>>()
+        };
+        for frame_cost in frame_costs {
+            total_ms.push(ns_to_ms(frame_cost_total_ns(frame_cost)));
+            if let Some(primary_pass_ms) = primary_visibility_pass_ms(frame_cost) {
+                primary_ms.push(primary_pass_ms);
+            }
+            scales.push(frame_cost.quality.internal_resolution_scale);
+            reconstructed_output_detected |= frame_cost.quality.reconstructed_output;
+            output_width = Some(frame_cost.output_width);
+            output_height = Some(frame_cost.output_height);
+
+            if frame_cost.output_width != profile.output_width
+                || frame_cost.output_height != profile.output_height
+            {
+                violations.push(format!(
+                    "scenario '{}' observed output {}x{} does not match closure target {}x{}",
+                    sample.scenario_id,
+                    frame_cost.output_width,
+                    frame_cost.output_height,
+                    profile.output_width,
+                    profile.output_height
+                ));
+            }
+            if frame_cost.quality.tier != "realtime_120" {
+                violations.push(format!(
+                    "scenario '{}' reported quality tier '{}' instead of realtime_120",
+                    sample.scenario_id, frame_cost.quality.tier
+                ));
+            }
+            if frame_cost.quality.internal_resolution_scale < profile.min_internal_resolution_scale
+            {
+                violations.push(format!(
+                    "scenario '{}' observed internal scale {:.2} below floor {:.2}",
+                    sample.scenario_id,
+                    frame_cost.quality.internal_resolution_scale,
+                    profile.min_internal_resolution_scale
+                ));
+            }
+            for degradation in &frame_cost.quality.active_degradations {
+                active_degradations.insert(degradation.clone());
+                if !legal_degradations.contains(degradation.as_str()) {
+                    violations.push(format!(
+                        "scenario '{}' used undeclared degradation '{}'",
+                        sample.scenario_id, degradation
+                    ));
+                }
+            }
+            for artifact in &frame_cost.active_acceleration_artifacts {
+                active_acceleration_artifacts.insert(artifact.clone());
+            }
+            if let Some(bottleneck) = &frame_cost.bottleneck_pass {
+                *bottleneck_counts.entry(bottleneck.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    report.measured_output_width = output_width;
+    report.measured_output_height = output_height;
+    report.min_internal_resolution_scale_observed = scales.iter().copied().reduce(f32::min);
+    report.max_internal_resolution_scale_observed = scales.iter().copied().reduce(f32::max);
+    report.reconstructed_output_detected = Some(reconstructed_output_detected);
+    report.active_acceleration_artifacts = active_acceleration_artifacts.into_iter().collect();
+    report.active_degradations = active_degradations.into_iter().collect();
+    report.total_frame_median_ms = percentile_f32(&total_ms, 0.50);
+    report.total_frame_p95_ms = percentile_f32(&total_ms, 0.95);
+    report.primary_visibility_median_ms = percentile_f32(&primary_ms, 0.50);
+    report.primary_visibility_p95_ms = percentile_f32(&primary_ms, 0.95);
+    report.dominant_bottleneck_pass = most_common_key(&bottleneck_counts);
+    report.notes.push(format!(
+        "presentation reports collected for {} scenario(s) spanning {} closure frame sample(s)",
+        presentation_reports.len(),
+        total_ms.len()
+    ));
+
+    if report.primary_visibility_median_ms.is_none() || report.primary_visibility_p95_ms.is_none() {
+        violations.push(
+            "primary_visibility pass timings were not present in the sampled reports".to_string(),
+        );
+    }
+    if let Some(total_median_ms) = report.total_frame_median_ms
+        && total_median_ms > profile.frame_budget.median_ms
+    {
+        violations.push(format!(
+            "frame median {:.2} ms exceeds budget {:.2} ms",
+            total_median_ms, profile.frame_budget.median_ms
+        ));
+    }
+    if let Some(total_p95_ms) = report.total_frame_p95_ms
+        && total_p95_ms > profile.frame_budget.p95_ms
+    {
+        violations.push(format!(
+            "frame p95 {:.2} ms exceeds budget {:.2} ms",
+            total_p95_ms, profile.frame_budget.p95_ms
+        ));
+    }
+    if let Some(primary_median_ms) = report.primary_visibility_median_ms
+        && primary_median_ms > profile.primary_visibility_budget.median_ms
+    {
+        violations.push(format!(
+            "primary visibility median {:.2} ms exceeds budget {:.2} ms",
+            primary_median_ms, profile.primary_visibility_budget.median_ms
+        ));
+    }
+    if let Some(primary_p95_ms) = report.primary_visibility_p95_ms
+        && primary_p95_ms > profile.primary_visibility_budget.p95_ms
+    {
+        violations.push(format!(
+            "primary visibility p95 {:.2} ms exceeds budget {:.2} ms",
+            primary_p95_ms, profile.primary_visibility_budget.p95_ms
+        ));
+    }
+
+    if violations.is_empty() {
+        report.status = PerfClosureLaneStatus::Validated;
+        report
+            .notes
+            .push("frame closure met the canonical 1080p120 contract".to_string());
+    } else {
+        report.status = PerfClosureLaneStatus::Violated;
+        report.notes.extend(violations);
+    }
+    report
+}
+
+fn build_collision_closure_status(
+    profile: &PerfClosureProfile,
+    samples: &[command_handlers::PerfSummary],
+    observed_warmup_runs: usize,
+    observed_measured_runs: usize,
+) -> PerfClosureLaneStatusReport {
+    let mut report = PerfClosureLaneStatusReport::unsampled(&profile.collision);
+    let summary = command_handlers::aggregate_perf_samples(samples);
+    let mut violations = Vec::new();
+    report.status = PerfClosureLaneStatus::Sampled;
+    report.notes.clear();
+    report.collision_baseline_id = Some(profile.collision_baseline.baseline_id.clone());
+    report.collision_runtime_median_ms = Some(ns_to_ms(summary.runtime_p50_ns));
+    report.collision_runtime_p95_ms = Some(ns_to_ms(summary.runtime_p95_ns));
+    report.notes.push(format!(
+        "collision closure sampled {} measured perf run(s) under protocol '{}'",
+        samples.len(),
+        profile.collision.protocol_id
+    ));
+    if observed_warmup_runs != profile.warmup_runs as usize
+        || observed_measured_runs != profile.measured_runs as usize
+    {
+        violations.push(format!(
+            "observed run protocol warmup={} measured={} does not match canonical warmup={} measured={}",
+            observed_warmup_runs,
+            observed_measured_runs,
+            profile.warmup_runs,
+            profile.measured_runs
+        ));
+    }
+    match load_collision_baseline_summary(&profile.collision_baseline.baseline_id) {
+        Ok(baseline) => {
+            let failures = command_handlers::evaluate_perf_gate(
+                &summary,
+                &baseline,
+                profile.collision_baseline.max_runtime_regression_pct as f64,
+                &command_handlers::KpiThresholds {
+                    check_fallback_max: None,
+                    check_batch_min: None,
+                    scheduler_p99_improve_min_pct: None,
+                    rewrite_overhead_max_pct: None,
+                    actor_throughput_improve_min_pct: None,
+                    queue_age_p99_max_regress_pct: None,
+                    starvation_violations_max: None,
+                    scheduler_throughput_improve_min_pct: None,
+                    scheduler_loop_p99_max_regress_pct: None,
+                    scheduler_local_hit_min: None,
+                },
+            );
+            let regression_pct = if baseline.runtime_p50_ns == 0 {
+                0.0
+            } else {
+                ((summary.runtime_p50_ns as f64 - baseline.runtime_p50_ns as f64)
+                    / baseline.runtime_p50_ns as f64
+                    * 100.0) as f32
+            };
+            report.collision_runtime_regression_pct = Some(regression_pct);
+            report.notes.push(format!(
+                "collision non-regression compared against baseline '{}' from {}",
+                profile.collision_baseline.baseline_id,
+                collision_baseline_fixture_path(&profile.collision_baseline.baseline_id).display()
+            ));
+            violations.extend(failures);
+        }
+        Err(err) => violations.push(format!(
+            "collision baseline '{}' unavailable: {}",
+            profile.collision_baseline.baseline_id, err
+        )),
+    }
+    if violations.is_empty() {
+        report.status = PerfClosureLaneStatus::Validated;
+        report.notes.push(format!(
+            "collision closure met the canonical non-regression budget ({:.2}% max runtime regression)",
+            profile.collision_baseline.max_runtime_regression_pct
+        ));
+    } else {
+        report.status = PerfClosureLaneStatus::Violated;
+        report.notes.extend(violations);
+    }
+    report
+}
+
+fn collision_baseline_fixture_path(baseline_id: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("benchmarks")
+        .join("field_engine")
+        .join("baselines")
+        .join(format!("{baseline_id}.json"))
+}
+
+fn load_collision_baseline_summary(
+    baseline_id: &str,
+) -> Result<command_handlers::PerfSummary, String> {
+    let path = collision_baseline_fixture_path(baseline_id);
+    command_handlers::load_perf_baseline_summary(&path)
+        .map_err(|err| format!("{}: {}", path.display(), err))
+}
+
+fn primary_visibility_pass_ms(
+    report: &wrela::presentation_exec::PresentationFrameCostReport,
+) -> Option<f32> {
+    report
+        .passes
+        .iter()
+        .find(|pass| pass.pass_kind == "primary_visibility")
+        .map(|pass| pass.elapsed_micros as f32 / 1_000.0)
+}
+
+fn most_common_key(counts: &HashMap<String, usize>) -> Option<String> {
+    counts
+        .iter()
+        .max_by(|left, right| left.1.cmp(right.1).then_with(|| right.0.cmp(left.0)))
+        .map(|(key, _)| key.clone())
+}
+
+fn ns_to_ms(value: u128) -> f32 {
+    value as f32 / 1_000_000.0
+}
+
+fn percentile_f32(values: &[f32], quantile: f32) -> Option<f32> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|left, right| left.total_cmp(right));
+    let index =
+        ((sorted.len().saturating_sub(1)) as f32 * quantile.clamp(0.0, 1.0)).round() as usize;
+    sorted.get(index).copied()
 }
 
 fn print_presentation_benchmark_reports(reports: &[PresentationBenchmarkReport]) {
@@ -577,9 +1095,10 @@ pub(super) fn execute_perfcmp_command(input: PerfcmpCommandInput) -> i32 {
         return EXIT_USAGE;
     };
 
-    let manifest_path = match resolve_benchmark_manifest_path(
+    let manifest_path = match resolve_perf_benchmark_manifest_path(
         &TestTarget::ProjectRoot(target_root.clone()),
         input.benchmark_manifest_path,
+        input.perf_profile,
     ) {
         Some(path) => path,
         None => {
@@ -1132,6 +1651,7 @@ pub(super) fn run_perfcmp(config: &PerfCmpConfig) -> i32 {
                     }
                 }
             }
+            PerfProfile::Closure1080p120 => {}
             PerfProfile::Deep => {
                 for result in &scenario_results {
                     if result.is_stable && result.verdict == "regression" {
@@ -1289,6 +1809,7 @@ fn profile_pair_counts(
         PerfProfile::Smoke => (2usize, 6usize),
         PerfProfile::Standard => (3usize, 10usize),
         PerfProfile::Deep => (5usize, 18usize),
+        PerfProfile::Closure1080p120 => (4usize, 12usize),
     };
     if let Some(config) = manifest.profiles.config_for(profile) {
         warmup = config.warmup_pairs.max(1);
@@ -1351,6 +1872,7 @@ fn perfcmp_env_knobs(profile: PerfProfile, run_mode: PerfRunMode) -> BTreeMap<St
             PerfProfile::Smoke => "1",
             PerfProfile::Standard => "1",
             PerfProfile::Deep => "0",
+            PerfProfile::Closure1080p120 => "0",
         };
         knobs.insert("WRELA_DISABLE_IO_URING".to_string(), value.to_string());
     }
@@ -2349,6 +2871,13 @@ fn check_lane_kpis_from_summary(summary: &command_handlers::PerfSummary) -> Chec
 mod tests {
     use super::*;
 
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root")
+            .to_path_buf()
+    }
+
     #[test]
     fn sanitize_git_ref_for_filename_replaces_unsafe_chars() {
         assert_eq!(
@@ -2390,6 +2919,189 @@ mod tests {
         let ci_a = bootstrap_ci_percentile(&values, 95.0, 128, &mut seed_a);
         let ci_b = bootstrap_ci_percentile(&values, 95.0, 128, &mut seed_b);
         assert_eq!(ci_a, ci_b);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_with_timeout_aborts_long_running_process() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("sleep 5 & wait");
+        let started = Instant::now();
+        let err = run_command_with_timeout(&mut command, Duration::from_millis(100))
+            .expect_err("long-running command should time out");
+        assert!(err.contains("timed out"), "{err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "timeout returned too late: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn real_realtime_presentation_closure_manifest_matches_expected_protocol() {
+        let bench_root = workspace_root()
+            .join("benchmarks")
+            .join("realtime_presentation");
+        let manifest_path = bench_root.join("1080p120_closure.toml");
+        let raw_manifest = fs::read_to_string(&manifest_path).expect("read closure manifest");
+        let manifest_toml: toml::Value = toml::from_str(&raw_manifest).expect("parse closure toml");
+        let manifest = load_benchmark_manifest(&manifest_path).expect("load closure manifest");
+        assert_eq!(manifest.suite, "realtime_presentation");
+        assert_eq!(
+            manifest_toml
+                .get("profiles")
+                .and_then(|value| value.get("closure_1080p120"))
+                .and_then(|value| value.get("warmup_pairs"))
+                .and_then(|value| value.as_integer()),
+            Some(4)
+        );
+        assert_eq!(
+            manifest_toml
+                .get("profiles")
+                .and_then(|value| value.get("closure_1080p120"))
+                .and_then(|value| value.get("measure_pairs"))
+                .and_then(|value| value.as_integer()),
+            Some(12)
+        );
+        assert_eq!(
+            manifest_toml
+                .get("profiles")
+                .and_then(|value| value.get("closure_1080p120"))
+                .and_then(|value| value.get("coverage"))
+                .and_then(|value| value.as_str()),
+            Some("all")
+        );
+
+        let scenarios = manifest.scenarios_for_profile(PerfProfile::Closure1080p120);
+        let scenario_ids = scenarios
+            .iter()
+            .map(|scenario| scenario.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            scenario_ids,
+            vec![
+                "closure_1080p120_dense_constructive",
+                "closure_1080p120_repetition_heavy",
+                "closure_1080p120_thin_stack_grazing",
+                "closure_1080p120_media_radiance",
+                "closure_1080p120_transformed_primitive_gallery",
+                "closure_1080p120_mixed_opaque_conservative",
+                "closure_1080p120_cache_stress_motion_path",
+                "closure_1080p120_camera_motion_temporal_reuse_clipmap_churn",
+            ]
+        );
+        assert!(scenarios.iter().all(|scenario| scenario.class == "closure"));
+        assert!(
+            scenarios
+                .iter()
+                .all(|scenario| scenario.presentation.is_some())
+        );
+        assert!(scenarios.iter().all(|scenario| {
+            let presentation = scenario.presentation.as_ref().expect("presentation spec");
+            presentation.width == Some(1920)
+                && presentation.height == Some(1080)
+                && presentation.frames == Some(2)
+        }));
+
+        let selection = build_benchmark_selection(
+            &TestTarget::ProjectRoot(bench_root),
+            &manifest_path,
+            PerfProfile::Closure1080p120,
+        )
+        .expect("build closure benchmark selection");
+        assert_eq!(selection.len(), scenario_ids.len());
+    }
+
+    #[test]
+    fn real_field_engine_closure_manifest_matches_expected_protocol() {
+        let bench_root = workspace_root().join("benchmarks").join("field_engine");
+        let manifest_path = bench_root.join("1080p120_closure.toml");
+        let raw_manifest = fs::read_to_string(&manifest_path).expect("read closure manifest");
+        let manifest_toml: toml::Value = toml::from_str(&raw_manifest).expect("parse closure toml");
+        let manifest = load_benchmark_manifest(&manifest_path).expect("load closure manifest");
+        assert_eq!(manifest.suite, "field_engine");
+        assert_eq!(
+            manifest_toml
+                .get("profiles")
+                .and_then(|value| value.get("closure_1080p120"))
+                .and_then(|value| value.get("warmup_pairs"))
+                .and_then(|value| value.as_integer()),
+            Some(4)
+        );
+        assert_eq!(
+            manifest_toml
+                .get("profiles")
+                .and_then(|value| value.get("closure_1080p120"))
+                .and_then(|value| value.get("measure_pairs"))
+                .and_then(|value| value.as_integer()),
+            Some(12)
+        );
+        assert_eq!(
+            manifest_toml
+                .get("profiles")
+                .and_then(|value| value.get("closure_1080p120"))
+                .and_then(|value| value.get("coverage"))
+                .and_then(|value| value.as_str()),
+            Some("all")
+        );
+
+        let scenarios = manifest.scenarios_for_profile(PerfProfile::Closure1080p120);
+        let scenario_ids = scenarios
+            .iter()
+            .map(|scenario| scenario.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            scenario_ids,
+            vec![
+                "closure_1080p120_repetition_identity_stability",
+                "closure_1080p120_mixed_solver_dense_oracle",
+                "closure_1080p120_collision_heavy_transition",
+                "closure_1080p120_transformed_primitive_gallery",
+                "closure_1080p120_mixed_opaque_conservative",
+            ]
+        );
+        assert!(scenarios.iter().all(|scenario| scenario.class == "closure"));
+        assert!(
+            scenarios
+                .iter()
+                .all(|scenario| scenario.presentation.is_none())
+        );
+
+        let selection = build_benchmark_selection(
+            &TestTarget::ProjectRoot(bench_root),
+            &manifest_path,
+            PerfProfile::Closure1080p120,
+        )
+        .expect("build closure benchmark selection");
+        assert_eq!(selection.len(), scenario_ids.len());
+    }
+
+    #[test]
+    fn frame_closure_status_records_report_collection_failures_as_violations() {
+        let profile = PerfClosureProfile::canonical_1080p120();
+        let report = build_frame_closure_status(
+            &profile,
+            &[],
+            &["scenario `dense` timed out".to_string()],
+            0,
+            1,
+        );
+        assert_eq!(report.status, PerfClosureLaneStatus::Violated);
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("presentation report collection failed"))
+        );
+    }
+
+    #[test]
+    fn checked_in_collision_baseline_fixture_loads() {
+        let summary = load_collision_baseline_summary("field_engine.phase34_cpu_oracle")
+            .expect("load checked-in collision baseline");
+        assert!(summary.runtime_p50_ns > 0);
+        assert!(summary.runtime_p95_ns >= summary.runtime_p50_ns);
+        assert!(summary.runtime_p99_ns >= summary.runtime_p95_ns);
     }
 
     #[test]
@@ -2494,6 +3206,20 @@ mod tests {
                     "continuation verdict=available reason=none change_class=stable accepted_change_class=camera-motion"
                         .to_string()
                 ],
+                acceleration_node_visits: 0,
+                union_cluster_visits: 0,
+                ray_support_interval_rejections: 0,
+                ray_support_entry_jumps: 0,
+                repeat_cell_skips: 0,
+                cache_brick_visits: 0,
+                cache_brick_hits: 0,
+                cache_brick_misses: 0,
+                accepted_relaxed_steps: 0,
+                rejected_relaxed_steps: 0,
+                analytic_transformed_hits: 0,
+                interval_subdivisions: 0,
+                interval_proof_successes: 0,
+                observer_continuation_seed_hits: 0,
                 attachment_bytes: vec![wrela::presentation_exec::PresentationAttachmentBytes {
                     attachment: "color".to_string(),
                     width: 64,
@@ -2557,8 +3283,31 @@ mod tests {
                     participant_resolve_count: 128,
                     history_reuse_rate: 0.0,
                     continuation_diagnostics: vec![],
+                    acceleration_node_visits: 0,
+                    union_cluster_visits: 0,
+                    ray_support_interval_rejections: 0,
+                    ray_support_entry_jumps: 0,
+                    repeat_cell_skips: 0,
+                    cache_brick_visits: 0,
+                    cache_brick_hits: 0,
+                    cache_brick_misses: 0,
+                    accepted_relaxed_steps: 0,
+                    rejected_relaxed_steps: 0,
+                    analytic_transformed_hits: 0,
+                    interval_subdivisions: 0,
+                    interval_proof_successes: 0,
+                    observer_continuation_seed_hits: 0,
                     attachment_bytes: vec![],
-                    passes: vec![],
+                    passes: vec![wrela::presentation_exec::PresentationPassCost {
+                        pass_id: "primary.visibility".to_string(),
+                        pass_kind: "primary_visibility".to_string(),
+                        work_items: 1024,
+                        elapsed_micros: 1200,
+                        dispatch_count: 1,
+                        attachment_bytes_read: 0,
+                        attachment_bytes_written: 4096,
+                        notes: vec![],
+                    }],
                     active_acceleration_artifacts: vec![],
                     bottleneck_pass: Some("primary_visibility".to_string()),
                     performance_gain_sources: vec!["backend_speed".to_string()],
@@ -2602,8 +3351,31 @@ mod tests {
                     participant_resolve_count: 128,
                     history_reuse_rate: 0.25,
                     continuation_diagnostics: vec![],
+                    acceleration_node_visits: 0,
+                    union_cluster_visits: 0,
+                    ray_support_interval_rejections: 0,
+                    ray_support_entry_jumps: 0,
+                    repeat_cell_skips: 0,
+                    cache_brick_visits: 0,
+                    cache_brick_hits: 0,
+                    cache_brick_misses: 0,
+                    accepted_relaxed_steps: 0,
+                    rejected_relaxed_steps: 0,
+                    analytic_transformed_hits: 0,
+                    interval_subdivisions: 0,
+                    interval_proof_successes: 0,
+                    observer_continuation_seed_hits: 0,
                     attachment_bytes: vec![],
-                    passes: vec![],
+                    passes: vec![wrela::presentation_exec::PresentationPassCost {
+                        pass_id: "primary.visibility".to_string(),
+                        pass_kind: "primary_visibility".to_string(),
+                        work_items: 1024,
+                        elapsed_micros: 2100,
+                        dispatch_count: 1,
+                        attachment_bytes_read: 0,
+                        attachment_bytes_written: 8192,
+                        notes: vec!["dynamic_resolution".to_string()],
+                    }],
                     active_acceleration_artifacts: vec!["dynamic_resolution".to_string()],
                     bottleneck_pass: Some("primary_visibility".to_string()),
                     performance_gain_sources: vec![

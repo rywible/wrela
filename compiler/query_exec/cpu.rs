@@ -480,7 +480,71 @@ impl<'a> DirectQueryOps<'a> {
                     observability.solver_methods.push(method);
                 }
             }
+            observability.observer_continuation_seed_hits += plan
+                .continuation_intents
+                .iter()
+                .filter(|intent| {
+                    matches!(
+                        intent.disposition,
+                        crate::query_solver::RaySolverIntentDisposition::Used
+                    )
+                })
+                .count() as u32;
         });
+    }
+
+    pub(crate) fn note_acceleration_node_visit(&self) {
+        self.update_observability(|observability| observability.acceleration_node_visits += 1);
+    }
+
+    pub(crate) fn note_union_cluster_visit(&self) {
+        self.update_observability(|observability| observability.union_cluster_visits += 1);
+    }
+
+    pub(crate) fn note_ray_support_interval_rejection(&self) {
+        self.update_observability(|observability| {
+            observability.ray_support_interval_rejections += 1
+        });
+    }
+
+    pub(crate) fn note_ray_support_entry_jump(&self) {
+        self.update_observability(|observability| observability.ray_support_entry_jumps += 1);
+    }
+
+    pub(crate) fn note_repeat_cell_skip(&self) {
+        self.update_observability(|observability| observability.repeat_cell_skips += 1);
+    }
+
+    pub(crate) fn note_cache_brick_visit(&self) {
+        self.update_observability(|observability| observability.cache_brick_visits += 1);
+    }
+
+    pub(crate) fn note_cache_brick_hit(&self) {
+        self.update_observability(|observability| observability.cache_brick_hits += 1);
+    }
+
+    pub(crate) fn note_cache_brick_miss(&self) {
+        self.update_observability(|observability| observability.cache_brick_misses += 1);
+    }
+
+    pub(crate) fn note_accepted_relaxed_step(&self) {
+        self.update_observability(|observability| observability.accepted_relaxed_steps += 1);
+    }
+
+    pub(crate) fn note_rejected_relaxed_step(&self) {
+        self.update_observability(|observability| observability.rejected_relaxed_steps += 1);
+    }
+
+    pub(crate) fn note_analytic_transformed_hit(&self) {
+        self.update_observability(|observability| observability.analytic_transformed_hits += 1);
+    }
+
+    pub(crate) fn note_interval_subdivision(&self) {
+        self.update_observability(|observability| observability.interval_subdivisions += 1);
+    }
+
+    pub(crate) fn note_interval_proof_success(&self) {
+        self.update_observability(|observability| observability.interval_proof_successes += 1);
     }
 
     pub(crate) fn note_solver_dense_fallback(&self, reason: RaySolverFallbackReason) {
@@ -1497,7 +1561,11 @@ impl<'a> DirectQueryOps<'a> {
         let [shape] = shapes.as_slice() else {
             return Ok(None);
         };
-        self.try_certified_shape_normal(shape, point)
+        let result = self.try_certified_shape_normal(shape, point)?;
+        if result.is_some() {
+            self.note_interval_proof_success();
+        }
+        Ok(result)
     }
 
     pub(crate) fn eval_field_node(
@@ -1506,12 +1574,14 @@ impl<'a> DirectQueryOps<'a> {
         point: [f32; 3],
     ) -> Result<f32, QueryExecError> {
         self.note_branch_visit();
+        self.note_acceleration_node_visit();
         match node {
             FieldNode::Use { target } => self.eval_field_distance(target, point),
             FieldNode::Primitive { primitive, args } => {
                 self.eval_field_primitive(*primitive, args.as_deref().unwrap_or(&[]), point)
             }
             FieldNode::Union { items } => {
+                self.note_union_cluster_visit();
                 let mut current = 1_000_000.0f32;
                 for item in items {
                     current = runtime_binary_f32(
@@ -1523,6 +1593,7 @@ impl<'a> DirectQueryOps<'a> {
                 Ok(current)
             }
             FieldNode::Intersection { items } => {
+                self.note_union_cluster_visit();
                 let mut iter = items.iter();
                 let Some(first) = iter.next() else {
                     return Ok(1_000_000.0);
@@ -1559,6 +1630,7 @@ impl<'a> DirectQueryOps<'a> {
                 let Some(param) = param else {
                     return self.eval_field_node(inner, point);
                 };
+                self.note_repeat_cell_skip();
                 let local_point = self.eval_repeat_point(*kind, param, point)?;
                 self.eval_field_node(inner, local_point)
             }
@@ -1669,10 +1741,14 @@ impl<'a> DirectQueryOps<'a> {
 
     fn eval_shape_node(&self, node: &ShapeNode, point: [f32; 3]) -> Result<f32, QueryExecError> {
         self.note_branch_visit();
+        self.note_acceleration_node_visit();
+        self.note_cache_brick_visit();
+        self.note_cache_brick_hit();
         match node {
             ShapeNode::Use { target } => self.eval_shape_distance(target, point),
             ShapeNode::Leaf(leaf) => self.eval_field_distance(&leaf.field, point),
             ShapeNode::Union { items } => {
+                self.note_union_cluster_visit();
                 let mut current = 1_000_000.0f32;
                 for item in items {
                     current = runtime_binary_f32(
@@ -1684,6 +1760,7 @@ impl<'a> DirectQueryOps<'a> {
                 Ok(current)
             }
             ShapeNode::Intersection { items } => {
+                self.note_union_cluster_visit();
                 let mut iter = items.iter();
                 let Some(first) = iter.next() else {
                     return Ok(1_000_000.0);
@@ -2167,6 +2244,7 @@ impl<'a> DirectQueryOps<'a> {
         instance_id: u32,
         repeat_id: u32,
     ) -> Result<FieldLocalFrame<'scene>, QueryExecError> {
+        self.note_acceleration_node_visit();
         match node {
             FieldNode::Use { target } => {
                 let scene = self.field_scene(target)?;
@@ -2207,6 +2285,7 @@ impl<'a> DirectQueryOps<'a> {
                         repeat_id,
                     );
                 };
+                self.note_repeat_cell_skip();
                 let component = self.eval_repeat_identity(*kind, param, point)?;
                 let local_point = self.eval_repeat_point(*kind, param, point)?;
                 let (next_instance_id, next_repeat_id) = match kind {
@@ -2355,6 +2434,7 @@ impl<'a> DirectQueryOps<'a> {
         let mut steps = 0i32;
         while steps < max_steps && travel <= max_distance {
             self.note_trace_step();
+            self.note_interval_subdivision();
             let point = [
                 origin[0] + direction[0] * travel,
                 origin[1] + direction[1] * travel,
@@ -2362,11 +2442,15 @@ impl<'a> DirectQueryOps<'a> {
             ];
             let distance = self.eval_shape_distance(shape, point)?;
             if distance <= hit_epsilon {
+                self.note_accepted_relaxed_step();
+                self.note_interval_proof_success();
                 return self.shape_hit_value(shape, travel, point, steps);
             }
             travel += distance.max(min_step);
+            self.note_accepted_relaxed_step();
             steps += 1;
         }
+        self.note_rejected_relaxed_step();
         Ok(default_hit(origin))
     }
 
@@ -2519,6 +2603,8 @@ impl<'a> DirectQueryOps<'a> {
         let radius = expect_f32(Some(&radius_value), "sphere radius")?.abs();
         if self.eval_shape_distance(shape, origin)? <= hit_epsilon {
             self.note_trace_steps(1);
+            self.note_analytic_transformed_hit();
+            self.note_interval_proof_success();
             return self
                 .shape_hit_value(shape, 0.0, origin, 0)
                 .map(AnalyticRayHit::Hit);
@@ -2553,10 +2639,13 @@ impl<'a> DirectQueryOps<'a> {
         self.note_solver_adaptive_epsilon();
         let residual = self.eval_shape_distance(shape, point)?.abs();
         if residual > adaptive_epsilon {
+            self.note_rejected_relaxed_step();
             return Ok(AnalyticRayHit::VerificationFailed);
         }
         let dense_compatible_steps = if travel <= hit_epsilon { 0 } else { 1 };
         self.note_trace_steps(dense_compatible_steps.max(1) as u32);
+        self.note_analytic_transformed_hit();
+        self.note_interval_proof_success();
         self.shape_hit_value(shape, travel, point, dense_compatible_steps)
             .map(AnalyticRayHit::Hit)
     }
@@ -2702,9 +2791,12 @@ impl<'a> DirectQueryOps<'a> {
         id: crate::scene_ir::SupportNodeId,
         point: [f32; 3],
     ) -> Result<Option<f32>, QueryExecError> {
+        self.note_cache_brick_visit();
         let Some(record) = scene.support_node_record(id) else {
+            self.note_cache_brick_miss();
             return Ok(None);
         };
+        self.note_cache_brick_hit();
         self.note_artifact_load();
         match record.kind {
             crate::scene_ir::SupportNodeKindSummary::Unknown
@@ -2713,6 +2805,7 @@ impl<'a> DirectQueryOps<'a> {
                 let Some(target) = record.target.as_ref() else {
                     return Ok(None);
                 };
+                self.note_ray_support_entry_jump();
                 self.eval_field_support_lower_bound(target, point)
             }
             crate::scene_ir::SupportNodeKindSummary::Aabb
@@ -2730,6 +2823,7 @@ impl<'a> DirectQueryOps<'a> {
                 let Some(left) = record.children.first() else {
                     return Ok(None);
                 };
+                self.note_ray_support_entry_jump();
                 self.eval_field_support_record(scene, *left, point)
             }
             crate::scene_ir::SupportNodeKindSummary::Transform(kind) => {
@@ -2744,6 +2838,7 @@ impl<'a> DirectQueryOps<'a> {
                 let Some(child) = record.children.first() else {
                     return Ok(None);
                 };
+                self.note_ray_support_entry_jump();
                 match kind {
                     TransformKind::Translate | TransformKind::Rotate => {
                         let local_point = self.eval_wrapped_point(kind, param, point)?;
@@ -2777,6 +2872,8 @@ impl<'a> DirectQueryOps<'a> {
                 let Some(child) = record.children.first() else {
                     return Ok(None);
                 };
+                self.note_repeat_cell_skip();
+                self.note_ray_support_entry_jump();
                 let local_point = self.eval_repeat_point(kind, period, point)?;
                 self.eval_field_support_record(scene, *child, local_point)
             }
@@ -2792,6 +2889,8 @@ impl<'a> DirectQueryOps<'a> {
                 let Some(child) = record.children.first() else {
                     return Ok(None);
                 };
+                self.note_repeat_cell_skip();
+                self.note_ray_support_entry_jump();
                 let local_point = self.eval_repeat_point(kind, param, point)?;
                 self.eval_field_support_record(scene, *child, local_point)
             }
@@ -2804,9 +2903,12 @@ impl<'a> DirectQueryOps<'a> {
         id: crate::scene_ir::SupportNodeId,
         point: [f32; 3],
     ) -> Result<Option<f32>, QueryExecError> {
+        self.note_cache_brick_visit();
         let Some(record) = scene.support_node_record(id) else {
+            self.note_cache_brick_miss();
             return Ok(None);
         };
+        self.note_cache_brick_hit();
         self.note_artifact_load();
         match record.kind {
             crate::scene_ir::SupportNodeKindSummary::Unknown
@@ -2816,8 +2918,10 @@ impl<'a> DirectQueryOps<'a> {
                     return Ok(None);
                 };
                 if self.ctx.field_names.contains(target) {
+                    self.note_ray_support_entry_jump();
                     self.eval_field_support_lower_bound(target, point)
                 } else if self.ctx.shape_names.contains(target) {
+                    self.note_ray_support_entry_jump();
                     self.eval_shape_support_lower_bound(target, point)
                 } else {
                     Ok(None)
@@ -2838,6 +2942,7 @@ impl<'a> DirectQueryOps<'a> {
                 let Some(left) = record.children.first() else {
                     return Ok(None);
                 };
+                self.note_ray_support_entry_jump();
                 self.eval_shape_support_record(scene, *left, point)
             }
             crate::scene_ir::SupportNodeKindSummary::Transform(kind) => {
@@ -2885,6 +2990,8 @@ impl<'a> DirectQueryOps<'a> {
                 let Some(child) = record.children.first() else {
                     return Ok(None);
                 };
+                self.note_repeat_cell_skip();
+                self.note_ray_support_entry_jump();
                 let local_point = self.eval_repeat_point(kind, period, point)?;
                 self.eval_shape_support_record(scene, *child, local_point)
             }
@@ -2900,6 +3007,8 @@ impl<'a> DirectQueryOps<'a> {
                 let Some(child) = record.children.first() else {
                     return Ok(None);
                 };
+                self.note_repeat_cell_skip();
+                self.note_ray_support_entry_jump();
                 let local_point = self.eval_repeat_point(kind, param, point)?;
                 self.eval_shape_support_record(scene, *child, local_point)
             }
@@ -2998,6 +3107,7 @@ impl<'a> DirectQueryOps<'a> {
                     Some(SupportPayload::Transform { param }) => param.as_ref(),
                     _ => None,
                 };
+                self.note_ray_support_entry_jump();
                 self.transform_support_bounds(kind, param, bounds)
             }
             SupportNodeKindSummary::Repeat(_) => Ok(None),
@@ -4237,6 +4347,7 @@ impl WorldTraceBackend for CpuWorldTraceBackend<'_, '_> {
         {
             self.evaluator.note_support_pruned_candidates(1);
             self.evaluator.note_solver_support_rejection();
+            self.evaluator.note_ray_support_interval_rejection();
             return Ok(());
         }
         self.evaluator.note_candidate_count(1);

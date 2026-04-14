@@ -1,3 +1,4 @@
+use crate::acceleration::{self, AccelerationObserver};
 use crate::artifact_contract::{
     ArtifactCompatibilityRelation, ArtifactEvidenceCompatibility, ArtifactLogicalField,
     ArtifactLogicalSchema, ArtifactPolicyCompatibility, ArtifactSnapshotRelation,
@@ -747,10 +748,16 @@ impl PresentationPlan {
     }
 
     pub fn semantic_artifact_contracts(&self) -> Vec<SemanticArtifactContract> {
-        self.frame_artifacts
+        let mut out = self
+            .frame_artifacts
             .iter()
             .filter_map(|artifact| presentation_semantic_artifact_contract(self, artifact))
-            .collect()
+            .collect::<Vec<_>>();
+        out.extend(acceleration::observer_acceleration_contracts(
+            AccelerationObserver::Presentation,
+            self.name.as_str(),
+        ));
+        out
     }
 
     pub fn artifact_uses(&self) -> Vec<ArtifactUse> {
@@ -829,7 +836,29 @@ impl PresentationPlan {
                 }
             }
         }
+        uses.extend(
+            acceleration::observer_acceleration_contracts(
+                AccelerationObserver::Presentation,
+                self.name.as_str(),
+            )
+            .into_iter()
+            .map(|contract| ArtifactUse {
+                actor: contract.producer.clone(),
+                artifact_id: contract.id.clone(),
+                kind: ArtifactUseKind::Produce,
+                source: ArtifactUseSource::Plan,
+                required_validity: None,
+            }),
+        );
         uses
+    }
+
+    pub fn validate_acceleration_contracts(&self) -> Vec<SmolStr> {
+        acceleration::validate_observer_acceleration_contracts(
+            AccelerationObserver::Presentation,
+            self.name.as_str(),
+            &self.semantic_artifact_contracts(),
+        )
     }
 
     pub fn apply_participant_policy(&mut self, radiance_enabled: bool, medium_enabled: bool) {
@@ -1007,6 +1036,7 @@ fn presentation_semantic_artifact_contract(
             history_slot.map(|(_, slot)| slot),
         ),
         compatibility,
+        acceleration: None,
         validity,
         producer: artifact.producer_pass.clone(),
         consumer: SmolStr::new("presentation.frame"),
@@ -1599,6 +1629,9 @@ pub fn validate_plan(plan: &PresentationPlan) -> Vec<PresentationPlanValidationE
         .into_iter()
         .map(|contract| (contract.id.clone(), contract))
         .collect::<std::collections::BTreeMap<_, _>>();
+    for note in plan.validate_acceleration_contracts() {
+        errors.push(validation_error(note));
+    }
     let produced_by = plan
         .frame_artifacts
         .iter()

@@ -125,6 +125,69 @@ field conservative distance media_field(p: Vec3) -> F32 {
     }
 }
 
+field conservative distance transformed_gallery_sphere(p: Vec3) -> F32 {
+    translate = vec3(-0.54, 0.10, 0.0) {
+        sphere(radius = 0.24)
+    }
+}
+
+field conservative distance transformed_gallery_beam(p: Vec3) -> F32 {
+    translate = vec3(0.38, -0.08, 0.0) {
+        sweep = vec3(0.62, 0.0, 0.0) {
+            circle2(radius = 0.05)
+        }
+    }
+}
+
+field conservative distance transformed_gallery_plate(p: Vec3) -> F32 {
+    translate = vec3(0.02, 0.42, 0.0) {
+        extrude = f32(0.10) {
+            rounded_rect2(half = vec2(0.18, 0.08), radius = 0.03)
+        }
+    }
+}
+
+field conservative distance transformed_gallery_field(p: Vec3) -> F32 {
+    union {
+        provenance_policy = nearest
+        use transformed_gallery_sphere
+        use transformed_gallery_beam
+        use transformed_gallery_plate
+    }
+}
+
+field conservative distance mixed_opaque_conservative_core(p: Vec3) -> F32 {
+    union {
+        provenance_policy = nearest
+        translate = vec3(-0.58, 0.0, 0.0) {
+            use dense_constructive_field
+        }
+        translate = vec3(0.34, 0.04, 0.0) {
+            use thin_stack_field
+        }
+    }
+}
+
+field conservative distance mixed_opaque_conservative_guard(p: Vec3) -> F32 {
+    support = Support3(bounds=Bounds3(
+        min=vec3(1.30, -0.95, -0.70),
+        max=vec3(2.70, 0.95, 0.70)
+    ))
+    bounds = Bounds3(
+        min=vec3(1.30, -0.95, -0.70),
+        max=vec3(2.70, 0.95, 0.70)
+    )
+    return length(p - vec3(2.00, 0.0, 0.0)) - 0.42
+}
+
+field conservative distance mixed_opaque_conservative_field(p: Vec3) -> F32 {
+    union {
+        provenance_policy = nearest
+        use mixed_opaque_conservative_core
+        use mixed_opaque_conservative_guard
+    }
+}
+
 material dense_constructive_surface(hit: Hit3) -> Surface {
     contour = clamp(abs(hit.local_position.x) * 0.32 + abs(hit.local_normal.y) * 0.24, 0.0, 1.0)
     return Surface(
@@ -174,6 +237,32 @@ material media_surface(hit: Hit3) -> Surface {
         clearcoat_roughness=0.10 + (1.0 - crest) * 0.12,
         sheen=0.08 + abs(hit.local_normal.y) * 0.14,
         emissive=vec3(1.4, 1.8, 2.8) * clamp(hit.local_normal.y, 0.0, 1.0)
+    )
+}
+
+material transformed_gallery_surface(hit: Hit3) -> Surface {
+    stripe = clamp(abs(hit.local_position.x) * 0.40 + abs(hit.local_normal.z) * 0.24, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(188.0, 132.0, 108.0) + vec3(14.0, 12.0, 10.0) * stripe,
+        roughness=0.16 + stripe * 0.16,
+        metalness=0.10 + abs(hit.local_normal.y) * 0.12,
+        clearcoat=0.10 + abs(hit.local_normal.x) * 0.12,
+        clearcoat_roughness=0.08 + abs(hit.local_position.y) * 0.08,
+        sheen=0.08 + abs(hit.local_normal.z) * 0.10,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+material mixed_opaque_conservative_surface(hit: Hit3) -> Surface {
+    guard = clamp(abs(hit.local_position.x) * 0.22 + abs(hit.local_normal.y) * 0.26, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(132.0, 146.0, 164.0) + vec3(10.0, 12.0, 14.0) * guard,
+        roughness=0.14 + guard * 0.18,
+        metalness=0.08 + abs(hit.local_normal.x) * 0.14,
+        clearcoat=0.12 + abs(hit.local_normal.z) * 0.10,
+        clearcoat_roughness=0.08 + abs(hit.local_position.x) * 0.08,
+        sheen=0.06 + abs(hit.local_normal.y) * 0.10,
+        emissive=vec3(0.0, 0.0, 0.0)
     )
 }
 
@@ -238,6 +327,26 @@ shape media_shape {
     )
 }
 
+shape transformed_gallery_shape {
+    field = transformed_gallery_field
+    material = transformed_gallery_surface
+    payload = Payload(
+        entity_id=u32(45),
+        material_id=u32(45),
+        actor=ActorHandle(id=u32(45), generation=u32(0))
+    )
+}
+
+shape mixed_opaque_conservative_shape {
+    field = mixed_opaque_conservative_field
+    material = mixed_opaque_conservative_surface
+    payload = Payload(
+        entity_id=u32(46),
+        material_id=u32(46),
+        actor=ActorHandle(id=u32(46), generation=u32(0))
+    )
+}
+
 region dense_constructive_region() {
     place primary = dense_constructive_shape
 }
@@ -252,6 +361,14 @@ region thin_stack_region() {
 
 region media_region() {
     place primary = media_shape
+}
+
+region transformed_gallery_region() {
+    place primary = transformed_gallery_shape
+}
+
+region mixed_opaque_conservative_region() {
+    place primary = mixed_opaque_conservative_shape
 }
 
 domain dense_constructive_domain(world: RegionCapture) {
@@ -298,6 +415,28 @@ domain media_domain(world: RegionCapture) {
     max_steps = 128
 }
 
+domain transformed_gallery_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = false
+    media = false
+    max_distance = 10.0
+    min_step = 0.03
+    hit_epsilon = 0.001
+    max_steps = 128
+}
+
+domain mixed_opaque_conservative_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = false
+    media = false
+    max_distance = 14.0
+    min_step = 0.03
+    hit_epsilon = 0.001
+    max_steps = 128
+}
+
 view show_dense_constructive_view(
     world: RegionCapture,
     camera: Camera
@@ -338,6 +477,30 @@ view show_repetition_view(
     history = temporal_history(color = true)
 }
 
+view show_repetition_1080p120_closure_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = repetition_domain(world = world)
+    viewport = viewport(width = 1920, height = 1080)
+    quality = realtime_quality(
+        target_fps = 120,
+        allow_dynamic_resolution = false,
+        primary_max_steps = 96
+    )
+    lighting = key_light(
+        light = Light(
+            position=vec3(-1.15, 2.55, 2.35),
+            direction=normalize(vec3(-0.82, -0.76, -0.78)),
+            intensity=vec3(1.0, 0.97, 0.92),
+            range=12.0
+        ),
+        fill_direction = normalize(vec3(-0.40, 0.34, 0.18))
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
+}
+
 view show_thin_stack_view(
     world: RegionCapture,
     camera: Camera
@@ -353,6 +516,30 @@ view show_thin_stack_view(
             range=10.0
         ),
         fill_direction = normalize(vec3(-0.42, 0.36, 0.2))
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
+}
+
+view show_thin_stack_1080p120_closure_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = thin_stack_domain(world = world)
+    viewport = viewport(width = 1920, height = 1080)
+    quality = realtime_quality(
+        target_fps = 120,
+        allow_dynamic_resolution = false,
+        primary_max_steps = 96
+    )
+    lighting = key_light(
+        light = Light(
+            position=vec3(-1.35, 2.15, 2.55),
+            direction=normalize(vec3(-0.76, -0.72, -0.80)),
+            intensity=vec3(0.98, 0.96, 1.0),
+            range=10.0
+        ),
+        fill_direction = normalize(vec3(-0.42, 0.35, 0.20))
     )
     outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
     history = temporal_history(color = true)
@@ -494,6 +681,61 @@ fn test_realtime_presentation_repetition_heavy_scene_ops_512() -> Nothing {
     require checksum != 0 else "repeat-heavy checksum nonzero"
 }
 
+fn test_realtime_presentation_repetition_heavy_1080p120_closure_ops_512() -> Nothing {
+    repeat_scene = capture repetition_region
+    domain = repetition_domain(world = repeat_scene)
+    mutable rays = []
+    for i in 1...513 {
+        px = f32(i % 24) * 0.20 - 2.3
+        py = f32((i / 24) % 8) * 0.11 - 0.24
+        motion = compute_closure_camera_motion_offset(i)
+        __wr_list_push(
+            rays,
+            ray_query(
+                origin=vec3(px, py, 2.8) + motion,
+                direction=vec3(0.0, 0.0, -1.0),
+                max_distance=12.0,
+                min_step=0.04,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+        )
+    }
+
+    hits = spatial.nearest_batch(
+        capture=repeat_scene,
+        domain=domain,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+
+    mutable checksum = 0
+    mutable hit_count = 0
+    mutable repeat_checksum = 0
+    for sample_i in 0...64 {
+        sample_index = sample_i * 8
+        hit = hits[sample_index]
+        if hit.hit {
+            hit_count += 1
+        }
+        checksum = update_scene_checksum(
+            current=checksum,
+            value=i32(hit.steps)
+                + i32(abs(hit.distance) * 100.0)
+                + i32(hit.repeat_id % u32(17))
+                + i32(hit.instance_id % u32(19))
+        )
+        repeat_checksum = update_scene_checksum(
+            current=repeat_checksum,
+            value=i32(hit.repeat_id % u32(23)) + i32(hit.instance_id % u32(29))
+        )
+    }
+
+    require hit_count > 0 else "repeat-heavy closure hits present"
+    require repeat_checksum != 0 else "repeat-heavy closure repeat checksum nonzero"
+    require checksum != 0 else "repeat-heavy closure checksum nonzero"
+}
+
 fn test_realtime_presentation_thin_stack_alias_prone_ops_384() -> Nothing {
     thin_scene = capture thin_stack_region
     domain = thin_stack_domain(world = thin_scene)
@@ -556,6 +798,80 @@ fn test_realtime_presentation_thin_stack_alias_prone_ops_384() -> Nothing {
     require hit_count > 0 else "thin-stack hits present"
     require miss_count > 0 else "thin-stack misses present"
     require checksum != 0 else "thin-stack checksum nonzero"
+}
+
+fn test_realtime_presentation_thin_stack_alias_prone_1080p120_closure_ops_384() -> Nothing {
+    thin_scene = capture thin_stack_region
+    domain = thin_stack_domain(world = thin_scene)
+    mutable rays = []
+    mutable points = []
+    for i in 1...385 {
+        px = f32(i % 16) * 0.08 - 0.60
+        py = f32((i / 16) % 16) * 0.07 - 0.52
+        motion = compute_closure_camera_motion_offset(i)
+        origin = vec3(px, py, 2.6) + motion
+        __wr_list_push(
+            rays,
+            ray_query(
+                origin=origin,
+                direction=normalize(vec3(-0.04 - px * 0.03, 0.03 - py * 0.02, -1.0)),
+                max_distance=10.0,
+                min_step=0.02,
+                hit_epsilon=0.0005,
+                max_steps=96
+            )
+        )
+        __wr_list_push(
+            points,
+            PointQuery(point=origin + vec3(0.0, 0.0, -0.7))
+        )
+    }
+
+    hits = spatial.nearest_batch(
+        capture=thin_scene,
+        domain=domain,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    normals = spatial.normal_batch(
+        capture=thin_scene,
+        domain=domain,
+        points=points,
+        backend=dispatch_backend_cpu()
+    )
+
+    mutable checksum = 0
+    mutable hit_count = 0
+    mutable miss_count = 0
+    mutable alias_checksum = 0
+    for sample_i in 0...48 {
+        sample_index = sample_i * 8
+        hit = hits[sample_index]
+        normal = normals[sample_index].normal
+        if hit.hit {
+            hit_count += 1
+        } else {
+            miss_count += 1
+        }
+        checksum = update_scene_checksum(
+            current=checksum,
+            value=i32(hit.steps)
+                + i32(abs(hit.distance) * 100.0)
+                + i32(abs(normal.x + normal.y + normal.z) * 100.0)
+        )
+        alias_checksum = update_scene_checksum(
+            current=alias_checksum,
+            value=i32(sample_i + 1)
+                + i32(hit.steps)
+                + i32(abs(hit.distance) * 100.0)
+                + i32(abs(normal.x + normal.y + normal.z) * 100.0)
+        )
+    }
+
+    require hit_count > 0 else "thin-stack closure hits present"
+    require miss_count > 0 else "thin-stack closure misses present"
+    require alias_checksum != 0 else "thin-stack closure alias checksum nonzero"
+    require checksum != 0 else "thin-stack closure checksum nonzero"
 }
 
 fn test_realtime_presentation_media_radiance_scene_ops_256() -> Nothing {
@@ -647,4 +963,657 @@ fn test_realtime_presentation_media_radiance_scene_ops_256() -> Nothing {
     require hit_count > 0 else "media radiance hits present"
     require media_signal != 0 else "media radiance signal nonzero"
     require checksum != 0 else "media radiance checksum nonzero"
+}
+
+fn compute_closure_camera_motion_offset(frame: Integer) -> Vec3 {
+    return vec3(
+        f32(frame) * 0.02,
+        f32(frame % 3) * 0.01,
+        f32(frame % 2) * -0.015
+    )
+}
+
+fn compute_cache_stress_motion_offset(frame: Integer) -> Vec3 {
+    return vec3(
+        f32(frame % 7) * 0.035 - 0.105,
+        f32((frame / 7) % 5) * 0.018 - 0.036,
+        f32(frame % 3) * -0.020
+    )
+}
+
+view show_dense_constructive_1080p120_closure_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = dense_constructive_domain(world = world)
+    viewport = viewport(width = 1920, height = 1080)
+    quality = realtime_quality(
+        target_fps = 120,
+        allow_dynamic_resolution = false,
+        primary_max_steps = 96
+    )
+    lighting = key_light(
+        light = Light(
+            position=vec3(-1.6, 2.8, 2.6),
+            direction=normalize(vec3(-0.86, -0.82, -0.78)),
+            intensity=vec3(1.0, 0.98, 0.95),
+            range=14.0
+        ),
+        fill_direction = normalize(vec3(-0.44, 0.38, 0.20))
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
+}
+
+view show_media_radiance_1080p120_closure_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = media_domain(world = world)
+    viewport = viewport(width = 1920, height = 1080)
+    quality = realtime_quality(
+        target_fps = 120,
+        allow_dynamic_resolution = false,
+        primary_max_steps = 96,
+        allow_media = true
+    )
+    lighting = key_light(
+        light = Light(
+            position=vec3(-1.5, 3.0, 3.0),
+            direction=normalize(vec3(-0.80, -0.78, -0.76)),
+            intensity=vec3(1.0, 0.98, 0.96),
+            range=12.0
+        ),
+        fill_direction = normalize(vec3(-0.42, 0.34, 0.18))
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
+}
+
+view show_transformed_gallery_1080p120_closure_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = transformed_gallery_domain(world = world)
+    viewport = viewport(width = 1920, height = 1080)
+    quality = realtime_quality(
+        target_fps = 120,
+        allow_dynamic_resolution = false,
+        primary_max_steps = 96
+    )
+    lighting = key_light(
+        light = Light(
+            position=vec3(-1.2, 2.6, 2.4),
+            direction=normalize(vec3(-0.74, -0.78, -0.82)),
+            intensity=vec3(1.0, 0.97, 0.93),
+            range=10.0
+        ),
+        fill_direction = normalize(vec3(-0.36, 0.34, 0.22))
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
+}
+
+view show_mixed_opaque_conservative_1080p120_closure_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = mixed_opaque_conservative_domain(world = world)
+    viewport = viewport(width = 1920, height = 1080)
+    quality = realtime_quality(
+        target_fps = 120,
+        allow_dynamic_resolution = false,
+        primary_max_steps = 96
+    )
+    lighting = key_light(
+        light = Light(
+            position=vec3(-1.4, 2.7, 2.6),
+            direction=normalize(vec3(-0.78, -0.80, -0.76)),
+            intensity=vec3(1.0, 0.98, 0.94),
+            range=14.0
+        ),
+        fill_direction = normalize(vec3(-0.40, 0.34, 0.20))
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
+}
+
+view show_cache_stress_motion_1080p120_closure_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = repetition_domain(world = world)
+    viewport = viewport(width = 1920, height = 1080)
+    quality = realtime_quality(
+        target_fps = 120,
+        allow_dynamic_resolution = false,
+        primary_max_steps = 96
+    )
+    lighting = key_light(
+        light = Light(
+            position=vec3(-1.05, 2.50, 2.30),
+            direction=normalize(vec3(-0.80, -0.74, -0.78)),
+            intensity=vec3(1.0, 0.96, 0.91),
+            range=12.0
+        ),
+        fill_direction = normalize(vec3(-0.38, 0.33, 0.18))
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
+}
+
+view show_camera_motion_temporal_reuse_clipmap_churn_1080p120_closure_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = media_domain(world = world)
+    viewport = viewport(width = 1920, height = 1080)
+    quality = realtime_quality(
+        target_fps = 120,
+        allow_dynamic_resolution = false,
+        primary_max_steps = 96,
+        allow_media = true
+    )
+    lighting = key_light(
+        light = Light(
+            position=vec3(-1.45, 2.95, 2.95),
+            direction=normalize(vec3(-0.82, -0.78, -0.74)),
+            intensity=vec3(1.0, 0.98, 0.96),
+            range=12.0
+        ),
+        fill_direction = normalize(vec3(-0.40, 0.34, 0.18))
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
+}
+
+fn test_realtime_presentation_dense_constructive_1080p120_closure_ops_256() -> Nothing {
+    world = capture dense_constructive_region
+    domain = dense_constructive_domain(world = world)
+    mutable rays = []
+    mutable points = []
+    for i in 1...257 {
+        px = f32(i % 16) / 15.0 - 0.5
+        py = f32((i / 16) % 16) / 15.0 - 0.5
+        motion = compute_closure_camera_motion_offset(i)
+        origin = vec3(px * 1.4, py * 1.2, 3.4) + motion
+        __wr_list_push(
+            rays,
+            ray_query(
+                origin=origin,
+                direction=normalize(vec3(-px * 0.10, -py * 0.10, -1.0)),
+                max_distance=14.0,
+                min_step=0.04,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+        )
+        __wr_list_push(
+            points,
+            PointQuery(point=origin + vec3(0.0, 0.0, -1.0))
+        )
+    }
+
+    hits = spatial.nearest_batch(
+        capture=world,
+        domain=domain,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    normals = spatial.normal_batch(
+        capture=world,
+        domain=domain,
+        points=points,
+        backend=dispatch_backend_cpu()
+    )
+
+    mutable checksum = 0
+    mutable hit_count = 0
+    mutable miss_count = 0
+    for sample_i in 0...64 {
+        sample_index = sample_i * 4
+        hit = hits[sample_index]
+        normal = normals[sample_index].normal
+        if hit.hit {
+            hit_count += 1
+        } else {
+            miss_count += 1
+        }
+        checksum = update_scene_checksum(
+            current=checksum,
+            value=i32(hit.steps)
+                + i32(abs(hit.distance) * 100.0)
+                + i32(abs(normal.x + normal.y + normal.z) * 100.0)
+        )
+    }
+
+    require hit_count > 0 else "dense constructive closure hits present"
+    require miss_count > 0 else "dense constructive closure misses present"
+    require checksum != 0 else "dense constructive closure checksum nonzero"
+}
+
+fn test_realtime_presentation_media_radiance_1080p120_closure_ops_256() -> Nothing {
+    media_scene = capture media_region
+    domain = media_domain(world = media_scene)
+    probe = vec3(0.0, 0.02, 0.84)
+    coarse_distance = spatial.distance(capture=media_scene, domain=domain, point=probe)
+    fine_hit = spatial.nearest(
+        capture=media_scene,
+        domain=domain,
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0) + compute_closure_camera_motion_offset(1),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=12.0,
+            min_step=0.04,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+    fine_surface = surface.sample(capture=media_scene, domain=domain, hit=fine_hit)
+    fine_radiance = participants.radiance(
+        capture=media_scene,
+        domain=domain,
+        sample=point_direction_query(
+            point=fine_hit.position,
+            direction=normalize(vec3(0.0, 1.0, 1.0))
+        )
+    )
+    fine_medium = participants.medium(capture=media_scene, domain=domain, point=fine_hit.position)
+
+    media_signal = i32(abs(coarse_distance) * 100.0)
+        + i32(fine_surface.clearcoat * 100.0)
+        + i32(fine_radiance.z * 10.0)
+        + i32(fine_medium.density * 1000.0)
+
+    mutable rays = []
+    mutable points = []
+    for i in 1...257 {
+        px = f32(i % 16) / 15.0 - 0.5
+        py = f32((i / 16) % 16) / 15.0 - 0.5
+        motion = compute_closure_camera_motion_offset(i)
+        origin = vec3(px * 1.2, py * 1.0, 3.0) + motion
+        __wr_list_push(
+            rays,
+            ray_query(
+                origin=origin,
+                direction=normalize(vec3(-px * 0.08, -py * 0.08, -1.0)),
+                max_distance=12.0,
+                min_step=0.04,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+        )
+        __wr_list_push(
+            points,
+            PointQuery(point=origin + vec3(0.0, 0.0, -1.0))
+        )
+    }
+
+    hits = spatial.nearest_batch(
+        capture=media_scene,
+        domain=domain,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    normals = spatial.normal_batch(
+        capture=media_scene,
+        domain=domain,
+        points=points,
+        backend=dispatch_backend_cpu()
+    )
+
+    mutable checksum = 0
+    mutable hit_count = 0
+    for sample_i in 0...64 {
+        sample_index = sample_i * 4
+        hit = hits[sample_index]
+        normal = normals[sample_index].normal
+        if hit.hit {
+            hit_count += 1
+        }
+        checksum = update_scene_checksum(
+            current=checksum,
+            value=i32(hit.steps)
+                + i32(abs(hit.distance) * 100.0)
+                + i32(abs(normal.x + normal.y + normal.z) * 100.0)
+        )
+    }
+
+    require hit_count > 0 else "media radiance closure hits present"
+    require media_signal != 0 else "media radiance closure signal nonzero"
+    require checksum != 0 else "media radiance closure checksum nonzero"
+}
+
+fn test_realtime_presentation_transformed_primitive_gallery_1080p120_closure_ops_288() -> Nothing {
+    gallery_scene = capture transformed_gallery_region
+    domain = transformed_gallery_domain(world = gallery_scene)
+    anchor_hit = spatial.nearest(
+        capture=gallery_scene,
+        domain=domain,
+        ray=ray_query(
+            origin=vec3(-0.54, 0.10, 2.8),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=10.0,
+            min_step=0.03,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+    anchor_surface = surface.sample(capture=gallery_scene, domain=domain, hit=anchor_hit)
+
+    mutable rays = []
+    mutable points = []
+    for i in 1...289 {
+        branch = i % 3
+        motion = compute_closure_camera_motion_offset(i)
+        mutable origin = vec3(0.0, 0.0, 2.8)
+        if branch == 0 {
+            origin = vec3(-0.54, 0.10, 2.8) + motion
+        } else if branch == 1 {
+            origin = vec3(0.38, -0.08, 2.8) + motion
+        } else {
+            origin = vec3(0.02, 0.42, 2.8) + motion
+        }
+        __wr_list_push(
+            rays,
+            ray_query(
+                origin=origin,
+                direction=vec3(0.0, 0.0, -1.0),
+                max_distance=10.0,
+                min_step=0.03,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+        )
+        __wr_list_push(
+            points,
+            PointQuery(point=origin + vec3(0.0, 0.0, -0.4))
+        )
+    }
+
+    hits = spatial.nearest_batch(
+        capture=gallery_scene,
+        domain=domain,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    normals = spatial.normal_batch(
+        capture=gallery_scene,
+        domain=domain,
+        points=points,
+        backend=dispatch_backend_cpu()
+    )
+
+    mutable checksum = 0
+    mutable hit_count = 0
+    mutable gallery_signal = i32(anchor_surface.albedo.x + anchor_surface.albedo.y)
+    for sample_index in 0...288 {
+        hit = hits[sample_index]
+        normal = normals[sample_index].normal
+        if hit.hit {
+            hit_count += 1
+        }
+        checksum = update_scene_checksum(
+            current=checksum,
+            value=i32(hit.steps)
+                + i32(abs(hit.distance) * 100.0)
+                + i32(abs(normal.x + normal.y + normal.z) * 100.0)
+        )
+        gallery_signal = update_scene_checksum(
+            current=gallery_signal,
+            value=i32(hit.feature_id % u32(29)) + i32(hit.instance_id % u32(31))
+        )
+    }
+
+    require anchor_hit.hit == true else "transformed gallery anchor hit"
+    require hit_count > 0 else "transformed gallery closure hits present"
+    require gallery_signal != 0 else "transformed gallery closure signal nonzero"
+    require checksum != 0 else "transformed gallery closure checksum nonzero"
+}
+
+fn test_realtime_presentation_mixed_opaque_conservative_1080p120_closure_ops_320() -> Nothing {
+    mixed_scene = capture mixed_opaque_conservative_region
+    domain = mixed_opaque_conservative_domain(world = mixed_scene)
+    guard_hit = spatial.nearest(
+        capture=mixed_scene,
+        domain=domain,
+        ray=ray_query(
+            origin=vec3(2.00, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=14.0,
+            min_step=0.03,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+    guard_surface = surface.sample(capture=mixed_scene, domain=domain, hit=guard_hit)
+
+    mutable rays = []
+    mutable points = []
+    for i in 1...321 {
+        px = f32(i % 20) / 19.0 - 0.5
+        py = f32((i / 20) % 16) / 15.0 - 0.5
+        motion = compute_closure_camera_motion_offset(i)
+        origin = vec3(px * 3.0, py * 1.4, 3.1) + motion
+        __wr_list_push(
+            rays,
+            ray_query(
+                origin=origin,
+                direction=normalize(vec3(-px * 0.06, -py * 0.06, -1.0)),
+                max_distance=14.0,
+                min_step=0.03,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+        )
+        __wr_list_push(
+            points,
+            PointQuery(point=origin + vec3(0.0, 0.0, -1.0))
+        )
+    }
+
+    hits = spatial.nearest_batch(
+        capture=mixed_scene,
+        domain=domain,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    normals = spatial.normal_batch(
+        capture=mixed_scene,
+        domain=domain,
+        points=points,
+        backend=dispatch_backend_cpu()
+    )
+
+    mutable checksum = 0
+    mutable hit_count = 0
+    mutable opaque_signal = i32(guard_surface.albedo.x + guard_surface.roughness * 100.0)
+    for sample_i in 0...40 {
+        sample_index = sample_i * 8
+        hit = hits[sample_index]
+        normal = normals[sample_index].normal
+        if hit.hit {
+            hit_count += 1
+        }
+        checksum = update_scene_checksum(
+            current=checksum,
+            value=i32(hit.steps)
+                + i32(abs(hit.distance) * 100.0)
+                + i32(abs(normal.x + normal.y + normal.z) * 100.0)
+        )
+        opaque_signal = update_scene_checksum(
+            current=opaque_signal,
+            value=i32(hit.feature_id % u32(37)) + i32(hit.instance_id % u32(41))
+        )
+    }
+
+    require guard_hit.hit == true else "mixed opaque/conservative guard hit"
+    require hit_count > 0 else "mixed opaque/conservative closure hits present"
+    require opaque_signal != 0 else "mixed opaque/conservative closure signal nonzero"
+    require checksum != 0 else "mixed opaque/conservative closure checksum nonzero"
+}
+
+fn test_realtime_presentation_cache_stress_motion_path_1080p120_closure_ops_320() -> Nothing {
+    repeat_scene = capture repetition_region
+    domain = repetition_domain(world = repeat_scene)
+    mutable rays = []
+    mutable points = []
+    for i in 1...321 {
+        px = f32(i % 24) * 0.20 - 2.30
+        py = f32((i / 24) % 8) * 0.11 - 0.24
+        motion = compute_cache_stress_motion_offset(i)
+        origin = vec3(px, py, 2.8) + motion
+        __wr_list_push(
+            rays,
+            ray_query(
+                origin=origin,
+                direction=vec3(0.0, 0.0, -1.0),
+                max_distance=12.0,
+                min_step=0.04,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+        )
+        __wr_list_push(
+            points,
+            PointQuery(point=origin + vec3(0.0, 0.0, -1.0))
+        )
+    }
+
+    hits = spatial.nearest_batch(
+        capture=repeat_scene,
+        domain=domain,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    normals = spatial.normal_batch(
+        capture=repeat_scene,
+        domain=domain,
+        points=points,
+        backend=dispatch_backend_cpu()
+    )
+
+    mutable checksum = 0
+    mutable hit_count = 0
+    mutable cache_motion_signal = 0
+    for sample_i in 0...40 {
+        sample_index = sample_i * 8
+        hit = hits[sample_index]
+        normal = normals[sample_index].normal
+        if hit.hit {
+            hit_count += 1
+        }
+        checksum = update_scene_checksum(
+            current=checksum,
+            value=i32(hit.steps)
+                + i32(abs(hit.distance) * 100.0)
+                + i32(abs(normal.x + normal.y + normal.z) * 100.0)
+        )
+        cache_motion_signal = update_scene_checksum(
+            current=cache_motion_signal,
+            value=i32(hit.repeat_id % u32(31)) + i32(hit.instance_id % u32(37))
+        )
+    }
+
+    require hit_count > 0 else "cache-stress closure hits present"
+    require cache_motion_signal != 0 else "cache-stress closure signal nonzero"
+    require checksum != 0 else "cache-stress closure checksum nonzero"
+}
+
+fn test_realtime_presentation_camera_motion_temporal_reuse_clipmap_churn_1080p120_closure_ops_320() -> Nothing {
+    media_scene = capture media_region
+    domain = media_domain(world = media_scene)
+    anchor_hit = spatial.nearest(
+        capture=media_scene,
+        domain=domain,
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0) + compute_closure_camera_motion_offset(1),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=12.0,
+            min_step=0.04,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+    anchor_radiance = participants.radiance(
+        capture=media_scene,
+        domain=domain,
+        sample=point_direction_query(
+            point=anchor_hit.position,
+            direction=normalize(vec3(0.0, 1.0, 1.0))
+        )
+    )
+    anchor_medium = participants.medium(
+        capture=media_scene,
+        domain=domain,
+        point=anchor_hit.position
+    )
+
+    mutable rays = []
+    mutable points = []
+    for i in 1...321 {
+        px = f32(i % 16) / 15.0 - 0.5
+        py = f32((i / 16) % 16) / 15.0 - 0.5
+        motion = compute_closure_camera_motion_offset(i) + compute_cache_stress_motion_offset(i)
+        origin = vec3(px * 1.2, py * 1.0, 3.0) + motion
+        __wr_list_push(
+            rays,
+            ray_query(
+                origin=origin,
+                direction=normalize(vec3(-px * 0.08, -py * 0.08, -1.0)),
+                max_distance=12.0,
+                min_step=0.04,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+        )
+        __wr_list_push(
+            points,
+            PointQuery(point=origin + vec3(0.0, 0.0, -0.8))
+        )
+    }
+
+    hits = spatial.nearest_batch(
+        capture=media_scene,
+        domain=domain,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    normals = spatial.normal_batch(
+        capture=media_scene,
+        domain=domain,
+        points=points,
+        backend=dispatch_backend_cpu()
+    )
+
+    mutable checksum = 0
+    mutable hit_count = 0
+    mutable churn_signal = 0
+    for sample_i in 0...40 {
+        sample_index = sample_i * 8
+        hit = hits[sample_index]
+        normal = normals[sample_index].normal
+        if hit.hit {
+            hit_count += 1
+        }
+        checksum = update_scene_checksum(
+            current=checksum,
+            value=i32(hit.steps)
+                + i32(abs(hit.distance) * 100.0)
+                + i32(abs(normal.x + normal.y + normal.z) * 100.0)
+        )
+        churn_signal = update_scene_checksum(
+            current=churn_signal,
+            value=i32(sample_i + 1)
+                + i32(hit.steps)
+                + i32(abs(normal.x + normal.y + normal.z) * 100.0)
+        )
+    }
+
+    require anchor_hit.hit == true else "camera-motion closure anchor hit present"
+    require anchor_radiance.z > anchor_radiance.x else "camera-motion closure radiance gradient present"
+    require anchor_medium.density > 0.0 else "camera-motion closure medium density present"
+    require hit_count > 0 else "camera-motion closure hits present"
+    require churn_signal != 0 else "camera-motion closure churn signal nonzero"
+    require checksum != 0 else "camera-motion closure checksum nonzero"
 }

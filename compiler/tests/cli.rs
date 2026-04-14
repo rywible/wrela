@@ -781,6 +781,7 @@ fn cli_collision_run_human_reports_runtime_results_and_reuse_trace() {
     assert!(stdout.contains("result: sweep hit=true"));
     assert!(stdout.contains("trace: contract=collision.point_occupancy.world"));
     assert!(stdout.contains("trace: contract=collision.sphere_sweep.transition"));
+    assert!(stdout.contains("broadphase: candidate_count="));
     assert!(stdout.contains("reuse metrics: available=0 consumed=0 rejected=0 unavailable=2"));
     assert!(stdout.contains("reuse metrics: available=2 consumed=2 rejected=0 unavailable=0"));
     assert!(stdout.contains("reuse metrics: available=0 consumed=0 rejected=2 unavailable=0"));
@@ -833,6 +834,18 @@ fn cli_collision_run_json_reports_results_and_reuse_diagnostics() {
     );
     assert_eq!(
         reused
+            .pointer("/trace/broadphase_candidate_count")
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert!(
+        reused
+            .pointer("/trace/interval_subdivisions")
+            .and_then(|value| value.as_u64())
+            .is_some()
+    );
+    assert_eq!(
+        reused
             .pointer("/trace/reuse_decisions/0/verdict")
             .and_then(|value| value.as_str()),
         Some("consumed")
@@ -857,6 +870,12 @@ fn cli_collision_run_json_reports_results_and_reuse_diagnostics() {
             .pointer("/trace/reuse_metrics/rejected_count")
             .and_then(|value| value.as_u64()),
         Some(2)
+    );
+    assert!(
+        rejected
+            .pointer("/trace/certificate_successes")
+            .and_then(|value| value.as_u64())
+            .is_some()
     );
     assert_eq!(
         rejected
@@ -1919,6 +1938,56 @@ fn cli_presentation_debug_json_reports_null_optional_exports() {
     );
     assert_eq!(dump.get("depth_ppm"), Some(&serde_json::Value::Null));
     assert_eq!(dump.get("world_normal_ppm"), Some(&serde_json::Value::Null));
+}
+
+#[test]
+fn cli_presentation_debug_no_export_skips_debug_artifacts() {
+    let temp = workspace_tempdir();
+    write_presentation_plan_fixture(temp.path());
+    let default_out_dir = temp
+        .path()
+        .join("src")
+        .join("presentation_debug")
+        .join("cli_plan_view");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("presentation-debug")
+        .arg(temp.path())
+        .arg("--view")
+        .arg("cli_plan_view")
+        .arg("--width")
+        .arg("4")
+        .arg("--height")
+        .arg("4")
+        .arg("--no-export")
+        .arg("--json")
+        .output()
+        .expect("run presentation-debug no-export json");
+    assert!(
+        output.status.success(),
+        "presentation-debug --no-export --json failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let dump: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("presentation-debug no-export json");
+    assert_eq!(dump.get("color_ppm"), Some(&serde_json::Value::Null));
+    assert_eq!(dump.get("depth_ppm"), Some(&serde_json::Value::Null));
+    assert_eq!(dump.get("world_normal_ppm"), Some(&serde_json::Value::Null));
+    assert_eq!(
+        dump.get("stats_path"),
+        Some(&serde_json::Value::String("<not exported>".to_string()))
+    );
+    assert!(
+        dump.get("stats")
+            .and_then(|value| value.as_str())
+            .is_some_and(|stats| stats.contains("quality tier=realtime_120"))
+    );
+    assert!(
+        !default_out_dir.exists(),
+        "presentation-debug --no-export should not materialize default debug artifacts"
+    );
 }
 
 #[test]
@@ -3644,6 +3713,245 @@ fn write_test_project(root: &std::path::Path) {
     value = 1 + 1
     assert value value == 2
 }
+"#,
+    )
+    .unwrap();
+}
+
+fn write_realtime_presentation_closure_benchmark_project(root: &std::path::Path) {
+    let src_dir = root.join("src");
+    let tests_dir = root.join("tests");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&tests_dir).unwrap();
+    write_fixture_file(
+        src_dir.join("main.wr"),
+        r#"fn run() -> Integer {
+    return 0
+}
+"#,
+    )
+    .unwrap();
+    write_fixture_file(
+        tests_dir.join("realtime_fixture_test.wr"),
+        r#"
+field exact distance fixture_field(p: Vec3) -> F32 {
+    sphere(radius = 0.55)
+}
+
+material fixture_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.3, 0.5, 0.8),
+        roughness=0.28,
+        metalness=0.0,
+        clearcoat=0.08,
+        clearcoat_roughness=0.06,
+        sheen=0.02,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape fixture_shape {
+    field = fixture_field
+    material = fixture_surface
+}
+
+region fixture_region() {
+    place primary = fixture_shape
+}
+
+domain fixture_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = false
+    media = false
+    max_distance = 8.0
+    min_step = 0.04
+    hit_epsilon = 0.001
+    max_steps = 64
+}
+
+view show_fixture_1080p120_closure_view(world: RegionCapture, camera: Camera) {
+    domain = fixture_domain(world = world)
+    viewport = viewport(width = 64, height = 64)
+    quality = realtime_quality(
+        target_fps = 120,
+        allow_dynamic_resolution = false,
+        primary_max_steps = 64
+    )
+    lighting = key_light(
+        light = Light(
+            position=vec3(-0.8, 1.2, 1.8),
+            direction=normalize(vec3(-0.2, -0.4, -1.0)),
+            intensity=vec3(1.0, 1.0, 1.0),
+            range=8.0
+        )
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
+}
+
+fn test_realtime_fixture_1080p120_closure_ops_64() -> Nothing {
+    world = capture fixture_region
+    domain = fixture_domain(world = world)
+    mutable rays = []
+    mutable points = []
+    for i in 1...65 {
+        px = f32(i % 8) * 0.16 - 0.56
+        py = f32((i / 8) % 8) * 0.14 - 0.49
+        origin = vec3(px, py, 2.4)
+        __wr_list_push(
+            rays,
+            ray_query(
+                origin=origin,
+                direction=normalize(vec3(-px * 0.08, -py * 0.08, -1.0)),
+                max_distance=8.0,
+                min_step=0.04,
+                hit_epsilon=0.001,
+                max_steps=64
+            )
+        )
+        __wr_list_push(
+            points,
+            PointQuery(point=origin + vec3(0.0, 0.0, -0.8))
+        )
+    }
+
+    hits = spatial.nearest_batch(
+        capture=world,
+        domain=domain,
+        rays=rays,
+        backend=dispatch_backend_cpu()
+    )
+    normals = spatial.normal_batch(
+        capture=world,
+        domain=domain,
+        points=points,
+        backend=dispatch_backend_cpu()
+    )
+
+    mutable checksum = 0
+    mutable hit_count = 0
+    for sample_i in 0...16 {
+        sample_index = sample_i * 4
+        hit = hits[sample_index]
+        normal = normals[sample_index].normal
+        if hit.hit {
+            hit_count += 1
+        }
+        checksum += i32(hit.steps) + i32(abs(normal.x + normal.y + normal.z) * 100.0)
+    }
+
+    require hit_count > 0 else "fixture closure hits present"
+    require checksum != 0 else "fixture closure checksum nonzero"
+}
+"#,
+    )
+    .unwrap();
+    write_fixture_file(
+        root.join("1080p120_closure.toml"),
+        r#"
+version = 1
+suite = "realtime_presentation"
+
+[profiles.closure_1080p120]
+warmup_pairs = 1
+measure_pairs = 1
+coverage = "all"
+
+[[scenarios]]
+id = "closure_1080p120_fixture"
+test_name = "tests/realtime_fixture::test_realtime_fixture_1080p120_closure_ops_64"
+ops = 64
+class = "closure"
+min_runtime_ms = 1
+timeout_ms = 20000
+allow_unstable = false
+presentation = { entry = "tests/realtime_fixture_test.wr", view = "show_fixture_1080p120_closure_view", region = "fixture_region", domain = "fixture_domain", width = 64, height = 64, frames = 1, camera_position = [0.0, 0.0, 2.4], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 45.0 }
+"#,
+    )
+    .unwrap();
+}
+
+fn write_field_engine_closure_benchmark_project(root: &std::path::Path) {
+    let src_dir = root.join("src");
+    let tests_dir = root.join("tests");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&tests_dir).unwrap();
+    write_fixture_file(
+        src_dir.join("main.wr"),
+        r#"fn run() -> Integer {
+    return 0
+}
+"#,
+    )
+    .unwrap();
+    write_fixture_file(
+        tests_dir.join("field_fixture_test.wr"),
+        r#"
+field exact distance field_fixture(p: Vec3) -> F32 {
+    sphere(radius = 0.6)
+}
+
+material field_fixture_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(120.0, 156.0, 208.0),
+        roughness=0.24,
+        metalness=0.08,
+        clearcoat=0.10,
+        clearcoat_roughness=0.10,
+        sheen=0.06,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape field_fixture_shape {
+    field = field_fixture
+    material = field_fixture_surface
+}
+
+fn test_field_engine_fixture_1080p120_closure_ops_64() -> Nothing {
+    world = capture field_fixture_shape
+    mutable checksum = 0
+    for i in 1...65 {
+        px = f32(i % 8) * 0.14 - 0.49
+        py = f32((i / 8) % 8) * 0.12 - 0.42
+        hit = spatial.nearest(
+            capture=world,
+            ray=ray_query(
+                origin=vec3(px, py, 2.4),
+                direction=normalize(vec3(-px * 0.08, -py * 0.08, -1.0)),
+                max_distance=8.0,
+                min_step=0.04,
+                hit_epsilon=0.001,
+                max_steps=64
+            )
+        )
+        checksum += hit.steps + i32(abs(hit.distance) * 100.0)
+    }
+    require checksum != 0 else "field-engine fixture checksum nonzero"
+}
+"#,
+    )
+    .unwrap();
+    write_fixture_file(
+        root.join("1080p120_closure.toml"),
+        r#"
+version = 1
+suite = "field_engine"
+
+[profiles.closure_1080p120]
+warmup_pairs = 1
+measure_pairs = 1
+coverage = "all"
+
+[[scenarios]]
+id = "closure_1080p120_field_fixture"
+test_name = "tests/field_fixture::test_field_engine_fixture_1080p120_closure_ops_64"
+ops = 64
+class = "closure"
+min_runtime_ms = 1
+timeout_ms = 20000
+allow_unstable = false
 "#,
     )
     .unwrap();
@@ -7263,6 +7571,25 @@ fn cli_perf_writes_baseline_json() {
     assert!(summary.get("runtime_p50_ns").is_some());
     assert!(summary.get("runtime_p95_ns").is_some());
     assert!(summary.get("runtime_p99_ns").is_some());
+    let closure = json.get("closure").expect("closure");
+    assert_eq!(
+        closure
+            .pointer("/profile/name")
+            .and_then(|value| value.as_str()),
+        Some("canonical_1080p120")
+    );
+    assert_eq!(
+        closure
+            .pointer("/frame/status")
+            .and_then(|value| value.as_str()),
+        Some("not_sampled")
+    );
+    assert_eq!(
+        closure
+            .pointer("/collision/status")
+            .and_then(|value| value.as_str()),
+        Some("not_sampled")
+    );
     let metrics = summary.get("metrics").expect("summary.metrics");
     assert!(metrics.get("scene_trace").is_some());
     assert!(metrics.get("field_sample").is_some());
@@ -7359,6 +7686,145 @@ allow_unstable = false
             .and_then(|value| value.as_u64())
             .unwrap_or(0)
             > 0
+    );
+}
+
+#[test]
+fn cli_perf_runs_realtime_presentation_1080p120_closure_profile() {
+    let dir = workspace_tempdir();
+    let bench_root = dir.path().join("realtime_presentation_fixture");
+    write_realtime_presentation_closure_benchmark_project(&bench_root);
+    let baseline = dir.path().join("realtime_presentation_1080p120.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("perf")
+        .arg("--runs=1")
+        .arg("--profile=1080p120")
+        .arg("--query-backend=cpu")
+        .arg(format!("--baseline-out={}", baseline.display()))
+        .arg(&bench_root)
+        .output()
+        .expect("run realtime_presentation closure perf");
+    assert!(
+        output.status.success(),
+        "realtime presentation closure perf failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&baseline).expect("read realtime baseline"))
+            .expect("parse realtime baseline");
+    let closure = json.get("closure").expect("closure report");
+    assert_eq!(
+        closure
+            .pointer("/profile/name")
+            .and_then(|value| value.as_str()),
+        Some("canonical_1080p120")
+    );
+    assert_eq!(
+        closure
+            .pointer("/profile/output_width")
+            .and_then(|value| value.as_u64()),
+        Some(1920)
+    );
+    assert_eq!(
+        closure
+            .pointer("/profile/target_fps")
+            .and_then(|value| value.as_u64()),
+        Some(120)
+    );
+    let frame_status = closure
+        .pointer("/frame/status")
+        .and_then(|value| value.as_str())
+        .expect("frame status");
+    assert!(
+        matches!(frame_status, "validated" | "violated"),
+        "unexpected frame status: {frame_status}"
+    );
+    assert_eq!(
+        closure
+            .pointer("/collision/status")
+            .and_then(|value| value.as_str()),
+        Some("not_sampled")
+    );
+    assert!(
+        closure
+            .pointer("/frame/total_frame_median_ms")
+            .and_then(|value| value.as_f64())
+            .is_some()
+    );
+    let presentation_reports = json
+        .get("presentation_reports")
+        .and_then(|value| value.as_array())
+        .expect("presentation reports array");
+    assert!(!presentation_reports.is_empty());
+    assert_eq!(
+        presentation_reports[0]
+            .pointer("/quality_tier")
+            .and_then(|value| value.as_str()),
+        Some("realtime_120")
+    );
+}
+
+#[test]
+fn cli_perf_runs_field_engine_1080p120_closure_profile() {
+    let dir = workspace_tempdir();
+    let bench_root = dir.path().join("field_engine_fixture");
+    write_field_engine_closure_benchmark_project(&bench_root);
+    let baseline = dir.path().join("field_engine_1080p120.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("perf")
+        .arg("--runs=1")
+        .arg("--profile=1080p120")
+        .arg("--query-backend=cpu")
+        .arg(format!("--baseline-out={}", baseline.display()))
+        .arg(&bench_root)
+        .output()
+        .expect("run field_engine closure perf");
+    assert!(
+        output.status.success(),
+        "field engine closure perf failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&baseline).expect("read field_engine baseline"))
+            .expect("parse field_engine baseline");
+    let closure = json.get("closure").expect("closure report");
+    assert_eq!(
+        closure
+            .pointer("/profile/name")
+            .and_then(|value| value.as_str()),
+        Some("canonical_1080p120")
+    );
+    assert_eq!(
+        closure
+            .pointer("/frame/status")
+            .and_then(|value| value.as_str()),
+        Some("not_sampled")
+    );
+    let collision_status = closure
+        .pointer("/collision/status")
+        .and_then(|value| value.as_str())
+        .expect("collision status");
+    assert!(
+        matches!(collision_status, "sampled" | "validated" | "violated"),
+        "unexpected collision status: {collision_status}"
+    );
+    assert_eq!(
+        closure
+            .pointer("/collision/collision_baseline_id")
+            .and_then(|value| value.as_str()),
+        Some("field_engine.phase34_cpu_oracle")
+    );
+    assert!(
+        json.get("presentation_reports").is_none(),
+        "field engine closure profile should not emit presentation reports"
     );
 }
 

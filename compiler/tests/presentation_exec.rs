@@ -462,6 +462,17 @@ fn cpu_first_color_path_materializes_surface_participants_and_color_attachments(
     assert!(result.metrics.candidates_before_pruning >= 16);
     assert!(result.metrics.trace_steps_max > 0);
     assert!(result.metrics.dense_fallback_count > 0);
+    assert!(result.metrics.acceleration_node_visits > 0);
+    assert!(result.metrics.cache_brick_visits > 0);
+    assert!(result.metrics.interval_subdivisions > 0);
+    assert!(result.frame_cost.acceleration_node_visits > 0);
+    assert!(result.frame_cost.cache_brick_visits > 0);
+    assert!(result.frame_cost.interval_subdivisions > 0);
+    let rendered_frame_cost =
+        wrela::presentation_exec::render_frame_cost_report(&result.frame_cost);
+    assert!(rendered_frame_cost.contains("acceleration_node_visits="));
+    assert!(rendered_frame_cost.contains("cache_brick_visits="));
+    assert!(rendered_frame_cost.contains("interval_subdivisions="));
     assert_eq!(
         result
             .metrics

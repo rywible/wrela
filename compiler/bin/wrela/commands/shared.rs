@@ -439,6 +439,10 @@ struct CollisionExecutionTraceDump {
     required_guarantee: String,
     selected_method: String,
     executed_query_contracts: Vec<String>,
+    broadphase_candidate_count: u32,
+    interval_subdivisions: u32,
+    interval_refinements: u32,
+    certificate_successes: u32,
     reuse_metrics: CollisionReuseMetricsDump,
     reuse_decisions: Vec<CollisionReuseDecisionDump>,
 }
@@ -824,6 +828,10 @@ struct ObserverSemanticArtifactDump {
     kind: String,
     logical_schema: String,
     snapshot_relation: String,
+    acceleration_kind: Option<String>,
+    acceleration_observer: Option<String>,
+    acceleration_residency: Option<String>,
+    acceleration_usage_site: Option<String>,
     validity: String,
     producer: String,
     consumer: String,
@@ -856,6 +864,7 @@ struct PresentationBindingDump {
 fn observer_semantic_artifact_dump(
     artifact: wrela::artifact_contract::SemanticArtifactContract,
 ) -> ObserverSemanticArtifactDump {
+    let acceleration = artifact.acceleration.as_ref();
     ObserverSemanticArtifactDump {
         id: artifact.id.to_string(),
         kind: format!("{:?}", artifact.kind),
@@ -864,6 +873,16 @@ fn observer_semantic_artifact_dump(
             artifact.compatibility.snapshot,
         )
         .to_string(),
+        acceleration_kind: acceleration.map(|value| {
+            wrela::artifact_contract::acceleration_artifact_kind_name(value.kind).to_string()
+        }),
+        acceleration_observer: acceleration.map(|value| {
+            wrela::artifact_contract::artifact_observer_name(value.observer).to_string()
+        }),
+        acceleration_residency: acceleration.map(|value| {
+            wrela::artifact_contract::artifact_residency_name(value.residency).to_string()
+        }),
+        acceleration_usage_site: acceleration.map(|value| value.usage_site.to_string()),
         validity: format!("{:?}", artifact.validity),
         producer: artifact.producer.to_string(),
         consumer: artifact.consumer.to_string(),
@@ -1754,6 +1773,10 @@ fn collision_execution_trace_dump(
             .iter()
             .map(|contract| contract.as_str().to_string())
             .collect(),
+        broadphase_candidate_count: trace.broadphase_candidate_count,
+        interval_subdivisions: trace.interval_subdivisions,
+        interval_refinements: trace.interval_refinements,
+        certificate_successes: trace.certificate_successes,
         reuse_metrics: CollisionReuseMetricsDump {
             available_count: trace.reuse_metrics.available_count,
             consumed_count: trace.reuse_metrics.consumed_count,
@@ -1820,6 +1843,13 @@ fn print_collision_run_human(report: &CollisionRunReport) {
                 execution.trace.executed_query_contracts.join(", ")
             );
         }
+        println!(
+            "    broadphase: candidate_count={} interval_subdivisions={} interval_refinements={} certificate_successes={}",
+            execution.trace.broadphase_candidate_count,
+            execution.trace.interval_subdivisions,
+            execution.trace.interval_refinements,
+            execution.trace.certificate_successes
+        );
         println!(
             "    reuse metrics: available={} consumed={} rejected={} unavailable={}",
             execution.trace.reuse_metrics.available_count,
@@ -2138,6 +2168,7 @@ struct PresentationDebugOptions {
     region: Option<String>,
     domain: Option<String>,
     out_dir: Option<PathBuf>,
+    skip_export: bool,
     width: Option<u32>,
     height: Option<u32>,
     camera_position: [f32; 3],
@@ -2325,18 +2356,27 @@ fn execute_presentation_debug_command(
         result = Some(frame_result);
     }
     let result = result.expect("presentation debug should execute at least one frame");
-    let out_dir = options.out_dir.unwrap_or_else(|| {
-        entry_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("presentation_debug")
-            .join(plan.name.as_str())
-    });
-    let artifacts = match wrela::presentation_exec::debug::export_frame_debug(&result, &out_dir) {
-        Ok(artifacts) => artifacts,
-        Err(err) => {
-            eprintln!("presentation debug export error: {err}");
-            std::process::exit(EXIT_CODEGEN);
+    let artifacts = if options.skip_export {
+        wrela::presentation_exec::debug::PresentationDebugArtifacts {
+            color_ppm: None,
+            depth_ppm: None,
+            world_normal_ppm: None,
+            stats_path: PathBuf::from("<not exported>"),
+        }
+    } else {
+        let out_dir = options.out_dir.unwrap_or_else(|| {
+            entry_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("presentation_debug")
+                .join(plan.name.as_str())
+        });
+        match wrela::presentation_exec::debug::export_frame_debug(&result, &out_dir) {
+            Ok(artifacts) => artifacts,
+            Err(err) => {
+                eprintln!("presentation debug export error: {err}");
+                std::process::exit(EXIT_CODEGEN);
+            }
         }
     };
     let stats = wrela::presentation_exec::debug::render_primary_visibility_stats(&result);
@@ -3770,6 +3810,7 @@ fn parse_presentation_debug_options(args: &[String]) -> Result<PresentationDebug
         region: None,
         domain: None,
         out_dir: None,
+        skip_export: false,
         width: None,
         height: None,
         camera_position: [0.0, 0.0, 2.5],
@@ -3806,6 +3847,7 @@ fn parse_presentation_debug_options(args: &[String]) -> Result<PresentationDebug
             "--out-dir" => {
                 options.out_dir = Some(PathBuf::from(take_value(&inline_value, args, &mut index)?))
             }
+            "--no-export" => options.skip_export = true,
             "--width" => {
                 options.width = Some(
                     take_value(&inline_value, args, &mut index)?
@@ -4773,13 +4815,33 @@ fn print_presentation_plan_human(dump: &PresentationPlanDump) {
         println!("  semantic artifacts:");
         for artifact in &plan.semantic_artifacts {
             println!(
-                "    {} kind={} snapshot_relation={} producer={} consumer={} schema={} validity={}",
+                "    {} kind={} snapshot_relation={} producer={} consumer={} schema={} acceleration={} validity={}",
                 artifact.id,
                 artifact.kind,
                 artifact.snapshot_relation,
                 artifact.producer,
                 artifact.consumer,
                 artifact.logical_schema,
+                artifact
+                    .acceleration_kind
+                    .as_ref()
+                    .map(|kind| format!(
+                        "{}:{}:{}@{}",
+                        kind,
+                        artifact
+                            .acceleration_observer
+                            .as_deref()
+                            .unwrap_or("unknown"),
+                        artifact
+                            .acceleration_residency
+                            .as_deref()
+                            .unwrap_or("unknown"),
+                        artifact
+                            .acceleration_usage_site
+                            .as_deref()
+                            .unwrap_or("unknown")
+                    ))
+                    .unwrap_or_else(|| "none".to_string()),
                 artifact.validity
             );
         }

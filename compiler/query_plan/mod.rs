@@ -1,4 +1,5 @@
 use self::DispatchBackend::{Auto, VirtualGpu, Wgsl};
+use crate::acceleration::{self, AccelerationObserver, AccelerationObserverKind};
 use crate::artifact_contract::{
     ArtifactCompatibilityRelation, ArtifactEvidenceCompatibility, ArtifactLogicalField,
     ArtifactLogicalSchema, ArtifactPolicyCompatibility, ArtifactSnapshotRelation,
@@ -590,6 +591,7 @@ impl ArtifactContract {
                     scope: self.evidence_summary.scope,
                 },
             },
+            acceleration: None,
             validity,
             producer: self.producer.clone(),
             consumer: self.consumer.clone(),
@@ -1059,14 +1061,43 @@ fn batch_item_contract_for_descriptor(
 
 impl BatchQueryPlan {
     pub fn semantic_artifact_contracts(&self) -> Vec<SemanticArtifactContract> {
-        self.artifact_contracts
+        let mut out = self
+            .artifact_contracts
             .iter()
             .map(ArtifactContract::semantic_artifact_contract)
-            .collect()
+            .collect::<Vec<_>>();
+        out.extend(acceleration::observer_acceleration_contracts(
+            AccelerationObserver::Query,
+            self.helper_name.as_str(),
+        ));
+        out
     }
 
     pub fn artifact_uses(&self) -> Vec<ArtifactUse> {
-        query_artifact_uses(&self.artifact_contracts)
+        let mut uses = query_artifact_uses(&self.artifact_contracts);
+        uses.extend(
+            acceleration::observer_acceleration_contracts(
+                AccelerationObserverKind::Query,
+                self.helper_name.as_str(),
+            )
+            .into_iter()
+            .map(|contract| ArtifactUse {
+                actor: contract.producer.clone(),
+                artifact_id: contract.id.clone(),
+                kind: ArtifactUseKind::Produce,
+                source: ArtifactUseSource::Plan,
+                required_validity: None,
+            }),
+        );
+        uses
+    }
+
+    pub fn validate_acceleration_contracts(&self) -> Vec<SmolStr> {
+        acceleration::validate_observer_acceleration_contracts(
+            AccelerationObserver::Query,
+            self.helper_name.as_str(),
+            &self.semantic_artifact_contracts(),
+        )
     }
 
     pub fn new<K>(capture_kind: CaptureKind, kind: K) -> Self
@@ -1372,14 +1403,43 @@ impl BatchQueryPlan {
 
 impl CaptureQueryPlan {
     pub fn semantic_artifact_contracts(&self) -> Vec<SemanticArtifactContract> {
-        self.artifact_contracts
+        let mut out = self
+            .artifact_contracts
             .iter()
             .map(ArtifactContract::semantic_artifact_contract)
-            .collect()
+            .collect::<Vec<_>>();
+        out.extend(acceleration::observer_acceleration_contracts(
+            AccelerationObserver::Query,
+            self.helper_name.as_str(),
+        ));
+        out
     }
 
     pub fn artifact_uses(&self) -> Vec<ArtifactUse> {
-        query_artifact_uses(&self.artifact_contracts)
+        let mut uses = query_artifact_uses(&self.artifact_contracts);
+        uses.extend(
+            acceleration::observer_acceleration_contracts(
+                AccelerationObserverKind::Query,
+                self.helper_name.as_str(),
+            )
+            .into_iter()
+            .map(|contract| ArtifactUse {
+                actor: contract.producer.clone(),
+                artifact_id: contract.id.clone(),
+                kind: ArtifactUseKind::Produce,
+                source: ArtifactUseSource::Plan,
+                required_validity: None,
+            }),
+        );
+        uses
+    }
+
+    pub fn validate_acceleration_contracts(&self) -> Vec<SmolStr> {
+        acceleration::validate_observer_acceleration_contracts(
+            AccelerationObserver::Query,
+            self.helper_name.as_str(),
+            &self.semantic_artifact_contracts(),
+        )
     }
 
     pub fn for_contract(
@@ -1565,14 +1625,43 @@ impl CaptureQueryPlan {
 
 impl WorldQueryPlan {
     pub fn semantic_artifact_contracts(&self) -> Vec<SemanticArtifactContract> {
-        self.artifact_contracts
+        let mut out = self
+            .artifact_contracts
             .iter()
             .map(ArtifactContract::semantic_artifact_contract)
-            .collect()
+            .collect::<Vec<_>>();
+        out.extend(acceleration::observer_acceleration_contracts(
+            AccelerationObserver::Query,
+            self.helper_name.as_str(),
+        ));
+        out
     }
 
     pub fn artifact_uses(&self) -> Vec<ArtifactUse> {
-        query_artifact_uses(&self.artifact_contracts)
+        let mut uses = query_artifact_uses(&self.artifact_contracts);
+        uses.extend(
+            acceleration::observer_acceleration_contracts(
+                AccelerationObserverKind::Query,
+                self.helper_name.as_str(),
+            )
+            .into_iter()
+            .map(|contract| ArtifactUse {
+                actor: contract.producer.clone(),
+                artifact_id: contract.id.clone(),
+                kind: ArtifactUseKind::Produce,
+                source: ArtifactUseSource::Plan,
+                required_validity: None,
+            }),
+        );
+        uses
+    }
+
+    pub fn validate_acceleration_contracts(&self) -> Vec<SmolStr> {
+        acceleration::validate_observer_acceleration_contracts(
+            AccelerationObserver::Query,
+            self.helper_name.as_str(),
+            &self.semantic_artifact_contracts(),
+        )
     }
 
     pub fn for_query(kind: WorldQueryKind) -> Self {

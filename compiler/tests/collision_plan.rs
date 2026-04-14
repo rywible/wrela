@@ -441,3 +441,26 @@ fn transition_collision_plans_execute_with_contact_fraction_and_normal_flavor() 
         other => panic!("expected time-of-impact result, got {other:?}"),
     }
 }
+
+#[test]
+fn collision_plan_surfaces_acceleration_artifacts() {
+    let plan = CollisionPlan::for_query(CollisionQueryKind::RayCastWorld);
+    let contracts = plan.semantic_artifact_contracts();
+
+    assert!(contracts.iter().any(|contract| {
+        contract.id == "shared_acceleration_forest"
+            && contract.compatibility.evidence.scope
+                == wrela::semantic_evidence::EvidenceScope::SnapshotLocal
+    }));
+    assert!(contracts.iter().any(|contract| {
+        contract.id == "distance_brick_cache"
+            && contract.compatibility.evidence.scope
+                == wrela::semantic_evidence::EvidenceScope::SnapshotLocal
+    }));
+    assert!(contracts.iter().any(|contract| {
+        contract.id == "continuation_seed_table"
+            && contract.compatibility.evidence.scope
+                == wrela::semantic_evidence::EvidenceScope::ArtifactBound
+    }));
+    assert!(plan.validate().is_empty());
+}

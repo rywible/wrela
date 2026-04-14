@@ -761,7 +761,7 @@ pub(super) struct PerfSummary {
     pub(super) metrics: MetricsTotals,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub(super) struct KpiThresholds {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) check_fallback_max: Option<f64>,
@@ -817,6 +817,8 @@ pub(super) struct PerfReport {
     pub(super) summary: PerfSummary,
     pub(super) samples: Vec<PerfSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) closure: Option<wrela::perf_target::PerfClosureReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) presentation_reports: Option<Vec<PresentationBenchmarkReport>>,
 }
 
@@ -832,6 +834,7 @@ pub(super) enum PerfProfile {
     Smoke,
     Standard,
     Deep,
+    Closure1080p120,
 }
 
 impl PerfProfile {
@@ -840,6 +843,9 @@ impl PerfProfile {
             "smoke" => Some(Self::Smoke),
             "standard" => Some(Self::Standard),
             "deep" => Some(Self::Deep),
+            "1080p120" | "canonical_1080p120" | "closure" | "realtime_120" => {
+                Some(Self::Closure1080p120)
+            }
             _ => None,
         }
     }
@@ -849,6 +855,7 @@ impl PerfProfile {
             Self::Smoke => "smoke",
             Self::Standard => "standard",
             Self::Deep => "deep",
+            Self::Closure1080p120 => "1080p120",
         }
     }
 }
@@ -872,6 +879,8 @@ pub(super) struct BenchmarkProfiles {
     standard: Option<BenchmarkProfileConfig>,
     #[serde(default)]
     deep: Option<BenchmarkProfileConfig>,
+    #[serde(default)]
+    closure_1080p120: Option<BenchmarkProfileConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -937,6 +946,8 @@ pub(super) struct PresentationBenchmarkReport {
     pub(super) active_acceleration_artifacts: Vec<String>,
     pub(super) performance_gain_sources: Vec<String>,
     pub(super) frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) frame_cost_history: Vec<wrela::presentation_exec::PresentationFrameCostReport>,
 }
 
 impl BenchmarkManifest {
@@ -963,6 +974,7 @@ impl BenchmarkProfiles {
             PerfProfile::Smoke => self.smoke.as_ref(),
             PerfProfile::Standard => self.standard.as_ref(),
             PerfProfile::Deep => self.deep.as_ref(),
+            PerfProfile::Closure1080p120 => self.closure_1080p120.as_ref(),
         }
     }
 }
@@ -2631,21 +2643,21 @@ pub(super) fn evaluate_perf_gate(
         ));
     }
     let compile_min = baseline.compile_throughput_tests_per_sec * down;
-    if current.compile_throughput_tests_per_sec < compile_min {
+    if float_below_limit(current.compile_throughput_tests_per_sec, compile_min) {
         failures.push(format!(
             "compile_tps {:.2} < {:.2}",
             current.compile_throughput_tests_per_sec, compile_min
         ));
     }
     let allocs_max = baseline.allocs_per_request * up;
-    if current.allocs_per_request > allocs_max {
+    if float_exceeds_limit(current.allocs_per_request, allocs_max) {
         failures.push(format!(
             "allocs/request {:.2} > {:.2}",
             current.allocs_per_request, allocs_max
         ));
     }
     let dispatch_min = baseline.dispatch_hit_ratio * down;
-    if current.dispatch_hit_ratio < dispatch_min {
+    if float_below_limit(current.dispatch_hit_ratio, dispatch_min) {
         failures.push(format!(
             "dispatch_hit_ratio {:.4} < {:.4}",
             current.dispatch_hit_ratio, dispatch_min
@@ -2781,6 +2793,18 @@ pub(super) fn evaluate_perf_gate(
     failures
 }
 
+fn float_exceeds_limit(current: f64, limit: f64) -> bool {
+    current - limit > float_compare_tolerance(current, limit)
+}
+
+fn float_below_limit(current: f64, limit: f64) -> bool {
+    limit - current > float_compare_tolerance(current, limit)
+}
+
+fn float_compare_tolerance(left: f64, right: f64) -> f64 {
+    1e-9_f64.max(left.abs().max(right.abs()) * 1e-9)
+}
+
 fn percentile(samples: &[u128], pct: f64) -> u128 {
     if samples.is_empty() {
         return 0;
@@ -2815,6 +2839,57 @@ fn collect_tests(root: &Path, tests_root: &Path, out: &mut Vec<TestCase>) -> io:
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod perf_gate_tests {
+    use super::*;
+
+    fn perf_summary_fixture() -> PerfSummary {
+        PerfSummary {
+            sample_count: 1,
+            compile_throughput_tests_per_sec: 0.0,
+            runtime_p50_ns: 100,
+            runtime_p95_ns: 200,
+            runtime_p99_ns: 300,
+            allocs_per_request: 12.4,
+            rc_inc: 0,
+            rc_dec: 0,
+            rc_ops_total: 0,
+            dispatch_hit_ratio: 1.0,
+            check_fallback_rate: None,
+            avg_check_batch_size: None,
+            check_oracle_eval_ns_p50: None,
+            check_oracle_eval_ns_p95: None,
+            effect_annihilation_rewrite_count: None,
+            scheduler_dispatch_p99_ns: None,
+            scheduler_starvation_violations: None,
+            rewrite_compile_overhead_pct: None,
+            rewrite_applied_count: None,
+            actor_msgs_per_sec_p50: None,
+            actor_msgs_per_sec_p95: None,
+            queue_enqueue_p99_ns: None,
+            queue_dequeue_p99_ns: None,
+            queue_age_p99_ns: None,
+            mailbox_wake_coalesced_count: None,
+            mailbox_rescue_wake_count: None,
+            queue_cas_retry_total: None,
+            cases: None,
+            metrics: MetricsTotals::default(),
+        }
+    }
+
+    #[test]
+    fn evaluate_perf_gate_ignores_float_rounding_noise() {
+        let baseline = perf_summary_fixture();
+        let mut current = perf_summary_fixture();
+        current.allocs_per_request = 12.400000000000004;
+        let failures = evaluate_perf_gate(&current, &baseline, 0.0, &KpiThresholds::default());
+        assert!(
+            !failures.iter().any(|failure| failure.contains("allocs/request")),
+            "{failures:?}"
+        );
+    }
 }
 
 fn is_generated_test_wrapper_dir(path: &Path, tests_root: &Path) -> bool {

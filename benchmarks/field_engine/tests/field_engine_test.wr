@@ -2,6 +2,14 @@ fn update_checksum(current: Integer, value: Integer) -> Integer {
     return ((current * 41) + value) % 2147483647
 }
 
+fn compute_transition_probe_offset(step: Integer) -> Vec3 {
+    return vec3(
+        f32(step % 9) * 0.04 - 0.16,
+        f32((step / 9) % 5) * 0.03 - 0.06,
+        f32(step % 4) * -0.02
+    )
+}
+
 field exact distance hard_ground(p: Vec3) -> F32 {
     plane(normal = vec3(0.0, 1.0, 0.0), offset = 1.0)
 }
@@ -849,6 +857,307 @@ fn test_field_mixed_solver_dense_oracle_closure_ops_54000() -> Nothing {
     require dense_oracle_signal > 0 else "mixed solver dense oracle signal nonzero"
     require candidate_after > candidate_before else "mixed solver candidate path observed"
     require field_samples_after > field_samples_before else "mixed solver field samples observed"
+}
+
+fn test_field_collision_heavy_transition_closure_ops_12000() -> Nothing {
+    world = capture hard_scene_shape
+    world_again = capture hard_scene_shape
+    assert value world.scene_id == world_again.scene_id
+
+    candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    field_samples_before = __wr_metrics_get(__wr_metrics_field_sample_id())
+
+    ground_hit = spatial.nearest(
+        capture=world,
+        ray=ray_query(
+            origin=vec3(7.0, 3.0, 0.0),
+            direction=vec3(0.0, -1.0, 0.0),
+            max_distance=8.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+    support_hit = spatial.nearest(
+        capture=world,
+        ray=ray_query(
+            origin=vec3(0.72, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=8.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+    assert value ground_hit.hit == true
+    assert value support_hit.hit == true
+
+    mutable checksum = 0
+    mutable transition_signal = 0
+    mutable hit_count = 0
+    for i in 1...12000 {
+        branch = i % 4
+        motion = compute_transition_probe_offset(i)
+        if branch == 0 {
+            sampled_hit = spatial.nearest(
+                capture=world,
+                ray=ray_query(
+                    origin=vec3(7.0, 3.0, 0.0) + motion,
+                    direction=normalize(vec3(-0.10, -1.0, 0.0)),
+                    max_distance=8.0,
+                    min_step=0.05,
+                    hit_epsilon=0.001,
+                    max_steps=96
+                )
+            )
+            if sampled_hit.hit {
+                hit_count += 1
+            }
+            checksum = update_checksum(
+                current=checksum,
+                value=sampled_hit.steps + i32(abs(sampled_hit.distance) * 100.0)
+            )
+        } else if branch == 1 {
+            sampled_hit = spatial.nearest(
+                capture=world,
+                ray=ray_query(
+                    origin=vec3(0.72, 0.0, 3.0) + motion,
+                    direction=normalize(vec3(0.0, -0.05, -1.0)),
+                    max_distance=8.0,
+                    min_step=0.05,
+                    hit_epsilon=0.001,
+                    max_steps=96
+                )
+            )
+            if sampled_hit.hit {
+                hit_count += 1
+            }
+            checksum = update_checksum(
+                current=checksum,
+                value=sampled_hit.steps + i32(abs(sampled_hit.distance) * 100.0)
+            )
+        } else if branch == 2 {
+            sampled_hit = spatial.nearest(
+                capture=world,
+                ray=ray_query(
+                    origin=vec3(-2.40, 0.40, 3.20) + motion,
+                    direction=normalize(vec3(0.18, -0.04, -1.0)),
+                    max_distance=8.0,
+                    min_step=0.05,
+                    hit_epsilon=0.001,
+                    max_steps=96
+                )
+            )
+            if sampled_hit.hit {
+                hit_count += 1
+            }
+            checksum = update_checksum(
+                current=checksum,
+                value=sampled_hit.steps + i32(abs(sampled_hit.distance) * 100.0)
+            )
+        } else {
+            sampled_hit = spatial.nearest(
+                capture=world,
+                ray=ray_query(
+                    origin=vec3(1.60, -0.60, 2.80) + motion,
+                    direction=normalize(vec3(-0.12, 0.08, -1.0)),
+                    max_distance=8.0,
+                    min_step=0.05,
+                    hit_epsilon=0.001,
+                    max_steps=96
+                )
+            )
+            if sampled_hit.hit {
+                hit_count += 1
+            }
+            checksum = update_checksum(
+                current=checksum,
+                value=sampled_hit.steps + i32(abs(sampled_hit.distance) * 100.0)
+            )
+        }
+        transition_signal += i32(branch)
+        if i % 3000 == 0 {
+            if branch % 2 == 0 {
+                probe_normal = spatial.normal(capture=world, point=ground_hit.position)
+                checksum = update_checksum(
+                    current=checksum,
+                    value=i32(abs(probe_normal.x + probe_normal.y + probe_normal.z) * 1000.0)
+                )
+            } else {
+                probe_normal = spatial.normal(capture=world, point=support_hit.position)
+                checksum = update_checksum(
+                    current=checksum,
+                    value=i32(abs(probe_normal.x + probe_normal.y + probe_normal.z) * 1000.0)
+                )
+            }
+        }
+    }
+
+    candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    field_samples_after = __wr_metrics_get(__wr_metrics_field_sample_id())
+
+    require checksum != 0 else "collision-heavy transition checksum nonzero"
+    require transition_signal > 0 else "collision-heavy transition signal nonzero"
+    require hit_count > 0 else "collision-heavy transition hits present"
+    require candidate_after > candidate_before else "collision-heavy transition candidate path observed"
+    require field_samples_after > field_samples_before else "collision-heavy transition field samples observed"
+}
+
+fn test_field_transformed_primitive_gallery_closure_ops_8000() -> Nothing {
+    character_scene = capture hard_character_shape
+    mirrored_scene = capture hard_character_shape
+    assert value character_scene.scene_id == mirrored_scene.scene_id
+
+    hero_hit = spatial.nearest(
+        capture=character_scene,
+        ray=ray_query(
+            origin=vec3(0.05, 0.45, 4.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=8.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+    hero_surface = surface.sample(capture=character_scene, hit=hero_hit)
+    require hero_hit.hit == true else "transformed gallery baseline hit"
+    require hero_surface.clearcoat > 0.10 else "transformed gallery baseline surface"
+
+    mutable checksum = 0
+    mutable gallery_signal = 0
+    for i in 1...8000 {
+        probe_x = f32(i % 8) * 0.05 - 0.16
+        probe_y = f32((i / 8) % 12) * 0.08 - 0.52
+        probe_origin = vec3(probe_x, probe_y, 3.6)
+        probe_hit = spatial.nearest(
+            capture=character_scene,
+            ray=ray_query(
+                origin=probe_origin,
+                direction=vec3(0.0, 0.0, -1.0),
+                max_distance=8.0,
+                min_step=0.05,
+                hit_epsilon=0.001,
+                max_steps=96
+            )
+        )
+        require probe_hit.hit == true else "transformed gallery probe hit"
+        if i % 2 == 0 {
+            probe_surface = surface.sample(capture=character_scene, hit=probe_hit)
+            checksum = update_checksum(
+                current=checksum,
+                value=i32(probe_hit.steps) + i32(probe_surface.clearcoat * 100.0)
+            )
+            gallery_signal += i32(probe_surface.sheen * 100.0)
+        } else {
+            probe_normal = spatial.normal(capture=character_scene, point=probe_hit.position)
+            checksum = update_checksum(
+                current=checksum,
+                value=i32(probe_hit.steps)
+                    + i32(abs(probe_normal.x + probe_normal.y + probe_normal.z) * 100.0)
+            )
+            gallery_signal += i32(abs(probe_hit.local_position.y) * 100.0)
+        }
+    }
+
+    require checksum != 0 else "transformed gallery checksum nonzero"
+    require gallery_signal > 0 else "transformed gallery signal nonzero"
+}
+
+fn test_field_mixed_opaque_conservative_closure_ops_6000() -> Nothing {
+    support_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    opaque_scene = capture hard_scene_shape
+    opaque_scene_again = capture hard_scene_shape
+    require opaque_scene.scene_id == opaque_scene_again.scene_id else "mixed opaque scene_id stable"
+
+    baseline_hit = spatial.nearest(
+        capture=opaque_scene,
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=8.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+    far_scene = capture hard_support_opaque_shape
+    far_hit = spatial.nearest(
+        capture=far_scene,
+        ray=ray_query(
+            origin=vec3(9.5, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=20.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+    require baseline_hit.hit == true else "mixed opaque baseline hit"
+    require far_hit.hit == true else "mixed opaque far hit"
+
+    mutable checksum = 0
+    mutable candidate_signal = 0
+    mutable support_signal = 0
+    for i in 1...6000 {
+        if i % 2 == 0 {
+            probe_x = f32(i % 6) * 0.12 - 0.30
+            probe_y = f32((i / 6) % 6) * 0.06 - 0.15
+            probe_origin = vec3(probe_x, probe_y, 3.0)
+            probe_hit = spatial.nearest(
+                capture=opaque_scene,
+                ray=ray_query(
+                    origin=probe_origin,
+                    direction=vec3(0.0, 0.0, -1.0),
+                    max_distance=8.0,
+                    min_step=0.05,
+                    hit_epsilon=0.001,
+                    max_steps=96
+                )
+            )
+            if probe_hit.hit {
+                probe_surface = surface.sample(capture=opaque_scene, hit=probe_hit)
+                checksum = update_checksum(
+                    current=checksum,
+                    value=probe_hit.steps + i32(probe_surface.albedo.x)
+                )
+            } else {
+                checksum = update_checksum(
+                    current=checksum,
+                    value=probe_hit.steps + i32(abs(probe_hit.distance) * 1000.0)
+                )
+            }
+        } else {
+            far_probe_hit = spatial.nearest(
+                capture=far_scene,
+                ray=ray_query(
+                    origin=vec3(9.5, 0.0, 3.0 + f32(i % 3) * 0.04),
+                    direction=vec3(0.0, 0.0, -1.0),
+                    max_distance=20.0,
+                    min_step=0.05,
+                    hit_epsilon=0.001,
+                    max_steps=96
+                )
+            )
+            checksum = update_checksum(
+                current=checksum,
+                value=far_probe_hit.steps + i32(abs(far_probe_hit.distance) * 100.0)
+            )
+        }
+        if i % 1200 == 0 {
+            candidate_signal += __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+            support_signal += __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+        }
+    }
+
+    support_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+
+    require checksum != 0 else "mixed opaque closure checksum nonzero"
+    require candidate_signal > 0 else "mixed opaque closure candidate signal nonzero"
+    require support_signal == 0 else "mixed opaque closure support signal stays quarantined"
+    require support_after - support_before == 0 else "mixed opaque closure support pruning stays quarantined"
+    require candidate_after - candidate_before > 0 else "mixed opaque closure candidate path observed"
 }
 
 @serial

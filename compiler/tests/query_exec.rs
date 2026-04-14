@@ -1433,6 +1433,10 @@ fn query_exec_traces_report_observability_counters() {
     assert!(cpu_trace.observability.field_samples > 0);
     assert!(cpu_trace.observability.branch_visits > 0);
     assert!(cpu_trace.observability.artifact_loads > 0);
+    assert!(cpu_trace.observability.acceleration_node_visits > 0);
+    assert!(cpu_trace.observability.cache_brick_visits > 0);
+    assert!(cpu_trace.observability.cache_brick_hits > 0);
+    assert!(cpu_trace.observability.accepted_relaxed_steps > 0);
     assert_eq!(
         cpu_trace
             .snapshot
@@ -1452,6 +1456,11 @@ fn query_exec_traces_report_observability_counters() {
             .iter()
             .any(|cause| { cause.kind == SemanticCostCauseKind::MarchPressure })
     );
+    let rendered = render_semantic_cost_report(&cpu_trace.cost_report);
+    assert!(rendered.contains("acceleration_node_visits="));
+    assert!(rendered.contains("cache_brick_visits="));
+    assert!(rendered.contains("accepted_relaxed_steps="));
+    assert!(rendered.contains("observer_continuation_seed_hits="));
 
     let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("scene_region"));
     let world_trace_plan =
@@ -1525,6 +1534,10 @@ fn query_exec_traces_report_observability_counters() {
     assert!(
         render_semantic_cost_report(&wgsl_world_trace.cost_report)
             .contains("solver_generated_dense_fallback_rays=1")
+    );
+    assert!(
+        render_semantic_cost_report(&wgsl_world_trace.cost_report)
+            .contains("observer_continuation_seed_hits=")
     );
     assert_eq!(
         wgsl_world_trace.cost_report.fidelity,

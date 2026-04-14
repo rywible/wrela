@@ -2089,3 +2089,26 @@ fn phase11_world_query_plans_preserve_specialization_and_artifact_contracts() {
         }
     )));
 }
+
+#[test]
+fn phase9_query_plans_surface_acceleration_artifacts() {
+    let plan = query_plan::BatchQueryPlan::for_shape(query_plan::ShapeBatchPlanKind::Trace);
+    let contracts = plan.semantic_artifact_contracts();
+
+    assert!(contracts.iter().any(|contract| {
+        contract.id == "shared_acceleration_forest"
+            && contract.compatibility.evidence.scope
+                == query_plan::SemanticEvidenceScope::SnapshotLocal
+    }));
+    assert!(contracts.iter().any(|contract| {
+        contract.id == "shared_union_subtree_forest"
+            && contract.compatibility.evidence.scope
+                == query_plan::SemanticEvidenceScope::SnapshotLocal
+    }));
+    assert!(contracts.iter().any(|contract| {
+        contract.id == "ray_candidate_table"
+            && contract.compatibility.evidence.scope
+                == query_plan::SemanticEvidenceScope::ArtifactBound
+    }));
+    assert!(plan.validate_acceleration_contracts().is_empty());
+}

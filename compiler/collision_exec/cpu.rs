@@ -88,6 +88,9 @@ struct SweepOutcome {
     contact_normal: Option<[f32; 3]>,
     normal_flavor: CollisionContactNormalFlavor,
     no_hit_certificate: Option<CollisionNoHitCertificate>,
+    interval_subdivisions: u32,
+    interval_refinements: u32,
+    certificate_successes: u32,
 }
 
 pub fn execute(
@@ -171,6 +174,10 @@ pub fn execute_with_store(
     let mut executed_query_contracts = Vec::new();
     let mut reuse_metrics = CollisionReuseMetrics::default();
     let mut reuse_decisions = Vec::new();
+    let mut broadphase_candidate_count = 0u32;
+    let mut interval_subdivisions = 0u32;
+    let mut interval_refinements = 0u32;
+    let mut certificate_successes = 0u32;
     let mut values = BTreeMap::<SmolStr, CollisionMaterializedValue>::new();
 
     for pass in &plan.passes {
@@ -438,6 +445,7 @@ pub fn execute_with_store(
                     support_artifact,
                     broadphase_artifact,
                 )?;
+                broadphase_candidate_count = broadphase.candidate_shape_names.len() as u32;
                 let outcome = sweep_outcome(
                     ctx,
                     backend,
@@ -453,6 +461,9 @@ pub fn execute_with_store(
                     broadphase.candidate_shape_names.len() as u32,
                     &mut executed_query_contracts,
                 )?;
+                interval_subdivisions = interval_subdivisions.max(outcome.interval_subdivisions);
+                interval_refinements = interval_refinements.max(outcome.interval_refinements);
+                certificate_successes = certificate_successes.max(outcome.certificate_successes);
                 store_transition_artifacts(
                     plan,
                     store,
@@ -521,6 +532,7 @@ pub fn execute_with_store(
                     support_artifact,
                     broadphase_artifact,
                 )?;
+                broadphase_candidate_count = broadphase.candidate_shape_names.len() as u32;
                 let outcome = sweep_outcome(
                     ctx,
                     backend,
@@ -536,6 +548,9 @@ pub fn execute_with_store(
                     broadphase.candidate_shape_names.len() as u32,
                     &mut executed_query_contracts,
                 )?;
+                interval_subdivisions = interval_subdivisions.max(outcome.interval_subdivisions);
+                interval_refinements = interval_refinements.max(outcome.interval_refinements);
+                certificate_successes = certificate_successes.max(outcome.certificate_successes);
                 store_transition_artifacts(
                     plan,
                     store,
@@ -627,6 +642,10 @@ pub fn execute_with_store(
             selected_method: plan.policy.selected_method,
             executed_query_contracts,
             artifact_store: store.report(),
+            broadphase_candidate_count,
+            interval_subdivisions,
+            interval_refinements,
+            certificate_successes,
             reuse_metrics,
             reuse_decisions,
         },
@@ -1200,6 +1219,9 @@ fn sweep_outcome(
                 valid_through_fraction: 1.0,
                 guarantee: plan_no_hit_guarantee(policy),
             }),
+            interval_subdivisions: 0,
+            interval_refinements: 0,
+            certificate_successes: 1,
         });
     }
     let travel = subtract(sweep.end_center, sweep.start_center);
@@ -1224,7 +1246,10 @@ fn sweep_outcome(
     }
     let mut fraction = seed_fraction.unwrap_or(0.0).clamp(0.0, 1.0);
     let mut iterations = 0;
+    let mut interval_subdivisions = 0;
+    let mut interval_refinements = 0;
     while iterations < sweep.max_iterations.max(1) {
+        interval_subdivisions += 1;
         let center = lerp(sweep.start_center, sweep.end_center, fraction);
         let (distance_value, distance_trace) = execute_point_query(
             ctx,
@@ -1261,6 +1286,9 @@ fn sweep_outcome(
                 contact_normal: Some(world_normal),
                 normal_flavor: CollisionContactNormalFlavor::ConservativeUpperBound,
                 no_hit_certificate: None,
+                interval_subdivisions,
+                interval_refinements: interval_refinements + 1,
+                certificate_successes: 1,
             });
         }
         let remaining = length * (1.0 - fraction);
@@ -1276,6 +1304,9 @@ fn sweep_outcome(
                     valid_through_fraction: 1.0,
                     guarantee: plan_no_hit_guarantee(policy),
                 }),
+                interval_subdivisions,
+                interval_refinements: interval_refinements + 1,
+                certificate_successes: 1,
             });
         }
         let step_fraction = (separation.max(sweep.contact_tolerance) / length).max(0.0005);
@@ -1284,6 +1315,7 @@ fn sweep_outcome(
             break;
         }
         fraction = next_fraction;
+        interval_refinements += 1;
         iterations += 1;
     }
     sphere_overlap_like_outcome(
@@ -1365,6 +1397,9 @@ fn sphere_overlap_like_outcome(
             contact_normal: Some(world_normal),
             normal_flavor,
             no_hit_certificate: None,
+            interval_subdivisions: 1,
+            interval_refinements: 1,
+            certificate_successes: 1,
         })
     } else {
         Ok(SweepOutcome {
@@ -1378,6 +1413,9 @@ fn sphere_overlap_like_outcome(
                 valid_through_fraction: 1.0,
                 guarantee: no_hit_guarantee,
             }),
+            interval_subdivisions: 1,
+            interval_refinements: 1,
+            certificate_successes: 1,
         })
     }
 }

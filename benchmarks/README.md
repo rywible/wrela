@@ -3,16 +3,19 @@
 The benchmark harness now focuses on the world-language surface that remains in the repo:
 
 - `micro`: low-level primitives and hot loops.
-- `field_engine`: authored field/scene query cases for repetition, thin features, local frames, mixed-solver dense-oracle closure, radiance/media, and opaque-pessimization regressions.
-- `realtime_presentation`: presentation-oriented scene-shape benchmarks for dense constructive geometry, repetition-heavy layouts, thin-stack aliasing, and media/radiance scenes.
+- `field_engine`: authored field/scene query cases for repetition, thin features, local frames, mixed-solver dense-oracle closure, radiance/media, opaque-pessimization regressions, and a collision-heavy transition proxy lane for the closure protocol.
+- `realtime_presentation`: presentation-oriented scene-shape benchmarks for dense constructive geometry, repetition-heavy layouts, thin-stack aliasing, transformed primitive galleries, mixed opaque/conservative scenes, media/radiance scenes, cache-stress motion paths, and camera-motion temporal-reuse / clipmap-churn coverage. The explicit `1080p120` closure lane now adds fixed scenarios for each of those representative stresses.
+- `1080p120` closure profiles: fixed 1920x1080, 120 FPS protocol manifests for the frame and collision lanes. `wrela perf --profile=1080p120` automatically selects the companion `1080p120_closure.toml` file when it exists.
 
 ## Manifests
 
-Each suite has a `bench.toml` manifest:
+Each suite has a `bench.toml` manifest for the default microbench lane, and the closure profiles use a companion `1080p120_closure.toml`:
 
 - `benchmarks/micro/bench.toml`
 - `benchmarks/field_engine/bench.toml`
 - `benchmarks/realtime_presentation/bench.toml`
+- `benchmarks/field_engine/1080p120_closure.toml`
+- `benchmarks/realtime_presentation/1080p120_closure.toml`
 
 Scenario test names must end with `_ops_<N>` where `<N>` matches `ops`, and scenarios should use deterministic checksum assertions in the test body.
 
@@ -56,6 +59,29 @@ The scene queries in this suite are pinned to `dispatch_backend_cpu()` so the be
 - `presentation_repetition_heavy_scene`: repetition-heavy structure built from nested linear repetition and instancing. This measures repeat identity, instance stability, and traversal behavior in tiled layouts.
 - `presentation_thin_stack_alias_prone`: thin stacked layers and near-touching surfaces. This exercises alias-prone rays, epsilon sensitivity, and shallow-angle normal consistency.
 - `presentation_media_radiance_scene`: radiance- and media-enabled presentation content. This covers surface sampling, radiance lookup, medium evaluation, and the frame path for volumetric scenes.
+
+The `1080p120_closure.toml` protocol files define the fixed closure lane. Their scenario ids are prefixed with `closure_1080p120_` so they stay visually distinct from the microbench scenes, and their view definitions use `realtime_quality(target_fps = 120)` with fixed 1920x1080 framing.
+
+Closure lane coverage currently includes:
+
+- `closure_1080p120_dense_constructive`: candidate selection and hit-resolution stress on composed geometry.
+- `closure_1080p120_repetition_heavy`: repeat identity and instance-stability stress on tiled repetition layouts.
+- `closure_1080p120_thin_stack_grazing`: alias-prone, shallow-angle ray coverage for thin-stack geometry.
+- `closure_1080p120_media_radiance`: radiance and medium evaluation coverage for volumetric scenes.
+- `closure_1080p120_transformed_primitive_gallery`: translated primitive-gallery coverage intended to keep transformed primitive hits and normals stable under the fixed closure protocol.
+- `closure_1080p120_mixed_opaque_conservative`: support-bounded guard plus conservative-field mix intended to stress opaque/conservative interplay in the representative presentation lane.
+- `closure_1080p120_cache_stress_motion_path`: repeat-heavy motion-path coverage intended to churn cache/acceleration reuse under fixed camera-relative movement.
+- `closure_1080p120_camera_motion_temporal_reuse_clipmap_churn`: camera-motion coverage intended to exercise temporal reuse and clipmap-like view churn in the canonical presentation lane.
+
+## Field Engine Closure Scenarios
+
+The `field_engine` closure manifest is the collision-side companion to the presentation closure lane. It keeps the benchmark protocol fixed while stressing the semantic query substrate that collision depends on, including repeat identity, dense-oracle mixed solving, and transition-like probe motion.
+
+- `closure_1080p120_repetition_identity_stability`: repeat identity and authored-instance stability for the collision baseline lane.
+- `closure_1080p120_mixed_solver_dense_oracle`: mixed solver behavior anchored to the dense CPU oracle under the fixed closure protocol.
+- `closure_1080p120_collision_heavy_transition`: transition-like probe motion across mixed support/repetition structure, used as the representative collision-heavy closure case for non-regression tracking.
+- `closure_1080p120_transformed_primitive_gallery`: transformed/deformed primitive coverage for the closure lane’s gallery-style authored geometry family.
+- `closure_1080p120_mixed_opaque_conservative`: mixed opaque/conservative coverage so closure keeps the authored opaque support path and the broader conservative scene in the same protocol.
 
 ## Artifacts
 

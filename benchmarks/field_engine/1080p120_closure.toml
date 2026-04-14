@@ -1,0 +1,62 @@
+version = 1
+suite = "field_engine"
+
+[profiles.closure_1080p120]
+warmup_pairs = 4
+measure_pairs = 12
+coverage = "all"
+
+# Repetition identity stability closure lane: keeps the repeat-heavy authored
+# field regression in the fixed 1080p120 protocol.
+[[scenarios]]
+id = "closure_1080p120_repetition_identity_stability"
+test_name = "tests/field_engine::test_field_repetition_identity_stability_ops_120000"
+ops = 120000
+class = "closure"
+min_runtime_ms = 1200
+timeout_ms = 180000
+allow_unstable = false
+
+# Mixed-solver dense oracle closure lane: captures the closure-side solver
+# regression for the field engine at the same fixed protocol.
+[[scenarios]]
+id = "closure_1080p120_mixed_solver_dense_oracle"
+test_name = "tests/field_engine::test_field_mixed_solver_dense_oracle_closure_ops_54000"
+ops = 54000
+class = "closure"
+min_runtime_ms = 1200
+timeout_ms = 180000
+allow_unstable = false
+
+# Collision-heavy transition closure lane: uses transition-like probe motion
+# across the mixed hard-scene field to anchor collision non-regression.
+[[scenarios]]
+id = "closure_1080p120_collision_heavy_transition"
+test_name = "tests/field_engine::test_field_collision_heavy_transition_closure_ops_12000"
+ops = 12000
+class = "closure"
+min_runtime_ms = 400
+timeout_ms = 180000
+allow_unstable = false
+
+# Transformed primitive gallery closure lane: keeps the transformed/deformed
+# primitive stack in the fixed closure protocol.
+[[scenarios]]
+id = "closure_1080p120_transformed_primitive_gallery"
+test_name = "tests/field_engine::test_field_transformed_primitive_gallery_closure_ops_8000"
+ops = 8000
+class = "closure"
+min_runtime_ms = 400
+timeout_ms = 180000
+allow_unstable = false
+
+# Mixed opaque/conservative closure lane: preserves the authored opaque support
+# case against the mixed conservative scene path under the same protocol.
+[[scenarios]]
+id = "closure_1080p120_mixed_opaque_conservative"
+test_name = "tests/field_engine::test_field_mixed_opaque_conservative_closure_ops_6000"
+ops = 6000
+class = "closure"
+min_runtime_ms = 400
+timeout_ms = 180000
+allow_unstable = false

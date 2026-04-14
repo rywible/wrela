@@ -14,7 +14,7 @@ use wrela::presentation_contract::{
 use wrela::presentation_plan::{PresentationPassKind, PresentationPlan};
 use wrela::query_contract;
 use wrela::query_plan::DispatchBackend;
-use wrela::semantic_evidence::FactAvailability;
+use wrela::semantic_evidence::{EvidenceScope, FactAvailability};
 use wrela::state_advance::ChangeClass;
 
 fn lower_inline_module(source: &str) -> hir::Module {
@@ -741,6 +741,28 @@ fn canonical_screen_sample_query_uses_fov_pixel_center_aspect_y_axis_and_jitter_
     assert!(wgsl_prelude.contains("pixel + vec2<f32>(0.5, 0.5) + jitter_pixels"));
     assert!(wgsl_prelude.contains("camera.vertical_fov_degrees"));
     assert!(wgsl_prelude.contains("1.0 - uv.y * 2.0"));
+}
+
+#[test]
+fn presentation_plan_surfaces_acceleration_artifacts() {
+    let module = lower_inline_module(view_plan_source());
+    let view = presentation_function(&module, "primary_view");
+    let plan = PresentationPlan::from_view_function(view, DispatchBackend::Auto).expect("plan");
+
+    let contracts = plan.semantic_artifact_contracts();
+    assert!(contracts.iter().any(|contract| {
+        contract.id == "shared_acceleration_forest"
+            && contract.compatibility.evidence.scope == EvidenceScope::SnapshotLocal
+    }));
+    assert!(contracts.iter().any(|contract| {
+        contract.id == "tile_candidate_table"
+            && contract.compatibility.evidence.scope == EvidenceScope::ArtifactBound
+    }));
+    assert!(contracts.iter().any(|contract| {
+        contract.id == "view_distance_clipmap"
+            && contract.compatibility.evidence.scope == EvidenceScope::ArtifactBound
+    }));
+    assert!(plan.validate_acceleration_contracts().is_empty());
 }
 
 fn assert_close2(actual: [f32; 2], expected: [f32; 2]) {

@@ -36,6 +36,7 @@ fn query_contract_with_validity(
         consumer: SmolStr::new("fixture.consumer"),
         deterministic: true,
         version: 1,
+        acceleration: None,
         transition: None,
         evidence_summary,
     }
@@ -201,6 +202,7 @@ fn presentation_history_requests_can_supply_their_exact_reuse_family() {
         consumer: SmolStr::new("presentation.frame"),
         deterministic: true,
         version: wrela::presentation_contract::PRESENTATION_CONTRACT_VERSION,
+        acceleration: None,
         transition: None,
         evidence_summary: evidence_summary.clone(),
     };

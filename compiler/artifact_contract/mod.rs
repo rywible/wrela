@@ -55,6 +55,39 @@ pub struct ArtifactEvidenceCompatibility {
     pub scope: EvidenceScope,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactObserver {
+    Query,
+    Presentation,
+    Collision,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactResidency {
+    SharedSnapshot,
+    ObserverLocal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccelerationArtifactKind {
+    SharedAccelerationForest,
+    SharedUnionSubtreeForest,
+    DistanceBrickCache,
+    SupportBrickCache,
+    RayCandidateTable,
+    TileCandidateTable,
+    ViewDistanceClipmap,
+    ContinuationSeedTable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccelerationArtifactMetadata {
+    pub kind: AccelerationArtifactKind,
+    pub observer: ArtifactObserver,
+    pub residency: ArtifactResidency,
+    pub usage_site: SmolStr,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArtifactValidityRule {
     Always,
@@ -84,6 +117,7 @@ pub struct SemanticArtifactContract {
     pub kind: SemanticArtifactKind,
     pub logical_schema: ArtifactLogicalSchema,
     pub compatibility: ArtifactCompatibilityRelation,
+    pub acceleration: Option<AccelerationArtifactMetadata>,
     pub validity: ArtifactValidityRule,
     pub producer: SmolStr,
     pub consumer: SmolStr,
@@ -205,4 +239,147 @@ pub fn snapshot_relation_name(value: ArtifactSnapshotRelation) -> &'static str {
         ArtifactSnapshotRelation::PreviousSnapshotEpoch => "previous-snapshot-epoch",
         ArtifactSnapshotRelation::CaptureLineage => "capture-lineage",
     }
+}
+
+pub fn artifact_observer_name(observer: ArtifactObserver) -> &'static str {
+    match observer {
+        ArtifactObserver::Query => "query",
+        ArtifactObserver::Presentation => "presentation",
+        ArtifactObserver::Collision => "collision",
+    }
+}
+
+pub fn artifact_residency_name(residency: ArtifactResidency) -> &'static str {
+    match residency {
+        ArtifactResidency::SharedSnapshot => "shared_snapshot",
+        ArtifactResidency::ObserverLocal => "observer_local",
+    }
+}
+
+pub fn acceleration_artifact_kind_name(kind: AccelerationArtifactKind) -> &'static str {
+    match kind {
+        AccelerationArtifactKind::SharedAccelerationForest => "shared_acceleration_forest",
+        AccelerationArtifactKind::SharedUnionSubtreeForest => "shared_union_subtree_forest",
+        AccelerationArtifactKind::DistanceBrickCache => "distance_brick_cache",
+        AccelerationArtifactKind::SupportBrickCache => "support_brick_cache",
+        AccelerationArtifactKind::RayCandidateTable => "ray_candidate_table",
+        AccelerationArtifactKind::TileCandidateTable => "tile_candidate_table",
+        AccelerationArtifactKind::ViewDistanceClipmap => "view_distance_clipmap",
+        AccelerationArtifactKind::ContinuationSeedTable => "continuation_seed_table",
+    }
+}
+
+pub const fn acceleration_artifact_expected_residency(
+    kind: AccelerationArtifactKind,
+) -> ArtifactResidency {
+    match kind {
+        AccelerationArtifactKind::SharedAccelerationForest
+        | AccelerationArtifactKind::SharedUnionSubtreeForest
+        | AccelerationArtifactKind::DistanceBrickCache
+        | AccelerationArtifactKind::SupportBrickCache => ArtifactResidency::SharedSnapshot,
+        AccelerationArtifactKind::RayCandidateTable
+        | AccelerationArtifactKind::TileCandidateTable
+        | AccelerationArtifactKind::ViewDistanceClipmap
+        | AccelerationArtifactKind::ContinuationSeedTable => ArtifactResidency::ObserverLocal,
+    }
+}
+
+pub const fn acceleration_artifact_allows_observer(
+    kind: AccelerationArtifactKind,
+    observer: ArtifactObserver,
+) -> bool {
+    match kind {
+        AccelerationArtifactKind::SharedAccelerationForest
+        | AccelerationArtifactKind::SharedUnionSubtreeForest
+        | AccelerationArtifactKind::DistanceBrickCache
+        | AccelerationArtifactKind::SupportBrickCache => true,
+        AccelerationArtifactKind::RayCandidateTable => {
+            matches!(
+                observer,
+                ArtifactObserver::Query | ArtifactObserver::Collision
+            )
+        }
+        AccelerationArtifactKind::TileCandidateTable
+        | AccelerationArtifactKind::ViewDistanceClipmap => {
+            matches!(observer, ArtifactObserver::Presentation)
+        }
+        AccelerationArtifactKind::ContinuationSeedTable => {
+            matches!(
+                observer,
+                ArtifactObserver::Presentation | ArtifactObserver::Collision
+            )
+        }
+    }
+}
+
+pub fn validate_acceleration_artifact_contract(contract: &SemanticArtifactContract) -> Vec<String> {
+    let Some(acceleration) = contract.acceleration.as_ref() else {
+        return Vec::new();
+    };
+    let mut errors = Vec::new();
+    let expected_residency = acceleration_artifact_expected_residency(acceleration.kind);
+    if acceleration.residency != expected_residency {
+        errors.push(format!(
+            "artifact '{}' declares residency '{}' for '{}' but expected '{}'",
+            contract.id,
+            artifact_residency_name(acceleration.residency),
+            acceleration_artifact_kind_name(acceleration.kind),
+            artifact_residency_name(expected_residency)
+        ));
+    }
+    if !acceleration_artifact_allows_observer(acceleration.kind, acceleration.observer) {
+        errors.push(format!(
+            "artifact '{}' kind '{}' is not valid for observer '{}'",
+            contract.id,
+            acceleration_artifact_kind_name(acceleration.kind),
+            artifact_observer_name(acceleration.observer)
+        ));
+    }
+    if acceleration.usage_site.trim().is_empty() {
+        errors.push(format!(
+            "artifact '{}' acceleration usage_site must not be empty",
+            contract.id
+        ));
+    }
+
+    match acceleration.residency {
+        ArtifactResidency::SharedSnapshot => {
+            if contract.compatibility.snapshot != ArtifactSnapshotRelation::ExactSnapshot {
+                errors.push(format!(
+                    "artifact '{}' shared snapshot acceleration must use exact-snapshot compatibility",
+                    contract.id
+                ));
+            }
+            if contract.compatibility.transition.requires_previous_snapshot {
+                errors.push(format!(
+                    "artifact '{}' shared snapshot acceleration must not require a previous snapshot",
+                    contract.id
+                ));
+            }
+        }
+        ArtifactResidency::ObserverLocal => match acceleration.kind {
+            AccelerationArtifactKind::ContinuationSeedTable => {
+                if !matches!(
+                    contract.compatibility.snapshot,
+                    ArtifactSnapshotRelation::ExactSnapshot
+                        | ArtifactSnapshotRelation::PreviousSnapshotEpoch
+                ) {
+                    errors.push(format!(
+                        "artifact '{}' continuation seed tables must be exact-snapshot or previous-snapshot scoped",
+                        contract.id
+                    ));
+                }
+            }
+            _ => {
+                if contract.compatibility.snapshot != ArtifactSnapshotRelation::ExactSnapshot {
+                    errors.push(format!(
+                        "artifact '{}' observer-local acceleration must use exact-snapshot compatibility",
+                        contract.id
+                    ));
+                }
+            }
+        },
+    }
+
+    errors
 }
