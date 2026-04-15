@@ -1,7 +1,7 @@
 use crate::kernel::{KernelStructValue, KernelValue, lower_batch_query_plan};
 use crate::portable::{
-    PortableAbiType, PortableStructField, portable_abi_emit_wgsl_structs, portable_abi_layout,
-    portable_builtin_record_abi,
+    PortableAbiType, PortableStructField, portable_abi_array_stride,
+    portable_abi_emit_wgsl_structs, portable_abi_layout, portable_builtin_record_abi,
 };
 use crate::presentation_contract::RealtimeRadianceMode;
 use crate::presentation_exec::clipmap::{
@@ -40,6 +40,16 @@ use crate::query_plan::{BatchQueryPlan, DispatchBackend};
 use smol_str::SmolStr;
 use std::time::Instant;
 use wgpu::util::DeviceExt;
+
+struct LinearShaderDispatchResult {
+    bytes: Vec<u8>,
+    dispatch_count: u32,
+}
+
+struct TemporalResolveDispatchResult {
+    consumed_count: u32,
+    dispatch_count: u32,
+}
 
 pub(super) fn execute_plan(
     ctx: &QueryExecContext,
@@ -255,7 +265,7 @@ pub(super) fn execute_plan(
                     ),
                     ..PassRuntimeStats::default()
                 };
-                let (count, notes) = execute_surface_resolve(
+                let (count, dispatch_count, notes) = execute_surface_resolve(
                     ctx,
                     current_snapshot,
                     input,
@@ -267,7 +277,7 @@ pub(super) fn execute_plan(
                 )?;
                 surface_resolve_count = count;
                 runtime.work_items = count;
-                runtime.dispatch_count = u32::from(count > 0);
+                runtime.dispatch_count = dispatch_count;
                 runtime.notes = notes;
                 runtime.elapsed_micros = pass_start.elapsed().as_micros();
                 pass_stats.push(runtime);
@@ -298,28 +308,28 @@ pub(super) fn execute_plan(
                             .unwrap_or_default(),
                     ..PassRuntimeStats::default()
                 };
-                let (radiance_count, medium_count, notes) = execute_participants_resolve(
-                    ctx,
-                    current_snapshot,
-                    input,
-                    &screen_samples,
-                    &mut attachments,
-                    hits,
-                    contract,
-                    DispatchBackend::Wgsl,
-                    quality.radiance_mode,
-                )?;
+                let (radiance_count, medium_count, dispatch_count, notes) =
+                    execute_participants_resolve(
+                        ctx,
+                        current_snapshot,
+                        input,
+                        &screen_samples,
+                        &mut attachments,
+                        hits,
+                        contract,
+                        DispatchBackend::Wgsl,
+                        quality.radiance_mode,
+                    )?;
                 participant_resolve_count = radiance_count + medium_count;
                 runtime.work_items = participant_resolve_count;
-                runtime.dispatch_count =
-                    u32::from(radiance_count > 0) + u32::from(medium_count > 0);
+                runtime.dispatch_count = dispatch_count;
                 runtime.notes = notes;
                 runtime.elapsed_micros = pass_start.elapsed().as_micros();
                 pass_stats.push(runtime);
             }
             PresentationPassKind::ShadePrimary { contract } => {
                 let pass_start = Instant::now();
-                shade_primary_wgsl(
+                let dispatch_count = shade_primary_wgsl(
                     &screen_samples,
                     &mut attachments,
                     &input.lighting,
@@ -351,7 +361,7 @@ pub(super) fn execute_plan(
                         &attachments,
                         contract.output_attachment.as_str(),
                     ),
-                    dispatch_count: 1,
+                    dispatch_count,
                     elapsed_micros: pass_start.elapsed().as_micros(),
                     ..PassRuntimeStats::default()
                 });
@@ -393,13 +403,14 @@ pub(super) fn execute_plan(
             }
             PresentationPassKind::TemporalResolve { contract } => {
                 let pass_start = Instant::now();
-                continuation_counts.consumed += temporal_resolve_wgsl(
+                let temporal = temporal_resolve_wgsl(
                     &mut attachments,
                     viewport.width,
                     viewport.height,
                     contract,
                     selected_workgroup_size,
                 )?;
+                continuation_counts.consumed += temporal.consumed_count;
                 pass_stats.push(PassRuntimeStats {
                     pass_id: pass.id.to_string(),
                     pass_kind: "temporal_resolve".to_string(),
@@ -429,14 +440,15 @@ pub(super) fn execute_plan(
                         .as_ref()
                         .map(|name| full_attachment_byte_size(&attachments, name))
                         .unwrap_or_default(),
-                    dispatch_count: 1,
+                    dispatch_count: temporal.dispatch_count,
                     elapsed_micros: pass_start.elapsed().as_micros(),
                     ..PassRuntimeStats::default()
                 });
             }
             PresentationPassKind::CompositeColor { contract } => {
                 let pass_start = Instant::now();
-                composite_color_wgsl(&mut attachments, contract, selected_workgroup_size)?;
+                let dispatch_count =
+                    composite_color_wgsl(&mut attachments, contract, selected_workgroup_size)?;
                 pass_stats.push(PassRuntimeStats {
                     pass_id: pass.id.to_string(),
                     pass_kind: "composite_color".to_string(),
@@ -449,7 +461,7 @@ pub(super) fn execute_plan(
                         &attachments,
                         contract.output_attachment.as_str(),
                     ),
-                    dispatch_count: 1,
+                    dispatch_count,
                     elapsed_micros: pass_start.elapsed().as_micros(),
                     ..PassRuntimeStats::default()
                 });
@@ -540,9 +552,9 @@ fn execute_surface_resolve(
     contract: &SurfaceResolvePassContract,
     backend: DispatchBackend,
     compact_hits: bool,
-) -> Result<(u32, Vec<String>), PresentationExecError> {
+) -> Result<(u32, u32, Vec<String>), PresentationExecError> {
     let Some(_) = attachments.attachment(contract.surface_attachment.as_str()) else {
-        return Ok((0, Vec::new()));
+        return Ok((0, 0, Vec::new()));
     };
     let default_surface = default_surface();
     let mut notes = Vec::new();
@@ -570,7 +582,7 @@ fn execute_surface_resolve(
     }
     if compact_hits || scaled_attachment {
         if work_items.is_empty() {
-            return Ok((0, notes));
+            return Ok((0, 0, notes));
         }
         let hit_indices = work_items
             .iter()
@@ -580,7 +592,7 @@ fn execute_surface_resolve(
             .iter()
             .map(|(_, hit)| hit.clone())
             .collect::<Vec<_>>();
-        let (surfaces, _) = execute_batch_contract(
+        let (surfaces, trace) = execute_batch_contract(
             ctx,
             backend,
             current_snapshot,
@@ -592,6 +604,10 @@ fn execute_surface_resolve(
                 KernelValue::Array(hit_values),
             ],
         )?;
+        let dispatch_count = trace
+            .observability
+            .dispatch_count
+            .max(u32::from(!hit_indices.is_empty()));
         if compact_hits {
             encode_values_at_indices(
                 attachments,
@@ -603,7 +619,7 @@ fn execute_surface_resolve(
             let Some(surface_attachment) =
                 attachments.attachment_mut(contract.surface_attachment.as_str())
             else {
-                return Ok((0, notes));
+                return Ok((0, 0, notes));
             };
             for ((index, hit), surface) in work_items.iter().zip(surfaces.iter()) {
                 if hit_flag(hit)? {
@@ -613,10 +629,10 @@ fn execute_surface_resolve(
                 }
             }
         }
-        return Ok((hit_indices.len() as u32, notes));
+        return Ok((hit_indices.len() as u32, dispatch_count, notes));
     }
 
-    let (surfaces, _) = execute_batch_contract(
+    let (surfaces, trace) = execute_batch_contract(
         ctx,
         backend,
         current_snapshot,
@@ -630,7 +646,7 @@ fn execute_surface_resolve(
     )?;
     let Some(surface_attachment) = attachments.attachment_mut(contract.surface_attachment.as_str())
     else {
-        return Ok((0, notes));
+        return Ok((0, 0, notes));
     };
     for (index, (hit, surface)) in hits.iter().zip(surfaces.iter()).enumerate() {
         if hit_flag(hit)? {
@@ -639,7 +655,14 @@ fn execute_surface_resolve(
             surface_attachment.encode(index, &default_surface)?;
         }
     }
-    Ok((hits.len() as u32, notes))
+    Ok((
+        hits.len() as u32,
+        trace
+            .observability
+            .dispatch_count
+            .max(u32::from(!hits.is_empty())),
+        notes,
+    ))
 }
 
 fn execute_participants_resolve(
@@ -652,9 +675,10 @@ fn execute_participants_resolve(
     contract: &ParticipantsResolvePassContract,
     backend: DispatchBackend,
     radiance_mode: RealtimeRadianceMode,
-) -> Result<(u32, u32, Vec<String>), PresentationExecError> {
+) -> Result<(u32, u32, u32, Vec<String>), PresentationExecError> {
     let mut radiance_count = 0;
     let mut medium_count = 0;
+    let mut dispatch_count = 0u32;
     let mut notes = Vec::new();
     if let (Some(query_contract), Some(attachment_name)) = (
         contract.radiance_query_contract,
@@ -692,7 +716,7 @@ fn execute_participants_resolve(
                 .iter()
                 .map(|item| item.point_direction_query.clone())
                 .collect::<Vec<_>>();
-            let (radiance, _) = execute_batch_contract(
+            let (radiance, trace) = execute_batch_contract(
                 ctx,
                 backend,
                 current_snapshot,
@@ -704,6 +728,12 @@ fn execute_participants_resolve(
                     KernelValue::Array(query_items),
                 ],
             )?;
+            dispatch_count = dispatch_count.saturating_add(
+                trace
+                    .observability
+                    .dispatch_count
+                    .max(u32::from(!target_indices.is_empty())),
+            );
             encode_values_at_indices(attachments, attachment_name, &target_indices, &radiance)?;
         }
     }
@@ -739,7 +769,7 @@ fn execute_participants_resolve(
                 .iter()
                 .map(|item| item.point_query.clone())
                 .collect::<Vec<_>>();
-            let (medium, _) = execute_batch_contract(
+            let (medium, trace) = execute_batch_contract(
                 ctx,
                 backend,
                 current_snapshot,
@@ -751,10 +781,16 @@ fn execute_participants_resolve(
                     KernelValue::Array(query_items),
                 ],
             )?;
+            dispatch_count = dispatch_count.saturating_add(
+                trace
+                    .observability
+                    .dispatch_count
+                    .max(u32::from(!target_indices.is_empty())),
+            );
             encode_values_at_indices(attachments, attachment_name, &target_indices, &medium)?;
         }
     }
-    Ok((radiance_count, medium_count, notes))
+    Ok((radiance_count, medium_count, dispatch_count, notes))
 }
 
 fn execute_packetized_primary_visibility_query(
@@ -786,7 +822,6 @@ fn execute_packetized_primary_visibility_query(
                 let packet_queue =
                     tile_candidate_dispatch_packets(&mask.candidate_table, selected_workgroup_size);
                 let mut covered_samples = vec![false; total_samples];
-                let mut dispatch_count = 1u32;
                 let (_, mut query_trace) = execute_batch_query_with_solver_mode_with_snapshot_on(
                     ctx,
                     DispatchBackend::Wgsl,
@@ -799,6 +834,7 @@ fn execute_packetized_primary_visibility_query(
                     ],
                     solver_mode,
                 )?;
+                let mut dispatch_count = query_trace.observability.dispatch_count;
                 for packet in &packet_queue {
                     let packet_rays = packet
                         .sample_indices
@@ -829,7 +865,12 @@ fn execute_packetized_primary_visibility_query(
                                 ],
                                 solver_mode,
                             )?;
-                        dispatch_count = dispatch_count.saturating_add(1);
+                        dispatch_count = dispatch_count.saturating_add(
+                            shape_trace
+                                .observability
+                                .dispatch_count
+                                .max(u32::from(!packet.sample_indices.is_empty())),
+                        );
                         query_trace
                             .observability
                             .merge_from(&shape_trace.observability);
@@ -877,7 +918,12 @@ fn execute_packetized_primary_visibility_query(
                             ],
                             solver_mode,
                         )?;
-                    dispatch_count = dispatch_count.saturating_add(1);
+                    dispatch_count = dispatch_count.saturating_add(
+                        fallback_trace
+                            .observability
+                            .dispatch_count
+                            .max(u32::from(!fallback_indices.is_empty())),
+                    );
                     query_trace
                         .observability
                         .merge_from(&fallback_trace.observability);
@@ -926,12 +972,16 @@ fn execute_packetized_primary_visibility_query(
                 {
                     hits[*index] = hit;
                 }
+                let dispatch_count = packet_trace
+                    .observability
+                    .dispatch_count
+                    .max(u32::from(!mask.active_samples.is_empty()));
                 (
                     crate::presentation_exec::TileCandidateStats::default(),
                     mask.stats.skipped_samples,
                     false,
                     packet_trace,
-                    1,
+                    dispatch_count,
                 )
             };
         query_trace.observability.screen_sample_count = total_samples as u32;
@@ -961,12 +1011,16 @@ fn execute_packetized_primary_visibility_query(
         )?;
         let tile_candidate =
             tile_candidate_stats(total_samples, total_samples, 1, total_samples.max(1) as u32);
+        let dispatch_count = query_trace
+            .observability
+            .dispatch_count
+            .max(u32::from(!rays.is_empty()));
         Ok((
             expect_array(&hits)?.to_vec(),
             query_trace,
             tile_candidate,
             false,
-            1,
+            dispatch_count,
         ))
     }
 }
@@ -978,7 +1032,7 @@ fn shade_primary_wgsl(
     camera_position: [f32; 3],
     contract: &ShadePrimaryPassContract,
     workgroup_size: u32,
-) -> Result<(), PresentationExecError> {
+) -> Result<u32, PresentationExecError> {
     let primary_hits = attachments.decode_attachment(contract.primary_hit_attachment.as_str())?;
     let default_surface = default_surface();
     let default_medium = default_medium();
@@ -1063,21 +1117,22 @@ fn shade_primary_wgsl(
                 contract.output_attachment
             ),
         })?;
-    output_attachment.bytes = dispatch_linear_shader(
+    let dispatch = dispatch_linear_shader(
         &shade_primary_shader_source(workgroup_size)?,
         &shade_primary_input_abi(),
         &shade_inputs,
         &output_layout,
         workgroup_size,
     )?;
-    Ok(())
+    output_attachment.bytes = dispatch.bytes;
+    Ok(dispatch.dispatch_count)
 }
 
 fn composite_color_wgsl(
     attachments: &mut AttachmentResourceSet,
     contract: &CompositeColorPassContract,
     workgroup_size: u32,
-) -> Result<(), PresentationExecError> {
+) -> Result<u32, PresentationExecError> {
     let input_values = attachments.decode_attachment(contract.input_attachment.as_str())?;
     let output_layout = attachments
         .attachment(contract.output_attachment.as_str())
@@ -1098,14 +1153,15 @@ fn composite_color_wgsl(
                 contract.output_attachment
             ),
         })?;
-    output_attachment.bytes = dispatch_linear_shader(
+    let dispatch = dispatch_linear_shader(
         &copy_vec3_shader_source(workgroup_size)?,
         &PortableAbiType::Vec3,
         &input_values,
         &output_layout,
         workgroup_size,
     )?;
-    Ok(())
+    output_attachment.bytes = dispatch.bytes;
+    Ok(dispatch.dispatch_count)
 }
 
 fn temporal_resolve_wgsl(
@@ -1114,7 +1170,7 @@ fn temporal_resolve_wgsl(
     height: u32,
     contract: &TemporalResolvePassContract,
     workgroup_size: u32,
-) -> Result<u32, PresentationExecError> {
+) -> Result<TemporalResolveDispatchResult, PresentationExecError> {
     let (input_values, consumed_count) =
         temporal_resolve_kernel_values(attachments, width, height, contract)?;
     let output_layout = attachments
@@ -1129,9 +1185,12 @@ fn temporal_resolve_wgsl(
         .plan
         .clone();
     if input_values.is_empty() {
-        return Ok(consumed_count);
+        return Ok(TemporalResolveDispatchResult {
+            consumed_count,
+            dispatch_count: 0,
+        });
     }
-    let output_bytes = dispatch_linear_shader(
+    let dispatch = dispatch_linear_shader(
         &temporal_resolve_shader_source(contract, workgroup_size)?,
         &temporal_resolve_input_abi(),
         &input_values,
@@ -1141,11 +1200,11 @@ fn temporal_resolve_wgsl(
     attachments
         .attachment_mut(contract.output_attachment.as_str())
         .expect("temporal output attachment")
-        .bytes = output_bytes.clone();
+        .bytes = dispatch.bytes.clone();
     if let Some(history_color) =
         attachments.attachment_mut(contract.history_color_attachment.as_str())
     {
-        history_color.bytes = output_bytes;
+        history_color.bytes = dispatch.bytes;
     }
     if let Some(history_primary_hit_attachment) = &contract.history_primary_hit_attachment {
         let primary_hits =
@@ -1158,7 +1217,10 @@ fn temporal_resolve_wgsl(
             }
         }
     }
-    Ok(consumed_count)
+    Ok(TemporalResolveDispatchResult {
+        consumed_count,
+        dispatch_count: dispatch.dispatch_count,
+    })
 }
 
 fn dispatch_linear_shader(
@@ -1167,38 +1229,47 @@ fn dispatch_linear_shader(
     input_values: &[KernelValue],
     output_layout: &FrameAttachmentLayoutPlan,
     workgroup_size: u32,
-) -> Result<Vec<u8>, PresentationExecError> {
+) -> Result<LinearShaderDispatchResult, PresentationExecError> {
+    dispatch_linear_shader_with_chunk_limit(
+        source,
+        input_abi,
+        input_values,
+        output_layout,
+        workgroup_size,
+        None,
+    )
+}
+
+fn dispatch_linear_shader_with_chunk_limit(
+    source: &str,
+    input_abi: &PortableAbiType,
+    input_values: &[KernelValue],
+    output_layout: &FrameAttachmentLayoutPlan,
+    workgroup_size: u32,
+    per_storage_buffer_limit_override: Option<u64>,
+) -> Result<LinearShaderDispatchResult, PresentationExecError> {
     if input_values.is_empty() {
-        return Ok(Vec::new());
+        return Ok(LinearShaderDispatchResult {
+            bytes: Vec::new(),
+            dispatch_count: 0,
+        });
     }
     let dense_output_size = output_layout.dense_output_size() as u64;
     let native = native_wgpu_context()?;
     let dispatch_abi = crate::query_exec::wgsl::codegen::wgsl_dispatch_config_abi();
-    let dispatch_buffer = native
-        .device
-        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wrela.presentation.dispatch"),
-            contents: &encode_value(
-                &dispatch_abi,
-                &presentation_dispatch_config(input_values.len() as u32),
-            )
-            .map_err(PresentationExecError::Query)?,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-    let input_buffer = native
-        .device
-        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wrela.presentation.input"),
-            contents: &encode_slice(input_abi, input_values)
-                .map_err(PresentationExecError::Query)?,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-    let output_buffer = native.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wrela.presentation.output"),
-        size: dense_output_size.max(4),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
+    let per_storage_buffer_limit = per_storage_buffer_limit_override.unwrap_or_else(|| {
+        native
+            .requested_limits
+            .max_storage_buffer_binding_size
+            .min(native.requested_limits.max_buffer_size)
     });
+    let items_per_chunk = crate::query_exec::wgsl::max_chunk_item_count(
+        per_storage_buffer_limit,
+        portable_abi_array_stride(input_abi) as u64,
+        output_layout.physical.element_stride as u64,
+        None,
+    )
+    .map_err(PresentationExecError::Query)?;
     let aux_buffer = native
         .device
         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1212,54 +1283,91 @@ fn dispatch_linear_shader(
         workgroup_size,
         wgpu::BufferSize::new(portable_abi_layout(&dispatch_abi).size as u64),
     )?;
-    let bind_group = native.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("wrela.presentation.bind_group"),
-        layout: &cached.bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: dispatch_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: input_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: output_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: aux_buffer.as_entire_binding(),
-            },
-        ],
-    });
-    let mut encoder = native
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("wrela.presentation.encoder"),
+    let mut dense_bytes = vec![0u8; dense_output_size as usize];
+    let mut dispatch_count = 0u32;
+    for (chunk_index, chunk) in input_values.chunks(items_per_chunk).enumerate() {
+        let chunk_stride = output_layout.physical.element_stride as usize;
+        let chunk_start = chunk_index * items_per_chunk;
+        let chunk_dense_size = (chunk.len() * chunk_stride).max(4) as u64;
+        let dispatch_buffer = native
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("wrela.presentation.dispatch"),
+                contents: &encode_value(
+                    &dispatch_abi,
+                    &presentation_dispatch_config(chunk.len() as u32),
+                )
+                .map_err(PresentationExecError::Query)?,
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let input_buffer = native
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("wrela.presentation.input"),
+                contents: &encode_slice(input_abi, chunk).map_err(PresentationExecError::Query)?,
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let output_buffer = native.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wrela.presentation.output"),
+            size: chunk_dense_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
         });
-    {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("wrela.presentation.compute"),
-            timestamp_writes: None,
+        let bind_group = native.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wrela.presentation.bind_group"),
+            layout: &cached.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: dispatch_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: input_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: output_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: aux_buffer.as_entire_binding(),
+                },
+            ],
         });
-        pass.set_pipeline(&cached.pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(
-            (input_values.len() as u32)
-                .div_ceil(workgroup_size.max(1))
-                .max(1),
-            1,
-            1,
-        );
+        let mut encoder = native
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("wrela.presentation.encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("wrela.presentation.compute"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&cached.pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(
+                (chunk.len() as u32).div_ceil(workgroup_size.max(1)).max(1),
+                1,
+                1,
+            );
+        }
+        native.queue.submit(Some(encoder.finish()));
+        dispatch_count = dispatch_count.saturating_add(1);
+        let chunk_bytes = readback_storage_buffer(&output_buffer, chunk_dense_size)
+            .map_err(PresentationExecError::Query)?;
+        let chunk_byte_offset = chunk_start * chunk_stride;
+        let chunk_byte_end = chunk_byte_offset + chunk.len() * chunk_stride;
+        dense_bytes[chunk_byte_offset..chunk_byte_end]
+            .copy_from_slice(&chunk_bytes[..chunk_byte_end - chunk_byte_offset]);
     }
-    native.queue.submit(Some(encoder.finish()));
-    let dense_bytes = readback_storage_buffer(&output_buffer, dense_output_size)
-        .map_err(PresentationExecError::Query)?;
-    output_layout
-        .pack_dense_output_bytes(&dense_bytes)
-        .map_err(PresentationExecError::Resource)
+    Ok(LinearShaderDispatchResult {
+        bytes: output_layout
+            .pack_dense_output_bytes(&dense_bytes)
+            .map_err(PresentationExecError::Resource)?,
+        dispatch_count,
+    })
 }
 
 fn presentation_dispatch_config(item_count: u32) -> KernelValue {
@@ -1658,7 +1766,7 @@ mod tests {
             KernelValue::Vec3([0.0, 1.0, 1.0]),
         ];
 
-        let bytes = dispatch_linear_shader(
+        let dispatch = dispatch_linear_shader(
             &copy_vec3_shader_source(64).expect("copy vec3 shader"),
             &PortableAbiType::Vec3,
             &input_values,
@@ -1668,7 +1776,7 @@ mod tests {
         .expect("row-aligned wgsl dispatch");
         let resource = AttachmentResource {
             layout: layout.materialize(),
-            bytes,
+            bytes: dispatch.bytes,
         };
 
         assert_eq!(
@@ -1692,6 +1800,49 @@ mod tests {
                     .iter()
                     .all(|byte| *byte == 0),
                 "row padding should remain untouched by dense shader output"
+            );
+        }
+    }
+
+    #[test]
+    fn forced_chunking_preserves_row_aligned_output_and_reports_dispatch_count() {
+        let frame = test_frame_for_color();
+        let layout = frame_attachment_layout_plan_with_strategy(
+            &frame,
+            &frame.outputs[0],
+            3,
+            2,
+            PhysicalLayoutStrategy::RowAligned { row_alignment: 32 },
+        )
+        .expect("row-aligned layout plan");
+        let input_values = vec![
+            KernelValue::Vec3([1.0, 0.0, 0.0]),
+            KernelValue::Vec3([0.0, 1.0, 0.0]),
+            KernelValue::Vec3([0.0, 0.0, 1.0]),
+            KernelValue::Vec3([1.0, 1.0, 0.0]),
+            KernelValue::Vec3([1.0, 0.0, 1.0]),
+            KernelValue::Vec3([0.0, 1.0, 1.0]),
+        ];
+
+        let dispatch = dispatch_linear_shader_with_chunk_limit(
+            &copy_vec3_shader_source(64).expect("copy vec3 shader"),
+            &PortableAbiType::Vec3,
+            &input_values,
+            &layout,
+            64,
+            Some(64),
+        )
+        .expect("forced chunked wgsl dispatch");
+        let resource = AttachmentResource {
+            layout: layout.materialize(),
+            bytes: dispatch.bytes,
+        };
+
+        assert_eq!(dispatch.dispatch_count, 2);
+        for (index, expected) in input_values.iter().enumerate() {
+            assert_eq!(
+                resource.decode(index).expect("decode row-aligned output"),
+                *expected
             );
         }
     }

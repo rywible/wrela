@@ -268,6 +268,12 @@ pub struct QueryExecutionObservability {
     pub solver_fallback_analytic_unsupported: u32,
     pub solver_fallback_verification_failed: u32,
     pub solver_fallback_unsupported_backend: u32,
+    pub learned_step_selected: u32,
+    pub learned_step_verified: u32,
+    pub learned_step_rejected: u32,
+    pub learned_step_bypassed: u32,
+    pub learned_verifier_acceptances: u32,
+    pub learned_verifier_fallbacks: u32,
     pub solver_certificate_failures: u32,
     pub solver_continuation_available: u32,
     pub solver_continuation_consumed: u32,
@@ -505,6 +511,24 @@ impl QueryExecutionObservability {
         self.solver_fallback_unsupported_backend = self
             .solver_fallback_unsupported_backend
             .saturating_add(other.solver_fallback_unsupported_backend);
+        self.learned_step_selected = self
+            .learned_step_selected
+            .saturating_add(other.learned_step_selected);
+        self.learned_step_verified = self
+            .learned_step_verified
+            .saturating_add(other.learned_step_verified);
+        self.learned_step_rejected = self
+            .learned_step_rejected
+            .saturating_add(other.learned_step_rejected);
+        self.learned_step_bypassed = self
+            .learned_step_bypassed
+            .saturating_add(other.learned_step_bypassed);
+        self.learned_verifier_acceptances = self
+            .learned_verifier_acceptances
+            .saturating_add(other.learned_verifier_acceptances);
+        self.learned_verifier_fallbacks = self
+            .learned_verifier_fallbacks
+            .saturating_add(other.learned_verifier_fallbacks);
         self.solver_certificate_failures = self
             .solver_certificate_failures
             .saturating_add(other.solver_certificate_failures);
@@ -537,6 +561,22 @@ impl QueryExecutionObservability {
         self.wgsl_selected_workgroup_size = self
             .wgsl_selected_workgroup_size
             .max(other.wgsl_selected_workgroup_size);
+    }
+
+    pub fn learned_verifier_acceptance_rate(&self) -> Option<f32> {
+        if self.learned_step_verified == 0 {
+            None
+        } else {
+            Some(self.learned_verifier_acceptances as f32 / self.learned_step_verified as f32)
+        }
+    }
+
+    pub fn learned_verifier_fallback_rate(&self) -> Option<f32> {
+        if self.learned_step_selected == 0 {
+            None
+        } else {
+            Some(self.learned_verifier_fallbacks as f32 / self.learned_step_selected as f32)
+        }
     }
 }
 

@@ -51,7 +51,7 @@ env: WRELA_BUDGET_*   Budget Policy v1 overrides (autogen/sim/fuzz/mutation + ti
 --lane=NAME           run/list tests for lane (spec|integration|sim|model|default); valid for test/perf
 --seed=N              schedule seed for sim tests; valid for test/perf
 --benchmark-manifest=PATH  benchmark manifest path (bench.toml)
---profile=NAME        benchmark profile (smoke|standard|deep)
+--profile=NAME        benchmark profile (smoke|standard|deep|1080p120)
 --repro PATH          replay a single typed repro artifact (autogen|fuzz)
 --replay-trace PATH   validate a sim/model replay trace artifact
 --perf-debug          dump perf counters after tests
@@ -60,6 +60,7 @@ env: WRELA_BUDGET_*   Budget Policy v1 overrides (autogen/sim/fuzz/mutation + ti
 --perf-gate=PATH      compare perf summary against baseline JSON
 --perf-max-regression-pct=N  allowed regression percentage (default: 5)
 --perf-cv-max-pct=N   max coefficient of variation percentage (default: 5)
+--why-not-120         perf: print the structured 1080p120 closure diagnosis
 --kpi-check-fallback-max=N  max allowed check fallback rate
 --kpi-check-batch-min=N  minimum required average check batch size
 --kpi-scheduler-p99-improve-min-pct=N  min scheduler p99 improvement vs baseline

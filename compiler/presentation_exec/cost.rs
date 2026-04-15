@@ -1,6 +1,7 @@
 use crate::execution_policy::{
     PresentationExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
 };
+use crate::perf_target::PerfClosureFinding;
 use crate::presentation_contract::{
     QualityDegradationStep, RealtimeQualityState, RealtimeRadianceMode,
 };
@@ -373,4 +374,86 @@ pub fn render_frame_cost_report(report: &PresentationFrameCostReport) -> String 
         out.push('\n');
     }
     out
+}
+
+pub fn explain_why_not_120_findings(
+    report: &PresentationFrameCostReport,
+    frame_median_ms: Option<f32>,
+    primary_visibility_median_ms: Option<f32>,
+    frame_budget_ms: f32,
+    primary_visibility_budget_ms: f32,
+) -> Vec<PerfClosureFinding> {
+    let mut findings = Vec::new();
+
+    if report.average_trace_steps >= 8.0 || report.primary_hit_rate < 0.90 {
+        findings.push(PerfClosureFinding {
+            subsystem: "presentation".to_string(),
+            focus: "dense_rays".to_string(),
+            summary: "too much of the primary visibility work is still being paid as dense ray marching".to_string(),
+            evidence: vec![
+                format!("primary_hit_rate={:.3}", report.primary_hit_rate),
+                format!("average_trace_steps={:.3}", report.average_trace_steps),
+                format!("max_trace_steps={}", report.max_trace_steps),
+            ],
+            next_step:
+                "reduce dense primary rays by tightening support bounds or introducing a stronger candidate filter before the primary visibility pass".to_string(),
+        });
+    }
+
+    if report.candidate_count_before_pruning > 0
+        && (report.candidate_count_after_pruning >= report.candidate_count_before_pruning
+            || report.support_prune_effectiveness <= 0.25)
+    {
+        findings.push(PerfClosureFinding {
+            subsystem: "presentation".to_string(),
+            focus: "pruning_failure".to_string(),
+            summary: "candidate pruning is not removing enough work to make 120 FPS plausible".to_string(),
+            evidence: vec![
+                format!(
+                    "candidate_count_before_pruning={}",
+                    report.candidate_count_before_pruning
+                ),
+                format!(
+                    "candidate_count_after_pruning={}",
+                    report.candidate_count_after_pruning
+                ),
+                format!(
+                    "support_prune_effectiveness={:.3}",
+                    report.support_prune_effectiveness
+                ),
+            ],
+            next_step:
+                "fix support-bound generation or the candidate table so pruning removes real work before tuning the solver".to_string(),
+        });
+    }
+
+    if let (Some(frame_median_ms), Some(primary_visibility_median_ms)) =
+        (frame_median_ms, primary_visibility_median_ms)
+        && frame_median_ms > frame_budget_ms
+        && primary_visibility_median_ms <= primary_visibility_budget_ms
+    {
+        findings.push(PerfClosureFinding {
+            subsystem: "presentation".to_string(),
+            focus: "visibility_vs_shading_bound".to_string(),
+            summary: "primary visibility is within budget, so the frame is now limited by later shading, resolve, or participant work".to_string(),
+            evidence: vec![
+                format!("frame_median_ms={frame_median_ms:.2}"),
+                format!("frame_budget_ms={frame_budget_ms:.2}"),
+                format!(
+                    "primary_visibility_median_ms={primary_visibility_median_ms:.2}"
+                ),
+                format!(
+                    "primary_visibility_budget_ms={primary_visibility_budget_ms:.2}"
+                ),
+                format!(
+                    "bottleneck_pass={}",
+                    report.bottleneck_pass.as_deref().unwrap_or("none")
+                ),
+            ],
+            next_step:
+                "look past visibility and focus on the later shading, resolve, or participant passes that are now dominating the frame".to_string(),
+        });
+    }
+
+    findings
 }

@@ -1,6 +1,8 @@
 pub mod build;
 pub mod cache;
 pub mod clipmap;
+#[cfg(feature = "internal-learned-experiments")]
+pub mod learned;
 pub mod report;
 
 use crate::artifact_contract::{

@@ -1,9 +1,9 @@
 use super::command_handlers::{
-    self, BenchmarkManifest, DifferentialPipeline, KpiThresholds, PerfCmpConfig, PerfGateConfig,
-    PerfProfile, PerfReport, PresentationBenchmarkComparison, PresentationBenchmarkReport,
-    PresentationWgslWorkgroupComparison, TestSelection, TestTarget, budget_jobs_timeout,
-    build_benchmark_selection, load_benchmark_manifest, resolve_budget_policy_v1,
-    resolve_test_target,
+    self, BenchmarkManifest, CollisionBenchmarkReport, DifferentialPipeline, KpiThresholds,
+    PerfCmpConfig, PerfGateConfig, PerfProfile, PerfReport, PresentationBenchmarkComparison,
+    PresentationBenchmarkReport, PresentationWgslWorkgroupComparison, TestSelection, TestTarget,
+    budget_jobs_timeout, build_benchmark_selection, load_benchmark_manifest,
+    resolve_budget_policy_v1, resolve_test_target,
 };
 use super::contracts::{EXIT_CODEGEN, EXIT_OK, EXIT_USAGE, OutputFormat};
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use wrela::acceleration::report::explain_why_not_120_findings as explain_acceleration_why_not_120_findings;
 use wrela::hir;
 use wrela::hir::lower as hir_lower;
 use wrela::kernel::{KernelStructValue, KernelValue};
@@ -22,9 +23,10 @@ use wrela::parser;
 use wrela::parser::ast;
 use wrela::parser::ast::AstNode;
 use wrela::perf_target::{
-    PerfClosureLaneStatus, PerfClosureLaneStatusReport, PerfClosureProfile, PerfClosureReport,
-    quality_degradation_step_name,
+    PerfClosureFinding, PerfClosureLaneStatus, PerfClosureLaneStatusReport, PerfClosureProfile,
+    PerfClosureReport, PerfClosureVerdict, PerfClosureVerdictStatus, quality_degradation_step_name,
 };
+use wrela::presentation_exec::cost::explain_why_not_120_findings as explain_frame_why_not_120_findings;
 use wrela::query_exec::{
     QueryExecContext, QueryTraceSolverMode, WGSL_WORKGROUP_SIZE_OVERRIDE_ENV,
     stable_region_scene_capture_id,
@@ -43,6 +45,7 @@ pub(super) struct PerfCommandInput {
     pub(super) perf_gate_path: Option<String>,
     pub(super) perf_max_regression_pct: Option<f64>,
     pub(super) perf_cv_max_pct: Option<f64>,
+    pub(super) perf_why_not_120: bool,
     pub(super) kpi_thresholds: KpiThresholds,
     pub(super) output_format: OutputFormat,
     pub(super) perf_debug: bool,
@@ -148,6 +151,7 @@ pub(super) fn execute_perf_command(mut input: PerfCommandInput) -> i32 {
         timeout,
         input.output_format,
         input.perf_debug,
+        input.perf_why_not_120,
         warmup_runs,
         runs,
         cv_max_pct,
@@ -168,6 +172,7 @@ pub(super) fn run_perf_harness(
     timeout: Duration,
     output_format: OutputFormat,
     perf_debug: bool,
+    perf_why_not_120: bool,
     warmup_runs: usize,
     runs: usize,
     cv_max_pct: f64,
@@ -348,7 +353,7 @@ pub(super) fn run_perf_harness(
         && latest_collision_reports.is_none()
         && !collision_report_samples.is_empty()
     {
-        latest_collision_reports = Some(collision_report_samples);
+        latest_collision_reports = Some(collision_report_samples.clone());
     }
     if matches!(output_format, OutputFormat::Pretty) {
         if let Some(reports) = latest_collision_reports.as_ref() {
@@ -442,6 +447,7 @@ pub(super) fn run_perf_harness(
         &samples,
         &presentation_report_samples,
         &presentation_report_errors,
+        &collision_report_samples,
         perf_profile,
         warmup_runs,
         samples.len(),
@@ -484,6 +490,11 @@ pub(super) fn run_perf_harness(
             err
         );
         return EXIT_CODEGEN;
+    }
+    if matches!(output_format, OutputFormat::Pretty)
+        && let Some(closure) = report.closure.as_ref()
+    {
+        print_closure_verdict_report(closure, perf_why_not_120);
     }
     println!("perf baseline written: {}", baseline_out.display());
     EXIT_OK
@@ -1906,6 +1917,7 @@ fn build_closure_report(
     samples: &[command_handlers::PerfSummary],
     presentation_reports: &[PresentationBenchmarkReport],
     presentation_report_errors: &[String],
+    collision_reports: &[CollisionBenchmarkReport],
     perf_profile: PerfProfile,
     observed_warmup_runs: usize,
     observed_measured_runs: usize,
@@ -1935,6 +1947,13 @@ fn build_closure_report(
             observed_measured_runs,
         );
     }
+    report.verdict = build_closure_verdict(
+        profile,
+        &report.frame,
+        &report.collision,
+        presentation_reports,
+        collision_reports,
+    );
     report
 }
 
@@ -2226,6 +2245,197 @@ fn build_collision_closure_status(
     report
 }
 
+fn build_closure_verdict(
+    profile: &PerfClosureProfile,
+    frame: &PerfClosureLaneStatusReport,
+    collision: &PerfClosureLaneStatusReport,
+    presentation_reports: &[PresentationBenchmarkReport],
+    collision_reports: &[CollisionBenchmarkReport],
+) -> PerfClosureVerdict {
+    let mut findings = BTreeMap::<(String, String), PerfClosureFinding>::new();
+    let frame_sampled = !matches!(frame.status, PerfClosureLaneStatus::NotSampled)
+        && !presentation_reports.is_empty();
+    let collision_sampled = !matches!(collision.status, PerfClosureLaneStatus::NotSampled)
+        && !collision_reports.is_empty();
+    let sampled = frame_sampled || collision_sampled;
+
+    if frame_sampled {
+        for report in presentation_reports {
+            for finding in explain_frame_why_not_120_findings(
+                &report.frame_cost,
+                frame.total_frame_median_ms,
+                frame.primary_visibility_median_ms,
+                profile.frame_budget.median_ms,
+                profile.primary_visibility_budget.median_ms,
+            ) {
+                merge_closure_finding(&mut findings, finding);
+            }
+            for finding in explain_acceleration_why_not_120_findings(&report.frame_cost) {
+                merge_closure_finding(&mut findings, finding);
+            }
+        }
+    }
+    if collision_sampled {
+        for report in collision_reports {
+            for finding in explain_collision_why_not_120_findings(report) {
+                merge_closure_finding(&mut findings, finding);
+            }
+        }
+    }
+
+    let status = if !sampled {
+        PerfClosureVerdictStatus::NotApplicable
+    } else if matches!(frame.status, PerfClosureLaneStatus::Violated)
+        || matches!(collision.status, PerfClosureLaneStatus::Violated)
+    {
+        PerfClosureVerdictStatus::Failed
+    } else {
+        PerfClosureVerdictStatus::Met
+    };
+    let top_remaining_bottleneck = if matches!(status, PerfClosureVerdictStatus::Failed) {
+        choose_top_remaining_bottleneck(profile, frame, collision, collision_reports)
+    } else {
+        None
+    };
+    let summary = match status {
+        PerfClosureVerdictStatus::NotApplicable => {
+            "closure target was not exercised in this run".to_string()
+        }
+        PerfClosureVerdictStatus::Met => format!(
+            "closure target met for sampled lanes across {} presentation report(s) and {} collision report(s)",
+            presentation_reports.len(),
+            collision_reports.len()
+        ),
+        PerfClosureVerdictStatus::Failed => format!(
+            "closure target failed; top remaining bottleneck: {}",
+            top_remaining_bottleneck.as_deref().unwrap_or("unknown")
+        ),
+    };
+
+    PerfClosureVerdict {
+        status,
+        summary,
+        top_remaining_bottleneck,
+        findings: findings.into_values().collect(),
+    }
+}
+
+fn choose_top_remaining_bottleneck(
+    profile: &PerfClosureProfile,
+    frame: &PerfClosureLaneStatusReport,
+    collision: &PerfClosureLaneStatusReport,
+    collision_reports: &[CollisionBenchmarkReport],
+) -> Option<String> {
+    if matches!(frame.status, PerfClosureLaneStatus::Violated) {
+        if let Some(bottleneck) = frame.dominant_bottleneck_pass.clone() {
+            return Some(bottleneck);
+        }
+        if let Some(primary_visibility_median_ms) = frame.primary_visibility_median_ms
+            && primary_visibility_median_ms > profile.primary_visibility_budget.median_ms
+        {
+            return Some("primary_visibility".to_string());
+        }
+        if let Some(frame_median_ms) = frame.total_frame_median_ms
+            && frame_median_ms > profile.frame_budget.median_ms
+        {
+            return Some("surface_or_shading".to_string());
+        }
+        return Some("presentation".to_string());
+    }
+
+    if matches!(collision.status, PerfClosureLaneStatus::Violated) {
+        if collision_reports.iter().any(|report| {
+            report.witness_reuse_rate < 0.5
+                && (report.unavailable_count_total > 0 || report.rejected_count_total > 0)
+        }) {
+            return Some("collision_witness_reuse".to_string());
+        }
+        if collision_reports
+            .iter()
+            .any(|report| report.fallback_rate > 0.0)
+        {
+            return Some("collision_fallback".to_string());
+        }
+        if collision.collision_runtime_regression_pct.is_some() {
+            return Some("collision_runtime_regression".to_string());
+        }
+    }
+
+    None
+}
+
+fn explain_collision_why_not_120_findings(
+    report: &CollisionBenchmarkReport,
+) -> Vec<PerfClosureFinding> {
+    let mut findings = Vec::new();
+
+    if report.witness_reuse_rate < 0.50
+        || report.unavailable_count_total > 0
+        || report.rejected_count_total > 0
+    {
+        findings.push(PerfClosureFinding {
+            subsystem: "collision".to_string(),
+            focus: "witness_reuse_invalid_or_unsupported".to_string(),
+            summary: "collision witness reuse is still being rejected or treated as unavailable, so the lane is not living on the fast path yet".to_string(),
+            evidence: vec![
+                format!("witness_reuse_rate={:.2}", report.witness_reuse_rate),
+                format!("available_count_total={}", report.available_count_total),
+                format!("consumed_count_total={}", report.consumed_count_total),
+                format!("rejected_count_total={}", report.rejected_count_total),
+                format!("unavailable_count_total={}", report.unavailable_count_total),
+            ],
+            next_step:
+                "revisit the witness reuse contract, then make the conservative fallback path explicit when reuse is not valid".to_string(),
+        });
+    }
+
+    if report.fallback_rate > 0.0 {
+        findings.push(PerfClosureFinding {
+            subsystem: "collision".to_string(),
+            focus: "fallback_rate".to_string(),
+            summary: "the collision lane is still falling back on a noticeable fraction of queries".to_string(),
+            evidence: vec![
+                format!("fallback_rate={:.2}", report.fallback_rate),
+                format!("average_candidate_count={:.2}", report.average_candidate_count),
+                format!(
+                    "average_rejected_candidate_count={:.2}",
+                    report.average_rejected_candidate_count
+                ),
+                format!(
+                    "average_pruned_node_count={:.2}",
+                    report.average_pruned_node_count
+                ),
+            ],
+            next_step:
+                "reduce the reasons the collision plan is falling back, then remeasure against the canonical baseline".to_string(),
+        });
+    }
+
+    findings
+}
+
+fn merge_closure_finding(
+    findings: &mut BTreeMap<(String, String), PerfClosureFinding>,
+    finding: PerfClosureFinding,
+) {
+    let key = (finding.subsystem.clone(), finding.focus.clone());
+    if let Some(existing) = findings.get_mut(&key) {
+        for evidence in finding.evidence {
+            if !existing.evidence.contains(&evidence) {
+                existing.evidence.push(evidence);
+            }
+        }
+        if existing.summary.is_empty() {
+            existing.summary = finding.summary;
+        }
+        if existing.next_step.is_empty() {
+            existing.next_step = finding.next_step;
+        }
+    } else {
+        findings.insert(key, finding);
+    }
+}
+
 fn collision_baseline_fixture_path(baseline_id: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -2417,6 +2627,43 @@ fn print_collision_benchmark_reports(reports: &[command_handlers::CollisionBench
                 execution.fallback_rate,
             );
         }
+    }
+}
+
+fn print_closure_verdict_report(report: &PerfClosureReport, verbose: bool) {
+    println!(
+        "closure verdict: {}",
+        closure_verdict_status_name(report.verdict.status)
+    );
+    println!("  summary: {}", report.verdict.summary);
+    if let Some(bottleneck) = report.verdict.top_remaining_bottleneck.as_deref() {
+        println!("  top remaining bottleneck: {bottleneck}");
+    }
+    if verbose || matches!(report.verdict.status, PerfClosureVerdictStatus::Failed) {
+        println!("why-not-120:");
+        if report.verdict.findings.is_empty() {
+            println!("  - no specific subsystem finding was inferred from the sampled reports");
+        } else {
+            for finding in &report.verdict.findings {
+                println!(
+                    "  - subsystem={} focus={}",
+                    finding.subsystem, finding.focus
+                );
+                println!("    summary: {}", finding.summary);
+                if !finding.evidence.is_empty() {
+                    println!("    evidence: {}", finding.evidence.join(" | "));
+                }
+                println!("    next step: {}", finding.next_step);
+            }
+        }
+    }
+}
+
+fn closure_verdict_status_name(status: PerfClosureVerdictStatus) -> &'static str {
+    match status {
+        PerfClosureVerdictStatus::NotApplicable => "not_applicable",
+        PerfClosureVerdictStatus::Met => "met",
+        PerfClosureVerdictStatus::Failed => "failed",
     }
 }
 
@@ -4571,6 +4818,156 @@ mod tests {
                 .notes
                 .iter()
                 .any(|note| note.contains("presentation report collection failed"))
+        );
+    }
+
+    #[test]
+    fn closure_verdict_surface_names_the_top_bottleneck_and_subsystem_findings() {
+        let profile = PerfClosureProfile::canonical_1080p120();
+        let mut frame_status = PerfClosureLaneStatusReport::unsampled(&profile.frame);
+        frame_status.status = PerfClosureLaneStatus::Violated;
+        frame_status.total_frame_median_ms = Some(11.0);
+        frame_status.primary_visibility_median_ms = Some(4.0);
+        frame_status.dominant_bottleneck_pass = Some("postprocess_shading".to_string());
+
+        let mut collision_status = PerfClosureLaneStatusReport::unsampled(&profile.collision);
+        collision_status.status = PerfClosureLaneStatus::Violated;
+        collision_status.collision_runtime_regression_pct = Some(6.5);
+
+        let mut frame_cost =
+            sample_presentation_frame_cost(64, 64, 1.0, 100, 16.0, 100, 98, 11_000);
+        frame_cost.execution_policy =
+            "required=best-effort selected=heuristic-solver backend=wgsl".to_string();
+        frame_cost.primary_hit_rate = 0.62;
+        frame_cost.average_trace_steps = 16.0;
+        frame_cost.support_prune_effectiveness = 0.02;
+        frame_cost.candidate_count_before_pruning = 100;
+        frame_cost.candidate_count_after_pruning = 98;
+        frame_cost.active_acceleration_artifacts = vec![];
+        frame_cost.performance_gain_sources = vec![];
+        frame_cost.cache_brick_visits = 0;
+        frame_cost.cache_brick_hits = 0;
+        frame_cost.cache_brick_misses = 0;
+        frame_cost.cache_interval_advances = 0;
+        frame_cost.bottleneck_pass = Some("postprocess_shading".to_string());
+        frame_cost.passes = vec![
+            wrela::presentation_exec::PresentationPassCost {
+                pass_id: "primary.visibility".to_string(),
+                pass_kind: "primary_visibility".to_string(),
+                work_items: 1024,
+                elapsed_micros: 4_000,
+                dispatch_count: 1,
+                attachment_bytes_read: 0,
+                attachment_bytes_written: 4_096,
+                notes: vec![],
+            },
+            wrela::presentation_exec::PresentationPassCost {
+                pass_id: "postprocess.shading".to_string(),
+                pass_kind: "postprocess".to_string(),
+                work_items: 1024,
+                elapsed_micros: 7_000,
+                dispatch_count: 1,
+                attachment_bytes_read: 4_096,
+                attachment_bytes_written: 4_096,
+                notes: vec![],
+            },
+        ];
+
+        let presentation_report = PresentationBenchmarkReport {
+            scenario_id: "closure_fixture".to_string(),
+            test_name: "tests/closure_fixture::test_ops_1".to_string(),
+            view: "view".to_string(),
+            region: "region".to_string(),
+            domain: "domain".to_string(),
+            backend: "wgsl".to_string(),
+            query_trace_solver_mode: "hybrid".to_string(),
+            selected_workgroup_size: 64,
+            frames_executed: 1,
+            frame_time_ns: 11_000_000,
+            field_samples: 100,
+            quality_tier: "realtime_120".to_string(),
+            target_fps: 120,
+            internal_resolution_scale: 1.0,
+            reconstructed_output: false,
+            quality_history: vec!["realtime_120".to_string()],
+            internal_resolution_history: vec![1.0],
+            bottleneck_pass: Some("postprocess_shading".to_string()),
+            active_acceleration_artifacts: vec![],
+            performance_gain_sources: vec![],
+            frame_cost,
+            frame_cost_history: vec![],
+            wgsl_workgroup_comparison: None,
+            ab_comparison: None,
+        };
+
+        let collision_report = CollisionBenchmarkReport {
+            suite: "collision_perf".to_string(),
+            backend: "cpu".to_string(),
+            command: "collision-suite".to_string(),
+            query_count_total: 4,
+            total_runtime_ns: 10_000,
+            queries_per_sec: 400.0,
+            average_candidate_count: 32.0,
+            average_rejected_candidate_count: 28.0,
+            average_pruned_node_count: 4.0,
+            average_interval_subdivisions: 2.0,
+            average_interval_refinements: 1.0,
+            average_certificate_successes: 0.0,
+            witness_reuse_rate: 0.20,
+            fallback_rate: 0.50,
+            available_count_total: 2,
+            consumed_count_total: 0,
+            rejected_count_total: 1,
+            unavailable_count_total: 1,
+            executions: vec![],
+        };
+
+        let verdict = build_closure_verdict(
+            &profile,
+            &frame_status,
+            &collision_status,
+            &[presentation_report],
+            &[collision_report],
+        );
+        assert_eq!(verdict.status, PerfClosureVerdictStatus::Failed);
+        assert_eq!(
+            verdict.top_remaining_bottleneck.as_deref(),
+            Some("postprocess_shading")
+        );
+        assert!(verdict
+            .findings
+            .iter()
+            .any(|finding| finding.subsystem == "presentation" && finding.focus == "dense_rays"));
+        assert!(verdict.findings.iter().any(
+            |finding| finding.subsystem == "presentation" && finding.focus == "pruning_failure"
+        ));
+        assert!(
+            verdict
+                .findings
+                .iter()
+                .any(|finding| finding.subsystem == "acceleration"
+                    && finding.focus == "caches_unavailable_or_invalid")
+        );
+        assert!(
+            verdict
+                .findings
+                .iter()
+                .any(|finding| finding.subsystem == "acceleration"
+                    && finding.focus == "wgsl_linear_traversal")
+        );
+        assert!(
+            verdict
+                .findings
+                .iter()
+                .any(|finding| finding.subsystem == "presentation"
+                    && finding.focus == "visibility_vs_shading_bound")
+        );
+        assert!(
+            verdict
+                .findings
+                .iter()
+                .any(|finding| finding.subsystem == "collision"
+                    && finding.focus == "witness_reuse_invalid_or_unsupported")
         );
     }
 

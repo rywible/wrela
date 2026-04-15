@@ -6,6 +6,8 @@ use super::{
     acceleration_cache_kind_name, acceleration_observer_name, acceleration_rejection_class_name,
     cache_artifact_scope_name,
 };
+use crate::perf_target::PerfClosureFinding;
+use crate::presentation_exec::PresentationFrameCostReport;
 use std::fmt::{self, Display, Formatter};
 
 fn sorted_nodes(forest: &AccelerationForest) -> Vec<&AccelerationNode> {
@@ -181,6 +183,78 @@ pub fn render_report_debug_dump(report: &AccelerationReport) -> String {
         out.push_str(&render_forest_debug_dump(forest));
     }
     out
+}
+
+pub fn explain_why_not_120_findings(
+    report: &PresentationFrameCostReport,
+) -> Vec<PerfClosureFinding> {
+    let mut findings = Vec::new();
+
+    if report.active_acceleration_artifacts.is_empty() || report.performance_gain_sources.is_empty()
+    {
+        findings.push(PerfClosureFinding {
+            subsystem: "acceleration".to_string(),
+            focus: "caches_unavailable_or_invalid".to_string(),
+            summary: "cache-backed acceleration artifacts were not available in the sampled frame, so the engine still looks like it is paying for the slow path".to_string(),
+            evidence: vec![
+                format!(
+                    "active_acceleration_artifacts={}",
+                    if report.active_acceleration_artifacts.is_empty() {
+                        "none".to_string()
+                    } else {
+                        report.active_acceleration_artifacts.join(",")
+                    }
+                ),
+                format!(
+                    "performance_gain_sources={}",
+                    if report.performance_gain_sources.is_empty() {
+                        "none".to_string()
+                    } else {
+                        report.performance_gain_sources.join(",")
+                    }
+                ),
+                format!("cache_brick_visits={}", report.cache_brick_visits),
+                format!("cache_brick_hits={}", report.cache_brick_hits),
+                format!("cache_brick_misses={}", report.cache_brick_misses),
+                format!("cache_interval_advances={}", report.cache_interval_advances),
+            ],
+            next_step:
+                "confirm the acceleration artifact is being built, validated, and surfaced to the closure run before treating the frame as cache-accelerated".to_string(),
+        });
+    }
+
+    let backend_is_wgsl = report.execution_policy.contains("backend=wgsl");
+    if backend_is_wgsl
+        && (report.average_trace_steps >= 8.0
+            || report.candidate_count_after_pruning >= report.candidate_count_before_pruning)
+    {
+        findings.push(PerfClosureFinding {
+            subsystem: "acceleration".to_string(),
+            focus: "wgsl_linear_traversal".to_string(),
+            summary: "the WGSL path still looks suspiciously dense, which usually means the acceleration spine is not being exercised yet".to_string(),
+            evidence: vec![
+                format!("execution_policy={}", report.execution_policy),
+                format!("selected_workgroup_size={}", report.selected_workgroup_size),
+                format!("average_trace_steps={:.3}", report.average_trace_steps),
+                format!(
+                    "candidate_count_before_pruning={}",
+                    report.candidate_count_before_pruning
+                ),
+                format!(
+                    "candidate_count_after_pruning={}",
+                    report.candidate_count_after_pruning
+                ),
+                format!(
+                    "support_prune_effectiveness={:.3}",
+                    report.support_prune_effectiveness
+                ),
+            ],
+            next_step:
+                "check that WGSL traversal is using the shared acceleration forest instead of a linear scan through every candidate".to_string(),
+        });
+    }
+
+    findings
 }
 
 impl Display for AccelerationNode {

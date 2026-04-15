@@ -45,6 +45,7 @@ pub struct ParsedArgs {
     pub perf_gate_path: Option<String>,
     pub perf_max_regression_pct: Option<f64>,
     pub perf_cv_max_pct: Option<f64>,
+    pub perf_why_not_120: bool,
     pub kpi_check_fallback_max: Option<f64>,
     pub kpi_check_batch_min: Option<f64>,
     pub kpi_scheduler_p99_improve_min_pct: Option<f64>,
@@ -167,6 +168,7 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
     let mut perf_gate_path: Option<String> = None;
     let mut perf_max_regression_pct: Option<f64> = None;
     let mut perf_cv_max_pct: Option<f64> = None;
+    let mut perf_why_not_120 = false;
     let mut kpi_check_fallback_max: Option<f64> = None;
     let mut kpi_check_batch_min: Option<f64> = None;
     let mut kpi_scheduler_p99_improve_min_pct: Option<f64> = None;
@@ -415,6 +417,10 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
         }
         if arg == "--perf-debug" {
             perf_debug = true;
+            continue;
+        }
+        if arg == "--why-not-120" {
+            perf_why_not_120 = true;
             continue;
         }
         if let Some(runs) = arg.strip_prefix("--runs=") {
@@ -761,6 +767,7 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
             perf_gate_path,
             perf_max_regression_pct,
             perf_cv_max_pct,
+            perf_why_not_120,
             kpi_check_fallback_max,
             kpi_check_batch_min,
             kpi_scheduler_p99_improve_min_pct,
@@ -1090,6 +1097,22 @@ mod tests {
             ParsedCommandSpec::Ready(parsed) => {
                 assert!(parsed.workspace_diagnostics);
                 assert_eq!(parsed.command, "fmt");
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_perf_why_not_120_flag() {
+        let spec = parse(vec![
+            "perf".to_string(),
+            "--why-not-120".to_string(),
+            ".".to_string(),
+        ]);
+        match spec.parsed {
+            ParsedCommandSpec::Ready(parsed) => {
+                assert!(parsed.perf_why_not_120);
+                assert_eq!(parsed.command, "perf");
             }
             other => panic!("unexpected parse result: {other:?}"),
         }

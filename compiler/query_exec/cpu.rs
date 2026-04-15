@@ -1,5 +1,11 @@
 use crate::acceleration::cache::{CacheDisableReason, SupportBrickCache};
+#[cfg(feature = "internal-learned-experiments")]
+use crate::acceleration::learned::{
+    build_cpu_oracle_dataset, maybe_export_learned_oracle_dataset, propose_cpu_oracle_step,
+    verify_learned_step,
+};
 use crate::acceleration::{AccelerationForest, AccelerationLeafPayload, BoundDescriptorKind};
+use crate::artifact_contract::ArtifactObserver;
 use crate::execution_policy::QueryExecutionPolicy;
 use crate::hir;
 use crate::hir::body::{BinaryOp, Expr, Literal, UnaryOp};
@@ -711,7 +717,7 @@ impl TraceLoopPolicy {
     fn from_solver_plan(plan: &RaySolverPlan) -> Self {
         Self {
             subject: plan.subject.clone(),
-            enabled_methods: plan.diagnostic_summary().methods,
+            enabled_methods: plan.runtime_methods_for_observer(ArtifactObserver::Query),
         }
     }
 
@@ -922,6 +928,13 @@ impl<'a> DirectQueryOps<'a> {
         self.note_batch_dispatch_grid(items, items.max(1), 1, 1, world_batch);
     }
 
+    pub(crate) fn note_world_batch_items(&self, items: u32) {
+        self.update_observability(|observability| {
+            observability.world_batch_item_count += items;
+            observability.screen_sample_count += items;
+        });
+    }
+
     pub(crate) fn note_batch_dispatch_grid(
         &self,
         items: u32,
@@ -956,7 +969,7 @@ impl<'a> DirectQueryOps<'a> {
     }
 
     pub(crate) fn note_solver_plan(&self, plan: &RaySolverPlan) {
-        self.note_solver_plan_with_methods(plan, &plan.diagnostic_summary().methods);
+        self.note_solver_plan_with_methods(plan, &plan.runtime_methods());
     }
 
     pub(crate) fn note_solver_plan_with_methods(
@@ -1254,6 +1267,36 @@ impl<'a> DirectQueryOps<'a> {
             observability.solver_generated_dense_fallback_rays += 1;
             observability.solver_fallback_unsupported_backend += 1;
         });
+    }
+
+    #[cfg(feature = "internal-learned-experiments")]
+    pub(crate) fn note_learned_step_selected(&self) {
+        self.update_observability(|observability| observability.learned_step_selected += 1);
+    }
+
+    #[cfg(feature = "internal-learned-experiments")]
+    pub(crate) fn note_learned_step_verified(&self) {
+        self.update_observability(|observability| observability.learned_step_verified += 1);
+    }
+
+    #[cfg(feature = "internal-learned-experiments")]
+    pub(crate) fn note_learned_step_rejected(&self) {
+        self.update_observability(|observability| observability.learned_step_rejected += 1);
+    }
+
+    #[cfg(feature = "internal-learned-experiments")]
+    pub(crate) fn note_learned_step_bypassed(&self) {
+        self.update_observability(|observability| observability.learned_step_bypassed += 1);
+    }
+
+    #[cfg(feature = "internal-learned-experiments")]
+    pub(crate) fn note_learned_verifier_acceptance(&self) {
+        self.update_observability(|observability| observability.learned_verifier_acceptances += 1);
+    }
+
+    #[cfg(feature = "internal-learned-experiments")]
+    pub(crate) fn note_learned_verifier_fallback(&self) {
+        self.update_observability(|observability| observability.learned_verifier_fallbacks += 1);
     }
 
     pub(crate) fn note_solver_analytic_hit(&self) {
@@ -3513,7 +3556,9 @@ impl<'a> DirectQueryOps<'a> {
         let runtime_plan =
             self.runtime_shape_solver_plan(solver_plan, artifact_contracts, shape)?;
         let effective_methods = match self.trace_solver_mode {
-            QueryTraceSolverMode::Hybrid => runtime_plan.diagnostic_summary().methods,
+            QueryTraceSolverMode::Hybrid => {
+                runtime_plan.runtime_methods_for_observer(ArtifactObserver::Query)
+            }
             QueryTraceSolverMode::DenseOnly => vec![RaySolverMethod::DenseSphereTracing],
         };
         let policy = match self.trace_solver_mode {
@@ -3676,6 +3721,13 @@ impl<'a> DirectQueryOps<'a> {
             ));
         }
 
+        #[cfg(feature = "internal-learned-experiments")]
+        if let Some(decision) =
+            self.try_learned_trace_certificate(shape, origin, direction, state, policy)?
+        {
+            return Ok(decision);
+        }
+
         if let Some(decision) = self.try_relaxed_or_interval_certificate(
             shape,
             origin,
@@ -3693,6 +3745,101 @@ impl<'a> DirectQueryOps<'a> {
             certificate: self.dense_distance_advance_certificate(policy, shape, state),
             next_sample: None,
         })
+    }
+
+    #[cfg(feature = "internal-learned-experiments")]
+    fn try_learned_trace_certificate(
+        &self,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        state: &TraceLoopState,
+        policy: &TraceLoopPolicy,
+    ) -> Result<Option<TraceStepDecision>, QueryExecError> {
+        let learned_selected = policy.method_enabled(RaySolverMethod::LearnedStepProposal);
+        let learned_bound_enabled = policy.method_enabled(RaySolverMethod::ConservativeNeuralBound);
+        if !learned_selected || !learned_bound_enabled {
+            if learned_selected || learned_bound_enabled {
+                self.note_learned_step_bypassed();
+            }
+            return Ok(None);
+        }
+
+        self.note_learned_step_selected();
+        let point = [
+            origin[0] + direction[0] * state.travel,
+            origin[1] + direction[1] * state.travel,
+            origin[2] + direction[2] * state.travel,
+        ];
+        let (proposal, bound) =
+            propose_cpu_oracle_step(shape.clone(), point, direction, state.distance);
+        let outcome = verify_learned_step(&proposal, &bound, state.distance);
+        let dataset = build_cpu_oracle_dataset(
+            shape.clone(),
+            &proposal,
+            &bound,
+            &outcome,
+            state.distance,
+            Some(state.distance),
+            Some([state.travel, state.travel + bound.conservative_step_bound]),
+        );
+        maybe_export_learned_oracle_dataset(&dataset).map_err(|err| {
+            QueryExecError::Unsupported {
+                message: format!("learned dataset export failed: {err}"),
+            }
+        })?;
+        self.note_learned_step_verified();
+        if outcome.accepted {
+            self.note_learned_verifier_acceptance();
+            return Ok(Some(TraceStepDecision::Advance {
+                certificate: self.learned_conservative_advance_certificate(
+                    policy, shape, state, &proposal, &bound,
+                ),
+                next_sample: None,
+            }));
+        }
+
+        self.note_learned_step_rejected();
+        self.note_learned_verifier_fallback();
+        Ok(None)
+    }
+
+    #[cfg(feature = "internal-learned-experiments")]
+    fn learned_conservative_advance_certificate(
+        &self,
+        policy: &TraceLoopPolicy,
+        shape: &SmolStr,
+        state: &TraceLoopState,
+        proposal: &crate::acceleration::learned::LearnedStepProposal,
+        bound: &crate::acceleration::learned::ConservativeNeuralBound,
+    ) -> RayStepCertificate {
+        let next_step = proposal.proposed_step.min(bound.conservative_step_bound);
+        RayStepCertificate {
+            kind: StepCertificateKind::RelaxedConservativeJump,
+            metadata: self.certificate_metadata(
+                RequiredGuaranteeClass::ConservativeNoFalseMiss,
+                policy,
+                shape,
+                RayStepCertificateSubjectKind::Interval,
+                "learned-step-proposal",
+                format!(
+                    "proposal_step={:.6}; verifier_bound={:.6}; no_false_negative_intent={}",
+                    proposal.proposed_step,
+                    bound.conservative_step_bound,
+                    bound.no_false_negative_intent
+                ),
+                CertificateReuseClass::RenderingAndCollision,
+                vec![
+                    SmolStr::new("learned proposal verified against conservative neural bound"),
+                    SmolStr::new("distance semantics changed"),
+                ],
+            ),
+            t_start: state.travel,
+            t_end: state.travel + next_step,
+            no_hit_before_t_end: true,
+            bracket: None,
+            provenance: None,
+        }
     }
 
     fn try_analytic_primitive_hit(

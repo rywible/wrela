@@ -5961,6 +5961,7 @@ pub fn execute(spec: CommandSpec) {
     let perf_gate_path = parsed.perf_gate_path;
     let perf_max_regression_pct = parsed.perf_max_regression_pct;
     let perf_cv_max_pct = parsed.perf_cv_max_pct;
+    let perf_why_not_120 = parsed.perf_why_not_120;
     let kpi_check_fallback_max = parsed.kpi_check_fallback_max;
     let kpi_check_batch_min = parsed.kpi_check_batch_min;
     let kpi_scheduler_p99_improve_min_pct = parsed.kpi_scheduler_p99_improve_min_pct;
@@ -6038,6 +6039,10 @@ pub fn execute(spec: CommandSpec) {
         eprintln!("error: --profile is only valid with `wrela perf` or `wrela perfcmp`");
         std::process::exit(EXIT_USAGE);
     }
+    if command != "perf" && perf_why_not_120 {
+        eprintln!("error: --why-not-120 is only valid with `wrela perf`");
+        std::process::exit(EXIT_USAGE);
+    }
     if command != "perfcmp"
         && (perfcmp_baseline_ref.is_some()
             || perfcmp_candidate_ref.is_some()
@@ -6101,7 +6106,7 @@ pub fn execute(spec: CommandSpec) {
     {
         Some(profile) => profile,
         None => {
-            eprintln!("error: invalid --profile value (expected smoke|standard|deep)");
+            eprintln!("error: invalid --profile value (expected smoke|standard|deep|1080p120)");
             std::process::exit(EXIT_USAGE);
         }
     };
@@ -6840,6 +6845,7 @@ pub fn execute(spec: CommandSpec) {
                 perf_gate_path,
                 perf_max_regression_pct,
                 perf_cv_max_pct,
+                perf_why_not_120,
                 kpi_thresholds,
                 output_format,
                 perf_debug,

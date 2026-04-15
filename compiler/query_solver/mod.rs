@@ -1,4 +1,7 @@
+#[cfg(feature = "internal-learned-experiments")]
+use crate::acceleration::learned::{LearnedMethodPolicy, resolved_learned_method_policy};
 pub use crate::acceleration::{AccelerationRejectionClass, CertificateProvenanceHandle};
+use crate::artifact_contract::ArtifactObserver;
 use crate::query_contract::{
     QueryCardinality, QueryContractId, QueryFamilyId, QueryItemKind, QueryQuestionId,
     QueryResultKind, QueryTargetKind, query_contract,
@@ -24,6 +27,10 @@ pub enum RaySolverMethod {
     SafeguardedNewtonRefinement,
     AffineArithmeticBounds,
     RepeatAwareTraversal,
+    #[cfg(feature = "internal-learned-experiments")]
+    LearnedStepProposal,
+    #[cfg(feature = "internal-learned-experiments")]
+    ConservativeNeuralBound,
     TilePacketSolving,
     NeighborFrameContinuation,
 }
@@ -294,6 +301,22 @@ impl RaySolverPlan {
             },
         ];
         entries.extend([
+            #[cfg(feature = "internal-learned-experiments")]
+            RaySolverPortfolioEntry {
+                method: RaySolverMethod::LearnedStepProposal,
+                status: learned_step_method_status(&evidence),
+                reason: SmolStr::new(
+                    "learned proposals must be verifier-backed before they may advance a ray",
+                ),
+            },
+            #[cfg(feature = "internal-learned-experiments")]
+            RaySolverPortfolioEntry {
+                method: RaySolverMethod::ConservativeNeuralBound,
+                status: conservative_neural_bound_method_status(&evidence),
+                reason: SmolStr::new(
+                    "conservative neural bounds must carry explicit no-false-negative intent",
+                ),
+            },
             reserved_entry(RaySolverMethod::AffineArithmeticBounds),
             reserved_entry(RaySolverMethod::TilePacketSolving),
             reserved_entry(RaySolverMethod::NeighborFrameContinuation),
@@ -389,12 +412,7 @@ impl RaySolverPlan {
                 .portfolio
                 .entries
                 .iter()
-                .filter(|entry| {
-                    matches!(
-                        entry.status,
-                        RaySolverMethodStatus::Enabled | RaySolverMethodStatus::Available
-                    )
-                })
+                .filter(|entry| reportable_runtime_method(entry))
                 .map(|entry| entry.method)
                 .collect(),
             acceleration_rejection_classes: major_acceleration_rejection_classes(&self.evidence),
@@ -411,6 +429,19 @@ impl RaySolverPlan {
         self.portfolio.entries.iter().any(|entry| {
             entry.method == method && matches!(entry.status, RaySolverMethodStatus::Enabled)
         })
+    }
+
+    pub fn runtime_methods(&self) -> Vec<RaySolverMethod> {
+        self.runtime_methods_for_observer(ArtifactObserver::Query)
+    }
+
+    pub fn runtime_methods_for_observer(&self, observer: ArtifactObserver) -> Vec<RaySolverMethod> {
+        self.portfolio
+            .entries
+            .iter()
+            .filter(|entry| runtime_method_enabled(entry, observer))
+            .map(|entry| entry.method)
+            .collect()
     }
 
     pub fn dense_fallback_reasons(&self) -> &[RaySolverFallbackReason] {
@@ -473,6 +504,53 @@ impl RaySolverPlan {
                 rewrite_selection_subject(&intent.selection.evidence_policy_summary, &subject);
         }
         plan
+    }
+}
+
+fn reportable_runtime_method(entry: &RaySolverPortfolioEntry) -> bool {
+    matches!(
+        entry.status,
+        RaySolverMethodStatus::Enabled | RaySolverMethodStatus::Available
+    )
+}
+
+fn runtime_method_enabled(entry: &RaySolverPortfolioEntry, observer: ArtifactObserver) -> bool {
+    if !reportable_runtime_method(entry) {
+        return false;
+    }
+    #[cfg(not(feature = "internal-learned-experiments"))]
+    let _ = observer;
+    #[cfg(feature = "internal-learned-experiments")]
+    {
+        if matches!(
+            entry.method,
+            RaySolverMethod::LearnedStepProposal | RaySolverMethod::ConservativeNeuralBound
+        ) {
+            return learned_runtime_method_enabled(entry, observer);
+        }
+    }
+    true
+}
+
+#[cfg(feature = "internal-learned-experiments")]
+fn learned_runtime_method_enabled(
+    entry: &RaySolverPortfolioEntry,
+    observer: ArtifactObserver,
+) -> bool {
+    let Some(policy) = resolved_learned_method_policy(observer) else {
+        return false;
+    };
+    match (observer, policy, entry.method) {
+        (
+            ArtifactObserver::Collision,
+            LearnedMethodPolicy::ConservativeNoFalseNegative,
+            RaySolverMethod::ConservativeNeuralBound,
+        ) => true,
+        (ArtifactObserver::Collision, _, RaySolverMethod::LearnedStepProposal) => false,
+        (_, _, RaySolverMethod::LearnedStepProposal | RaySolverMethod::ConservativeNeuralBound) => {
+            true
+        }
+        _ => false,
     }
 }
 
@@ -652,6 +730,16 @@ fn refinement_method_reason(evidence: &SemanticEvidence) -> &'static str {
     } else {
         "certified gradients may refine proven brackets with safeguarded Newton steps"
     }
+}
+
+#[cfg(feature = "internal-learned-experiments")]
+fn learned_step_method_status(_evidence: &SemanticEvidence) -> RaySolverMethodStatus {
+    RaySolverMethodStatus::Available
+}
+
+#[cfg(feature = "internal-learned-experiments")]
+fn conservative_neural_bound_method_status(_evidence: &SemanticEvidence) -> RaySolverMethodStatus {
+    RaySolverMethodStatus::Available
 }
 
 fn primary_certificate_method(entries: &[RaySolverPortfolioEntry]) -> RaySolverMethod {
@@ -935,6 +1023,10 @@ fn required_guarantee_for_method(method: RaySolverMethod) -> RequiredGuaranteeCl
         | RaySolverMethod::SafeguardedNewtonRefinement
         | RaySolverMethod::AffineArithmeticBounds => RequiredGuaranteeClass::IntervalBounded,
         RaySolverMethod::RepeatAwareTraversal => RequiredGuaranteeClass::ConservativeNoFalseMiss,
+        #[cfg(feature = "internal-learned-experiments")]
+        RaySolverMethod::LearnedStepProposal => RequiredGuaranteeClass::BestEffort,
+        #[cfg(feature = "internal-learned-experiments")]
+        RaySolverMethod::ConservativeNeuralBound => RequiredGuaranteeClass::ConservativeNoFalseMiss,
         RaySolverMethod::TilePacketSolving | RaySolverMethod::NeighborFrameContinuation => {
             RequiredGuaranteeClass::BestEffort
         }
@@ -949,6 +1041,10 @@ fn selected_method_class_for_method(method: RaySolverMethod) -> SelectedMethodCl
         RaySolverMethod::SupportBoundCandidateRejection | RaySolverMethod::RepeatAwareTraversal => {
             SelectedMethodClass::ConservativeSolver
         }
+        #[cfg(feature = "internal-learned-experiments")]
+        RaySolverMethod::LearnedStepProposal => SelectedMethodClass::HeuristicSolver,
+        #[cfg(feature = "internal-learned-experiments")]
+        RaySolverMethod::ConservativeNeuralBound => SelectedMethodClass::ConservativeSolver,
         RaySolverMethod::LipschitzSafeStepping
         | RaySolverMethod::IntervalNewtonIsolation
         | RaySolverMethod::SafeguardedNewtonRefinement
@@ -969,6 +1065,10 @@ fn candidate_class_for_method(method: RaySolverMethod) -> &'static str {
         RaySolverMethod::SafeguardedNewtonRefinement => "newton-refinement-candidates",
         RaySolverMethod::AffineArithmeticBounds => "affine-bounds-candidates",
         RaySolverMethod::RepeatAwareTraversal => "repeat-aware-candidates",
+        #[cfg(feature = "internal-learned-experiments")]
+        RaySolverMethod::LearnedStepProposal => "learned-step-proposal",
+        #[cfg(feature = "internal-learned-experiments")]
+        RaySolverMethod::ConservativeNeuralBound => "conservative-neural-bound",
         RaySolverMethod::TilePacketSolving => "tile-packet-candidates",
         RaySolverMethod::NeighborFrameContinuation => "temporal-continuation",
     }
@@ -995,6 +1095,10 @@ pub fn ray_solver_method_name(method: RaySolverMethod) -> &'static str {
         RaySolverMethod::SafeguardedNewtonRefinement => "safeguarded-newton-refinement",
         RaySolverMethod::AffineArithmeticBounds => "affine-arithmetic-bounds",
         RaySolverMethod::RepeatAwareTraversal => "repeat-aware-traversal",
+        #[cfg(feature = "internal-learned-experiments")]
+        RaySolverMethod::LearnedStepProposal => "learned-step-proposal",
+        #[cfg(feature = "internal-learned-experiments")]
+        RaySolverMethod::ConservativeNeuralBound => "conservative-neural-bound",
         RaySolverMethod::TilePacketSolving => "tile-packet-solving",
         RaySolverMethod::NeighborFrameContinuation => "neighbor-frame-continuation",
     }

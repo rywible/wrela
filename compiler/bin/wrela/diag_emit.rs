@@ -218,7 +218,7 @@ options:\n\
   --lane=NAME           run/list tests for lane (spec|integration|sim|model|default); valid for test/perf\n\
   --seed=N              schedule seed for sim tests; valid for test/perf\n\
   --benchmark-manifest=PATH  benchmark manifest path (bench.toml)\n\
-  --profile=NAME        benchmark profile (smoke|standard|deep)\n\
+  --profile=NAME        benchmark profile (smoke|standard|deep|1080p120)\n\
   --repro PATH          replay a single typed repro artifact (autogen|fuzz)\n\
   --replay-trace PATH   validate a sim/model replay trace artifact\n\
   --perf-debug          dump perf counters after tests\n\
@@ -227,6 +227,7 @@ options:\n\
   --perf-gate=PATH      compare perf summary against baseline JSON\n\
   --perf-max-regression-pct=N  allowed regression percentage (default: 5)\n\
   --perf-cv-max-pct=N   max coefficient of variation percentage (default: 5)\n\
+  --why-not-120         perf: print the structured 1080p120 closure diagnosis\n\
   --kpi-check-fallback-max=N  max allowed check fallback rate\n\
   --kpi-check-batch-min=N  minimum required average check batch size\n\
   --kpi-scheduler-p99-improve-min-pct=N  min scheduler p99 improvement vs baseline\n\
@@ -712,6 +713,7 @@ mod tests {
         assert!(help.contains("--allow-review-fixes"));
         assert!(help.contains("--query-backend=NAME"));
         assert!(help.contains("--strict-naming"));
+        assert!(help.contains("--why-not-120"));
         assert!(help.contains("collision-contracts"));
         assert!(help.contains("collision-plan"));
         assert!(help.contains("collision-run"));

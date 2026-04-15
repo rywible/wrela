@@ -387,8 +387,18 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
         report.counters.cache_resident_shared_snapshot_artifacts;
     let cache_resident_observer_local_artifacts =
         report.counters.cache_resident_observer_local_artifacts;
+    let learned_verifier_acceptance_rate = report
+        .counters
+        .learned_verifier_acceptance_rate()
+        .map(|rate| format!("{rate:.3}"))
+        .unwrap_or_else(|| "none".to_string());
+    let learned_verifier_fallback_rate = report
+        .counters
+        .learned_verifier_fallback_rate()
+        .map(|rate| format!("{rate:.3}"))
+        .unwrap_or_else(|| "none".to_string());
     out.push_str(&format!(
-        "counters dispatch={} dispatch_items={} workgroups={}x{}x{} screen_samples={} world_batch_items={} candidates={} candidates_before={} candidates_after={} pruned={} trace_steps={} trace_steps_avg={:.2} trace_steps_max={} hits={} misses={} field_samples={} artifacts={} opaque_fallbacks={} dense_batches={} semantic_pruned_batches={} cache_shared_snapshot={} cache_observer_local={} solver_plan={} solver_subject={} solver_methods={} solver_analytic_hits={} solver_support_rejections={} solver_interval_skips={} solver_packet_tile_rejections={} solver_newton_refinements={} solver_lipschitz_steps={} solver_adaptive_epsilon={} solver_dense_fallback_rays={} solver_generated_dense_fallback_rays={} solver_fallback_contract_dense={} solver_fallback_missing_facts={} solver_fallback_analytic_unsupported={} solver_fallback_verification_failed={} solver_fallback_unsupported_backend={} solver_certificate_failures={} observer_continuation_seed_hits={} wgsl_layout_signature={} wgsl_bind_groups={} wgsl_storage_requested={} wgsl_storage_used={} wgsl_workgroup_size={}",
+        "counters dispatch={} dispatch_items={} workgroups={}x{}x{} screen_samples={} world_batch_items={} candidates={} candidates_before={} candidates_after={} pruned={} trace_steps={} trace_steps_avg={:.2} trace_steps_max={} hits={} misses={} field_samples={} artifacts={} opaque_fallbacks={} dense_batches={} semantic_pruned_batches={} cache_shared_snapshot={} cache_observer_local={} solver_plan={} solver_subject={} solver_methods={} solver_analytic_hits={} solver_support_rejections={} solver_interval_skips={} solver_packet_tile_rejections={} solver_newton_refinements={} solver_lipschitz_steps={} solver_adaptive_epsilon={} solver_dense_fallback_rays={} solver_generated_dense_fallback_rays={} solver_fallback_contract_dense={} solver_fallback_missing_facts={} solver_fallback_analytic_unsupported={} solver_fallback_verification_failed={} solver_fallback_unsupported_backend={} learned_step_selected={} learned_step_verified={} learned_step_rejected={} learned_step_bypassed={} learned_verifier_acceptances={} learned_verifier_fallbacks={} learned_verifier_acceptance_rate={} learned_verifier_fallback_rate={} solver_certificate_failures={} observer_continuation_seed_hits={} wgsl_layout_signature={} wgsl_bind_groups={} wgsl_storage_requested={} wgsl_storage_used={} wgsl_workgroup_size={}",
         report.counters.dispatch_count,
         report.counters.dispatch_items,
         report.counters.dispatch_workgroups_x,
@@ -429,6 +439,14 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
         report.counters.solver_fallback_analytic_unsupported,
         report.counters.solver_fallback_verification_failed,
         report.counters.solver_fallback_unsupported_backend,
+        report.counters.learned_step_selected,
+        report.counters.learned_step_verified,
+        report.counters.learned_step_rejected,
+        report.counters.learned_step_bypassed,
+        report.counters.learned_verifier_acceptances,
+        report.counters.learned_verifier_fallbacks,
+        learned_verifier_acceptance_rate,
+        learned_verifier_fallback_rate,
         report.counters.solver_certificate_failures,
         report.counters.observer_continuation_seed_hits,
         report

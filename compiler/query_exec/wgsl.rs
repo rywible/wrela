@@ -26,6 +26,8 @@ use crate::query_plan::CaptureKind;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use smol_str::SmolStr;
 use std::borrow::Cow;
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use wgpu::util::{DeviceExt, initialize_adapter_from_env_or_default};
@@ -112,6 +114,17 @@ struct WgslDispatchDiagnostics {
     requested_max_storage_buffer_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WgslDispatchChunkPlan {
+    items_per_chunk: usize,
+    chunk_count: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_WGSL_CHUNK_STORAGE_BUFFER_LIMIT_OVERRIDE: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
 #[derive(Debug, Clone, Copy)]
 struct WgslAccelNodeRecord {
     min: [f32; 3],
@@ -144,7 +157,6 @@ pub(crate) fn execute_capture_query_with_snapshot_observability(
     args: &[KernelValue],
 ) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
     let ops = DirectQueryOps::new_with_snapshot(ctx, snapshot);
-    ops.note_dispatch();
     if let Err(errors) = validate_capture_query_plan(plan) {
         ops.note_contract_validation_failure();
         return Err(validation_error("capture query", errors));
@@ -200,7 +212,6 @@ pub(crate) fn execute_world_query_with_policy_with_snapshot_observability(
     args: &[KernelValue],
 ) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
     let ops = DirectQueryOps::new_with_snapshot(ctx, snapshot);
-    ops.note_dispatch();
     if let Some(ray_solver) = &plan.ray_solver {
         ops.note_solver_plan(ray_solver);
     }
@@ -240,7 +251,6 @@ pub(crate) fn execute_batch_query_with_snapshot_observability(
     _trace: &KernelBatchQueryTrace,
 ) -> Result<(KernelValue, QueryExecutionObservability), QueryExecError> {
     let ops = DirectQueryOps::new_with_snapshot(ctx, snapshot);
-    ops.note_dispatch();
     if let Some(ray_solver) = &plan.ray_solver {
         ops.note_solver_plan(ray_solver);
     }
@@ -250,17 +260,9 @@ pub(crate) fn execute_batch_query_with_snapshot_observability(
     }
     let generated = generate_compiled_shader(ctx, ShaderPlan::Batch(plan))?;
     let request = build_batch_request(&ops, plan, args)?;
-    let workgroups_x = dispatch_workgroups_x_for_items(
-        request.items.len() as u32,
-        current_selected_query_workgroup_size()?,
-    );
-    ops.note_batch_dispatch_grid(
-        request.items.len() as u32,
-        workgroups_x.max(1),
-        1,
-        1,
-        descriptor_for_plan(plan.contract_id)?.target == QueryTargetKind::World,
-    );
+    if descriptor_for_plan(plan.contract_id)?.target == QueryTargetKind::World {
+        ops.note_world_batch_items(request.items.len() as u32);
+    }
     let (values, wgsl_observability) =
         dispatch_compiled_shader_with_observability(&generated, request)?;
     let descriptor = descriptor_for_plan(plan.contract_id)?;
@@ -1152,6 +1154,38 @@ pub(crate) fn dispatch_compiled_shader_with_observability(
         return Ok((Vec::new(), QueryExecutionObservability::default()));
     }
 
+    let chunk_plan = compute_wgsl_dispatch_chunk_plan(generated, &request)?;
+    if chunk_plan.chunk_count > 1 {
+        let mut values = Vec::with_capacity(request.items.len());
+        let mut observability = QueryExecutionObservability::default();
+        for (chunk_index, start) in (0..request.items.len())
+            .step_by(chunk_plan.items_per_chunk)
+            .enumerate()
+        {
+            let end = (start + chunk_plan.items_per_chunk).min(request.items.len());
+            let chunk_request = slice_gpu_dispatch_request(&request, start..end)?;
+            let (chunk_values, mut chunk_observability) =
+                dispatch_compiled_shader_single_with_observability(generated, chunk_request)?;
+            if chunk_index > 0 {
+                suppress_repeated_chunk_seed_metrics(&mut chunk_observability);
+            }
+            values.extend(chunk_values);
+            observability.merge_from(&chunk_observability);
+        }
+        return Ok((values, observability));
+    }
+
+    dispatch_compiled_shader_single_with_observability(generated, request)
+}
+
+fn dispatch_compiled_shader_single_with_observability(
+    generated: &GeneratedShaderModule,
+    request: GpuDispatchRequest,
+) -> Result<(Vec<KernelValue>, QueryExecutionObservability), QueryExecError> {
+    if request.items.is_empty() {
+        return Ok((Vec::new(), QueryExecutionObservability::default()));
+    }
+
     let dispatch_bytes = encode_value(&generated.dispatch_abi, &request.dispatch)?;
     let input_bytes = encode_slice(&generated.item_abi, &request.items)?;
     let accel_node_bytes =
@@ -1230,8 +1264,176 @@ pub(crate) fn dispatch_compiled_shader_with_observability(
 
     Ok((
         decode_slice(&generated.result_abi, &bytes, request.items.len())?,
-        decode_wgsl_observability(generated, &diagnostics, &observability_bytes),
+        decode_wgsl_observability(
+            generated,
+            &diagnostics,
+            &observability_bytes,
+            request.items.len() as u32,
+        ),
     ))
+}
+
+fn compute_wgsl_dispatch_chunk_plan(
+    generated: &GeneratedShaderModule,
+    request: &GpuDispatchRequest,
+) -> Result<WgslDispatchChunkPlan, QueryExecError> {
+    let item_count = request.items.len();
+    if item_count == 0 {
+        return Ok(WgslDispatchChunkPlan {
+            items_per_chunk: 0,
+            chunk_count: 0,
+        });
+    }
+
+    let native = native_wgpu_context()?;
+    let per_storage_buffer_limit = effective_chunk_storage_buffer_limit(&native.requested_limits);
+    let item_stride = portable_abi_array_stride(&generated.item_abi) as u64;
+    let result_stride = portable_abi_array_stride(&generated.result_abi) as u64;
+    let per_item_seed_stride = continuation_seed_stride_for_chunking(request)?;
+    let items_per_chunk = max_chunk_item_count(
+        per_storage_buffer_limit,
+        item_stride,
+        result_stride,
+        per_item_seed_stride,
+    )?;
+    Ok(WgslDispatchChunkPlan {
+        items_per_chunk,
+        chunk_count: item_count.div_ceil(items_per_chunk),
+    })
+}
+
+fn effective_chunk_storage_buffer_limit(requested_limits: &wgpu::Limits) -> u64 {
+    #[cfg(test)]
+    if let Some(limit) = TEST_WGSL_CHUNK_STORAGE_BUFFER_LIMIT_OVERRIDE.with(Cell::get) {
+        return limit;
+    }
+
+    requested_limits
+        .max_storage_buffer_binding_size
+        .min(requested_limits.max_buffer_size)
+}
+
+#[cfg(test)]
+fn with_test_chunk_storage_buffer_limit_override<T>(limit: u64, f: impl FnOnce() -> T) -> T {
+    struct Reset(Option<u64>);
+
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_WGSL_CHUNK_STORAGE_BUFFER_LIMIT_OVERRIDE.with(|cell| cell.set(self.0));
+        }
+    }
+
+    TEST_WGSL_CHUNK_STORAGE_BUFFER_LIMIT_OVERRIDE.with(|cell| {
+        let previous = cell.replace(Some(limit));
+        let _reset = Reset(previous);
+        f()
+    })
+}
+
+fn continuation_seed_stride_for_chunking(
+    request: &GpuDispatchRequest,
+) -> Result<Option<u64>, QueryExecError> {
+    if request.continuation_seeds.is_empty() {
+        return Ok(None);
+    }
+    if request.continuation_seeds.len() == request.items.len() {
+        return Ok(Some(std::mem::size_of::<u32>() as u64));
+    }
+    Err(QueryExecError::Unsupported {
+        message: format!(
+            "WGSL batch chunking requires continuation seeds to be empty or one-per-item, found {} seeds for {} items",
+            request.continuation_seeds.len(),
+            request.items.len()
+        ),
+    })
+}
+
+pub(crate) fn max_chunk_item_count(
+    per_storage_buffer_limit: u64,
+    item_stride: u64,
+    result_stride: u64,
+    per_item_seed_stride: Option<u64>,
+) -> Result<usize, QueryExecError> {
+    let mut item_limits = Vec::new();
+    item_limits.push(max_items_for_stride(
+        per_storage_buffer_limit,
+        item_stride,
+        "WGSL input item ABI",
+    )?);
+    item_limits.push(max_items_for_stride(
+        per_storage_buffer_limit,
+        result_stride,
+        "WGSL result ABI",
+    )?);
+    if let Some(seed_stride) = per_item_seed_stride {
+        item_limits.push(max_items_for_stride(
+            per_storage_buffer_limit,
+            seed_stride,
+            "WGSL continuation seed ABI",
+        )?);
+    }
+    let items_per_chunk = item_limits.into_iter().min().unwrap_or(1);
+    Ok(items_per_chunk.max(1))
+}
+
+fn max_items_for_stride(
+    per_storage_buffer_limit: u64,
+    stride: u64,
+    label: &str,
+) -> Result<usize, QueryExecError> {
+    if stride == 0 {
+        return Err(QueryExecError::Unsupported {
+            message: format!("{label} reported a zero byte stride"),
+        });
+    }
+    let max_items = per_storage_buffer_limit / stride;
+    if max_items == 0 {
+        return Err(QueryExecError::Unsupported {
+            message: format!(
+                "{label} requires {stride} bytes per item but the adapter only allows {} bytes per storage buffer",
+                per_storage_buffer_limit
+            ),
+        });
+    }
+    Ok(max_items as usize)
+}
+
+fn slice_gpu_dispatch_request(
+    request: &GpuDispatchRequest,
+    range: std::ops::Range<usize>,
+) -> Result<GpuDispatchRequest, QueryExecError> {
+    let mut dispatch = expect_struct_arg(Some(&request.dispatch), "WgslDispatchConfig")?.clone();
+    if let Some((_, value)) = dispatch
+        .fields
+        .iter_mut()
+        .find(|(name, _)| name == "item_count")
+    {
+        *value = KernelValue::U32(range.len() as u32);
+    } else {
+        return Err(QueryExecError::Unsupported {
+            message: "WGSL dispatch config is missing item_count".to_string(),
+        });
+    }
+    Ok(GpuDispatchRequest {
+        dispatch: KernelValue::Struct(dispatch),
+        items: request.items[range.clone()].to_vec(),
+        world_shape_indices: request.world_shape_indices.clone(),
+        accel_nodes: request.accel_nodes.clone(),
+        accel_children: request.accel_children.clone(),
+        cache_bricks: request.cache_bricks.clone(),
+        continuation_seeds: if request.continuation_seeds.len() == request.items.len() {
+            request.continuation_seeds[range].to_vec()
+        } else {
+            request.continuation_seeds.clone()
+        },
+    })
+}
+
+fn suppress_repeated_chunk_seed_metrics(observability: &mut QueryExecutionObservability) {
+    observability.cache_resident_shared_snapshot_artifacts = 0;
+    observability.cache_resident_observer_local_artifacts = 0;
+    observability.cache_upload_attempts = 0;
+    observability.cache_upload_rejections = 0;
 }
 
 fn dispatch_compiled_shader_with_buffers(
@@ -1407,11 +1609,6 @@ fn dispatch_compiled_shader_with_buffers(
 
 fn dispatch_workgroups_x_for_items(item_count: u32, workgroup_size: u32) -> u32 {
     item_count.div_ceil(workgroup_size.max(1))
-}
-
-fn current_selected_query_workgroup_size() -> Result<u32, QueryExecError> {
-    let native = native_wgpu_context()?;
-    select_query_wgsl_workgroup_size(&native.adapter_limits)
 }
 
 pub(crate) fn readback_storage_buffer(
@@ -1795,6 +1992,7 @@ fn decode_wgsl_observability(
     generated: &GeneratedShaderModule,
     diagnostics: &WgslDispatchDiagnostics,
     bytes: &[u8],
+    dispatch_items: u32,
 ) -> QueryExecutionObservability {
     let read_u32 = |index: usize| -> u32 {
         let start = index * std::mem::size_of::<u32>();
@@ -1824,6 +2022,14 @@ fn decode_wgsl_observability(
         solver_analytic_hits: read_u32(15),
         solver_generated_dense_fallback_rays: read_u32(16),
         solver_support_rejections: read_u32(17),
+        dispatch_count: 1,
+        dispatch_items,
+        dispatch_workgroups_x: dispatch_workgroups_x_for_items(
+            dispatch_items,
+            diagnostics.selected_workgroup_size,
+        ),
+        dispatch_workgroups_y: 1,
+        dispatch_workgroups_z: 1,
         wgsl_layout_signature: Some(generated.layout_signature),
         wgsl_bind_group_count: generated.bind_group_count,
         wgsl_requested_max_storage_buffer_bytes: diagnostics.requested_max_storage_buffer_bytes,
@@ -1901,6 +2107,12 @@ fn init_native_wgpu_context_for_limits(
             request.max_storage_buffer_binding_size, adapter_limits.max_storage_buffer_binding_size
         ));
     }
+    if request.max_storage_buffer_binding_size > adapter_limits.max_buffer_size {
+        return Err(format!(
+            "requested storage buffer binding size {} exceeds adapter max buffer size {}",
+            request.max_storage_buffer_binding_size, adapter_limits.max_buffer_size
+        ));
+    }
     if QUERY_WGSL_BIND_GROUP_COUNT > adapter_limits.max_bind_groups {
         return Err(format!(
             "query WGSL layout needs {} bind groups but adapter profile only supports {}",
@@ -1916,6 +2128,7 @@ fn init_native_wgpu_context_for_limits(
     required_limits.max_storage_buffers_per_shader_stage =
         request.max_storage_buffers_per_shader_stage;
     required_limits.max_storage_buffer_binding_size = request.max_storage_buffer_binding_size;
+    required_limits.max_buffer_size = adapter_limits.max_buffer_size;
     required_limits.max_compute_invocations_per_workgroup = selected_workgroup_size;
     required_limits.max_compute_workgroup_size_x = selected_workgroup_size;
     required_limits.max_compute_workgroup_size_y = 1;
@@ -2171,12 +2384,258 @@ fn expect_vec3_arg(
 
 #[cfg(test)]
 mod tests {
-    use super::dispatch_workgroups_x_for_items;
+    use super::{
+        GeneratedShaderModule, GpuDispatchRequest, WgslDispatchChunkPlan,
+        dispatch_compiled_shader_with_observability, dispatch_config,
+        dispatch_workgroups_x_for_items, max_chunk_item_count, slice_gpu_dispatch_request,
+        suppress_repeated_chunk_seed_metrics, with_test_chunk_storage_buffer_limit_override,
+    };
+    use crate::kernel::{KernelStructValue, KernelValue};
+    use crate::portable::{PortableAbiType, portable_abi_emit_wgsl_structs};
+    use crate::query_exec::QueryExecutionObservability;
+    use crate::query_exec::wgsl::codegen::{
+        wgsl_accel_node_abi, wgsl_cache_brick_abi, wgsl_dispatch_config_abi, wgsl_shape_meta_abi,
+    };
+    use smol_str::SmolStr;
 
     #[test]
     fn dispatch_workgroups_follow_selected_workgroup_size() {
         assert_eq!(dispatch_workgroups_x_for_items(96, 32), 3);
         assert_eq!(dispatch_workgroups_x_for_items(96, 64), 2);
         assert_eq!(dispatch_workgroups_x_for_items(96, 128), 1);
+    }
+
+    #[test]
+    fn chunk_plan_caps_items_to_storage_buffer_limits() {
+        let plan = WgslDispatchChunkPlan {
+            items_per_chunk: max_chunk_item_count(128 << 20, 48, 256, None).unwrap(),
+            chunk_count: 2_073_600usize.div_ceil(524_288),
+        };
+        assert_eq!(plan.items_per_chunk, 524_288);
+        assert_eq!(plan.chunk_count, 4);
+    }
+
+    #[test]
+    fn slice_request_updates_dispatch_item_count_and_seeds() {
+        let request = GpuDispatchRequest {
+            dispatch: dispatch_config(2, 0, 6, 3, 1, 4, 0, true, false, false),
+            items: (0..6).map(KernelValue::U32).collect(),
+            world_shape_indices: vec![7, 8, 9],
+            accel_nodes: Vec::new(),
+            accel_children: Vec::new(),
+            cache_bricks: Vec::new(),
+            continuation_seeds: vec![10, 11, 12, 13, 14, 15],
+        };
+        let sliced = slice_gpu_dispatch_request(&request, 2..5).unwrap();
+        let dispatch = match sliced.dispatch {
+            KernelValue::Struct(ref dispatch) => dispatch,
+            _ => panic!("expected struct dispatch config"),
+        };
+        let item_count = dispatch
+            .fields
+            .iter()
+            .find(|(name, _)| name == "item_count")
+            .and_then(|(_, value)| match value {
+                KernelValue::U32(count) => Some(*count),
+                _ => None,
+            })
+            .expect("item_count field");
+        assert_eq!(item_count, 3);
+        assert_eq!(sliced.items.len(), 3);
+        assert_eq!(sliced.continuation_seeds, vec![12, 13, 14]);
+        assert_eq!(sliced.world_shape_indices, vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn repeated_chunk_seed_metrics_are_suppressed_after_first_chunk() {
+        let mut merged = QueryExecutionObservability {
+            cache_resident_shared_snapshot_artifacts: 3,
+            cache_resident_observer_local_artifacts: 2,
+            cache_upload_attempts: 5,
+            cache_upload_rejections: 1,
+            dispatch_count: 1,
+            dispatch_items: 4,
+            ..QueryExecutionObservability::default()
+        };
+        let mut repeated_chunk = QueryExecutionObservability {
+            cache_resident_shared_snapshot_artifacts: 3,
+            cache_resident_observer_local_artifacts: 2,
+            cache_upload_attempts: 5,
+            cache_upload_rejections: 1,
+            dispatch_count: 1,
+            dispatch_items: 2,
+            ..QueryExecutionObservability::default()
+        };
+
+        suppress_repeated_chunk_seed_metrics(&mut repeated_chunk);
+        merged.merge_from(&repeated_chunk);
+
+        assert_eq!(merged.cache_resident_shared_snapshot_artifacts, 3);
+        assert_eq!(merged.cache_resident_observer_local_artifacts, 2);
+        assert_eq!(merged.cache_upload_attempts, 5);
+        assert_eq!(merged.cache_upload_rejections, 1);
+        assert_eq!(merged.dispatch_count, 2);
+        assert_eq!(merged.dispatch_items, 6);
+    }
+
+    #[test]
+    fn chunked_direct_dispatch_preserves_results_and_merged_observability() {
+        let structs = portable_abi_emit_wgsl_structs(&[
+            wgsl_dispatch_config_abi(),
+            wgsl_accel_node_abi(),
+            wgsl_cache_brick_abi(),
+            wgsl_shape_meta_abi(),
+        ])
+        .expect("wgsl structs");
+        let source = format!(
+            "{structs}
+
+override WG_SIZE: u32 = 64u;
+
+struct InputBuffer {{
+  values: array<u32>,
+}}
+
+struct ResultBuffer {{
+  values: array<u32>,
+}}
+
+struct ShapeIndexBuffer {{
+  values: array<u32>,
+}}
+
+struct AccelNodeBuffer {{
+  values: array<WgslAccelNode>,
+}}
+
+struct ShapeMetaBuffer {{
+  values: array<WgslShapeMeta>,
+}}
+
+struct CacheBrickBuffer {{
+  values: array<WgslCacheBrick>,
+}}
+
+struct ContinuationSeedBuffer {{
+  values: array<u32>,
+}}
+
+struct WgslObservabilityBuffer {{
+  acceleration_node_visits: atomic<u32>,
+  shape_leaf_visits: atomic<u32>,
+  acceleration_pruned_nodes: atomic<u32>,
+  ray_support_interval_rejections: atomic<u32>,
+  ray_support_entry_jumps: atomic<u32>,
+  cache_brick_visits: atomic<u32>,
+  cache_brick_hits: atomic<u32>,
+  cache_brick_misses: atomic<u32>,
+  cache_interval_advances: atomic<u32>,
+  cache_resident_shared_snapshot_artifacts: atomic<u32>,
+  cache_resident_observer_local_artifacts: atomic<u32>,
+  cache_upload_attempts: atomic<u32>,
+  cache_upload_rejections: atomic<u32>,
+  cache_budget_rejections: atomic<u32>,
+  cache_dense_fallback_rays: atomic<u32>,
+  solver_analytic_hits: atomic<u32>,
+  solver_generated_dense_fallback_rays: atomic<u32>,
+  solver_support_rejections: atomic<u32>,
+}}
+
+@group(0) @binding(0)
+var<storage, read> dispatch_config: WgslDispatchConfig;
+@group(1) @binding(0)
+var<storage, read> accel_nodes: AccelNodeBuffer;
+@group(1) @binding(1)
+var<storage, read> accel_children: ShapeIndexBuffer;
+@group(1) @binding(2)
+var<storage, read> shape_meta: ShapeMetaBuffer;
+@group(1) @binding(3)
+var<storage, read> cache_bricks: CacheBrickBuffer;
+@group(2) @binding(0)
+var<storage, read> input_items: InputBuffer;
+@group(2) @binding(1)
+var<storage, read_write> output_items: ResultBuffer;
+@group(2) @binding(2)
+var<storage, read> world_shapes: ShapeIndexBuffer;
+@group(2) @binding(3)
+var<storage, read_write> observability_metrics: WgslObservabilityBuffer;
+@group(3) @binding(0)
+var<storage, read> continuation_seeds: ContinuationSeedBuffer;
+
+@compute @workgroup_size(WG_SIZE)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
+  let index = global_id.x;
+  _ = accel_nodes.values[0].flags;
+  _ = accel_children.values[0];
+  _ = shape_meta.values[0].root_shape_id;
+  _ = cache_bricks.values[0].min.x;
+  _ = world_shapes.values[0];
+  _ = continuation_seeds.values[0];
+  if (index >= dispatch_config.item_count) {{
+    return;
+  }}
+  if (index == 0u) {{
+    atomicAdd(&observability_metrics.cache_resident_shared_snapshot_artifacts, 3u);
+    atomicAdd(&observability_metrics.cache_upload_attempts, 3u);
+  }}
+  output_items.values[index] = input_items.values[index];
+}}
+"
+        );
+        let generated = GeneratedShaderModule {
+            source,
+            workgroup_size: 64,
+            dispatch_abi: wgsl_dispatch_config_abi(),
+            accel_node_abi: wgsl_accel_node_abi(),
+            cache_brick_abi: wgsl_cache_brick_abi(),
+            shape_meta_abi: wgsl_shape_meta_abi(),
+            item_abi: PortableAbiType::U32,
+            result_abi: PortableAbiType::U32,
+            shape_meta_values: vec![KernelValue::Struct(KernelStructValue {
+                name: SmolStr::new("WgslShapeMeta"),
+                fields: vec![
+                    (SmolStr::new("root_shape_id"), KernelValue::U32(0)),
+                    (SmolStr::new("analytic_kind"), KernelValue::U32(0)),
+                ],
+            })],
+            layout_signature: 1,
+            bind_group_count: 4,
+        };
+        let request = GpuDispatchRequest {
+            dispatch: dispatch_config(0, 0, 6, 1, 0, 1, 1, false, false, false),
+            items: (0..6).map(KernelValue::U32).collect(),
+            world_shape_indices: vec![0],
+            accel_nodes: vec![KernelValue::Struct(KernelStructValue {
+                name: SmolStr::new("WgslAccelNode"),
+                fields: vec![
+                    (SmolStr::new("min"), KernelValue::Vec3([0.0, 0.0, 0.0])),
+                    (SmolStr::new("max"), KernelValue::Vec3([1.0, 1.0, 1.0])),
+                    (SmolStr::new("child_start"), KernelValue::U32(0)),
+                    (SmolStr::new("child_len"), KernelValue::U32(0)),
+                    (SmolStr::new("leaf_shape_index"), KernelValue::U32(0)),
+                    (SmolStr::new("flags"), KernelValue::U32(0)),
+                ],
+            })],
+            accel_children: vec![0],
+            cache_bricks: vec![KernelValue::Struct(KernelStructValue {
+                name: SmolStr::new("WgslCacheBrick"),
+                fields: vec![
+                    (SmolStr::new("min"), KernelValue::Vec3([0.0, 0.0, 0.0])),
+                    (SmolStr::new("max"), KernelValue::Vec3([1.0, 1.0, 1.0])),
+                ],
+            })],
+            continuation_seeds: vec![0; 6],
+        };
+
+        let (values, observability) = with_test_chunk_storage_buffer_limit_override(16, || {
+            dispatch_compiled_shader_with_observability(&generated, request.clone())
+                .expect("chunked direct dispatch")
+        });
+
+        assert_eq!(values, request.items);
+        assert_eq!(observability.dispatch_count, 2);
+        assert_eq!(observability.dispatch_items, 6);
+        assert_eq!(observability.cache_resident_shared_snapshot_artifacts, 3);
+        assert_eq!(observability.cache_upload_attempts, 3);
     }
 }

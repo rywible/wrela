@@ -142,11 +142,42 @@ pub struct PerfClosureLaneStatusReport {
     pub notes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PerfClosureVerdictStatus {
+    #[default]
+    NotApplicable,
+    Met,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct PerfClosureFinding {
+    pub subsystem: String,
+    pub focus: String,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<String>,
+    pub next_step: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PerfClosureVerdict {
+    pub status: PerfClosureVerdictStatus,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_remaining_bottleneck: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<PerfClosureFinding>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PerfClosureReport {
     pub profile: PerfClosureProfile,
     pub frame: PerfClosureLaneStatusReport,
     pub collision: PerfClosureLaneStatusReport,
+    #[serde(default)]
+    pub verdict: PerfClosureVerdict,
 }
 
 impl PerfClosureProfile {
@@ -380,7 +411,47 @@ impl PerfClosureReport {
             frame: PerfClosureLaneStatusReport::unsampled(&profile.frame),
             collision: PerfClosureLaneStatusReport::unsampled(&profile.collision),
             profile,
+            verdict: PerfClosureVerdict::not_applicable(),
         }
+    }
+}
+
+impl PerfClosureVerdict {
+    pub fn not_applicable() -> Self {
+        Self {
+            status: PerfClosureVerdictStatus::NotApplicable,
+            summary: "closure target was not exercised in this run".to_string(),
+            top_remaining_bottleneck: None,
+            findings: Vec::new(),
+        }
+    }
+
+    pub fn met(summary: impl Into<String>) -> Self {
+        Self {
+            status: PerfClosureVerdictStatus::Met,
+            summary: summary.into(),
+            top_remaining_bottleneck: None,
+            findings: Vec::new(),
+        }
+    }
+
+    pub fn failed(
+        summary: impl Into<String>,
+        top_remaining_bottleneck: Option<String>,
+        findings: Vec<PerfClosureFinding>,
+    ) -> Self {
+        Self {
+            status: PerfClosureVerdictStatus::Failed,
+            summary: summary.into(),
+            top_remaining_bottleneck,
+            findings,
+        }
+    }
+}
+
+impl Default for PerfClosureVerdict {
+    fn default() -> Self {
+        Self::not_applicable()
     }
 }
 

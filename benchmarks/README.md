@@ -8,6 +8,9 @@ The benchmark harness now focuses on the world-language surface that remains in 
 - `realtime_presentation`: presentation-oriented scene-shape benchmarks for dense constructive geometry, repetition-heavy layouts, a dedicated repeat-aware solver proof lane, thin-stack aliasing, relaxed exact-torus solver coverage, transformed primitive galleries, mixed opaque/conservative scenes, media/radiance scenes, cache-stress motion paths, and camera-motion temporal-reuse / clipmap-churn coverage. The explicit `1080p120` closure lane now adds fixed scenarios for each of those representative stresses.
 - `1080p120` closure profiles: fixed 1920x1080, 120 FPS protocol manifests for the frame lane and the dedicated collision lane. `wrela perf --profile=1080p120` automatically selects the companion `1080p120_closure.toml` file when it exists.
 
+If you need the junior-friendly walkthrough for reading plans, report dumps, closure output,
+and parity checks, start with [docs/perf/acceleration_playbook.md](../docs/perf/acceleration_playbook.md).
+
 ## Manifests
 
 Each suite has a `bench.toml` manifest for the default microbench lane, and the closure profiles use a companion `1080p120_closure.toml`:
@@ -48,6 +51,15 @@ cargo run -p wrela -- perfcmp benchmarks/realtime_presentation \
   --baseline-ref=origin/main \
   --candidate-ref=HEAD
 ```
+
+For the current rendering diagnostic mode, use `cargo run -p wrela -- presentation-debug <path>`.
+That is the quickest way to inspect pass-level rendering output when `presentation-plan` is not
+enough.
+
+For closure failure analysis, use `cargo run -p wrela -- perf <suite-root> --profile=1080p120 --why-not-120`.
+That prints the closure verdict, the top remaining bottleneck, and a junior-friendly breakdown of
+the slowest subsystem signals: dense rays, pruning, acceleration caches, visibility vs shading,
+WGSL traversal, and collision witness reuse.
 
 ## Profiles
 

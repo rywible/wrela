@@ -1,3 +1,7 @@
+#[cfg(feature = "internal-learned-experiments")]
+use std::sync::{Mutex, OnceLock};
+#[cfg(feature = "internal-learned-experiments")]
+use wrela::artifact_contract::ArtifactObserver;
 use wrela::hir;
 use wrela::hir::lower as hir_lower;
 use wrela::parser::ast;
@@ -36,6 +40,36 @@ field conservative distance opaque_field(p: Vec3) -> F32 {
     return length(p - vec3(3.0, 0.0, 0.0)) - 0.5
 }
 "#
+}
+
+#[cfg(feature = "internal-learned-experiments")]
+fn learned_policy_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(feature = "internal-learned-experiments")]
+fn with_learned_policy_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+    let _guard = learned_policy_env_lock().lock().expect("learned env lock");
+    let previous = std::env::var_os("WRELA_INTERNAL_LEARNED_POLICY");
+    match value {
+        Some(value) => unsafe {
+            std::env::set_var("WRELA_INTERNAL_LEARNED_POLICY", value);
+        },
+        None => unsafe {
+            std::env::remove_var("WRELA_INTERNAL_LEARNED_POLICY");
+        },
+    }
+    let result = f();
+    match previous {
+        Some(value) => unsafe {
+            std::env::set_var("WRELA_INTERNAL_LEARNED_POLICY", value);
+        },
+        None => unsafe {
+            std::env::remove_var("WRELA_INTERNAL_LEARNED_POLICY");
+        },
+    }
+    result
 }
 
 fn acceleration_rejection_fixture_source() -> &'static str {
@@ -102,18 +136,50 @@ fn ray_solver_plan_exposes_mixed_selection_and_intent_summary_surface() {
 
     assert_eq!(solver.subject.as_str(), solver.contract_id.as_str());
     assert_eq!(summary.subject, solver.subject);
-    assert_eq!(summary.mixed_selections.len(), 6);
-    assert_eq!(
-        summary.methods,
-        vec![
-            RaySolverMethod::DenseSphereTracing,
-            RaySolverMethod::SupportBoundCandidateRejection,
-            RaySolverMethod::AnalyticPrimitiveIntersection,
-            RaySolverMethod::LipschitzSafeStepping,
-            RaySolverMethod::IntervalNewtonIsolation,
-            RaySolverMethod::SafeguardedNewtonRefinement,
-        ]
-    );
+    #[cfg(feature = "internal-learned-experiments")]
+    {
+        assert_eq!(summary.mixed_selections.len(), 8);
+        assert_eq!(
+            summary.methods,
+            vec![
+                RaySolverMethod::DenseSphereTracing,
+                RaySolverMethod::SupportBoundCandidateRejection,
+                RaySolverMethod::AnalyticPrimitiveIntersection,
+                RaySolverMethod::LipschitzSafeStepping,
+                RaySolverMethod::IntervalNewtonIsolation,
+                RaySolverMethod::SafeguardedNewtonRefinement,
+                RaySolverMethod::LearnedStepProposal,
+                RaySolverMethod::ConservativeNeuralBound,
+            ]
+        );
+        assert!(summary.mixed_selections.iter().any(|selection| {
+            selection.method == RaySolverMethod::LearnedStepProposal
+                && selection.candidate_class == "learned-step-proposal"
+                && selection.required_guarantee == RequiredGuaranteeClass::BestEffort
+                && selection.selected_method_class == SelectedMethodClass::HeuristicSolver
+        }));
+        assert!(summary.mixed_selections.iter().any(|selection| {
+            selection.method == RaySolverMethod::ConservativeNeuralBound
+                && selection.candidate_class == "conservative-neural-bound"
+                && selection.required_guarantee == RequiredGuaranteeClass::ConservativeNoFalseMiss
+                && selection.selected_method_class == SelectedMethodClass::ConservativeSolver
+        }));
+    }
+    #[cfg(not(feature = "internal-learned-experiments"))]
+    {
+        assert_eq!(summary.mixed_selections.len(), 6);
+        assert_eq!(
+            summary.methods,
+            vec![
+                RaySolverMethod::DenseSphereTracing,
+                RaySolverMethod::SupportBoundCandidateRejection,
+                RaySolverMethod::AnalyticPrimitiveIntersection,
+                RaySolverMethod::LipschitzSafeStepping,
+                RaySolverMethod::IntervalNewtonIsolation,
+                RaySolverMethod::SafeguardedNewtonRefinement,
+            ]
+        );
+    }
     assert!(
         summary
             .mixed_selections
@@ -173,6 +239,9 @@ fn ray_solver_plan_exposes_mixed_selection_and_intent_summary_surface() {
         solver.certificate.fallback_reason,
         Some(RaySolverFallbackReason::ContractRequiresDenseOracle)
     );
+    #[cfg(feature = "internal-learned-experiments")]
+    assert_eq!(solver.portfolio.entries.len(), 12);
+    #[cfg(not(feature = "internal-learned-experiments"))]
     assert_eq!(solver.portfolio.entries.len(), 10);
     assert_eq!(
         solver
@@ -203,6 +272,17 @@ fn ray_solver_plan_exposes_mixed_selection_and_intent_summary_surface() {
         entry.method == RaySolverMethod::NeighborFrameContinuation
             && entry.status == RaySolverMethodStatus::Reserved
     }));
+    #[cfg(feature = "internal-learned-experiments")]
+    {
+        assert!(solver.portfolio.entries.iter().any(|entry| {
+            entry.method == RaySolverMethod::LearnedStepProposal
+                && entry.status == RaySolverMethodStatus::Available
+        }));
+        assert!(solver.portfolio.entries.iter().any(|entry| {
+            entry.method == RaySolverMethod::ConservativeNeuralBound
+                && entry.status == RaySolverMethodStatus::Available
+        }));
+    }
     assert_eq!(
         summary.artifact_reuse_intents[0].disposition,
         RaySolverIntentDisposition::Unavailable
@@ -307,6 +387,36 @@ fn ray_solver_plan_exposes_mixed_selection_and_intent_summary_surface() {
                         .contains("subject=shape.scene_branch")
             })
     );
+}
+
+#[cfg(feature = "internal-learned-experiments")]
+#[test]
+fn learned_runtime_methods_stay_disabled_by_default_and_reject_collision_proposal_mode() {
+    let module = lower_inline_module_from_source(fact_fixture_source());
+    let scene = scene_ir::lower_module(&module);
+    let sphere = scene.fields.get("sphere_field").expect("sphere field");
+    let solver = wrela::query_solver::RaySolverPlan::for_contract(
+        query_contract::SPATIAL_NEAREST_WORLD,
+        Some(SemanticEvidence::for_field_scene(sphere)),
+    )
+    .expect("ray solver plan");
+
+    with_learned_policy_env(None, || {
+        let runtime_methods = solver.runtime_methods_for_observer(ArtifactObserver::Query);
+        assert!(!runtime_methods.contains(&RaySolverMethod::LearnedStepProposal));
+        assert!(!runtime_methods.contains(&RaySolverMethod::ConservativeNeuralBound));
+    });
+
+    with_learned_policy_env(Some("proposal-only"), || {
+        let query_runtime_methods = solver.runtime_methods_for_observer(ArtifactObserver::Query);
+        assert!(query_runtime_methods.contains(&RaySolverMethod::LearnedStepProposal));
+        assert!(query_runtime_methods.contains(&RaySolverMethod::ConservativeNeuralBound));
+
+        let collision_runtime_methods =
+            solver.runtime_methods_for_observer(ArtifactObserver::Collision);
+        assert!(!collision_runtime_methods.contains(&RaySolverMethod::LearnedStepProposal));
+        assert!(!collision_runtime_methods.contains(&RaySolverMethod::ConservativeNeuralBound));
+    });
 }
 
 #[test]

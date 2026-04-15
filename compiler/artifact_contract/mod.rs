@@ -1,3 +1,5 @@
+#[cfg(feature = "internal-learned-experiments")]
+use crate::acceleration::learned::{LearnedMethodPolicy, learned_method_policy_rejection};
 use crate::artifact_key::ArtifactPolicyDigestMode;
 use crate::semantic_evidence::{EvidenceOrigin, EvidenceScope, SemanticEvidenceSummary};
 use crate::state_advance::{ChangeCompatibility, QueryTransitionContract};
@@ -382,4 +384,14 @@ pub fn validate_acceleration_artifact_contract(contract: &SemanticArtifactContra
     }
 
     errors
+}
+
+#[cfg(feature = "internal-learned-experiments")]
+pub fn validate_learned_method_policy(
+    observer: ArtifactObserver,
+    policy: LearnedMethodPolicy,
+) -> Vec<String> {
+    learned_method_policy_rejection(observer, policy)
+        .map(|reason| vec![reason.to_string()])
+        .unwrap_or_default()
 }

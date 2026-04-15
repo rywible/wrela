@@ -6,6 +6,10 @@ license = "MIT"
 description = "The Wrela programming language compiler"
 repository = "https://github.com/ryanwible/wrela"
 
+[features]
+default = []
+internal-learned-experiments = []
+
 [[bin]]
 name = "wrela"
 path = "bin/wrela.rs"

@@ -7733,6 +7733,12 @@ fn cli_perf_writes_baseline_json() {
             .and_then(|value| value.as_str()),
         Some("not_sampled")
     );
+    assert_eq!(
+        closure
+            .pointer("/verdict/status")
+            .and_then(|value| value.as_str()),
+        Some("not_applicable")
+    );
     let metrics = summary.get("metrics").expect("summary.metrics");
     assert!(metrics.get("scene_trace").is_some());
     assert!(metrics.get("field_sample").is_some());
@@ -8093,10 +8099,32 @@ fn cli_perf_runs_realtime_presentation_1080p120_closure_profile() {
             .and_then(|value| value.as_str()),
         Some("not_sampled")
     );
+    assert!(matches!(
+        closure
+            .pointer("/verdict/status")
+            .and_then(|value| value.as_str()),
+        Some("met") | Some("failed")
+    ));
     assert!(
         closure
             .pointer("/frame/total_frame_median_ms")
             .and_then(|value| value.as_f64())
+            .is_some()
+    );
+    assert!(
+        matches!(
+            closure
+                .pointer("/verdict/status")
+                .and_then(|value| value.as_str()),
+            Some("met") | Some("failed")
+        ),
+        "unexpected closure verdict status: {:?}",
+        closure.pointer("/verdict/status")
+    );
+    assert!(
+        closure
+            .pointer("/verdict/summary")
+            .and_then(|value| value.as_str())
             .is_some()
     );
     let presentation_reports = json
@@ -8111,6 +8139,44 @@ fn cli_perf_runs_realtime_presentation_1080p120_closure_profile() {
         Some("realtime_120")
     );
     assert!(json.get("collision_reports").is_none());
+}
+
+#[test]
+fn cli_perf_why_not_120_mode_prints_closure_verdict_and_diagnostics() {
+    let dir = workspace_tempdir();
+    let bench_root = dir.path().join("realtime_presentation_fixture");
+    write_realtime_presentation_closure_benchmark_project(&bench_root);
+    let baseline = dir
+        .path()
+        .join("realtime_presentation_1080p120_diagnostics.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("perf")
+        .arg("--runs=1")
+        .arg("--profile=1080p120")
+        .arg("--query-backend=cpu")
+        .arg("--why-not-120")
+        .arg(format!("--baseline-out={}", baseline.display()))
+        .arg(&bench_root)
+        .output()
+        .expect("run realtime_presentation closure perf diagnostics");
+    assert!(
+        output.status.success(),
+        "realtime presentation closure diagnostics failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("closure verdict:"));
+    assert!(stdout.contains("why-not-120:"));
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&baseline).expect("read diagnostics baseline"))
+            .expect("parse diagnostics baseline");
+    let closure = json.get("closure").expect("closure report");
+    assert!(closure.pointer("/verdict/status").is_some());
+    assert!(closure.pointer("/verdict/summary").is_some());
+    assert!(closure.pointer("/verdict/findings").is_some());
 }
 
 #[test]
@@ -8141,6 +8207,12 @@ fn cli_perf_runs_field_engine_1080p120_closure_profile() {
         serde_json::from_slice(&std::fs::read(&baseline).expect("read field_engine baseline"))
             .expect("parse field_engine baseline");
     let closure = json.get("closure").expect("closure report");
+    assert_eq!(
+        closure
+            .pointer("/verdict/status")
+            .and_then(|value| value.as_str()),
+        Some("not_applicable")
+    );
     assert_eq!(
         closure
             .pointer("/profile/name")
@@ -8223,6 +8295,12 @@ fn cli_perf_runs_collision_perf_1080p120_closure_profile() {
         serde_json::from_slice(&std::fs::read(&baseline).expect("read collision baseline"))
             .expect("parse collision baseline");
     let closure = json.get("closure").expect("closure report");
+    assert!(matches!(
+        closure
+            .pointer("/verdict/status")
+            .and_then(|value| value.as_str()),
+        Some("met") | Some("failed")
+    ));
     let collision_status = closure
         .pointer("/collision/status")
         .and_then(|value| value.as_str())

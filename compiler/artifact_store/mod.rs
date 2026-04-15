@@ -83,6 +83,37 @@ pub struct ArtifactStoreReport {
     pub buckets: Vec<ArtifactStoreBucketReport>,
 }
 
+#[cfg(feature = "internal-learned-experiments")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct LearnedExperimentStoreReport {
+    pub samples: usize,
+    pub selected: u32,
+    pub verified: u32,
+    pub rejected: u32,
+    pub bypassed: u32,
+    pub verifier_acceptances: u32,
+    pub verifier_fallbacks: u32,
+}
+
+#[cfg(feature = "internal-learned-experiments")]
+impl LearnedExperimentStoreReport {
+    pub fn verifier_acceptance_rate(&self) -> Option<f32> {
+        if self.verified == 0 {
+            None
+        } else {
+            Some(self.verifier_acceptances as f32 / self.verified as f32)
+        }
+    }
+
+    pub fn verifier_fallback_rate(&self) -> Option<f32> {
+        if self.selected == 0 {
+            None
+        } else {
+            Some(self.verifier_fallbacks as f32 / self.selected as f32)
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactStoreBucketReport {
     pub contract_id: SmolStr,
@@ -195,6 +226,42 @@ impl<T> ArtifactStore<T> {
                 .collect(),
         }
     }
+}
+
+#[cfg(feature = "internal-learned-experiments")]
+pub fn learned_experiment_store_report(
+    export: &crate::acceleration::learned::LearnedOracleDataset,
+) -> LearnedExperimentStoreReport {
+    let mut report = LearnedExperimentStoreReport {
+        samples: export.samples.len(),
+        selected: 0,
+        verified: 0,
+        rejected: 0,
+        bypassed: 0,
+        verifier_acceptances: 0,
+        verifier_fallbacks: 0,
+    };
+    for sample in &export.samples {
+        if sample.selected {
+            report.selected += 1;
+        }
+        if sample.verified {
+            report.verified += 1;
+        }
+        if sample.rejected {
+            report.rejected += 1;
+        }
+        if sample.bypassed {
+            report.bypassed += 1;
+        }
+        if sample.accepted {
+            report.verifier_acceptances += 1;
+        }
+        if sample.fallback {
+            report.verifier_fallbacks += 1;
+        }
+    }
+    report
 }
 
 pub fn store_backed_use(
