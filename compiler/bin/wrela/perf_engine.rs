@@ -7,6 +7,7 @@ use super::command_handlers::{
 };
 use super::contracts::{EXIT_CODEGEN, EXIT_OK, EXIT_USAGE, OutputFormat};
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
@@ -14,11 +15,20 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use wrela::hir;
+use wrela::hir::lower as hir_lower;
+use wrela::kernel::{KernelStructValue, KernelValue};
+use wrela::parser;
+use wrela::parser::ast;
+use wrela::parser::ast::AstNode;
 use wrela::perf_target::{
     PerfClosureLaneStatus, PerfClosureLaneStatusReport, PerfClosureProfile, PerfClosureReport,
     quality_degradation_step_name,
 };
-use wrela::query_exec::{QueryTraceSolverMode, WGSL_WORKGROUP_SIZE_OVERRIDE_ENV};
+use wrela::query_exec::{
+    QueryExecContext, QueryTraceSolverMode, WGSL_WORKGROUP_SIZE_OVERRIDE_ENV,
+    stable_region_scene_capture_id,
+};
 
 pub(super) struct PerfCommandInput {
     pub(super) trace: bool,
@@ -175,10 +185,15 @@ pub(super) fn run_perf_harness(
             .iter()
             .any(|scenario| scenario.presentation.is_some())
     });
+    let collision_benchmarks_active = benchmark_manifest
+        .is_some_and(|manifest| manifest.suite.eq_ignore_ascii_case("collision_perf"));
     let mut samples = Vec::new();
     let mut latest_presentation_reports = None;
     let mut presentation_report_samples = Vec::new();
     let mut presentation_report_errors = Vec::new();
+    let mut latest_collision_reports = None;
+    let mut collision_report_samples = Vec::new();
+    let mut collision_report_errors = Vec::new();
     for idx in 0..warmup_runs {
         println!("perf-warmup {}/{}", idx + 1, warmup_runs);
         let (exit, _, _) = command_handlers::run_tests_once(
@@ -244,6 +259,7 @@ pub(super) fn run_perf_harness(
                     benchmark_root,
                     manifest,
                     perf_profile,
+                    query_backend,
                 ) {
                     Ok(collection) => collection,
                     Err(err) => {
@@ -280,6 +296,43 @@ pub(super) fn run_perf_harness(
                 presentation_report_errors.extend(report_collection.errors.into_iter());
                 latest_presentation_reports = Some(report_collection.reports);
                 samples.push(summary);
+            } else if collision_benchmarks_active {
+                let TestTarget::ProjectRoot(benchmark_root) = target else {
+                    eprintln!("perf harness error: collision benchmarks require a project root");
+                    return EXIT_CODEGEN;
+                };
+                let Some(manifest) = benchmark_manifest else {
+                    eprintln!(
+                        "perf harness error: collision benchmarks require a benchmark manifest"
+                    );
+                    return EXIT_CODEGEN;
+                };
+                let report_collection = match collect_collision_benchmark_reports(
+                    benchmark_root,
+                    manifest,
+                    perf_profile,
+                    query_backend,
+                ) {
+                    Ok(collection) => collection,
+                    Err(err) => {
+                        eprintln!("perf harness error: failed to collect collision reports: {err}");
+                        return EXIT_CODEGEN;
+                    }
+                };
+                let runtime_cases = report_collection
+                    .reports
+                    .iter()
+                    .flat_map(collision_runtime_cases_from_report)
+                    .collect::<Vec<_>>();
+                let summary = if runtime_cases.is_empty() {
+                    summary
+                } else {
+                    command_handlers::overlay_perf_summary_runtime_cases(&summary, &runtime_cases)
+                };
+                collision_report_samples.extend(report_collection.reports.iter().cloned());
+                collision_report_errors.extend(report_collection.errors.into_iter());
+                latest_collision_reports = Some(report_collection.reports);
+                samples.push(summary);
             } else {
                 samples.push(summary);
             }
@@ -291,6 +344,20 @@ pub(super) fn run_perf_harness(
     }
     let summary = command_handlers::aggregate_perf_samples(&samples);
     let cv = command_handlers::compute_cv(&samples);
+    if collision_benchmarks_active
+        && latest_collision_reports.is_none()
+        && !collision_report_samples.is_empty()
+    {
+        latest_collision_reports = Some(collision_report_samples);
+    }
+    if matches!(output_format, OutputFormat::Pretty) {
+        if let Some(reports) = latest_collision_reports.as_ref() {
+            print_collision_benchmark_reports(reports);
+            for error in &collision_report_errors {
+                eprintln!("collision-benchmark-error: {error}");
+            }
+        }
+    }
     let cv_exceeded = if runtime_only_cv_gate {
         cv.runtime_p50_pct > cv_max_pct
             || cv.runtime_p95_pct > cv_max_pct
@@ -380,7 +447,7 @@ pub(super) fn run_perf_harness(
         samples.len(),
     ));
     let report = PerfReport {
-        version: 2,
+        version: 4,
         generated_at_unix_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::from_secs(0))
@@ -391,6 +458,7 @@ pub(super) fn run_perf_harness(
         samples,
         closure: closure_report,
         presentation_reports: latest_presentation_reports,
+        collision_reports: latest_collision_reports,
     };
     if let Some(parent) = baseline_out.parent()
         && let Err(err) = fs::create_dir_all(parent)
@@ -439,6 +507,30 @@ struct PresentationBenchmarkReportCollection {
     errors: Vec<String>,
 }
 
+struct CollisionBenchmarkReportCollection {
+    reports: Vec<command_handlers::CollisionBenchmarkReport>,
+    errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CollisionBenchmarkScenarioMetrics {
+    query_count: u64,
+    total_runtime_ns: u128,
+    total_candidate_count: u64,
+    total_rejected_candidate_count: u64,
+    total_pruned_node_count: u64,
+    total_interval_subdivisions: u64,
+    total_interval_refinements: u64,
+    total_certificate_successes: u64,
+    total_fallback_count: u64,
+    available_count_total: u64,
+    consumed_count_total: u64,
+    rejected_count_total: u64,
+    unavailable_count_total: u64,
+    last_interval_bracket: Option<[f32; 2]>,
+    contact_normal_provenance: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct PresentationAggregatedMetrics {
     frame_time_ns: u128,
@@ -473,6 +565,7 @@ fn collect_presentation_benchmark_reports(
     benchmark_root: &Path,
     manifest: &BenchmarkManifest,
     profile: PerfProfile,
+    query_backend: wrela::query_plan::DispatchBackend,
 ) -> Result<PresentationBenchmarkReportCollection, String> {
     let current_exe =
         env::current_exe().map_err(|err| format!("failed to resolve current executable: {err}"))?;
@@ -484,7 +577,13 @@ fn collect_presentation_benchmark_reports(
         let Some(spec) = scenario.presentation.as_ref() else {
             continue;
         };
-        match run_presentation_benchmark_report(&current_exe, benchmark_root, scenario, spec) {
+        match run_presentation_benchmark_report(
+            &current_exe,
+            benchmark_root,
+            scenario,
+            spec,
+            query_backend,
+        ) {
             Ok(report) => collection.reports.push(report),
             Err(err) => collection.errors.push(err),
         }
@@ -492,18 +591,808 @@ fn collect_presentation_benchmark_reports(
     Ok(collection)
 }
 
+fn collect_collision_benchmark_reports(
+    benchmark_root: &Path,
+    manifest: &BenchmarkManifest,
+    profile: PerfProfile,
+    query_backend: wrela::query_plan::DispatchBackend,
+) -> Result<CollisionBenchmarkReportCollection, String> {
+    let backend = collision_benchmark_backend(query_backend)?;
+    let mut collection = CollisionBenchmarkReportCollection {
+        reports: Vec::new(),
+        errors: Vec::new(),
+    };
+    let mut contexts = HashMap::<PathBuf, CollisionBenchmarkContext>::new();
+    let mut scenario_results = Vec::new();
+    for scenario in manifest.scenarios_for_profile(profile) {
+        let Some(spec) = scenario.collision.as_ref() else {
+            continue;
+        };
+        let entry_path = collision_benchmark_entry_path(benchmark_root, spec);
+        if !contexts.contains_key(&entry_path) {
+            contexts.insert(
+                entry_path.clone(),
+                compile_collision_benchmark_context(&entry_path)?,
+            );
+        }
+        let ctx = contexts
+            .get(&entry_path)
+            .expect("collision benchmark context inserted");
+        match run_collision_benchmark_scenario(ctx, scenario, spec, backend) {
+            Ok(result) => scenario_results.push(result),
+            Err(err) => collection.errors.push(err),
+        }
+    }
+    if !scenario_results.is_empty() {
+        collection
+            .reports
+            .push(collision_benchmark_report_from_scenarios(
+                manifest,
+                backend,
+                &scenario_results,
+            ));
+    }
+    Ok(collection)
+}
+
+struct CollisionBenchmarkScenarioResult {
+    execution: command_handlers::CollisionBenchmarkExecutionReport,
+    metrics: CollisionBenchmarkScenarioMetrics,
+}
+
+struct CollisionBenchmarkContext {
+    ctx: QueryExecContext,
+    module: hir::Module,
+}
+
+fn collision_benchmark_backend(
+    query_backend: wrela::query_plan::DispatchBackend,
+) -> Result<wrela::query_plan::DispatchBackend, String> {
+    match query_backend {
+        wrela::query_plan::DispatchBackend::Cpu | wrela::query_plan::DispatchBackend::Auto => {
+            Ok(wrela::query_plan::DispatchBackend::Cpu)
+        }
+        other => Err(format!(
+            "collision benchmarks only support cpu or auto query backends, not {other:?}"
+        )),
+    }
+}
+
+fn perf_dispatch_backend_name(backend: wrela::query_plan::DispatchBackend) -> &'static str {
+    match backend {
+        wrela::query_plan::DispatchBackend::Cpu => "cpu",
+        wrela::query_plan::DispatchBackend::VirtualGpu => "virtual_gpu",
+        wrela::query_plan::DispatchBackend::Wgsl => "wgsl",
+        wrela::query_plan::DispatchBackend::Auto => "auto",
+    }
+}
+
+fn collision_benchmark_entry_path(
+    benchmark_root: &Path,
+    spec: &command_handlers::BenchmarkCollisionSpec,
+) -> PathBuf {
+    spec.entry
+        .as_ref()
+        .map(|entry| benchmark_root.join(entry))
+        .unwrap_or_else(|| benchmark_root.join("tests").join("collision_perf_test.wr"))
+}
+
+fn compile_collision_benchmark_context(
+    entry_path: &Path,
+) -> Result<CollisionBenchmarkContext, String> {
+    let source = fs::read_to_string(entry_path).map_err(|err| {
+        format!(
+            "failed to read collision benchmark source {}: {err}",
+            entry_path.display()
+        )
+    })?;
+    let node = parser::parse(&source);
+    let root = ast::Root::cast(node).ok_or_else(|| {
+        format!(
+            "collision benchmark source {} did not parse",
+            entry_path.display()
+        )
+    })?;
+    let module = hir_lower::lower(root);
+    let semantic = hir::semantic::check_module(&module);
+    if !semantic.errors.is_empty() {
+        return Err(format!(
+            "collision benchmark semantic errors in {}: {:?}",
+            entry_path.display(),
+            semantic.errors
+        ));
+    }
+    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+    if !type_errors.is_empty() {
+        return Err(format!(
+            "collision benchmark type errors in {}: {type_errors:?}",
+            entry_path.display()
+        ));
+    }
+    Ok(CollisionBenchmarkContext {
+        ctx: QueryExecContext::compile(&module, &type_info),
+        module,
+    })
+}
+
+fn run_collision_benchmark_scenario(
+    context: &CollisionBenchmarkContext,
+    scenario: &command_handlers::BenchmarkScenario,
+    spec: &command_handlers::BenchmarkCollisionSpec,
+    backend: wrela::query_plan::DispatchBackend,
+) -> Result<CollisionBenchmarkScenarioResult, String> {
+    let scene_id = stable_region_scene_capture_id(&SmolStr::new(spec.region.as_str()));
+    let domain = collision_benchmark_domain(&context.module, &spec.domain, &spec.region)?;
+    match spec.workload.as_str() {
+        "point_occupancy_burst" => {
+            run_collision_point_occupancy_burst(&context.ctx, scenario, scene_id, domain, backend)
+        }
+        "dense_ray_casts" => {
+            run_collision_dense_ray_casts(&context.ctx, scenario, scene_id, domain, backend)
+        }
+        "overlap_burst" => {
+            run_collision_overlap_burst(&context.ctx, scenario, scene_id, domain, backend)
+        }
+        "repeated_sweeps" => {
+            run_collision_repeated_sweeps(&context.ctx, scenario, scene_id, domain, backend)
+        }
+        "toi_transition_reuse" => {
+            run_collision_toi_transition_reuse(&context.ctx, scenario, scene_id, domain, backend)
+        }
+        other => Err(format!(
+            "collision benchmark scenario `{}` declares unsupported workload `{other}`",
+            scenario.id
+        )),
+    }
+}
+
+fn collision_benchmark_report_from_scenarios(
+    manifest: &BenchmarkManifest,
+    backend: wrela::query_plan::DispatchBackend,
+    scenarios: &[CollisionBenchmarkScenarioResult],
+) -> command_handlers::CollisionBenchmarkReport {
+    let query_count_total = scenarios
+        .iter()
+        .map(|scenario| scenario.metrics.query_count)
+        .sum::<u64>();
+    let total_runtime_ns = scenarios
+        .iter()
+        .map(|scenario| scenario.metrics.total_runtime_ns)
+        .sum::<u128>();
+    let total_candidate_count = scenarios
+        .iter()
+        .map(|scenario| scenario.metrics.total_candidate_count)
+        .sum::<u64>();
+    let total_rejected_candidate_count = scenarios
+        .iter()
+        .map(|scenario| scenario.metrics.total_rejected_candidate_count)
+        .sum::<u64>();
+    let total_pruned_node_count = scenarios
+        .iter()
+        .map(|scenario| scenario.metrics.total_pruned_node_count)
+        .sum::<u64>();
+    let total_interval_subdivisions = scenarios
+        .iter()
+        .map(|scenario| scenario.metrics.total_interval_subdivisions)
+        .sum::<u64>();
+    let total_interval_refinements = scenarios
+        .iter()
+        .map(|scenario| scenario.metrics.total_interval_refinements)
+        .sum::<u64>();
+    let total_certificate_successes = scenarios
+        .iter()
+        .map(|scenario| scenario.metrics.total_certificate_successes)
+        .sum::<u64>();
+    let total_fallback_count = scenarios
+        .iter()
+        .map(|scenario| scenario.metrics.total_fallback_count)
+        .sum::<u64>();
+    let available_count_total = scenarios
+        .iter()
+        .map(|scenario| scenario.metrics.available_count_total)
+        .sum::<u64>();
+    let consumed_count_total = scenarios
+        .iter()
+        .map(|scenario| scenario.metrics.consumed_count_total)
+        .sum::<u64>();
+    let rejected_count_total = scenarios
+        .iter()
+        .map(|scenario| scenario.metrics.rejected_count_total)
+        .sum::<u64>();
+    let unavailable_count_total = scenarios
+        .iter()
+        .map(|scenario| scenario.metrics.unavailable_count_total)
+        .sum::<u64>();
+    let queries_per_sec = if total_runtime_ns == 0 {
+        0.0
+    } else {
+        query_count_total as f64 / (total_runtime_ns as f64 / 1_000_000_000.0)
+    };
+    let reuse_total = consumed_count_total + rejected_count_total + unavailable_count_total;
+    command_handlers::CollisionBenchmarkReport {
+        suite: manifest.suite.clone(),
+        backend: perf_dispatch_backend_name(backend).to_string(),
+        command: "collision-suite".to_string(),
+        query_count_total,
+        total_runtime_ns,
+        queries_per_sec,
+        average_candidate_count: collision_average(total_candidate_count, query_count_total),
+        average_rejected_candidate_count: collision_average(
+            total_rejected_candidate_count,
+            query_count_total,
+        ),
+        average_pruned_node_count: collision_average(total_pruned_node_count, query_count_total),
+        average_interval_subdivisions: collision_average(
+            total_interval_subdivisions,
+            query_count_total,
+        ),
+        average_interval_refinements: collision_average(
+            total_interval_refinements,
+            query_count_total,
+        ),
+        average_certificate_successes: collision_average(
+            total_certificate_successes,
+            query_count_total,
+        ),
+        witness_reuse_rate: if reuse_total == 0 {
+            0.0
+        } else {
+            consumed_count_total as f64 / reuse_total as f64
+        },
+        fallback_rate: if query_count_total == 0 {
+            0.0
+        } else {
+            total_fallback_count as f64 / query_count_total as f64
+        },
+        available_count_total,
+        consumed_count_total,
+        rejected_count_total,
+        unavailable_count_total,
+        executions: scenarios
+            .iter()
+            .map(|scenario| scenario.execution.clone())
+            .collect(),
+    }
+}
+
+fn build_collision_benchmark_execution(
+    scenario_id: &str,
+    plan: &wrela::collision_plan::CollisionPlan,
+    metrics: CollisionBenchmarkScenarioMetrics,
+) -> CollisionBenchmarkScenarioResult {
+    let reuse_total = metrics.consumed_count_total
+        + metrics.rejected_count_total
+        + metrics.unavailable_count_total;
+    let queries_per_sec = if metrics.total_runtime_ns == 0 {
+        0.0
+    } else {
+        metrics.query_count as f64 / (metrics.total_runtime_ns as f64 / 1_000_000_000.0)
+    };
+    CollisionBenchmarkScenarioResult {
+        execution: command_handlers::CollisionBenchmarkExecutionReport {
+            name: scenario_id.to_string(),
+            plan_name: plan.name.to_string(),
+            contract_id: plan.contract_id.as_str().to_string(),
+            query_count: metrics.query_count,
+            runtime_ns: metrics.total_runtime_ns,
+            queries_per_sec,
+            broadphase_candidate_count: collision_average_u32(
+                metrics.total_candidate_count,
+                metrics.query_count,
+            ),
+            broadphase_rejected_candidate_count: collision_average_u32(
+                metrics.total_rejected_candidate_count,
+                metrics.query_count,
+            ),
+            broadphase_pruned_node_count: collision_average_u32(
+                metrics.total_pruned_node_count,
+                metrics.query_count,
+            ),
+            interval_subdivisions: collision_average_u32(
+                metrics.total_interval_subdivisions,
+                metrics.query_count,
+            ),
+            interval_refinements: collision_average_u32(
+                metrics.total_interval_refinements,
+                metrics.query_count,
+            ),
+            certificate_successes: collision_average_u32(
+                metrics.total_certificate_successes,
+                metrics.query_count,
+            ),
+            interval_bracket: metrics.last_interval_bracket,
+            fallback_count: metrics.total_fallback_count.min(u64::from(u32::MAX)) as u32,
+            contact_normal_provenance: metrics.contact_normal_provenance.clone(),
+            available_count: metrics.available_count_total.min(u64::from(u32::MAX)) as u32,
+            consumed_count: metrics.consumed_count_total.min(u64::from(u32::MAX)) as u32,
+            rejected_count: metrics.rejected_count_total.min(u64::from(u32::MAX)) as u32,
+            unavailable_count: metrics.unavailable_count_total.min(u64::from(u32::MAX)) as u32,
+            witness_reuse_rate: if reuse_total == 0 {
+                0.0
+            } else {
+                metrics.consumed_count_total as f64 / reuse_total as f64
+            },
+            fallback_rate: if metrics.query_count == 0 {
+                0.0
+            } else {
+                metrics.total_fallback_count as f64 / metrics.query_count as f64
+            },
+        },
+        metrics,
+    }
+}
+
+fn collision_average(total: u64, count: u64) -> f64 {
+    if count == 0 {
+        0.0
+    } else {
+        total as f64 / count as f64
+    }
+}
+
+fn collision_average_u32(total: u64, count: u64) -> u32 {
+    if count == 0 {
+        0
+    } else {
+        collision_average(total, count)
+            .round()
+            .clamp(0.0, f64::from(u32::MAX)) as u32
+    }
+}
+
+fn record_collision_trace(
+    metrics: &mut CollisionBenchmarkScenarioMetrics,
+    runtime_ns: u128,
+    trace: &wrela::collision_plan::CollisionExecutionTrace,
+) {
+    metrics.query_count = metrics.query_count.saturating_add(1);
+    metrics.total_runtime_ns = metrics.total_runtime_ns.saturating_add(runtime_ns);
+    metrics.total_candidate_count = metrics
+        .total_candidate_count
+        .saturating_add(u64::from(trace.broadphase_candidate_count));
+    metrics.total_rejected_candidate_count = metrics
+        .total_rejected_candidate_count
+        .saturating_add(u64::from(trace.broadphase_rejected_candidate_count));
+    metrics.total_pruned_node_count = metrics
+        .total_pruned_node_count
+        .saturating_add(u64::from(trace.broadphase_pruned_node_count));
+    metrics.total_interval_subdivisions = metrics
+        .total_interval_subdivisions
+        .saturating_add(u64::from(trace.interval_subdivisions));
+    metrics.total_interval_refinements = metrics
+        .total_interval_refinements
+        .saturating_add(u64::from(trace.interval_refinements));
+    metrics.total_certificate_successes = metrics
+        .total_certificate_successes
+        .saturating_add(u64::from(trace.certificate_successes));
+    metrics.total_fallback_count = metrics
+        .total_fallback_count
+        .saturating_add(u64::from(trace.fallback_count));
+    metrics.available_count_total = metrics
+        .available_count_total
+        .saturating_add(u64::from(trace.reuse_metrics.available_count));
+    metrics.consumed_count_total = metrics
+        .consumed_count_total
+        .saturating_add(u64::from(trace.reuse_metrics.consumed_count));
+    metrics.rejected_count_total = metrics
+        .rejected_count_total
+        .saturating_add(u64::from(trace.reuse_metrics.rejected_count));
+    metrics.unavailable_count_total = metrics
+        .unavailable_count_total
+        .saturating_add(u64::from(trace.reuse_metrics.unavailable_count));
+    if let Some(bracket) = trace.interval_bracket {
+        metrics.last_interval_bracket = Some(match metrics.last_interval_bracket {
+            Some(current) => [current[0].min(bracket[0]), current[1].max(bracket[1])],
+            None => bracket,
+        });
+    }
+    let provenance = trace
+        .contact_normal_provenance
+        .map(wrela::collision_contract::collision_contact_normal_provenance_name)
+        .map(str::to_string)
+        .unwrap_or_else(|| "none".to_string());
+    match metrics.contact_normal_provenance.as_deref() {
+        None => metrics.contact_normal_provenance = Some(provenance),
+        Some(existing) if existing == provenance => {}
+        Some("mixed") => {}
+        Some(_) => metrics.contact_normal_provenance = Some("mixed".to_string()),
+    }
+}
+
+fn collision_benchmark_domain(
+    module: &hir::Module,
+    domain_name: &str,
+    region_name: &str,
+) -> Result<KernelValue, String> {
+    let domain = module
+        .functions
+        .iter()
+        .find(|(_, func)| func.name == domain_name && func.role == hir::FunctionRole::Domain)
+        .map(|(_, func)| func)
+        .ok_or_else(|| format!("missing collision benchmark domain `{domain_name}`"))?;
+    let metadata = domain
+        .domain
+        .as_ref()
+        .ok_or_else(|| format!("collision benchmark domain `{domain_name}` is missing metadata"))?;
+    let _execution_policy = domain.domain_execution_policy.as_ref().ok_or_else(|| {
+        format!(
+            "collision benchmark domain `{domain_name}` is missing lowered execution policy metadata"
+        )
+    })?;
+    let geometry_detail = match metadata.geometry_detail {
+        hir::DomainGeometryDetail::Coarse => 0,
+        hir::DomainGeometryDetail::Fine => 1,
+    };
+    Ok(wrela::presentation_exec::scene_domain_value(
+        stable_region_scene_capture_id(&SmolStr::new(region_name)),
+        geometry_detail,
+        metadata.material,
+        metadata.radiance,
+        metadata.media,
+    ))
+}
+
+fn collision_benchmark_capture(scene_id: u32, epoch: u32) -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("RegionCapture"),
+        fields: vec![
+            (SmolStr::new("scene_id"), KernelValue::U32(scene_id)),
+            (SmolStr::new("epoch"), KernelValue::U32(epoch)),
+        ],
+    })
+}
+
+fn collision_benchmark_transition(current_epoch: u32, previous_epoch: u32) -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("CollisionSnapshotTransitionInput"),
+        fields: vec![
+            (
+                SmolStr::new("current_snapshot_epoch"),
+                KernelValue::U32(current_epoch),
+            ),
+            (
+                SmolStr::new("previous_snapshot_epoch"),
+                KernelValue::U32(previous_epoch),
+            ),
+            (
+                SmolStr::new("change_class"),
+                KernelValue::U32(wrela::state_advance::ChangeClass::Presentation as u32),
+            ),
+        ],
+    })
+}
+
+fn collision_benchmark_point(point: [f32; 3]) -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("CollisionPointInput"),
+        fields: vec![(SmolStr::new("point"), KernelValue::Vec3(point))],
+    })
+}
+
+fn collision_benchmark_ray(origin: [f32; 3], direction: [f32; 3]) -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("CollisionRayInput"),
+        fields: vec![
+            (SmolStr::new("origin"), KernelValue::Vec3(origin)),
+            (SmolStr::new("direction"), KernelValue::Vec3(direction)),
+            (SmolStr::new("max_distance"), KernelValue::F32(12.0)),
+            (SmolStr::new("min_step"), KernelValue::F32(0.05)),
+            (SmolStr::new("hit_epsilon"), KernelValue::F32(0.001)),
+            (SmolStr::new("max_steps"), KernelValue::I32(96)),
+        ],
+    })
+}
+
+fn collision_benchmark_probe(center: [f32; 3], radius: f32) -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("CollisionSphereProbe"),
+        fields: vec![
+            (SmolStr::new("center"), KernelValue::Vec3(center)),
+            (SmolStr::new("radius"), KernelValue::F32(radius)),
+        ],
+    })
+}
+
+fn collision_benchmark_sweep(
+    start_center: [f32; 3],
+    end_center: [f32; 3],
+    radius: f32,
+) -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("CollisionSphereSweepInput"),
+        fields: vec![
+            (
+                SmolStr::new("start_center"),
+                KernelValue::Vec3(start_center),
+            ),
+            (SmolStr::new("end_center"), KernelValue::Vec3(end_center)),
+            (SmolStr::new("radius"), KernelValue::F32(radius)),
+            (SmolStr::new("contact_tolerance"), KernelValue::F32(0.001)),
+            (SmolStr::new("max_iterations"), KernelValue::I32(64)),
+        ],
+    })
+}
+
+fn collision_transition_probe_offset(step: u64) -> [f32; 3] {
+    [
+        (step % 9) as f32 * 0.04 - 0.16,
+        ((step / 9) % 5) as f32 * 0.03 - 0.06,
+        (step % 4) as f32 * -0.02,
+    ]
+}
+
+fn run_collision_point_occupancy_burst(
+    ctx: &QueryExecContext,
+    scenario: &command_handlers::BenchmarkScenario,
+    scene_id: u32,
+    domain: KernelValue,
+    backend: wrela::query_plan::DispatchBackend,
+) -> Result<CollisionBenchmarkScenarioResult, String> {
+    let plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
+        wrela::collision_plan::CollisionQueryKind::PointOccupancyWorld,
+        backend,
+    );
+    let capture = collision_benchmark_capture(scene_id, 2);
+    let mut metrics = CollisionBenchmarkScenarioMetrics::default();
+    for i in 1..=scenario.ops {
+        let point = [
+            (i % 16) as f32 * 0.08 - 0.60,
+            ((i / 16) % 10) as f32 * 0.06 - 0.24,
+            (i % 5) as f32 * 0.04 - 0.08,
+        ];
+        let started = Instant::now();
+        let (_, trace) = plan
+            .execute(
+                ctx,
+                &[
+                    capture.clone(),
+                    domain.clone(),
+                    collision_benchmark_point(point),
+                ],
+            )
+            .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
+        record_collision_trace(&mut metrics, started.elapsed().as_nanos(), &trace);
+    }
+    Ok(build_collision_benchmark_execution(
+        &scenario.id,
+        &plan,
+        metrics,
+    ))
+}
+
+fn run_collision_dense_ray_casts(
+    ctx: &QueryExecContext,
+    scenario: &command_handlers::BenchmarkScenario,
+    scene_id: u32,
+    domain: KernelValue,
+    backend: wrela::query_plan::DispatchBackend,
+) -> Result<CollisionBenchmarkScenarioResult, String> {
+    let plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
+        wrela::collision_plan::CollisionQueryKind::RayCastWorld,
+        backend,
+    );
+    let capture = collision_benchmark_capture(scene_id, 2);
+    let mut metrics = CollisionBenchmarkScenarioMetrics::default();
+    for i in 1..=scenario.ops {
+        let origin = [
+            (i % 12) as f32 * 0.12 - 0.66,
+            ((i / 12) % 8) as f32 * 0.08 - 0.28,
+            3.2 + (i % 3) as f32 * 0.02,
+        ];
+        let direction = [
+            ((i % 5) as i32 - 2) as f32 * 0.04,
+            ((i % 7) as i32 - 3) as f32 * -0.03,
+            -1.0,
+        ];
+        let started = Instant::now();
+        let (_, trace) = plan
+            .execute(
+                ctx,
+                &[
+                    capture.clone(),
+                    domain.clone(),
+                    collision_benchmark_ray(origin, direction),
+                ],
+            )
+            .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
+        record_collision_trace(&mut metrics, started.elapsed().as_nanos(), &trace);
+    }
+    Ok(build_collision_benchmark_execution(
+        &scenario.id,
+        &plan,
+        metrics,
+    ))
+}
+
+fn run_collision_overlap_burst(
+    ctx: &QueryExecContext,
+    scenario: &command_handlers::BenchmarkScenario,
+    scene_id: u32,
+    domain: KernelValue,
+    backend: wrela::query_plan::DispatchBackend,
+) -> Result<CollisionBenchmarkScenarioResult, String> {
+    let plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
+        wrela::collision_plan::CollisionQueryKind::SphereOverlapWorld,
+        backend,
+    );
+    let capture = collision_benchmark_capture(scene_id, 2);
+    let mut metrics = CollisionBenchmarkScenarioMetrics::default();
+    for i in 1..=scenario.ops {
+        let (anchor_x, anchor_y) = match i % 3 {
+            0 => (0.0, 0.0),
+            1 => (1.08, 0.02),
+            _ => (-1.38, -0.06),
+        };
+        let center = [
+            anchor_x + (i % 6) as f32 * 0.04 - 0.10,
+            anchor_y + ((i / 6) % 5) as f32 * 0.03 - 0.06,
+            (i % 4) as f32 * 0.03 - 0.05,
+        ];
+        let radius = 0.16 + (i % 4) as f32 * 0.02;
+        let started = Instant::now();
+        let (_, trace) = plan
+            .execute(
+                ctx,
+                &[
+                    capture.clone(),
+                    domain.clone(),
+                    collision_benchmark_probe(center, radius),
+                ],
+            )
+            .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
+        record_collision_trace(&mut metrics, started.elapsed().as_nanos(), &trace);
+    }
+    Ok(build_collision_benchmark_execution(
+        &scenario.id,
+        &plan,
+        metrics,
+    ))
+}
+
+fn run_collision_repeated_sweeps(
+    ctx: &QueryExecContext,
+    scenario: &command_handlers::BenchmarkScenario,
+    scene_id: u32,
+    domain: KernelValue,
+    backend: wrela::query_plan::DispatchBackend,
+) -> Result<CollisionBenchmarkScenarioResult, String> {
+    let plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
+        wrela::collision_plan::CollisionQueryKind::SphereSweepTransition,
+        backend,
+    );
+    let mut metrics = CollisionBenchmarkScenarioMetrics::default();
+    let mut store = wrela::collision_exec::cpu::CollisionArtifactStore::default();
+    for i in 1..=scenario.ops {
+        let cycle_epoch = ((i - 1) % 255 + 1) as u32;
+        if cycle_epoch == 1 {
+            store = wrela::collision_exec::cpu::CollisionArtifactStore::default();
+        }
+        let previous_epoch = if cycle_epoch == 1 { 0 } else { cycle_epoch - 1 };
+        let offset = collision_transition_probe_offset(i);
+        let start_center = [offset[0], offset[1], 2.9 + offset[2]];
+        let end_center = [offset[0] + 0.05, offset[1] - 0.03, -1.1 + offset[2]];
+        let started = Instant::now();
+        let (_, trace) = wrela::collision_exec::cpu::execute_with_store(
+            &plan,
+            ctx,
+            &[
+                collision_benchmark_capture(scene_id, cycle_epoch),
+                domain.clone(),
+                collision_benchmark_transition(cycle_epoch, previous_epoch),
+                collision_benchmark_sweep(start_center, end_center, 0.25),
+            ],
+            &mut store,
+        )
+        .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
+        record_collision_trace(&mut metrics, started.elapsed().as_nanos(), &trace);
+    }
+    Ok(build_collision_benchmark_execution(
+        &scenario.id,
+        &plan,
+        metrics,
+    ))
+}
+
+fn run_collision_toi_transition_reuse(
+    ctx: &QueryExecContext,
+    scenario: &command_handlers::BenchmarkScenario,
+    scene_id: u32,
+    domain: KernelValue,
+    backend: wrela::query_plan::DispatchBackend,
+) -> Result<CollisionBenchmarkScenarioResult, String> {
+    let plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
+        wrela::collision_plan::CollisionQueryKind::SphereTimeOfImpactTransition,
+        backend,
+    );
+    let mut metrics = CollisionBenchmarkScenarioMetrics::default();
+    let mut store = wrela::collision_exec::cpu::CollisionArtifactStore::default();
+    for i in 1..=scenario.ops {
+        let cycle_epoch = ((i - 1) % 255 + 1) as u32;
+        if cycle_epoch == 1 {
+            store = wrela::collision_exec::cpu::CollisionArtifactStore::default();
+        }
+        let previous_epoch = if cycle_epoch == 1 { 0 } else { cycle_epoch - 1 };
+        let offset = collision_transition_probe_offset(i);
+        let start_center = [offset[0], offset[1], 2.4 + offset[2]];
+        let end_center = [offset[0] + 0.04, offset[1] - 0.02, -0.9 + offset[2]];
+        let started = Instant::now();
+        let (_, trace) = wrela::collision_exec::cpu::execute_with_store(
+            &plan,
+            ctx,
+            &[
+                collision_benchmark_capture(scene_id, cycle_epoch),
+                domain.clone(),
+                collision_benchmark_transition(cycle_epoch, previous_epoch),
+                collision_benchmark_sweep(start_center, end_center, 0.20),
+            ],
+            &mut store,
+        )
+        .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
+        record_collision_trace(&mut metrics, started.elapsed().as_nanos(), &trace);
+    }
+    Ok(build_collision_benchmark_execution(
+        &scenario.id,
+        &plan,
+        metrics,
+    ))
+}
+
+fn collision_runtime_cases_from_report(
+    report: &command_handlers::CollisionBenchmarkReport,
+) -> Vec<(String, String, u128)> {
+    report
+        .executions
+        .iter()
+        .map(|execution| {
+            (
+                format!("{}::{}", execution.contract_id, execution.name),
+                execution.name.clone(),
+                execution.runtime_ns,
+            )
+        })
+        .collect()
+}
+
 fn run_presentation_benchmark_report(
     current_exe: &Path,
     benchmark_root: &Path,
     scenario: &command_handlers::BenchmarkScenario,
     spec: &command_handlers::BenchmarkPresentationSpec,
+    query_backend: wrela::query_plan::DispatchBackend,
 ) -> Result<PresentationBenchmarkReport, String> {
+    if !matches!(query_backend, wrela::query_plan::DispatchBackend::Wgsl) {
+        let hybrid = run_presentation_benchmark_report_for_mode(
+            current_exe,
+            benchmark_root,
+            scenario,
+            spec,
+            QueryTraceSolverMode::Hybrid,
+            None,
+            query_backend,
+        )?;
+        let dense_only = run_presentation_benchmark_report_for_mode(
+            current_exe,
+            benchmark_root,
+            scenario,
+            spec,
+            QueryTraceSolverMode::DenseOnly,
+            None,
+            query_backend,
+        )?;
+        let mut report = presentation_report_from_debug_output(scenario, hybrid);
+        report.ab_comparison = Some(presentation_comparison_from_debug_reports(
+            &report,
+            &dense_only,
+        ));
+        return Ok(report);
+    }
     let hybrid_candidates = run_presentation_benchmark_reports_for_workgroup_sizes(
         current_exe,
         benchmark_root,
         scenario,
         spec,
         QueryTraceSolverMode::Hybrid,
+        query_backend,
     )?;
     let Some(best_hybrid) = hybrid_candidates
         .iter()
@@ -524,6 +1413,7 @@ fn run_presentation_benchmark_report(
         spec,
         QueryTraceSolverMode::DenseOnly,
         Some(best_hybrid.selected_workgroup_size),
+        query_backend,
     )?;
     let mut report = best_hybrid;
     report.wgsl_workgroup_comparison = Some(workgroup_comparison);
@@ -540,6 +1430,7 @@ fn run_presentation_benchmark_reports_for_workgroup_sizes(
     scenario: &command_handlers::BenchmarkScenario,
     spec: &command_handlers::BenchmarkPresentationSpec,
     query_trace_solver_mode: QueryTraceSolverMode,
+    query_backend: wrela::query_plan::DispatchBackend,
 ) -> Result<Vec<PresentationBenchmarkReport>, String> {
     let supported_workgroup_sizes = wrela::query_exec::supported_wgsl_workgroup_sizes()
         .map_err(|err| format!("failed to enumerate supported WGSL workgroup sizes: {err}"))?;
@@ -558,6 +1449,7 @@ fn run_presentation_benchmark_reports_for_workgroup_sizes(
             spec,
             query_trace_solver_mode,
             Some(workgroup_size),
+            query_backend,
         )?;
         let report = presentation_report_from_debug_output(scenario, dump);
         if report.selected_workgroup_size != workgroup_size {
@@ -578,6 +1470,7 @@ fn run_presentation_benchmark_report_for_mode(
     spec: &command_handlers::BenchmarkPresentationSpec,
     query_trace_solver_mode: QueryTraceSolverMode,
     workgroup_size_override: Option<u32>,
+    query_backend: wrela::query_plan::DispatchBackend,
 ) -> Result<PresentationDebugCommandOutput, String> {
     let presentation_target = spec
         .entry
@@ -590,6 +1483,7 @@ fn run_presentation_benchmark_report_for_mode(
         spec,
         query_trace_solver_mode,
         workgroup_size_override,
+        query_backend,
     );
     let timeout = Duration::from_millis(scenario.timeout_ms.unwrap_or(60_000));
     let output = run_command_with_timeout(&mut command, timeout).map_err(|err| {
@@ -625,11 +1519,15 @@ fn build_presentation_debug_command(
     spec: &command_handlers::BenchmarkPresentationSpec,
     query_trace_solver_mode: QueryTraceSolverMode,
     workgroup_size_override: Option<u32>,
+    query_backend: wrela::query_plan::DispatchBackend,
 ) -> Command {
     let mut command = Command::new(current_exe);
     command
         .arg("--json")
-        .arg("--query-backend=wgsl")
+        .arg(format!(
+            "--query-backend={}",
+            perf_dispatch_backend_name(query_backend)
+        ))
         .arg("presentation-debug")
         .arg(presentation_target)
         .args(presentation_debug_args(spec, query_trace_solver_mode));
@@ -1333,7 +2231,7 @@ fn collision_baseline_fixture_path(baseline_id: &str) -> PathBuf {
         .parent()
         .expect("workspace root")
         .join("benchmarks")
-        .join("field_engine")
+        .join("collision_perf")
         .join("baselines")
         .join(format!("{baseline_id}.json"))
 }
@@ -1463,6 +2361,60 @@ fn print_presentation_benchmark_reports(reports: &[PresentationBenchmarkReport])
                 pass.attachment_bytes_read,
                 pass.attachment_bytes_written,
                 pass.notes.join("|"),
+            );
+        }
+    }
+}
+
+fn print_collision_benchmark_reports(reports: &[command_handlers::CollisionBenchmarkReport]) {
+    println!("collision-benchmarks:");
+    for report in reports {
+        println!(
+            "collision-scenario suite={} backend={} command={} total_runtime_ns={} queries_per_sec={:.2} avg_candidates={:.2} avg_rejected_candidates={:.2} avg_pruned_nodes={:.2} avg_interval_subdivisions={:.2} avg_interval_refinements={:.2} avg_certificate_successes={:.2} witness_reuse_rate={:.2} fallback_rate={:.2}",
+            report.suite,
+            report.backend,
+            report.command,
+            report.total_runtime_ns,
+            report.queries_per_sec,
+            report.average_candidate_count,
+            report.average_rejected_candidate_count,
+            report.average_pruned_node_count,
+            report.average_interval_subdivisions,
+            report.average_interval_refinements,
+            report.average_certificate_successes,
+            report.witness_reuse_rate,
+            report.fallback_rate,
+        );
+        for execution in &report.executions {
+            println!(
+                "  collision-execution {} plan={} contract={} query_count={} runtime_ns={} qps={:.2} candidate_count={} rejected_candidate_count={} pruned_node_count={} interval_subdivisions={} interval_refinements={} certificate_successes={} fallback_count={} interval_bracket={} contact_normal_provenance={} reuse_available={} reuse_consumed={} reuse_rejected={} reuse_unavailable={} witness_reuse_rate={:.2} fallback_rate={:.2}",
+                execution.name,
+                execution.plan_name,
+                execution.contract_id,
+                execution.query_count,
+                execution.runtime_ns,
+                execution.queries_per_sec,
+                execution.broadphase_candidate_count,
+                execution.broadphase_rejected_candidate_count,
+                execution.broadphase_pruned_node_count,
+                execution.interval_subdivisions,
+                execution.interval_refinements,
+                execution.certificate_successes,
+                execution.fallback_count,
+                execution
+                    .interval_bracket
+                    .map(|bracket| format!("[{:.6}, {:.6}]", bracket[0], bracket[1]))
+                    .unwrap_or_else(|| "none".to_string()),
+                execution
+                    .contact_normal_provenance
+                    .as_deref()
+                    .unwrap_or("none"),
+                execution.available_count,
+                execution.consumed_count,
+                execution.rejected_count,
+                execution.unavailable_count,
+                execution.witness_reuse_rate,
+                execution.fallback_rate,
             );
         }
     }
@@ -3501,6 +4453,109 @@ mod tests {
     }
 
     #[test]
+    fn real_collision_perf_manifest_matches_expected_protocol() {
+        let bench_root = workspace_root().join("benchmarks").join("collision_perf");
+        let manifest_path = bench_root.join("bench.toml");
+        let raw_manifest = fs::read_to_string(&manifest_path).expect("read collision manifest");
+        let manifest_toml: toml::Value =
+            toml::from_str(&raw_manifest).expect("parse collision toml");
+        let manifest = load_benchmark_manifest(&manifest_path).expect("load collision manifest");
+        assert_eq!(manifest.suite, "collision_perf");
+        assert_eq!(
+            manifest_toml
+                .get("profiles")
+                .and_then(|value| value.get("standard"))
+                .and_then(|value| value.get("warmup_pairs"))
+                .and_then(|value| value.as_integer()),
+            Some(3)
+        );
+        assert_eq!(
+            manifest_toml
+                .get("profiles")
+                .and_then(|value| value.get("standard"))
+                .and_then(|value| value.get("measure_pairs"))
+                .and_then(|value| value.as_integer()),
+            Some(10)
+        );
+        let scenarios = manifest.scenarios_for_profile(PerfProfile::Standard);
+        let scenario_ids = scenarios
+            .iter()
+            .map(|scenario| scenario.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            scenario_ids,
+            vec![
+                "collision_perf_point_occupancy_burst",
+                "collision_perf_dense_ray_casts",
+                "collision_perf_overlap_burst",
+                "collision_perf_repeated_sweeps",
+                "collision_perf_toi_transition_reuse",
+            ]
+        );
+        assert!(
+            scenarios
+                .iter()
+                .all(|scenario| scenario.class == "critical")
+        );
+        let selection = build_benchmark_selection(
+            &TestTarget::ProjectRoot(bench_root),
+            &manifest_path,
+            PerfProfile::Standard,
+        )
+        .expect("build collision benchmark selection");
+        assert_eq!(selection.len(), scenario_ids.len());
+    }
+
+    #[test]
+    fn real_collision_perf_closure_manifest_matches_expected_protocol() {
+        let bench_root = workspace_root().join("benchmarks").join("collision_perf");
+        let manifest_path = bench_root.join("1080p120_closure.toml");
+        let raw_manifest = fs::read_to_string(&manifest_path).expect("read closure manifest");
+        let manifest_toml: toml::Value = toml::from_str(&raw_manifest).expect("parse closure toml");
+        let manifest = load_benchmark_manifest(&manifest_path).expect("load closure manifest");
+        assert_eq!(manifest.suite, "collision_perf");
+        assert_eq!(
+            manifest_toml
+                .get("profiles")
+                .and_then(|value| value.get("closure_1080p120"))
+                .and_then(|value| value.get("warmup_pairs"))
+                .and_then(|value| value.as_integer()),
+            Some(4)
+        );
+        assert_eq!(
+            manifest_toml
+                .get("profiles")
+                .and_then(|value| value.get("closure_1080p120"))
+                .and_then(|value| value.get("measure_pairs"))
+                .and_then(|value| value.as_integer()),
+            Some(12)
+        );
+        let scenarios = manifest.scenarios_for_profile(PerfProfile::Closure1080p120);
+        let scenario_ids = scenarios
+            .iter()
+            .map(|scenario| scenario.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            scenario_ids,
+            vec![
+                "closure_1080p120_point_occupancy_burst",
+                "closure_1080p120_dense_ray_casts",
+                "closure_1080p120_overlap_burst",
+                "closure_1080p120_repeated_sweeps",
+                "closure_1080p120_toi_transition_reuse",
+            ]
+        );
+        assert!(scenarios.iter().all(|scenario| scenario.class == "closure"));
+        let selection = build_benchmark_selection(
+            &TestTarget::ProjectRoot(bench_root),
+            &manifest_path,
+            PerfProfile::Closure1080p120,
+        )
+        .expect("build closure benchmark selection");
+        assert_eq!(selection.len(), scenario_ids.len());
+    }
+
+    #[test]
     fn frame_closure_status_records_report_collection_failures_as_violations() {
         let profile = PerfClosureProfile::canonical_1080p120();
         let report = build_frame_closure_status(
@@ -3521,7 +4576,7 @@ mod tests {
 
     #[test]
     fn checked_in_collision_baseline_fixture_loads() {
-        let summary = load_collision_baseline_summary("field_engine.phase34_cpu_oracle")
+        let summary = load_collision_baseline_summary("collision_perf.phase40_cpu_oracle")
             .expect("load checked-in collision baseline");
         assert!(summary.runtime_p50_ns > 0);
         assert!(summary.runtime_p95_ns >= summary.runtime_p50_ns);
@@ -3595,12 +4650,13 @@ mod tests {
             &spec,
             QueryTraceSolverMode::Hybrid,
             Some(64),
+            wrela::query_plan::DispatchBackend::Cpu,
         );
         let args = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert!(args.iter().any(|arg| arg == "--query-backend=wgsl"));
+        assert!(args.iter().any(|arg| arg == "--query-backend=cpu"));
         assert!(args.iter().any(|arg| arg == "presentation-debug"));
         let envs = command
             .get_envs()
@@ -3682,7 +4738,7 @@ mod tests {
             cache_brick_visits: 0,
             cache_brick_hits: 0,
             cache_brick_misses: 0,
-            cache_interval_accepts: 0,
+            cache_interval_advances: 0,
             accepted_relaxed_steps: 0,
             rejected_relaxed_steps: 0,
             analytic_transformed_hits: 0,
@@ -3735,6 +4791,7 @@ mod tests {
             timeout_ms: None,
             allow_unstable: false,
             presentation: None,
+            collision: None,
         };
         let dump = PresentationDebugCommandOutput {
             view: "bench_view".to_string(),
@@ -3799,7 +4856,7 @@ mod tests {
                 cache_brick_visits: 0,
                 cache_brick_hits: 0,
                 cache_brick_misses: 0,
-                cache_interval_accepts: 0,
+                cache_interval_advances: 0,
                 accepted_relaxed_steps: 0,
                 rejected_relaxed_steps: 0,
                 analytic_transformed_hits: 0,
@@ -3906,7 +4963,7 @@ mod tests {
                     cache_brick_visits: 0,
                     cache_brick_hits: 0,
                     cache_brick_misses: 0,
-                    cache_interval_accepts: 0,
+                    cache_interval_advances: 0,
                     accepted_relaxed_steps: 0,
                     rejected_relaxed_steps: 0,
                     analytic_transformed_hits: 0,
@@ -3998,7 +5055,7 @@ mod tests {
                     cache_brick_visits: 0,
                     cache_brick_hits: 0,
                     cache_brick_misses: 0,
-                    cache_interval_accepts: 0,
+                    cache_interval_advances: 0,
                     accepted_relaxed_steps: 0,
                     rejected_relaxed_steps: 0,
                     analytic_transformed_hits: 0,
@@ -4080,6 +5137,7 @@ mod tests {
             timeout_ms: None,
             allow_unstable: false,
             presentation: None,
+            collision: None,
         };
         let hybrid_dump = PresentationDebugCommandOutput {
             view: "bench_view".to_string(),

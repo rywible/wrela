@@ -343,6 +343,7 @@ struct CollisionExecutionDump {
     contract_id: String,
     target: String,
     authority_scope: String,
+    runtime_ns: u128,
     result: CollisionResultDump,
     trace: CollisionExecutionTraceDump,
 }
@@ -385,6 +386,7 @@ struct CollisionPointWitnessDump {
     nearest_point_on_world: [f32; 3],
     world_normal: [f32; 3],
     signed_distance: f32,
+    normal_provenance: String,
 }
 
 #[derive(Serialize)]
@@ -394,6 +396,7 @@ struct CollisionRayWitnessDump {
     normal: [f32; 3],
     root_shape_id: u32,
     feature_id: u32,
+    normal_provenance: String,
 }
 
 #[derive(Serialize)]
@@ -402,6 +405,7 @@ struct CollisionSphereWitnessDump {
     point_on_world: [f32; 3],
     world_normal: [f32; 3],
     signed_separation: f32,
+    normal_provenance: String,
 }
 
 #[derive(Serialize)]
@@ -411,6 +415,7 @@ struct CollisionSweepWitnessDump {
     point_on_world: [f32; 3],
     contact_normal: [f32; 3],
     normal_flavor: String,
+    normal_provenance: String,
 }
 
 #[derive(Serialize)]
@@ -420,6 +425,7 @@ struct CollisionTimeOfImpactWitnessDump {
     point_on_world: [f32; 3],
     contact_normal: [f32; 3],
     normal_flavor: String,
+    normal_provenance: String,
 }
 
 #[derive(Serialize)]
@@ -440,9 +446,16 @@ struct CollisionExecutionTraceDump {
     selected_method: String,
     executed_query_contracts: Vec<String>,
     broadphase_candidate_count: u32,
+    broadphase_rejected_candidate_count: u32,
+    broadphase_pruned_node_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    interval_bracket: Option<[f32; 2]>,
     interval_subdivisions: u32,
     interval_refinements: u32,
     certificate_successes: u32,
+    fallback_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    contact_normal_provenance: Option<String>,
     reuse_metrics: CollisionReuseMetricsDump,
     reuse_decisions: Vec<CollisionReuseDecisionDump>,
 }
@@ -1527,24 +1540,61 @@ fn collision_run_report(
         wrela::query_exec::stable_region_scene_capture_id(&SmolStr::new("collision_region"));
     let domain = collision_demo_domain(scene_id);
     let point = collision_demo_point([0.0, 0.0, 0.25]);
+    let ray = collision_demo_ray([0.0, 0.0, 2.5], [0.0, 0.0, -1.0]);
+    let overlap = collision_demo_probe([0.15, 0.0, 0.25], 0.35);
     let sweep = collision_demo_sweep([0.0, 0.0, 2.0], [0.0, 0.0, -2.0], 0.25);
+    let toi = collision_demo_sweep([0.0, 0.0, 2.4], [0.0, 0.0, -1.6], 0.20);
 
     let point_plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
         wrela::collision_plan::CollisionQueryKind::PointOccupancyWorld,
+        backend,
+    );
+    let ray_plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
+        wrela::collision_plan::CollisionQueryKind::RayCastWorld,
+        backend,
+    );
+    let overlap_plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
+        wrela::collision_plan::CollisionQueryKind::SphereOverlapWorld,
         backend,
     );
     let sweep_plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
         wrela::collision_plan::CollisionQueryKind::SphereSweepTransition,
         backend,
     );
+    let toi_plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
+        wrela::collision_plan::CollisionQueryKind::SphereTimeOfImpactTransition,
+        backend,
+    );
     let mut store = wrela::collision_exec::cpu::CollisionArtifactStore::default();
 
+    let point_started = Instant::now();
     let point_result = point_plan
         .execute(
             &query_ctx,
             &[collision_demo_capture(scene_id, 2), domain.clone(), point],
         )
         .map_err(|err| err.to_string())?;
+    let point_runtime_ns = point_started.elapsed().as_nanos();
+
+    let ray_started = Instant::now();
+    let ray_result = ray_plan
+        .execute(
+            &query_ctx,
+            &[collision_demo_capture(scene_id, 2), domain.clone(), ray],
+        )
+        .map_err(|err| err.to_string())?;
+    let ray_runtime_ns = ray_started.elapsed().as_nanos();
+
+    let overlap_started = Instant::now();
+    let overlap_result = overlap_plan
+        .execute(
+            &query_ctx,
+            &[collision_demo_capture(scene_id, 2), domain.clone(), overlap],
+        )
+        .map_err(|err| err.to_string())?;
+    let overlap_runtime_ns = overlap_started.elapsed().as_nanos();
+
+    let first_transition_started = Instant::now();
     let first_transition_result = wrela::collision_exec::cpu::execute_with_store(
         &sweep_plan,
         &query_ctx,
@@ -1557,6 +1607,9 @@ fn collision_run_report(
         &mut store,
     )
     .map_err(|err| err.to_string())?;
+    let first_transition_runtime_ns = first_transition_started.elapsed().as_nanos();
+
+    let second_transition_started = Instant::now();
     let second_transition_result = wrela::collision_exec::cpu::execute_with_store(
         &sweep_plan,
         &query_ctx,
@@ -1569,18 +1622,67 @@ fn collision_run_report(
         &mut store,
     )
     .map_err(|err| err.to_string())?;
+    let second_transition_runtime_ns = second_transition_started.elapsed().as_nanos();
+
+    let third_transition_started = Instant::now();
     let third_transition_result = wrela::collision_exec::cpu::execute_with_store(
         &sweep_plan,
         &query_ctx,
         &[
             collision_demo_capture(scene_id, 3),
-            domain,
+            domain.clone(),
             collision_demo_transition(3, 1, wrela::state_advance::ChangeClass::Presentation),
             sweep,
         ],
         &mut store,
     )
     .map_err(|err| err.to_string())?;
+    let third_transition_runtime_ns = third_transition_started.elapsed().as_nanos();
+
+    let first_toi_started = Instant::now();
+    let first_toi_result = wrela::collision_exec::cpu::execute_with_store(
+        &toi_plan,
+        &query_ctx,
+        &[
+            collision_demo_capture(scene_id, 1),
+            domain.clone(),
+            collision_demo_transition(1, 0, wrela::state_advance::ChangeClass::Presentation),
+            toi.clone(),
+        ],
+        &mut store,
+    )
+    .map_err(|err| err.to_string())?;
+    let first_toi_runtime_ns = first_toi_started.elapsed().as_nanos();
+
+    let second_toi_started = Instant::now();
+    let second_toi_result = wrela::collision_exec::cpu::execute_with_store(
+        &toi_plan,
+        &query_ctx,
+        &[
+            collision_demo_capture(scene_id, 2),
+            domain.clone(),
+            collision_demo_transition(2, 1, wrela::state_advance::ChangeClass::Presentation),
+            toi.clone(),
+        ],
+        &mut store,
+    )
+    .map_err(|err| err.to_string())?;
+    let second_toi_runtime_ns = second_toi_started.elapsed().as_nanos();
+
+    let third_toi_started = Instant::now();
+    let third_toi_result = wrela::collision_exec::cpu::execute_with_store(
+        &toi_plan,
+        &query_ctx,
+        &[
+            collision_demo_capture(scene_id, 3),
+            domain.clone(),
+            collision_demo_transition(3, 1, wrela::state_advance::ChangeClass::Presentation),
+            toi,
+        ],
+        &mut store,
+    )
+    .map_err(|err| err.to_string())?;
+    let third_toi_runtime_ns = third_toi_started.elapsed().as_nanos();
 
     Ok(CollisionRunReport {
         schema_version: 1,
@@ -1591,24 +1693,63 @@ fn collision_run_report(
                 &point_plan,
                 point_result.0,
                 point_result.1,
+                point_runtime_ns,
+            ),
+            collision_execution_dump(
+                "ray-cast-first",
+                &ray_plan,
+                ray_result.0,
+                ray_result.1,
+                ray_runtime_ns,
+            ),
+            collision_execution_dump(
+                "sphere-overlap-burst",
+                &overlap_plan,
+                overlap_result.0,
+                overlap_result.1,
+                overlap_runtime_ns,
             ),
             collision_execution_dump(
                 "sphere-sweep-first",
                 &sweep_plan,
                 first_transition_result.0,
                 first_transition_result.1,
+                first_transition_runtime_ns,
             ),
             collision_execution_dump(
                 "sphere-sweep-reused",
                 &sweep_plan,
                 second_transition_result.0,
                 second_transition_result.1,
+                second_transition_runtime_ns,
             ),
             collision_execution_dump(
                 "sphere-sweep-rejected",
                 &sweep_plan,
                 third_transition_result.0,
                 third_transition_result.1,
+                third_transition_runtime_ns,
+            ),
+            collision_execution_dump(
+                "time-of-impact-first",
+                &toi_plan,
+                first_toi_result.0,
+                first_toi_result.1,
+                first_toi_runtime_ns,
+            ),
+            collision_execution_dump(
+                "time-of-impact-reused",
+                &toi_plan,
+                second_toi_result.0,
+                second_toi_result.1,
+                second_toi_runtime_ns,
+            ),
+            collision_execution_dump(
+                "time-of-impact-rejected",
+                &toi_plan,
+                third_toi_result.0,
+                third_toi_result.1,
+                third_toi_runtime_ns,
             ),
         ],
     })
@@ -1619,6 +1760,7 @@ fn collision_execution_dump(
     plan: &wrela::collision_plan::CollisionPlan,
     result: wrela::collision_contract::CollisionResult,
     trace: wrela::collision_plan::CollisionExecutionTrace,
+    runtime_ns: u128,
 ) -> CollisionExecutionDump {
     CollisionExecutionDump {
         name: name.to_string(),
@@ -1629,6 +1771,7 @@ fn collision_execution_dump(
             plan.authority_scope,
         )
         .to_string(),
+        runtime_ns,
         result: collision_result_dump(result),
         trace: collision_execution_trace_dump(trace),
     }
@@ -1688,6 +1831,10 @@ fn collision_point_witness_dump(
         nearest_point_on_world: witness.nearest_point_on_world,
         world_normal: witness.world_normal,
         signed_distance: witness.signed_distance,
+        normal_provenance: wrela::collision_contract::collision_contact_normal_provenance_name(
+            witness.normal_provenance,
+        )
+        .to_string(),
     }
 }
 
@@ -1700,6 +1847,10 @@ fn collision_ray_witness_dump(
         normal: witness.normal,
         root_shape_id: witness.root_shape_id,
         feature_id: witness.feature_id,
+        normal_provenance: wrela::collision_contract::collision_contact_normal_provenance_name(
+            witness.normal_provenance,
+        )
+        .to_string(),
     }
 }
 
@@ -1711,6 +1862,10 @@ fn collision_sphere_witness_dump(
         point_on_world: witness.point_on_world,
         world_normal: witness.world_normal,
         signed_separation: witness.signed_separation,
+        normal_provenance: wrela::collision_contract::collision_contact_normal_provenance_name(
+            witness.normal_provenance,
+        )
+        .to_string(),
     }
 }
 
@@ -1726,6 +1881,10 @@ fn collision_sweep_witness_dump(
             witness.normal_flavor,
         )
         .to_string(),
+        normal_provenance: wrela::collision_contract::collision_contact_normal_provenance_name(
+            witness.normal_provenance,
+        )
+        .to_string(),
     }
 }
 
@@ -1739,6 +1898,10 @@ fn collision_toi_witness_dump(
         contact_normal: witness.contact_normal,
         normal_flavor: wrela::collision_contract::collision_contact_normal_flavor_name(
             witness.normal_flavor,
+        )
+        .to_string(),
+        normal_provenance: wrela::collision_contract::collision_contact_normal_provenance_name(
+            witness.normal_provenance,
         )
         .to_string(),
     }
@@ -1775,9 +1938,17 @@ fn collision_execution_trace_dump(
             .map(|contract| contract.as_str().to_string())
             .collect(),
         broadphase_candidate_count: trace.broadphase_candidate_count,
+        broadphase_rejected_candidate_count: trace.broadphase_rejected_candidate_count,
+        broadphase_pruned_node_count: trace.broadphase_pruned_node_count,
+        interval_bracket: trace.interval_bracket,
         interval_subdivisions: trace.interval_subdivisions,
         interval_refinements: trace.interval_refinements,
         certificate_successes: trace.certificate_successes,
+        fallback_count: trace.fallback_count,
+        contact_normal_provenance: trace.contact_normal_provenance.map(|provenance| {
+            wrela::collision_contract::collision_contact_normal_provenance_name(provenance)
+                .to_string()
+        }),
         reuse_metrics: CollisionReuseMetricsDump {
             available_count: trace.reuse_metrics.available_count,
             consumed_count: trace.reuse_metrics.consumed_count,
@@ -1845,12 +2016,24 @@ fn print_collision_run_human(report: &CollisionRunReport) {
             );
         }
         println!(
-            "    broadphase: candidate_count={} interval_subdivisions={} interval_refinements={} certificate_successes={}",
+            "    broadphase: candidate_count={} rejected_candidate_count={} pruned_node_count={} interval_subdivisions={} interval_refinements={} certificate_successes={} fallback_count={}",
             execution.trace.broadphase_candidate_count,
+            execution.trace.broadphase_rejected_candidate_count,
+            execution.trace.broadphase_pruned_node_count,
             execution.trace.interval_subdivisions,
             execution.trace.interval_refinements,
-            execution.trace.certificate_successes
+            execution.trace.certificate_successes,
+            execution.trace.fallback_count
         );
+        if let Some(bracket) = execution.trace.interval_bracket {
+            println!(
+                "    interval bracket: [{:.6}, {:.6}]",
+                bracket[0], bracket[1]
+            );
+        }
+        if let Some(provenance) = &execution.trace.contact_normal_provenance {
+            println!("    contact normal provenance: {}", provenance);
+        }
         println!(
             "    reuse metrics: available={} consumed={} rejected={} unavailable={}",
             execution.trace.reuse_metrics.available_count,
@@ -1877,6 +2060,7 @@ fn print_collision_run_human(report: &CollisionRunReport) {
                 );
             }
         }
+        println!("    runtime_ns={}", execution.runtime_ns);
     }
 }
 
@@ -1888,8 +2072,13 @@ fn collision_result_human(result: &CollisionResultDump) -> String {
             signed_distance,
             witness,
         } => format!(
-            "occupancy occupied={} classification={} signed_distance={} witness=sample_point={:?} world_normal={:?}",
-            occupied, classification, signed_distance, witness.sample_point, witness.world_normal
+            "occupancy occupied={} classification={} signed_distance={} witness=sample_point={:?} world_normal={:?} normal_provenance={}",
+            occupied,
+            classification,
+            signed_distance,
+            witness.sample_point,
+            witness.world_normal,
+            witness.normal_provenance
         ),
         CollisionResultDump::RayCast {
             hit,
@@ -1902,8 +2091,8 @@ fn collision_result_human(result: &CollisionResultDump) -> String {
             witness
                 .as_ref()
                 .map(|w| format!(
-                    "travel_distance={} position={:?}",
-                    w.travel_distance, w.position
+                    "travel_distance={} position={:?} normal_provenance={}",
+                    w.travel_distance, w.position, w.normal_provenance
                 ))
                 .unwrap_or_else(|| "none".to_string())
         ),
@@ -1912,8 +2101,12 @@ fn collision_result_human(result: &CollisionResultDump) -> String {
             signed_separation,
             witness,
         } => format!(
-            "sphere_overlap overlaps={} signed_separation={} witness=point_on_probe={:?} world_normal={:?}",
-            overlaps, signed_separation, witness.point_on_probe, witness.world_normal
+            "sphere_overlap overlaps={} signed_separation={} witness=point_on_probe={:?} world_normal={:?} normal_provenance={}",
+            overlaps,
+            signed_separation,
+            witness.point_on_probe,
+            witness.world_normal,
+            witness.normal_provenance
         ),
         CollisionResultDump::Sweep {
             hit,
@@ -1925,8 +2118,11 @@ fn collision_result_human(result: &CollisionResultDump) -> String {
             witness
                 .as_ref()
                 .map(|w| format!(
-                    "fraction={} normal_flavor={} point_on_probe={:?}",
-                    w.contact_fraction_upper_bound, w.normal_flavor, w.point_on_probe
+                    "fraction={} normal_flavor={} normal_provenance={} point_on_probe={:?}",
+                    w.contact_fraction_upper_bound,
+                    w.normal_flavor,
+                    w.normal_provenance,
+                    w.point_on_probe
                 ))
                 .unwrap_or_else(|| "none".to_string()),
             no_hit_certificate
@@ -1949,8 +2145,11 @@ fn collision_result_human(result: &CollisionResultDump) -> String {
             witness
                 .as_ref()
                 .map(|w| format!(
-                    "fraction={} normal_flavor={} point_on_probe={:?}",
-                    w.time_fraction_upper_bound, w.normal_flavor, w.point_on_probe
+                    "fraction={} normal_flavor={} normal_provenance={} point_on_probe={:?}",
+                    w.time_fraction_upper_bound,
+                    w.normal_flavor,
+                    w.normal_provenance,
+                    w.point_on_probe
                 ))
                 .unwrap_or_else(|| "none".to_string()),
             no_hit_certificate
@@ -1991,6 +2190,18 @@ field exact distance collision_field(p: Vec3) -> F32 {
     sphere(radius = 0.5)
 }
 
+field exact distance collision_left_field(p: Vec3) -> F32 {
+    translate = vec3(-2.5, 0.15, 0.0) {
+        use collision_field
+    }
+}
+
+field exact distance collision_right_field(p: Vec3) -> F32 {
+    translate = vec3(2.3, -0.2, 0.0) {
+        use collision_field
+    }
+}
+
 material collision_surface(hit: Hit3) -> Surface {
     return Surface(
         albedo=vec3(0.8, 0.3, 0.2),
@@ -2008,8 +2219,20 @@ shape collision_shape {
     material = collision_surface
 }
 
+shape collision_left_shape {
+    field = collision_left_field
+    material = collision_surface
+}
+
+shape collision_right_shape {
+    field = collision_right_field
+    material = collision_surface
+}
+
 region collision_region() {
     place sample = collision_shape
+    place left = collision_left_shape
+    place right = collision_right_shape
 }
 
 domain collision_domain(world: RegionCapture) {
@@ -2128,6 +2351,54 @@ fn collision_demo_point(point: [f32; 3]) -> wrela::kernel::KernelValue {
             SmolStr::new("point"),
             wrela::kernel::KernelValue::Vec3(point),
         )],
+    })
+}
+
+fn collision_demo_ray(origin: [f32; 3], direction: [f32; 3]) -> wrela::kernel::KernelValue {
+    wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
+        name: SmolStr::new("CollisionRayInput"),
+        fields: vec![
+            (
+                SmolStr::new("origin"),
+                wrela::kernel::KernelValue::Vec3(origin),
+            ),
+            (
+                SmolStr::new("direction"),
+                wrela::kernel::KernelValue::Vec3(direction),
+            ),
+            (
+                SmolStr::new("max_distance"),
+                wrela::kernel::KernelValue::F32(8.0),
+            ),
+            (
+                SmolStr::new("min_step"),
+                wrela::kernel::KernelValue::F32(0.05),
+            ),
+            (
+                SmolStr::new("hit_epsilon"),
+                wrela::kernel::KernelValue::F32(0.001),
+            ),
+            (
+                SmolStr::new("max_steps"),
+                wrela::kernel::KernelValue::I32(96),
+            ),
+        ],
+    })
+}
+
+fn collision_demo_probe(center: [f32; 3], radius: f32) -> wrela::kernel::KernelValue {
+    wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
+        name: SmolStr::new("CollisionSphereProbe"),
+        fields: vec![
+            (
+                SmolStr::new("center"),
+                wrela::kernel::KernelValue::Vec3(center),
+            ),
+            (
+                SmolStr::new("radius"),
+                wrela::kernel::KernelValue::F32(radius),
+            ),
+        ],
     })
 }
 

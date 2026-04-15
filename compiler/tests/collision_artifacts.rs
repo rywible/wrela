@@ -11,6 +11,10 @@ use wrela::collision_plan::{
     collision_history_compatibility_hash,
 };
 use wrela::query_exec::stable_region_snapshot_handle;
+use wrela::query_solver::{
+    CertificateReuseClass, RayStepCertificate, RayStepCertificateMetadata,
+    RayStepCertificateSubjectKind, RequiredGuaranteeClass, StepCertificateKind,
+};
 use wrela::state_advance::ChangeClass;
 use wrela::world_identity::SnapshotEpoch;
 
@@ -36,6 +40,26 @@ fn artifact_by_kind(
         .iter()
         .find(|artifact| artifact.kind == kind)
         .expect("artifact kind")
+}
+
+fn test_transition_certificate(reusable_by: CertificateReuseClass) -> RayStepCertificate {
+    RayStepCertificate {
+        kind: StepCertificateKind::RefinementBracket,
+        metadata: RayStepCertificateMetadata {
+            guarantee: RequiredGuaranteeClass::ConservativeNoFalseMiss,
+            proof_family: SmolStr::new("collision.transition"),
+            subject: SmolStr::new("collision.test"),
+            subject_kind: RayStepCertificateSubjectKind::Interval,
+            tolerance_context: SmolStr::new("collision test certificate"),
+            reusable_by,
+            invalidation_reasons: vec![SmolStr::new("collision test changed")],
+        },
+        t_start: 0.25,
+        t_end: 0.3125,
+        no_hit_before_t_end: true,
+        bracket: Some([0.25, 0.3125]),
+        provenance: None,
+    }
 }
 
 #[test]
@@ -81,6 +105,8 @@ fn witness_reuse_validity_accepts_presentation_change_and_rejects_topology_chang
     let conservative_flavor =
         wrela::collision_contract::CollisionContactNormalFlavor::ConservativeUpperBound;
     let gradient_flavor = wrela::collision_contract::CollisionContactNormalFlavor::SurfaceGradient;
+    let reusable_certificate =
+        test_transition_certificate(CertificateReuseClass::RenderingAndCollision);
     let history_hash = collision_history_compatibility_hash(
         plan.contract_id,
         CollisionArtifactKind::WitnessCache,
@@ -108,7 +134,12 @@ fn witness_reuse_validity_accepts_presentation_change_and_rejects_topology_chang
         payload: CollisionArtifactPayload::WitnessCache(CollisionStoredWitness {
             hit: true,
             contact_fraction_upper_bound: Some(0.3125),
+            separation_upper_bound: Some(-0.2),
+            normal_provenance: Some(
+                wrela::collision_contract::CollisionContactNormalProvenance::CertifiedFieldGradient,
+            ),
             normal_flavor: conservative_flavor,
+            certificate: reusable_certificate.clone(),
         }),
     });
     store.insert(StoredArtifact {
@@ -136,7 +167,12 @@ fn witness_reuse_validity_accepts_presentation_change_and_rejects_topology_chang
         payload: CollisionArtifactPayload::ContinuationSeed(CollisionContinuationSeed {
             fraction_hint: 0.3125,
             no_hit_certificate: true,
+            separation_upper_bound: Some(-0.2),
+            normal_provenance: Some(
+                wrela::collision_contract::CollisionContactNormalProvenance::CertifiedFieldGradient,
+            ),
             normal_flavor: conservative_flavor,
+            certificate: reusable_certificate,
         }),
     });
 

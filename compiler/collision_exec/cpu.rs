@@ -1,34 +1,42 @@
+use crate::acceleration::{AccelerationForest, AccelerationNode, BoundDescriptorKind};
 use crate::artifact_key::ArtifactReuseKey;
 use crate::artifact_store::{
     ArtifactInstanceMetadata, ArtifactLookupRequest, ArtifactStore, StoredArtifact,
 };
 use crate::collision_contract::{
-    CollisionContactNormalFlavor, CollisionNoHitCertificate, CollisionOccupancyClass,
-    CollisionOccupancyResult, CollisionPointInput, CollisionPointWitness, CollisionRayCastResult,
-    CollisionRayInput, CollisionRayMissReason, CollisionRayWitness, CollisionResult,
-    CollisionSnapshotTransitionInput, CollisionSphereOverlapResult, CollisionSphereProbe,
-    CollisionSphereSweepInput, CollisionSphereWitness, CollisionSweepResult, CollisionSweepWitness,
-    CollisionTargetKind, CollisionTimeOfImpactResult, CollisionTimeOfImpactWitness,
+    CollisionContactNormalFlavor, CollisionContactNormalProvenance, CollisionNoHitCertificate,
+    CollisionOccupancyClass, CollisionOccupancyResult, CollisionPointInput, CollisionPointWitness,
+    CollisionRayCastResult, CollisionRayInput, CollisionRayMissReason, CollisionRayWitness,
+    CollisionResult, CollisionSnapshotTransitionInput, CollisionSphereOverlapResult,
+    CollisionSphereProbe, CollisionSphereSweepInput, CollisionSphereWitness, CollisionSweepResult,
+    CollisionSweepWitness, CollisionTargetKind, CollisionTimeOfImpactResult,
+    CollisionTimeOfImpactWitness,
 };
 use crate::collision_plan::{
-    CollisionArtifactBinding, CollisionArtifactKind, CollisionExecError, CollisionExecutionTrace,
-    CollisionPass, CollisionPassKind, CollisionPlan, CollisionReuseDecision, CollisionReuseMetrics,
+    CollisionArtifactBinding, CollisionExecError, CollisionExecutionTrace, CollisionPass,
+    CollisionPassKind, CollisionPlan, CollisionReuseDecision, CollisionReuseMetrics,
     CollisionReuseReason, CollisionReuseVerdict, collision_artifact_kind_name,
-    collision_history_compatibility_hash, collision_reuse_reason_name,
-    collision_reuse_verdict_name,
+    collision_reuse_reason_name, collision_reuse_verdict_name,
 };
 use crate::execution_policy::QueryExecutionPolicy;
-use crate::kernel::{KernelStructValue, KernelValue, lower_world_query_plan};
+use crate::kernel::{
+    KernelCaptureQueryPlan, KernelStructValue, KernelValue, lower_capture_query_plan,
+    lower_world_query_plan,
+};
 use crate::query_contract::{self, DispatchBackend, QueryContractId};
 use crate::query_exec::cpu::DirectQueryOps;
 use crate::query_exec::{
-    DirectQueryExecutionTrace, QueryExecContext, execute_world_query_with_policy_with_snapshot_on,
-    execute_world_query_with_snapshot_on,
+    DirectQueryExecutionTrace, QueryExecContext, execute_capture_query_with_snapshot_on,
+    execute_world_query_with_policy_with_snapshot_on, execute_world_query_with_snapshot_on,
 };
-use crate::query_plan::{WorldQueryKind, WorldQueryPlan};
+use crate::query_plan::{CaptureQueryPlan, WorldQueryKind, WorldQueryPlan};
+use crate::query_solver::{
+    CertificateReuseClass, RayStepCertificate, RayStepCertificateMetadata,
+    RayStepCertificateSubjectKind, StepCertificateKind,
+};
 use crate::world_identity::WorldSnapshotHandle;
 use smol_str::SmolStr;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CollisionArtifactPayload {
@@ -52,20 +60,28 @@ pub struct CollisionSupportSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CollisionBroadphaseCandidates {
     pub candidate_shape_names: Vec<SmolStr>,
+    pub rejected_candidate_count: u32,
+    pub pruned_node_count: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CollisionStoredWitness {
     pub hit: bool,
     pub contact_fraction_upper_bound: Option<f32>,
+    pub separation_upper_bound: Option<f32>,
+    pub normal_provenance: Option<CollisionContactNormalProvenance>,
     pub normal_flavor: CollisionContactNormalFlavor,
+    pub certificate: RayStepCertificate,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CollisionContinuationSeed {
     pub fraction_hint: f32,
     pub no_hit_certificate: bool,
+    pub separation_upper_bound: Option<f32>,
+    pub normal_provenance: Option<CollisionContactNormalProvenance>,
     pub normal_flavor: CollisionContactNormalFlavor,
+    pub certificate: RayStepCertificate,
 }
 
 pub type CollisionArtifactStore = ArtifactStore<CollisionArtifactPayload>;
@@ -79,18 +95,30 @@ enum CollisionMaterializedValue {
     TimeOfImpact(CollisionTimeOfImpactResult),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct SweepOutcome {
     hit: bool,
     fraction_upper_bound: Option<f32>,
+    separation_upper_bound: Option<f32>,
     point_on_probe: Option<[f32; 3]>,
     point_on_world: Option<[f32; 3]>,
     contact_normal: Option<[f32; 3]>,
+    contact_normal_provenance: Option<CollisionContactNormalProvenance>,
     normal_flavor: CollisionContactNormalFlavor,
     no_hit_certificate: Option<CollisionNoHitCertificate>,
+    certificate: RayStepCertificate,
     interval_subdivisions: u32,
     interval_refinements: u32,
     certificate_successes: u32,
+    fallback_count: u32,
+}
+
+#[derive(Debug, Clone)]
+struct CollisionTransitionReuseSeed {
+    seed_fraction: Option<f32>,
+    normal_flavor: CollisionContactNormalFlavor,
+    normal_provenance: Option<CollisionContactNormalProvenance>,
+    certificate: Option<RayStepCertificate>,
 }
 
 pub fn execute(
@@ -175,9 +203,14 @@ pub fn execute_with_store(
     let mut reuse_metrics = CollisionReuseMetrics::default();
     let mut reuse_decisions = Vec::new();
     let mut broadphase_candidate_count = 0u32;
+    let mut broadphase_rejected_candidate_count = 0u32;
+    let mut broadphase_pruned_node_count = 0u32;
+    let mut interval_bracket = None;
     let mut interval_subdivisions = 0u32;
     let mut interval_refinements = 0u32;
     let mut certificate_successes = 0u32;
+    let mut fallback_count = 0u32;
+    let mut contact_normal_provenance = None;
     let mut values = BTreeMap::<SmolStr, CollisionMaterializedValue>::new();
 
     for pass in &plan.passes {
@@ -201,6 +234,7 @@ pub fn execute_with_store(
                     artifact,
                     &snapshot,
                     collision_policy_digest(plan.policy),
+                    collision_domain_compatibility_hash(&domain)?,
                     None,
                     CollisionArtifactPayload::SupportSummary(parse_collision_support_summary(
                         &support_summary,
@@ -217,6 +251,12 @@ pub fn execute_with_store(
                     artifact_binding_by_id(plan, support_artifact)?,
                     &snapshot,
                     collision_policy_digest(plan.policy),
+                    Some(artifact_reuse_key(
+                        artifact_binding_by_id(plan, support_artifact)?,
+                        &snapshot,
+                        collision_policy_digest(plan.policy),
+                        collision_domain_compatibility_hash(&domain)?,
+                    )),
                 )?;
                 let support_summary = match support_payload {
                     CollisionArtifactPayload::SupportSummary(payload) => payload.clone(),
@@ -239,6 +279,11 @@ pub fn execute_with_store(
                     artifact,
                     &snapshot,
                     collision_policy_digest(plan.policy),
+                    collision_broadphase_compatibility_hash(
+                        &capture_name,
+                        &domain,
+                        collision_input,
+                    )?,
                     None,
                     CollisionArtifactPayload::BroadphaseCandidates(broadphase),
                 );
@@ -247,36 +292,71 @@ pub fn execute_with_store(
                 distance_contract,
                 normal_contract,
                 support_artifact,
+                broadphase_artifact,
             } => {
                 ensure_current_artifact_available(
                     store,
                     artifact_binding_by_id(plan, support_artifact)?,
                     &snapshot,
                     collision_policy_digest(plan.policy),
+                    Some(artifact_reuse_key(
+                        artifact_binding_by_id(plan, support_artifact)?,
+                        &snapshot,
+                        collision_policy_digest(plan.policy),
+                        collision_domain_compatibility_hash(&domain)?,
+                    )),
                 )?;
+                ensure_current_artifact_available(
+                    store,
+                    artifact_binding_by_id(plan, broadphase_artifact)?,
+                    &snapshot,
+                    collision_policy_digest(plan.policy),
+                    Some(artifact_reuse_key(
+                        artifact_binding_by_id(plan, broadphase_artifact)?,
+                        &snapshot,
+                        collision_policy_digest(plan.policy),
+                        collision_broadphase_compatibility_hash(
+                            &capture_name,
+                            &domain,
+                            collision_input,
+                        )?,
+                    )),
+                )?;
+                let broadphase = load_broadphase_candidates(
+                    ctx,
+                    plan,
+                    store,
+                    &snapshot,
+                    &capture_name,
+                    &domain,
+                    collision_input,
+                    support_artifact,
+                    broadphase_artifact,
+                )?;
+                broadphase_candidate_count = broadphase.candidate_shape_names.len() as u32;
+                broadphase_rejected_candidate_count = broadphase.rejected_candidate_count;
+                broadphase_pruned_node_count = broadphase.pruned_node_count;
                 let point = collision_point_input(collision_input)?;
-                let (distance, distance_trace) = execute_point_query(
+                let distance_capture_plan =
+                    lower_shape_capture_query_plan(query_contract::SPATIAL_DISTANCE_CAPTURE_SHAPE)?;
+                let normal_capture_plan =
+                    lower_shape_capture_query_plan(query_contract::SPATIAL_NORMAL_CAPTURE_SHAPE)?;
+                let (distance, normal, provenance, _) = candidate_limited_point_query(
                     ctx,
                     backend,
                     &policy,
                     &snapshot,
                     &capture,
                     &domain,
+                    broadphase.candidate_shape_names.as_slice(),
                     point.point,
+                    &distance_capture_plan,
+                    &normal_capture_plan,
                     *distance_contract,
-                )?;
-                executed_query_contracts.push(distance_trace.contract_id);
-                let (normal, normal_trace) = execute_point_query(
-                    ctx,
-                    backend,
-                    &policy,
-                    &snapshot,
-                    &capture,
-                    &domain,
-                    point.point,
                     *normal_contract,
+                    &mut executed_query_contracts,
                 )?;
-                executed_query_contracts.push(normal_trace.contract_id);
+                contact_normal_provenance = provenance;
                 let signed_distance = expect_f32(&distance)?;
                 let world_normal = expect_vec3(&normal)?;
                 materialize_value(
@@ -294,50 +374,106 @@ pub fn execute_with_store(
                             ),
                             world_normal,
                             signed_distance,
+                            normal_provenance: provenance.unwrap_or(
+                                CollisionContactNormalProvenance::HeuristicShadingNormal,
+                            ),
                         },
                     }),
                     &mut values,
                 )?;
             }
             CollisionPassKind::CastRayFirstHit {
-                trace_contract,
+                trace_contract: _trace_contract,
                 support_artifact,
+                broadphase_artifact,
             } => {
                 ensure_current_artifact_available(
                     store,
                     artifact_binding_by_id(plan, support_artifact)?,
                     &snapshot,
                     collision_policy_digest(plan.policy),
+                    Some(artifact_reuse_key(
+                        artifact_binding_by_id(plan, support_artifact)?,
+                        &snapshot,
+                        collision_policy_digest(plan.policy),
+                        collision_domain_compatibility_hash(&domain)?,
+                    )),
                 )?;
-                let ray = collision_ray_input(collision_input)?;
-                let (hit, trace) = execute_world_query_contract(
-                    ctx,
-                    backend,
-                    Some(&policy),
+                ensure_current_artifact_available(
+                    store,
+                    artifact_binding_by_id(plan, broadphase_artifact)?,
                     &snapshot,
-                    *trace_contract,
-                    &[capture.clone(), domain.clone(), ray_query_value(ray)],
+                    collision_policy_digest(plan.policy),
+                    Some(artifact_reuse_key(
+                        artifact_binding_by_id(plan, broadphase_artifact)?,
+                        &snapshot,
+                        collision_policy_digest(plan.policy),
+                        collision_broadphase_compatibility_hash(
+                            &capture_name,
+                            &domain,
+                            collision_input,
+                        )?,
+                    )),
                 )?;
-                executed_query_contracts.push(trace.contract_id);
-                let hit_ref = expect_struct(&hit, "Hit3")?;
-                let hit_flag = expect_bool(field(hit_ref, "hit")?)?;
-                let value = if hit_flag {
-                    CollisionRayCastResult {
-                        hit: true,
-                        miss_reason: CollisionRayMissReason::None,
-                        witness: Some(CollisionRayWitness {
-                            travel_distance: expect_f32(field(hit_ref, "distance")?)?,
-                            position: expect_vec3(field(hit_ref, "position")?)?,
-                            normal: expect_vec3(field(hit_ref, "normal")?)?,
-                            root_shape_id: expect_u32(field(hit_ref, "root_shape_id")?)?,
-                            feature_id: expect_u32(field(hit_ref, "feature_id")?)?,
-                        }),
-                    }
-                } else {
+                let broadphase = load_broadphase_candidates(
+                    ctx,
+                    plan,
+                    store,
+                    &snapshot,
+                    &capture_name,
+                    &domain,
+                    collision_input,
+                    support_artifact,
+                    broadphase_artifact,
+                )?;
+                broadphase_candidate_count = broadphase.candidate_shape_names.len() as u32;
+                broadphase_rejected_candidate_count = broadphase.rejected_candidate_count;
+                broadphase_pruned_node_count = broadphase.pruned_node_count;
+                let value = if broadphase.candidate_shape_names.is_empty() {
                     CollisionRayCastResult {
                         hit: false,
                         miss_reason: CollisionRayMissReason::NoHitWithinRange,
                         witness: None,
+                    }
+                } else {
+                    let trace_capture_plan = lower_shape_capture_query_plan(
+                        query_contract::SPATIAL_TRACE_CAPTURE_SHAPE,
+                    )?;
+                    let ray = collision_ray_input(collision_input)?;
+                    let (hit, trace) = candidate_limited_ray_query(
+                        ctx,
+                        backend,
+                        &snapshot,
+                        broadphase.candidate_shape_names.as_slice(),
+                        &trace_capture_plan,
+                        ray,
+                        &mut executed_query_contracts,
+                    )?;
+                    let hit_ref = expect_struct(&hit, "Hit3")?;
+                    let hit_flag = expect_bool(field(hit_ref, "hit")?)?;
+                    if hit_flag {
+                        let provenance = collision_contact_normal_provenance_from_trace(&trace);
+                        contact_normal_provenance = provenance;
+                        CollisionRayCastResult {
+                            hit: true,
+                            miss_reason: CollisionRayMissReason::None,
+                            witness: Some(CollisionRayWitness {
+                                travel_distance: expect_f32(field(hit_ref, "distance")?)?,
+                                position: expect_vec3(field(hit_ref, "position")?)?,
+                                normal: expect_vec3(field(hit_ref, "normal")?)?,
+                                root_shape_id: expect_u32(field(hit_ref, "root_shape_id")?)?,
+                                feature_id: expect_u32(field(hit_ref, "feature_id")?)?,
+                                normal_provenance: provenance.unwrap_or(
+                                    CollisionContactNormalProvenance::HeuristicShadingNormal,
+                                ),
+                            }),
+                        }
+                    } else {
+                        CollisionRayCastResult {
+                            hit: false,
+                            miss_reason: CollisionRayMissReason::NoHitWithinRange,
+                            witness: None,
+                        }
                     }
                 };
                 materialize_value(
@@ -350,6 +486,7 @@ pub fn execute_with_store(
                 distance_contract,
                 normal_contract,
                 support_artifact,
+                broadphase_artifact,
                 ..
             } => {
                 ensure_current_artifact_available(
@@ -357,30 +494,64 @@ pub fn execute_with_store(
                     artifact_binding_by_id(plan, support_artifact)?,
                     &snapshot,
                     collision_policy_digest(plan.policy),
+                    Some(artifact_reuse_key(
+                        artifact_binding_by_id(plan, support_artifact)?,
+                        &snapshot,
+                        collision_policy_digest(plan.policy),
+                        collision_domain_compatibility_hash(&domain)?,
+                    )),
                 )?;
+                ensure_current_artifact_available(
+                    store,
+                    artifact_binding_by_id(plan, broadphase_artifact)?,
+                    &snapshot,
+                    collision_policy_digest(plan.policy),
+                    Some(artifact_reuse_key(
+                        artifact_binding_by_id(plan, broadphase_artifact)?,
+                        &snapshot,
+                        collision_policy_digest(plan.policy),
+                        collision_broadphase_compatibility_hash(
+                            &capture_name,
+                            &domain,
+                            collision_input,
+                        )?,
+                    )),
+                )?;
+                let broadphase = load_broadphase_candidates(
+                    ctx,
+                    plan,
+                    store,
+                    &snapshot,
+                    &capture_name,
+                    &domain,
+                    collision_input,
+                    support_artifact,
+                    broadphase_artifact,
+                )?;
+                broadphase_candidate_count = broadphase.candidate_shape_names.len() as u32;
+                broadphase_rejected_candidate_count = broadphase.rejected_candidate_count;
+                broadphase_pruned_node_count = broadphase.pruned_node_count;
                 let probe = collision_sphere_input(collision_input)?;
-                let (distance, distance_trace) = execute_point_query(
+                let distance_capture_plan =
+                    lower_shape_capture_query_plan(query_contract::SPATIAL_DISTANCE_CAPTURE_SHAPE)?;
+                let normal_capture_plan =
+                    lower_shape_capture_query_plan(query_contract::SPATIAL_NORMAL_CAPTURE_SHAPE)?;
+                let (distance, normal, provenance, _) = candidate_limited_point_query(
                     ctx,
                     backend,
                     &policy,
                     &snapshot,
                     &capture,
                     &domain,
+                    broadphase.candidate_shape_names.as_slice(),
                     probe.center,
+                    &distance_capture_plan,
+                    &normal_capture_plan,
                     *distance_contract,
-                )?;
-                executed_query_contracts.push(distance_trace.contract_id);
-                let (normal, normal_trace) = execute_point_query(
-                    ctx,
-                    backend,
-                    &policy,
-                    &snapshot,
-                    &capture,
-                    &domain,
-                    probe.center,
                     *normal_contract,
+                    &mut executed_query_contracts,
                 )?;
-                executed_query_contracts.push(normal_trace.contract_id);
+                contact_normal_provenance = provenance;
                 let center_distance = expect_f32(&distance)?;
                 let world_normal = expect_vec3(&normal)?;
                 let signed_separation = center_distance - probe.radius;
@@ -398,6 +569,9 @@ pub fn execute_with_store(
                             ),
                             world_normal,
                             signed_separation,
+                            normal_provenance: provenance.unwrap_or(
+                                CollisionContactNormalProvenance::HeuristicShadingNormal,
+                            ),
                         },
                     }),
                     &mut values,
@@ -417,14 +591,30 @@ pub fn execute_with_store(
                     artifact_binding_by_id(plan, support_artifact)?,
                     &snapshot,
                     collision_policy_digest(plan.policy),
+                    Some(artifact_reuse_key(
+                        artifact_binding_by_id(plan, support_artifact)?,
+                        &snapshot,
+                        collision_policy_digest(plan.policy),
+                        collision_domain_compatibility_hash(&domain)?,
+                    )),
                 )?;
                 ensure_current_artifact_available(
                     store,
                     artifact_binding_by_id(plan, broadphase_artifact)?,
                     &snapshot,
                     collision_policy_digest(plan.policy),
+                    Some(artifact_reuse_key(
+                        artifact_binding_by_id(plan, broadphase_artifact)?,
+                        &snapshot,
+                        collision_policy_digest(plan.policy),
+                        collision_broadphase_compatibility_hash(
+                            &capture_name,
+                            &domain,
+                            collision_input,
+                        )?,
+                    )),
                 )?;
-                let (seed_fraction, normal_flavor) = load_transition_reuse(
+                let seed = load_transition_reuse(
                     plan,
                     store,
                     &snapshot,
@@ -446,6 +636,12 @@ pub fn execute_with_store(
                     broadphase_artifact,
                 )?;
                 broadphase_candidate_count = broadphase.candidate_shape_names.len() as u32;
+                broadphase_rejected_candidate_count = broadphase.rejected_candidate_count;
+                broadphase_pruned_node_count = broadphase.pruned_node_count;
+                let distance_capture_plan =
+                    lower_shape_capture_query_plan(query_contract::SPATIAL_DISTANCE_CAPTURE_SHAPE)?;
+                let normal_capture_plan =
+                    lower_shape_capture_query_plan(query_contract::SPATIAL_NORMAL_CAPTURE_SHAPE)?;
                 let outcome = sweep_outcome(
                     ctx,
                     backend,
@@ -456,21 +652,25 @@ pub fn execute_with_store(
                     sweep,
                     *distance_contract,
                     *normal_contract,
-                    seed_fraction,
-                    normal_flavor,
-                    broadphase.candidate_shape_names.len() as u32,
+                    &distance_capture_plan,
+                    &normal_capture_plan,
+                    seed,
+                    broadphase.candidate_shape_names.as_slice(),
                     &mut executed_query_contracts,
                 )?;
                 interval_subdivisions = interval_subdivisions.max(outcome.interval_subdivisions);
                 interval_refinements = interval_refinements.max(outcome.interval_refinements);
                 certificate_successes = certificate_successes.max(outcome.certificate_successes);
+                interval_bracket = outcome.certificate.bracket;
+                fallback_count = fallback_count.max(outcome.fallback_count);
+                contact_normal_provenance = outcome.contact_normal_provenance;
                 store_transition_artifacts(
                     plan,
                     store,
                     &snapshot,
                     witness_artifact,
                     continuation_artifact,
-                    outcome,
+                    outcome.clone(),
                 )?;
                 materialize_value(
                     pass,
@@ -483,6 +683,9 @@ pub fn execute_with_store(
                                 point_on_world: outcome.point_on_world.expect("hit witness"),
                                 contact_normal: outcome.contact_normal.expect("hit witness"),
                                 normal_flavor: outcome.normal_flavor,
+                                normal_provenance: outcome.contact_normal_provenance.unwrap_or(
+                                    CollisionContactNormalProvenance::HeuristicShadingNormal,
+                                ),
                             }
                         }),
                         no_hit_certificate: outcome.no_hit_certificate,
@@ -504,14 +707,30 @@ pub fn execute_with_store(
                     artifact_binding_by_id(plan, support_artifact)?,
                     &snapshot,
                     collision_policy_digest(plan.policy),
+                    Some(artifact_reuse_key(
+                        artifact_binding_by_id(plan, support_artifact)?,
+                        &snapshot,
+                        collision_policy_digest(plan.policy),
+                        collision_domain_compatibility_hash(&domain)?,
+                    )),
                 )?;
                 ensure_current_artifact_available(
                     store,
                     artifact_binding_by_id(plan, broadphase_artifact)?,
                     &snapshot,
                     collision_policy_digest(plan.policy),
+                    Some(artifact_reuse_key(
+                        artifact_binding_by_id(plan, broadphase_artifact)?,
+                        &snapshot,
+                        collision_policy_digest(plan.policy),
+                        collision_broadphase_compatibility_hash(
+                            &capture_name,
+                            &domain,
+                            collision_input,
+                        )?,
+                    )),
                 )?;
-                let (seed_fraction, normal_flavor) = load_transition_reuse(
+                let seed = load_transition_reuse(
                     plan,
                     store,
                     &snapshot,
@@ -533,6 +752,12 @@ pub fn execute_with_store(
                     broadphase_artifact,
                 )?;
                 broadphase_candidate_count = broadphase.candidate_shape_names.len() as u32;
+                broadphase_rejected_candidate_count = broadphase.rejected_candidate_count;
+                broadphase_pruned_node_count = broadphase.pruned_node_count;
+                let distance_capture_plan =
+                    lower_shape_capture_query_plan(query_contract::SPATIAL_DISTANCE_CAPTURE_SHAPE)?;
+                let normal_capture_plan =
+                    lower_shape_capture_query_plan(query_contract::SPATIAL_NORMAL_CAPTURE_SHAPE)?;
                 let outcome = sweep_outcome(
                     ctx,
                     backend,
@@ -543,21 +768,25 @@ pub fn execute_with_store(
                     sweep,
                     *distance_contract,
                     *normal_contract,
-                    seed_fraction,
-                    normal_flavor,
-                    broadphase.candidate_shape_names.len() as u32,
+                    &distance_capture_plan,
+                    &normal_capture_plan,
+                    seed,
+                    broadphase.candidate_shape_names.as_slice(),
                     &mut executed_query_contracts,
                 )?;
                 interval_subdivisions = interval_subdivisions.max(outcome.interval_subdivisions);
                 interval_refinements = interval_refinements.max(outcome.interval_refinements);
                 certificate_successes = certificate_successes.max(outcome.certificate_successes);
+                interval_bracket = outcome.certificate.bracket;
+                fallback_count = fallback_count.max(outcome.fallback_count);
+                contact_normal_provenance = outcome.contact_normal_provenance;
                 store_transition_artifacts(
                     plan,
                     store,
                     &snapshot,
                     witness_artifact,
                     continuation_artifact,
-                    outcome,
+                    outcome.clone(),
                 )?;
                 materialize_value(
                     pass,
@@ -571,6 +800,9 @@ pub fn execute_with_store(
                                 point_on_world: outcome.point_on_world.expect("hit witness"),
                                 contact_normal: outcome.contact_normal.expect("hit witness"),
                                 normal_flavor: outcome.normal_flavor,
+                                normal_provenance: outcome.contact_normal_provenance.unwrap_or(
+                                    CollisionContactNormalProvenance::HeuristicShadingNormal,
+                                ),
                             }
                         }),
                         no_hit_certificate: outcome.no_hit_certificate,
@@ -643,9 +875,14 @@ pub fn execute_with_store(
             executed_query_contracts,
             artifact_store: store.report(),
             broadphase_candidate_count,
+            broadphase_rejected_candidate_count,
+            broadphase_pruned_node_count,
+            interval_bracket,
             interval_subdivisions,
             interval_refinements,
             certificate_successes,
+            fallback_count,
+            contact_normal_provenance,
             reuse_metrics,
             reuse_decisions,
         },
@@ -751,6 +988,161 @@ fn execute_point_query(
     )
 }
 
+fn lower_shape_capture_query_plan(
+    contract_id: QueryContractId,
+) -> Result<KernelCaptureQueryPlan, CollisionExecError> {
+    let plan = CaptureQueryPlan::for_contract(contract_id, None).map_err(|_| {
+        CollisionExecError::UnknownQueryContract {
+            contract_id: contract_id.as_str().to_string(),
+        }
+    })?;
+    Ok(lower_capture_query_plan(&plan))
+}
+
+fn execute_shape_capture_query_plan(
+    ctx: &QueryExecContext,
+    backend: DispatchBackend,
+    snapshot: &WorldSnapshotHandle,
+    plan: &KernelCaptureQueryPlan,
+    args: &[KernelValue],
+) -> Result<(KernelValue, DirectQueryExecutionTrace), CollisionExecError> {
+    execute_capture_query_with_snapshot_on(ctx, backend, Some(snapshot), plan, args).map_err(
+        |error| CollisionExecError::ExecutionUnavailable {
+            message: error.to_string(),
+        },
+    )
+}
+
+fn candidate_limited_point_query(
+    ctx: &QueryExecContext,
+    backend: DispatchBackend,
+    policy: &QueryExecutionPolicy,
+    snapshot: &WorldSnapshotHandle,
+    capture: &KernelValue,
+    domain: &KernelValue,
+    candidates: &[SmolStr],
+    point: [f32; 3],
+    distance_capture_plan: &KernelCaptureQueryPlan,
+    normal_capture_plan: &KernelCaptureQueryPlan,
+    world_distance_contract: QueryContractId,
+    world_normal_contract: QueryContractId,
+    executed_query_contracts: &mut Vec<QueryContractId>,
+) -> Result<
+    (
+        KernelValue,
+        KernelValue,
+        Option<CollisionContactNormalProvenance>,
+        bool,
+    ),
+    CollisionExecError,
+> {
+    let mut best_candidate: Option<(f32, SmolStr)> = None;
+    for candidate in candidates {
+        let (distance, trace) = execute_shape_capture_query_plan(
+            ctx,
+            backend,
+            snapshot,
+            distance_capture_plan,
+            &[
+                KernelValue::Capture(candidate.clone()),
+                KernelValue::Vec3(point),
+            ],
+        )?;
+        executed_query_contracts.push(trace.contract_id);
+        let distance = expect_f32(&distance)?;
+        if best_candidate
+            .as_ref()
+            .map(|(best_distance, _)| distance < *best_distance)
+            .unwrap_or(true)
+        {
+            best_candidate = Some((distance, candidate.clone()));
+        }
+    }
+
+    if let Some((best_distance, candidate)) = best_candidate {
+        let (normal, normal_trace) = execute_shape_capture_query_plan(
+            ctx,
+            backend,
+            snapshot,
+            normal_capture_plan,
+            &[KernelValue::Capture(candidate), KernelValue::Vec3(point)],
+        )?;
+        executed_query_contracts.push(normal_trace.contract_id);
+        let provenance = collision_contact_normal_provenance_from_trace(&normal_trace);
+        return Ok((KernelValue::F32(best_distance), normal, provenance, true));
+    }
+
+    let (distance, distance_trace) = execute_point_query(
+        ctx,
+        backend,
+        policy,
+        snapshot,
+        capture,
+        domain,
+        point,
+        world_distance_contract,
+    )?;
+    executed_query_contracts.push(distance_trace.contract_id);
+    let (normal, normal_trace) = execute_point_query(
+        ctx,
+        backend,
+        policy,
+        snapshot,
+        capture,
+        domain,
+        point,
+        world_normal_contract,
+    )?;
+    executed_query_contracts.push(normal_trace.contract_id);
+    let provenance = collision_contact_normal_provenance_from_trace(&normal_trace);
+    Ok((distance, normal, provenance, false))
+}
+
+fn candidate_limited_ray_query(
+    ctx: &QueryExecContext,
+    backend: DispatchBackend,
+    snapshot: &WorldSnapshotHandle,
+    candidates: &[SmolStr],
+    trace_capture_plan: &KernelCaptureQueryPlan,
+    ray: CollisionRayInput,
+    executed_query_contracts: &mut Vec<QueryContractId>,
+) -> Result<(KernelValue, DirectQueryExecutionTrace), CollisionExecError> {
+    let mut best_hit: Option<(f32, KernelValue, DirectQueryExecutionTrace)> = None;
+    let mut first_miss: Option<(KernelValue, DirectQueryExecutionTrace)> = None;
+    for candidate in candidates {
+        let (hit, trace) = execute_shape_capture_query_plan(
+            ctx,
+            backend,
+            snapshot,
+            trace_capture_plan,
+            &[
+                KernelValue::Capture(candidate.clone()),
+                ray_query_value(&ray),
+            ],
+        )?;
+        executed_query_contracts.push(trace.contract_id);
+        let hit_ref = expect_struct(&hit, "Hit3")?;
+        if expect_bool(field(hit_ref, "hit")?)? {
+            let distance = expect_f32(field(hit_ref, "distance")?)?;
+            let replace = best_hit
+                .as_ref()
+                .map(|(best_distance, _, _)| distance < *best_distance)
+                .unwrap_or(true);
+            if replace {
+                best_hit = Some((distance, hit, trace));
+            }
+        } else if first_miss.is_none() {
+            first_miss = Some((hit, trace));
+        }
+    }
+    if let Some((_, hit, trace)) = best_hit {
+        return Ok((hit, trace));
+    }
+    first_miss.ok_or_else(|| CollisionExecError::ExecutionUnavailable {
+        message: "candidate-limited ray query requires at least one candidate".to_string(),
+    })
+}
+
 fn execute_world_query_contract(
     ctx: &QueryExecContext,
     backend: DispatchBackend,
@@ -808,23 +1200,99 @@ fn collision_policy_digest(policy: crate::collision_contract::CollisionExecution
     ])
 }
 
+fn artifact_reuse_key(
+    artifact: &CollisionArtifactBinding,
+    snapshot: &WorldSnapshotHandle,
+    policy_digest: u64,
+    compatibility_hash: u64,
+) -> ArtifactReuseKey {
+    ArtifactReuseKey::new(
+        snapshot,
+        Some(artifact.id.clone()),
+        artifact.contract.logical_schema.describe(),
+        compatibility_hash,
+        Some(policy_digest),
+        artifact.contract.compatibility.policy.mode,
+    )
+}
+
+fn collision_broadphase_compatibility_hash(
+    capture: &SmolStr,
+    domain: &KernelValue,
+    collision_input: &KernelValue,
+) -> Result<u64, CollisionExecError> {
+    let kind_tag = if collision_point_input(collision_input).is_ok() {
+        "point"
+    } else if collision_ray_input(collision_input).is_ok() {
+        "ray"
+    } else if collision_sphere_input(collision_input).is_ok() {
+        "sphere"
+    } else if collision_sweep_input(collision_input).is_ok() {
+        "sweep"
+    } else {
+        "collision"
+    };
+    let capture_bytes = capture.as_str().as_bytes();
+    let domain_hash = collision_domain_compatibility_hash(domain)?.to_le_bytes();
+    let debug_input;
+    let Some((min, max)) = collision_query_bounds(collision_input).ok().flatten() else {
+        debug_input = format!("{collision_input:?}");
+        return Ok(crate::query_exec::ids::stable_semantic_id(&[
+            kind_tag.as_bytes(),
+            capture_bytes,
+            &domain_hash,
+            debug_input.as_bytes(),
+        ]));
+    };
+    let min0 = min[0].to_le_bytes();
+    let min1 = min[1].to_le_bytes();
+    let min2 = min[2].to_le_bytes();
+    let max0 = max[0].to_le_bytes();
+    let max1 = max[1].to_le_bytes();
+    let max2 = max[2].to_le_bytes();
+    Ok(crate::query_exec::ids::stable_semantic_id(&[
+        kind_tag.as_bytes(),
+        capture_bytes,
+        &domain_hash,
+        &min0,
+        &min1,
+        &min2,
+        &max0,
+        &max1,
+        &max2,
+    ]))
+}
+
+fn collision_domain_compatibility_hash(domain: &KernelValue) -> Result<u64, CollisionExecError> {
+    let domain = expect_struct(domain, "SceneDomain")?;
+    let scene_id = expect_u32(field(domain, "scene_id")?)?.to_le_bytes();
+    let spatial = expect_struct(field(domain, "spatial")?, "SpatialDomainContract")?;
+    let geometry_detail = expect_i32(field(spatial, "geometry_detail")?)?.to_le_bytes();
+    let surface = expect_struct(field(domain, "surface")?, "SurfaceDomainContract")?;
+    let material = [u8::from(expect_bool(field(surface, "material")?)?)];
+    let participants = expect_struct(field(domain, "participants")?, "ParticipantDomainContract")?;
+    let radiance = [u8::from(expect_bool(field(participants, "radiance")?)?)];
+    let media = [u8::from(expect_bool(field(participants, "media")?)?)];
+    Ok(crate::query_exec::ids::stable_semantic_id(&[
+        b"collision-scene-domain",
+        &scene_id,
+        &geometry_detail,
+        &material,
+        &radiance,
+        &media,
+    ]))
+}
+
 fn insert_artifact(
     store: &mut CollisionArtifactStore,
     artifact: &CollisionArtifactBinding,
     snapshot: &WorldSnapshotHandle,
     policy_digest: u64,
+    compatibility_hash: u64,
     history_compatibility_hash: Option<u64>,
     payload: CollisionArtifactPayload,
 ) {
-    let logical_schema = artifact.contract.logical_schema.describe();
-    let reuse_key = ArtifactReuseKey::new(
-        snapshot,
-        Some(artifact.id.clone()),
-        logical_schema,
-        artifact.contract.logical_schema.stable_hash(),
-        Some(policy_digest),
-        artifact.contract.compatibility.policy.mode,
-    );
+    let reuse_key = artifact_reuse_key(artifact, snapshot, policy_digest, compatibility_hash);
     store.insert(StoredArtifact {
         contract: artifact.contract.clone(),
         metadata: ArtifactInstanceMetadata {
@@ -845,10 +1313,11 @@ fn ensure_current_artifact_available(
     artifact: &CollisionArtifactBinding,
     snapshot: &WorldSnapshotHandle,
     policy_digest: u64,
+    reuse_key: Option<ArtifactReuseKey>,
 ) -> Result<(), CollisionExecError> {
     let request = ArtifactLookupRequest {
         contract: artifact.contract.clone(),
-        reuse_key: None,
+        reuse_key,
         current_snapshot: snapshot.clone(),
         previous_snapshot_epoch: None,
         change_class: None,
@@ -868,15 +1337,43 @@ fn ensure_current_artifact_available(
     }
 }
 
+fn collision_history_hash_candidates(
+    plan: &CollisionPlan,
+    artifact_kind: crate::collision_plan::CollisionArtifactKind,
+    preferred_flavor: CollisionContactNormalFlavor,
+) -> Vec<Option<u64>> {
+    let mut hashes = Vec::new();
+    let mut push = |flavor: Option<CollisionContactNormalFlavor>| {
+        let hash = flavor.map(|value| {
+            crate::collision_plan::collision_history_compatibility_hash(
+                plan.contract_id,
+                artifact_kind,
+                Some(value),
+            )
+        });
+        if !hashes.contains(&hash) {
+            hashes.push(hash);
+        }
+    };
+    push(Some(preferred_flavor));
+    push(Some(CollisionContactNormalFlavor::SurfaceGradient));
+    push(Some(CollisionContactNormalFlavor::ConservativeUpperBound));
+    if !hashes.contains(&None) {
+        hashes.push(None);
+    }
+    hashes
+}
+
 fn current_artifact_payload<'a>(
     store: &'a CollisionArtifactStore,
     artifact: &CollisionArtifactBinding,
     snapshot: &WorldSnapshotHandle,
     policy_digest: u64,
+    reuse_key: Option<ArtifactReuseKey>,
 ) -> Result<&'a CollisionArtifactPayload, CollisionExecError> {
     let request = ArtifactLookupRequest {
         contract: artifact.contract.clone(),
-        reuse_key: None,
+        reuse_key,
         current_snapshot: snapshot.clone(),
         previous_snapshot_epoch: None,
         change_class: None,
@@ -908,103 +1405,258 @@ fn build_broadphase_candidates(
         .map_err(|error| CollisionExecError::ExecutionUnavailable {
             message: error.to_string(),
         })?;
-    let candidate_shape_names =
-        ops.resolve_world_shapes(capture, detail, None)
-            .map_err(|error| CollisionExecError::ExecutionUnavailable {
-                message: error.to_string(),
-            })?;
-    if !support_summary.can_coarse_support_prune || !support_summary.has_bounds {
-        return Ok(CollisionBroadphaseCandidates {
-            candidate_shape_names,
-        });
-    }
     let Some((query_min, query_max)) = collision_query_bounds(collision_input)? else {
-        return Ok(CollisionBroadphaseCandidates {
-            candidate_shape_names,
-        });
+        return build_broadphase_candidates_without_query_bounds(ctx, capture, detail);
     };
-    if !aabb_intersects(
-        (support_summary.min, support_summary.max),
-        (query_min, query_max),
-    ) {
+    if support_summary.can_coarse_support_prune
+        && support_summary.has_bounds
+        && !aabb_intersects(
+            (support_summary.min, support_summary.max),
+            (query_min, query_max),
+        )
+    {
+        let rejected_candidate_count = ctx
+            .world_acceleration_forest(capture, detail)
+            .map(broadphase_leaf_count)
+            .unwrap_or(0);
         return Ok(CollisionBroadphaseCandidates {
             candidate_shape_names: Vec::new(),
+            rejected_candidate_count,
+            pruned_node_count: if rejected_candidate_count > 0 { 1 } else { 0 },
         });
     }
-    let bounded_shapes = ops
-        .region_shape_support_bounds(capture, detail)
-        .map_err(|error| CollisionExecError::ExecutionUnavailable {
-            message: error.to_string(),
-        })?
-        .into_iter()
-        .map(|(shape, min, max)| (shape, (min, max)))
-        .collect::<BTreeMap<_, _>>();
-    let candidate_shape_names = candidate_shape_names
-        .into_iter()
-        .filter(|shape| match bounded_shapes.get(shape) {
-            Some(bounds) => aabb_intersects(*bounds, (query_min, query_max)),
-            None => true,
-        })
-        .collect();
-    Ok(CollisionBroadphaseCandidates {
-        candidate_shape_names,
-    })
+    if let Some(forest) = ctx.world_acceleration_forest(capture, detail) {
+        return Ok(traverse_collision_broadphase_forest(
+            forest,
+            Some((query_min, query_max)),
+        ));
+    }
+    build_broadphase_candidates_without_forest(ctx, capture, detail, Some((query_min, query_max)))
 }
 
 fn load_broadphase_candidates(
-    ctx: &QueryExecContext,
+    _ctx: &QueryExecContext,
     plan: &CollisionPlan,
     store: &CollisionArtifactStore,
     snapshot: &WorldSnapshotHandle,
     capture: &SmolStr,
     domain: &KernelValue,
     collision_input: &KernelValue,
-    support_artifact_id: &SmolStr,
+    _support_artifact_id: &SmolStr,
     artifact_id: &SmolStr,
 ) -> Result<CollisionBroadphaseCandidates, CollisionExecError> {
     let artifact = artifact_binding_by_id(plan, artifact_id)?;
+    let reuse_key = Some(artifact_reuse_key(
+        artifact,
+        snapshot,
+        collision_policy_digest(plan.policy),
+        collision_broadphase_compatibility_hash(capture, domain, collision_input)?,
+    ));
     let payload = current_artifact_payload(
         store,
         artifact,
         snapshot,
         collision_policy_digest(plan.policy),
+        reuse_key,
     )?;
-    let broadphase = match payload {
-        CollisionArtifactPayload::BroadphaseCandidates(payload) => payload.clone(),
-        other => {
-            return Err(CollisionExecError::TypeMismatch {
-                expected: "BroadphaseCandidates".to_string(),
-                found: format!("{other:?}"),
-            });
-        }
-    };
-    let support_payload = current_artifact_payload(
-        store,
-        artifact_binding_by_id(plan, support_artifact_id)?,
-        snapshot,
-        collision_policy_digest(plan.policy),
-    )?;
-    let support_summary = match support_payload {
-        CollisionArtifactPayload::SupportSummary(payload) => payload.clone(),
-        other => {
-            return Err(CollisionExecError::TypeMismatch {
-                expected: "SupportSummary".to_string(),
-                found: format!("{other:?}"),
-            });
-        }
-    };
-    let expected =
-        build_broadphase_candidates(ctx, capture, domain, collision_input, &support_summary)?;
-    if broadphase != expected {
-        return Err(CollisionExecError::InvalidPass {
-            pass_id: artifact.id.clone(),
-            message: format!(
-                "broadphase payload mismatch: expected {:?}, found {:?}",
-                expected, broadphase
-            ),
-        });
+    match payload {
+        CollisionArtifactPayload::BroadphaseCandidates(payload) => Ok(payload.clone()),
+        other => Err(CollisionExecError::TypeMismatch {
+            expected: "BroadphaseCandidates".to_string(),
+            found: format!("{other:?}"),
+        }),
     }
-    Ok(broadphase)
+}
+
+fn build_broadphase_candidates_without_query_bounds(
+    ctx: &QueryExecContext,
+    capture: &SmolStr,
+    detail: i32,
+) -> Result<CollisionBroadphaseCandidates, CollisionExecError> {
+    if let Some(forest) = ctx.world_acceleration_forest(capture, detail) {
+        return Ok(traverse_collision_broadphase_forest(forest, None));
+    }
+    build_broadphase_candidates_without_forest(ctx, capture, detail, None)
+}
+
+fn build_broadphase_candidates_without_forest(
+    ctx: &QueryExecContext,
+    capture: &SmolStr,
+    detail: i32,
+    query_bounds: Option<([f32; 3], [f32; 3])>,
+) -> Result<CollisionBroadphaseCandidates, CollisionExecError> {
+    let ops = DirectQueryOps::new(ctx);
+    let candidate_shape_names =
+        ops.resolve_world_shapes(capture, detail, None)
+            .map_err(|error| CollisionExecError::ExecutionUnavailable {
+                message: error.to_string(),
+            })?;
+    let candidate_shape_names = if let Some(query_bounds) = query_bounds {
+        let bounded_shapes = ops
+            .region_shape_support_bounds(capture, detail)
+            .map_err(|error| CollisionExecError::ExecutionUnavailable {
+                message: error.to_string(),
+            })?
+            .into_iter()
+            .map(|(shape, min, max)| (shape, (min, max)))
+            .collect::<BTreeMap<_, _>>();
+        candidate_shape_names
+            .into_iter()
+            .filter(|shape| match bounded_shapes.get(shape) {
+                Some(bounds) => aabb_intersects(*bounds, query_bounds),
+                None => true,
+            })
+            .collect()
+    } else {
+        candidate_shape_names
+    };
+    Ok(CollisionBroadphaseCandidates {
+        candidate_shape_names,
+        rejected_candidate_count: 0,
+        pruned_node_count: 0,
+    })
+}
+
+fn traverse_collision_broadphase_forest(
+    forest: &AccelerationForest,
+    query_bounds: Option<([f32; 3], [f32; 3])>,
+) -> CollisionBroadphaseCandidates {
+    let node_lookup = forest
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node))
+        .collect::<HashMap<_, _>>();
+    let mut candidates = BTreeSet::new();
+    let mut rejected_candidate_count = 0u32;
+    let mut pruned_node_count = 0u32;
+    let mut leaf_count_cache = HashMap::<SmolStr, u32>::new();
+    for root in forest.root_nodes() {
+        traverse_collision_broadphase_node(
+            root,
+            &node_lookup,
+            query_bounds,
+            &mut candidates,
+            &mut rejected_candidate_count,
+            &mut pruned_node_count,
+            &mut leaf_count_cache,
+        );
+    }
+    CollisionBroadphaseCandidates {
+        candidate_shape_names: candidates.into_iter().collect(),
+        rejected_candidate_count,
+        pruned_node_count,
+    }
+}
+
+fn traverse_collision_broadphase_node<'a>(
+    node_id: &SmolStr,
+    node_lookup: &HashMap<SmolStr, &'a AccelerationNode>,
+    query_bounds: Option<([f32; 3], [f32; 3])>,
+    candidates: &mut BTreeSet<SmolStr>,
+    rejected_candidate_count: &mut u32,
+    pruned_node_count: &mut u32,
+    leaf_count_cache: &mut HashMap<SmolStr, u32>,
+) {
+    let Some(node) = node_lookup.get(node_id).copied() else {
+        return;
+    };
+    if let (Some(bounds), Some(query_bounds)) = (forest_node_bounds(node), query_bounds) {
+        if !aabb_intersects(bounds, query_bounds) {
+            *pruned_node_count += 1;
+            *rejected_candidate_count +=
+                broadphase_leaf_count_from_node(node_id, node_lookup, leaf_count_cache);
+            return;
+        }
+    }
+    if node.child_ids.is_empty() {
+        if let Some(leaf) = &node.leaf_payload {
+            candidates.insert(leaf.semantic_id.clone());
+        }
+        return;
+    }
+    for child_id in &node.child_ids {
+        traverse_collision_broadphase_node(
+            child_id,
+            node_lookup,
+            query_bounds,
+            candidates,
+            rejected_candidate_count,
+            pruned_node_count,
+            leaf_count_cache,
+        );
+    }
+}
+
+fn broadphase_leaf_count(forest: &AccelerationForest) -> u32 {
+    let node_lookup = forest
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node))
+        .collect::<HashMap<_, _>>();
+    let mut leaf_count_cache = HashMap::<SmolStr, u32>::new();
+    forest
+        .root_nodes()
+        .iter()
+        .map(|root| broadphase_leaf_count_from_node(root, &node_lookup, &mut leaf_count_cache))
+        .sum()
+}
+
+fn broadphase_leaf_count_from_node<'a>(
+    node_id: &SmolStr,
+    node_lookup: &HashMap<SmolStr, &'a AccelerationNode>,
+    leaf_count_cache: &mut HashMap<SmolStr, u32>,
+) -> u32 {
+    if let Some(count) = leaf_count_cache.get(node_id) {
+        return *count;
+    }
+    let Some(node) = node_lookup.get(node_id).copied() else {
+        return 0;
+    };
+    let count = if node.child_ids.is_empty() {
+        u32::from(node.leaf_payload.is_some())
+    } else {
+        node.child_ids
+            .iter()
+            .map(|child_id| {
+                broadphase_leaf_count_from_node(child_id, node_lookup, leaf_count_cache)
+            })
+            .sum()
+    };
+    leaf_count_cache.insert(node_id.clone(), count);
+    count
+}
+
+fn forest_node_bounds(node: &AccelerationNode) -> Option<([f32; 3], [f32; 3])> {
+    node.bounds.iter().find_map(|bound| {
+        if !matches!(bound.kind, BoundDescriptorKind::AxisAlignedBounds) {
+            return None;
+        }
+        parse_support_bounds_summary(&bound.summary).map(|bounds| (bounds.min, bounds.max))
+    })
+}
+
+fn parse_support_bounds_summary(summary: &str) -> Option<SupportBoundsSummary> {
+    let (min, max) = summary.split_once("|max=")?;
+    let min = min.strip_prefix("min=")?;
+    Some(SupportBoundsSummary {
+        min: parse_summary_vec3(min)?,
+        max: parse_summary_vec3(max)?,
+    })
+}
+
+fn parse_summary_vec3(summary: &str) -> Option<[f32; 3]> {
+    let parts = summary
+        .split(',')
+        .map(|part| part.trim().parse::<f32>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    let [x, y, z] = parts.try_into().ok()?;
+    Some([x, y, z])
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SupportBoundsSummary {
+    min: [f32; 3],
+    max: [f32; 3],
 }
 
 fn load_transition_reuse(
@@ -1016,33 +1668,44 @@ fn load_transition_reuse(
     continuation_artifact: &SmolStr,
     metrics: &mut CollisionReuseMetrics,
     decisions: &mut Vec<CollisionReuseDecision>,
-) -> Result<(Option<f32>, CollisionContactNormalFlavor), CollisionExecError> {
-    let mut seed_fraction = None;
-    let mut normal_flavor = CollisionContactNormalFlavor::ConservativeUpperBound;
+) -> Result<CollisionTransitionReuseSeed, CollisionExecError> {
+    let mut seed = CollisionTransitionReuseSeed {
+        seed_fraction: None,
+        normal_flavor: CollisionContactNormalFlavor::ConservativeUpperBound,
+        normal_provenance: None,
+        certificate: None,
+    };
     for artifact_id in [witness_artifact, continuation_artifact] {
         let artifact = artifact_binding_by_id(plan, artifact_id)?;
-        let expected_flavor = transition_reuse_normal_flavor(artifact.kind);
         let decision = if let Some(transition) = transition {
-            let history_hash = Some(collision_history_compatibility_hash(
-                plan.contract_id,
-                artifact.kind,
-                expected_flavor,
-            ));
-            let request = ArtifactLookupRequest {
-                contract: artifact.contract.clone(),
-                reuse_key: None,
-                current_snapshot: snapshot.clone(),
-                previous_snapshot_epoch: Some(crate::world_identity::SnapshotEpoch(u64::from(
-                    transition.previous_snapshot_epoch,
-                ))),
-                change_class: Some(transition.change_class),
-                policy_digest: Some(collision_policy_digest(plan.policy)),
-                presentation_frame: None,
-                layout_signature: None,
-                history_compatibility_hash: history_hash,
-                evidence_summary: Some(artifact.contract.evidence_summary.clone()),
-            };
-            let (candidate, report) = store.lookup(&request);
+            let previous_snapshot_epoch =
+                crate::world_identity::SnapshotEpoch(u64::from(transition.previous_snapshot_epoch));
+            let mut candidate = None;
+            let mut report = None;
+            for history_hash in
+                collision_history_hash_candidates(plan, artifact.kind, seed.normal_flavor)
+            {
+                let request = ArtifactLookupRequest {
+                    contract: artifact.contract.clone(),
+                    reuse_key: None,
+                    current_snapshot: snapshot.clone(),
+                    previous_snapshot_epoch: Some(previous_snapshot_epoch),
+                    change_class: Some(transition.change_class),
+                    policy_digest: Some(collision_policy_digest(plan.policy)),
+                    presentation_frame: None,
+                    layout_signature: None,
+                    history_compatibility_hash: history_hash,
+                    evidence_summary: Some(artifact.contract.evidence_summary.clone()),
+                };
+                let (lookup_candidate, lookup_report) = store.lookup(&request);
+                let stop = lookup_candidate.is_some() || lookup_report.index_candidates == 0;
+                candidate = lookup_candidate;
+                report = Some(lookup_report);
+                if stop {
+                    break;
+                }
+            }
+            let report = report.expect("collision transition reuse lookup should produce a report");
             let mut verdict = if candidate.is_some() {
                 (CollisionReuseVerdict::Consumed, CollisionReuseReason::None)
             } else if report.index_candidates == 0 {
@@ -1072,27 +1735,43 @@ fn load_transition_reuse(
             if let Some(candidate) = candidate {
                 match &candidate.payload {
                     CollisionArtifactPayload::WitnessCache(payload) => {
-                        if expected_flavor != Some(payload.normal_flavor) {
+                        if payload.certificate.metadata.reusable_by
+                            == CertificateReuseClass::RenderingOnly
+                        {
                             verdict = (
                                 CollisionReuseVerdict::Rejected,
-                                CollisionReuseReason::CompatibilityRejected,
+                                CollisionReuseReason::RenderingOnlyCertificate,
                             );
-                            detail = SmolStr::new("normal-flavor-mismatch");
+                            detail = SmolStr::new("rendering-only-certificate");
                         } else {
-                            seed_fraction = payload.contact_fraction_upper_bound;
-                            normal_flavor = payload.normal_flavor;
+                            seed.seed_fraction = payload
+                                .certificate
+                                .bracket
+                                .map(|bracket| bracket[0])
+                                .or(payload.contact_fraction_upper_bound);
+                            seed.normal_flavor = payload.normal_flavor;
+                            seed.normal_provenance = payload.normal_provenance;
+                            seed.certificate = Some(payload.certificate.clone());
                         }
                     }
                     CollisionArtifactPayload::ContinuationSeed(payload) => {
-                        if expected_flavor != Some(payload.normal_flavor) {
+                        if payload.certificate.metadata.reusable_by
+                            == CertificateReuseClass::RenderingOnly
+                        {
                             verdict = (
                                 CollisionReuseVerdict::Rejected,
-                                CollisionReuseReason::CompatibilityRejected,
+                                CollisionReuseReason::RenderingOnlyCertificate,
                             );
-                            detail = SmolStr::new("normal-flavor-mismatch");
+                            detail = SmolStr::new("rendering-only-certificate");
                         } else {
-                            seed_fraction = Some(payload.fraction_hint);
-                            normal_flavor = payload.normal_flavor;
+                            seed.seed_fraction = payload
+                                .certificate
+                                .bracket
+                                .map(|bracket| bracket[0])
+                                .or(Some(payload.fraction_hint));
+                            seed.normal_flavor = payload.normal_flavor;
+                            seed.normal_provenance = payload.normal_provenance;
+                            seed.certificate = Some(payload.certificate.clone());
                         }
                     }
                     CollisionArtifactPayload::SupportSummary(_)
@@ -1120,7 +1799,7 @@ fn load_transition_reuse(
         update_reuse_metrics(metrics, &decision);
         decisions.push(decision);
     }
-    Ok((seed_fraction, normal_flavor))
+    Ok(seed)
 }
 
 fn update_reuse_metrics(metrics: &mut CollisionReuseMetrics, decision: &CollisionReuseDecision) {
@@ -1154,26 +1833,28 @@ fn store_transition_artifacts(
     continuation_artifact: &SmolStr,
     outcome: SweepOutcome,
 ) -> Result<(), CollisionExecError> {
-    let history_hash_witness = Some(collision_history_compatibility_hash(
-        plan.contract_id,
-        CollisionArtifactKind::WitnessCache,
-        Some(outcome.normal_flavor),
-    ));
-    let history_hash_seed = Some(collision_history_compatibility_hash(
-        plan.contract_id,
-        CollisionArtifactKind::ContinuationSeed,
-        Some(outcome.normal_flavor),
-    ));
+    let normal_provenance = outcome.contact_normal_provenance;
     insert_artifact(
         store,
         artifact_binding_by_id(plan, witness_artifact)?,
         snapshot,
         collision_policy_digest(plan.policy),
-        history_hash_witness,
+        artifact_binding_by_id(plan, witness_artifact)?
+            .contract
+            .logical_schema
+            .stable_hash(),
+        Some(crate::collision_plan::collision_history_compatibility_hash(
+            plan.contract_id,
+            crate::collision_plan::CollisionArtifactKind::WitnessCache,
+            Some(outcome.normal_flavor),
+        )),
         CollisionArtifactPayload::WitnessCache(CollisionStoredWitness {
             hit: outcome.hit,
             contact_fraction_upper_bound: outcome.fraction_upper_bound,
+            separation_upper_bound: outcome.separation_upper_bound,
+            normal_provenance,
             normal_flavor: outcome.normal_flavor,
+            certificate: outcome.certificate.clone(),
         }),
     );
     insert_artifact(
@@ -1181,11 +1862,22 @@ fn store_transition_artifacts(
         artifact_binding_by_id(plan, continuation_artifact)?,
         snapshot,
         collision_policy_digest(plan.policy),
-        history_hash_seed,
+        artifact_binding_by_id(plan, continuation_artifact)?
+            .contract
+            .logical_schema
+            .stable_hash(),
+        Some(crate::collision_plan::collision_history_compatibility_hash(
+            plan.contract_id,
+            crate::collision_plan::CollisionArtifactKind::ContinuationSeed,
+            Some(outcome.normal_flavor),
+        )),
         CollisionArtifactPayload::ContinuationSeed(CollisionContinuationSeed {
             fraction_hint: outcome.fraction_upper_bound.unwrap_or(1.0),
             no_hit_certificate: outcome.no_hit_certificate.is_some(),
+            separation_upper_bound: outcome.separation_upper_bound,
+            normal_provenance,
             normal_flavor: outcome.normal_flavor,
+            certificate: outcome.certificate,
         }),
     );
     Ok(())
@@ -1202,26 +1894,41 @@ fn sweep_outcome(
     sweep: CollisionSphereSweepInput,
     distance_contract: QueryContractId,
     normal_contract: QueryContractId,
-    seed_fraction: Option<f32>,
-    seed_normal_flavor: CollisionContactNormalFlavor,
-    broadphase_candidate_count: u32,
+    distance_capture_plan: &KernelCaptureQueryPlan,
+    normal_capture_plan: &KernelCaptureQueryPlan,
+    seed: CollisionTransitionReuseSeed,
+    candidate_shape_names: &[SmolStr],
     executed_query_contracts: &mut Vec<QueryContractId>,
 ) -> Result<SweepOutcome, CollisionExecError> {
-    if broadphase_candidate_count == 0 {
+    let seed_normal_flavor = seed.normal_flavor;
+    if candidate_shape_names.is_empty() {
+        let certificate = build_collision_no_hit_certificate(
+            plan_no_hit_guarantee(policy),
+            "collision.sweep.no_hit",
+            sweep.contact_tolerance,
+            0.0,
+            1.0,
+            seed_normal_flavor,
+            seed.normal_provenance,
+        );
         return Ok(SweepOutcome {
             hit: false,
             fraction_upper_bound: None,
+            separation_upper_bound: None,
             point_on_probe: None,
             point_on_world: None,
             contact_normal: None,
+            contact_normal_provenance: None,
             normal_flavor: seed_normal_flavor,
             no_hit_certificate: Some(CollisionNoHitCertificate {
-                valid_through_fraction: 1.0,
+                valid_through_fraction: certificate.t_end,
                 guarantee: plan_no_hit_guarantee(policy),
             }),
+            certificate,
             interval_subdivisions: 0,
             interval_refinements: 0,
             certificate_successes: 1,
+            fallback_count: 0,
         });
     }
     let travel = subtract(sweep.end_center, sweep.start_center);
@@ -1234,79 +1941,106 @@ fn sweep_outcome(
             snapshot,
             capture,
             domain,
+            candidate_shape_names,
             sweep.start_center,
             sweep.radius,
+            distance_capture_plan,
+            normal_capture_plan,
             distance_contract,
             normal_contract,
-            seed_normal_flavor,
-            plan_no_hit_guarantee(policy),
+            seed.clone(),
             sweep.contact_tolerance,
             executed_query_contracts,
         );
     }
-    let mut fraction = seed_fraction.unwrap_or(0.0).clamp(0.0, 1.0);
+    let mut fraction = seed
+        .certificate
+        .as_ref()
+        .and_then(|certificate| certificate.bracket.map(|bracket| bracket[0]))
+        .or(seed.seed_fraction)
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
     let mut iterations = 0;
     let mut interval_subdivisions = 0;
     let mut interval_refinements = 0;
     while iterations < sweep.max_iterations.max(1) {
         interval_subdivisions += 1;
         let center = lerp(sweep.start_center, sweep.end_center, fraction);
-        let (distance_value, distance_trace) = execute_point_query(
+        let (distance_value, normal_value, provenance, _) = candidate_limited_point_query(
             ctx,
             backend,
             policy,
             snapshot,
             capture,
             domain,
+            candidate_shape_names,
             center,
+            distance_capture_plan,
+            normal_capture_plan,
             distance_contract,
+            normal_contract,
+            executed_query_contracts,
         )?;
-        executed_query_contracts.push(distance_trace.contract_id);
         let separation = expect_f32(&distance_value)? - sweep.radius;
         if separation <= sweep.contact_tolerance {
-            let (normal_value, normal_trace) = execute_point_query(
-                ctx,
-                backend,
-                policy,
-                snapshot,
-                capture,
-                domain,
-                center,
-                normal_contract,
-            )?;
-            executed_query_contracts.push(normal_trace.contract_id);
             let world_normal = expect_vec3(&normal_value)?;
             let point_on_probe = offset_point(center, world_normal, -sweep.radius);
             let point_on_world = offset_point(center, world_normal, -(separation + sweep.radius));
             return Ok(SweepOutcome {
                 hit: true,
                 fraction_upper_bound: Some(fraction),
+                separation_upper_bound: Some(separation),
                 point_on_probe: Some(point_on_probe),
                 point_on_world: Some(point_on_world),
                 contact_normal: Some(world_normal),
-                normal_flavor: CollisionContactNormalFlavor::ConservativeUpperBound,
+                contact_normal_provenance: provenance,
+                normal_flavor: collision_contact_normal_flavor_from_provenance(provenance),
                 no_hit_certificate: None,
+                certificate: build_collision_contact_certificate(
+                    "collision.sweep.contact",
+                    plan_contact_guarantee(policy),
+                    fraction,
+                    fraction,
+                    Some([fraction, fraction]),
+                    separation,
+                    provenance,
+                    collision_contact_normal_flavor_from_provenance(provenance),
+                ),
                 interval_subdivisions,
                 interval_refinements: interval_refinements + 1,
                 certificate_successes: 1,
+                fallback_count: 0,
             });
         }
         let remaining = length * (1.0 - fraction);
         if separation >= remaining {
+            let certificate = build_collision_no_hit_certificate(
+                plan_no_hit_guarantee(policy),
+                "collision.sweep.no_hit",
+                sweep.contact_tolerance,
+                fraction,
+                1.0,
+                seed.normal_flavor,
+                seed.normal_provenance,
+            );
             return Ok(SweepOutcome {
                 hit: false,
                 fraction_upper_bound: None,
+                separation_upper_bound: Some(separation),
                 point_on_probe: None,
                 point_on_world: None,
                 contact_normal: None,
                 normal_flavor: seed_normal_flavor,
+                contact_normal_provenance: seed.normal_provenance,
                 no_hit_certificate: Some(CollisionNoHitCertificate {
-                    valid_through_fraction: 1.0,
+                    valid_through_fraction: certificate.t_end,
                     guarantee: plan_no_hit_guarantee(policy),
                 }),
+                certificate,
                 interval_subdivisions,
                 interval_refinements: interval_refinements + 1,
                 certificate_successes: 1,
+                fallback_count: 0,
             });
         }
         let step_fraction = (separation.max(sweep.contact_tolerance) / length).max(0.0005);
@@ -1318,33 +2052,142 @@ fn sweep_outcome(
         interval_refinements += 1;
         iterations += 1;
     }
-    sphere_overlap_like_outcome(
+    dense_fallback_sweep_outcome(
         ctx,
         backend,
         policy,
         snapshot,
         capture,
         domain,
-        sweep.end_center,
-        sweep.radius,
+        sweep,
+        candidate_shape_names,
+        distance_capture_plan,
+        normal_capture_plan,
         distance_contract,
         normal_contract,
-        seed_normal_flavor,
-        plan_no_hit_guarantee(policy),
-        sweep.contact_tolerance,
+        fraction,
+        seed,
+        interval_subdivisions,
+        interval_refinements,
         executed_query_contracts,
     )
 }
 
-fn transition_reuse_normal_flavor(
-    artifact_kind: CollisionArtifactKind,
-) -> Option<CollisionContactNormalFlavor> {
-    match artifact_kind {
-        CollisionArtifactKind::WitnessCache | CollisionArtifactKind::ContinuationSeed => {
-            Some(CollisionContactNormalFlavor::ConservativeUpperBound)
+#[allow(clippy::too_many_arguments)]
+fn dense_fallback_sweep_outcome(
+    ctx: &QueryExecContext,
+    backend: DispatchBackend,
+    policy: &QueryExecutionPolicy,
+    snapshot: &WorldSnapshotHandle,
+    capture: &KernelValue,
+    domain: &KernelValue,
+    sweep: CollisionSphereSweepInput,
+    candidate_shape_names: &[SmolStr],
+    distance_capture_plan: &KernelCaptureQueryPlan,
+    normal_capture_plan: &KernelCaptureQueryPlan,
+    distance_contract: QueryContractId,
+    normal_contract: QueryContractId,
+    certified_start_fraction: f32,
+    seed: CollisionTransitionReuseSeed,
+    mut interval_subdivisions: u32,
+    mut interval_refinements: u32,
+    executed_query_contracts: &mut Vec<QueryContractId>,
+) -> Result<SweepOutcome, CollisionExecError> {
+    let dense_budget = sweep.max_iterations.max(1).saturating_mul(8).max(16) as u32;
+    let remaining_fraction = (1.0 - certified_start_fraction).max(0.0);
+    let dense_step = if remaining_fraction <= f32::EPSILON {
+        0.0
+    } else {
+        (remaining_fraction / dense_budget as f32).max(0.0005)
+    };
+    let mut fraction = certified_start_fraction;
+    let mut last_separation = None;
+    while fraction < 1.0 - f32::EPSILON && dense_step > 0.0 {
+        fraction = (fraction + dense_step).min(1.0);
+        interval_subdivisions += 1;
+        let center = lerp(sweep.start_center, sweep.end_center, fraction);
+        let (distance_value, normal_value, provenance, _) = candidate_limited_point_query(
+            ctx,
+            backend,
+            policy,
+            snapshot,
+            capture,
+            domain,
+            candidate_shape_names,
+            center,
+            distance_capture_plan,
+            normal_capture_plan,
+            distance_contract,
+            normal_contract,
+            executed_query_contracts,
+        )?;
+        interval_refinements += 1;
+        let separation = expect_f32(&distance_value)? - sweep.radius;
+        last_separation = Some(separation);
+        if separation <= sweep.contact_tolerance {
+            let world_normal = expect_vec3(&normal_value)?;
+            let point_on_probe = offset_point(center, world_normal, -sweep.radius);
+            let point_on_world = offset_point(center, world_normal, -(separation + sweep.radius));
+            let normal_flavor = collision_contact_normal_flavor_from_provenance(provenance);
+            return Ok(SweepOutcome {
+                hit: true,
+                fraction_upper_bound: Some(fraction),
+                separation_upper_bound: Some(separation),
+                point_on_probe: Some(point_on_probe),
+                point_on_world: Some(point_on_world),
+                contact_normal: Some(world_normal),
+                contact_normal_provenance: provenance,
+                normal_flavor,
+                no_hit_certificate: None,
+                certificate: build_collision_contact_certificate(
+                    "collision.sweep.fallback_contact",
+                    plan_contact_guarantee(policy),
+                    certified_start_fraction,
+                    fraction,
+                    Some([certified_start_fraction, fraction]),
+                    separation,
+                    provenance,
+                    normal_flavor,
+                ),
+                interval_subdivisions,
+                interval_refinements,
+                certificate_successes: 0,
+                fallback_count: 1,
+            });
         }
-        CollisionArtifactKind::SupportSummary | CollisionArtifactKind::BroadphaseCandidates => None,
     }
+
+    let certificate = build_collision_no_hit_certificate(
+        seed.certificate
+            .as_ref()
+            .map(|certificate| certificate.metadata.guarantee)
+            .unwrap_or_else(|| plan_no_hit_guarantee(policy)),
+        "collision.sweep.partial_no_hit",
+        sweep.contact_tolerance,
+        certified_start_fraction,
+        certified_start_fraction,
+        seed.normal_flavor,
+        seed.normal_provenance,
+    );
+    Ok(SweepOutcome {
+        hit: false,
+        fraction_upper_bound: None,
+        separation_upper_bound: last_separation,
+        point_on_probe: None,
+        point_on_world: None,
+        contact_normal: None,
+        contact_normal_provenance: seed.normal_provenance,
+        normal_flavor: seed.normal_flavor,
+        no_hit_certificate: Some(CollisionNoHitCertificate {
+            valid_through_fraction: certificate.t_end,
+            guarantee: certificate.metadata.guarantee,
+        }),
+        certificate,
+        interval_subdivisions,
+        interval_refinements,
+        certificate_successes: 0,
+        fallback_count: 1,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1355,67 +2198,92 @@ fn sphere_overlap_like_outcome(
     snapshot: &WorldSnapshotHandle,
     capture: &KernelValue,
     domain: &KernelValue,
+    candidate_shape_names: &[SmolStr],
     center: [f32; 3],
     radius: f32,
+    distance_capture_plan: &KernelCaptureQueryPlan,
+    normal_capture_plan: &KernelCaptureQueryPlan,
     distance_contract: QueryContractId,
     normal_contract: QueryContractId,
-    normal_flavor: CollisionContactNormalFlavor,
-    no_hit_guarantee: crate::execution_policy::RequiredGuaranteeClass,
+    seed: CollisionTransitionReuseSeed,
     tolerance: f32,
     executed_query_contracts: &mut Vec<QueryContractId>,
 ) -> Result<SweepOutcome, CollisionExecError> {
-    let (distance_value, distance_trace) = execute_point_query(
+    let (distance_value, normal_value, provenance, _) = candidate_limited_point_query(
         ctx,
         backend,
         policy,
         snapshot,
         capture,
         domain,
+        candidate_shape_names,
         center,
+        distance_capture_plan,
+        normal_capture_plan,
         distance_contract,
+        normal_contract,
+        executed_query_contracts,
     )?;
-    executed_query_contracts.push(distance_trace.contract_id);
     let separation = expect_f32(&distance_value)? - radius;
     if separation <= tolerance {
-        let (normal_value, normal_trace) = execute_point_query(
-            ctx,
-            backend,
-            policy,
-            snapshot,
-            capture,
-            domain,
-            center,
-            normal_contract,
-        )?;
-        executed_query_contracts.push(normal_trace.contract_id);
         let world_normal = expect_vec3(&normal_value)?;
+        let normal_flavor = collision_contact_normal_flavor_from_provenance(provenance);
         Ok(SweepOutcome {
             hit: true,
             fraction_upper_bound: Some(1.0),
+            separation_upper_bound: Some(separation),
             point_on_probe: Some(offset_point(center, world_normal, -radius)),
             point_on_world: Some(offset_point(center, world_normal, -(separation + radius))),
             contact_normal: Some(world_normal),
+            contact_normal_provenance: provenance,
             normal_flavor,
             no_hit_certificate: None,
+            certificate: build_collision_contact_certificate(
+                "collision.sweep.contact",
+                plan_contact_guarantee(policy),
+                1.0,
+                1.0,
+                Some([1.0, 1.0]),
+                separation,
+                provenance,
+                normal_flavor,
+            ),
             interval_subdivisions: 1,
             interval_refinements: 1,
             certificate_successes: 1,
+            fallback_count: 0,
         })
     } else {
+        let certificate = build_collision_no_hit_certificate(
+            seed.certificate
+                .as_ref()
+                .map(|certificate| certificate.metadata.guarantee)
+                .unwrap_or_else(|| plan_no_hit_guarantee(policy)),
+            "collision.sweep.no_hit",
+            tolerance,
+            1.0,
+            1.0,
+            seed.normal_flavor,
+            seed.normal_provenance,
+        );
         Ok(SweepOutcome {
             hit: false,
             fraction_upper_bound: None,
+            separation_upper_bound: Some(separation),
             point_on_probe: None,
             point_on_world: None,
             contact_normal: None,
-            normal_flavor,
+            contact_normal_provenance: seed.normal_provenance,
+            normal_flavor: seed.normal_flavor,
             no_hit_certificate: Some(CollisionNoHitCertificate {
-                valid_through_fraction: 1.0,
-                guarantee: no_hit_guarantee,
+                valid_through_fraction: certificate.t_end,
+                guarantee: certificate.metadata.guarantee,
             }),
+            certificate,
             interval_subdivisions: 1,
             interval_refinements: 1,
             certificate_successes: 1,
+            fallback_count: 0,
         })
     }
 }
@@ -1428,6 +2296,120 @@ fn plan_no_hit_guarantee(
             crate::execution_policy::RequiredGuaranteeClass::IntervalBounded
         }
         _ => crate::execution_policy::RequiredGuaranteeClass::ConservativeNoFalseMiss,
+    }
+}
+
+fn plan_contact_guarantee(
+    policy: &QueryExecutionPolicy,
+) -> crate::execution_policy::RequiredGuaranteeClass {
+    policy.required_guarantee
+}
+
+fn collision_contact_normal_provenance_from_trace(
+    trace: &DirectQueryExecutionTrace,
+) -> Option<CollisionContactNormalProvenance> {
+    match trace.observability.normal_role.as_deref() {
+        Some("normal_role::certified_field_gradient") => {
+            Some(CollisionContactNormalProvenance::CertifiedFieldGradient)
+        }
+        Some("normal_role::feature_normal") => {
+            Some(CollisionContactNormalProvenance::FeatureNormal)
+        }
+        Some("normal_role::heuristic_shading_normal") => {
+            Some(CollisionContactNormalProvenance::HeuristicShadingNormal)
+        }
+        _ => None,
+    }
+}
+
+fn collision_contact_normal_flavor_from_provenance(
+    provenance: Option<CollisionContactNormalProvenance>,
+) -> CollisionContactNormalFlavor {
+    match provenance {
+        Some(CollisionContactNormalProvenance::HeuristicShadingNormal) | None => {
+            CollisionContactNormalFlavor::ConservativeUpperBound
+        }
+        Some(CollisionContactNormalProvenance::CertifiedFieldGradient)
+        | Some(CollisionContactNormalProvenance::FeatureNormal) => {
+            CollisionContactNormalFlavor::SurfaceGradient
+        }
+    }
+}
+
+fn build_collision_contact_certificate(
+    proof_family: impl Into<SmolStr>,
+    guarantee: crate::execution_policy::RequiredGuaranteeClass,
+    t_start: f32,
+    t_end: f32,
+    bracket: Option<[f32; 2]>,
+    separation_upper_bound: f32,
+    provenance: Option<CollisionContactNormalProvenance>,
+    normal_flavor: CollisionContactNormalFlavor,
+) -> RayStepCertificate {
+    let provenance = provenance
+        .map(crate::collision_contract::collision_contact_normal_provenance_name)
+        .unwrap_or("none");
+    let tolerance_context = format!(
+        "separation_upper_bound={separation_upper_bound:.6}; normal_flavor={}; normal_provenance={provenance}",
+        crate::collision_contract::collision_contact_normal_flavor_name(normal_flavor)
+    );
+    RayStepCertificate {
+        kind: StepCertificateKind::RefinementBracket,
+        metadata: RayStepCertificateMetadata {
+            guarantee,
+            proof_family: proof_family.into(),
+            subject: SmolStr::new("collision.transition"),
+            subject_kind: RayStepCertificateSubjectKind::Interval,
+            tolerance_context: SmolStr::new(tolerance_context),
+            reusable_by: CertificateReuseClass::RenderingAndCollision,
+            invalidation_reasons: vec![
+                SmolStr::new("collision distance semantics changed"),
+                SmolStr::new("collision normal provenance changed"),
+            ],
+        },
+        t_start,
+        t_end,
+        no_hit_before_t_end: true,
+        bracket,
+        provenance: None,
+    }
+}
+
+fn build_collision_no_hit_certificate(
+    guarantee: crate::execution_policy::RequiredGuaranteeClass,
+    proof_family: impl Into<SmolStr>,
+    tolerance: f32,
+    t_start: f32,
+    t_end: f32,
+    normal_flavor: CollisionContactNormalFlavor,
+    provenance: Option<CollisionContactNormalProvenance>,
+) -> RayStepCertificate {
+    let provenance = provenance
+        .map(crate::collision_contract::collision_contact_normal_provenance_name)
+        .unwrap_or("none");
+    let tolerance_context = format!(
+        "tolerance={tolerance:.6}; normal_flavor={}; normal_provenance={provenance}",
+        crate::collision_contract::collision_contact_normal_flavor_name(normal_flavor)
+    );
+    RayStepCertificate {
+        kind: StepCertificateKind::IntervalNoRootProof,
+        metadata: RayStepCertificateMetadata {
+            guarantee,
+            proof_family: proof_family.into(),
+            subject: SmolStr::new("collision.transition"),
+            subject_kind: RayStepCertificateSubjectKind::Interval,
+            tolerance_context: SmolStr::new(tolerance_context),
+            reusable_by: CertificateReuseClass::RenderingAndCollision,
+            invalidation_reasons: vec![
+                SmolStr::new("collision distance semantics changed"),
+                SmolStr::new("collision support forest changed"),
+            ],
+        },
+        t_start,
+        t_end,
+        no_hit_before_t_end: true,
+        bracket: Some([t_start, t_end]),
+        provenance: None,
     }
 }
 
@@ -1624,7 +2606,7 @@ fn component_max(lhs: [f32; 3], rhs: [f32; 3]) -> [f32; 3] {
     [lhs[0].max(rhs[0]), lhs[1].max(rhs[1]), lhs[2].max(rhs[2])]
 }
 
-fn ray_query_value(ray: CollisionRayInput) -> KernelValue {
+fn ray_query_value(ray: &CollisionRayInput) -> KernelValue {
     KernelValue::Struct(KernelStructValue {
         name: SmolStr::new("RayQuery"),
         fields: vec![

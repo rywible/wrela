@@ -90,6 +90,13 @@ pub enum CollisionContactNormalFlavor {
     ConservativeUpperBound,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CollisionContactNormalProvenance {
+    CertifiedFieldGradient,
+    FeatureNormal,
+    HeuristicShadingNormal,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CollisionAuthorityRequirement {
     pub scope: CollisionAuthorityScope,
@@ -241,6 +248,10 @@ const POINT_WITNESS_FIELDS: &[CollisionWitnessField] = &[
         name: "signed_distance",
         ty: "f32",
     },
+    CollisionWitnessField {
+        name: "normal_provenance",
+        ty: "CollisionContactNormalProvenance",
+    },
 ];
 
 const RAY_WITNESS_FIELDS: &[CollisionWitnessField] = &[
@@ -264,6 +275,10 @@ const RAY_WITNESS_FIELDS: &[CollisionWitnessField] = &[
         name: "feature_id",
         ty: "u32",
     },
+    CollisionWitnessField {
+        name: "normal_provenance",
+        ty: "CollisionContactNormalProvenance",
+    },
 ];
 
 const SPHERE_WITNESS_FIELDS: &[CollisionWitnessField] = &[
@@ -282,6 +297,10 @@ const SPHERE_WITNESS_FIELDS: &[CollisionWitnessField] = &[
     CollisionWitnessField {
         name: "signed_separation",
         ty: "f32",
+    },
+    CollisionWitnessField {
+        name: "normal_provenance",
+        ty: "CollisionContactNormalProvenance",
     },
 ];
 
@@ -306,6 +325,10 @@ const SWEEP_WITNESS_FIELDS: &[CollisionWitnessField] = &[
         name: "normal_flavor",
         ty: "CollisionContactNormalFlavor",
     },
+    CollisionWitnessField {
+        name: "normal_provenance",
+        ty: "CollisionContactNormalProvenance",
+    },
 ];
 
 const TIME_OF_IMPACT_WITNESS_FIELDS: &[CollisionWitnessField] = &[
@@ -328,6 +351,10 @@ const TIME_OF_IMPACT_WITNESS_FIELDS: &[CollisionWitnessField] = &[
     CollisionWitnessField {
         name: "normal_flavor",
         ty: "CollisionContactNormalFlavor",
+    },
+    CollisionWitnessField {
+        name: "normal_provenance",
+        ty: "CollisionContactNormalProvenance",
     },
 ];
 
@@ -501,6 +528,7 @@ pub struct CollisionPointWitness {
     pub nearest_point_on_world: [f32; 3],
     pub world_normal: [f32; 3],
     pub signed_distance: f32,
+    pub normal_provenance: CollisionContactNormalProvenance,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -510,6 +538,7 @@ pub struct CollisionRayWitness {
     pub normal: [f32; 3],
     pub root_shape_id: u32,
     pub feature_id: u32,
+    pub normal_provenance: CollisionContactNormalProvenance,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -518,6 +547,7 @@ pub struct CollisionSphereWitness {
     pub point_on_world: [f32; 3],
     pub world_normal: [f32; 3],
     pub signed_separation: f32,
+    pub normal_provenance: CollisionContactNormalProvenance,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -527,6 +557,7 @@ pub struct CollisionSweepWitness {
     pub point_on_world: [f32; 3],
     pub contact_normal: [f32; 3],
     pub normal_flavor: CollisionContactNormalFlavor,
+    pub normal_provenance: CollisionContactNormalProvenance,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -536,6 +567,7 @@ pub struct CollisionTimeOfImpactWitness {
     pub point_on_world: [f32; 3],
     pub contact_normal: [f32; 3],
     pub normal_flavor: CollisionContactNormalFlavor,
+    pub normal_provenance: CollisionContactNormalProvenance,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -670,6 +702,16 @@ pub fn collision_contact_normal_flavor_name(value: CollisionContactNormalFlavor)
     match value {
         CollisionContactNormalFlavor::SurfaceGradient => "surface_gradient",
         CollisionContactNormalFlavor::ConservativeUpperBound => "conservative_upper_bound",
+    }
+}
+
+pub fn collision_contact_normal_provenance_name(
+    value: CollisionContactNormalProvenance,
+) -> &'static str {
+    match value {
+        CollisionContactNormalProvenance::CertifiedFieldGradient => "certified_field_gradient",
+        CollisionContactNormalProvenance::FeatureNormal => "feature_normal",
+        CollisionContactNormalProvenance::HeuristicShadingNormal => "heuristic_shading_normal",
     }
 }
 

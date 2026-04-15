@@ -782,6 +782,12 @@ fn cli_collision_run_human_reports_runtime_results_and_reuse_trace() {
     assert!(stdout.contains("trace: contract=collision.point_occupancy.world"));
     assert!(stdout.contains("trace: contract=collision.sphere_sweep.transition"));
     assert!(stdout.contains("broadphase: candidate_count="));
+    assert!(stdout.contains("rejected_candidate_count="));
+    assert!(stdout.contains("pruned_node_count="));
+    assert!(stdout.contains("fallback_count="));
+    assert!(stdout.contains("interval bracket: ["));
+    assert!(stdout.contains("contact normal provenance:"));
+    assert!(stdout.contains("normal_provenance="));
     assert!(stdout.contains("reuse metrics: available=0 consumed=0 rejected=0 unavailable=2"));
     assert!(stdout.contains("reuse metrics: available=2 consumed=2 rejected=0 unavailable=0"));
     assert!(stdout.contains("reuse metrics: available=0 consumed=0 rejected=2 unavailable=0"));
@@ -816,7 +822,13 @@ fn cli_collision_run_json_reports_results_and_reuse_diagnostics() {
         .get("executions")
         .and_then(|value| value.as_array())
         .expect("executions array");
-    assert_eq!(executions.len(), 4);
+    assert_eq!(executions.len(), 9);
+    assert!(executions.iter().all(|execution| {
+        execution
+            .get("runtime_ns")
+            .and_then(|value| value.as_u64())
+            .is_some()
+    }));
     let reused = executions
         .iter()
         .find(|execution| {
@@ -840,10 +852,38 @@ fn cli_collision_run_json_reports_results_and_reuse_diagnostics() {
     );
     assert!(
         reused
+            .pointer("/trace/broadphase_rejected_candidate_count")
+            .and_then(|value| value.as_u64())
+            .is_some_and(|value| value > 0)
+    );
+    assert!(
+        reused
+            .pointer("/trace/broadphase_pruned_node_count")
+            .and_then(|value| value.as_u64())
+            .is_some_and(|value| value > 0)
+    );
+    assert!(
+        reused
+            .pointer("/trace/interval_bracket/0")
+            .and_then(|value| value.as_f64())
+            .is_some()
+    );
+    assert_eq!(
+        reused
+            .pointer("/trace/fallback_count")
+            .and_then(|value| value.as_u64()),
+        Some(0)
+    );
+    assert!(
+        reused
             .pointer("/trace/interval_subdivisions")
             .and_then(|value| value.as_u64())
             .is_some()
     );
+    let reused_trace_provenance = reused
+        .pointer("/trace/contact_normal_provenance")
+        .and_then(|value| value.as_str())
+        .expect("trace contact normal provenance");
     assert_eq!(
         reused
             .pointer("/trace/reuse_decisions/0/verdict")
@@ -855,6 +895,19 @@ fn cli_collision_run_json_reports_results_and_reuse_diagnostics() {
             .pointer("/result/kind")
             .and_then(|value| value.as_str()),
         Some("sweep")
+    );
+    assert_eq!(
+        reused
+            .pointer("/result/witness/normal_provenance")
+            .and_then(|value| value.as_str()),
+        Some(reused_trace_provenance)
+    );
+    assert_eq!(
+        reused
+            .pointer("/runtime_ns")
+            .and_then(|value| value.as_u64())
+            .map(|value| value > 0),
+        Some(true)
     );
     let rejected = executions
         .iter()
@@ -888,6 +941,36 @@ fn cli_collision_run_json_reports_results_and_reuse_diagnostics() {
             .pointer("/trace/transition/change_class")
             .and_then(|value| value.as_str()),
         Some("Presentation")
+    );
+    let ray_cast = executions
+        .iter()
+        .find(|execution| {
+            execution
+                .get("name")
+                .and_then(|value| value.as_str())
+                .is_some_and(|name| name == "ray-cast-first")
+        })
+        .expect("ray cast execution");
+    assert_eq!(
+        ray_cast
+            .pointer("/result/kind")
+            .and_then(|value| value.as_str()),
+        Some("ray_cast")
+    );
+    let toi_reused = executions
+        .iter()
+        .find(|execution| {
+            execution
+                .get("name")
+                .and_then(|value| value.as_str())
+                .is_some_and(|name| name == "time-of-impact-reused")
+        })
+        .expect("toi reused execution");
+    assert_eq!(
+        toi_reused
+            .pointer("/result/kind")
+            .and_then(|value| value.as_str()),
+        Some("time_of_impact")
     );
 }
 
@@ -8027,6 +8110,7 @@ fn cli_perf_runs_realtime_presentation_1080p120_closure_profile() {
             .and_then(|value| value.as_str()),
         Some("realtime_120")
     );
+    assert!(json.get("collision_reports").is_none());
 }
 
 #[test]
@@ -8074,6 +8158,76 @@ fn cli_perf_runs_field_engine_1080p120_closure_profile() {
         .and_then(|value| value.as_str())
         .expect("collision status");
     assert!(
+        matches!(collision_status, "not_sampled"),
+        "unexpected collision status: {collision_status}"
+    );
+    assert!(
+        json.get("presentation_reports").is_none(),
+        "field engine closure profile should not emit presentation reports"
+    );
+    assert!(
+        json.get("collision_reports").is_none(),
+        "field engine closure profile should not emit collision reports"
+    );
+}
+
+#[test]
+fn cli_collision_perf_fixture_compiles_with_region_domain_contract() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .to_path_buf();
+    let fixture = repo_root.join("benchmarks/collision_perf/tests/collision_perf_test.wr");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .arg("check")
+        .arg(&fixture)
+        .output()
+        .expect("compile collision perf fixture");
+    assert!(
+        output.status.success(),
+        "collision perf fixture failed to compile: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn cli_perf_runs_collision_perf_1080p120_closure_profile() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .to_path_buf();
+    let bench_root = repo_root.join("benchmarks/collision_perf");
+    let dir = workspace_tempdir();
+    let baseline = dir.path().join("collision_perf_1080p120.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("perf")
+        .arg("--runs=1")
+        .arg("--profile=1080p120")
+        .arg("--query-backend=cpu")
+        .arg(format!("--baseline-out={}", baseline.display()))
+        .arg(&bench_root)
+        .output()
+        .expect("run collision perf closure");
+    assert!(
+        output.status.success(),
+        "collision perf closure failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&baseline).expect("read collision baseline"))
+            .expect("parse collision baseline");
+    let closure = json.get("closure").expect("closure report");
+    let collision_status = closure
+        .pointer("/collision/status")
+        .and_then(|value| value.as_str())
+        .expect("collision status");
+    assert!(
         matches!(collision_status, "sampled" | "validated" | "violated"),
         "unexpected collision status: {collision_status}"
     );
@@ -8081,11 +8235,119 @@ fn cli_perf_runs_field_engine_1080p120_closure_profile() {
         closure
             .pointer("/collision/collision_baseline_id")
             .and_then(|value| value.as_str()),
-        Some("field_engine.phase34_cpu_oracle")
+        Some("collision_perf.phase40_cpu_oracle")
+    );
+    let collision_reports = json
+        .get("collision_reports")
+        .and_then(|value| value.as_array())
+        .expect("collision reports array");
+    assert!(!collision_reports.is_empty());
+    let report = &collision_reports[0];
+    assert_eq!(
+        report.pointer("/suite").and_then(|value| value.as_str()),
+        Some("collision_perf")
+    );
+    assert_eq!(
+        report.pointer("/command").and_then(|value| value.as_str()),
+        Some("collision-suite")
+    );
+    assert_eq!(
+        report
+            .pointer("/query_count_total")
+            .and_then(|value| value.as_u64()),
+        Some(270000)
     );
     assert!(
-        json.get("presentation_reports").is_none(),
-        "field engine closure profile should not emit presentation reports"
+        report
+            .pointer("/queries_per_sec")
+            .and_then(|value| value.as_f64())
+            .is_some()
+    );
+    assert!(
+        report
+            .pointer("/average_rejected_candidate_count")
+            .and_then(|value| value.as_f64())
+            .is_some_and(|value| value > 0.0)
+    );
+    assert!(
+        report
+            .pointer("/average_pruned_node_count")
+            .and_then(|value| value.as_f64())
+            .is_some_and(|value| value > 0.0)
+    );
+    assert!(
+        report
+            .pointer("/witness_reuse_rate")
+            .and_then(|value| value.as_f64())
+            .is_some()
+    );
+    assert!(
+        report
+            .pointer("/fallback_rate")
+            .and_then(|value| value.as_f64())
+            .is_some()
+    );
+    assert!(
+        report
+            .pointer("/executions/0/broadphase_rejected_candidate_count")
+            .and_then(|value| value.as_u64())
+            .is_some()
+    );
+    assert!(
+        report
+            .pointer("/executions/0/broadphase_pruned_node_count")
+            .and_then(|value| value.as_u64())
+            .is_some()
+    );
+    let executions = report
+        .get("executions")
+        .and_then(|value| value.as_array())
+        .expect("collision benchmark executions");
+    assert_eq!(executions.len(), 5);
+    let repeated_sweeps = executions
+        .iter()
+        .find(|execution| {
+            execution
+                .pointer("/name")
+                .and_then(|value| value.as_str())
+                .is_some_and(|name| name == "closure_1080p120_repeated_sweeps")
+        })
+        .expect("repeated sweeps execution");
+    assert_eq!(
+        repeated_sweeps
+            .pointer("/plan_name")
+            .and_then(|value| value.as_str()),
+        Some("collision.sphere_sweep.transition")
+    );
+    assert_eq!(
+        repeated_sweeps
+            .pointer("/query_count")
+            .and_then(|value| value.as_u64()),
+        Some(40000)
+    );
+    assert!(
+        repeated_sweeps
+            .pointer("/broadphase_rejected_candidate_count")
+            .and_then(|value| value.as_u64())
+            .is_some_and(|value| value > 0)
+    );
+    assert!(
+        repeated_sweeps
+            .pointer("/broadphase_pruned_node_count")
+            .and_then(|value| value.as_u64())
+            .is_some_and(|value| value > 0)
+    );
+    assert!(
+        repeated_sweeps
+            .pointer("/interval_bracket/0")
+            .and_then(|value| value.as_f64())
+            .is_some()
+    );
+    assert!(
+        repeated_sweeps
+            .pointer("/fallback_count")
+            .and_then(|value| value.as_u64())
+            .is_some()
     );
 }
 
@@ -11565,6 +11827,8 @@ fn benchmark_manifest_scenarios_resolve_via_discovery() {
         "benchmarks/micro/bench.toml",
         "benchmarks/field_engine/bench.toml",
         "benchmarks/realtime_presentation/bench.toml",
+        "benchmarks/collision_perf/bench.toml",
+        "benchmarks/collision_perf/1080p120_closure.toml",
     ];
 
     for manifest_rel in manifests {
@@ -11665,6 +11929,35 @@ fn benchmark_manifest_scenarios_resolve_via_discovery() {
                         .get("frames")
                         .and_then(|value| value.as_integer())
                         .is_some_and(|value| value > 0)
+                );
+            } else if manifest_rel.starts_with("benchmarks/collision_perf/") {
+                let collision = scenario
+                    .get("collision")
+                    .and_then(|value| value.as_table())
+                    .expect("collision perf metadata");
+                assert!(
+                    collision
+                        .get("entry")
+                        .and_then(|value| value.as_str())
+                        .is_some()
+                );
+                assert!(
+                    collision
+                        .get("region")
+                        .and_then(|value| value.as_str())
+                        .is_some()
+                );
+                assert!(
+                    collision
+                        .get("domain")
+                        .and_then(|value| value.as_str())
+                        .is_some()
+                );
+                assert!(
+                    collision
+                        .get("workload")
+                        .and_then(|value| value.as_str())
+                        .is_some()
                 );
             }
         }

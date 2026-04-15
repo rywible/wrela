@@ -1,0 +1,396 @@
+fn update_checksum(current: Integer, value: Integer) -> Integer {
+    return ((current * 41) + value) % 2147483647
+}
+
+fn compute_transition_probe_offset(step: Integer) -> Vec3 {
+    return vec3(
+        f32(step % 9) * 0.04 - 0.16,
+        f32((step / 9) % 5) * 0.03 - 0.06,
+        f32(step % 4) * -0.02
+    )
+}
+
+field exact distance collision_anchor(p: Vec3) -> F32 {
+    sphere(radius = 0.42)
+}
+
+field conservative distance collision_column(p: Vec3) -> F32 {
+    sweep = vec3(0.0, 1.76, 0.0) {
+        circle2(radius = 0.10)
+    }
+}
+
+field conservative distance collision_cap(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.58, 0.0) {
+        extrude = f32(0.14) {
+            rect2(half = vec2(0.18, 0.06))
+        }
+    }
+}
+
+field conservative distance collision_cluster(p: Vec3) -> F32 {
+    union {
+        provenance_policy = nearest
+        use collision_anchor
+        translate = vec3(1.08, 0.02, 0.0) {
+            use collision_column
+        }
+        translate = vec3(-1.38, -0.06, 0.0) {
+            use collision_cap
+        }
+    }
+}
+
+field exact distance collision_left_guard(p: Vec3) -> F32 {
+    translate = vec3(-2.55, 0.14, 0.0) {
+        sphere(radius = 0.34)
+    }
+}
+
+field exact distance collision_right_guard(p: Vec3) -> F32 {
+    translate = vec3(2.45, -0.18, 0.0) {
+        sphere(radius = 0.30)
+    }
+}
+
+material collision_surface(hit: Hit3) -> Surface {
+    shell = clamp(abs(hit.local_position.x) * 0.32 + abs(hit.local_normal.y) * 0.24, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(164.0, 142.0, 102.0) + vec3(18.0, 12.0, 8.0) * shell,
+        roughness=0.20 + shell * 0.14,
+        metalness=0.08 + clamp(hit.local_normal.z, 0.0, 1.0) * 0.10,
+        clearcoat=0.14 + clamp(hit.local_normal.y, 0.0, 1.0) * 0.12,
+        clearcoat_roughness=0.08 + abs(hit.local_position.x) * 0.08,
+        sheen=0.06 + abs(hit.local_normal.x) * 0.10,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape collision_perf_shape {
+    field = collision_cluster
+    material = collision_surface
+}
+
+shape collision_perf_left_shape {
+    field = collision_left_guard
+    material = collision_surface
+}
+
+shape collision_perf_right_shape {
+    field = collision_right_guard
+    material = collision_surface
+}
+
+region collision_perf_region() {
+    place center = collision_perf_shape
+    place left = collision_perf_left_shape
+    place right = collision_perf_right_shape
+}
+
+domain collision_perf_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = false
+    media = false
+    max_distance = 12.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+
+fn load_collision_perf_scene() -> RegionCapture {
+    return capture collision_perf_region
+}
+
+fn compute_collision_perf_point(world: RegionCapture, point: Vec3) -> F32 {
+    domain = collision_perf_domain(world = world)
+    return spatial.distance(capture = world, domain = domain, point = point)
+}
+
+fn compute_collision_perf_ray(world: RegionCapture, origin: Vec3, direction: Vec3) -> Hit3 {
+    domain = collision_perf_domain(world = world)
+    return spatial.nearest(
+        capture=world,
+        domain=domain,
+        ray=ray_query(
+            origin=origin,
+            direction=direction,
+            max_distance=12.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+}
+
+fn compute_collision_perf_transition(world: RegionCapture, step: Integer) -> Hit3 {
+    offset = compute_transition_probe_offset(step)
+    domain = collision_perf_domain(world = world)
+    return spatial.nearest(
+        capture=world,
+        domain=domain,
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0) + offset,
+            direction=normalize(vec3(0.05, -0.03, -1.0)),
+            max_distance=12.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+}
+
+fn test_collision_perf_point_occupancy_burst_ops_80000() -> Nothing {
+    world = load_collision_perf_scene()
+    world_again = load_collision_perf_scene()
+    assert value world.scene_id == world_again.scene_id
+
+    candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    field_samples_before = __wr_metrics_get(__wr_metrics_field_sample_id())
+    anchor_distance = compute_collision_perf_point(world = world, point = vec3(0.0, 0.0, 0.0))
+    cap_distance = compute_collision_perf_point(world = world, point = vec3(-1.35, -0.06, 0.0))
+
+    mutable checksum = 0
+    mutable occupied_count = 0
+    for i in 1...80000 {
+        point = vec3(
+            f32(i % 16) * 0.08 - 0.60,
+            f32((i / 16) % 10) * 0.06 - 0.24,
+            f32(i % 5) * 0.04 - 0.08
+        )
+        distance_sample = compute_collision_perf_point(world = world, point = point)
+        if distance_sample <= 0.0 {
+            occupied_count += 1
+        }
+        checksum = update_checksum(
+            current=checksum,
+            value=i32(abs(distance_sample) * 1000.0) + (i % 17)
+        )
+        if i % 8000 == 0 {
+            candidate_signal = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+            checksum = update_checksum(current=checksum, value=candidate_signal)
+        }
+    }
+
+    candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    field_samples_after = __wr_metrics_get(__wr_metrics_field_sample_id())
+    require checksum != 0 else "point occupancy checksum nonzero"
+    require occupied_count > 0 else "point occupancy hit count present"
+    require field_samples_after > field_samples_before else "point occupancy field samples observed"
+}
+
+fn test_collision_perf_dense_ray_casts_ops_72000() -> Nothing {
+    world = load_collision_perf_scene()
+    world_again = load_collision_perf_scene()
+    assert value world.scene_id == world_again.scene_id
+
+    candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    field_samples_before = __wr_metrics_get(__wr_metrics_field_sample_id())
+    baseline_hit = compute_collision_perf_ray(
+        world = world,
+        origin = vec3(0.0, 0.0, 3.0),
+        direction = vec3(0.0, 0.0, -1.0)
+    )
+
+    mutable checksum = 0
+    mutable hit_count = 0
+    for i in 1...72000 {
+        origin = vec3(
+            f32(i % 12) * 0.12 - 0.66,
+            f32((i / 12) % 8) * 0.08 - 0.28,
+            3.2 + f32(i % 3) * 0.02
+        )
+        direction = normalize(vec3(
+            f32((i % 5) - 2) * 0.04,
+            f32((i % 7) - 3) * -0.03,
+            -1.0
+        ))
+        sampled_hit = compute_collision_perf_ray(world = world, origin = origin, direction = direction)
+        if sampled_hit.hit {
+            hit_count += 1
+        }
+        checksum = update_checksum(
+            current=checksum,
+            value=sampled_hit.steps + i32(abs(sampled_hit.distance) * 100.0)
+        )
+    }
+
+    candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    field_samples_after = __wr_metrics_get(__wr_metrics_field_sample_id())
+    require checksum != 0 else "ray cast checksum nonzero"
+    require hit_count > 0 else "ray cast hits present"
+    require field_samples_after > field_samples_before else "ray cast field samples observed"
+}
+
+fn test_collision_perf_overlap_burst_ops_48000() -> Nothing {
+    world = load_collision_perf_scene()
+    world_again = load_collision_perf_scene()
+    assert value world.scene_id == world_again.scene_id
+
+    support_before = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    baseline_hit = compute_collision_perf_ray(
+        world = world,
+        origin = vec3(-1.35, 0.0, 3.0),
+        direction = vec3(0.0, 0.0, -1.0)
+    )
+
+    mutable checksum = 0
+    mutable overlap_signal = 0
+    for i in 1...48000 {
+        if i % 2 == 0 {
+            point = vec3(
+                f32(i % 10) * 0.06 - 0.24,
+                f32((i / 10) % 10) * 0.06 - 0.24,
+                0.0
+            )
+            distance_sample = compute_collision_perf_point(world = world, point = point)
+            checksum = update_checksum(
+                current=checksum,
+                value=i32(abs(distance_sample) * 1000.0) + (i % 23)
+            )
+        } else {
+            sampled_hit = compute_collision_perf_ray(
+                world = world,
+                origin = vec3(-1.35 + f32(i % 4) * 0.03, 0.0, 3.0),
+                direction = vec3(0.0, 0.0, -1.0)
+            )
+            checksum = update_checksum(
+                current=checksum,
+                value=sampled_hit.steps + i32(abs(sampled_hit.distance) * 100.0)
+            )
+        }
+        if i % 6000 == 0 {
+            overlap_signal += __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+            overlap_signal += __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+        }
+    }
+
+    support_after = __wr_metrics_get(__wr_metrics_scene_trace_support_pruned_branch_id())
+    candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    require checksum != 0 else "overlap checksum nonzero"
+    require support_after >= support_before else "overlap support metric monotonic"
+}
+
+fn test_collision_perf_repeated_sweeps_ops_40000() -> Nothing {
+    world = load_collision_perf_scene()
+    world_again = load_collision_perf_scene()
+    assert value world.scene_id == world_again.scene_id
+
+    candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    field_samples_before = __wr_metrics_get(__wr_metrics_field_sample_id())
+    anchor_hit = compute_collision_perf_transition(world = world, step = 1)
+    require anchor_hit.hit == true else "repeated sweeps anchor hit"
+
+    mutable checksum = 0
+    mutable sweep_signal = 0
+    for i in 1...40000 {
+        mutable probe_hit = compute_collision_perf_ray(
+            world = world,
+            origin = vec3(0.0, 0.0, 3.0) + compute_transition_probe_offset(i),
+            direction = normalize(vec3(0.03, -0.04, -1.0))
+        )
+        if i % 4 == 0 {
+            probe_hit = compute_collision_perf_transition(world = world, step = i)
+        } else if i % 4 == 1 {
+            probe_hit = compute_collision_perf_ray(
+                world = world,
+                origin = vec3(0.0, 0.0, 3.0) + compute_transition_probe_offset(i),
+                direction = normalize(vec3(0.03, -0.04, -1.0))
+            )
+        } else if i % 4 == 2 {
+            probe_hit = compute_collision_perf_ray(
+                world = world,
+                origin = vec3(1.08, 0.02, 3.0) + compute_transition_probe_offset(i),
+                direction = normalize(vec3(-0.02, -0.03, -1.0))
+            )
+        } else {
+            probe_hit = compute_collision_perf_ray(
+                world = world,
+                origin = vec3(-1.38, -0.06, 3.0) + compute_transition_probe_offset(i),
+                direction = normalize(vec3(0.01, -0.04, -1.0))
+            )
+        }
+        checksum = update_checksum(
+            current=checksum,
+            value=probe_hit.steps + i32(abs(probe_hit.distance) * 100.0)
+        )
+        if probe_hit.hit {
+            sweep_signal += 1
+        }
+    }
+
+    candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    field_samples_after = __wr_metrics_get(__wr_metrics_field_sample_id())
+    require checksum != 0 else "repeated sweeps checksum nonzero"
+    require sweep_signal > 0 else "repeated sweeps hits present"
+    require field_samples_after > field_samples_before else "repeated sweeps field samples observed"
+}
+
+@serial
+fn test_collision_perf_toi_transition_reuse_ops_30000() -> Nothing {
+    world = load_collision_perf_scene()
+    world_again = load_collision_perf_scene()
+    assert value world.scene_id == world_again.scene_id
+
+    candidate_before = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    field_samples_before = __wr_metrics_get(__wr_metrics_field_sample_id())
+    anchor_hit = compute_collision_perf_transition(world = world, step = 2)
+    support_hit = compute_collision_perf_transition(world = world, step = 7)
+    require anchor_hit.hit == true else "toi transition anchor hit"
+    require support_hit.hit == true else "toi transition support hit"
+
+    mutable checksum = 0
+    mutable transition_signal = 0
+    mutable hit_count = 0
+    for i in 1...30000 {
+        offset = compute_transition_probe_offset(i)
+        mutable probe_hit = compute_collision_perf_ray(
+            world = world,
+            origin = vec3(0.0, 0.0, 3.0) + offset,
+            direction = normalize(vec3(0.04, -0.03, -1.0))
+        )
+        if i % 3 == 0 {
+            probe_hit = compute_collision_perf_ray(
+                world = world,
+                origin = vec3(0.0, 0.0, 3.0) + offset,
+                direction = normalize(vec3(0.04, -0.03, -1.0))
+            )
+        } else if i % 3 == 1 {
+            probe_hit = compute_collision_perf_ray(
+                world = world,
+                origin = vec3(1.08, 0.02, 3.0) + offset,
+                direction = normalize(vec3(-0.04, -0.02, -1.0))
+            )
+        } else {
+            probe_hit = compute_collision_perf_ray(
+                world = world,
+                origin = vec3(-1.38, -0.06, 3.0) + offset,
+                direction = normalize(vec3(0.02, -0.05, -1.0))
+            )
+        }
+        if probe_hit.hit {
+            hit_count += 1
+        }
+        checksum = update_checksum(
+            current=checksum,
+            value=probe_hit.steps + i32(abs(probe_hit.distance) * 100.0)
+        )
+        transition_signal += i32(i % 5)
+        if i % 6000 == 0 {
+            probe_point = vec3(0.0, 0.0, 0.0) + offset
+            occupancy_sample = compute_collision_perf_point(world = world, point = probe_point)
+            checksum = update_checksum(
+                current=checksum,
+                value=i32(abs(occupancy_sample) * 1000.0)
+            )
+        }
+    }
+
+    candidate_after = __wr_metrics_get(__wr_metrics_scene_trace_candidate_branch_id())
+    field_samples_after = __wr_metrics_get(__wr_metrics_field_sample_id())
+    require checksum != 0 else "toi transition checksum nonzero"
+    require transition_signal > 0 else "toi transition signal nonzero"
+    require hit_count > 0 else "toi transition hits present"
+    require field_samples_after > field_samples_before else "toi transition field samples observed"
+}

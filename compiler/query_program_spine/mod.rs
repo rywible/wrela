@@ -32,6 +32,8 @@ pub use validate::{
 };
 
 pub const QUERY_PROGRAM_SPINE_SCHEMA_VERSION: u32 = 1;
+const SHARED_ACCELERATION_ACTOR: &str = "shared_acceleration";
+const SHARED_ACCELERATION_NODE_ID: &str = "invoke:shared_acceleration";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ObserverKind {
@@ -348,6 +350,12 @@ pub fn project_presentation_plan(plan: &PresentationPlan) -> ObserverProjection 
         }
     }));
 
+    nodes.push(shared_acceleration_node(
+        ObserverKind::Presentation,
+        "PresentationPlan",
+    ));
+    nodes.extend(shared_acceleration_store_nodes(&semantic_artifacts));
+
     nodes.extend(
         artifact_uses
             .iter()
@@ -472,6 +480,19 @@ pub fn project_presentation_plan(plan: &PresentationPlan) -> ObserverProjection 
             }
         }
     }
+    dependencies.extend(
+        artifact_uses
+            .iter()
+            .filter(|use_record| use_record.actor == SHARED_ACCELERATION_ACTOR)
+            .map(|use_record| SpineDependencyEdge {
+                from: SmolStr::new(SHARED_ACCELERATION_NODE_ID),
+                to: SmolStr::new(format!("artifact:{}", use_record.artifact_id)),
+                kind: SpineEdgeKind::ProducesArtifact,
+                subject: Some(use_record.artifact_id.clone()),
+                required_validity: None,
+                lossy: false,
+            }),
+    );
     for output in &outputs {
         if let Some(artifact_id) = attachment_to_artifact.get(&output.binding) {
             dependencies.push(SpineDependencyEdge {
@@ -665,6 +686,12 @@ pub fn project_collision_plan(plan: &CollisionPlan) -> ObserverProjection {
         ],
     }));
 
+    nodes.push(shared_acceleration_node(
+        ObserverKind::Collision,
+        "CollisionPlan",
+    ));
+    nodes.extend(shared_acceleration_store_nodes(&semantic_artifacts));
+
     nodes.extend(
         artifact_uses
             .iter()
@@ -793,6 +820,19 @@ pub fn project_collision_plan(plan: &CollisionPlan) -> ObserverProjection {
             }
         }
     }
+    dependencies.extend(
+        artifact_uses
+            .iter()
+            .filter(|use_record| use_record.actor == SHARED_ACCELERATION_ACTOR)
+            .map(|use_record| SpineDependencyEdge {
+                from: SmolStr::new(SHARED_ACCELERATION_NODE_ID),
+                to: SmolStr::new(format!("artifact:{}", use_record.artifact_id)),
+                kind: SpineEdgeKind::ProducesArtifact,
+                subject: Some(use_record.artifact_id.clone()),
+                required_validity: None,
+                lossy: false,
+            }),
+    );
     let mut value_producers = BTreeMap::new();
     for pass in &plan.passes {
         if matches!(pass.kind, CollisionPassKind::MaterializeOutput { .. }) {
@@ -921,6 +961,68 @@ fn spine_output_node(binding: &SpineOutputBinding) -> SpineNode {
         required_validity: None,
         notes: binding.notes.clone(),
     }
+}
+
+fn shared_acceleration_node(observer_kind: ObserverKind, execution_owner: &str) -> SpineNode {
+    SpineNode {
+        id: SmolStr::new(SHARED_ACCELERATION_NODE_ID),
+        family: SpineNodeFamily::PrimitiveInvocation,
+        label: SmolStr::new("shared_acceleration"),
+        query_contracts: Vec::new(),
+        artifact_ids: Vec::new(),
+        required_validity: None,
+        notes: vec![
+            SmolStr::new("pass_id=shared_acceleration"),
+            SmolStr::new(format!("observer={}", observer_kind_name(observer_kind))),
+            SmolStr::new(format!("execution_owner={}", execution_owner)),
+        ],
+    }
+}
+
+fn shared_acceleration_store_nodes(
+    semantic_artifacts: &[SemanticArtifactContract],
+) -> Vec<SpineNode> {
+    semantic_artifacts
+        .iter()
+        .filter_map(|contract| {
+            let acceleration = contract.acceleration.as_ref()?;
+            Some(SpineNode {
+                id: SmolStr::new(format!("artifact:{}", contract.id)),
+                family: SpineNodeFamily::ArtifactStore,
+                label: contract.logical_schema.name.clone(),
+                query_contracts: Vec::new(),
+                artifact_ids: vec![contract.id.clone()],
+                required_validity: Some(contract.validity.clone()),
+                notes: vec![
+                    SmolStr::new(format!("contract_id={}", contract.id)),
+                    SmolStr::new(format!("producer={}", contract.producer)),
+                    SmolStr::new(format!("consumer={}", contract.consumer)),
+                    SmolStr::new(format!(
+                        "observer={}",
+                        match acceleration.observer {
+                            crate::artifact_contract::ArtifactObserver::Query => "query",
+                            crate::artifact_contract::ArtifactObserver::Presentation => {
+                                "presentation"
+                            }
+                            crate::artifact_contract::ArtifactObserver::Collision => "collision",
+                        }
+                    )),
+                    SmolStr::new(format!("usage_site={}", acceleration.usage_site)),
+                    SmolStr::new(format!(
+                        "residency={}",
+                        match acceleration.residency {
+                            crate::artifact_contract::ArtifactResidency::SharedSnapshot => {
+                                "shared_snapshot"
+                            }
+                            crate::artifact_contract::ArtifactResidency::ObserverLocal => {
+                                "observer_local"
+                            }
+                        }
+                    )),
+                ],
+            })
+        })
+        .collect()
 }
 
 fn primitive_presentation_notes(pass: &crate::presentation_plan::PresentationPass) -> Vec<SmolStr> {

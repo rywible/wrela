@@ -84,15 +84,18 @@ pub enum CollisionPassKind {
         distance_contract: QueryContractId,
         normal_contract: QueryContractId,
         support_artifact: SmolStr,
+        broadphase_artifact: SmolStr,
     },
     CastRayFirstHit {
         trace_contract: QueryContractId,
         support_artifact: SmolStr,
+        broadphase_artifact: SmolStr,
     },
     ResolveSphereOverlap {
         distance_contract: QueryContractId,
         normal_contract: QueryContractId,
         support_artifact: SmolStr,
+        broadphase_artifact: SmolStr,
         supported_shape: SmolStr,
     },
     SweepSphereFirstContact {
@@ -160,6 +163,7 @@ pub enum CollisionReuseReason {
     CompatibilityRejected,
     ValidityRejected,
     ArtifactUnavailable,
+    RenderingOnlyCertificate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,7 +185,7 @@ pub struct CollisionReuseMetrics {
     pub diagnostics: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CollisionExecutionTrace {
     pub contract_id: CollisionContractId,
     pub family: CollisionFamilyId,
@@ -194,9 +198,15 @@ pub struct CollisionExecutionTrace {
     pub executed_query_contracts: Vec<QueryContractId>,
     pub artifact_store: ArtifactStoreReport,
     pub broadphase_candidate_count: u32,
+    pub broadphase_rejected_candidate_count: u32,
+    pub broadphase_pruned_node_count: u32,
+    pub interval_bracket: Option<[f32; 2]>,
     pub interval_subdivisions: u32,
     pub interval_refinements: u32,
     pub certificate_successes: u32,
+    pub fallback_count: u32,
+    pub contact_normal_provenance:
+        Option<crate::collision_contract::CollisionContactNormalProvenance>,
     pub reuse_metrics: CollisionReuseMetrics,
     pub reuse_decisions: Vec<CollisionReuseDecision>,
 }
@@ -624,6 +634,7 @@ impl CollisionPlan {
                     distance_contract,
                     normal_contract,
                     support_artifact,
+                    broadphase_artifact,
                 } => {
                     evaluation_passes += 1;
                     validate_static_distance_pass(
@@ -632,6 +643,7 @@ impl CollisionPlan {
                         *distance_contract,
                         *normal_contract,
                         support_artifact,
+                        broadphase_artifact,
                         &available_artifacts,
                         &mut available_values,
                         &mut errors,
@@ -640,6 +652,7 @@ impl CollisionPlan {
                 CollisionPassKind::CastRayFirstHit {
                     trace_contract,
                     support_artifact,
+                    broadphase_artifact,
                 } => {
                     evaluation_passes += 1;
                     if descriptor.question != CollisionQuestionId::RayCastFirstHit {
@@ -654,9 +667,10 @@ impl CollisionPlan {
                             pass.id
                         )));
                     }
-                    validate_single_support_consumer(
+                    validate_broadphase_consumer(
                         pass,
                         support_artifact,
+                        broadphase_artifact,
                         &available_artifacts,
                         &mut available_values,
                         &mut errors,
@@ -666,6 +680,7 @@ impl CollisionPlan {
                     distance_contract,
                     normal_contract,
                     support_artifact,
+                    broadphase_artifact,
                     supported_shape,
                 } => {
                     evaluation_passes += 1;
@@ -689,9 +704,10 @@ impl CollisionPlan {
                             pass.id, supported_shape
                         )));
                     }
-                    validate_single_support_consumer(
+                    validate_broadphase_consumer(
                         pass,
                         support_artifact,
+                        broadphase_artifact,
                         &available_artifacts,
                         &mut available_values,
                         &mut errors,
@@ -763,12 +779,7 @@ impl CollisionPlan {
                 self.name
             )));
         }
-        let expected_broadphase =
-            if matches!(descriptor.target, CollisionTargetKind::WorldTransition) {
-                1
-            } else {
-                0
-            };
+        let expected_broadphase = 1;
         if broadphase_passes != expected_broadphase {
             errors.push(validation_error(format!(
                 "collision plan '{}' must declare {} broadphase candidate pass(es)",
@@ -872,7 +883,9 @@ pub fn collision_history_compatibility_hash(
 fn static_point_plan(backend: DispatchBackend) -> CollisionPlan {
     let descriptor = descriptor(COLLISION_POINT_OCCUPANCY_WORLD);
     let support_id = SmolStr::new("artifact.support_summary.point_occupancy");
+    let broadphase_id = SmolStr::new("artifact.broadphase_candidates.point_occupancy");
     let gather = SmolStr::new("candidate_gather");
+    let broadphase = SmolStr::new("broadphase_candidates");
     CollisionPlan {
         name: SmolStr::new("collision.point_occupancy.world"),
         contract_id: descriptor.id,
@@ -899,13 +912,23 @@ fn static_point_plan(backend: DispatchBackend) -> CollisionPlan {
                 materializes: Vec::new(),
             },
             CollisionPass {
+                id: broadphase.clone(),
+                kind: CollisionPassKind::BuildBroadphaseCandidates {
+                    support_artifact: support_id.clone(),
+                    artifact_id: broadphase_id.clone(),
+                },
+                consumes: vec![support_id.clone()],
+                materializes: Vec::new(),
+            },
+            CollisionPass {
                 id: SmolStr::new("point_occupancy"),
                 kind: CollisionPassKind::EvaluatePointOccupancy {
                     distance_contract: query_contract::SPATIAL_DISTANCE_WORLD,
                     normal_contract: query_contract::SPATIAL_NORMAL_WORLD,
                     support_artifact: support_id.clone(),
+                    broadphase_artifact: broadphase_id.clone(),
                 },
-                consumes: vec![support_id.clone()],
+                consumes: vec![support_id.clone(), broadphase_id.clone()],
                 materializes: vec![SmolStr::new("occupancy")],
             },
             CollisionPass {
@@ -917,7 +940,10 @@ fn static_point_plan(backend: DispatchBackend) -> CollisionPlan {
                 materializes: vec![SmolStr::new("occupancy")],
             },
         ],
-        artifacts: vec![support_summary_artifact(descriptor, gather, support_id)],
+        artifacts: vec![
+            support_summary_artifact(descriptor, gather, support_id),
+            broadphase_candidates_artifact(descriptor, broadphase, broadphase_id),
+        ],
         outputs: vec![output_binding(
             "occupancy",
             descriptor.output_kind,
@@ -930,7 +956,9 @@ fn static_point_plan(backend: DispatchBackend) -> CollisionPlan {
 fn static_ray_plan(backend: DispatchBackend) -> CollisionPlan {
     let descriptor = descriptor(COLLISION_RAY_CAST_WORLD);
     let support_id = SmolStr::new("artifact.support_summary.ray_cast");
+    let broadphase_id = SmolStr::new("artifact.broadphase_candidates.ray_cast");
     let gather = SmolStr::new("candidate_gather");
+    let broadphase = SmolStr::new("broadphase_candidates");
     CollisionPlan {
         name: SmolStr::new("collision.ray_cast.world"),
         contract_id: descriptor.id,
@@ -957,12 +985,22 @@ fn static_ray_plan(backend: DispatchBackend) -> CollisionPlan {
                 materializes: Vec::new(),
             },
             CollisionPass {
+                id: broadphase.clone(),
+                kind: CollisionPassKind::BuildBroadphaseCandidates {
+                    support_artifact: support_id.clone(),
+                    artifact_id: broadphase_id.clone(),
+                },
+                consumes: vec![support_id.clone()],
+                materializes: Vec::new(),
+            },
+            CollisionPass {
                 id: SmolStr::new("ray_cast"),
                 kind: CollisionPassKind::CastRayFirstHit {
                     trace_contract: query_contract::SPATIAL_NEAREST_WORLD,
                     support_artifact: support_id.clone(),
+                    broadphase_artifact: broadphase_id.clone(),
                 },
-                consumes: vec![support_id.clone()],
+                consumes: vec![support_id.clone(), broadphase_id.clone()],
                 materializes: vec![SmolStr::new("ray_cast")],
             },
             CollisionPass {
@@ -974,7 +1012,10 @@ fn static_ray_plan(backend: DispatchBackend) -> CollisionPlan {
                 materializes: vec![SmolStr::new("ray_cast")],
             },
         ],
-        artifacts: vec![support_summary_artifact(descriptor, gather, support_id)],
+        artifacts: vec![
+            support_summary_artifact(descriptor, gather, support_id),
+            broadphase_candidates_artifact(descriptor, broadphase, broadphase_id),
+        ],
         outputs: vec![output_binding(
             "ray_cast",
             descriptor.output_kind,
@@ -987,7 +1028,9 @@ fn static_ray_plan(backend: DispatchBackend) -> CollisionPlan {
 fn static_overlap_plan(backend: DispatchBackend) -> CollisionPlan {
     let descriptor = descriptor(COLLISION_SPHERE_OVERLAP_WORLD);
     let support_id = SmolStr::new("artifact.support_summary.sphere_overlap");
+    let broadphase_id = SmolStr::new("artifact.broadphase_candidates.sphere_overlap");
     let gather = SmolStr::new("candidate_gather");
+    let broadphase = SmolStr::new("broadphase_candidates");
     CollisionPlan {
         name: SmolStr::new("collision.sphere_overlap.world"),
         contract_id: descriptor.id,
@@ -1018,14 +1061,24 @@ fn static_overlap_plan(backend: DispatchBackend) -> CollisionPlan {
                 materializes: Vec::new(),
             },
             CollisionPass {
+                id: broadphase.clone(),
+                kind: CollisionPassKind::BuildBroadphaseCandidates {
+                    support_artifact: support_id.clone(),
+                    artifact_id: broadphase_id.clone(),
+                },
+                consumes: vec![support_id.clone()],
+                materializes: Vec::new(),
+            },
+            CollisionPass {
                 id: SmolStr::new("sphere_overlap"),
                 kind: CollisionPassKind::ResolveSphereOverlap {
                     distance_contract: query_contract::SPATIAL_DISTANCE_WORLD,
                     normal_contract: query_contract::SPATIAL_NORMAL_WORLD,
                     support_artifact: support_id.clone(),
+                    broadphase_artifact: broadphase_id.clone(),
                     supported_shape: SmolStr::new("sphere"),
                 },
-                consumes: vec![support_id.clone()],
+                consumes: vec![support_id.clone(), broadphase_id.clone()],
                 materializes: vec![SmolStr::new("sphere_overlap")],
             },
             CollisionPass {
@@ -1037,7 +1090,10 @@ fn static_overlap_plan(backend: DispatchBackend) -> CollisionPlan {
                 materializes: vec![SmolStr::new("sphere_overlap")],
             },
         ],
-        artifacts: vec![support_summary_artifact(descriptor, gather, support_id)],
+        artifacts: vec![
+            support_summary_artifact(descriptor, gather, support_id),
+            broadphase_candidates_artifact(descriptor, broadphase, broadphase_id),
+        ],
         outputs: vec![output_binding(
             "sphere_overlap",
             descriptor.output_kind,
@@ -1617,6 +1673,7 @@ fn validate_static_distance_pass(
     distance_contract: QueryContractId,
     normal_contract: QueryContractId,
     support_artifact: &SmolStr,
+    broadphase_artifact: &SmolStr,
     available_artifacts: &BTreeSet<SmolStr>,
     available_values: &mut BTreeSet<SmolStr>,
     errors: &mut Vec<CollisionPlanValidationError>,
@@ -1637,32 +1694,39 @@ fn validate_static_distance_pass(
             pass.id
         )));
     }
-    validate_single_support_consumer(
+    validate_broadphase_consumer(
         pass,
         support_artifact,
+        broadphase_artifact,
         available_artifacts,
         available_values,
         errors,
     );
 }
 
-fn validate_single_support_consumer(
+fn validate_broadphase_consumer(
     pass: &CollisionPass,
     support_artifact: &SmolStr,
+    broadphase_artifact: &SmolStr,
     available_artifacts: &BTreeSet<SmolStr>,
     available_values: &mut BTreeSet<SmolStr>,
     errors: &mut Vec<CollisionPlanValidationError>,
 ) {
-    if !available_artifacts.contains(support_artifact) {
-        errors.push(validation_error(format!(
-            "collision pass '{}' consumes undeclared support artifact '{}'",
-            pass.id, support_artifact
-        )));
+    for artifact_id in [support_artifact, broadphase_artifact] {
+        if !available_artifacts.contains(artifact_id) {
+            errors.push(validation_error(format!(
+                "collision pass '{}' consumes undeclared support artifact '{}'",
+                pass.id, artifact_id
+            )));
+        }
     }
-    if pass.consumes.len() != 1 || pass.consumes[0] != *support_artifact {
+    if pass.consumes.len() != 2
+        || pass.consumes[0] != *support_artifact
+        || pass.consumes[1] != *broadphase_artifact
+    {
         errors.push(validation_error(format!(
-            "collision pass '{}' must consume support artifact '{}'",
-            pass.id, support_artifact
+            "collision pass '{}' must consume support and broadphase artifacts in order",
+            pass.id
         )));
     }
     if pass.materializes.len() != 1 {
@@ -1796,7 +1860,10 @@ fn validate_output_materialization(
 
 fn expected_artifact_kinds(target: CollisionTargetKind) -> Vec<CollisionArtifactKind> {
     match target {
-        CollisionTargetKind::WorldSnapshot => vec![CollisionArtifactKind::SupportSummary],
+        CollisionTargetKind::WorldSnapshot => vec![
+            CollisionArtifactKind::SupportSummary,
+            CollisionArtifactKind::BroadphaseCandidates,
+        ],
         CollisionTargetKind::WorldTransition => vec![
             CollisionArtifactKind::SupportSummary,
             CollisionArtifactKind::BroadphaseCandidates,
@@ -1843,5 +1910,6 @@ pub fn collision_reuse_reason_name(value: CollisionReuseReason) -> &'static str 
         CollisionReuseReason::CompatibilityRejected => "compatibility_rejected",
         CollisionReuseReason::ValidityRejected => "validity_rejected",
         CollisionReuseReason::ArtifactUnavailable => "artifact_unavailable",
+        CollisionReuseReason::RenderingOnlyCertificate => "rendering_only_certificate",
     }
 }

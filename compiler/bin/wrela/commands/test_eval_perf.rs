@@ -820,6 +820,8 @@ pub(super) struct PerfReport {
     pub(super) closure: Option<wrela::perf_target::PerfClosureReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) presentation_reports: Option<Vec<PresentationBenchmarkReport>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) collision_reports: Option<Vec<CollisionBenchmarkReport>>,
 }
 
 #[derive(Debug, Clone)]
@@ -904,6 +906,8 @@ pub(super) struct BenchmarkScenario {
     pub(super) allow_unstable: bool,
     #[serde(default)]
     pub(super) presentation: Option<BenchmarkPresentationSpec>,
+    #[serde(default)]
+    pub(super) collision: Option<BenchmarkCollisionSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -924,6 +928,15 @@ pub(super) struct BenchmarkPresentationSpec {
     pub(super) camera_forward: [f32; 3],
     pub(super) camera_up: [f32; 3],
     pub(super) vertical_fov_degrees: f32,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub(super) struct BenchmarkCollisionSpec {
+    #[serde(default)]
+    pub(super) entry: Option<String>,
+    pub(super) region: String,
+    pub(super) domain: String,
+    pub(super) workload: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -981,6 +994,59 @@ pub(super) struct PresentationBenchmarkComparison {
     pub(super) candidate_count_before_pruning_delta_vs_dense_only: i64,
     pub(super) dense_only_candidate_count_after_pruning: u32,
     pub(super) candidate_count_after_pruning_delta_vs_dense_only: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(super) struct CollisionBenchmarkReport {
+    pub(super) suite: String,
+    pub(super) backend: String,
+    pub(super) command: String,
+    pub(super) query_count_total: u64,
+    pub(super) total_runtime_ns: u128,
+    pub(super) queries_per_sec: f64,
+    pub(super) average_candidate_count: f64,
+    pub(super) average_rejected_candidate_count: f64,
+    pub(super) average_pruned_node_count: f64,
+    pub(super) average_interval_subdivisions: f64,
+    pub(super) average_interval_refinements: f64,
+    pub(super) average_certificate_successes: f64,
+    pub(super) witness_reuse_rate: f64,
+    pub(super) fallback_rate: f64,
+    pub(super) available_count_total: u64,
+    pub(super) consumed_count_total: u64,
+    pub(super) rejected_count_total: u64,
+    pub(super) unavailable_count_total: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) executions: Vec<CollisionBenchmarkExecutionReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(super) struct CollisionBenchmarkExecutionReport {
+    pub(super) name: String,
+    pub(super) plan_name: String,
+    pub(super) contract_id: String,
+    #[serde(default)]
+    pub(super) query_count: u64,
+    pub(super) runtime_ns: u128,
+    pub(super) queries_per_sec: f64,
+    pub(super) broadphase_candidate_count: u32,
+    pub(super) broadphase_rejected_candidate_count: u32,
+    pub(super) broadphase_pruned_node_count: u32,
+    pub(super) interval_subdivisions: u32,
+    pub(super) interval_refinements: u32,
+    pub(super) certificate_successes: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) interval_bracket: Option<[f32; 2]>,
+    #[serde(default)]
+    pub(super) fallback_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) contact_normal_provenance: Option<String>,
+    pub(super) available_count: u32,
+    pub(super) consumed_count: u32,
+    pub(super) rejected_count: u32,
+    pub(super) unavailable_count: u32,
+    pub(super) witness_reuse_rate: f64,
+    pub(super) fallback_rate: f64,
 }
 
 impl BenchmarkManifest {

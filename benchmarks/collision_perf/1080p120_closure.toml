@@ -1,0 +1,57 @@
+version = 1
+suite = "collision_perf"
+
+[profiles.closure_1080p120]
+warmup_pairs = 4
+measure_pairs = 12
+coverage = "all"
+
+[[scenarios]]
+id = "closure_1080p120_point_occupancy_burst"
+test_name = "tests/collision_perf::test_collision_perf_point_occupancy_burst_ops_80000"
+ops = 80000
+class = "closure"
+min_runtime_ms = 900
+timeout_ms = 180000
+allow_unstable = false
+collision = { entry = "tests/collision_perf_test.wr", region = "collision_perf_region", domain = "collision_perf_domain", workload = "point_occupancy_burst" }
+
+[[scenarios]]
+id = "closure_1080p120_dense_ray_casts"
+test_name = "tests/collision_perf::test_collision_perf_dense_ray_casts_ops_72000"
+ops = 72000
+class = "closure"
+min_runtime_ms = 900
+timeout_ms = 180000
+allow_unstable = false
+collision = { entry = "tests/collision_perf_test.wr", region = "collision_perf_region", domain = "collision_perf_domain", workload = "dense_ray_casts" }
+
+[[scenarios]]
+id = "closure_1080p120_overlap_burst"
+test_name = "tests/collision_perf::test_collision_perf_overlap_burst_ops_48000"
+ops = 48000
+class = "closure"
+min_runtime_ms = 900
+timeout_ms = 180000
+allow_unstable = false
+collision = { entry = "tests/collision_perf_test.wr", region = "collision_perf_region", domain = "collision_perf_domain", workload = "overlap_burst" }
+
+[[scenarios]]
+id = "closure_1080p120_repeated_sweeps"
+test_name = "tests/collision_perf::test_collision_perf_repeated_sweeps_ops_40000"
+ops = 40000
+class = "closure"
+min_runtime_ms = 900
+timeout_ms = 180000
+allow_unstable = false
+collision = { entry = "tests/collision_perf_test.wr", region = "collision_perf_region", domain = "collision_perf_domain", workload = "repeated_sweeps" }
+
+[[scenarios]]
+id = "closure_1080p120_toi_transition_reuse"
+test_name = "tests/collision_perf::test_collision_perf_toi_transition_reuse_ops_30000"
+ops = 30000
+class = "closure"
+min_runtime_ms = 900
+timeout_ms = 180000
+allow_unstable = false
+collision = { entry = "tests/collision_perf_test.wr", region = "collision_perf_region", domain = "collision_perf_domain", workload = "toi_transition_reuse" }

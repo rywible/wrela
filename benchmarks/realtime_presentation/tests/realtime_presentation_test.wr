@@ -10,9 +10,9 @@ field conservative distance dense_constructive_shell(p: Vec3) -> F32 {
 }
 
 field conservative distance dense_constructive_bridge(p: Vec3) -> F32 {
-    bend = vec3(0.0, 0.18, 0.0) {
-        sweep = vec3(0.68, 0.0, 0.0) {
-            circle2(radius = 0.06)
+    translate = vec3(0.34, 0.18, 0.0) {
+        extrude = f32(0.12) {
+            rounded_rect2(half = vec2(0.28, 0.06), radius = 0.03)
         }
     }
 }
@@ -193,6 +193,14 @@ field conservative distance mixed_opaque_conservative_guard(p: Vec3) -> F32 {
 }
 
 field conservative distance mixed_opaque_conservative_field(p: Vec3) -> F32 {
+    support = Support3(bounds=Bounds3(
+        min=vec3(1.30, -0.95, -0.70),
+        max=vec3(2.70, 0.95, 0.70)
+    ))
+    bounds = Bounds3(
+        min=vec3(1.30, -0.95, -0.70),
+        max=vec3(2.70, 0.95, 0.70)
+    )
     union {
         provenance_policy = nearest
         use mixed_opaque_conservative_core

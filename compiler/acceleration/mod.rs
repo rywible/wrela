@@ -510,6 +510,9 @@ fn artifact_validity(kind: AccelerationArtifactKind) -> ArtifactValidityRule {
             ArtifactValidityRule::predicate(
                 ArtifactValidityPredicate::SnapshotLineageMatchesCurrent,
             ),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::CompatibleChange(
+                ChangeCompatibility::new(ChangeClass::Presentation),
+            )),
             ArtifactValidityRule::predicate(ArtifactValidityPredicate::PolicyDigestMatches),
             ArtifactValidityRule::predicate(ArtifactValidityPredicate::HistoryCompatibilityMatches),
             ArtifactValidityRule::predicate(ArtifactValidityPredicate::EvidenceSummaryMatches),
@@ -573,8 +576,8 @@ pub fn observer_acceleration_contracts(
                     usage_site,
                 }),
                 validity: artifact_validity(kind),
-                producer: SmolStr::new(owner),
-                consumer: SmolStr::new("shared_acceleration"),
+                producer: SmolStr::new("shared_acceleration"),
+                consumer: SmolStr::new(owner),
                 deterministic: true,
                 version: 1,
                 transition: None,

@@ -2,7 +2,8 @@ use smol_str::SmolStr;
 use wrela::collision_contract::{
     COLLISION_POINT_OCCUPANCY_WORLD, COLLISION_SPHERE_SWEEP_TRANSITION,
     COLLISION_TIME_OF_IMPACT_TRANSITION, CollisionAuthorityScope, CollisionContactNormalFlavor,
-    CollisionOccupancyClass, CollisionResult, CollisionTargetKind, collision_contracts,
+    CollisionContactNormalProvenance, CollisionOccupancyClass, CollisionResult,
+    CollisionTargetKind, collision_contracts,
 };
 use wrela::collision_plan::{
     CollisionArtifactKind, CollisionPlan, CollisionQueryKind, collision_plans_with_backend,
@@ -261,10 +262,15 @@ fn collision_plans_validate_transition_artifacts_and_witness_declarations() {
                 .iter()
                 .map(|artifact| artifact.kind)
                 .collect::<Vec<_>>();
-            assert!(kinds.contains(&CollisionArtifactKind::BroadphaseCandidates));
             assert!(kinds.contains(&CollisionArtifactKind::WitnessCache));
             assert!(kinds.contains(&CollisionArtifactKind::ContinuationSeed));
         }
+        let kinds = plan
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.kind)
+            .collect::<Vec<_>>();
+        assert!(kinds.contains(&CollisionArtifactKind::BroadphaseCandidates));
     }
 }
 
@@ -372,7 +378,8 @@ fn static_collision_outputs_remain_cpu_oracle_checkable() {
             ],
         )
         .expect("sphere overlap");
-    assert_eq!(overlap_trace.artifact_store.entries, 1);
+    assert_eq!(overlap_trace.artifact_store.entries, 2);
+    assert!(overlap_trace.broadphase_candidate_count > 0);
     match overlap {
         CollisionResult::SphereOverlap(value) => {
             assert!(value.overlaps);
@@ -420,23 +427,44 @@ fn transition_collision_plans_execute_with_contact_fraction_and_normal_flavor() 
             assert_approx_eq(witness.contact_fraction_upper_bound, 0.3125);
             assert_eq!(
                 witness.normal_flavor,
-                CollisionContactNormalFlavor::ConservativeUpperBound
+                CollisionContactNormalFlavor::SurfaceGradient
+            );
+            assert_eq!(
+                witness.normal_provenance,
+                CollisionContactNormalProvenance::FeatureNormal
             );
             assert_approx_eq(witness.point_on_probe[2], 0.5);
             assert_approx_eq(witness.point_on_world[2], 0.5);
         }
         other => panic!("expected sweep result, got {other:?}"),
     }
+    assert_eq!(
+        trace.contact_normal_provenance,
+        Some(CollisionContactNormalProvenance::FeatureNormal)
+    );
+    let sweep_bracket = trace.interval_bracket.expect("sweep interval bracket");
+    assert_approx_eq(sweep_bracket[0], 0.3125);
+    assert_approx_eq(sweep_bracket[1], 0.3125);
+    assert_eq!(trace.fallback_count, 0);
 
     let toi_plan = CollisionPlan::for_query(CollisionQueryKind::SphereTimeOfImpactTransition);
-    let (result, _) = toi_plan
+    let (result, toi_trace) = toi_plan
         .execute(&ctx, &[capture, domain, transition, sweep])
         .expect("time of impact");
+    let toi_bracket = toi_trace.interval_bracket.expect("toi interval bracket");
+    assert_approx_eq(toi_bracket[0], 0.3125);
+    assert_approx_eq(toi_bracket[1], 0.3125);
+    assert_eq!(toi_trace.fallback_count, 0);
     match result {
         CollisionResult::TimeOfImpact(value) => {
             assert!(value.hit);
             assert!(value.no_hit_certificate.is_none());
             assert_approx_eq(value.time_fraction_upper_bound.expect("toi"), 0.3125);
+            let witness = value.witness.expect("toi witness");
+            assert_eq!(
+                witness.normal_provenance,
+                CollisionContactNormalProvenance::FeatureNormal
+            );
         }
         other => panic!("expected time-of-impact result, got {other:?}"),
     }

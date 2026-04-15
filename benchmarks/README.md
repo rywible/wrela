@@ -4,8 +4,9 @@ The benchmark harness now focuses on the world-language surface that remains in 
 
 - `micro`: low-level primitives and hot loops.
 - `field_engine`: authored field/scene query cases for repetition, thin features, local frames, mixed-solver dense-oracle closure, radiance/media, opaque-pessimization regressions, and a collision-heavy transition proxy lane for the closure protocol.
+- `collision_perf`: collision-focused point occupancy, ray-cast, overlap, sweep, and TOI workload coverage with a dedicated 1080p120 closure companion.
 - `realtime_presentation`: presentation-oriented scene-shape benchmarks for dense constructive geometry, repetition-heavy layouts, a dedicated repeat-aware solver proof lane, thin-stack aliasing, relaxed exact-torus solver coverage, transformed primitive galleries, mixed opaque/conservative scenes, media/radiance scenes, cache-stress motion paths, and camera-motion temporal-reuse / clipmap-churn coverage. The explicit `1080p120` closure lane now adds fixed scenarios for each of those representative stresses.
-- `1080p120` closure profiles: fixed 1920x1080, 120 FPS protocol manifests for the frame and collision lanes. `wrela perf --profile=1080p120` automatically selects the companion `1080p120_closure.toml` file when it exists.
+- `1080p120` closure profiles: fixed 1920x1080, 120 FPS protocol manifests for the frame lane and the dedicated collision lane. `wrela perf --profile=1080p120` automatically selects the companion `1080p120_closure.toml` file when it exists.
 
 ## Manifests
 
@@ -13,8 +14,10 @@ Each suite has a `bench.toml` manifest for the default microbench lane, and the 
 
 - `benchmarks/micro/bench.toml`
 - `benchmarks/field_engine/bench.toml`
+- `benchmarks/collision_perf/bench.toml`
 - `benchmarks/realtime_presentation/bench.toml`
 - `benchmarks/field_engine/1080p120_closure.toml`
+- `benchmarks/collision_perf/1080p120_closure.toml`
 - `benchmarks/realtime_presentation/1080p120_closure.toml`
 
 Scenario test names must end with `_ops_<N>` where `<N>` matches `ops`, and scenarios should use deterministic checksum assertions in the test body.
@@ -24,6 +27,7 @@ Scenario test names must end with `_ops_<N>` where `<N>` matches `ops`, and scen
 ```bash
 cargo run -p wrela -- perf benchmarks/micro --profile=standard --runs=5
 cargo run -p wrela -- perf benchmarks/field_engine --profile=standard --runs=5 --query-backend=cpu
+cargo run -p wrela -- perf benchmarks/collision_perf --profile=standard --runs=5 --query-backend=cpu
 cargo run -p wrela -- perf benchmarks/field_engine --profile=standard --runs=5 --query-backend=wgsl
 cargo run -p wrela -- perf benchmarks/realtime_presentation --profile=standard --runs=5 --query-backend=cpu
 ```
@@ -32,6 +36,10 @@ Paired comparison:
 
 ```bash
 cargo run -p wrela -- perfcmp benchmarks/field_engine \
+  --profile=standard \
+  --baseline-ref=origin/main \
+  --candidate-ref=HEAD
+cargo run -p wrela -- perfcmp benchmarks/collision_perf \
   --profile=standard \
   --baseline-ref=origin/main \
   --candidate-ref=HEAD
@@ -74,15 +82,15 @@ Closure lane coverage currently includes:
 - `closure_1080p120_cache_stress_motion_path`: repeat-heavy motion-path coverage intended to churn cache/acceleration reuse under fixed camera-relative movement.
 - `closure_1080p120_camera_motion_temporal_reuse_clipmap_churn`: camera-motion coverage intended to exercise temporal reuse and clipmap-like view churn in the canonical presentation lane.
 
-## Field Engine Closure Scenarios
+## Collision Perf Closure Scenarios
 
-The `field_engine` closure manifest is the collision-side companion to the presentation closure lane. It keeps the benchmark protocol fixed while stressing the semantic query substrate that collision depends on, including repeat identity, dense-oracle mixed solving, and transition-like probe motion.
+The `collision_perf` closure manifest is the dedicated collision-side companion to the presentation closure lane. It keeps the benchmark protocol fixed while stressing point occupancy, dense ray casts, overlap bursts, repeated sweeps, and TOI transition reuse under the fixed 1080p120 protocol.
 
-- `closure_1080p120_repetition_identity_stability`: repeat identity and authored-instance stability for the collision baseline lane.
-- `closure_1080p120_mixed_solver_dense_oracle`: mixed solver behavior anchored to the dense CPU oracle under the fixed closure protocol.
-- `closure_1080p120_collision_heavy_transition`: transition-like probe motion across mixed support/repetition structure, used as the representative collision-heavy closure case for non-regression tracking.
-- `closure_1080p120_transformed_primitive_gallery`: transformed/deformed primitive coverage for the closure lane’s gallery-style authored geometry family.
-- `closure_1080p120_mixed_opaque_conservative`: mixed opaque/conservative coverage so closure keeps the authored opaque support path and the broader conservative scene in the same protocol.
+- `closure_1080p120_point_occupancy_burst`: many point occupancy probes across the canonical collision scene.
+- `closure_1080p120_dense_ray_casts`: dense ray-cast coverage for the collision throughput lane.
+- `closure_1080p120_overlap_burst`: overlap-heavy burst coverage around the canonical collision cluster.
+- `closure_1080p120_repeated_sweeps`: repeated sweep-like probes through static clutter.
+- `closure_1080p120_toi_transition_reuse`: transition-scoped TOI-style reuse coverage for the collision closure lane.
 
 ## Artifacts
 

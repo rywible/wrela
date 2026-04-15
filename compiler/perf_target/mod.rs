@@ -193,8 +193,8 @@ impl PerfClosureProfile {
             },
             collision: PerfClosureLaneProtocol {
                 lane: PerfClosureLaneKind::Collision,
-                protocol_id: "field_engine.1080p120".to_string(),
-                suite: "field_engine".to_string(),
+                protocol_id: "collision_perf.1080p120".to_string(),
+                suite: "collision_perf".to_string(),
                 scene_set_id: "closure_1080p120_collision".to_string(),
                 view_set_id: "collision_closure_cases".to_string(),
                 camera_path_id: "closure_collision_probe_path".to_string(),
@@ -202,7 +202,7 @@ impl PerfClosureProfile {
                 fixed_seed: 0x1080_0121,
             },
             collision_baseline: PerfClosureCollisionBaseline {
-                baseline_id: "field_engine.phase34_cpu_oracle".to_string(),
+                baseline_id: "collision_perf.phase40_cpu_oracle".to_string(),
                 max_runtime_regression_pct: 0.0,
             },
         }
@@ -364,8 +364,8 @@ impl PerfClosureProfile {
                 "frame closure lane suite must be realtime_presentation for the canonical profile"
                     .to_string(),
             ),
-            PerfClosureLaneKind::Collision if lane.suite != "field_engine" => errors.push(
-                "collision closure lane suite must be field_engine for the canonical profile"
+            PerfClosureLaneKind::Collision if lane.suite != "collision_perf" => errors.push(
+                "collision closure lane suite must be collision_perf for the canonical profile"
                     .to_string(),
             ),
             _ => {}
@@ -481,6 +481,7 @@ mod tests {
         assert_eq!(PerfClosureProfile::named("1080p120"), Some(profile.clone()));
         assert_eq!(profile.frame.lane, PerfClosureLaneKind::Frame);
         assert_eq!(profile.collision.lane, PerfClosureLaneKind::Collision);
+        assert_eq!(profile.collision.suite, "collision_perf");
         assert_eq!(
             profile
                 .legal_degradations
