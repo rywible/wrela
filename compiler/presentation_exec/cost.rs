@@ -345,8 +345,13 @@ pub fn render_frame_cost_report(report: &PresentationFrameCostReport) -> String 
         report.execution_bound,
         report.gpu_runtime.timestamps_supported,
     ));
+    let optional_features = if report.gpu_runtime.enabled_optional_features.is_empty() {
+        "none".to_string()
+    } else {
+        report.gpu_runtime.enabled_optional_features.join(",")
+    };
     out.push_str(&format!(
-        "gpu_runtime timestamped_pass_count={} gpu_time_max_micros={} queue_submit_count={} upload_bytes={} readback_bytes={} transient_buffer_creations={} transient_bind_group_creations={} cpu_screen_sample_allocations={} attachment_decode_count={} attachment_encode_count={} primary_visibility_packet_fanout_count={} dispatch_fragmentation_count={} scene_reupload_bytes={} pipeline_cache_hits={} pipeline_cache_misses={}\n",
+        "gpu_runtime timestamped_pass_count={} gpu_time_max_micros={} queue_submit_count={} upload_bytes={} readback_bytes={} transient_buffer_creations={} transient_bind_group_creations={} cpu_screen_sample_allocations={} attachment_decode_count={} attachment_encode_count={} primary_visibility_packet_fanout_count={} dispatch_fragmentation_count={} scene_reupload_bytes={} pipeline_cache_hits={} pipeline_cache_misses={} requested_limits_profile={} enabled_optional_features={}\n",
         report.gpu_runtime.timestamped_pass_count,
         report.gpu_runtime.gpu_time_max_micros,
         report.gpu_runtime.queue_submit_count,
@@ -362,6 +367,8 @@ pub fn render_frame_cost_report(report: &PresentationFrameCostReport) -> String 
         report.gpu_runtime.scene_reupload_bytes,
         report.gpu_runtime.pipeline_cache_hits,
         report.gpu_runtime.pipeline_cache_misses,
+        report.gpu_runtime.requested_limits_profile,
+        optional_features,
     ));
     if !report.active_acceleration_artifacts.is_empty() {
         out.push_str(&format!(

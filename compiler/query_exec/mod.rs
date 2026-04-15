@@ -47,7 +47,6 @@ pub use region::{
 pub use world::{WorldQuerySemantics, world_query_semantics};
 
 pub const WGSL_WORKGROUP_SIZE_OVERRIDE_ENV: &str = "WRELA_WGSL_WORKGROUP_SIZE";
-pub(crate) const QUERY_WGSL_BIND_GROUP_COUNT: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryTraceSolverMode {

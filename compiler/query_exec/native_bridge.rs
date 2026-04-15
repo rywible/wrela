@@ -353,8 +353,6 @@ fn world_module_from_parts(
         item_abi: wgsl_item_abi_for_descriptor(descriptor)?,
         result_abi: wgsl_result_abi_for_descriptor(descriptor)?,
         shape_meta_values: Vec::new(),
-        layout_signature: 0,
-        bind_group_count: 4,
     })
 }
 
@@ -382,8 +380,6 @@ fn world_batch_module_from_parts(
         item_abi: wgsl_item_abi_for_descriptor(descriptor)?,
         result_abi: wgsl_result_abi_for_descriptor(descriptor)?,
         shape_meta_values: Vec::new(),
-        layout_signature: 0,
-        bind_group_count: 4,
     })
 }
 
@@ -403,8 +399,6 @@ fn batch_module_from_parts(
         item_abi: wgsl_item_abi_for_descriptor(descriptor)?,
         result_abi: wgsl_result_abi_for_descriptor(descriptor)?,
         shape_meta_values: Vec::new(),
-        layout_signature: 0,
-        bind_group_count: 4,
     })
 }
 
@@ -472,6 +466,9 @@ fn world_batch_query(
             accel_children: Vec::new(),
             cache_bricks: Vec::new(),
             continuation_seeds: Vec::new(),
+            resident_scene_snapshot: None,
+            resident_scene_detail: 0,
+            resident_scene_selection_signature: 0,
         },
     )?;
     kernel_array_to_runtime(&values)
@@ -507,6 +504,9 @@ fn world_query(
             accel_children: Vec::new(),
             cache_bricks: Vec::new(),
             continuation_seeds: Vec::new(),
+            resident_scene_snapshot: None,
+            resident_scene_detail: 0,
+            resident_scene_selection_signature: 0,
         },
     )?
     .into_iter()
@@ -571,6 +571,9 @@ fn batch_query(
             accel_children: Vec::new(),
             cache_bricks: Vec::new(),
             continuation_seeds: Vec::new(),
+            resident_scene_snapshot: None,
+            resident_scene_detail: 0,
+            resident_scene_selection_signature: 0,
         },
     )?;
     kernel_array_to_runtime(&values)

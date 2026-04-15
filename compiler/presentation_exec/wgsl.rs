@@ -1,4 +1,7 @@
-use crate::gpu_runtime::{GpuPassProfiler, GpuRuntimeMetrics};
+use crate::gpu_runtime::{
+    BufferPoolKey, GPU_RUNTIME_PASS_BIND_GROUP_INDEX, GpuPassProfiler, GpuRuntimeMetrics,
+    lock_shared_upload_arena, shared_buffer_pool,
+};
 use crate::kernel::{KernelStructValue, KernelValue, lower_batch_query_plan};
 use crate::portable::{
     PortableAbiType, PortableStructField, portable_abi_array_stride,
@@ -40,7 +43,6 @@ use crate::query_exec::wgsl::{
 use crate::query_plan::{BatchQueryPlan, DispatchBackend};
 use smol_str::SmolStr;
 use std::time::Instant;
-use wgpu::util::DeviceExt;
 
 struct LinearShaderDispatchResult {
     bytes: Vec<u8>,
@@ -52,8 +54,35 @@ struct TemporalResolveDispatchResult {
     dispatch_count: u32,
 }
 
-fn storage_buffer_size(bytes: &[u8]) -> u64 {
-    bytes.len().max(4) as u64
+fn acquire_presentation_upload_buffer(
+    native: &crate::query_exec::wgsl::NativeWgpuContext,
+    size: u64,
+    usage: wgpu::BufferUsages,
+    label: Option<&str>,
+    gpu_runtime: &mut GpuRuntimeMetrics,
+) -> (wgpu::Buffer, BufferPoolKey) {
+    let key = BufferPoolKey::new(size.max(4), usage);
+    let pool = shared_buffer_pool(native.limit_request);
+    let (buffer, created) = pool
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .acquire(&native.device, key, label);
+    if created {
+        gpu_runtime.transient_buffer_creations =
+            gpu_runtime.transient_buffer_creations.saturating_add(1);
+    }
+    (buffer, key)
+}
+
+fn release_presentation_upload_buffers(
+    native: &crate::query_exec::wgsl::NativeWgpuContext,
+    buffers: impl IntoIterator<Item = (BufferPoolKey, wgpu::Buffer)>,
+) {
+    let pool = shared_buffer_pool(native.limit_request);
+    let mut guard = pool.lock().unwrap_or_else(|poison| poison.into_inner());
+    for (key, buffer) in buffers {
+        guard.release(key, buffer);
+    }
 }
 
 pub(super) fn execute_plan(
@@ -1378,25 +1407,105 @@ fn dispatch_linear_shader_with_chunk_limit(
     .map_err(PresentationExecError::Query)?;
     let chunk_count = input_values.len().div_ceil(items_per_chunk);
     let mut profiler = GpuPassProfiler::new(&native, chunk_count as u32);
-    let aux_buffer = native
-        .device
-        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wrela.presentation.aux"),
-            contents: &[0u8; 4],
-            usage: wgpu::BufferUsages::STORAGE,
-        });
     let mut local_gpu_runtime = GpuRuntimeMetrics {
-        upload_bytes: 4,
-        transient_buffer_creations: 1,
         ..GpuRuntimeMetrics::default()
     };
+    local_gpu_runtime.note_context_metadata(&native);
     let cached = compiled_pipeline(
         &native,
         source,
         workgroup_size,
+        GPU_RUNTIME_PASS_BIND_GROUP_INDEX,
         wgpu::BufferSize::new(portable_abi_layout(&dispatch_abi).size as u64),
         &mut local_gpu_runtime,
     )?;
+    let dispatch_bytes_size = portable_abi_layout(&dispatch_abi).size as u64;
+    let input_buffer_size =
+        ((items_per_chunk as u64) * portable_abi_array_stride(input_abi) as u64).max(4);
+    let output_buffer_size =
+        ((items_per_chunk as u64) * output_layout.physical.element_stride as u64).max(4);
+    let mut leased_buffers = Vec::new();
+    let (aux_buffer, aux_pool_key) = acquire_presentation_upload_buffer(
+        &native,
+        4,
+        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        Some("wrela.presentation.aux"),
+        &mut local_gpu_runtime,
+    );
+    leased_buffers.push((aux_pool_key, aux_buffer.clone()));
+    let (dispatch_buffer, dispatch_pool_key) = acquire_presentation_upload_buffer(
+        &native,
+        dispatch_bytes_size,
+        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        Some("wrela.presentation.dispatch"),
+        &mut local_gpu_runtime,
+    );
+    leased_buffers.push((dispatch_pool_key, dispatch_buffer.clone()));
+    let (input_buffer, input_pool_key) = acquire_presentation_upload_buffer(
+        &native,
+        input_buffer_size,
+        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        Some("wrela.presentation.input"),
+        &mut local_gpu_runtime,
+    );
+    leased_buffers.push((input_pool_key, input_buffer.clone()));
+    let (output_buffer, output_pool_key) = acquire_presentation_upload_buffer(
+        &native,
+        output_buffer_size,
+        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        Some("wrela.presentation.output"),
+        &mut local_gpu_runtime,
+    );
+    leased_buffers.push((output_pool_key, output_buffer.clone()));
+    let mut upload_arena = lock_shared_upload_arena(
+        native.limit_request,
+        &native.device,
+        dispatch_bytes_size.max(input_buffer_size).max(4),
+    );
+    upload_arena.set_scratch_encoder(native.device.create_command_encoder(
+        &wgpu::CommandEncoderDescriptor {
+            label: Some("wrela.presentation.upload_init"),
+        },
+    ));
+    local_gpu_runtime.upload_bytes = local_gpu_runtime.upload_bytes.saturating_add(
+        upload_arena
+            .write_storage_bytes(&aux_buffer, 0, &[0u8; 4])
+            .map_err(|err| {
+                PresentationExecError::Query(crate::query_exec::cpu::QueryExecError::Unsupported {
+                    message: format!("presentation aux upload failed: {err:?}"),
+                })
+            })?,
+    );
+    if let Some(upload_commands) = upload_arena.finish() {
+        native.queue.submit(Some(upload_commands));
+        local_gpu_runtime.queue_submit_count =
+            local_gpu_runtime.queue_submit_count.saturating_add(1);
+    }
+    local_gpu_runtime.transient_bind_group_creations = local_gpu_runtime
+        .transient_bind_group_creations
+        .saturating_add(1);
+    let bind_group = native.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("wrela.presentation.bind_group"),
+        layout: &cached.bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: dispatch_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: input_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: output_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: aux_buffer.as_entire_binding(),
+            },
+        ],
+    });
     let mut dense_bytes = vec![0u8; dense_output_size as usize];
     let mut dispatch_count = 0u32;
     for (chunk_index, chunk) in input_values.chunks(items_per_chunk).enumerate() {
@@ -1409,58 +1518,40 @@ fn dispatch_linear_shader_with_chunk_limit(
         )
         .map_err(PresentationExecError::Query)?;
         let input_bytes = encode_slice(input_abi, chunk).map_err(PresentationExecError::Query)?;
+        upload_arena.set_scratch_encoder(native.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor {
+                label: Some("wrela.presentation.upload_encoder"),
+            },
+        ));
         local_gpu_runtime.upload_bytes = local_gpu_runtime
             .upload_bytes
-            .saturating_add(storage_buffer_size(&dispatch_bytes))
-            .saturating_add(storage_buffer_size(&input_bytes));
-        local_gpu_runtime.transient_buffer_creations = local_gpu_runtime
-            .transient_buffer_creations
-            .saturating_add(3);
-        local_gpu_runtime.transient_bind_group_creations = local_gpu_runtime
-            .transient_bind_group_creations
-            .saturating_add(1);
-        let dispatch_buffer = native
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("wrela.presentation.dispatch"),
-                contents: &dispatch_bytes,
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-        let input_buffer = native
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("wrela.presentation.input"),
-                contents: &input_bytes,
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-        let output_buffer = native.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("wrela.presentation.output"),
-            size: chunk_dense_size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let bind_group = native.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("wrela.presentation.bind_group"),
-            layout: &cached.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: dispatch_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: input_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: output_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: aux_buffer.as_entire_binding(),
-                },
-            ],
-        });
+            .saturating_add(
+                upload_arena
+                    .write_storage_bytes(&dispatch_buffer, 0, &dispatch_bytes)
+                    .map_err(|err| {
+                        PresentationExecError::Query(
+                            crate::query_exec::cpu::QueryExecError::Unsupported {
+                                message: format!("presentation dispatch upload failed: {err:?}"),
+                            },
+                        )
+                    })?,
+            )
+            .saturating_add(
+                upload_arena
+                    .write_storage_bytes(&input_buffer, 0, &input_bytes)
+                    .map_err(|err| {
+                        PresentationExecError::Query(
+                            crate::query_exec::cpu::QueryExecError::Unsupported {
+                                message: format!("presentation input upload failed: {err:?}"),
+                            },
+                        )
+                    })?,
+            );
+        if let Some(upload_commands) = upload_arena.finish() {
+            native.queue.submit(Some(upload_commands));
+            local_gpu_runtime.queue_submit_count =
+                local_gpu_runtime.queue_submit_count.saturating_add(1);
+        }
         let mut encoder = native
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1473,7 +1564,7 @@ fn dispatch_linear_shader_with_chunk_limit(
                 timestamp_writes,
             });
             pass.set_pipeline(&cached.pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
+            pass.set_bind_group(GPU_RUNTIME_PASS_BIND_GROUP_INDEX, &bind_group, &[]);
             pass.dispatch_workgroups(
                 (chunk.len() as u32).div_ceil(workgroup_size.max(1)).max(1),
                 1,
@@ -1491,6 +1582,7 @@ fn dispatch_linear_shader_with_chunk_limit(
                     message: format!("native WGSL readback failed: {message}"),
                 })
             })?;
+        upload_arena.recall();
         local_gpu_runtime.queue_submit_count =
             local_gpu_runtime.queue_submit_count.saturating_add(1);
         local_gpu_runtime.transient_buffer_creations = local_gpu_runtime
@@ -1504,6 +1596,8 @@ fn dispatch_linear_shader_with_chunk_limit(
         dense_bytes[chunk_byte_offset..chunk_byte_end]
             .copy_from_slice(&chunk_bytes[..chunk_byte_end - chunk_byte_offset]);
     }
+    upload_arena.recall();
+    release_presentation_upload_buffers(&native, leased_buffers);
     let gpu_elapsed_micros = profiler
         .readback_gpu_elapsed_micros(&native)
         .map_err(|message| {
@@ -1650,7 +1744,7 @@ fn shade_primary_shader_source(workgroup_size: u32) -> Result<String, Presentati
 
 override WG_SIZE: u32 = {workgroup_size}u;
 
-@group(0) @binding(0)
+@group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(0)
 var<storage, read> dispatch_config: Abi_WgslDispatchConfig;
 
 struct InputBuffer {{
@@ -1665,11 +1759,11 @@ struct DummyBuffer {{
   values: array<u32>,
 }}
 
-@group(0) @binding(1)
+@group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(1)
 var<storage, read> input_items: InputBuffer;
-@group(0) @binding(2)
+@group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(2)
 var<storage, read_write> output_items: OutputBuffer;
-@group(0) @binding(3)
+@group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(3)
 var<storage, read> dummy_items: DummyBuffer;
 
 fn clamp_vec3(value: vec3<f32>, min_value: f32, max_value: f32) -> vec3<f32> {{
@@ -1734,7 +1828,7 @@ fn copy_vec3_shader_source(workgroup_size: u32) -> Result<String, PresentationEx
 
 override WG_SIZE: u32 = {workgroup_size}u;
 
-@group(0) @binding(0)
+@group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(0)
 var<storage, read> dispatch_config: Abi_WgslDispatchConfig;
 
 struct InputBuffer {{
@@ -1749,11 +1843,11 @@ struct DummyBuffer {{
   values: array<u32>,
 }}
 
-@group(0) @binding(1)
+@group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(1)
 var<storage, read> input_items: InputBuffer;
-@group(0) @binding(2)
+@group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(2)
 var<storage, read_write> output_items: OutputBuffer;
-@group(0) @binding(3)
+@group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(3)
 var<storage, read> dummy_items: DummyBuffer;
 
 @compute @workgroup_size(WG_SIZE)
@@ -1784,7 +1878,7 @@ fn temporal_resolve_shader_source(
 
 override WG_SIZE: u32 = {workgroup_size}u;
 
-@group(0) @binding(0)
+@group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(0)
 var<storage, read> dispatch_config: Abi_WgslDispatchConfig;
 
 struct InputBuffer {{
@@ -1799,11 +1893,11 @@ struct DummyBuffer {{
   values: array<u32>,
 }}
 
-@group(0) @binding(1)
+@group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(1)
 var<storage, read> input_items: InputBuffer;
-@group(0) @binding(2)
+@group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(2)
 var<storage, read_write> output_items: OutputBuffer;
-@group(0) @binding(3)
+@group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(3)
 var<storage, read> dummy_items: DummyBuffer;
 
 fn clamp_vec3(value: vec3<f32>, min_value: vec3<f32>, max_value: vec3<f32>) -> vec3<f32> {{
@@ -2004,6 +2098,15 @@ mod tests {
         };
 
         assert_eq!(dispatch.dispatch_count, 2);
+        assert_eq!(
+            gpu_runtime.transient_bind_group_creations, 1,
+            "chunked presentation WGSL dispatches should reuse one bind group across chunks"
+        );
+        assert!(
+            gpu_runtime.transient_buffer_creations <= 7,
+            "chunked presentation WGSL dispatches should reuse persistent upload buffers, got {:?}",
+            gpu_runtime
+        );
         for (index, expected) in input_values.iter().enumerate() {
             assert_eq!(
                 resource.decode(index).expect("decode row-aligned output"),

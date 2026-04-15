@@ -1601,28 +1601,33 @@ fn presentation_report_from_debug_output(
     scenario: &command_handlers::BenchmarkScenario,
     dump: PresentationDebugCommandOutput,
 ) -> PresentationBenchmarkReport {
-    let frame_cost_history = dump.frame_cost_history.clone();
-    let effective_history =
-        effective_presentation_frame_history(&dump.frame_cost, &frame_cost_history);
-    let aggregate = aggregate_presentation_frame_metrics(&effective_history);
-    let quality_history = effective_history
+    let measured_history = if scenario.class.eq_ignore_ascii_case("closure") {
+        closure_measured_presentation_frame_history(&dump.frame_cost, &dump.frame_cost_history)
+    } else {
+        presentation_frame_history(&dump.frame_cost, &dump.frame_cost_history)
+    };
+    let measured_frames_executed = measured_history
+        .len()
+        .min(dump.frames_executed.max(1) as usize);
+    let aggregate = aggregate_presentation_frame_metrics(&measured_history);
+    let quality_history = measured_history
         .iter()
         .map(|frame| frame.quality.tier.clone())
         .collect();
-    let internal_resolution_history = effective_history
+    let internal_resolution_history = measured_history
         .iter()
         .map(|frame| frame.quality.internal_resolution_scale)
         .collect();
-    let reconstructed_output = effective_history
+    let reconstructed_output = measured_history
         .iter()
         .any(|frame| frame.quality.reconstructed_output);
-    let active_acceleration_artifacts = effective_history
+    let active_acceleration_artifacts = measured_history
         .iter()
         .flat_map(|frame| frame.active_acceleration_artifacts.iter().cloned())
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    let performance_gain_sources = effective_history
+    let performance_gain_sources = measured_history
         .iter()
         .flat_map(|frame| frame.performance_gain_sources.iter().cloned())
         .collect::<std::collections::BTreeSet<_>>()
@@ -1642,7 +1647,7 @@ fn presentation_report_from_debug_output(
         backend: dump.backend,
         query_trace_solver_mode: dump.query_trace_solver_mode,
         selected_workgroup_size: dump.frame_cost.selected_workgroup_size,
-        frames_executed: dump.frames_executed.max(1),
+        frames_executed: measured_frames_executed as u32,
         frame_time_ns: aggregate.frame_time_ns,
         field_samples: aggregate.field_samples,
         quality_tier: dump.frame_cost.quality.tier.clone(),
@@ -1655,7 +1660,7 @@ fn presentation_report_from_debug_output(
         active_acceleration_artifacts,
         performance_gain_sources,
         frame_cost: dump.frame_cost,
-        frame_cost_history,
+        frame_cost_history: measured_history,
         wgsl_workgroup_comparison: None,
         ab_comparison: None,
     }
@@ -1672,13 +1677,13 @@ fn presentation_comparison_from_debug_reports(
     hybrid: &PresentationBenchmarkReport,
     dense_only: &PresentationDebugCommandOutput,
 ) -> PresentationBenchmarkComparison {
-    let hybrid_metrics = aggregate_presentation_frame_metrics(
-        &effective_presentation_frame_history(&hybrid.frame_cost, &hybrid.frame_cost_history),
-    );
+    let hybrid_history = presentation_frame_history(&hybrid.frame_cost, &hybrid.frame_cost_history);
+    let hybrid_metrics = aggregate_presentation_frame_metrics(&hybrid_history);
     let dense_only_metrics =
-        aggregate_presentation_frame_metrics(&effective_presentation_frame_history(
+        aggregate_presentation_frame_metrics(&aligned_presentation_frame_history(
             &dense_only.frame_cost,
             &dense_only.frame_cost_history,
+            hybrid_history.len(),
         ));
     let frame_time_ns_delta_vs_dense_only =
         hybrid_metrics.frame_time_ns as i128 - dense_only_metrics.frame_time_ns as i128;
@@ -1752,7 +1757,7 @@ fn presentation_workgroup_comparison_from_reports(
     }
 }
 
-fn effective_presentation_frame_history(
+fn presentation_frame_history(
     frame_cost: &wrela::presentation_exec::PresentationFrameCostReport,
     frame_cost_history: &[wrela::presentation_exec::PresentationFrameCostReport],
 ) -> Vec<wrela::presentation_exec::PresentationFrameCostReport> {
@@ -1760,6 +1765,34 @@ fn effective_presentation_frame_history(
         vec![frame_cost.clone()]
     } else {
         frame_cost_history.to_vec()
+    }
+}
+
+fn closure_measured_presentation_frame_history(
+    frame_cost: &wrela::presentation_exec::PresentationFrameCostReport,
+    frame_cost_history: &[wrela::presentation_exec::PresentationFrameCostReport],
+) -> Vec<wrela::presentation_exec::PresentationFrameCostReport> {
+    let frame_history = presentation_frame_history(frame_cost, frame_cost_history);
+    if frame_history.len() > 1 {
+        // Treat the first frame in a multi-frame subprocess sample as an
+        // in-process warmup so steady-state closure metrics exclude first-use
+        // pipeline compilation and resident-scene upload cost.
+        frame_history.into_iter().skip(1).collect()
+    } else {
+        frame_history
+    }
+}
+
+fn aligned_presentation_frame_history(
+    frame_cost: &wrela::presentation_exec::PresentationFrameCostReport,
+    frame_cost_history: &[wrela::presentation_exec::PresentationFrameCostReport],
+    measured_frame_count: usize,
+) -> Vec<wrela::presentation_exec::PresentationFrameCostReport> {
+    let frame_history = presentation_frame_history(frame_cost, frame_cost_history);
+    if measured_frame_count == 0 || measured_frame_count >= frame_history.len() {
+        frame_history
+    } else {
+        frame_history[frame_history.len() - measured_frame_count..].to_vec()
     }
 }
 
@@ -2005,11 +2038,45 @@ fn apply_observed_wgsl_runtime_metadata(
     {
         profile.adapter_name = adapter_name.to_string();
     }
+    if let Some(requested_limits_profile) = wgsl_reports
+        .iter()
+        .map(|report| {
+            report
+                .frame_cost
+                .gpu_runtime
+                .requested_limits_profile
+                .trim()
+        })
+        .find(|profile_name| !profile_name.is_empty())
+    {
+        profile.requested_limits_profile = requested_limits_profile.to_string();
+    }
+    profile.enabled_optional_features = wgsl_reports
+        .iter()
+        .flat_map(|report| {
+            report
+                .frame_cost
+                .gpu_runtime
+                .enabled_optional_features
+                .iter()
+                .cloned()
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
     profile.timestamps_enabled = wgsl_reports.iter().any(|report| {
-        effective_presentation_frame_history(&report.frame_cost, &report.frame_cost_history)
+        presentation_frame_history(&report.frame_cost, &report.frame_cost_history)
             .into_iter()
             .any(|frame| frame.gpu_runtime.timestamps_supported)
     });
+    profile.f16_enabled = profile
+        .enabled_optional_features
+        .iter()
+        .any(|feature| feature == "shader_f16");
+    profile.indirect_dispatch_enabled = profile
+        .enabled_optional_features
+        .iter()
+        .any(|feature| feature == "indirect_dispatch");
 }
 
 fn build_frame_closure_status(
@@ -2075,11 +2142,9 @@ fn build_frame_closure_status(
                 sample.scenario_id, sample.backend, expected_backend
             ));
         }
-        let frame_costs = if sample.frame_cost_history.is_empty() {
-            vec![&sample.frame_cost]
-        } else {
-            sample.frame_cost_history.iter().collect::<Vec<_>>()
-        };
+        let measured_frame_costs =
+            presentation_frame_history(&sample.frame_cost, &sample.frame_cost_history);
+        let frame_costs = measured_frame_costs.iter().collect::<Vec<_>>();
         for frame_cost in frame_costs {
             total_ms.push(ns_to_ms(frame_cost_total_ns(frame_cost)));
             if let Some(primary_pass_ms) = primary_visibility_pass_ms(frame_cost) {
@@ -2565,7 +2630,7 @@ fn print_presentation_benchmark_reports(reports: &[PresentationBenchmarkReport])
     println!("presentation-benchmarks:");
     for report in reports {
         let effective_history =
-            effective_presentation_frame_history(&report.frame_cost, &report.frame_cost_history);
+            presentation_frame_history(&report.frame_cost, &report.frame_cost_history);
         let solver_counters = aggregate_presentation_solver_counters(&effective_history);
         println!(
             "presentation-scenario {} test={} backend={} query_trace_solver_mode={} selected_workgroup_size={} frames={} frame_time_ns={} field_samples={} quality={} target_fps={} scale={:.2} scale_history={} reconstructed_output={} bottleneck_pass={} acceleration={} gain_sources={}",
@@ -5056,6 +5121,11 @@ mod tests {
         let mut profile = PerfClosureProfile::canonical_1080p120();
         let mut frame_cost = sample_presentation_frame_cost(64, 64, 1.0, 128, 2.0, 16, 8, 1_000);
         frame_cost.gpu_runtime.timestamps_supported = true;
+        frame_cost.gpu_runtime.requested_limits_profile =
+            "storage_buffers_per_stage=10 storage_binding_bytes=268435456 bind_groups=4 workgroup_x=128"
+                .to_string();
+        frame_cost.gpu_runtime.enabled_optional_features =
+            vec!["timestamp_query".to_string(), "shader_f16".to_string()];
 
         apply_observed_wgsl_runtime_metadata(
             &mut profile,
@@ -5089,7 +5159,17 @@ mod tests {
         );
 
         assert_eq!(profile.adapter_name, "Test Adapter");
+        assert_eq!(
+            profile.requested_limits_profile,
+            "storage_buffers_per_stage=10 storage_binding_bytes=268435456 bind_groups=4 workgroup_x=128"
+        );
+        assert_eq!(
+            profile.enabled_optional_features,
+            vec!["shader_f16".to_string(), "timestamp_query".to_string()]
+        );
         assert!(profile.timestamps_enabled);
+        assert!(profile.f16_enabled);
+        assert!(!profile.indirect_dispatch_enabled);
     }
 
     #[test]
@@ -5456,6 +5536,16 @@ mod tests {
     }
 
     #[test]
+    fn closure_measured_presentation_frame_history_drops_cold_start_frame() {
+        let cold = sample_presentation_frame_cost(64, 64, 1.0, 10, 2.0, 6, 4, 1_000);
+        let warm = sample_presentation_frame_cost(32, 32, 0.5, 30, 4.0, 10, 7, 2_000);
+
+        let effective = closure_measured_presentation_frame_history(&warm, &[cold, warm.clone()]);
+
+        assert_eq!(effective, vec![warm]);
+    }
+
+    #[test]
     fn presentation_report_from_debug_output_carries_quality_and_pass_data() {
         let scenario = command_handlers::BenchmarkScenario {
             id: "presentation_fixture".to_string(),
@@ -5811,6 +5901,43 @@ mod tests {
         assert!(report.wgsl_workgroup_comparison.is_none());
         assert_eq!(report.frame_cost.passes.len(), 1);
         assert_eq!(report.frame_cost.passes[0].pass_kind, "primary_visibility");
+    }
+
+    #[test]
+    fn presentation_report_from_debug_output_drops_cold_start_frame_for_closure_scenarios() {
+        let scenario = command_handlers::BenchmarkScenario {
+            id: "closure_fixture".to_string(),
+            test_name: "tests/fixture::closure_ops_64".to_string(),
+            ops: 64,
+            class: "closure".to_string(),
+            min_runtime_ms: None,
+            timeout_ms: None,
+            allow_unstable: false,
+            presentation: None,
+            collision: None,
+        };
+        let warm = sample_presentation_frame_cost(32, 32, 0.5, 30, 4.0, 10, 7, 2_000);
+        let dump = PresentationDebugCommandOutput {
+            view: "bench_view".to_string(),
+            region: "bench_region".to_string(),
+            domain: "bench_domain".to_string(),
+            backend: "cpu".to_string(),
+            query_trace_solver_mode: "hybrid".to_string(),
+            frames_executed: 2,
+            frame_cost: warm.clone(),
+            frame_cost_history: vec![
+                sample_presentation_frame_cost(64, 64, 1.0, 10, 2.0, 6, 4, 1_000),
+                warm.clone(),
+            ],
+        };
+
+        let report = presentation_report_from_debug_output(&scenario, dump);
+
+        assert_eq!(report.frames_executed, 1);
+        assert_eq!(report.frame_time_ns, 2_000_000);
+        assert_eq!(report.field_samples, 30);
+        assert_eq!(report.internal_resolution_history, vec![0.5]);
+        assert_eq!(report.frame_cost_history, vec![warm]);
     }
 
     #[test]

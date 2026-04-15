@@ -2137,6 +2137,8 @@ fn wgsl_frame_cost_reports_tile_candidates_packets_and_workgroup_size() {
         result.frame_cost.gpu_runtime.timestamps_supported,
         result.frame_cost.gpu_runtime.timestamped_pass_count > 0
     );
+    assert!(result.frame_cost.gpu_runtime.transient_bind_group_creations > 0);
+    assert!(result.frame_cost.gpu_runtime.transient_buffer_creations > 0);
     assert!(
         result.frame_cost.tile_candidate_total_samples
             >= result.frame_cost.tile_candidate_active_samples
@@ -2164,6 +2166,7 @@ fn wgsl_frame_cost_reports_tile_candidates_packets_and_workgroup_size() {
     assert!(report.contains("tile_candidate_total_samples="));
     assert!(report.contains("packet_scheduling_active="));
     assert!(report.contains("selected_workgroup_size="));
+    assert!(report.contains("transient_bind_group_creations="));
     assert!(report.contains("frame_timing cpu_time_total_micros="));
     assert!(report.contains("timestamps_supported="));
     assert!(report.contains("gpu_runtime timestamped_pass_count="));

@@ -1,8 +1,13 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GpuRuntimeMetrics {
     pub timestamps_supported: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub requested_limits_profile: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enabled_optional_features: Vec<String>,
     pub timestamped_pass_count: u32,
     pub gpu_time_total_micros: u128,
     pub gpu_time_max_micros: u128,
@@ -22,8 +27,32 @@ pub struct GpuRuntimeMetrics {
 }
 
 impl GpuRuntimeMetrics {
+    pub fn note_context_metadata(&mut self, context: &crate::gpu_runtime::GpuRuntimeContext) {
+        if self.requested_limits_profile.is_empty() {
+            self.requested_limits_profile = context.requested_limits_profile_name();
+        }
+        self.timestamps_supported |= context.timestamps_supported();
+        let mut features = self
+            .enabled_optional_features
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        features.extend(context.enabled_optional_feature_names());
+        self.enabled_optional_features = features.into_iter().collect();
+    }
+
     pub fn merge_from(&mut self, other: &Self) {
         self.timestamps_supported |= other.timestamps_supported;
+        if self.requested_limits_profile.is_empty() {
+            self.requested_limits_profile = other.requested_limits_profile.clone();
+        }
+        let mut features = self
+            .enabled_optional_features
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        features.extend(other.enabled_optional_features.iter().cloned());
+        self.enabled_optional_features = features.into_iter().collect();
         self.timestamped_pass_count = self
             .timestamped_pass_count
             .saturating_add(other.timestamped_pass_count);

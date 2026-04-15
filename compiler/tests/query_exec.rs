@@ -2,6 +2,7 @@ use smol_str::SmolStr;
 use std::env;
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use wrela::artifact_contract::{ArtifactUseKind, ArtifactUseSource};
 use wrela::hir;
 use wrela::hir::lower as hir_lower;
@@ -60,6 +61,13 @@ impl Drop for EnvVarGuard {
             unsafe { env::remove_var(self.key) };
         }
     }
+}
+
+fn workgroup_override_test_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
 }
 
 fn typed_query_module(source: &str) -> (hir::Module, hir::TypeInfo, QueryExecContext) {
@@ -1815,6 +1823,138 @@ fn query_exec_traces_report_observability_counters() {
             .gpu_runtime
             .timestamped_pass_count
             > 0
+    );
+}
+
+#[test]
+fn query_exec_wgsl_world_trace_reuses_resident_scene_after_first_upload() {
+    let source = r#"
+field exact distance phase43_resident_scene_field(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+material phase43_resident_scene_material(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.2, 0.35, 0.45),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape phase43_resident_scene_shape {
+    field = phase43_resident_scene_field
+    material = phase43_resident_scene_material
+    payload = Payload(entity_id=u32(43))
+}
+
+region phase43_resident_scene_region() {
+    place scene = phase43_resident_scene_shape
+}
+"#;
+    let (_, _, ctx) = typed_query_module(source);
+    let capture_name = SmolStr::new("phase43_resident_scene_region");
+    let region_scene_id = stable_region_scene_capture_id(&capture_name);
+    let world_trace_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+    let args = [
+        KernelValue::Capture(capture_name.clone()),
+        scene_domain(region_scene_id, 1, false, false, false),
+        ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
+    ];
+
+    let (first_hit, first_trace) =
+        execute_world_query_with_trace_on(&ctx, DispatchBackend::Wgsl, &world_trace_plan, &args)
+            .expect("first wgsl world trace");
+    let (second_hit, second_trace) =
+        execute_world_query_with_trace_on(&ctx, DispatchBackend::Wgsl, &world_trace_plan, &args)
+            .expect("second wgsl world trace");
+
+    assert_hit3_approx_eq(&first_hit, &second_hit);
+    assert_eq!(first_trace.backend, DispatchBackend::Wgsl);
+    assert_eq!(second_trace.backend, DispatchBackend::Wgsl);
+    assert_eq!(first_trace.executor, DirectQueryExecutor::Wgsl);
+    assert_eq!(second_trace.executor, DirectQueryExecutor::Wgsl);
+    assert!(first_trace.observability.gpu_runtime.scene_reupload_bytes > 0);
+    assert_eq!(
+        second_trace.observability.gpu_runtime.scene_reupload_bytes,
+        0
+    );
+    assert!(
+        first_trace.observability.gpu_runtime.upload_bytes
+            >= first_trace.observability.gpu_runtime.scene_reupload_bytes
+    );
+    assert_eq!(second_trace.observability.wgsl_bind_group_count, 4);
+    assert!(second_trace.observability.gpu_runtime.queue_submit_count > 0);
+
+    let rendered_second_cost = render_semantic_cost_report(&second_trace.cost_report);
+    assert!(rendered_second_cost.contains("scene_reupload_bytes=0"));
+}
+
+#[test]
+fn query_exec_wgsl_batch_reuses_resident_scene_across_dispatch_size_changes() {
+    let (_, _, ctx) = typed_query_module(query_fixture_source());
+    let region_capture = KernelValue::Capture(SmolStr::new("scene_region"));
+    let fine_domain = scene_domain(
+        stable_region_scene_capture_id(&SmolStr::new("scene_region")),
+        1,
+        true,
+        true,
+        true,
+    );
+    let world_batch_plan = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_NEAREST_BATCH_WORLD,
+            DispatchBackend::Wgsl,
+            None,
+        )
+        .expect("world nearest batch plan"),
+    );
+    let small_ray_items = KernelValue::Array(vec![
+        ray_query([0.0, 0.0, 3.0], [0.0, 0.0, -1.0]),
+        ray_query([0.0, 0.0, 3.0], [0.0, 1.0, 0.0]),
+    ]);
+    let large_ray_items = KernelValue::Array(
+        (0..48)
+            .map(|index| {
+                if index % 2 == 0 {
+                    ray_query([0.0, 0.0, 3.0], [0.0, 0.0, -1.0])
+                } else {
+                    ray_query([0.0, 0.0, 3.0], [0.0, 1.0, 0.0])
+                }
+            })
+            .collect(),
+    );
+
+    let (_small_hits, small_trace) = execute_batch_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &world_batch_plan,
+        &[region_capture.clone(), fine_domain.clone(), small_ray_items],
+    )
+    .expect("small wgsl world batch");
+    let (_large_hits, large_trace) = execute_batch_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &world_batch_plan,
+        &[region_capture, fine_domain, large_ray_items],
+    )
+    .expect("large wgsl world batch");
+
+    assert!(small_trace.observability.gpu_runtime.scene_reupload_bytes > 0);
+    assert_eq!(
+        large_trace.observability.gpu_runtime.scene_reupload_bytes,
+        0
+    );
+    assert!(
+        !large_trace
+            .observability
+            .gpu_runtime
+            .requested_limits_profile
+            .is_empty()
     );
 }
 
@@ -7220,6 +7360,7 @@ fn query_exec_opaque_fields_use_authored_bounds_fallback() {
 
 #[test]
 fn query_wgsl_selector_honors_supported_workgroup_override() {
+    let _lock = workgroup_override_test_lock();
     let _guard = EnvVarGuard::set(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV, "64");
     let mut adapter_limits = wgpu::Limits::downlevel_defaults();
     adapter_limits.max_compute_invocations_per_workgroup = 128;
@@ -7232,6 +7373,7 @@ fn query_wgsl_selector_honors_supported_workgroup_override() {
 
 #[test]
 fn query_wgsl_selector_rejects_incompatible_workgroup_override() {
+    let _lock = workgroup_override_test_lock();
     let _guard = EnvVarGuard::set(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV, "128");
     let mut adapter_limits = wgpu::Limits::downlevel_defaults();
     adapter_limits.max_compute_invocations_per_workgroup = 64;
@@ -7242,4 +7384,74 @@ fn query_wgsl_selector_rejects_incompatible_workgroup_override() {
         err.to_string().contains("incompatible with adapter limits"),
         "unexpected error: {err}"
     );
+}
+
+#[test]
+fn query_wgsl_batch_rebuilds_pipeline_when_workgroup_override_changes() {
+    let _lock = workgroup_override_test_lock();
+    let (_, _, ctx) = typed_query_module(query_fixture_source());
+    let region_capture = KernelValue::Capture(SmolStr::new("scene_region"));
+    let fine_domain = scene_domain(
+        stable_region_scene_capture_id(&SmolStr::new("scene_region")),
+        1,
+        true,
+        true,
+        true,
+    );
+    let first_ray_items =
+        KernelValue::Array(vec![ray_query([0.0, 0.0, 3.0], [0.0, 0.0, -1.0]); 48]);
+    let mut second_rays = vec![ray_query([0.0, 0.0, 3.0], [0.0, 0.0, -1.0]); 32];
+    second_rays.extend(vec![ray_query([0.0, 0.0, 3.0], [0.0, 1.0, 0.0]); 16]);
+    let second_ray_items = KernelValue::Array(second_rays);
+    let world_batch_plan = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::SPATIAL_NEAREST_BATCH_WORLD,
+            DispatchBackend::Wgsl,
+            None,
+        )
+        .expect("world nearest batch plan"),
+    );
+
+    let (_first_hits, first_trace) = {
+        let _guard = EnvVarGuard::set(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV, "32");
+        execute_batch_query_with_trace_on(
+            &ctx,
+            DispatchBackend::Wgsl,
+            &world_batch_plan,
+            &[region_capture.clone(), fine_domain.clone(), first_ray_items],
+        )
+        .expect("wgsl batch run with 32-wide workgroup")
+    };
+
+    let (expected_second_hits, _) = execute_batch_query_with_trace_on(
+        &ctx,
+        DispatchBackend::VirtualGpu,
+        &world_batch_plan,
+        &[
+            region_capture.clone(),
+            fine_domain.clone(),
+            second_ray_items.clone(),
+        ],
+    )
+    .expect("virtual gpu batch baseline");
+    let (second_hits, second_trace) = {
+        let _guard = EnvVarGuard::set(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV, "64");
+        execute_batch_query_with_trace_on(
+            &ctx,
+            DispatchBackend::Wgsl,
+            &world_batch_plan,
+            &[region_capture, fine_domain, second_ray_items],
+        )
+        .expect("wgsl batch run with 64-wide workgroup")
+    };
+
+    assert_eq!(first_trace.observability.wgsl_selected_workgroup_size, 32);
+    assert_eq!(second_trace.observability.wgsl_selected_workgroup_size, 64);
+
+    for (expected, actual) in expect_array(&expected_second_hits)
+        .iter()
+        .zip(expect_array(&second_hits))
+    {
+        assert_hit3_approx_eq(expected, actual);
+    }
 }

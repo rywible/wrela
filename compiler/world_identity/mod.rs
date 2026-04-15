@@ -50,7 +50,7 @@ pub struct WorldSnapshotHandle {
     portable: PortableSceneCaptureProjection,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SnapshotIdentityReport {
     pub capture_name: String,
     pub kind: SnapshotCaptureKind,

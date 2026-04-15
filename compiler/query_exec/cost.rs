@@ -351,8 +351,22 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
         report.counters.interval_proof_successes,
         report.counters.observer_continuation_seed_hits,
     ));
+    let optional_features = if report
+        .counters
+        .gpu_runtime
+        .enabled_optional_features
+        .is_empty()
+    {
+        "none".to_string()
+    } else {
+        report
+            .counters
+            .gpu_runtime
+            .enabled_optional_features
+            .join(",")
+    };
     out.push_str(&format!(
-        "gpu_runtime timestamps_supported={} timestamped_pass_count={} gpu_time_total_micros={} gpu_time_max_micros={} queue_submit_count={} upload_bytes={} readback_bytes={} transient_buffer_creations={} transient_bind_group_creations={} cpu_screen_sample_allocations={} attachment_decode_count={} attachment_encode_count={} primary_visibility_packet_fanout_count={} dispatch_fragmentation_count={} scene_reupload_bytes={} pipeline_cache_hits={} pipeline_cache_misses={}\n",
+        "gpu_runtime timestamps_supported={} timestamped_pass_count={} gpu_time_total_micros={} gpu_time_max_micros={} queue_submit_count={} upload_bytes={} readback_bytes={} transient_buffer_creations={} transient_bind_group_creations={} cpu_screen_sample_allocations={} attachment_decode_count={} attachment_encode_count={} primary_visibility_packet_fanout_count={} dispatch_fragmentation_count={} scene_reupload_bytes={} pipeline_cache_hits={} pipeline_cache_misses={} requested_limits_profile={} enabled_optional_features={}\n",
         report.counters.gpu_runtime.timestamps_supported,
         report.counters.gpu_runtime.timestamped_pass_count,
         report.counters.gpu_runtime.gpu_time_total_micros,
@@ -373,6 +387,8 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
         report.counters.gpu_runtime.scene_reupload_bytes,
         report.counters.gpu_runtime.pipeline_cache_hits,
         report.counters.gpu_runtime.pipeline_cache_misses,
+        report.counters.gpu_runtime.requested_limits_profile,
+        optional_features,
     ));
     let traced_items = report
         .counters

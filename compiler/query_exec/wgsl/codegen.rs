@@ -1,3 +1,7 @@
+use crate::gpu_runtime::{
+    GPU_RUNTIME_FRAME_BIND_GROUP_INDEX, GPU_RUNTIME_PASS_BIND_GROUP_INDEX,
+    GPU_RUNTIME_SCENE_BIND_GROUP_INDEX, GPU_RUNTIME_SCRATCH_BIND_GROUP_INDEX,
+};
 use crate::hir;
 use crate::kernel::ir::{KernelBatchQueryPlan, KernelCaptureQueryPlan, KernelWorldQueryPlan};
 use crate::kernel::{KernelStructValue, KernelValue};
@@ -859,7 +863,11 @@ fn emit_bindings(
     result_abi: &PortableAbiType,
 ) -> Result<String, QueryExecError> {
     let mut out = String::new();
-    writeln!(out, "@group(0) @binding(0)").ok();
+    writeln!(
+        out,
+        "@group({GPU_RUNTIME_FRAME_BIND_GROUP_INDEX}) @binding(0)"
+    )
+    .ok();
     writeln!(
         out,
         "var<storage, read> dispatch_config: {};",
@@ -940,27 +948,63 @@ fn emit_bindings(
     writeln!(out, "  solver_generated_dense_fallback_rays: atomic<u32>,").ok();
     writeln!(out, "  solver_support_rejections: atomic<u32>,").ok();
     writeln!(out, "}}\n").ok();
-    writeln!(out, "@group(1) @binding(0)").ok();
+    writeln!(
+        out,
+        "@group({GPU_RUNTIME_SCENE_BIND_GROUP_INDEX}) @binding(0)"
+    )
+    .ok();
     writeln!(out, "var<storage, read> accel_nodes: AccelNodeBuffer;").ok();
-    writeln!(out, "@group(1) @binding(1)").ok();
+    writeln!(
+        out,
+        "@group({GPU_RUNTIME_SCENE_BIND_GROUP_INDEX}) @binding(1)"
+    )
+    .ok();
     writeln!(out, "var<storage, read> accel_children: ShapeIndexBuffer;").ok();
-    writeln!(out, "@group(1) @binding(2)").ok();
+    writeln!(
+        out,
+        "@group({GPU_RUNTIME_SCENE_BIND_GROUP_INDEX}) @binding(2)"
+    )
+    .ok();
     writeln!(out, "var<storage, read> shape_meta: ShapeMetaBuffer;").ok();
-    writeln!(out, "@group(1) @binding(3)").ok();
+    writeln!(
+        out,
+        "@group({GPU_RUNTIME_SCENE_BIND_GROUP_INDEX}) @binding(3)"
+    )
+    .ok();
     writeln!(out, "var<storage, read> cache_bricks: CacheBrickBuffer;").ok();
-    writeln!(out, "@group(2) @binding(0)").ok();
+    writeln!(
+        out,
+        "@group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(0)"
+    )
+    .ok();
     writeln!(out, "var<storage, read> input_items: InputBuffer;").ok();
-    writeln!(out, "@group(2) @binding(1)").ok();
+    writeln!(
+        out,
+        "@group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(1)"
+    )
+    .ok();
     writeln!(out, "var<storage, read_write> output_items: ResultBuffer;").ok();
-    writeln!(out, "@group(2) @binding(2)").ok();
+    writeln!(
+        out,
+        "@group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(2)"
+    )
+    .ok();
     writeln!(out, "var<storage, read> world_shapes: ShapeIndexBuffer;").ok();
-    writeln!(out, "@group(2) @binding(3)").ok();
+    writeln!(
+        out,
+        "@group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(3)"
+    )
+    .ok();
     writeln!(
         out,
         "var<storage, read_write> observability_metrics: WgslObservabilityBuffer;"
     )
     .ok();
-    writeln!(out, "@group(3) @binding(0)").ok();
+    writeln!(
+        out,
+        "@group({GPU_RUNTIME_SCRATCH_BIND_GROUP_INDEX}) @binding(0)"
+    )
+    .ok();
     writeln!(
         out,
         "var<storage, read> continuation_seeds: ContinuationSeedBuffer;"

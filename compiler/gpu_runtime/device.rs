@@ -1,12 +1,17 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
+use crate::gpu_runtime::layout::{
+    GPU_RUNTIME_BIND_GROUP_COUNT, GPU_RUNTIME_FEATURE_SHADER_F16,
+    GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY, GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY_INSIDE_PASSES,
+};
 use wgpu::util::initialize_adapter_from_env_or_default;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GpuLimitRequest {
     pub max_storage_buffers_per_shader_stage: u32,
     pub max_storage_buffer_binding_size: u64,
+    pub timestamps_enabled: bool,
 }
 
 impl Default for GpuLimitRequest {
@@ -16,6 +21,7 @@ impl Default for GpuLimitRequest {
                 .max_storage_buffers_per_shader_stage,
             max_storage_buffer_binding_size: wgpu::Limits::downlevel_defaults()
                 .max_storage_buffer_binding_size,
+            timestamps_enabled: false,
         }
     }
 }
@@ -27,12 +33,71 @@ pub struct GpuRuntimeContext {
     pub adapter_info: wgpu::AdapterInfo,
     pub adapter_limits: wgpu::Limits,
     pub requested_limits: wgpu::Limits,
+    pub requested_features: wgpu::Features,
+    pub limit_request: GpuLimitRequest,
     pub timestamp_support: bool,
 }
 
 impl GpuRuntimeContext {
     pub fn timestamps_supported(&self) -> bool {
         self.timestamp_support
+    }
+
+    pub fn requested_limits_profile_name(&self) -> String {
+        format!(
+            "storage_buffers_per_stage={} storage_binding_bytes={} bind_groups={} workgroup_x={}",
+            self.requested_limits.max_storage_buffers_per_shader_stage,
+            self.requested_limits.max_storage_buffer_binding_size,
+            self.requested_limits.max_bind_groups,
+            self.requested_limits.max_compute_workgroup_size_x,
+        )
+    }
+
+    pub fn feature_mask(&self) -> u64 {
+        let mut mask = 0u64;
+        if self
+            .requested_features
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
+        {
+            mask |= GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY;
+        }
+        if self
+            .requested_features
+            .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES)
+        {
+            mask |= GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY_INSIDE_PASSES;
+        }
+        if self.requested_features.contains(wgpu::Features::SHADER_F16) {
+            mask |= GPU_RUNTIME_FEATURE_SHADER_F16;
+        }
+        mask
+    }
+
+    pub fn enabled_optional_feature_names(&self) -> Vec<String> {
+        let mut features = BTreeSet::new();
+        if self
+            .requested_features
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
+        {
+            features.insert("timestamp_query".to_string());
+        }
+        if self
+            .requested_features
+            .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES)
+        {
+            features.insert("timestamp_query_inside_passes".to_string());
+        }
+        if self.requested_features.contains(wgpu::Features::SHADER_F16) {
+            features.insert("shader_f16".to_string());
+        }
+        features.into_iter().collect()
+    }
+
+    pub fn create_upload_arena(
+        &self,
+        chunk_size: u64,
+    ) -> crate::gpu_runtime::upload::FrameUploadArena {
+        crate::gpu_runtime::upload::FrameUploadArena::new(&self.device, chunk_size)
     }
 }
 
@@ -51,6 +116,19 @@ pub fn shared_wgpu_context(request: GpuLimitRequest) -> Result<Arc<GpuRuntimeCon
     let mut guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
     let entry = guard.entry(request).or_insert_with(|| context.clone());
     entry.clone()
+}
+
+fn requested_optional_features(
+    request: GpuLimitRequest,
+    adapter_features: wgpu::Features,
+) -> wgpu::Features {
+    let timestamp_features =
+        wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+    let mut requested = wgpu::Features::empty();
+    if request.timestamps_enabled && adapter_features.contains(timestamp_features) {
+        requested |= timestamp_features;
+    }
+    requested
 }
 
 fn init_shared_wgpu_context(request: GpuLimitRequest) -> Result<GpuRuntimeContext, String> {
@@ -81,20 +159,29 @@ fn init_shared_wgpu_context(request: GpuLimitRequest) -> Result<GpuRuntimeContex
             request.max_storage_buffer_binding_size, adapter_limits.max_buffer_size
         ));
     }
-    if crate::query_exec::QUERY_WGSL_BIND_GROUP_COUNT > adapter_limits.max_bind_groups {
+    if GPU_RUNTIME_BIND_GROUP_COUNT > adapter_limits.max_bind_groups {
         return Err(format!(
-            "query WGSL layout needs {} bind groups but adapter profile only supports {}",
-            crate::query_exec::QUERY_WGSL_BIND_GROUP_COUNT,
-            adapter_limits.max_bind_groups
+            "gpu runtime layout needs {} bind groups but adapter profile only supports {}",
+            GPU_RUNTIME_BIND_GROUP_COUNT, adapter_limits.max_bind_groups
         ));
     }
 
+    let requested_features = requested_optional_features(request, adapter.features());
     let timestamp_features =
         wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
-    let timestamp_support = adapter.features().contains(timestamp_features);
-    let selected_workgroup_size =
-        crate::query_exec::select_query_wgsl_workgroup_size(&adapter_limits)
-            .map_err(|err| err.to_string())?;
+    let timestamp_support = requested_features.contains(timestamp_features);
+    let selected_workgroup_size = [128u32, 64, 32]
+        .into_iter()
+        .find(|candidate| {
+            *candidate <= adapter_limits.max_compute_workgroup_size_x
+                && *candidate <= adapter_limits.max_compute_invocations_per_workgroup
+        })
+        .ok_or_else(|| {
+            format!(
+                "adapter does not support any legal query WGSL workgroup size in {:?}",
+                crate::query_exec::QUERY_WGSL_LEGAL_WORKGROUP_SIZES
+            )
+        })?;
     let mut required_limits = wgpu::Limits::downlevel_defaults()
         .using_resolution(adapter_limits.clone())
         .using_alignment(adapter_limits.clone());
@@ -102,18 +189,14 @@ fn init_shared_wgpu_context(request: GpuLimitRequest) -> Result<GpuRuntimeContex
         request.max_storage_buffers_per_shader_stage;
     required_limits.max_storage_buffer_binding_size = request.max_storage_buffer_binding_size;
     required_limits.max_buffer_size = adapter_limits.max_buffer_size;
-    required_limits.max_bind_groups = crate::query_exec::QUERY_WGSL_BIND_GROUP_COUNT;
+    required_limits.max_bind_groups = GPU_RUNTIME_BIND_GROUP_COUNT;
     required_limits.max_compute_invocations_per_workgroup = selected_workgroup_size;
     required_limits.max_compute_workgroup_size_x = selected_workgroup_size;
     required_limits.max_compute_workgroup_size_y = 1;
     required_limits.max_compute_workgroup_size_z = 1;
     let descriptor = wgpu::DeviceDescriptor {
         label: Some("wrela.gpu_runtime.device"),
-        required_features: if timestamp_support {
-            timestamp_features
-        } else {
-            wgpu::Features::empty()
-        },
+        required_features: requested_features,
         required_limits: required_limits.clone(),
         experimental_features: wgpu::ExperimentalFeatures::disabled(),
         memory_hints: wgpu::MemoryHints::Performance,
@@ -127,8 +210,41 @@ fn init_shared_wgpu_context(request: GpuLimitRequest) -> Result<GpuRuntimeContex
         adapter_info,
         adapter_limits,
         requested_limits: required_limits,
+        requested_features: descriptor.required_features,
+        limit_request: request,
         timestamp_support,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_limit_request_disables_optional_features() {
+        let requested = requested_optional_features(
+            GpuLimitRequest::default(),
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES,
+        );
+
+        assert_eq!(requested, wgpu::Features::empty());
+    }
+
+    #[test]
+    fn timestamp_features_require_explicit_opt_in_and_full_support() {
+        let request = GpuLimitRequest {
+            timestamps_enabled: true,
+            ..GpuLimitRequest::default()
+        };
+        let full_support =
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+
+        let requested = requested_optional_features(request, full_support);
+        assert_eq!(requested, full_support);
+
+        let partial_support = requested_optional_features(request, wgpu::Features::TIMESTAMP_QUERY);
+        assert_eq!(partial_support, wgpu::Features::empty());
+    }
 }
 
 pub fn readback_storage_buffer_on(

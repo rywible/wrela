@@ -5,8 +5,13 @@ use crate::acceleration::cache::SupportBrickCache;
 use crate::acceleration::{AccelerationForest, BoundDescriptorKind};
 use crate::execution_policy::QueryExecutionPolicy;
 use crate::gpu_runtime::{
-    GpuLimitRequest, GpuPassProfiler, GpuRuntimeContext, GpuRuntimeMetrics,
-    readback_storage_buffer_on as shared_readback_storage_buffer_on, shared_wgpu_context,
+    ComputePipelineKey, GPU_RUNTIME_BIND_GROUP_COUNT, GPU_RUNTIME_FRAME_BIND_GROUP_INDEX,
+    GPU_RUNTIME_PASS_BIND_GROUP_INDEX, GPU_RUNTIME_SCENE_BIND_GROUP_INDEX,
+    GPU_RUNTIME_SCRATCH_BIND_GROUP_INDEX, GpuBindGroupRole, GpuLayoutIdentity, GpuLimitRequest,
+    GpuPassProfiler, GpuResidentScene, GpuResidentSceneKey, GpuResidentScenePayload,
+    GpuRuntimeContext, GpuRuntimeMetrics, PipelineLayoutKey, bind_group_layout_signature_for_role,
+    lock_shared_upload_arena, readback_storage_buffer_on as shared_readback_storage_buffer_on,
+    shared_resident_scene_cache_for_request, shared_wgpu_context,
 };
 use crate::kernel::KernelBatchQueryTrace;
 use crate::kernel::ir::{KernelBatchQueryPlan, KernelCaptureQueryPlan, KernelWorldQueryPlan};
@@ -27,16 +32,17 @@ use crate::query_exec::ids::stable_semantic_id;
 use crate::query_exec::world::{NormalRole, world_query_semantics_for_contract};
 use crate::query_exec::{QueryExecutionObservability, select_query_wgsl_workgroup_size};
 use crate::query_plan::CaptureKind;
+use crate::world_identity::SnapshotIdentityReport;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use smol_str::SmolStr;
 use std::borrow::Cow;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
-const QUERY_WGSL_BIND_GROUP_COUNT: u32 = 4;
 const QUERY_WGSL_STORAGE_BUFFERS_PER_SHADER_STAGE: u32 = 10;
 const QUERY_WGSL_ACCEL_FLAG_LEAF: u32 = 1;
 const QUERY_WGSL_ACCEL_FLAG_HAS_BOUNDS: u32 = 2;
@@ -53,6 +59,9 @@ pub(crate) struct GpuDispatchRequest {
     pub(crate) accel_children: Vec<u32>,
     pub(crate) cache_bricks: Vec<KernelValue>,
     pub(crate) continuation_seeds: Vec<u32>,
+    pub(crate) resident_scene_snapshot: Option<SnapshotIdentityReport>,
+    pub(crate) resident_scene_detail: i32,
+    pub(crate) resident_scene_selection_signature: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -66,8 +75,6 @@ pub(crate) struct GeneratedShaderModule {
     pub(crate) item_abi: PortableAbiType,
     pub(crate) result_abi: PortableAbiType,
     pub(crate) shape_meta_values: Vec<KernelValue>,
-    pub(crate) layout_signature: u64,
-    pub(crate) bind_group_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -84,7 +91,8 @@ pub(crate) struct CachedPipeline {
 
 #[derive(Clone)]
 pub(crate) struct QueryCachedPipeline {
-    pub(crate) bind_group_layouts: [wgpu::BindGroupLayout; QUERY_WGSL_BIND_GROUP_COUNT as usize],
+    pub(crate) bind_group_layouts: [wgpu::BindGroupLayout; GPU_RUNTIME_BIND_GROUP_COUNT as usize],
+    pub(crate) layout_identity: GpuLayoutIdentity,
     pub(crate) pipeline: wgpu::ComputePipeline,
 }
 
@@ -301,27 +309,34 @@ fn build_capture_request(
         });
     }
 
-    let (capture_kind, capture_index, cache_bricks) = match descriptor.capture_kind {
-        CaptureKind::Field => {
-            let capture = ops.resolve_field_or_shape_capture(args.first())?;
-            note_wgsl_normal_role_for_capture(ops, descriptor, &capture);
-            (0u32, field_index(ops.context(), &capture)?, Vec::new())
-        }
-        CaptureKind::Shape => {
-            let capture = ops.resolve_shape_capture(args.first())?;
-            note_wgsl_normal_role_for_capture(ops, descriptor, &capture);
-            (
-                1u32,
-                shape_index(ops.context(), &capture)?,
-                shape_cache_brick_kernel_values(ops.context(), &capture),
-            )
-        }
-        CaptureKind::Region => {
-            return Err(QueryExecError::Unsupported {
-                message: "region captures are only valid for world queries".to_string(),
-            });
-        }
-    };
+    let (capture_kind, capture_index, cache_bricks, resident_scene_snapshot) =
+        match descriptor.capture_kind {
+            CaptureKind::Field => {
+                let capture = ops.resolve_field_or_shape_capture(args.first())?;
+                note_wgsl_normal_role_for_capture(ops, descriptor, &capture);
+                (
+                    0u32,
+                    field_index(ops.context(), &capture)?,
+                    Vec::new(),
+                    ops.context().snapshot_report_for_capture_name(&capture),
+                )
+            }
+            CaptureKind::Shape => {
+                let capture = ops.resolve_shape_capture(args.first())?;
+                note_wgsl_normal_role_for_capture(ops, descriptor, &capture);
+                (
+                    1u32,
+                    shape_index(ops.context(), &capture)?,
+                    shape_cache_brick_kernel_values(ops.context(), &capture),
+                    ops.context().snapshot_report_for_capture_name(&capture),
+                )
+            }
+            CaptureKind::Region => {
+                return Err(QueryExecError::Unsupported {
+                    message: "region captures are only valid for world queries".to_string(),
+                });
+            }
+        };
 
     let item = scalar_item_arg(descriptor, args.get(1))?;
 
@@ -344,6 +359,9 @@ fn build_capture_request(
         accel_children: Vec::new(),
         cache_bricks,
         continuation_seeds: Vec::new(),
+        resident_scene_snapshot,
+        resident_scene_detail: 0,
+        resident_scene_selection_signature: 0,
     })
 }
 
@@ -646,6 +664,9 @@ fn build_world_request(
         accel_children: accel.children,
         cache_bricks,
         continuation_seeds: Vec::new(),
+        resident_scene_snapshot: ops.context().snapshot_report_for_capture_name(&capture),
+        resident_scene_detail: detail,
+        resident_scene_selection_signature: u64::from(surface_root_shape_id.unwrap_or_default()),
     })
 }
 
@@ -726,6 +747,9 @@ fn build_batch_request(
         accel_children: Vec::new(),
         cache_bricks,
         continuation_seeds: Vec::new(),
+        resident_scene_snapshot: ops.context().snapshot_report_for_capture_name(&capture),
+        resident_scene_detail: 0,
+        resident_scene_selection_signature: 0,
     })
 }
 
@@ -777,6 +801,9 @@ fn build_world_batch_request(
         accel_children: accel.children,
         cache_bricks,
         continuation_seeds: Vec::new(),
+        resident_scene_snapshot: ops.context().snapshot_report_for_capture_name(&capture),
+        resident_scene_detail: detail,
+        resident_scene_selection_signature: 0,
     })
 }
 
@@ -786,14 +813,6 @@ fn generate_compiled_shader(
 ) -> Result<GeneratedShaderModule, QueryExecError> {
     let generated = generate_shader(ctx, plan)?;
     validate_generated_shader(&generated.source)?;
-    let layout_signature = query_wgsl_layout_signature(
-        &generated.dispatch_abi,
-        &generated.accel_node_abi,
-        &generated.cache_brick_abi,
-        &generated.shape_meta_abi,
-        &generated.item_abi,
-        &generated.result_abi,
-    );
     Ok(GeneratedShaderModule {
         source: generated.source,
         workgroup_size: generated.workgroup_size,
@@ -804,36 +823,7 @@ fn generate_compiled_shader(
         item_abi: generated.item_abi,
         result_abi: generated.result_abi,
         shape_meta_values: generated.shape_meta_values,
-        layout_signature,
-        bind_group_count: QUERY_WGSL_BIND_GROUP_COUNT,
     })
-}
-
-fn query_wgsl_layout_signature(
-    dispatch_abi: &PortableAbiType,
-    accel_node_abi: &PortableAbiType,
-    cache_brick_abi: &PortableAbiType,
-    shape_meta_abi: &PortableAbiType,
-    item_abi: &PortableAbiType,
-    result_abi: &PortableAbiType,
-) -> u64 {
-    let dispatch = format!("{dispatch_abi:?}");
-    let accel_node = format!("{accel_node_abi:?}");
-    let cache_brick = format!("{cache_brick_abi:?}");
-    let shape_meta = format!("{shape_meta_abi:?}");
-    let item = format!("{item_abi:?}");
-    let result = format!("{result_abi:?}");
-    stable_semantic_id(&[
-        b"query_exec::wgsl::layout::v2",
-        dispatch.as_bytes(),
-        accel_node.as_bytes(),
-        cache_brick.as_bytes(),
-        shape_meta.as_bytes(),
-        item.as_bytes(),
-        result.as_bytes(),
-        &QUERY_WGSL_BIND_GROUP_COUNT.to_le_bytes(),
-        &QUERY_WGSL_STORAGE_BUFFERS_PER_SHADER_STAGE.to_le_bytes(),
-    ])
 }
 
 fn world_acceleration_request_data(
@@ -1118,8 +1108,409 @@ fn encode_shape_meta_values(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum WgslBufferKind {
+    SceneAccelNodes,
+    SceneAccelChildren,
+    SceneCacheBricks,
+    SceneShapeMeta,
+    SceneWorldShapes,
+}
+
+impl WgslBufferKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::SceneAccelNodes => "wrela.wgsl.accel_nodes",
+            Self::SceneAccelChildren => "wrela.wgsl.accel_children",
+            Self::SceneCacheBricks => "wrela.wgsl.cache_bricks",
+            Self::SceneShapeMeta => "wrela.wgsl.shape_meta",
+            Self::SceneWorldShapes => "wrela.wgsl.world_shapes",
+        }
+    }
+
+    fn usage(self) -> wgpu::BufferUsages {
+        match self {
+            Self::SceneAccelNodes
+            | Self::SceneAccelChildren
+            | Self::SceneCacheBricks
+            | Self::SceneShapeMeta
+            | Self::SceneWorldShapes => wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct WgslBufferPoolKey {
+    limits: WgslLimitRequest,
+    kind: WgslBufferKind,
+    size: u64,
+    token: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct WgslSceneBindGroupKey {
+    limits: WgslLimitRequest,
+    pipeline_signature: u64,
+    scene_fingerprint: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct WgslPipelineCacheKey {
+    limits: WgslLimitRequest,
+    pipeline: ComputePipelineKey,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct WgslDynamicResourcesKey {
+    limits: WgslLimitRequest,
+    pipeline_signature: u64,
+    scene_token: u64,
+    dispatch_buffer_size: u64,
+    input_buffer_size: u64,
+    output_buffer_size: u64,
+    observability_buffer_size: u64,
+    continuation_buffer_size: u64,
+}
+
+#[derive(Clone)]
+struct WgslDynamicResources {
+    dispatch_buffer: wgpu::Buffer,
+    input_buffer: wgpu::Buffer,
+    output_buffer: wgpu::Buffer,
+    observability_buffer: wgpu::Buffer,
+    continuation_seed_buffer: wgpu::Buffer,
+    frame_bind_group: wgpu::BindGroup,
+    pass_bind_group: wgpu::BindGroup,
+    scratch_bind_group: wgpu::BindGroup,
+}
+
+#[derive(Debug, Clone)]
+struct WgslDispatchPayloadBytes {
+    dispatch_bytes: Vec<u8>,
+    input_bytes: Vec<u8>,
+    accel_node_bytes: Vec<u8>,
+    accel_child_bytes: Vec<u8>,
+    cache_brick_bytes: Vec<u8>,
+    shape_meta_bytes: Vec<u8>,
+    world_shape_bytes: Vec<u8>,
+    continuation_seed_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct WgslDispatchOutcome {
+    result_bytes: Vec<u8>,
+    observability_bytes: Vec<u8>,
+    gpu_runtime: GpuRuntimeMetrics,
+    layout_signature: u64,
+}
+
 fn storage_buffer_size(bytes: &[u8]) -> u64 {
     bytes.len().max(4) as u64
+}
+
+fn padded_storage_bytes(bytes: &[u8]) -> Cow<'_, [u8]> {
+    if bytes.len() >= 4 {
+        Cow::Borrowed(bytes)
+    } else {
+        let mut padded = Vec::with_capacity(4);
+        padded.extend_from_slice(bytes);
+        padded.resize(4, 0);
+        Cow::Owned(padded)
+    }
+}
+
+fn create_storage_buffer_with_bytes(
+    device: &wgpu::Device,
+    label: &'static str,
+    bytes: &[u8],
+) -> wgpu::Buffer {
+    let padded = padded_storage_bytes(bytes);
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents: padded.as_ref(),
+        usage: wgpu::BufferUsages::STORAGE,
+    })
+}
+
+fn scene_upload_bytes(payloads: &WgslDispatchPayloadBytes) -> u64 {
+    storage_buffer_size(&payloads.accel_node_bytes)
+        + storage_buffer_size(&payloads.accel_child_bytes)
+        + storage_buffer_size(&payloads.cache_brick_bytes)
+        + storage_buffer_size(&payloads.shape_meta_bytes)
+        + storage_buffer_size(&payloads.world_shape_bytes)
+}
+
+fn shared_resident_scene_for_request(
+    layout_identity: GpuLayoutIdentity,
+    request: &GpuDispatchRequest,
+    payloads: &WgslDispatchPayloadBytes,
+    runtime_request: WgslLimitRequest,
+    native: &NativeWgpuContext,
+    scene_layout: &wgpu::BindGroupLayout,
+) -> Result<Option<(Arc<GpuResidentScene>, bool)>, QueryExecError> {
+    let Some(snapshot) = request.resident_scene_snapshot.clone() else {
+        return Ok(None);
+    };
+    let cache = shared_resident_scene_cache_for_request::<GpuResidentScenePayload>(runtime_request);
+    let mut guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
+    let key = GpuResidentSceneKey::new(snapshot, request.resident_scene_detail, layout_identity)
+        .with_selection_signature(request.resident_scene_selection_signature);
+    if let Some(scene) = guard.get(&key) {
+        return Ok(Some((scene, false)));
+    }
+    let built = guard.get_or_insert_with(key, |key| {
+        let world_shapes = create_storage_buffer_with_bytes(
+            &native.device,
+            "wrela.wgsl.scene.world_shapes",
+            &payloads.world_shape_bytes,
+        );
+        let accel_nodes = create_storage_buffer_with_bytes(
+            &native.device,
+            "wrela.wgsl.scene.accel_nodes",
+            &payloads.accel_node_bytes,
+        );
+        let accel_children = create_storage_buffer_with_bytes(
+            &native.device,
+            "wrela.wgsl.scene.accel_children",
+            &payloads.accel_child_bytes,
+        );
+        let shape_meta = create_storage_buffer_with_bytes(
+            &native.device,
+            "wrela.wgsl.scene.shape_meta",
+            &payloads.shape_meta_bytes,
+        );
+        let cache_bricks = create_storage_buffer_with_bytes(
+            &native.device,
+            "wrela.wgsl.scene.cache_bricks",
+            &payloads.cache_brick_bytes,
+        );
+        let bind_group_scene = native.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wrela.wgsl.query.group0"),
+            layout: scene_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: accel_nodes.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: accel_children.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: shape_meta.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: cache_bricks.as_entire_binding(),
+                },
+            ],
+        });
+        Ok(GpuResidentScene::new(
+            key.clone(),
+            GpuResidentScenePayload {
+                world_shapes,
+                accel_nodes,
+                accel_children,
+                shape_meta,
+                cache_bricks,
+                bind_group_scene,
+            },
+        ))
+    })?;
+    Ok(Some((built, true)))
+}
+
+fn pooled_storage_buffer(
+    native: &NativeWgpuContext,
+    limit_request: WgslLimitRequest,
+    kind: WgslBufferKind,
+    size: u64,
+    token: u64,
+    gpu_runtime: &mut GpuRuntimeMetrics,
+) -> Result<(wgpu::Buffer, bool), QueryExecError> {
+    static BUFFERS: OnceLock<Mutex<HashMap<WgslBufferPoolKey, wgpu::Buffer>>> = OnceLock::new();
+    let cache = BUFFERS.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = WgslBufferPoolKey {
+        limits: limit_request,
+        kind,
+        size,
+        token,
+    };
+
+    {
+        let guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
+        if let Some(buffer) = guard.get(&key) {
+            return Ok((buffer.clone(), false));
+        }
+    }
+
+    let buffer = native.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(kind.label()),
+        size,
+        usage: kind.usage(),
+        mapped_at_creation: false,
+    });
+    let mut guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
+    let created = guard.insert(key, buffer.clone()).is_none();
+    if created {
+        gpu_runtime.transient_buffer_creations =
+            gpu_runtime.transient_buffer_creations.saturating_add(1);
+    }
+    Ok((buffer, created))
+}
+
+fn hash_value<T: Hash>(value: &T) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn lock_query_dynamic_resources(
+    native: &NativeWgpuContext,
+    key: WgslDynamicResourcesKey,
+    cached: &QueryCachedPipeline,
+    world_shapes_buffer: &wgpu::Buffer,
+) -> (std::sync::MutexGuard<'static, WgslDynamicResources>, bool) {
+    static RESOURCES: OnceLock<
+        Mutex<HashMap<WgslDynamicResourcesKey, &'static Mutex<WgslDynamicResources>>>,
+    > = OnceLock::new();
+    let registry = RESOURCES.get_or_init(|| Mutex::new(HashMap::new()));
+    let (resources_mutex, created) = {
+        let mut guard = registry.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut created = false;
+        let resources_mutex = *guard.entry(key).or_insert_with(|| {
+            created = true;
+            let dispatch_buffer = native.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("wrela.wgsl.dispatch"),
+                size: key.dispatch_buffer_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let input_buffer = native.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("wrela.wgsl.input"),
+                size: key.input_buffer_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let output_buffer = native.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("wrela.wgsl.output"),
+                size: key.output_buffer_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            let observability_buffer = native.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("wrela.wgsl.observability"),
+                size: key.observability_buffer_size,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let continuation_seed_buffer = native.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("wrela.wgsl.continuation"),
+                size: key.continuation_buffer_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let frame_bind_group = native.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("wrela.wgsl.bind_group1"),
+                layout: &cached.bind_group_layouts[GPU_RUNTIME_FRAME_BIND_GROUP_INDEX as usize],
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: dispatch_buffer.as_entire_binding(),
+                }],
+            });
+            let pass_bind_group = native.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("wrela.wgsl.bind_group2"),
+                layout: &cached.bind_group_layouts[GPU_RUNTIME_PASS_BIND_GROUP_INDEX as usize],
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: input_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: output_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: world_shapes_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: observability_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+            let scratch_bind_group = native.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("wrela.wgsl.bind_group3"),
+                layout: &cached.bind_group_layouts[GPU_RUNTIME_SCRATCH_BIND_GROUP_INDEX as usize],
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: continuation_seed_buffer.as_entire_binding(),
+                }],
+            });
+            Box::leak(Box::new(Mutex::new(WgslDynamicResources {
+                dispatch_buffer,
+                input_buffer,
+                output_buffer,
+                observability_buffer,
+                continuation_seed_buffer,
+                frame_bind_group,
+                pass_bind_group,
+                scratch_bind_group,
+            })))
+        });
+        (resources_mutex, created)
+    };
+    let resources = resources_mutex
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    (resources, created)
+}
+
+fn write_pooled_buffer(native: &NativeWgpuContext, buffer: &wgpu::Buffer, bytes: &[u8]) -> u64 {
+    let padded = padded_storage_bytes(bytes);
+    native.queue.write_buffer(buffer, 0, padded.as_ref());
+    storage_buffer_size(padded.as_ref())
+}
+
+fn scene_fingerprint(
+    layout_signature: u64,
+    accel_node_bytes: &[u8],
+    accel_child_bytes: &[u8],
+    cache_brick_bytes: &[u8],
+    shape_meta_bytes: &[u8],
+    world_shape_bytes: &[u8],
+) -> u64 {
+    stable_semantic_id(&[
+        b"query_exec::wgsl::resident_scene::v1",
+        &layout_signature.to_le_bytes(),
+        accel_node_bytes,
+        accel_child_bytes,
+        cache_brick_bytes,
+        shape_meta_bytes,
+        world_shape_bytes,
+    ])
+}
+
+fn pipeline_signature(
+    source: &str,
+    workgroup_size: u32,
+    layout_signature: u64,
+    limit_request: WgslLimitRequest,
+) -> u64 {
+    stable_semantic_id(&[
+        b"query_exec::wgsl::pipeline::v1",
+        source.as_bytes(),
+        &workgroup_size.to_le_bytes(),
+        &layout_signature.to_le_bytes(),
+        &limit_request
+            .max_storage_buffers_per_shader_stage
+            .to_le_bytes(),
+        &limit_request.max_storage_buffer_binding_size.to_le_bytes(),
+    ])
 }
 
 pub(crate) fn dispatch_compiled_shader(
@@ -1173,108 +1564,71 @@ fn dispatch_compiled_shader_single_with_observability(
         return Ok((Vec::new(), QueryExecutionObservability::default()));
     }
 
-    let dispatch_bytes = encode_value(&generated.dispatch_abi, &request.dispatch)?;
-    let input_bytes = encode_slice(&generated.item_abi, &request.items)?;
-    let accel_node_bytes =
-        encode_accel_node_values(&generated.accel_node_abi, &request.accel_nodes)?;
-    let accel_child_bytes = encode_u32_values(&request.accel_children)?;
-    let cache_brick_bytes =
-        encode_cache_brick_values(&generated.cache_brick_abi, &request.cache_bricks)?;
-    let shape_meta_bytes =
-        encode_shape_meta_values(&generated.shape_meta_abi, &generated.shape_meta_values)?;
-    let world_shape_bytes = encode_shape_indices(&request.world_shape_indices)?;
-    let continuation_seed_bytes = encode_u32_values(&request.continuation_seeds)?;
+    let payloads = WgslDispatchPayloadBytes {
+        dispatch_bytes: encode_value(&generated.dispatch_abi, &request.dispatch)?,
+        input_bytes: encode_slice(&generated.item_abi, &request.items)?,
+        accel_node_bytes: encode_accel_node_values(
+            &generated.accel_node_abi,
+            &request.accel_nodes,
+        )?,
+        accel_child_bytes: encode_u32_values(&request.accel_children)?,
+        cache_brick_bytes: encode_cache_brick_values(
+            &generated.cache_brick_abi,
+            &request.cache_bricks,
+        )?,
+        shape_meta_bytes: encode_shape_meta_values(
+            &generated.shape_meta_abi,
+            &generated.shape_meta_values,
+        )?,
+        world_shape_bytes: encode_shape_indices(&request.world_shape_indices)?,
+        continuation_seed_bytes: encode_u32_values(&request.continuation_seeds)?,
+    };
     let result_stride = portable_abi_array_stride(&generated.result_abi) as usize;
     let result_buffer_size = (result_stride * request.items.len()).max(result_stride.max(4)) as u64;
     let used_max_storage_buffer_bytes = [
-        storage_buffer_size(&dispatch_bytes),
-        storage_buffer_size(&input_bytes),
+        storage_buffer_size(&payloads.dispatch_bytes),
+        storage_buffer_size(&payloads.input_bytes),
         result_buffer_size,
-        storage_buffer_size(&accel_node_bytes),
-        storage_buffer_size(&accel_child_bytes),
-        storage_buffer_size(&cache_brick_bytes),
-        storage_buffer_size(&shape_meta_bytes),
-        storage_buffer_size(&world_shape_bytes),
-        storage_buffer_size(&continuation_seed_bytes),
+        storage_buffer_size(&payloads.accel_node_bytes),
+        storage_buffer_size(&payloads.accel_child_bytes),
+        storage_buffer_size(&payloads.cache_brick_bytes),
+        storage_buffer_size(&payloads.shape_meta_bytes),
+        storage_buffer_size(&payloads.world_shape_bytes),
+        storage_buffer_size(&payloads.continuation_seed_bytes),
         (QUERY_WGSL_OBSERVABILITY_U32S * std::mem::size_of::<u32>()) as u64,
     ]
     .into_iter()
     .max()
     .unwrap_or(4);
-    let limit_request = WgslLimitRequest {
+    let required_limit_request = WgslLimitRequest {
         max_storage_buffers_per_shader_stage: QUERY_WGSL_STORAGE_BUFFERS_PER_SHADER_STAGE,
         max_storage_buffer_binding_size: used_max_storage_buffer_bytes,
+        ..WgslLimitRequest::default()
     };
-    let native = native_wgpu_context_for_limits(limit_request)?;
+    let native = native_wgpu_context_for_limits(required_limit_request)?;
     let mut profiler = GpuPassProfiler::new(&native, 1);
     let selected_workgroup_size = select_query_wgsl_workgroup_size(&native.adapter_limits)?;
-    let input_buffer = native
-        .device
-        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wrela.wgsl.input"),
-            contents: &input_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-    let output_buffer = native.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wrela.wgsl.output"),
-        size: result_buffer_size,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    let observability_buffer =
-        native
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("wrela.wgsl.observability"),
-                contents: &[0u8; QUERY_WGSL_OBSERVABILITY_U32S * std::mem::size_of::<u32>()],
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            });
-
     let diagnostics = WgslDispatchDiagnostics {
         selected_workgroup_size,
         used_max_storage_buffer_bytes,
         requested_max_storage_buffer_bytes: native.requested_limits.max_storage_buffer_binding_size,
     };
-    let mut gpu_runtime = GpuRuntimeMetrics {
-        timestamps_supported: profiler.timestamps_supported(),
-        timestamped_pass_count: 0,
-        gpu_time_total_micros: 0,
-        gpu_time_max_micros: 0,
-        queue_submit_count: 0,
-        transient_buffer_creations: 3,
-        transient_bind_group_creations: 0,
-        upload_bytes: storage_buffer_size(&input_bytes)
-            + (QUERY_WGSL_OBSERVABILITY_U32S * std::mem::size_of::<u32>()) as u64,
-        readback_bytes: 0,
-        cpu_screen_sample_allocations: 0,
-        attachment_decode_count: 0,
-        attachment_encode_count: 0,
-        primary_visibility_packet_fanout_count: 0,
-        dispatch_fragmentation_count: 0,
-        scene_reupload_bytes: 0,
-        pipeline_cache_hits: 0,
-        pipeline_cache_misses: 0,
-    };
-    gpu_runtime.merge_from(&dispatch_compiled_shader_with_buffers(
+    let outcome = dispatch_compiled_shader_with_buffers(
         generated,
         &request,
-        &input_buffer,
-        &output_buffer,
-        &observability_buffer,
+        &payloads,
         diagnostics,
-        &mut profiler,
-    )?);
-    let bytes = readback_storage_buffer_on(&native, &output_buffer, result_buffer_size)?;
-    let observability_bytes = readback_storage_buffer_on(
+        native.limit_request,
         &native,
-        &observability_buffer,
-        (QUERY_WGSL_OBSERVABILITY_U32S * std::mem::size_of::<u32>()) as u64,
+        &mut profiler,
     )?;
     let gpu_elapsed_micros = profiler
         .readback_gpu_elapsed_micros(&native)
         .map_err(|message| QueryExecError::Unsupported {
             message: format!("native WGSL GPU timing readback failed: {message}"),
         })?;
+    let mut gpu_runtime = outcome.gpu_runtime;
+    gpu_runtime.note_context_metadata(&native);
     gpu_runtime.note_gpu_timings(profiler.timestamps_supported(), &gpu_elapsed_micros);
     gpu_runtime.queue_submit_count = gpu_runtime
         .queue_submit_count
@@ -1289,12 +1643,16 @@ fn dispatch_compiled_shader_single_with_observability(
         .saturating_add(gpu_runtime.timestamped_pass_count as u64 * 16);
 
     Ok((
-        decode_slice(&generated.result_abi, &bytes, request.items.len())?,
+        decode_slice(
+            &generated.result_abi,
+            &outcome.result_bytes,
+            request.items.len(),
+        )?,
         decode_wgsl_observability(
-            generated,
             &diagnostics,
-            &observability_bytes,
+            &outcome.observability_bytes,
             request.items.len() as u32,
+            outcome.layout_signature,
             gpu_runtime,
         ),
     ))
@@ -1453,6 +1811,9 @@ fn slice_gpu_dispatch_request(
         } else {
             request.continuation_seeds.clone()
         },
+        resident_scene_snapshot: request.resident_scene_snapshot.clone(),
+        resident_scene_detail: request.resident_scene_detail,
+        resident_scene_selection_signature: request.resident_scene_selection_signature,
     })
 }
 
@@ -1466,95 +1827,30 @@ fn suppress_repeated_chunk_seed_metrics(observability: &mut QueryExecutionObserv
 fn dispatch_compiled_shader_with_buffers(
     generated: &GeneratedShaderModule,
     request: &GpuDispatchRequest,
-    input_buffer: &wgpu::Buffer,
-    output_buffer: &wgpu::Buffer,
-    observability_buffer: &wgpu::Buffer,
+    payloads: &WgslDispatchPayloadBytes,
     diagnostics: WgslDispatchDiagnostics,
+    runtime_request: WgslLimitRequest,
+    native: &NativeWgpuContext,
     profiler: &mut GpuPassProfiler,
-) -> Result<GpuRuntimeMetrics, QueryExecError> {
+) -> Result<WgslDispatchOutcome, QueryExecError> {
     if request.items.is_empty() {
-        return Ok(GpuRuntimeMetrics::default());
+        return Ok(WgslDispatchOutcome {
+            result_bytes: Vec::new(),
+            observability_bytes: Vec::new(),
+            gpu_runtime: GpuRuntimeMetrics::default(),
+            layout_signature: 0,
+        });
     }
-    let native = native_wgpu_context_for_limits(WgslLimitRequest {
-        max_storage_buffers_per_shader_stage: QUERY_WGSL_STORAGE_BUFFERS_PER_SHADER_STAGE,
-        max_storage_buffer_binding_size: diagnostics.used_max_storage_buffer_bytes,
-    })?;
-    let dispatch_bytes = encode_value(&generated.dispatch_abi, &request.dispatch)?;
-    let accel_node_bytes =
-        encode_accel_node_values(&generated.accel_node_abi, &request.accel_nodes)?;
-    let accel_child_bytes = encode_u32_values(&request.accel_children)?;
-    let cache_brick_bytes =
-        encode_cache_brick_values(&generated.cache_brick_abi, &request.cache_bricks)?;
-    let shape_meta_bytes =
-        encode_shape_meta_values(&generated.shape_meta_abi, &generated.shape_meta_values)?;
-    let shape_bytes = encode_shape_indices(&request.world_shape_indices)?;
-    let continuation_seed_bytes = encode_u32_values(&request.continuation_seeds)?;
+    let result_stride = portable_abi_array_stride(&generated.result_abi) as usize;
+    let result_buffer_size = (result_stride * request.items.len()).max(result_stride.max(4)) as u64;
     let mut gpu_runtime = GpuRuntimeMetrics::default();
-    gpu_runtime.upload_bytes = storage_buffer_size(&dispatch_bytes)
-        + storage_buffer_size(&accel_node_bytes)
-        + storage_buffer_size(&accel_child_bytes)
-        + storage_buffer_size(&cache_brick_bytes)
-        + storage_buffer_size(&shape_meta_bytes)
-        + storage_buffer_size(&shape_bytes)
-        + storage_buffer_size(&continuation_seed_bytes);
-    gpu_runtime.scene_reupload_bytes = storage_buffer_size(&accel_node_bytes)
-        + storage_buffer_size(&accel_child_bytes)
-        + storage_buffer_size(&cache_brick_bytes)
-        + storage_buffer_size(&shape_meta_bytes)
-        + storage_buffer_size(&shape_bytes);
-    gpu_runtime.transient_buffer_creations = 7;
-    gpu_runtime.transient_bind_group_creations = 4;
-    let dispatch_buffer = native
-        .device
-        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wrela.wgsl.dispatch"),
-            contents: &dispatch_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-    let accel_nodes_buffer = native
-        .device
-        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wrela.wgsl.accel_nodes"),
-            contents: &accel_node_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-    let accel_children_buffer =
-        native
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("wrela.wgsl.accel_children"),
-                contents: &accel_child_bytes,
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-    let cache_bricks_buffer = native
-        .device
-        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wrela.wgsl.cache_bricks"),
-            contents: &cache_brick_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-    let shape_meta_buffer = native
-        .device
-        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wrela.wgsl.shape_meta"),
-            contents: &shape_meta_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-    let world_shapes_buffer = native
-        .device
-        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wrela.wgsl.world_shapes"),
-            contents: &shape_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-    let continuation_seed_buffer =
-        native
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("wrela.wgsl.continuation"),
-                contents: &continuation_seed_bytes,
-                usage: wgpu::BufferUsages::STORAGE,
-            });
+    gpu_runtime.note_context_metadata(native);
+    let dispatch_buffer_size = storage_buffer_size(&payloads.dispatch_bytes);
+    let input_buffer_size = storage_buffer_size(&payloads.input_bytes);
+    let continuation_seed_buffer_size = storage_buffer_size(&payloads.continuation_seed_bytes);
+    let observability_buffer_size =
+        (QUERY_WGSL_OBSERVABILITY_U32S * std::mem::size_of::<u32>()) as u64;
+
     let cached = compiled_query_pipeline(
         &native,
         &generated.source,
@@ -1562,66 +1858,299 @@ fn dispatch_compiled_shader_with_buffers(
         generated,
         &mut gpu_runtime,
     )?;
-    let bind_group0 = native.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("wrela.wgsl.bind_group0"),
-        layout: &cached.bind_group_layouts[0],
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: dispatch_buffer.as_entire_binding(),
-        }],
-    });
-    let bind_group1 = native.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("wrela.wgsl.bind_group1"),
-        layout: &cached.bind_group_layouts[1],
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: accel_nodes_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: accel_children_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: shape_meta_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: cache_bricks_buffer.as_entire_binding(),
-            },
-        ],
-    });
-    let bind_group2 = native.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("wrela.wgsl.bind_group2"),
-        layout: &cached.bind_group_layouts[2],
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: input_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: output_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: world_shapes_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: observability_buffer.as_entire_binding(),
-            },
-        ],
-    });
-    let bind_group3 = native.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("wrela.wgsl.bind_group3"),
-        layout: &cached.bind_group_layouts[3],
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: continuation_seed_buffer.as_entire_binding(),
-        }],
-    });
+    let scene_fingerprint = scene_fingerprint(
+        cached.layout_identity.layout_signature,
+        &payloads.accel_node_bytes,
+        &payloads.accel_child_bytes,
+        &payloads.cache_brick_bytes,
+        &payloads.shape_meta_bytes,
+        &payloads.world_shape_bytes,
+    );
+    let (world_shapes_buffer, scene_bind_group, scene_bind_group_created) =
+        if let Some((scene, created)) = shared_resident_scene_for_request(
+            cached.layout_identity,
+            request,
+            payloads,
+            runtime_request,
+            native,
+            &cached.bind_group_layouts[GPU_RUNTIME_SCENE_BIND_GROUP_INDEX as usize],
+        )? {
+            if created {
+                let scene_bytes = scene_upload_bytes(payloads);
+                gpu_runtime.scene_reupload_bytes =
+                    gpu_runtime.scene_reupload_bytes.saturating_add(scene_bytes);
+                gpu_runtime.upload_bytes = gpu_runtime.upload_bytes.saturating_add(scene_bytes);
+            }
+            (
+                scene.payload.world_shapes.clone(),
+                scene.payload.bind_group_scene.clone(),
+                created,
+            )
+        } else {
+            let (accel_nodes_buffer, created_accel_nodes) = pooled_storage_buffer(
+                native,
+                runtime_request,
+                WgslBufferKind::SceneAccelNodes,
+                storage_buffer_size(&payloads.accel_node_bytes),
+                scene_fingerprint,
+                &mut gpu_runtime,
+            )?;
+            let (accel_children_buffer, created_accel_children) = pooled_storage_buffer(
+                native,
+                runtime_request,
+                WgslBufferKind::SceneAccelChildren,
+                storage_buffer_size(&payloads.accel_child_bytes),
+                scene_fingerprint,
+                &mut gpu_runtime,
+            )?;
+            let (cache_bricks_buffer, created_cache_bricks) = pooled_storage_buffer(
+                native,
+                runtime_request,
+                WgslBufferKind::SceneCacheBricks,
+                storage_buffer_size(&payloads.cache_brick_bytes),
+                scene_fingerprint,
+                &mut gpu_runtime,
+            )?;
+            let (shape_meta_buffer, created_shape_meta) = pooled_storage_buffer(
+                native,
+                runtime_request,
+                WgslBufferKind::SceneShapeMeta,
+                storage_buffer_size(&payloads.shape_meta_bytes),
+                scene_fingerprint,
+                &mut gpu_runtime,
+            )?;
+            let (world_shapes_buffer, created_world_shapes) = pooled_storage_buffer(
+                native,
+                runtime_request,
+                WgslBufferKind::SceneWorldShapes,
+                storage_buffer_size(&payloads.world_shape_bytes),
+                scene_fingerprint,
+                &mut gpu_runtime,
+            )?;
+            if created_accel_nodes {
+                gpu_runtime.scene_reupload_bytes =
+                    gpu_runtime
+                        .scene_reupload_bytes
+                        .saturating_add(write_pooled_buffer(
+                            native,
+                            &accel_nodes_buffer,
+                            &payloads.accel_node_bytes,
+                        ));
+                gpu_runtime.upload_bytes = gpu_runtime
+                    .upload_bytes
+                    .saturating_add(storage_buffer_size(&payloads.accel_node_bytes));
+            }
+            if created_accel_children {
+                gpu_runtime.scene_reupload_bytes =
+                    gpu_runtime
+                        .scene_reupload_bytes
+                        .saturating_add(write_pooled_buffer(
+                            native,
+                            &accel_children_buffer,
+                            &payloads.accel_child_bytes,
+                        ));
+                gpu_runtime.upload_bytes = gpu_runtime
+                    .upload_bytes
+                    .saturating_add(storage_buffer_size(&payloads.accel_child_bytes));
+            }
+            if created_cache_bricks {
+                gpu_runtime.scene_reupload_bytes =
+                    gpu_runtime
+                        .scene_reupload_bytes
+                        .saturating_add(write_pooled_buffer(
+                            native,
+                            &cache_bricks_buffer,
+                            &payloads.cache_brick_bytes,
+                        ));
+                gpu_runtime.upload_bytes = gpu_runtime
+                    .upload_bytes
+                    .saturating_add(storage_buffer_size(&payloads.cache_brick_bytes));
+            }
+            if created_shape_meta {
+                gpu_runtime.scene_reupload_bytes =
+                    gpu_runtime
+                        .scene_reupload_bytes
+                        .saturating_add(write_pooled_buffer(
+                            native,
+                            &shape_meta_buffer,
+                            &payloads.shape_meta_bytes,
+                        ));
+                gpu_runtime.upload_bytes = gpu_runtime
+                    .upload_bytes
+                    .saturating_add(storage_buffer_size(&payloads.shape_meta_bytes));
+            }
+            if created_world_shapes {
+                gpu_runtime.scene_reupload_bytes =
+                    gpu_runtime
+                        .scene_reupload_bytes
+                        .saturating_add(write_pooled_buffer(
+                            native,
+                            &world_shapes_buffer,
+                            &payloads.world_shape_bytes,
+                        ));
+                gpu_runtime.upload_bytes = gpu_runtime
+                    .upload_bytes
+                    .saturating_add(storage_buffer_size(&payloads.world_shape_bytes));
+            }
+            let scene_bind_group_key = WgslSceneBindGroupKey {
+                limits: runtime_request,
+                pipeline_signature: pipeline_signature(
+                    &generated.source,
+                    diagnostics.selected_workgroup_size,
+                    cached.layout_identity.layout_signature,
+                    runtime_request,
+                ),
+                scene_fingerprint,
+            };
+            let (scene_bind_group, scene_bind_group_created) = {
+                static SCENE_BIND_GROUPS: OnceLock<
+                    Mutex<HashMap<WgslSceneBindGroupKey, wgpu::BindGroup>>,
+                > = OnceLock::new();
+                let cache = SCENE_BIND_GROUPS.get_or_init(|| Mutex::new(HashMap::new()));
+                let mut guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
+                if let Some(bind_group) = guard.get(&scene_bind_group_key) {
+                    (bind_group.clone(), false)
+                } else {
+                    let bind_group = native.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("wrela.wgsl.query.group0"),
+                        layout: &cached.bind_group_layouts
+                            [GPU_RUNTIME_SCENE_BIND_GROUP_INDEX as usize],
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: accel_nodes_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: accel_children_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: shape_meta_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: cache_bricks_buffer.as_entire_binding(),
+                            },
+                        ],
+                    });
+                    let entry = guard
+                        .entry(scene_bind_group_key)
+                        .or_insert_with(|| bind_group.clone());
+                    (entry.clone(), true)
+                }
+            };
+            (
+                world_shapes_buffer,
+                scene_bind_group,
+                scene_bind_group_created,
+            )
+        };
+    let scene_token = request
+        .resident_scene_snapshot
+        .as_ref()
+        .map(|_| {
+            hash_value(
+                &GpuResidentSceneKey::new(
+                    request
+                        .resident_scene_snapshot
+                        .clone()
+                        .expect("snapshot exists when hashing resident scene"),
+                    request.resident_scene_detail,
+                    cached.layout_identity,
+                )
+                .with_selection_signature(request.resident_scene_selection_signature),
+            )
+        })
+        .unwrap_or(scene_fingerprint);
+    let dynamic_resources_key = WgslDynamicResourcesKey {
+        limits: runtime_request,
+        pipeline_signature: pipeline_signature(
+            &generated.source,
+            diagnostics.selected_workgroup_size,
+            cached.layout_identity.layout_signature,
+            runtime_request,
+        ),
+        scene_token,
+        dispatch_buffer_size,
+        input_buffer_size,
+        output_buffer_size: result_buffer_size,
+        observability_buffer_size,
+        continuation_buffer_size: continuation_seed_buffer_size,
+    };
+    let (dynamic_resources, dynamic_resources_created) =
+        lock_query_dynamic_resources(native, dynamic_resources_key, &cached, &world_shapes_buffer);
+    if dynamic_resources_created {
+        gpu_runtime.transient_buffer_creations =
+            gpu_runtime.transient_buffer_creations.saturating_add(5);
+    }
+    gpu_runtime.transient_bind_group_creations =
+        u32::from(scene_bind_group_created) + if dynamic_resources_created { 3 } else { 0 };
+
+    let mut upload_arena = lock_shared_upload_arena(
+        runtime_request,
+        &native.device,
+        [
+            dispatch_buffer_size,
+            input_buffer_size,
+            observability_buffer_size,
+            continuation_seed_buffer_size,
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(4),
+    );
+    upload_arena.set_scratch_encoder(native.device.create_command_encoder(
+        &wgpu::CommandEncoderDescriptor {
+            label: Some("wrela.wgsl.upload_encoder"),
+        },
+    ));
+    gpu_runtime.upload_bytes = gpu_runtime
+        .upload_bytes
+        .saturating_add(
+            upload_arena
+                .write_storage_bytes(
+                    &dynamic_resources.dispatch_buffer,
+                    0,
+                    &payloads.dispatch_bytes,
+                )
+                .map_err(|err| QueryExecError::Unsupported {
+                    message: format!("WGSL dispatch upload failed: {err:?}"),
+                })?,
+        )
+        .saturating_add(
+            upload_arena
+                .write_storage_bytes(&dynamic_resources.input_buffer, 0, &payloads.input_bytes)
+                .map_err(|err| QueryExecError::Unsupported {
+                    message: format!("WGSL input upload failed: {err:?}"),
+                })?,
+        )
+        .saturating_add(
+            upload_arena
+                .write_storage_bytes(
+                    &dynamic_resources.observability_buffer,
+                    0,
+                    &[0u8; QUERY_WGSL_OBSERVABILITY_U32S * std::mem::size_of::<u32>()],
+                )
+                .map_err(|err| QueryExecError::Unsupported {
+                    message: format!("WGSL observability upload failed: {err:?}"),
+                })?,
+        )
+        .saturating_add(
+            upload_arena
+                .write_storage_bytes(
+                    &dynamic_resources.continuation_seed_buffer,
+                    0,
+                    &payloads.continuation_seed_bytes,
+                )
+                .map_err(|err| QueryExecError::Unsupported {
+                    message: format!("WGSL continuation upload failed: {err:?}"),
+                })?,
+        );
+    if let Some(upload_commands) = upload_arena.finish() {
+        native.queue.submit(Some(upload_commands));
+        gpu_runtime.queue_submit_count = gpu_runtime.queue_submit_count.saturating_add(1);
+    }
 
     let mut encoder = native
         .device
@@ -1635,10 +2164,22 @@ fn dispatch_compiled_shader_with_buffers(
             timestamp_writes,
         });
         pass.set_pipeline(&cached.pipeline);
-        pass.set_bind_group(0, &bind_group0, &[]);
-        pass.set_bind_group(1, &bind_group1, &[]);
-        pass.set_bind_group(2, &bind_group2, &[]);
-        pass.set_bind_group(3, &bind_group3, &[]);
+        pass.set_bind_group(GPU_RUNTIME_SCENE_BIND_GROUP_INDEX, &scene_bind_group, &[]);
+        pass.set_bind_group(
+            GPU_RUNTIME_FRAME_BIND_GROUP_INDEX,
+            &dynamic_resources.frame_bind_group,
+            &[],
+        );
+        pass.set_bind_group(
+            GPU_RUNTIME_PASS_BIND_GROUP_INDEX,
+            &dynamic_resources.pass_bind_group,
+            &[],
+        );
+        pass.set_bind_group(
+            GPU_RUNTIME_SCRATCH_BIND_GROUP_INDEX,
+            &dynamic_resources.scratch_bind_group,
+            &[],
+        );
         pass.dispatch_workgroups(
             dispatch_workgroups_x_for_items(
                 request.items.len() as u32,
@@ -1650,8 +2191,24 @@ fn dispatch_compiled_shader_with_buffers(
     }
     profiler.resolve_into(&mut encoder);
     native.queue.submit(Some(encoder.finish()));
-    gpu_runtime.queue_submit_count = 1;
-    Ok(gpu_runtime)
+    gpu_runtime.queue_submit_count = gpu_runtime.queue_submit_count.saturating_add(1);
+    let result_bytes = readback_storage_buffer_on(
+        &native,
+        &dynamic_resources.output_buffer,
+        result_buffer_size,
+    )?;
+    let observability_bytes = readback_storage_buffer_on(
+        &native,
+        &dynamic_resources.observability_buffer,
+        observability_buffer_size,
+    )?;
+    upload_arena.recall();
+    Ok(WgslDispatchOutcome {
+        result_bytes,
+        observability_bytes,
+        gpu_runtime,
+        layout_signature: cached.layout_identity.layout_signature,
+    })
 }
 
 fn dispatch_workgroups_x_for_items(item_count: u32, workgroup_size: u32) -> u32 {
@@ -1682,17 +2239,90 @@ pub(crate) fn compiled_pipeline(
     native: &NativeWgpuContext,
     source: &str,
     workgroup_size: u32,
+    bind_group_index: u32,
     dispatch_min_size: Option<wgpu::BufferSize>,
     gpu_runtime: &mut GpuRuntimeMetrics,
 ) -> Result<CachedPipeline, QueryExecError> {
-    static PIPELINES: OnceLock<Mutex<HashMap<(String, u32, u64), CachedPipeline>>> =
+    if bind_group_index >= GPU_RUNTIME_BIND_GROUP_COUNT {
+        return Err(QueryExecError::Unsupported {
+            message: format!(
+                "native WGSL bind group index {bind_group_index} exceeds shared runtime convention count {GPU_RUNTIME_BIND_GROUP_COUNT}"
+            ),
+        });
+    }
+    let role = match bind_group_index {
+        GPU_RUNTIME_PASS_BIND_GROUP_INDEX => GpuBindGroupRole::Pass,
+        GPU_RUNTIME_FRAME_BIND_GROUP_INDEX => GpuBindGroupRole::Frame,
+        GPU_RUNTIME_SCENE_BIND_GROUP_INDEX => GpuBindGroupRole::SceneStatic,
+        GPU_RUNTIME_SCRATCH_BIND_GROUP_INDEX => GpuBindGroupRole::Scratch,
+        _ => unreachable!("bind group index already range checked"),
+    };
+    let entries = [
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: dispatch_min_size,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+    ];
+    let descriptor = wgpu::BindGroupLayoutDescriptor {
+        label: Some("wrela.wgsl.bind_group_layout"),
+        entries: &entries,
+    };
+    let bind_group_layout_signature = bind_group_layout_signature_for_role(role, &descriptor);
+    let mut bind_group_layout_signatures = [0u64; GPU_RUNTIME_BIND_GROUP_COUNT as usize];
+    bind_group_layout_signatures[bind_group_index as usize] = bind_group_layout_signature;
+    let layout_key = PipelineLayoutKey::from_bind_group_layout_signatures(
+        &bind_group_layout_signatures,
+        0,
+        native.feature_mask(),
+    );
+    let key = WgslPipelineCacheKey {
+        limits: native.limit_request,
+        pipeline: ComputePipelineKey::from_shader_source(
+            layout_key.clone(),
+            source,
+            "main",
+            workgroup_size,
+        ),
+    };
+    static PIPELINES: OnceLock<Mutex<HashMap<WgslPipelineCacheKey, CachedPipeline>>> =
         OnceLock::new();
     let cache = PIPELINES.get_or_init(|| Mutex::new(HashMap::new()));
-    let key = (
-        source.to_string(),
-        workgroup_size,
-        dispatch_min_size.map(wgpu::BufferSize::get).unwrap_or(0),
-    );
 
     {
         let guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -1703,59 +2333,16 @@ pub(crate) fn compiled_pipeline(
     }
     gpu_runtime.pipeline_cache_misses = gpu_runtime.pipeline_cache_misses.saturating_add(1);
 
-    let bind_group_layout =
-        native
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("wrela.wgsl.bind_group_layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: dispatch_min_size,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
+    let bind_group_layout = native.device.create_bind_group_layout(&descriptor);
     let pipeline_layout = native
         .device
         .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wrela.wgsl.pipeline_layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
+            bind_group_layouts: &{
+                let mut layouts = [None; GPU_RUNTIME_BIND_GROUP_COUNT as usize];
+                layouts[bind_group_index as usize] = Some(&bind_group_layout);
+                layouts
+            },
             immediate_size: 0,
         });
     let pipeline = create_compute_pipeline(
@@ -1781,16 +2368,159 @@ fn compiled_query_pipeline(
     generated: &GeneratedShaderModule,
     gpu_runtime: &mut GpuRuntimeMetrics,
 ) -> Result<QueryCachedPipeline, QueryExecError> {
-    static PIPELINES: OnceLock<Mutex<HashMap<(String, u32, u64, u32, u64), QueryCachedPipeline>>> =
+    let frame_entries = [wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: wgpu::BufferSize::new(
+                portable_abi_layout(&generated.dispatch_abi).size as u64,
+            ),
+        },
+        count: None,
+    }];
+    let frame_descriptor = wgpu::BindGroupLayoutDescriptor {
+        label: Some("wrela.wgsl.query.group1"),
+        entries: &frame_entries,
+    };
+    let scene_entries = [
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(
+                    portable_abi_layout(&generated.accel_node_abi).size as u64,
+                ),
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(4),
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(
+                    portable_abi_layout(&generated.shape_meta_abi).size as u64,
+                ),
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(
+                    portable_abi_layout(&generated.cache_brick_abi).size as u64,
+                ),
+            },
+            count: None,
+        },
+    ];
+    let scene_descriptor = wgpu::BindGroupLayoutDescriptor {
+        label: Some("wrela.wgsl.query.group0"),
+        entries: &scene_entries,
+    };
+    let pass_entries = [
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(4),
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(
+                    (QUERY_WGSL_OBSERVABILITY_U32S * std::mem::size_of::<u32>()) as u64,
+                ),
+            },
+            count: None,
+        },
+    ];
+    let pass_descriptor = wgpu::BindGroupLayoutDescriptor {
+        label: Some("wrela.wgsl.query.group2"),
+        entries: &pass_entries,
+    };
+    let scratch_entries = [wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: wgpu::BufferSize::new(4),
+        },
+        count: None,
+    }];
+    let scratch_descriptor = wgpu::BindGroupLayoutDescriptor {
+        label: Some("wrela.wgsl.query.group3"),
+        entries: &scratch_entries,
+    };
+    let bind_group_layout_signatures = [
+        bind_group_layout_signature_for_role(GpuBindGroupRole::SceneStatic, &scene_descriptor),
+        bind_group_layout_signature_for_role(GpuBindGroupRole::Frame, &frame_descriptor),
+        bind_group_layout_signature_for_role(GpuBindGroupRole::Pass, &pass_descriptor),
+        bind_group_layout_signature_for_role(GpuBindGroupRole::Scratch, &scratch_descriptor),
+    ];
+    let layout_key = PipelineLayoutKey::from_bind_group_layout_signatures(
+        &bind_group_layout_signatures,
+        0,
+        native.feature_mask(),
+    );
+    let key = WgslPipelineCacheKey {
+        limits: native.limit_request,
+        pipeline: ComputePipelineKey::from_shader_source(
+            layout_key.clone(),
+            source,
+            "main",
+            workgroup_size,
+        ),
+    };
+    static PIPELINES: OnceLock<Mutex<HashMap<WgslPipelineCacheKey, QueryCachedPipeline>>> =
         OnceLock::new();
     let cache = PIPELINES.get_or_init(|| Mutex::new(HashMap::new()));
-    let key = (
-        source.to_string(),
-        workgroup_size,
-        generated.layout_signature,
-        native.requested_limits.max_storage_buffers_per_shader_stage,
-        native.requested_limits.max_storage_buffer_binding_size,
-    );
 
     {
         let guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -1801,151 +2531,19 @@ fn compiled_query_pipeline(
     }
     gpu_runtime.pipeline_cache_misses = gpu_runtime.pipeline_cache_misses.saturating_add(1);
 
-    let dispatch_layout =
-        native
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("wrela.wgsl.query.group0"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            portable_abi_layout(&generated.dispatch_abi).size as u64,
-                        ),
-                    },
-                    count: None,
-                }],
-            });
-    let static_layout = native
-        .device
-        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("wrela.wgsl.query.group1"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            portable_abi_layout(&generated.accel_node_abi).size as u64,
-                        ),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(4),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            portable_abi_layout(&generated.shape_meta_abi).size as u64,
-                        ),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            portable_abi_layout(&generated.cache_brick_abi).size as u64,
-                        ),
-                    },
-                    count: None,
-                },
-            ],
-        });
-    let io_layout = native
-        .device
-        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("wrela.wgsl.query.group2"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(4),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            (QUERY_WGSL_OBSERVABILITY_U32S * std::mem::size_of::<u32>()) as u64,
-                        ),
-                    },
-                    count: None,
-                },
-            ],
-        });
-    let temporal_layout =
-        native
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("wrela.wgsl.query.group3"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(4),
-                    },
-                    count: None,
-                }],
-            });
+    let frame_layout = native.device.create_bind_group_layout(&frame_descriptor);
+    let scene_layout = native.device.create_bind_group_layout(&scene_descriptor);
+    let pass_layout = native.device.create_bind_group_layout(&pass_descriptor);
+    let scratch_layout = native.device.create_bind_group_layout(&scratch_descriptor);
     let pipeline_layout = native
         .device
         .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wrela.wgsl.query.pipeline_layout"),
             bind_group_layouts: &[
-                Some(&dispatch_layout),
-                Some(&static_layout),
-                Some(&io_layout),
-                Some(&temporal_layout),
+                Some(&scene_layout),
+                Some(&frame_layout),
+                Some(&pass_layout),
+                Some(&scratch_layout),
             ],
             immediate_size: 0,
         });
@@ -1958,7 +2556,8 @@ fn compiled_query_pipeline(
     )?;
 
     let cached = QueryCachedPipeline {
-        bind_group_layouts: [dispatch_layout, static_layout, io_layout, temporal_layout],
+        bind_group_layouts: [scene_layout, frame_layout, pass_layout, scratch_layout],
+        layout_identity: layout_key.layout,
         pipeline,
     };
     let mut guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -2007,10 +2606,10 @@ fn create_compute_pipeline(
 }
 
 fn decode_wgsl_observability(
-    generated: &GeneratedShaderModule,
     diagnostics: &WgslDispatchDiagnostics,
     bytes: &[u8],
     dispatch_items: u32,
+    layout_signature: u64,
     gpu_runtime: GpuRuntimeMetrics,
 ) -> QueryExecutionObservability {
     let read_u32 = |index: usize| -> u32 {
@@ -2049,8 +2648,8 @@ fn decode_wgsl_observability(
         ),
         dispatch_workgroups_y: 1,
         dispatch_workgroups_z: 1,
-        wgsl_layout_signature: Some(generated.layout_signature),
-        wgsl_bind_group_count: generated.bind_group_count,
+        wgsl_layout_signature: Some(layout_signature),
+        wgsl_bind_group_count: GPU_RUNTIME_BIND_GROUP_COUNT,
         wgsl_requested_max_storage_buffer_bytes: diagnostics.requested_max_storage_buffer_bytes,
         wgsl_used_max_storage_buffer_bytes: diagnostics.used_max_storage_buffer_bytes,
         wgsl_selected_workgroup_size: diagnostics.selected_workgroup_size,
@@ -2076,34 +2675,62 @@ pub(crate) fn native_wgpu_context() -> Result<Arc<NativeWgpuContext>, QueryExecE
     native_wgpu_context_for_limits(WgslLimitRequest::default())
 }
 
-fn native_wgpu_context_for_limits(
-    request: WgslLimitRequest,
-) -> Result<Arc<NativeWgpuContext>, QueryExecError> {
-    static CONTEXTS: OnceLock<
-        Mutex<HashMap<WgslLimitRequest, Result<Arc<NativeWgpuContext>, String>>>,
-    > = OnceLock::new();
-    let cache = CONTEXTS.get_or_init(|| Mutex::new(HashMap::new()));
-    {
-        let guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
-        if let Some(context) = guard.get(&request) {
-            return context
-                .clone()
-                .map_err(|message| QueryExecError::Unsupported {
-                    message: format!("native WGSL backend initialization failed: {message}"),
-                });
-        }
-    }
-    let mut guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
-    let entry = guard.entry(request).or_insert_with(|| {
-        shared_wgpu_context(request)
-            .map_err(|message| format!("native WGSL backend initialization failed: {message}"))
-    });
-    match entry {
-        Ok(context) => Ok(context.clone()),
-        Err(message) => Err(QueryExecError::Unsupported {
+fn query_runtime_limit_request(
+    required_request: WgslLimitRequest,
+) -> Result<WgslLimitRequest, QueryExecError> {
+    let adapter_context = shared_wgpu_context(WgslLimitRequest::default()).map_err(|message| {
+        QueryExecError::Unsupported {
             message: format!("native WGSL backend initialization failed: {message}"),
-        }),
+        }
+    })?;
+    if QUERY_WGSL_STORAGE_BUFFERS_PER_SHADER_STAGE
+        > adapter_context
+            .adapter_limits
+            .max_storage_buffers_per_shader_stage
+    {
+        return Err(QueryExecError::Unsupported {
+            message: format!(
+                "native WGSL runtime requires {} storage buffers per shader stage but adapter only supports {}",
+                QUERY_WGSL_STORAGE_BUFFERS_PER_SHADER_STAGE,
+                adapter_context
+                    .adapter_limits
+                    .max_storage_buffers_per_shader_stage
+            ),
+        });
     }
+    if required_request.max_storage_buffer_binding_size
+        > adapter_context
+            .adapter_limits
+            .max_storage_buffer_binding_size
+    {
+        return Err(QueryExecError::Unsupported {
+            message: format!(
+                "native WGSL runtime requires storage buffer binding size {} but adapter only supports {}",
+                required_request.max_storage_buffer_binding_size,
+                adapter_context
+                    .adapter_limits
+                    .max_storage_buffer_binding_size
+            ),
+        });
+    }
+    Ok(WgslLimitRequest {
+        max_storage_buffers_per_shader_stage: QUERY_WGSL_STORAGE_BUFFERS_PER_SHADER_STAGE,
+        // Keep query WGSL on a stable adapter-max device so resident scenes and
+        // cached pipelines survive dispatch-size changes.
+        max_storage_buffer_binding_size: adapter_context
+            .adapter_limits
+            .max_storage_buffer_binding_size,
+        ..WgslLimitRequest::default()
+    })
+}
+
+fn native_wgpu_context_for_limits(
+    required_request: WgslLimitRequest,
+) -> Result<Arc<NativeWgpuContext>, QueryExecError> {
+    let runtime_request = query_runtime_limit_request(required_request)?;
+    shared_wgpu_context(runtime_request).map_err(|message| QueryExecError::Unsupported {
+        message: format!("native WGSL backend initialization failed: {message}"),
+    })
 }
 
 fn validation_error(label: &str, errors: Vec<KernelValidationError>) -> QueryExecError {
@@ -2340,11 +2967,12 @@ fn expect_vec3_arg(
 #[cfg(test)]
 mod tests {
     use super::{
-        GeneratedShaderModule, GpuDispatchRequest, WgslDispatchChunkPlan,
-        dispatch_compiled_shader_with_observability, dispatch_config,
+        GeneratedShaderModule, GpuDispatchRequest, WgslDispatchChunkPlan, WgslLimitRequest,
+        WgslPipelineCacheKey, dispatch_compiled_shader_with_observability, dispatch_config,
         dispatch_workgroups_x_for_items, max_chunk_item_count, slice_gpu_dispatch_request,
         suppress_repeated_chunk_seed_metrics, with_test_chunk_storage_buffer_limit_override,
     };
+    use crate::gpu_runtime::{ComputePipelineKey, GpuLayoutIdentity, PipelineLayoutKey};
     use crate::kernel::{KernelStructValue, KernelValue};
     use crate::portable::{PortableAbiType, portable_abi_emit_wgsl_structs};
     use crate::query_exec::QueryExecutionObservability;
@@ -2380,6 +3008,9 @@ mod tests {
             accel_children: Vec::new(),
             cache_bricks: Vec::new(),
             continuation_seeds: vec![10, 11, 12, 13, 14, 15],
+            resident_scene_snapshot: None,
+            resident_scene_detail: 0,
+            resident_scene_selection_signature: 0,
         };
         let sliced = slice_gpu_dispatch_request(&request, 2..5).unwrap();
         let dispatch = match sliced.dispatch {
@@ -2431,6 +3062,31 @@ mod tests {
         assert_eq!(merged.cache_upload_rejections, 1);
         assert_eq!(merged.dispatch_count, 2);
         assert_eq!(merged.dispatch_items, 6);
+    }
+
+    #[test]
+    fn pipeline_cache_key_tracks_runtime_limit_request() {
+        let layout = PipelineLayoutKey::new(GpuLayoutIdentity::new(7, 11), 4, 0);
+        let pipeline =
+            ComputePipelineKey::from_shader_source(layout, "@compute fn main() {}", "main", 64);
+        let left = WgslPipelineCacheKey {
+            limits: WgslLimitRequest {
+                max_storage_buffers_per_shader_stage: 10,
+                max_storage_buffer_binding_size: 4096,
+                ..WgslLimitRequest::default()
+            },
+            pipeline: pipeline.clone(),
+        };
+        let right = WgslPipelineCacheKey {
+            limits: WgslLimitRequest {
+                max_storage_buffers_per_shader_stage: 10,
+                max_storage_buffer_binding_size: 8192,
+                ..WgslLimitRequest::default()
+            },
+            pipeline,
+        };
+
+        assert_ne!(left, right);
     }
 
     #[test]
@@ -2497,15 +3153,15 @@ struct WgslObservabilityBuffer {{
 }}
 
 @group(0) @binding(0)
-var<storage, read> dispatch_config: WgslDispatchConfig;
-@group(1) @binding(0)
 var<storage, read> accel_nodes: AccelNodeBuffer;
-@group(1) @binding(1)
+@group(0) @binding(1)
 var<storage, read> accel_children: ShapeIndexBuffer;
-@group(1) @binding(2)
+@group(0) @binding(2)
 var<storage, read> shape_meta: ShapeMetaBuffer;
-@group(1) @binding(3)
+@group(0) @binding(3)
 var<storage, read> cache_bricks: CacheBrickBuffer;
+@group(1) @binding(0)
+var<storage, read> dispatch_config: WgslDispatchConfig;
 @group(2) @binding(0)
 var<storage, read> input_items: InputBuffer;
 @group(2) @binding(1)
@@ -2549,12 +3205,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
             shape_meta_values: vec![KernelValue::Struct(KernelStructValue {
                 name: SmolStr::new("WgslShapeMeta"),
                 fields: vec![
-                    (SmolStr::new("root_shape_id"), KernelValue::U32(0)),
+                    (SmolStr::new("root_shape_id"), KernelValue::U32(123)),
                     (SmolStr::new("analytic_kind"), KernelValue::U32(0)),
                 ],
             })],
-            layout_signature: 1,
-            bind_group_count: 4,
         };
         let request = GpuDispatchRequest {
             dispatch: dispatch_config(0, 0, 6, 1, 0, 1, 1, false, false, false),
@@ -2580,17 +3234,38 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
                 ],
             })],
             continuation_seeds: vec![0; 6],
+            resident_scene_snapshot: None,
+            resident_scene_detail: 0,
+            resident_scene_selection_signature: 0,
         };
 
         let (values, observability) = with_test_chunk_storage_buffer_limit_override(16, || {
             dispatch_compiled_shader_with_observability(&generated, request.clone())
                 .expect("chunked direct dispatch")
         });
+        let (second_values, second_observability) =
+            with_test_chunk_storage_buffer_limit_override(16, || {
+                dispatch_compiled_shader_with_observability(&generated, request.clone())
+                    .expect("chunked direct dispatch reuse")
+            });
 
         assert_eq!(values, request.items);
+        assert_eq!(second_values, request.items);
         assert_eq!(observability.dispatch_count, 2);
         assert_eq!(observability.dispatch_items, 6);
         assert_eq!(observability.cache_resident_shared_snapshot_artifacts, 3);
         assert_eq!(observability.cache_upload_attempts, 3);
+        assert!(observability.gpu_runtime.scene_reupload_bytes > 0);
+        assert_eq!(second_observability.gpu_runtime.scene_reupload_bytes, 0);
+        assert!(
+            second_observability.gpu_runtime.transient_buffer_creations
+                < observability.gpu_runtime.transient_buffer_creations
+        );
+        assert!(
+            second_observability
+                .gpu_runtime
+                .transient_bind_group_creations
+                < observability.gpu_runtime.transient_bind_group_creations
+        );
     }
 }
