@@ -14,7 +14,7 @@ use crate::presentation_exec::{
     hit_world_normal, internal_resolution_viewport, materialize_primary_visibility_attachments,
     participant_query_work_items, presentation_metrics, primary_hit_miss_value,
     resolved_quality_state, runtime_primary_solver_summary, screen_sample_ray, shade_lookup_value,
-    tile_culling_mask,
+    tile_candidate_dispatch_packets, tile_candidate_stats, tile_culling_mask,
 };
 use crate::presentation_plan::{
     CompositeColorPassContract, ParticipantsResolvePassContract, PresentationPassKind,
@@ -69,6 +69,9 @@ pub(super) fn execute_plan(
     let mut primary_solver_context = None;
     let mut continuation_counts = crate::presentation_exec::temporal::ContinuationCounts::default();
     let mut tile_cull = TileCullingStats::default();
+    let mut tile_candidate = crate::presentation_exec::TileCandidateStats::default();
+    let mut candidate_table_active = false;
+    let mut packet_scheduling_active = false;
     let mut surface_resolve_count = 0;
     let mut participant_resolve_count = 0;
     let mut pass_stats = Vec::new();
@@ -113,6 +116,18 @@ pub(super) fn execute_plan(
                         }
                     })?,
                 );
+                let shape_batch_plan = lower_batch_query_plan(
+                    &BatchQueryPlan::for_contract(
+                        crate::query_contract::SPATIAL_NEAREST_BATCH_SHAPE,
+                        DispatchBackend::Cpu,
+                        None,
+                    )
+                    .map_err(|message| {
+                        PresentationExecError::UnsupportedPlan {
+                            message: message.to_string(),
+                        }
+                    })?,
+                );
                 let cull_mask = tile_culling_mask(
                     ctx,
                     input,
@@ -123,72 +138,236 @@ pub(super) fn execute_plan(
                         .compatibility_projection
                         .legacy_path_active,
                 )?;
-                let (hits, query_trace) = if let Some(mask) = cull_mask {
-                    tile_cull = mask.stats;
-                    if mask.active_samples.len() < primary_screen_samples.len() {
-                        runtime.work_items = mask.active_samples.len() as u32;
-                        runtime.notes.push(format!(
-                            "tile_cull active_tiles={}/{} skipped_samples={}",
-                            mask.stats.active_tiles,
-                            mask.stats.total_tiles,
-                            mask.stats.skipped_samples
-                        ));
-                    }
-                    let active_rays = mask
-                        .active_samples
-                        .iter()
-                        .map(|index| rays[*index].clone())
-                        .collect::<Vec<_>>();
-                    let (active_hits, mut query_trace) =
-                        execute_batch_query_with_solver_mode_with_snapshot_on(
-                            ctx,
-                            DispatchBackend::Cpu,
-                            Some(current_snapshot),
-                            &batch_plan,
-                            &[
-                                input.region_capture_value(),
-                                input.frame_domain.clone(),
-                                KernelValue::Array(active_rays),
-                            ],
-                            input.query_trace_solver_mode,
-                        )?;
-                    query_trace.observability.screen_sample_count = screen_samples.len() as u32;
-                    query_trace.observability.miss_count = query_trace
-                        .observability
-                        .miss_count
-                        .saturating_add(mask.stats.skipped_samples);
-                    let active_hits = expect_array(&active_hits)?.to_vec();
-                    let mut hits = vec![primary_hit_miss_value(); primary_screen_samples.len()];
-                    for (index, hit) in mask.active_samples.iter().zip(active_hits) {
-                        hits[*index] = hit;
-                    }
-                    (
-                        expand_internal_hits(&hits, viewport, primary_viewport),
-                        query_trace,
-                    )
-                } else {
-                    let (hits, query_trace) =
-                        execute_batch_query_with_solver_mode_with_snapshot_on(
-                            ctx,
-                            DispatchBackend::Cpu,
-                            Some(current_snapshot),
-                            &batch_plan,
-                            &[
-                                input.region_capture_value(),
-                                input.frame_domain.clone(),
-                                KernelValue::Array(rays),
-                            ],
-                            input.query_trace_solver_mode,
-                        )?;
-                    (
-                        expand_internal_hits(
-                            &expect_array(&hits)?.to_vec(),
-                            viewport,
-                            primary_viewport,
-                        ),
-                        query_trace,
-                    )
-                };
+                candidate_table_active = cull_mask
+                    .as_ref()
+                    .is_some_and(|mask| mask.candidate_table.enabled);
+                let packet_size =
+                    crate::presentation_exec::PRESENTATION_WORKGROUP_SIZE_CANDIDATES[0];
+                let (hits, query_trace, tile_candidate_stats_result, queue_active, dispatch_count) =
+                    if let Some(mask) = cull_mask.as_ref() {
+                        tile_cull = mask.stats;
+                        if mask.active_samples.len() < primary_screen_samples.len() {
+                            runtime.work_items = mask.active_samples.len() as u32;
+                            runtime.notes.push(format!(
+                                "tile_cull active_tiles={}/{} skipped_samples={}",
+                                mask.stats.active_tiles,
+                                mask.stats.total_tiles,
+                                mask.stats.skipped_samples
+                            ));
+                        }
+                        let mut hits = vec![primary_hit_miss_value(); primary_screen_samples.len()];
+                        let (stats, skipped_samples, queue_active, mut query_trace, dispatch_count) =
+                            if mask.candidate_table.enabled {
+                                let packets = tile_candidate_dispatch_packets(
+                                    &mask.candidate_table,
+                                    packet_size,
+                                );
+                                let mut covered_samples = vec![false; primary_screen_samples.len()];
+                                let mut dispatch_count = 1u32;
+                                let (_, mut query_trace) =
+                                    execute_batch_query_with_solver_mode_with_snapshot_on(
+                                        ctx,
+                                        DispatchBackend::Cpu,
+                                        Some(current_snapshot),
+                                        &batch_plan,
+                                        &[
+                                            input.region_capture_value(),
+                                            input.frame_domain.clone(),
+                                            KernelValue::Array(Vec::new()),
+                                        ],
+                                        input.query_trace_solver_mode,
+                                    )?;
+                                for packet in &packets {
+                                    let packet_rays = packet
+                                        .sample_indices
+                                        .iter()
+                                        .map(|index| rays[*index].clone())
+                                        .collect::<Vec<_>>();
+                                    let mut packet_hits =
+                                        vec![primary_hit_miss_value(); packet.sample_indices.len()];
+                                    let mut packet_best_distances =
+                                        vec![f32::INFINITY; packet.sample_indices.len()];
+                                    for shape in &packet.candidate_shapes {
+                                        let shape_snapshot = ctx.shape_snapshot_handle(shape).ok_or_else(
+                                    || PresentationExecError::UnsupportedPlan {
+                                        message: format!(
+                                            "missing shape snapshot for tile candidate '{shape}'"
+                                        ),
+                                    },
+                                )?;
+                                        let (shape_hits, shape_trace) =
+                                            execute_batch_query_with_solver_mode_with_snapshot_on(
+                                                ctx,
+                                                DispatchBackend::Cpu,
+                                                Some(shape_snapshot),
+                                                &shape_batch_plan,
+                                                &[
+                                                    shape_snapshot.capture_value(),
+                                                    KernelValue::Array(packet_rays.clone()),
+                                                ],
+                                                input.query_trace_solver_mode,
+                                            )?;
+                                        dispatch_count = dispatch_count.saturating_add(1);
+                                        query_trace
+                                            .observability
+                                            .merge_from(&shape_trace.observability);
+                                        for ((best_hit, best_distance), candidate_hit) in
+                                            packet_hits
+                                                .iter_mut()
+                                                .zip(packet_best_distances.iter_mut())
+                                                .zip(expect_array(&shape_hits)?.iter())
+                                        {
+                                            if !hit_flag(candidate_hit)? {
+                                                continue;
+                                            }
+                                            let candidate_distance = hit_distance(candidate_hit)?;
+                                            if candidate_distance < *best_distance {
+                                                *best_distance = candidate_distance;
+                                                *best_hit = candidate_hit.clone();
+                                            }
+                                        }
+                                    }
+                                    for (index, hit) in
+                                        packet.sample_indices.iter().zip(packet_hits.into_iter())
+                                    {
+                                        covered_samples[*index] = true;
+                                        hits[*index] = hit;
+                                    }
+                                }
+                                let mut fallback_indices = Vec::new();
+                                for index in &mask.active_samples {
+                                    if !covered_samples[*index] || !hit_flag(&hits[*index])? {
+                                        fallback_indices.push(*index);
+                                    }
+                                }
+                                if !fallback_indices.is_empty() {
+                                    let fallback_rays = fallback_indices
+                                        .iter()
+                                        .map(|index| rays[*index].clone())
+                                        .collect::<Vec<_>>();
+                                    let (fallback_hits, fallback_trace) =
+                                        execute_batch_query_with_solver_mode_with_snapshot_on(
+                                            ctx,
+                                            DispatchBackend::Cpu,
+                                            Some(current_snapshot),
+                                            &batch_plan,
+                                            &[
+                                                input.region_capture_value(),
+                                                input.frame_domain.clone(),
+                                                KernelValue::Array(fallback_rays),
+                                            ],
+                                            input.query_trace_solver_mode,
+                                        )?;
+                                    dispatch_count = dispatch_count.saturating_add(1);
+                                    query_trace
+                                        .observability
+                                        .merge_from(&fallback_trace.observability);
+                                    for (index, hit) in fallback_indices
+                                        .iter()
+                                        .zip(expect_array(&fallback_hits)?.iter())
+                                    {
+                                        hits[*index] = hit.clone();
+                                    }
+                                }
+                                (
+                                    tile_candidate_stats(
+                                        mask.active_samples.len(),
+                                        fallback_indices.len(),
+                                        packets.len(),
+                                        packet_size,
+                                    ),
+                                    mask.stats.skipped_samples,
+                                    !packets.is_empty(),
+                                    query_trace,
+                                    dispatch_count,
+                                )
+                            } else {
+                                let active_rays = mask
+                                    .active_samples
+                                    .iter()
+                                    .map(|index| rays[*index].clone())
+                                    .collect::<Vec<_>>();
+                                let (active_hits, query_trace) =
+                                    execute_batch_query_with_solver_mode_with_snapshot_on(
+                                        ctx,
+                                        DispatchBackend::Cpu,
+                                        Some(current_snapshot),
+                                        &batch_plan,
+                                        &[
+                                            input.region_capture_value(),
+                                            input.frame_domain.clone(),
+                                            KernelValue::Array(active_rays),
+                                        ],
+                                        input.query_trace_solver_mode,
+                                    )?;
+                                for (index, hit) in mask
+                                    .active_samples
+                                    .iter()
+                                    .zip(expect_array(&active_hits)?.to_vec())
+                                {
+                                    hits[*index] = hit;
+                                }
+                                (
+                                    crate::presentation_exec::TileCandidateStats::default(),
+                                    mask.stats.skipped_samples,
+                                    false,
+                                    query_trace,
+                                    1,
+                                )
+                            };
+                        query_trace.observability.screen_sample_count = screen_samples.len() as u32;
+                        query_trace.observability.miss_count = query_trace
+                            .observability
+                            .miss_count
+                            .saturating_add(skipped_samples);
+                        (
+                            expand_internal_hits(&hits, viewport, primary_viewport),
+                            query_trace,
+                            stats,
+                            queue_active,
+                            dispatch_count,
+                        )
+                    } else {
+                        let (hits, query_trace) =
+                            execute_batch_query_with_solver_mode_with_snapshot_on(
+                                ctx,
+                                DispatchBackend::Cpu,
+                                Some(current_snapshot),
+                                &batch_plan,
+                                &[
+                                    input.region_capture_value(),
+                                    input.frame_domain.clone(),
+                                    KernelValue::Array(rays),
+                                ],
+                                input.query_trace_solver_mode,
+                            )?;
+                        let stats = tile_candidate_stats(
+                            primary_screen_samples.len(),
+                            primary_screen_samples.len(),
+                            1,
+                            primary_screen_samples.len().max(1) as u32,
+                        );
+                        (
+                            expand_internal_hits(
+                                &expect_array(&hits)?.to_vec(),
+                                viewport,
+                                primary_viewport,
+                            ),
+                            query_trace,
+                            stats,
+                            false,
+                            1,
+                        )
+                    };
+                tile_candidate = tile_candidate_stats_result;
+                packet_scheduling_active = queue_active;
+                runtime.notes.push(format!(
+                    "tile_candidate_table active_samples={}/{} packet_count={} packet_size={}",
+                    tile_candidate.active_samples,
+                    tile_candidate.total_samples,
+                    tile_candidate.packet_count,
+                    tile_candidate.packet_size
+                ));
                 materialize_primary_visibility_attachments(&mut attachments, &hits, contract)?;
                 primary_solver_context = batch_plan
                     .ray_solver
@@ -196,7 +375,7 @@ pub(super) fn execute_plan(
                     .map(|solver| (solver.clone(), batch_plan.artifact_contracts.clone()));
                 primary_trace = Some(query_trace);
                 primary_hits = Some(hits);
-                runtime.dispatch_count = 1;
+                runtime.dispatch_count = dispatch_count;
                 runtime.elapsed_micros = pass_start.elapsed().as_micros();
                 pass_stats.push(runtime);
             }
@@ -453,14 +632,22 @@ pub(super) fn execute_plan(
         DispatchBackend::Cpu,
         viewport.width,
         viewport.height,
+        &effective_plan.frame.quality,
         &quality,
         &metrics,
         tile_cull,
+        tile_candidate,
+        packet_scheduling_active,
+        0,
         surface_resolve_count,
         participant_resolve_count,
         &attachments,
         pass_stats,
-        Vec::new(),
+        if candidate_table_active {
+            vec!["tile_candidate_table".to_string()]
+        } else {
+            Vec::new()
+        },
     );
     Ok(PresentationExecutionResult {
         plan_name: plan.name.clone(),
@@ -874,6 +1061,10 @@ fn hit_flag(value: &KernelValue) -> Result<bool, PresentationExecError> {
 
 fn hit_position(value: &KernelValue) -> Result<[f32; 3], PresentationExecError> {
     expect_vec3(field(expect_struct(value, "Hit3")?, "position")?)
+}
+
+fn hit_distance(value: &KernelValue) -> Result<f32, PresentationExecError> {
+    expect_f32(field(expect_struct(value, "Hit3")?, "distance")?)
 }
 
 trait ZipMap {

@@ -6,6 +6,7 @@ pub mod resources;
 mod temporal;
 mod wgsl;
 
+use crate::acceleration::{AccelerationNodeKind, BoundDescriptorKind};
 use crate::artifact_contract::{
     ArtifactCompatibilityRelation, ArtifactEvidenceCompatibility, ArtifactLogicalField,
     ArtifactLogicalSchema, ArtifactPolicyCompatibility, ArtifactSnapshotRelation,
@@ -45,6 +46,7 @@ use resources::{
 };
 use smol_str::SmolStr;
 use std::collections::BTreeMap;
+use std::env;
 use thiserror::Error;
 
 pub use self::controller::AdaptivePresentationController;
@@ -224,6 +226,52 @@ pub(crate) struct TileCullingStats {
     pub skipped_samples: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum TileCandidateQueueState {
+    Empty,
+    Singleton,
+    Packeted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TileCandidateSpan {
+    pub tile_index: u32,
+    pub candidate_start: u32,
+    pub candidate_len: u32,
+    pub state: TileCandidateQueueState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TileCandidateDispatchPacket {
+    pub tile_indices: Vec<u32>,
+    pub state: TileCandidateQueueState,
+    pub candidate_shapes: Vec<SmolStr>,
+    pub sample_indices: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TileCandidateArtifact {
+    pub enabled: bool,
+    pub viewport_width: u32,
+    pub viewport_height: u32,
+    pub tile_size: u32,
+    pub tiles_x: u32,
+    pub tiles_y: u32,
+    pub total_samples: u32,
+    pub active_samples: u32,
+    pub skipped_samples: u32,
+    pub candidate_shapes: Vec<SmolStr>,
+    pub tile_spans: Vec<TileCandidateSpan>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TileCandidateStats {
+    pub total_samples: u32,
+    pub active_samples: u32,
+    pub packet_count: u32,
+    pub packet_size: u32,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ParticipantQueryWorkItem {
     pub target_index: usize,
@@ -235,6 +283,348 @@ pub(crate) struct ParticipantQueryWorkItem {
 pub(crate) struct TileCullingMask {
     pub active_samples: Vec<usize>,
     pub stats: TileCullingStats,
+    pub candidate_table: TileCandidateArtifact,
+}
+
+pub(crate) const PRESENTATION_WORKGROUP_SIZE_CANDIDATES: [u32; 3] = [32, 64, 128];
+pub(crate) const PRESENTATION_TILE_SIZE: u32 = 8;
+
+pub fn validate_presentation_workgroup_size(
+    requested_workgroup_size: u32,
+    adapter_limits: &wgpu::Limits,
+) -> Result<u32, PresentationExecError> {
+    if !PRESENTATION_WORKGROUP_SIZE_CANDIDATES.contains(&requested_workgroup_size) {
+        return Err(PresentationExecError::UnsupportedPlan {
+            message: format!(
+                "presentation WGSL workgroup size {requested_workgroup_size} is not in the legal set {:?}",
+                PRESENTATION_WORKGROUP_SIZE_CANDIDATES
+            ),
+        });
+    }
+    if requested_workgroup_size > adapter_limits.max_compute_workgroup_size_x
+        || requested_workgroup_size > adapter_limits.max_compute_invocations_per_workgroup
+    {
+        return Err(PresentationExecError::UnsupportedPlan {
+            message: format!(
+                "presentation WGSL workgroup size {requested_workgroup_size} is incompatible with adapter limits x={} invocations={}",
+                adapter_limits.max_compute_workgroup_size_x,
+                adapter_limits.max_compute_invocations_per_workgroup
+            ),
+        });
+    }
+    Ok(requested_workgroup_size)
+}
+
+fn supported_presentation_workgroup_sizes(adapter_limits: &wgpu::Limits) -> Vec<u32> {
+    PRESENTATION_WORKGROUP_SIZE_CANDIDATES
+        .iter()
+        .copied()
+        .filter_map(|candidate| {
+            validate_presentation_workgroup_size(candidate, adapter_limits).ok()
+        })
+        .collect()
+}
+
+fn requested_presentation_workgroup_size_override() -> Result<Option<u32>, PresentationExecError> {
+    env::var(crate::query_exec::WGSL_WORKGROUP_SIZE_OVERRIDE_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| PresentationExecError::UnsupportedPlan {
+                    message: format!(
+                        "{} must be an integer legal WGSL workgroup size in {:?}, found `{}`",
+                        crate::query_exec::WGSL_WORKGROUP_SIZE_OVERRIDE_ENV,
+                        PRESENTATION_WORKGROUP_SIZE_CANDIDATES,
+                        value.trim()
+                    ),
+                })
+        })
+        .transpose()
+}
+
+pub fn select_presentation_workgroup_size(
+    adapter_limits: &wgpu::Limits,
+) -> Result<u32, PresentationExecError> {
+    let supported_sizes = supported_presentation_workgroup_sizes(adapter_limits);
+    if supported_sizes.is_empty() {
+        return Err(PresentationExecError::UnsupportedPlan {
+            message: format!(
+                "adapter limits only allow x={} invocations={} per workgroup, which is below the smallest legal presentation workgroup size of 32",
+                adapter_limits.max_compute_workgroup_size_x,
+                adapter_limits.max_compute_invocations_per_workgroup
+            ),
+        });
+    }
+    if let Some(requested_workgroup_size) = requested_presentation_workgroup_size_override()? {
+        return validate_presentation_workgroup_size(requested_workgroup_size, adapter_limits);
+    }
+    supported_sizes
+        .last()
+        .copied()
+        .ok_or_else(|| PresentationExecError::UnsupportedPlan {
+            message: "presentation WGSL adapter reported no supported workgroup sizes".to_string(),
+        })
+}
+
+pub(crate) fn packetize_sample_indices(indices: &[usize], packet_size: u32) -> Vec<Vec<usize>> {
+    let packet_size = packet_size.max(1) as usize;
+    indices
+        .chunks(packet_size)
+        .map(|chunk| chunk.to_vec())
+        .collect()
+}
+
+pub(crate) fn tile_candidate_stats(
+    total_samples: usize,
+    active_samples: usize,
+    packet_count: usize,
+    packet_size: u32,
+) -> TileCandidateStats {
+    TileCandidateStats {
+        total_samples: total_samples as u32,
+        active_samples: active_samples as u32,
+        packet_count: packet_count as u32,
+        packet_size: packet_size.max(1),
+    }
+}
+
+pub(crate) fn build_tile_candidate_artifact(
+    viewport: CanonicalViewportInput,
+    tile_candidates: &[Vec<SmolStr>],
+    enabled: bool,
+) -> TileCandidateArtifact {
+    let tile_size = PRESENTATION_TILE_SIZE;
+    let tiles_x = viewport.width.div_ceil(tile_size);
+    let tiles_y = viewport.height.div_ceil(tile_size);
+    let total_samples = viewport.width.saturating_mul(viewport.height);
+    if !enabled {
+        return TileCandidateArtifact {
+            enabled: false,
+            viewport_width: viewport.width,
+            viewport_height: viewport.height,
+            tile_size,
+            tiles_x,
+            tiles_y,
+            total_samples,
+            active_samples: 0,
+            skipped_samples: total_samples,
+            candidate_shapes: Vec::new(),
+            tile_spans: Vec::new(),
+        };
+    }
+
+    let mut candidate_shapes = Vec::new();
+    let mut tile_spans = Vec::new();
+    let mut active_samples = 0u32;
+    for tile_index in 0..(tiles_x * tiles_y) {
+        let indices = tile_candidates
+            .get(tile_index as usize)
+            .cloned()
+            .unwrap_or_default();
+        let candidate_start = candidate_shapes.len() as u32;
+        let candidate_len = indices.len() as u32;
+        let state = match candidate_len {
+            0 => TileCandidateQueueState::Empty,
+            1 => TileCandidateQueueState::Singleton,
+            _ => TileCandidateQueueState::Packeted,
+        };
+        if candidate_len > 0 {
+            active_samples = active_samples
+                .saturating_add(tile_sample_count(viewport, tile_size, tiles_x, tile_index));
+        }
+        candidate_shapes.extend(indices.iter().cloned());
+        tile_spans.push(TileCandidateSpan {
+            tile_index,
+            candidate_start,
+            candidate_len,
+            state,
+        });
+    }
+
+    TileCandidateArtifact {
+        enabled: true,
+        viewport_width: viewport.width,
+        viewport_height: viewport.height,
+        tile_size,
+        tiles_x,
+        tiles_y,
+        total_samples,
+        active_samples,
+        skipped_samples: total_samples.saturating_sub(active_samples),
+        candidate_shapes,
+        tile_spans,
+    }
+}
+
+pub(crate) fn tile_candidate_dispatch_packets(
+    artifact: &TileCandidateArtifact,
+    packet_size: u32,
+) -> Vec<TileCandidateDispatchPacket> {
+    if !artifact.enabled {
+        return Vec::new();
+    }
+    let mut grouped =
+        BTreeMap::<(TileCandidateQueueState, Vec<SmolStr>), (Vec<u32>, Vec<usize>)>::new();
+    for span in &artifact.tile_spans {
+        if span.candidate_len == 0 {
+            continue;
+        }
+        let candidate_start = span.candidate_start as usize;
+        let candidate_end = candidate_start + span.candidate_len as usize;
+        let candidate_shapes = artifact.candidate_shapes[candidate_start..candidate_end].to_vec();
+        let sample_indices = tile_sample_indices(artifact, span.tile_index);
+        if sample_indices.is_empty() {
+            continue;
+        }
+        let entry = grouped
+            .entry((span.state, candidate_shapes))
+            .or_insert_with(|| (Vec::new(), Vec::new()));
+        entry.0.push(span.tile_index);
+        entry.1.extend(sample_indices);
+    }
+    let mut packets = Vec::new();
+    for ((state, candidate_shapes), (tile_indices, sample_indices)) in grouped {
+        match state {
+            TileCandidateQueueState::Empty => {}
+            TileCandidateQueueState::Singleton => {
+                packets.push(TileCandidateDispatchPacket {
+                    tile_indices: tile_indices.clone(),
+                    state,
+                    candidate_shapes: candidate_shapes.clone(),
+                    sample_indices,
+                });
+            }
+            TileCandidateQueueState::Packeted => {
+                for chunk in packetize_sample_indices(&sample_indices, packet_size) {
+                    packets.push(TileCandidateDispatchPacket {
+                        tile_indices: tile_indices.clone(),
+                        state,
+                        candidate_shapes: candidate_shapes.clone(),
+                        sample_indices: chunk,
+                    });
+                }
+            }
+        }
+    }
+    packets
+}
+
+fn tile_sample_count(
+    viewport: CanonicalViewportInput,
+    tile_size: u32,
+    tiles_x: u32,
+    tile_index: u32,
+) -> u32 {
+    let tile_x = tile_index % tiles_x;
+    let tile_y = tile_index / tiles_x;
+    let start_x = tile_x.saturating_mul(tile_size);
+    let start_y = tile_y.saturating_mul(tile_size);
+    let width = viewport.width.saturating_sub(start_x).min(tile_size);
+    let height = viewport.height.saturating_sub(start_y).min(tile_size);
+    width.saturating_mul(height)
+}
+
+fn tile_sample_indices(artifact: &TileCandidateArtifact, tile_index: u32) -> Vec<usize> {
+    let tile_x = tile_index % artifact.tiles_x;
+    let tile_y = tile_index / artifact.tiles_x;
+    let start_x = tile_x.saturating_mul(artifact.tile_size);
+    let start_y = tile_y.saturating_mul(artifact.tile_size);
+    let end_x = start_x
+        .saturating_add(artifact.tile_size)
+        .min(artifact.viewport_width);
+    let end_y = start_y
+        .saturating_add(artifact.tile_size)
+        .min(artifact.viewport_height);
+    let mut out = Vec::new();
+    for y in start_y..end_y {
+        for x in start_x..end_x {
+            out.push((y * artifact.viewport_width + x) as usize);
+        }
+    }
+    out
+}
+
+fn build_observer_local_tile_candidate_artifact(
+    ctx: &QueryExecContext,
+    capture_name: &SmolStr,
+    detail: i32,
+    camera: CanonicalCameraInput,
+    viewport: CanonicalViewportInput,
+) -> Option<TileCandidateArtifact> {
+    let forest = ctx.world_acceleration_forest(capture_name, detail)?;
+    let tile_size = PRESENTATION_TILE_SIZE;
+    let tiles_x = viewport.width.div_ceil(tile_size);
+    let tiles_y = viewport.height.div_ceil(tile_size);
+    let mut tile_candidates = vec![Vec::<SmolStr>::new(); (tiles_x * tiles_y) as usize];
+    let mut saw_leaf_candidate = false;
+
+    for node in &forest.nodes {
+        if !matches!(node.kind, AccelerationNodeKind::LeafCandidate) {
+            continue;
+        }
+        saw_leaf_candidate = true;
+        let shape = node.leaf_payload.as_ref()?.semantic_id.clone();
+        let bounds = acceleration_leaf_bounds(node)?;
+        let coverage = match projected_bounds_tile_range(
+            tiles_x, tiles_y, tile_size, camera, viewport, bounds.0, bounds.1,
+        ) {
+            Ok(Some(coverage)) => coverage,
+            Ok(None) => continue,
+            Err(()) => return None,
+        };
+        for tile_y in coverage.2..=coverage.3 {
+            for tile_x in coverage.0..=coverage.1 {
+                let tile_index = (tile_y * tiles_x + tile_x) as usize;
+                if let Some(candidates) = tile_candidates.get_mut(tile_index) {
+                    candidates.push(shape.clone());
+                }
+            }
+        }
+    }
+
+    if !saw_leaf_candidate {
+        return None;
+    }
+
+    for candidates in &mut tile_candidates {
+        candidates.sort_unstable();
+        candidates.dedup();
+    }
+
+    Some(build_tile_candidate_artifact(
+        viewport,
+        &tile_candidates,
+        true,
+    ))
+}
+
+fn acceleration_leaf_bounds(
+    node: &crate::acceleration::AccelerationNode,
+) -> Option<([f32; 3], [f32; 3])> {
+    node.bounds.iter().find_map(|bound| {
+        if !matches!(bound.kind, BoundDescriptorKind::AxisAlignedBounds) {
+            return None;
+        }
+        parse_bounds_summary(&bound.summary)
+    })
+}
+
+fn parse_bounds_summary(summary: &str) -> Option<([f32; 3], [f32; 3])> {
+    let (min, max) = summary.split_once("|max=")?;
+    let min = min.strip_prefix("min=")?;
+    Some((parse_summary_vec3(min)?, parse_summary_vec3(max)?))
+}
+
+fn parse_summary_vec3(summary: &str) -> Option<[f32; 3]> {
+    let parts = summary
+        .split(',')
+        .map(|part| part.trim().parse::<f32>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    let [x, y, z] = parts.try_into().ok()?;
+    Some([x, y, z])
 }
 
 pub fn execute_plan(
@@ -478,7 +868,7 @@ pub(crate) fn tile_culling_mask(
     if bounds.is_empty() {
         return Ok(None);
     }
-    let tile_size = 8u32;
+    let tile_size = PRESENTATION_TILE_SIZE;
     let tiles_x = viewport.width.div_ceil(tile_size);
     let tiles_y = viewport.height.div_ceil(tile_size);
     let mut active = vec![false; (tiles_x * tiles_y) as usize];
@@ -496,7 +886,7 @@ pub(crate) fn tile_culling_mask(
             return Ok(None);
         }
     }
-    let mut active_samples = Vec::new();
+    let mut coarse_active_samples = Vec::new();
     let mut skipped_samples = Vec::new();
     for y in 0..viewport.height {
         for x in 0..viewport.width {
@@ -505,13 +895,26 @@ pub(crate) fn tile_culling_mask(
             let tile_index = (tile_y * tiles_x + tile_x) as usize;
             let sample_index = (y * viewport.width + x) as usize;
             if active.get(tile_index).copied().unwrap_or(true) {
-                active_samples.push(sample_index);
+                coarse_active_samples.push(sample_index);
             } else {
                 skipped_samples.push(sample_index);
             }
         }
     }
     let active_tiles = active.iter().filter(|tile| **tile).count() as u32;
+    let candidate_table = build_observer_local_tile_candidate_artifact(
+        ctx,
+        input.region_capture_name(),
+        detail,
+        camera,
+        viewport,
+    )
+    .unwrap_or_else(|| build_tile_candidate_artifact(viewport, &[], false));
+    let active_samples = if candidate_table.enabled {
+        coarse_active_samples.clone()
+    } else {
+        coarse_active_samples
+    };
     Ok(Some(TileCullingMask {
         active_samples,
         stats: TileCullingStats {
@@ -519,6 +922,7 @@ pub(crate) fn tile_culling_mask(
             active_tiles,
             skipped_samples: skipped_samples.len() as u32,
         },
+        candidate_table,
     }))
 }
 
@@ -532,6 +936,34 @@ fn mark_projected_bounds_tiles(
     min: [f32; 3],
     max: [f32; 3],
 ) -> bool {
+    let Ok(range) =
+        projected_bounds_tile_range(tiles_x, tiles_y, tile_size, camera, viewport, min, max)
+    else {
+        return false;
+    };
+    let Some((min_tile_x, max_tile_x, min_tile_y, max_tile_y)) = range else {
+        return true;
+    };
+    for tile_y in min_tile_y..=max_tile_y {
+        for tile_x in min_tile_x..=max_tile_x {
+            let index = (tile_y * tiles_x + tile_x) as usize;
+            if let Some(slot) = active.get_mut(index) {
+                *slot = true;
+            }
+        }
+    }
+    true
+}
+
+fn projected_bounds_tile_range(
+    tiles_x: u32,
+    tiles_y: u32,
+    tile_size: u32,
+    camera: CanonicalCameraInput,
+    viewport: CanonicalViewportInput,
+    min: [f32; 3],
+    max: [f32; 3],
+) -> Result<Option<(u32, u32, u32, u32)>, ()> {
     let corners = [
         [min[0], min[1], min[2]],
         [min[0], min[1], max[2]],
@@ -557,7 +989,7 @@ fn mark_projected_bounds_tiles(
         ];
         let depth = rel[0] * forward[0] + rel[1] * forward[1] + rel[2] * forward[2];
         if depth <= 0.0 {
-            return false;
+            return Err(());
         }
         let x = (rel[0] * right[0] + rel[1] * right[1] + rel[2] * right[2])
             / (depth * horizontal_scale);
@@ -575,7 +1007,7 @@ fn mark_projected_bounds_tiles(
         .map(|p| p[1])
         .fold(f32::NEG_INFINITY, f32::max);
     if min_ndc_x > 1.0 || max_ndc_x < -1.0 || min_ndc_y > 1.0 || max_ndc_y < -1.0 {
-        return true;
+        return Ok(None);
     }
     let min_px = (((min_ndc_x.clamp(-1.0, 1.0) + 1.0) * 0.5) * viewport.width as f32)
         .floor()
@@ -590,15 +1022,7 @@ fn mark_projected_bounds_tiles(
     let max_tile_x = (max_px.div_ceil(tile_size)).min(tiles_x).saturating_sub(1);
     let min_tile_y = (min_py / tile_size).min(tiles_y.saturating_sub(1));
     let max_tile_y = (max_py.div_ceil(tile_size)).min(tiles_y).saturating_sub(1);
-    for tile_y in min_tile_y..=max_tile_y {
-        for tile_x in min_tile_x..=max_tile_x {
-            let index = (tile_y * tiles_x + tile_x) as usize;
-            if let Some(slot) = active.get_mut(index) {
-                *slot = true;
-            }
-        }
-    }
-    true
+    Ok(Some((min_tile_x, max_tile_x, min_tile_y, max_tile_y)))
 }
 
 pub fn frame_state_value(
@@ -1401,9 +1825,13 @@ pub(crate) fn build_frame_cost_report(
     backend: DispatchBackend,
     width: u32,
     height: u32,
+    quality_contract: &RealtimeQualityContract,
     quality: &RealtimeQualityState,
     metrics: &PresentationMetrics,
     tile_cull: TileCullingStats,
+    tile_candidate_stats: TileCandidateStats,
+    packet_scheduling_active: bool,
+    selected_workgroup_size: u32,
     surface_resolve_count: u32,
     participant_resolve_count: u32,
     attachments: &AttachmentResourceSet,
@@ -1411,15 +1839,16 @@ pub(crate) fn build_frame_cost_report(
     mut active_acceleration_artifacts: Vec<String>,
 ) -> PresentationFrameCostReport {
     let semantic_domain = semantic_domain_report(frame_domain);
-    let execution_policy =
-        render_execution_policy_report(&execution_policy, backend, &quality.active_degradations);
-    let legal_degradations = quality
-        .active_degradations
+    let execution_policy = render_execution_policy_report(
+        &execution_policy,
+        backend,
+        &quality_contract.degradation_order,
+    );
+    let legal_degradations = quality_contract
+        .degradation_order
         .iter()
         .map(|step| cost::quality_degradation_name(*step).to_string())
         .collect::<Vec<_>>();
-    let radiance_mode = quality.radiance_mode;
-    let half_res_participants = quality.half_res_participants;
     let hit_compaction_enabled = quality.hit_compaction_enabled;
     let active_degradations_empty = quality.active_degradations.is_empty();
     let quality = quality_report(quality, width, height);
@@ -1458,17 +1887,11 @@ pub(crate) fn build_frame_cost_report(
     if hit_compaction_enabled {
         active_acceleration_artifacts.push("hit_compaction".to_string());
     }
-    if quality.internal_resolution_scale < 1.0 {
-        active_acceleration_artifacts.push("dynamic_resolution".to_string());
-    }
     if tile_cull.total_tiles > 0 && tile_cull.active_tiles < tile_cull.total_tiles {
         active_acceleration_artifacts.push("view_tile_culling".to_string());
     }
-    if half_res_participants {
-        active_acceleration_artifacts.push("half_res_participants".to_string());
-    }
-    if radiance_mode == crate::presentation_contract::RealtimeRadianceMode::Reduced {
-        active_acceleration_artifacts.push("reduced_radiance_queries".to_string());
+    if packet_scheduling_active {
+        active_acceleration_artifacts.push("packet_scheduling".to_string());
     }
     active_acceleration_artifacts.extend(
         metrics
@@ -1500,11 +1923,20 @@ pub(crate) fn build_frame_cost_report(
         .max_by_key(|pass| (pass.elapsed_micros, pass.work_items))
         .map(|pass| pass.pass_id.clone());
     let mut performance_gain_sources = Vec::new();
-    if support_prune_effectiveness > 0.0 || tile_cull_efficiency > 0.0 {
-        performance_gain_sources.push("less_semantic_work".to_string());
+    if support_prune_effectiveness > 0.0 {
+        performance_gain_sources.push("support_pruning".to_string());
+    }
+    if tile_cull_efficiency > 0.0 {
+        performance_gain_sources.push("tile_culling".to_string());
+    }
+    if tile_candidate_stats.total_samples > tile_candidate_stats.active_samples {
+        performance_gain_sources.push("tile_candidate_table".to_string());
+    }
+    if packet_scheduling_active {
+        performance_gain_sources.push("packet_scheduling".to_string());
     }
     if !active_degradations_empty {
-        performance_gain_sources.push("quality_degradation".to_string());
+        performance_gain_sources.push("quality_degradation_active".to_string());
     }
     if performance_gain_sources.is_empty() {
         performance_gain_sources.push("backend_speed".to_string());
@@ -1527,6 +1959,13 @@ pub(crate) fn build_frame_cost_report(
         tile_cull_total_tiles: tile_cull.total_tiles,
         tile_cull_active_tiles: tile_cull.active_tiles,
         tile_cull_efficiency,
+        tile_candidate_total_samples: tile_candidate_stats.total_samples,
+        tile_candidate_active_samples: tile_candidate_stats.active_samples,
+        tile_candidate_reduction: tile_candidate_stats
+            .total_samples
+            .saturating_sub(tile_candidate_stats.active_samples),
+        packet_scheduling_active,
+        selected_workgroup_size,
         surface_resolve_count,
         participant_resolve_count,
         history_reuse_rate,
@@ -2232,5 +2671,84 @@ fn kernel_value_kind(value: &KernelValue) -> &'static str {
         KernelValue::GpuBuffer(_) => "GpuBuffer",
         KernelValue::GpuAtomicI32(_) => "GpuAtomicI32",
         KernelValue::GpuAtomicU32(_) => "GpuAtomicU32",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CanonicalViewportInput, TileCandidateQueueState, build_tile_candidate_artifact,
+        tile_candidate_dispatch_packets,
+    };
+    use smol_str::SmolStr;
+
+    #[test]
+    fn tile_candidate_artifact_builds_tile_spans_and_candidate_queues() {
+        let viewport = CanonicalViewportInput {
+            width: 24,
+            height: 8,
+        };
+        let artifact = build_tile_candidate_artifact(
+            viewport,
+            &[
+                vec![SmolStr::new("shape.left")],
+                vec![SmolStr::new("shape.right"), SmolStr::new("shape.extra")],
+                Vec::new(),
+            ],
+            true,
+        );
+
+        assert!(artifact.enabled);
+        assert_eq!(artifact.tile_spans.len(), 3);
+        assert_eq!(
+            artifact.candidate_shapes,
+            vec![
+                SmolStr::new("shape.left"),
+                SmolStr::new("shape.right"),
+                SmolStr::new("shape.extra"),
+            ]
+        );
+        assert_eq!(
+            artifact.tile_spans[0].state,
+            TileCandidateQueueState::Singleton
+        );
+        assert_eq!(
+            artifact.tile_spans[1].state,
+            TileCandidateQueueState::Packeted
+        );
+        assert_eq!(artifact.tile_spans[2].state, TileCandidateQueueState::Empty);
+        assert_eq!(artifact.active_samples, 128);
+        assert_eq!(artifact.skipped_samples, 64);
+
+        let packets = tile_candidate_dispatch_packets(&artifact, 8);
+        assert_eq!(packets.len(), 9);
+        assert_eq!(packets[0].state, TileCandidateQueueState::Singleton);
+        assert_eq!(packets[0].tile_indices, vec![0]);
+        assert_eq!(
+            packets[0].candidate_shapes,
+            vec![SmolStr::new("shape.left")]
+        );
+        assert_eq!(packets[0].sample_indices.len(), 64);
+        assert_eq!(packets[0].sample_indices.first(), Some(&0));
+        assert_eq!(packets[0].sample_indices.last(), Some(&175));
+        assert_eq!(packets[1].state, TileCandidateQueueState::Packeted);
+        assert_eq!(packets[1].tile_indices, vec![1]);
+        assert_eq!(
+            packets[1].candidate_shapes,
+            vec![SmolStr::new("shape.right"), SmolStr::new("shape.extra")]
+        );
+        assert_eq!(packets[1].sample_indices.len(), 8);
+
+        let disabled = build_tile_candidate_artifact(
+            viewport,
+            &[
+                vec![SmolStr::new("shape.left")],
+                vec![SmolStr::new("shape.right"), SmolStr::new("shape.extra")],
+            ],
+            false,
+        );
+        assert!(!disabled.enabled);
+        assert!(disabled.tile_spans.is_empty());
+        assert!(tile_candidate_dispatch_packets(&disabled, 8).is_empty());
     }
 }

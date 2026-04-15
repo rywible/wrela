@@ -23,6 +23,7 @@ use crate::query_solver::{RaySolverMethod, RayStepCertificateMetadata, StepCerti
 use crate::world_identity::{SnapshotEpoch, SnapshotIdentityReport, WorldSnapshotHandle};
 use smol_str::SmolStr;
 use std::collections::BTreeMap;
+use std::env;
 
 pub use crate::execution_policy::{
     QueryExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
@@ -44,10 +45,90 @@ pub use region::{
 };
 pub use world::{WorldQuerySemantics, world_query_semantics};
 
+pub const WGSL_WORKGROUP_SIZE_OVERRIDE_ENV: &str = "WRELA_WGSL_WORKGROUP_SIZE";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryTraceSolverMode {
     Hybrid,
     DenseOnly,
+}
+
+pub const QUERY_WGSL_LEGAL_WORKGROUP_SIZES: [u32; 3] = [32, 64, 128];
+
+pub fn validate_query_wgsl_workgroup_size(
+    requested_workgroup_size: u32,
+    adapter_limits: &wgpu::Limits,
+) -> Result<u32, QueryExecError> {
+    if !QUERY_WGSL_LEGAL_WORKGROUP_SIZES.contains(&requested_workgroup_size) {
+        return Err(QueryExecError::Unsupported {
+            message: format!(
+                "native WGSL workgroup size {requested_workgroup_size} is not in the legal set {:?}",
+                QUERY_WGSL_LEGAL_WORKGROUP_SIZES
+            ),
+        });
+    }
+    if requested_workgroup_size > adapter_limits.max_compute_workgroup_size_x
+        || requested_workgroup_size > adapter_limits.max_compute_invocations_per_workgroup
+    {
+        return Err(QueryExecError::Unsupported {
+            message: format!(
+                "native WGSL workgroup size {requested_workgroup_size} is incompatible with adapter limits x={} invocations={}",
+                adapter_limits.max_compute_workgroup_size_x,
+                adapter_limits.max_compute_invocations_per_workgroup
+            ),
+        });
+    }
+    Ok(requested_workgroup_size)
+}
+
+fn supported_query_wgsl_workgroup_sizes(adapter_limits: &wgpu::Limits) -> Vec<u32> {
+    QUERY_WGSL_LEGAL_WORKGROUP_SIZES
+        .iter()
+        .copied()
+        .filter_map(|candidate| validate_query_wgsl_workgroup_size(candidate, adapter_limits).ok())
+        .collect()
+}
+
+fn requested_query_wgsl_workgroup_size_override() -> Result<Option<u32>, QueryExecError> {
+    env::var(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| QueryExecError::Unsupported {
+                    message: format!(
+                        "{WGSL_WORKGROUP_SIZE_OVERRIDE_ENV} must be an integer legal WGSL workgroup size in {:?}, found `{}`",
+                        QUERY_WGSL_LEGAL_WORKGROUP_SIZES,
+                        value.trim()
+                    ),
+                })
+        })
+        .transpose()
+}
+
+pub fn select_query_wgsl_workgroup_size(
+    adapter_limits: &wgpu::Limits,
+) -> Result<u32, QueryExecError> {
+    let supported_sizes = supported_query_wgsl_workgroup_sizes(adapter_limits);
+    if supported_sizes.is_empty() {
+        return Err(QueryExecError::Unsupported {
+            message: format!(
+                "native WGSL adapter does not support any legal workgroup size in {:?}",
+                QUERY_WGSL_LEGAL_WORKGROUP_SIZES
+            ),
+        });
+    }
+    if let Some(requested_workgroup_size) = requested_query_wgsl_workgroup_size_override()? {
+        return validate_query_wgsl_workgroup_size(requested_workgroup_size, adapter_limits);
+    }
+    supported_sizes
+        .last()
+        .copied()
+        .ok_or_else(|| QueryExecError::Unsupported {
+            message: "native WGSL adapter reported no supported workgroup sizes".to_string(),
+        })
 }
 
 impl QueryTraceSolverMode {
@@ -57,6 +138,24 @@ impl QueryTraceSolverMode {
             Self::DenseOnly => "dense-only",
         }
     }
+}
+
+pub fn legal_wgsl_workgroup_sizes() -> &'static [u32] {
+    &QUERY_WGSL_LEGAL_WORKGROUP_SIZES
+}
+
+pub fn supported_wgsl_workgroup_sizes() -> Result<Vec<u32>, QueryExecError> {
+    let native = wgsl::native_wgpu_context()?;
+    Ok(QUERY_WGSL_LEGAL_WORKGROUP_SIZES
+        .iter()
+        .copied()
+        .filter(|size| validate_query_wgsl_workgroup_size(*size, &native.adapter_limits).is_ok())
+        .collect())
+}
+
+pub fn selected_wgsl_workgroup_size() -> Result<u32, QueryExecError> {
+    let native = wgsl::native_wgpu_context()?;
+    select_query_wgsl_workgroup_size(&native.adapter_limits)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,6 +268,248 @@ pub struct QueryExecutionObservability {
     pub solver_continuation_unavailable: u32,
     pub field_samples: u32,
     pub contract_validation_failures: u32,
+    pub wgsl_layout_signature: Option<u64>,
+    pub wgsl_bind_group_count: u32,
+    pub wgsl_requested_max_storage_buffer_bytes: u64,
+    pub wgsl_used_max_storage_buffer_bytes: u64,
+    pub wgsl_selected_workgroup_size: u32,
+}
+
+impl QueryExecutionObservability {
+    pub fn merge_from(&mut self, other: &Self) {
+        if self.solver_plan_id.is_none() {
+            self.solver_plan_id = other.solver_plan_id.clone();
+        }
+        if self.solver_subject.is_none() {
+            self.solver_subject = other.solver_subject.clone();
+        }
+        if self.normal_role.is_none() {
+            self.normal_role = other.normal_role.clone();
+        }
+        for method in &other.solver_methods {
+            if !self.solver_methods.contains(method) {
+                self.solver_methods.push(*method);
+            }
+        }
+        for (kind, count) in &other.step_certificate_kinds {
+            *self.step_certificate_kinds.entry(*kind).or_default() = self
+                .step_certificate_kinds
+                .get(kind)
+                .copied()
+                .unwrap_or_default()
+                .saturating_add(*count);
+        }
+        for metadata in &other.step_certificate_metadata {
+            if !self.step_certificate_metadata.contains(metadata) {
+                self.step_certificate_metadata.push(metadata.clone());
+            }
+        }
+        self.acceleration_node_visits = self
+            .acceleration_node_visits
+            .saturating_add(other.acceleration_node_visits);
+        self.shape_leaf_visits = self
+            .shape_leaf_visits
+            .saturating_add(other.shape_leaf_visits);
+        self.acceleration_pruned_nodes = self
+            .acceleration_pruned_nodes
+            .saturating_add(other.acceleration_pruned_nodes);
+        self.union_cluster_visits = self
+            .union_cluster_visits
+            .saturating_add(other.union_cluster_visits);
+        self.ray_support_interval_rejections = self
+            .ray_support_interval_rejections
+            .saturating_add(other.ray_support_interval_rejections);
+        self.ray_support_entry_jumps = self
+            .ray_support_entry_jumps
+            .saturating_add(other.ray_support_entry_jumps);
+        self.repeat_cell_skips = self
+            .repeat_cell_skips
+            .saturating_add(other.repeat_cell_skips);
+        self.cache_brick_visits = self
+            .cache_brick_visits
+            .saturating_add(other.cache_brick_visits);
+        self.cache_brick_hits = self.cache_brick_hits.saturating_add(other.cache_brick_hits);
+        self.cache_brick_misses = self
+            .cache_brick_misses
+            .saturating_add(other.cache_brick_misses);
+        self.accepted_relaxed_steps = self
+            .accepted_relaxed_steps
+            .saturating_add(other.accepted_relaxed_steps);
+        self.rejected_relaxed_steps = self
+            .rejected_relaxed_steps
+            .saturating_add(other.rejected_relaxed_steps);
+        self.solver_relaxed_attempts = self
+            .solver_relaxed_attempts
+            .saturating_add(other.solver_relaxed_attempts);
+        self.solver_relaxed_no_root_advances = self
+            .solver_relaxed_no_root_advances
+            .saturating_add(other.solver_relaxed_no_root_advances);
+        self.solver_relaxed_brackets = self
+            .solver_relaxed_brackets
+            .saturating_add(other.solver_relaxed_brackets);
+        self.solver_relaxed_unresolved = self
+            .solver_relaxed_unresolved
+            .saturating_add(other.solver_relaxed_unresolved);
+        self.solver_interval_attempts = self
+            .solver_interval_attempts
+            .saturating_add(other.solver_interval_attempts);
+        self.solver_interval_no_root_advances = self
+            .solver_interval_no_root_advances
+            .saturating_add(other.solver_interval_no_root_advances);
+        self.solver_interval_brackets = self
+            .solver_interval_brackets
+            .saturating_add(other.solver_interval_brackets);
+        self.solver_interval_unresolved = self
+            .solver_interval_unresolved
+            .saturating_add(other.solver_interval_unresolved);
+        self.solver_refinement_attempts = self
+            .solver_refinement_attempts
+            .saturating_add(other.solver_refinement_attempts);
+        self.solver_refinement_failures = self
+            .solver_refinement_failures
+            .saturating_add(other.solver_refinement_failures);
+        self.solver_repeat_attempts = self
+            .solver_repeat_attempts
+            .saturating_add(other.solver_repeat_attempts);
+        self.solver_repeat_supported = self
+            .solver_repeat_supported
+            .saturating_add(other.solver_repeat_supported);
+        self.solver_repeat_inapplicable = self
+            .solver_repeat_inapplicable
+            .saturating_add(other.solver_repeat_inapplicable);
+        self.solver_repeat_unsupported = self
+            .solver_repeat_unsupported
+            .saturating_add(other.solver_repeat_unsupported);
+        self.solver_repeat_unsupported_form = self
+            .solver_repeat_unsupported_form
+            .saturating_add(other.solver_repeat_unsupported_form);
+        self.solver_repeat_unsupported_bounds = self
+            .solver_repeat_unsupported_bounds
+            .saturating_add(other.solver_repeat_unsupported_bounds);
+        self.solver_repeat_cells_enumerated = self
+            .solver_repeat_cells_enumerated
+            .saturating_add(other.solver_repeat_cells_enumerated);
+        self.analytic_transformed_hits = self
+            .analytic_transformed_hits
+            .saturating_add(other.analytic_transformed_hits);
+        self.interval_subdivisions = self
+            .interval_subdivisions
+            .saturating_add(other.interval_subdivisions);
+        self.interval_proof_successes = self
+            .interval_proof_successes
+            .saturating_add(other.interval_proof_successes);
+        self.observer_continuation_seed_hits = self
+            .observer_continuation_seed_hits
+            .saturating_add(other.observer_continuation_seed_hits);
+        self.dispatch_count = self.dispatch_count.saturating_add(other.dispatch_count);
+        self.dispatch_items = self.dispatch_items.saturating_add(other.dispatch_items);
+        self.dispatch_workgroups_x = self.dispatch_workgroups_x.max(other.dispatch_workgroups_x);
+        self.dispatch_workgroups_y = self.dispatch_workgroups_y.max(other.dispatch_workgroups_y);
+        self.dispatch_workgroups_z = self.dispatch_workgroups_z.max(other.dispatch_workgroups_z);
+        self.screen_sample_count = self
+            .screen_sample_count
+            .saturating_add(other.screen_sample_count);
+        self.world_batch_item_count = self
+            .world_batch_item_count
+            .saturating_add(other.world_batch_item_count);
+        self.candidate_count = self.candidate_count.saturating_add(other.candidate_count);
+        self.candidates_before_pruning = self
+            .candidates_before_pruning
+            .saturating_add(other.candidates_before_pruning);
+        self.candidates_after_pruning = self
+            .candidates_after_pruning
+            .saturating_add(other.candidates_after_pruning);
+        self.branch_visits = self.branch_visits.saturating_add(other.branch_visits);
+        self.support_pruned_candidates = self
+            .support_pruned_candidates
+            .saturating_add(other.support_pruned_candidates);
+        self.artifact_loads = self.artifact_loads.saturating_add(other.artifact_loads);
+        self.opaque_fallbacks = self.opaque_fallbacks.saturating_add(other.opaque_fallbacks);
+        self.trace_steps = self.trace_steps.saturating_add(other.trace_steps);
+        self.trace_steps_max = self.trace_steps_max.max(other.trace_steps_max);
+        self.hit_count = self.hit_count.saturating_add(other.hit_count);
+        self.miss_count = self.miss_count.saturating_add(other.miss_count);
+        self.dense_compatibility_batches = self
+            .dense_compatibility_batches
+            .saturating_add(other.dense_compatibility_batches);
+        self.semantic_pruned_batches = self
+            .semantic_pruned_batches
+            .saturating_add(other.semantic_pruned_batches);
+        self.solver_analytic_hits = self
+            .solver_analytic_hits
+            .saturating_add(other.solver_analytic_hits);
+        self.solver_support_rejections = self
+            .solver_support_rejections
+            .saturating_add(other.solver_support_rejections);
+        self.solver_interval_skips = self
+            .solver_interval_skips
+            .saturating_add(other.solver_interval_skips);
+        self.solver_packet_tile_rejections = self
+            .solver_packet_tile_rejections
+            .saturating_add(other.solver_packet_tile_rejections);
+        self.solver_newton_refinements = self
+            .solver_newton_refinements
+            .saturating_add(other.solver_newton_refinements);
+        self.solver_lipschitz_steps = self
+            .solver_lipschitz_steps
+            .saturating_add(other.solver_lipschitz_steps);
+        self.solver_adaptive_epsilon_uses = self
+            .solver_adaptive_epsilon_uses
+            .saturating_add(other.solver_adaptive_epsilon_uses);
+        self.solver_dense_fallback_rays = self
+            .solver_dense_fallback_rays
+            .saturating_add(other.solver_dense_fallback_rays);
+        self.solver_generated_dense_fallback_rays = self
+            .solver_generated_dense_fallback_rays
+            .saturating_add(other.solver_generated_dense_fallback_rays);
+        self.solver_fallback_contract_dense = self
+            .solver_fallback_contract_dense
+            .saturating_add(other.solver_fallback_contract_dense);
+        self.solver_fallback_missing_facts = self
+            .solver_fallback_missing_facts
+            .saturating_add(other.solver_fallback_missing_facts);
+        self.solver_fallback_analytic_unsupported = self
+            .solver_fallback_analytic_unsupported
+            .saturating_add(other.solver_fallback_analytic_unsupported);
+        self.solver_fallback_verification_failed = self
+            .solver_fallback_verification_failed
+            .saturating_add(other.solver_fallback_verification_failed);
+        self.solver_fallback_unsupported_backend = self
+            .solver_fallback_unsupported_backend
+            .saturating_add(other.solver_fallback_unsupported_backend);
+        self.solver_certificate_failures = self
+            .solver_certificate_failures
+            .saturating_add(other.solver_certificate_failures);
+        self.solver_continuation_available = self
+            .solver_continuation_available
+            .saturating_add(other.solver_continuation_available);
+        self.solver_continuation_consumed = self
+            .solver_continuation_consumed
+            .saturating_add(other.solver_continuation_consumed);
+        self.solver_continuation_rejected = self
+            .solver_continuation_rejected
+            .saturating_add(other.solver_continuation_rejected);
+        self.solver_continuation_unavailable = self
+            .solver_continuation_unavailable
+            .saturating_add(other.solver_continuation_unavailable);
+        self.field_samples = self.field_samples.saturating_add(other.field_samples);
+        self.contract_validation_failures = self
+            .contract_validation_failures
+            .saturating_add(other.contract_validation_failures);
+        if self.wgsl_layout_signature.is_none() {
+            self.wgsl_layout_signature = other.wgsl_layout_signature;
+        }
+        self.wgsl_bind_group_count = self.wgsl_bind_group_count.max(other.wgsl_bind_group_count);
+        self.wgsl_requested_max_storage_buffer_bytes = self
+            .wgsl_requested_max_storage_buffer_bytes
+            .max(other.wgsl_requested_max_storage_buffer_bytes);
+        self.wgsl_used_max_storage_buffer_bytes = self
+            .wgsl_used_max_storage_buffer_bytes
+            .max(other.wgsl_used_max_storage_buffer_bytes);
+        self.wgsl_selected_workgroup_size = self
+            .wgsl_selected_workgroup_size
+            .max(other.wgsl_selected_workgroup_size);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

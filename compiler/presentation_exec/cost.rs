@@ -66,6 +66,11 @@ pub struct PresentationFrameCostReport {
     pub tile_cull_total_tiles: u32,
     pub tile_cull_active_tiles: u32,
     pub tile_cull_efficiency: f32,
+    pub tile_candidate_total_samples: u32,
+    pub tile_candidate_active_samples: u32,
+    pub tile_candidate_reduction: u32,
+    pub packet_scheduling_active: bool,
+    pub selected_workgroup_size: u32,
     pub surface_resolve_count: u32,
     pub participant_resolve_count: u32,
     pub history_reuse_rate: f32,
@@ -317,6 +322,14 @@ pub fn render_frame_cost_report(report: &PresentationFrameCostReport) -> String 
         report.surface_resolve_count,
         report.participant_resolve_count,
         report.history_reuse_rate,
+    ));
+    out.push_str(&format!(
+        "tile_candidate_total_samples={} tile_candidate_active_samples={} tile_candidate_reduction={} packet_scheduling_active={} selected_workgroup_size={}\n",
+        report.tile_candidate_total_samples,
+        report.tile_candidate_active_samples,
+        report.tile_candidate_reduction,
+        report.packet_scheduling_active,
+        report.selected_workgroup_size,
     ));
     if !report.active_acceleration_artifacts.is_empty() {
         out.push_str(&format!(

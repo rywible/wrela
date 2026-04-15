@@ -375,7 +375,7 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
             .join("|")
     };
     out.push_str(&format!(
-        "counters dispatch={} dispatch_items={} workgroups={}x{}x{} screen_samples={} world_batch_items={} candidates={} candidates_before={} candidates_after={} pruned={} trace_steps={} trace_steps_avg={:.2} trace_steps_max={} hits={} misses={} field_samples={} artifacts={} opaque_fallbacks={} dense_batches={} semantic_pruned_batches={} solver_plan={} solver_subject={} solver_methods={} solver_analytic_hits={} solver_support_rejections={} solver_interval_skips={} solver_packet_tile_rejections={} solver_newton_refinements={} solver_lipschitz_steps={} solver_adaptive_epsilon={} solver_dense_fallback_rays={} solver_generated_dense_fallback_rays={} solver_fallback_contract_dense={} solver_fallback_missing_facts={} solver_fallback_analytic_unsupported={} solver_fallback_verification_failed={} solver_fallback_unsupported_backend={} solver_certificate_failures={} observer_continuation_seed_hits={}",
+        "counters dispatch={} dispatch_items={} workgroups={}x{}x{} screen_samples={} world_batch_items={} candidates={} candidates_before={} candidates_after={} pruned={} trace_steps={} trace_steps_avg={:.2} trace_steps_max={} hits={} misses={} field_samples={} artifacts={} opaque_fallbacks={} dense_batches={} semantic_pruned_batches={} solver_plan={} solver_subject={} solver_methods={} solver_analytic_hits={} solver_support_rejections={} solver_interval_skips={} solver_packet_tile_rejections={} solver_newton_refinements={} solver_lipschitz_steps={} solver_adaptive_epsilon={} solver_dense_fallback_rays={} solver_generated_dense_fallback_rays={} solver_fallback_contract_dense={} solver_fallback_missing_facts={} solver_fallback_analytic_unsupported={} solver_fallback_verification_failed={} solver_fallback_unsupported_backend={} solver_certificate_failures={} observer_continuation_seed_hits={} wgsl_layout_signature={} wgsl_bind_groups={} wgsl_storage_requested={} wgsl_storage_used={} wgsl_workgroup_size={}",
         report.counters.dispatch_count,
         report.counters.dispatch_items,
         report.counters.dispatch_workgroups_x,
@@ -416,6 +416,15 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
         report.counters.solver_fallback_unsupported_backend,
         report.counters.solver_certificate_failures,
         report.counters.observer_continuation_seed_hits,
+        report
+            .counters
+            .wgsl_layout_signature
+            .map(|signature| format!("{signature:016x}"))
+            .unwrap_or_else(|| "none".to_string()),
+        report.counters.wgsl_bind_group_count,
+        report.counters.wgsl_requested_max_storage_buffer_bytes,
+        report.counters.wgsl_used_max_storage_buffer_bytes,
+        report.counters.wgsl_selected_workgroup_size,
     ));
     out
 }

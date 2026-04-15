@@ -347,8 +347,13 @@ fn world_module_from_parts(
         source,
         workgroup_size,
         dispatch_abi: wgsl_dispatch_config_abi(),
+        accel_node_abi: crate::query_exec::wgsl::codegen::wgsl_accel_node_abi(),
+        shape_meta_abi: crate::query_exec::wgsl::codegen::wgsl_shape_meta_abi(),
         item_abi: wgsl_item_abi_for_descriptor(descriptor)?,
         result_abi: wgsl_result_abi_for_descriptor(descriptor)?,
+        shape_meta_values: Vec::new(),
+        layout_signature: 0,
+        bind_group_count: 4,
     })
 }
 
@@ -370,8 +375,13 @@ fn world_batch_module_from_parts(
         source,
         workgroup_size,
         dispatch_abi: wgsl_dispatch_config_abi(),
+        accel_node_abi: crate::query_exec::wgsl::codegen::wgsl_accel_node_abi(),
+        shape_meta_abi: crate::query_exec::wgsl::codegen::wgsl_shape_meta_abi(),
         item_abi: wgsl_item_abi_for_descriptor(descriptor)?,
         result_abi: wgsl_result_abi_for_descriptor(descriptor)?,
+        shape_meta_values: Vec::new(),
+        layout_signature: 0,
+        bind_group_count: 4,
     })
 }
 
@@ -385,8 +395,13 @@ fn batch_module_from_parts(
         source,
         workgroup_size,
         dispatch_abi: wgsl_dispatch_config_abi(),
+        accel_node_abi: crate::query_exec::wgsl::codegen::wgsl_accel_node_abi(),
+        shape_meta_abi: crate::query_exec::wgsl::codegen::wgsl_shape_meta_abi(),
         item_abi: wgsl_item_abi_for_descriptor(descriptor)?,
         result_abi: wgsl_result_abi_for_descriptor(descriptor)?,
+        shape_meta_values: Vec::new(),
+        layout_signature: 0,
+        bind_group_count: 4,
     })
 }
 
@@ -441,12 +456,17 @@ fn world_batch_query(
                 0,
                 items.len() as u32,
                 shape_indices.len() as u32,
+                0,
+                0,
                 runtime_bool(material_enabled, "material_enabled")?,
                 runtime_bool(radiance_enabled, "radiance_enabled")?,
                 runtime_bool(media_enabled, "media_enabled")?,
             ),
             items,
             world_shape_indices: shape_indices,
+            accel_nodes: Vec::new(),
+            accel_children: Vec::new(),
+            continuation_seeds: Vec::new(),
         },
     )?;
     kernel_array_to_runtime(&values)
@@ -469,12 +489,17 @@ fn world_query(
                 0,
                 1,
                 shape_indices.len() as u32,
+                0,
+                0,
                 matches!(kind, WorldBridgeKind::Surface),
                 matches!(kind, WorldBridgeKind::Radiance),
                 matches!(kind, WorldBridgeKind::Medium),
             ),
             items: vec![item],
             world_shape_indices: shape_indices,
+            accel_nodes: Vec::new(),
+            accel_children: Vec::new(),
+            continuation_seeds: Vec::new(),
         },
     )?
     .into_iter()
@@ -526,12 +551,17 @@ fn batch_query(
                 capture_index,
                 items.len() as u32,
                 0,
+                0,
+                0,
                 false,
                 false,
                 false,
             ),
             items,
             world_shape_indices: Vec::new(),
+            accel_nodes: Vec::new(),
+            accel_children: Vec::new(),
+            continuation_seeds: Vec::new(),
         },
     )?;
     kernel_array_to_runtime(&values)

@@ -625,7 +625,9 @@ enum IntervalProofOutcome {
         end_t: f32,
         end_sample: IntervalSample,
     },
-    Bracket { bracket: BracketRefinement },
+    Bracket {
+        bracket: BracketRefinement,
+    },
     Unresolved,
 }
 
@@ -3374,9 +3376,8 @@ impl<'a> DirectQueryOps<'a> {
                     } else {
                         0
                     };
-                    cached_sample = next_sample.filter(|sample| {
-                        (sample.t - next_travel).abs() <= f32::EPSILON
-                    });
+                    cached_sample =
+                        next_sample.filter(|sample| (sample.t - next_travel).abs() <= f32::EPSILON);
                     travel = next_travel;
                     steps += 1;
                 }
@@ -3421,7 +3422,8 @@ impl<'a> DirectQueryOps<'a> {
         hit_epsilon: f32,
         max_steps: i32,
     ) -> Result<KernelValue, QueryExecError> {
-        let runtime_plan = self.runtime_shape_solver_plan(solver_plan, artifact_contracts, shape)?;
+        let runtime_plan =
+            self.runtime_shape_solver_plan(solver_plan, artifact_contracts, shape)?;
         let effective_methods = match self.trace_solver_mode {
             QueryTraceSolverMode::Hybrid => runtime_plan.diagnostic_summary().methods,
             QueryTraceSolverMode::DenseOnly => vec![RaySolverMethod::DenseSphereTracing],
@@ -3949,7 +3951,11 @@ impl<'a> DirectQueryOps<'a> {
                 kind,
                 param: Some(param),
                 inner,
-            } if matches!(kind, TransformKind::Translate | TransformKind::AffineTransform) => {
+            } if matches!(
+                kind,
+                TransformKind::Translate | TransformKind::AffineTransform
+            ) =>
+            {
                 let Some((local_origin, local_direction)) =
                     self.repeat_aware_local_ray(*kind, param, origin, direction)?
                 else {
@@ -3971,7 +3977,8 @@ impl<'a> DirectQueryOps<'a> {
                     .support_node_record(field.root_support_id)
                     .and_then(|record| record.children.first().copied())
                     .and_then(|repeat_id| {
-                        field.support_node_record(repeat_id)
+                        field
+                            .support_node_record(repeat_id)
                             .and_then(|record| record.children.first().copied())
                     });
                 let Some(child_support) = repeat_support else {
@@ -4070,7 +4077,9 @@ impl<'a> DirectQueryOps<'a> {
                     direction,
                 )))
             }
-            TransformKind::AffineTransform => pure_translation_local_ray(&config, origin, direction),
+            TransformKind::AffineTransform => {
+                pure_translation_local_ray(&config, origin, direction)
+            }
             _ => Ok(None),
         }
     }
@@ -4123,12 +4132,9 @@ impl<'a> DirectQueryOps<'a> {
             let factor = relaxed_step_factor(state.previous_distance, state.distance);
             let candidate_end = (state.travel + state.step_bound * factor).min(max_distance);
             let required_relaxed_end = state.travel + (state.step_bound * 1.5);
-            let relaxed_admission =
-                state.previous_distance.is_some()
-                    && (state.non_improving_distance || state.consecutive_small_steps >= 1);
-            if relaxed_admission
-                && candidate_end + f32::EPSILON >= required_relaxed_end
-            {
+            let relaxed_admission = state.previous_distance.is_some()
+                && (state.non_improving_distance || state.consecutive_small_steps >= 1);
+            if relaxed_admission && candidate_end + f32::EPSILON >= required_relaxed_end {
                 self.note_solver_relaxed_attempt();
                 match self.prove_shape_interval(
                     shape,

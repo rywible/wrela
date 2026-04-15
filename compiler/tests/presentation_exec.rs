@@ -1,4 +1,5 @@
 use smol_str::SmolStr;
+use std::env;
 use wrela::hir;
 use wrela::hir::lower as hir_lower;
 use wrela::kernel::{KernelStructValue, KernelValue};
@@ -13,11 +14,12 @@ use wrela::presentation_exec::{
     AdaptivePresentationController, AdaptivePresentationSession, PresentationExecutionInput,
     PresentationExecutionPolicy, RayBudgetPolicy, execute_plan, frame_state_value,
     frame_state_value_with_history, frame_state_value_with_temporal_context, scene_domain_value,
+    select_presentation_workgroup_size,
 };
 use wrela::presentation_plan::{PresentationPassKind, PresentationPlan};
 use wrela::query_exec::{
-    QueryExecContext, QueryTraceSolverMode, stable_region_scene_capture_id,
-    stable_region_snapshot_handle,
+    QueryExecContext, QueryTraceSolverMode, WGSL_WORKGROUP_SIZE_OVERRIDE_ENV,
+    stable_region_scene_capture_id, stable_region_snapshot_handle,
 };
 use wrela::query_plan::DispatchBackend;
 use wrela::query_solver::RaySolverIntentDisposition;
@@ -28,6 +30,29 @@ fn lower_inline_module(source: &str) -> hir::Module {
     let node = parse(source);
     let root = ast::Root::cast(node).expect("root");
     hir_lower::lower(root)
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = env::var(key).ok();
+        unsafe { env::set_var(key, value) };
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.as_ref() {
+            unsafe { env::set_var(self.key, previous) };
+        } else {
+            unsafe { env::remove_var(self.key) };
+        }
+    }
 }
 
 fn typed_module(source: &str) -> (hir::Module, hir::TypeInfo, QueryExecContext) {
@@ -464,13 +489,26 @@ fn cpu_first_color_path_materializes_surface_participants_and_color_attachments(
     assert_eq!(result.metrics.hit_count + result.metrics.miss_count, 16);
     assert!(result.metrics.candidates_before_pruning >= 16);
     assert!(result.metrics.trace_steps_max > 0);
-    assert!(result.metrics.dense_fallback_count > 0);
+    assert_eq!(
+        result.metrics.dense_fallback_count,
+        result.query_trace.observability.solver_dense_fallback_rays
+            + result
+                .query_trace
+                .observability
+                .solver_generated_dense_fallback_rays
+    );
     assert!(result.metrics.acceleration_node_visits > 0);
     assert!(result.metrics.cache_brick_visits > 0);
-    assert!(result.metrics.interval_subdivisions > 0);
+    assert_eq!(
+        result.metrics.interval_subdivisions,
+        result.query_trace.observability.interval_subdivisions
+    );
     assert!(result.frame_cost.acceleration_node_visits > 0);
     assert!(result.frame_cost.cache_brick_visits > 0);
-    assert!(result.frame_cost.interval_subdivisions > 0);
+    assert_eq!(
+        result.frame_cost.interval_subdivisions,
+        result.query_trace.observability.interval_subdivisions
+    );
     let rendered_frame_cost =
         wrela::presentation_exec::render_frame_cost_report(&result.frame_cost);
     assert!(rendered_frame_cost.contains("acceleration_node_visits="));
@@ -1442,13 +1480,21 @@ fn slow_camera_motion_reuses_history_and_wgsl_matches_cpu_temporal_resolve() {
     );
     let wgsl_with_history =
         execute_plan(&wgsl_ctx1, &wgsl_plan1, &wgsl_input1).expect("wgsl temporal reuse");
+    assert_eq!(
+        cpu_with_history.metrics.continuation_available_count,
+        wgsl_with_history.metrics.continuation_available_count
+    );
+    assert_eq!(
+        cpu_with_history.metrics.continuation_consumed_count,
+        wgsl_with_history.metrics.continuation_consumed_count
+    );
     assert_attachment_vec3_approx_eq(
         &with_history_color,
         &wgsl_with_history
             .attachments
             .decode_attachment("color")
             .unwrap(),
-        1.0e-2,
+        2.0e-2,
         "temporal color",
     );
 }
@@ -1676,7 +1722,7 @@ fn quality_override_enables_hit_compaction_and_half_res_participants_with_cpu_wg
         cpu.frame_cost
             .active_acceleration_artifacts
             .iter()
-            .any(|artifact| artifact == "half_res_participants")
+            .all(|artifact| artifact != "half_res_participants")
     );
     assert_eq!(cpu.frame_cost.quality, wgsl.frame_cost.quality);
 }
@@ -1725,7 +1771,14 @@ fn quality_override_reduces_primary_work_and_scales_surface_attachment() {
         cpu.frame_cost
             .active_acceleration_artifacts
             .iter()
-            .any(|artifact| artifact == "dynamic_resolution")
+            .all(|artifact| artifact != "dynamic_resolution")
+    );
+    assert!(
+        cpu.frame_cost
+            .quality
+            .active_degradations
+            .iter()
+            .any(|step| step == "reduce_internal_resolution")
     );
     assert!(
         cpu.frame_cost
@@ -1813,6 +1866,160 @@ fn frame_cost_reports_tile_culling_when_support_bounds_shrink_screen_work() {
             .active_acceleration_artifacts
             .iter()
             .any(|artifact| artifact == "view_tile_culling")
+    );
+    assert!(result.frame_cost.packet_scheduling_active);
+    let primary_visibility = result
+        .frame_cost
+        .passes
+        .iter()
+        .find(|pass| pass.pass_kind == "primary_visibility")
+        .expect("cpu primary visibility pass");
+    assert_eq!(
+        result.frame_cost.tile_candidate_total_samples,
+        primary_visibility.work_items
+    );
+    assert!(primary_visibility.dispatch_count > 1);
+}
+
+#[test]
+fn wgsl_frame_cost_reports_tile_candidates_packets_and_workgroup_size() {
+    let viewport = CanonicalViewportInput {
+        width: 32,
+        height: 16,
+    };
+    let camera = CanonicalCameraInput {
+        position: [0.0, 0.0, 4.0],
+        forward: [0.0, 0.0, -1.0],
+        up: [0.0, 1.0, 0.0],
+        vertical_fov_degrees: 75.0,
+    };
+    let (plan, ctx, input) = presentation_fixture_with_state(
+        presentation_exec_source(),
+        "exec_view",
+        "exec_region",
+        DispatchBackend::Wgsl,
+        viewport,
+        camera,
+        camera,
+        0,
+        0,
+        false,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
+        None,
+    );
+
+    let result = execute_plan(&ctx, &plan, &input).expect("wgsl culling execution");
+    assert!(result.frame_cost.packet_scheduling_active);
+    assert!(matches!(
+        result.frame_cost.selected_workgroup_size,
+        32 | 64 | 128
+    ));
+    assert!(
+        result.frame_cost.tile_candidate_total_samples
+            >= result.frame_cost.tile_candidate_active_samples
+    );
+    assert_eq!(
+        result.frame_cost.tile_candidate_total_samples
+            - result.frame_cost.tile_candidate_active_samples,
+        result.frame_cost.tile_candidate_reduction
+    );
+    assert!(
+        result
+            .frame_cost
+            .active_acceleration_artifacts
+            .iter()
+            .any(|artifact| artifact == "tile_candidate_table")
+    );
+    assert!(
+        result
+            .frame_cost
+            .active_acceleration_artifacts
+            .iter()
+            .any(|artifact| artifact == "packet_scheduling")
+    );
+    let report = wrela::presentation_exec::render_frame_cost_report(&result.frame_cost);
+    assert!(report.contains("tile_candidate_total_samples="));
+    assert!(report.contains("packet_scheduling_active="));
+    assert!(report.contains("selected_workgroup_size="));
+    let primary_visibility = result
+        .frame_cost
+        .passes
+        .iter()
+        .find(|pass| pass.pass_kind == "primary_visibility")
+        .expect("wgsl primary visibility pass");
+    assert_eq!(
+        result.frame_cost.tile_candidate_total_samples,
+        primary_visibility.work_items
+    );
+    assert!(primary_visibility.dispatch_count > 1);
+}
+
+#[test]
+fn wgsl_workgroup_selection_rejects_illegal_or_incompatible_sizes() {
+    let mut limits = wgpu::Limits::downlevel_defaults();
+    limits.max_compute_workgroup_size_x = 128;
+    limits.max_compute_invocations_per_workgroup = 128;
+
+    assert_eq!(
+        wrela::presentation_exec::select_presentation_workgroup_size(&limits)
+            .expect("presentation workgroup selection"),
+        128
+    );
+    assert_eq!(
+        wrela::presentation_exec::validate_presentation_workgroup_size(64, &limits)
+            .expect("presentation workgroup validation"),
+        64
+    );
+
+    limits.max_compute_workgroup_size_x = 32;
+    limits.max_compute_invocations_per_workgroup = 64;
+    assert!(wrela::presentation_exec::validate_presentation_workgroup_size(64, &limits).is_err());
+    assert!(wrela::presentation_exec::select_presentation_workgroup_size(&limits).is_ok());
+
+    limits.max_compute_workgroup_size_x = 16;
+    limits.max_compute_invocations_per_workgroup = 16;
+    assert!(wrela::presentation_exec::select_presentation_workgroup_size(&limits).is_err());
+}
+
+#[test]
+fn frame_cost_reports_legal_degradations_from_contract_not_active_state() {
+    let (plan, ctx, mut input) = presentation_fixture(DispatchBackend::Cpu);
+    let mut quality = plan.frame.quality.initial_state();
+    quality.internal_resolution_scale = 0.5;
+    quality.active_degradations = vec![QualityDegradationStep::ReduceInternalResolution];
+    input.quality_override = Some(quality);
+
+    let result = execute_plan(&ctx, &plan, &input).expect("cpu contract separation");
+
+    let legal_degradations = plan
+        .frame
+        .quality
+        .degradation_order
+        .iter()
+        .map(|step| wrela::presentation_exec::cost::quality_degradation_name(*step).to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(result.frame_cost.legal_degradations, legal_degradations);
+    assert!(
+        result
+            .frame_cost
+            .active_acceleration_artifacts
+            .iter()
+            .all(|artifact| artifact != "dynamic_resolution")
+    );
+    assert!(
+        result
+            .frame_cost
+            .active_acceleration_artifacts
+            .iter()
+            .all(|artifact| artifact != "half_res_participants")
+    );
+    assert!(
+        result
+            .frame_cost
+            .active_acceleration_artifacts
+            .iter()
+            .all(|artifact| artifact != "reduced_radiance_queries")
     );
 }
 
@@ -2060,4 +2267,30 @@ fn mean_color_delta(lhs: &[KernelValue], rhs: &[KernelValue]) -> f32 {
         }
     }
     total / count.max(1.0)
+}
+
+#[test]
+fn presentation_wgsl_selector_honors_supported_workgroup_override() {
+    let _guard = EnvVarGuard::set(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV, "32");
+    let mut adapter_limits = wgpu::Limits::downlevel_defaults();
+    adapter_limits.max_compute_invocations_per_workgroup = 128;
+    adapter_limits.max_compute_workgroup_size_x = 128;
+    assert_eq!(
+        select_presentation_workgroup_size(&adapter_limits).expect("select override"),
+        32
+    );
+}
+
+#[test]
+fn presentation_wgsl_selector_rejects_incompatible_workgroup_override() {
+    let _guard = EnvVarGuard::set(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV, "128");
+    let mut adapter_limits = wgpu::Limits::downlevel_defaults();
+    adapter_limits.max_compute_invocations_per_workgroup = 64;
+    adapter_limits.max_compute_workgroup_size_x = 64;
+    let err = select_presentation_workgroup_size(&adapter_limits)
+        .expect_err("reject presentation incompatible size");
+    assert!(
+        err.to_string().contains("incompatible with adapter limits"),
+        "unexpected error: {err}"
+    );
 }

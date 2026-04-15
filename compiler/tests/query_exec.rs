@@ -1,4 +1,6 @@
 use smol_str::SmolStr;
+use std::env;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use wrela::artifact_contract::{ArtifactUseKind, ArtifactUseSource};
 use wrela::hir;
@@ -17,12 +19,13 @@ use wrela::query_exec::{
     BatchQueryExecutionTrace, CostFidelity, DirectQueryExecutionTrace, DirectQueryExecutor,
     QueryExecContext, QueryExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass,
     SelectedMethodClass, SemanticCostCauseKind, SemanticCostUnit, SemanticStageKind,
-    executable_region_shape_lists, execute_batch_query_with_trace,
-    execute_batch_query_with_trace_on, execute_capture_query, execute_capture_query_on,
-    execute_capture_query_with_trace_on, execute_world_query, execute_world_query_on,
-    execute_world_query_with_policy_with_trace_on, execute_world_query_with_trace_on,
-    render_semantic_cost_report, stable_field_scene_capture_id, stable_region_scene_capture_id,
-    stable_shape_capture_id, stable_shape_scene_capture_id,
+    WGSL_WORKGROUP_SIZE_OVERRIDE_ENV, executable_region_shape_lists,
+    execute_batch_query_with_trace, execute_batch_query_with_trace_on, execute_capture_query,
+    execute_capture_query_on, execute_capture_query_with_trace_on, execute_world_query,
+    execute_world_query_on, execute_world_query_with_policy_with_trace_on,
+    execute_world_query_with_trace_on, render_semantic_cost_report,
+    select_query_wgsl_workgroup_size, stable_field_scene_capture_id,
+    stable_region_scene_capture_id, stable_shape_capture_id, stable_shape_scene_capture_id,
 };
 use wrela::query_plan::{
     ArtifactSchema, BatchQueryKind, BatchQueryPlan, CaptureKind, CaptureQueryKind,
@@ -34,6 +37,29 @@ fn lower_inline_module_from_source(source: &str) -> hir::Module {
     let node = parse(source);
     let root = ast::Root::cast(node).expect("root");
     hir_lower::lower(root)
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = env::var(key).ok();
+        unsafe { env::set_var(key, value) };
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.as_ref() {
+            unsafe { env::set_var(self.key, previous) };
+        } else {
+            unsafe { env::remove_var(self.key) };
+        }
+    }
 }
 
 fn typed_query_module(source: &str) -> (hir::Module, hir::TypeInfo, QueryExecContext) {
@@ -1569,6 +1595,31 @@ fn query_exec_traces_report_observability_counters() {
     assert!(wgsl_world_trace.observability.trace_steps > 0);
     assert!(wgsl_world_trace.observability.artifact_loads > 0);
     assert!(wgsl_world_trace.observability.solver_plan_id.is_some());
+    assert!(
+        wgsl_world_trace
+            .observability
+            .wgsl_layout_signature
+            .is_some()
+    );
+    assert_eq!(wgsl_world_trace.observability.wgsl_bind_group_count, 4);
+    assert!(
+        wgsl_world_trace
+            .observability
+            .wgsl_requested_max_storage_buffer_bytes
+            >= wgsl_world_trace
+                .observability
+                .wgsl_used_max_storage_buffer_bytes
+    );
+    assert!(
+        wgsl_world_trace
+            .observability
+            .wgsl_used_max_storage_buffer_bytes
+            >= 4
+    );
+    assert!(matches!(
+        wgsl_world_trace.observability.wgsl_selected_workgroup_size,
+        32 | 64 | 128
+    ));
     assert_eq!(
         wgsl_world_trace
             .observability
@@ -1582,6 +1633,23 @@ fn query_exec_traces_report_observability_counters() {
     assert!(
         render_semantic_cost_report(&wgsl_world_trace.cost_report)
             .contains("observer_continuation_seed_hits=")
+    );
+    assert!(
+        render_semantic_cost_report(&wgsl_world_trace.cost_report)
+            .contains("wgsl_layout_signature=")
+    );
+    assert!(
+        render_semantic_cost_report(&wgsl_world_trace.cost_report).contains("wgsl_bind_groups=4")
+    );
+    assert!(
+        render_semantic_cost_report(&wgsl_world_trace.cost_report)
+            .contains("wgsl_storage_requested=")
+    );
+    assert!(
+        render_semantic_cost_report(&wgsl_world_trace.cost_report).contains("wgsl_storage_used=")
+    );
+    assert!(
+        render_semantic_cost_report(&wgsl_world_trace.cost_report).contains("wgsl_workgroup_size=")
     );
     assert_eq!(
         wgsl_world_trace.cost_report.fidelity,
@@ -1642,6 +1710,38 @@ fn query_exec_traces_report_observability_counters() {
         wgsl_batch_trace.cost_report.fidelity,
         CostFidelity::StructuralApproximation
     );
+}
+
+#[test]
+fn query_wgsl_workgroup_selection_is_bounded_and_consistent_with_presentation() {
+    let mut limits = wgpu::Limits::downlevel_defaults();
+    limits.max_compute_workgroup_size_x = 128;
+    limits.max_compute_invocations_per_workgroup = 128;
+
+    let query_selected = wrela::query_exec::select_query_wgsl_workgroup_size(&limits)
+        .expect("query workgroup selection");
+    let presentation_selected =
+        wrela::presentation_exec::select_presentation_workgroup_size(&limits)
+            .expect("presentation workgroup selection");
+
+    assert_eq!(query_selected, 128);
+    assert_eq!(presentation_selected, 128);
+    assert_eq!(query_selected, presentation_selected);
+    assert_eq!(
+        wrela::query_exec::validate_query_wgsl_workgroup_size(64, &limits)
+            .expect("query workgroup validation"),
+        64
+    );
+
+    limits.max_compute_workgroup_size_x = 64;
+    limits.max_compute_invocations_per_workgroup = 64;
+    assert!(wrela::query_exec::validate_query_wgsl_workgroup_size(128, &limits).is_err());
+    assert!(wrela::presentation_exec::validate_presentation_workgroup_size(128, &limits).is_err());
+
+    limits.max_compute_workgroup_size_x = 16;
+    limits.max_compute_invocations_per_workgroup = 16;
+    assert!(wrela::query_exec::select_query_wgsl_workgroup_size(&limits).is_err());
+    assert!(wrela::presentation_exec::select_presentation_workgroup_size(&limits).is_err());
 }
 
 #[test]
@@ -5868,6 +5968,126 @@ domain scene_domain(world: RegionCapture) {
 "#
 }
 
+fn wide_world_overflow_fixture_source(shape_count: usize) -> String {
+    let mut source = String::new();
+    for index in 0..shape_count {
+        let x = index as f32 * 2.0;
+        writeln!(
+            source,
+            "field exact distance leaf_{index}_field(p: Vec3) -> F32 {{
+    translate = vec3({x:.1}, 0.0, 0.0) {{
+        sphere(radius = 0.45)
+    }}
+}}
+"
+        )
+        .expect("append field");
+    }
+    source.push_str(
+        r#"
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.25, 0.35, 0.45),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+"#,
+    );
+    for index in 0..shape_count {
+        let entity_id = 10_000 + index as u32;
+        writeln!(
+            source,
+            "shape leaf_{index}_shape {{
+    field = leaf_{index}_field
+    material = shade
+    payload = Payload(
+        entity_id=u32({entity_id}),
+        material_id=u32({entity_id}),
+        actor=ActorHandle(id=u32({entity_id}), generation=u32(0))
+    )
+}}
+"
+        )
+        .expect("append shape");
+    }
+    source.push_str("region overflow_region() {\n");
+    for index in 0..shape_count {
+        writeln!(source, "    place leaf_{index} = leaf_{index}_shape").expect("append place");
+    }
+    source.push_str(
+        r#"}
+
+domain overflow_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = false
+    media = false
+    max_distance = 6.0
+    min_step = 0.02
+    hit_epsilon = 0.001
+    max_steps = 128
+}
+"#,
+    );
+    source
+}
+
+#[test]
+fn query_exec_wgsl_world_trace_dense_fallbacks_when_accel_stack_overflows() {
+    let shape_count = 160usize;
+    let target_index = shape_count - 1;
+    let target_x = target_index as f32 * 2.0;
+    let source = wide_world_overflow_fixture_source(shape_count);
+    let (_, _, ctx) = typed_query_module(&source);
+    let region_name = SmolStr::new("overflow_region");
+    let region_scene_id = stable_region_scene_capture_id(&region_name);
+    let args = [
+        KernelValue::Capture(region_name.clone()),
+        scene_domain(region_scene_id, 1, false, false, false),
+        ray_query_with_limits(
+            [target_x, 0.0, 3.0],
+            [0.0, 0.0, -1.0],
+            6.0,
+            0.02,
+            0.001,
+            128,
+        ),
+    ];
+    let plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+
+    let (cpu_hit, _) = execute_world_query_with_trace_on(&ctx, DispatchBackend::Cpu, &plan, &args)
+        .expect("cpu overflow trace");
+    let (wgsl_hit, wgsl_trace) =
+        execute_world_query_with_trace_on(&ctx, DispatchBackend::Wgsl, &plan, &args)
+            .expect("wgsl overflow trace");
+
+    let cpu_payload = expect_struct(field(expect_struct(&cpu_hit, "Hit3"), "payload"), "Payload");
+    let wgsl_payload = expect_struct(
+        field(expect_struct(&wgsl_hit, "Hit3"), "payload"),
+        "Payload",
+    );
+    assert_eq!(
+        expect_u32(field(cpu_payload, "entity_id")),
+        10_000 + target_index as u32
+    );
+    assert_eq!(
+        expect_u32(field(wgsl_payload, "entity_id")),
+        10_000 + target_index as u32
+    );
+    assert!(
+        wgsl_trace
+            .observability
+            .solver_generated_dense_fallback_rays
+            > 0
+    );
+}
+
 fn wgsl_profile_fixture_source() -> &'static str {
     r#"
 field conservative distance polygon_plate(p: Vec3) -> F32 {
@@ -6464,4 +6684,30 @@ fn query_exec_opaque_fields_use_authored_bounds_fallback() {
 
     assert_approx_eq(expect_f32(&inside), -1.0);
     assert_approx_eq(expect_f32(&outside), 1.0);
+}
+
+#[test]
+fn query_wgsl_selector_honors_supported_workgroup_override() {
+    let _guard = EnvVarGuard::set(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV, "64");
+    let mut adapter_limits = wgpu::Limits::downlevel_defaults();
+    adapter_limits.max_compute_invocations_per_workgroup = 128;
+    adapter_limits.max_compute_workgroup_size_x = 128;
+    assert_eq!(
+        select_query_wgsl_workgroup_size(&adapter_limits).expect("select override"),
+        64
+    );
+}
+
+#[test]
+fn query_wgsl_selector_rejects_incompatible_workgroup_override() {
+    let _guard = EnvVarGuard::set(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV, "128");
+    let mut adapter_limits = wgpu::Limits::downlevel_defaults();
+    adapter_limits.max_compute_invocations_per_workgroup = 64;
+    adapter_limits.max_compute_workgroup_size_x = 64;
+    let err =
+        select_query_wgsl_workgroup_size(&adapter_limits).expect_err("reject incompatible size");
+    assert!(
+        err.to_string().contains("incompatible with adapter limits"),
+        "unexpected error: {err}"
+    );
 }

@@ -927,6 +927,15 @@ pub(super) struct BenchmarkPresentationSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(super) struct PresentationWgslWorkgroupComparison {
+    pub(super) selected_workgroup_size: u32,
+    pub(super) candidate_workgroup_sizes: Vec<u32>,
+    pub(super) candidate_frame_time_ns: Vec<u128>,
+    pub(super) frame_time_ns_delta_vs_selected: Vec<i128>,
+    pub(super) frame_time_ns_delta_vs_selected_pct: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(super) struct PresentationBenchmarkReport {
     pub(super) scenario_id: String,
     pub(super) test_name: String,
@@ -935,6 +944,8 @@ pub(super) struct PresentationBenchmarkReport {
     pub(super) domain: String,
     pub(super) backend: String,
     pub(super) query_trace_solver_mode: String,
+    #[serde(default)]
+    pub(super) selected_workgroup_size: u32,
     pub(super) frames_executed: u32,
     pub(super) frame_time_ns: u128,
     pub(super) field_samples: u32,
@@ -950,6 +961,8 @@ pub(super) struct PresentationBenchmarkReport {
     pub(super) frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) frame_cost_history: Vec<wrela::presentation_exec::PresentationFrameCostReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) wgsl_workgroup_comparison: Option<PresentationWgslWorkgroupComparison>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) ab_comparison: Option<PresentationBenchmarkComparison>,
 }
@@ -1190,8 +1203,7 @@ fn execute_eval_command(input: EvalCommandInput) -> i32 {
                     "case={} passed={} loops_to_green={} parse_survived={} machine_applicable_fix_applied={} retries={} hidden_retries={} execution_ms_total={}",
                     case.id,
                     case.passed,
-                    case
-                        .loops_to_green
+                    case.loops_to_green
                         .map(|value| value.to_string())
                         .unwrap_or_else(|| "null".to_string()),
                     case.parse_survived,
@@ -1376,16 +1388,24 @@ fn run_eval_one_shot_cases(
         .map_err(|err| format!("failed to resolve cwd for eval staging: {err}"))?
         .join("target")
         .join("wrela_eval");
-    fs::create_dir_all(&eval_root)
-        .map_err(|err| format!("failed to create eval staging root {}: {err}", eval_root.display()))?;
+    fs::create_dir_all(&eval_root).map_err(|err| {
+        format!(
+            "failed to create eval staging root {}: {err}",
+            eval_root.display()
+        )
+    })?;
     let run_root = eval_root.join(format!(
         "{}_{}_{}",
         sanitize_test_path_component(&manifest.suite_id),
         std::process::id(),
         now_unix_ms()
     ));
-    fs::create_dir_all(&run_root)
-        .map_err(|err| format!("failed to create eval run root {}: {err}", run_root.display()))?;
+    fs::create_dir_all(&run_root).map_err(|err| {
+        format!(
+            "failed to create eval run root {}: {err}",
+            run_root.display()
+        )
+    })?;
     let cli_path = env::current_exe()
         .map_err(|err| format!("failed to resolve current wrela executable path: {err}"))?;
     let mut reports = Vec::with_capacity(manifest.cases.len());
@@ -1582,7 +1602,11 @@ fn run_eval_one_shot_attempt(
 
 fn eval_one_shot_attempt_has_parse_failure(output: &Output) -> bool {
     let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines().map(str::trim).filter(|line| !line.is_empty()) {
+    for line in stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(line)
             && value.get("stage").and_then(|stage| stage.as_str()) == Some("parse")
             && value
@@ -1611,7 +1635,10 @@ fn summarize_eval_one_shot(
         .iter()
         .filter(|case| case.passed && case.hidden_retries == 0)
         .count();
-    let parse_survived_count = case_reports.iter().filter(|case| case.parse_survived).count();
+    let parse_survived_count = case_reports
+        .iter()
+        .filter(|case| case.parse_survived)
+        .count();
     let machine_fix_count = case_reports
         .iter()
         .filter(|case| case.machine_applicable_fix_applied)
@@ -2249,7 +2276,8 @@ pub(super) fn overlay_perf_summary_runtime_cases(
     cases: &[(String, String, u128)],
 ) -> PerfSummary {
     let mut summary = base.clone();
-    let mut runtime_sorted: Vec<u128> = cases.iter().map(|(_, _, runtime_ns)| *runtime_ns).collect();
+    let mut runtime_sorted: Vec<u128> =
+        cases.iter().map(|(_, _, runtime_ns)| *runtime_ns).collect();
     runtime_sorted.sort_unstable();
     summary.sample_count = runtime_sorted.len();
     if runtime_sorted.is_empty() {
@@ -2469,7 +2497,8 @@ pub(super) fn aggregate_perf_samples(samples: &[PerfSummary]) -> PerfSummary {
             .max(sample.metrics.queue_burst_drain_avg);
         metrics.scene_trace += sample.metrics.scene_trace;
         metrics.field_sample += sample.metrics.field_sample;
-        metrics.scene_trace_support_pruned_branch += sample.metrics.scene_trace_support_pruned_branch;
+        metrics.scene_trace_support_pruned_branch +=
+            sample.metrics.scene_trace_support_pruned_branch;
         metrics.scene_trace_candidate_branch += sample.metrics.scene_trace_candidate_branch;
         metrics.scene_trace_exact_path += sample.metrics.scene_trace_exact_path;
         metrics.scene_trace_conservative_path += sample.metrics.scene_trace_conservative_path;
@@ -2906,7 +2935,9 @@ mod perf_gate_tests {
         current.allocs_per_request = 12.400000000000004;
         let failures = evaluate_perf_gate(&current, &baseline, 0.0, &KpiThresholds::default());
         assert!(
-            !failures.iter().any(|failure| failure.contains("allocs/request")),
+            !failures
+                .iter()
+                .any(|failure| failure.contains("allocs/request")),
             "{failures:?}"
         );
     }
@@ -4023,7 +4054,7 @@ fn compile_test_harness(
         output_format,
         query_backend,
     )
-        .map_err(|_| "compile failed".to_string())?;
+    .map_err(|_| "compile failed".to_string())?;
     wrela::backend::cranelift::compile_to_executable(&mir_module, &exe_path)
         .map_err(|err| format!("codegen error: {}", err.0))?;
     let compile_ns = compile_start.elapsed().as_nanos();
@@ -4064,7 +4095,10 @@ fn selected_test_fingerprint(tests: &[TestCase]) -> String {
     hasher.finish_hex()
 }
 
-fn harness_source_fingerprint(compile_root: &Path, tests_root: Option<&Path>) -> Result<String, String> {
+fn harness_source_fingerprint(
+    compile_root: &Path,
+    tests_root: Option<&Path>,
+) -> Result<String, String> {
     let mut files = Vec::new();
     collect_harness_source_files(compile_root, &mut files)?;
     if let Some(root) = tests_root {
@@ -4908,7 +4942,9 @@ fn load_function_test_coverage_index(
     Ok(artifact.function_to_tests)
 }
 
-fn build_function_test_coverage_index(summary: Option<&PerfSummary>) -> BTreeMap<String, Vec<String>> {
+fn build_function_test_coverage_index(
+    summary: Option<&PerfSummary>,
+) -> BTreeMap<String, Vec<String>> {
     let mut grouped: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let Some(cases) = summary.and_then(|value| value.cases.as_ref()) else {
         return BTreeMap::new();
@@ -4942,7 +4978,9 @@ fn build_function_test_coverage_index(summary: Option<&PerfSummary>) -> BTreeMap
         .collect()
 }
 
-fn canonicalize_function_coverage(function_coverage: &BTreeMap<String, u64>) -> BTreeMap<String, u64> {
+fn canonicalize_function_coverage(
+    function_coverage: &BTreeMap<String, u64>,
+) -> BTreeMap<String, u64> {
     let mut normalized: BTreeMap<String, u64> = BTreeMap::new();
     for (function_id, hits) in function_coverage {
         let canonical_function_id = normalize_function_coverage_key(function_id);
@@ -6318,11 +6356,8 @@ fn compile_to_mir_with_root(
     if had_errors {
         return Err(EXIT_TYPE);
     }
-    let mir_module = mir::lower::lower_module_with_types_and_backend(
-        &module,
-        &type_info,
-        query_backend,
-    );
+    let mir_module =
+        mir::lower::lower_module_with_types_and_backend(&module, &type_info, query_backend);
     had_errors = false;
     for err in mir::validate::validate_module(&mir_module) {
         let desc = mir_descriptor(err.kind);

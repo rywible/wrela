@@ -1,8 +1,9 @@
 use super::command_handlers::{
     self, BenchmarkManifest, DifferentialPipeline, KpiThresholds, PerfCmpConfig, PerfGateConfig,
     PerfProfile, PerfReport, PresentationBenchmarkComparison, PresentationBenchmarkReport,
-    TestSelection, TestTarget, budget_jobs_timeout, build_benchmark_selection,
-    load_benchmark_manifest, resolve_budget_policy_v1, resolve_test_target,
+    PresentationWgslWorkgroupComparison, TestSelection, TestTarget, budget_jobs_timeout,
+    build_benchmark_selection, load_benchmark_manifest, resolve_budget_policy_v1,
+    resolve_test_target,
 };
 use super::contracts::{EXIT_CODEGEN, EXIT_OK, EXIT_USAGE, OutputFormat};
 use serde::{Deserialize, Serialize};
@@ -17,7 +18,7 @@ use wrela::perf_target::{
     PerfClosureLaneStatus, PerfClosureLaneStatusReport, PerfClosureProfile, PerfClosureReport,
     quality_degradation_step_name,
 };
-use wrela::query_exec::QueryTraceSolverMode;
+use wrela::query_exec::{QueryTraceSolverMode, WGSL_WORKGROUP_SIZE_OVERRIDE_ENV};
 
 pub(super) struct PerfCommandInput {
     pub(super) trace: bool,
@@ -497,26 +498,77 @@ fn run_presentation_benchmark_report(
     scenario: &command_handlers::BenchmarkScenario,
     spec: &command_handlers::BenchmarkPresentationSpec,
 ) -> Result<PresentationBenchmarkReport, String> {
-    let hybrid = run_presentation_benchmark_report_for_mode(
+    let hybrid_candidates = run_presentation_benchmark_reports_for_workgroup_sizes(
         current_exe,
         benchmark_root,
         scenario,
         spec,
         QueryTraceSolverMode::Hybrid,
     )?;
+    let Some(best_hybrid) = hybrid_candidates
+        .iter()
+        .min_by_key(|report| report.frame_time_ns)
+        .cloned()
+    else {
+        return Err(format!(
+            "presentation-debug produced no hybrid workgroup candidates for scenario `{}`",
+            scenario.id
+        ));
+    };
+    let workgroup_comparison =
+        presentation_workgroup_comparison_from_reports(&hybrid_candidates, &best_hybrid);
     let dense_only = run_presentation_benchmark_report_for_mode(
         current_exe,
         benchmark_root,
         scenario,
         spec,
         QueryTraceSolverMode::DenseOnly,
+        Some(best_hybrid.selected_workgroup_size),
     )?;
-    let mut report = presentation_report_from_debug_output(scenario, hybrid);
+    let mut report = best_hybrid;
+    report.wgsl_workgroup_comparison = Some(workgroup_comparison);
     report.ab_comparison = Some(presentation_comparison_from_debug_reports(
         &report,
         &dense_only,
     ));
     Ok(report)
+}
+
+fn run_presentation_benchmark_reports_for_workgroup_sizes(
+    current_exe: &Path,
+    benchmark_root: &Path,
+    scenario: &command_handlers::BenchmarkScenario,
+    spec: &command_handlers::BenchmarkPresentationSpec,
+    query_trace_solver_mode: QueryTraceSolverMode,
+) -> Result<Vec<PresentationBenchmarkReport>, String> {
+    let supported_workgroup_sizes = wrela::query_exec::supported_wgsl_workgroup_sizes()
+        .map_err(|err| format!("failed to enumerate supported WGSL workgroup sizes: {err}"))?;
+    if supported_workgroup_sizes.is_empty() {
+        return Err(format!(
+            "no supported legal WGSL workgroup sizes were available for scenario `{}`",
+            scenario.id
+        ));
+    }
+    let mut reports = Vec::new();
+    for workgroup_size in supported_workgroup_sizes {
+        let dump = run_presentation_benchmark_report_for_mode(
+            current_exe,
+            benchmark_root,
+            scenario,
+            spec,
+            query_trace_solver_mode,
+            Some(workgroup_size),
+        )?;
+        let report = presentation_report_from_debug_output(scenario, dump);
+        if report.selected_workgroup_size != workgroup_size {
+            return Err(format!(
+                "presentation-debug reported workgroup size {} for scenario `{}` while benchmarking override {}",
+                report.selected_workgroup_size, scenario.id, workgroup_size
+            ));
+        }
+        reports.push(report);
+    }
+    Ok(reports)
 }
 
 fn run_presentation_benchmark_report_for_mode(
@@ -525,19 +577,20 @@ fn run_presentation_benchmark_report_for_mode(
     scenario: &command_handlers::BenchmarkScenario,
     spec: &command_handlers::BenchmarkPresentationSpec,
     query_trace_solver_mode: QueryTraceSolverMode,
+    workgroup_size_override: Option<u32>,
 ) -> Result<PresentationDebugCommandOutput, String> {
     let presentation_target = spec
         .entry
         .as_ref()
         .map(|entry| benchmark_root.join(entry))
         .unwrap_or_else(|| benchmark_root.to_path_buf());
-    let mut command = Command::new(current_exe);
-    command
-        .arg("--json")
-        .arg("--query-backend=cpu")
-        .arg("presentation-debug")
-        .arg(presentation_target)
-        .args(presentation_debug_args(spec, query_trace_solver_mode));
+    let mut command = build_presentation_debug_command(
+        current_exe,
+        &presentation_target,
+        spec,
+        query_trace_solver_mode,
+        workgroup_size_override,
+    );
     let timeout = Duration::from_millis(scenario.timeout_ms.unwrap_or(60_000));
     let output = run_command_with_timeout(&mut command, timeout).map_err(|err| {
         format!(
@@ -564,6 +617,28 @@ fn run_presentation_benchmark_report_for_mode(
             )
         })?;
     Ok(dump)
+}
+
+fn build_presentation_debug_command(
+    current_exe: &Path,
+    presentation_target: &Path,
+    spec: &command_handlers::BenchmarkPresentationSpec,
+    query_trace_solver_mode: QueryTraceSolverMode,
+    workgroup_size_override: Option<u32>,
+) -> Command {
+    let mut command = Command::new(current_exe);
+    command
+        .arg("--json")
+        .arg("--query-backend=wgsl")
+        .arg("presentation-debug")
+        .arg(presentation_target)
+        .args(presentation_debug_args(spec, query_trace_solver_mode));
+    if let Some(workgroup_size) = workgroup_size_override {
+        command.env(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV, workgroup_size.to_string());
+    } else {
+        command.env_remove(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV);
+    }
+    command
 }
 
 fn run_command_with_timeout(
@@ -650,6 +725,7 @@ fn presentation_report_from_debug_output(
         domain: dump.domain,
         backend: dump.backend,
         query_trace_solver_mode: dump.query_trace_solver_mode,
+        selected_workgroup_size: dump.frame_cost.selected_workgroup_size,
         frames_executed: dump.frames_executed.max(1),
         frame_time_ns: aggregate.frame_time_ns,
         field_samples: aggregate.field_samples,
@@ -664,6 +740,7 @@ fn presentation_report_from_debug_output(
         performance_gain_sources,
         frame_cost: dump.frame_cost,
         frame_cost_history,
+        wgsl_workgroup_comparison: None,
         ab_comparison: None,
     }
 }
@@ -709,6 +786,46 @@ fn presentation_comparison_from_debug_reports(
             .candidate_count_after_pruning
             as i64
             - dense_only_metrics.candidate_count_after_pruning as i64,
+    }
+}
+
+fn presentation_workgroup_comparison_from_reports(
+    candidate_reports: &[PresentationBenchmarkReport],
+    selected: &PresentationBenchmarkReport,
+) -> PresentationWgslWorkgroupComparison {
+    let selected_frame_time_ns = selected.frame_time_ns;
+    let candidate_workgroup_sizes = candidate_reports
+        .iter()
+        .map(|report| report.selected_workgroup_size)
+        .collect::<Vec<_>>();
+    let candidate_frame_time_ns = candidate_reports
+        .iter()
+        .map(|report| report.frame_time_ns)
+        .collect::<Vec<_>>();
+    let frame_time_ns_delta_vs_selected = candidate_frame_time_ns
+        .iter()
+        .map(|candidate_frame_time_ns| {
+            *candidate_frame_time_ns as i128 - selected_frame_time_ns as i128
+        })
+        .collect::<Vec<_>>();
+    let frame_time_ns_delta_vs_selected_pct = candidate_frame_time_ns
+        .iter()
+        .map(|candidate_frame_time_ns| {
+            if selected_frame_time_ns == 0 {
+                0.0
+            } else {
+                ((*candidate_frame_time_ns as f64 - selected_frame_time_ns as f64)
+                    / selected_frame_time_ns as f64)
+                    * 100.0
+            }
+        })
+        .collect::<Vec<_>>();
+    PresentationWgslWorkgroupComparison {
+        selected_workgroup_size: selected.selected_workgroup_size,
+        candidate_workgroup_sizes,
+        candidate_frame_time_ns,
+        frame_time_ns_delta_vs_selected,
+        frame_time_ns_delta_vs_selected_pct,
     }
 }
 
@@ -1054,6 +1171,30 @@ fn build_frame_closure_status(
         presentation_reports.len(),
         total_ms.len()
     ));
+    let selected_workgroup_sizes = presentation_reports
+        .iter()
+        .map(|report| report.selected_workgroup_size)
+        .collect::<std::collections::BTreeSet<_>>();
+    if !selected_workgroup_sizes.is_empty() {
+        report.notes.push(format!(
+            "wgsl workgroup size selection observed: {}",
+            selected_workgroup_sizes
+                .iter()
+                .map(|size| size.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
+    if let Some(comparison) = presentation_reports
+        .iter()
+        .find_map(|report| report.wgsl_workgroup_comparison.as_ref())
+    {
+        report.notes.push(format!(
+            "wgsl workgroup comparison selected={} candidates={}",
+            comparison.selected_workgroup_size,
+            format_workgroup_comparison(comparison)
+        ));
+    }
 
     if report.primary_visibility_median_ms.is_none() || report.primary_visibility_p95_ms.is_none() {
         violations.push(
@@ -1244,11 +1385,12 @@ fn print_presentation_benchmark_reports(reports: &[PresentationBenchmarkReport])
             effective_presentation_frame_history(&report.frame_cost, &report.frame_cost_history);
         let solver_counters = aggregate_presentation_solver_counters(&effective_history);
         println!(
-            "presentation-scenario {} test={} backend={} query_trace_solver_mode={} frames={} frame_time_ns={} field_samples={} quality={} target_fps={} scale={:.2} scale_history={} reconstructed_output={} bottleneck_pass={} acceleration={} gain_sources={}",
+            "presentation-scenario {} test={} backend={} query_trace_solver_mode={} selected_workgroup_size={} frames={} frame_time_ns={} field_samples={} quality={} target_fps={} scale={:.2} scale_history={} reconstructed_output={} bottleneck_pass={} acceleration={} gain_sources={}",
             report.scenario_id,
             report.test_name,
             report.backend,
             report.query_trace_solver_mode,
+            report.selected_workgroup_size,
             report.frames_executed,
             report.frame_time_ns,
             report.field_samples,
@@ -1266,6 +1408,13 @@ fn print_presentation_benchmark_reports(reports: &[PresentationBenchmarkReport])
             report.active_acceleration_artifacts.join(","),
             report.performance_gain_sources.join(","),
         );
+        if let Some(comparison) = &report.wgsl_workgroup_comparison {
+            println!(
+                "  wgsl workgroup comparison selected={} candidates={}",
+                comparison.selected_workgroup_size,
+                format_workgroup_comparison(comparison),
+            );
+        }
         if let Some(comparison) = &report.ab_comparison {
             println!(
                 "  ab hybrid-vs-dense-only frame_time_ns_delta={} ({:.2}%) average_trace_steps_delta={:.3} field_samples_delta={} candidate_count_before_pruning_delta={} candidate_count_after_pruning_delta={} dense_only_frame_time_ns={} dense_only_average_trace_steps={:.3} dense_only_field_samples={} dense_only_candidate_count_before_pruning={} dense_only_candidate_count_after_pruning={}",
@@ -1317,6 +1466,19 @@ fn print_presentation_benchmark_reports(reports: &[PresentationBenchmarkReport])
             );
         }
     }
+}
+
+fn format_workgroup_comparison(comparison: &PresentationWgslWorkgroupComparison) -> String {
+    comparison
+        .candidate_workgroup_sizes
+        .iter()
+        .zip(&comparison.candidate_frame_time_ns)
+        .zip(&comparison.frame_time_ns_delta_vs_selected_pct)
+        .map(|((workgroup_size, frame_time_ns), delta_pct)| {
+            format!("{}:{}ns({:+.2}%)", workgroup_size, frame_time_ns, delta_pct)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub(super) struct PerfcmpCommandInput {
@@ -3412,6 +3574,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn presentation_debug_command_uses_wgsl_backend_and_shared_workgroup_override() {
+        let spec = command_handlers::BenchmarkPresentationSpec {
+            view: "bench_view".to_string(),
+            region: "bench_region".to_string(),
+            entry: Some("tests/bench_fixture.wr".to_string()),
+            domain: Some("bench_domain".to_string()),
+            width: Some(96),
+            height: Some(54),
+            frames: Some(2),
+            camera_position: [0.0, 1.0, 2.0],
+            camera_forward: [0.0, 0.0, -1.0],
+            camera_up: [0.0, 1.0, 0.0],
+            vertical_fov_degrees: 48.0,
+        };
+        let command = build_presentation_debug_command(
+            Path::new("/tmp/wrela"),
+            Path::new("/tmp/bench_fixture.wr"),
+            &spec,
+            QueryTraceSolverMode::Hybrid,
+            Some(64),
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args.iter().any(|arg| arg == "--query-backend=wgsl"));
+        assert!(args.iter().any(|arg| arg == "presentation-debug"));
+        let envs = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            envs.get(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV)
+                .map(String::as_str),
+            Some("64")
+        );
+    }
+
     fn sample_presentation_frame_cost(
         internal_width: u32,
         internal_height: u32,
@@ -3457,6 +3665,11 @@ mod tests {
             tile_cull_total_tiles: 16,
             tile_cull_active_tiles: 9,
             tile_cull_efficiency: 0.4375,
+            tile_candidate_total_samples: 256,
+            tile_candidate_active_samples: 128,
+            tile_candidate_reduction: 128,
+            packet_scheduling_active: true,
+            selected_workgroup_size: 64,
             surface_resolve_count: 256,
             participant_resolve_count: 128,
             history_reuse_rate: 0.25,
@@ -3565,6 +3778,11 @@ mod tests {
                 tile_cull_total_tiles: 16,
                 tile_cull_active_tiles: 9,
                 tile_cull_efficiency: 0.4375,
+                tile_candidate_total_samples: 256,
+                tile_candidate_active_samples: 128,
+                tile_candidate_reduction: 128,
+                packet_scheduling_active: true,
+                selected_workgroup_size: 64,
                 surface_resolve_count: 256,
                 participant_resolve_count: 128,
                 history_reuse_rate: 0.5,
@@ -3619,11 +3837,17 @@ mod tests {
                     attachment_bytes_written: 8192,
                     notes: vec!["dynamic_resolution".to_string()],
                 }],
-                active_acceleration_artifacts: vec!["dynamic_resolution".to_string()],
+                active_acceleration_artifacts: vec![
+                    "tile_candidate_table".to_string(),
+                    "packet_scheduling".to_string(),
+                ],
                 bottleneck_pass: Some("primary_visibility".to_string()),
                 performance_gain_sources: vec![
-                    "less_semantic_work".to_string(),
-                    "quality_degradation".to_string(),
+                    "support_pruning".to_string(),
+                    "tile_culling".to_string(),
+                    "tile_candidate_table".to_string(),
+                    "packet_scheduling".to_string(),
+                    "quality_degradation_active".to_string(),
                 ],
             },
             frame_cost_history: vec![
@@ -3663,6 +3887,11 @@ mod tests {
                     tile_cull_total_tiles: 16,
                     tile_cull_active_tiles: 9,
                     tile_cull_efficiency: 0.4375,
+                    tile_candidate_total_samples: 256,
+                    tile_candidate_active_samples: 256,
+                    tile_candidate_reduction: 0,
+                    packet_scheduling_active: false,
+                    selected_workgroup_size: 0,
                     surface_resolve_count: 256,
                     participant_resolve_count: 128,
                     history_reuse_rate: 0.0,
@@ -3749,6 +3978,11 @@ mod tests {
                     tile_cull_total_tiles: 16,
                     tile_cull_active_tiles: 9,
                     tile_cull_efficiency: 0.4375,
+                    tile_candidate_total_samples: 256,
+                    tile_candidate_active_samples: 256,
+                    tile_candidate_reduction: 0,
+                    packet_scheduling_active: false,
+                    selected_workgroup_size: 0,
                     surface_resolve_count: 256,
                     participant_resolve_count: 128,
                     history_reuse_rate: 0.25,
@@ -3795,11 +4029,17 @@ mod tests {
                         attachment_bytes_written: 8192,
                         notes: vec!["dynamic_resolution".to_string()],
                     }],
-                    active_acceleration_artifacts: vec!["dynamic_resolution".to_string()],
+                    active_acceleration_artifacts: vec![
+                        "tile_candidate_table".to_string(),
+                        "packet_scheduling".to_string(),
+                    ],
                     bottleneck_pass: Some("primary_visibility".to_string()),
                     performance_gain_sources: vec![
-                        "less_semantic_work".to_string(),
-                        "quality_degradation".to_string(),
+                        "support_pruning".to_string(),
+                        "tile_culling".to_string(),
+                        "tile_candidate_table".to_string(),
+                        "packet_scheduling".to_string(),
+                        "quality_degradation_active".to_string(),
                     ],
                 },
             ],
@@ -3811,6 +4051,7 @@ mod tests {
         assert_eq!(report.frame_time_ns, 3_300_000);
         assert_eq!(report.field_samples, 1024);
         assert_eq!(report.query_trace_solver_mode, "hybrid");
+        assert_eq!(report.selected_workgroup_size, 64);
         assert_eq!(report.quality_tier, "realtime_60");
         assert_eq!(report.internal_resolution_scale, 0.5);
         assert!(report.reconstructed_output);
@@ -3819,6 +4060,7 @@ mod tests {
             report.bottleneck_pass.as_deref(),
             Some("primary_visibility")
         );
+        assert!(report.wgsl_workgroup_comparison.is_none());
         assert_eq!(report.frame_cost.passes.len(), 1);
         assert_eq!(report.frame_cost.passes[0].pass_kind, "primary_visibility");
     }
@@ -3879,5 +4121,51 @@ mod tests {
         assert!((comparison.average_trace_steps_delta_vs_dense_only + 1.0).abs() < f32::EPSILON);
         assert_eq!(comparison.dense_only_frame_time_ns, 4_000_000);
         assert_eq!(comparison.frame_time_ns_delta_vs_dense_only, -1_000_000);
+    }
+
+    #[test]
+    fn presentation_workgroup_comparison_tracks_candidate_deltas() {
+        let make_report = |workgroup_size: u32, frame_time_ns: u128| PresentationBenchmarkReport {
+            scenario_id: "scenario".to_string(),
+            test_name: "tests/fixture".to_string(),
+            view: "bench_view".to_string(),
+            region: "bench_region".to_string(),
+            domain: "bench_domain".to_string(),
+            backend: "wgsl".to_string(),
+            query_trace_solver_mode: "hybrid".to_string(),
+            selected_workgroup_size: workgroup_size,
+            frames_executed: 1,
+            frame_time_ns,
+            field_samples: 512,
+            quality_tier: "realtime_120".to_string(),
+            target_fps: 120,
+            internal_resolution_scale: 1.0,
+            reconstructed_output: false,
+            quality_history: vec!["realtime_120".to_string()],
+            internal_resolution_history: vec![1.0],
+            bottleneck_pass: Some("primary_visibility".to_string()),
+            active_acceleration_artifacts: vec!["packet_scheduling".to_string()],
+            performance_gain_sources: vec!["packet_scheduling".to_string()],
+            frame_cost: sample_presentation_frame_cost(64, 64, 1.0, 512, 4.0, 10, 8, 1_000),
+            frame_cost_history: vec![],
+            wgsl_workgroup_comparison: None,
+            ab_comparison: None,
+        };
+        let reports = vec![
+            make_report(32, 7_500_000),
+            make_report(64, 6_000_000),
+            make_report(128, 6_500_000),
+        ];
+        let comparison = presentation_workgroup_comparison_from_reports(&reports, &reports[1]);
+        assert_eq!(comparison.selected_workgroup_size, 64);
+        assert_eq!(comparison.candidate_workgroup_sizes, vec![32, 64, 128]);
+        assert_eq!(
+            comparison.frame_time_ns_delta_vs_selected,
+            vec![1_500_000, 0, 500_000]
+        );
+        assert_eq!(
+            format_workgroup_comparison(&comparison),
+            "32:7500000ns(+25.00%) 64:6000000ns(+0.00%) 128:6500000ns(+8.33%)"
+        );
     }
 }
