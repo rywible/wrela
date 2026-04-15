@@ -36,6 +36,6 @@ When there is tension between short-term feature delivery and preserving the sem
 
 ## Completion Gate
 
-After completing acceptance criteria for a given project, that project is not complete until you launch a new subagent to review your work for correctness, architecture, maintainability, and performance. It should also verify that the project has been fully completed based on the tasks in the plan and expected outcomes. Take that feedback into account and fix whatever comes up from this independent review. This should always be your last task.
+After completing acceptance criteria for a given project, that project is not complete until you launch a new subagent to review your work for correctness, architecture, maintainability, and performance. It should also verify that the project has been fully completed based on the tasks in the plan and expected outcomes. Take that feedback into account and fix whatever comes up from this independent review. This should always be your last task. When you launch the subagent, in your message, tell it that it is a review subagent. Provide the subagent with any test findings that you already ran.
 
-If you are asked to review code, that means YOU ARE THE SUBAGENT. Do not launch your own subagent. Just do the code review and return with your findings.
+If you are reading this and you have been told you are a review subagent, YOU ARE THE SUBAGENT. Do not launch your own subagent. Just do the code review and return with your findings. Don't run any tests, just do a code review.
