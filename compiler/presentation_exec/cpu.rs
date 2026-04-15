@@ -1,5 +1,8 @@
 use crate::kernel::{KernelValue, lower_batch_query_plan};
 use crate::presentation_contract::RealtimeRadianceMode;
+use crate::presentation_exec::clipmap::{
+    build_view_distance_clipmap_artifact, clipmap_pass_note, clipmap_pass_runtime,
+};
 use crate::presentation_exec::resources::AttachmentResourceSet;
 use crate::presentation_exec::temporal::{
     motion_resolve, temporal_resolve_cpu, update_query_trace_continuation,
@@ -70,6 +73,7 @@ pub(super) fn execute_plan(
     let mut continuation_counts = crate::presentation_exec::temporal::ContinuationCounts::default();
     let mut tile_cull = TileCullingStats::default();
     let mut tile_candidate = crate::presentation_exec::TileCandidateStats::default();
+    let mut view_distance_clipmap = None;
     let mut candidate_table_active = false;
     let mut packet_scheduling_active = false;
     let mut surface_resolve_count = 0;
@@ -361,6 +365,24 @@ pub(super) fn execute_plan(
                     };
                 tile_candidate = tile_candidate_stats_result;
                 packet_scheduling_active = queue_active;
+                view_distance_clipmap = Some(build_view_distance_clipmap_artifact(
+                    effective_plan.name.as_str(),
+                    current_snapshot,
+                    &crate::presentation_exec::frame_state_temporal_components(&input.frame_state)?,
+                    &quality,
+                    input.execution_policy,
+                    cull_mask.as_ref(),
+                    input
+                        .history
+                        .as_ref()
+                        .and_then(|history| history.clipmap.as_ref()),
+                ));
+                if let Some(clipmap) = view_distance_clipmap.as_ref() {
+                    if clipmap.usage_count > 0 || !clipmap.fallback_reasons.is_empty() {
+                        runtime.notes.push(clipmap_pass_note(clipmap));
+                    }
+                    pass_stats.push(clipmap_pass_runtime("view_distance_clipmap", clipmap));
+                }
                 runtime.notes.push(format!(
                     "tile_candidate_table active_samples={}/{} packet_count={} packet_size={}",
                     tile_candidate.active_samples,
@@ -625,6 +647,7 @@ pub(super) fn execute_plan(
         &input.frame_state,
         &attachments,
         current_snapshot,
+        view_distance_clipmap.as_ref(),
     )?;
     let frame_cost = build_frame_cost_report(
         &input.frame_domain,
@@ -644,9 +667,15 @@ pub(super) fn execute_plan(
         &attachments,
         pass_stats,
         if candidate_table_active {
-            vec!["tile_candidate_table".to_string()]
+            let mut artifacts = vec!["tile_candidate_table".to_string()];
+            artifacts.push("view_distance_clipmap".to_string());
+            artifacts
         } else {
-            Vec::new()
+            if view_distance_clipmap.is_some() {
+                vec!["view_distance_clipmap".to_string()]
+            } else {
+                Vec::new()
+            }
         },
     );
     Ok(PresentationExecutionResult {

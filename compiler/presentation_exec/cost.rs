@@ -83,6 +83,7 @@ pub struct PresentationFrameCostReport {
     pub cache_brick_visits: u32,
     pub cache_brick_hits: u32,
     pub cache_brick_misses: u32,
+    pub cache_interval_advances: u32,
     pub accepted_relaxed_steps: u32,
     pub rejected_relaxed_steps: u32,
     pub solver_relaxed_attempts: u32,
@@ -268,7 +269,7 @@ pub fn render_frame_cost_report(report: &PresentationFrameCostReport) -> String 
         ));
     }
     out.push_str(&format!(
-        "acceleration_node_visits={} union_cluster_visits={} ray_support_interval_rejections={} ray_support_entry_jumps={} repeat_cell_skips={} cache_brick_visits={} cache_brick_hits={} cache_brick_misses={} accepted_relaxed_steps={} rejected_relaxed_steps={} analytic_transformed_hits={} interval_subdivisions={} interval_proof_successes={} observer_continuation_seed_hits={}\n",
+        "acceleration_node_visits={} union_cluster_visits={} ray_support_interval_rejections={} ray_support_entry_jumps={} repeat_cell_skips={} cache_brick_visits={} cache_brick_hits={} cache_brick_misses={} cache_interval_advances={} accepted_relaxed_steps={} rejected_relaxed_steps={} analytic_transformed_hits={} interval_subdivisions={} interval_proof_successes={} observer_continuation_seed_hits={}\n",
         report.acceleration_node_visits,
         report.union_cluster_visits,
         report.ray_support_interval_rejections,
@@ -277,6 +278,7 @@ pub fn render_frame_cost_report(report: &PresentationFrameCostReport) -> String 
         report.cache_brick_visits,
         report.cache_brick_hits,
         report.cache_brick_misses,
+        report.cache_interval_advances,
         report.accepted_relaxed_steps,
         report.rejected_relaxed_steps,
         report.analytic_transformed_hits,

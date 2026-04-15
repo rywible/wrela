@@ -1,4 +1,6 @@
 pub mod build;
+pub mod cache;
+pub mod clipmap;
 pub mod report;
 
 use crate::artifact_contract::{

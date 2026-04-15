@@ -1,3 +1,4 @@
+use super::cache::{SharedBrickCacheCatalog, build_shared_brick_cache_catalog};
 use super::{
     AccelerationCacheDescriptor, AccelerationCandidateClass, AccelerationChildSpan,
     AccelerationForest, AccelerationForestContract, AccelerationForestContractKind,
@@ -12,10 +13,11 @@ use crate::scene_ir::SupportClass;
 use smol_str::SmolStr;
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SharedAccelerationCatalog {
     pub world_forests: BTreeMap<(SmolStr, i32), AccelerationForest>,
     pub union_forests: BTreeMap<SmolStr, AccelerationForest>,
+    pub cache_catalog: SharedBrickCacheCatalog,
 }
 
 impl SharedAccelerationCatalog {
@@ -33,6 +35,10 @@ impl SharedAccelerationCatalog {
             .cloned()
             .chain(self.union_forests.values().cloned())
             .collect()
+    }
+
+    pub fn cache_catalog(&self) -> &SharedBrickCacheCatalog {
+        &self.cache_catalog
     }
 }
 
@@ -245,7 +251,13 @@ pub fn build_shared_acceleration_forests(ctx: &QueryExecContext) -> SharedAccele
         }
     }
 
+    catalog.cache_catalog = build_shared_brick_cache_catalog(ctx);
+
     catalog
+}
+
+pub fn build_shared_cache_catalog(ctx: &QueryExecContext) -> SharedBrickCacheCatalog {
+    build_shared_brick_cache_catalog(ctx)
 }
 
 fn build_world_forest(

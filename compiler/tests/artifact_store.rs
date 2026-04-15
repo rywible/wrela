@@ -74,6 +74,68 @@ fn stored_artifact(
     }
 }
 
+fn distance_brick_cache_contract(
+    version: u32,
+    support_signature: &str,
+) -> SemanticArtifactContract {
+    let evidence = SemanticEvidenceSummary::contract_bound();
+    SemanticArtifactContract {
+        id: SmolStr::new("distance_brick_cache::cache_shape::cache_shape"),
+        kind: SemanticArtifactKind::Query,
+        logical_schema: ArtifactLogicalSchema {
+            namespace: SmolStr::new("acceleration_cache"),
+            name: SmolStr::new("distance_brick_cache"),
+            fields: vec![
+                ArtifactLogicalField::new("schema_version", version.to_string()),
+                ArtifactLogicalField::new("snapshot_kind", "shape"),
+                ArtifactLogicalField::new("snapshot_root", "cache_shape"),
+                ArtifactLogicalField::new("semantic_root", "cache_shape"),
+                ArtifactLogicalField::new("support_signature", support_signature),
+                ArtifactLogicalField::new("support_class", "Bounded"),
+                ArtifactLogicalField::new("opaque_boundary", "false"),
+                ArtifactLogicalField::new("can_coarse_support_pruning", "true"),
+                ArtifactLogicalField::new("rebuild_mode", "frozen_snapshot"),
+                ArtifactLogicalField::new("brick_dimensions", "8x8x8"),
+                ArtifactLogicalField::new("voxel_size_microunits", "1000"),
+                ArtifactLogicalField::new("band_width_microunits", "2000"),
+            ],
+        },
+        compatibility: ArtifactCompatibilityRelation {
+            snapshot: ArtifactSnapshotRelation::ExactSnapshot,
+            transition: ArtifactTransitionRelation {
+                compatibility: None,
+                requires_previous_snapshot: false,
+            },
+            policy: ArtifactPolicyCompatibility {
+                mode: ArtifactPolicyDigestMode::CompatibleRange,
+            },
+            evidence: ArtifactEvidenceCompatibility {
+                origin: evidence.origin,
+                scope: evidence.scope,
+            },
+        },
+        validity: ArtifactValidityRule::all(vec![
+            ArtifactValidityRule::predicate(
+                ArtifactValidityPredicate::CurrentSnapshotMatchesStored,
+            ),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::PolicyDigestMatches),
+            ArtifactValidityRule::predicate(ArtifactValidityPredicate::EvidenceSummaryMatches),
+        ]),
+        producer: SmolStr::new("cache_shape"),
+        consumer: SmolStr::new("cache_shape"),
+        deterministic: true,
+        version,
+        acceleration: Some(wrela::artifact_contract::AccelerationArtifactMetadata {
+            kind: wrela::artifact_contract::AccelerationArtifactKind::DistanceBrickCache,
+            observer: wrela::artifact_contract::ArtifactObserver::Query,
+            residency: wrela::artifact_contract::ArtifactResidency::SharedSnapshot,
+            usage_site: SmolStr::new("cache_shape"),
+        }),
+        transition: None,
+        evidence_summary: evidence,
+    }
+}
+
 #[test]
 fn query_artifact_requests_can_supply_their_exact_reuse_family() {
     let artifact =
@@ -615,6 +677,48 @@ fn store_rejects_artifacts_when_contract_version_changes_even_if_ids_match() {
             .iter()
             .any(|reason| reason == "artifact-version-mismatch"),
         "expected version mismatch rejection: {lookup:?}"
+    );
+}
+
+#[test]
+fn cache_artifacts_reject_version_changes_and_remain_schema_bound() {
+    let cache_contract =
+        distance_brick_cache_contract(1, "support=Bounded|opaque=false|coarse=true");
+    let mut requested_contract = cache_contract.clone();
+    requested_contract.version = cache_contract.version + 1;
+    let evidence = requested_contract.evidence_summary.clone();
+
+    let mut store = ArtifactStore::default();
+    store.insert(stored_artifact(
+        cache_contract,
+        "cache_shape",
+        1,
+        Some(13),
+        evidence.clone(),
+    ));
+
+    let current_snapshot =
+        stable_region_snapshot_handle(&SmolStr::new("cache_shape")).with_epoch(SnapshotEpoch(1));
+    let (found, lookup) = store.lookup(&ArtifactLookupRequest {
+        contract: requested_contract,
+        reuse_key: None,
+        current_snapshot,
+        previous_snapshot_epoch: None,
+        change_class: Some(ChangeClass::Presentation),
+        policy_digest: Some(13),
+        presentation_frame: None,
+        layout_signature: None,
+        history_compatibility_hash: None,
+        evidence_summary: Some(evidence),
+    });
+
+    assert!(found.is_none());
+    assert!(
+        lookup
+            .compatibility_rejections
+            .iter()
+            .any(|reason| reason == "artifact-version-mismatch"),
+        "expected cache version mismatch rejection: {lookup:?}"
     );
 }
 

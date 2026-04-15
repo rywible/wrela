@@ -204,6 +204,13 @@ pub struct QueryExecutionObservability {
     pub cache_brick_visits: u32,
     pub cache_brick_hits: u32,
     pub cache_brick_misses: u32,
+    pub cache_interval_advances: u32,
+    pub cache_resident_shared_snapshot_artifacts: u32,
+    pub cache_resident_observer_local_artifacts: u32,
+    pub cache_upload_attempts: u32,
+    pub cache_upload_rejections: u32,
+    pub cache_budget_rejections: u32,
+    pub cache_dense_fallback_rays: u32,
     pub accepted_relaxed_steps: u32,
     pub rejected_relaxed_steps: u32,
     pub solver_relaxed_attempts: u32,
@@ -332,6 +339,27 @@ impl QueryExecutionObservability {
         self.cache_brick_misses = self
             .cache_brick_misses
             .saturating_add(other.cache_brick_misses);
+        self.cache_interval_advances = self
+            .cache_interval_advances
+            .saturating_add(other.cache_interval_advances);
+        self.cache_resident_shared_snapshot_artifacts = self
+            .cache_resident_shared_snapshot_artifacts
+            .saturating_add(other.cache_resident_shared_snapshot_artifacts);
+        self.cache_resident_observer_local_artifacts = self
+            .cache_resident_observer_local_artifacts
+            .saturating_add(other.cache_resident_observer_local_artifacts);
+        self.cache_upload_attempts = self
+            .cache_upload_attempts
+            .saturating_add(other.cache_upload_attempts);
+        self.cache_upload_rejections = self
+            .cache_upload_rejections
+            .saturating_add(other.cache_upload_rejections);
+        self.cache_budget_rejections = self
+            .cache_budget_rejections
+            .saturating_add(other.cache_budget_rejections);
+        self.cache_dense_fallback_rays = self
+            .cache_dense_fallback_rays
+            .saturating_add(other.cache_dense_fallback_rays);
         self.accepted_relaxed_steps = self
             .accepted_relaxed_steps
             .saturating_add(other.accepted_relaxed_steps);

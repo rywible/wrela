@@ -1493,8 +1493,20 @@ fn query_exec_traces_report_observability_counters() {
     assert!(cpu_trace.observability.artifact_loads > 0);
     assert!(cpu_trace.observability.acceleration_node_visits > 0);
     assert!(cpu_trace.observability.shape_leaf_visits > 0);
-    assert!(cpu_trace.observability.cache_brick_visits > 0);
-    assert!(cpu_trace.observability.cache_brick_hits > 0);
+    assert_eq!(cpu_trace.observability.cache_brick_visits, 0);
+    assert_eq!(cpu_trace.observability.cache_brick_hits, 0);
+    assert_eq!(
+        cpu_trace.observability.cache_upload_attempts,
+        cpu_trace
+            .observability
+            .cache_resident_shared_snapshot_artifacts
+    );
+    assert_eq!(
+        cpu_trace.observability.cache_upload_rejections,
+        cpu_trace
+            .observability
+            .cache_resident_observer_local_artifacts
+    );
     assert_eq!(cpu_trace.observability.accepted_relaxed_steps, 0);
     assert!(
         cpu_trace
@@ -1529,6 +1541,10 @@ fn query_exec_traces_report_observability_counters() {
     assert!(rendered.contains("shape_leaf_visits="));
     assert!(rendered.contains("union_cluster_visits="));
     assert!(rendered.contains("cache_brick_visits="));
+    assert_eq!(cpu_trace.observability.cache_interval_advances, 0);
+    assert!(rendered.contains("cache_interval_advances="));
+    assert!(rendered.contains("cache_resident_shared_snapshot_artifacts="));
+    assert!(rendered.contains("cache_upload_attempts="));
     assert!(rendered.contains("accepted_relaxed_steps="));
     assert!(rendered.contains("observer_continuation_seed_hits="));
 
@@ -1578,6 +1594,13 @@ fn query_exec_traces_report_observability_counters() {
             .iter()
             .any(|cause| { cause.kind == SemanticCostCauseKind::SupportTopology })
     );
+    assert!(
+        vgpu_world_trace
+            .cost_report
+            .causes
+            .iter()
+            .any(|cause| { cause.kind == SemanticCostCauseKind::CacheTraversal })
+    );
 
     let (_wgsl_world_hit, wgsl_world_trace) = execute_world_query_with_trace_on(
         &ctx,
@@ -1595,6 +1618,20 @@ fn query_exec_traces_report_observability_counters() {
     assert!(wgsl_world_trace.observability.trace_steps > 0);
     assert!(wgsl_world_trace.observability.artifact_loads > 0);
     assert!(wgsl_world_trace.observability.solver_plan_id.is_some());
+    assert_eq!(
+        wgsl_world_trace.observability.cache_upload_attempts,
+        wgsl_world_trace
+            .observability
+            .cache_resident_shared_snapshot_artifacts
+    );
+    assert_eq!(
+        wgsl_world_trace.observability.cache_upload_rejections,
+        wgsl_world_trace
+            .observability
+            .cache_resident_observer_local_artifacts
+    );
+    assert!(wgsl_world_trace.observability.cache_brick_visits > 0);
+    assert!(wgsl_world_trace.observability.cache_brick_hits > 0);
     assert!(
         wgsl_world_trace
             .observability
@@ -1629,6 +1666,10 @@ fn query_exec_traces_report_observability_counters() {
     assert!(
         render_semantic_cost_report(&wgsl_world_trace.cost_report)
             .contains("solver_generated_dense_fallback_rays=1")
+    );
+    assert!(
+        render_semantic_cost_report(&wgsl_world_trace.cost_report)
+            .contains("cache_shared_snapshot=")
     );
     assert!(
         render_semantic_cost_report(&wgsl_world_trace.cost_report)
@@ -1710,6 +1751,304 @@ fn query_exec_traces_report_observability_counters() {
         wgsl_batch_trace.cost_report.fidelity,
         CostFidelity::StructuralApproximation
     );
+}
+
+fn hybrid_cache_regression_source() -> &'static str {
+    r#"
+field exact distance front_flank_field(p: Vec3) -> F32 {
+    translate = vec3(2.25, 0.0, 0.0) {
+        sphere(radius = 0.65)
+    }
+}
+
+field exact distance deep_center_field(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.0, -4.5) {
+        sphere(radius = 0.45)
+    }
+}
+
+material cache_shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.3, 0.35, 0.4),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape front_flank_shape {
+    field = front_flank_field
+    material = cache_shade
+    payload = Payload()
+}
+
+shape deep_center_shape {
+    field = deep_center_field
+    material = cache_shade
+    payload = Payload()
+}
+
+shape cache_world_shape {
+    union {
+        use front_flank_shape
+        use deep_center_shape
+    }
+}
+
+region cache_world_region() {
+    place scene = cache_world_shape
+}
+
+domain cache_world_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = false
+    media = false
+    max_distance = 8.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 192
+}
+"#
+}
+
+#[test]
+fn query_exec_cpu_hybrid_shape_cache_advances_far_field_and_reduces_work() {
+    let source = hybrid_cache_regression_source();
+    let (_, _, mut ctx_with_cache) = typed_query_module(source);
+    let (_, _, mut ctx_without_cache) = typed_query_module(source);
+    ctx_with_cache
+        .shared_acceleration
+        .cache_catalog
+        .world_support
+        .clear();
+    ctx_with_cache
+        .shared_acceleration
+        .cache_catalog
+        .world_distance
+        .clear();
+    ctx_without_cache
+        .shared_acceleration
+        .cache_catalog
+        .shape_support
+        .clear();
+    ctx_without_cache
+        .shared_acceleration
+        .cache_catalog
+        .shape_distance
+        .clear();
+    ctx_without_cache
+        .shared_acceleration
+        .cache_catalog
+        .world_support
+        .clear();
+    ctx_without_cache
+        .shared_acceleration
+        .cache_catalog
+        .world_distance
+        .clear();
+    let plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+    let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("cache_world_region"));
+    let domain = scene_domain_with_limits(
+        region_scene_id,
+        1,
+        false,
+        false,
+        false,
+        8.0,
+        0.05,
+        0.001,
+        192,
+    );
+    let capture = KernelValue::Capture(SmolStr::new("cache_world_region"));
+    let mut cached_field_samples = 0u32;
+    let mut uncached_field_samples = 0u32;
+    let mut cached_steps = 0u32;
+    let mut uncached_steps = 0u32;
+    let mut cached_cache_hits = 0u32;
+    let mut cached_interval_advances = 0u32;
+
+    for y in 0..6 {
+        for x in 0..6 {
+            let px = x as f32 * 0.12 - 0.30;
+            let py = y as f32 * 0.12 - 0.30;
+            let ray = ray_query_with_limits([px, py, 0.0], [0.0, 0.0, -1.0], 8.0, 0.05, 0.001, 192);
+
+            let (cached_hit, cached_trace) = execute_world_query_with_trace_on(
+                &ctx_with_cache,
+                DispatchBackend::Cpu,
+                &plan,
+                &[capture.clone(), domain.clone(), ray.clone()],
+            )
+            .expect("cpu cached trace");
+            let (uncached_hit, uncached_trace) = execute_world_query_with_trace_on(
+                &ctx_without_cache,
+                DispatchBackend::Cpu,
+                &plan,
+                &[capture.clone(), domain.clone(), ray],
+            )
+            .expect("cpu uncached trace");
+
+            let cached_hit_ref = expect_struct(&cached_hit, "Hit3");
+            let uncached_hit_ref = expect_struct(&uncached_hit, "Hit3");
+            let cached_did_hit = expect_bool(field(cached_hit_ref, "hit"));
+            let uncached_did_hit = expect_bool(field(uncached_hit_ref, "hit"));
+            assert_eq!(cached_did_hit, uncached_did_hit);
+            if cached_did_hit {
+                assert!(
+                    (expect_f32(field(cached_hit_ref, "distance"))
+                        - expect_f32(field(uncached_hit_ref, "distance")))
+                    .abs()
+                        < 0.05
+                );
+                assert_eq!(
+                    expect_u32(field(cached_hit_ref, "feature_id")),
+                    expect_u32(field(uncached_hit_ref, "feature_id"))
+                );
+                assert_eq!(
+                    expect_u32(field(cached_hit_ref, "instance_id")),
+                    expect_u32(field(uncached_hit_ref, "instance_id"))
+                );
+                assert_eq!(
+                    expect_u32(field(cached_hit_ref, "repeat_id")),
+                    expect_u32(field(uncached_hit_ref, "repeat_id"))
+                );
+            }
+            cached_field_samples += cached_trace.observability.field_samples;
+            uncached_field_samples += uncached_trace.observability.field_samples;
+            cached_steps += cached_trace.observability.trace_steps;
+            uncached_steps += uncached_trace.observability.trace_steps;
+            cached_cache_hits += cached_trace.observability.cache_brick_hits;
+            cached_interval_advances += cached_trace.observability.cache_interval_advances;
+            assert_eq!(uncached_trace.observability.cache_interval_advances, 0);
+        }
+    }
+
+    assert!(cached_cache_hits > 0);
+    assert!(cached_interval_advances > 0);
+    assert!(
+        cached_field_samples < uncached_field_samples,
+        "cached_field_samples={} uncached_field_samples={}",
+        cached_field_samples,
+        uncached_field_samples
+    );
+    assert!(
+        cached_steps < uncached_steps,
+        "cached_steps={} uncached_steps={}",
+        cached_steps,
+        uncached_steps
+    );
+}
+
+#[test]
+fn query_exec_cpu_hybrid_world_cache_advances_far_field_without_changing_hits() {
+    let source = hybrid_cache_regression_source();
+    let (_, _, mut ctx_with_cache) = typed_query_module(source);
+    let (_, _, mut ctx_without_cache) = typed_query_module(source);
+    ctx_with_cache
+        .shared_acceleration
+        .cache_catalog
+        .shape_support
+        .clear();
+    ctx_with_cache
+        .shared_acceleration
+        .cache_catalog
+        .shape_distance
+        .clear();
+    ctx_without_cache
+        .shared_acceleration
+        .cache_catalog
+        .shape_support
+        .clear();
+    ctx_without_cache
+        .shared_acceleration
+        .cache_catalog
+        .shape_distance
+        .clear();
+    ctx_without_cache
+        .shared_acceleration
+        .cache_catalog
+        .world_support
+        .clear();
+    ctx_without_cache
+        .shared_acceleration
+        .cache_catalog
+        .world_distance
+        .clear();
+    let plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+    let region_scene_id = stable_region_scene_capture_id(&SmolStr::new("cache_world_region"));
+    let domain = scene_domain_with_limits(
+        region_scene_id,
+        1,
+        false,
+        false,
+        false,
+        8.0,
+        0.05,
+        0.001,
+        192,
+    );
+    let capture = KernelValue::Capture(SmolStr::new("cache_world_region"));
+    let mut cached_cache_hits = 0u32;
+    let mut cached_interval_advances = 0u32;
+
+    for y in 0..6 {
+        for x in 0..6 {
+            let px = x as f32 * 0.12 - 0.30;
+            let py = y as f32 * 0.12 - 0.30;
+            let ray = ray_query_with_limits([px, py, 0.0], [0.0, 0.0, -1.0], 8.0, 0.05, 0.001, 192);
+
+            let (cached_hit, cached_trace) = execute_world_query_with_trace_on(
+                &ctx_with_cache,
+                DispatchBackend::Cpu,
+                &plan,
+                &[capture.clone(), domain.clone(), ray.clone()],
+            )
+            .expect("cpu cached trace");
+            let (uncached_hit, uncached_trace) = execute_world_query_with_trace_on(
+                &ctx_without_cache,
+                DispatchBackend::Cpu,
+                &plan,
+                &[capture.clone(), domain.clone(), ray],
+            )
+            .expect("cpu uncached trace");
+
+            let cached_hit_ref = expect_struct(&cached_hit, "Hit3");
+            let uncached_hit_ref = expect_struct(&uncached_hit, "Hit3");
+            let cached_did_hit = expect_bool(field(cached_hit_ref, "hit"));
+            let uncached_did_hit = expect_bool(field(uncached_hit_ref, "hit"));
+            assert_eq!(cached_did_hit, uncached_did_hit);
+            if cached_did_hit {
+                assert!(
+                    (expect_f32(field(cached_hit_ref, "distance"))
+                        - expect_f32(field(uncached_hit_ref, "distance")))
+                    .abs()
+                        < 0.05
+                );
+                assert_eq!(
+                    expect_u32(field(cached_hit_ref, "feature_id")),
+                    expect_u32(field(uncached_hit_ref, "feature_id"))
+                );
+                assert_eq!(
+                    expect_u32(field(cached_hit_ref, "instance_id")),
+                    expect_u32(field(uncached_hit_ref, "instance_id"))
+                );
+                assert_eq!(
+                    expect_u32(field(cached_hit_ref, "repeat_id")),
+                    expect_u32(field(uncached_hit_ref, "repeat_id"))
+                );
+            }
+            cached_cache_hits += cached_trace.observability.cache_brick_hits;
+            cached_interval_advances += cached_trace.observability.cache_interval_advances;
+            assert_eq!(uncached_trace.observability.cache_interval_advances, 0);
+        }
+    }
+
+    assert!(cached_cache_hits > 0);
+    assert!(cached_interval_advances > 0);
 }
 
 #[test]
@@ -6080,6 +6419,54 @@ fn query_exec_wgsl_world_trace_dense_fallbacks_when_accel_stack_overflows() {
         expect_u32(field(wgsl_payload, "entity_id")),
         10_000 + target_index as u32
     );
+    assert!(
+        wgsl_trace
+            .observability
+            .solver_generated_dense_fallback_rays
+            > 0
+    );
+    assert!(wgsl_trace.observability.cache_dense_fallback_rays > 0);
+}
+
+fn empty_world_fixture_source() -> &'static str {
+    r#"
+region empty_region() {
+}
+
+domain empty_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = false
+    media = false
+    max_distance = 6.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+"#
+}
+
+#[test]
+fn query_exec_wgsl_world_trace_records_budget_rejection_on_empty_world() {
+    let source = empty_world_fixture_source();
+    let (_, _, ctx) = typed_query_module(source);
+    let region_name = SmolStr::new("empty_region");
+    let region_scene_id = stable_region_scene_capture_id(&region_name);
+    let args = [
+        KernelValue::Capture(region_name.clone()),
+        scene_domain(region_scene_id, 1, false, false, false),
+        ray_query_with_limits([0.0, 0.0, 3.0], [0.0, 0.0, -1.0], 6.0, 0.05, 0.001, 96),
+    ];
+    let plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+
+    let (wgsl_hit, wgsl_trace) =
+        execute_world_query_with_trace_on(&ctx, DispatchBackend::Wgsl, &plan, &args)
+            .expect("wgsl empty world trace");
+
+    let hit = expect_struct(&wgsl_hit, "Hit3");
+    assert!(!expect_bool(field(hit, "hit")));
+    assert!(wgsl_trace.observability.cache_budget_rejections > 0);
+    assert!(wgsl_trace.observability.cache_dense_fallback_rays > 0);
     assert!(
         wgsl_trace
             .observability

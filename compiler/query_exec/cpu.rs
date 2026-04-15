@@ -1,3 +1,4 @@
+use crate::acceleration::cache::{CacheDisableReason, SupportBrickCache};
 use crate::acceleration::{AccelerationForest, AccelerationLeafPayload, BoundDescriptorKind};
 use crate::execution_policy::QueryExecutionPolicy;
 use crate::hir;
@@ -66,6 +67,41 @@ fn snapshot_capture_kind(kind: crate::query_plan::CaptureKind) -> SnapshotCaptur
         crate::query_plan::CaptureKind::Shape => SnapshotCaptureKind::Shape,
         crate::query_plan::CaptureKind::Region => SnapshotCaptureKind::Region,
     }
+}
+
+fn ready_shared_cache_artifact_count(ctx: &QueryExecContext) -> u32 {
+    let catalog = ctx.shared_acceleration.cache_catalog();
+    let ready_shape_support = catalog
+        .shape_support
+        .values()
+        .filter(|cache| cache.is_ready())
+        .count();
+    let ready_shape_distance = catalog
+        .shape_distance
+        .values()
+        .filter(|cache| cache.is_ready())
+        .count();
+    let ready_world_support = catalog
+        .world_support
+        .values()
+        .filter(|cache| cache.is_ready())
+        .count();
+    let ready_world_distance = catalog
+        .world_distance
+        .values()
+        .filter(|cache| cache.is_ready())
+        .count();
+    (ready_shape_support + ready_shape_distance + ready_world_support + ready_world_distance) as u32
+}
+
+fn cache_disable_reason_is_budget_pressure(reason: CacheDisableReason) -> bool {
+    matches!(
+        reason,
+        CacheDisableReason::MemoryBudgetExceeded
+            | CacheDisableReason::BuildBudgetExhausted
+            | CacheDisableReason::UploadBudgetExhausted
+            | CacheDisableReason::InsufficientNarrowBandCoverage
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -807,6 +843,19 @@ impl<'a> DirectQueryOps<'a> {
             world_acceleration_cache: Rc::new(RefCell::new(HashMap::new())),
             shape_union_cache: Rc::new(RefCell::new(HashMap::new())),
         }
+        .with_seeded_cache_diagnostics()
+    }
+
+    fn with_seeded_cache_diagnostics(self) -> Self {
+        let shared_snapshot_artifacts = ready_shared_cache_artifact_count(self.ctx);
+        let observer_local_artifacts = 0;
+        self.update_observability(|observability| {
+            observability.cache_resident_shared_snapshot_artifacts = shared_snapshot_artifacts;
+            observability.cache_resident_observer_local_artifacts = observer_local_artifacts;
+            observability.cache_upload_attempts = shared_snapshot_artifacts;
+            observability.cache_upload_rejections = observer_local_artifacts;
+        });
+        self
     }
 
     pub(crate) fn snapshot_observability(&self) -> QueryExecutionObservability {
@@ -1039,6 +1088,28 @@ impl<'a> DirectQueryOps<'a> {
 
     pub(crate) fn note_cache_brick_miss(&self) {
         self.update_observability(|observability| observability.cache_brick_misses += 1);
+    }
+
+    pub(crate) fn note_cache_interval_advance(&self) {
+        self.update_observability(|observability| observability.cache_interval_advances += 1);
+    }
+
+    pub(crate) fn note_cache_budget_rejection(&self) {
+        self.update_observability(|observability| observability.cache_budget_rejections += 1);
+    }
+
+    pub(crate) fn note_cache_dense_fallback(&self) {
+        self.update_observability(|observability| observability.cache_dense_fallback_rays += 1);
+    }
+
+    fn note_cache_disable_reasons(&self, reasons: &[CacheDisableReason]) {
+        if reasons
+            .iter()
+            .copied()
+            .any(cache_disable_reason_is_budget_pressure)
+        {
+            self.note_cache_budget_rejection();
+        }
     }
 
     pub(crate) fn note_accepted_relaxed_step(&self) {
@@ -1686,6 +1757,7 @@ impl<'a> DirectQueryOps<'a> {
             artifact_contracts: &plan.artifact_contracts,
             result: default_hit(origin),
             best_distance: f32::INFINITY,
+            cache_start_t: 0.0,
         };
         execute_world_ray(
             &mut backend,
@@ -1941,6 +2013,7 @@ impl<'a> DirectQueryOps<'a> {
             self.note_union_cluster_visit();
             return self.eval_shape_union_tree(items, &tree, point);
         }
+        self.note_cache_dense_fallback();
         self.eval_shape_node(&scene.root, point)
     }
 
@@ -2411,8 +2484,6 @@ impl<'a> DirectQueryOps<'a> {
     fn eval_shape_node(&self, node: &ShapeNode, point: [f32; 3]) -> Result<f32, QueryExecError> {
         self.note_branch_visit();
         self.note_acceleration_node_visit();
-        self.note_cache_brick_visit();
-        self.note_cache_brick_hit();
         match node {
             ShapeNode::Use { target } => self.eval_shape_distance(target, point),
             ShapeNode::Leaf(leaf) => {
@@ -3422,6 +3493,23 @@ impl<'a> DirectQueryOps<'a> {
         hit_epsilon: f32,
         max_steps: i32,
     ) -> Result<KernelValue, QueryExecError> {
+        let start_travel = if start_travel <= 0.0 {
+            match self.shape_cache_support_probe(
+                shape,
+                origin,
+                direction,
+                start_travel,
+                max_distance,
+            ) {
+                RaySupportProbe::Interval(interval) => start_travel.max(interval.start_t.max(0.0)),
+                RaySupportProbe::Rejected | RaySupportProbe::Unavailable => {
+                    self.note_cache_dense_fallback();
+                    start_travel
+                }
+            }
+        } else {
+            start_travel
+        };
         let runtime_plan =
             self.runtime_shape_solver_plan(solver_plan, artifact_contracts, shape)?;
         let effective_methods = match self.trace_solver_mode {
@@ -4722,12 +4810,9 @@ impl<'a> DirectQueryOps<'a> {
         id: crate::scene_ir::SupportNodeId,
         point: [f32; 3],
     ) -> Result<Option<f32>, QueryExecError> {
-        self.note_cache_brick_visit();
         let Some(record) = scene.support_node_record(id) else {
-            self.note_cache_brick_miss();
             return Ok(None);
         };
-        self.note_cache_brick_hit();
         self.note_artifact_load();
         match record.kind {
             crate::scene_ir::SupportNodeKindSummary::Unknown
@@ -4834,12 +4919,9 @@ impl<'a> DirectQueryOps<'a> {
         id: crate::scene_ir::SupportNodeId,
         point: [f32; 3],
     ) -> Result<Option<f32>, QueryExecError> {
-        self.note_cache_brick_visit();
         let Some(record) = scene.support_node_record(id) else {
-            self.note_cache_brick_miss();
             return Ok(None);
         };
-        self.note_cache_brick_hit();
         self.note_artifact_load();
         match record.kind {
             crate::scene_ir::SupportNodeKindSummary::Unknown
@@ -5300,12 +5382,91 @@ impl<'a> DirectQueryOps<'a> {
         Ok(tree)
     }
 
+    fn support_cache_probe(
+        &self,
+        cache: Option<&SupportBrickCache>,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        start_t: f32,
+        max_t: f32,
+    ) -> RaySupportProbe {
+        self.note_cache_brick_visit();
+        let Some(cache) = cache else {
+            self.note_cache_brick_miss();
+            return RaySupportProbe::Unavailable;
+        };
+        if !cache.is_ready() {
+            self.note_cache_brick_miss();
+            self.note_cache_disable_reasons(&cache.report.rejection_reasons);
+            return RaySupportProbe::Unavailable;
+        }
+        self.note_artifact_load();
+        match cache.first_occupied_interval(origin, direction, start_t, max_t) {
+            Some(interval) => {
+                self.note_cache_brick_hit();
+                if interval.start_t.max(0.0) > start_t.max(0.0) + f32::EPSILON {
+                    self.note_cache_interval_advance();
+                }
+                RaySupportProbe::Interval(RaySupportInterval {
+                    start_t: interval.start_t,
+                    end_t: interval.end_t,
+                    starts_inside: interval.start_t <= start_t.max(0.0),
+                    conservative: true,
+                })
+            }
+            None => {
+                self.note_cache_brick_miss();
+                RaySupportProbe::Rejected
+            }
+        }
+    }
+
+    fn shape_cache_support_probe(
+        &self,
+        shape: &SmolStr,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        start_t: f32,
+        max_t: f32,
+    ) -> RaySupportProbe {
+        self.support_cache_probe(
+            self.ctx.shape_cache_support(shape),
+            origin,
+            direction,
+            start_t,
+            max_t,
+        )
+    }
+
+    fn world_cache_support_probe(
+        &self,
+        capture: &SmolStr,
+        detail: i32,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        start_t: f32,
+        max_t: f32,
+    ) -> RaySupportProbe {
+        self.support_cache_probe(
+            self.ctx.world_cache_support(capture, detail),
+            origin,
+            direction,
+            start_t,
+            max_t,
+        )
+    }
+
     fn shape_ray_support_probe_world(
         &self,
         shape: &SmolStr,
         origin: [f32; 3],
         direction: [f32; 3],
     ) -> Result<RaySupportProbe, QueryExecError> {
+        let cache_probe =
+            self.shape_cache_support_probe(shape, origin, direction, 0.0, f32::INFINITY);
+        if matches!(cache_probe, RaySupportProbe::Interval(_)) {
+            return Ok(cache_probe);
+        }
         let direct = self.shape_ray_support_probe(shape, origin, direction)?;
         let Some((min, max)) = self.shape_support_bounds_world(shape)? else {
             return Ok(direct);
@@ -6913,6 +7074,7 @@ struct CpuWorldTraceBackend<'a, 'ctx> {
     artifact_contracts: &'a [ArtifactContract],
     result: KernelValue,
     best_distance: f32,
+    cache_start_t: f32,
 }
 
 impl CpuWorldTraceBackend<'_, '_> {
@@ -6947,7 +7109,8 @@ impl CpuWorldTraceBackend<'_, '_> {
                 }
             }
             None => 0.0,
-        };
+        }
+        .max(self.cache_start_t);
         let mut stack = vec![CpuRayTraversal {
             node_index: tree.root,
             start_t: root_start_t,
@@ -7087,11 +7250,26 @@ impl WorldQueryBackend for CpuWorldTraceBackend<'_, '_> {
     where
         F: FnMut(&mut Self, &[SmolStr]) -> Result<(), Self::Error>,
     {
+        self.cache_start_t = match self.evaluator.world_cache_support_probe(
+            self.capture,
+            self.detail,
+            self.origin,
+            self.direction,
+            0.0,
+            self.max_distance,
+        ) {
+            RaySupportProbe::Interval(interval) => interval.start_t.max(0.0),
+            RaySupportProbe::Rejected | RaySupportProbe::Unavailable => 0.0,
+        };
         if let Some(tree) = self
             .evaluator
             .world_acceleration_tree(self.capture, self.detail)?
         {
             return self.trace_world_hierarchically(&tree);
+        }
+        self.evaluator.note_cache_dense_fallback();
+        if self.cache_start_t <= 0.0 {
+            self.evaluator.note_cache_budget_rejection();
         }
         cpu_backend_with_world_shapes(
             self.evaluator,
@@ -7117,12 +7295,13 @@ impl WorldTraceBackend for CpuWorldTraceBackend<'_, '_> {
     fn init_world_trace(&mut self) -> Result<(), Self::Error> {
         self.result = default_hit(self.origin);
         self.best_distance = f32::INFINITY;
+        self.cache_start_t = 0.0;
         Ok(())
     }
 
     fn consider_world_trace_shape(&mut self, shape: &SmolStr) -> Result<(), Self::Error> {
         let prune_distance = self.best_distance.min(self.max_distance);
-        let mut start_travel = 0.0f32;
+        let mut start_travel = self.cache_start_t;
         match self
             .evaluator
             .shape_ray_support_probe_world(shape, self.origin, self.direction)?

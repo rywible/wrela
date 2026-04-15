@@ -1,5 +1,6 @@
 use smol_str::SmolStr;
 use wrela::acceleration::build::{union_subtree_forest_builder, world_forest_builder};
+use wrela::acceleration::cache::CacheDisableReason;
 use wrela::acceleration::report::{
     AccelerationChildSpan, AccelerationLeafPayload, AccelerationNode, AccelerationRejectionClass,
     AccelerationRejectionRecord, AccelerationReport,
@@ -203,6 +204,31 @@ domain mixed_domain(world: RegionCapture) {
     min_step = 0.05
     hit_epsilon = 0.001
     max_steps = 96
+}
+"#
+}
+
+fn budget_pressure_fixture_source() -> &'static str {
+    r#"
+field conservative distance budget_field(p: Vec3) -> F32 {
+    box(half = vec3(24.0, 24.0, 24.0))
+}
+
+material budget_material(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.2, 0.3, 0.4),
+        roughness=0.25,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape budget_shape {
+    field = budget_field
+    material = budget_material
 }
 "#
 }
@@ -527,4 +553,94 @@ fn mixed_bounded_and_unbounded_world_candidates_do_not_publish_partial_cluster_b
         })
         .expect("mixed cluster");
     assert!(cluster.bounds.is_empty());
+}
+
+#[test]
+fn shared_cache_catalog_is_deterministic_and_support_bounded() {
+    let left = typed_query_context(shared_forest_fixture_source());
+    let right = typed_query_context(shared_forest_fixture_source());
+
+    assert_eq!(
+        left.shared_acceleration.cache_catalog,
+        right.shared_acceleration.cache_catalog
+    );
+
+    let shape_support = left
+        .shape_cache_support(&SmolStr::new("shared_shape"))
+        .expect("shared shape support cache");
+    let shape_distance = left
+        .shape_cache_distance(&SmolStr::new("shared_shape"))
+        .expect("shared shape distance cache");
+    assert_eq!(shape_support.schema.version, 1);
+    assert_eq!(shape_distance.schema.version, 1);
+    assert_eq!(shape_support.schema.semantic_root, "shared_shape");
+    assert_eq!(shape_distance.schema.semantic_root, "shared_shape");
+    assert_eq!(
+        shape_support.report.candidate_bricks,
+        shape_distance.report.candidate_bricks
+    );
+    assert_eq!(
+        shape_support.report.rejection_reasons,
+        shape_distance.report.rejection_reasons
+    );
+
+    let world_support = left
+        .world_cache_support(&SmolStr::new("shared_region"), 1)
+        .expect("shared world support cache");
+    let world_distance = left
+        .world_cache_distance(&SmolStr::new("shared_region"), 1)
+        .expect("shared world distance cache");
+    assert_eq!(world_support.schema.version, 1);
+    assert_eq!(world_distance.schema.version, 1);
+    assert_eq!(
+        world_support.report.candidate_bricks,
+        world_distance.report.candidate_bricks
+    );
+    assert_eq!(
+        world_support.report.rejection_reasons,
+        world_distance.report.rejection_reasons
+    );
+}
+
+#[test]
+fn cache_catalog_reports_unsupported_support_and_budget_pressure() {
+    let ctx = typed_query_context(mixed_bounded_unbounded_world_fixture_source());
+
+    let repeated_shape_cache = ctx
+        .shape_cache_support(&SmolStr::new("repeated_shape"))
+        .expect("repeated shape cache");
+    assert!(!repeated_shape_cache.is_ready());
+    assert!(
+        repeated_shape_cache
+            .report
+            .rejection_reasons
+            .iter()
+            .any(|reason| *reason == CacheDisableReason::UnboundedSupport)
+    );
+
+    let world_support = ctx
+        .world_cache_support(&SmolStr::new("mixed_region"), 1)
+        .expect("mixed region world support cache");
+    assert!(world_support.is_ready());
+    assert!(
+        world_support
+            .report
+            .rejection_reasons
+            .iter()
+            .any(|reason| *reason == CacheDisableReason::UnboundedSupport)
+    );
+
+    let budget_ctx = typed_query_context(budget_pressure_fixture_source());
+    let budget_shape_cache = budget_ctx
+        .shape_cache_support(&SmolStr::new("budget_shape"))
+        .expect("budget shape cache");
+    assert!(!budget_shape_cache.is_ready());
+    assert!(
+        budget_shape_cache
+            .report
+            .rejection_reasons
+            .iter()
+            .any(|reason| *reason == CacheDisableReason::MemoryBudgetExceeded)
+    );
+    assert_eq!(budget_shape_cache.report.memory_bytes, 0);
 }

@@ -1,6 +1,7 @@
 pub(crate) mod codegen;
 
 use self::codegen::{ShaderPlan, generate_shader};
+use crate::acceleration::cache::SupportBrickCache;
 use crate::acceleration::{AccelerationForest, BoundDescriptorKind};
 use crate::execution_policy::QueryExecutionPolicy;
 use crate::kernel::KernelBatchQueryTrace;
@@ -30,10 +31,10 @@ use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use wgpu::util::{DeviceExt, initialize_adapter_from_env_or_default};
 
 const QUERY_WGSL_BIND_GROUP_COUNT: u32 = 4;
-const QUERY_WGSL_STORAGE_BUFFERS_PER_SHADER_STAGE: u32 = 9;
+const QUERY_WGSL_STORAGE_BUFFERS_PER_SHADER_STAGE: u32 = 10;
 const QUERY_WGSL_ACCEL_FLAG_LEAF: u32 = 1;
 const QUERY_WGSL_ACCEL_FLAG_HAS_BOUNDS: u32 = 2;
-const QUERY_WGSL_OBSERVABILITY_U32S: usize = 8;
+const QUERY_WGSL_OBSERVABILITY_U32S: usize = 18;
 
 #[derive(Clone)]
 pub(crate) struct NativeWgpuContext {
@@ -50,6 +51,7 @@ pub(crate) struct GpuDispatchRequest {
     pub(crate) world_shape_indices: Vec<u32>,
     pub(crate) accel_nodes: Vec<KernelValue>,
     pub(crate) accel_children: Vec<u32>,
+    pub(crate) cache_bricks: Vec<KernelValue>,
     pub(crate) continuation_seeds: Vec<u32>,
 }
 
@@ -59,6 +61,7 @@ pub(crate) struct GeneratedShaderModule {
     pub(crate) workgroup_size: u32,
     pub(crate) dispatch_abi: PortableAbiType,
     pub(crate) accel_node_abi: PortableAbiType,
+    pub(crate) cache_brick_abi: PortableAbiType,
     pub(crate) shape_meta_abi: PortableAbiType,
     pub(crate) item_abi: PortableAbiType,
     pub(crate) result_abi: PortableAbiType,
@@ -313,16 +316,20 @@ fn build_capture_request(
         });
     }
 
-    let (capture_kind, capture_index) = match descriptor.capture_kind {
+    let (capture_kind, capture_index, cache_bricks) = match descriptor.capture_kind {
         CaptureKind::Field => {
             let capture = ops.resolve_field_or_shape_capture(args.first())?;
             note_wgsl_normal_role_for_capture(ops, descriptor, &capture);
-            (0u32, field_index(ops.context(), &capture)?)
+            (0u32, field_index(ops.context(), &capture)?, Vec::new())
         }
         CaptureKind::Shape => {
             let capture = ops.resolve_shape_capture(args.first())?;
             note_wgsl_normal_role_for_capture(ops, descriptor, &capture);
-            (1u32, shape_index(ops.context(), &capture)?)
+            (
+                1u32,
+                shape_index(ops.context(), &capture)?,
+                shape_cache_brick_kernel_values(ops.context(), &capture),
+            )
         }
         CaptureKind::Region => {
             return Err(QueryExecError::Unsupported {
@@ -334,11 +341,23 @@ fn build_capture_request(
     let item = scalar_item_arg(descriptor, args.get(1))?;
 
     Ok(GpuDispatchRequest {
-        dispatch: dispatch_config(capture_kind, capture_index, 1, 0, 0, 0, true, true, true),
+        dispatch: dispatch_config(
+            capture_kind,
+            capture_index,
+            1,
+            0,
+            0,
+            0,
+            cache_bricks.len() as u32,
+            true,
+            true,
+            true,
+        ),
         items: vec![item],
         world_shape_indices: Vec::new(),
         accel_nodes: Vec::new(),
         accel_children: Vec::new(),
+        cache_bricks,
         continuation_seeds: Vec::new(),
     })
 }
@@ -619,6 +638,7 @@ fn build_world_request(
         .map(|shape| shape_index(ops.context(), shape))
         .collect::<Result<Vec<_>, _>>()?;
     let accel = world_acceleration_request_data(ops.context(), &capture, detail)?;
+    let cache_bricks = world_cache_brick_kernel_values(ops.context(), &capture, detail);
     note_wgsl_normal_role_for_world(ops, descriptor, &world_shapes);
     let item = scalar_item_arg(descriptor, args.get(2))?;
 
@@ -630,6 +650,7 @@ fn build_world_request(
             world_shape_indices.len() as u32,
             accel.root_index,
             accel.nodes.len() as u32,
+            cache_bricks.len() as u32,
             scene_domain_flag_enabled(domain, SceneDomainFlag::Material)?,
             scene_domain_flag_enabled(domain, SceneDomainFlag::Radiance)?,
             scene_domain_flag_enabled(domain, SceneDomainFlag::Media)?,
@@ -638,6 +659,7 @@ fn build_world_request(
         world_shape_indices,
         accel_nodes: accel_nodes_kernel_values(&accel.nodes),
         accel_children: accel.children,
+        cache_bricks,
         continuation_seeds: Vec::new(),
     })
 }
@@ -688,6 +710,10 @@ fn build_batch_request(
         crate::query_plan::PruningStrategy::None
             | crate::query_plan::PruningStrategy::ConservativeTraversal
     ));
+    let cache_bricks = match descriptor.capture_kind {
+        CaptureKind::Shape => shape_cache_brick_kernel_values(ops.context(), &capture),
+        CaptureKind::Field | CaptureKind::Region => Vec::new(),
+    };
     Ok(GpuDispatchRequest {
         dispatch: dispatch_config(
             match descriptor.capture_kind {
@@ -704,6 +730,7 @@ fn build_batch_request(
             0,
             0,
             0,
+            cache_bricks.len() as u32,
             true,
             true,
             true,
@@ -712,6 +739,7 @@ fn build_batch_request(
         world_shape_indices: Vec::new(),
         accel_nodes: Vec::new(),
         accel_children: Vec::new(),
+        cache_bricks,
         continuation_seeds: Vec::new(),
     })
 }
@@ -742,6 +770,7 @@ fn build_world_batch_request(
         .map(|shape| shape_index(ops.context(), shape))
         .collect::<Result<Vec<_>, _>>()?;
     let accel = world_acceleration_request_data(ops.context(), &capture, detail)?;
+    let cache_bricks = world_cache_brick_kernel_values(ops.context(), &capture, detail);
     note_wgsl_normal_role_for_world(ops, descriptor, &world_shapes);
 
     Ok(GpuDispatchRequest {
@@ -752,6 +781,7 @@ fn build_world_batch_request(
             world_shape_indices.len() as u32,
             accel.root_index,
             accel.nodes.len() as u32,
+            cache_bricks.len() as u32,
             scene_domain_flag_enabled(domain, SceneDomainFlag::Material)?,
             scene_domain_flag_enabled(domain, SceneDomainFlag::Radiance)?,
             scene_domain_flag_enabled(domain, SceneDomainFlag::Media)?,
@@ -760,6 +790,7 @@ fn build_world_batch_request(
         world_shape_indices,
         accel_nodes: accel_nodes_kernel_values(&accel.nodes),
         accel_children: accel.children,
+        cache_bricks,
         continuation_seeds: Vec::new(),
     })
 }
@@ -773,6 +804,7 @@ fn generate_compiled_shader(
     let layout_signature = query_wgsl_layout_signature(
         &generated.dispatch_abi,
         &generated.accel_node_abi,
+        &generated.cache_brick_abi,
         &generated.shape_meta_abi,
         &generated.item_abi,
         &generated.result_abi,
@@ -782,6 +814,7 @@ fn generate_compiled_shader(
         workgroup_size: generated.workgroup_size,
         dispatch_abi: generated.dispatch_abi,
         accel_node_abi: generated.accel_node_abi.clone(),
+        cache_brick_abi: generated.cache_brick_abi.clone(),
         shape_meta_abi: generated.shape_meta_abi.clone(),
         item_abi: generated.item_abi,
         result_abi: generated.result_abi,
@@ -794,12 +827,14 @@ fn generate_compiled_shader(
 fn query_wgsl_layout_signature(
     dispatch_abi: &PortableAbiType,
     accel_node_abi: &PortableAbiType,
+    cache_brick_abi: &PortableAbiType,
     shape_meta_abi: &PortableAbiType,
     item_abi: &PortableAbiType,
     result_abi: &PortableAbiType,
 ) -> u64 {
     let dispatch = format!("{dispatch_abi:?}");
     let accel_node = format!("{accel_node_abi:?}");
+    let cache_brick = format!("{cache_brick_abi:?}");
     let shape_meta = format!("{shape_meta_abi:?}");
     let item = format!("{item_abi:?}");
     let result = format!("{result_abi:?}");
@@ -807,6 +842,7 @@ fn query_wgsl_layout_signature(
         b"query_exec::wgsl::layout::v2",
         dispatch.as_bytes(),
         accel_node.as_bytes(),
+        cache_brick.as_bytes(),
         shape_meta.as_bytes(),
         item.as_bytes(),
         result.as_bytes(),
@@ -956,6 +992,43 @@ fn parse_summary_vec3(summary: &str) -> Option<[f32; 3]> {
     Some([x, y, z])
 }
 
+fn shape_cache_brick_kernel_values(
+    ctx: &crate::query_exec::context::QueryExecContext,
+    shape: &SmolStr,
+) -> Vec<KernelValue> {
+    cache_brick_kernel_values(ctx.shape_cache_support(shape))
+}
+
+fn world_cache_brick_kernel_values(
+    ctx: &crate::query_exec::context::QueryExecContext,
+    capture: &SmolStr,
+    detail: i32,
+) -> Vec<KernelValue> {
+    cache_brick_kernel_values(ctx.world_cache_support(capture, detail))
+}
+
+fn cache_brick_kernel_values(cache: Option<&SupportBrickCache>) -> Vec<KernelValue> {
+    let Some(cache) = cache.filter(|cache| cache.is_ready()) else {
+        return Vec::new();
+    };
+    if cache.bricks.is_empty() {
+        return Vec::new();
+    }
+    cache
+        .bricks
+        .iter()
+        .map(|brick| {
+            KernelValue::Struct(KernelStructValue {
+                name: SmolStr::new("WgslCacheBrick"),
+                fields: vec![
+                    (SmolStr::new("min"), KernelValue::Vec3(brick.bounds.min)),
+                    (SmolStr::new("max"), KernelValue::Vec3(brick.bounds.max)),
+                ],
+            })
+        })
+        .collect()
+}
+
 fn accel_nodes_kernel_values(nodes: &[WgslAccelNodeRecord]) -> Vec<KernelValue> {
     if nodes.is_empty() {
         return vec![empty_accel_node_kernel_value()];
@@ -998,6 +1071,16 @@ fn empty_accel_node_kernel_value() -> KernelValue {
     })
 }
 
+fn empty_cache_brick_kernel_value() -> KernelValue {
+    KernelValue::Struct(KernelStructValue {
+        name: SmolStr::new("WgslCacheBrick"),
+        fields: vec![
+            (SmolStr::new("min"), KernelValue::Vec3([0.0, 0.0, 0.0])),
+            (SmolStr::new("max"), KernelValue::Vec3([0.0, 0.0, 0.0])),
+        ],
+    })
+}
+
 fn empty_shape_meta_kernel_value() -> KernelValue {
     KernelValue::Struct(KernelStructValue {
         name: SmolStr::new("WgslShapeMeta"),
@@ -1023,6 +1106,17 @@ fn encode_accel_node_values(
 ) -> Result<Vec<u8>, QueryExecError> {
     if values.is_empty() {
         encode_slice(abi, &[empty_accel_node_kernel_value()])
+    } else {
+        encode_slice(abi, values)
+    }
+}
+
+fn encode_cache_brick_values(
+    abi: &PortableAbiType,
+    values: &[KernelValue],
+) -> Result<Vec<u8>, QueryExecError> {
+    if values.is_empty() {
+        encode_slice(abi, &[empty_cache_brick_kernel_value()])
     } else {
         encode_slice(abi, values)
     }
@@ -1063,6 +1157,8 @@ pub(crate) fn dispatch_compiled_shader_with_observability(
     let accel_node_bytes =
         encode_accel_node_values(&generated.accel_node_abi, &request.accel_nodes)?;
     let accel_child_bytes = encode_u32_values(&request.accel_children)?;
+    let cache_brick_bytes =
+        encode_cache_brick_values(&generated.cache_brick_abi, &request.cache_bricks)?;
     let shape_meta_bytes =
         encode_shape_meta_values(&generated.shape_meta_abi, &generated.shape_meta_values)?;
     let world_shape_bytes = encode_shape_indices(&request.world_shape_indices)?;
@@ -1075,6 +1171,7 @@ pub(crate) fn dispatch_compiled_shader_with_observability(
         result_buffer_size,
         storage_buffer_size(&accel_node_bytes),
         storage_buffer_size(&accel_child_bytes),
+        storage_buffer_size(&cache_brick_bytes),
         storage_buffer_size(&shape_meta_bytes),
         storage_buffer_size(&world_shape_bytes),
         storage_buffer_size(&continuation_seed_bytes),
@@ -1156,6 +1253,8 @@ fn dispatch_compiled_shader_with_buffers(
     let accel_node_bytes =
         encode_accel_node_values(&generated.accel_node_abi, &request.accel_nodes)?;
     let accel_child_bytes = encode_u32_values(&request.accel_children)?;
+    let cache_brick_bytes =
+        encode_cache_brick_values(&generated.cache_brick_abi, &request.cache_bricks)?;
     let shape_meta_bytes =
         encode_shape_meta_values(&generated.shape_meta_abi, &generated.shape_meta_values)?;
     let shape_bytes = encode_shape_indices(&request.world_shape_indices)?;
@@ -1182,6 +1281,13 @@ fn dispatch_compiled_shader_with_buffers(
                 contents: &accel_child_bytes,
                 usage: wgpu::BufferUsages::STORAGE,
             });
+    let cache_bricks_buffer = native
+        .device
+        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("wrela.wgsl.cache_bricks"),
+            contents: &cache_brick_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+        });
     let shape_meta_buffer = native
         .device
         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1233,6 +1339,10 @@ fn dispatch_compiled_shader_with_buffers(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: shape_meta_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: cache_bricks_buffer.as_entire_binding(),
             },
         ],
     });
@@ -1533,6 +1643,18 @@ fn compiled_query_pipeline(
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(
+                            portable_abi_layout(&generated.cache_brick_abi).size as u64,
+                        ),
+                    },
+                    count: None,
+                },
             ],
         });
     let io_layout = native
@@ -1689,9 +1811,19 @@ fn decode_wgsl_observability(
         acceleration_pruned_nodes: read_u32(2),
         ray_support_interval_rejections: read_u32(3),
         ray_support_entry_jumps: read_u32(4),
-        solver_analytic_hits: read_u32(5),
-        solver_generated_dense_fallback_rays: read_u32(6),
-        solver_support_rejections: read_u32(7),
+        cache_brick_visits: read_u32(5),
+        cache_brick_hits: read_u32(6),
+        cache_brick_misses: read_u32(7),
+        cache_interval_advances: read_u32(8),
+        cache_resident_shared_snapshot_artifacts: read_u32(9),
+        cache_resident_observer_local_artifacts: read_u32(10),
+        cache_upload_attempts: read_u32(11),
+        cache_upload_rejections: read_u32(12),
+        cache_budget_rejections: read_u32(13),
+        cache_dense_fallback_rays: read_u32(14),
+        solver_analytic_hits: read_u32(15),
+        solver_generated_dense_fallback_rays: read_u32(16),
+        solver_support_rejections: read_u32(17),
         wgsl_layout_signature: Some(generated.layout_signature),
         wgsl_bind_group_count: generated.bind_group_count,
         wgsl_requested_max_storage_buffer_bytes: diagnostics.requested_max_storage_buffer_bytes,
@@ -1848,6 +1980,7 @@ pub(crate) fn dispatch_config(
     shape_count: u32,
     accel_root_index: u32,
     accel_node_count: u32,
+    cache_brick_count: u32,
     material_enabled: bool,
     radiance_enabled: bool,
     media_enabled: bool,
@@ -1869,6 +2002,10 @@ pub(crate) fn dispatch_config(
             (
                 SmolStr::new("accel_node_count"),
                 KernelValue::U32(accel_node_count),
+            ),
+            (
+                SmolStr::new("cache_brick_count"),
+                KernelValue::U32(cache_brick_count),
             ),
             (
                 SmolStr::new("material_enabled"),

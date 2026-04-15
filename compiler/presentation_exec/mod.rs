@@ -1,3 +1,4 @@
+pub(crate) mod clipmap;
 pub mod controller;
 pub mod cost;
 mod cpu;
@@ -6,6 +7,7 @@ pub mod resources;
 mod temporal;
 mod wgsl;
 
+use crate::acceleration::clipmap::ViewDistanceClipmapArtifact;
 use crate::acceleration::{AccelerationNodeKind, BoundDescriptorKind};
 use crate::artifact_contract::{
     ArtifactCompatibilityRelation, ArtifactEvidenceCompatibility, ArtifactLogicalField,
@@ -110,6 +112,7 @@ pub struct PresentationTemporalHistory {
     pub snapshot_handle: WorldSnapshotHandle,
     pub attachments: AttachmentResourceSet,
     pub slots: Vec<PresentationTemporalHistorySlot>,
+    pub clipmap: Option<ViewDistanceClipmapArtifact>,
 }
 
 impl PresentationExecutionInput {
@@ -161,6 +164,7 @@ pub struct PresentationMetrics {
     pub cache_brick_visits: u32,
     pub cache_brick_hits: u32,
     pub cache_brick_misses: u32,
+    pub cache_interval_advances: u32,
     pub accepted_relaxed_steps: u32,
     pub rejected_relaxed_steps: u32,
     pub solver_relaxed_attempts: u32,
@@ -1455,6 +1459,7 @@ fn build_temporal_history(
     frame_state: &KernelValue,
     attachments: &AttachmentResourceSet,
     current_snapshot: &WorldSnapshotHandle,
+    clipmap: Option<&ViewDistanceClipmapArtifact>,
 ) -> Result<Option<PresentationTemporalHistory>, PresentationExecError> {
     let Some(temporal) = &plan.frame.temporal else {
         return Ok(None);
@@ -1490,6 +1495,7 @@ fn build_temporal_history(
                 )
             })
             .collect::<Result<Vec<_>, _>>()?,
+        clipmap: clipmap.cloned(),
     }))
 }
 
@@ -1713,6 +1719,7 @@ fn presentation_metrics(
         cache_brick_visits: observability.cache_brick_visits,
         cache_brick_hits: observability.cache_brick_hits,
         cache_brick_misses: observability.cache_brick_misses,
+        cache_interval_advances: observability.cache_interval_advances,
         accepted_relaxed_steps: observability.accepted_relaxed_steps,
         rejected_relaxed_steps: observability.rejected_relaxed_steps,
         solver_relaxed_attempts: observability.solver_relaxed_attempts,
@@ -1978,6 +1985,7 @@ pub(crate) fn build_frame_cost_report(
         cache_brick_visits: metrics.cache_brick_visits,
         cache_brick_hits: metrics.cache_brick_hits,
         cache_brick_misses: metrics.cache_brick_misses,
+        cache_interval_advances: metrics.cache_interval_advances,
         accepted_relaxed_steps: metrics.accepted_relaxed_steps,
         rejected_relaxed_steps: metrics.rejected_relaxed_steps,
         solver_relaxed_attempts: metrics.solver_relaxed_attempts,

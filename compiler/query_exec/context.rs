@@ -211,6 +211,44 @@ impl QueryExecContext {
         self.shared_acceleration.union(shape)
     }
 
+    pub fn shared_cache_catalog(&self) -> &crate::acceleration::cache::SharedBrickCacheCatalog {
+        &self.shared_acceleration.cache_catalog
+    }
+
+    pub fn shape_cache_support(
+        &self,
+        shape: &SmolStr,
+    ) -> Option<&crate::acceleration::cache::SupportBrickCache> {
+        self.shared_acceleration.cache_catalog.shape_support(shape)
+    }
+
+    pub fn shape_cache_distance(
+        &self,
+        shape: &SmolStr,
+    ) -> Option<&crate::acceleration::cache::DistanceBrickCache> {
+        self.shared_acceleration.cache_catalog.shape_distance(shape)
+    }
+
+    pub fn world_cache_support(
+        &self,
+        capture: &SmolStr,
+        detail: i32,
+    ) -> Option<&crate::acceleration::cache::SupportBrickCache> {
+        self.shared_acceleration
+            .cache_catalog
+            .world_support(capture, detail)
+    }
+
+    pub fn world_cache_distance(
+        &self,
+        capture: &SmolStr,
+        detail: i32,
+    ) -> Option<&crate::acceleration::cache::DistanceBrickCache> {
+        self.shared_acceleration
+            .cache_catalog
+            .world_distance(capture, detail)
+    }
+
     pub fn snapshot_handle_for_capture_name(&self, name: &SmolStr) -> Option<&WorldSnapshotHandle> {
         self.field_snapshot_handle(name)
             .or_else(|| self.shape_snapshot_handle(name))

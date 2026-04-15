@@ -60,6 +60,7 @@ pub enum SemanticStageKind {
     CandidateGeneration,
     CandidatePruning,
     ArtifactLoad,
+    CacheTraversal,
     ParticipantSelection,
     ItemIteration,
     DomainSelection,
@@ -84,6 +85,7 @@ pub enum SemanticCostCauseKind {
     SupportTopology,
     CandidateTraversal,
     CaptureArtifacts,
+    CacheTraversal,
     DomainGating,
     ParticipantAccumulation,
     IdentityLocality,
@@ -324,7 +326,7 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
         ));
     }
     out.push_str(&format!(
-        "acceleration_node_visits={} shape_leaf_visits={} acceleration_pruned_nodes={} union_cluster_visits={} ray_support_interval_rejections={} ray_support_entry_jumps={} repeat_cell_skips={} cache_brick_visits={} cache_brick_hits={} cache_brick_misses={} accepted_relaxed_steps={} rejected_relaxed_steps={} analytic_transformed_hits={} interval_subdivisions={} interval_proof_successes={} observer_continuation_seed_hits={}\n",
+        "acceleration_node_visits={} shape_leaf_visits={} acceleration_pruned_nodes={} union_cluster_visits={} ray_support_interval_rejections={} ray_support_entry_jumps={} repeat_cell_skips={} cache_brick_visits={} cache_brick_hits={} cache_brick_misses={} cache_interval_advances={} cache_resident_shared_snapshot_artifacts={} cache_resident_observer_local_artifacts={} cache_upload_attempts={} cache_upload_rejections={} cache_budget_rejections={} cache_dense_fallback_rays={} accepted_relaxed_steps={} rejected_relaxed_steps={} analytic_transformed_hits={} interval_subdivisions={} interval_proof_successes={} observer_continuation_seed_hits={}\n",
         report.counters.acceleration_node_visits,
         report.counters.shape_leaf_visits,
         report.counters.acceleration_pruned_nodes,
@@ -335,6 +337,13 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
         report.counters.cache_brick_visits,
         report.counters.cache_brick_hits,
         report.counters.cache_brick_misses,
+        report.counters.cache_interval_advances,
+        report.counters.cache_resident_shared_snapshot_artifacts,
+        report.counters.cache_resident_observer_local_artifacts,
+        report.counters.cache_upload_attempts,
+        report.counters.cache_upload_rejections,
+        report.counters.cache_budget_rejections,
+        report.counters.cache_dense_fallback_rays,
         report.counters.accepted_relaxed_steps,
         report.counters.rejected_relaxed_steps,
         report.counters.analytic_transformed_hits,
@@ -374,8 +383,12 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
             .collect::<Vec<_>>()
             .join("|")
     };
+    let cache_resident_shared_snapshot_artifacts =
+        report.counters.cache_resident_shared_snapshot_artifacts;
+    let cache_resident_observer_local_artifacts =
+        report.counters.cache_resident_observer_local_artifacts;
     out.push_str(&format!(
-        "counters dispatch={} dispatch_items={} workgroups={}x{}x{} screen_samples={} world_batch_items={} candidates={} candidates_before={} candidates_after={} pruned={} trace_steps={} trace_steps_avg={:.2} trace_steps_max={} hits={} misses={} field_samples={} artifacts={} opaque_fallbacks={} dense_batches={} semantic_pruned_batches={} solver_plan={} solver_subject={} solver_methods={} solver_analytic_hits={} solver_support_rejections={} solver_interval_skips={} solver_packet_tile_rejections={} solver_newton_refinements={} solver_lipschitz_steps={} solver_adaptive_epsilon={} solver_dense_fallback_rays={} solver_generated_dense_fallback_rays={} solver_fallback_contract_dense={} solver_fallback_missing_facts={} solver_fallback_analytic_unsupported={} solver_fallback_verification_failed={} solver_fallback_unsupported_backend={} solver_certificate_failures={} observer_continuation_seed_hits={} wgsl_layout_signature={} wgsl_bind_groups={} wgsl_storage_requested={} wgsl_storage_used={} wgsl_workgroup_size={}",
+        "counters dispatch={} dispatch_items={} workgroups={}x{}x{} screen_samples={} world_batch_items={} candidates={} candidates_before={} candidates_after={} pruned={} trace_steps={} trace_steps_avg={:.2} trace_steps_max={} hits={} misses={} field_samples={} artifacts={} opaque_fallbacks={} dense_batches={} semantic_pruned_batches={} cache_shared_snapshot={} cache_observer_local={} solver_plan={} solver_subject={} solver_methods={} solver_analytic_hits={} solver_support_rejections={} solver_interval_skips={} solver_packet_tile_rejections={} solver_newton_refinements={} solver_lipschitz_steps={} solver_adaptive_epsilon={} solver_dense_fallback_rays={} solver_generated_dense_fallback_rays={} solver_fallback_contract_dense={} solver_fallback_missing_facts={} solver_fallback_analytic_unsupported={} solver_fallback_verification_failed={} solver_fallback_unsupported_backend={} solver_certificate_failures={} observer_continuation_seed_hits={} wgsl_layout_signature={} wgsl_bind_groups={} wgsl_storage_requested={} wgsl_storage_used={} wgsl_workgroup_size={}",
         report.counters.dispatch_count,
         report.counters.dispatch_items,
         report.counters.dispatch_workgroups_x,
@@ -397,6 +410,8 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
         report.counters.opaque_fallbacks,
         report.counters.dense_compatibility_batches,
         report.counters.semantic_pruned_batches,
+        cache_resident_shared_snapshot_artifacts,
+        cache_resident_observer_local_artifacts,
         solver_plan,
         solver_subject,
         solver_methods,
@@ -545,6 +560,45 @@ fn collect_dominant_stages(
             };
             (weight, detail)
         }),
+    );
+    push_stage_if_present(
+        &mut stages,
+        context,
+        SemanticStageKind::CacheTraversal,
+        (
+            counters.cache_brick_visits > 0
+                || counters.cache_brick_hits > 0
+                || counters.cache_brick_misses > 0
+                || counters.cache_interval_advances > 0
+                || counters.cache_dense_fallback_rays > 0
+                || counters.cache_budget_rejections > 0
+                || counters.cache_upload_attempts > 0
+                || counters.cache_upload_rejections > 0
+                || counters.cache_resident_shared_snapshot_artifacts > 0
+                || counters.cache_resident_observer_local_artifacts > 0
+        )
+        .then_some((
+            u64::from(
+                counters
+                    .cache_brick_visits
+                    .saturating_add(counters.cache_interval_advances)
+                    .saturating_add(counters.cache_dense_fallback_rays)
+                    .max(1),
+            ),
+            format!(
+                "cache bricks visits={} hits={} misses={} interval_advances={} dense_fallbacks={} budget_rejections={} resident_shared_snapshot={} resident_observer_local={} uploads={} upload_rejections={}",
+                counters.cache_brick_visits,
+                counters.cache_brick_hits,
+                counters.cache_brick_misses,
+                counters.cache_interval_advances,
+                counters.cache_dense_fallback_rays,
+                counters.cache_budget_rejections,
+                counters.cache_resident_shared_snapshot_artifacts,
+                counters.cache_resident_observer_local_artifacts,
+                counters.cache_upload_attempts,
+                counters.cache_upload_rejections
+            ),
+        )),
     );
     push_stage_if_present(
         &mut stages,
@@ -826,6 +880,43 @@ fn collect_causes(
             detail: format!(
                 "capture specialization depended on [{}]",
                 artifact_labels.join(", ")
+            ),
+        });
+    }
+
+    if counters.cache_brick_visits > 0
+        || counters.cache_brick_hits > 0
+        || counters.cache_brick_misses > 0
+        || counters.cache_interval_advances > 0
+        || counters.cache_dense_fallback_rays > 0
+        || counters.cache_budget_rejections > 0
+        || counters.cache_upload_attempts > 0
+        || counters.cache_upload_rejections > 0
+        || counters.cache_resident_shared_snapshot_artifacts > 0
+        || counters.cache_resident_observer_local_artifacts > 0
+    {
+        causes.push(SemanticCostCause {
+            kind: SemanticCostCauseKind::CacheTraversal,
+            score: u64::from(
+                counters
+                    .cache_brick_visits
+                    .saturating_add(counters.cache_interval_advances)
+                    .saturating_add(counters.cache_dense_fallback_rays)
+                    .saturating_add(counters.cache_budget_rejections)
+                    .max(1),
+            ),
+            detail: format!(
+                "cache residency shared_snapshot={} observer_local={} uploads={} upload_rejections={} visits={} hits={} misses={} interval_advances={} dense_fallbacks={} budget_rejections={}",
+                counters.cache_resident_shared_snapshot_artifacts,
+                counters.cache_resident_observer_local_artifacts,
+                counters.cache_upload_attempts,
+                counters.cache_upload_rejections,
+                counters.cache_brick_visits,
+                counters.cache_brick_hits,
+                counters.cache_brick_misses,
+                counters.cache_interval_advances,
+                counters.cache_dense_fallback_rays,
+                counters.cache_budget_rejections
             ),
         });
     }
@@ -1254,6 +1345,7 @@ fn stage_label(stage: SemanticStageKind) -> &'static str {
         SemanticStageKind::HitContextAssembly => "hit-context-assembly",
         SemanticStageKind::ResultAppend => "result-append",
         SemanticStageKind::RaySolver => "ray-solver",
+        SemanticStageKind::CacheTraversal => "cache-traversal",
     }
 }
 
@@ -1282,6 +1374,7 @@ fn cause_label(kind: SemanticCostCauseKind) -> &'static str {
         SemanticCostCauseKind::ParticipantAccumulation => "participant-accumulation",
         SemanticCostCauseKind::IdentityLocality => "identity-locality",
         SemanticCostCauseKind::OpaqueFallback => "opaque-fallback",
+        SemanticCostCauseKind::CacheTraversal => "cache-traversal",
         SemanticCostCauseKind::BackendDispatch => "backend-dispatch",
         SemanticCostCauseKind::RaySolverFallback => "ray-solver-fallback",
     }

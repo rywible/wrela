@@ -1882,6 +1882,188 @@ fn frame_cost_reports_tile_culling_when_support_bounds_shrink_screen_work() {
 }
 
 #[test]
+fn frame_cost_reports_view_distance_clipmap_reuse_update_and_fallback() {
+    let (plan, ctx, input) = presentation_fixture(DispatchBackend::Cpu);
+
+    let first = execute_plan(&ctx, &plan, &input).expect("cpu clipmap build");
+    let first_clipmap = first
+        .history
+        .as_ref()
+        .and_then(|history| history.clipmap.as_ref())
+        .expect("initial clipmap artifact");
+    assert_eq!(first_clipmap.build_count, 1);
+    assert_eq!(first_clipmap.reuse_count, 0);
+    assert_eq!(first_clipmap.update_count, 0);
+
+    let mut stable_input = input.clone();
+    stable_input.history = first.history.clone();
+    stable_input.frame_state = frame_state_value_with_history(
+        CanonicalCameraInput {
+            position: [0.0, 0.0, 2.0],
+            forward: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            vertical_fov_degrees: 75.0,
+        },
+        CanonicalCameraInput {
+            position: [0.0, 0.0, 2.0],
+            forward: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            vertical_fov_degrees: 75.0,
+        },
+        CanonicalViewportInput {
+            width: 4,
+            height: 4,
+        },
+        CanonicalViewportInput {
+            width: 4,
+            height: 4,
+        },
+        [0.0, 0.0],
+        [0.0, 0.0],
+        1,
+        0,
+        1.0 / 60.0,
+        false,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
+    );
+    let stable = execute_plan(&ctx, &plan, &stable_input).expect("cpu clipmap reuse");
+    let stable_clipmap = stable
+        .history
+        .as_ref()
+        .and_then(|history| history.clipmap.as_ref())
+        .expect("stable clipmap artifact");
+    assert_eq!(stable_clipmap.reuse_count, 1);
+    assert_eq!(stable_clipmap.update_count, 0);
+    assert!(
+        stable
+            .frame_cost
+            .passes
+            .iter()
+            .find(|pass| pass.pass_kind == "view_distance_clipmap")
+            .expect("clipmap pass")
+            .notes
+            .iter()
+            .any(|note| note.contains("status=reused")),
+        "expected clipmap reuse note, got {:?}",
+        stable.frame_cost.passes
+    );
+    assert!(
+        stable
+            .frame_cost
+            .active_acceleration_artifacts
+            .iter()
+            .any(|artifact| artifact == "view_distance_clipmap")
+    );
+
+    let mut moving_input = input.clone();
+    moving_input.history = first.history.clone();
+    moving_input.frame_state = frame_state_value_with_history(
+        CanonicalCameraInput {
+            position: [0.10, 0.0, 2.0],
+            forward: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            vertical_fov_degrees: 75.0,
+        },
+        CanonicalCameraInput {
+            position: [0.0, 0.0, 2.0],
+            forward: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            vertical_fov_degrees: 75.0,
+        },
+        CanonicalViewportInput {
+            width: 4,
+            height: 4,
+        },
+        CanonicalViewportInput {
+            width: 4,
+            height: 4,
+        },
+        [0.0, 0.0],
+        [0.0, 0.0],
+        1,
+        0,
+        1.0 / 60.0,
+        false,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
+    );
+    let moving = execute_plan(&ctx, &plan, &moving_input).expect("cpu clipmap update");
+    let moving_clipmap = moving
+        .history
+        .as_ref()
+        .and_then(|history| history.clipmap.as_ref())
+        .expect("moving clipmap artifact");
+    assert_eq!(moving_clipmap.update_count, 1);
+    assert_eq!(moving_clipmap.reuse_count, 0);
+    assert!(
+        moving
+            .frame_cost
+            .passes
+            .iter()
+            .find(|pass| pass.pass_kind == "view_distance_clipmap")
+            .expect("clipmap pass")
+            .notes
+            .iter()
+            .any(|note| note.contains("status=updated"))
+    );
+
+    let mut budget_input = input.clone();
+    budget_input.history = first.history.clone();
+    budget_input.execution_policy = presentation_execution_policy(1);
+    budget_input.frame_state = frame_state_value_with_history(
+        CanonicalCameraInput {
+            position: [0.10, 0.0, 2.0],
+            forward: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            vertical_fov_degrees: 75.0,
+        },
+        CanonicalCameraInput {
+            position: [0.0, 0.0, 2.0],
+            forward: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            vertical_fov_degrees: 75.0,
+        },
+        CanonicalViewportInput {
+            width: 4,
+            height: 4,
+        },
+        CanonicalViewportInput {
+            width: 4,
+            height: 4,
+        },
+        [0.0, 0.0],
+        [0.0, 0.0],
+        1,
+        0,
+        1.0 / 60.0,
+        false,
+        SnapshotEpoch(1),
+        SnapshotEpoch(1),
+    );
+    let budget = execute_plan(&ctx, &plan, &budget_input).expect("cpu clipmap fallback");
+    let budget_clipmap = budget
+        .history
+        .as_ref()
+        .and_then(|history| history.clipmap.as_ref())
+        .expect("budget clipmap artifact");
+    assert_eq!(
+        budget_clipmap.build_mode,
+        wrela::acceleration::clipmap::ViewDistanceClipmapBuildMode::Fallback
+    );
+    assert!(
+        budget_clipmap
+            .fallback_reasons
+            .iter()
+            .any(|reason| reason == "upload-budget-exceeded")
+    );
+    assert!(
+        wrela::presentation_exec::render_frame_cost_report(&budget.frame_cost)
+            .contains("view_distance_clipmap")
+    );
+}
+
+#[test]
 fn wgsl_frame_cost_reports_tile_candidates_packets_and_workgroup_size() {
     let viewport = CanonicalViewportInput {
         width: 32,
