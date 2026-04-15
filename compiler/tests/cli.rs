@@ -4000,6 +4000,14 @@ suite = "realtime_presentation"
 warmup_pairs = 1
 measure_pairs = 1
 coverage = "all"
+execution_story = "wgsl_resident"
+adapter_name = "wgsl_resident"
+enabled_optional_features = []
+timestamps_enabled = false
+f16_enabled = false
+indirect_dispatch_enabled = false
+warmup_protocol = "pipeline_and_resident_scene_upload"
+companion_profile = "canonical_1080p120_cpu_oracle"
 
 [[scenarios]]
 id = "closure_1080p120_fixture"
@@ -4086,6 +4094,14 @@ suite = "field_engine"
 warmup_pairs = 1
 measure_pairs = 1
 coverage = "all"
+execution_story = "wgsl_resident"
+adapter_name = "wgsl_resident"
+enabled_optional_features = []
+timestamps_enabled = false
+f16_enabled = false
+indirect_dispatch_enabled = false
+warmup_protocol = "pipeline_and_resident_scene_upload"
+companion_profile = "canonical_1080p120_cpu_oracle"
 
 [[scenarios]]
 id = "closure_1080p120_field_fixture"
@@ -7719,7 +7735,31 @@ fn cli_perf_writes_baseline_json() {
         closure
             .pointer("/profile/name")
             .and_then(|value| value.as_str()),
-        Some("canonical_1080p120")
+        Some("canonical_1080p120_wgsl_resident")
+    );
+    assert_eq!(
+        closure
+            .pointer("/profile/execution_story")
+            .and_then(|value| value.as_str()),
+        Some("wgsl_resident")
+    );
+    assert_eq!(
+        closure
+            .pointer("/profile/backend")
+            .and_then(|value| value.as_str()),
+        Some("wgsl")
+    );
+    assert_eq!(
+        closure
+            .pointer("/profile/adapter_name")
+            .and_then(|value| value.as_str()),
+        Some("wgsl_resident")
+    );
+    assert_eq!(
+        closure
+            .pointer("/cpu_oracle_profile/name")
+            .and_then(|value| value.as_str()),
+        Some("canonical_1080p120_cpu_oracle")
     );
     assert_eq!(
         closure
@@ -8051,7 +8091,7 @@ fn cli_perf_runs_realtime_presentation_1080p120_closure_profile() {
         .arg("perf")
         .arg("--runs=1")
         .arg("--profile=1080p120")
-        .arg("--query-backend=cpu")
+        .arg("--query-backend=wgsl")
         .arg(format!("--baseline-out={}", baseline.display()))
         .arg(&bench_root)
         .output()
@@ -8071,7 +8111,13 @@ fn cli_perf_runs_realtime_presentation_1080p120_closure_profile() {
         closure
             .pointer("/profile/name")
             .and_then(|value| value.as_str()),
-        Some("canonical_1080p120")
+        Some("canonical_1080p120_wgsl_resident")
+    );
+    assert_eq!(
+        closure
+            .pointer("/cpu_oracle_profile/name")
+            .and_then(|value| value.as_str()),
+        Some("canonical_1080p120_cpu_oracle")
     );
     assert_eq!(
         closure
@@ -8132,11 +8178,35 @@ fn cli_perf_runs_realtime_presentation_1080p120_closure_profile() {
         .and_then(|value| value.as_array())
         .expect("presentation reports array");
     assert!(!presentation_reports.is_empty());
+    let observed_adapter_name = presentation_reports[0]
+        .get("observed_adapter_name")
+        .and_then(|value| value.as_str())
+        .expect("observed adapter name");
     assert_eq!(
         presentation_reports[0]
             .pointer("/quality_tier")
             .and_then(|value| value.as_str()),
         Some("realtime_120")
+    );
+    assert_eq!(
+        presentation_reports[0]
+            .pointer("/backend")
+            .and_then(|value| value.as_str()),
+        Some("wgsl")
+    );
+    assert_eq!(
+        closure
+            .pointer("/profile/adapter_name")
+            .and_then(|value| value.as_str()),
+        Some(observed_adapter_name)
+    );
+    assert_eq!(
+        closure
+            .pointer("/profile/timestamps_enabled")
+            .and_then(|value| value.as_bool()),
+        presentation_reports[0]
+            .pointer("/frame_cost/gpu_runtime/timestamps_supported")
+            .and_then(|value| value.as_bool())
     );
     assert!(json.get("collision_reports").is_none());
 }
@@ -8155,7 +8225,7 @@ fn cli_perf_why_not_120_mode_prints_closure_verdict_and_diagnostics() {
         .arg("perf")
         .arg("--runs=1")
         .arg("--profile=1080p120")
-        .arg("--query-backend=cpu")
+        .arg("--query-backend=wgsl")
         .arg("--why-not-120")
         .arg(format!("--baseline-out={}", baseline.display()))
         .arg(&bench_root)
@@ -8169,6 +8239,8 @@ fn cli_perf_why_not_120_mode_prints_closure_verdict_and_diagnostics() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("closure verdict:"));
+    assert!(stdout.contains("wgsl_resident"));
+    assert!(stdout.contains("cpu-oracle companion:"));
     assert!(stdout.contains("why-not-120:"));
     let json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&baseline).expect("read diagnostics baseline"))
@@ -8177,6 +8249,16 @@ fn cli_perf_why_not_120_mode_prints_closure_verdict_and_diagnostics() {
     assert!(closure.pointer("/verdict/status").is_some());
     assert!(closure.pointer("/verdict/summary").is_some());
     assert!(closure.pointer("/verdict/findings").is_some());
+    let presentation_reports = json
+        .get("presentation_reports")
+        .and_then(|value| value.as_array())
+        .expect("presentation reports array");
+    assert_eq!(
+        presentation_reports[0]
+            .pointer("/backend")
+            .and_then(|value| value.as_str()),
+        Some("wgsl")
+    );
 }
 
 #[test]
@@ -8217,7 +8299,13 @@ fn cli_perf_runs_field_engine_1080p120_closure_profile() {
         closure
             .pointer("/profile/name")
             .and_then(|value| value.as_str()),
-        Some("canonical_1080p120")
+        Some("canonical_1080p120_wgsl_resident")
+    );
+    assert_eq!(
+        closure
+            .pointer("/cpu_oracle_profile/name")
+            .and_then(|value| value.as_str()),
+        Some("canonical_1080p120_cpu_oracle")
     );
     assert_eq!(
         closure
@@ -8295,6 +8383,18 @@ fn cli_perf_runs_collision_perf_1080p120_closure_profile() {
         serde_json::from_slice(&std::fs::read(&baseline).expect("read collision baseline"))
             .expect("parse collision baseline");
     let closure = json.get("closure").expect("closure report");
+    assert_eq!(
+        closure
+            .pointer("/profile/name")
+            .and_then(|value| value.as_str()),
+        Some("canonical_1080p120_wgsl_resident")
+    );
+    assert_eq!(
+        closure
+            .pointer("/cpu_oracle_profile/name")
+            .and_then(|value| value.as_str()),
+        Some("canonical_1080p120_cpu_oracle")
+    );
     assert!(matches!(
         closure
             .pointer("/verdict/status")

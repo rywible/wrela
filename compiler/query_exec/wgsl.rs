@@ -4,6 +4,10 @@ use self::codegen::{ShaderPlan, generate_shader};
 use crate::acceleration::cache::SupportBrickCache;
 use crate::acceleration::{AccelerationForest, BoundDescriptorKind};
 use crate::execution_policy::QueryExecutionPolicy;
+use crate::gpu_runtime::{
+    GpuLimitRequest, GpuPassProfiler, GpuRuntimeContext, GpuRuntimeMetrics,
+    readback_storage_buffer_on as shared_readback_storage_buffer_on, shared_wgpu_context,
+};
 use crate::kernel::KernelBatchQueryTrace;
 use crate::kernel::ir::{KernelBatchQueryPlan, KernelCaptureQueryPlan, KernelWorldQueryPlan};
 use crate::kernel::{
@@ -29,8 +33,8 @@ use std::borrow::Cow;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
-use wgpu::util::{DeviceExt, initialize_adapter_from_env_or_default};
+use std::sync::{Arc, Mutex, OnceLock};
+use wgpu::util::DeviceExt;
 
 const QUERY_WGSL_BIND_GROUP_COUNT: u32 = 4;
 const QUERY_WGSL_STORAGE_BUFFERS_PER_SHADER_STAGE: u32 = 10;
@@ -38,13 +42,7 @@ const QUERY_WGSL_ACCEL_FLAG_LEAF: u32 = 1;
 const QUERY_WGSL_ACCEL_FLAG_HAS_BOUNDS: u32 = 2;
 const QUERY_WGSL_OBSERVABILITY_U32S: usize = 18;
 
-#[derive(Clone)]
-pub(crate) struct NativeWgpuContext {
-    pub(crate) device: wgpu::Device,
-    pub(crate) queue: wgpu::Queue,
-    pub(crate) adapter_limits: wgpu::Limits,
-    pub(crate) requested_limits: wgpu::Limits,
-}
+pub(crate) type NativeWgpuContext = GpuRuntimeContext;
 
 #[derive(Debug, Clone)]
 pub(crate) struct GpuDispatchRequest {
@@ -90,22 +88,7 @@ pub(crate) struct QueryCachedPipeline {
     pub(crate) pipeline: wgpu::ComputePipeline,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct WgslLimitRequest {
-    max_storage_buffers_per_shader_stage: u32,
-    max_storage_buffer_binding_size: u64,
-}
-
-impl Default for WgslLimitRequest {
-    fn default() -> Self {
-        Self {
-            max_storage_buffers_per_shader_stage: wgpu::Limits::downlevel_defaults()
-                .max_storage_buffers_per_shader_stage,
-            max_storage_buffer_binding_size: wgpu::Limits::downlevel_defaults()
-                .max_storage_buffer_binding_size,
-        }
-    }
-}
+type WgslLimitRequest = GpuLimitRequest;
 
 #[derive(Debug, Clone, Copy)]
 struct WgslDispatchDiagnostics {
@@ -1172,6 +1155,10 @@ pub(crate) fn dispatch_compiled_shader_with_observability(
             values.extend(chunk_values);
             observability.merge_from(&chunk_observability);
         }
+        observability.gpu_runtime.dispatch_fragmentation_count = observability
+            .gpu_runtime
+            .dispatch_fragmentation_count
+            .saturating_add(chunk_plan.chunk_count.saturating_sub(1) as u32);
         return Ok((values, observability));
     }
 
@@ -1219,6 +1206,7 @@ fn dispatch_compiled_shader_single_with_observability(
         max_storage_buffer_binding_size: used_max_storage_buffer_bytes,
     };
     let native = native_wgpu_context_for_limits(limit_request)?;
+    let mut profiler = GpuPassProfiler::new(&native, 1);
     let selected_workgroup_size = select_query_wgsl_workgroup_size(&native.adapter_limits)?;
     let input_buffer = native
         .device
@@ -1247,20 +1235,58 @@ fn dispatch_compiled_shader_single_with_observability(
         used_max_storage_buffer_bytes,
         requested_max_storage_buffer_bytes: native.requested_limits.max_storage_buffer_binding_size,
     };
-    dispatch_compiled_shader_with_buffers(
+    let mut gpu_runtime = GpuRuntimeMetrics {
+        timestamps_supported: profiler.timestamps_supported(),
+        timestamped_pass_count: 0,
+        gpu_time_total_micros: 0,
+        gpu_time_max_micros: 0,
+        queue_submit_count: 0,
+        transient_buffer_creations: 3,
+        transient_bind_group_creations: 0,
+        upload_bytes: storage_buffer_size(&input_bytes)
+            + (QUERY_WGSL_OBSERVABILITY_U32S * std::mem::size_of::<u32>()) as u64,
+        readback_bytes: 0,
+        cpu_screen_sample_allocations: 0,
+        attachment_decode_count: 0,
+        attachment_encode_count: 0,
+        primary_visibility_packet_fanout_count: 0,
+        dispatch_fragmentation_count: 0,
+        scene_reupload_bytes: 0,
+        pipeline_cache_hits: 0,
+        pipeline_cache_misses: 0,
+    };
+    gpu_runtime.merge_from(&dispatch_compiled_shader_with_buffers(
         generated,
         &request,
         &input_buffer,
         &output_buffer,
         &observability_buffer,
         diagnostics,
-    )?;
+        &mut profiler,
+    )?);
     let bytes = readback_storage_buffer_on(&native, &output_buffer, result_buffer_size)?;
     let observability_bytes = readback_storage_buffer_on(
         &native,
         &observability_buffer,
         (QUERY_WGSL_OBSERVABILITY_U32S * std::mem::size_of::<u32>()) as u64,
     )?;
+    let gpu_elapsed_micros = profiler
+        .readback_gpu_elapsed_micros(&native)
+        .map_err(|message| QueryExecError::Unsupported {
+            message: format!("native WGSL GPU timing readback failed: {message}"),
+        })?;
+    gpu_runtime.note_gpu_timings(profiler.timestamps_supported(), &gpu_elapsed_micros);
+    gpu_runtime.queue_submit_count = gpu_runtime
+        .queue_submit_count
+        .saturating_add(2 + u32::from(profiler.timestamps_supported()));
+    gpu_runtime.transient_buffer_creations = gpu_runtime
+        .transient_buffer_creations
+        .saturating_add(2 + u32::from(profiler.timestamps_supported()));
+    gpu_runtime.readback_bytes = gpu_runtime
+        .readback_bytes
+        .saturating_add(result_buffer_size)
+        .saturating_add((QUERY_WGSL_OBSERVABILITY_U32S * std::mem::size_of::<u32>()) as u64)
+        .saturating_add(gpu_runtime.timestamped_pass_count as u64 * 16);
 
     Ok((
         decode_slice(&generated.result_abi, &bytes, request.items.len())?,
@@ -1269,6 +1295,7 @@ fn dispatch_compiled_shader_single_with_observability(
             &diagnostics,
             &observability_bytes,
             request.items.len() as u32,
+            gpu_runtime,
         ),
     ))
 }
@@ -1443,9 +1470,10 @@ fn dispatch_compiled_shader_with_buffers(
     output_buffer: &wgpu::Buffer,
     observability_buffer: &wgpu::Buffer,
     diagnostics: WgslDispatchDiagnostics,
-) -> Result<(), QueryExecError> {
+    profiler: &mut GpuPassProfiler,
+) -> Result<GpuRuntimeMetrics, QueryExecError> {
     if request.items.is_empty() {
-        return Ok(());
+        return Ok(GpuRuntimeMetrics::default());
     }
     let native = native_wgpu_context_for_limits(WgslLimitRequest {
         max_storage_buffers_per_shader_stage: QUERY_WGSL_STORAGE_BUFFERS_PER_SHADER_STAGE,
@@ -1461,6 +1489,21 @@ fn dispatch_compiled_shader_with_buffers(
         encode_shape_meta_values(&generated.shape_meta_abi, &generated.shape_meta_values)?;
     let shape_bytes = encode_shape_indices(&request.world_shape_indices)?;
     let continuation_seed_bytes = encode_u32_values(&request.continuation_seeds)?;
+    let mut gpu_runtime = GpuRuntimeMetrics::default();
+    gpu_runtime.upload_bytes = storage_buffer_size(&dispatch_bytes)
+        + storage_buffer_size(&accel_node_bytes)
+        + storage_buffer_size(&accel_child_bytes)
+        + storage_buffer_size(&cache_brick_bytes)
+        + storage_buffer_size(&shape_meta_bytes)
+        + storage_buffer_size(&shape_bytes)
+        + storage_buffer_size(&continuation_seed_bytes);
+    gpu_runtime.scene_reupload_bytes = storage_buffer_size(&accel_node_bytes)
+        + storage_buffer_size(&accel_child_bytes)
+        + storage_buffer_size(&cache_brick_bytes)
+        + storage_buffer_size(&shape_meta_bytes)
+        + storage_buffer_size(&shape_bytes);
+    gpu_runtime.transient_buffer_creations = 7;
+    gpu_runtime.transient_bind_group_creations = 4;
     let dispatch_buffer = native
         .device
         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1517,6 +1560,7 @@ fn dispatch_compiled_shader_with_buffers(
         &generated.source,
         diagnostics.selected_workgroup_size,
         generated,
+        &mut gpu_runtime,
     )?;
     let bind_group0 = native.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("wrela.wgsl.bind_group0"),
@@ -1585,9 +1629,10 @@ fn dispatch_compiled_shader_with_buffers(
             label: Some("wrela.wgsl.encoder"),
         });
     {
+        let timestamp_writes = profiler.compute_pass_timestamp_writes();
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("wrela.wgsl.compute_pass"),
-            timestamp_writes: None,
+            timestamp_writes,
         });
         pass.set_pipeline(&cached.pipeline);
         pass.set_bind_group(0, &bind_group0, &[]);
@@ -1603,8 +1648,10 @@ fn dispatch_compiled_shader_with_buffers(
             1,
         );
     }
+    profiler.resolve_into(&mut encoder);
     native.queue.submit(Some(encoder.finish()));
-    Ok(())
+    gpu_runtime.queue_submit_count = 1;
+    Ok(gpu_runtime)
 }
 
 fn dispatch_workgroups_x_for_items(item_count: u32, workgroup_size: u32) -> u32 {
@@ -1624,46 +1671,11 @@ pub(crate) fn readback_storage_buffer_on(
     buffer: &wgpu::Buffer,
     size: u64,
 ) -> Result<Vec<u8>, QueryExecError> {
-    let readback_buffer = native.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wrela.wgsl.readback"),
-        size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = native
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("wrela.wgsl.readback_encoder"),
-        });
-    encoder.copy_buffer_to_buffer(buffer, 0, &readback_buffer, 0, size);
-    native.queue.submit(Some(encoder.finish()));
-
-    let slice = readback_buffer.slice(..size);
-    let (tx, rx) = mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |result| {
-        let _ = tx.send(result);
-    });
-    native
-        .device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .map_err(wgpu_poll_error)?;
-    match rx.recv() {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => {
-            return Err(QueryExecError::Unsupported {
-                message: format!("native WGSL readback failed: {err}"),
-            });
+    shared_readback_storage_buffer_on(native, buffer, size).map_err(|message| {
+        QueryExecError::Unsupported {
+            message: format!("native WGSL readback failed: {message}"),
         }
-        Err(err) => {
-            return Err(QueryExecError::Unsupported {
-                message: format!("native WGSL readback channel failed: {err}"),
-            });
-        }
-    }
-    let bytes = slice.get_mapped_range().to_vec();
-    let _ = slice;
-    readback_buffer.unmap();
-    Ok(bytes)
+    })
 }
 
 pub(crate) fn compiled_pipeline(
@@ -1671,6 +1683,7 @@ pub(crate) fn compiled_pipeline(
     source: &str,
     workgroup_size: u32,
     dispatch_min_size: Option<wgpu::BufferSize>,
+    gpu_runtime: &mut GpuRuntimeMetrics,
 ) -> Result<CachedPipeline, QueryExecError> {
     static PIPELINES: OnceLock<Mutex<HashMap<(String, u32, u64), CachedPipeline>>> =
         OnceLock::new();
@@ -1684,9 +1697,11 @@ pub(crate) fn compiled_pipeline(
     {
         let guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
         if let Some(cached) = guard.get(&key) {
+            gpu_runtime.pipeline_cache_hits = gpu_runtime.pipeline_cache_hits.saturating_add(1);
             return Ok(cached.clone());
         }
     }
+    gpu_runtime.pipeline_cache_misses = gpu_runtime.pipeline_cache_misses.saturating_add(1);
 
     let bind_group_layout =
         native
@@ -1764,6 +1779,7 @@ fn compiled_query_pipeline(
     source: &str,
     workgroup_size: u32,
     generated: &GeneratedShaderModule,
+    gpu_runtime: &mut GpuRuntimeMetrics,
 ) -> Result<QueryCachedPipeline, QueryExecError> {
     static PIPELINES: OnceLock<Mutex<HashMap<(String, u32, u64, u32, u64), QueryCachedPipeline>>> =
         OnceLock::new();
@@ -1779,9 +1795,11 @@ fn compiled_query_pipeline(
     {
         let guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
         if let Some(cached) = guard.get(&key) {
+            gpu_runtime.pipeline_cache_hits = gpu_runtime.pipeline_cache_hits.saturating_add(1);
             return Ok(cached.clone());
         }
     }
+    gpu_runtime.pipeline_cache_misses = gpu_runtime.pipeline_cache_misses.saturating_add(1);
 
     let dispatch_layout =
         native
@@ -1993,6 +2011,7 @@ fn decode_wgsl_observability(
     diagnostics: &WgslDispatchDiagnostics,
     bytes: &[u8],
     dispatch_items: u32,
+    gpu_runtime: GpuRuntimeMetrics,
 ) -> QueryExecutionObservability {
     let read_u32 = |index: usize| -> u32 {
         let start = index * std::mem::size_of::<u32>();
@@ -2035,6 +2054,7 @@ fn decode_wgsl_observability(
         wgsl_requested_max_storage_buffer_bytes: diagnostics.requested_max_storage_buffer_bytes,
         wgsl_used_max_storage_buffer_bytes: diagnostics.used_max_storage_buffer_bytes,
         wgsl_selected_workgroup_size: diagnostics.selected_workgroup_size,
+        gpu_runtime,
         ..QueryExecutionObservability::default()
     }
 }
@@ -2073,82 +2093,17 @@ fn native_wgpu_context_for_limits(
                 });
         }
     }
-    let context = init_native_wgpu_context_for_limits(request).map(Arc::new);
     let mut guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
-    let entry = guard.entry(request).or_insert_with(|| context.clone());
+    let entry = guard.entry(request).or_insert_with(|| {
+        shared_wgpu_context(request)
+            .map_err(|message| format!("native WGSL backend initialization failed: {message}"))
+    });
     match entry {
         Ok(context) => Ok(context.clone()),
         Err(message) => Err(QueryExecError::Unsupported {
             message: format!("native WGSL backend initialization failed: {message}"),
         }),
     }
-}
-
-fn init_native_wgpu_context_for_limits(
-    request: WgslLimitRequest,
-) -> Result<NativeWgpuContext, String> {
-    let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter = pollster::block_on(initialize_adapter_from_env_or_default(&instance, None))
-        .map_err(|err| format!("request adapter failed: {err}"))?;
-    let adapter_limits = adapter.limits();
-    if request.max_storage_buffers_per_shader_stage
-        > adapter_limits.max_storage_buffers_per_shader_stage
-    {
-        return Err(format!(
-            "requested {} storage buffers per shader stage but adapter profile only supports {}",
-            request.max_storage_buffers_per_shader_stage,
-            adapter_limits.max_storage_buffers_per_shader_stage
-        ));
-    }
-    if request.max_storage_buffer_binding_size > adapter_limits.max_storage_buffer_binding_size {
-        return Err(format!(
-            "requested storage buffer binding size {} exceeds adapter profile {}",
-            request.max_storage_buffer_binding_size, adapter_limits.max_storage_buffer_binding_size
-        ));
-    }
-    if request.max_storage_buffer_binding_size > adapter_limits.max_buffer_size {
-        return Err(format!(
-            "requested storage buffer binding size {} exceeds adapter max buffer size {}",
-            request.max_storage_buffer_binding_size, adapter_limits.max_buffer_size
-        ));
-    }
-    if QUERY_WGSL_BIND_GROUP_COUNT > adapter_limits.max_bind_groups {
-        return Err(format!(
-            "query WGSL layout needs {} bind groups but adapter profile only supports {}",
-            QUERY_WGSL_BIND_GROUP_COUNT, adapter_limits.max_bind_groups
-        ));
-    }
-    let selected_workgroup_size =
-        select_query_wgsl_workgroup_size(&adapter_limits).map_err(|err| err.to_string())?;
-    let mut required_limits = wgpu::Limits::downlevel_defaults()
-        .using_resolution(adapter_limits.clone())
-        .using_alignment(adapter_limits.clone());
-    required_limits.max_bind_groups = QUERY_WGSL_BIND_GROUP_COUNT;
-    required_limits.max_storage_buffers_per_shader_stage =
-        request.max_storage_buffers_per_shader_stage;
-    required_limits.max_storage_buffer_binding_size = request.max_storage_buffer_binding_size;
-    required_limits.max_buffer_size = adapter_limits.max_buffer_size;
-    required_limits.max_compute_invocations_per_workgroup = selected_workgroup_size;
-    required_limits.max_compute_workgroup_size_x = selected_workgroup_size;
-    required_limits.max_compute_workgroup_size_y = 1;
-    required_limits.max_compute_workgroup_size_z = 1;
-    let descriptor = wgpu::DeviceDescriptor {
-        label: Some("wrela.wgsl.device"),
-        required_features: wgpu::Features::empty(),
-        required_limits: required_limits.clone(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    };
-    let (device, queue) = pollster::block_on(adapter.request_device(&descriptor))
-        .map_err(|err| format!("request device failed: {err}"))?;
-    Ok(NativeWgpuContext {
-        device,
-        queue,
-        adapter_limits,
-        requested_limits: required_limits,
-    })
 }
 
 fn validation_error(label: &str, errors: Vec<KernelValidationError>) -> QueryExecError {

@@ -41,6 +41,34 @@ pub enum PerfClosureBackend {
     Auto,
 }
 
+impl PerfClosureBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Vgpu => "vgpu",
+            Self::Wgsl => "wgsl",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PerfClosureExecutionStory {
+    #[default]
+    WgslResident,
+    CpuOracle,
+}
+
+impl PerfClosureExecutionStory {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CpuOracle => "cpu_oracle",
+            Self::WgslResident => "wgsl_resident",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PerfClosureDegradationStep {
@@ -81,11 +109,25 @@ pub struct PerfClosureCollisionBaseline {
 pub struct PerfClosureProfile {
     pub version: u32,
     pub name: String,
+    #[serde(default)]
+    pub execution_story: PerfClosureExecutionStory,
     pub machine_class: String,
     pub adapter_name_pattern: String,
+    #[serde(default)]
+    pub adapter_name: String,
     pub backend: PerfClosureBackend,
     pub backend_contract: String,
     pub requested_limits_profile: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enabled_optional_features: Vec<String>,
+    #[serde(default)]
+    pub timestamps_enabled: bool,
+    #[serde(default)]
+    pub f16_enabled: bool,
+    #[serde(default)]
+    pub indirect_dispatch_enabled: bool,
+    #[serde(default)]
+    pub warmup_protocol: String,
     pub output_width: u32,
     pub output_height: u32,
     pub target_fps: u32,
@@ -174,6 +216,8 @@ pub struct PerfClosureVerdict {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PerfClosureReport {
     pub profile: PerfClosureProfile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_oracle_profile: Option<PerfClosureProfile>,
     pub frame: PerfClosureLaneStatusReport,
     pub collision: PerfClosureLaneStatusReport,
     #[serde(default)]
@@ -182,14 +226,90 @@ pub struct PerfClosureReport {
 
 impl PerfClosureProfile {
     pub fn canonical_1080p120() -> Self {
+        Self::canonical_1080p120_wgsl_resident()
+    }
+
+    pub fn canonical_1080p120_cpu_oracle() -> Self {
         Self {
             version: PERF_CLOSURE_CONTRACT_VERSION,
-            name: "canonical_1080p120".to_string(),
+            name: "canonical_1080p120_cpu_oracle".to_string(),
+            execution_story: PerfClosureExecutionStory::CpuOracle,
             machine_class: "desktop_class_cpu_oracle".to_string(),
             adapter_name_pattern: "cpu_oracle".to_string(),
+            adapter_name: "cpu_oracle".to_string(),
             backend: PerfClosureBackend::Cpu,
             backend_contract: "cpu_oracle_with_wgsl_parity_reference".to_string(),
             requested_limits_profile: "cpu_oracle_reference".to_string(),
+            enabled_optional_features: Vec::new(),
+            timestamps_enabled: false,
+            f16_enabled: false,
+            indirect_dispatch_enabled: false,
+            warmup_protocol: "cpu_oracle_baseline_warmup".to_string(),
+            output_width: 1920,
+            output_height: 1080,
+            target_fps: 120,
+            min_internal_resolution_scale: 1.0,
+            legal_degradations: vec![
+                PerfClosureDegradationStep::EnableHitCompaction,
+                PerfClosureDegradationStep::LowerPrimarySteps,
+                PerfClosureDegradationStep::DisableMedia,
+                PerfClosureDegradationStep::LowerRadianceQuality,
+                PerfClosureDegradationStep::DisableRadiance,
+                PerfClosureDegradationStep::HalfResolutionParticipants,
+            ],
+            warmup_runs: 4,
+            measured_runs: 12,
+            frame: PerfClosureLaneProtocol {
+                lane: PerfClosureLaneKind::Frame,
+                protocol_id: "realtime_presentation.1080p120".to_string(),
+                suite: "realtime_presentation".to_string(),
+                scene_set_id: "closure_1080p120_frame".to_string(),
+                view_set_id: "realtime_120_closure_views".to_string(),
+                camera_path_id: "closure_camera_path_fixed".to_string(),
+                motion_fixture_id: Some("closure_camera_motion_fixture".to_string()),
+                fixed_seed: 0x1080_0120,
+            },
+            frame_budget: PerfClosureMetricBudget {
+                median_ms: 8.33,
+                p95_ms: 8.33,
+            },
+            primary_visibility_budget: PerfClosureMetricBudget {
+                median_ms: 4.50,
+                p95_ms: 5.25,
+            },
+            collision: PerfClosureLaneProtocol {
+                lane: PerfClosureLaneKind::Collision,
+                protocol_id: "collision_perf.1080p120".to_string(),
+                suite: "collision_perf".to_string(),
+                scene_set_id: "closure_1080p120_collision".to_string(),
+                view_set_id: "collision_closure_cases".to_string(),
+                camera_path_id: "closure_collision_probe_path".to_string(),
+                motion_fixture_id: Some("closure_collision_motion_fixture".to_string()),
+                fixed_seed: 0x1080_0121,
+            },
+            collision_baseline: PerfClosureCollisionBaseline {
+                baseline_id: "collision_perf.phase40_cpu_oracle".to_string(),
+                max_runtime_regression_pct: 0.0,
+            },
+        }
+    }
+
+    pub fn canonical_1080p120_wgsl_resident() -> Self {
+        Self {
+            version: PERF_CLOSURE_CONTRACT_VERSION,
+            name: "canonical_1080p120_wgsl_resident".to_string(),
+            execution_story: PerfClosureExecutionStory::WgslResident,
+            machine_class: "desktop_class_wgsl_resident".to_string(),
+            adapter_name_pattern: "wgsl_resident".to_string(),
+            adapter_name: "wgsl_resident".to_string(),
+            backend: PerfClosureBackend::Wgsl,
+            backend_contract: "wgsl_resident_with_cpu_oracle_reference".to_string(),
+            requested_limits_profile: "wgsl_resident_reference".to_string(),
+            enabled_optional_features: vec![],
+            timestamps_enabled: false,
+            f16_enabled: false,
+            indirect_dispatch_enabled: false,
+            warmup_protocol: "pipeline_and_resident_scene_upload".to_string(),
             output_width: 1920,
             output_height: 1080,
             target_fps: 120,
@@ -241,8 +361,14 @@ impl PerfClosureProfile {
 
     pub fn named(name: &str) -> Option<Self> {
         match name.trim().to_ascii_lowercase().as_str() {
-            "canonical_1080p120" | "closure" | "1080p120" | "realtime_120" => {
-                Some(Self::canonical_1080p120())
+            "canonical_1080p120"
+            | "closure"
+            | "1080p120"
+            | "realtime_120"
+            | "wgsl_resident"
+            | "canonical_1080p120_wgsl_resident" => Some(Self::canonical_1080p120_wgsl_resident()),
+            "canonical_1080p120_cpu_oracle" | "cpu_oracle" | "cpu_oracle_1080p120" => {
+                Some(Self::canonical_1080p120_cpu_oracle())
             }
             _ => None,
         }
@@ -259,6 +385,9 @@ impl PerfClosureProfile {
         if self.name.trim().is_empty() {
             errors.push("performance closure profile name must not be empty".to_string());
         }
+        if self.adapter_name.trim().is_empty() {
+            errors.push("performance closure adapter_name must not be empty".to_string());
+        }
         if self.machine_class.trim().is_empty() {
             errors.push("performance closure machine_class must not be empty".to_string());
         }
@@ -271,6 +400,22 @@ impl PerfClosureProfile {
         if self.requested_limits_profile.trim().is_empty() {
             errors
                 .push("performance closure requested_limits_profile must not be empty".to_string());
+        }
+        if self.warmup_protocol.trim().is_empty() {
+            errors.push("performance closure warmup_protocol must not be empty".to_string());
+        }
+        match self.execution_story {
+            PerfClosureExecutionStory::CpuOracle
+                if !matches!(self.backend, PerfClosureBackend::Cpu) =>
+            {
+                errors.push("cpu_oracle closure profiles must use the cpu backend".to_string());
+            }
+            PerfClosureExecutionStory::WgslResident
+                if !matches!(self.backend, PerfClosureBackend::Wgsl) =>
+            {
+                errors.push("wgsl_resident closure profiles must use the wgsl backend".to_string());
+            }
+            _ => {}
         }
         if self.output_width != 1920 || self.output_height != 1080 {
             errors.push("canonical performance closure must target 1920x1080 output".to_string());
@@ -300,6 +445,15 @@ impl PerfClosureProfile {
                 errors.push(format!(
                     "performance closure legal degradation '{}' appears more than once",
                     quality_degradation_step_name(*step)
+                ));
+            }
+        }
+        let mut seen_optional_features = BTreeSet::new();
+        for feature in &self.enabled_optional_features {
+            if !seen_optional_features.insert(feature) {
+                errors.push(format!(
+                    "performance closure enabled_optional_features '{}' appears more than once",
+                    feature
                 ));
             }
         }
@@ -408,6 +562,7 @@ impl PerfClosureProfile {
 impl PerfClosureReport {
     pub fn unsampled(profile: PerfClosureProfile) -> Self {
         Self {
+            cpu_oracle_profile: None,
             frame: PerfClosureLaneStatusReport::unsampled(&profile.frame),
             collision: PerfClosureLaneStatusReport::unsampled(&profile.collision),
             profile,
@@ -541,8 +696,8 @@ fn validate_metric_budget(name: &str, budget: &PerfClosureMetricBudget) -> Vec<S
 #[cfg(test)]
 mod tests {
     use super::{
-        PerfClosureDegradationStep, PerfClosureLaneKind, PerfClosureLaneStatus, PerfClosureProfile,
-        quality_degradation_step_name,
+        PerfClosureDegradationStep, PerfClosureExecutionStory, PerfClosureLaneKind,
+        PerfClosureLaneStatus, PerfClosureProfile, quality_degradation_step_name,
     };
 
     #[test]
@@ -550,6 +705,30 @@ mod tests {
         let profile = PerfClosureProfile::canonical_1080p120();
         assert!(profile.validate().is_empty(), "{:?}", profile.validate());
         assert_eq!(PerfClosureProfile::named("1080p120"), Some(profile.clone()));
+        assert_eq!(
+            profile.execution_story,
+            PerfClosureExecutionStory::WgslResident
+        );
+        assert_eq!(profile.backend.as_str(), "wgsl");
+        assert_eq!(profile.adapter_name, "wgsl_resident");
+        assert!(profile.enabled_optional_features.is_empty());
+        assert_eq!(profile.timestamps_enabled, false);
+        assert_eq!(profile.f16_enabled, false);
+        assert_eq!(profile.indirect_dispatch_enabled, false);
+        assert_eq!(
+            profile.warmup_protocol,
+            "pipeline_and_resident_scene_upload"
+        );
+        let cpu_oracle = PerfClosureProfile::canonical_1080p120_cpu_oracle();
+        assert_eq!(
+            PerfClosureProfile::named("cpu_oracle"),
+            Some(cpu_oracle.clone())
+        );
+        assert_eq!(
+            cpu_oracle.execution_story,
+            PerfClosureExecutionStory::CpuOracle
+        );
+        assert_eq!(cpu_oracle.backend.as_str(), "cpu");
         assert_eq!(profile.frame.lane, PerfClosureLaneKind::Frame);
         assert_eq!(profile.collision.lane, PerfClosureLaneKind::Collision);
         assert_eq!(profile.collision.suite, "collision_perf");
@@ -592,5 +771,6 @@ mod tests {
         let report = super::PerfClosureReport::unsampled(profile);
         assert_eq!(report.frame.status, PerfClosureLaneStatus::NotSampled);
         assert_eq!(report.collision.status, PerfClosureLaneStatus::NotSampled);
+        assert!(report.cpu_oracle_profile.is_none());
     }
 }

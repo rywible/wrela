@@ -15,6 +15,7 @@ pub struct PresentationPassCost {
     pub pass_kind: String,
     pub work_items: u32,
     pub elapsed_micros: u128,
+    pub gpu_elapsed_micros: Option<u128>,
     pub dispatch_count: u32,
     pub attachment_bytes_read: u64,
     pub attachment_bytes_written: u64,
@@ -109,6 +110,9 @@ pub struct PresentationFrameCostReport {
     pub interval_proof_successes: u32,
     pub observer_continuation_seed_hits: u32,
     pub field_samples: u32,
+    pub cpu_time_total_micros: u128,
+    pub execution_bound: String,
+    pub gpu_runtime: crate::gpu_runtime::GpuRuntimeMetrics,
     pub attachment_bytes: Vec<PresentationAttachmentBytes>,
     pub passes: Vec<PresentationPassCost>,
     pub active_acceleration_artifacts: Vec<String>,
@@ -334,6 +338,31 @@ pub fn render_frame_cost_report(report: &PresentationFrameCostReport) -> String 
         report.packet_scheduling_active,
         report.selected_workgroup_size,
     ));
+    out.push_str(&format!(
+        "frame_timing cpu_time_total_micros={} gpu_time_total_micros={} execution_bound={} timestamps_supported={}\n",
+        report.cpu_time_total_micros,
+        report.gpu_runtime.gpu_time_total_micros,
+        report.execution_bound,
+        report.gpu_runtime.timestamps_supported,
+    ));
+    out.push_str(&format!(
+        "gpu_runtime timestamped_pass_count={} gpu_time_max_micros={} queue_submit_count={} upload_bytes={} readback_bytes={} transient_buffer_creations={} transient_bind_group_creations={} cpu_screen_sample_allocations={} attachment_decode_count={} attachment_encode_count={} primary_visibility_packet_fanout_count={} dispatch_fragmentation_count={} scene_reupload_bytes={} pipeline_cache_hits={} pipeline_cache_misses={}\n",
+        report.gpu_runtime.timestamped_pass_count,
+        report.gpu_runtime.gpu_time_max_micros,
+        report.gpu_runtime.queue_submit_count,
+        report.gpu_runtime.upload_bytes,
+        report.gpu_runtime.readback_bytes,
+        report.gpu_runtime.transient_buffer_creations,
+        report.gpu_runtime.transient_bind_group_creations,
+        report.gpu_runtime.cpu_screen_sample_allocations,
+        report.gpu_runtime.attachment_decode_count,
+        report.gpu_runtime.attachment_encode_count,
+        report.gpu_runtime.primary_visibility_packet_fanout_count,
+        report.gpu_runtime.dispatch_fragmentation_count,
+        report.gpu_runtime.scene_reupload_bytes,
+        report.gpu_runtime.pipeline_cache_hits,
+        report.gpu_runtime.pipeline_cache_misses,
+    ));
     if !report.active_acceleration_artifacts.is_empty() {
         out.push_str(&format!(
             "active_acceleration_artifacts={}\n",
@@ -368,6 +397,9 @@ pub fn render_frame_cost_report(report: &PresentationFrameCostReport) -> String 
             pass.attachment_bytes_read,
             pass.attachment_bytes_written,
         ));
+        if let Some(gpu_elapsed_micros) = pass.gpu_elapsed_micros {
+            out.push_str(&format!(" gpu_elapsed_us={gpu_elapsed_micros}"));
+        }
         if !pass.notes.is_empty() {
             out.push_str(&format!(" notes={}", pass.notes.join("|")));
         }
@@ -397,6 +429,104 @@ pub fn explain_why_not_120_findings(
             ],
             next_step:
                 "reduce dense primary rays by tightening support bounds or introducing a stronger candidate filter before the primary visibility pass".to_string(),
+        });
+    }
+
+    if report.gpu_runtime.cpu_screen_sample_allocations > 0
+        && report.gpu_runtime.cpu_screen_sample_allocations
+            >= report.output_width.saturating_mul(report.output_height)
+    {
+        findings.push(PerfClosureFinding {
+            subsystem: "presentation".to_string(),
+            focus: "cpu_primary_setup".to_string(),
+            summary: "the frame is still paying for CPU-side screen-sample setup before WGSL can do useful work".to_string(),
+            evidence: vec![
+                format!(
+                    "cpu_screen_sample_allocations={}",
+                    report.gpu_runtime.cpu_screen_sample_allocations
+                ),
+                format!(
+                    "output_pixels={}",
+                    report.output_width.saturating_mul(report.output_height)
+                ),
+                format!("execution_bound={}", report.execution_bound),
+            ],
+            next_step:
+                "move screen-sample generation and primary-ray setup closer to the GPU execution path".to_string(),
+        });
+    }
+
+    if report.gpu_runtime.readback_bytes > 0 || report.gpu_runtime.upload_bytes > 0 {
+        findings.push(PerfClosureFinding {
+            subsystem: "presentation".to_string(),
+            focus: "cpu_gpu_churn".to_string(),
+            summary: "the WGSL path is still spending a lot of time shuttling data between CPU and GPU".to_string(),
+            evidence: vec![
+                format!("upload_bytes={}", report.gpu_runtime.upload_bytes),
+                format!("readback_bytes={}", report.gpu_runtime.readback_bytes),
+                format!("queue_submit_count={}", report.gpu_runtime.queue_submit_count),
+                format!("execution_bound={}", report.execution_bound),
+            ],
+            next_step:
+                "reduce transient uploads and readbacks so the resident frame stays on the GPU longer".to_string(),
+        });
+    }
+
+    if report.gpu_runtime.dispatch_fragmentation_count > 0 {
+        findings.push(PerfClosureFinding {
+            subsystem: "presentation".to_string(),
+            focus: "dispatch_fragmentation".to_string(),
+            summary: "the frame is still being split into too many dispatch fragments".to_string(),
+            evidence: vec![
+                format!(
+                    "dispatch_fragmentation_count={}",
+                    report.gpu_runtime.dispatch_fragmentation_count
+                ),
+                format!(
+                    "transient_bind_group_creations={}",
+                    report.gpu_runtime.transient_bind_group_creations
+                ),
+                format!("execution_bound={}", report.execution_bound),
+            ],
+            next_step:
+                "batch the resident work into fewer larger dispatches before pursuing deeper shader tuning".to_string(),
+        });
+    }
+
+    if report.gpu_runtime.scene_reupload_bytes > 0 {
+        findings.push(PerfClosureFinding {
+            subsystem: "presentation".to_string(),
+            focus: "steady_state_scene_reupload".to_string(),
+            summary: "the timed path is still re-uploading resident data instead of reusing it".to_string(),
+            evidence: vec![
+                format!("upload_bytes={}", report.gpu_runtime.upload_bytes),
+                format!("scene_reupload_bytes={}", report.gpu_runtime.scene_reupload_bytes),
+            ],
+            next_step:
+                "keep snapshot-scoped scene and acceleration data resident across frames instead of rebuilding it every time".to_string(),
+        });
+    }
+
+    if report.gpu_runtime.attachment_decode_count > 0
+        || report.gpu_runtime.attachment_encode_count > 0
+    {
+        findings.push(PerfClosureFinding {
+            subsystem: "presentation".to_string(),
+            focus: "attachment_cpu_bounce".to_string(),
+            summary: "the frame is still decoding or re-encoding attachments on the CPU between WGSL passes".to_string(),
+            evidence: vec![
+                format!(
+                    "attachment_decode_count={}",
+                    report.gpu_runtime.attachment_decode_count
+                ),
+                format!(
+                    "attachment_encode_count={}",
+                    report.gpu_runtime.attachment_encode_count
+                ),
+                format!("execution_bound={}", report.execution_bound),
+            ],
+            next_step:
+                "keep intermediate attachments GPU-resident so later passes can consume them without CPU materialization".to_string(),
         });
     }
 

@@ -6297,8 +6297,15 @@ impl<'a> DirectQueryOps<'a> {
         &self,
         body: &hir::Body,
     ) -> Result<KernelValue, QueryExecError> {
+        if body.root_stmts.is_empty() {
+            return Ok(default_payload());
+        }
         let mut scopes = vec![HashMap::new()];
-        self.eval_portable_body_expr(body, &mut scopes)
+        let value = self.eval_portable_body_expr(body, &mut scopes)?;
+        Ok(match value {
+            KernelValue::Nothing => default_payload(),
+            other => other,
+        })
     }
 
     fn eval_portable_body_expr(

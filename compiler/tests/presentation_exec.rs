@@ -487,6 +487,11 @@ fn cpu_first_color_path_materializes_surface_participants_and_color_attachments(
     );
     assert_eq!(result.metrics.sample_count, 16);
     assert_eq!(result.metrics.hit_count + result.metrics.miss_count, 16);
+    assert_eq!(result.metrics.gpu_runtime, result.frame_cost.gpu_runtime);
+    assert_eq!(
+        result.metrics.gpu_runtime.timestamps_supported,
+        result.metrics.gpu_runtime.timestamped_pass_count > 0
+    );
     assert!(result.metrics.candidates_before_pruning >= 16);
     assert!(result.metrics.trace_steps_max > 0);
     assert_eq!(
@@ -517,6 +522,9 @@ fn cpu_first_color_path_materializes_surface_participants_and_color_attachments(
     assert!(rendered_frame_cost.contains("solver_relaxed_attempts="));
     assert!(rendered_frame_cost.contains("solver_interval_attempts="));
     assert!(rendered_frame_cost.contains("solver_repeat_cells_enumerated="));
+    assert!(rendered_frame_cost.contains("frame_timing cpu_time_total_micros="));
+    assert!(rendered_frame_cost.contains("timestamps_supported="));
+    assert!(rendered_frame_cost.contains("gpu_runtime timestamped_pass_count="));
     assert_eq!(
         result
             .metrics
@@ -626,6 +634,9 @@ fn cpu_first_color_frame_cost_report_exposes_solver_counters() {
     assert!(rendered_frame_cost.contains("solver_relaxed_attempts="));
     assert!(rendered_frame_cost.contains("solver_interval_attempts="));
     assert!(rendered_frame_cost.contains("solver_repeat_cells_enumerated="));
+    assert!(rendered_frame_cost.contains("frame_timing cpu_time_total_micros="));
+    assert!(rendered_frame_cost.contains("timestamps_supported="));
+    assert!(rendered_frame_cost.contains("gpu_runtime timestamped_pass_count="));
     let frame_cost_json =
         serde_json::to_value(&result.frame_cost).expect("serialize frame cost report");
     assert_eq!(
@@ -640,6 +651,30 @@ fn cpu_first_color_frame_cost_report_exposes_solver_counters() {
             .and_then(|value| value.as_u64()),
         Some(0)
     );
+}
+
+#[test]
+fn why_not_120_findings_reflect_shared_gpu_runtime_churn() {
+    let (plan, ctx, input) = presentation_fixture(DispatchBackend::Cpu);
+    let result = execute_plan(&ctx, &plan, &input).expect("cpu presentation execution");
+    let mut report = result.frame_cost.clone();
+    report.gpu_runtime.cpu_screen_sample_allocations =
+        report.output_width.saturating_mul(report.output_height);
+    report.gpu_runtime.upload_bytes = 1_500_000;
+    report.gpu_runtime.readback_bytes = 1_500_000;
+    report.gpu_runtime.dispatch_fragmentation_count = 3;
+    report.gpu_runtime.scene_reupload_bytes = 1_500_000;
+
+    let findings =
+        wrela::presentation_exec::cost::explain_why_not_120_findings(&report, None, None, 8.0, 8.0);
+    let focuses = findings
+        .iter()
+        .map(|finding| finding.focus.as_str())
+        .collect::<Vec<_>>();
+    assert!(focuses.contains(&"cpu_primary_setup"));
+    assert!(focuses.contains(&"cpu_gpu_churn"));
+    assert!(focuses.contains(&"dispatch_fragmentation"));
+    assert!(focuses.contains(&"steady_state_scene_reupload"));
 }
 
 #[test]
@@ -2097,6 +2132,11 @@ fn wgsl_frame_cost_reports_tile_candidates_packets_and_workgroup_size() {
         result.frame_cost.selected_workgroup_size,
         32 | 64 | 128
     ));
+    assert!(result.frame_cost.gpu_runtime.queue_submit_count > 0);
+    assert_eq!(
+        result.frame_cost.gpu_runtime.timestamps_supported,
+        result.frame_cost.gpu_runtime.timestamped_pass_count > 0
+    );
     assert!(
         result.frame_cost.tile_candidate_total_samples
             >= result.frame_cost.tile_candidate_active_samples
@@ -2124,6 +2164,14 @@ fn wgsl_frame_cost_reports_tile_candidates_packets_and_workgroup_size() {
     assert!(report.contains("tile_candidate_total_samples="));
     assert!(report.contains("packet_scheduling_active="));
     assert!(report.contains("selected_workgroup_size="));
+    assert!(report.contains("frame_timing cpu_time_total_micros="));
+    assert!(report.contains("timestamps_supported="));
+    assert!(report.contains("gpu_runtime timestamped_pass_count="));
+    assert!(result.frame_cost.passes.iter().all(|pass| {
+        pass.notes
+            .iter()
+            .all(|note| !note.starts_with("gpu_elapsed_micros="))
+    }));
     let primary_visibility = result
         .frame_cost
         .passes

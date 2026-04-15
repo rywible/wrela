@@ -157,6 +157,7 @@ pub(crate) fn clipmap_pass_runtime(
         pass_kind: "view_distance_clipmap".to_string(),
         work_items: artifact.usage_count,
         elapsed_micros: 0,
+        gpu_elapsed_micros: None,
         dispatch_count: artifact.upload_count + artifact.eviction_count,
         attachment_bytes_read: artifact.build_bytes,
         attachment_bytes_written: artifact.upload_bytes,

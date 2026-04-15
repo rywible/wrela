@@ -22,6 +22,7 @@ use crate::artifact_store::{
 pub use crate::execution_policy::{
     PresentationExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
 };
+use crate::gpu_runtime::{GpuRuntimeMetrics, classify_execution_bound};
 use crate::kernel::{KernelStructValue, KernelValue, lower_batch_query_plan};
 use crate::presentation_contract::{
     AttachmentLifetime, AttachmentResolutionClass, AttachmentResolutionScale, CanonicalCameraInput,
@@ -189,6 +190,7 @@ pub struct PresentationMetrics {
     pub interval_proof_successes: u32,
     pub observer_continuation_seed_hits: u32,
     pub field_samples: u32,
+    pub gpu_runtime: GpuRuntimeMetrics,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -217,6 +219,7 @@ pub(crate) struct PassRuntimeStats {
     pub pass_kind: String,
     pub work_items: u32,
     pub elapsed_micros: u128,
+    pub gpu_elapsed_micros: Option<u128>,
     pub dispatch_count: u32,
     pub attachment_bytes_read: u64,
     pub attachment_bytes_written: u64,
@@ -1657,6 +1660,7 @@ fn presentation_metrics(
     query_trace: &BatchQueryExecutionTrace,
     solver_summary: Option<RaySolverDiagnosticSummary>,
     continuation_diagnostics: Vec<String>,
+    gpu_runtime: GpuRuntimeMetrics,
 ) -> PresentationMetrics {
     let mut distribution = PresentationRayStepDistribution {
         zero: 0,
@@ -1744,6 +1748,7 @@ fn presentation_metrics(
         interval_proof_successes: observability.interval_proof_successes,
         observer_continuation_seed_hits: observability.observer_continuation_seed_hits,
         field_samples: observability.field_samples,
+        gpu_runtime,
     }
 }
 
@@ -1912,6 +1917,10 @@ pub(crate) fn build_frame_cost_report(
             .entry(artifact.clone())
             .or_insert(artifact);
     }
+    let cpu_time_total_micros = passes.iter().map(|pass| pass.elapsed_micros).sum::<u128>();
+    let execution_bound =
+        classify_execution_bound(cpu_time_total_micros, &metrics.gpu_runtime, passes.len())
+            .to_string();
     let passes = passes
         .into_iter()
         .map(|pass| PresentationPassCost {
@@ -1919,6 +1928,7 @@ pub(crate) fn build_frame_cost_report(
             pass_kind: pass.pass_kind,
             work_items: pass.work_items,
             elapsed_micros: pass.elapsed_micros,
+            gpu_elapsed_micros: pass.gpu_elapsed_micros,
             dispatch_count: pass.dispatch_count,
             attachment_bytes_read: pass.attachment_bytes_read,
             attachment_bytes_written: pass.attachment_bytes_written,
@@ -2010,6 +2020,9 @@ pub(crate) fn build_frame_cost_report(
         interval_proof_successes: metrics.interval_proof_successes,
         observer_continuation_seed_hits: metrics.observer_continuation_seed_hits,
         field_samples: metrics.field_samples,
+        cpu_time_total_micros,
+        execution_bound,
+        gpu_runtime: metrics.gpu_runtime.clone(),
         attachment_bytes: attachment_byte_reports(attachments),
         passes,
         active_acceleration_artifacts: deduped_artifacts.into_values().collect(),

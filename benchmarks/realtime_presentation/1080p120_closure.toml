@@ -5,6 +5,14 @@ suite = "realtime_presentation"
 warmup_pairs = 4
 measure_pairs = 12
 coverage = "all"
+execution_story = "wgsl_resident"
+adapter_name = "wgsl_resident"
+enabled_optional_features = []
+timestamps_enabled = false
+f16_enabled = false
+indirect_dispatch_enabled = false
+warmup_protocol = "pipeline_and_resident_scene_upload"
+companion_profile = "canonical_1080p120_cpu_oracle"
 
 # Dense constructive closure lane: stresses candidate selection, hit resolution,
 # and normal stability under the fixed 1080p120 presentation protocol.

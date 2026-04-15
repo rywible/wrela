@@ -956,6 +956,8 @@ pub(super) struct PresentationBenchmarkReport {
     pub(super) region: String,
     pub(super) domain: String,
     pub(super) backend: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) observed_adapter_name: Option<String>,
     pub(super) query_trace_solver_mode: String,
     #[serde(default)]
     pub(super) selected_workgroup_size: u32,

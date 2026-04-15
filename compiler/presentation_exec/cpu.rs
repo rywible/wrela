@@ -641,6 +641,7 @@ pub(super) fn execute_plan(
         &primary_trace,
         primary_solver_summary,
         continuation_diagnostics,
+        primary_trace.observability.gpu_runtime.clone(),
     );
     let history = build_temporal_history(
         &effective_plan,

@@ -2271,11 +2271,14 @@ fn emit_payload_lookup_function(
         writeln!(out, "      switch leaf_id {{").ok();
         for (leaf_id, leaf) in &scene.leaves {
             let payload = ops.eval_payload_body(&leaf.payload)?;
+            let rendered_payload = match &payload {
+                KernelValue::Nothing => "wr_default_payload()".to_string(),
+                _ => kernel_value_literal(&payload)?,
+            };
             writeln!(
                 out,
                 "        case {}u: {{ return {}; }}",
-                leaf_id.0,
-                kernel_value_literal(&payload)?
+                leaf_id.0, rendered_payload
             )
             .ok();
         }

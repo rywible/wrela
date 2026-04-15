@@ -12,6 +12,7 @@ pub mod vgpu;
 pub mod wgsl;
 pub mod world;
 
+use crate::gpu_runtime::GpuRuntimeMetrics;
 use crate::kernel::KernelValue;
 use crate::kernel::ir::{KernelBatchQueryPlan, KernelCaptureQueryPlan, KernelWorldQueryPlan};
 use crate::kernel::{KernelBatchQueryTrace, interpret_batch_query};
@@ -46,6 +47,7 @@ pub use region::{
 pub use world::{WorldQuerySemantics, world_query_semantics};
 
 pub const WGSL_WORKGROUP_SIZE_OVERRIDE_ENV: &str = "WRELA_WGSL_WORKGROUP_SIZE";
+pub(crate) const QUERY_WGSL_BIND_GROUP_COUNT: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryTraceSolverMode {
@@ -286,6 +288,7 @@ pub struct QueryExecutionObservability {
     pub wgsl_requested_max_storage_buffer_bytes: u64,
     pub wgsl_used_max_storage_buffer_bytes: u64,
     pub wgsl_selected_workgroup_size: u32,
+    pub gpu_runtime: GpuRuntimeMetrics,
 }
 
 impl QueryExecutionObservability {
@@ -561,6 +564,7 @@ impl QueryExecutionObservability {
         self.wgsl_selected_workgroup_size = self
             .wgsl_selected_workgroup_size
             .max(other.wgsl_selected_workgroup_size);
+        self.gpu_runtime.merge_from(&other.gpu_runtime);
     }
 
     pub fn learned_verifier_acceptance_rate(&self) -> Option<f32> {

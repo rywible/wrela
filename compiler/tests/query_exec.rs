@@ -1642,6 +1642,66 @@ fn query_exec_traces_report_observability_counters() {
     assert!(
         wgsl_world_trace
             .observability
+            .gpu_runtime
+            .queue_submit_count
+            > 0
+    );
+    assert!(
+        wgsl_world_trace
+            .observability
+            .gpu_runtime
+            .transient_buffer_creations
+            > 0
+    );
+    assert_eq!(
+        wgsl_world_trace
+            .observability
+            .gpu_runtime
+            .timestamps_supported,
+        wgsl_world_trace
+            .observability
+            .gpu_runtime
+            .timestamped_pass_count
+            > 0
+    );
+    if wgsl_world_trace
+        .observability
+        .gpu_runtime
+        .timestamps_supported
+    {
+        assert!(
+            wgsl_world_trace
+                .observability
+                .gpu_runtime
+                .gpu_time_total_micros
+                > 0
+        );
+        assert!(
+            wgsl_world_trace
+                .observability
+                .gpu_runtime
+                .gpu_time_max_micros
+                > 0
+        );
+    } else {
+        assert_eq!(
+            wgsl_world_trace
+                .observability
+                .gpu_runtime
+                .gpu_time_total_micros,
+            0
+        );
+        assert_eq!(
+            wgsl_world_trace
+                .observability
+                .gpu_runtime
+                .gpu_time_max_micros,
+            0
+        );
+    }
+    assert!(
+        wgsl_world_trace
+            .observability
             .wgsl_requested_max_storage_buffer_bytes
             >= wgsl_world_trace
                 .observability
@@ -1663,35 +1723,22 @@ fn query_exec_traces_report_observability_counters() {
             .solver_generated_dense_fallback_rays,
         1
     );
-    assert!(
-        render_semantic_cost_report(&wgsl_world_trace.cost_report)
-            .contains("solver_generated_dense_fallback_rays=1")
-    );
-    assert!(
-        render_semantic_cost_report(&wgsl_world_trace.cost_report)
-            .contains("cache_shared_snapshot=")
-    );
-    assert!(
-        render_semantic_cost_report(&wgsl_world_trace.cost_report)
-            .contains("observer_continuation_seed_hits=")
-    );
-    assert!(
-        render_semantic_cost_report(&wgsl_world_trace.cost_report)
-            .contains("wgsl_layout_signature=")
-    );
-    assert!(
-        render_semantic_cost_report(&wgsl_world_trace.cost_report).contains("wgsl_bind_groups=4")
-    );
-    assert!(
-        render_semantic_cost_report(&wgsl_world_trace.cost_report)
-            .contains("wgsl_storage_requested=")
-    );
-    assert!(
-        render_semantic_cost_report(&wgsl_world_trace.cost_report).contains("wgsl_storage_used=")
-    );
-    assert!(
-        render_semantic_cost_report(&wgsl_world_trace.cost_report).contains("wgsl_workgroup_size=")
-    );
+    let rendered_wgsl_world_cost = render_semantic_cost_report(&wgsl_world_trace.cost_report);
+    assert!(rendered_wgsl_world_cost.contains("solver_generated_dense_fallback_rays=1"));
+    assert!(rendered_wgsl_world_cost.contains("cache_shared_snapshot="));
+    assert!(rendered_wgsl_world_cost.contains("observer_continuation_seed_hits="));
+    assert!(rendered_wgsl_world_cost.contains("wgsl_layout_signature="));
+    assert!(rendered_wgsl_world_cost.contains("wgsl_bind_groups=4"));
+    assert!(rendered_wgsl_world_cost.contains("wgsl_storage_requested="));
+    assert!(rendered_wgsl_world_cost.contains("wgsl_storage_used="));
+    assert!(rendered_wgsl_world_cost.contains("wgsl_workgroup_size="));
+    assert!(rendered_wgsl_world_cost.contains("gpu_runtime timestamps_supported="));
+    assert!(rendered_wgsl_world_cost.contains("timestamped_pass_count="));
+    assert!(rendered_wgsl_world_cost.contains("queue_submit_count="));
+    assert!(rendered_wgsl_world_cost.contains("upload_bytes="));
+    assert!(rendered_wgsl_world_cost.contains("readback_bytes="));
+    assert!(rendered_wgsl_world_cost.contains("pipeline_cache_hits="));
+    assert!(rendered_wgsl_world_cost.contains("pipeline_cache_misses="));
     assert_eq!(
         wgsl_world_trace.cost_report.fidelity,
         CostFidelity::StructuralApproximation
@@ -1750,6 +1797,24 @@ fn query_exec_traces_report_observability_counters() {
     assert_eq!(
         wgsl_batch_trace.cost_report.fidelity,
         CostFidelity::StructuralApproximation
+    );
+    assert!(
+        wgsl_batch_trace
+            .observability
+            .gpu_runtime
+            .queue_submit_count
+            > 0
+    );
+    assert_eq!(
+        wgsl_batch_trace
+            .observability
+            .gpu_runtime
+            .timestamps_supported,
+        wgsl_batch_trace
+            .observability
+            .gpu_runtime
+            .timestamped_pass_count
+            > 0
     );
 }
 
@@ -6446,6 +6511,46 @@ domain empty_domain(world: RegionCapture) {
 "#
 }
 
+fn payloadless_shape_fixture_source() -> &'static str {
+    r#"
+material payloadless_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.3, 0.5, 0.8),
+        roughness=0.28,
+        metalness=0.0,
+        clearcoat=0.08,
+        clearcoat_roughness=0.06,
+        sheen=0.02,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+field exact distance payloadless_field(p: Vec3) -> F32 {
+    sphere(radius = 0.55)
+}
+
+shape payloadless_shape {
+    field = payloadless_field
+    material = payloadless_surface
+}
+
+region payloadless_region() {
+    place primary = payloadless_shape
+}
+
+domain payloadless_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = false
+    media = false
+    max_distance = 6.0
+    min_step = 0.04
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+"#
+}
+
 #[test]
 fn query_exec_wgsl_world_trace_records_budget_rejection_on_empty_world() {
     let source = empty_world_fixture_source();
@@ -6473,6 +6578,46 @@ fn query_exec_wgsl_world_trace_records_budget_rejection_on_empty_world() {
             .solver_generated_dense_fallback_rays
             > 0
     );
+}
+
+#[test]
+fn query_exec_wgsl_world_trace_defaults_payload_for_payloadless_shapes() {
+    let source = payloadless_shape_fixture_source();
+    let (_, _, ctx) = typed_query_module(source);
+    let region_name = SmolStr::new("payloadless_region");
+    let region_scene_id = stable_region_scene_capture_id(&region_name);
+    let args = [
+        KernelValue::Capture(region_name.clone()),
+        scene_domain(region_scene_id, 1, false, false, false),
+        ray_query_with_limits([0.0, 0.0, 2.4], [0.0, 0.0, -1.0], 6.0, 0.04, 0.001, 96),
+    ];
+    let plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Trace));
+
+    let (cpu_hit, _) = execute_world_query_with_trace_on(&ctx, DispatchBackend::Cpu, &plan, &args)
+        .expect("cpu payloadless trace");
+    let (wgsl_hit, _) =
+        execute_world_query_with_trace_on(&ctx, DispatchBackend::Wgsl, &plan, &args)
+            .expect("wgsl payloadless trace");
+
+    let cpu_hit = expect_struct(&cpu_hit, "Hit3");
+    let wgsl_hit = expect_struct(&wgsl_hit, "Hit3");
+    assert!(expect_bool(field(cpu_hit, "hit")));
+    assert!(expect_bool(field(wgsl_hit, "hit")));
+
+    let cpu_payload = expect_struct(field(cpu_hit, "payload"), "Payload");
+    let wgsl_payload = expect_struct(field(wgsl_hit, "payload"), "Payload");
+
+    assert_eq!(expect_u32(field(cpu_payload, "entity_id")), 0);
+    assert_eq!(expect_u32(field(cpu_payload, "material_id")), 0);
+    assert_eq!(expect_u32(field(wgsl_payload, "entity_id")), 0);
+    assert_eq!(expect_u32(field(wgsl_payload, "material_id")), 0);
+
+    let cpu_actor = expect_struct(field(cpu_payload, "actor"), "ActorHandle");
+    let wgsl_actor = expect_struct(field(wgsl_payload, "actor"), "ActorHandle");
+    assert_eq!(expect_u32(field(cpu_actor, "id")), 0);
+    assert_eq!(expect_u32(field(cpu_actor, "generation")), 0);
+    assert_eq!(expect_u32(field(wgsl_actor, "id")), 0);
+    assert_eq!(expect_u32(field(wgsl_actor, "generation")), 0);
 }
 
 fn wgsl_profile_fixture_source() -> &'static str {

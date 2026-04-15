@@ -4,9 +4,9 @@ The benchmark harness now focuses on the world-language surface that remains in 
 
 - `micro`: low-level primitives and hot loops.
 - `field_engine`: authored field/scene query cases for repetition, thin features, local frames, mixed-solver dense-oracle closure, radiance/media, opaque-pessimization regressions, and a collision-heavy transition proxy lane for the closure protocol.
-- `collision_perf`: collision-focused point occupancy, ray-cast, overlap, sweep, and TOI workload coverage with a dedicated 1080p120 closure companion.
-- `realtime_presentation`: presentation-oriented scene-shape benchmarks for dense constructive geometry, repetition-heavy layouts, a dedicated repeat-aware solver proof lane, thin-stack aliasing, relaxed exact-torus solver coverage, transformed primitive galleries, mixed opaque/conservative scenes, media/radiance scenes, cache-stress motion paths, and camera-motion temporal-reuse / clipmap-churn coverage. The explicit `1080p120` closure lane now adds fixed scenarios for each of those representative stresses.
-- `1080p120` closure profiles: fixed 1920x1080, 120 FPS protocol manifests for the frame lane and the dedicated collision lane. `wrela perf --profile=1080p120` automatically selects the companion `1080p120_closure.toml` file when it exists.
+- `collision_perf`: collision-focused point occupancy, ray-cast, overlap, sweep, and TOI workload coverage with a dedicated CPU-oracle 1080p120 closure companion.
+- `realtime_presentation`: presentation-oriented scene-shape benchmarks for dense constructive geometry, repetition-heavy layouts, a dedicated repeat-aware solver proof lane, thin-stack aliasing, relaxed exact-torus solver coverage, transformed primitive galleries, mixed opaque/conservative scenes, media/radiance scenes, cache-stress motion paths, and camera-motion temporal-reuse / clipmap-churn coverage. The explicit `1080p120` closure lane now represents the WGSL-resident story for those stresses, with the CPU-oracle companion reported alongside it.
+- `1080p120` closure profiles: fixed 1920x1080, 120 FPS protocol manifests for the representative WGSL-resident frame lane plus the companion CPU-oracle collision lane. `wrela perf --profile=1080p120` automatically selects the companion `1080p120_closure.toml` file when it exists and reports both closure stories explicitly.
 
 If you need the junior-friendly walkthrough for reading plans, report dumps, closure output,
 and parity checks, start with [docs/perf/acceleration_playbook.md](../docs/perf/acceleration_playbook.md).
@@ -57,9 +57,7 @@ That is the quickest way to inspect pass-level rendering output when `presentati
 enough.
 
 For closure failure analysis, use `cargo run -p wrela -- perf <suite-root> --profile=1080p120 --why-not-120`.
-That prints the closure verdict, the top remaining bottleneck, and a junior-friendly breakdown of
-the slowest subsystem signals: dense rays, pruning, acceleration caches, visibility vs shading,
-WGSL traversal, and collision witness reuse.
+That prints the WGSL-resident closure verdict, the CPU-oracle companion profile, the top remaining bottleneck, and a junior-friendly breakdown of the slowest subsystem signals: dense rays, pruning, acceleration caches, visibility vs shading, WGSL traversal, and collision witness reuse.
 
 ## Profiles
 
@@ -73,7 +71,7 @@ Per-scenario overrides are available for `perfcmp` with `--warmup-pairs`, `--mea
 
 The `realtime_presentation` suite keeps the checks deterministic by combining fixed query grids with checksum-style assertions while also attaching a canonical multi-frame named-view probe per scenario in `bench.toml`. `wrela perf benchmarks/realtime_presentation ...` now derives its scenario runtime lane from presentation frame-cost reports rather than the raw query-fixture wall clock alone, records those presentation probes in the baseline JSON under `presentation_reports`, and prints `presentation-scenario` / `presentation-pass` lines with the quality tier, internal resolution scale history, bottleneck pass, acceleration artifacts, and per-pass work/cost breakdown.
 
-The scene queries in this suite are pinned to `dispatch_backend_cpu()` so the benchmark lane measures one stable execution backend rather than whatever `auto` resolves to on a given machine. The presentation probe is likewise collected with the CPU backend today. Use the CPU perf lane for these complex representative scenes until the remaining WGSL shader-validation gaps are closed; CPU/WGSL parity stays covered by `compiler/tests/presentation_exec.rs`.
+The suite keeps backend selection explicit so benchmark lanes do not silently drift with `auto`. The canonical `1080p120` presentation closure lane is now the WGSL-resident lane, while the CPU oracle remains the companion reference in `compiler/tests/presentation_exec.rs`, the CPU-specific closure profile, and the collision closure lane.
 
 - `presentation_dense_constructive_geometry`: dense constructive solids built from lofts, sweeps, bends, and unions. This stresses candidate selection, hit resolution, and normal stability on heavily composed geometry.
 - `presentation_repetition_heavy_scene`: repetition-heavy structure built from nested linear repetition and instancing. This measures repeat identity, instance stability, and traversal behavior in tiled layouts.
@@ -81,7 +79,7 @@ The scene queries in this suite are pinned to `dispatch_backend_cpu()` so the be
 - `presentation_thin_stack_alias_prone`: thin stacked layers and near-touching surfaces. This exercises alias-prone rays, epsilon sensitivity, and shallow-angle normal consistency.
 - `presentation_media_radiance_scene`: radiance- and media-enabled presentation content. This covers surface sampling, radiance lookup, medium evaluation, and the frame path for volumetric scenes.
 
-The `1080p120_closure.toml` protocol files define the fixed closure lane. Their scenario ids are prefixed with `closure_1080p120_` so they stay visually distinct from the microbench scenes, and their view definitions use `realtime_quality(target_fps = 120)` with fixed 1920x1080 framing.
+The `1080p120_closure.toml` protocol files define the fixed closure lane. Their scenario ids are prefixed with `closure_1080p120_` so they stay visually distinct from the microbench scenes, and their view definitions use `realtime_quality(target_fps = 120)` with fixed 1920x1080 framing. The presentation suite is the WGSL-resident representative lane, while the collision suite is the CPU-oracle companion lane.
 
 Closure lane coverage currently includes:
 
