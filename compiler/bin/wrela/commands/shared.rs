@@ -2610,6 +2610,7 @@ fn execute_presentation_debug_command(
     let mut result = None;
     for frame_offset in 0..options.frames.max(1) {
         let mut frame_input = prepared.input.clone();
+        frame_input.materialize_cpu_attachments = !options.skip_export;
         frame_input.frame_state = wrela::presentation_exec::frame_state_value(
             prepared.camera,
             prepared.camera,
@@ -3410,6 +3411,7 @@ fn prepare_presentation_execution(
             frame_domain: domain_inputs.frame_domain,
             frame_state,
             history: None,
+            materialize_cpu_attachments: true,
             lighting,
             compatibility_projection,
             execution_policy: domain_inputs.execution_policy,

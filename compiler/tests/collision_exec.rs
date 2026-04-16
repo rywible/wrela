@@ -734,6 +734,138 @@ fn static_collision_paths_use_candidate_capture_queries() {
 }
 
 #[test]
+fn static_collision_paths_execute_on_wgsl_and_use_world_queries() {
+    let ctx = typed_query_module(collision_fixture_source());
+    let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_region"));
+    let domain = scene_domain(scene_id);
+    let capture = region_capture(scene_id, 1);
+
+    for (kind, args, expected_kind) in [
+        (
+            CollisionQueryKind::PointOccupancyWorld,
+            vec![
+                capture.clone(),
+                domain.clone(),
+                collision_point_input([0.0, 0.0, 0.25]),
+            ],
+            "occupancy",
+        ),
+        (
+            CollisionQueryKind::RayCastWorld,
+            vec![
+                capture.clone(),
+                domain.clone(),
+                collision_ray_input([0.0, 0.0, 2.0], [0.0, 0.0, -1.0]),
+            ],
+            "ray",
+        ),
+        (
+            CollisionQueryKind::SphereOverlapWorld,
+            vec![
+                capture.clone(),
+                domain.clone(),
+                collision_sphere_probe([0.0, 0.0, 0.9], 0.6),
+            ],
+            "overlap",
+        ),
+    ] {
+        let plan = CollisionPlan::for_query_with_backend(
+            kind,
+            wrela::query_contract::DispatchBackend::Wgsl,
+        );
+        assert!(
+            plan.validate().is_empty(),
+            "expected Wgsl {expected_kind} plan to validate cleanly: {:?}",
+            plan.validate()
+        );
+        let (result, trace) = plan.execute(&ctx, &args).expect("wgsl collision execution");
+        assert_eq!(trace.backend, wrela::query_contract::DispatchBackend::Wgsl);
+        match (kind, result) {
+            (CollisionQueryKind::PointOccupancyWorld, CollisionResult::Occupancy(value)) => {
+                assert!(value.occupied);
+                assert!(value.signed_distance < 0.0);
+                assert!(
+                    trace
+                        .executed_query_contracts
+                        .contains(&wrela::query_contract::SPATIAL_DISTANCE_BATCH_WORLD),
+                    "expected Wgsl occupancy to use the batch world distance contract: {trace:?}"
+                );
+                assert!(
+                    trace
+                        .executed_query_contracts
+                        .contains(&wrela::query_contract::SPATIAL_NORMAL_BATCH_WORLD),
+                    "expected Wgsl occupancy to use the batch world normal contract: {trace:?}"
+                );
+                assert!(
+                    !trace
+                        .executed_query_contracts
+                        .contains(&wrela::query_contract::SPATIAL_DISTANCE_CAPTURE_SHAPE),
+                    "expected Wgsl occupancy to avoid the capture distance contract: {trace:?}"
+                );
+                assert!(
+                    !trace
+                        .executed_query_contracts
+                        .contains(&wrela::query_contract::SPATIAL_DISTANCE_WORLD),
+                    "expected Wgsl occupancy to avoid the direct world distance contract: {trace:?}"
+                );
+            }
+            (CollisionQueryKind::RayCastWorld, CollisionResult::RayCast(value)) => {
+                assert!(value.hit);
+                let witness = value.witness.expect("ray witness");
+                assert!(witness.travel_distance > 1.0 && witness.travel_distance < 2.0);
+                assert!(
+                    trace
+                        .executed_query_contracts
+                        .contains(&wrela::query_contract::SPATIAL_NEAREST_BATCH_WORLD),
+                    "expected Wgsl ray casting to use the batch world trace contract: {trace:?}"
+                );
+                assert!(
+                    !trace
+                        .executed_query_contracts
+                        .contains(&wrela::query_contract::SPATIAL_TRACE_CAPTURE_SHAPE),
+                    "expected Wgsl ray casting to avoid the capture trace contract: {trace:?}"
+                );
+                assert!(
+                    !trace
+                        .executed_query_contracts
+                        .contains(&wrela::query_contract::SPATIAL_NEAREST_WORLD),
+                    "expected Wgsl ray casting to avoid the direct world trace contract: {trace:?}"
+                );
+            }
+            (CollisionQueryKind::SphereOverlapWorld, CollisionResult::SphereOverlap(value)) => {
+                assert!(value.overlaps);
+                assert!(value.signed_separation < 0.0);
+                assert!(
+                    trace
+                        .executed_query_contracts
+                        .contains(&wrela::query_contract::SPATIAL_DISTANCE_BATCH_WORLD),
+                    "expected Wgsl overlap to use the batch world distance contract: {trace:?}"
+                );
+                assert!(
+                    trace
+                        .executed_query_contracts
+                        .contains(&wrela::query_contract::SPATIAL_NORMAL_BATCH_WORLD),
+                    "expected Wgsl overlap to use the batch world normal contract: {trace:?}"
+                );
+                assert!(
+                    !trace
+                        .executed_query_contracts
+                        .contains(&wrela::query_contract::SPATIAL_DISTANCE_CAPTURE_SHAPE),
+                    "expected Wgsl overlap to avoid the capture distance contract: {trace:?}"
+                );
+                assert!(
+                    !trace
+                        .executed_query_contracts
+                        .contains(&wrela::query_contract::SPATIAL_DISTANCE_WORLD),
+                    "expected Wgsl overlap to avoid the direct world distance contract: {trace:?}"
+                );
+            }
+            other => panic!("unexpected collision result for {kind:?}: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn transition_collision_reuse_decisions_report_consumed_and_rejected_paths() {
     let ctx = typed_query_module(collision_fixture_source());
     let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_region"));

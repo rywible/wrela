@@ -190,6 +190,14 @@ impl CollisionBackendSupport {
         }
     }
 
+    pub const fn cpu_and_wgsl() -> Self {
+        Self {
+            cpu: true,
+            virtual_gpu: false,
+            wgsl: true,
+        }
+    }
+
     pub const fn supports(self, backend: DispatchBackend) -> bool {
         match backend {
             DispatchBackend::Cpu => self.cpu,
@@ -402,7 +410,7 @@ const COLLISION_CONTRACTS: [CollisionContractDescriptor; 5] = [
         output_record: "CollisionOccupancyResult",
         witness_schema: &POINT_WITNESS_SCHEMA,
         policy: CollisionExecutionPolicy::exact_oracle(DispatchBackend::Cpu),
-        supported_backends: CollisionBackendSupport::cpu_only(),
+        supported_backends: CollisionBackendSupport::cpu_and_wgsl(),
     },
     CollisionContractDescriptor {
         id: COLLISION_RAY_CAST_WORLD,
@@ -417,7 +425,7 @@ const COLLISION_CONTRACTS: [CollisionContractDescriptor; 5] = [
         output_record: "CollisionRayCastResult",
         witness_schema: &RAY_WITNESS_SCHEMA,
         policy: CollisionExecutionPolicy::exact_oracle(DispatchBackend::Cpu),
-        supported_backends: CollisionBackendSupport::cpu_only(),
+        supported_backends: CollisionBackendSupport::cpu_and_wgsl(),
     },
     CollisionContractDescriptor {
         id: COLLISION_SPHERE_OVERLAP_WORLD,
@@ -432,7 +440,7 @@ const COLLISION_CONTRACTS: [CollisionContractDescriptor; 5] = [
         output_record: "CollisionSphereOverlapResult",
         witness_schema: &SPHERE_WITNESS_SCHEMA,
         policy: CollisionExecutionPolicy::exact_oracle(DispatchBackend::Cpu),
-        supported_backends: CollisionBackendSupport::cpu_only(),
+        supported_backends: CollisionBackendSupport::cpu_and_wgsl(),
     },
     CollisionContractDescriptor {
         id: COLLISION_SPHERE_SWEEP_TRANSITION,

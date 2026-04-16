@@ -4,6 +4,7 @@ pub mod layout;
 pub mod metrics;
 pub mod pipeline_cache;
 pub mod profiler;
+pub mod readback;
 pub mod resident_scene;
 pub mod upload;
 
@@ -28,6 +29,11 @@ pub use pipeline_cache::{
     PipelineLayoutCache, PipelineLayoutKey, shader_signature,
 };
 pub use profiler::GpuPassProfiler;
+pub use readback::{
+    ReadbackReason, ReadbackRequest, ReadbackResult, ReadbackTicket,
+    collect_storage_buffer_readback, collect_storage_buffer_readback_bytes,
+    schedule_storage_buffer_readback,
+};
 pub use resident_scene::{
     GpuResidentScene, GpuResidentSceneCache, GpuResidentSceneKey, GpuResidentScenePayload,
     shared_resident_scene_cache_for_request,

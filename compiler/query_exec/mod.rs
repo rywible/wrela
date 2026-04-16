@@ -1,5 +1,6 @@
 mod capture;
 pub(crate) mod cost;
+pub(crate) mod gpu_dispatch;
 mod native_bridge;
 
 pub mod context;
@@ -282,6 +283,7 @@ pub struct QueryExecutionObservability {
     pub solver_continuation_unavailable: u32,
     pub field_samples: u32,
     pub contract_validation_failures: u32,
+    pub wgsl_world_helper_path: Option<SmolStr>,
     pub wgsl_layout_signature: Option<u64>,
     pub wgsl_bind_group_count: u32,
     pub wgsl_requested_max_storage_buffer_bytes: u64,
@@ -550,6 +552,9 @@ impl QueryExecutionObservability {
         self.contract_validation_failures = self
             .contract_validation_failures
             .saturating_add(other.contract_validation_failures);
+        if self.wgsl_world_helper_path.is_none() {
+            self.wgsl_world_helper_path = other.wgsl_world_helper_path.clone();
+        }
         if self.wgsl_layout_signature.is_none() {
             self.wgsl_layout_signature = other.wgsl_layout_signature;
         }

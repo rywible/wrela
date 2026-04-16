@@ -421,16 +421,15 @@ impl CollisionPlan {
                 descriptor.policy.selected_method.name()
             )));
         }
-        if matches!(
-            self.backend,
-            DispatchBackend::VirtualGpu | DispatchBackend::Wgsl
-        ) && (matches!(
-            self.policy.required_guarantee,
-            RequiredGuaranteeClass::Exact
-        ) || matches!(
-            self.policy.selected_method,
-            SelectedMethodClass::ExactOracle
-        )) {
+        if matches!(self.backend, DispatchBackend::VirtualGpu)
+            && (matches!(
+                self.policy.required_guarantee,
+                RequiredGuaranteeClass::Exact
+            ) || matches!(
+                self.policy.selected_method,
+                SelectedMethodClass::ExactOracle
+            ))
+        {
             errors.push(validation_error(format!(
                 "collision plan '{}' cannot target {:?} with required_guarantee={} selected_method={}",
                 self.name,

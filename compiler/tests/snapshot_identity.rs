@@ -163,6 +163,7 @@ fn presentation_input(
             1.0 / 60.0,
         ),
         history,
+        materialize_cpu_attachments: true,
         lighting: PresentationLightingInputs {
             key_light: CanonicalLightInput {
                 position: [1.8, 2.4, 2.2],

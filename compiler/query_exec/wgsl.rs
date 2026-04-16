@@ -8,9 +8,9 @@ use crate::gpu_runtime::{
     ComputePipelineKey, GPU_RUNTIME_BIND_GROUP_COUNT, GPU_RUNTIME_FRAME_BIND_GROUP_INDEX,
     GPU_RUNTIME_PASS_BIND_GROUP_INDEX, GPU_RUNTIME_SCENE_BIND_GROUP_INDEX,
     GPU_RUNTIME_SCRATCH_BIND_GROUP_INDEX, GpuBindGroupRole, GpuLayoutIdentity, GpuLimitRequest,
-    GpuPassProfiler, GpuResidentScene, GpuResidentSceneKey, GpuResidentScenePayload,
-    GpuRuntimeContext, GpuRuntimeMetrics, PipelineLayoutKey, bind_group_layout_signature_for_role,
-    lock_shared_upload_arena, readback_storage_buffer_on as shared_readback_storage_buffer_on,
+    GpuPassProfiler, GpuResidentScene, GpuResidentSceneKey, GpuRuntimeContext, GpuRuntimeMetrics,
+    PipelineLayoutKey, bind_group_layout_signature_for_role, lock_shared_upload_arena,
+    readback_storage_buffer_on as shared_readback_storage_buffer_on,
     shared_resident_scene_cache_for_request, shared_wgpu_context,
 };
 use crate::kernel::KernelBatchQueryTrace;
@@ -31,7 +31,10 @@ use crate::query_exec::cpu::{DirectQueryOps, QueryExecError};
 use crate::query_exec::ids::stable_semantic_id;
 use crate::query_exec::world::{NormalRole, world_query_semantics_for_contract};
 use crate::query_exec::{QueryExecutionObservability, select_query_wgsl_workgroup_size};
-use crate::query_plan::CaptureKind;
+use crate::query_plan::{
+    BatchQueryKind, CaptureKind, WorldQueryKind, batch_query_kind_for_contract_id,
+    world_query_kind_for_contract_id,
+};
 use crate::world_identity::SnapshotIdentityReport;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use smol_str::SmolStr;
@@ -39,7 +42,6 @@ use std::borrow::Cow;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
@@ -59,6 +61,7 @@ pub(crate) struct GpuDispatchRequest {
     pub(crate) accel_children: Vec<u32>,
     pub(crate) cache_bricks: Vec<KernelValue>,
     pub(crate) continuation_seeds: Vec<u32>,
+    pub(crate) candidate_spans: Vec<u32>,
     pub(crate) resident_scene_snapshot: Option<SnapshotIdentityReport>,
     pub(crate) resident_scene_detail: i32,
     pub(crate) resident_scene_selection_signature: u64,
@@ -81,6 +84,133 @@ pub(crate) struct GeneratedShaderModule {
 pub(crate) struct NativeWgslBridgeConfig {
     pub(crate) source: SmolStr,
     pub(crate) workgroup_size: i64,
+}
+
+#[derive(Clone)]
+pub(crate) struct ResidentBatchQuerySession {
+    pub(crate) native: Arc<NativeWgpuContext>,
+    pub(crate) pipeline: wgpu::ComputePipeline,
+    pub(crate) scene_bind_group: wgpu::BindGroup,
+    pub(crate) frame_bind_group: wgpu::BindGroup,
+    pub(crate) pass_bind_group: wgpu::BindGroup,
+    pub(crate) scratch_bind_group: wgpu::BindGroup,
+    pub(crate) dispatch_buffer: wgpu::Buffer,
+    pub(crate) input_buffer: wgpu::Buffer,
+    pub(crate) input_buffer_size: u64,
+    pub(crate) output_buffer: wgpu::Buffer,
+    pub(crate) observability_buffer: wgpu::Buffer,
+    pub(crate) continuation_seed_buffer: wgpu::Buffer,
+    pub(crate) continuation_seed_buffer_size: u64,
+    pub(crate) result_abi: PortableAbiType,
+    pub(crate) item_count: u32,
+    pub(crate) output_buffer_size: u64,
+    pub(crate) observability_buffer_size: u64,
+    pub(crate) layout_signature: u64,
+    diagnostics: WgslDispatchDiagnostics,
+    initial_gpu_runtime: GpuRuntimeMetrics,
+}
+
+impl ResidentBatchQuerySession {
+    pub(crate) fn selected_workgroup_size(&self) -> u32 {
+        self.diagnostics.selected_workgroup_size
+    }
+
+    pub(crate) fn initial_gpu_runtime(&self) -> GpuRuntimeMetrics {
+        self.initial_gpu_runtime.clone()
+    }
+
+    pub(crate) fn initialize_dispatch_state(
+        &self,
+        dispatch: &KernelValue,
+    ) -> Result<u64, QueryExecError> {
+        self.initialize_dispatch_state_with_inputs(dispatch, None, None)
+    }
+
+    pub(crate) fn initialize_dispatch_state_with_inputs(
+        &self,
+        dispatch: &KernelValue,
+        input_bytes: Option<&[u8]>,
+        side_channel_bytes: Option<&[u8]>,
+    ) -> Result<u64, QueryExecError> {
+        let dispatch_bytes = encode_value(&codegen::wgsl_dispatch_config_abi(), dispatch)?;
+        let observability_bytes = [0u8; QUERY_WGSL_OBSERVABILITY_U32S * std::mem::size_of::<u32>()];
+        let side_channel_bytes = side_channel_bytes.unwrap_or(&[0u8; std::mem::size_of::<u32>()]);
+        self.native
+            .queue
+            .write_buffer(&self.dispatch_buffer, 0, &dispatch_bytes);
+        if let Some(input_bytes) = input_bytes
+            && !input_bytes.is_empty()
+        {
+            self.native
+                .queue
+                .write_buffer(&self.input_buffer, 0, input_bytes);
+        }
+        self.native
+            .queue
+            .write_buffer(&self.observability_buffer, 0, &observability_bytes);
+        self.native
+            .queue
+            .write_buffer(&self.continuation_seed_buffer, 0, side_channel_bytes);
+        Ok(storage_buffer_size(&dispatch_bytes)
+            .saturating_add(storage_buffer_size(input_bytes.unwrap_or(&[])))
+            .saturating_add(observability_bytes.len() as u64)
+            .saturating_add(storage_buffer_size(side_channel_bytes)))
+    }
+
+    pub(crate) fn encode_compute_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        profiler: &mut GpuPassProfiler,
+    ) {
+        let timestamp_writes = profiler.compute_pass_timestamp_writes();
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("wrela.wgsl.compute_pass"),
+            timestamp_writes,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(
+            GPU_RUNTIME_SCENE_BIND_GROUP_INDEX,
+            &self.scene_bind_group,
+            &[],
+        );
+        pass.set_bind_group(
+            GPU_RUNTIME_FRAME_BIND_GROUP_INDEX,
+            &self.frame_bind_group,
+            &[],
+        );
+        pass.set_bind_group(
+            GPU_RUNTIME_PASS_BIND_GROUP_INDEX,
+            &self.pass_bind_group,
+            &[],
+        );
+        pass.set_bind_group(
+            GPU_RUNTIME_SCRATCH_BIND_GROUP_INDEX,
+            &self.scratch_bind_group,
+            &[],
+        );
+        pass.dispatch_workgroups(
+            dispatch_workgroups_x_for_items(
+                self.item_count,
+                self.diagnostics.selected_workgroup_size,
+            ),
+            1,
+            1,
+        );
+    }
+
+    pub(crate) fn decode_observability(
+        &self,
+        bytes: &[u8],
+        gpu_runtime: GpuRuntimeMetrics,
+    ) -> QueryExecutionObservability {
+        decode_wgsl_observability(
+            &self.diagnostics,
+            bytes,
+            self.item_count,
+            self.layout_signature,
+            gpu_runtime,
+        )
+    }
 }
 
 #[derive(Clone)]
@@ -211,6 +341,7 @@ pub(crate) fn execute_world_query_with_policy_with_snapshot_observability(
         return Err(validation_error("world query", errors));
     }
     let request = build_world_request(&ops, plan, args)?;
+    let helper_request = request.clone();
     let generated = generate_compiled_shader(ctx, ShaderPlan::World(plan))?;
     let (mut values, wgsl_observability) =
         dispatch_compiled_shader_with_observability(&generated, request)?;
@@ -222,6 +353,11 @@ pub(crate) fn execute_world_query_with_policy_with_snapshot_observability(
     })?;
     let mut observability = ops.snapshot_observability();
     observability.merge_from(&wgsl_observability);
+    annotate_wgsl_world_helper_path_for_world(
+        &mut observability,
+        plan.contract_id,
+        &helper_request,
+    );
     Ok((value, observability))
 }
 
@@ -251,6 +387,7 @@ pub(crate) fn execute_batch_query_with_snapshot_observability(
     }
     let generated = generate_compiled_shader(ctx, ShaderPlan::Batch(plan))?;
     let request = build_batch_request(&ops, plan, args)?;
+    let helper_request = request.clone();
     if descriptor_for_plan(plan.contract_id)?.target == QueryTargetKind::World {
         ops.note_world_batch_items(request.items.len() as u32);
     }
@@ -261,7 +398,92 @@ pub(crate) fn execute_batch_query_with_snapshot_observability(
     note_result_observability(&ops, descriptor, &values);
     let mut observability = ops.snapshot_observability();
     observability.merge_from(&wgsl_observability);
+    annotate_wgsl_world_helper_path_for_batch(
+        &mut observability,
+        plan.contract_id,
+        &helper_request,
+    );
     Ok((KernelValue::Array(values), observability))
+}
+
+fn annotate_wgsl_world_helper_path_for_world(
+    observability: &mut QueryExecutionObservability,
+    contract_id: crate::query_contract::QueryContractId,
+    request: &GpuDispatchRequest,
+) {
+    let path = world_query_kind_for_contract_id(contract_id)
+        .and_then(|kind| helper_path_label_for_world_kind(kind, request, observability));
+    if observability.wgsl_world_helper_path.is_none() {
+        observability.wgsl_world_helper_path = path;
+    }
+}
+
+fn annotate_wgsl_world_helper_path_for_batch(
+    observability: &mut QueryExecutionObservability,
+    contract_id: crate::query_contract::QueryContractId,
+    request: &GpuDispatchRequest,
+) {
+    let path = batch_query_kind_for_contract_id(contract_id)
+        .and_then(|kind| helper_path_label_for_batch_kind(kind, request, observability));
+    if observability.wgsl_world_helper_path.is_none() {
+        observability.wgsl_world_helper_path = path;
+    }
+}
+
+fn helper_path_label_for_world_kind(
+    kind: WorldQueryKind,
+    request: &GpuDispatchRequest,
+    observability: &QueryExecutionObservability,
+) -> Option<SmolStr> {
+    let label = match kind {
+        WorldQueryKind::Distance => classify_wgsl_world_helper_path(request, observability)?,
+        WorldQueryKind::Normal => {
+            if request.world_shape_indices.len() == 1 {
+                "single_shape"
+            } else {
+                classify_wgsl_world_helper_path(request, observability)?
+            }
+        }
+        WorldQueryKind::Radiance => classify_wgsl_world_helper_path(request, observability)?,
+        WorldQueryKind::Medium => classify_wgsl_world_helper_path(request, observability)?,
+        _ => return None,
+    };
+    Some(SmolStr::new(label))
+}
+
+fn helper_path_label_for_batch_kind(
+    kind: BatchQueryKind,
+    request: &GpuDispatchRequest,
+    observability: &QueryExecutionObservability,
+) -> Option<SmolStr> {
+    let label = match kind {
+        BatchQueryKind::Distance => classify_wgsl_world_helper_path(request, observability)?,
+        BatchQueryKind::Normal => {
+            if request.world_shape_indices.len() == 1 {
+                "single_shape"
+            } else {
+                classify_wgsl_world_helper_path(request, observability)?
+            }
+        }
+        BatchQueryKind::Radiance => classify_wgsl_world_helper_path(request, observability)?,
+        BatchQueryKind::Medium => classify_wgsl_world_helper_path(request, observability)?,
+        _ => return None,
+    };
+    Some(SmolStr::new(label))
+}
+
+fn classify_wgsl_world_helper_path<'a>(
+    request: &GpuDispatchRequest,
+    observability: &'a QueryExecutionObservability,
+) -> Option<&'a str> {
+    if request.world_shape_indices.is_empty() {
+        return None;
+    }
+    if request.accel_nodes.is_empty() || observability.cache_budget_rejections > 0 {
+        Some("dense_fallback")
+    } else {
+        Some("accelerated")
+    }
 }
 
 pub(crate) fn compile_world_shader(
@@ -288,6 +510,350 @@ pub(crate) fn build_batch_request_for_shader(
     }
     let ops = DirectQueryOps::new(ctx);
     build_batch_request(&ops, plan, args)
+}
+
+pub(crate) fn build_batch_request_without_items_for_shader(
+    ctx: &crate::query_exec::context::QueryExecContext,
+    plan: &KernelBatchQueryPlan,
+    args: &[KernelValue],
+    item_count: u32,
+) -> Result<GpuDispatchRequest, QueryExecError> {
+    if let Err(errors) = validate_batch_query_plan(plan) {
+        return Err(validation_error("batch query", errors));
+    }
+    let ops = DirectQueryOps::new(ctx);
+    build_batch_request_without_items(&ops, plan, args, item_count)
+}
+
+pub(crate) fn prepare_resident_batch_query(
+    generated: &GeneratedShaderModule,
+    request: &GpuDispatchRequest,
+) -> Result<ResidentBatchQuerySession, QueryExecError> {
+    let item_count = dispatch_item_count(request)?;
+    if item_count == 0 {
+        return Err(QueryExecError::Unsupported {
+            message: "resident WGSL dispatch requires a positive item_count".to_string(),
+        });
+    }
+    let dispatch = normalized_dispatch_config(request)?;
+
+    let payloads = WgslDispatchPayloadBytes {
+        dispatch_bytes: encode_value(&generated.dispatch_abi, &dispatch)?,
+        input_bytes: Vec::new(),
+        accel_node_bytes: encode_accel_node_values(
+            &generated.accel_node_abi,
+            &request.accel_nodes,
+        )?,
+        accel_child_bytes: encode_u32_values(&request.accel_children)?,
+        cache_brick_bytes: encode_cache_brick_values(
+            &generated.cache_brick_abi,
+            &request.cache_bricks,
+        )?,
+        shape_meta_bytes: encode_shape_meta_values(
+            &generated.shape_meta_abi,
+            &generated.shape_meta_values,
+        )?,
+        world_shape_bytes: encode_shape_indices(&request.world_shape_indices)?,
+        continuation_seed_bytes: dispatch_side_channel_bytes(request)?,
+    };
+    let item_stride = portable_abi_array_stride(&generated.item_abi) as usize;
+    let result_stride = portable_abi_array_stride(&generated.result_abi) as usize;
+    let input_buffer_size = (item_stride * item_count as usize).max(item_stride.max(4)) as u64;
+    let output_buffer_size = (result_stride * item_count as usize).max(result_stride.max(4)) as u64;
+    let used_max_storage_buffer_bytes = [
+        storage_buffer_size(&payloads.dispatch_bytes),
+        input_buffer_size,
+        output_buffer_size,
+        storage_buffer_size(&payloads.accel_node_bytes),
+        storage_buffer_size(&payloads.accel_child_bytes),
+        storage_buffer_size(&payloads.cache_brick_bytes),
+        storage_buffer_size(&payloads.shape_meta_bytes),
+        storage_buffer_size(&payloads.world_shape_bytes),
+        storage_buffer_size(&payloads.continuation_seed_bytes),
+        (QUERY_WGSL_OBSERVABILITY_U32S * std::mem::size_of::<u32>()) as u64,
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(4);
+    let required_limit_request = WgslLimitRequest {
+        max_storage_buffers_per_shader_stage: QUERY_WGSL_STORAGE_BUFFERS_PER_SHADER_STAGE,
+        max_storage_buffer_binding_size: used_max_storage_buffer_bytes,
+        ..WgslLimitRequest::default()
+    };
+    let native = native_wgpu_context_for_limits(required_limit_request)?;
+    let selected_workgroup_size = select_query_wgsl_workgroup_size(&native.adapter_limits)?;
+    let diagnostics = WgslDispatchDiagnostics {
+        selected_workgroup_size,
+        used_max_storage_buffer_bytes,
+        requested_max_storage_buffer_bytes: native.requested_limits.max_storage_buffer_binding_size,
+    };
+    let mut gpu_runtime = GpuRuntimeMetrics::default();
+    gpu_runtime.note_context_metadata(&native);
+    let cached = compiled_query_pipeline(
+        &native,
+        &generated.source,
+        selected_workgroup_size,
+        generated,
+        &mut gpu_runtime,
+    )?;
+    let resident_scene_fingerprint = scene_fingerprint(
+        cached.layout_identity.layout_signature,
+        &payloads.accel_node_bytes,
+        &payloads.accel_child_bytes,
+        &payloads.cache_brick_bytes,
+        &payloads.shape_meta_bytes,
+    );
+    let resident_world_shape_fingerprint = world_shape_fingerprint(
+        cached.layout_identity.layout_signature,
+        &payloads.world_shape_bytes,
+    );
+    let (world_shapes_buffer, scene_bind_group, scene_bind_group_created) =
+        if let Some((scene, created)) = shared_resident_scene_for_request(
+            cached.layout_identity,
+            request,
+            &payloads,
+            native.limit_request,
+            &native,
+            &cached.bind_group_layouts[GPU_RUNTIME_SCENE_BIND_GROUP_INDEX as usize],
+        )? {
+            if created {
+                let scene_bytes = scene_upload_bytes(&payloads);
+                gpu_runtime.scene_reupload_bytes =
+                    gpu_runtime.scene_reupload_bytes.saturating_add(scene_bytes);
+                gpu_runtime.upload_bytes = gpu_runtime.upload_bytes.saturating_add(scene_bytes);
+            }
+            let (world_shapes_buffer, created_world_shapes) = pooled_storage_buffer(
+                &native,
+                native.limit_request,
+                WgslBufferKind::SceneWorldShapes,
+                storage_buffer_size(&payloads.world_shape_bytes),
+                resident_world_shape_fingerprint,
+                &mut gpu_runtime,
+            )?;
+            if created_world_shapes {
+                let world_shape_bytes = world_shape_upload_bytes(&payloads);
+                gpu_runtime.scene_reupload_bytes = gpu_runtime
+                    .scene_reupload_bytes
+                    .saturating_add(world_shape_bytes);
+                gpu_runtime.upload_bytes =
+                    gpu_runtime.upload_bytes.saturating_add(world_shape_bytes);
+            }
+            (
+                world_shapes_buffer,
+                scene.payload.bind_group_scene.clone(),
+                created,
+            )
+        } else {
+            let (accel_nodes_buffer, created_accel_nodes) = pooled_storage_buffer(
+                &native,
+                native.limit_request,
+                WgslBufferKind::SceneAccelNodes,
+                storage_buffer_size(&payloads.accel_node_bytes),
+                resident_scene_fingerprint,
+                &mut gpu_runtime,
+            )?;
+            let (accel_children_buffer, created_accel_children) = pooled_storage_buffer(
+                &native,
+                native.limit_request,
+                WgslBufferKind::SceneAccelChildren,
+                storage_buffer_size(&payloads.accel_child_bytes),
+                resident_scene_fingerprint,
+                &mut gpu_runtime,
+            )?;
+            let (cache_bricks_buffer, created_cache_bricks) = pooled_storage_buffer(
+                &native,
+                native.limit_request,
+                WgslBufferKind::SceneCacheBricks,
+                storage_buffer_size(&payloads.cache_brick_bytes),
+                resident_scene_fingerprint,
+                &mut gpu_runtime,
+            )?;
+            let (shape_meta_buffer, created_shape_meta) = pooled_storage_buffer(
+                &native,
+                native.limit_request,
+                WgslBufferKind::SceneShapeMeta,
+                storage_buffer_size(&payloads.shape_meta_bytes),
+                resident_scene_fingerprint,
+                &mut gpu_runtime,
+            )?;
+            let (world_shapes_buffer, created_world_shapes) = pooled_storage_buffer(
+                &native,
+                native.limit_request,
+                WgslBufferKind::SceneWorldShapes,
+                storage_buffer_size(&payloads.world_shape_bytes),
+                resident_world_shape_fingerprint,
+                &mut gpu_runtime,
+            )?;
+            if created_accel_nodes {
+                gpu_runtime.scene_reupload_bytes =
+                    gpu_runtime
+                        .scene_reupload_bytes
+                        .saturating_add(write_pooled_buffer(
+                            &native,
+                            &accel_nodes_buffer,
+                            &payloads.accel_node_bytes,
+                        ));
+                gpu_runtime.upload_bytes = gpu_runtime
+                    .upload_bytes
+                    .saturating_add(storage_buffer_size(&payloads.accel_node_bytes));
+            }
+            if created_accel_children {
+                gpu_runtime.scene_reupload_bytes =
+                    gpu_runtime
+                        .scene_reupload_bytes
+                        .saturating_add(write_pooled_buffer(
+                            &native,
+                            &accel_children_buffer,
+                            &payloads.accel_child_bytes,
+                        ));
+                gpu_runtime.upload_bytes = gpu_runtime
+                    .upload_bytes
+                    .saturating_add(storage_buffer_size(&payloads.accel_child_bytes));
+            }
+            if created_cache_bricks {
+                gpu_runtime.scene_reupload_bytes =
+                    gpu_runtime
+                        .scene_reupload_bytes
+                        .saturating_add(write_pooled_buffer(
+                            &native,
+                            &cache_bricks_buffer,
+                            &payloads.cache_brick_bytes,
+                        ));
+                gpu_runtime.upload_bytes = gpu_runtime
+                    .upload_bytes
+                    .saturating_add(storage_buffer_size(&payloads.cache_brick_bytes));
+            }
+            if created_shape_meta {
+                gpu_runtime.scene_reupload_bytes =
+                    gpu_runtime
+                        .scene_reupload_bytes
+                        .saturating_add(write_pooled_buffer(
+                            &native,
+                            &shape_meta_buffer,
+                            &payloads.shape_meta_bytes,
+                        ));
+                gpu_runtime.upload_bytes = gpu_runtime
+                    .upload_bytes
+                    .saturating_add(storage_buffer_size(&payloads.shape_meta_bytes));
+            }
+            if created_world_shapes {
+                gpu_runtime.scene_reupload_bytes =
+                    gpu_runtime
+                        .scene_reupload_bytes
+                        .saturating_add(write_pooled_buffer(
+                            &native,
+                            &world_shapes_buffer,
+                            &payloads.world_shape_bytes,
+                        ));
+                gpu_runtime.upload_bytes = gpu_runtime
+                    .upload_bytes
+                    .saturating_add(storage_buffer_size(&payloads.world_shape_bytes));
+            }
+            let scene_bind_group_key = WgslSceneBindGroupKey {
+                limits: native.limit_request,
+                pipeline_signature: pipeline_signature(
+                    &generated.source,
+                    selected_workgroup_size,
+                    cached.layout_identity.layout_signature,
+                    native.limit_request,
+                ),
+                scene_fingerprint: resident_scene_fingerprint,
+            };
+            let (scene_bind_group, scene_bind_group_created) = {
+                static SCENE_BIND_GROUPS: OnceLock<
+                    Mutex<HashMap<WgslSceneBindGroupKey, wgpu::BindGroup>>,
+                > = OnceLock::new();
+                let cache = SCENE_BIND_GROUPS.get_or_init(|| Mutex::new(HashMap::new()));
+                let mut guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
+                if let Some(bind_group) = guard.get(&scene_bind_group_key) {
+                    (bind_group.clone(), false)
+                } else {
+                    let bind_group = native.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("wrela.wgsl.query.group0"),
+                        layout: &cached.bind_group_layouts
+                            [GPU_RUNTIME_SCENE_BIND_GROUP_INDEX as usize],
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: accel_nodes_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: accel_children_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: shape_meta_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: cache_bricks_buffer.as_entire_binding(),
+                            },
+                        ],
+                    });
+                    let entry = guard
+                        .entry(scene_bind_group_key)
+                        .or_insert_with(|| bind_group.clone());
+                    (entry.clone(), true)
+                }
+            };
+            (
+                world_shapes_buffer,
+                scene_bind_group,
+                scene_bind_group_created,
+            )
+        };
+    let scene_token = resident_world_shape_fingerprint;
+    let dynamic_resources_key = WgslDynamicResourcesKey {
+        limits: native.limit_request,
+        pipeline_signature: pipeline_signature(
+            &generated.source,
+            selected_workgroup_size,
+            cached.layout_identity.layout_signature,
+            native.limit_request,
+        ),
+        scene_token,
+        dispatch_buffer_size: storage_buffer_size(&payloads.dispatch_bytes),
+        input_buffer_size,
+        output_buffer_size,
+        observability_buffer_size: (QUERY_WGSL_OBSERVABILITY_U32S * std::mem::size_of::<u32>())
+            as u64,
+        continuation_buffer_size: storage_buffer_size(&payloads.continuation_seed_bytes),
+    };
+    let (dynamic_resources, dynamic_resources_created) = lock_query_dynamic_resources(
+        &native,
+        dynamic_resources_key,
+        &cached,
+        &world_shapes_buffer,
+    );
+    if dynamic_resources_created {
+        gpu_runtime.transient_buffer_creations =
+            gpu_runtime.transient_buffer_creations.saturating_add(5);
+    }
+    gpu_runtime.transient_bind_group_creations =
+        u32::from(scene_bind_group_created) + if dynamic_resources_created { 3 } else { 0 };
+    Ok(ResidentBatchQuerySession {
+        native,
+        pipeline: cached.pipeline.clone(),
+        scene_bind_group,
+        frame_bind_group: dynamic_resources.frame_bind_group.clone(),
+        pass_bind_group: dynamic_resources.pass_bind_group.clone(),
+        scratch_bind_group: dynamic_resources.scratch_bind_group.clone(),
+        dispatch_buffer: dynamic_resources.dispatch_buffer.clone(),
+        input_buffer: dynamic_resources.input_buffer.clone(),
+        input_buffer_size,
+        output_buffer: dynamic_resources.output_buffer.clone(),
+        observability_buffer: dynamic_resources.observability_buffer.clone(),
+        continuation_seed_buffer: dynamic_resources.continuation_seed_buffer.clone(),
+        continuation_seed_buffer_size: dynamic_resources_key.continuation_buffer_size,
+        result_abi: generated.result_abi.clone(),
+        item_count,
+        output_buffer_size,
+        observability_buffer_size: dynamic_resources_key.observability_buffer_size,
+        layout_signature: cached.layout_identity.layout_signature,
+        diagnostics,
+        initial_gpu_runtime: gpu_runtime,
+    })
 }
 
 pub(crate) fn bridge_config(shader: &GeneratedShaderModule) -> NativeWgslBridgeConfig {
@@ -352,6 +918,7 @@ fn build_capture_request(
             true,
             true,
             true,
+            false,
         ),
         items: vec![item],
         world_shape_indices: Vec::new(),
@@ -359,6 +926,7 @@ fn build_capture_request(
         accel_children: Vec::new(),
         cache_bricks,
         continuation_seeds: Vec::new(),
+        candidate_spans: Vec::new(),
         resident_scene_snapshot,
         resident_scene_detail: 0,
         resident_scene_selection_signature: 0,
@@ -657,6 +1225,7 @@ fn build_world_request(
             scene_domain_flag_enabled(domain, SceneDomainFlag::Material)?,
             scene_domain_flag_enabled(domain, SceneDomainFlag::Radiance)?,
             scene_domain_flag_enabled(domain, SceneDomainFlag::Media)?,
+            false,
         ),
         items: vec![item],
         world_shape_indices,
@@ -664,6 +1233,7 @@ fn build_world_request(
         accel_children: accel.children,
         cache_bricks,
         continuation_seeds: Vec::new(),
+        candidate_spans: Vec::new(),
         resident_scene_snapshot: ops.context().snapshot_report_for_capture_name(&capture),
         resident_scene_detail: detail,
         resident_scene_selection_signature: u64::from(surface_root_shape_id.unwrap_or_default()),
@@ -740,6 +1310,7 @@ fn build_batch_request(
             true,
             true,
             true,
+            false,
         ),
         items: items.to_vec(),
         world_shape_indices: Vec::new(),
@@ -747,8 +1318,65 @@ fn build_batch_request(
         accel_children: Vec::new(),
         cache_bricks,
         continuation_seeds: Vec::new(),
+        candidate_spans: Vec::new(),
         resident_scene_snapshot: ops.context().snapshot_report_for_capture_name(&capture),
         resident_scene_detail: 0,
+        resident_scene_selection_signature: 0,
+    })
+}
+
+fn build_batch_request_without_items(
+    ops: &DirectQueryOps<'_>,
+    plan: &KernelBatchQueryPlan,
+    args: &[KernelValue],
+    item_count: u32,
+) -> Result<GpuDispatchRequest, QueryExecError> {
+    let descriptor = descriptor_for_plan(plan.contract_id)?;
+    let capture = ops.resolve_region_capture(args.first())?;
+    let domain = expect_struct_arg(args.get(1), "SceneDomain")?;
+    let detail = ops.validate_world_domain(
+        &capture,
+        domain,
+        world_query_semantics_for_contract(plan.contract_id).query_name,
+    )?;
+    let world_shapes = ops.resolve_world_shapes(&capture, detail, None)?;
+    ops.note_candidate_count((world_shapes.len() as u32).saturating_mul(item_count));
+    ops.note_batch_execution_mode(!matches!(
+        plan.pruning_strategy,
+        crate::query_plan::PruningStrategy::None
+            | crate::query_plan::PruningStrategy::ConservativeTraversal
+    ));
+    let world_shape_indices = world_shapes
+        .iter()
+        .map(|shape| shape_index(ops.context(), shape))
+        .collect::<Result<Vec<_>, _>>()?;
+    let accel = world_acceleration_request_data(ops.context(), &capture, detail)?;
+    let cache_bricks = world_cache_brick_kernel_values(ops.context(), &capture, detail);
+    note_wgsl_normal_role_for_world(ops, descriptor, &world_shapes);
+
+    Ok(GpuDispatchRequest {
+        dispatch: dispatch_config(
+            2,
+            0,
+            item_count,
+            world_shape_indices.len() as u32,
+            accel.root_index,
+            accel.nodes.len() as u32,
+            cache_bricks.len() as u32,
+            scene_domain_flag_enabled(domain, SceneDomainFlag::Material)?,
+            scene_domain_flag_enabled(domain, SceneDomainFlag::Radiance)?,
+            scene_domain_flag_enabled(domain, SceneDomainFlag::Media)?,
+            false,
+        ),
+        items: Vec::new(),
+        world_shape_indices,
+        accel_nodes: accel_nodes_kernel_values(&accel.nodes),
+        accel_children: accel.children,
+        cache_bricks,
+        continuation_seeds: Vec::new(),
+        candidate_spans: Vec::new(),
+        resident_scene_snapshot: ops.context().snapshot_report_for_capture_name(&capture),
+        resident_scene_detail: detail,
         resident_scene_selection_signature: 0,
     })
 }
@@ -794,6 +1422,7 @@ fn build_world_batch_request(
             scene_domain_flag_enabled(domain, SceneDomainFlag::Material)?,
             scene_domain_flag_enabled(domain, SceneDomainFlag::Radiance)?,
             scene_domain_flag_enabled(domain, SceneDomainFlag::Media)?,
+            false,
         ),
         items: items.to_vec(),
         world_shape_indices,
@@ -801,6 +1430,7 @@ fn build_world_batch_request(
         accel_children: accel.children,
         cache_bricks,
         continuation_seeds: Vec::new(),
+        candidate_spans: Vec::new(),
         resident_scene_snapshot: ops.context().snapshot_report_for_capture_name(&capture),
         resident_scene_detail: detail,
         resident_scene_selection_signature: 0,
@@ -1204,8 +1834,53 @@ struct WgslDispatchOutcome {
     layout_signature: u64,
 }
 
+#[derive(Debug)]
+struct WgslResidentScenePayload {
+    accel_nodes: wgpu::Buffer,
+    accel_children: wgpu::Buffer,
+    shape_meta: wgpu::Buffer,
+    cache_bricks: wgpu::Buffer,
+    bind_group_scene: wgpu::BindGroup,
+}
+
 fn storage_buffer_size(bytes: &[u8]) -> u64 {
     bytes.len().max(4) as u64
+}
+
+fn dispatch_item_count(request: &GpuDispatchRequest) -> Result<u32, QueryExecError> {
+    let dispatch = expect_struct_arg(Some(&request.dispatch), "WgslDispatchConfig")?;
+    dispatch
+        .fields
+        .iter()
+        .find(|(name, _)| name == "item_count")
+        .and_then(|(_, value)| match value {
+            KernelValue::U32(count) => Some(*count),
+            _ => None,
+        })
+        .ok_or_else(|| QueryExecError::Unsupported {
+            message: "WGSL dispatch config is missing item_count".to_string(),
+        })
+}
+
+fn dispatch_side_channel_bytes(request: &GpuDispatchRequest) -> Result<Vec<u8>, QueryExecError> {
+    if !request.candidate_spans.is_empty() {
+        return encode_u32_values(&request.candidate_spans);
+    }
+    encode_u32_values(&request.continuation_seeds)
+}
+
+pub(crate) fn normalized_dispatch_config(
+    request: &GpuDispatchRequest,
+) -> Result<KernelValue, QueryExecError> {
+    let mut dispatch = expect_struct_arg(Some(&request.dispatch), "WgslDispatchConfig")?.clone();
+    if let Some((_, value)) = dispatch
+        .fields
+        .iter_mut()
+        .find(|(name, _)| name == "candidate_spans_enabled")
+    {
+        *value = KernelValue::Bool(!request.candidate_spans.is_empty());
+    }
+    Ok(KernelValue::Struct(dispatch))
 }
 
 fn padded_storage_bytes(bytes: &[u8]) -> Cow<'_, [u8]> {
@@ -1237,7 +1912,10 @@ fn scene_upload_bytes(payloads: &WgslDispatchPayloadBytes) -> u64 {
         + storage_buffer_size(&payloads.accel_child_bytes)
         + storage_buffer_size(&payloads.cache_brick_bytes)
         + storage_buffer_size(&payloads.shape_meta_bytes)
-        + storage_buffer_size(&payloads.world_shape_bytes)
+}
+
+fn world_shape_upload_bytes(payloads: &WgslDispatchPayloadBytes) -> u64 {
+    storage_buffer_size(&payloads.world_shape_bytes)
 }
 
 fn shared_resident_scene_for_request(
@@ -1247,23 +1925,18 @@ fn shared_resident_scene_for_request(
     runtime_request: WgslLimitRequest,
     native: &NativeWgpuContext,
     scene_layout: &wgpu::BindGroupLayout,
-) -> Result<Option<(Arc<GpuResidentScene>, bool)>, QueryExecError> {
+) -> Result<Option<(Arc<GpuResidentScene<WgslResidentScenePayload>>, bool)>, QueryExecError> {
     let Some(snapshot) = request.resident_scene_snapshot.clone() else {
         return Ok(None);
     };
-    let cache = shared_resident_scene_cache_for_request::<GpuResidentScenePayload>(runtime_request);
+    let cache =
+        shared_resident_scene_cache_for_request::<WgslResidentScenePayload>(runtime_request);
     let mut guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
-    let key = GpuResidentSceneKey::new(snapshot, request.resident_scene_detail, layout_identity)
-        .with_selection_signature(request.resident_scene_selection_signature);
+    let key = GpuResidentSceneKey::new(snapshot, request.resident_scene_detail, layout_identity);
     if let Some(scene) = guard.get(&key) {
         return Ok(Some((scene, false)));
     }
     let built = guard.get_or_insert_with(key, |key| {
-        let world_shapes = create_storage_buffer_with_bytes(
-            &native.device,
-            "wrela.wgsl.scene.world_shapes",
-            &payloads.world_shape_bytes,
-        );
         let accel_nodes = create_storage_buffer_with_bytes(
             &native.device,
             "wrela.wgsl.scene.accel_nodes",
@@ -1308,8 +1981,7 @@ fn shared_resident_scene_for_request(
         });
         Ok(GpuResidentScene::new(
             key.clone(),
-            GpuResidentScenePayload {
-                world_shapes,
+            WgslResidentScenePayload {
                 accel_nodes,
                 accel_children,
                 shape_meta,
@@ -1358,12 +2030,6 @@ fn pooled_storage_buffer(
             gpu_runtime.transient_buffer_creations.saturating_add(1);
     }
     Ok((buffer, created))
-}
-
-fn hash_value<T: Hash>(value: &T) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    value.hash(&mut hasher);
-    hasher.finish()
 }
 
 fn lock_query_dynamic_resources(
@@ -1482,15 +2148,21 @@ fn scene_fingerprint(
     accel_child_bytes: &[u8],
     cache_brick_bytes: &[u8],
     shape_meta_bytes: &[u8],
-    world_shape_bytes: &[u8],
 ) -> u64 {
     stable_semantic_id(&[
-        b"query_exec::wgsl::resident_scene::v1",
+        b"query_exec::wgsl::resident_scene_static::v1",
         &layout_signature.to_le_bytes(),
         accel_node_bytes,
         accel_child_bytes,
         cache_brick_bytes,
         shape_meta_bytes,
+    ])
+}
+
+fn world_shape_fingerprint(layout_signature: u64, world_shape_bytes: &[u8]) -> u64 {
+    stable_semantic_id(&[
+        b"query_exec::wgsl::resident_world_shapes::v1",
+        &layout_signature.to_le_bytes(),
         world_shape_bytes,
     ])
 }
@@ -1565,7 +2237,10 @@ fn dispatch_compiled_shader_single_with_observability(
     }
 
     let payloads = WgslDispatchPayloadBytes {
-        dispatch_bytes: encode_value(&generated.dispatch_abi, &request.dispatch)?,
+        dispatch_bytes: encode_value(
+            &generated.dispatch_abi,
+            &normalized_dispatch_config(&request)?,
+        )?,
         input_bytes: encode_slice(&generated.item_abi, &request.items)?,
         accel_node_bytes: encode_accel_node_values(
             &generated.accel_node_abi,
@@ -1581,7 +2256,7 @@ fn dispatch_compiled_shader_single_with_observability(
             &generated.shape_meta_values,
         )?,
         world_shape_bytes: encode_shape_indices(&request.world_shape_indices)?,
-        continuation_seed_bytes: encode_u32_values(&request.continuation_seeds)?,
+        continuation_seed_bytes: dispatch_side_channel_bytes(&request)?,
     };
     let result_stride = portable_abi_array_stride(&generated.result_abi) as usize;
     let result_buffer_size = (result_stride * request.items.len()).max(result_stride.max(4)) as u64;
@@ -1674,16 +2349,27 @@ fn compute_wgsl_dispatch_chunk_plan(
     let per_storage_buffer_limit = effective_chunk_storage_buffer_limit(&native.requested_limits);
     let item_stride = portable_abi_array_stride(&generated.item_abi) as u64;
     let result_stride = portable_abi_array_stride(&generated.result_abi) as u64;
-    let per_item_seed_stride = continuation_seed_stride_for_chunking(request)?;
+    let per_item_side_channel_stride = side_channel_stride_for_chunking(request)?;
     let items_per_chunk = max_chunk_item_count(
         per_storage_buffer_limit,
         item_stride,
         result_stride,
-        per_item_seed_stride,
+        per_item_side_channel_stride,
     )?;
+    let chunk_count = item_count.div_ceil(items_per_chunk);
+    if !request.candidate_spans.is_empty()
+        && request.candidate_spans.len() > request.items.len().saturating_mul(2)
+        && chunk_count > 1
+    {
+        return Err(QueryExecError::Unsupported {
+            message: format!(
+                "WGSL batch chunking does not yet support slicing packed candidate span tables across {chunk_count} chunks"
+            ),
+        });
+    }
     Ok(WgslDispatchChunkPlan {
         items_per_chunk,
-        chunk_count: item_count.div_ceil(items_per_chunk),
+        chunk_count,
     })
 }
 
@@ -1715,9 +2401,24 @@ fn with_test_chunk_storage_buffer_limit_override<T>(limit: u64, f: impl FnOnce()
     })
 }
 
-fn continuation_seed_stride_for_chunking(
+fn side_channel_stride_for_chunking(
     request: &GpuDispatchRequest,
 ) -> Result<Option<u64>, QueryExecError> {
+    if !request.candidate_spans.is_empty() {
+        if request.candidate_spans.len() == request.items.len().saturating_mul(2) {
+            return Ok(Some((std::mem::size_of::<u32>() * 2) as u64));
+        }
+        if request.candidate_spans.len() >= request.items.len().saturating_mul(2) {
+            return Ok(None);
+        }
+        return Err(QueryExecError::Unsupported {
+            message: format!(
+                "WGSL batch chunking requires packed candidate spans to include at least one span pair per item, found {} span values for {} items",
+                request.candidate_spans.len(),
+                request.items.len()
+            ),
+        });
+    }
     if request.continuation_seeds.is_empty() {
         return Ok(None);
     }
@@ -1726,8 +2427,11 @@ fn continuation_seed_stride_for_chunking(
     }
     Err(QueryExecError::Unsupported {
         message: format!(
-            "WGSL batch chunking requires continuation seeds to be empty or one-per-item, found {} seeds for {} items",
-            request.continuation_seeds.len(),
+            "WGSL batch chunking requires continuation seeds or candidate spans to be empty or one-per-item, found {} side-channel values for {} items",
+            request
+                .continuation_seeds
+                .len()
+                .max(request.candidate_spans.len()),
             request.items.len()
         ),
     })
@@ -1737,7 +2441,7 @@ pub(crate) fn max_chunk_item_count(
     per_storage_buffer_limit: u64,
     item_stride: u64,
     result_stride: u64,
-    per_item_seed_stride: Option<u64>,
+    per_item_side_channel_stride: Option<u64>,
 ) -> Result<usize, QueryExecError> {
     let mut item_limits = Vec::new();
     item_limits.push(max_items_for_stride(
@@ -1750,11 +2454,11 @@ pub(crate) fn max_chunk_item_count(
         result_stride,
         "WGSL result ABI",
     )?);
-    if let Some(seed_stride) = per_item_seed_stride {
+    if let Some(seed_stride) = per_item_side_channel_stride {
         item_limits.push(max_items_for_stride(
             per_storage_buffer_limit,
             seed_stride,
-            "WGSL continuation seed ABI",
+            "WGSL batch side channel ABI",
         )?);
     }
     let items_per_chunk = item_limits.into_iter().min().unwrap_or(1);
@@ -1787,6 +2491,8 @@ fn slice_gpu_dispatch_request(
     request: &GpuDispatchRequest,
     range: std::ops::Range<usize>,
 ) -> Result<GpuDispatchRequest, QueryExecError> {
+    let range_start = range.start;
+    let range_end = range.end;
     let mut dispatch = expect_struct_arg(Some(&request.dispatch), "WgslDispatchConfig")?.clone();
     if let Some((_, value)) = dispatch
         .fields
@@ -1807,9 +2513,14 @@ fn slice_gpu_dispatch_request(
         accel_children: request.accel_children.clone(),
         cache_bricks: request.cache_bricks.clone(),
         continuation_seeds: if request.continuation_seeds.len() == request.items.len() {
-            request.continuation_seeds[range].to_vec()
+            request.continuation_seeds[range_start..range_end].to_vec()
         } else {
             request.continuation_seeds.clone()
+        },
+        candidate_spans: if request.candidate_spans.len() == request.items.len().saturating_mul(2) {
+            request.candidate_spans[range_start * 2..range_end * 2].to_vec()
+        } else {
+            request.candidate_spans.clone()
         },
         resident_scene_snapshot: request.resident_scene_snapshot.clone(),
         resident_scene_detail: request.resident_scene_detail,
@@ -1858,12 +2569,15 @@ fn dispatch_compiled_shader_with_buffers(
         generated,
         &mut gpu_runtime,
     )?;
-    let scene_fingerprint = scene_fingerprint(
+    let resident_scene_fingerprint = scene_fingerprint(
         cached.layout_identity.layout_signature,
         &payloads.accel_node_bytes,
         &payloads.accel_child_bytes,
         &payloads.cache_brick_bytes,
         &payloads.shape_meta_bytes,
+    );
+    let resident_world_shape_fingerprint = world_shape_fingerprint(
+        cached.layout_identity.layout_signature,
         &payloads.world_shape_bytes,
     );
     let (world_shapes_buffer, scene_bind_group, scene_bind_group_created) =
@@ -1881,8 +2595,24 @@ fn dispatch_compiled_shader_with_buffers(
                     gpu_runtime.scene_reupload_bytes.saturating_add(scene_bytes);
                 gpu_runtime.upload_bytes = gpu_runtime.upload_bytes.saturating_add(scene_bytes);
             }
+            let (world_shapes_buffer, created_world_shapes) = pooled_storage_buffer(
+                native,
+                runtime_request,
+                WgslBufferKind::SceneWorldShapes,
+                storage_buffer_size(&payloads.world_shape_bytes),
+                resident_world_shape_fingerprint,
+                &mut gpu_runtime,
+            )?;
+            if created_world_shapes {
+                let world_shape_bytes = world_shape_upload_bytes(payloads);
+                gpu_runtime.scene_reupload_bytes = gpu_runtime
+                    .scene_reupload_bytes
+                    .saturating_add(world_shape_bytes);
+                gpu_runtime.upload_bytes =
+                    gpu_runtime.upload_bytes.saturating_add(world_shape_bytes);
+            }
             (
-                scene.payload.world_shapes.clone(),
+                world_shapes_buffer,
                 scene.payload.bind_group_scene.clone(),
                 created,
             )
@@ -1892,7 +2622,7 @@ fn dispatch_compiled_shader_with_buffers(
                 runtime_request,
                 WgslBufferKind::SceneAccelNodes,
                 storage_buffer_size(&payloads.accel_node_bytes),
-                scene_fingerprint,
+                resident_scene_fingerprint,
                 &mut gpu_runtime,
             )?;
             let (accel_children_buffer, created_accel_children) = pooled_storage_buffer(
@@ -1900,7 +2630,7 @@ fn dispatch_compiled_shader_with_buffers(
                 runtime_request,
                 WgslBufferKind::SceneAccelChildren,
                 storage_buffer_size(&payloads.accel_child_bytes),
-                scene_fingerprint,
+                resident_scene_fingerprint,
                 &mut gpu_runtime,
             )?;
             let (cache_bricks_buffer, created_cache_bricks) = pooled_storage_buffer(
@@ -1908,7 +2638,7 @@ fn dispatch_compiled_shader_with_buffers(
                 runtime_request,
                 WgslBufferKind::SceneCacheBricks,
                 storage_buffer_size(&payloads.cache_brick_bytes),
-                scene_fingerprint,
+                resident_scene_fingerprint,
                 &mut gpu_runtime,
             )?;
             let (shape_meta_buffer, created_shape_meta) = pooled_storage_buffer(
@@ -1916,7 +2646,7 @@ fn dispatch_compiled_shader_with_buffers(
                 runtime_request,
                 WgslBufferKind::SceneShapeMeta,
                 storage_buffer_size(&payloads.shape_meta_bytes),
-                scene_fingerprint,
+                resident_scene_fingerprint,
                 &mut gpu_runtime,
             )?;
             let (world_shapes_buffer, created_world_shapes) = pooled_storage_buffer(
@@ -1924,7 +2654,7 @@ fn dispatch_compiled_shader_with_buffers(
                 runtime_request,
                 WgslBufferKind::SceneWorldShapes,
                 storage_buffer_size(&payloads.world_shape_bytes),
-                scene_fingerprint,
+                resident_world_shape_fingerprint,
                 &mut gpu_runtime,
             )?;
             if created_accel_nodes {
@@ -2000,7 +2730,7 @@ fn dispatch_compiled_shader_with_buffers(
                     cached.layout_identity.layout_signature,
                     runtime_request,
                 ),
-                scene_fingerprint,
+                scene_fingerprint: resident_scene_fingerprint,
             };
             let (scene_bind_group, scene_bind_group_created) = {
                 static SCENE_BIND_GROUPS: OnceLock<
@@ -2046,23 +2776,7 @@ fn dispatch_compiled_shader_with_buffers(
                 scene_bind_group_created,
             )
         };
-    let scene_token = request
-        .resident_scene_snapshot
-        .as_ref()
-        .map(|_| {
-            hash_value(
-                &GpuResidentSceneKey::new(
-                    request
-                        .resident_scene_snapshot
-                        .clone()
-                        .expect("snapshot exists when hashing resident scene"),
-                    request.resident_scene_detail,
-                    cached.layout_identity,
-                )
-                .with_selection_signature(request.resident_scene_selection_signature),
-            )
-        })
-        .unwrap_or(scene_fingerprint);
+    let scene_token = resident_world_shape_fingerprint;
     let dynamic_resources_key = WgslDynamicResourcesKey {
         limits: runtime_request,
         pipeline_signature: pipeline_signature(
@@ -2666,7 +3380,7 @@ fn validate_generated_shader(source: &str) -> Result<(), QueryExecError> {
     Validator::new(ValidationFlags::all(), Capabilities::all())
         .validate(&module)
         .map_err(|err| QueryExecError::Unsupported {
-            message: format!("native WGSL validation failed: {err}"),
+            message: format!("native WGSL validation failed: {err:?}"),
         })?;
     Ok(())
 }
@@ -2779,6 +3493,7 @@ pub(crate) fn dispatch_config(
     material_enabled: bool,
     radiance_enabled: bool,
     media_enabled: bool,
+    candidate_spans_enabled: bool,
 ) -> KernelValue {
     KernelValue::Struct(KernelStructValue {
         name: SmolStr::new("WgslDispatchConfig"),
@@ -2813,6 +3528,10 @@ pub(crate) fn dispatch_config(
             (
                 SmolStr::new("media_enabled"),
                 KernelValue::Bool(media_enabled),
+            ),
+            (
+                SmolStr::new("candidate_spans_enabled"),
+                KernelValue::Bool(candidate_spans_enabled),
             ),
         ],
     })
@@ -2968,18 +3687,254 @@ fn expect_vec3_arg(
 mod tests {
     use super::{
         GeneratedShaderModule, GpuDispatchRequest, WgslDispatchChunkPlan, WgslLimitRequest,
-        WgslPipelineCacheKey, dispatch_compiled_shader_with_observability, dispatch_config,
-        dispatch_workgroups_x_for_items, max_chunk_item_count, slice_gpu_dispatch_request,
-        suppress_repeated_chunk_seed_metrics, with_test_chunk_storage_buffer_limit_override,
+        WgslPipelineCacheKey, annotate_wgsl_world_helper_path_for_world,
+        build_batch_request_for_shader, compile_batch_shader, compile_world_shader,
+        dispatch_compiled_shader_with_observability, dispatch_config,
+        dispatch_workgroups_x_for_items, max_chunk_item_count, normalized_dispatch_config,
+        slice_gpu_dispatch_request, suppress_repeated_chunk_seed_metrics,
+        with_test_chunk_storage_buffer_limit_override,
     };
     use crate::gpu_runtime::{ComputePipelineKey, GpuLayoutIdentity, PipelineLayoutKey};
-    use crate::kernel::{KernelStructValue, KernelValue};
+    use crate::hir;
+    use crate::hir::lower as hir_lower;
+    use crate::kernel::{
+        KernelStructValue, KernelValue, lower_batch_query_plan, lower_world_query_plan,
+    };
+    use crate::parser::ast;
+    use crate::parser::ast::AstNode;
+    use crate::parser::parse;
     use crate::portable::{PortableAbiType, portable_abi_emit_wgsl_structs};
+    use crate::query_contract;
+    use crate::query_exec::QueryExecContext;
     use crate::query_exec::QueryExecutionObservability;
+    use crate::query_exec::ids::{stable_region_scene_capture_id, stable_region_snapshot_handle};
     use crate::query_exec::wgsl::codegen::{
         wgsl_accel_node_abi, wgsl_cache_brick_abi, wgsl_dispatch_config_abi, wgsl_shape_meta_abi,
     };
+    use crate::query_plan::{
+        BatchQueryPlan, DispatchBackend, WorldQueryKind, WorldQueryPlan, world_query_contract_id,
+    };
     use smol_str::SmolStr;
+
+    fn lower_inline_module_from_source(source: &str) -> hir::Module {
+        let node = parse(source);
+        let root = ast::Root::cast(node).expect("root");
+        hir_lower::lower(root)
+    }
+
+    fn typed_query_module(source: &str) -> QueryExecContext {
+        let module = lower_inline_module_from_source(source);
+        let semantic = hir::semantic::check_module(&module);
+        assert!(
+            semantic.errors.is_empty(),
+            "semantic errors: {:?}",
+            semantic.errors
+        );
+        let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+        assert!(type_errors.is_empty(), "type errors: {type_errors:?}");
+        QueryExecContext::compile(&module, &type_info)
+    }
+
+    fn accelerated_world_helper_fixture_source() -> &'static str {
+        r#"
+field exact distance near_field(p: Vec3) -> F32 {
+    translate = vec3(-6.0, 0.0, 0.0) {
+        sphere(radius = 0.45)
+    }
+}
+
+field exact distance mid_a_field(p: Vec3) -> F32 {
+    translate = vec3(-3.0, 0.0, 0.0) {
+        sphere(radius = 0.45)
+    }
+}
+
+field exact distance mid_b_field(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.0, 0.0) {
+        sphere(radius = 0.45)
+    }
+}
+
+field exact distance focus_field(p: Vec3) -> F32 {
+    translate = vec3(6.0, 0.0, 0.0) {
+        sphere(radius = 0.45)
+    }
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.25, 0.35, 0.45),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+radiance field glow(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
+    return vec3(0.1, 0.2, 0.3) + direction * 0.0 + vec3(f32(feature_id) * 0.0, 0.0, 0.0)
+}
+
+volume field fog(p: Vec3, surface_distance: F32) -> Medium {
+    return Medium(
+        density=0.2,
+        emission=vec3(0.05, 0.06, 0.07) + vec3(abs(surface_distance) * 0.0, 0.0, 0.0),
+        anisotropy=0.1
+    )
+}
+
+shape near_shape {
+    field = near_field
+    material = shade
+    radiance = glow
+    volume = fog
+    payload = Payload(
+        entity_id=u32(101),
+        material_id=u32(201),
+        actor=ActorHandle(id=u32(301), generation=u32(0))
+    )
+}
+
+shape mid_a_shape {
+    field = mid_a_field
+    material = shade
+    radiance = glow
+    volume = fog
+    payload = Payload(
+        entity_id=u32(102),
+        material_id=u32(202),
+        actor=ActorHandle(id=u32(302), generation=u32(0))
+    )
+}
+
+shape mid_b_shape {
+    field = mid_b_field
+    material = shade
+    radiance = glow
+    volume = fog
+    payload = Payload(
+        entity_id=u32(103),
+        material_id=u32(203),
+        actor=ActorHandle(id=u32(303), generation=u32(0))
+    )
+}
+
+shape focus_shape {
+    field = focus_field
+    material = shade
+    radiance = glow
+    volume = fog
+    payload = Payload(
+        entity_id=u32(104),
+        material_id=u32(204),
+        actor=ActorHandle(id=u32(304), generation=u32(0))
+    )
+}
+
+region accelerated_region() {
+    place near = near_shape
+    place mid_a = mid_a_shape
+    place mid_b = mid_b_shape
+    place focus = focus_shape
+}
+
+domain accelerated_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = true
+    media = true
+    max_distance = 12.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+"#
+    }
+
+    fn scene_domain(
+        scene_id: u32,
+        detail: i32,
+        material: bool,
+        radiance: bool,
+        media: bool,
+    ) -> KernelValue {
+        KernelValue::Struct(KernelStructValue {
+            name: SmolStr::new("SceneDomain"),
+            fields: vec![
+                (SmolStr::new("scene_id"), KernelValue::U32(scene_id)),
+                (
+                    SmolStr::new("spatial"),
+                    KernelValue::Struct(KernelStructValue {
+                        name: SmolStr::new("SpatialDomainContract"),
+                        fields: vec![(SmolStr::new("geometry_detail"), KernelValue::I32(detail))],
+                    }),
+                ),
+                (
+                    SmolStr::new("surface"),
+                    KernelValue::Struct(KernelStructValue {
+                        name: SmolStr::new("SurfaceDomainContract"),
+                        fields: vec![(SmolStr::new("material"), KernelValue::Bool(material))],
+                    }),
+                ),
+                (
+                    SmolStr::new("participants"),
+                    KernelValue::Struct(KernelStructValue {
+                        name: SmolStr::new("ParticipantDomainContract"),
+                        fields: vec![
+                            (SmolStr::new("radiance"), KernelValue::Bool(radiance)),
+                            (SmolStr::new("media"), KernelValue::Bool(media)),
+                        ],
+                    }),
+                ),
+            ],
+        })
+    }
+
+    fn ray_query_with_limits(
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+        min_step: f32,
+        hit_epsilon: f32,
+        max_steps: i32,
+    ) -> KernelValue {
+        KernelValue::Struct(KernelStructValue {
+            name: SmolStr::new("RayQuery"),
+            fields: vec![
+                (SmolStr::new("origin"), KernelValue::Vec3(origin)),
+                (SmolStr::new("direction"), KernelValue::Vec3(direction)),
+                (SmolStr::new("max_distance"), KernelValue::F32(max_distance)),
+                (SmolStr::new("min_step"), KernelValue::F32(min_step)),
+                (SmolStr::new("hit_epsilon"), KernelValue::F32(hit_epsilon)),
+                (SmolStr::new("max_steps"), KernelValue::I32(max_steps)),
+            ],
+        })
+    }
+
+    fn expect_struct<'a>(value: &'a KernelValue, name: &str) -> &'a KernelStructValue {
+        match value {
+            KernelValue::Struct(value) if value.name.as_str() == name => value,
+            other => panic!("expected {name}, got {other:?}"),
+        }
+    }
+
+    fn field<'a>(value: &'a KernelStructValue, name: &str) -> &'a KernelValue {
+        value
+            .fields
+            .iter()
+            .find(|(field_name, _)| field_name.as_str() == name)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("missing field {name} on {}", value.name))
+    }
+
+    fn expect_u32(value: &KernelValue) -> u32 {
+        match value {
+            KernelValue::U32(value) => *value,
+            other => panic!("expected U32, got {other:?}"),
+        }
+    }
 
     #[test]
     fn dispatch_workgroups_follow_selected_workgroup_size() {
@@ -3001,13 +3956,14 @@ mod tests {
     #[test]
     fn slice_request_updates_dispatch_item_count_and_seeds() {
         let request = GpuDispatchRequest {
-            dispatch: dispatch_config(2, 0, 6, 3, 1, 4, 0, true, false, false),
+            dispatch: dispatch_config(2, 0, 6, 3, 1, 4, 0, true, false, false, false),
             items: (0..6).map(KernelValue::U32).collect(),
             world_shape_indices: vec![7, 8, 9],
             accel_nodes: Vec::new(),
             accel_children: Vec::new(),
             cache_bricks: Vec::new(),
             continuation_seeds: vec![10, 11, 12, 13, 14, 15],
+            candidate_spans: Vec::new(),
             resident_scene_snapshot: None,
             resident_scene_detail: 0,
             resident_scene_selection_signature: 0,
@@ -3030,6 +3986,41 @@ mod tests {
         assert_eq!(sliced.items.len(), 3);
         assert_eq!(sliced.continuation_seeds, vec![12, 13, 14]);
         assert_eq!(sliced.world_shape_indices, vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn slice_request_preserves_candidate_span_pairs() {
+        let request = GpuDispatchRequest {
+            dispatch: dispatch_config(2, 0, 4, 3, 1, 4, 0, true, false, false, false),
+            items: (0..4).map(KernelValue::U32).collect(),
+            world_shape_indices: vec![7, 8, 9],
+            accel_nodes: Vec::new(),
+            accel_children: Vec::new(),
+            cache_bricks: Vec::new(),
+            continuation_seeds: Vec::new(),
+            candidate_spans: vec![0xffffffff, 0, 4, 2, 8, 1, 9, 3],
+            resident_scene_snapshot: None,
+            resident_scene_detail: 0,
+            resident_scene_selection_signature: 0,
+        };
+        let normalized = normalized_dispatch_config(&request).unwrap();
+        let normalized_dispatch = match normalized {
+            KernelValue::Struct(ref dispatch) => dispatch,
+            _ => panic!("expected struct dispatch config"),
+        };
+        let candidate_spans_enabled = normalized_dispatch
+            .fields
+            .iter()
+            .find(|(name, _)| name == "candidate_spans_enabled")
+            .and_then(|(_, value)| match value {
+                KernelValue::Bool(enabled) => Some(*enabled),
+                _ => None,
+            })
+            .expect("candidate_spans_enabled field");
+        assert!(candidate_spans_enabled);
+        let sliced = slice_gpu_dispatch_request(&request, 1..3).unwrap();
+
+        assert_eq!(sliced.candidate_spans, vec![4, 2, 8, 1]);
     }
 
     #[test]
@@ -3062,6 +4053,68 @@ mod tests {
         assert_eq!(merged.cache_upload_rejections, 1);
         assert_eq!(merged.dispatch_count, 2);
         assert_eq!(merged.dispatch_items, 6);
+    }
+
+    #[test]
+    fn world_helper_annotation_reports_dense_fallback_and_accelerated_paths() {
+        fn accel_node_value() -> KernelValue {
+            KernelValue::Struct(KernelStructValue {
+                name: SmolStr::new("WgslAccelNode"),
+                fields: vec![
+                    (SmolStr::new("min"), KernelValue::Vec3([0.0, 0.0, 0.0])),
+                    (SmolStr::new("max"), KernelValue::Vec3([1.0, 1.0, 1.0])),
+                    (SmolStr::new("child_start"), KernelValue::U32(0)),
+                    (SmolStr::new("child_len"), KernelValue::U32(0)),
+                    (SmolStr::new("leaf_shape_index"), KernelValue::U32(0)),
+                    (SmolStr::new("flags"), KernelValue::U32(0)),
+                ],
+            })
+        }
+
+        let contract_id = world_query_contract_id(WorldQueryKind::Distance);
+        let base_request = GpuDispatchRequest {
+            dispatch: dispatch_config(2, 0, 1, 1, 0, 0, 0, false, false, false, false),
+            items: vec![KernelValue::Vec3([0.0, 0.0, 0.0])],
+            world_shape_indices: vec![0],
+            accel_nodes: Vec::new(),
+            accel_children: Vec::new(),
+            cache_bricks: Vec::new(),
+            continuation_seeds: Vec::new(),
+            candidate_spans: Vec::new(),
+            resident_scene_snapshot: None,
+            resident_scene_detail: 0,
+            resident_scene_selection_signature: 0,
+        };
+
+        let mut dense = QueryExecutionObservability::default();
+        annotate_wgsl_world_helper_path_for_world(&mut dense, contract_id, &base_request);
+        assert_eq!(
+            dense.wgsl_world_helper_path.as_deref(),
+            Some("dense_fallback")
+        );
+
+        let mut accelerated = QueryExecutionObservability::default();
+        let mut accelerated_request = base_request.clone();
+        accelerated_request.accel_nodes = vec![accel_node_value()];
+        annotate_wgsl_world_helper_path_for_world(
+            &mut accelerated,
+            contract_id,
+            &accelerated_request,
+        );
+        assert_eq!(
+            accelerated.wgsl_world_helper_path.as_deref(),
+            Some("accelerated")
+        );
+
+        let mut rejected = QueryExecutionObservability {
+            cache_budget_rejections: 1,
+            ..QueryExecutionObservability::default()
+        };
+        annotate_wgsl_world_helper_path_for_world(&mut rejected, contract_id, &accelerated_request);
+        assert_eq!(
+            rejected.wgsl_world_helper_path.as_deref(),
+            Some("dense_fallback")
+        );
     }
 
     #[test]
@@ -3211,7 +4264,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
             })],
         };
         let request = GpuDispatchRequest {
-            dispatch: dispatch_config(0, 0, 6, 1, 0, 1, 1, false, false, false),
+            dispatch: dispatch_config(0, 0, 6, 1, 0, 1, 1, false, false, false, false),
             items: (0..6).map(KernelValue::U32).collect(),
             world_shape_indices: vec![0],
             accel_nodes: vec![KernelValue::Struct(KernelStructValue {
@@ -3234,9 +4287,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
                 ],
             })],
             continuation_seeds: vec![0; 6],
-            resident_scene_snapshot: None,
+            candidate_spans: Vec::new(),
+            resident_scene_snapshot: Some(
+                stable_region_snapshot_handle(&SmolStr::new("chunked_dispatch_region")).report(),
+            ),
             resident_scene_detail: 0,
-            resident_scene_selection_signature: 0,
+            resident_scene_selection_signature: 11,
         };
 
         let (values, observability) = with_test_chunk_storage_buffer_limit_override(16, || {
@@ -3248,15 +4304,28 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
                 dispatch_compiled_shader_with_observability(&generated, request.clone())
                     .expect("chunked direct dispatch reuse")
             });
+        let mut alternate_request = request.clone();
+        alternate_request.resident_scene_selection_signature = 12;
+        alternate_request.world_shape_indices = vec![1, 2];
+        let (alternate_values, alternate_observability) =
+            with_test_chunk_storage_buffer_limit_override(16, || {
+                dispatch_compiled_shader_with_observability(&generated, alternate_request.clone())
+                    .expect("chunked direct dispatch alternate selection")
+            });
 
         assert_eq!(values, request.items);
         assert_eq!(second_values, request.items);
+        assert_eq!(alternate_values, request.items);
         assert_eq!(observability.dispatch_count, 2);
         assert_eq!(observability.dispatch_items, 6);
         assert_eq!(observability.cache_resident_shared_snapshot_artifacts, 3);
         assert_eq!(observability.cache_upload_attempts, 3);
         assert!(observability.gpu_runtime.scene_reupload_bytes > 0);
         assert_eq!(second_observability.gpu_runtime.scene_reupload_bytes, 0);
+        assert!(
+            alternate_observability.gpu_runtime.scene_reupload_bytes
+                < observability.gpu_runtime.scene_reupload_bytes
+        );
         assert!(
             second_observability.gpu_runtime.transient_buffer_creations
                 < observability.gpu_runtime.transient_buffer_creations
@@ -3267,5 +4336,113 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
                 .transient_bind_group_creations
                 < observability.gpu_runtime.transient_bind_group_creations
         );
+    }
+
+    #[test]
+    fn accelerated_world_helpers_stop_emitting_dense_helper_functions() {
+        let ctx = typed_query_module(accelerated_world_helper_fixture_source());
+
+        let distance_plan =
+            lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Distance));
+        let distance_shader = compile_world_shader(&ctx, &distance_plan).expect("distance shader");
+        assert!(
+            distance_shader
+                .source
+                .contains("fn world_distance_point_accel(")
+        );
+        assert!(
+            !distance_shader
+                .source
+                .contains("fn world_distance_point_dense(")
+        );
+
+        let radiance_plan =
+            lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Radiance));
+        let radiance_shader = compile_world_shader(&ctx, &radiance_plan).expect("radiance shader");
+        assert!(
+            radiance_shader
+                .source
+                .contains("fn world_radiance_query_accel(")
+        );
+        assert!(
+            !radiance_shader
+                .source
+                .contains("fn world_radiance_query_dense(")
+        );
+
+        let medium_plan =
+            lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Medium));
+        let medium_shader = compile_world_shader(&ctx, &medium_plan).expect("medium shader");
+        assert!(
+            medium_shader
+                .source
+                .contains("fn world_medium_point_accel(")
+        );
+        assert!(
+            !medium_shader
+                .source
+                .contains("fn world_medium_point_dense(")
+        );
+    }
+
+    #[test]
+    fn candidate_span_miss_falls_back_to_full_world_trace() {
+        let ctx = typed_query_module(accelerated_world_helper_fixture_source());
+        let region_name = SmolStr::new("accelerated_region");
+        let region_scene_id = stable_region_scene_capture_id(&region_name);
+        let domain = scene_domain(region_scene_id, 1, true, true, true);
+        let plan = lower_batch_query_plan(
+            &BatchQueryPlan::for_contract(
+                query_contract::SPATIAL_NEAREST_BATCH_WORLD,
+                DispatchBackend::Wgsl,
+                None,
+            )
+            .expect("world nearest batch plan"),
+        );
+        let generated = compile_batch_shader(&ctx, &plan).expect("world nearest batch shader");
+        let mut request = build_batch_request_for_shader(
+            &ctx,
+            &plan,
+            &[
+                KernelValue::Capture(region_name.clone()),
+                domain,
+                KernelValue::Array(vec![ray_query_with_limits(
+                    [6.0, 0.0, 3.0],
+                    [0.0, 0.0, -1.0],
+                    12.0,
+                    0.05,
+                    0.001,
+                    96,
+                )]),
+            ],
+        )
+        .expect("world nearest batch request");
+        assert!(!request.accel_nodes.is_empty());
+        let near_shape_index = ctx
+            .scene
+            .shapes
+            .keys()
+            .enumerate()
+            .find_map(|(index, shape)| (shape.as_str() == "near_shape").then_some(index as u32))
+            .expect("near_shape scene index");
+        let focus_shape_index = ctx
+            .scene
+            .shapes
+            .keys()
+            .enumerate()
+            .find_map(|(index, shape)| (shape.as_str() == "focus_shape").then_some(index as u32))
+            .expect("focus_shape scene index");
+        assert!(request.world_shape_indices.contains(&focus_shape_index));
+
+        request.candidate_spans = vec![0, 1, near_shape_index];
+        let (values, observability) =
+            dispatch_compiled_shader_with_observability(&generated, request)
+                .expect("candidate-span fallback dispatch");
+
+        let hit = expect_struct(values.first().expect("batch hit"), "Hit3");
+        let payload = expect_struct(field(hit, "payload"), "Payload");
+        assert_eq!(expect_u32(field(payload, "entity_id")), 104);
+        assert!(observability.acceleration_node_visits > 0);
+        assert_eq!(observability.cache_budget_rejections, 0);
     }
 }

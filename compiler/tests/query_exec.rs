@@ -6582,6 +6582,124 @@ domain overflow_domain(world: RegionCapture) {
     source
 }
 
+fn accelerated_world_helper_fixture_source() -> &'static str {
+    r#"
+field exact distance near_field(p: Vec3) -> F32 {
+    translate = vec3(-6.0, 0.0, 0.0) {
+        sphere(radius = 0.45)
+    }
+}
+
+field exact distance mid_a_field(p: Vec3) -> F32 {
+    translate = vec3(-3.0, 0.0, 0.0) {
+        sphere(radius = 0.45)
+    }
+}
+
+field exact distance mid_b_field(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.0, 0.0) {
+        sphere(radius = 0.45)
+    }
+}
+
+field exact distance focus_field(p: Vec3) -> F32 {
+    translate = vec3(6.0, 0.0, 0.0) {
+        sphere(radius = 0.45)
+    }
+}
+
+material shade(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.25, 0.35, 0.45),
+        roughness=0.5,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+radiance field glow(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3 {
+    return vec3(0.1, 0.2, 0.3) + direction * 0.0 + vec3(f32(feature_id) * 0.0, 0.0, 0.0)
+}
+
+volume field fog(p: Vec3, surface_distance: F32) -> Medium {
+    return Medium(
+        density=0.2,
+        emission=vec3(0.05, 0.06, 0.07) + vec3(abs(surface_distance) * 0.0, 0.0, 0.0),
+        anisotropy=0.1
+    )
+}
+
+shape near_shape {
+    field = near_field
+    material = shade
+    radiance = glow
+    volume = fog
+    payload = Payload(
+        entity_id=u32(101),
+        material_id=u32(201),
+        actor=ActorHandle(id=u32(301), generation=u32(0))
+    )
+}
+
+shape mid_a_shape {
+    field = mid_a_field
+    material = shade
+    radiance = glow
+    volume = fog
+    payload = Payload(
+        entity_id=u32(102),
+        material_id=u32(202),
+        actor=ActorHandle(id=u32(302), generation=u32(0))
+    )
+}
+
+shape mid_b_shape {
+    field = mid_b_field
+    material = shade
+    radiance = glow
+    volume = fog
+    payload = Payload(
+        entity_id=u32(103),
+        material_id=u32(203),
+        actor=ActorHandle(id=u32(303), generation=u32(0))
+    )
+}
+
+shape focus_shape {
+    field = focus_field
+    material = shade
+    radiance = glow
+    volume = fog
+    payload = Payload(
+        entity_id=u32(104),
+        material_id=u32(204),
+        actor=ActorHandle(id=u32(304), generation=u32(0))
+    )
+}
+
+region accelerated_region() {
+    place near = near_shape
+    place mid_a = mid_a_shape
+    place mid_b = mid_b_shape
+    place focus = focus_shape
+}
+
+domain accelerated_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = true
+    media = true
+    max_distance = 12.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+"#
+}
+
 #[test]
 fn query_exec_wgsl_world_trace_dense_fallbacks_when_accel_stack_overflows() {
     let shape_count = 160usize;
@@ -6631,6 +6749,125 @@ fn query_exec_wgsl_world_trace_dense_fallbacks_when_accel_stack_overflows() {
             > 0
     );
     assert!(wgsl_trace.observability.cache_dense_fallback_rays > 0);
+}
+
+#[test]
+fn query_exec_wgsl_world_distance_prefers_accelerated_helpers_when_available() {
+    let (_, _, ctx) = typed_query_module(accelerated_world_helper_fixture_source());
+    let region_name = SmolStr::new("accelerated_region");
+    let region_scene_id = stable_region_scene_capture_id(&region_name);
+    let domain = scene_domain(region_scene_id, 1, true, true, true);
+    let distance_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Distance));
+    let radiance_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Radiance));
+    let medium_plan = lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Medium));
+    let sample_point = KernelValue::Vec3([6.45, 0.0, 0.0]);
+    let distance_args = [
+        KernelValue::Capture(region_name.clone()),
+        domain.clone(),
+        sample_point.clone(),
+    ];
+
+    let (cpu_distance, _) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &distance_plan,
+        &distance_args,
+    )
+    .expect("cpu accelerated distance");
+    let (wgsl_distance, distance_trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &distance_plan,
+        &distance_args,
+    )
+    .expect("wgsl accelerated distance");
+    assert_approx_eq(expect_f32(&cpu_distance), expect_f32(&wgsl_distance));
+    assert!(distance_trace.observability.acceleration_node_visits > 0);
+    assert!(distance_trace.observability.shape_leaf_visits > 0);
+    assert_eq!(distance_trace.observability.cache_budget_rejections, 0);
+
+    let radiance_args = [
+        KernelValue::Capture(region_name.clone()),
+        domain.clone(),
+        point_direction_query([6.45, 0.0, 0.0], [0.0, 0.0, 1.0]),
+    ];
+    let (cpu_radiance, _) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &radiance_plan,
+        &radiance_args,
+    )
+    .expect("cpu accelerated radiance");
+    let (wgsl_radiance, radiance_trace) = execute_world_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &radiance_plan,
+        &radiance_args,
+    )
+    .expect("wgsl accelerated radiance");
+    assert_vec3_approx_eq(expect_vec3(&cpu_radiance), expect_vec3(&wgsl_radiance));
+    assert!(radiance_trace.observability.acceleration_node_visits > 0);
+    assert!(radiance_trace.observability.shape_leaf_visits > 0);
+    assert_eq!(radiance_trace.observability.cache_budget_rejections, 0);
+
+    let medium_args = [KernelValue::Capture(region_name), domain, sample_point];
+    let (cpu_medium, _) =
+        execute_world_query_with_trace_on(&ctx, DispatchBackend::Cpu, &medium_plan, &medium_args)
+            .expect("cpu accelerated medium");
+    let (wgsl_medium, medium_trace) =
+        execute_world_query_with_trace_on(&ctx, DispatchBackend::Wgsl, &medium_plan, &medium_args)
+            .expect("wgsl accelerated medium");
+    assert_medium_approx_eq(&cpu_medium, &wgsl_medium);
+    assert!(medium_trace.observability.acceleration_node_visits > 0);
+    assert!(medium_trace.observability.shape_leaf_visits > 0);
+    assert_eq!(medium_trace.observability.cache_budget_rejections, 0);
+
+    let rendered_distance = render_semantic_cost_report(&distance_trace.cost_report);
+    assert!(rendered_distance.contains("acceleration_node_visits="));
+    assert!(rendered_distance.contains("acceleration_pruned_nodes="));
+    assert!(rendered_distance.contains("wgsl_world_helper_path=accelerated"));
+    let rendered_radiance = render_semantic_cost_report(&radiance_trace.cost_report);
+    assert!(rendered_radiance.contains("acceleration_node_visits="));
+    assert!(rendered_radiance.contains("wgsl_world_helper_path=accelerated"));
+    let rendered_medium = render_semantic_cost_report(&medium_trace.cost_report);
+    assert!(rendered_medium.contains("acceleration_node_visits="));
+    assert!(rendered_medium.contains("wgsl_world_helper_path=accelerated"));
+}
+
+#[test]
+fn query_exec_wgsl_world_distance_keeps_parity_on_wide_worlds() {
+    let shape_count = 160usize;
+    let target_index = shape_count - 1;
+    let target_x = target_index as f32 * 2.0;
+    let source = wide_world_overflow_fixture_source(shape_count);
+    let (_, _, ctx) = typed_query_module(&source);
+    let region_name = SmolStr::new("overflow_region");
+    let region_scene_id = stable_region_scene_capture_id(&region_name);
+    let distance_plan =
+        lower_world_query_plan(&WorldQueryPlan::for_query(WorldQueryKind::Distance));
+    let args = [
+        KernelValue::Capture(region_name),
+        scene_domain(region_scene_id, 1, false, false, false),
+        KernelValue::Vec3([target_x, 0.0, 0.0]),
+    ];
+
+    let (cpu_distance, _) =
+        execute_world_query_with_trace_on(&ctx, DispatchBackend::Cpu, &distance_plan, &args)
+            .expect("cpu wide-world distance");
+    let (wgsl_distance, wgsl_trace) =
+        execute_world_query_with_trace_on(&ctx, DispatchBackend::Wgsl, &distance_plan, &args)
+            .expect("wgsl wide-world distance");
+
+    assert_approx_eq(expect_f32(&cpu_distance), expect_f32(&wgsl_distance));
+    assert!(
+        wgsl_trace.observability.acceleration_node_visits > 0
+            || wgsl_trace.observability.shape_leaf_visits > 0
+    );
+    let rendered = render_semantic_cost_report(&wgsl_trace.cost_report);
+    assert!(rendered.contains("cache_budget_rejections="));
+    assert!(rendered.contains("wgsl_world_helper_path=accelerated"));
 }
 
 fn empty_world_fixture_source() -> &'static str {

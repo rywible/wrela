@@ -28,6 +28,7 @@ pub struct PresentationAttachmentBytes {
     pub width: u32,
     pub height: u32,
     pub total_size_bytes: u64,
+    pub backing: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -71,6 +72,10 @@ pub struct PresentationFrameCostReport {
     pub tile_candidate_total_samples: u32,
     pub tile_candidate_active_samples: u32,
     pub tile_candidate_reduction: u32,
+    pub tile_candidate_effectiveness: f32,
+    pub tile_candidate_packet_count: u32,
+    pub tile_candidate_packet_size: u32,
+    pub packet_compaction_ratio: f32,
     pub packet_scheduling_active: bool,
     pub selected_workgroup_size: u32,
     pub surface_resolve_count: u32,
@@ -115,6 +120,7 @@ pub struct PresentationFrameCostReport {
     pub gpu_runtime: crate::gpu_runtime::GpuRuntimeMetrics,
     pub attachment_bytes: Vec<PresentationAttachmentBytes>,
     pub passes: Vec<PresentationPassCost>,
+    pub framegraph_exceptions: Vec<String>,
     pub active_acceleration_artifacts: Vec<String>,
     pub bottleneck_pass: Option<String>,
     pub performance_gain_sources: Vec<String>,
@@ -331,10 +337,14 @@ pub fn render_frame_cost_report(report: &PresentationFrameCostReport) -> String 
         report.history_reuse_rate,
     ));
     out.push_str(&format!(
-        "tile_candidate_total_samples={} tile_candidate_active_samples={} tile_candidate_reduction={} packet_scheduling_active={} selected_workgroup_size={}\n",
+        "tile_candidate_total_samples={} tile_candidate_active_samples={} tile_candidate_reduction={} tile_candidate_effectiveness={:.3} tile_candidate_packet_count={} tile_candidate_packet_size={} packet_compaction_ratio={:.3} packet_scheduling_active={} selected_workgroup_size={}\n",
         report.tile_candidate_total_samples,
         report.tile_candidate_active_samples,
         report.tile_candidate_reduction,
+        report.tile_candidate_effectiveness,
+        report.tile_candidate_packet_count,
+        report.tile_candidate_packet_size,
+        report.packet_compaction_ratio,
         report.packet_scheduling_active,
         report.selected_workgroup_size,
     ));
@@ -376,6 +386,12 @@ pub fn render_frame_cost_report(report: &PresentationFrameCostReport) -> String 
             report.active_acceleration_artifacts.join(",")
         ));
     }
+    if !report.framegraph_exceptions.is_empty() {
+        out.push_str(&format!(
+            "framegraph_exceptions={}\n",
+            report.framegraph_exceptions.join(",")
+        ));
+    }
     if let Some(bottleneck) = &report.bottleneck_pass {
         out.push_str(&format!("bottleneck_pass={bottleneck}\n"));
     }
@@ -388,8 +404,12 @@ pub fn render_frame_cost_report(report: &PresentationFrameCostReport) -> String 
     out.push_str("attachment_bytes:\n");
     for attachment in &report.attachment_bytes {
         out.push_str(&format!(
-            "- {} {}x{} {} bytes\n",
-            attachment.attachment, attachment.width, attachment.height, attachment.total_size_bytes
+            "- {} {}x{} {} bytes backing={}\n",
+            attachment.attachment,
+            attachment.width,
+            attachment.height,
+            attachment.total_size_bytes,
+            attachment.backing,
         ));
     }
     out.push_str("passes:\n");

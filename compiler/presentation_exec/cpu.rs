@@ -17,7 +17,8 @@ use crate::presentation_exec::{
     hit_world_normal, internal_resolution_viewport, materialize_primary_visibility_attachments,
     participant_query_work_items, presentation_metrics, primary_hit_miss_value,
     resolved_quality_state, runtime_primary_solver_summary, screen_sample_ray, shade_lookup_value,
-    tile_candidate_dispatch_packets, tile_candidate_stats, tile_culling_mask,
+    tile_candidate_dispatch_packets, tile_candidate_packet_fragment_count,
+    tile_candidate_packet_sample_count, tile_candidate_stats, tile_culling_mask,
 };
 use crate::presentation_plan::{
     CompositeColorPassContract, ParticipantsResolvePassContract, PresentationPassKind,
@@ -276,8 +277,8 @@ pub(super) fn execute_plan(
                                 (
                                     tile_candidate_stats(
                                         mask.active_samples.len(),
-                                        fallback_indices.len(),
-                                        packets.len(),
+                                        tile_candidate_packet_sample_count(&packets),
+                                        tile_candidate_packet_fragment_count(&packets, packet_size),
                                         packet_size,
                                     ),
                                     mask.stats.skipped_samples,
@@ -665,8 +666,9 @@ pub(super) fn execute_plan(
         0,
         surface_resolve_count,
         participant_resolve_count,
-        &attachments,
+        crate::presentation_exec::attachment_byte_reports(&attachments, None),
         pass_stats,
+        Vec::new(),
         if candidate_table_active {
             let mut artifacts = vec!["tile_candidate_table".to_string()];
             artifacts.push("view_distance_clipmap".to_string());

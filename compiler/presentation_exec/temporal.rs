@@ -26,6 +26,13 @@ pub(super) struct ContinuationCounts {
     pub diagnostics: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MotionResolveAssessmentSummary {
+    pub history_available: bool,
+    pub history_rejected: bool,
+    pub diagnostic: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContinuationVerdict {
     Available,
@@ -190,6 +197,140 @@ pub(super) fn motion_resolve(
         .diagnostics
         .push(continuation_diagnostic(&assessment));
     Ok(counts)
+}
+
+pub(super) fn motion_resolve_without_screen_samples(
+    plan: &PresentationPlan,
+    input: &PresentationExecutionInput,
+    attachments: &mut AttachmentResourceSet,
+    viewport: CanonicalViewportInput,
+    primary_hits: &[KernelValue],
+    contract: &MotionResolvePassContract,
+) -> Result<ContinuationCounts, PresentationExecError> {
+    let components = frame_state_temporal_components(&input.frame_state)?;
+    let assessment = history_assessment(plan, input, &components)?;
+    let previous_hits = contract
+        .history_primary_hit_attachment
+        .as_ref()
+        .map(|name| attachments.decode_attachment(name))
+        .transpose()?;
+    let Some(motion_attachment) = attachments.attachment_mut(contract.output_attachment.as_str())
+    else {
+        return Ok(ContinuationCounts::default());
+    };
+    let mut counts = ContinuationCounts::default();
+    for (index, hit) in primary_hits.iter().enumerate() {
+        let current_pixel = [
+            (index as u32 % viewport.width.max(1)) as f32,
+            (index as u32 / viewport.width.max(1)) as f32,
+        ];
+        let motion = if hit_flag(hit)? {
+            let previous_sample = project_to_previous_sample(
+                components.previous_camera,
+                components.previous_viewport,
+                components.previous_jitter,
+                hit_position(hit)?,
+            );
+            if matches!(assessment.verdict, ContinuationVerdict::Available) {
+                match previous_sample {
+                    Some(previous_sample)
+                        if sample_in_view(previous_sample, components.previous_viewport) =>
+                    {
+                        let previous_index =
+                            previous_history_index(previous_sample, components.previous_viewport);
+                        if previous_hits
+                            .as_ref()
+                            .and_then(|hits| hits.get(previous_index))
+                            .is_some_and(|previous_hit| {
+                                identities_match(hit, previous_hit).unwrap_or(false)
+                            })
+                        {
+                            counts.available += 1;
+                            MotionSample {
+                                delta_pixels: [
+                                    previous_sample[0] - current_pixel[0],
+                                    previous_sample[1] - current_pixel[1],
+                                ],
+                                previous_sample,
+                                valid: true,
+                                disoccluded: false,
+                            }
+                        } else {
+                            counts.rejected += 1;
+                            MotionSample {
+                                delta_pixels: [
+                                    previous_sample[0] - current_pixel[0],
+                                    previous_sample[1] - current_pixel[1],
+                                ],
+                                previous_sample,
+                                valid: false,
+                                disoccluded: true,
+                            }
+                        }
+                    }
+                    Some(previous_sample) => {
+                        counts.rejected += 1;
+                        MotionSample {
+                            delta_pixels: [
+                                previous_sample[0] - current_pixel[0],
+                                previous_sample[1] - current_pixel[1],
+                            ],
+                            previous_sample,
+                            valid: false,
+                            disoccluded: true,
+                        }
+                    }
+                    None => {
+                        counts.rejected += 1;
+                        MotionSample {
+                            delta_pixels: [0.0, 0.0],
+                            previous_sample: [0.0, 0.0],
+                            valid: false,
+                            disoccluded: true,
+                        }
+                    }
+                }
+            } else {
+                match assessment.verdict {
+                    ContinuationVerdict::Rejected => counts.rejected += 1,
+                    ContinuationVerdict::Unavailable => counts.unavailable += 1,
+                    ContinuationVerdict::Available => {}
+                }
+                MotionSample {
+                    delta_pixels: [0.0, 0.0],
+                    previous_sample: previous_sample.unwrap_or([0.0, 0.0]),
+                    valid: false,
+                    disoccluded: false,
+                }
+            }
+        } else {
+            counts.unavailable += 1;
+            MotionSample {
+                delta_pixels: [0.0, 0.0],
+                previous_sample: [0.0, 0.0],
+                valid: false,
+                disoccluded: false,
+            }
+        };
+        motion_attachment.encode(index, &motion_value(motion))?;
+    }
+    counts
+        .diagnostics
+        .push(continuation_diagnostic(&assessment));
+    Ok(counts)
+}
+
+pub(super) fn motion_resolve_assessment_summary(
+    plan: &PresentationPlan,
+    input: &PresentationExecutionInput,
+) -> Result<MotionResolveAssessmentSummary, PresentationExecError> {
+    let components = frame_state_temporal_components(&input.frame_state)?;
+    let assessment = history_assessment(plan, input, &components)?;
+    Ok(MotionResolveAssessmentSummary {
+        history_available: matches!(assessment.verdict, ContinuationVerdict::Available),
+        history_rejected: matches!(assessment.verdict, ContinuationVerdict::Rejected),
+        diagnostic: continuation_diagnostic(&assessment),
+    })
 }
 
 pub(super) fn temporal_resolve_inputs(

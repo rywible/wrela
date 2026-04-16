@@ -1,5 +1,6 @@
 use smol_str::SmolStr;
 use std::env;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use wrela::hir;
 use wrela::hir::lower as hir_lower;
 use wrela::kernel::{KernelStructValue, KernelValue};
@@ -53,6 +54,13 @@ impl Drop for EnvVarGuard {
             unsafe { env::remove_var(self.key) };
         }
     }
+}
+
+fn workgroup_override_test_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
 }
 
 fn typed_module(source: &str) -> (hir::Module, hir::TypeInfo, QueryExecContext) {
@@ -184,6 +192,7 @@ fn presentation_fixture(
         ),
         frame_state: frame_state_value(camera, camera, viewport, [0.0, 0.0], 0, 1.0 / 60.0),
         history: None,
+        materialize_cpu_attachments: true,
         lighting: PresentationLightingInputs {
             key_light: CanonicalLightInput {
                 position: [1.8, 2.4, 2.2],
@@ -250,6 +259,7 @@ fn presentation_fixture_with_state(
             previous_snapshot_epoch,
         ),
         history,
+        materialize_cpu_attachments: true,
         lighting: PresentationLightingInputs {
             key_light: CanonicalLightInput {
                 position: [1.8, 2.4, 2.2],
@@ -805,6 +815,95 @@ fn wgsl_first_color_path_matches_cpu_for_final_color_and_semantic_attachments() 
             1.0e-2,
         );
     }
+}
+
+#[test]
+fn wgsl_phase_44_resident_framegraph_reports_gpu_attachment_backing_and_explicit_exception() {
+    let (plan, ctx, input) = presentation_fixture(DispatchBackend::Wgsl);
+    let result = execute_plan(&ctx, &plan, &input).expect("wgsl presentation execution");
+
+    assert!(result.screen_samples.is_empty());
+    assert_eq!(
+        result.frame_cost.gpu_runtime.cpu_screen_sample_allocations,
+        0
+    );
+    assert_eq!(result.frame_cost.gpu_runtime.attachment_decode_count, 0);
+    assert!(result.frame_cost.gpu_runtime.readback_bytes > 0);
+    assert!(result.frame_cost.gpu_runtime.queue_submit_count > 1);
+    assert!(
+        result
+            .frame_cost
+            .framegraph_exceptions
+            .iter()
+            .any(|exception| exception == "cpu_followup_query_passes")
+    );
+    assert_eq!(
+        result
+            .frame_cost
+            .framegraph_exceptions
+            .iter()
+            .filter(|exception| exception.as_str() == "cpu_followup_query_passes")
+            .count(),
+        1
+    );
+    assert!(
+        result
+            .frame_cost
+            .attachment_bytes
+            .iter()
+            .all(|attachment| attachment.backing == "gpu_buffer")
+    );
+    let primary_writeout = result
+        .frame_cost
+        .passes
+        .iter()
+        .find(|pass| pass.pass_kind == "primary_writeout")
+        .expect("wgsl primary writeout pass");
+    assert!(primary_writeout.dispatch_count > 0);
+
+    let report = wrela::presentation_exec::render_frame_cost_report(&result.frame_cost);
+    assert!(report.contains("backing=gpu_buffer"));
+    assert!(report.contains("framegraph_exceptions=cpu_followup_query_passes"));
+}
+
+#[test]
+fn wgsl_no_export_lane_avoids_full_attachment_readback() {
+    let (plan, ctx, input) = presentation_fixture(DispatchBackend::Wgsl);
+    let fully_materialized =
+        execute_plan(&ctx, &plan, &input).expect("wgsl materialized presentation execution");
+
+    let mut resident_input = input.clone();
+    resident_input.materialize_cpu_attachments = false;
+    let resident =
+        execute_plan(&ctx, &plan, &resident_input).expect("wgsl resident presentation execution");
+
+    assert!(resident.history.is_some());
+    assert!(resident.frame_cost.gpu_runtime.readback_bytes > 0);
+    assert!(
+        resident.frame_cost.gpu_runtime.readback_bytes
+            < fully_materialized.frame_cost.gpu_runtime.readback_bytes
+    );
+    assert_eq!(
+        resident
+            .frame_cost
+            .gpu_runtime
+            .cpu_screen_sample_allocations,
+        0
+    );
+    assert_eq!(resident.frame_cost.gpu_runtime.attachment_decode_count, 0);
+}
+
+#[test]
+fn wgsl_custom_pass_pipelines_record_cache_hits_after_warm_frame() {
+    let (plan, ctx, input) = presentation_fixture(DispatchBackend::Wgsl);
+    let cold = execute_plan(&ctx, &plan, &input).expect("cold wgsl frame");
+    let warm = execute_plan(&ctx, &plan, &input).expect("warm wgsl frame");
+
+    assert!(warm.frame_cost.gpu_runtime.pipeline_cache_hits > 0);
+    assert!(
+        warm.frame_cost.gpu_runtime.pipeline_cache_misses
+            <= cold.frame_cost.gpu_runtime.pipeline_cache_misses
+    );
 }
 
 #[test]
@@ -1909,9 +2008,9 @@ fn frame_cost_reports_tile_culling_when_support_bounds_shrink_screen_work() {
         .iter()
         .find(|pass| pass.pass_kind == "primary_visibility")
         .expect("cpu primary visibility pass");
-    assert_eq!(
-        result.frame_cost.tile_candidate_total_samples,
-        primary_visibility.work_items
+    assert!(
+        result.frame_cost.tile_candidate_total_samples < primary_visibility.work_items,
+        "candidate-table totals should measure cull-active samples, not the full resident pass"
     );
     assert!(primary_visibility.dispatch_count > 1);
 }
@@ -2127,7 +2226,7 @@ fn wgsl_frame_cost_reports_tile_candidates_packets_and_workgroup_size() {
     );
 
     let result = execute_plan(&ctx, &plan, &input).expect("wgsl culling execution");
-    assert!(result.frame_cost.packet_scheduling_active);
+    assert!(!result.frame_cost.packet_scheduling_active);
     assert!(matches!(
         result.frame_cost.selected_workgroup_size,
         32 | 64 | 128
@@ -2155,21 +2254,23 @@ fn wgsl_frame_cost_reports_tile_candidates_packets_and_workgroup_size() {
             .iter()
             .any(|artifact| artifact == "tile_candidate_table")
     );
-    assert!(
-        result
-            .frame_cost
-            .active_acceleration_artifacts
-            .iter()
-            .any(|artifact| artifact == "packet_scheduling")
-    );
+    assert!(result.frame_cost.tile_candidate_packet_count > 0);
+    assert!(result.frame_cost.packet_compaction_ratio > 0.0);
     let report = wrela::presentation_exec::render_frame_cost_report(&result.frame_cost);
     assert!(report.contains("tile_candidate_total_samples="));
+    assert!(report.contains("tile_candidate_effectiveness="));
+    assert!(report.contains("tile_candidate_packet_count="));
+    assert!(report.contains("packet_compaction_ratio="));
     assert!(report.contains("packet_scheduling_active="));
     assert!(report.contains("selected_workgroup_size="));
     assert!(report.contains("transient_bind_group_creations="));
     assert!(report.contains("frame_timing cpu_time_total_micros="));
     assert!(report.contains("timestamps_supported="));
     assert!(report.contains("gpu_runtime timestamped_pass_count="));
+    assert!(result.frame_cost.tile_candidate_effectiveness >= 0.0);
+    assert!(result.frame_cost.tile_candidate_effectiveness <= 1.0);
+    assert!(result.frame_cost.packet_compaction_ratio >= 0.0);
+    assert!(result.frame_cost.packet_compaction_ratio <= 1.0);
     assert!(result.frame_cost.passes.iter().all(|pass| {
         pass.notes
             .iter()
@@ -2181,15 +2282,22 @@ fn wgsl_frame_cost_reports_tile_candidates_packets_and_workgroup_size() {
         .iter()
         .find(|pass| pass.pass_kind == "primary_visibility")
         .expect("wgsl primary visibility pass");
-    assert_eq!(
-        result.frame_cost.tile_candidate_total_samples,
-        primary_visibility.work_items
+    assert!(
+        primary_visibility
+            .notes
+            .iter()
+            .any(|note| note == "packet_scheduling active=false reason=resident_primary_path")
+    );
+    assert!(
+        result.frame_cost.tile_candidate_total_samples < primary_visibility.work_items,
+        "candidate-table totals should measure cull-active samples, not the full resident pass"
     );
     assert!(primary_visibility.dispatch_count > 1);
 }
 
 #[test]
 fn wgsl_workgroup_selection_rejects_illegal_or_incompatible_sizes() {
+    let _lock = workgroup_override_test_lock();
     let mut limits = wgpu::Limits::downlevel_defaults();
     limits.max_compute_workgroup_size_x = 128;
     limits.max_compute_invocations_per_workgroup = 128;
@@ -2504,6 +2612,7 @@ fn mean_color_delta(lhs: &[KernelValue], rhs: &[KernelValue]) -> f32 {
 
 #[test]
 fn presentation_wgsl_selector_honors_supported_workgroup_override() {
+    let _lock = workgroup_override_test_lock();
     let _guard = EnvVarGuard::set(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV, "32");
     let mut adapter_limits = wgpu::Limits::downlevel_defaults();
     adapter_limits.max_compute_invocations_per_workgroup = 128;
@@ -2516,6 +2625,7 @@ fn presentation_wgsl_selector_honors_supported_workgroup_override() {
 
 #[test]
 fn presentation_wgsl_selector_rejects_incompatible_workgroup_override() {
+    let _lock = workgroup_override_test_lock();
     let _guard = EnvVarGuard::set(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV, "128");
     let mut adapter_limits = wgpu::Limits::downlevel_defaults();
     adapter_limits.max_compute_invocations_per_workgroup = 64;

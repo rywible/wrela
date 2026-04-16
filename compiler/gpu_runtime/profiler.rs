@@ -1,4 +1,7 @@
-use crate::gpu_runtime::device::{GpuRuntimeContext, readback_storage_buffer_on};
+use crate::gpu_runtime::{
+    ReadbackReason, ReadbackRequest, ReadbackTicket, device::GpuRuntimeContext,
+    readback::schedule_storage_buffer_readback,
+};
 
 #[derive(Debug, Clone)]
 struct GpuPassRecord {
@@ -54,6 +57,10 @@ impl GpuPassProfiler {
         self.timestamps_supported
     }
 
+    pub fn record_count(&self) -> usize {
+        self.records.len()
+    }
+
     pub fn compute_pass_timestamp_writes<'a>(
         &'a mut self,
     ) -> Option<wgpu::ComputePassTimestampWrites<'a>> {
@@ -83,6 +90,43 @@ impl GpuPassProfiler {
         }
     }
 
+    pub fn schedule_readback(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Option<ReadbackTicket> {
+        if !self.timestamps_supported || self.records.is_empty() {
+            return None;
+        }
+        let resolve_buffer = self.resolve_buffer.as_ref()?;
+        let size_bytes = u64::from(self.next_query) * 8;
+        Some(schedule_storage_buffer_readback(
+            device,
+            encoder,
+            resolve_buffer,
+            ReadbackRequest::new(
+                ReadbackReason::GpuTiming,
+                "wrela.gpu_runtime.timestamp_readback",
+                size_bytes,
+            ),
+        ))
+    }
+
+    pub fn decode_elapsed_micros(&self, bytes: &[u8]) -> Vec<u128> {
+        if !self.timestamps_supported || self.records.is_empty() {
+            return Vec::new();
+        }
+        let mut elapsed = Vec::with_capacity(self.records.len());
+        for record in &self.records {
+            let start = read_u64(bytes, record.start_query as usize);
+            let end = read_u64(bytes, record.end_query as usize);
+            let diff_ns = end.saturating_sub(start) as f64 * self.timestamp_period_ns;
+            let diff_us = (diff_ns / 1_000.0).max(0.0).round() as u128;
+            elapsed.push(diff_us);
+        }
+        elapsed
+    }
+
     pub fn readback_gpu_elapsed_micros(
         &self,
         context: &GpuRuntimeContext,
@@ -93,17 +137,25 @@ impl GpuPassProfiler {
         let Some(resolve_buffer) = &self.resolve_buffer else {
             return Ok(Vec::new());
         };
-        let bytes =
-            readback_storage_buffer_on(context, resolve_buffer, u64::from(self.next_query) * 8)?;
-        let mut elapsed = Vec::with_capacity(self.records.len());
-        for record in &self.records {
-            let start = read_u64(&bytes, record.start_query as usize);
-            let end = read_u64(&bytes, record.end_query as usize);
-            let diff_ns = end.saturating_sub(start) as f64 * self.timestamp_period_ns;
-            let diff_us = (diff_ns / 1_000.0).max(0.0).round() as u128;
-            elapsed.push(diff_us);
-        }
-        Ok(elapsed)
+        let request = ReadbackRequest::new(
+            ReadbackReason::GpuTiming,
+            "wrela.gpu_runtime.timestamp_readback",
+            u64::from(self.next_query) * 8,
+        );
+        let mut encoder = context
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("wrela.gpu_runtime.timestamp_readback_encoder"),
+            });
+        let ticket = schedule_storage_buffer_readback(
+            &context.device,
+            &mut encoder,
+            resolve_buffer,
+            request,
+        );
+        context.queue.submit(Some(encoder.finish()));
+        let bytes = crate::gpu_runtime::collect_storage_buffer_readback(context, ticket)?.bytes;
+        Ok(self.decode_elapsed_micros(&bytes))
     }
 }
 

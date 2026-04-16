@@ -3,6 +3,9 @@ pub mod controller;
 pub mod cost;
 mod cpu;
 pub mod debug;
+pub mod framegraph;
+mod gpu_primary;
+pub mod gpu_resources;
 pub mod resources;
 mod temporal;
 mod wgsl;
@@ -58,6 +61,10 @@ pub use cost::{
     PresentationQualityReport, quality_report, radiance_mode_name, render_execution_policy_report,
     render_frame_cost_report, render_semantic_domain_report,
 };
+pub use framegraph::{PresentationFramegraph, PresentationFramegraphPass};
+pub use gpu_resources::{
+    AttachmentBacking, GpuAttachmentArena, GpuAttachmentArenaError, GpuAttachmentSlot,
+};
 pub use resources::{
     AttachmentResource, FrameAttachmentLayout, PresentationResourceError as ResourceError,
     allocate_attachment_resources as allocate_frame_attachment_resources,
@@ -90,6 +97,7 @@ pub struct PresentationExecutionInput {
     pub frame_domain: KernelValue,
     pub frame_state: KernelValue,
     pub history: Option<PresentationTemporalHistory>,
+    pub materialize_cpu_attachments: bool,
     pub lighting: PresentationLightingInputs,
     pub compatibility_projection: Option<LegacyCompatibilityProjectionInput>,
     pub execution_policy: PresentationExecutionPolicy,
@@ -398,6 +406,24 @@ pub(crate) fn tile_candidate_stats(
     }
 }
 
+pub(crate) fn tile_candidate_packet_sample_count(packets: &[TileCandidateDispatchPacket]) -> usize {
+    packets
+        .iter()
+        .map(|packet| packet.sample_indices.len())
+        .sum()
+}
+
+pub(crate) fn tile_candidate_packet_fragment_count(
+    packets: &[TileCandidateDispatchPacket],
+    packet_size: u32,
+) -> usize {
+    let packet_size = packet_size.max(1) as usize;
+    packets
+        .iter()
+        .map(|packet| packet.sample_indices.len().div_ceil(packet_size))
+        .sum()
+}
+
 pub(crate) fn build_tile_candidate_artifact(
     viewport: CanonicalViewportInput,
     tile_candidates: &[Vec<SmolStr>],
@@ -517,6 +543,46 @@ pub(crate) fn tile_candidate_dispatch_packets(
         }
     }
     packets
+}
+
+pub(crate) fn build_tile_candidate_span_words(
+    artifact: &TileCandidateArtifact,
+    active_samples: &[usize],
+    _packet_size: u32,
+) -> Vec<u32> {
+    let mut spans = vec![0u32; artifact.total_samples as usize * 2];
+    if artifact.total_samples == 0 {
+        return spans;
+    }
+
+    let mut write_span = |sample_index: usize, candidate_start: u32, candidate_len: u32| {
+        let span_index = sample_index.saturating_mul(2);
+        if span_index + 1 < spans.len() {
+            spans[span_index] = candidate_start;
+            spans[span_index + 1] = candidate_len;
+        }
+    };
+
+    if !artifact.enabled {
+        for &sample_index in active_samples {
+            write_span(sample_index, u32::MAX, u32::MAX);
+        }
+        return spans;
+    }
+
+    for &sample_index in active_samples {
+        let sample_index = sample_index.min(artifact.total_samples.saturating_sub(1) as usize);
+        let sample_x = sample_index as u32 % artifact.viewport_width.max(1);
+        let sample_y = sample_index as u32 / artifact.viewport_width.max(1);
+        let tile_x = sample_x / artifact.tile_size.max(1);
+        let tile_y = sample_y / artifact.tile_size.max(1);
+        let tile_index = (tile_y * artifact.tiles_x + tile_x) as usize;
+        if let Some(span) = artifact.tile_spans.get(tile_index) {
+            write_span(sample_index, span.candidate_start, span.candidate_len);
+        }
+    }
+
+    spans
 }
 
 fn tile_sample_count(
@@ -748,6 +814,7 @@ pub(crate) fn full_attachment_byte_size(attachments: &AttachmentResourceSet, nam
 
 pub(crate) fn attachment_byte_reports(
     attachments: &AttachmentResourceSet,
+    arena: Option<&GpuAttachmentArena>,
 ) -> Vec<PresentationAttachmentBytes> {
     attachments
         .attachments
@@ -757,6 +824,14 @@ pub(crate) fn attachment_byte_reports(
             width: attachment.layout.width,
             height: attachment.layout.height,
             total_size_bytes: attachment.bytes.len() as u64,
+            backing: arena
+                .and_then(|gpu_attachments| gpu_attachments.attachment(name.as_str()))
+                .map(|slot| match &slot.backing {
+                    AttachmentBacking::CpuBytes(_) => "cpu_bytes",
+                    AttachmentBacking::GpuBuffer { .. } => "gpu_buffer",
+                })
+                .unwrap_or("cpu_bytes")
+                .to_string(),
         })
         .collect()
 }
@@ -813,8 +888,8 @@ pub(crate) fn participant_query_work_items(
 ) -> Result<Vec<ParticipantQueryWorkItem>, PresentationExecError> {
     let frame = expect_struct(&input.frame_state, "FrameState")?;
     let view = expect_struct(field(frame, "view")?, "ViewState")?;
-    let camera = expect_struct(field(view, "camera")?, "Camera")?;
-    let camera_position = expect_vec3(field(camera, "position")?)?;
+    let view_camera = expect_struct(field(view, "camera")?, "Camera")?;
+    let camera_position = expect_vec3(field(view_camera, "position")?)?;
     let Some(attachment) = attachments.attachment(attachment_name) else {
         return Ok(Vec::new());
     };
@@ -857,6 +932,109 @@ pub(crate) fn participant_query_work_items(
         items.extend(scaled_cells.into_values());
     }
     Ok(items)
+}
+
+pub(crate) fn participant_query_work_items_without_screen_samples(
+    input: &PresentationExecutionInput,
+    camera_input: CanonicalCameraInput,
+    viewport: CanonicalViewportInput,
+    jitter_pixels: [f32; 2],
+    legacy_projection: bool,
+    hits: &[KernelValue],
+    attachments: &AttachmentResourceSet,
+    attachment_name: &str,
+    miss_sample_distance: f32,
+    include_misses: bool,
+) -> Result<Vec<ParticipantQueryWorkItem>, PresentationExecError> {
+    let frame = expect_struct(&input.frame_state, "FrameState")?;
+    let view = expect_struct(field(frame, "view")?, "ViewState")?;
+    let view_camera = expect_struct(field(view, "camera")?, "Camera")?;
+    let camera_position = expect_vec3(field(view_camera, "position")?)?;
+    let Some(attachment) = attachments.attachment(attachment_name) else {
+        return Ok(Vec::new());
+    };
+    let scaled = attachment.layout.width != attachments.width
+        || attachment.layout.height != attachments.height;
+    let mut items = Vec::new();
+    let mut scaled_cells = BTreeMap::new();
+    for (index, hit) in hits.iter().enumerate() {
+        let is_hit = hit_flag(hit)?;
+        if !include_misses && !is_hit {
+            continue;
+        }
+        let ray_direction = view_ray_direction_for_index(
+            input,
+            camera_input,
+            viewport,
+            jitter_pixels,
+            legacy_projection,
+            index,
+        );
+        let point = if is_hit {
+            hit_position(hit)?
+        } else {
+            [
+                camera_position[0] + ray_direction[0] * miss_sample_distance,
+                camera_position[1] + ray_direction[1] * miss_sample_distance,
+                camera_position[2] + ray_direction[2] * miss_sample_distance,
+            ]
+        };
+        let target_index = attachment_target_index(attachments, attachment, index);
+        let item = ParticipantQueryWorkItem {
+            target_index,
+            point_query: point_query_value(point),
+            point_direction_query: point_direction_query_value(point, ray_direction),
+        };
+        if scaled {
+            scaled_cells.entry(target_index).or_insert(item);
+        } else {
+            items.push(item);
+        }
+    }
+    if scaled {
+        items.extend(scaled_cells.into_values());
+    }
+    Ok(items)
+}
+
+pub(crate) fn view_ray_direction_for_index(
+    input: &PresentationExecutionInput,
+    camera_input: CanonicalCameraInput,
+    viewport: CanonicalViewportInput,
+    jitter_pixels: [f32; 2],
+    legacy_projection: bool,
+    index: usize,
+) -> [f32; 3] {
+    let x = (index as u32) % viewport.width.max(1);
+    let y = (index as u32) / viewport.width.max(1);
+    let budget = CanonicalRayBudget {
+        max_distance: 0.0,
+        min_step: 0.0,
+        hit_epsilon: 0.0,
+        max_steps: 0,
+    };
+    if legacy_projection {
+        legacy_preview_screen_sample_query(
+            camera_input,
+            viewport,
+            x,
+            y,
+            jitter_pixels,
+            budget,
+            input
+                .compatibility_projection
+                .unwrap_or(LegacyCompatibilityProjectionInput {
+                    world_up: camera_input.up,
+                    view_scale: 0.72,
+                }),
+        )
+        .ray
+        .direction
+    } else {
+        canonical_screen_sample_query(camera_input, viewport, x, y, jitter_pixels, budget)
+            .ray
+            .direction
+    }
 }
 
 pub(crate) fn tile_culling_mask(
@@ -1846,8 +2024,9 @@ pub(crate) fn build_frame_cost_report(
     selected_workgroup_size: u32,
     surface_resolve_count: u32,
     participant_resolve_count: u32,
-    attachments: &AttachmentResourceSet,
+    attachment_bytes: Vec<PresentationAttachmentBytes>,
     passes: Vec<PassRuntimeStats>,
+    framegraph_exceptions: Vec<String>,
     mut active_acceleration_artifacts: Vec<String>,
 ) -> PresentationFrameCostReport {
     let semantic_domain = semantic_domain_report(frame_domain);
@@ -1883,6 +2062,22 @@ pub(crate) fn build_frame_cost_report(
         0.0
     } else {
         1.0 - (tile_cull.active_tiles as f32 / tile_cull.total_tiles as f32)
+    };
+    let tile_candidate_reduction = tile_candidate_stats
+        .total_samples
+        .saturating_sub(tile_candidate_stats.active_samples);
+    let tile_candidate_effectiveness = if tile_candidate_stats.total_samples == 0 {
+        0.0
+    } else {
+        tile_candidate_reduction as f32 / tile_candidate_stats.total_samples as f32
+    };
+    let packet_capacity = tile_candidate_stats
+        .packet_count
+        .saturating_mul(tile_candidate_stats.packet_size);
+    let packet_compaction_ratio = if packet_capacity == 0 {
+        0.0
+    } else {
+        tile_candidate_stats.active_samples as f32 / packet_capacity as f32
     };
     let history_reuse_total = metrics.continuation_available_count
         + metrics.continuation_consumed_count
@@ -1946,7 +2141,9 @@ pub(crate) fn build_frame_cost_report(
     if tile_cull_efficiency > 0.0 {
         performance_gain_sources.push("tile_culling".to_string());
     }
-    if tile_candidate_stats.total_samples > tile_candidate_stats.active_samples {
+    if tile_candidate_stats.packet_count > 0
+        && tile_candidate_stats.total_samples > tile_candidate_stats.active_samples
+    {
         performance_gain_sources.push("tile_candidate_table".to_string());
     }
     if packet_scheduling_active {
@@ -1978,9 +2175,11 @@ pub(crate) fn build_frame_cost_report(
         tile_cull_efficiency,
         tile_candidate_total_samples: tile_candidate_stats.total_samples,
         tile_candidate_active_samples: tile_candidate_stats.active_samples,
-        tile_candidate_reduction: tile_candidate_stats
-            .total_samples
-            .saturating_sub(tile_candidate_stats.active_samples),
+        tile_candidate_reduction,
+        tile_candidate_effectiveness,
+        tile_candidate_packet_count: tile_candidate_stats.packet_count,
+        tile_candidate_packet_size: tile_candidate_stats.packet_size,
+        packet_compaction_ratio,
         packet_scheduling_active,
         selected_workgroup_size,
         surface_resolve_count,
@@ -2023,8 +2222,9 @@ pub(crate) fn build_frame_cost_report(
         cpu_time_total_micros,
         execution_bound,
         gpu_runtime: metrics.gpu_runtime.clone(),
-        attachment_bytes: attachment_byte_reports(attachments),
+        attachment_bytes,
         passes,
+        framegraph_exceptions,
         active_acceleration_artifacts: deduped_artifacts.into_values().collect(),
         bottleneck_pass,
         performance_gain_sources,
@@ -2699,7 +2899,7 @@ fn kernel_value_kind(value: &KernelValue) -> &'static str {
 mod tests {
     use super::{
         CanonicalViewportInput, TileCandidateQueueState, build_tile_candidate_artifact,
-        tile_candidate_dispatch_packets,
+        build_tile_candidate_span_words, tile_candidate_dispatch_packets,
     };
     use smol_str::SmolStr;
 
@@ -2771,5 +2971,57 @@ mod tests {
         assert!(!disabled.enabled);
         assert!(disabled.tile_spans.is_empty());
         assert!(tile_candidate_dispatch_packets(&disabled, 8).is_empty());
+    }
+
+    #[test]
+    fn tile_candidate_span_words_cover_active_samples_and_skip_gaps() {
+        let viewport = CanonicalViewportInput {
+            width: 16,
+            height: 8,
+        };
+        let active_samples = (0..128usize).collect::<Vec<_>>();
+        let artifact = build_tile_candidate_artifact(
+            viewport,
+            &[vec![SmolStr::new("shape.left")], Vec::new()],
+            true,
+        );
+
+        let spans = build_tile_candidate_span_words(&artifact, &active_samples, 8);
+        assert_eq!(spans.len(), 256);
+        assert_eq!(spans[0], 0);
+        assert_eq!(spans[1], 1);
+        assert_eq!(spans[7 * 2], 0);
+        assert_eq!(spans[7 * 2 + 1], 1);
+        assert_eq!(spans[8 * 2], 1);
+        assert_eq!(spans[8 * 2 + 1], 0);
+
+        let disabled = build_tile_candidate_artifact(
+            viewport,
+            &[vec![SmolStr::new("shape.left")], Vec::new()],
+            false,
+        );
+        let disabled_spans = build_tile_candidate_span_words(&disabled, &active_samples, 8);
+        assert_eq!(disabled_spans[0], u32::MAX);
+        assert_eq!(disabled_spans[1], u32::MAX);
+        assert_eq!(disabled_spans[8 * 2], u32::MAX);
+        assert_eq!(disabled_spans[8 * 2 + 1], u32::MAX);
+        assert_eq!(disabled_spans[64 * 2], u32::MAX);
+        assert_eq!(disabled_spans[64 * 2 + 1], u32::MAX);
+    }
+
+    #[test]
+    fn tile_candidate_span_words_keep_enabled_empty_tiles_as_zero_length_misses() {
+        let viewport = CanonicalViewportInput {
+            width: 16,
+            height: 8,
+        };
+        let active_samples = (0..128usize).collect::<Vec<_>>();
+        let artifact = build_tile_candidate_artifact(viewport, &[Vec::new(), Vec::new()], true);
+
+        let spans = build_tile_candidate_span_words(&artifact, &active_samples, 8);
+        assert_eq!(spans[0], 0);
+        assert_eq!(spans[1], 0);
+        assert_eq!(spans[64 * 2], 0);
+        assert_eq!(spans[64 * 2 + 1], 0);
     }
 }

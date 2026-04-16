@@ -390,6 +390,14 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
         report.counters.gpu_runtime.requested_limits_profile,
         optional_features,
     ));
+    out.push_str(&format!(
+        "wgsl_world_helper_path={}\n",
+        report
+            .counters
+            .wgsl_world_helper_path
+            .as_deref()
+            .unwrap_or("none")
+    ));
     let traced_items = report
         .counters
         .hit_count

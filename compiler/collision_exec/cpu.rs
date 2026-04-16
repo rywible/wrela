@@ -26,8 +26,9 @@ use crate::kernel::{
 use crate::query_contract::{self, DispatchBackend, QueryContractId};
 use crate::query_exec::cpu::DirectQueryOps;
 use crate::query_exec::{
-    DirectQueryExecutionTrace, QueryExecContext, execute_capture_query_with_snapshot_on,
-    execute_world_query_with_policy_with_snapshot_on, execute_world_query_with_snapshot_on,
+    DirectQueryExecutionTrace, QueryExecContext, QueryExecutionObservability,
+    execute_capture_query_with_snapshot_on, execute_world_query_with_policy_with_snapshot_on,
+    execute_world_query_with_snapshot_on,
 };
 use crate::query_plan::{CaptureQueryPlan, WorldQueryKind, WorldQueryPlan};
 use crate::query_solver::{
@@ -220,9 +221,14 @@ pub fn execute_with_store(
                 support_artifact,
             } => {
                 let artifact = artifact_binding_by_id(plan, support_artifact)?;
+                let support_backend = if matches!(backend, DispatchBackend::Wgsl) {
+                    DispatchBackend::Cpu
+                } else {
+                    backend
+                };
                 let (support_summary, trace) = execute_world_query_contract(
                     ctx,
-                    backend,
+                    support_backend,
                     None,
                     &snapshot,
                     *support_summary_contract,
@@ -440,10 +446,13 @@ pub fn execute_with_store(
                         query_contract::SPATIAL_TRACE_CAPTURE_SHAPE,
                     )?;
                     let ray = collision_ray_input(collision_input)?;
-                    let (hit, trace) = candidate_limited_ray_query(
+                    let (hit, provenance) = candidate_limited_ray_query(
                         ctx,
                         backend,
+                        &policy,
                         &snapshot,
+                        &capture,
+                        &domain,
                         broadphase.candidate_shape_names.as_slice(),
                         &trace_capture_plan,
                         ray,
@@ -452,7 +461,6 @@ pub fn execute_with_store(
                     let hit_ref = expect_struct(&hit, "Hit3")?;
                     let hit_flag = expect_bool(field(hit_ref, "hit")?)?;
                     if hit_flag {
-                        let provenance = collision_contact_normal_provenance_from_trace(&trace);
                         contact_normal_provenance = provenance;
                         CollisionRayCastResult {
                             hit: true,
@@ -892,6 +900,7 @@ pub fn execute_with_store(
 fn resolve_backend(backend: DispatchBackend) -> Result<DispatchBackend, CollisionExecError> {
     match backend {
         DispatchBackend::Cpu | DispatchBackend::Auto => Ok(DispatchBackend::Cpu),
+        DispatchBackend::Wgsl => Ok(DispatchBackend::Wgsl),
         other => Err(CollisionExecError::UnsupportedBackend { backend: other }),
     }
 }
@@ -1036,6 +1045,27 @@ fn candidate_limited_point_query(
     ),
     CollisionExecError,
 > {
+    if matches!(backend, DispatchBackend::Wgsl) {
+        let (distance, _) = crate::collision_exec::gpu::execute_batched_point_distance_query(
+            ctx,
+            capture.clone(),
+            domain.clone(),
+            point,
+        )?;
+        executed_query_contracts.push(query_contract::SPATIAL_DISTANCE_BATCH_WORLD);
+        let (normal, normal_observability) =
+            crate::collision_exec::gpu::execute_batched_point_normal_query(
+                ctx,
+                capture.clone(),
+                domain.clone(),
+                point,
+            )?;
+        executed_query_contracts.push(query_contract::SPATIAL_NORMAL_BATCH_WORLD);
+        let provenance =
+            collision_contact_normal_provenance_from_observability(&normal_observability);
+        return Ok((distance, normal, provenance, false));
+    }
+
     let mut best_candidate: Option<(f32, SmolStr)> = None;
     for candidate in candidates {
         let (distance, trace) = execute_shape_capture_query_plan(
@@ -1101,12 +1131,27 @@ fn candidate_limited_point_query(
 fn candidate_limited_ray_query(
     ctx: &QueryExecContext,
     backend: DispatchBackend,
+    _policy: &QueryExecutionPolicy,
     snapshot: &WorldSnapshotHandle,
+    capture: &KernelValue,
+    domain: &KernelValue,
     candidates: &[SmolStr],
     trace_capture_plan: &KernelCaptureQueryPlan,
     ray: CollisionRayInput,
     executed_query_contracts: &mut Vec<QueryContractId>,
-) -> Result<(KernelValue, DirectQueryExecutionTrace), CollisionExecError> {
+) -> Result<(KernelValue, Option<CollisionContactNormalProvenance>), CollisionExecError> {
+    if matches!(backend, DispatchBackend::Wgsl) {
+        let (hit, observability) = crate::collision_exec::gpu::execute_batched_ray_trace_query(
+            ctx,
+            capture.clone(),
+            domain.clone(),
+            ray,
+        )?;
+        executed_query_contracts.push(query_contract::SPATIAL_NEAREST_BATCH_WORLD);
+        let provenance = collision_contact_normal_provenance_from_observability(&observability);
+        return Ok((hit, provenance));
+    }
+
     let mut best_hit: Option<(f32, KernelValue, DirectQueryExecutionTrace)> = None;
     let mut first_miss: Option<(KernelValue, DirectQueryExecutionTrace)> = None;
     for candidate in candidates {
@@ -1136,11 +1181,13 @@ fn candidate_limited_ray_query(
         }
     }
     if let Some((_, hit, trace)) = best_hit {
-        return Ok((hit, trace));
+        return Ok((hit, collision_contact_normal_provenance_from_trace(&trace)));
     }
-    first_miss.ok_or_else(|| CollisionExecError::ExecutionUnavailable {
-        message: "candidate-limited ray query requires at least one candidate".to_string(),
-    })
+    first_miss
+        .map(|(hit, trace)| (hit, collision_contact_normal_provenance_from_trace(&trace)))
+        .ok_or_else(|| CollisionExecError::ExecutionUnavailable {
+            message: "candidate-limited ray query requires at least one candidate".to_string(),
+        })
 }
 
 fn execute_world_query_contract(
@@ -2308,7 +2355,13 @@ fn plan_contact_guarantee(
 fn collision_contact_normal_provenance_from_trace(
     trace: &DirectQueryExecutionTrace,
 ) -> Option<CollisionContactNormalProvenance> {
-    match trace.observability.normal_role.as_deref() {
+    collision_contact_normal_provenance_from_observability(&trace.observability)
+}
+
+fn collision_contact_normal_provenance_from_observability(
+    observability: &QueryExecutionObservability,
+) -> Option<CollisionContactNormalProvenance> {
+    match observability.normal_role.as_deref() {
         Some("normal_role::certified_field_gradient") => {
             Some(CollisionContactNormalProvenance::CertifiedFieldGradient)
         }
