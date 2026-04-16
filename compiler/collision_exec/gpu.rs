@@ -28,33 +28,61 @@ pub fn execute(
 
 pub(crate) fn prepare_batched_point_distance_dispatch(
     ctx: &QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
     capture: KernelValue,
     domain: KernelValue,
     points: &[KernelValue],
 ) -> Result<GpuQueryDispatcher, CollisionExecError> {
-    prepare_world_batch_dispatch(ctx, BatchQueryKind::Distance, capture, domain, points, &[])
+    prepare_world_batch_dispatch(
+        ctx,
+        snapshot,
+        BatchQueryKind::Distance,
+        capture,
+        domain,
+        points,
+        &[],
+    )
 }
 
 pub(crate) fn prepare_batched_point_normal_dispatch(
     ctx: &QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
     capture: KernelValue,
     domain: KernelValue,
     points: &[KernelValue],
 ) -> Result<GpuQueryDispatcher, CollisionExecError> {
-    prepare_world_batch_dispatch(ctx, BatchQueryKind::Normal, capture, domain, points, &[])
+    prepare_world_batch_dispatch(
+        ctx,
+        snapshot,
+        BatchQueryKind::Normal,
+        capture,
+        domain,
+        points,
+        &[],
+    )
 }
 
 pub(crate) fn prepare_batched_ray_trace_dispatch(
     ctx: &QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
     capture: KernelValue,
     domain: KernelValue,
     rays: &[KernelValue],
 ) -> Result<GpuQueryDispatcher, CollisionExecError> {
-    prepare_world_batch_dispatch(ctx, BatchQueryKind::Trace, capture, domain, rays, &[])
+    prepare_world_batch_dispatch(
+        ctx,
+        snapshot,
+        BatchQueryKind::Trace,
+        capture,
+        domain,
+        rays,
+        &[],
+    )
 }
 
 fn prepare_world_batch_dispatch(
     ctx: &QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
     kind: BatchQueryKind,
     capture: KernelValue,
     domain: KernelValue,
@@ -72,8 +100,9 @@ fn prepare_world_batch_dispatch(
         })?;
     let lowered = lower_batch_query_plan(&batch_plan);
     let candidate_spans = pack_candidate_spans(ctx, candidates, items.len())?;
-    GpuQueryDispatcher::from_batch_plan_with_candidate_spans(
+    GpuQueryDispatcher::from_batch_plan_with_candidate_spans_and_snapshot(
         ctx,
+        snapshot,
         &lowered,
         &[capture, domain, KernelValue::Array(items.to_vec())],
         candidate_spans,
@@ -85,12 +114,19 @@ fn prepare_world_batch_dispatch(
 
 pub(crate) fn execute_batched_point_distance_query(
     ctx: &QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
     capture: KernelValue,
     domain: KernelValue,
     point: [f32; 3],
 ) -> Result<(KernelValue, QueryExecutionObservability), CollisionExecError> {
     let (value, observability) = execute_single_result_dispatch(
-        prepare_batched_point_distance_dispatch(ctx, capture, domain, &[point_query_value(point)])?,
+        prepare_batched_point_distance_dispatch(
+            ctx,
+            snapshot,
+            capture,
+            domain,
+            &[point_query_value(point)],
+        )?,
     )?;
     let distance = match value {
         KernelValue::Struct(result) => result
@@ -112,6 +148,7 @@ pub(crate) fn execute_batched_point_distance_query(
 
 pub(crate) fn execute_batched_point_distance_queries(
     ctx: &QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
     capture: KernelValue,
     domain: KernelValue,
     points: &[[f32; 3]],
@@ -122,13 +159,14 @@ pub(crate) fn execute_batched_point_distance_queries(
         .map(point_query_value)
         .collect::<Vec<_>>();
     let (values, observability) = execute_dispatch(prepare_batched_point_distance_dispatch(
-        ctx, capture, domain, &items,
+        ctx, snapshot, capture, domain, &items,
     )?)?;
     Ok((extract_distance_values(values)?, observability))
 }
 
 pub(crate) fn execute_batched_point_distance_queries_with_candidates(
     ctx: &QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
     capture: KernelValue,
     domain: KernelValue,
     points: &[[f32; 3]],
@@ -141,6 +179,7 @@ pub(crate) fn execute_batched_point_distance_queries_with_candidates(
         .collect::<Vec<_>>();
     let (values, observability) = execute_dispatch(prepare_world_batch_dispatch(
         ctx,
+        snapshot,
         BatchQueryKind::Distance,
         capture,
         domain,
@@ -152,12 +191,19 @@ pub(crate) fn execute_batched_point_distance_queries_with_candidates(
 
 pub(crate) fn execute_batched_point_normal_query(
     ctx: &QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
     capture: KernelValue,
     domain: KernelValue,
     point: [f32; 3],
 ) -> Result<(KernelValue, QueryExecutionObservability), CollisionExecError> {
     let (value, observability) = execute_single_result_dispatch(
-        prepare_batched_point_normal_dispatch(ctx, capture, domain, &[point_query_value(point)])?,
+        prepare_batched_point_normal_dispatch(
+            ctx,
+            snapshot,
+            capture,
+            domain,
+            &[point_query_value(point)],
+        )?,
     )?;
     let normal = match value {
         KernelValue::Struct(result) => result
@@ -180,6 +226,7 @@ pub(crate) fn execute_batched_point_normal_query(
 
 pub(crate) fn execute_batched_point_normal_queries(
     ctx: &QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
     capture: KernelValue,
     domain: KernelValue,
     points: &[[f32; 3]],
@@ -190,13 +237,14 @@ pub(crate) fn execute_batched_point_normal_queries(
         .map(point_query_value)
         .collect::<Vec<_>>();
     let (values, observability) = execute_dispatch(prepare_batched_point_normal_dispatch(
-        ctx, capture, domain, &items,
+        ctx, snapshot, capture, domain, &items,
     )?)?;
     Ok((extract_normal_values(values)?, observability))
 }
 
 pub(crate) fn execute_batched_point_normal_queries_with_candidates(
     ctx: &QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
     capture: KernelValue,
     domain: KernelValue,
     points: &[[f32; 3]],
@@ -209,6 +257,7 @@ pub(crate) fn execute_batched_point_normal_queries_with_candidates(
         .collect::<Vec<_>>();
     let (values, observability) = execute_dispatch(prepare_world_batch_dispatch(
         ctx,
+        snapshot,
         BatchQueryKind::Normal,
         capture,
         domain,
@@ -220,12 +269,14 @@ pub(crate) fn execute_batched_point_normal_queries_with_candidates(
 
 pub(crate) fn execute_batched_ray_trace_query(
     ctx: &QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
     capture: KernelValue,
     domain: KernelValue,
     ray: CollisionRayInput,
 ) -> Result<(KernelValue, QueryExecutionObservability), CollisionExecError> {
     execute_single_result_dispatch(prepare_batched_ray_trace_dispatch(
         ctx,
+        snapshot,
         capture,
         domain,
         &[ray_query_value(ray)],
@@ -234,6 +285,7 @@ pub(crate) fn execute_batched_ray_trace_query(
 
 pub(crate) fn execute_batched_ray_trace_query_with_candidates(
     ctx: &QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
     capture: KernelValue,
     domain: KernelValue,
     ray: CollisionRayInput,
@@ -241,6 +293,7 @@ pub(crate) fn execute_batched_ray_trace_query_with_candidates(
 ) -> Result<(KernelValue, QueryExecutionObservability), CollisionExecError> {
     execute_single_result_dispatch(prepare_world_batch_dispatch(
         ctx,
+        snapshot,
         BatchQueryKind::Trace,
         capture,
         domain,
@@ -573,6 +626,7 @@ domain collision_domain(world: RegionCapture) {
         let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_region"));
         let dispatcher = prepare_batched_point_distance_dispatch(
             &ctx,
+            None,
             region_capture(scene_id, 1),
             scene_domain(scene_id),
             &[point_query([0.0, 0.0, 0.0]), point_query([2.0, 0.0, 0.0])],
@@ -649,6 +703,7 @@ domain collision_domain(world: RegionCapture) {
         let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_region"));
         let dispatcher = prepare_batched_point_normal_dispatch(
             &ctx,
+            None,
             region_capture(scene_id, 1),
             scene_domain(scene_id),
             &[point_query([0.0, 0.0, 0.0]), point_query([2.0, 0.0, 0.0])],
@@ -716,6 +771,7 @@ domain collision_domain(world: RegionCapture) {
         let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_region"));
         let dispatcher = prepare_batched_ray_trace_dispatch(
             &ctx,
+            None,
             region_capture(scene_id, 1),
             scene_domain(scene_id),
             &[

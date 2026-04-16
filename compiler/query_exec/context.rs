@@ -1,11 +1,13 @@
 use crate::acceleration::build::{SharedAccelerationCatalog, build_shared_acceleration_forests};
 use crate::hir;
 use crate::hir::typeck::TypeInfo;
+use crate::query_plan::SceneSummary;
 use crate::query_exec::ids::{
     stable_field_snapshot_handle, stable_region_snapshot_handle, stable_shape_snapshot_handle,
 };
 use crate::query_exec::region::{RegionExecCase, build_region_exec_cases};
 use crate::scene_ir;
+use crate::scene_ir::{DistanceSemantics, SupportClass};
 use crate::scene_ir::{ShapeLeafId, ShapeLeafRef, ShapeLeafScene};
 use crate::world_identity::{SnapshotCaptureKind, SnapshotIdentityReport, WorldSnapshotHandle};
 use smol_str::SmolStr;
@@ -320,6 +322,100 @@ impl QueryExecContext {
         self.region_snapshot_handle(name)
             .map(WorldSnapshotHandle::portable_scene_id)
             .unwrap_or_default()
+    }
+
+    pub fn region_scene_summary(&self, name: &SmolStr, detail: i32) -> Option<SceneSummary> {
+        let scene_id = self.region_scene_id(name);
+        let region_case = self.region_cases.iter().find(|case| case.scene_id == scene_id)?;
+        let shapes = region_case.shapes_for_detail(detail).ok()?;
+        let mut summaries = Vec::with_capacity(shapes.len());
+        for shape_name in shapes {
+            let shape_scene = self.scene.shapes.get(shape_name)?;
+            let identity_source_count = shape_scene
+                .feature_leaves
+                .values()
+                .filter_map(|leaf_ref| {
+                    self.scene
+                        .shapes
+                        .get(&leaf_ref.scene)
+                        .and_then(|scene| scene.leaves.get(&leaf_ref.leaf))
+                        .and_then(|leaf| self.scene.fields.get(&leaf.field))
+                })
+                .map(|field| field.identity_sources.len() as u32)
+                .sum::<u32>();
+            summaries.push((shape_scene, identity_source_count));
+        }
+        if summaries.is_empty() {
+            return Some(SceneSummary {
+                name: Some(name.clone()),
+                ..SceneSummary::default()
+            });
+        }
+
+        let support_class = if summaries
+            .iter()
+            .any(|(scene, _)| matches!(scene.support_class, SupportClass::Unbounded))
+        {
+            SupportClass::Unbounded
+        } else if summaries
+            .iter()
+            .any(|(scene, _)| matches!(scene.support_class, SupportClass::Periodic))
+        {
+            SupportClass::Periodic
+        } else if summaries
+            .iter()
+            .any(|(scene, _)| matches!(scene.support_class, SupportClass::Unknown))
+        {
+            SupportClass::Unknown
+        } else {
+            SupportClass::Bounded
+        };
+        let semantics = if summaries
+            .iter()
+            .any(|(scene, _)| matches!(scene.semantics, DistanceSemantics::UnknownOpaque))
+        {
+            DistanceSemantics::UnknownOpaque
+        } else if summaries.len() == 1 {
+            summaries[0].0.semantics
+        } else {
+            DistanceSemantics::ConservativeLowerBound
+        };
+        let opaque_boundary = summaries.iter().any(|(scene, _)| scene.opaque_boundary);
+        let can_coarse_support_pruning = !opaque_boundary
+            && matches!(support_class, SupportClass::Bounded)
+            && summaries
+                .iter()
+                .all(|(scene, _)| scene.can_coarse_support_pruning);
+
+        Some(SceneSummary {
+            name: Some(name.clone()),
+            semantics,
+            support_class,
+            can_coarse_support_pruning,
+            opaque_boundary,
+            evidence_summary: SceneSummary::default().evidence_summary,
+            semantic_root: summaries
+                .first()
+                .map(|(scene, _)| scene.root_node_id.0)
+                .unwrap_or_default(),
+            support_root: summaries
+                .first()
+                .map(|(scene, _)| scene.root_support_id.0)
+                .unwrap_or_default(),
+            node_count: summaries
+                .iter()
+                .map(|(scene, _)| scene.node_records.len() as u32)
+                .sum(),
+            support_node_count: summaries
+                .iter()
+                .map(|(scene, _)| scene.support_records.len() as u32)
+                .sum(),
+            leaf_count: summaries
+                .iter()
+                .map(|(scene, _)| scene.feature_leaves.len() as u32)
+                .sum(),
+            identity_source_count: summaries.iter().map(|(_, count)| *count).sum(),
+        })
     }
 
     pub fn shape_leaf_ref(&self, shape: &SmolStr, feature_id: u32) -> Option<&ShapeLeafRef> {

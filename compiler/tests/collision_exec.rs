@@ -965,6 +965,53 @@ fn transition_collision_wgsl_uses_gpu_bracket_and_cpu_certification() {
 }
 
 #[test]
+fn transition_collision_wgsl_with_store_accepts_later_snapshot_epochs() {
+    let ctx = typed_query_module(collision_fixture_source());
+    let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_region"));
+    let domain = scene_domain(scene_id);
+    let sweep = collision_sweep_input([0.0, 0.0, 2.0], [0.0, 0.0, -2.0], 0.25);
+
+    for kind in [
+        CollisionQueryKind::SphereSweepTransition,
+        CollisionQueryKind::SphereTimeOfImpactTransition,
+    ] {
+        let plan = CollisionPlan::for_query_with_backend(
+            kind,
+            wrela::query_contract::DispatchBackend::Wgsl,
+        );
+        let mut store = CollisionArtifactStore::default();
+
+        let (_, first_trace) = execute_with_store(
+            &plan,
+            &ctx,
+            &[
+                region_capture(scene_id, 1),
+                domain.clone(),
+                collision_transition_input(1, 0, ChangeClass::Presentation),
+                sweep.clone(),
+            ],
+            &mut store,
+        )
+        .expect("initial wgsl transition query");
+        assert!(first_trace.wgsl_metrics.is_some());
+
+        let (_, second_trace) = execute_with_store(
+            &plan,
+            &ctx,
+            &[
+                region_capture(scene_id, 2),
+                domain.clone(),
+                collision_transition_input(2, 1, ChangeClass::Presentation),
+                sweep.clone(),
+            ],
+            &mut store,
+        )
+        .expect("follow-up wgsl transition query");
+        assert!(second_trace.wgsl_metrics.is_some());
+    }
+}
+
+#[test]
 fn transition_collision_reuse_decisions_report_consumed_and_rejected_paths() {
     let ctx = typed_query_module(collision_fixture_source());
     let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_region"));

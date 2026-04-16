@@ -4392,15 +4392,176 @@ timeout_ms = 120000
 allow_unstable = false
 collision = { entry = "tests/collision_perf_test.wr", region = "collision_perf_region", domain = "collision_perf_domain", workload = "point_occupancy_burst" }
 
+"#,
+    )
+    .unwrap();
+}
+
+fn write_whole_frame_closure_benchmark_project(root: &std::path::Path) {
+    let src_dir = root.join("src");
+    let tests_dir = root.join("tests");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&tests_dir).unwrap();
+    write_fixture_file(
+        src_dir.join("main.wr"),
+        r#"fn run() -> Integer {
+    return 0
+}
+"#,
+    )
+    .unwrap();
+    write_fixture_file(
+        tests_dir.join("whole_frame_test.wr"),
+        r#"
+fn update_checksum(current: Integer, value: Integer) -> Integer {
+    return ((current * 41) + value) % 2147483647
+}
+
+field exact distance fixture_field(p: Vec3) -> F32 {
+    sphere(radius = 0.55)
+}
+
+material fixture_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.3, 0.5, 0.8),
+        roughness=0.28,
+        metalness=0.0,
+        clearcoat=0.08,
+        clearcoat_roughness=0.06,
+        sheen=0.02,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape fixture_shape {
+    field = fixture_field
+    material = fixture_surface
+}
+
+region fixture_region() {
+    place primary = fixture_shape
+}
+
+domain fixture_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = true
+    media = true
+    max_distance = 8.0
+    min_step = 0.04
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+
+view show_fixture_1080p120_closure_view(world: RegionCapture, camera: Camera) {
+    domain = fixture_domain(world = world)
+    viewport = viewport(width = 64, height = 64)
+    quality = realtime_quality(
+        target_fps = 120,
+        allow_dynamic_resolution = false,
+        primary_max_steps = 96
+    )
+    lighting = key_light(
+        light = Light(
+            position=vec3(-0.8, 1.2, 1.8),
+            direction=normalize(vec3(-0.2, -0.4, -1.0)),
+            intensity=vec3(1.0, 1.0, 1.0),
+            range=8.0
+        )
+    )
+    outputs = frame_outputs(color = true, depth = true, normal = true, motion = true)
+    history = temporal_history(color = true)
+}
+
+fn load_whole_frame_scene() -> RegionCapture {
+    return capture fixture_region
+}
+
+fn compute_whole_frame_point(world: RegionCapture, point: Vec3) -> F32 {
+    domain = fixture_domain(world = world)
+    return spatial.distance(capture = world, domain = domain, point = point)
+}
+
+fn compute_whole_frame_ray(world: RegionCapture, origin: Vec3, direction: Vec3) -> Hit3 {
+    domain = fixture_domain(world = world)
+    return spatial.nearest(
+        capture=world,
+        domain=domain,
+        ray=ray_query(
+            origin=origin,
+            direction=direction,
+            max_distance=8.0,
+            min_step=0.04,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+}
+
+fn test_whole_frame_fixture_ops_64() -> Nothing {
+    world = load_whole_frame_scene()
+    world_again = load_whole_frame_scene()
+    assert value world.scene_id == world_again.scene_id
+
+    mutable checksum = 0
+    mutable hit_count = 0
+    for i in 1...65 {
+        point = vec3(
+            f32(i % 8) * 0.16 - 0.56,
+            f32((i / 8) % 8) * 0.14 - 0.49,
+            0.0
+        )
+        origin = point + vec3(0.0, 0.0, 2.4)
+        hit = compute_whole_frame_ray(
+            world = world,
+            origin = origin,
+            direction = normalize(vec3(-point.x * 0.08, -point.y * 0.08, -1.0))
+        )
+        distance_sample = compute_whole_frame_point(world = world, point = point)
+        if hit.hit {
+            hit_count += 1
+        }
+        checksum = update_checksum(
+            current=checksum,
+            value=hit.steps + i32(abs(hit.distance) * 100.0) + i32(abs(distance_sample) * 100.0)
+        )
+    }
+
+    require checksum != 0 else "whole-frame fixture checksum nonzero"
+    require hit_count > 0 else "whole-frame fixture hits present"
+}
+"#,
+    )
+    .unwrap();
+    write_fixture_file(
+        root.join("1080p120_closure.toml"),
+        r#"
+version = 1
+suite = "whole_frame"
+
+[profiles.closure_1080p120]
+warmup_pairs = 1
+measure_pairs = 1
+coverage = "all"
+execution_story = "wgsl_resident"
+adapter_name = "wgsl_resident"
+enabled_optional_features = []
+timestamps_enabled = false
+f16_enabled = false
+indirect_dispatch_enabled = false
+warmup_protocol = "pipeline_and_resident_scene_upload"
+companion_profile = "canonical_1080p120_cpu_oracle"
+
 [[scenarios]]
-id = "closure_1080p120_repeated_sweeps"
-test_name = "tests/collision_perf::test_collision_perf_repeated_sweeps_ops_32"
-ops = 32
+id = "closure_1080p120_fixture"
+test_name = "tests/whole_frame::test_whole_frame_fixture_ops_64"
+ops = 64
 class = "closure"
 min_runtime_ms = 1
-timeout_ms = 120000
+timeout_ms = 20000
 allow_unstable = false
-collision = { entry = "tests/collision_perf_test.wr", region = "collision_perf_region", domain = "collision_perf_domain", workload = "repeated_sweeps" }
+presentation = { entry = "tests/whole_frame_test.wr", view = "show_fixture_1080p120_closure_view", region = "fixture_region", domain = "fixture_domain", width = 64, height = 64, frames = 1, camera_position = [0.0, 0.0, 2.4], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 45.0 }
+collision = { entry = "tests/whole_frame_test.wr", region = "fixture_region", domain = "fixture_domain", workload = "dense_ray_casts" }
 "#,
     )
     .unwrap();
@@ -8424,13 +8585,11 @@ fn cli_perf_runs_realtime_presentation_1080p120_closure_profile() {
             .and_then(|value| value.as_u64()),
         Some(120)
     );
-    let frame_status = closure
-        .pointer("/frame/status")
-        .and_then(|value| value.as_str())
-        .expect("frame status");
-    assert!(
-        matches!(frame_status, "validated" | "violated"),
-        "unexpected frame status: {frame_status}"
+    assert_eq!(
+        closure
+            .pointer("/frame/status")
+            .and_then(|value| value.as_str()),
+        Some("not_sampled")
     );
     assert_eq!(
         closure
@@ -8438,39 +8597,17 @@ fn cli_perf_runs_realtime_presentation_1080p120_closure_profile() {
             .and_then(|value| value.as_str()),
         Some("not_sampled")
     );
-    assert!(matches!(
+    assert_eq!(
         closure
             .pointer("/verdict/status")
             .and_then(|value| value.as_str()),
-        Some("met") | Some("failed")
-    ));
-    assert!(
-        matches!(
-            closure
-                .pointer("/verdict/status")
-                .and_then(|value| value.as_str()),
-            Some("met") | Some("failed")
-        ),
-        "unexpected closure verdict status: {:?}",
-        closure.pointer("/verdict/status")
+        Some("not_applicable")
     );
     assert!(
         closure
             .pointer("/verdict/summary")
             .and_then(|value| value.as_str())
             .is_some()
-    );
-    assert!(
-        closure
-            .pointer("/frame/total_frame_median_ms")
-            .and_then(|value| value.as_f64())
-            .is_some_and(|value| value > 0.0)
-    );
-    assert!(
-        closure
-            .pointer("/frame/total_frame_median_fps")
-            .and_then(|value| value.as_f64())
-            .is_some_and(|value| value > 0.0)
     );
     let presentation_reports = json
         .get("presentation_reports")
@@ -8523,16 +8660,114 @@ fn cli_perf_runs_realtime_presentation_1080p120_closure_profile() {
             .and_then(|value| value.as_bool())
     );
     assert!(json.get("collision_reports").is_none());
+    assert!(json.get("whole_frame_reports").is_none());
+}
+
+#[test]
+fn cli_perf_runs_whole_frame_1080p120_closure_profile() {
+    let dir = workspace_tempdir();
+    let bench_root = dir.path().join("whole_frame_fixture");
+    write_whole_frame_closure_benchmark_project(&bench_root);
+    let baseline = dir.path().join("whole_frame_1080p120.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("perf")
+        .arg("--runs=1")
+        .arg("--profile=1080p120")
+        .arg(format!("--baseline-out={}", baseline.display()))
+        .arg(&bench_root)
+        .output()
+        .expect("run whole_frame closure perf");
+    assert!(
+        output.status.success(),
+        "whole frame closure perf failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&baseline).expect("read whole-frame baseline"))
+            .expect("parse whole-frame baseline");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("presentation-scenario"));
+    assert!(stdout.contains("collision-scenario"));
+    assert!(stdout.contains("whole-frame-scenario"));
+
+    let closure = json.get("closure").expect("closure report");
+    assert_eq!(
+        closure.pointer("/frame/suite").and_then(|value| value.as_str()),
+        Some("whole_frame")
+    );
+    assert_eq!(
+        closure
+            .pointer("/collision/suite")
+            .and_then(|value| value.as_str()),
+        Some("whole_frame")
+    );
+    assert!(matches!(
+        closure.pointer("/frame/status").and_then(|value| value.as_str()),
+        Some("sampled") | Some("validated") | Some("violated")
+    ));
+    assert!(matches!(
+        closure
+            .pointer("/collision/status")
+            .and_then(|value| value.as_str()),
+        Some("sampled") | Some("validated") | Some("violated")
+    ));
+    assert!(matches!(
+        closure
+            .pointer("/verdict/status")
+            .and_then(|value| value.as_str()),
+        Some("met") | Some("failed")
+    ));
+    let presentation_reports = json
+        .get("presentation_reports")
+        .and_then(|value| value.as_array())
+        .expect("presentation reports array");
+    let collision_reports = json
+        .get("collision_reports")
+        .and_then(|value| value.as_array())
+        .expect("collision reports array");
+    let whole_frame_reports = json
+        .get("whole_frame_reports")
+        .and_then(|value| value.as_array())
+        .expect("whole-frame reports array");
+    assert_eq!(presentation_reports.len(), 1);
+    assert_eq!(collision_reports.len(), 1);
+    assert_eq!(whole_frame_reports.len(), 1);
+    assert_eq!(
+        presentation_reports[0]
+            .pointer("/backend")
+            .and_then(|value| value.as_str()),
+        Some("wgsl")
+    );
+    assert_eq!(
+        collision_reports[0]
+            .pointer("/backend")
+            .and_then(|value| value.as_str()),
+        Some("wgsl")
+    );
+    assert!(
+        whole_frame_reports[0]
+            .pointer("/total_runtime_ns")
+            .and_then(|value| value.as_u64())
+            .is_some_and(|value| value > 0)
+    );
+    assert!(
+        whole_frame_reports[0]
+            .pointer("/steady_state_fps")
+            .and_then(|value| value.as_f64())
+            .is_some_and(|value| value > 0.0)
+    );
 }
 
 #[test]
 fn cli_perf_why_not_120_mode_prints_closure_verdict_and_diagnostics() {
     let dir = workspace_tempdir();
-    let bench_root = dir.path().join("realtime_presentation_fixture");
-    write_realtime_presentation_closure_benchmark_project(&bench_root);
-    let baseline = dir
-        .path()
-        .join("realtime_presentation_1080p120_diagnostics.json");
+    let bench_root = dir.path().join("whole_frame_fixture");
+    write_whole_frame_closure_benchmark_project(&bench_root);
+    let baseline = dir.path().join("whole_frame_1080p120_diagnostics.json");
 
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .current_dir(dir.path())
@@ -8544,10 +8779,10 @@ fn cli_perf_why_not_120_mode_prints_closure_verdict_and_diagnostics() {
         .arg(format!("--baseline-out={}", baseline.display()))
         .arg(&bench_root)
         .output()
-        .expect("run realtime_presentation closure perf diagnostics");
+        .expect("run whole_frame closure perf diagnostics");
     assert!(
         output.status.success(),
-        "realtime presentation closure diagnostics failed: stdout={}\nstderr={}",
+        "whole-frame closure diagnostics failed: stdout={}\nstderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -8635,8 +8870,8 @@ fn cli_perf_why_not_120_mode_prints_closure_verdict_and_diagnostics() {
 #[test]
 fn cli_perf_1080p120_closure_collection_failure_exits_nonzero_but_preserves_baseline() {
     let dir = workspace_tempdir();
-    let bench_root = dir.path().join("realtime_presentation_fixture");
-    write_realtime_presentation_closure_benchmark_project(&bench_root);
+    let bench_root = dir.path().join("whole_frame_fixture");
+    write_whole_frame_closure_benchmark_project(&bench_root);
     let manifest_path = bench_root.join("1080p120_closure.toml");
     let broken_manifest = std::fs::read_to_string(&manifest_path)
         .expect("read closure manifest")
@@ -8645,9 +8880,7 @@ fn cli_perf_1080p120_closure_collection_failure_exits_nonzero_but_preserves_base
             "show_missing_fixture_1080p120_closure_view",
         );
     write_fixture_file(&manifest_path, &broken_manifest).expect("rewrite broken closure manifest");
-    let baseline = dir
-        .path()
-        .join("realtime_presentation_1080p120_unstable_collection.json");
+    let baseline = dir.path().join("whole_frame_1080p120_unstable_collection.json");
 
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .current_dir(dir.path())
@@ -8658,10 +8891,10 @@ fn cli_perf_1080p120_closure_collection_failure_exits_nonzero_but_preserves_base
         .arg(format!("--baseline-out={}", baseline.display()))
         .arg(&bench_root)
         .output()
-        .expect("run realtime_presentation closure perf with broken view");
+        .expect("run whole-frame closure perf with broken view");
     assert!(
         !output.status.success(),
-        "expected realtime presentation closure with broken view to fail: stdout={}\nstderr={}",
+        "expected whole-frame closure with broken view to fail: stdout={}\nstderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -8687,14 +8920,21 @@ fn cli_perf_1080p120_closure_collection_failure_exits_nonzero_but_preserves_base
         .and_then(|value| value.as_array())
         .expect("frame notes");
     assert!(notes.iter().any(|note| {
-        note.as_str()
-            .is_some_and(|text| text.contains("presentation report collection failed"))
+        note.as_str().is_some_and(|text| {
+            text.contains("presentation report collection failed")
+                || text.contains("whole-frame report collection failed")
+        })
     }));
     let presentation_reports = json
         .get("presentation_reports")
         .and_then(|value| value.as_array())
         .expect("presentation reports array");
     assert!(presentation_reports.is_empty());
+    let whole_frame_reports = json
+        .get("whole_frame_reports")
+        .and_then(|value| value.as_array())
+        .expect("whole-frame reports array");
+    assert!(whole_frame_reports.is_empty());
 }
 
 #[test]
@@ -8828,25 +9068,23 @@ fn cli_perf_runs_collision_perf_1080p120_closure_profile() {
             .and_then(|value| value.as_str()),
         Some("canonical_1080p120_cpu_oracle")
     );
-    assert!(matches!(
+    assert_eq!(
         closure
-            .pointer("/verdict/status")
+            .pointer("/frame/status")
             .and_then(|value| value.as_str()),
-        Some("met") | Some("failed")
-    ));
-    let collision_status = closure
-        .pointer("/collision/status")
-        .and_then(|value| value.as_str())
-        .expect("collision status");
-    assert!(
-        matches!(collision_status, "sampled" | "validated" | "violated"),
-        "unexpected collision status: {collision_status}"
+        Some("not_sampled")
     );
     assert_eq!(
         closure
-            .pointer("/collision/collision_baseline_id")
+            .pointer("/collision/status")
             .and_then(|value| value.as_str()),
-        Some("collision_perf.phase40_cpu_oracle")
+        Some("not_sampled")
+    );
+    assert_eq!(
+        closure
+            .pointer("/verdict/status")
+            .and_then(|value| value.as_str()),
+        Some("not_applicable")
     );
     let collision_reports = json
         .get("collision_reports")
@@ -8946,14 +9184,16 @@ fn cli_perf_runs_collision_perf_1080p120_closure_profile() {
             .and_then(|value| value.as_u64())
             .is_some_and(|value| value > 0)
     );
+    assert!(json.get("presentation_reports").is_none());
+    assert!(json.get("whole_frame_reports").is_none());
 }
 
 #[test]
 fn cli_perf_collision_closure_marks_cpu_backend_mismatch_as_violated() {
     let dir = workspace_tempdir();
-    write_collision_closure_benchmark_project(dir.path());
-    let bench_root = dir.path();
-    let baseline = dir.path().join("collision_perf_1080p120_cpu_mismatch.json");
+    let bench_root = dir.path().join("whole_frame_fixture");
+    write_whole_frame_closure_benchmark_project(&bench_root);
+    let baseline = dir.path().join("whole_frame_1080p120_cpu_mismatch.json");
 
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .current_dir(dir.path())
@@ -8964,17 +9204,17 @@ fn cli_perf_collision_closure_marks_cpu_backend_mismatch_as_violated() {
         .arg(format!("--baseline-out={}", baseline.display()))
         .arg(&bench_root)
         .output()
-        .expect("run collision perf closure with cpu backend");
+        .expect("run whole-frame closure with cpu backend");
     assert!(
         output.status.success(),
-        "collision perf closure cpu mismatch failed: stdout={}\nstderr={}",
+        "whole-frame closure cpu mismatch failed: stdout={}\nstderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 
     let json: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&baseline).expect("read collision baseline"))
-            .expect("parse collision baseline");
+        serde_json::from_slice(&std::fs::read(&baseline).expect("read whole-frame baseline"))
+            .expect("parse whole-frame baseline");
     let closure = json.get("closure").expect("closure report");
     assert_eq!(
         closure
@@ -12476,6 +12716,8 @@ fn benchmark_manifest_scenarios_resolve_via_discovery() {
         "benchmarks/realtime_presentation/bench.toml",
         "benchmarks/collision_perf/bench.toml",
         "benchmarks/collision_perf/1080p120_closure.toml",
+        "benchmarks/whole_frame/bench.toml",
+        "benchmarks/whole_frame/1080p120_closure.toml",
     ];
 
     for manifest_rel in manifests {
@@ -12597,6 +12839,39 @@ fn benchmark_manifest_scenarios_resolve_via_discovery() {
                 assert!(
                     collision
                         .get("domain")
+                        .and_then(|value| value.as_str())
+                        .is_some()
+                );
+                assert!(
+                    collision
+                        .get("workload")
+                        .and_then(|value| value.as_str())
+                        .is_some()
+                );
+            } else if manifest_rel.starts_with("benchmarks/whole_frame/") {
+                let presentation = scenario
+                    .get("presentation")
+                    .and_then(|value| value.as_table())
+                    .expect("whole frame presentation metadata");
+                let collision = scenario
+                    .get("collision")
+                    .and_then(|value| value.as_table())
+                    .expect("whole frame collision metadata");
+                assert!(
+                    presentation
+                        .get("entry")
+                        .and_then(|value| value.as_str())
+                        .is_some()
+                );
+                assert!(
+                    presentation
+                        .get("view")
+                        .and_then(|value| value.as_str())
+                        .is_some()
+                );
+                assert!(
+                    collision
+                        .get("entry")
                         .and_then(|value| value.as_str())
                         .is_some()
                 );

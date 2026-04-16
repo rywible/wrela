@@ -5,8 +5,9 @@ use crate::portable::PortableAbiType;
 use crate::query_exec::cpu::QueryExecError;
 use crate::query_exec::wgsl::{
     GpuDispatchRequest, NativeWgpuContext, ResidentBatchQuerySession,
-    build_batch_request_for_shader, build_batch_request_without_items_for_shader,
-    compile_batch_shader, encode_slice, normalized_dispatch_config, prepare_resident_batch_query,
+    build_batch_request_for_shader_with_snapshot,
+    build_batch_request_without_items_for_shader_with_snapshot, compile_batch_shader,
+    encode_slice, normalized_dispatch_config, prepare_resident_batch_query,
 };
 use crate::query_exec::{QueryExecContext, QueryExecutionObservability};
 use std::sync::Arc;
@@ -48,8 +49,24 @@ impl GpuQueryDispatcher {
         args: &[KernelValue],
         candidate_spans: Vec<u32>,
     ) -> Result<Self, QueryExecError> {
+        Self::from_batch_plan_with_candidate_spans_and_snapshot(
+            ctx,
+            None,
+            plan,
+            args,
+            candidate_spans,
+        )
+    }
+
+    pub(crate) fn from_batch_plan_with_candidate_spans_and_snapshot(
+        ctx: &QueryExecContext,
+        snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
+        plan: &KernelBatchQueryPlan,
+        args: &[KernelValue],
+        candidate_spans: Vec<u32>,
+    ) -> Result<Self, QueryExecError> {
         let generated = compile_batch_shader(ctx, plan)?;
-        let mut request = build_batch_request_for_shader(ctx, plan, args)?;
+        let mut request = build_batch_request_for_shader_with_snapshot(ctx, snapshot, plan, args)?;
         request.candidate_spans = candidate_spans;
         let item_abi = generated.item_abi.clone();
         Self::from_request(item_abi, request, generated)
@@ -61,8 +78,20 @@ impl GpuQueryDispatcher {
         args: &[KernelValue],
         item_count: u32,
     ) -> Result<Self, QueryExecError> {
+        Self::from_batch_plan_without_items_and_snapshot(ctx, None, plan, args, item_count)
+    }
+
+    pub(crate) fn from_batch_plan_without_items_and_snapshot(
+        ctx: &QueryExecContext,
+        snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
+        plan: &KernelBatchQueryPlan,
+        args: &[KernelValue],
+        item_count: u32,
+    ) -> Result<Self, QueryExecError> {
         let generated = compile_batch_shader(ctx, plan)?;
-        let request = build_batch_request_without_items_for_shader(ctx, plan, args, item_count)?;
+        let request = build_batch_request_without_items_for_shader_with_snapshot(
+            ctx, snapshot, plan, args, item_count,
+        )?;
         let item_abi = generated.item_abi.clone();
         Self::from_request(item_abi, request, generated)
     }

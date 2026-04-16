@@ -300,12 +300,12 @@ impl PerfClosureProfile {
             measured_runs: 12,
             frame: PerfClosureLaneProtocol {
                 lane: PerfClosureLaneKind::Frame,
-                protocol_id: "realtime_presentation.1080p120".to_string(),
-                suite: "realtime_presentation".to_string(),
-                scene_set_id: "closure_1080p120_frame".to_string(),
-                view_set_id: "realtime_120_closure_views".to_string(),
-                camera_path_id: "closure_camera_path_fixed".to_string(),
-                motion_fixture_id: Some("closure_camera_motion_fixture".to_string()),
+                protocol_id: "whole_frame.1080p120.frame".to_string(),
+                suite: "whole_frame".to_string(),
+                scene_set_id: "whole_frame_1080p120_frame".to_string(),
+                view_set_id: "whole_frame_1080p120_views".to_string(),
+                camera_path_id: "whole_frame_camera_path_fixed".to_string(),
+                motion_fixture_id: Some("whole_frame_camera_motion_fixture".to_string()),
                 fixed_seed: 0x1080_0120,
             },
             frame_budget: PerfClosureMetricBudget {
@@ -318,12 +318,12 @@ impl PerfClosureProfile {
             },
             collision: PerfClosureLaneProtocol {
                 lane: PerfClosureLaneKind::Collision,
-                protocol_id: "collision_perf.1080p120".to_string(),
-                suite: "collision_perf".to_string(),
-                scene_set_id: "closure_1080p120_collision".to_string(),
-                view_set_id: "collision_closure_cases".to_string(),
-                camera_path_id: "closure_collision_probe_path".to_string(),
-                motion_fixture_id: Some("closure_collision_motion_fixture".to_string()),
+                protocol_id: "whole_frame.1080p120.collision".to_string(),
+                suite: "whole_frame".to_string(),
+                scene_set_id: "whole_frame_1080p120_collision".to_string(),
+                view_set_id: "whole_frame_1080p120_collision_cases".to_string(),
+                camera_path_id: "whole_frame_collision_probe_path".to_string(),
+                motion_fixture_id: Some("whole_frame_collision_motion_fixture".to_string()),
                 fixed_seed: 0x1080_0121,
             },
             collision_baseline: PerfClosureCollisionBaseline {
@@ -372,12 +372,12 @@ impl PerfClosureProfile {
             measured_runs: 12,
             frame: PerfClosureLaneProtocol {
                 lane: PerfClosureLaneKind::Frame,
-                protocol_id: "realtime_presentation.1080p120".to_string(),
-                suite: "realtime_presentation".to_string(),
-                scene_set_id: "closure_1080p120_frame".to_string(),
-                view_set_id: "realtime_120_closure_views".to_string(),
-                camera_path_id: "closure_camera_path_fixed".to_string(),
-                motion_fixture_id: Some("closure_camera_motion_fixture".to_string()),
+                protocol_id: "whole_frame.1080p120.frame".to_string(),
+                suite: "whole_frame".to_string(),
+                scene_set_id: "whole_frame_1080p120_frame".to_string(),
+                view_set_id: "whole_frame_1080p120_views".to_string(),
+                camera_path_id: "whole_frame_camera_path_fixed".to_string(),
+                motion_fixture_id: Some("whole_frame_camera_motion_fixture".to_string()),
                 fixed_seed: 0x1080_0120,
             },
             frame_budget: PerfClosureMetricBudget {
@@ -390,12 +390,12 @@ impl PerfClosureProfile {
             },
             collision: PerfClosureLaneProtocol {
                 lane: PerfClosureLaneKind::Collision,
-                protocol_id: "collision_perf.1080p120".to_string(),
-                suite: "collision_perf".to_string(),
-                scene_set_id: "closure_1080p120_collision".to_string(),
-                view_set_id: "collision_closure_cases".to_string(),
-                camera_path_id: "closure_collision_probe_path".to_string(),
-                motion_fixture_id: Some("closure_collision_motion_fixture".to_string()),
+                protocol_id: "whole_frame.1080p120.collision".to_string(),
+                suite: "whole_frame".to_string(),
+                scene_set_id: "whole_frame_1080p120_collision".to_string(),
+                view_set_id: "whole_frame_1080p120_collision_cases".to_string(),
+                camera_path_id: "whole_frame_collision_probe_path".to_string(),
+                motion_fixture_id: Some("whole_frame_collision_motion_fixture".to_string()),
                 fixed_seed: 0x1080_0121,
             },
             collision_baseline: PerfClosureCollisionBaseline {
@@ -603,12 +603,12 @@ impl PerfClosureProfile {
             errors.push("performance closure camera_path_id must not be empty".to_string());
         }
         match lane.lane {
-            PerfClosureLaneKind::Frame if lane.suite != "realtime_presentation" => errors.push(
-                "frame closure lane suite must be realtime_presentation for the canonical profile"
+            PerfClosureLaneKind::Frame if lane.suite != "whole_frame" => errors.push(
+                "frame closure lane suite must be whole_frame for the canonical profile"
                     .to_string(),
             ),
-            PerfClosureLaneKind::Collision if lane.suite != "collision_perf" => errors.push(
-                "collision closure lane suite must be collision_perf for the canonical profile"
+            PerfClosureLaneKind::Collision if lane.suite != "whole_frame" => errors.push(
+                "collision closure lane suite must be whole_frame for the canonical profile"
                     .to_string(),
             ),
             _ => {}

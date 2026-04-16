@@ -2,7 +2,7 @@ use super::command_handlers::{
     self, BenchmarkManifest, CollisionBenchmarkReport, DifferentialPipeline, KpiThresholds,
     PerfCmpConfig, PerfGateConfig, PerfProfile, PerfReport, PresentationBenchmarkComparison,
     PresentationBenchmarkReport, PresentationWgslWorkgroupComparison, TestSelection, TestTarget,
-    WRELA_PRESENTATION_DEBUG_ADAPTIVE_WINDOW_ENV,
+    WholeFrameBenchmarkReport, WRELA_PRESENTATION_DEBUG_ADAPTIVE_WINDOW_ENV,
     WRELA_PRESENTATION_DEBUG_WARM_QUALITY_PIPELINES_ENV, budget_jobs_timeout,
     build_benchmark_selection, load_benchmark_manifest, resolve_budget_policy_v1,
     resolve_test_target,
@@ -14,8 +14,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wrela::acceleration::report::explain_why_not_120_findings as explain_acceleration_why_not_120_findings;
@@ -189,14 +190,21 @@ pub(super) fn run_perf_harness(
     benchmark_manifest: Option<&BenchmarkManifest>,
     perf_profile: PerfProfile,
 ) -> i32 {
+    let query_backend = effective_perf_query_backend(perf_profile, query_backend);
     let presentation_benchmarks_active = benchmark_manifest.is_some_and(|manifest| {
         manifest
             .scenarios_for_profile(perf_profile)
             .iter()
             .any(|scenario| scenario.presentation.is_some())
     });
-    let collision_benchmarks_active = benchmark_manifest
-        .is_some_and(|manifest| manifest.suite.eq_ignore_ascii_case("collision_perf"));
+    let collision_benchmarks_active = benchmark_manifest.is_some_and(|manifest| {
+        manifest
+            .scenarios_for_profile(perf_profile)
+            .iter()
+            .any(|scenario| scenario.collision.is_some())
+    });
+    let whole_frame_benchmarks_active =
+        presentation_benchmarks_active && collision_benchmarks_active;
     let presentation_collection_mode = presentation_benchmarks_active
         .then(|| presentation_benchmark_collection_mode(perf_profile, perf_why_not_120));
     let expected_presentation_report_count = benchmark_manifest
@@ -208,10 +216,32 @@ pub(super) fn run_perf_harness(
                 .count()
         })
         .unwrap_or(0);
+    let expected_collision_execution_count = benchmark_manifest
+        .map(|manifest| {
+            manifest
+                .scenarios_for_profile(perf_profile)
+                .iter()
+                .filter(|scenario| scenario.collision.is_some())
+                .count()
+        })
+        .unwrap_or(0);
+    let expected_whole_frame_report_count = benchmark_manifest
+        .map(|manifest| {
+            manifest
+                .scenarios_for_profile(perf_profile)
+                .iter()
+                .filter(|scenario| scenario.presentation.is_some() && scenario.collision.is_some())
+                .count()
+        })
+        .unwrap_or(0);
     let mut samples = Vec::new();
+    let mut collision_summary_samples = Vec::new();
     let mut latest_presentation_reports = None;
     let mut presentation_report_samples = Vec::new();
     let mut presentation_report_errors = Vec::new();
+    let mut latest_whole_frame_reports = None;
+    let mut whole_frame_report_samples = Vec::new();
+    let mut whole_frame_report_errors = Vec::new();
     let mut latest_collision_reports = None;
     let mut collision_report_samples = Vec::new();
     let mut collision_report_errors = Vec::new();
@@ -266,7 +296,185 @@ pub(super) fn run_perf_harness(
             return exit;
         }
         if let Some(summary) = summary {
-            if presentation_benchmarks_active {
+            if whole_frame_benchmarks_active {
+                let TestTarget::ProjectRoot(benchmark_root) = target else {
+                    eprintln!("perf harness error: whole-frame benchmarks require a project root");
+                    return EXIT_CODEGEN;
+                };
+                let Some(manifest) = benchmark_manifest else {
+                    eprintln!(
+                        "perf harness error: whole-frame benchmarks require a benchmark manifest"
+                    );
+                    return EXIT_CODEGEN;
+                };
+                let collect_once_for_closure = matches!(perf_profile, PerfProfile::Closure1080p120);
+                let collect_reports_this_run = !collect_once_for_closure
+                    || latest_presentation_reports.is_none()
+                    || latest_collision_reports.is_none()
+                    || latest_whole_frame_reports.is_none();
+                let (presentation_reports, presentation_errors, collision_reports, collision_errors, whole_frame_reports, whole_frame_errors, report_collection_errors) =
+                    if collect_reports_this_run {
+                        let presentation_collection = match collect_presentation_benchmark_reports(
+                            benchmark_root,
+                            manifest,
+                            perf_profile,
+                            query_backend,
+                            presentation_collection_mode
+                                .expect("presentation benchmarks should set collection mode"),
+                        ) {
+                            Ok(collection) => collection,
+                            Err(err) => {
+                                eprintln!(
+                                    "perf harness error: failed to collect presentation reports: {err}"
+                                );
+                                return EXIT_CODEGEN;
+                            }
+                        };
+                        let collision_collection = match collect_collision_benchmark_reports(
+                            benchmark_root,
+                            manifest,
+                            perf_profile,
+                            query_backend,
+                        ) {
+                            Ok(collection) => collection,
+                            Err(err) => {
+                                eprintln!(
+                                    "perf harness error: failed to collect collision reports: {err}"
+                                );
+                                return EXIT_CODEGEN;
+                            }
+                        };
+                        let mut presentation_errors = presentation_collection.errors;
+                        let mut collision_errors = collision_collection.errors;
+                        let mut whole_frame_errors = Vec::new();
+                        let mut report_collection_errors = Vec::new();
+                        if presentation_collection.reports.len() != expected_presentation_report_count
+                        {
+                            let error = format!(
+                                "presentation benchmark collection returned {} report(s) for {} expected scenario(s) in {} mode",
+                                presentation_collection.reports.len(),
+                                expected_presentation_report_count,
+                                presentation_collection_mode
+                                    .expect("presentation benchmarks should set collection mode")
+                                    .as_str()
+                            );
+                            presentation_errors.push(error.clone());
+                            report_collection_errors.push(error);
+                        }
+                        let collision_execution_count = collision_collection
+                            .reports
+                            .iter()
+                            .map(|report| report.executions.len())
+                            .sum::<usize>();
+                        if collision_execution_count != expected_collision_execution_count {
+                            let error = format!(
+                                "collision benchmark collection returned {} execution(s) for {} expected scenario(s)",
+                                collision_execution_count,
+                                expected_collision_execution_count
+                            );
+                            collision_errors.push(error.clone());
+                            report_collection_errors.push(error);
+                        }
+                        let whole_frame_reports = match build_whole_frame_benchmark_reports(
+                            &presentation_collection.reports,
+                            &collision_collection.reports,
+                        ) {
+                            Ok(reports) => reports,
+                            Err(err) => {
+                                whole_frame_errors.push(err.clone());
+                                report_collection_errors.push(err);
+                                Vec::new()
+                            }
+                        };
+                        if whole_frame_reports.len() != expected_whole_frame_report_count {
+                            let error = format!(
+                                "whole-frame report collection returned {} report(s) for {} expected composite scenario(s)",
+                                whole_frame_reports.len(),
+                                expected_whole_frame_report_count
+                            );
+                            whole_frame_errors.push(error.clone());
+                            report_collection_errors.push(error);
+                        }
+                        (
+                            presentation_collection.reports,
+                            presentation_errors,
+                            collision_collection.reports,
+                            collision_errors,
+                            whole_frame_reports,
+                            whole_frame_errors,
+                            report_collection_errors,
+                        )
+                    } else {
+                        (
+                            latest_presentation_reports
+                                .clone()
+                                .expect("closure whole-frame benchmarks should have cached presentation reports"),
+                            Vec::new(),
+                            latest_collision_reports
+                                .clone()
+                                .expect("closure whole-frame benchmarks should have cached collision reports"),
+                            Vec::new(),
+                            latest_whole_frame_reports
+                                .clone()
+                                .expect("closure whole-frame benchmarks should have cached whole-frame reports"),
+                            Vec::new(),
+                            Vec::new(),
+                        )
+                    };
+                let whole_frame_runtime_cases =
+                    whole_frame_runtime_cases_from_reports(&whole_frame_reports);
+                let collision_runtime_cases = collision_reports
+                    .iter()
+                    .flat_map(collision_runtime_cases_by_scenario_id)
+                    .collect::<Vec<_>>();
+                let summary = if whole_frame_runtime_cases.is_empty() {
+                    summary
+                } else {
+                    command_handlers::overlay_perf_summary_runtime_cases(
+                        &summary,
+                        &whole_frame_runtime_cases,
+                    )
+                };
+                if !collision_runtime_cases.is_empty() {
+                    collision_summary_samples.push(
+                        command_handlers::overlay_perf_summary_runtime_cases(
+                            &summary,
+                            &collision_runtime_cases,
+                        ),
+                    );
+                }
+                if matches!(output_format, OutputFormat::Pretty) {
+                    command_handlers::emit_perf_summary(&summary, perf_debug);
+                    if collect_reports_this_run {
+                        print_presentation_benchmark_reports(&presentation_reports);
+                        print_collision_benchmark_reports(&collision_reports);
+                        print_whole_frame_benchmark_reports(&whole_frame_reports);
+                    }
+                    for error in &report_collection_errors {
+                        eprintln!("whole-frame-benchmark-error: {error}");
+                    }
+                }
+                if matches!(perf_profile, PerfProfile::Closure1080p120)
+                    && collect_reports_this_run
+                    && !report_collection_errors.is_empty()
+                {
+                    late_failures.extend(report_collection_errors.iter().map(|error| {
+                        format!("whole-frame closure report collection unstable: {error}")
+                    }));
+                }
+                if collect_reports_this_run {
+                    presentation_report_samples.extend(presentation_reports.iter().cloned());
+                    presentation_report_errors.extend(presentation_errors);
+                    whole_frame_report_samples.extend(whole_frame_reports.iter().cloned());
+                    whole_frame_report_errors.extend(whole_frame_errors);
+                    collision_report_samples.extend(collision_reports.iter().cloned());
+                    collision_report_errors.extend(collision_errors);
+                    latest_presentation_reports = Some(presentation_reports.clone());
+                    latest_collision_reports = Some(collision_reports.clone());
+                    latest_whole_frame_reports = Some(whole_frame_reports.clone());
+                }
+                samples.push(summary);
+            } else if presentation_benchmarks_active {
                 let TestTarget::ProjectRoot(benchmark_root) = target else {
                     eprintln!("perf harness error: presentation benchmarks require a project root");
                     return EXIT_CODEGEN;
@@ -403,6 +611,7 @@ pub(super) fn run_perf_harness(
                 collision_report_samples.extend(report_collection.reports.iter().cloned());
                 collision_report_errors.extend(report_collection.errors.into_iter());
                 latest_collision_reports = Some(report_collection.reports);
+                collision_summary_samples.push(summary.clone());
                 samples.push(summary);
             } else {
                 samples.push(summary);
@@ -422,7 +631,9 @@ pub(super) fn run_perf_harness(
         latest_collision_reports = Some(collision_report_samples.clone());
     }
     if matches!(output_format, OutputFormat::Pretty) {
-        if let Some(reports) = latest_collision_reports.as_ref() {
+        if !whole_frame_benchmarks_active
+            && let Some(reports) = latest_collision_reports.as_ref()
+        {
             print_collision_benchmark_reports(reports);
             for error in &collision_report_errors {
                 eprintln!("collision-benchmark-error: {error}");
@@ -510,9 +721,11 @@ pub(super) fn run_perf_harness(
     let closure_report = Some(build_closure_report(
         &closure_profile,
         benchmark_manifest,
-        &samples,
+        &collision_summary_samples,
         &presentation_report_samples,
         &presentation_report_errors,
+        &whole_frame_report_samples,
+        &whole_frame_report_errors,
         &collision_report_samples,
         &collision_report_errors,
         perf_profile,
@@ -531,6 +744,7 @@ pub(super) fn run_perf_harness(
         samples,
         closure: closure_report,
         presentation_reports: latest_presentation_reports,
+        whole_frame_reports: latest_whole_frame_reports,
         collision_reports: latest_collision_reports,
     };
     if let Some(parent) = baseline_out.parent()
@@ -664,6 +878,19 @@ impl PresentationBenchmarkCollectionMode {
             Self::Measurement => "measurement",
             Self::Diagnostic => "diagnostic",
         }
+    }
+}
+
+fn effective_perf_query_backend(
+    perf_profile: PerfProfile,
+    query_backend: wrela::query_plan::DispatchBackend,
+) -> wrela::query_plan::DispatchBackend {
+    if matches!(perf_profile, PerfProfile::Closure1080p120)
+        && matches!(query_backend, wrela::query_plan::DispatchBackend::Auto)
+    {
+        wrela::query_plan::DispatchBackend::Wgsl
+    } else {
+        query_backend
     }
 }
 
@@ -1511,6 +1738,93 @@ fn collision_runtime_cases_from_report(
         .collect()
 }
 
+fn collision_runtime_cases_by_scenario_id(
+    report: &command_handlers::CollisionBenchmarkReport,
+) -> Vec<(String, String, u128)> {
+    report
+        .executions
+        .iter()
+        .map(|execution| {
+            (
+                execution.name.clone(),
+                execution.name.clone(),
+                execution.runtime_ns,
+            )
+        })
+        .collect()
+}
+
+fn build_whole_frame_benchmark_reports(
+    presentation_reports: &[PresentationBenchmarkReport],
+    collision_reports: &[CollisionBenchmarkReport],
+) -> Result<Vec<WholeFrameBenchmarkReport>, String> {
+    let mut collision_by_scenario = HashMap::new();
+    for report in collision_reports {
+        for execution in &report.executions {
+            if collision_by_scenario
+                .insert(execution.name.clone(), execution)
+                .is_some()
+            {
+                return Err(format!(
+                    "whole-frame report join saw duplicate collision execution for scenario '{}'",
+                    execution.name
+                ));
+            }
+        }
+    }
+
+    let mut reports = Vec::with_capacity(presentation_reports.len());
+    for presentation in presentation_reports {
+        let Some(collision) = collision_by_scenario.remove(&presentation.scenario_id) else {
+            return Err(format!(
+                "whole-frame report join missing collision execution for scenario '{}'",
+                presentation.scenario_id
+            ));
+        };
+        let total_runtime_ns = presentation
+            .frame_time_ns
+            .saturating_add(collision.runtime_ns);
+        reports.push(WholeFrameBenchmarkReport {
+            scenario_id: presentation.scenario_id.clone(),
+            test_name: presentation.test_name.clone(),
+            presentation_frame_time_ns: presentation.frame_time_ns,
+            collision_runtime_ns: collision.runtime_ns,
+            total_runtime_ns,
+            steady_state_fps: fps_from_frame_time_ns(
+                total_runtime_ns,
+                presentation.frames_executed.max(1) as usize,
+            ),
+            presentation_bottleneck_pass: presentation.bottleneck_pass.clone(),
+            collision_fallback_rate: collision.fallback_rate,
+            collision_witness_reuse_rate: collision.witness_reuse_rate,
+        });
+    }
+
+    if let Some(extra) = collision_by_scenario.keys().next() {
+        return Err(format!(
+            "whole-frame report join found collision execution '{}' without a matching presentation scenario",
+            extra
+        ));
+    }
+
+    Ok(reports)
+}
+
+fn whole_frame_runtime_cases_from_reports(
+    reports: &[WholeFrameBenchmarkReport],
+) -> Vec<(String, String, u128)> {
+    reports
+        .iter()
+        .map(|report| {
+            (
+                report.scenario_id.clone(),
+                report.test_name.clone(),
+                report.total_runtime_ns,
+            )
+        })
+        .collect()
+}
+
 fn run_presentation_benchmark_report(
     current_exe: &Path,
     benchmark_root: &Path,
@@ -1763,13 +2077,27 @@ fn run_command_with_timeout(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| format!("failed to spawn command: {err}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to capture command stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "failed to capture command stderr".to_string())?;
+    let stdout_reader = thread::spawn(move || read_command_stream(stdout));
+    let stderr_reader = thread::spawn(move || read_command_stream(stderr));
     let started = Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => {
-                return child
-                    .wait_with_output()
-                    .map_err(|err| format!("failed to collect command output: {err}"));
+            Ok(Some(status)) => {
+                let stdout = join_command_stream(stdout_reader, "stdout")?;
+                let stderr = join_command_stream(stderr_reader, "stderr")?;
+                return Ok(Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
             }
             Ok(None) => {}
             Err(err) => return Err(format!("failed to poll command status: {err}")),
@@ -1788,9 +2116,28 @@ fn run_command_with_timeout(
             }
             let _ = child.kill();
             let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
             return Err(format!("command timed out after {:?}", timeout));
         }
         thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn read_command_stream<R: Read>(mut stream: R) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn join_command_stream(
+    handle: thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    stream_name: &str,
+) -> Result<Vec<u8>, String> {
+    match handle.join() {
+        Ok(Ok(bytes)) => Ok(bytes),
+        Ok(Err(err)) => Err(format!("failed to read command {stream_name}: {err}")),
+        Err(_) => Err(format!("command {stream_name} reader thread panicked")),
     }
 }
 
@@ -2211,9 +2558,11 @@ fn frame_cost_total_ns(report: &wrela::presentation_exec::PresentationFrameCostR
 fn build_closure_report(
     profile: &PerfClosureProfile,
     manifest: Option<&BenchmarkManifest>,
-    samples: &[command_handlers::PerfSummary],
+    collision_samples: &[command_handlers::PerfSummary],
     presentation_reports: &[PresentationBenchmarkReport],
     presentation_report_errors: &[String],
+    whole_frame_reports: &[WholeFrameBenchmarkReport],
+    whole_frame_report_errors: &[String],
     collision_reports: &[CollisionBenchmarkReport],
     collision_report_errors: &[String],
     perf_profile: PerfProfile,
@@ -2240,6 +2589,8 @@ fn build_closure_report(
             profile,
             presentation_reports,
             presentation_report_errors,
+            whole_frame_reports,
+            whole_frame_report_errors,
             observed_warmup_runs,
             observed_measured_runs,
         );
@@ -2249,7 +2600,7 @@ fn build_closure_report(
     {
         report.collision = build_collision_closure_status(
             profile,
-            samples,
+            collision_samples,
             collision_reports,
             collision_report_errors,
             observed_warmup_runs,
@@ -2336,16 +2687,26 @@ fn build_frame_closure_status(
     profile: &PerfClosureProfile,
     presentation_reports: &[PresentationBenchmarkReport],
     presentation_report_errors: &[String],
+    whole_frame_reports: &[WholeFrameBenchmarkReport],
+    whole_frame_report_errors: &[String],
     observed_warmup_runs: usize,
     observed_measured_runs: usize,
 ) -> PerfClosureLaneStatusReport {
     let mut report = PerfClosureLaneStatusReport::unsampled(&profile.frame);
     report.status = PerfClosureLaneStatus::Sampled;
     report.notes.clear();
+    let whole_frame_suite = profile.frame.suite.eq_ignore_ascii_case("whole_frame");
     let mut violations = presentation_report_errors
         .iter()
         .map(|error| format!("presentation report collection failed: {error}"))
         .collect::<Vec<_>>();
+    if whole_frame_suite {
+        violations.extend(
+            whole_frame_report_errors
+                .iter()
+                .map(|error| format!("whole-frame report collection failed: {error}")),
+        );
+    }
     if presentation_reports.is_empty() {
         if violations.is_empty() {
             report.notes.push(
@@ -2382,6 +2743,10 @@ fn build_frame_closure_status(
     let mut timestamps_supported = false;
     let mut timestamped_pass_count = 0u32;
     let expected_backend = profile.backend.as_str();
+    let whole_frame_by_scenario = whole_frame_reports
+        .iter()
+        .map(|report| (report.scenario_id.as_str(), report))
+        .collect::<HashMap<_, _>>();
 
     if observed_warmup_runs != profile.warmup_runs as usize
         || observed_measured_runs != profile.measured_runs as usize
@@ -2406,8 +2771,31 @@ fn build_frame_closure_status(
         let measured_frame_costs =
             presentation_frame_history(&sample.frame_cost, &sample.frame_cost_history);
         let frame_costs = measured_frame_costs.iter().collect::<Vec<_>>();
+        let whole_frame_total_ms = if whole_frame_suite {
+            whole_frame_by_scenario
+                .get(sample.scenario_id.as_str())
+                .map(|report| {
+                    ns_to_ms(
+                        report
+                            .total_runtime_ns
+                            .checked_div(u128::from(sample.frames_executed.max(1)))
+                            .unwrap_or(report.total_runtime_ns),
+                    )
+                })
+                .or_else(|| {
+                    violations.push(format!(
+                        "whole-frame timing missing for scenario '{}'",
+                        sample.scenario_id
+                    ));
+                    None
+                })
+        } else {
+            None
+        };
         for frame_cost in frame_costs {
-            total_ms.push(ns_to_ms(frame_cost_total_ns(frame_cost)));
+            total_ms.push(
+                whole_frame_total_ms.unwrap_or_else(|| ns_to_ms(frame_cost_total_ns(frame_cost))),
+            );
             if let Some(primary_pass_ms) = primary_visibility_pass_ms(frame_cost) {
                 primary_ms.push(primary_pass_ms);
             }
@@ -2568,6 +2956,9 @@ fn build_frame_closure_status(
                     sample.scenario_id
                 ));
             }
+            if whole_frame_suite {
+                validate_whole_frame_presentation_contract(sample, frame_cost, &mut violations);
+            }
         }
     }
 
@@ -2597,6 +2988,12 @@ fn build_frame_closure_status(
         presentation_reports.len(),
         total_ms.len()
     ));
+    if whole_frame_suite {
+        report.notes.push(format!(
+            "whole-frame reports collected for {} scenario(s)",
+            whole_frame_reports.len()
+        ));
+    }
     if !observed_backends.is_empty() {
         report.notes.push(format!(
             "presentation backends observed: {}",
@@ -2687,6 +3084,149 @@ fn build_frame_closure_status(
         report.notes.extend(violations);
     }
     report
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WholeFrameScenarioKind {
+    Dense,
+    Repetition,
+    ThinStack,
+    Media,
+    CameraMotion,
+    Other,
+}
+
+fn whole_frame_scenario_kind(scenario_id: &str) -> WholeFrameScenarioKind {
+    match scenario_id {
+        "closure_1080p120_dense_constructive_dense_ray_casts" => WholeFrameScenarioKind::Dense,
+        "closure_1080p120_repetition_heavy_repeated_sweeps" => WholeFrameScenarioKind::Repetition,
+        "closure_1080p120_thin_stack_point_occupancy" => WholeFrameScenarioKind::ThinStack,
+        "closure_1080p120_media_radiance_overlap_burst" => WholeFrameScenarioKind::Media,
+        "closure_1080p120_camera_motion_toi_reuse" => WholeFrameScenarioKind::CameraMotion,
+        _ => WholeFrameScenarioKind::Other,
+    }
+}
+
+fn validate_whole_frame_presentation_contract(
+    sample: &PresentationBenchmarkReport,
+    frame_cost: &wrela::presentation_exec::PresentationFrameCostReport,
+    violations: &mut Vec<String>,
+) {
+    let kind = whole_frame_scenario_kind(&sample.scenario_id);
+    let clipmap_notes = frame_cost
+        .passes
+        .iter()
+        .filter(|pass| pass.pass_kind == "view_distance_clipmap")
+        .flat_map(|pass| pass.notes.iter())
+        .collect::<Vec<_>>();
+    if clipmap_notes.is_empty() {
+        violations.push(format!(
+            "scenario '{}' produced no view_distance_clipmap report in the timed lane",
+            sample.scenario_id
+        ));
+    }
+    if clipmap_notes
+        .iter()
+        .any(|note| note.contains("tile-culling-unavailable"))
+    {
+        violations.push(format!(
+            "scenario '{}' fell back to clipmap mode because tile culling was unavailable",
+            sample.scenario_id
+        ));
+    }
+    if clipmap_notes.iter().any(|note| {
+        note.contains("status=fallback")
+            && !(note.contains("snapshot-mismatch") || note.contains("layout-mismatch"))
+    }) {
+        violations.push(format!(
+            "scenario '{}' reported a whole-frame clipmap fallback outside the allowed snapshot/layout mismatch reasons",
+            sample.scenario_id
+        ));
+    }
+
+    match kind {
+        WholeFrameScenarioKind::Dense
+        | WholeFrameScenarioKind::Repetition
+        | WholeFrameScenarioKind::CameraMotion => {
+            if frame_cost.tile_cull_total_tiles == 0 || frame_cost.tile_cull_active_tiles == 0 {
+                violations.push(format!(
+                    "scenario '{}' reported no tile-cull activity in the timed WGSL path",
+                    sample.scenario_id
+                ));
+            }
+            if frame_cost.tile_candidate_reduction == 0 {
+                violations.push(format!(
+                    "scenario '{}' reported no candidate-table reduction in the timed WGSL path",
+                    sample.scenario_id
+                ));
+            }
+        }
+        _ => {}
+    }
+
+    match kind {
+        WholeFrameScenarioKind::Dense
+        | WholeFrameScenarioKind::Repetition
+        | WholeFrameScenarioKind::ThinStack
+        | WholeFrameScenarioKind::Media => {
+            if !clipmap_notes.iter().any(|note| note.contains("status=reused")) {
+                violations.push(format!(
+                    "scenario '{}' did not report clipmap status=reused after warmup",
+                    sample.scenario_id
+                ));
+            }
+        }
+        WholeFrameScenarioKind::CameraMotion => {
+            if !clipmap_notes.iter().any(|note| note.contains("status=updated")) {
+                violations.push(format!(
+                    "scenario '{}' did not report clipmap status=updated after warmup",
+                    sample.scenario_id
+                ));
+            }
+        }
+        WholeFrameScenarioKind::Other => {}
+    }
+
+    if matches!(
+        kind,
+        WholeFrameScenarioKind::Media | WholeFrameScenarioKind::CameraMotion
+    ) {
+        if frame_cost.participant_resolve_count == 0 {
+            violations.push(format!(
+                "scenario '{}' did not execute participants_resolve in the media whole-frame lane",
+                sample.scenario_id
+            ));
+        }
+        if !frame_cost.quality.media_enabled {
+            violations.push(format!(
+                "scenario '{}' disabled media in the canonical whole-frame lane",
+                sample.scenario_id
+            ));
+        }
+        if frame_cost.quality.radiance_mode != "full" {
+            violations.push(format!(
+                "scenario '{}' degraded radiance mode to '{}'",
+                sample.scenario_id,
+                frame_cost.quality.radiance_mode
+            ));
+        }
+        if frame_cost.quality.half_res_participants {
+            violations.push(format!(
+                "scenario '{}' enabled half-resolution participants in the canonical whole-frame lane",
+                sample.scenario_id
+            ));
+        }
+        if !frame_cost
+            .passes
+            .iter()
+            .any(|pass| pass.pass_kind == "participants_resolve")
+        {
+            violations.push(format!(
+                "scenario '{}' produced no participants_resolve pass report",
+                sample.scenario_id
+            ));
+        }
+    }
 }
 
 fn frame_execution_model_gate_findings(
@@ -2838,11 +3378,22 @@ fn build_collision_closure_status(
     observed_measured_runs: usize,
 ) -> PerfClosureLaneStatusReport {
     let mut report = PerfClosureLaneStatusReport::unsampled(&profile.collision);
-    let summary = command_handlers::aggregate_perf_samples(samples);
     let mut violations = Vec::new();
     report.status = PerfClosureLaneStatus::Sampled;
     report.notes.clear();
     report.collision_baseline_id = Some(profile.collision_baseline.baseline_id.clone());
+    if samples.is_empty() {
+        report.status = PerfClosureLaneStatus::Violated;
+        report.notes.push(format!(
+            "collision closure sampled 0 measured perf run(s) under protocol '{}'",
+            profile.collision.protocol_id
+        ));
+        report
+            .notes
+            .push("collision closure suite ran without sampled runtime summaries".to_string());
+        return report;
+    }
+    let summary = command_handlers::aggregate_perf_samples(samples);
     report.collision_runtime_median_ms = Some(ns_to_ms(summary.runtime_p50_ns));
     report.collision_runtime_p95_ms = Some(ns_to_ms(summary.runtime_p95_ns));
     report.notes.push(format!(
@@ -3356,6 +3907,27 @@ fn print_collision_benchmark_reports(reports: &[command_handlers::CollisionBench
                 execution.fallback_rate,
             );
         }
+    }
+}
+
+fn print_whole_frame_benchmark_reports(reports: &[WholeFrameBenchmarkReport]) {
+    println!("whole-frame-benchmarks:");
+    for report in reports {
+        println!(
+            "whole-frame-scenario {} test={} presentation_frame_time_ns={} collision_runtime_ns={} total_runtime_ns={} fps={:.2} presentation_bottleneck_pass={} collision_fallback_rate={:.2} collision_witness_reuse_rate={:.2}",
+            report.scenario_id,
+            report.test_name,
+            report.presentation_frame_time_ns,
+            report.collision_runtime_ns,
+            report.total_runtime_ns,
+            report.steady_state_fps,
+            report
+                .presentation_bottleneck_pass
+                .as_deref()
+                .unwrap_or("none"),
+            report.collision_fallback_rate,
+            report.collision_witness_reuse_rate,
+        );
     }
 }
 
@@ -5360,6 +5932,20 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn run_command_with_timeout_drains_large_stdout_while_child_runs() {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("dd if=/dev/zero bs=65536 count=32 status=none");
+        let output = run_command_with_timeout(&mut command, Duration::from_secs(2))
+            .expect("large stdout should not deadlock command collection");
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 65_536 * 32);
+        assert!(output.stderr.is_empty());
+    }
+
     #[test]
     fn real_realtime_presentation_closure_manifest_matches_expected_protocol() {
         let bench_root = workspace_root()
@@ -5667,12 +6253,75 @@ mod tests {
     }
 
     #[test]
+    fn real_whole_frame_closure_manifest_matches_expected_protocol() {
+        let bench_root = workspace_root().join("benchmarks").join("whole_frame");
+        let manifest_path = bench_root.join("1080p120_closure.toml");
+        let raw_manifest = fs::read_to_string(&manifest_path).expect("read closure manifest");
+        let manifest_toml: toml::Value = toml::from_str(&raw_manifest).expect("parse closure toml");
+        let manifest = load_benchmark_manifest(&manifest_path).expect("load closure manifest");
+        assert_eq!(manifest.suite, "whole_frame");
+        assert_eq!(
+            manifest_toml
+                .get("profiles")
+                .and_then(|value| value.get("closure_1080p120"))
+                .and_then(|value| value.get("warmup_pairs"))
+                .and_then(|value| value.as_integer()),
+            Some(4)
+        );
+        assert_eq!(
+            manifest_toml
+                .get("profiles")
+                .and_then(|value| value.get("closure_1080p120"))
+                .and_then(|value| value.get("measure_pairs"))
+                .and_then(|value| value.as_integer()),
+            Some(12)
+        );
+        let scenarios = manifest.scenarios_for_profile(PerfProfile::Closure1080p120);
+        let scenario_ids = scenarios
+            .iter()
+            .map(|scenario| scenario.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            scenario_ids,
+            vec![
+                "closure_1080p120_dense_constructive_dense_ray_casts",
+                "closure_1080p120_repetition_heavy_repeated_sweeps",
+                "closure_1080p120_thin_stack_point_occupancy",
+                "closure_1080p120_media_radiance_overlap_burst",
+                "closure_1080p120_camera_motion_toi_reuse",
+            ]
+        );
+        assert!(scenarios.iter().all(|scenario| scenario.class == "closure"));
+        assert!(scenarios.iter().all(|scenario| scenario.presentation.is_some()));
+        assert!(scenarios.iter().all(|scenario| scenario.collision.is_some()));
+        assert!(scenarios.iter().all(|scenario| {
+            let presentation = scenario.presentation.as_ref().expect("presentation spec");
+            let collision = scenario.collision.as_ref().expect("collision spec");
+            presentation.width == Some(1920)
+                && presentation.height == Some(1080)
+                && presentation.frames == Some(7)
+                && presentation.entry.as_deref() == Some("tests/whole_frame_test.wr")
+                && collision.entry.as_deref() == Some("tests/whole_frame_test.wr")
+        }));
+
+        let selection = build_benchmark_selection(
+            &TestTarget::ProjectRoot(bench_root),
+            &manifest_path,
+            PerfProfile::Closure1080p120,
+        )
+        .expect("build closure benchmark selection");
+        assert_eq!(selection.len(), scenario_ids.len());
+    }
+
+    #[test]
     fn frame_closure_status_records_report_collection_failures_as_violations() {
         let profile = PerfClosureProfile::canonical_1080p120();
         let report = build_frame_closure_status(
             &profile,
             &[],
             &["scenario `dense` timed out".to_string()],
+            &[],
+            &[],
             0,
             1,
         );
@@ -5733,6 +6382,8 @@ mod tests {
                 wgsl_workgroup_comparison: None,
                 ab_comparison: None,
             }],
+            &[],
+            &[],
             &[],
             0,
             1,
@@ -5810,6 +6461,8 @@ mod tests {
             &profile,
             std::slice::from_ref(&presentation_report),
             &[],
+            &[],
+            &[],
             0,
             1,
         );
@@ -5850,6 +6503,210 @@ mod tests {
         assert!(focuses.contains("attachment_cpu_bounce_gate"));
         assert!(focuses.contains("queue_submit_gate"));
         assert!(focuses.contains("primary_visibility_dispatch_gate"));
+    }
+
+    #[test]
+    fn whole_frame_benchmark_reports_join_presentation_and_collision_by_scenario_id() {
+        let presentation_reports = vec![PresentationBenchmarkReport {
+            scenario_id: "closure_1080p120_dense_constructive_dense_ray_casts".to_string(),
+            test_name: "tests/whole_frame::test_whole_frame_dense_constructive_dense_ray_casts_ops_7200"
+                .to_string(),
+            view: "show_dense_constructive_1080p120_closure_view".to_string(),
+            region: "dense_constructive_region".to_string(),
+            domain: "dense_constructive_domain".to_string(),
+            backend: "wgsl".to_string(),
+            observed_adapter_name: None,
+            query_trace_solver_mode: "hybrid".to_string(),
+            selected_workgroup_size: 64,
+            frames_executed: 1,
+            frame_time_ns: 6_000_000,
+            steady_state_fps: fps_from_frame_time_ns(6_000_000, 1),
+            field_samples: 128,
+            quality_tier: "realtime_120".to_string(),
+            target_fps: 120,
+            internal_resolution_scale: 1.0,
+            reconstructed_output: false,
+            quality_history: vec!["realtime_120".to_string()],
+            internal_resolution_history: vec![1.0],
+            bottleneck_pass: Some("surface_resolve".to_string()),
+            active_acceleration_artifacts: vec!["view_tile_culling".to_string()],
+            performance_gain_sources: vec!["tile_culling".to_string()],
+            frame_cost: sample_presentation_frame_cost(64, 64, 1.0, 128, 2.0, 16, 8, 6_000),
+            frame_cost_history: vec![],
+            wgsl_workgroup_comparison: None,
+            ab_comparison: None,
+        }];
+        let collision_reports = vec![CollisionBenchmarkReport {
+            suite: "whole_frame".to_string(),
+            backend: "wgsl".to_string(),
+            command: "collision-suite".to_string(),
+            query_count_total: 7_200,
+            total_runtime_ns: 2_500_000,
+            queries_per_sec: 2_880_000.0,
+            average_candidate_count: 5.0,
+            average_rejected_candidate_count: 2.0,
+            average_pruned_node_count: 1.0,
+            average_interval_subdivisions: 0.5,
+            average_interval_refinements: 0.2,
+            average_certificate_successes: 0.0,
+            witness_reuse_rate: 0.75,
+            fallback_rate: 0.10,
+            available_count_total: 10,
+            consumed_count_total: 7,
+            rejected_count_total: 2,
+            unavailable_count_total: 1,
+            executions: vec![command_handlers::CollisionBenchmarkExecutionReport {
+                name: "closure_1080p120_dense_constructive_dense_ray_casts".to_string(),
+                plan_name: "dense_ray_casts".to_string(),
+                contract_id: "whole_frame_collision".to_string(),
+                query_count: 7_200,
+                runtime_ns: 2_500_000,
+                queries_per_sec: 2_880_000.0,
+                broadphase_candidate_count: 5,
+                broadphase_rejected_candidate_count: 2,
+                broadphase_pruned_node_count: 1,
+                candidate_reduction_effectiveness: 0.5,
+                interval_subdivisions: 1,
+                interval_refinements: 0,
+                certificate_successes: 0,
+                interval_bracket: None,
+                fallback_count: 720,
+                contact_normal_provenance: None,
+                wgsl_dispatch_count: 4,
+                wgsl_dispatch_items: 256,
+                wgsl_selected_workgroup_size: 64,
+                wgsl_resident_shared_snapshot_artifacts: 1,
+                cpu_certification_query_count: 0,
+                available_count: 10,
+                consumed_count: 7,
+                rejected_count: 2,
+                unavailable_count: 1,
+                witness_reuse_rate: 0.70,
+                fallback_rate: 0.10,
+            }],
+        }];
+
+        let reports = build_whole_frame_benchmark_reports(&presentation_reports, &collision_reports)
+            .expect("build whole-frame reports");
+        assert_eq!(reports.len(), 1);
+        assert_eq!(
+            reports[0],
+            WholeFrameBenchmarkReport {
+                scenario_id: "closure_1080p120_dense_constructive_dense_ray_casts".to_string(),
+                test_name:
+                    "tests/whole_frame::test_whole_frame_dense_constructive_dense_ray_casts_ops_7200"
+                        .to_string(),
+                presentation_frame_time_ns: 6_000_000,
+                collision_runtime_ns: 2_500_000,
+                total_runtime_ns: 8_500_000,
+                steady_state_fps: fps_from_frame_time_ns(8_500_000, 1),
+                presentation_bottleneck_pass: Some("surface_resolve".to_string()),
+                collision_fallback_rate: 0.10,
+                collision_witness_reuse_rate: 0.70,
+            }
+        );
+
+        let runtime_cases = whole_frame_runtime_cases_from_reports(&reports);
+        assert_eq!(
+            runtime_cases,
+            vec![(
+                "closure_1080p120_dense_constructive_dense_ray_casts".to_string(),
+                "tests/whole_frame::test_whole_frame_dense_constructive_dense_ray_casts_ops_7200"
+                    .to_string(),
+                8_500_000,
+            )]
+        );
+    }
+
+    #[test]
+    fn frame_closure_status_uses_whole_frame_totals_for_whole_frame_suite() {
+        let mut profile = PerfClosureProfile::canonical_1080p120();
+        profile.output_width = 64;
+        profile.output_height = 64;
+        profile.warmup_runs = 0;
+        profile.measured_runs = 1;
+        profile.frame_budget.median_ms = 100.0;
+        profile.frame_budget.p95_ms = 100.0;
+        profile.primary_visibility_budget.median_ms = 100.0;
+        profile.primary_visibility_budget.p95_ms = 100.0;
+
+        let mut frame_cost = sample_presentation_frame_cost(64, 64, 1.0, 128, 2.0, 16, 8, 3_000);
+        frame_cost.quality.tier = "realtime_120".to_string();
+        frame_cost.quality.target_fps = 120;
+        frame_cost.tile_cull_total_tiles = 16;
+        frame_cost.tile_cull_active_tiles = 8;
+        frame_cost.tile_candidate_reduction = 64;
+        frame_cost.passes.push(wrela::presentation_exec::PresentationPassCost {
+            pass_id: "view_distance_clipmap".to_string(),
+            pass_kind: "view_distance_clipmap".to_string(),
+            work_items: 8,
+            elapsed_micros: 0,
+            gpu_elapsed_micros: None,
+            dispatch_count: 1,
+            attachment_bytes_read: 0,
+            attachment_bytes_written: 0,
+            notes: vec![
+                "view_distance_clipmap schema_version=1 semantic_root=show_dense_constructive_1080p120_closure_view status=reused resolution=64x64 internal=64x64 bricks=8,8,1 voxel_size=8 narrow_band_width=96 build=0 update=0 reuse=1 upload=0 build_bytes=0 upload_bytes=0 eviction=0 usage=8 fallback_reasons=none layout_signature=1 runtime_signature=2"
+                    .to_string(),
+            ],
+        });
+
+        let presentation_report = PresentationBenchmarkReport {
+            scenario_id: "closure_1080p120_dense_constructive_dense_ray_casts".to_string(),
+            test_name: "tests/whole_frame::test_whole_frame_dense_constructive_dense_ray_casts_ops_7200"
+                .to_string(),
+            view: "show_dense_constructive_1080p120_closure_view".to_string(),
+            region: "dense_constructive_region".to_string(),
+            domain: "dense_constructive_domain".to_string(),
+            backend: "wgsl".to_string(),
+            observed_adapter_name: None,
+            query_trace_solver_mode: "hybrid".to_string(),
+            selected_workgroup_size: 64,
+            frames_executed: 1,
+            frame_time_ns: 3_000_000,
+            steady_state_fps: fps_from_frame_time_ns(3_000_000, 1),
+            field_samples: 128,
+            quality_tier: "realtime_120".to_string(),
+            target_fps: 120,
+            internal_resolution_scale: 1.0,
+            reconstructed_output: false,
+            quality_history: vec!["realtime_120".to_string()],
+            internal_resolution_history: vec![1.0],
+            bottleneck_pass: Some("primary_visibility".to_string()),
+            active_acceleration_artifacts: vec!["view_tile_culling".to_string()],
+            performance_gain_sources: vec!["tile_culling".to_string()],
+            frame_cost: frame_cost.clone(),
+            frame_cost_history: vec![],
+            wgsl_workgroup_comparison: None,
+            ab_comparison: None,
+        };
+        let whole_frame_reports = vec![WholeFrameBenchmarkReport {
+            scenario_id: "closure_1080p120_dense_constructive_dense_ray_casts".to_string(),
+            test_name: "tests/whole_frame::test_whole_frame_dense_constructive_dense_ray_casts_ops_7200"
+                .to_string(),
+            presentation_frame_time_ns: 3_000_000,
+            collision_runtime_ns: 5_000_000,
+            total_runtime_ns: 8_000_000,
+            steady_state_fps: fps_from_frame_time_ns(8_000_000, 1),
+            presentation_bottleneck_pass: Some("primary_visibility".to_string()),
+            collision_fallback_rate: 0.0,
+            collision_witness_reuse_rate: 1.0,
+        }];
+
+        let report = build_frame_closure_status(
+            &profile,
+            &[presentation_report],
+            &[],
+            &whole_frame_reports,
+            &[],
+            0,
+            1,
+        );
+
+        assert_eq!(report.status, PerfClosureLaneStatus::Validated);
+        assert_eq!(report.total_frame_median_ms, Some(8.0));
+        assert_eq!(report.total_frame_median_fps, fps_from_ms(8.0));
+        assert_eq!(report.primary_visibility_median_ms, Some(3.0));
     }
 
     #[test]
@@ -6860,6 +7717,28 @@ mod tests {
         assert_eq!(
             presentation_benchmark_collection_mode(PerfProfile::Standard, false),
             PresentationBenchmarkCollectionMode::Diagnostic
+        );
+    }
+
+    #[test]
+    fn canonical_1080p120_auto_backend_resolves_to_wgsl() {
+        assert_eq!(
+            effective_perf_query_backend(
+                PerfProfile::Closure1080p120,
+                wrela::query_plan::DispatchBackend::Auto,
+            ),
+            wrela::query_plan::DispatchBackend::Wgsl
+        );
+    }
+
+    #[test]
+    fn nonclosure_auto_backend_preserves_auto_selection() {
+        assert_eq!(
+            effective_perf_query_backend(
+                PerfProfile::Standard,
+                wrela::query_plan::DispatchBackend::Auto,
+            ),
+            wrela::query_plan::DispatchBackend::Auto
         );
     }
 

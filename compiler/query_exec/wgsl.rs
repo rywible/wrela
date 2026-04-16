@@ -551,10 +551,19 @@ pub(crate) fn build_batch_request_for_shader(
     plan: &KernelBatchQueryPlan,
     args: &[KernelValue],
 ) -> Result<GpuDispatchRequest, QueryExecError> {
+    build_batch_request_for_shader_with_snapshot(ctx, None, plan, args)
+}
+
+pub(crate) fn build_batch_request_for_shader_with_snapshot(
+    ctx: &crate::query_exec::context::QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
+    plan: &KernelBatchQueryPlan,
+    args: &[KernelValue],
+) -> Result<GpuDispatchRequest, QueryExecError> {
     if let Err(errors) = validate_batch_query_plan(plan) {
         return Err(validation_error("batch query", errors));
     }
-    let ops = DirectQueryOps::new(ctx);
+    let ops = DirectQueryOps::new_with_snapshot(ctx, snapshot);
     build_batch_request(&ops, plan, args)
 }
 
@@ -564,10 +573,20 @@ pub(crate) fn build_batch_request_without_items_for_shader(
     args: &[KernelValue],
     item_count: u32,
 ) -> Result<GpuDispatchRequest, QueryExecError> {
+    build_batch_request_without_items_for_shader_with_snapshot(ctx, None, plan, args, item_count)
+}
+
+pub(crate) fn build_batch_request_without_items_for_shader_with_snapshot(
+    ctx: &crate::query_exec::context::QueryExecContext,
+    snapshot: Option<&crate::world_identity::WorldSnapshotHandle>,
+    plan: &KernelBatchQueryPlan,
+    args: &[KernelValue],
+    item_count: u32,
+) -> Result<GpuDispatchRequest, QueryExecError> {
     if let Err(errors) = validate_batch_query_plan(plan) {
         return Err(validation_error("batch query", errors));
     }
-    let ops = DirectQueryOps::new(ctx);
+    let ops = DirectQueryOps::new_with_snapshot(ctx, snapshot);
     build_batch_request_without_items(&ops, plan, args, item_count)
 }
 

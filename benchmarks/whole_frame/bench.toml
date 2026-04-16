@@ -1,0 +1,72 @@
+version = 1
+suite = "whole_frame"
+
+[profiles.smoke]
+warmup_pairs = 2
+measure_pairs = 6
+coverage = "critical"
+
+[profiles.standard]
+warmup_pairs = 3
+measure_pairs = 10
+coverage = "all"
+
+[profiles.deep]
+warmup_pairs = 5
+measure_pairs = 18
+coverage = "all"
+
+[[scenarios]]
+id = "whole_frame_dense_constructive_dense_ray_casts"
+test_name = "tests/whole_frame::test_whole_frame_dense_constructive_dense_ray_casts_ops_7200"
+ops = 7200
+class = "critical"
+min_runtime_ms = 250
+timeout_ms = 600000
+allow_unstable = false
+presentation = { entry = "tests/whole_frame_test.wr", view = "show_dense_constructive_view", region = "dense_constructive_region", domain = "dense_constructive_domain", width = 64, height = 64, frames = 4, camera_position = [0.0, 0.0, 3.4], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 46.0 }
+collision = { entry = "tests/whole_frame_test.wr", region = "collision_perf_region", domain = "collision_perf_domain", workload = "dense_ray_casts" }
+
+[[scenarios]]
+id = "whole_frame_repetition_heavy_repeated_sweeps"
+test_name = "tests/whole_frame::test_whole_frame_repetition_heavy_repeated_sweeps_ops_4000"
+ops = 4000
+class = "critical"
+min_runtime_ms = 250
+timeout_ms = 600000
+allow_unstable = false
+presentation = { entry = "tests/whole_frame_test.wr", view = "show_repetition_view", region = "repetition_region", domain = "repetition_domain", width = 64, height = 64, frames = 4, camera_position = [0.0, 0.0, 3.0], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 48.0 }
+collision = { entry = "tests/whole_frame_test.wr", region = "collision_perf_region", domain = "collision_perf_domain", workload = "repeated_sweeps" }
+
+[[scenarios]]
+id = "whole_frame_thin_stack_point_occupancy"
+test_name = "tests/whole_frame::test_whole_frame_thin_stack_point_occupancy_ops_8000"
+ops = 8000
+class = "critical"
+min_runtime_ms = 250
+timeout_ms = 600000
+allow_unstable = false
+presentation = { entry = "tests/whole_frame_test.wr", view = "show_thin_stack_view", region = "thin_stack_region", domain = "thin_stack_domain", width = 64, height = 64, frames = 4, camera_position = [0.0, 0.0, 2.8], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 44.0 }
+collision = { entry = "tests/whole_frame_test.wr", region = "collision_perf_region", domain = "collision_perf_domain", workload = "point_occupancy_burst" }
+
+[[scenarios]]
+id = "whole_frame_media_radiance_overlap_burst"
+test_name = "tests/whole_frame::test_whole_frame_media_radiance_overlap_burst_ops_4800"
+ops = 4800
+class = "critical"
+min_runtime_ms = 250
+timeout_ms = 600000
+allow_unstable = false
+presentation = { entry = "tests/whole_frame_test.wr", view = "show_media_radiance_view", region = "media_region", domain = "media_domain", width = 64, height = 64, frames = 4, camera_position = [0.0, 0.0, 3.2], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 48.0 }
+collision = { entry = "tests/whole_frame_test.wr", region = "collision_perf_region", domain = "collision_perf_domain", workload = "overlap_burst" }
+
+[[scenarios]]
+id = "whole_frame_camera_motion_toi_reuse"
+test_name = "tests/whole_frame::test_whole_frame_camera_motion_toi_reuse_ops_3000"
+ops = 3000
+class = "critical"
+min_runtime_ms = 250
+timeout_ms = 600000
+allow_unstable = false
+presentation = { entry = "tests/whole_frame_test.wr", view = "show_camera_motion_temporal_reuse_clipmap_churn_1080p120_closure_view", region = "media_region", domain = "media_domain", width = 64, height = 64, frames = 4, camera_position = [0.0, 0.0, 3.0], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 48.0 }
+collision = { entry = "tests/whole_frame_test.wr", region = "collision_perf_region", domain = "collision_perf_domain", workload = "toi_transition_reuse" }

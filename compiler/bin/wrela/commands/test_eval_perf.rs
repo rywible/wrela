@@ -821,6 +821,8 @@ pub(super) struct PerfReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) presentation_reports: Option<Vec<PresentationBenchmarkReport>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) whole_frame_reports: Option<Vec<WholeFrameBenchmarkReport>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) collision_reports: Option<Vec<CollisionBenchmarkReport>>,
 }
 
@@ -1063,6 +1065,20 @@ pub(super) struct CollisionBenchmarkExecutionReport {
     pub(super) unavailable_count: u32,
     pub(super) witness_reuse_rate: f64,
     pub(super) fallback_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(super) struct WholeFrameBenchmarkReport {
+    pub(super) scenario_id: String,
+    pub(super) test_name: String,
+    pub(super) presentation_frame_time_ns: u128,
+    pub(super) collision_runtime_ns: u128,
+    pub(super) total_runtime_ns: u128,
+    pub(super) steady_state_fps: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) presentation_bottleneck_pass: Option<String>,
+    pub(super) collision_fallback_rate: f64,
+    pub(super) collision_witness_reuse_rate: f64,
 }
 
 impl BenchmarkManifest {

@@ -1080,6 +1080,7 @@ fn candidate_limited_point_query(
         let (mut distances, distance_observability) =
             crate::collision_exec::gpu::execute_batched_point_distance_queries_with_candidates(
                 ctx,
+                Some(snapshot),
                 capture.clone(),
                 domain.clone(),
                 &[point],
@@ -1099,6 +1100,7 @@ fn candidate_limited_point_query(
         let (mut normals, normal_observability) =
             crate::collision_exec::gpu::execute_batched_point_normal_queries_with_candidates(
                 ctx,
+                Some(snapshot),
                 capture.clone(),
                 domain.clone(),
                 &[point],
@@ -1199,6 +1201,7 @@ fn candidate_limited_ray_query(
         let (hit, observability) =
             crate::collision_exec::gpu::execute_batched_ray_trace_query_with_candidates(
                 ctx,
+                Some(snapshot),
                 capture.clone(),
                 domain.clone(),
                 ray,
@@ -2006,6 +2009,7 @@ fn gpu_assisted_sweep_outcome(
     let (distance_values, distance_observability) =
         crate::collision_exec::gpu::execute_batched_point_distance_queries_with_candidates(
             ctx,
+            Some(snapshot),
             capture.clone(),
             domain.clone(),
             &sample_points,
