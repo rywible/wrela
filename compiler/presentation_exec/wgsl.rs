@@ -1,28 +1,32 @@
+#[cfg(test)]
+use crate::gpu_runtime::lock_shared_upload_arena;
 use crate::gpu_runtime::{
     BufferPoolKey, GPU_RUNTIME_BIND_GROUP_COUNT, GPU_RUNTIME_PASS_BIND_GROUP_INDEX,
-    GpuPassProfiler, GpuRuntimeMetrics, ReadbackReason, ReadbackRequest, lock_shared_upload_arena,
-    shared_buffer_pool,
+    GpuPassProfiler, GpuRuntimeMetrics, ReadbackReason, ReadbackRequest, shared_buffer_pool,
 };
 use crate::kernel::{
     KernelStructValue, KernelValue, interpret_batch_query, lower_batch_query_plan,
 };
 use crate::portable::{
-    PortableAbiType, PortableStructField, portable_abi_array_stride,
-    portable_abi_emit_wgsl_structs, portable_abi_layout, portable_builtin_record_abi,
+    PortableAbiType, PortableStructField, portable_abi_decode_slice,
+    portable_abi_emit_wgsl_structs, portable_builtin_record_abi,
 };
-use crate::presentation_contract::RealtimeRadianceMode;
+#[cfg(test)]
+use crate::portable::{portable_abi_array_stride, portable_abi_layout};
+use crate::presentation_contract::{AttachmentLifetime, RealtimeRadianceMode};
 use crate::presentation_exec::clipmap::{
     build_view_distance_clipmap_artifact, clipmap_pass_runtime,
 };
 use crate::presentation_exec::framegraph::{
     PresentationFramegraph, PresentationFramegraphError, PresentationFramegraphSubmission,
 };
-use crate::presentation_exec::resources::{
-    AttachmentResource, AttachmentResourceSet, FrameAttachmentLayoutPlan,
-};
+#[cfg(test)]
+use crate::presentation_exec::resources::FrameAttachmentLayoutPlan;
+use crate::presentation_exec::resources::{AttachmentResource, AttachmentResourceSet};
+#[cfg(test)]
+use crate::presentation_exec::temporal::temporal_resolve_kernel_values;
 use crate::presentation_exec::temporal::{
-    motion_resolve_assessment_summary, temporal_resolve_kernel_values,
-    update_query_trace_continuation,
+    motion_resolve_assessment_summary, update_query_trace_continuation,
 };
 use crate::presentation_exec::{
     PassRuntimeStats, PresentationExecError, PresentationExecutionInput,
@@ -30,14 +34,16 @@ use crate::presentation_exec::{
     allocate_execution_attachments, attachment_hit_work_items, build_frame_cost_report,
     build_temporal_history, build_tile_candidate_span_words, effective_plan_for_quality,
     encode_values_at_indices, execute_batch_contract, expect_array, expect_f32, expect_struct,
-    expect_vec3, field, frame_state_components, full_attachment_byte_size,
-    internal_resolution_viewport, lighting_inputs_value, participant_query_work_items,
+    field, frame_state_components, full_attachment_byte_size, internal_resolution_viewport,
+    lighting_inputs_value, participant_query_work_items,
     participant_query_work_items_without_screen_samples, presentation_metrics,
     primary_hit_miss_value, resolved_quality_state, runtime_primary_solver_summary,
-    select_presentation_workgroup_size, shade_lookup_value, tile_candidate_dispatch_packets,
+    select_presentation_workgroup_size, tile_candidate_dispatch_packets,
     tile_candidate_packet_fragment_count, tile_candidate_packet_sample_count, tile_candidate_stats,
     tile_culling_mask,
 };
+#[cfg(test)]
+use crate::presentation_exec::{expect_vec3, shade_lookup_value};
 use crate::presentation_plan::{
     CompositeColorPassContract, MotionResolvePassContract, ParticipantsResolvePassContract,
     PresentationPassKind, PresentationPlan, ShadePrimaryPassContract, SurfaceResolvePassContract,
@@ -46,9 +52,10 @@ use crate::presentation_plan::{
 use crate::query_exec::QueryExecContext;
 use crate::query_exec::cpu::{default_medium, default_surface};
 use crate::query_exec::execute_batch_query_with_solver_mode_with_snapshot_on;
-use crate::query_exec::wgsl::{
-    compiled_pipeline, encode_slice, encode_value, native_wgpu_context, readback_storage_buffer,
-};
+use crate::query_exec::wgsl::encode_slice;
+#[cfg(test)]
+use crate::query_exec::wgsl::{compiled_pipeline, legacy_test_only_readback_storage_buffer};
+use crate::query_exec::wgsl::{encode_value, native_wgpu_context};
 use crate::query_exec::{BatchQueryExecutionTrace, QueryExecutionObservability};
 use crate::query_plan::{BatchQueryPlan, DispatchBackend};
 use smol_str::SmolStr;
@@ -58,16 +65,19 @@ use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use super::gpu_primary::{
-    decode_primary_hit_attachment_bytes, prepare_primary_visibility_dispatch,
-};
+use super::gpu_primary::{PrimaryVisibilityGpuDispatch, prepare_primary_visibility_dispatch};
 
-struct LinearShaderDispatchResult {
+#[path = "gpu_post.rs"]
+mod gpu_post;
+
+#[cfg(test)]
+struct LegacyTestOnlyLinearShaderDispatchResult {
     bytes: Vec<u8>,
     dispatch_count: u32,
 }
 
-struct TemporalResolveDispatchResult {
+#[cfg(test)]
+struct LegacyTestOnlyTemporalResolveDispatchResult {
     consumed_count: u32,
     dispatch_count: u32,
 }
@@ -132,8 +142,6 @@ pub(super) fn execute_plan(
             .max(8),
     );
     let selected_workgroup_size = select_presentation_workgroup_size(&native.adapter_limits)?;
-    let mut primary_hits = None;
-    let mut primary_trace = None;
     let mut primary_solver_context = None;
     let mut continuation_counts = crate::presentation_exec::temporal::ContinuationCounts::default();
     let mut tile_cull = TileCullingStats::default();
@@ -147,14 +155,23 @@ pub(super) fn execute_plan(
     let mut pass_stats = Vec::new();
     let mut framegraph_exceptions = Vec::<String>::new();
     let mut pending_gpu_pass_ranges = Vec::<(usize, Range<usize>)>::new();
-    let mut motion_counts_readback_label = None::<String>;
-    let mut temporal_counts_readback_label = None::<String>;
+    let mut motion_counts_readback = None::<(wgpu::Buffer, String)>;
+    let mut temporal_counts_readback = None::<(wgpu::Buffer, String)>;
+    let mut explicitly_exported_attachments = BTreeSet::<SmolStr>::new();
+    let mut primary_trace_seed = None::<(
+        crate::query_contract::QueryContractId,
+        crate::kernel::ir::KernelBatchQueryPlan,
+        u32,
+        SmolStr,
+        SmolStr,
+    )>;
+    let mut primary_trace_dispatch = None::<PrimaryVisibilityGpuDispatch>;
+    let mut primary_observability_buffer = None::<(wgpu::Buffer, u64)>;
 
     for pass in &effective_plan.passes {
         match &pass.kind {
             PresentationPassKind::GenerateScreenSamples { .. } => {}
             PresentationPassKind::PrimaryVisibility { contract } => {
-                let pass_start = Instant::now();
                 let batch_plan = lower_batch_query_plan(
                     &BatchQueryPlan::for_contract(
                         contract.query_contract,
@@ -273,7 +290,7 @@ pub(super) fn execute_plan(
                 let (encoder, profiler) = framegraph
                     .encoder_and_profiler_mut()
                     .map_err(presentation_framegraph_error)?;
-                primary_dispatch.encode_passes(
+                let primary_encode = primary_dispatch.encode_passes(
                     encoder,
                     profiler,
                     &arena,
@@ -283,86 +300,22 @@ pub(super) fn execute_plan(
                 let range_end = framegraph
                     .profiler_record_count()
                     .map_err(presentation_framegraph_error)?;
-                let primary_hit_buffer = primary_dispatch
-                    .primary_hit_attachment_buffer(&framegraph.attachments, contract)?
-                    .clone();
                 let primary_result = primary_dispatch.dispatch_result();
-                let primary_hit_size = framegraph
-                    .attachments
-                    .attachment(contract.primary_hit_attachment.as_str())
-                    .map(|slot| slot.layout.total_size as u64)
-                    .unwrap_or_default();
-                framegraph
-                    .schedule_readback(
-                        &primary_result
-                            .metrics
-                            .as_ref()
-                            .expect("primary visibility GPU query metrics handle")
-                            .buffer,
-                        ReadbackRequest::new(
-                            ReadbackReason::QueryResult,
-                            "wrela.presentation.primary.observability",
-                            primary_result
-                                .metrics
-                                .as_ref()
-                                .expect("primary visibility GPU query metrics handle")
-                                .size_bytes,
-                        ),
-                    )
-                    .map_err(presentation_framegraph_error)?;
-                framegraph
-                    .schedule_readback(
-                        &primary_hit_buffer,
-                        ReadbackRequest::new(
-                            ReadbackReason::Attachment {
-                                attachment: contract.primary_hit_attachment.clone(),
-                            },
-                            "wrela.presentation.primary.primary_hit",
-                            primary_hit_size,
-                        ),
-                    )
-                    .map_err(presentation_framegraph_error)?;
-                framegraph.document_exception("cpu_followup_query_passes");
-                let submission = framegraph
-                    .submit_segment()
-                    .map_err(presentation_framegraph_error)?;
-                framegraph_exceptions.extend(
-                    submission
-                        .documented_exceptions
-                        .iter()
-                        .map(|exception| exception.to_string()),
-                );
-                note_framegraph_submission_metrics(&submission, &mut gpu_runtime);
-                let observability_bytes = submission_readback_bytes(
-                    &submission,
-                    "wrela.presentation.primary.observability",
-                )?;
-                let primary_hit_bytes = submission_readback_bytes(
-                    &submission,
-                    "wrela.presentation.primary.primary_hit",
-                )?;
-                let query_observability =
-                    primary_dispatch.decode_observability(observability_bytes, gpu_runtime.clone());
-                let hits = decode_primary_hit_attachment_bytes(
-                    &framegraph.attachments,
-                    contract,
-                    primary_hit_bytes,
-                )?;
-                primary_trace = Some(build_primary_batch_query_trace(
+                primary_trace_dispatch = Some(primary_dispatch.clone());
+                primary_trace_seed = Some((
                     contract.query_contract,
-                    current_snapshot,
-                    &batch_plan,
+                    batch_plan.clone(),
                     primary_result.item_count,
-                    query_observability,
-                )?);
-                primary_hits = Some(hits);
+                    contract.primary_hit_attachment.clone(),
+                    SmolStr::new("wrela.presentation.primary.observability"),
+                ));
+                primary_observability_buffer = primary_result
+                    .metrics
+                    .as_ref()
+                    .map(|handle| (handle.buffer.clone(), handle.size_bytes));
                 let materialize_dispatch_count = 1
                     + u32::from(contract.depth_attachment.is_some())
                     + u32::from(contract.world_normal_attachment.is_some());
-                let primary_visibility_elapsed =
-                    sum_gpu_elapsed_micros(&submission, range_start..range_start.saturating_add(2));
-                let primary_writeout_elapsed =
-                    sum_gpu_elapsed_micros(&submission, range_start.saturating_add(2)..range_end);
                 let mut notes = Vec::new();
                 if let Some(mask) = cull_mask.as_ref() {
                     notes.push(format!(
@@ -385,6 +338,15 @@ pub(super) fn execute_plan(
                     primary_viewport.width,
                     primary_viewport.height
                 ));
+                let resident_primary_samples = primary_viewport
+                    .width
+                    .saturating_mul(primary_viewport.height);
+                if primary_result.item_count < resident_primary_samples {
+                    notes.push(format!(
+                        "active_dispatch_samples={}",
+                        primary_result.item_count
+                    ));
+                }
                 if candidate_table_active {
                     notes.push(
                         "packet_scheduling active=false reason=resident_primary_path".to_string(),
@@ -393,11 +355,11 @@ pub(super) fn execute_plan(
                 pass_stats.push(PassRuntimeStats {
                     pass_id: pass.id.to_string(),
                     pass_kind: "primary_visibility".to_string(),
-                    work_items: primary_result.item_count,
+                    work_items: primary_viewport
+                        .width
+                        .saturating_mul(primary_viewport.height),
                     dispatch_count: 2,
-                    gpu_elapsed_micros: (primary_visibility_elapsed > 0)
-                        .then_some(primary_visibility_elapsed),
-                    elapsed_micros: pass_start.elapsed().as_micros(),
+                    elapsed_micros: primary_encode.visibility_elapsed_micros,
                     notes: notes.clone(),
                     ..PassRuntimeStats::default()
                 });
@@ -419,23 +381,53 @@ pub(super) fn execute_plan(
                             .map(|name| full_attachment_byte_size(&attachments, name))
                             .unwrap_or_default(),
                     dispatch_count: materialize_dispatch_count,
-                    gpu_elapsed_micros: (primary_writeout_elapsed > 0)
-                        .then_some(primary_writeout_elapsed),
-                    elapsed_micros: pass_start.elapsed().as_micros(),
+                    elapsed_micros: primary_encode.writeout_elapsed_micros,
                     notes,
                     ..PassRuntimeStats::default()
                 });
+                pending_gpu_pass_ranges.push((
+                    pass_stats.len() - 2,
+                    range_start..range_start.saturating_add(2),
+                ));
+                pending_gpu_pass_ranges.push((
+                    pass_stats.len() - 1,
+                    range_start.saturating_add(2)..range_end,
+                ));
             }
             PresentationPassKind::SurfaceResolve { contract } => {
-                let hits = primary_hits.as_ref().ok_or_else(|| {
+                primary_trace_seed.as_ref().ok_or_else(|| {
                     PresentationExecError::MissingPrimaryVisibilityPass {
                         plan: effective_plan.name.clone(),
                     }
                 })?;
                 let pass_start = Instant::now();
-                let mut runtime = PassRuntimeStats {
+                let range_start = framegraph
+                    .profiler_record_count()
+                    .map_err(presentation_framegraph_error)?;
+                let arena = framegraph.attachments.clone();
+                let (encoder, profiler) = framegraph
+                    .encoder_and_profiler_mut()
+                    .map_err(presentation_framegraph_error)?;
+                let (count, dispatch_count, notes) = gpu_post::encode_surface_resolve_gpu(
+                    &native,
+                    encoder,
+                    profiler,
+                    &arena,
+                    ctx,
+                    input,
+                    contract,
+                    quality.hit_compaction_enabled,
+                    selected_workgroup_size,
+                    &mut gpu_runtime,
+                )?;
+                let range_end = framegraph
+                    .profiler_record_count()
+                    .map_err(presentation_framegraph_error)?;
+                surface_resolve_count = count;
+                pass_stats.push(PassRuntimeStats {
                     pass_id: pass.id.to_string(),
                     pass_kind: "surface_resolve".to_string(),
+                    work_items: count,
                     attachment_bytes_read: full_attachment_byte_size(
                         &attachments,
                         contract.primary_hit_attachment.as_str(),
@@ -444,76 +436,55 @@ pub(super) fn execute_plan(
                         &attachments,
                         contract.surface_attachment.as_str(),
                     ),
+                    dispatch_count,
+                    notes,
+                    elapsed_micros: pass_start.elapsed().as_micros(),
                     ..PassRuntimeStats::default()
-                };
-                let mut staged_surface_attachments = None;
-                let (count, dispatch_count, notes, surface_gpu_runtime) =
-                    if input.materialize_cpu_attachments {
-                        execute_surface_resolve(
-                            ctx,
-                            current_snapshot,
-                            input,
-                            &mut attachments,
-                            hits,
-                            contract,
-                            DispatchBackend::Wgsl,
-                            quality.hit_compaction_enabled,
-                        )?
-                    } else {
-                        let mut staging = staging_attachment_resources(
-                            &attachments,
-                            &[contract.surface_attachment.as_str()],
-                        );
-                        let result = execute_surface_resolve(
-                            ctx,
-                            current_snapshot,
-                            input,
-                            &mut staging,
-                            hits,
-                            contract,
-                            DispatchBackend::Wgsl,
-                            quality.hit_compaction_enabled,
-                        )?;
-                        staged_surface_attachments = Some(staging);
-                        result
-                    };
-                surface_resolve_count = count;
-                gpu_runtime.merge_from(&surface_gpu_runtime);
-                if let Some(staging) = staged_surface_attachments.as_ref() {
-                    upload_attachment_to_gpu(
-                        &native,
-                        staging,
-                        &framegraph.attachments,
-                        contract.surface_attachment.as_str(),
-                        &mut gpu_runtime,
-                    )?;
-                } else {
-                    upload_attachment_to_gpu(
-                        &native,
-                        &attachments,
-                        &framegraph.attachments,
-                        contract.surface_attachment.as_str(),
-                        &mut gpu_runtime,
-                    )?;
-                }
-                runtime.work_items = count;
-                runtime.dispatch_count = dispatch_count;
-                runtime.gpu_elapsed_micros = (surface_gpu_runtime.gpu_time_total_micros > 0)
-                    .then_some(surface_gpu_runtime.gpu_time_total_micros);
-                runtime.notes = notes;
-                runtime.elapsed_micros = pass_start.elapsed().as_micros();
-                pass_stats.push(runtime);
+                });
+                pending_gpu_pass_ranges.push((pass_stats.len() - 1, range_start..range_end));
             }
             PresentationPassKind::ParticipantsResolve { contract } => {
-                let hits = primary_hits.as_ref().ok_or_else(|| {
+                primary_trace_seed.as_ref().ok_or_else(|| {
                     PresentationExecError::MissingPrimaryVisibilityPass {
                         plan: effective_plan.name.clone(),
                     }
                 })?;
                 let pass_start = Instant::now();
-                let mut runtime = PassRuntimeStats {
+                let range_start = framegraph
+                    .profiler_record_count()
+                    .map_err(presentation_framegraph_error)?;
+                let arena = framegraph.attachments.clone();
+                let (encoder, profiler) = framegraph
+                    .encoder_and_profiler_mut()
+                    .map_err(presentation_framegraph_error)?;
+                let (radiance_count, medium_count, dispatch_count, notes) =
+                    gpu_post::encode_participants_resolve_gpu(
+                        &native,
+                        encoder,
+                        profiler,
+                        &arena,
+                        ctx,
+                        input,
+                        camera,
+                        viewport,
+                        jitter_pixels,
+                        effective_plan
+                            .view
+                            .compatibility_projection
+                            .legacy_path_active,
+                        contract,
+                        quality.radiance_mode,
+                        selected_workgroup_size,
+                        &mut gpu_runtime,
+                    )?;
+                let range_end = framegraph
+                    .profiler_record_count()
+                    .map_err(presentation_framegraph_error)?;
+                participant_resolve_count = radiance_count + medium_count;
+                pass_stats.push(PassRuntimeStats {
                     pass_id: pass.id.to_string(),
                     pass_kind: "participants_resolve".to_string(),
+                    work_items: participant_resolve_count,
                     attachment_bytes_read: full_attachment_byte_size(
                         &attachments,
                         contract.primary_hit_attachment.as_str(),
@@ -528,108 +499,12 @@ pub(super) fn execute_plan(
                             .as_ref()
                             .map(|name| full_attachment_byte_size(&attachments, name))
                             .unwrap_or_default(),
+                    dispatch_count,
+                    notes,
+                    elapsed_micros: pass_start.elapsed().as_micros(),
                     ..PassRuntimeStats::default()
-                };
-                let participant_attachment_names = [
-                    contract.radiance_attachment.as_deref(),
-                    contract.medium_attachment.as_deref(),
-                ]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>();
-                let mut staged_participant_attachments = None;
-                let (radiance_count, medium_count, dispatch_count, notes, participants_gpu_runtime) =
-                    if input.materialize_cpu_attachments || participant_attachment_names.is_empty()
-                    {
-                        execute_participants_resolve_without_screen_samples(
-                            ctx,
-                            current_snapshot,
-                            input,
-                            camera,
-                            viewport,
-                            jitter_pixels,
-                            effective_plan
-                                .view
-                                .compatibility_projection
-                                .legacy_path_active,
-                            &mut attachments,
-                            hits,
-                            contract,
-                            DispatchBackend::Wgsl,
-                            quality.radiance_mode,
-                        )?
-                    } else {
-                        let mut staging = staging_attachment_resources(
-                            &attachments,
-                            &participant_attachment_names,
-                        );
-                        let result = execute_participants_resolve_without_screen_samples(
-                            ctx,
-                            current_snapshot,
-                            input,
-                            camera,
-                            viewport,
-                            jitter_pixels,
-                            effective_plan
-                                .view
-                                .compatibility_projection
-                                .legacy_path_active,
-                            &mut staging,
-                            hits,
-                            contract,
-                            DispatchBackend::Wgsl,
-                            quality.radiance_mode,
-                        )?;
-                        staged_participant_attachments = Some(staging);
-                        result
-                    };
-                participant_resolve_count = radiance_count + medium_count;
-                gpu_runtime.merge_from(&participants_gpu_runtime);
-                if let Some(attachment_name) = contract.radiance_attachment.as_deref() {
-                    if let Some(staging) = staged_participant_attachments.as_ref() {
-                        upload_attachment_to_gpu(
-                            &native,
-                            staging,
-                            &framegraph.attachments,
-                            attachment_name,
-                            &mut gpu_runtime,
-                        )?;
-                    } else {
-                        upload_attachment_to_gpu(
-                            &native,
-                            &attachments,
-                            &framegraph.attachments,
-                            attachment_name,
-                            &mut gpu_runtime,
-                        )?;
-                    }
-                }
-                if let Some(attachment_name) = contract.medium_attachment.as_deref() {
-                    if let Some(staging) = staged_participant_attachments.as_ref() {
-                        upload_attachment_to_gpu(
-                            &native,
-                            staging,
-                            &framegraph.attachments,
-                            attachment_name,
-                            &mut gpu_runtime,
-                        )?;
-                    } else {
-                        upload_attachment_to_gpu(
-                            &native,
-                            &attachments,
-                            &framegraph.attachments,
-                            attachment_name,
-                            &mut gpu_runtime,
-                        )?;
-                    }
-                }
-                runtime.work_items = participant_resolve_count;
-                runtime.dispatch_count = dispatch_count;
-                runtime.gpu_elapsed_micros = (participants_gpu_runtime.gpu_time_total_micros > 0)
-                    .then_some(participants_gpu_runtime.gpu_time_total_micros);
-                runtime.notes = notes;
-                runtime.elapsed_micros = pass_start.elapsed().as_micros();
-                pass_stats.push(runtime);
+                });
+                pending_gpu_pass_ranges.push((pass_stats.len() - 1, range_start..range_end));
             }
             PresentationPassKind::ShadePrimary { contract } => {
                 let pass_start = Instant::now();
@@ -712,20 +587,13 @@ pub(super) fn execute_plan(
                     &mut gpu_runtime,
                     &summary,
                 )?;
-                framegraph
-                    .schedule_readback(
-                        &motion_dispatch.counts_buffer,
-                        ReadbackRequest::new(
-                            ReadbackReason::Custom(SmolStr::new("motion_resolve_counts")),
-                            motion_dispatch.counts_readback_label.clone(),
-                            12,
-                        ),
-                    )
-                    .map_err(presentation_framegraph_error)?;
                 let range_end = framegraph
                     .profiler_record_count()
                     .map_err(presentation_framegraph_error)?;
-                motion_counts_readback_label = Some(motion_dispatch.counts_readback_label);
+                motion_counts_readback = Some((
+                    motion_dispatch.counts_buffer.clone(),
+                    motion_dispatch.counts_readback_label.clone(),
+                ));
                 continuation_counts
                     .diagnostics
                     .push(summary.diagnostic.clone());
@@ -772,20 +640,13 @@ pub(super) fn execute_plan(
                     selected_workgroup_size,
                     &mut gpu_runtime,
                 )?;
-                framegraph
-                    .schedule_readback(
-                        &temporal.counts_buffer,
-                        ReadbackRequest::new(
-                            ReadbackReason::Custom(SmolStr::new("temporal_resolve_counts")),
-                            temporal.counts_readback_label.clone(),
-                            4,
-                        ),
-                    )
-                    .map_err(presentation_framegraph_error)?;
                 let range_end = framegraph
                     .profiler_record_count()
                     .map_err(presentation_framegraph_error)?;
-                temporal_counts_readback_label = Some(temporal.counts_readback_label);
+                temporal_counts_readback = Some((
+                    temporal.counts_buffer.clone(),
+                    temporal.counts_readback_label.clone(),
+                ));
                 pass_stats.push(PassRuntimeStats {
                     pass_id: pass.id.to_string(),
                     pass_kind: "temporal_resolve".to_string(),
@@ -860,7 +721,22 @@ pub(super) fn execute_plan(
                 });
                 pending_gpu_pass_ranges.push((pass_stats.len() - 1, range_start..range_end));
             }
-            PresentationPassKind::ExportAttachment { .. } => {}
+            PresentationPassKind::ExportAttachment { attachment } => {
+                explicitly_exported_attachments.insert(attachment.clone());
+                pass_stats.push(PassRuntimeStats {
+                    pass_id: pass.id.to_string(),
+                    pass_kind: "export_attachment".to_string(),
+                    work_items: framegraph
+                        .attachments
+                        .attachment(attachment.as_str())
+                        .map(|slot| slot.layout.width.saturating_mul(slot.layout.height))
+                        .unwrap_or_default(),
+                    attachment_bytes_read: full_attachment_byte_size(&attachments, attachment),
+                    dispatch_count: 0,
+                    notes: vec!["readback=explicit_export".to_string()],
+                    ..PassRuntimeStats::default()
+                });
+            }
             other => {
                 return Err(PresentationExecError::UnsupportedPlan {
                     message: format!("wgsl executor does not support pass kind {other:?}"),
@@ -869,19 +745,9 @@ pub(super) fn execute_plan(
         }
     }
 
-    let primary_hits =
-        primary_hits.ok_or_else(|| PresentationExecError::MissingPrimaryVisibilityPass {
-            plan: effective_plan.name.clone(),
-        })?;
-    let mut primary_trace =
-        primary_trace.ok_or_else(|| PresentationExecError::MissingPrimaryVisibilityPass {
-            plan: effective_plan.name.clone(),
-        })?;
-    for attachment_name in cpu_materialization_attachment_names(
-        &effective_plan,
-        &attachments,
-        input.materialize_cpu_attachments,
-    ) {
+    for attachment_name in
+        timed_attachment_readback_names(&effective_plan, &explicitly_exported_attachments)
+    {
         framegraph
             .schedule_attachment_readback(attachment_name.as_str())
             .map_err(presentation_framegraph_error)?;
@@ -902,43 +768,127 @@ pub(super) fn execute_plan(
             pass_stats[pass_index].gpu_elapsed_micros = Some(gpu_elapsed_micros);
         }
     }
-    if let Some(label) = motion_counts_readback_label.as_deref() {
-        let counts_bytes = submission_readback_bytes(&final_submission, label)?;
+    let timed_gpu_runtime = gpu_runtime.clone();
+    apply_attachment_readbacks(&mut attachments, &final_submission)?;
+    gpu_runtime.dispatch_fragmentation_count = pass_stats
+        .iter()
+        .map(|pass| pass.dispatch_count.saturating_sub(1))
+        .sum();
+    let untimed_attachment_readbacks = if input.materialize_cpu_attachments {
+        untimed_cpu_materialization_attachment_names(&attachments, &explicitly_exported_attachments)
+    } else {
+        temporal_history_attachment_names(&effective_plan)
+    };
+    let (
+        primary_contract_id,
+        primary_batch_plan,
+        primary_item_count,
+        primary_hit_attachment,
+        primary_observability_label,
+    ) = primary_trace_seed.ok_or_else(|| PresentationExecError::MissingPrimaryVisibilityPass {
+        plan: effective_plan.name.clone(),
+    })?;
+    let primary_trace_dispatch = primary_trace_dispatch.ok_or_else(|| {
+        PresentationExecError::MissingPrimaryVisibilityPass {
+            plan: effective_plan.name.clone(),
+        }
+    })?;
+    framegraph
+        .schedule_attachment_readback(primary_hit_attachment.as_str())
+        .map_err(presentation_framegraph_error)?;
+    if let Some((buffer, size_bytes)) = primary_observability_buffer.as_ref() {
+        framegraph
+            .schedule_readback(
+                buffer,
+                ReadbackRequest::new(
+                    ReadbackReason::QueryResult,
+                    primary_observability_label.to_string(),
+                    *size_bytes,
+                ),
+            )
+            .map_err(presentation_framegraph_error)?;
+    }
+    if let Some((buffer, label)) = motion_counts_readback.as_ref() {
+        framegraph
+            .schedule_readback(
+                buffer,
+                ReadbackRequest::new(
+                    ReadbackReason::Custom(SmolStr::new("motion_resolve_counts")),
+                    label.clone(),
+                    12,
+                ),
+            )
+            .map_err(presentation_framegraph_error)?;
+    }
+    if let Some((buffer, label)) = temporal_counts_readback.as_ref() {
+        framegraph
+            .schedule_readback(
+                buffer,
+                ReadbackRequest::new(
+                    ReadbackReason::Custom(SmolStr::new("temporal_resolve_counts")),
+                    label.clone(),
+                    4,
+                ),
+            )
+            .map_err(presentation_framegraph_error)?;
+    }
+    for attachment_name in &untimed_attachment_readbacks {
+        framegraph
+            .schedule_attachment_readback(attachment_name.as_str())
+            .map_err(presentation_framegraph_error)?;
+    }
+    let untimed_submission = framegraph
+        .submit_segment()
+        .map_err(presentation_framegraph_error)?;
+    apply_attachment_readbacks(&mut attachments, &untimed_submission)?;
+    if let Some((_, label)) = motion_counts_readback.as_ref() {
+        let counts_bytes = submission_readback_bytes(&untimed_submission, label)?;
         let (available, rejected, unavailable) = decode_motion_counts(counts_bytes);
         continuation_counts.available = continuation_counts.available.saturating_add(available);
         continuation_counts.rejected = continuation_counts.rejected.saturating_add(rejected);
         continuation_counts.unavailable =
             continuation_counts.unavailable.saturating_add(unavailable);
     }
-    if let Some(label) = temporal_counts_readback_label.as_deref() {
-        let counts_bytes = submission_readback_bytes(&final_submission, label)?;
+    if let Some((_, label)) = temporal_counts_readback.as_ref() {
+        let counts_bytes = submission_readback_bytes(&untimed_submission, label)?;
         continuation_counts.consumed = continuation_counts
             .consumed
             .saturating_add(decode_u32_count(counts_bytes));
     }
-    apply_attachment_readbacks(&mut attachments, &final_submission)?;
+    let query_observability = if primary_observability_buffer.is_some() {
+        let observability_bytes =
+            submission_readback_bytes(&untimed_submission, primary_observability_label.as_str())?;
+        primary_trace_dispatch.decode_observability(observability_bytes, timed_gpu_runtime.clone())
+    } else {
+        QueryExecutionObservability::default()
+    };
+    let primary_hit_bytes = submission_readback_bytes(
+        &untimed_submission,
+        &format!("wrela.presentation.readback.{}", primary_hit_attachment),
+    )?;
+    let primary_hits = decode_primary_hit_attachment_bytes_from_name(
+        &framegraph.attachments,
+        primary_hit_attachment.as_str(),
+        primary_hit_bytes,
+    )?;
+    let mut primary_trace = build_primary_batch_query_trace(
+        primary_contract_id,
+        current_snapshot,
+        &primary_batch_plan,
+        primary_item_count,
+        query_observability,
+    )?;
     let continuation_diagnostics = continuation_counts.diagnostics.clone();
     let primary_solver_summary =
         runtime_primary_solver_summary(primary_solver_context.as_ref(), &continuation_counts);
     update_query_trace_continuation(&mut primary_trace, continuation_counts);
-    gpu_runtime.dispatch_fragmentation_count = pass_stats
-        .iter()
-        .map(|pass| pass.dispatch_count.saturating_sub(1))
-        .sum();
     let metrics = presentation_metrics(
         &primary_hits,
         &primary_trace,
         primary_solver_summary,
         continuation_diagnostics,
-        gpu_runtime.clone(),
+        timed_gpu_runtime.clone(),
     );
-    let history = build_temporal_history(
-        &effective_plan,
-        &input.frame_state,
-        &attachments,
-        current_snapshot,
-        view_distance_clipmap.as_ref(),
-    )?;
     let frame_cost = build_frame_cost_report(
         &input.frame_domain,
         input.execution_policy,
@@ -970,6 +920,13 @@ pub(super) fn execute_plan(
             Vec::new()
         },
     );
+    let history = build_temporal_history(
+        &effective_plan,
+        &input.frame_state,
+        &attachments,
+        current_snapshot,
+        view_distance_clipmap.as_ref(),
+    )?;
     Ok(PresentationExecutionResult {
         plan_name: plan.name.clone(),
         backend: DispatchBackend::Wgsl,
@@ -1028,6 +985,28 @@ fn submission_readback_bytes<'a>(
         .ok_or_else(|| PresentationExecError::UnsupportedPlan {
             message: format!("missing presentation readback '{label}'"),
         })
+}
+
+fn decode_primary_hit_attachment_bytes_from_name(
+    arena: &crate::presentation_exec::gpu_resources::GpuAttachmentArena,
+    attachment_name: &str,
+    bytes: &[u8],
+) -> Result<Vec<KernelValue>, PresentationExecError> {
+    let layout = arena
+        .attachment(attachment_name)
+        .ok_or_else(|| PresentationExecError::UnsupportedPlan {
+            message: format!("missing GPU primary-hit attachment '{attachment_name}'"),
+        })?
+        .layout
+        .clone();
+    portable_abi_decode_slice(
+        &layout.element_abi,
+        bytes,
+        (layout.width.saturating_mul(layout.height)) as usize,
+    )
+    .map_err(|err| PresentationExecError::UnsupportedPlan {
+        message: format!("failed to decode GPU primary-hit attachment bytes: {err}"),
+    })
 }
 
 fn sum_gpu_elapsed_micros(
@@ -1104,14 +1083,14 @@ fn staging_attachment_resources(
     }
 }
 
-fn cpu_materialization_attachment_names(
-    plan: &PresentationPlan,
-    attachments: &AttachmentResourceSet,
-    materialize_cpu_attachments: bool,
+fn timed_attachment_readback_names(
+    _plan: &PresentationPlan,
+    explicitly_exported_attachments: &BTreeSet<SmolStr>,
 ) -> Vec<SmolStr> {
-    if materialize_cpu_attachments {
-        return attachments.attachments.keys().cloned().collect();
-    }
+    explicitly_exported_attachments.iter().cloned().collect()
+}
+
+fn temporal_history_attachment_names(plan: &PresentationPlan) -> Vec<SmolStr> {
     let mut names = BTreeSet::new();
     if let Some(temporal) = &plan.frame.temporal {
         for slot in &temporal.history_slots {
@@ -1119,6 +1098,25 @@ fn cpu_materialization_attachment_names(
         }
     }
     names.into_iter().collect()
+}
+
+fn untimed_cpu_materialization_attachment_names(
+    attachments: &AttachmentResourceSet,
+    explicitly_exported_attachments: &BTreeSet<SmolStr>,
+) -> Vec<SmolStr> {
+    attachments
+        .attachments
+        .iter()
+        .filter_map(|(name, attachment)| {
+            if explicitly_exported_attachments.contains(name) {
+                return None;
+            }
+            if attachment.layout.attachment.lifetime == AttachmentLifetime::Exported {
+                return None;
+            }
+            Some(name.clone())
+        })
+        .collect()
 }
 
 fn upload_attachment_to_gpu(
@@ -2009,6 +2007,9 @@ fn encode_shade_primary_gpu(
     workgroup_size: u32,
     gpu_runtime: &mut GpuRuntimeMetrics,
 ) -> Result<u32, PresentationExecError> {
+    let shader_f16_enabled = native
+        .requested_features
+        .contains(wgpu::Features::SHADER_F16);
     let Some(primary_hit_buffer) =
         arena.attachment_buffer(contract.primary_hit_attachment.as_str())
     else {
@@ -2029,13 +2030,14 @@ fn encode_shade_primary_gpu(
                     contract.output_attachment
                 ),
             })?;
-    let radiance_bytes = encode_value(&PortableAbiType::Vec3, &KernelValue::Vec3([0.0, 0.0, 0.0]))
-        .map_err(PresentationExecError::Query)?;
-    let medium_bytes = encode_value(
-        &portable_builtin_record_abi("Medium").expect("Medium abi"),
-        &default_medium(),
+    let radiance_bytes = encode_slice(
+        &PortableAbiType::Vec3,
+        &[KernelValue::Vec3([0.0, 0.0, 0.0])],
     )
     .map_err(PresentationExecError::Query)?;
+    let medium_abi = portable_builtin_record_abi("Medium").expect("Medium abi");
+    let medium_bytes =
+        encode_slice(&medium_abi, &[default_medium()]).map_err(PresentationExecError::Query)?;
     let radiance_buffer = if let Some(name) = contract.radiance_attachment.as_deref() {
         arena
             .attachment_buffer(name)
@@ -2102,7 +2104,7 @@ fn encode_shade_primary_gpu(
     );
     let cached = create_custom_pass_pipeline(
         native,
-        &shade_primary_gpu_shader_source(workgroup_size)?,
+        &shade_primary_gpu_shader_source(workgroup_size, shader_f16_enabled)?,
         workgroup_size,
         &[
             wgpu::BindGroupLayoutEntry {
@@ -2418,6 +2420,9 @@ fn encode_temporal_resolve_gpu(
     workgroup_size: u32,
     gpu_runtime: &mut GpuRuntimeMetrics,
 ) -> Result<TemporalResolveGpuDispatch, PresentationExecError> {
+    let shader_f16_enabled = native
+        .requested_features
+        .contains(wgpu::Features::SHADER_F16);
     let Some(current_color_buffer) = arena.attachment_buffer(contract.input_attachment.as_str())
     else {
         return Ok(TemporalResolveGpuDispatch {
@@ -2503,7 +2508,7 @@ fn encode_temporal_resolve_gpu(
     );
     let cached = create_custom_pass_pipeline(
         native,
-        &temporal_resolve_gpu_shader_source(workgroup_size)?,
+        &temporal_resolve_gpu_shader_source(workgroup_size, shader_f16_enabled)?,
         workgroup_size,
         &[
             wgpu::BindGroupLayoutEntry {
@@ -2658,6 +2663,9 @@ fn encode_composite_color_gpu(
     workgroup_size: u32,
     gpu_runtime: &mut GpuRuntimeMetrics,
 ) -> Result<u32, PresentationExecError> {
+    let shader_f16_enabled = native
+        .requested_features
+        .contains(wgpu::Features::SHADER_F16);
     let Some(input_buffer) = arena.attachment_buffer(contract.input_attachment.as_str()) else {
         return Ok(0);
     };
@@ -2689,7 +2697,7 @@ fn encode_composite_color_gpu(
     );
     let cached = create_custom_pass_pipeline(
         native,
-        &copy_vec3_shader_source(workgroup_size)?,
+        &copy_vec3_shader_source(workgroup_size, shader_f16_enabled)?,
         workgroup_size,
         &[
             wgpu::BindGroupLayoutEntry {
@@ -2771,7 +2779,8 @@ fn encode_composite_color_gpu(
     Ok(1)
 }
 
-fn shade_primary_wgsl(
+#[cfg(test)]
+fn legacy_test_only_shade_primary_wgsl(
     screen_samples: &[KernelValue],
     attachments: &mut AttachmentResourceSet,
     lighting: &crate::presentation_contract::PresentationLightingInputs,
@@ -2865,8 +2874,8 @@ fn shade_primary_wgsl(
                 contract.output_attachment
             ),
         })?;
-    let dispatch = dispatch_linear_shader(
-        &shade_primary_shader_source(workgroup_size)?,
+    let dispatch = legacy_test_only_dispatch_linear_shader(
+        &shade_primary_shader_source(workgroup_size, false)?,
         &shade_primary_input_abi(),
         &shade_inputs,
         &output_layout,
@@ -2878,7 +2887,8 @@ fn shade_primary_wgsl(
     Ok(dispatch.dispatch_count)
 }
 
-fn composite_color_wgsl(
+#[cfg(test)]
+fn legacy_test_only_composite_color_wgsl(
     attachments: &mut AttachmentResourceSet,
     contract: &CompositeColorPassContract,
     workgroup_size: u32,
@@ -2905,8 +2915,8 @@ fn composite_color_wgsl(
                 contract.output_attachment
             ),
         })?;
-    let dispatch = dispatch_linear_shader(
-        &copy_vec3_shader_source(workgroup_size)?,
+    let dispatch = legacy_test_only_dispatch_linear_shader(
+        &copy_vec3_shader_source(workgroup_size, false)?,
         &PortableAbiType::Vec3,
         &input_values,
         &output_layout,
@@ -2918,14 +2928,15 @@ fn composite_color_wgsl(
     Ok(dispatch.dispatch_count)
 }
 
-fn temporal_resolve_wgsl(
+#[cfg(test)]
+fn legacy_test_only_temporal_resolve_wgsl(
     attachments: &mut AttachmentResourceSet,
     width: u32,
     height: u32,
     contract: &TemporalResolvePassContract,
     workgroup_size: u32,
     gpu_runtime: &mut GpuRuntimeMetrics,
-) -> Result<TemporalResolveDispatchResult, PresentationExecError> {
+) -> Result<LegacyTestOnlyTemporalResolveDispatchResult, PresentationExecError> {
     let (input_values, consumed_count) =
         temporal_resolve_kernel_values(attachments, width, height, contract)?;
     let output_layout = attachments
@@ -2940,13 +2951,13 @@ fn temporal_resolve_wgsl(
         .plan
         .clone();
     if input_values.is_empty() {
-        return Ok(TemporalResolveDispatchResult {
+        return Ok(LegacyTestOnlyTemporalResolveDispatchResult {
             consumed_count,
             dispatch_count: 0,
         });
     }
-    let dispatch = dispatch_linear_shader(
-        &temporal_resolve_shader_source(contract, workgroup_size)?,
+    let dispatch = legacy_test_only_dispatch_linear_shader(
+        &temporal_resolve_shader_source(contract, workgroup_size, false)?,
         &temporal_resolve_input_abi(),
         &input_values,
         &output_layout,
@@ -2977,21 +2988,22 @@ fn temporal_resolve_wgsl(
             }
         }
     }
-    Ok(TemporalResolveDispatchResult {
+    Ok(LegacyTestOnlyTemporalResolveDispatchResult {
         consumed_count,
         dispatch_count: dispatch.dispatch_count,
     })
 }
 
-fn dispatch_linear_shader(
+#[cfg(test)]
+fn legacy_test_only_dispatch_linear_shader(
     source: &str,
     input_abi: &PortableAbiType,
     input_values: &[KernelValue],
     output_layout: &FrameAttachmentLayoutPlan,
     workgroup_size: u32,
     gpu_runtime: &mut GpuRuntimeMetrics,
-) -> Result<LinearShaderDispatchResult, PresentationExecError> {
-    dispatch_linear_shader_with_chunk_limit(
+) -> Result<LegacyTestOnlyLinearShaderDispatchResult, PresentationExecError> {
+    legacy_test_only_dispatch_linear_shader_with_chunk_limit(
         source,
         input_abi,
         input_values,
@@ -3002,7 +3014,10 @@ fn dispatch_linear_shader(
     )
 }
 
-fn dispatch_linear_shader_with_chunk_limit(
+// Legacy/test-only helper for CPU-bounce WGSL verification paths. The timed resident framegraph
+// must not route through this immediate-readback loop, so we compile it only for tests.
+#[cfg(test)]
+fn legacy_test_only_dispatch_linear_shader_with_chunk_limit(
     source: &str,
     input_abi: &PortableAbiType,
     input_values: &[KernelValue],
@@ -3010,9 +3025,9 @@ fn dispatch_linear_shader_with_chunk_limit(
     workgroup_size: u32,
     per_storage_buffer_limit_override: Option<u64>,
     gpu_runtime: &mut GpuRuntimeMetrics,
-) -> Result<LinearShaderDispatchResult, PresentationExecError> {
+) -> Result<LegacyTestOnlyLinearShaderDispatchResult, PresentationExecError> {
     if input_values.is_empty() {
-        return Ok(LinearShaderDispatchResult {
+        return Ok(LegacyTestOnlyLinearShaderDispatchResult {
             bytes: Vec::new(),
             dispatch_count: 0,
         });
@@ -3204,12 +3219,15 @@ fn dispatch_linear_shader_with_chunk_limit(
         dispatch_count = dispatch_count.saturating_add(1);
         local_gpu_runtime.queue_submit_count =
             local_gpu_runtime.queue_submit_count.saturating_add(1);
-        let chunk_bytes =
-            readback_storage_buffer(&output_buffer, chunk_dense_size).map_err(|message| {
-                PresentationExecError::Query(crate::query_exec::cpu::QueryExecError::Unsupported {
-                    message: format!("native WGSL readback failed: {message}"),
-                })
-            })?;
+        let chunk_bytes = legacy_test_only_readback_storage_buffer(
+            &output_buffer,
+            chunk_dense_size,
+        )
+        .map_err(|message| {
+            PresentationExecError::Query(crate::query_exec::cpu::QueryExecError::Unsupported {
+                message: format!("native WGSL readback failed: {message}"),
+            })
+        })?;
         upload_arena.recall();
         local_gpu_runtime.queue_submit_count =
             local_gpu_runtime.queue_submit_count.saturating_add(1);
@@ -3245,7 +3263,7 @@ fn dispatch_linear_shader_with_chunk_limit(
             .saturating_add((gpu_elapsed_micros.len() as u64) * 16);
     }
     gpu_runtime.merge_from(&local_gpu_runtime);
-    Ok(LinearShaderDispatchResult {
+    Ok(LegacyTestOnlyLinearShaderDispatchResult {
         bytes: output_layout
             .pack_dense_output_bytes(&dense_bytes)
             .map_err(PresentationExecError::Resource)?,
@@ -3271,6 +3289,7 @@ fn presentation_dispatch_config(item_count: u32) -> KernelValue {
     })
 }
 
+#[cfg(test)]
 fn shade_primary_input_abi() -> PortableAbiType {
     PortableAbiType::Struct {
         name: SmolStr::new("ShadePrimaryInput"),
@@ -3333,6 +3352,7 @@ fn lighting_inputs_abi() -> PortableAbiType {
     }
 }
 
+#[cfg(test)]
 fn temporal_resolve_input_abi() -> PortableAbiType {
     PortableAbiType::Struct {
         name: SmolStr::new("TemporalResolveInput"),
@@ -3735,7 +3755,10 @@ fn temporal_resolve_gpu_config_value(
     })
 }
 
-fn shade_primary_gpu_shader_source(workgroup_size: u32) -> Result<String, PresentationExecError> {
+fn shade_primary_gpu_shader_source(
+    workgroup_size: u32,
+    shader_f16_enabled: bool,
+) -> Result<String, PresentationExecError> {
     let structs = emit_wgsl_structs(&[
         shade_primary_gpu_config_abi(),
         portable_builtin_record_abi("Hit3").expect("Hit3 abi"),
@@ -3743,8 +3766,11 @@ fn shade_primary_gpu_shader_source(workgroup_size: u32) -> Result<String, Presen
         portable_builtin_record_abi("Medium").expect("Medium abi"),
         lighting_inputs_abi(),
     ])?;
+    let f16_preamble = wgsl_shader_f16_preamble(shader_f16_enabled);
+    let vec3_narrow = wgsl_vec3_narrow_helper(shader_f16_enabled);
     Ok(format!(
-        "{structs}
+        "{f16_preamble}
+{structs}
 
 override WG_SIZE: u32 = {workgroup_size}u;
 
@@ -3777,6 +3803,8 @@ var<storage, read> radiance_values: RadianceBuffer;
 var<storage, read> medium_values: MediumBuffer;
 @group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(5)
 var<storage, read_write> output_values: OutputBuffer;
+
+{vec3_narrow}
 
 fn wr_normalize_or(value: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {{
   let len_sq = dot(value, value);
@@ -3894,11 +3922,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
     let fog_color = medium.emission + (radiance * 0.22);
     let radiance_lit = radiance * (0.25 + (highlight * 0.15));
     let lit = direct + surface.emissive + radiance_lit;
-    output_values.values[index] = mix(lit, fog_color, vec3<f32>(fog_strength));
+    output_values.values[index] = narrow_vec3(mix(lit, fog_color, vec3<f32>(fog_strength)));
   }} else {{
     let miss_fog = clamp(medium.density * 3.0, 0.0, 0.45);
     let miss_mix_color = medium.emission + (radiance * 0.28);
-    output_values.values[index] = mix(radiance, miss_mix_color, vec3<f32>(miss_fog));
+    output_values.values[index] = narrow_vec3(mix(radiance, miss_mix_color, vec3<f32>(miss_fog)));
   }}
 }}
 "
@@ -4047,13 +4075,17 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
 
 fn temporal_resolve_gpu_shader_source(
     workgroup_size: u32,
+    shader_f16_enabled: bool,
 ) -> Result<String, PresentationExecError> {
     let structs = emit_wgsl_structs(&[
         temporal_resolve_gpu_config_abi(),
         portable_builtin_record_abi("MotionVector").expect("MotionVector abi"),
     ])?;
+    let f16_preamble = wgsl_shader_f16_preamble(shader_f16_enabled);
+    let vec3_narrow = wgsl_vec3_narrow_helper(shader_f16_enabled);
     Ok(format!(
-        "{structs}
+        "{f16_preamble}
+{structs}
 
 override WG_SIZE: u32 = {workgroup_size}u;
 
@@ -4080,6 +4112,8 @@ var<storage, read> motion_values: MotionBuffer;
 var<storage, read_write> output_color: ColorBuffer;
 @group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(5)
 var<storage, read_write> stats: StatsBuffer;
+
+{vec3_narrow}
 
 fn previous_index(sample: vec2<f32>) -> u32 {{
   let x = u32(clamp(round(sample.x), 0.0, f32(max(config.width, 1u) - 1u)));
@@ -4136,19 +4170,26 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
     (current * (1.0 - history_weight)) + (clamped_history * history_weight),
     use_history
   );
-  output_color.values[index] = resolved;
+  output_color.values[index] = narrow_vec3(resolved);
 }}
 "
     ))
 }
 
-fn shade_primary_shader_source(workgroup_size: u32) -> Result<String, PresentationExecError> {
+#[cfg(test)]
+fn shade_primary_shader_source(
+    workgroup_size: u32,
+    shader_f16_enabled: bool,
+) -> Result<String, PresentationExecError> {
     let structs = emit_wgsl_structs(&[
         crate::query_exec::wgsl::codegen::wgsl_dispatch_config_abi(),
         shade_primary_input_abi(),
     ])?;
+    let f16_preamble = wgsl_shader_f16_preamble(shader_f16_enabled);
+    let vec3_narrow = wgsl_vec3_narrow_helper(shader_f16_enabled);
     Ok(format!(
-        "{structs}
+        "{f16_preamble}
+{structs}
 
 override WG_SIZE: u32 = {workgroup_size}u;
 
@@ -4173,6 +4214,8 @@ var<storage, read> input_items: InputBuffer;
 var<storage, read_write> output_items: OutputBuffer;
 @group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(3)
 var<storage, read> dummy_items: DummyBuffer;
+
+{vec3_narrow}
 
 fn clamp_vec3(value: vec3<f32>, min_value: f32, max_value: f32) -> vec3<f32> {{
   return vec3<f32>(
@@ -4217,22 +4260,29 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
     let fog_color = input.medium.emission + (input.radiance * 0.22);
     let radiance_lit = input.radiance * (0.25 + (highlight * 0.15));
     let lit = direct + input.surface.emissive + radiance_lit;
-    output_items.values[index] = mix(lit, fog_color, vec3<f32>(fog_strength));
+    output_items.values[index] = narrow_vec3(mix(lit, fog_color, vec3<f32>(fog_strength)));
   }} else {{
     let miss_fog = clamp(input.medium.density * 3.0, 0.0, 0.45);
     let miss_mix_color = input.medium.emission + (input.radiance * 0.28);
-    output_items.values[index] = mix(input.radiance, miss_mix_color, vec3<f32>(miss_fog));
+    output_items.values[index] =
+      narrow_vec3(mix(input.radiance, miss_mix_color, vec3<f32>(miss_fog)));
   }}
 }}
 "
     ))
 }
 
-fn copy_vec3_shader_source(workgroup_size: u32) -> Result<String, PresentationExecError> {
+fn copy_vec3_shader_source(
+    workgroup_size: u32,
+    shader_f16_enabled: bool,
+) -> Result<String, PresentationExecError> {
     let structs =
         emit_wgsl_structs(&[crate::query_exec::wgsl::codegen::wgsl_dispatch_config_abi()])?;
+    let f16_preamble = wgsl_shader_f16_preamble(shader_f16_enabled);
+    let vec3_narrow = wgsl_vec3_narrow_helper(shader_f16_enabled);
     Ok(format!(
-        "{structs}
+        "{f16_preamble}
+{structs}
 
 override WG_SIZE: u32 = {workgroup_size}u;
 
@@ -4258,6 +4308,8 @@ var<storage, read_write> output_items: OutputBuffer;
 @group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(3)
 var<storage, read> dummy_items: DummyBuffer;
 
+{vec3_narrow}
+
 @compute @workgroup_size(WG_SIZE)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
   let index = global_id.x;
@@ -4265,15 +4317,17 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
   if (index >= dispatch_config.item_count) {{
     return;
   }}
-  output_items.values[index] = input_items.values[index];
+  output_items.values[index] = narrow_vec3(input_items.values[index]);
 }}
 "
     ))
 }
 
+#[cfg(test)]
 fn temporal_resolve_shader_source(
     contract: &TemporalResolvePassContract,
     workgroup_size: u32,
+    shader_f16_enabled: bool,
 ) -> Result<String, PresentationExecError> {
     let structs = emit_wgsl_structs(&[
         crate::query_exec::wgsl::codegen::wgsl_dispatch_config_abi(),
@@ -4281,8 +4335,11 @@ fn temporal_resolve_shader_source(
     ])?;
     let history_weight = contract.history_weight_numerator as f32
         / contract.history_weight_denominator.max(1) as f32;
+    let f16_preamble = wgsl_shader_f16_preamble(shader_f16_enabled);
+    let vec3_narrow = wgsl_vec3_narrow_helper(shader_f16_enabled);
     Ok(format!(
-        "{structs}
+        "{f16_preamble}
+{structs}
 
 override WG_SIZE: u32 = {workgroup_size}u;
 
@@ -4308,6 +4365,8 @@ var<storage, read_write> output_items: OutputBuffer;
 @group({GPU_RUNTIME_PASS_BIND_GROUP_INDEX}) @binding(3)
 var<storage, read> dummy_items: DummyBuffer;
 
+{vec3_narrow}
+
 fn clamp_vec3(value: vec3<f32>, min_value: vec3<f32>, max_value: vec3<f32>) -> vec3<f32> {{
   return vec3<f32>(
     clamp(value.x, min_value.x, max_value.x),
@@ -4326,13 +4385,39 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
   let input = input_items.values[index];
   if (input.use_history != 0u) {{
     let clamped_history = clamp_vec3(input.history_color, input.clamp_min, input.clamp_max);
-    output_items.values[index] = mix(input.current_color, clamped_history, vec3<f32>({history_weight}));
+    output_items.values[index] =
+      narrow_vec3(mix(input.current_color, clamped_history, vec3<f32>({history_weight})));
   }} else {{
-    output_items.values[index] = input.current_color;
+    output_items.values[index] = narrow_vec3(input.current_color);
   }}
 }}
 "
     ))
+}
+
+fn wgsl_shader_f16_preamble(shader_f16_enabled: bool) -> &'static str {
+    if shader_f16_enabled {
+        "enable f16;"
+    } else {
+        ""
+    }
+}
+
+fn wgsl_vec3_narrow_helper(shader_f16_enabled: bool) -> &'static str {
+    if shader_f16_enabled {
+        r#"
+fn narrow_vec3(value: vec3<f32>) -> vec3<f32> {
+  let narrowed = vec3<f16>(value);
+  return vec3<f32>(narrowed);
+}
+"#
+    } else {
+        r#"
+fn narrow_vec3(value: vec3<f32>) -> vec3<f32> {
+  return value;
+}
+"#
+    }
 }
 
 fn emit_wgsl_structs(roots: &[PortableAbiType]) -> Result<String, PresentationExecError> {
@@ -4430,8 +4515,8 @@ mod tests {
         ];
         let mut gpu_runtime = GpuRuntimeMetrics::default();
 
-        let dispatch = dispatch_linear_shader(
-            &copy_vec3_shader_source(64).expect("copy vec3 shader"),
+        let dispatch = legacy_test_only_dispatch_linear_shader(
+            &copy_vec3_shader_source(64, false).expect("copy vec3 shader"),
             &PortableAbiType::Vec3,
             &input_values,
             &layout,
@@ -4490,8 +4575,8 @@ mod tests {
         ];
         let mut gpu_runtime = GpuRuntimeMetrics::default();
 
-        let dispatch = dispatch_linear_shader_with_chunk_limit(
-            &copy_vec3_shader_source(64).expect("copy vec3 shader"),
+        let dispatch = legacy_test_only_dispatch_linear_shader_with_chunk_limit(
+            &copy_vec3_shader_source(64, false).expect("copy vec3 shader"),
             &PortableAbiType::Vec3,
             &input_values,
             &layout,

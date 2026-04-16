@@ -39,9 +39,9 @@ use crate::world_identity::SnapshotIdentityReport;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use smol_str::SmolStr;
 use std::borrow::Cow;
-#[cfg(test)]
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::env;
 use std::sync::{Arc, Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
@@ -51,6 +51,41 @@ const QUERY_WGSL_ACCEL_FLAG_HAS_BOUNDS: u32 = 2;
 const QUERY_WGSL_OBSERVABILITY_U32S: usize = 18;
 
 pub(crate) type NativeWgpuContext = GpuRuntimeContext;
+
+thread_local! {
+    static SHADER_F16_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+pub struct ShaderF16OverrideGuard {
+    previous: Option<bool>,
+}
+
+impl Drop for ShaderF16OverrideGuard {
+    fn drop(&mut self) {
+        SHADER_F16_OVERRIDE.with(|cell| cell.set(self.previous));
+    }
+}
+
+pub fn override_shader_f16_for_current_thread(enabled: Option<bool>) -> ShaderF16OverrideGuard {
+    let previous = SHADER_F16_OVERRIDE.with(|cell| {
+        let previous = cell.get();
+        cell.set(enabled);
+        previous
+    });
+    ShaderF16OverrideGuard { previous }
+}
+
+pub fn clear_native_wgsl_test_caches() {
+    use crate::gpu_runtime::clear_shared_resident_scene_caches_for_type;
+
+    clear_shared_resident_scene_caches_for_type::<WgslResidentScenePayload>();
+    if let Some(cache) = GENERATED_SHADER_MODULES.get() {
+        cache
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct GpuDispatchRequest {
@@ -79,6 +114,17 @@ pub(crate) struct GeneratedShaderModule {
     pub(crate) result_abi: PortableAbiType,
     pub(crate) shape_meta_values: Vec<KernelValue>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct GeneratedShaderCacheKey {
+    context_id: u64,
+    plan_signature: u64,
+    f16_enabled: bool,
+}
+
+static GENERATED_SHADER_MODULES: OnceLock<
+    Mutex<HashMap<GeneratedShaderCacheKey, GeneratedShaderModule>>,
+> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub(crate) struct NativeWgslBridgeConfig {
@@ -1441,9 +1487,19 @@ fn generate_compiled_shader(
     ctx: &crate::query_exec::context::QueryExecContext,
     plan: ShaderPlan<'_>,
 ) -> Result<GeneratedShaderModule, QueryExecError> {
+    let key = generated_shader_cache_key(ctx, &plan);
+    let cache = GENERATED_SHADER_MODULES.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(cached) = cache
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .get(&key)
+        .cloned()
+    {
+        return Ok(cached);
+    }
     let generated = generate_shader(ctx, plan)?;
     validate_generated_shader(&generated.source)?;
-    Ok(GeneratedShaderModule {
+    let compiled = GeneratedShaderModule {
         source: generated.source,
         workgroup_size: generated.workgroup_size,
         dispatch_abi: generated.dispatch_abi,
@@ -1453,7 +1509,24 @@ fn generate_compiled_shader(
         item_abi: generated.item_abi,
         result_abi: generated.result_abi,
         shape_meta_values: generated.shape_meta_values,
-    })
+    };
+    cache
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .insert(key, compiled.clone());
+    Ok(compiled)
+}
+
+fn generated_shader_cache_key(
+    ctx: &crate::query_exec::context::QueryExecContext,
+    plan: &ShaderPlan<'_>,
+) -> GeneratedShaderCacheKey {
+    let plan_debug = format!("{plan:?}");
+    GeneratedShaderCacheKey {
+        context_id: ctx.wgsl_shader_cache_context_id,
+        plan_signature: stable_semantic_id(&[plan_debug.as_bytes()]),
+        f16_enabled: requested_shader_f16_feature(),
+    }
 }
 
 fn world_acceleration_request_data(
@@ -1932,7 +2005,24 @@ fn shared_resident_scene_for_request(
     let cache =
         shared_resident_scene_cache_for_request::<WgslResidentScenePayload>(runtime_request);
     let mut guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
-    let key = GpuResidentSceneKey::new(snapshot, request.resident_scene_detail, layout_identity);
+    let key = GpuResidentSceneKey::new(snapshot, request.resident_scene_detail, layout_identity)
+        .with_selection_signature(stable_semantic_id(&[
+            b"query_exec::wgsl::resident_scene_scope::v1",
+            &request.resident_scene_selection_signature.to_le_bytes(),
+            &scene_fingerprint(
+                layout_identity.layout_signature,
+                &payloads.accel_node_bytes,
+                &payloads.accel_child_bytes,
+                &payloads.cache_brick_bytes,
+                &payloads.shape_meta_bytes,
+            )
+            .to_le_bytes(),
+            &world_shape_fingerprint(
+                layout_identity.layout_signature,
+                &payloads.world_shape_bytes,
+            )
+            .to_le_bytes(),
+        ]));
     if let Some(scene) = guard.get(&key) {
         return Ok(Some((scene, false)));
     }
@@ -2929,7 +3019,9 @@ fn dispatch_workgroups_x_for_items(item_count: u32, workgroup_size: u32) -> u32 
     item_count.div_ceil(workgroup_size.max(1))
 }
 
-pub(crate) fn readback_storage_buffer(
+// Legacy/test-only helper for CPU-bounce WGSL validation paths. Do not use this from the
+// timed resident frame path; use explicit readback scheduling instead.
+pub(crate) fn legacy_test_only_readback_storage_buffer(
     buffer: &wgpu::Buffer,
     size: u64,
 ) -> Result<Vec<u8>, QueryExecError> {
@@ -3386,12 +3478,26 @@ fn validate_generated_shader(source: &str) -> Result<(), QueryExecError> {
 }
 
 pub(crate) fn native_wgpu_context() -> Result<Arc<NativeWgpuContext>, QueryExecError> {
-    native_wgpu_context_for_limits(WgslLimitRequest::default())
+    native_wgpu_context_for_limits(WgslLimitRequest {
+        f16_enabled: requested_shader_f16_feature(),
+        ..WgslLimitRequest::default()
+    })
+}
+
+fn requested_shader_f16_feature() -> bool {
+    if let Some(enabled) = SHADER_F16_OVERRIDE.with(Cell::get) {
+        return enabled;
+    }
+    matches!(
+        env::var("WRELA_PRESENTATION_SHADER_F16"),
+        Ok(value) if matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
+    )
 }
 
 fn query_runtime_limit_request(
     required_request: WgslLimitRequest,
 ) -> Result<WgslLimitRequest, QueryExecError> {
+    let shader_f16_enabled = required_request.f16_enabled || requested_shader_f16_feature();
     let adapter_context = shared_wgpu_context(WgslLimitRequest::default()).map_err(|message| {
         QueryExecError::Unsupported {
             message: format!("native WGSL backend initialization failed: {message}"),
@@ -3434,6 +3540,7 @@ fn query_runtime_limit_request(
         max_storage_buffer_binding_size: adapter_context
             .adapter_limits
             .max_storage_buffer_binding_size,
+        f16_enabled: shader_f16_enabled,
         ..WgslLimitRequest::default()
     })
 }
@@ -3933,6 +4040,20 @@ domain accelerated_domain(world: RegionCapture) {
         match value {
             KernelValue::U32(value) => *value,
             other => panic!("expected U32, got {other:?}"),
+        }
+    }
+
+    fn expect_f32(value: &KernelValue) -> f32 {
+        match value {
+            KernelValue::F32(value) => *value,
+            other => panic!("expected F32, got {other:?}"),
+        }
+    }
+
+    fn expect_vec3(value: &KernelValue) -> [f32; 3] {
+        match value {
+            KernelValue::Vec3(value) => *value,
+            other => panic!("expected Vec3, got {other:?}"),
         }
     }
 
@@ -4444,5 +4565,87 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
         assert_eq!(expect_u32(field(payload, "entity_id")), 104);
         assert!(observability.acceleration_node_visits > 0);
         assert_eq!(observability.cache_budget_rejections, 0);
+    }
+
+    #[test]
+    fn candidate_span_restricts_world_distance_batches() {
+        let ctx = typed_query_module(accelerated_world_helper_fixture_source());
+        let region_name = SmolStr::new("accelerated_region");
+        let region_scene_id = stable_region_scene_capture_id(&region_name);
+        let domain = scene_domain(region_scene_id, 1, true, true, true);
+        let plan = lower_batch_query_plan(
+            &BatchQueryPlan::for_contract(
+                query_contract::SPATIAL_DISTANCE_BATCH_WORLD,
+                DispatchBackend::Wgsl,
+                None,
+            )
+            .expect("world distance batch plan"),
+        );
+        let generated = compile_batch_shader(&ctx, &plan).expect("world distance batch shader");
+        let mut request = build_batch_request_for_shader(
+            &ctx,
+            &plan,
+            &[
+                KernelValue::Capture(region_name.clone()),
+                domain,
+                KernelValue::Array(vec![super::point_query([5.4, 0.0, 0.0])]),
+            ],
+        )
+        .expect("world distance batch request");
+        let near_shape_index = ctx
+            .scene
+            .shapes
+            .keys()
+            .enumerate()
+            .find_map(|(index, shape)| (shape.as_str() == "near_shape").then_some(index as u32))
+            .expect("near_shape scene index");
+        request.candidate_spans = vec![0, 1, near_shape_index];
+
+        let (values, _) = dispatch_compiled_shader_with_observability(&generated, request)
+            .expect("candidate-span distance dispatch");
+
+        let result = expect_struct(values.first().expect("distance value"), "DistanceResult");
+        assert!(expect_f32(field(result, "distance")) > 10.0);
+    }
+
+    #[test]
+    fn candidate_span_restricts_world_normal_batches() {
+        let ctx = typed_query_module(accelerated_world_helper_fixture_source());
+        let region_name = SmolStr::new("accelerated_region");
+        let region_scene_id = stable_region_scene_capture_id(&region_name);
+        let domain = scene_domain(region_scene_id, 1, true, true, true);
+        let plan = lower_batch_query_plan(
+            &BatchQueryPlan::for_contract(
+                query_contract::SPATIAL_NORMAL_BATCH_WORLD,
+                DispatchBackend::Wgsl,
+                None,
+            )
+            .expect("world normal batch plan"),
+        );
+        let generated = compile_batch_shader(&ctx, &plan).expect("world normal batch shader");
+        let mut request = build_batch_request_for_shader(
+            &ctx,
+            &plan,
+            &[
+                KernelValue::Capture(region_name.clone()),
+                domain,
+                KernelValue::Array(vec![super::point_query([5.4, 0.0, 0.0])]),
+            ],
+        )
+        .expect("world normal batch request");
+        let near_shape_index = ctx
+            .scene
+            .shapes
+            .keys()
+            .enumerate()
+            .find_map(|(index, shape)| (shape.as_str() == "near_shape").then_some(index as u32))
+            .expect("near_shape scene index");
+        request.candidate_spans = vec![0, 1, near_shape_index];
+
+        let (values, _) = dispatch_compiled_shader_with_observability(&generated, request)
+            .expect("candidate-span normal dispatch");
+
+        let result = expect_struct(values.first().expect("normal value"), "NormalResult");
+        assert_eq!(expect_vec3(field(result, "normal")), [1.0, 0.0, 0.0]);
     }
 }

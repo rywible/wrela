@@ -185,6 +185,16 @@ pub struct CollisionReuseMetrics {
     pub diagnostics: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CollisionWgslMetrics {
+    pub dispatch_count: u32,
+    pub dispatch_items: u32,
+    pub candidate_reduction_effectiveness: f32,
+    pub selected_workgroup_size: u32,
+    pub resident_shared_snapshot_artifacts: u32,
+    pub cpu_certification_query_count: u32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CollisionExecutionTrace {
     pub contract_id: CollisionContractId,
@@ -209,6 +219,7 @@ pub struct CollisionExecutionTrace {
         Option<crate::collision_contract::CollisionContactNormalProvenance>,
     pub reuse_metrics: CollisionReuseMetrics,
     pub reuse_decisions: Vec<CollisionReuseDecision>,
+    pub wgsl_metrics: Option<CollisionWgslMetrics>,
 }
 
 #[derive(Debug, Error, Clone, PartialEq)]
@@ -847,7 +858,10 @@ impl CollisionPlan {
         ctx: &QueryExecContext,
         args: &[KernelValue],
     ) -> Result<(CollisionResult, CollisionExecutionTrace), CollisionExecError> {
-        crate::collision_exec::cpu::execute(self, ctx, args)
+        match self.backend {
+            DispatchBackend::Wgsl => crate::collision_exec::gpu::execute(self, ctx, args),
+            _ => crate::collision_exec::cpu::execute(self, ctx, args),
+        }
     }
 }
 

@@ -458,7 +458,7 @@ const COLLISION_CONTRACTS: [CollisionContractDescriptor; 5] = [
         output_record: "CollisionSweepResult",
         witness_schema: &SWEEP_WITNESS_SCHEMA,
         policy: CollisionExecutionPolicy::conservative(DispatchBackend::Cpu),
-        supported_backends: CollisionBackendSupport::cpu_only(),
+        supported_backends: CollisionBackendSupport::cpu_and_wgsl(),
     },
     CollisionContractDescriptor {
         id: COLLISION_TIME_OF_IMPACT_TRANSITION,
@@ -476,7 +476,7 @@ const COLLISION_CONTRACTS: [CollisionContractDescriptor; 5] = [
         output_record: "CollisionTimeOfImpactResult",
         witness_schema: &TIME_OF_IMPACT_WITNESS_SCHEMA,
         policy: CollisionExecutionPolicy::interval_bounded(DispatchBackend::Cpu),
-        supported_backends: CollisionBackendSupport::cpu_only(),
+        supported_backends: CollisionBackendSupport::cpu_and_wgsl(),
     },
 ];
 

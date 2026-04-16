@@ -458,6 +458,8 @@ struct CollisionExecutionTraceDump {
     contact_normal_provenance: Option<String>,
     reuse_metrics: CollisionReuseMetricsDump,
     reuse_decisions: Vec<CollisionReuseDecisionDump>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wgsl_metrics: Option<CollisionWgslMetricsDump>,
 }
 
 #[derive(Serialize)]
@@ -483,6 +485,16 @@ struct CollisionReuseDecisionDump {
     verdict: String,
     reason: String,
     detail: String,
+}
+
+#[derive(Serialize)]
+struct CollisionWgslMetricsDump {
+    dispatch_count: u32,
+    dispatch_items: u32,
+    candidate_reduction_effectiveness: f32,
+    selected_workgroup_size: u32,
+    resident_shared_snapshot_artifacts: u32,
+    cpu_certification_query_count: u32,
 }
 
 #[derive(Serialize)]
@@ -1970,6 +1982,14 @@ fn collision_execution_trace_dump(
                 detail: decision.detail.to_string(),
             })
             .collect(),
+        wgsl_metrics: trace.wgsl_metrics.map(|metrics| CollisionWgslMetricsDump {
+            dispatch_count: metrics.dispatch_count,
+            dispatch_items: metrics.dispatch_items,
+            candidate_reduction_effectiveness: metrics.candidate_reduction_effectiveness,
+            selected_workgroup_size: metrics.selected_workgroup_size,
+            resident_shared_snapshot_artifacts: metrics.resident_shared_snapshot_artifacts,
+            cpu_certification_query_count: metrics.cpu_certification_query_count,
+        }),
     }
 }
 
@@ -2033,6 +2053,17 @@ fn print_collision_run_human(report: &CollisionRunReport) {
         }
         if let Some(provenance) = &execution.trace.contact_normal_provenance {
             println!("    contact normal provenance: {}", provenance);
+        }
+        if let Some(metrics) = &execution.trace.wgsl_metrics {
+            println!(
+                "    wgsl: dispatch_count={} dispatch_items={} candidate_reduction_effectiveness={:.3} selected_workgroup_size={} resident_shared_snapshot_artifacts={} cpu_certification_query_count={}",
+                metrics.dispatch_count,
+                metrics.dispatch_items,
+                metrics.candidate_reduction_effectiveness,
+                metrics.selected_workgroup_size,
+                metrics.resident_shared_snapshot_artifacts,
+                metrics.cpu_certification_query_count
+            );
         }
         println!(
             "    reuse metrics: available={} consumed={} rejected={} unavailable={}",
@@ -2453,6 +2484,11 @@ struct PresentationDebugOptions {
     frames: u32,
 }
 
+pub(crate) const WRELA_PRESENTATION_DEBUG_WARM_QUALITY_PIPELINES_ENV: &str =
+    "WRELA_PRESENTATION_DEBUG_WARM_QUALITY_PIPELINES";
+pub(crate) const WRELA_PRESENTATION_DEBUG_ADAPTIVE_WINDOW_ENV: &str =
+    "WRELA_PRESENTATION_DEBUG_ADAPTIVE_WINDOW";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FrameAttachmentFormat {
     Json,
@@ -2596,6 +2632,7 @@ fn execute_presentation_debug_command(
         options.delta_seconds,
         query_backend,
         options.query_trace_solver_mode,
+        options.skip_export,
     ) {
         Ok(prepared) => prepared,
         Err(err) => {
@@ -2603,9 +2640,29 @@ fn execute_presentation_debug_command(
             std::process::exit(EXIT_USAGE);
         }
     };
+    if query_backend == wrela::query_plan::DispatchBackend::Wgsl
+        && env_flag_truthy(WRELA_PRESENTATION_DEBUG_WARM_QUALITY_PIPELINES_ENV)
+    {
+        if let Err(err) = warm_presentation_debug_quality_pipelines(
+            &bundle.query_ctx,
+            &prepared.plan,
+            &prepared.input,
+            prepared.camera,
+            prepared.viewport,
+            options.frame_index,
+            options.delta_seconds,
+        ) {
+            eprintln!("presentation warmup error: {err}");
+            std::process::exit(EXIT_CODEGEN);
+        }
+    }
+    let adaptive_window = env_usize_override(WRELA_PRESENTATION_DEBUG_ADAPTIVE_WINDOW_ENV);
     let mut session = wrela::presentation_exec::AdaptivePresentationSession::new(
         prepared.plan.frame.quality.clone(),
     );
+    if let Some(window) = adaptive_window {
+        session = session.with_window(window);
+    }
     let mut frame_cost_history = Vec::new();
     let mut result = None;
     for frame_offset in 0..options.frames.max(1) {
@@ -2732,6 +2789,58 @@ fn execute_presentation_debug_command(
         println!("  stats: {}", dump.stats_path);
         println!("{}", dump.stats.trim_end());
     }
+}
+
+fn env_flag_truthy(name: &str) -> bool {
+    env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn env_usize_override(name: &str) -> Option<usize> {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+}
+
+fn warm_presentation_debug_quality_pipelines(
+    ctx: &wrela::query_exec::QueryExecContext,
+    plan: &wrela::presentation_plan::PresentationPlan,
+    input: &wrela::presentation_exec::PresentationExecutionInput,
+    camera: wrela::presentation_contract::CanonicalCameraInput,
+    viewport: wrela::presentation_contract::CanonicalViewportInput,
+    frame_index: u32,
+    delta_seconds: f32,
+) -> Result<(), wrela::presentation_exec::PresentationExecError> {
+    let mut history = None;
+    let mut quality = plan.frame.quality.initial_state();
+    let mut warm_states = vec![quality.clone()];
+    while quality.step_down(&plan.frame.quality) {
+        warm_states.push(quality.clone());
+    }
+    for (offset, quality_override) in warm_states.into_iter().enumerate() {
+        let mut frame_input = input.clone();
+        frame_input.materialize_cpu_attachments = false;
+        frame_input.history = history.clone();
+        frame_input.quality_override = Some(quality_override);
+        frame_input.frame_state = wrela::presentation_exec::frame_state_value(
+            camera,
+            camera,
+            viewport,
+            [0.0, 0.0],
+            frame_index.saturating_add(offset as u32),
+            delta_seconds,
+        );
+        let result = wrela::presentation_exec::execute_plan(ctx, plan, &frame_input)?;
+        history = result.history;
+    }
+    Ok(())
 }
 
 fn execute_preview_command(
@@ -3188,6 +3297,7 @@ fn load_prepared_presentation_execution(
         delta_seconds,
         query_backend,
         query_trace_solver_mode,
+        false,
     ) {
         Ok(prepared) => prepared,
         Err(err) => {
@@ -3360,6 +3470,7 @@ fn prepare_presentation_execution(
     delta_seconds: f32,
     query_backend: wrela::query_plan::DispatchBackend,
     query_trace_solver_mode: wrela::query_exec::QueryTraceSolverMode,
+    disable_export_attachment: bool,
 ) -> Result<PreparedPresentationExecution, String> {
     let region_snapshot = query_ctx
         .region_snapshot_handle(&region_name)
@@ -3380,6 +3491,9 @@ fn prepare_presentation_execution(
         .as_ref()
         .ok_or_else(|| format!("selected domain `{domain_name}` is missing domain metadata"))?;
     plan.apply_participant_policy(domain_metadata.radiance, domain_metadata.media);
+    if disable_export_attachment {
+        strip_presentation_export_attachment(&mut plan);
+    }
     let validation_errors = plan.validate();
     if !validation_errors.is_empty() {
         return Err(format!(
@@ -3424,6 +3538,30 @@ fn prepare_presentation_execution(
         camera,
         viewport: wrela::presentation_contract::CanonicalViewportInput { width, height },
     })
+}
+
+fn strip_presentation_export_attachment(plan: &mut wrela::presentation_plan::PresentationPlan) {
+    let export_binding_ids = plan
+        .passes
+        .iter()
+        .filter_map(|pass| match &pass.kind {
+            wrela::presentation_plan::PresentationPassKind::ExportAttachment { .. } => {
+                pass.binding.clone()
+            }
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    plan.passes.retain(|pass| {
+        !matches!(
+            pass.kind,
+            wrela::presentation_plan::PresentationPassKind::ExportAttachment { .. }
+        )
+    });
+    if export_binding_ids.is_empty() {
+        return;
+    }
+    plan.bindings
+        .retain(|binding| !export_binding_ids.contains(&binding.id));
 }
 
 fn bind_presentation_function_params(
@@ -7024,6 +7162,7 @@ view sample_view(world: RegionCapture, camera: Camera) {
             1.0 / 60.0,
             wrela::query_plan::DispatchBackend::Auto,
             wrela::query_exec::QueryTraceSolverMode::Hybrid,
+            false,
         )
         .expect("prepared execution");
 
@@ -7042,5 +7181,93 @@ view sample_view(world: RegionCapture, camera: Camera) {
                 .iter()
                 .all(|attachment| attachment.name != "radiance" && attachment.name != "medium")
         );
+    }
+
+    #[test]
+    fn prepared_execution_strips_export_pass_when_disabled() {
+        let module = lower_inline_module(
+            r#"
+field exact distance scene_field(p: Vec3) -> F32 {
+    sphere(radius = 1.0)
+}
+
+material scene_material(hit: Hit3) -> Surface {
+    return diffuse(color = vec3(0.7, 0.7, 0.7))
+}
+
+shape scene_shape {
+    field = scene_field
+    material = scene_material
+}
+
+region scene_region() {
+    place scene = scene_shape
+}
+
+domain sample_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = false
+    media = false
+    max_distance = 6.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 64
+}
+
+view sample_view(world: RegionCapture, camera: Camera) {
+    domain = sample_domain(world = world)
+    viewport = viewport(width = 2, height = 2)
+}
+"#,
+        );
+        let (_type_errors, type_info) = hir::typeck::check_module_with_info(&module);
+        let query_ctx = wrela::query_exec::QueryExecContext::compile(&module, &type_info);
+        let view = function(&module, "sample_view");
+        let plan = wrela::presentation_plan::PresentationPlan::from_view_function(
+            view,
+            wrela::query_plan::DispatchBackend::Auto,
+        )
+        .expect("plan");
+
+        assert!(plan.export_binding().is_some());
+        assert!(plan.passes.iter().any(|pass| {
+            matches!(
+                pass.kind,
+                wrela::presentation_plan::PresentationPassKind::ExportAttachment { .. }
+            )
+        }));
+
+        let prepared = prepare_presentation_execution(
+            &module,
+            &query_ctx,
+            &plan,
+            view,
+            SmolStr::new("scene_region"),
+            SmolStr::new("sample_domain"),
+            wrela::presentation_contract::CanonicalCameraInput {
+                position: [0.0, 0.0, 3.0],
+                forward: [0.0, 0.0, -1.0],
+                up: [0.0, 1.0, 0.0],
+                vertical_fov_degrees: 46.0,
+            },
+            None,
+            None,
+            0,
+            1.0 / 60.0,
+            wrela::query_plan::DispatchBackend::Auto,
+            wrela::query_exec::QueryTraceSolverMode::Hybrid,
+            true,
+        )
+        .expect("prepared execution");
+
+        assert!(prepared.plan.validate().is_empty());
+        assert!(prepared.plan.export_binding().is_none());
+        assert!(!prepared.plan.passes.iter().any(|pass| {
+            matches!(
+                pass.kind,
+                wrela::presentation_plan::PresentationPassKind::ExportAttachment { .. }
+            )
+        }));
     }
 }

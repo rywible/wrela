@@ -17,7 +17,7 @@ use crate::query_contract::{
 };
 use crate::query_exec::QueryExecContext;
 use crate::query_exec::cpu::{DirectQueryOps, QueryExecError};
-use crate::query_plan::{NormalizedQueryBehavior, NormalizedQueryValuePath};
+use crate::query_plan::{NormalizedQueryBehavior, NormalizedQueryValuePath, PruningStrategy};
 use crate::query_solver::{RaySolverPlan, ray_solver_method_name};
 use crate::scene_ir::{
     FieldNodeKindSummary, FieldNodeRecord, RepeatKind, SceneOperatorPayload, SceneProfileExpr,
@@ -61,6 +61,7 @@ struct NormalizedShaderBehavior {
     requires_root_shape_lookup: bool,
     value_path: NormalizedQueryValuePath,
     ray_solver: Option<RaySolverPlan>,
+    world_support_lower_bound_pruning: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -73,10 +74,22 @@ struct CacheObservabilitySeed {
 
 impl NormalizedShaderBehavior {
     fn from_plan(plan: ShaderPlan<'_>) -> Result<Self, QueryExecError> {
-        let (normalized_behavior, ray_solver) = match plan {
-            ShaderPlan::Capture(plan) => (plan.normalized_behavior.clone(), None),
-            ShaderPlan::World(plan) => (plan.normalized_behavior.clone(), plan.ray_solver.clone()),
-            ShaderPlan::Batch(plan) => (plan.normalized_behavior.clone(), plan.ray_solver.clone()),
+        let (normalized_behavior, ray_solver, pruning_strategy) = match plan {
+            ShaderPlan::Capture(plan) => (
+                plan.normalized_behavior.clone(),
+                None,
+                PruningStrategy::None,
+            ),
+            ShaderPlan::World(plan) => (
+                plan.normalized_behavior.clone(),
+                plan.ray_solver.clone(),
+                plan.pruning_strategy,
+            ),
+            ShaderPlan::Batch(plan) => (
+                plan.normalized_behavior.clone(),
+                plan.ray_solver.clone(),
+                plan.pruning_strategy,
+            ),
         };
         let NormalizedQueryBehavior {
             cardinality,
@@ -89,6 +102,8 @@ impl NormalizedShaderBehavior {
             value_path,
             ..
         } = normalized_behavior;
+        let world_support_lower_bound_pruning =
+            matches!(pruning_strategy, PruningStrategy::SupportLowerBound);
         Ok(Self {
             cardinality,
             result_kind,
@@ -99,6 +114,7 @@ impl NormalizedShaderBehavior {
             requires_root_shape_lookup,
             value_path,
             ray_solver,
+            world_support_lower_bound_pruning,
         })
     }
 
@@ -1403,6 +1419,187 @@ fn emit_query_helpers(
 
     if matches!(
         behavior.value_path,
+        NormalizedQueryValuePath::WorldDistance
+            | NormalizedQueryValuePath::WorldNormal
+            | NormalizedQueryValuePath::WorldTrace
+            | NormalizedQueryValuePath::WorldOcclusion
+    ) {
+        writeln!(
+            out,
+            "fn wr_candidate_span_start(item_index: u32) -> u32 {{ return continuation_seeds.values[item_index * 2u]; }}"
+        )
+        .ok();
+        writeln!(
+            out,
+            "fn wr_candidate_span_len(item_index: u32) -> u32 {{ return continuation_seeds.values[item_index * 2u + 1u]; }}"
+        )
+        .ok();
+        writeln!(
+            out,
+            "fn wr_candidate_shape_word_offset() -> u32 {{ return dispatch_config.item_count * 2u; }}"
+        )
+        .ok();
+        writeln!(
+            out,
+            "fn wr_candidate_shape_word_count() -> u32 {{ let total_words = arrayLength(&continuation_seeds.values); let offset = wr_candidate_shape_word_offset(); if (total_words > offset) {{ return total_words - offset; }} return 0u; }}"
+        )
+        .ok();
+        writeln!(
+            out,
+            "fn wr_candidate_shape(candidate_index: u32) -> u32 {{ return continuation_seeds.values[wr_candidate_shape_word_offset() + candidate_index]; }}"
+        )
+        .ok();
+        writeln!(
+            out,
+            "fn world_distance_point_candidate_span(point: vec3<f32>, candidate_start: u32, candidate_len: u32) -> f32 {{"
+        )
+        .ok();
+        writeln!(
+            out,
+            "  if (candidate_start == 0xffffffffu) {{ return world_distance_point(point); }}"
+        )
+        .ok();
+        writeln!(
+            out,
+            "  let candidate_shape_count = wr_candidate_shape_word_count();"
+        )
+        .ok();
+        writeln!(
+            out,
+            "  if (candidate_len == 0u || candidate_start >= candidate_shape_count) {{ return world_distance_point(point); }}"
+        )
+        .ok();
+        writeln!(out, "  var best_distance: f32 = 1000000.0;").ok();
+        writeln!(
+            out,
+            "  let candidate_end = min(candidate_start + candidate_len, candidate_shape_count);"
+        )
+        .ok();
+        writeln!(
+            out,
+            "  for (var candidate_index: u32 = candidate_start; candidate_index < candidate_end; candidate_index = candidate_index + 1u) {{"
+        )
+        .ok();
+        writeln!(
+            out,
+            "    best_distance = min(best_distance, shape_distance_dispatch(wr_candidate_shape(candidate_index), point));"
+        )
+        .ok();
+        writeln!(out, "  }}").ok();
+        writeln!(out, "  return best_distance;").ok();
+        writeln!(out, "}}\n").ok();
+        writeln!(
+            out,
+            "fn world_normal_point_candidate_span(point: vec3<f32>, candidate_start: u32, candidate_len: u32) -> vec3<f32> {{"
+        )
+        .ok();
+        writeln!(
+            out,
+            "  if (candidate_start == 0xffffffffu) {{ return world_normal_point(point); }}"
+        )
+        .ok();
+        writeln!(
+            out,
+            "  let candidate_shape_count = wr_candidate_shape_word_count();"
+        )
+        .ok();
+        writeln!(
+            out,
+            "  if (candidate_len == 0u || candidate_start >= candidate_shape_count) {{ return world_normal_point(point); }}"
+        )
+        .ok();
+        writeln!(
+            out,
+            "  let candidate_end = min(candidate_start + candidate_len, candidate_shape_count);"
+        )
+        .ok();
+        writeln!(
+            out,
+            "  var best_shape = wr_candidate_shape(candidate_start);"
+        )
+        .ok();
+        writeln!(
+            out,
+            "  var best_distance = shape_distance_dispatch(best_shape, point);"
+        )
+        .ok();
+        writeln!(
+            out,
+            "  for (var candidate_index: u32 = candidate_start + 1u; candidate_index < candidate_end; candidate_index = candidate_index + 1u) {{"
+        )
+        .ok();
+        writeln!(
+            out,
+            "    let candidate_shape = wr_candidate_shape(candidate_index);"
+        )
+        .ok();
+        writeln!(
+            out,
+            "    let candidate_distance = shape_distance_dispatch(candidate_shape, point);"
+        )
+        .ok();
+        writeln!(
+            out,
+            "    if (candidate_distance < best_distance) {{ best_distance = candidate_distance; best_shape = candidate_shape; }}"
+        )
+        .ok();
+        writeln!(out, "  }}").ok();
+        writeln!(
+            out,
+            "  let sample = shape_normal_dispatch_sample(best_shape, point);"
+        )
+        .ok();
+        writeln!(
+            out,
+            "  if (sample.available != 0u) {{ return wr_normalize3(sample.normal); }}"
+        )
+        .ok();
+        writeln!(out, "  let eps: f32 = 0.001;").ok();
+        writeln!(
+            out,
+            "  let dx = shape_distance_dispatch(best_shape, point + vec3<f32>(eps, 0.0, 0.0)) - shape_distance_dispatch(best_shape, point - vec3<f32>(eps, 0.0, 0.0));"
+        )
+        .ok();
+        writeln!(
+            out,
+            "  let dy = shape_distance_dispatch(best_shape, point + vec3<f32>(0.0, eps, 0.0)) - shape_distance_dispatch(best_shape, point - vec3<f32>(0.0, eps, 0.0));"
+        )
+        .ok();
+        writeln!(
+            out,
+            "  let dz = shape_distance_dispatch(best_shape, point + vec3<f32>(0.0, 0.0, eps)) - shape_distance_dispatch(best_shape, point - vec3<f32>(0.0, 0.0, eps));"
+        )
+        .ok();
+        writeln!(out, "  return wr_normalize3(vec3<f32>(dx, dy, dz));").ok();
+        writeln!(out, "}}\n").ok();
+        writeln!(
+            out,
+            "fn wr_batch_world_distance(item_index: u32, point: vec3<f32>) -> f32 {{"
+        )
+        .ok();
+        writeln!(
+            out,
+            "  if (dispatch_config.candidate_spans_enabled != 0u) {{ return world_distance_point_candidate_span(point, wr_candidate_span_start(item_index), wr_candidate_span_len(item_index)); }}"
+        )
+        .ok();
+        writeln!(out, "  return world_distance_point(point);").ok();
+        writeln!(out, "}}\n").ok();
+        writeln!(
+            out,
+            "fn wr_batch_world_normal(item_index: u32, point: vec3<f32>) -> vec3<f32> {{"
+        )
+        .ok();
+        writeln!(
+            out,
+            "  if (dispatch_config.candidate_spans_enabled != 0u) {{ return world_normal_point_candidate_span(point, wr_candidate_span_start(item_index), wr_candidate_span_len(item_index)); }}"
+        )
+        .ok();
+        writeln!(out, "  return world_normal_point(point);").ok();
+        writeln!(out, "}}\n").ok();
+    }
+
+    if matches!(
+        behavior.value_path,
         NormalizedQueryValuePath::WorldTrace | NormalizedQueryValuePath::WorldOcclusion
     ) {
         writeln!(out, "fn world_trace_ray(ray: RayQuery) -> Hit3 {{").ok();
@@ -1503,31 +1700,6 @@ fn emit_query_helpers(
         writeln!(out, "  return best;").ok();
         writeln!(out, "}}\n").ok();
 
-        writeln!(
-            out,
-            "fn wr_candidate_span_start(item_index: u32) -> u32 {{ return continuation_seeds.values[item_index * 2u]; }}"
-        )
-        .ok();
-        writeln!(
-            out,
-            "fn wr_candidate_span_len(item_index: u32) -> u32 {{ return continuation_seeds.values[item_index * 2u + 1u]; }}"
-        )
-        .ok();
-        writeln!(
-            out,
-            "fn wr_candidate_shape_word_offset() -> u32 {{ return dispatch_config.item_count * 2u; }}"
-        )
-        .ok();
-        writeln!(
-            out,
-            "fn wr_candidate_shape_word_count() -> u32 {{ let total_words = arrayLength(&continuation_seeds.values); let offset = wr_candidate_shape_word_offset(); if (total_words > offset) {{ return total_words - offset; }} return 0u; }}"
-        )
-        .ok();
-        writeln!(
-            out,
-            "fn wr_candidate_shape(candidate_index: u32) -> u32 {{ return continuation_seeds.values[wr_candidate_shape_word_offset() + candidate_index]; }}"
-        )
-        .ok();
         writeln!(
             out,
             "fn world_trace_ray_candidate_span(ray: RayQuery, candidate_start: u32, candidate_len: u32) -> Hit3 {{"
@@ -1932,6 +2104,8 @@ fn emit_world_acceleration_helpers(
     let needs_radiance_helpers =
         matches!(behavior.value_path, NormalizedQueryValuePath::WorldRadiance);
     let needs_medium_helpers = matches!(behavior.value_path, NormalizedQueryValuePath::WorldMedium);
+    let point_support_pruning_enabled = behavior.world_support_lower_bound_pruning
+        && (needs_radiance_helpers || needs_medium_helpers);
     if !needs_distance_helpers && !needs_radiance_helpers && !needs_medium_helpers {
         return Ok(());
     }
@@ -1984,8 +2158,23 @@ fn emit_world_acceleration_helpers(
             "var dense_total = vec3<f32>(0.0, 0.0, 0.0);\nfor (var index: u32 = 0u; index < dispatch_config.shape_count; index = index + 1u) {\n  dense_total = dense_total + radiance_at_shape_dispatch(world_shapes.values[index], query.point, query.direction);\n}\nreturn dense_total;",
             "        ",
         );
+        let root_lower_bound = if point_support_pruning_enabled {
+            "  let root_lower_bound = wr_world_node_lower_bound(query.point, root.min, root.max, root.flags);\n  if (root_lower_bound > 0.0) {\n    atomicAdd(&observability_metrics.acceleration_pruned_nodes, 1u);\n    return vec3<f32>(0.0, 0.0, 0.0);\n  }\n"
+        } else {
+            ""
+        };
+        let traversal_prune = if point_support_pruning_enabled {
+            "    if (traversal.lower_bound > 0.0) {\n      atomicAdd(&observability_metrics.acceleration_pruned_nodes, 1u);\n      continue;\n    }\n"
+        } else {
+            ""
+        };
+        let child_push = if point_support_pruning_enabled {
+            "      let child_lower_bound = wr_world_node_lower_bound(query.point, child.min, child.max, child.flags);\n      if (child_lower_bound > 0.0) {\n        atomicAdd(&observability_metrics.acceleration_pruned_nodes, 1u);\n        continue;\n      }\n      if (!wr_push_world_node(child_index, child_lower_bound, &stack_len, &stack_nodes, &stack_bounds)) {\n"
+        } else {
+            "      if (!wr_push_world_node(child_index, wr_world_node_lower_bound(query.point, child.min, child.max, child.flags), &stack_len, &stack_nodes, &stack_bounds)) {\n"
+        };
         out.push_str(&format!(
-            "fn world_radiance_query_accel(query: PointDirectionQuery) -> vec3<f32> {{\n  if (dispatch_config.radiance_enabled == 0u) {{ return vec3<f32>(0.0, 0.0, 0.0); }}\n  if (dispatch_config.accel_node_count == 0u) {{\n{dense_radiance_scan}  }}\n  var stack_len: u32 = 0u;\n  var stack_nodes: array<u32, 128>;\n  var stack_bounds: array<f32, 128>;\n  let root = accel_nodes.values[dispatch_config.accel_root_index];\n  if (!wr_push_world_node(dispatch_config.accel_root_index, wr_world_node_lower_bound(query.point, root.min, root.max, root.flags), &stack_len, &stack_nodes, &stack_bounds)) {{\n{dense_radiance_scan}  }}\n  var total = vec3<f32>(0.0, 0.0, 0.0);\n  loop {{\n    if (stack_len == 0u) {{ break; }}\n    let traversal = wr_pop_best_world_node(&stack_len, &stack_nodes, &stack_bounds);\n    atomicAdd(&observability_metrics.acceleration_node_visits, 1u);\n    let node = accel_nodes.values[traversal.node_index];\n    if ((node.flags & WR_ACCEL_NODE_FLAG_LEAF) != 0u) {{\n      atomicAdd(&observability_metrics.shape_leaf_visits, 1u);\n      total = total + radiance_at_shape_dispatch(node.leaf_shape_index, query.point, query.direction);\n      continue;\n    }}\n    for (var child_offset: u32 = 0u; child_offset < node.child_len; child_offset = child_offset + 1u) {{\n      let child_index = accel_children.values[node.child_start + child_offset];\n      let child = accel_nodes.values[child_index];\n      if (!wr_push_world_node(child_index, wr_world_node_lower_bound(query.point, child.min, child.max, child.flags), &stack_len, &stack_nodes, &stack_bounds)) {{\n{dense_radiance_scan_in_child}      }}\n    }}\n  }}\n  return total;\n}}\n\n"
+            "fn world_radiance_query_accel(query: PointDirectionQuery) -> vec3<f32> {{\n  if (dispatch_config.radiance_enabled == 0u) {{ return vec3<f32>(0.0, 0.0, 0.0); }}\n  if (dispatch_config.accel_node_count == 0u) {{\n{dense_radiance_scan}  }}\n  var stack_len: u32 = 0u;\n  var stack_nodes: array<u32, 128>;\n  var stack_bounds: array<f32, 128>;\n  let root = accel_nodes.values[dispatch_config.accel_root_index];\n{root_lower_bound}  if (!wr_push_world_node(dispatch_config.accel_root_index, wr_world_node_lower_bound(query.point, root.min, root.max, root.flags), &stack_len, &stack_nodes, &stack_bounds)) {{\n{dense_radiance_scan}  }}\n  var total = vec3<f32>(0.0, 0.0, 0.0);\n  loop {{\n    if (stack_len == 0u) {{ break; }}\n    let traversal = wr_pop_best_world_node(&stack_len, &stack_nodes, &stack_bounds);\n    atomicAdd(&observability_metrics.acceleration_node_visits, 1u);\n{traversal_prune}    let node = accel_nodes.values[traversal.node_index];\n    if ((node.flags & WR_ACCEL_NODE_FLAG_LEAF) != 0u) {{\n      atomicAdd(&observability_metrics.shape_leaf_visits, 1u);\n      total = total + radiance_at_shape_dispatch(node.leaf_shape_index, query.point, query.direction);\n      continue;\n    }}\n    for (var child_offset: u32 = 0u; child_offset < node.child_len; child_offset = child_offset + 1u) {{\n      let child_index = accel_children.values[node.child_start + child_offset];\n      let child = accel_nodes.values[child_index];\n{child_push}{dense_radiance_scan_in_child}      }}\n    }}\n  }}\n  return total;\n}}\n\n"
         ));
     }
     if needs_medium_helpers {
@@ -1997,8 +2186,23 @@ fn emit_world_acceleration_helpers(
             "var dense_total = wr_default_medium();\nfor (var index: u32 = 0u; index < dispatch_config.shape_count; index = index + 1u) {\n  dense_total = wr_combine_medium_values(dense_total, medium_at_shape_dispatch(world_shapes.values[index], point.point));\n}\nreturn dense_total;",
             "        ",
         );
+        let root_lower_bound = if point_support_pruning_enabled {
+            "  let root_lower_bound = wr_world_node_lower_bound(point.point, root.min, root.max, root.flags);\n  if (root_lower_bound > 0.0) {\n    atomicAdd(&observability_metrics.acceleration_pruned_nodes, 1u);\n    return wr_default_medium();\n  }\n"
+        } else {
+            ""
+        };
+        let traversal_prune = if point_support_pruning_enabled {
+            "    if (traversal.lower_bound > 0.0) {\n      atomicAdd(&observability_metrics.acceleration_pruned_nodes, 1u);\n      continue;\n    }\n"
+        } else {
+            ""
+        };
+        let child_push = if point_support_pruning_enabled {
+            "      let child_lower_bound = wr_world_node_lower_bound(point.point, child.min, child.max, child.flags);\n      if (child_lower_bound > 0.0) {\n        atomicAdd(&observability_metrics.acceleration_pruned_nodes, 1u);\n        continue;\n      }\n      if (!wr_push_world_node(child_index, child_lower_bound, &stack_len, &stack_nodes, &stack_bounds)) {\n"
+        } else {
+            "      if (!wr_push_world_node(child_index, wr_world_node_lower_bound(point.point, child.min, child.max, child.flags), &stack_len, &stack_nodes, &stack_bounds)) {\n"
+        };
         out.push_str(&format!(
-            "fn world_medium_point_accel(point: PointQuery) -> Medium {{\n  if (dispatch_config.media_enabled == 0u) {{ return wr_default_medium(); }}\n  if (dispatch_config.accel_node_count == 0u) {{\n{dense_medium_scan}  }}\n  var stack_len: u32 = 0u;\n  var stack_nodes: array<u32, 128>;\n  var stack_bounds: array<f32, 128>;\n  let root = accel_nodes.values[dispatch_config.accel_root_index];\n  if (!wr_push_world_node(dispatch_config.accel_root_index, wr_world_node_lower_bound(point.point, root.min, root.max, root.flags), &stack_len, &stack_nodes, &stack_bounds)) {{\n{dense_medium_scan}  }}\n  var total = wr_default_medium();\n  loop {{\n    if (stack_len == 0u) {{ break; }}\n    let traversal = wr_pop_best_world_node(&stack_len, &stack_nodes, &stack_bounds);\n    atomicAdd(&observability_metrics.acceleration_node_visits, 1u);\n    let node = accel_nodes.values[traversal.node_index];\n    if ((node.flags & WR_ACCEL_NODE_FLAG_LEAF) != 0u) {{\n      atomicAdd(&observability_metrics.shape_leaf_visits, 1u);\n      total = wr_combine_medium_values(total, medium_at_shape_dispatch(node.leaf_shape_index, point.point));\n      continue;\n    }}\n    for (var child_offset: u32 = 0u; child_offset < node.child_len; child_offset = child_offset + 1u) {{\n      let child_index = accel_children.values[node.child_start + child_offset];\n      let child = accel_nodes.values[child_index];\n      if (!wr_push_world_node(child_index, wr_world_node_lower_bound(point.point, child.min, child.max, child.flags), &stack_len, &stack_nodes, &stack_bounds)) {{\n{dense_medium_scan_in_child}      }}\n    }}\n  }}\n  return total;\n}}\n\n"
+            "fn world_medium_point_accel(point: PointQuery) -> Medium {{\n  if (dispatch_config.media_enabled == 0u) {{ return wr_default_medium(); }}\n  if (dispatch_config.accel_node_count == 0u) {{\n{dense_medium_scan}  }}\n  var stack_len: u32 = 0u;\n  var stack_nodes: array<u32, 128>;\n  var stack_bounds: array<f32, 128>;\n  let root = accel_nodes.values[dispatch_config.accel_root_index];\n{root_lower_bound}  if (!wr_push_world_node(dispatch_config.accel_root_index, wr_world_node_lower_bound(point.point, root.min, root.max, root.flags), &stack_len, &stack_nodes, &stack_bounds)) {{\n{dense_medium_scan}  }}\n  var total = wr_default_medium();\n  loop {{\n    if (stack_len == 0u) {{ break; }}\n    let traversal = wr_pop_best_world_node(&stack_len, &stack_nodes, &stack_bounds);\n    atomicAdd(&observability_metrics.acceleration_node_visits, 1u);\n{traversal_prune}    let node = accel_nodes.values[traversal.node_index];\n    if ((node.flags & WR_ACCEL_NODE_FLAG_LEAF) != 0u) {{\n      atomicAdd(&observability_metrics.shape_leaf_visits, 1u);\n      total = wr_combine_medium_values(total, medium_at_shape_dispatch(node.leaf_shape_index, point.point));\n      continue;\n    }}\n    for (var child_offset: u32 = 0u; child_offset < node.child_len; child_offset = child_offset + 1u) {{\n      let child_index = accel_children.values[node.child_start + child_offset];\n      let child = accel_nodes.values[child_index];\n{child_push}{dense_medium_scan_in_child}      }}\n    }}\n  }}\n  return total;\n}}\n\n"
         ));
     }
     Ok(())
@@ -2398,6 +2602,12 @@ fn emit_main(
     let eval_expr = match behavior.cardinality {
         QueryCardinality::Scalar => behavior.scalar_eval_expr(&item_expr),
         QueryCardinality::Batch => match behavior.value_path {
+            NormalizedQueryValuePath::WorldDistance => {
+                format!("DistanceResult(wr_batch_world_distance(index, {item_expr}.point))")
+            }
+            NormalizedQueryValuePath::WorldNormal => {
+                format!("NormalResult(wr_batch_world_normal(index, {item_expr}.point))")
+            }
             NormalizedQueryValuePath::WorldTrace => {
                 format!("wr_batch_world_trace(index, {item_expr})")
             }

@@ -39,8 +39,18 @@ impl GpuQueryDispatcher {
         plan: &KernelBatchQueryPlan,
         args: &[KernelValue],
     ) -> Result<Self, QueryExecError> {
+        Self::from_batch_plan_with_candidate_spans(ctx, plan, args, Vec::new())
+    }
+
+    pub(crate) fn from_batch_plan_with_candidate_spans(
+        ctx: &QueryExecContext,
+        plan: &KernelBatchQueryPlan,
+        args: &[KernelValue],
+        candidate_spans: Vec<u32>,
+    ) -> Result<Self, QueryExecError> {
         let generated = compile_batch_shader(ctx, plan)?;
-        let request = build_batch_request_for_shader(ctx, plan, args)?;
+        let mut request = build_batch_request_for_shader(ctx, plan, args)?;
+        request.candidate_spans = candidate_spans;
         let item_abi = generated.item_abi.clone();
         Self::from_request(item_abi, request, generated)
     }

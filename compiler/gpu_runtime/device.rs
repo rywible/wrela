@@ -12,6 +12,7 @@ pub struct GpuLimitRequest {
     pub max_storage_buffers_per_shader_stage: u32,
     pub max_storage_buffer_binding_size: u64,
     pub timestamps_enabled: bool,
+    pub f16_enabled: bool,
 }
 
 impl Default for GpuLimitRequest {
@@ -22,6 +23,7 @@ impl Default for GpuLimitRequest {
             max_storage_buffer_binding_size: wgpu::Limits::downlevel_defaults()
                 .max_storage_buffer_binding_size,
             timestamps_enabled: false,
+            f16_enabled: false,
         }
     }
 }
@@ -127,6 +129,9 @@ fn requested_optional_features(
     let mut requested = wgpu::Features::empty();
     if request.timestamps_enabled && adapter_features.contains(timestamp_features) {
         requested |= timestamp_features;
+    }
+    if request.f16_enabled && adapter_features.contains(wgpu::Features::SHADER_F16) {
+        requested |= wgpu::Features::SHADER_F16;
     }
     requested
 }

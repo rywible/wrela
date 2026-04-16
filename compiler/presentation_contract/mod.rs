@@ -48,6 +48,87 @@ pub enum AttachmentClearPolicy {
     PreservePrevious,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AttachmentStorageKind {
+    Buffer,
+    Texture2d,
+}
+
+impl AttachmentStorageKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Buffer => "buffer",
+            Self::Texture2d => "texture2d",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AttachmentPrecision {
+    F32,
+    F16,
+}
+
+impl AttachmentPrecision {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::F32 => "f32",
+            Self::F16 => "f16",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AttachmentPolicy {
+    pub storage_kind: AttachmentStorageKind,
+    pub precision: AttachmentPrecision,
+    pub optional_precision: Option<AttachmentPrecision>,
+}
+
+impl AttachmentPolicy {
+    pub const fn new(storage_kind: AttachmentStorageKind, precision: AttachmentPrecision) -> Self {
+        Self {
+            storage_kind,
+            precision,
+            optional_precision: None,
+        }
+    }
+
+    pub const fn buffer_f32() -> Self {
+        Self::new(AttachmentStorageKind::Buffer, AttachmentPrecision::F32)
+    }
+
+    pub const fn with_optional_precision(
+        mut self,
+        optional_precision: AttachmentPrecision,
+    ) -> Self {
+        self.optional_precision = Some(optional_precision);
+        self
+    }
+
+    pub const fn buffer_f32_with_optional_f16() -> Self {
+        Self::buffer_f32().with_optional_precision(AttachmentPrecision::F16)
+    }
+
+    pub fn supports_precision(self, precision: AttachmentPrecision) -> bool {
+        self.precision == precision
+            || matches!(self.optional_precision, Some(value) if value == precision)
+    }
+
+    pub fn describe(self) -> String {
+        let mut description = format!(
+            "storage={} precision={}",
+            self.storage_kind.as_str(),
+            self.precision.as_str()
+        );
+        if let Some(optional_precision) = self.optional_precision {
+            description.push_str(" optional_precision=");
+            description.push_str(optional_precision.as_str());
+        }
+        description
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AttachmentElementSchema {
     NamedRecord(SmolStr),
@@ -512,6 +593,36 @@ impl LightingInputContract {
 }
 
 impl FrameAttachmentContract {
+    pub const fn policy(&self) -> AttachmentPolicy {
+        match self.kind {
+            FrameAttachmentKind::Radiance | FrameAttachmentKind::Color => {
+                AttachmentPolicy::buffer_f32_with_optional_f16()
+            }
+            FrameAttachmentKind::PrimaryHit
+            | FrameAttachmentKind::Depth
+            | FrameAttachmentKind::WorldNormal
+            | FrameAttachmentKind::Surface
+            | FrameAttachmentKind::Medium
+            | FrameAttachmentKind::Motion => AttachmentPolicy::buffer_f32(),
+        }
+    }
+
+    pub const fn storage_kind(&self) -> AttachmentStorageKind {
+        self.policy().storage_kind
+    }
+
+    pub const fn precision(&self) -> AttachmentPrecision {
+        self.policy().precision
+    }
+
+    pub fn policy_description(&self) -> String {
+        self.policy().describe()
+    }
+
+    pub fn supports_precision(&self, precision: AttachmentPrecision) -> bool {
+        self.policy().supports_precision(precision)
+    }
+
     pub fn primary_hit(name: impl Into<SmolStr>) -> Self {
         Self {
             name: name.into(),
@@ -1253,4 +1364,51 @@ fn normalize_or(value: [f32; 3], fallback: [f32; 3]) -> [f32; 3] {
     }
     let inv_len = len_sq.sqrt().recip();
     [value[0] * inv_len, value[1] * inv_len, value[2] * inv_len]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AttachmentPrecision, AttachmentStorageKind, FrameAttachmentContract};
+
+    #[test]
+    fn frame_attachment_constructors_make_attachment_policy_explicit() {
+        let attachments = [
+            FrameAttachmentContract::primary_hit("primary_hit"),
+            FrameAttachmentContract::depth("depth"),
+            FrameAttachmentContract::world_normal("world_normal"),
+            FrameAttachmentContract::surface("surface"),
+            FrameAttachmentContract::medium("medium"),
+            FrameAttachmentContract::motion("motion"),
+        ];
+
+        for attachment in attachments {
+            assert_eq!(attachment.storage_kind(), AttachmentStorageKind::Buffer);
+            assert_eq!(attachment.precision(), AttachmentPrecision::F32);
+            assert_eq!(
+                attachment.supports_precision(AttachmentPrecision::F16),
+                false
+            );
+            assert_eq!(
+                attachment.policy_description(),
+                "storage=buffer precision=f32"
+            );
+        }
+
+        let reduced_precision_candidates = [
+            FrameAttachmentContract::radiance("radiance"),
+            FrameAttachmentContract::transient_color("color"),
+            FrameAttachmentContract::history_color("history_color", 0),
+            FrameAttachmentContract::exported_color("final_color"),
+        ];
+
+        for attachment in reduced_precision_candidates {
+            assert_eq!(attachment.storage_kind(), AttachmentStorageKind::Buffer);
+            assert_eq!(attachment.precision(), AttachmentPrecision::F32);
+            assert!(attachment.supports_precision(AttachmentPrecision::F16));
+            assert_eq!(
+                attachment.policy_description(),
+                "storage=buffer precision=f32 optional_precision=f16"
+            );
+        }
+    }
 }

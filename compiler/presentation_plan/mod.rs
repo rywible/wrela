@@ -239,7 +239,7 @@ impl PresentationPlan {
             metadata,
             default_backend,
             ViewContract::canonical(),
-            false,
+            true,
             true,
         )
     }
@@ -1334,7 +1334,7 @@ pub fn validate_plan(plan: &PresentationPlan) -> Vec<PresentationPlanValidationE
         .iter()
         .map(|binding| binding.id.as_str().to_string())
         .collect::<BTreeSet<_>>();
-    for pass in &plan.passes {
+    for (_pass_index, pass) in plan.passes.iter().enumerate() {
         if let Some(binding) = &pass.binding
             && !binding_ids.contains(binding.as_str())
         {
@@ -1713,7 +1713,7 @@ pub fn validate_plan(plan: &PresentationPlan) -> Vec<PresentationPlanValidationE
             _ => {}
         }
     }
-    for pass in &plan.passes {
+    for (pass_index, pass) in plan.passes.iter().enumerate() {
         match &pass.kind {
             PresentationPassKind::PrimaryVisibility { contract } => {
                 if contract.query_contract != crate::query_contract::SPATIAL_NEAREST_BATCH_WORLD {
@@ -1911,6 +1911,12 @@ pub fn validate_plan(plan: &PresentationPlan) -> Vec<PresentationPlanValidationE
                     errors.push(validation_error(format!(
                         "export pass '{}' references missing attachment '{}'",
                         pass.id, attachment
+                    )));
+                }
+                if pass_index + 1 != plan.passes.len() {
+                    errors.push(validation_error(format!(
+                        "export pass '{}' must be terminal in the framegraph",
+                        pass.id
                     )));
                 }
             }

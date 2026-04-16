@@ -1,5 +1,5 @@
 use crate::collision_contract::CollisionRayInput;
-use crate::collision_plan::CollisionExecError;
+use crate::collision_plan::{CollisionExecError, CollisionExecutionTrace, CollisionPlan};
 use crate::gpu_runtime::{GpuPassProfiler, GpuRuntimeMetrics};
 use crate::kernel::{KernelValue, lower_batch_query_plan};
 use crate::portable::portable_abi_decode_slice;
@@ -12,13 +12,27 @@ use crate::query_plan::{
 };
 use smol_str::SmolStr;
 
+pub fn execute(
+    plan: &CollisionPlan,
+    ctx: &QueryExecContext,
+    args: &[KernelValue],
+) -> Result<
+    (
+        crate::collision_contract::CollisionResult,
+        CollisionExecutionTrace,
+    ),
+    CollisionExecError,
+> {
+    crate::collision_exec::cpu::execute(plan, ctx, args)
+}
+
 pub(crate) fn prepare_batched_point_distance_dispatch(
     ctx: &QueryExecContext,
     capture: KernelValue,
     domain: KernelValue,
     points: &[KernelValue],
 ) -> Result<GpuQueryDispatcher, CollisionExecError> {
-    prepare_world_batch_dispatch(ctx, BatchQueryKind::Distance, capture, domain, points)
+    prepare_world_batch_dispatch(ctx, BatchQueryKind::Distance, capture, domain, points, &[])
 }
 
 pub(crate) fn prepare_batched_point_normal_dispatch(
@@ -27,7 +41,7 @@ pub(crate) fn prepare_batched_point_normal_dispatch(
     domain: KernelValue,
     points: &[KernelValue],
 ) -> Result<GpuQueryDispatcher, CollisionExecError> {
-    prepare_world_batch_dispatch(ctx, BatchQueryKind::Normal, capture, domain, points)
+    prepare_world_batch_dispatch(ctx, BatchQueryKind::Normal, capture, domain, points, &[])
 }
 
 pub(crate) fn prepare_batched_ray_trace_dispatch(
@@ -36,7 +50,7 @@ pub(crate) fn prepare_batched_ray_trace_dispatch(
     domain: KernelValue,
     rays: &[KernelValue],
 ) -> Result<GpuQueryDispatcher, CollisionExecError> {
-    prepare_world_batch_dispatch(ctx, BatchQueryKind::Trace, capture, domain, rays)
+    prepare_world_batch_dispatch(ctx, BatchQueryKind::Trace, capture, domain, rays, &[])
 }
 
 fn prepare_world_batch_dispatch(
@@ -45,6 +59,7 @@ fn prepare_world_batch_dispatch(
     capture: KernelValue,
     domain: KernelValue,
     items: &[KernelValue],
+    candidates: &[SmolStr],
 ) -> Result<GpuQueryDispatcher, CollisionExecError> {
     let contract_id = batch_query_contract_id(kind, CaptureKind::Region).ok_or_else(|| {
         CollisionExecError::ExecutionUnavailable {
@@ -56,10 +71,12 @@ fn prepare_world_batch_dispatch(
             message: message.to_string(),
         })?;
     let lowered = lower_batch_query_plan(&batch_plan);
-    GpuQueryDispatcher::from_batch_plan(
+    let candidate_spans = pack_candidate_spans(ctx, candidates, items.len())?;
+    GpuQueryDispatcher::from_batch_plan_with_candidate_spans(
         ctx,
         &lowered,
         &[capture, domain, KernelValue::Array(items.to_vec())],
+        candidate_spans,
     )
     .map_err(|err| CollisionExecError::ExecutionUnavailable {
         message: err.to_string(),
@@ -93,6 +110,46 @@ pub(crate) fn execute_batched_point_distance_query(
     Ok((distance, observability))
 }
 
+pub(crate) fn execute_batched_point_distance_queries(
+    ctx: &QueryExecContext,
+    capture: KernelValue,
+    domain: KernelValue,
+    points: &[[f32; 3]],
+) -> Result<(Vec<KernelValue>, QueryExecutionObservability), CollisionExecError> {
+    let items = points
+        .iter()
+        .copied()
+        .map(point_query_value)
+        .collect::<Vec<_>>();
+    let (values, observability) = execute_dispatch(prepare_batched_point_distance_dispatch(
+        ctx, capture, domain, &items,
+    )?)?;
+    Ok((extract_distance_values(values)?, observability))
+}
+
+pub(crate) fn execute_batched_point_distance_queries_with_candidates(
+    ctx: &QueryExecContext,
+    capture: KernelValue,
+    domain: KernelValue,
+    points: &[[f32; 3]],
+    candidates: &[SmolStr],
+) -> Result<(Vec<KernelValue>, QueryExecutionObservability), CollisionExecError> {
+    let items = points
+        .iter()
+        .copied()
+        .map(point_query_value)
+        .collect::<Vec<_>>();
+    let (values, observability) = execute_dispatch(prepare_world_batch_dispatch(
+        ctx,
+        BatchQueryKind::Distance,
+        capture,
+        domain,
+        &items,
+        candidates,
+    )?)?;
+    Ok((extract_distance_values(values)?, observability))
+}
+
 pub(crate) fn execute_batched_point_normal_query(
     ctx: &QueryExecContext,
     capture: KernelValue,
@@ -121,6 +178,46 @@ pub(crate) fn execute_batched_point_normal_query(
     Ok((normal, observability))
 }
 
+pub(crate) fn execute_batched_point_normal_queries(
+    ctx: &QueryExecContext,
+    capture: KernelValue,
+    domain: KernelValue,
+    points: &[[f32; 3]],
+) -> Result<(Vec<KernelValue>, QueryExecutionObservability), CollisionExecError> {
+    let items = points
+        .iter()
+        .copied()
+        .map(point_query_value)
+        .collect::<Vec<_>>();
+    let (values, observability) = execute_dispatch(prepare_batched_point_normal_dispatch(
+        ctx, capture, domain, &items,
+    )?)?;
+    Ok((extract_normal_values(values)?, observability))
+}
+
+pub(crate) fn execute_batched_point_normal_queries_with_candidates(
+    ctx: &QueryExecContext,
+    capture: KernelValue,
+    domain: KernelValue,
+    points: &[[f32; 3]],
+    candidates: &[SmolStr],
+) -> Result<(Vec<KernelValue>, QueryExecutionObservability), CollisionExecError> {
+    let items = points
+        .iter()
+        .copied()
+        .map(point_query_value)
+        .collect::<Vec<_>>();
+    let (values, observability) = execute_dispatch(prepare_world_batch_dispatch(
+        ctx,
+        BatchQueryKind::Normal,
+        capture,
+        domain,
+        &items,
+        candidates,
+    )?)?;
+    Ok((extract_normal_values(values)?, observability))
+}
+
 pub(crate) fn execute_batched_ray_trace_query(
     ctx: &QueryExecContext,
     capture: KernelValue,
@@ -133,6 +230,99 @@ pub(crate) fn execute_batched_ray_trace_query(
         domain,
         &[ray_query_value(ray)],
     )?)
+}
+
+pub(crate) fn execute_batched_ray_trace_query_with_candidates(
+    ctx: &QueryExecContext,
+    capture: KernelValue,
+    domain: KernelValue,
+    ray: CollisionRayInput,
+    candidates: &[SmolStr],
+) -> Result<(KernelValue, QueryExecutionObservability), CollisionExecError> {
+    execute_single_result_dispatch(prepare_world_batch_dispatch(
+        ctx,
+        BatchQueryKind::Trace,
+        capture,
+        domain,
+        &[ray_query_value(ray)],
+        candidates,
+    )?)
+}
+
+fn pack_candidate_spans(
+    ctx: &QueryExecContext,
+    candidates: &[SmolStr],
+    item_count: usize,
+) -> Result<Vec<u32>, CollisionExecError> {
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let candidate_indices = candidates
+        .iter()
+        .map(|candidate| shape_index(ctx, candidate))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut spans = Vec::with_capacity(item_count.saturating_mul(2) + candidate_indices.len());
+    for _ in 0..item_count {
+        spans.push(0);
+        spans.push(candidate_indices.len() as u32);
+    }
+    spans.extend(candidate_indices);
+    Ok(spans)
+}
+
+fn shape_index(ctx: &QueryExecContext, name: &SmolStr) -> Result<u32, CollisionExecError> {
+    ctx.scene
+        .shapes
+        .keys()
+        .enumerate()
+        .find_map(|(index, candidate)| (candidate == name).then_some(index as u32))
+        .ok_or_else(|| CollisionExecError::ExecutionUnavailable {
+            message: format!("collision WGSL candidate '{name}' is not present in the scene index"),
+        })
+}
+
+fn extract_distance_values(
+    values: Vec<KernelValue>,
+) -> Result<Vec<KernelValue>, CollisionExecError> {
+    values.into_iter().map(extract_distance_value).collect()
+}
+
+fn extract_distance_value(value: KernelValue) -> Result<KernelValue, CollisionExecError> {
+    match value {
+        KernelValue::Struct(result) => result
+            .fields
+            .into_iter()
+            .find(|(name, _)| name.as_str() == "distance")
+            .map(|(_, value)| value)
+            .ok_or_else(|| CollisionExecError::ExecutionUnavailable {
+                message: "collision WGSL distance result is missing a distance field".to_string(),
+            }),
+        KernelValue::F32(_) => Ok(value),
+        other => Err(CollisionExecError::ExecutionUnavailable {
+            message: format!("collision WGSL distance result has unexpected shape: {other:?}"),
+        }),
+    }
+}
+
+fn extract_normal_values(values: Vec<KernelValue>) -> Result<Vec<KernelValue>, CollisionExecError> {
+    values.into_iter().map(extract_normal_value).collect()
+}
+
+fn extract_normal_value(value: KernelValue) -> Result<KernelValue, CollisionExecError> {
+    match value {
+        KernelValue::Struct(result) => result
+            .fields
+            .into_iter()
+            .find(|(name, _)| name.as_str() == "normal")
+            .map(|(_, value)| value)
+            .ok_or_else(|| CollisionExecError::ExecutionUnavailable {
+                message: "collision WGSL normal result is missing a normal field".to_string(),
+            }),
+        KernelValue::Vec3(_) => Ok(value),
+        other => Err(CollisionExecError::ExecutionUnavailable {
+            message: format!("collision WGSL normal result has unexpected shape: {other:?}"),
+        }),
+    }
 }
 
 fn execute_single_result_dispatch(

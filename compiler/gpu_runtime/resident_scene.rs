@@ -136,12 +136,16 @@ impl<P> GpuResidentSceneCache<P> {
     }
 }
 
+fn resident_scene_registry() -> &'static Mutex<HashMap<(GpuLimitRequest, &'static str), usize>> {
+    static REQUEST_CACHES: OnceLock<Mutex<HashMap<(GpuLimitRequest, &'static str), usize>>> =
+        OnceLock::new();
+    REQUEST_CACHES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 pub fn shared_resident_scene_cache_for_request<P: 'static>(
     request: GpuLimitRequest,
 ) -> &'static Mutex<GpuResidentSceneCache<P>> {
-    static REQUEST_CACHES: OnceLock<Mutex<HashMap<(GpuLimitRequest, &'static str), usize>>> =
-        OnceLock::new();
-    let registry = REQUEST_CACHES.get_or_init(|| Mutex::new(HashMap::new()));
+    let registry = resident_scene_registry();
     let type_name = std::any::type_name::<P>();
     let mut guard = registry.lock().unwrap_or_else(|poison| poison.into_inner());
     let ptr = guard.entry((request, type_name)).or_insert_with(|| {
@@ -149,6 +153,20 @@ pub fn shared_resident_scene_cache_for_request<P: 'static>(
         Box::into_raw(boxed) as usize
     });
     unsafe { &*(*ptr as *const Mutex<GpuResidentSceneCache<P>>) }
+}
+
+pub fn clear_shared_resident_scene_caches_for_type<P: 'static>() {
+    let registry = resident_scene_registry();
+    let type_name = std::any::type_name::<P>();
+    let guard = registry.lock().unwrap_or_else(|poison| poison.into_inner());
+    for ((_, cached_type_name), ptr) in guard.iter() {
+        if *cached_type_name != type_name {
+            continue;
+        }
+        let cache = unsafe { &*(*ptr as *const Mutex<GpuResidentSceneCache<P>>) };
+        let mut cache_guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
+        cache_guard.clear();
+    }
 }
 
 impl<P> Default for GpuResidentSceneCache<P> {

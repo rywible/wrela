@@ -160,6 +160,10 @@ pub fn selected_wgsl_workgroup_size() -> Result<u32, QueryExecError> {
     select_query_wgsl_workgroup_size(&native.adapter_limits)
 }
 
+pub fn clear_native_wgsl_test_caches() {
+    wgsl::clear_native_wgsl_test_caches();
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchQueryExecutionTrace {
     pub contract_id: QueryContractId,

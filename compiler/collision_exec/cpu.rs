@@ -15,8 +15,8 @@ use crate::collision_contract::{
 use crate::collision_plan::{
     CollisionArtifactBinding, CollisionExecError, CollisionExecutionTrace, CollisionPass,
     CollisionPassKind, CollisionPlan, CollisionReuseDecision, CollisionReuseMetrics,
-    CollisionReuseReason, CollisionReuseVerdict, collision_artifact_kind_name,
-    collision_reuse_reason_name, collision_reuse_verdict_name,
+    CollisionReuseReason, CollisionReuseVerdict, CollisionWgslMetrics,
+    collision_artifact_kind_name, collision_reuse_reason_name, collision_reuse_verdict_name,
 };
 use crate::execution_policy::QueryExecutionPolicy;
 use crate::kernel::{
@@ -213,6 +213,8 @@ pub fn execute_with_store(
     let mut fallback_count = 0u32;
     let mut contact_normal_provenance = None;
     let mut values = BTreeMap::<SmolStr, CollisionMaterializedValue>::new();
+    let mut wgsl_metrics =
+        matches!(backend, DispatchBackend::Wgsl).then(CollisionWgslMetrics::default);
 
     for pass in &plan.passes {
         match &pass.kind {
@@ -361,6 +363,7 @@ pub fn execute_with_store(
                     *distance_contract,
                     *normal_contract,
                     &mut executed_query_contracts,
+                    wgsl_metrics.as_mut(),
                 )?;
                 contact_normal_provenance = provenance;
                 let signed_distance = expect_f32(&distance)?;
@@ -457,6 +460,7 @@ pub fn execute_with_store(
                         &trace_capture_plan,
                         ray,
                         &mut executed_query_contracts,
+                        wgsl_metrics.as_mut(),
                     )?;
                     let hit_ref = expect_struct(&hit, "Hit3")?;
                     let hit_flag = expect_bool(field(hit_ref, "hit")?)?;
@@ -558,6 +562,7 @@ pub fn execute_with_store(
                     *distance_contract,
                     *normal_contract,
                     &mut executed_query_contracts,
+                    wgsl_metrics.as_mut(),
                 )?;
                 contact_normal_provenance = provenance;
                 let center_distance = expect_f32(&distance)?;
@@ -665,6 +670,7 @@ pub fn execute_with_store(
                     seed,
                     broadphase.candidate_shape_names.as_slice(),
                     &mut executed_query_contracts,
+                    wgsl_metrics.as_mut(),
                 )?;
                 interval_subdivisions = interval_subdivisions.max(outcome.interval_subdivisions);
                 interval_refinements = interval_refinements.max(outcome.interval_refinements);
@@ -781,6 +787,7 @@ pub fn execute_with_store(
                     seed,
                     broadphase.candidate_shape_names.as_slice(),
                     &mut executed_query_contracts,
+                    wgsl_metrics.as_mut(),
                 )?;
                 interval_subdivisions = interval_subdivisions.max(outcome.interval_subdivisions);
                 interval_refinements = interval_refinements.max(outcome.interval_refinements);
@@ -869,6 +876,28 @@ pub fn execute_with_store(
         CollisionMaterializedValue::TimeOfImpact(value) => CollisionResult::TimeOfImpact(value),
     };
 
+    if let Some(metrics) = wgsl_metrics.as_mut() {
+        metrics.candidate_reduction_effectiveness = collision_candidate_reduction_effectiveness(
+            broadphase_candidate_count,
+            broadphase_rejected_candidate_count,
+        );
+        metrics.cpu_certification_query_count = metrics.cpu_certification_query_count.max(
+            executed_query_contracts
+                .iter()
+                .filter(|contract| {
+                    matches!(
+                        **contract,
+                        query_contract::SPATIAL_DISTANCE_CAPTURE_SHAPE
+                            | query_contract::SPATIAL_NORMAL_CAPTURE_SHAPE
+                            | query_contract::SPATIAL_DISTANCE_WORLD
+                            | query_contract::SPATIAL_NORMAL_WORLD
+                            | query_contract::SPATIAL_TRACE_CAPTURE_SHAPE
+                    )
+                })
+                .count() as u32,
+        );
+    }
+
     Ok((
         result,
         CollisionExecutionTrace {
@@ -893,6 +922,7 @@ pub fn execute_with_store(
             contact_normal_provenance,
             reuse_metrics,
             reuse_decisions,
+            wgsl_metrics,
         },
     ))
 }
@@ -1036,6 +1066,7 @@ fn candidate_limited_point_query(
     world_distance_contract: QueryContractId,
     world_normal_contract: QueryContractId,
     executed_query_contracts: &mut Vec<QueryContractId>,
+    mut wgsl_metrics: Option<&mut CollisionWgslMetrics>,
 ) -> Result<
     (
         KernelValue,
@@ -1046,21 +1077,44 @@ fn candidate_limited_point_query(
     CollisionExecError,
 > {
     if matches!(backend, DispatchBackend::Wgsl) {
-        let (distance, _) = crate::collision_exec::gpu::execute_batched_point_distance_query(
-            ctx,
-            capture.clone(),
-            domain.clone(),
-            point,
-        )?;
-        executed_query_contracts.push(query_contract::SPATIAL_DISTANCE_BATCH_WORLD);
-        let (normal, normal_observability) =
-            crate::collision_exec::gpu::execute_batched_point_normal_query(
+        let (mut distances, distance_observability) =
+            crate::collision_exec::gpu::execute_batched_point_distance_queries_with_candidates(
                 ctx,
                 capture.clone(),
                 domain.clone(),
-                point,
+                &[point],
+                candidates,
             )?;
+        if let Some(metrics) = wgsl_metrics.as_deref_mut() {
+            merge_collision_wgsl_observability(metrics, &distance_observability);
+        }
+        executed_query_contracts.push(query_contract::SPATIAL_DISTANCE_BATCH_WORLD);
+        let distance =
+            distances
+                .drain(..)
+                .next()
+                .ok_or_else(|| CollisionExecError::ExecutionUnavailable {
+                    message: "collision WGSL distance batch returned no values".to_string(),
+                })?;
+        let (mut normals, normal_observability) =
+            crate::collision_exec::gpu::execute_batched_point_normal_queries_with_candidates(
+                ctx,
+                capture.clone(),
+                domain.clone(),
+                &[point],
+                candidates,
+            )?;
+        if let Some(metrics) = wgsl_metrics.as_deref_mut() {
+            merge_collision_wgsl_observability(metrics, &normal_observability);
+        }
         executed_query_contracts.push(query_contract::SPATIAL_NORMAL_BATCH_WORLD);
+        let normal =
+            normals
+                .drain(..)
+                .next()
+                .ok_or_else(|| CollisionExecError::ExecutionUnavailable {
+                    message: "collision WGSL normal batch returned no values".to_string(),
+                })?;
         let provenance =
             collision_contact_normal_provenance_from_observability(&normal_observability);
         return Ok((distance, normal, provenance, false));
@@ -1139,14 +1193,20 @@ fn candidate_limited_ray_query(
     trace_capture_plan: &KernelCaptureQueryPlan,
     ray: CollisionRayInput,
     executed_query_contracts: &mut Vec<QueryContractId>,
+    mut wgsl_metrics: Option<&mut CollisionWgslMetrics>,
 ) -> Result<(KernelValue, Option<CollisionContactNormalProvenance>), CollisionExecError> {
     if matches!(backend, DispatchBackend::Wgsl) {
-        let (hit, observability) = crate::collision_exec::gpu::execute_batched_ray_trace_query(
-            ctx,
-            capture.clone(),
-            domain.clone(),
-            ray,
-        )?;
+        let (hit, observability) =
+            crate::collision_exec::gpu::execute_batched_ray_trace_query_with_candidates(
+                ctx,
+                capture.clone(),
+                domain.clone(),
+                ray,
+                candidates,
+            )?;
+        if let Some(metrics) = wgsl_metrics.as_deref_mut() {
+            merge_collision_wgsl_observability(metrics, &observability);
+        }
         executed_query_contracts.push(query_contract::SPATIAL_NEAREST_BATCH_WORLD);
         let provenance = collision_contact_normal_provenance_from_observability(&observability);
         return Ok((hit, provenance));
@@ -1872,6 +1932,221 @@ fn update_reuse_metrics(metrics: &mut CollisionReuseMetrics, decision: &Collisio
     ));
 }
 
+fn merge_collision_wgsl_observability(
+    metrics: &mut CollisionWgslMetrics,
+    observability: &QueryExecutionObservability,
+) {
+    metrics.dispatch_count = metrics
+        .dispatch_count
+        .saturating_add(observability.dispatch_count);
+    metrics.dispatch_items = metrics
+        .dispatch_items
+        .saturating_add(observability.dispatch_items);
+    metrics.selected_workgroup_size = metrics
+        .selected_workgroup_size
+        .max(observability.wgsl_selected_workgroup_size);
+    metrics.resident_shared_snapshot_artifacts = metrics
+        .resident_shared_snapshot_artifacts
+        .saturating_add(observability.cache_resident_shared_snapshot_artifacts);
+}
+
+fn collision_candidate_reduction_effectiveness(candidates: u32, rejected: u32) -> f32 {
+    let total = candidates.saturating_add(rejected);
+    if total == 0 {
+        0.0
+    } else {
+        rejected as f32 / total as f32
+    }
+}
+
+fn count_cpu_certification_queries(
+    executed_query_contracts: &[QueryContractId],
+    start_index: usize,
+) -> u32 {
+    executed_query_contracts[start_index..]
+        .iter()
+        .filter(|contract| {
+            matches!(
+                **contract,
+                query_contract::SPATIAL_DISTANCE_CAPTURE_SHAPE
+                    | query_contract::SPATIAL_NORMAL_CAPTURE_SHAPE
+                    | query_contract::SPATIAL_DISTANCE_WORLD
+                    | query_contract::SPATIAL_NORMAL_WORLD
+                    | query_contract::SPATIAL_TRACE_CAPTURE_SHAPE
+            )
+        })
+        .count() as u32
+}
+
+#[allow(clippy::too_many_arguments)]
+fn gpu_assisted_sweep_outcome(
+    ctx: &QueryExecContext,
+    policy: &QueryExecutionPolicy,
+    snapshot: &WorldSnapshotHandle,
+    capture: &KernelValue,
+    domain: &KernelValue,
+    sweep: CollisionSphereSweepInput,
+    distance_capture_plan: &KernelCaptureQueryPlan,
+    normal_capture_plan: &KernelCaptureQueryPlan,
+    distance_contract: QueryContractId,
+    normal_contract: QueryContractId,
+    candidate_shape_names: &[SmolStr],
+    seed: CollisionTransitionReuseSeed,
+    executed_query_contracts: &mut Vec<QueryContractId>,
+    mut wgsl_metrics: Option<&mut CollisionWgslMetrics>,
+) -> Result<Option<SweepOutcome>, CollisionExecError> {
+    let sample_count = sweep.max_iterations.max(1).clamp(4, 16) as usize;
+    let sample_fractions = (0..sample_count)
+        .map(|index| (index + 1) as f32 / sample_count as f32)
+        .collect::<Vec<_>>();
+    let sample_points = sample_fractions
+        .iter()
+        .map(|fraction| lerp(sweep.start_center, sweep.end_center, *fraction))
+        .collect::<Vec<_>>();
+    let (distance_values, distance_observability) =
+        crate::collision_exec::gpu::execute_batched_point_distance_queries_with_candidates(
+            ctx,
+            capture.clone(),
+            domain.clone(),
+            &sample_points,
+            candidate_shape_names,
+        )?;
+    if let Some(metrics) = wgsl_metrics.as_deref_mut() {
+        merge_collision_wgsl_observability(metrics, &distance_observability);
+    }
+    executed_query_contracts.push(query_contract::SPATIAL_DISTANCE_BATCH_WORLD);
+    let hit_sample = sample_fractions
+        .iter()
+        .copied()
+        .zip(distance_values.iter())
+        .enumerate()
+        .find_map(|(index, (fraction, value))| {
+            let separation = expect_f32(value).ok()? - sweep.radius;
+            (separation <= sweep.contact_tolerance).then_some((index, fraction, separation))
+        });
+    let Some((hit_index, hit_fraction, certified_separation_hint)) = hit_sample else {
+        return Ok(None);
+    };
+    let _bracket_start = if hit_index == 0 {
+        seed.seed_fraction.unwrap_or(0.0).clamp(0.0, hit_fraction)
+    } else {
+        sample_fractions[hit_index - 1]
+    };
+    let center = lerp(sweep.start_center, sweep.end_center, hit_fraction);
+    let certification_query_start = executed_query_contracts.len();
+    let (distance_value, normal_value, provenance, _) = candidate_limited_point_query(
+        ctx,
+        DispatchBackend::Cpu,
+        policy,
+        snapshot,
+        capture,
+        domain,
+        candidate_shape_names,
+        center,
+        distance_capture_plan,
+        normal_capture_plan,
+        distance_contract,
+        normal_contract,
+        executed_query_contracts,
+        None,
+    )?;
+    if let Some(metrics) = wgsl_metrics.as_deref_mut() {
+        metrics.cpu_certification_query_count = metrics
+            .cpu_certification_query_count
+            .saturating_add(count_cpu_certification_queries(
+                executed_query_contracts,
+                certification_query_start,
+            ));
+    }
+    let separation = expect_f32(&distance_value)? - sweep.radius;
+    if separation > sweep.contact_tolerance {
+        return Ok(None);
+    }
+    let world_normal = expect_vec3(&normal_value)?;
+    let point_on_probe = offset_point(center, world_normal, -sweep.radius);
+    let point_on_world = offset_point(center, world_normal, -(separation + sweep.radius));
+    let normal_flavor = collision_contact_normal_flavor_from_provenance(provenance);
+    Ok(Some(SweepOutcome {
+        hit: true,
+        fraction_upper_bound: Some(hit_fraction),
+        separation_upper_bound: Some(separation.min(certified_separation_hint)),
+        point_on_probe: Some(point_on_probe),
+        point_on_world: Some(point_on_world),
+        contact_normal: Some(world_normal),
+        contact_normal_provenance: provenance,
+        normal_flavor,
+        no_hit_certificate: None,
+        certificate: build_collision_contact_certificate(
+            "collision.sweep.gpu_bracket_contact",
+            plan_contact_guarantee(policy),
+            hit_fraction,
+            hit_fraction,
+            Some([hit_fraction, hit_fraction]),
+            separation,
+            provenance,
+            normal_flavor,
+        ),
+        interval_subdivisions: sample_count as u32,
+        interval_refinements: 1,
+        certificate_successes: 1,
+        fallback_count: 0,
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn certify_wgsl_sweep_sample(
+    ctx: &QueryExecContext,
+    policy: &QueryExecutionPolicy,
+    snapshot: &WorldSnapshotHandle,
+    capture: &KernelValue,
+    domain: &KernelValue,
+    candidate_shape_names: &[SmolStr],
+    center: [f32; 3],
+    radius: f32,
+    distance_capture_plan: &KernelCaptureQueryPlan,
+    normal_capture_plan: &KernelCaptureQueryPlan,
+    distance_contract: QueryContractId,
+    normal_contract: QueryContractId,
+    executed_query_contracts: &mut Vec<QueryContractId>,
+    mut wgsl_metrics: Option<&mut CollisionWgslMetrics>,
+) -> Result<
+    (
+        KernelValue,
+        KernelValue,
+        Option<CollisionContactNormalProvenance>,
+        f32,
+    ),
+    CollisionExecError,
+> {
+    let certification_query_start = executed_query_contracts.len();
+    let (distance_value, normal_value, provenance, _) = candidate_limited_point_query(
+        ctx,
+        DispatchBackend::Cpu,
+        policy,
+        snapshot,
+        capture,
+        domain,
+        candidate_shape_names,
+        center,
+        distance_capture_plan,
+        normal_capture_plan,
+        distance_contract,
+        normal_contract,
+        executed_query_contracts,
+        None,
+    )?;
+    if let Some(metrics) = wgsl_metrics.as_deref_mut() {
+        metrics.cpu_certification_query_count = metrics
+            .cpu_certification_query_count
+            .saturating_add(count_cpu_certification_queries(
+                executed_query_contracts,
+                certification_query_start,
+            ));
+    }
+    let separation = expect_f32(&distance_value)? - radius;
+    Ok((distance_value, normal_value, provenance, separation))
+}
+
 fn store_transition_artifacts(
     plan: &CollisionPlan,
     store: &mut CollisionArtifactStore,
@@ -1946,6 +2221,7 @@ fn sweep_outcome(
     seed: CollisionTransitionReuseSeed,
     candidate_shape_names: &[SmolStr],
     executed_query_contracts: &mut Vec<QueryContractId>,
+    mut wgsl_metrics: Option<&mut CollisionWgslMetrics>,
 ) -> Result<SweepOutcome, CollisionExecError> {
     let seed_normal_flavor = seed.normal_flavor;
     if candidate_shape_names.is_empty() {
@@ -1998,7 +2274,28 @@ fn sweep_outcome(
             seed.clone(),
             sweep.contact_tolerance,
             executed_query_contracts,
+            wgsl_metrics.as_deref_mut(),
         );
+    }
+    if matches!(backend, DispatchBackend::Wgsl)
+        && let Some(outcome) = gpu_assisted_sweep_outcome(
+            ctx,
+            policy,
+            snapshot,
+            capture,
+            domain,
+            sweep,
+            distance_capture_plan,
+            normal_capture_plan,
+            distance_contract,
+            normal_contract,
+            candidate_shape_names,
+            seed.clone(),
+            executed_query_contracts,
+            wgsl_metrics.as_deref_mut(),
+        )?
+    {
+        return Ok(outcome);
     }
     let mut fraction = seed
         .certificate
@@ -2027,8 +2324,30 @@ fn sweep_outcome(
             distance_contract,
             normal_contract,
             executed_query_contracts,
+            wgsl_metrics.as_deref_mut(),
         )?;
-        let separation = expect_f32(&distance_value)? - sweep.radius;
+        let (_distance_value, normal_value, provenance, separation) =
+            if matches!(backend, DispatchBackend::Wgsl) {
+                certify_wgsl_sweep_sample(
+                    ctx,
+                    policy,
+                    snapshot,
+                    capture,
+                    domain,
+                    candidate_shape_names,
+                    center,
+                    sweep.radius,
+                    distance_capture_plan,
+                    normal_capture_plan,
+                    distance_contract,
+                    normal_contract,
+                    executed_query_contracts,
+                    wgsl_metrics.as_deref_mut(),
+                )?
+            } else {
+                let separation = expect_f32(&distance_value)? - sweep.radius;
+                (distance_value, normal_value, provenance, separation)
+            };
         if separation <= sweep.contact_tolerance {
             let world_normal = expect_vec3(&normal_value)?;
             let point_on_probe = offset_point(center, world_normal, -sweep.radius);
@@ -2117,6 +2436,7 @@ fn sweep_outcome(
         interval_subdivisions,
         interval_refinements,
         executed_query_contracts,
+        wgsl_metrics,
     )
 }
 
@@ -2139,6 +2459,7 @@ fn dense_fallback_sweep_outcome(
     mut interval_subdivisions: u32,
     mut interval_refinements: u32,
     executed_query_contracts: &mut Vec<QueryContractId>,
+    mut wgsl_metrics: Option<&mut CollisionWgslMetrics>,
 ) -> Result<SweepOutcome, CollisionExecError> {
     let dense_budget = sweep.max_iterations.max(1).saturating_mul(8).max(16) as u32;
     let remaining_fraction = (1.0 - certified_start_fraction).max(0.0);
@@ -2167,11 +2488,37 @@ fn dense_fallback_sweep_outcome(
             distance_contract,
             normal_contract,
             executed_query_contracts,
+            wgsl_metrics.as_deref_mut(),
         )?;
         interval_refinements += 1;
         let separation = expect_f32(&distance_value)? - sweep.radius;
         last_separation = Some(separation);
         if separation <= sweep.contact_tolerance {
+            let (_distance_value, normal_value, provenance, separation) =
+                if matches!(backend, DispatchBackend::Wgsl) {
+                    certify_wgsl_sweep_sample(
+                        ctx,
+                        policy,
+                        snapshot,
+                        capture,
+                        domain,
+                        candidate_shape_names,
+                        center,
+                        sweep.radius,
+                        distance_capture_plan,
+                        normal_capture_plan,
+                        distance_contract,
+                        normal_contract,
+                        executed_query_contracts,
+                        wgsl_metrics.as_deref_mut(),
+                    )?
+                } else {
+                    (distance_value, normal_value, provenance, separation)
+                };
+            last_separation = Some(separation);
+            if separation > sweep.contact_tolerance {
+                continue;
+            }
             let world_normal = expect_vec3(&normal_value)?;
             let point_on_probe = offset_point(center, world_normal, -sweep.radius);
             let point_on_world = offset_point(center, world_normal, -(separation + sweep.radius));
@@ -2255,23 +2602,46 @@ fn sphere_overlap_like_outcome(
     seed: CollisionTransitionReuseSeed,
     tolerance: f32,
     executed_query_contracts: &mut Vec<QueryContractId>,
+    wgsl_metrics: Option<&mut CollisionWgslMetrics>,
 ) -> Result<SweepOutcome, CollisionExecError> {
-    let (distance_value, normal_value, provenance, _) = candidate_limited_point_query(
-        ctx,
-        backend,
-        policy,
-        snapshot,
-        capture,
-        domain,
-        candidate_shape_names,
-        center,
-        distance_capture_plan,
-        normal_capture_plan,
-        distance_contract,
-        normal_contract,
-        executed_query_contracts,
-    )?;
-    let separation = expect_f32(&distance_value)? - radius;
+    let (_distance_value, normal_value, provenance, separation) =
+        if matches!(backend, DispatchBackend::Wgsl) {
+            certify_wgsl_sweep_sample(
+                ctx,
+                policy,
+                snapshot,
+                capture,
+                domain,
+                candidate_shape_names,
+                center,
+                radius,
+                distance_capture_plan,
+                normal_capture_plan,
+                distance_contract,
+                normal_contract,
+                executed_query_contracts,
+                wgsl_metrics,
+            )?
+        } else {
+            let (distance_value, normal_value, provenance, _) = candidate_limited_point_query(
+                ctx,
+                backend,
+                policy,
+                snapshot,
+                capture,
+                domain,
+                candidate_shape_names,
+                center,
+                distance_capture_plan,
+                normal_capture_plan,
+                distance_contract,
+                normal_contract,
+                executed_query_contracts,
+                None,
+            )?;
+            let separation = expect_f32(&distance_value)? - radius;
+            (distance_value, normal_value, provenance, separation)
+        };
     if separation <= tolerance {
         let world_normal = expect_vec3(&normal_value)?;
         let normal_flavor = collision_contact_normal_flavor_from_provenance(provenance);

@@ -35,6 +35,14 @@ impl AdaptivePresentationController {
     }
 
     pub fn observe_frame(&mut self, report: &PresentationFrameCostReport) -> bool {
+        // First-use pipeline compilation should not drive the adaptive quality
+        // controller. Closure benchmarking warms those variants separately, and
+        // any remaining cache miss in the measured lane is setup churn rather
+        // than steady-state frame cost.
+        if report.gpu_runtime.pipeline_cache_misses > 0 {
+            self.recovery_streak = 0;
+            return false;
+        }
         let frame_time_ms = if report.passes.is_empty() {
             if report.quality.target_fps == 0 {
                 0.0

@@ -10,6 +10,9 @@ use crate::scene_ir::{ShapeLeafId, ShapeLeafRef, ShapeLeafScene};
 use crate::world_identity::{SnapshotCaptureKind, SnapshotIdentityReport, WorldSnapshotHandle};
 use smol_str::SmolStr;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_QUERY_EXEC_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
 pub struct QueryExecContext {
@@ -31,6 +34,7 @@ pub struct QueryExecContext {
     pub field_snapshots: BTreeMap<SmolStr, WorldSnapshotHandle>,
     pub shape_snapshots: BTreeMap<SmolStr, WorldSnapshotHandle>,
     pub region_snapshots: BTreeMap<SmolStr, WorldSnapshotHandle>,
+    pub(crate) wgsl_shader_cache_context_id: u64,
     field_scene_index: HashMap<u32, SmolStr>,
     shape_scene_index: HashMap<u32, SmolStr>,
     shape_root_feature_index: HashMap<u32, SmolStr>,
@@ -151,6 +155,8 @@ impl QueryExecContext {
             .iter()
             .map(|(name, snapshot)| (snapshot.portable_scene_id(), name.clone()))
             .collect::<HashMap<_, _>>();
+        let wgsl_shader_cache_context_id =
+            NEXT_QUERY_EXEC_CONTEXT_ID.fetch_add(1, Ordering::Relaxed);
 
         let mut context = Self {
             module,
@@ -175,6 +181,7 @@ impl QueryExecContext {
             field_snapshots,
             shape_snapshots,
             region_snapshots,
+            wgsl_shader_cache_context_id,
             field_scene_index,
             shape_scene_index,
             shape_root_feature_index,

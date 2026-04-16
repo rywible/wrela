@@ -309,6 +309,10 @@ pub fn attachment_element_abi(
     }
 }
 
+pub fn attachment_policy_description(attachment: &FrameAttachmentContract) -> String {
+    attachment.policy_description()
+}
+
 impl AttachmentResourceSet {
     pub fn attachment(&self, name: &str) -> Option<&AttachmentResource> {
         self.attachments.get(name)

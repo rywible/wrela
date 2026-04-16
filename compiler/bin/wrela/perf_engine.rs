@@ -2,14 +2,17 @@ use super::command_handlers::{
     self, BenchmarkManifest, CollisionBenchmarkReport, DifferentialPipeline, KpiThresholds,
     PerfCmpConfig, PerfGateConfig, PerfProfile, PerfReport, PresentationBenchmarkComparison,
     PresentationBenchmarkReport, PresentationWgslWorkgroupComparison, TestSelection, TestTarget,
-    budget_jobs_timeout, build_benchmark_selection, load_benchmark_manifest,
-    resolve_budget_policy_v1, resolve_test_target,
+    WRELA_PRESENTATION_DEBUG_ADAPTIVE_WINDOW_ENV,
+    WRELA_PRESENTATION_DEBUG_WARM_QUALITY_PIPELINES_ENV, budget_jobs_timeout,
+    build_benchmark_selection, load_benchmark_manifest, resolve_budget_policy_v1,
+    resolve_test_target,
 };
 use super::contracts::{EXIT_CODEGEN, EXIT_OK, EXIT_USAGE, OutputFormat};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::collections::{BTreeMap, HashMap};
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -194,6 +197,17 @@ pub(super) fn run_perf_harness(
     });
     let collision_benchmarks_active = benchmark_manifest
         .is_some_and(|manifest| manifest.suite.eq_ignore_ascii_case("collision_perf"));
+    let presentation_collection_mode = presentation_benchmarks_active
+        .then(|| presentation_benchmark_collection_mode(perf_profile, perf_why_not_120));
+    let expected_presentation_report_count = benchmark_manifest
+        .map(|manifest| {
+            manifest
+                .scenarios_for_profile(perf_profile)
+                .iter()
+                .filter(|scenario| scenario.presentation.is_some())
+                .count()
+        })
+        .unwrap_or(0);
     let mut samples = Vec::new();
     let mut latest_presentation_reports = None;
     let mut presentation_report_samples = Vec::new();
@@ -201,6 +215,7 @@ pub(super) fn run_perf_harness(
     let mut latest_collision_reports = None;
     let mut collision_report_samples = Vec::new();
     let mut collision_report_errors = Vec::new();
+    let mut late_failures = Vec::<String>::new();
     for idx in 0..warmup_runs {
         println!("perf-warmup {}/{}", idx + 1, warmup_runs);
         let (exit, _, _) = command_handlers::run_tests_once(
@@ -262,22 +277,45 @@ pub(super) fn run_perf_harness(
                     );
                     return EXIT_CODEGEN;
                 };
-                let report_collection = match collect_presentation_benchmark_reports(
-                    benchmark_root,
-                    manifest,
-                    perf_profile,
-                    query_backend,
-                ) {
-                    Ok(collection) => collection,
-                    Err(err) => {
-                        eprintln!(
-                            "perf harness error: failed to collect presentation reports: {err}"
-                        );
-                        return EXIT_CODEGEN;
+                let collect_once_for_closure = matches!(perf_profile, PerfProfile::Closure1080p120);
+                let collect_reports_this_run =
+                    !collect_once_for_closure || latest_presentation_reports.is_none();
+                let mut report_collection_errors = Vec::new();
+                let presentation_reports = if collect_reports_this_run {
+                    let report_collection = match collect_presentation_benchmark_reports(
+                        benchmark_root,
+                        manifest,
+                        perf_profile,
+                        query_backend,
+                        presentation_collection_mode
+                            .expect("presentation benchmarks should set collection mode"),
+                    ) {
+                        Ok(collection) => collection,
+                        Err(err) => {
+                            eprintln!(
+                                "perf harness error: failed to collect presentation reports: {err}"
+                            );
+                            return EXIT_CODEGEN;
+                        }
+                    };
+                    report_collection_errors = report_collection.errors;
+                    if report_collection.reports.len() != expected_presentation_report_count {
+                        report_collection_errors.push(format!(
+                            "presentation benchmark collection returned {} report(s) for {} expected scenario(s) in {} mode",
+                            report_collection.reports.len(),
+                            expected_presentation_report_count,
+                            presentation_collection_mode
+                                .expect("presentation benchmarks should set collection mode")
+                                .as_str()
+                        ));
                     }
+                    report_collection.reports
+                } else {
+                    latest_presentation_reports
+                        .clone()
+                        .expect("closure presentation benchmarks should have cached reports")
                 };
-                let runtime_cases = report_collection
-                    .reports
+                let runtime_cases = presentation_reports
                     .iter()
                     .map(|report| {
                         (
@@ -294,14 +332,26 @@ pub(super) fn run_perf_harness(
                 };
                 if matches!(output_format, OutputFormat::Pretty) {
                     command_handlers::emit_perf_summary(&summary, perf_debug);
-                    print_presentation_benchmark_reports(&report_collection.reports);
-                    for error in &report_collection.errors {
+                    if collect_reports_this_run {
+                        print_presentation_benchmark_reports(&presentation_reports);
+                    }
+                    for error in &report_collection_errors {
                         eprintln!("presentation-benchmark-error: {error}");
                     }
                 }
-                presentation_report_samples.extend(report_collection.reports.iter().cloned());
-                presentation_report_errors.extend(report_collection.errors.into_iter());
-                latest_presentation_reports = Some(report_collection.reports);
+                if matches!(perf_profile, PerfProfile::Closure1080p120)
+                    && collect_reports_this_run
+                    && !report_collection_errors.is_empty()
+                {
+                    late_failures.extend(report_collection_errors.iter().map(|error| {
+                        format!("presentation closure report collection unstable: {error}")
+                    }));
+                }
+                if collect_reports_this_run {
+                    presentation_report_samples.extend(presentation_reports.iter().cloned());
+                    presentation_report_errors.extend(report_collection_errors.into_iter());
+                    latest_presentation_reports = Some(presentation_reports.clone());
+                }
                 samples.push(summary);
             } else if collision_benchmarks_active {
                 let TestTarget::ProjectRoot(benchmark_root) = target else {
@@ -336,6 +386,20 @@ pub(super) fn run_perf_harness(
                 } else {
                     command_handlers::overlay_perf_summary_runtime_cases(&summary, &runtime_cases)
                 };
+                if matches!(perf_profile, PerfProfile::Closure1080p120)
+                    && (report_collection.reports.is_empty()
+                        || !report_collection.errors.is_empty())
+                {
+                    if report_collection.reports.is_empty() {
+                        late_failures.push(
+                            "collision closure report collection unstable: no collision benchmark reports were produced"
+                                .to_string(),
+                        );
+                    }
+                    late_failures.extend(report_collection.errors.iter().map(|error| {
+                        format!("collision closure report collection unstable: {error}")
+                    }));
+                }
                 collision_report_samples.extend(report_collection.reports.iter().cloned());
                 collision_report_errors.extend(report_collection.errors.into_iter());
                 latest_collision_reports = Some(report_collection.reports);
@@ -450,6 +514,7 @@ pub(super) fn run_perf_harness(
         &presentation_report_samples,
         &presentation_report_errors,
         &collision_report_samples,
+        &collision_report_errors,
         perf_profile,
         warmup_runs,
         samples.len(),
@@ -499,6 +564,13 @@ pub(super) fn run_perf_harness(
         print_closure_verdict_report(closure, perf_why_not_120);
     }
     println!("perf baseline written: {}", baseline_out.display());
+    if !late_failures.is_empty() {
+        eprintln!("perf harness failed: unstable benchmark collection");
+        for failure in late_failures {
+            eprintln!("  - {failure}");
+        }
+        return EXIT_CODEGEN;
+    }
     EXIT_OK
 }
 
@@ -532,10 +604,16 @@ struct CollisionBenchmarkScenarioMetrics {
     total_candidate_count: u64,
     total_rejected_candidate_count: u64,
     total_pruned_node_count: u64,
+    total_candidate_reduction_effectiveness: f64,
     total_interval_subdivisions: u64,
     total_interval_refinements: u64,
     total_certificate_successes: u64,
     total_fallback_count: u64,
+    total_wgsl_dispatch_count: u64,
+    total_wgsl_dispatch_items: u64,
+    total_wgsl_resident_shared_snapshot_artifacts: u64,
+    total_cpu_certification_query_count: u64,
+    max_wgsl_selected_workgroup_size: u32,
     available_count_total: u64,
     consumed_count_total: u64,
     rejected_count_total: u64,
@@ -574,11 +652,42 @@ struct PresentationAggregatedSolverCounters {
     solver_repeat_cells_enumerated: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PresentationBenchmarkCollectionMode {
+    Measurement,
+    Diagnostic,
+}
+
+impl PresentationBenchmarkCollectionMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Measurement => "measurement",
+            Self::Diagnostic => "diagnostic",
+        }
+    }
+}
+
+fn presentation_benchmark_collection_mode(
+    perf_profile: PerfProfile,
+    perf_why_not_120: bool,
+) -> PresentationBenchmarkCollectionMode {
+    if matches!(perf_profile, PerfProfile::Closure1080p120) && !perf_why_not_120 {
+        PresentationBenchmarkCollectionMode::Measurement
+    } else {
+        PresentationBenchmarkCollectionMode::Diagnostic
+    }
+}
+
+fn should_warm_closure_quality_pipelines(scenario: &command_handlers::BenchmarkScenario) -> bool {
+    scenario.class.eq_ignore_ascii_case("closure")
+}
+
 fn collect_presentation_benchmark_reports(
     benchmark_root: &Path,
     manifest: &BenchmarkManifest,
     profile: PerfProfile,
     query_backend: wrela::query_plan::DispatchBackend,
+    collection_mode: PresentationBenchmarkCollectionMode,
 ) -> Result<PresentationBenchmarkReportCollection, String> {
     let current_exe =
         env::current_exe().map_err(|err| format!("failed to resolve current executable: {err}"))?;
@@ -596,6 +705,7 @@ fn collect_presentation_benchmark_reports(
             scenario,
             spec,
             query_backend,
+            collection_mode,
         ) {
             Ok(report) => collection.reports.push(report),
             Err(err) => collection.errors.push(err),
@@ -665,8 +775,9 @@ fn collision_benchmark_backend(
         wrela::query_plan::DispatchBackend::Cpu | wrela::query_plan::DispatchBackend::Auto => {
             Ok(wrela::query_plan::DispatchBackend::Cpu)
         }
+        wrela::query_plan::DispatchBackend::Wgsl => Ok(wrela::query_plan::DispatchBackend::Wgsl),
         other => Err(format!(
-            "collision benchmarks only support cpu or auto query backends, not {other:?}"
+            "collision benchmarks only support cpu, auto, or wgsl query backends, not {other:?}"
         )),
     }
 }
@@ -901,6 +1012,11 @@ fn build_collision_benchmark_execution(
                 metrics.total_pruned_node_count,
                 metrics.query_count,
             ),
+            candidate_reduction_effectiveness: if metrics.query_count == 0 {
+                0.0
+            } else {
+                metrics.total_candidate_reduction_effectiveness / metrics.query_count as f64
+            } as f32,
             interval_subdivisions: collision_average_u32(
                 metrics.total_interval_subdivisions,
                 metrics.query_count,
@@ -916,6 +1032,16 @@ fn build_collision_benchmark_execution(
             interval_bracket: metrics.last_interval_bracket,
             fallback_count: metrics.total_fallback_count.min(u64::from(u32::MAX)) as u32,
             contact_normal_provenance: metrics.contact_normal_provenance.clone(),
+            wgsl_dispatch_count: metrics.total_wgsl_dispatch_count.min(u64::from(u32::MAX)) as u32,
+            wgsl_dispatch_items: metrics.total_wgsl_dispatch_items.min(u64::from(u32::MAX)) as u32,
+            wgsl_selected_workgroup_size: metrics.max_wgsl_selected_workgroup_size,
+            wgsl_resident_shared_snapshot_artifacts: metrics
+                .total_wgsl_resident_shared_snapshot_artifacts
+                .min(u64::from(u32::MAX))
+                as u32,
+            cpu_certification_query_count: metrics
+                .total_cpu_certification_query_count
+                .min(u64::from(u32::MAX)) as u32,
             available_count: metrics.available_count_total.min(u64::from(u32::MAX)) as u32,
             consumed_count: metrics.consumed_count_total.min(u64::from(u32::MAX)) as u32,
             rejected_count: metrics.rejected_count_total.min(u64::from(u32::MAX)) as u32,
@@ -969,6 +1095,25 @@ fn record_collision_trace(
     metrics.total_pruned_node_count = metrics
         .total_pruned_node_count
         .saturating_add(u64::from(trace.broadphase_pruned_node_count));
+    if let Some(wgsl_metrics) = &trace.wgsl_metrics {
+        metrics.total_candidate_reduction_effectiveness +=
+            f64::from(wgsl_metrics.candidate_reduction_effectiveness);
+        metrics.total_wgsl_dispatch_count = metrics
+            .total_wgsl_dispatch_count
+            .saturating_add(u64::from(wgsl_metrics.dispatch_count));
+        metrics.total_wgsl_dispatch_items = metrics
+            .total_wgsl_dispatch_items
+            .saturating_add(u64::from(wgsl_metrics.dispatch_items));
+        metrics.total_wgsl_resident_shared_snapshot_artifacts = metrics
+            .total_wgsl_resident_shared_snapshot_artifacts
+            .saturating_add(u64::from(wgsl_metrics.resident_shared_snapshot_artifacts));
+        metrics.total_cpu_certification_query_count = metrics
+            .total_cpu_certification_query_count
+            .saturating_add(u64::from(wgsl_metrics.cpu_certification_query_count));
+        metrics.max_wgsl_selected_workgroup_size = metrics
+            .max_wgsl_selected_workgroup_size
+            .max(wgsl_metrics.selected_workgroup_size);
+    }
     metrics.total_interval_subdivisions = metrics
         .total_interval_subdivisions
         .saturating_add(u64::from(trace.interval_subdivisions));
@@ -1145,7 +1290,7 @@ fn run_collision_point_occupancy_burst(
         wrela::collision_plan::CollisionQueryKind::PointOccupancyWorld,
         backend,
     );
-    let capture = collision_benchmark_capture(scene_id, 2);
+    let capture = collision_benchmark_capture(scene_id, 1);
     let mut metrics = CollisionBenchmarkScenarioMetrics::default();
     for i in 1..=scenario.ops {
         let point = [
@@ -1184,7 +1329,7 @@ fn run_collision_dense_ray_casts(
         wrela::collision_plan::CollisionQueryKind::RayCastWorld,
         backend,
     );
-    let capture = collision_benchmark_capture(scene_id, 2);
+    let capture = collision_benchmark_capture(scene_id, 1);
     let mut metrics = CollisionBenchmarkScenarioMetrics::default();
     for i in 1..=scenario.ops {
         let origin = [
@@ -1228,7 +1373,7 @@ fn run_collision_overlap_burst(
         wrela::collision_plan::CollisionQueryKind::SphereOverlapWorld,
         backend,
     );
-    let capture = collision_benchmark_capture(scene_id, 2);
+    let capture = collision_benchmark_capture(scene_id, 1);
     let mut metrics = CollisionBenchmarkScenarioMetrics::default();
     for i in 1..=scenario.ops {
         let (anchor_x, anchor_y) = match i % 3 {
@@ -1372,7 +1517,22 @@ fn run_presentation_benchmark_report(
     scenario: &command_handlers::BenchmarkScenario,
     spec: &command_handlers::BenchmarkPresentationSpec,
     query_backend: wrela::query_plan::DispatchBackend,
+    collection_mode: PresentationBenchmarkCollectionMode,
 ) -> Result<PresentationBenchmarkReport, String> {
+    let warm_quality_pipelines = should_warm_closure_quality_pipelines(scenario);
+    if matches!(
+        collection_mode,
+        PresentationBenchmarkCollectionMode::Measurement
+    ) {
+        return run_presentation_benchmark_measurement_report(
+            current_exe,
+            benchmark_root,
+            scenario,
+            spec,
+            query_backend,
+            warm_quality_pipelines,
+        );
+    }
     if !matches!(query_backend, wrela::query_plan::DispatchBackend::Wgsl) {
         let hybrid = run_presentation_benchmark_report_for_mode(
             current_exe,
@@ -1382,6 +1542,7 @@ fn run_presentation_benchmark_report(
             QueryTraceSolverMode::Hybrid,
             None,
             query_backend,
+            warm_quality_pipelines,
         )?;
         let dense_only = run_presentation_benchmark_report_for_mode(
             current_exe,
@@ -1391,8 +1552,9 @@ fn run_presentation_benchmark_report(
             QueryTraceSolverMode::DenseOnly,
             None,
             query_backend,
+            warm_quality_pipelines,
         )?;
-        let mut report = presentation_report_from_debug_output(scenario, hybrid);
+        let mut report = presentation_report_from_debug_output(scenario, hybrid)?;
         report.ab_comparison = Some(presentation_comparison_from_debug_reports(
             &report,
             &dense_only,
@@ -1406,6 +1568,7 @@ fn run_presentation_benchmark_report(
         spec,
         QueryTraceSolverMode::Hybrid,
         query_backend,
+        warm_quality_pipelines,
     )?;
     let Some(best_hybrid) = hybrid_candidates
         .iter()
@@ -1427,6 +1590,7 @@ fn run_presentation_benchmark_report(
         QueryTraceSolverMode::DenseOnly,
         Some(best_hybrid.selected_workgroup_size),
         query_backend,
+        warm_quality_pipelines,
     )?;
     let mut report = best_hybrid;
     report.wgsl_workgroup_comparison = Some(workgroup_comparison);
@@ -1437,6 +1601,27 @@ fn run_presentation_benchmark_report(
     Ok(report)
 }
 
+fn run_presentation_benchmark_measurement_report(
+    current_exe: &Path,
+    benchmark_root: &Path,
+    scenario: &command_handlers::BenchmarkScenario,
+    spec: &command_handlers::BenchmarkPresentationSpec,
+    query_backend: wrela::query_plan::DispatchBackend,
+    warm_quality_pipelines: bool,
+) -> Result<PresentationBenchmarkReport, String> {
+    let dump = run_presentation_benchmark_report_for_mode(
+        current_exe,
+        benchmark_root,
+        scenario,
+        spec,
+        QueryTraceSolverMode::Hybrid,
+        None,
+        query_backend,
+        warm_quality_pipelines,
+    )?;
+    presentation_report_from_debug_output(scenario, dump)
+}
+
 fn run_presentation_benchmark_reports_for_workgroup_sizes(
     current_exe: &Path,
     benchmark_root: &Path,
@@ -1444,6 +1629,7 @@ fn run_presentation_benchmark_reports_for_workgroup_sizes(
     spec: &command_handlers::BenchmarkPresentationSpec,
     query_trace_solver_mode: QueryTraceSolverMode,
     query_backend: wrela::query_plan::DispatchBackend,
+    warm_quality_pipelines: bool,
 ) -> Result<Vec<PresentationBenchmarkReport>, String> {
     let supported_workgroup_sizes = wrela::query_exec::supported_wgsl_workgroup_sizes()
         .map_err(|err| format!("failed to enumerate supported WGSL workgroup sizes: {err}"))?;
@@ -1463,8 +1649,9 @@ fn run_presentation_benchmark_reports_for_workgroup_sizes(
             query_trace_solver_mode,
             Some(workgroup_size),
             query_backend,
+            warm_quality_pipelines,
         )?;
-        let report = presentation_report_from_debug_output(scenario, dump);
+        let report = presentation_report_from_debug_output(scenario, dump)?;
         if report.selected_workgroup_size != workgroup_size {
             return Err(format!(
                 "presentation-debug reported workgroup size {} for scenario `{}` while benchmarking override {}",
@@ -1484,6 +1671,7 @@ fn run_presentation_benchmark_report_for_mode(
     query_trace_solver_mode: QueryTraceSolverMode,
     workgroup_size_override: Option<u32>,
     query_backend: wrela::query_plan::DispatchBackend,
+    warm_quality_pipelines: bool,
 ) -> Result<PresentationDebugCommandOutput, String> {
     let presentation_target = spec
         .entry
@@ -1497,6 +1685,7 @@ fn run_presentation_benchmark_report_for_mode(
         query_trace_solver_mode,
         workgroup_size_override,
         query_backend,
+        warm_quality_pipelines,
     );
     let timeout = Duration::from_millis(scenario.timeout_ms.unwrap_or(60_000));
     let output = run_command_with_timeout(&mut command, timeout).map_err(|err| {
@@ -1533,6 +1722,7 @@ fn build_presentation_debug_command(
     query_trace_solver_mode: QueryTraceSolverMode,
     workgroup_size_override: Option<u32>,
     query_backend: wrela::query_plan::DispatchBackend,
+    warm_quality_pipelines: bool,
 ) -> Command {
     let mut command = Command::new(current_exe);
     command
@@ -1548,6 +1738,13 @@ fn build_presentation_debug_command(
         command.env(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV, workgroup_size.to_string());
     } else {
         command.env_remove(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV);
+    }
+    if warm_quality_pipelines {
+        command.env(WRELA_PRESENTATION_DEBUG_WARM_QUALITY_PIPELINES_ENV, "1");
+        command.env(WRELA_PRESENTATION_DEBUG_ADAPTIVE_WINDOW_ENV, "1");
+    } else {
+        command.env_remove(WRELA_PRESENTATION_DEBUG_WARM_QUALITY_PIPELINES_ENV);
+        command.env_remove(WRELA_PRESENTATION_DEBUG_ADAPTIVE_WINDOW_ENV);
     }
     command
 }
@@ -1600,12 +1797,16 @@ fn run_command_with_timeout(
 fn presentation_report_from_debug_output(
     scenario: &command_handlers::BenchmarkScenario,
     dump: PresentationDebugCommandOutput,
-) -> PresentationBenchmarkReport {
+) -> Result<PresentationBenchmarkReport, String> {
     let measured_history = if scenario.class.eq_ignore_ascii_case("closure") {
         closure_measured_presentation_frame_history(&dump.frame_cost, &dump.frame_cost_history)
     } else {
-        presentation_frame_history(&dump.frame_cost, &dump.frame_cost_history)
+        Ok(presentation_frame_history(
+            &dump.frame_cost,
+            &dump.frame_cost_history,
+        ))
     };
+    let measured_history = measured_history?;
     let measured_frames_executed = measured_history
         .len()
         .min(dump.frames_executed.max(1) as usize);
@@ -1633,7 +1834,7 @@ fn presentation_report_from_debug_output(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    PresentationBenchmarkReport {
+    Ok(PresentationBenchmarkReport {
         scenario_id: scenario.id.clone(),
         test_name: scenario.test_name.clone(),
         view: dump.view,
@@ -1649,6 +1850,7 @@ fn presentation_report_from_debug_output(
         selected_workgroup_size: dump.frame_cost.selected_workgroup_size,
         frames_executed: measured_frames_executed as u32,
         frame_time_ns: aggregate.frame_time_ns,
+        steady_state_fps: fps_from_frame_time_ns(aggregate.frame_time_ns, measured_frames_executed),
         field_samples: aggregate.field_samples,
         quality_tier: dump.frame_cost.quality.tier.clone(),
         target_fps: dump.frame_cost.quality.target_fps,
@@ -1663,7 +1865,7 @@ fn presentation_report_from_debug_output(
         frame_cost_history: measured_history,
         wgsl_workgroup_comparison: None,
         ab_comparison: None,
-    }
+    })
 }
 
 fn observed_wgsl_adapter_name() -> Option<String> {
@@ -1768,19 +1970,67 @@ fn presentation_frame_history(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PresentationQualitySignature {
+    tier: String,
+    radiance_mode: String,
+    media_enabled: bool,
+    half_res_participants: bool,
+    hit_compaction_enabled: bool,
+    internal_resolution_scale_millis: u32,
+    active_degradations: Vec<String>,
+}
+
+fn presentation_quality_signature(
+    frame_cost: &wrela::presentation_exec::PresentationFrameCostReport,
+) -> PresentationQualitySignature {
+    PresentationQualitySignature {
+        tier: frame_cost.quality.tier.clone(),
+        radiance_mode: frame_cost.quality.radiance_mode.clone(),
+        media_enabled: frame_cost.quality.media_enabled,
+        half_res_participants: frame_cost.quality.half_res_participants,
+        hit_compaction_enabled: frame_cost.quality.hit_compaction_enabled,
+        internal_resolution_scale_millis: (frame_cost.quality.internal_resolution_scale * 1000.0)
+            .round()
+            .max(0.0) as u32,
+        active_degradations: frame_cost.quality.active_degradations.clone(),
+    }
+}
+
 fn closure_measured_presentation_frame_history(
     frame_cost: &wrela::presentation_exec::PresentationFrameCostReport,
     frame_cost_history: &[wrela::presentation_exec::PresentationFrameCostReport],
-) -> Vec<wrela::presentation_exec::PresentationFrameCostReport> {
+) -> Result<Vec<wrela::presentation_exec::PresentationFrameCostReport>, String> {
     let frame_history = presentation_frame_history(frame_cost, frame_cost_history);
-    if frame_history.len() > 1 {
-        // Treat the first frame in a multi-frame subprocess sample as an
-        // in-process warmup so steady-state closure metrics exclude first-use
-        // pipeline compilation and resident-scene upload cost.
-        frame_history.into_iter().skip(1).collect()
-    } else {
-        frame_history
+    if frame_history.is_empty() {
+        return Err("presentation-debug produced no frame history".to_string());
     }
+    let last_frame = frame_history
+        .last()
+        .expect("non-empty frame history should have a last frame");
+    if last_frame.gpu_runtime.pipeline_cache_misses > 0 {
+        return Err(format!(
+            "final closure frame ended with {} pipeline cache miss(es) while quality={} radiance={} half_res_participants={} scale={:.2}; increase scenario frames or warm the required quality pipelines before measurement",
+            last_frame.gpu_runtime.pipeline_cache_misses,
+            last_frame.quality.active_degradations.join("|"),
+            last_frame.quality.radiance_mode,
+            last_frame.quality.half_res_participants,
+            last_frame.quality.internal_resolution_scale,
+        ));
+    }
+    let trailing_signature = presentation_quality_signature(last_frame);
+    let mut start = frame_history.len() - 1;
+    while start > 0 {
+        let candidate = &frame_history[start - 1];
+        if candidate.gpu_runtime.pipeline_cache_misses == 0
+            && presentation_quality_signature(candidate) == trailing_signature
+        {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    Ok(frame_history[start..].to_vec())
 }
 
 fn aligned_presentation_frame_history(
@@ -1965,6 +2215,7 @@ fn build_closure_report(
     presentation_reports: &[PresentationBenchmarkReport],
     presentation_report_errors: &[String],
     collision_reports: &[CollisionBenchmarkReport],
+    collision_report_errors: &[String],
     perf_profile: PerfProfile,
     observed_warmup_runs: usize,
     observed_measured_runs: usize,
@@ -1999,6 +2250,8 @@ fn build_closure_report(
         report.collision = build_collision_closure_status(
             profile,
             samples,
+            collision_reports,
+            collision_report_errors,
             observed_warmup_runs,
             observed_measured_runs,
         );
@@ -2120,6 +2373,14 @@ fn build_frame_closure_status(
     let mut active_acceleration_artifacts = std::collections::BTreeSet::new();
     let mut active_degradations = std::collections::BTreeSet::new();
     let mut bottleneck_counts: HashMap<String, usize> = HashMap::new();
+    let mut hot_path_readback_bytes = 0u64;
+    let mut scene_reupload_bytes = 0u64;
+    let mut cpu_screen_sample_allocations = 0u32;
+    let mut attachment_cpu_bounce_count = 0u32;
+    let mut queue_submit_count = 0u32;
+    let mut primary_visibility_dispatch_count = 0u32;
+    let mut timestamps_supported = false;
+    let mut timestamped_pass_count = 0u32;
     let expected_backend = profile.backend.as_str();
 
     if observed_warmup_runs != profile.warmup_runs as usize
@@ -2197,6 +2458,116 @@ fn build_frame_closure_status(
             if let Some(bottleneck) = &frame_cost.bottleneck_pass {
                 *bottleneck_counts.entry(bottleneck.clone()).or_insert(0) += 1;
             }
+
+            let frame_timestamped_pass_count = frame_cost.gpu_runtime.timestamped_pass_count;
+            let frame_hot_path_readback_bytes = if frame_cost.gpu_runtime.timestamps_supported {
+                let frame_timestamp_bytes =
+                    (frame_timestamped_pass_count as u64).saturating_mul(16);
+                frame_cost
+                    .gpu_runtime
+                    .readback_bytes
+                    .saturating_sub(frame_timestamp_bytes)
+            } else {
+                frame_cost.gpu_runtime.readback_bytes
+            };
+            hot_path_readback_bytes = hot_path_readback_bytes.max(frame_hot_path_readback_bytes);
+            scene_reupload_bytes =
+                scene_reupload_bytes.max(frame_cost.gpu_runtime.scene_reupload_bytes);
+            cpu_screen_sample_allocations = cpu_screen_sample_allocations
+                .max(frame_cost.gpu_runtime.cpu_screen_sample_allocations);
+            attachment_cpu_bounce_count = attachment_cpu_bounce_count.max(
+                frame_cost
+                    .gpu_runtime
+                    .attachment_decode_count
+                    .saturating_add(frame_cost.gpu_runtime.attachment_encode_count),
+            );
+            queue_submit_count = queue_submit_count.max(frame_cost.gpu_runtime.queue_submit_count);
+            primary_visibility_dispatch_count = primary_visibility_dispatch_count.max(
+                frame_cost
+                    .gpu_runtime
+                    .primary_visibility_packet_fanout_count,
+            );
+            timestamps_supported |= frame_cost.gpu_runtime.timestamps_supported;
+            timestamped_pass_count = timestamped_pass_count.max(frame_timestamped_pass_count);
+
+            if frame_hot_path_readback_bytes > profile.max_hot_path_readback_bytes_per_frame {
+                violations.push(format!(
+                    "scenario '{}' still has {} byte(s) of hot-path readback after subtracting timestamp traffic; per-frame budget is {} byte(s)",
+                    sample.scenario_id,
+                    frame_hot_path_readback_bytes,
+                    profile.max_hot_path_readback_bytes_per_frame
+                ));
+            }
+            if frame_cost.gpu_runtime.scene_reupload_bytes
+                > profile.max_scene_reupload_bytes_per_frame
+            {
+                violations.push(format!(
+                    "scenario '{}' reuploaded {} byte(s) of resident scene data; per-frame budget is {} byte(s)",
+                    sample.scenario_id,
+                    frame_cost.gpu_runtime.scene_reupload_bytes,
+                    profile.max_scene_reupload_bytes_per_frame
+                ));
+            }
+            if frame_cost.gpu_runtime.cpu_screen_sample_allocations
+                > profile.max_cpu_screen_sample_allocations_per_frame
+            {
+                violations.push(format!(
+                    "scenario '{}' still allocates {} CPU screen sample(s); per-frame budget is {}",
+                    sample.scenario_id,
+                    frame_cost.gpu_runtime.cpu_screen_sample_allocations,
+                    profile.max_cpu_screen_sample_allocations_per_frame
+                ));
+            }
+            if frame_cost
+                .gpu_runtime
+                .attachment_decode_count
+                .saturating_add(frame_cost.gpu_runtime.attachment_encode_count)
+                > profile.max_attachment_cpu_bounce_count
+            {
+                violations.push(format!(
+                    "scenario '{}' bounced attachments through CPU {} time(s) (decode={} encode={}); per-frame budget is {}",
+                    sample.scenario_id,
+                    frame_cost
+                        .gpu_runtime
+                        .attachment_decode_count
+                        .saturating_add(frame_cost.gpu_runtime.attachment_encode_count),
+                    frame_cost.gpu_runtime.attachment_decode_count,
+                    frame_cost.gpu_runtime.attachment_encode_count,
+                    profile.max_attachment_cpu_bounce_count
+                ));
+            }
+            if frame_cost.gpu_runtime.queue_submit_count > profile.max_queue_submit_count_per_frame
+            {
+                violations.push(format!(
+                    "scenario '{}' issued {} queue submit(s); per-frame budget is {}",
+                    sample.scenario_id,
+                    frame_cost.gpu_runtime.queue_submit_count,
+                    profile.max_queue_submit_count_per_frame
+                ));
+            }
+            if frame_cost
+                .gpu_runtime
+                .primary_visibility_packet_fanout_count
+                > profile.max_dispatch_count_primary_visibility
+            {
+                violations.push(format!(
+                    "scenario '{}' used {} primary visibility dispatch(es); per-frame budget is {}",
+                    sample.scenario_id,
+                    frame_cost
+                        .gpu_runtime
+                        .primary_visibility_packet_fanout_count,
+                    profile.max_dispatch_count_primary_visibility
+                ));
+            }
+            if profile.gpu_timestamps_required_if_supported
+                && frame_cost.gpu_runtime.timestamps_supported
+                && frame_cost.gpu_runtime.timestamped_pass_count == 0
+            {
+                violations.push(format!(
+                    "scenario '{}' reported timestamps_supported=true but never recorded a timestamped pass",
+                    sample.scenario_id
+                ));
+            }
         }
     }
 
@@ -2208,10 +2579,19 @@ fn build_frame_closure_status(
     report.active_acceleration_artifacts = active_acceleration_artifacts.into_iter().collect();
     report.active_degradations = active_degradations.into_iter().collect();
     report.total_frame_median_ms = percentile_f32(&total_ms, 0.50);
+    report.total_frame_median_fps = report.total_frame_median_ms.and_then(fps_from_ms);
     report.total_frame_p95_ms = percentile_f32(&total_ms, 0.95);
     report.primary_visibility_median_ms = percentile_f32(&primary_ms, 0.50);
     report.primary_visibility_p95_ms = percentile_f32(&primary_ms, 0.95);
     report.dominant_bottleneck_pass = most_common_key(&bottleneck_counts);
+    report.hot_path_readback_bytes = Some(hot_path_readback_bytes);
+    report.scene_reupload_bytes = Some(scene_reupload_bytes);
+    report.cpu_screen_sample_allocations = Some(cpu_screen_sample_allocations);
+    report.attachment_cpu_bounce_count = Some(attachment_cpu_bounce_count);
+    report.queue_submit_count = Some(queue_submit_count);
+    report.primary_visibility_dispatch_count = Some(primary_visibility_dispatch_count);
+    report.timestamps_supported = Some(timestamps_supported);
+    report.timestamped_pass_count = Some(timestamped_pass_count);
     report.notes.push(format!(
         "presentation reports collected for {} scenario(s) spanning {} closure frame sample(s)",
         presentation_reports.len(),
@@ -2247,6 +2627,17 @@ fn build_frame_closure_status(
             format_workgroup_comparison(comparison)
         ));
     }
+    report.notes.push(format!(
+        "execution model observations hot_path_readback_bytes={} scene_reupload_bytes={} cpu_screen_sample_allocations={} attachment_cpu_bounce_count={} queue_submit_count={} primary_visibility_dispatch_count={} timestamps_supported={} timestamped_pass_count={}",
+        hot_path_readback_bytes,
+        scene_reupload_bytes,
+        cpu_screen_sample_allocations,
+        attachment_cpu_bounce_count,
+        queue_submit_count,
+        primary_visibility_dispatch_count,
+        timestamps_supported,
+        timestamped_pass_count
+    ));
 
     if report.primary_visibility_median_ms.is_none() || report.primary_visibility_p95_ms.is_none() {
         violations.push(
@@ -2298,9 +2689,151 @@ fn build_frame_closure_status(
     report
 }
 
+fn frame_execution_model_gate_findings(
+    profile: &PerfClosureProfile,
+    report: &PerfClosureLaneStatusReport,
+    presentation_reports: &[PresentationBenchmarkReport],
+) -> Vec<PerfClosureFinding> {
+    let mut findings = Vec::new();
+    if let Some(observed) = report.hot_path_readback_bytes
+        && observed > profile.max_hot_path_readback_bytes_per_frame
+    {
+        findings.push(PerfClosureFinding {
+            subsystem: "presentation".to_string(),
+            focus: "hot_path_readback_gate".to_string(),
+            summary: "the resident frame still performs hot-path readback, so the closure is not purely GPU-resident yet".to_string(),
+            evidence: vec![
+                format!("hot_path_readback_bytes={observed}"),
+                format!(
+                    "max_hot_path_readback_bytes_per_frame={}",
+                    profile.max_hot_path_readback_bytes_per_frame
+                ),
+            ],
+            next_step:
+                "move the timed path off CPU readback and leave only the explicit timestamp budget, if supported".to_string(),
+        });
+    }
+    if let Some(observed) = report.scene_reupload_bytes
+        && observed > profile.max_scene_reupload_bytes_per_frame
+    {
+        findings.push(PerfClosureFinding {
+            subsystem: "presentation".to_string(),
+            focus: "scene_reupload_gate".to_string(),
+            summary: "the resident scene cache is still being reuploaded during the timed lane".to_string(),
+            evidence: vec![
+                format!("scene_reupload_bytes={observed}"),
+                format!(
+                    "max_scene_reupload_bytes_per_frame={}",
+                    profile.max_scene_reupload_bytes_per_frame
+                ),
+            ],
+            next_step:
+                "keep the scene and acceleration data resident across frames instead of rebuilding it in the measured loop".to_string(),
+        });
+    }
+    if let Some(observed) = report.cpu_screen_sample_allocations
+        && observed > profile.max_cpu_screen_sample_allocations_per_frame
+    {
+        findings.push(PerfClosureFinding {
+            subsystem: "presentation".to_string(),
+            focus: "cpu_screen_sample_allocation_gate".to_string(),
+            summary: "the frame is still allocating CPU screen samples before WGSL can do the real work".to_string(),
+            evidence: vec![
+                format!("cpu_screen_sample_allocations={observed}"),
+                format!(
+                    "max_cpu_screen_sample_allocations_per_frame={}",
+                    profile.max_cpu_screen_sample_allocations_per_frame
+                ),
+            ],
+            next_step:
+                "move primary screen-sample setup onto the resident path or reuse the existing GPU-side allocation".to_string(),
+        });
+    }
+    if let Some(observed) = report.attachment_cpu_bounce_count
+        && observed > profile.max_attachment_cpu_bounce_count
+    {
+        findings.push(PerfClosureFinding {
+            subsystem: "presentation".to_string(),
+            focus: "attachment_cpu_bounce_gate".to_string(),
+            summary: "attachments are still bouncing through CPU memory inside the timed WGSL lane".to_string(),
+            evidence: vec![
+                format!("attachment_cpu_bounce_count={observed}"),
+                format!(
+                    "max_attachment_cpu_bounce_count={}",
+                    profile.max_attachment_cpu_bounce_count
+                ),
+            ],
+            next_step:
+                "keep attachment decode and encode work GPU-resident so the closure lane does not materialize CPU copies".to_string(),
+        });
+    }
+    if let Some(observed) = report.queue_submit_count
+        && observed > profile.max_queue_submit_count_per_frame
+    {
+        findings.push(PerfClosureFinding {
+            subsystem: "presentation".to_string(),
+            focus: "queue_submit_gate".to_string(),
+            summary: "the measured lane is still fragmenting the frame across too many queue submits".to_string(),
+            evidence: vec![
+                format!("queue_submit_count={observed}"),
+                format!(
+                    "max_queue_submit_count_per_frame={}",
+                    profile.max_queue_submit_count_per_frame
+                ),
+            ],
+            next_step:
+                "batch the resident work into fewer submissions so the closure lane reflects the steady-state framegraph".to_string(),
+        });
+    }
+    if let Some(observed) = report.primary_visibility_dispatch_count
+        && observed > profile.max_dispatch_count_primary_visibility
+    {
+        findings.push(PerfClosureFinding {
+            subsystem: "presentation".to_string(),
+            focus: "primary_visibility_dispatch_gate".to_string(),
+            summary:
+                "primary visibility is still dispatching more work than the closure profile allows"
+                    .to_string(),
+            evidence: vec![
+                format!("primary_visibility_dispatch_count={observed}"),
+                format!(
+                    "max_dispatch_count_primary_visibility={}",
+                    profile.max_dispatch_count_primary_visibility
+                ),
+            ],
+            next_step:
+                "tighten the primary visibility dispatch plan before tuning the later shading work"
+                    .to_string(),
+        });
+    }
+    if profile.gpu_timestamps_required_if_supported {
+        for sample in presentation_reports {
+            let timestamps_supported = sample.frame_cost.gpu_runtime.timestamps_supported;
+            let timestamped_pass_count = sample.frame_cost.gpu_runtime.timestamped_pass_count;
+            if timestamps_supported && timestamped_pass_count == 0 {
+                findings.push(PerfClosureFinding {
+                    subsystem: "presentation".to_string(),
+                    focus: "timestamp_requirement_gate".to_string(),
+                    summary: "the GPU supports timestamps, but the timed lane is not actually using them".to_string(),
+                    evidence: vec![
+                        format!("scenario={}", sample.scenario_id),
+                        "timestamps_supported=true".to_string(),
+                        "timestamped_pass_count=0".to_string(),
+                    ],
+                    next_step:
+                        "thread timestamp coverage through the resident path whenever the adapter supports it".to_string(),
+                });
+            }
+        }
+    }
+    findings
+}
+
 fn build_collision_closure_status(
     profile: &PerfClosureProfile,
     samples: &[command_handlers::PerfSummary],
+    collision_reports: &[CollisionBenchmarkReport],
+    collision_report_errors: &[String],
     observed_warmup_runs: usize,
     observed_measured_runs: usize,
 ) -> PerfClosureLaneStatusReport {
@@ -2317,6 +2850,20 @@ fn build_collision_closure_status(
         samples.len(),
         profile.collision.protocol_id
     ));
+    if collision_reports.is_empty() {
+        violations.push("collision benchmark collection produced no benchmark reports".to_string());
+    }
+    if !collision_report_errors.is_empty() {
+        violations.push(format!(
+            "collision benchmark collection reported {} error(s)",
+            collision_report_errors.len()
+        ));
+        violations.extend(
+            collision_report_errors
+                .iter()
+                .map(|error| format!("collision benchmark error: {error}")),
+        );
+    }
     if observed_warmup_runs != profile.warmup_runs as usize
         || observed_measured_runs != profile.measured_runs as usize
     {
@@ -2327,6 +2874,28 @@ fn build_collision_closure_status(
             profile.warmup_runs,
             profile.measured_runs
         ));
+    }
+    let expected_backend = profile.backend.as_str();
+    let observed_backends = collision_reports
+        .iter()
+        .map(|report| report.backend.as_str())
+        .collect::<Vec<_>>();
+    if !observed_backends.is_empty()
+        && observed_backends
+            .iter()
+            .any(|backend| *backend != expected_backend)
+    {
+        violations.push(format!(
+            "collision backends observed: {}",
+            observed_backends.join(", ")
+        ));
+        for observed_backend in observed_backends {
+            if observed_backend != expected_backend {
+                violations.push(format!(
+                    "collision report backend '{observed_backend}' does not match closure backend '{expected_backend}'"
+                ));
+            }
+        }
     }
     match load_collision_baseline_summary(&profile.collision_baseline.baseline_id) {
         Ok(baseline) => {
@@ -2388,13 +2957,14 @@ fn build_closure_verdict(
     collision_reports: &[CollisionBenchmarkReport],
 ) -> PerfClosureVerdict {
     let mut findings = BTreeMap::<(String, String), PerfClosureFinding>::new();
-    let frame_sampled = !matches!(frame.status, PerfClosureLaneStatus::NotSampled)
-        && !presentation_reports.is_empty();
-    let collision_sampled = !matches!(collision.status, PerfClosureLaneStatus::NotSampled)
-        && !collision_reports.is_empty();
+    let frame_sampled = !matches!(frame.status, PerfClosureLaneStatus::NotSampled);
+    let collision_sampled = !matches!(collision.status, PerfClosureLaneStatus::NotSampled);
     let sampled = frame_sampled || collision_sampled;
 
     if frame_sampled {
+        for finding in frame_execution_model_gate_findings(profile, frame, presentation_reports) {
+            merge_closure_finding(&mut findings, finding);
+        }
         for report in presentation_reports {
             for finding in explain_frame_why_not_120_findings(
                 &report.frame_cost,
@@ -2615,6 +3185,18 @@ fn ns_to_ms(value: u128) -> f32 {
     value as f32 / 1_000_000.0
 }
 
+fn fps_from_frame_time_ns(total_frame_time_ns: u128, measured_frame_count: usize) -> f64 {
+    if total_frame_time_ns == 0 || measured_frame_count == 0 {
+        0.0
+    } else {
+        measured_frame_count as f64 / (total_frame_time_ns as f64 / 1_000_000_000.0)
+    }
+}
+
+fn fps_from_ms(frame_time_ms: f32) -> Option<f32> {
+    (frame_time_ms.is_finite() && frame_time_ms > 0.0).then_some(1000.0 / frame_time_ms)
+}
+
 fn percentile_f32(values: &[f32], quantile: f32) -> Option<f32> {
     if values.is_empty() {
         return None;
@@ -2633,7 +3215,7 @@ fn print_presentation_benchmark_reports(reports: &[PresentationBenchmarkReport])
             presentation_frame_history(&report.frame_cost, &report.frame_cost_history);
         let solver_counters = aggregate_presentation_solver_counters(&effective_history);
         println!(
-            "presentation-scenario {} test={} backend={} query_trace_solver_mode={} selected_workgroup_size={} frames={} frame_time_ns={} field_samples={} quality={} target_fps={} scale={:.2} scale_history={} reconstructed_output={} bottleneck_pass={} acceleration={} gain_sources={}",
+            "presentation-scenario {} test={} backend={} query_trace_solver_mode={} selected_workgroup_size={} frames={} frame_time_ns={} fps={:.2} field_samples={} quality={} target_fps={} scale={:.2} scale_history={} reconstructed_output={} bottleneck_pass={} acceleration={} gain_sources={}",
             report.scenario_id,
             report.test_name,
             report.backend,
@@ -2641,6 +3223,7 @@ fn print_presentation_benchmark_reports(reports: &[PresentationBenchmarkReport])
             report.selected_workgroup_size,
             report.frames_executed,
             report.frame_time_ns,
+            report.steady_state_fps,
             report.field_samples,
             report.quality_tier,
             report.target_fps,
@@ -2737,7 +3320,7 @@ fn print_collision_benchmark_reports(reports: &[command_handlers::CollisionBench
         );
         for execution in &report.executions {
             println!(
-                "  collision-execution {} plan={} contract={} query_count={} runtime_ns={} qps={:.2} candidate_count={} rejected_candidate_count={} pruned_node_count={} interval_subdivisions={} interval_refinements={} certificate_successes={} fallback_count={} interval_bracket={} contact_normal_provenance={} reuse_available={} reuse_consumed={} reuse_rejected={} reuse_unavailable={} witness_reuse_rate={:.2} fallback_rate={:.2}",
+                "  collision-execution {} plan={} contract={} query_count={} runtime_ns={} qps={:.2} candidate_count={} rejected_candidate_count={} pruned_node_count={} candidate_reduction_effectiveness={:.3} interval_subdivisions={} interval_refinements={} certificate_successes={} fallback_count={} interval_bracket={} contact_normal_provenance={} wgsl_dispatch_count={} wgsl_dispatch_items={} wgsl_selected_workgroup_size={} wgsl_resident_shared_snapshot_artifacts={} cpu_certification_query_count={} reuse_available={} reuse_consumed={} reuse_rejected={} reuse_unavailable={} witness_reuse_rate={:.2} fallback_rate={:.2}",
                 execution.name,
                 execution.plan_name,
                 execution.contract_id,
@@ -2747,6 +3330,7 @@ fn print_collision_benchmark_reports(reports: &[command_handlers::CollisionBench
                 execution.broadphase_candidate_count,
                 execution.broadphase_rejected_candidate_count,
                 execution.broadphase_pruned_node_count,
+                execution.candidate_reduction_effectiveness,
                 execution.interval_subdivisions,
                 execution.interval_refinements,
                 execution.certificate_successes,
@@ -2759,6 +3343,11 @@ fn print_collision_benchmark_reports(reports: &[command_handlers::CollisionBench
                     .contact_normal_provenance
                     .as_deref()
                     .unwrap_or("none"),
+                execution.wgsl_dispatch_count,
+                execution.wgsl_dispatch_items,
+                execution.wgsl_selected_workgroup_size,
+                execution.wgsl_resident_shared_snapshot_artifacts,
+                execution.cpu_certification_query_count,
                 execution.available_count,
                 execution.consumed_count,
                 execution.rejected_count,
@@ -2771,59 +3360,103 @@ fn print_collision_benchmark_reports(reports: &[command_handlers::CollisionBench
 }
 
 fn print_closure_verdict_report(report: &PerfClosureReport, verbose: bool) {
-    println!(
+    print!("{}", render_closure_verdict_report(report, verbose));
+}
+
+fn render_closure_verdict_report(report: &PerfClosureReport, verbose: bool) -> String {
+    let mut rendered = String::new();
+    writeln!(
+        rendered,
         "closure verdict: {}",
         closure_verdict_status_name(report.verdict.status)
-    );
-    println!(
-        "  profile: {} ({}, backend={}, adapter={}, requested_limits={}, timestamps={}, f16={}, indirect_dispatch={}, warmup={})",
+    )
+    .expect("write closure verdict");
+    writeln!(
+        rendered,
+        "  profile: {} ({}, backend={}, adapter={}, requested_limits={}, timestamps={}, timestamps_required_if_supported={}, readback_max={}, scene_reupload_max={}, cpu_samples_max={}, attachment_bounce_max={}, queue_submits_max={}, primary_visibility_dispatch_max={}, f16={}, indirect_dispatch={}, warmup={})",
         report.profile.name,
         report.profile.execution_story.as_str(),
         report.profile.backend.as_str(),
         report.profile.adapter_name,
         report.profile.requested_limits_profile,
         report.profile.timestamps_enabled,
+        report.profile.gpu_timestamps_required_if_supported,
+        report.profile.max_hot_path_readback_bytes_per_frame,
+        report.profile.max_scene_reupload_bytes_per_frame,
+        report.profile.max_cpu_screen_sample_allocations_per_frame,
+        report.profile.max_attachment_cpu_bounce_count,
+        report.profile.max_queue_submit_count_per_frame,
+        report.profile.max_dispatch_count_primary_visibility,
         report.profile.f16_enabled,
         report.profile.indirect_dispatch_enabled,
         report.profile.warmup_protocol,
-    );
+    )
+    .expect("write closure profile");
     if !report.profile.enabled_optional_features.is_empty() {
-        println!(
+        writeln!(
+            rendered,
             "  enabled optional features: {}",
             report.profile.enabled_optional_features.join(", ")
-        );
+        )
+        .expect("write optional features");
     }
     if let Some(cpu_oracle_profile) = report.cpu_oracle_profile.as_ref() {
-        println!(
+        writeln!(
+            rendered,
             "  cpu-oracle companion: {} ({}, backend={}, adapter={})",
             cpu_oracle_profile.name,
             cpu_oracle_profile.execution_story.as_str(),
             cpu_oracle_profile.backend.as_str(),
             cpu_oracle_profile.adapter_name
-        );
+        )
+        .expect("write cpu oracle profile");
     }
-    println!("  summary: {}", report.verdict.summary);
+    writeln!(rendered, "  summary: {}", report.verdict.summary).expect("write closure summary");
     if let Some(bottleneck) = report.verdict.top_remaining_bottleneck.as_deref() {
-        println!("  top remaining bottleneck: {bottleneck}");
+        writeln!(rendered, "  top remaining bottleneck: {bottleneck}")
+            .expect("write top bottleneck");
+    }
+    if let Some(frame_median_ms) = report.frame.total_frame_median_ms {
+        if let Some(frame_median_fps) = report.frame.total_frame_median_fps {
+            writeln!(
+                rendered,
+                "  frame median: {:.2} ms ({:.2} FPS)",
+                frame_median_ms, frame_median_fps
+            )
+            .expect("write frame median fps");
+        } else {
+            writeln!(rendered, "  frame median: {:.2} ms", frame_median_ms)
+                .expect("write frame median");
+        }
     }
     if verbose || matches!(report.verdict.status, PerfClosureVerdictStatus::Failed) {
-        println!("why-not-120:");
+        writeln!(rendered, "why-not-120:").expect("write why-not heading");
         if report.verdict.findings.is_empty() {
-            println!("  - no specific subsystem finding was inferred from the sampled reports");
+            writeln!(
+                rendered,
+                "  - no specific subsystem finding was inferred from the sampled reports"
+            )
+            .expect("write empty findings");
         } else {
             for finding in &report.verdict.findings {
-                println!(
+                writeln!(
+                    rendered,
                     "  - subsystem={} focus={}",
                     finding.subsystem, finding.focus
-                );
-                println!("    summary: {}", finding.summary);
+                )
+                .expect("write finding header");
+                writeln!(rendered, "    summary: {}", finding.summary)
+                    .expect("write finding summary");
                 if !finding.evidence.is_empty() {
-                    println!("    evidence: {}", finding.evidence.join(" | "));
+                    writeln!(rendered, "    evidence: {}", finding.evidence.join(" | "))
+                        .expect("write finding evidence");
                 }
-                println!("    next step: {}", finding.next_step);
+                writeln!(rendered, "    next step: {}", finding.next_step)
+                    .expect("write finding next step");
             }
         }
     }
+    rendered
 }
 
 fn closure_verdict_status_name(status: PerfClosureVerdictStatus) -> &'static str {
@@ -4822,7 +5455,7 @@ mod tests {
             let presentation = scenario.presentation.as_ref().expect("presentation spec");
             presentation.width == Some(1920)
                 && presentation.height == Some(1080)
-                && presentation.frames == Some(2)
+                && presentation.frames == Some(7)
         }));
 
         let selection = build_benchmark_selection(
@@ -5078,6 +5711,7 @@ mod tests {
                 selected_workgroup_size: 0,
                 frames_executed: 1,
                 frame_time_ns: 1_000_000,
+                steady_state_fps: 1000.0,
                 field_samples: 128,
                 quality_tier: "realtime_120".to_string(),
                 target_fps: 120,
@@ -5117,6 +5751,108 @@ mod tests {
     }
 
     #[test]
+    fn frame_closure_status_applies_execution_model_hard_gates_and_records_observations() {
+        let mut profile = PerfClosureProfile::canonical_1080p120();
+        profile.output_width = 64;
+        profile.output_height = 64;
+        profile.warmup_runs = 0;
+        profile.measured_runs = 1;
+        profile.frame_budget.median_ms = 100.0;
+        profile.frame_budget.p95_ms = 100.0;
+        profile.primary_visibility_budget.median_ms = 100.0;
+        profile.primary_visibility_budget.p95_ms = 100.0;
+
+        let mut frame_cost = sample_presentation_frame_cost(64, 64, 1.0, 128, 2.0, 16, 8, 1_000);
+        frame_cost.quality.tier = "realtime_120".to_string();
+        frame_cost.quality.target_fps = 120;
+        frame_cost.gpu_runtime.timestamps_supported = true;
+        frame_cost.gpu_runtime.timestamped_pass_count = 1;
+        frame_cost.gpu_runtime.readback_bytes = 32;
+        frame_cost.gpu_runtime.scene_reupload_bytes = 1;
+        frame_cost.gpu_runtime.cpu_screen_sample_allocations = 1;
+        frame_cost.gpu_runtime.attachment_decode_count = 2;
+        frame_cost.gpu_runtime.attachment_encode_count = 1;
+        frame_cost.gpu_runtime.queue_submit_count = 65;
+        frame_cost
+            .gpu_runtime
+            .primary_visibility_packet_fanout_count = 4097;
+
+        let presentation_report = PresentationBenchmarkReport {
+            scenario_id: "closure_fixture".to_string(),
+            test_name: "tests/fixture".to_string(),
+            view: "view".to_string(),
+            region: "region".to_string(),
+            domain: "domain".to_string(),
+            backend: "wgsl".to_string(),
+            observed_adapter_name: Some("Test Adapter".to_string()),
+            query_trace_solver_mode: "hybrid".to_string(),
+            selected_workgroup_size: 64,
+            frames_executed: 1,
+            frame_time_ns: 1_000_000,
+            steady_state_fps: 1000.0,
+            field_samples: 128,
+            quality_tier: "realtime_120".to_string(),
+            target_fps: 120,
+            internal_resolution_scale: 1.0,
+            reconstructed_output: false,
+            quality_history: vec!["realtime_120".to_string()],
+            internal_resolution_history: vec![1.0],
+            bottleneck_pass: Some("primary_visibility".to_string()),
+            active_acceleration_artifacts: vec![],
+            performance_gain_sources: vec![],
+            frame_cost: frame_cost.clone(),
+            frame_cost_history: vec![],
+            wgsl_workgroup_comparison: None,
+            ab_comparison: None,
+        };
+
+        let report = build_frame_closure_status(
+            &profile,
+            std::slice::from_ref(&presentation_report),
+            &[],
+            0,
+            1,
+        );
+
+        assert_eq!(report.status, PerfClosureLaneStatus::Violated);
+        assert_eq!(report.total_frame_median_fps, Some(1000.0));
+        assert_eq!(report.hot_path_readback_bytes, Some(16));
+        assert_eq!(report.scene_reupload_bytes, Some(1));
+        assert_eq!(report.cpu_screen_sample_allocations, Some(1));
+        assert_eq!(report.attachment_cpu_bounce_count, Some(3));
+        assert_eq!(report.queue_submit_count, Some(65));
+        assert_eq!(report.primary_visibility_dispatch_count, Some(4097));
+        assert_eq!(report.timestamps_supported, Some(true));
+        assert_eq!(report.timestamped_pass_count, Some(1));
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("execution model observations"))
+        );
+
+        let collision_status = PerfClosureLaneStatusReport::unsampled(&profile.collision);
+        let verdict = build_closure_verdict(
+            &profile,
+            &report,
+            &collision_status,
+            std::slice::from_ref(&presentation_report),
+            &[],
+        );
+        let focuses = verdict
+            .findings
+            .iter()
+            .map(|finding| finding.focus.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(focuses.contains("hot_path_readback_gate"));
+        assert!(focuses.contains("scene_reupload_gate"));
+        assert!(focuses.contains("cpu_screen_sample_allocation_gate"));
+        assert!(focuses.contains("attachment_cpu_bounce_gate"));
+        assert!(focuses.contains("queue_submit_gate"));
+        assert!(focuses.contains("primary_visibility_dispatch_gate"));
+    }
+
+    #[test]
     fn closure_profile_prefers_observed_wgsl_runtime_metadata() {
         let mut profile = PerfClosureProfile::canonical_1080p120();
         let mut frame_cost = sample_presentation_frame_cost(64, 64, 1.0, 128, 2.0, 16, 8, 1_000);
@@ -5141,6 +5877,7 @@ mod tests {
                 selected_workgroup_size: 64,
                 frames_executed: 1,
                 frame_time_ns: 1_000_000,
+                steady_state_fps: 1000.0,
                 field_samples: 128,
                 quality_tier: "realtime_120".to_string(),
                 target_fps: 120,
@@ -5178,6 +5915,7 @@ mod tests {
         let mut frame_status = PerfClosureLaneStatusReport::unsampled(&profile.frame);
         frame_status.status = PerfClosureLaneStatus::Violated;
         frame_status.total_frame_median_ms = Some(11.0);
+        frame_status.total_frame_median_fps = fps_from_ms(11.0);
         frame_status.primary_visibility_median_ms = Some(4.0);
         frame_status.dominant_bottleneck_pass = Some("postprocess_shading".to_string());
 
@@ -5238,6 +5976,7 @@ mod tests {
             selected_workgroup_size: 64,
             frames_executed: 1,
             frame_time_ns: 11_000_000,
+            steady_state_fps: fps_from_frame_time_ns(11_000_000, 1),
             field_samples: 100,
             quality_tier: "realtime_120".to_string(),
             target_fps: 120,
@@ -5326,6 +6065,56 @@ mod tests {
     }
 
     #[test]
+    fn rendered_closure_verdict_prints_execution_model_gate_reasons_directly() {
+        let profile = PerfClosureProfile::canonical_1080p120();
+        let mut report = PerfClosureReport::unsampled(profile);
+        report.frame.total_frame_median_ms = Some(9.5);
+        report.frame.total_frame_median_fps = fps_from_ms(9.5);
+        report.verdict = PerfClosureVerdict {
+            status: PerfClosureVerdictStatus::Failed,
+            summary: "execution-model gates failed".to_string(),
+            top_remaining_bottleneck: Some("attachment_cpu_bounce_gate".to_string()),
+            findings: vec![
+                PerfClosureFinding {
+                    subsystem: "presentation".to_string(),
+                    focus: "hot_path_readback_gate".to_string(),
+                    summary: "the resident frame still performs hot-path readback, so the closure is not purely GPU-resident yet".to_string(),
+                    evidence: vec![
+                        "hot_path_readback_bytes=256".to_string(),
+                        "max_hot_path_readback_bytes_per_frame=0".to_string(),
+                    ],
+                    next_step: "move the timed path off CPU readback and leave only the explicit timestamp budget, if supported".to_string(),
+                },
+                PerfClosureFinding {
+                    subsystem: "presentation".to_string(),
+                    focus: "attachment_cpu_bounce_gate".to_string(),
+                    summary: "the measured lane still bounces attachments through CPU-owned memory".to_string(),
+                    evidence: vec![
+                        "attachment_cpu_bounce_count=2".to_string(),
+                        "max_attachment_cpu_bounce_count=0".to_string(),
+                    ],
+                    next_step: "keep steady-state attachments resident on GPU buffers and reserve CPU bounce for explicit export/debug paths".to_string(),
+                },
+            ],
+        };
+
+        let rendered = render_closure_verdict_report(&report, true);
+
+        assert!(rendered.contains("closure verdict: failed"));
+        assert!(rendered.contains("frame median: 9.50 ms (105.26 FPS)"));
+        assert!(rendered.contains("why-not-120:"));
+        assert!(rendered.contains("focus=hot_path_readback_gate"));
+        assert!(rendered.contains(
+            "the resident frame still performs hot-path readback, so the closure is not purely GPU-resident yet"
+        ));
+        assert!(rendered.contains("focus=attachment_cpu_bounce_gate"));
+        assert!(
+            rendered
+                .contains("the measured lane still bounces attachments through CPU-owned memory")
+        );
+    }
+
+    #[test]
     fn checked_in_collision_baseline_fixture_loads() {
         let summary = load_collision_baseline_summary("collision_perf.phase40_cpu_oracle")
             .expect("load checked-in collision baseline");
@@ -5402,6 +6191,7 @@ mod tests {
             QueryTraceSolverMode::Hybrid,
             Some(64),
             wrela::query_plan::DispatchBackend::Cpu,
+            false,
         );
         let args = command
             .get_args()
@@ -5424,6 +6214,55 @@ mod tests {
             envs.get(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV)
                 .map(String::as_str),
             Some("64")
+        );
+        assert!(!envs.contains_key(WRELA_PRESENTATION_DEBUG_WARM_QUALITY_PIPELINES_ENV));
+        assert!(!envs.contains_key(WRELA_PRESENTATION_DEBUG_ADAPTIVE_WINDOW_ENV));
+    }
+
+    #[test]
+    fn presentation_debug_command_can_enable_quality_pipeline_warmup() {
+        let spec = command_handlers::BenchmarkPresentationSpec {
+            view: "bench_view".to_string(),
+            region: "bench_region".to_string(),
+            entry: Some("tests/bench_fixture.wr".to_string()),
+            domain: Some("bench_domain".to_string()),
+            width: Some(1920),
+            height: Some(1080),
+            frames: Some(7),
+            camera_position: [0.0, 1.0, 2.0],
+            camera_forward: [0.0, 0.0, -1.0],
+            camera_up: [0.0, 1.0, 0.0],
+            vertical_fov_degrees: 48.0,
+        };
+        let command = build_presentation_debug_command(
+            Path::new("/tmp/wrela"),
+            Path::new("/tmp/bench_fixture.wr"),
+            &spec,
+            QueryTraceSolverMode::Hybrid,
+            None,
+            wrela::query_plan::DispatchBackend::Wgsl,
+            true,
+        );
+        let envs = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            envs.get(WRELA_PRESENTATION_DEBUG_WARM_QUALITY_PIPELINES_ENV)
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            envs.get(WRELA_PRESENTATION_DEBUG_ADAPTIVE_WINDOW_ENV)
+                .map(String::as_str),
+            Some("1")
         );
     }
 
@@ -5545,9 +6384,52 @@ mod tests {
         let cold = sample_presentation_frame_cost(64, 64, 1.0, 10, 2.0, 6, 4, 1_000);
         let warm = sample_presentation_frame_cost(32, 32, 0.5, 30, 4.0, 10, 7, 2_000);
 
-        let effective = closure_measured_presentation_frame_history(&warm, &[cold, warm.clone()]);
+        let effective = closure_measured_presentation_frame_history(&warm, &[cold, warm.clone()])
+            .expect("stable closure history");
 
         assert_eq!(effective, vec![warm]);
+    }
+
+    #[test]
+    fn closure_measured_presentation_frame_history_keeps_trailing_stable_quality_suffix() {
+        let mut warm_transition =
+            sample_presentation_frame_cost(64, 64, 1.0, 30, 4.0, 10, 7, 9_500);
+        warm_transition.quality.hit_compaction_enabled = true;
+        warm_transition.quality.active_degradations = vec!["enable_hit_compaction".to_string()];
+        warm_transition.gpu_runtime.pipeline_cache_misses = 1;
+
+        let mut stable0 = warm_transition.clone();
+        stable0.gpu_runtime.pipeline_cache_misses = 0;
+        stable0.passes[0].elapsed_micros = 7_900;
+
+        let mut stable1 = stable0.clone();
+        stable1.passes[0].elapsed_micros = 7_800;
+
+        let effective = closure_measured_presentation_frame_history(
+            &stable1,
+            &[
+                sample_presentation_frame_cost(64, 64, 1.0, 10, 2.0, 6, 4, 1_000),
+                warm_transition,
+                stable0.clone(),
+                stable1.clone(),
+            ],
+        )
+        .expect("stable trailing closure history");
+
+        assert_eq!(effective, vec![stable0, stable1]);
+    }
+
+    #[test]
+    fn closure_measured_presentation_frame_history_rejects_final_cache_miss_frame() {
+        let mut unstable = sample_presentation_frame_cost(64, 64, 1.0, 30, 4.0, 10, 7, 9_500);
+        unstable.quality.hit_compaction_enabled = true;
+        unstable.quality.active_degradations = vec!["enable_hit_compaction".to_string()];
+        unstable.gpu_runtime.pipeline_cache_misses = 2;
+
+        let err = closure_measured_presentation_frame_history(&unstable, &[unstable.clone()])
+            .expect_err("unstable closure frame should fail");
+
+        assert!(err.contains("pipeline cache miss"));
     }
 
     #[test]
@@ -5904,10 +6786,12 @@ mod tests {
             ],
         };
 
-        let report = presentation_report_from_debug_output(&scenario, dump);
+        let report = presentation_report_from_debug_output(&scenario, dump)
+            .expect("non-closure report should parse");
         assert_eq!(report.scenario_id, "presentation_fixture");
         assert_eq!(report.frames_executed, 2);
         assert_eq!(report.frame_time_ns, 3_300_000);
+        assert!((report.steady_state_fps - (2.0 / 0.0033)).abs() < 0.01);
         assert_eq!(report.field_samples, 1024);
         assert_eq!(report.query_trace_solver_mode, "hybrid");
         assert_eq!(report.selected_workgroup_size, 64);
@@ -5952,13 +6836,31 @@ mod tests {
             ],
         };
 
-        let report = presentation_report_from_debug_output(&scenario, dump);
+        let report = presentation_report_from_debug_output(&scenario, dump)
+            .expect("closure report should parse");
 
         assert_eq!(report.frames_executed, 1);
         assert_eq!(report.frame_time_ns, 2_000_000);
+        assert!((report.steady_state_fps - 500.0).abs() < f64::EPSILON);
         assert_eq!(report.field_samples, 30);
         assert_eq!(report.internal_resolution_history, vec![0.5]);
         assert_eq!(report.frame_cost_history, vec![warm]);
+    }
+
+    #[test]
+    fn closure_profile_defaults_to_measurement_collection_until_why_not_is_requested() {
+        assert_eq!(
+            presentation_benchmark_collection_mode(PerfProfile::Closure1080p120, false),
+            PresentationBenchmarkCollectionMode::Measurement
+        );
+        assert_eq!(
+            presentation_benchmark_collection_mode(PerfProfile::Closure1080p120, true),
+            PresentationBenchmarkCollectionMode::Diagnostic
+        );
+        assert_eq!(
+            presentation_benchmark_collection_mode(PerfProfile::Standard, false),
+            PresentationBenchmarkCollectionMode::Diagnostic
+        );
     }
 
     #[test]
@@ -5997,7 +6899,8 @@ mod tests {
             ..hybrid_dump.clone()
         };
 
-        let hybrid_report = presentation_report_from_debug_output(&scenario, hybrid_dump);
+        let hybrid_report = presentation_report_from_debug_output(&scenario, hybrid_dump)
+            .expect("hybrid report should parse");
         let comparison =
             presentation_comparison_from_debug_reports(&hybrid_report, &dense_only_dump);
 
@@ -6034,6 +6937,7 @@ mod tests {
             selected_workgroup_size: workgroup_size,
             frames_executed: 1,
             frame_time_ns,
+            steady_state_fps: fps_from_frame_time_ns(frame_time_ns, 1),
             field_samples: 512,
             quality_tier: "realtime_120".to_string(),
             target_fps: 120,

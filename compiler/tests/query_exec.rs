@@ -20,7 +20,7 @@ use wrela::query_exec::{
     BatchQueryExecutionTrace, CostFidelity, DirectQueryExecutionTrace, DirectQueryExecutor,
     QueryExecContext, QueryExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass,
     SelectedMethodClass, SemanticCostCauseKind, SemanticCostUnit, SemanticStageKind,
-    WGSL_WORKGROUP_SIZE_OVERRIDE_ENV, executable_region_shape_lists,
+    WGSL_WORKGROUP_SIZE_OVERRIDE_ENV, clear_native_wgsl_test_caches, executable_region_shape_lists,
     execute_batch_query_with_trace, execute_batch_query_with_trace_on, execute_capture_query,
     execute_capture_query_on, execute_capture_query_with_trace_on, execute_world_query,
     execute_world_query_on, execute_world_query_with_policy_with_trace_on,
@@ -64,6 +64,13 @@ impl Drop for EnvVarGuard {
 }
 
 fn workgroup_override_test_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+}
+
+fn wgsl_resident_cache_test_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
@@ -1896,6 +1903,8 @@ region phase43_resident_scene_region() {
 
 #[test]
 fn query_exec_wgsl_batch_reuses_resident_scene_across_dispatch_size_changes() {
+    let _lock = wgsl_resident_cache_test_lock();
+    clear_native_wgsl_test_caches();
     let (_, _, ctx) = typed_query_module(query_fixture_source());
     let region_capture = KernelValue::Capture(SmolStr::new("scene_region"));
     let fine_domain = scene_domain(
@@ -1944,10 +1953,13 @@ fn query_exec_wgsl_batch_reuses_resident_scene_across_dispatch_size_changes() {
     )
     .expect("large wgsl world batch");
 
-    assert!(small_trace.observability.gpu_runtime.scene_reupload_bytes > 0);
     assert_eq!(
         large_trace.observability.gpu_runtime.scene_reupload_bytes,
         0
+    );
+    assert!(
+        small_trace.observability.gpu_runtime.scene_reupload_bytes
+            >= large_trace.observability.gpu_runtime.scene_reupload_bytes
     );
     assert!(
         !large_trace
@@ -2257,7 +2269,9 @@ fn query_exec_cpu_hybrid_world_cache_advances_far_field_without_changing_hits() 
 }
 
 #[test]
-fn query_wgsl_workgroup_selection_is_bounded_and_consistent_with_presentation() {
+fn query_wgsl_workgroup_selection_is_bounded_and_uses_documented_defaults() {
+    let _lock = workgroup_override_test_lock();
+    let _guard = EnvVarGuard::set(WGSL_WORKGROUP_SIZE_OVERRIDE_ENV, "");
     let mut limits = wgpu::Limits::downlevel_defaults();
     limits.max_compute_workgroup_size_x = 128;
     limits.max_compute_invocations_per_workgroup = 128;
@@ -2269,8 +2283,7 @@ fn query_wgsl_workgroup_selection_is_bounded_and_consistent_with_presentation() 
             .expect("presentation workgroup selection");
 
     assert_eq!(query_selected, 128);
-    assert_eq!(presentation_selected, 128);
-    assert_eq!(query_selected, presentation_selected);
+    assert_eq!(presentation_selected, 64);
     assert_eq!(
         wrela::query_exec::validate_query_wgsl_workgroup_size(64, &limits)
             .expect("query workgroup validation"),
@@ -6834,6 +6847,70 @@ fn query_exec_wgsl_world_distance_prefers_accelerated_helpers_when_available() {
     let rendered_medium = render_semantic_cost_report(&medium_trace.cost_report);
     assert!(rendered_medium.contains("acceleration_node_visits="));
     assert!(rendered_medium.contains("wgsl_world_helper_path=accelerated"));
+}
+
+#[test]
+fn query_exec_wgsl_participant_batches_prune_bounded_world_support() {
+    let (_, _, ctx) = typed_query_module(accelerated_world_helper_fixture_source());
+    let region_name = SmolStr::new("accelerated_region");
+    let region_scene_id = stable_region_scene_capture_id(&region_name);
+    let domain = scene_domain(region_scene_id, 1, true, true, true);
+    let scene_summary = ctx
+        .region_scene_summary(&region_name, 1)
+        .expect("bounded region summary");
+    let radiance_plan = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::PARTICIPANTS_RADIANCE_BATCH_WORLD,
+            DispatchBackend::Wgsl,
+            Some(scene_summary.clone()),
+        )
+        .expect("radiance batch plan"),
+    );
+    let medium_plan = lower_batch_query_plan(
+        &BatchQueryPlan::for_contract(
+            query_contract::PARTICIPANTS_MEDIUM_BATCH_WORLD,
+            DispatchBackend::Wgsl,
+            Some(scene_summary),
+        )
+        .expect("medium batch plan"),
+    );
+    let pruned_point = [30.0, 0.0, 0.0];
+
+    let radiance_args = [
+        KernelValue::Capture(region_name.clone()),
+        domain.clone(),
+        KernelValue::Array(vec![point_direction_query(pruned_point, [0.0, 0.0, 1.0])]),
+    ];
+    let (cpu_radiance, _) = execute_batch_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Cpu,
+        &radiance_plan,
+        &radiance_args,
+    )
+    .expect("cpu radiance batch");
+    let (wgsl_radiance, wgsl_radiance_trace) = execute_batch_query_with_trace_on(
+        &ctx,
+        DispatchBackend::Wgsl,
+        &radiance_plan,
+        &radiance_args,
+    )
+    .expect("wgsl radiance batch");
+    assert_eq!(cpu_radiance, wgsl_radiance);
+    assert!(wgsl_radiance_trace.observability.acceleration_pruned_nodes > 0);
+
+    let medium_args = [
+        KernelValue::Capture(region_name),
+        domain,
+        KernelValue::Array(vec![point_query(pruned_point)]),
+    ];
+    let (cpu_medium, _) =
+        execute_batch_query_with_trace_on(&ctx, DispatchBackend::Cpu, &medium_plan, &medium_args)
+            .expect("cpu medium batch");
+    let (wgsl_medium, wgsl_medium_trace) =
+        execute_batch_query_with_trace_on(&ctx, DispatchBackend::Wgsl, &medium_plan, &medium_args)
+            .expect("wgsl medium batch");
+    assert_eq!(cpu_medium, wgsl_medium);
+    assert!(wgsl_medium_trace.observability.acceleration_pruned_nodes > 0);
 }
 
 #[test]

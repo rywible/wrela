@@ -963,6 +963,8 @@ pub(super) struct PresentationBenchmarkReport {
     pub(super) selected_workgroup_size: u32,
     pub(super) frames_executed: u32,
     pub(super) frame_time_ns: u128,
+    #[serde(default)]
+    pub(super) steady_state_fps: f64,
     pub(super) field_samples: u32,
     pub(super) quality_tier: String,
     pub(super) target_fps: u32,
@@ -1034,6 +1036,8 @@ pub(super) struct CollisionBenchmarkExecutionReport {
     pub(super) broadphase_candidate_count: u32,
     pub(super) broadphase_rejected_candidate_count: u32,
     pub(super) broadphase_pruned_node_count: u32,
+    #[serde(default)]
+    pub(super) candidate_reduction_effectiveness: f32,
     pub(super) interval_subdivisions: u32,
     pub(super) interval_refinements: u32,
     pub(super) certificate_successes: u32,
@@ -1043,6 +1047,16 @@ pub(super) struct CollisionBenchmarkExecutionReport {
     pub(super) fallback_count: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) contact_normal_provenance: Option<String>,
+    #[serde(default)]
+    pub(super) wgsl_dispatch_count: u32,
+    #[serde(default)]
+    pub(super) wgsl_dispatch_items: u32,
+    #[serde(default)]
+    pub(super) wgsl_selected_workgroup_size: u32,
+    #[serde(default)]
+    pub(super) wgsl_resident_shared_snapshot_artifacts: u32,
+    #[serde(default)]
+    pub(super) cpu_certification_query_count: u32,
     pub(super) available_count: u32,
     pub(super) consumed_count: u32,
     pub(super) rejected_count: u32,

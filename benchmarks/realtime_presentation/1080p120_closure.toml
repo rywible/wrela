@@ -24,7 +24,7 @@ class = "closure"
 min_runtime_ms = 250
 timeout_ms = 180000
 allow_unstable = false
-presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_dense_constructive_1080p120_closure_view", region = "dense_constructive_region", domain = "dense_constructive_domain", width = 1920, height = 1080, frames = 2, camera_position = [0.0, 0.0, 3.4], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 46.0 }
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_dense_constructive_1080p120_closure_view", region = "dense_constructive_region", domain = "dense_constructive_domain", width = 1920, height = 1080, frames = 7, camera_position = [0.0, 0.0, 3.4], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 46.0 }
 
 # Repetition-heavy closure lane: checks repeat identity, instance stability,
 # and traversal behavior against the fixed 1080p120 protocol.
@@ -36,7 +36,7 @@ class = "closure"
 min_runtime_ms = 300
 timeout_ms = 180000
 allow_unstable = false
-presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_repetition_1080p120_closure_view", region = "repetition_region", domain = "repetition_domain", width = 1920, height = 1080, frames = 2, camera_position = [0.0, 0.0, 2.8], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 47.0 }
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_repetition_1080p120_closure_view", region = "repetition_region", domain = "repetition_domain", width = 1920, height = 1080, frames = 7, camera_position = [0.0, 0.0, 2.8], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 47.0 }
 
 # Thin-stack / grazing closure lane: exercises alias-prone rays, epsilon
 # sensitivity, and shallow-angle normal stability.
@@ -48,7 +48,7 @@ class = "closure"
 min_runtime_ms = 300
 timeout_ms = 180000
 allow_unstable = false
-presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_thin_stack_1080p120_closure_view", region = "thin_stack_region", domain = "thin_stack_domain", width = 1920, height = 1080, frames = 2, camera_position = [0.0, 0.0, 2.6], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 48.0 }
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_thin_stack_1080p120_closure_view", region = "thin_stack_region", domain = "thin_stack_domain", width = 1920, height = 1080, frames = 7, camera_position = [0.0, 0.0, 2.6], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 48.0 }
 
 # Media radiance closure lane: preserves the original radiance/medium probe
 # alongside the fixed 1080p120 presentation protocol.
@@ -60,7 +60,7 @@ class = "closure"
 min_runtime_ms = 300
 timeout_ms = 180000
 allow_unstable = false
-presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_media_radiance_1080p120_closure_view", region = "media_region", domain = "media_domain", width = 1920, height = 1080, frames = 2, camera_position = [0.0, 0.0, 3.2], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 48.0 }
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_media_radiance_1080p120_closure_view", region = "media_region", domain = "media_domain", width = 1920, height = 1080, frames = 7, camera_position = [0.0, 0.0, 3.2], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 48.0 }
 
 # Transformed primitive gallery closure lane: keeps translated/instanced
 # primitive coverage in the fixed 1080p120 protocol.
@@ -72,7 +72,7 @@ class = "closure"
 min_runtime_ms = 250
 timeout_ms = 180000
 allow_unstable = false
-presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_transformed_gallery_1080p120_closure_view", region = "transformed_gallery_region", domain = "transformed_gallery_domain", width = 1920, height = 1080, frames = 2, camera_position = [0.0, 0.0, 2.8], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 47.0 }
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_transformed_gallery_1080p120_closure_view", region = "transformed_gallery_region", domain = "transformed_gallery_domain", width = 1920, height = 1080, frames = 7, camera_position = [0.0, 0.0, 2.8], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 47.0 }
 
 # Mixed opaque/conservative closure lane: anchors the representative
 # support-bounded guard plus conservative field mix under the fixed protocol.
@@ -84,7 +84,7 @@ class = "closure"
 min_runtime_ms = 300
 timeout_ms = 180000
 allow_unstable = false
-presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_mixed_opaque_conservative_1080p120_closure_view", region = "mixed_opaque_conservative_region", domain = "mixed_opaque_conservative_domain", width = 1920, height = 1080, frames = 2, camera_position = [0.0, 0.0, 3.1], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 48.0 }
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_mixed_opaque_conservative_1080p120_closure_view", region = "mixed_opaque_conservative_region", domain = "mixed_opaque_conservative_domain", width = 1920, height = 1080, frames = 7, camera_position = [0.0, 0.0, 3.1], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 48.0 }
 
 # Cache-stress motion-path closure lane: keeps the shared acceleration/cache
 # story under repeated camera-relative motion and repeat-heavy traversal.
@@ -96,7 +96,7 @@ class = "closure"
 min_runtime_ms = 300
 timeout_ms = 180000
 allow_unstable = false
-presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_cache_stress_motion_1080p120_closure_view", region = "repetition_region", domain = "repetition_domain", width = 1920, height = 1080, frames = 2, camera_position = [0.0, 0.0, 2.8], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 47.0 }
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_cache_stress_motion_1080p120_closure_view", region = "repetition_region", domain = "repetition_domain", width = 1920, height = 1080, frames = 7, camera_position = [0.0, 0.0, 2.8], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 47.0 }
 
 # Camera-motion / temporal-reuse / clipmap-churn closure lane: preserves the
 # fixed 1080p120 path while moving through a media-enabled authored scene.
@@ -108,4 +108,4 @@ class = "closure"
 min_runtime_ms = 300
 timeout_ms = 180000
 allow_unstable = false
-presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_camera_motion_temporal_reuse_clipmap_churn_1080p120_closure_view", region = "media_region", domain = "media_domain", width = 1920, height = 1080, frames = 2, camera_position = [0.0, 0.0, 3.0], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 48.0 }
+presentation = { entry = "tests/realtime_presentation_test.wr", view = "show_camera_motion_temporal_reuse_clipmap_churn_1080p120_closure_view", region = "media_region", domain = "media_domain", width = 1920, height = 1080, frames = 7, camera_position = [0.0, 0.0, 3.0], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 48.0 }

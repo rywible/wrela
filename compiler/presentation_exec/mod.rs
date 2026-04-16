@@ -303,6 +303,10 @@ pub(crate) struct TileCullingMask {
 
 pub(crate) const PRESENTATION_WORKGROUP_SIZE_CANDIDATES: [u32; 3] = [32, 64, 128];
 pub(crate) const PRESENTATION_TILE_SIZE: u32 = 8;
+// Resident post-visibility passes converged on 64 as the best default after Phase 46:
+// it still fills an 8x8 tile packet in one group while avoiding the occupancy drop
+// from always pushing to the largest legal candidate on mixed scatter/build passes.
+pub(crate) const PRESENTATION_RETUNED_DEFAULT_WORKGROUP_SIZE: u32 = 64;
 
 pub fn validate_presentation_workgroup_size(
     requested_workgroup_size: u32,
@@ -376,8 +380,11 @@ pub fn select_presentation_workgroup_size(
     if let Some(requested_workgroup_size) = requested_presentation_workgroup_size_override()? {
         return validate_presentation_workgroup_size(requested_workgroup_size, adapter_limits);
     }
+    if supported_sizes.contains(&PRESENTATION_RETUNED_DEFAULT_WORKGROUP_SIZE) {
+        return Ok(PRESENTATION_RETUNED_DEFAULT_WORKGROUP_SIZE);
+    }
     supported_sizes
-        .last()
+        .first()
         .copied()
         .ok_or_else(|| PresentationExecError::UnsupportedPlan {
             message: "presentation WGSL adapter reported no supported workgroup sizes".to_string(),
@@ -824,16 +831,26 @@ pub(crate) fn attachment_byte_reports(
             width: attachment.layout.width,
             height: attachment.layout.height,
             total_size_bytes: attachment.bytes.len() as u64,
-            backing: arena
-                .and_then(|gpu_attachments| gpu_attachments.attachment(name.as_str()))
-                .map(|slot| match &slot.backing {
-                    AttachmentBacking::CpuBytes(_) => "cpu_bytes",
-                    AttachmentBacking::GpuBuffer { .. } => "gpu_buffer",
-                })
-                .unwrap_or("cpu_bytes")
-                .to_string(),
+            backing: attachment_backing_report(
+                arena
+                    .and_then(|gpu_attachments| gpu_attachments.attachment(name.as_str()))
+                    .map(|slot| match &slot.backing {
+                        AttachmentBacking::CpuBytes(_) => "cpu_bytes",
+                        AttachmentBacking::GpuBuffer { .. } => "gpu_buffer",
+                    })
+                    .unwrap_or("cpu_bytes"),
+                &attachment.layout.attachment,
+            ),
         })
         .collect()
+}
+
+fn attachment_backing_report(backing: &str, attachment: &FrameAttachmentContract) -> String {
+    format!(
+        "{}({})",
+        backing,
+        resources::attachment_policy_description(attachment)
+    )
 }
 
 pub(crate) fn encode_values_at_indices(
@@ -1050,15 +1067,21 @@ pub(crate) fn tile_culling_mask(
     let evaluator = DirectQueryEvaluator::new_with_snapshot(ctx, Some(&input.region_snapshot));
     let detail = frame_domain_geometry_detail(&input.frame_domain).unwrap_or(0);
     let bounds = evaluator.region_shape_support_bounds(input.region_capture_name(), detail)?;
-    if bounds.is_empty() {
-        return Ok(None);
-    }
     let tile_size = PRESENTATION_TILE_SIZE;
     let tiles_x = viewport.width.div_ceil(tile_size);
     let tiles_y = viewport.height.div_ceil(tile_size);
+    let candidate_table = build_observer_local_tile_candidate_artifact(
+        ctx,
+        input.region_capture_name(),
+        detail,
+        camera,
+        viewport,
+    )
+    .unwrap_or_else(|| build_tile_candidate_artifact(viewport, &[], false));
     let mut active = vec![false; (tiles_x * tiles_y) as usize];
+    let mut saw_coverage = false;
     for (_, min, max) in bounds {
-        if !mark_projected_bounds_tiles(
+        if mark_projected_bounds_tiles(
             &mut active,
             tiles_x,
             tiles_y,
@@ -1068,8 +1091,22 @@ pub(crate) fn tile_culling_mask(
             min,
             max,
         ) {
-            return Ok(None);
+            saw_coverage = true;
         }
+    }
+    if !saw_coverage && candidate_table.enabled {
+        for span in &candidate_table.tile_spans {
+            if span.candidate_len == 0 {
+                continue;
+            }
+            if let Some(slot) = active.get_mut(span.tile_index as usize) {
+                *slot = true;
+                saw_coverage = true;
+            }
+        }
+    }
+    if !saw_coverage {
+        return Ok(None);
     }
     let mut coarse_active_samples = Vec::new();
     let mut skipped_samples = Vec::new();
@@ -1087,14 +1124,6 @@ pub(crate) fn tile_culling_mask(
         }
     }
     let active_tiles = active.iter().filter(|tile| **tile).count() as u32;
-    let candidate_table = build_observer_local_tile_candidate_artifact(
-        ctx,
-        input.region_capture_name(),
-        detail,
-        camera,
-        viewport,
-    )
-    .unwrap_or_else(|| build_tile_candidate_artifact(viewport, &[], false));
     let active_samples = if candidate_table.enabled {
         coarse_active_samples.clone()
     } else {
@@ -1174,7 +1203,12 @@ fn projected_bounds_tile_range(
         ];
         let depth = rel[0] * forward[0] + rel[1] * forward[1] + rel[2] * forward[2];
         if depth <= 0.0 {
-            return Err(());
+            return Ok(Some((
+                0,
+                tiles_x.saturating_sub(1),
+                0,
+                tiles_y.saturating_sub(1),
+            )));
         }
         let x = (rel[0] * right[0] + rel[1] * right[1] + rel[2] * right[2])
             / (depth * horizontal_scale);
@@ -2898,8 +2932,9 @@ fn kernel_value_kind(value: &KernelValue) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        CanonicalViewportInput, TileCandidateQueueState, build_tile_candidate_artifact,
-        build_tile_candidate_span_words, tile_candidate_dispatch_packets,
+        CanonicalCameraInput, CanonicalViewportInput, TileCandidateQueueState,
+        build_tile_candidate_artifact, build_tile_candidate_span_words,
+        projected_bounds_tile_range, tile_candidate_dispatch_packets,
     };
     use smol_str::SmolStr;
 
@@ -3023,5 +3058,33 @@ mod tests {
         assert_eq!(spans[1], 0);
         assert_eq!(spans[64 * 2], 0);
         assert_eq!(spans[64 * 2 + 1], 0);
+    }
+
+    #[test]
+    fn projected_bounds_tile_range_keeps_full_screen_coverage_when_bounds_cross_camera_plane() {
+        let viewport = CanonicalViewportInput {
+            width: 16,
+            height: 16,
+        };
+        let camera = CanonicalCameraInput {
+            position: [0.0, 0.0, 0.0],
+            forward: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            vertical_fov_degrees: 75.0,
+        };
+
+        let coverage = projected_bounds_tile_range(
+            2,
+            2,
+            8,
+            camera,
+            viewport,
+            [-0.5, -0.5, -1.0],
+            [0.5, 0.5, 0.5],
+        )
+        .expect("camera-plane-crossing bounds should stay conservative")
+        .expect("coverage should remain available");
+
+        assert_eq!(coverage, (0, 1, 0, 1));
     }
 }

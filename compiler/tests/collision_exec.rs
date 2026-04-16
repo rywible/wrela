@@ -780,6 +780,11 @@ fn static_collision_paths_execute_on_wgsl_and_use_world_queries() {
         );
         let (result, trace) = plan.execute(&ctx, &args).expect("wgsl collision execution");
         assert_eq!(trace.backend, wrela::query_contract::DispatchBackend::Wgsl);
+        let wgsl_metrics = trace.wgsl_metrics.as_ref().expect("wgsl collision metrics");
+        assert!(wgsl_metrics.dispatch_count > 0);
+        assert!(wgsl_metrics.dispatch_items > 0);
+        assert!(wgsl_metrics.selected_workgroup_size > 0);
+        assert_eq!(wgsl_metrics.cpu_certification_query_count, 0);
         match (kind, result) {
             (CollisionQueryKind::PointOccupancyWorld, CollisionResult::Occupancy(value)) => {
                 assert!(value.occupied);
@@ -862,6 +867,100 @@ fn static_collision_paths_execute_on_wgsl_and_use_world_queries() {
             }
             other => panic!("unexpected collision result for {kind:?}: {other:?}"),
         }
+    }
+}
+
+#[test]
+fn wgsl_collision_trace_reports_candidate_reduction_effectiveness() {
+    let ctx = typed_query_module(collision_clutter_fixture_source());
+    let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_clutter_region"));
+    let plan = CollisionPlan::for_query_with_backend(
+        CollisionQueryKind::PointOccupancyWorld,
+        wrela::query_contract::DispatchBackend::Wgsl,
+    );
+    let (_, trace) = plan
+        .execute(
+            &ctx,
+            &[
+                region_capture(scene_id, 1),
+                scene_domain(scene_id),
+                collision_point_input([0.0, 0.0, 0.25]),
+            ],
+        )
+        .expect("wgsl clutter occupancy");
+    let wgsl_metrics = trace.wgsl_metrics.as_ref().expect("wgsl metrics");
+    assert_eq!(trace.broadphase_candidate_count, 1);
+    assert!(trace.broadphase_rejected_candidate_count >= 2);
+    assert!(wgsl_metrics.candidate_reduction_effectiveness > 0.5);
+}
+
+#[test]
+fn transition_collision_wgsl_uses_gpu_bracket_and_cpu_certification() {
+    let ctx = typed_query_module(collision_fixture_source());
+    let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_region"));
+    let args = vec![
+        region_capture(scene_id, 1),
+        scene_domain(scene_id),
+        collision_transition_input(1, 0, ChangeClass::Presentation),
+        collision_sweep_input([0.0, 0.0, 2.0], [0.0, 0.0, -2.0], 0.25),
+    ];
+
+    for kind in [
+        CollisionQueryKind::SphereSweepTransition,
+        CollisionQueryKind::SphereTimeOfImpactTransition,
+    ] {
+        let cpu_plan = CollisionPlan::for_query(kind);
+        let wgsl_plan = CollisionPlan::for_query_with_backend(
+            kind,
+            wrela::query_contract::DispatchBackend::Wgsl,
+        );
+        let (cpu_result, _cpu_trace) = cpu_plan
+            .execute(&ctx, &args)
+            .expect("cpu transition collision");
+        let (wgsl_result, wgsl_trace) = wgsl_plan
+            .execute(&ctx, &args)
+            .expect("wgsl transition collision");
+        let wgsl_metrics = wgsl_trace
+            .wgsl_metrics
+            .as_ref()
+            .expect("wgsl transition metrics");
+        assert!(wgsl_metrics.dispatch_count > 0);
+        assert!(wgsl_metrics.dispatch_items >= 4);
+        assert!(wgsl_metrics.cpu_certification_query_count > 0);
+        assert!(
+            wgsl_trace
+                .executed_query_contracts
+                .contains(&wrela::query_contract::SPATIAL_DISTANCE_BATCH_WORLD)
+        );
+        assert!(
+            wgsl_trace
+                .executed_query_contracts
+                .contains(&wrela::query_contract::SPATIAL_DISTANCE_CAPTURE_SHAPE)
+        );
+        match (cpu_result, wgsl_result) {
+            (CollisionResult::Sweep(cpu), CollisionResult::Sweep(wgsl)) => {
+                assert_eq!(cpu.hit, wgsl.hit);
+                assert_approx_eq(
+                    cpu.witness
+                        .as_ref()
+                        .expect("cpu sweep witness")
+                        .contact_fraction_upper_bound,
+                    wgsl.witness
+                        .as_ref()
+                        .expect("wgsl sweep witness")
+                        .contact_fraction_upper_bound,
+                );
+            }
+            (CollisionResult::TimeOfImpact(cpu), CollisionResult::TimeOfImpact(wgsl)) => {
+                assert_eq!(cpu.hit, wgsl.hit);
+                assert_approx_eq(
+                    cpu.time_fraction_upper_bound.expect("cpu toi"),
+                    wgsl.time_fraction_upper_bound.expect("wgsl toi"),
+                );
+            }
+            other => panic!("unexpected transition result pairing for {kind:?}: {other:?}"),
+        }
+        assert!(wgsl_trace.interval_subdivisions > 0);
     }
 }
 

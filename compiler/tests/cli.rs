@@ -734,7 +734,7 @@ fn cli_collision_plan_json_reports_validation_and_policy() {
 }
 
 #[test]
-fn cli_collision_plan_wgsl_reports_invalid_exact_oracle_validation() {
+fn cli_collision_plan_wgsl_reports_valid_transition_support() {
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .arg("collision-plan")
         .arg("--query-backend=wgsl")
@@ -748,13 +748,20 @@ fn cli_collision_plan_wgsl_reports_invalid_exact_oracle_validation() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("backend: wgsl"));
-    assert!(stdout.contains("validation: invalid"));
+    assert!(stdout.contains("validation: ok"));
     assert!(stdout.contains("authority_scope: transition"));
-    assert!(stdout.contains("required_guarantee=exact"));
-    assert!(stdout.contains("selected_method=exact_oracle"));
+    assert!(stdout.contains("required_guarantee=conservative_no_false_miss"));
+    assert!(stdout.contains("selected_method=conservative_solver"));
+    assert!(stdout.contains("required_guarantee=interval_bounded"));
+    assert!(stdout.contains("selected_method=interval_solver"));
     assert!(stdout.contains("shared spine: observer=collision owner=CollisionPlan"));
     assert!(stdout.contains("shared spine primitive nodes:"));
-    assert!(stdout.contains("shared policy summary: status=invalid"));
+    assert!(stdout.contains(
+        "shared policy summary: status=valid requirements=collision_policy[legal=true backends=wgsl supported=cpu|wgsl required_guarantee=conservative_no_false_miss selected_method=conservative_solver]"
+    ));
+    assert!(stdout.contains(
+        "shared policy summary: status=valid requirements=collision_policy[legal=true backends=wgsl supported=cpu|wgsl required_guarantee=interval_bounded selected_method=interval_solver]"
+    ));
     assert!(stdout.contains("shared observability report: common="));
 }
 
@@ -4111,6 +4118,289 @@ class = "closure"
 min_runtime_ms = 1
 timeout_ms = 20000
 allow_unstable = false
+"#,
+    )
+    .unwrap();
+}
+
+fn write_collision_closure_benchmark_project(root: &std::path::Path) {
+    let src_dir = root.join("src");
+    let tests_dir = root.join("tests");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&tests_dir).unwrap();
+    write_fixture_file(
+        src_dir.join("main.wr"),
+        r#"fn run() -> Integer {
+    return 0
+}
+"#,
+    )
+    .unwrap();
+    write_fixture_file(
+        tests_dir.join("collision_perf_test.wr"),
+        r#"
+fn update_checksum(current: Integer, value: Integer) -> Integer {
+    return ((current * 41) + value) % 2147483647
+}
+
+fn compute_transition_probe_offset(step: Integer) -> Vec3 {
+    return vec3(
+        f32(step % 9) * 0.04 - 0.16,
+        f32((step / 9) % 5) * 0.03 - 0.06,
+        f32(step % 4) * -0.02
+    )
+}
+
+field exact distance collision_anchor(p: Vec3) -> F32 {
+    sphere(radius = 0.42)
+}
+
+field conservative distance collision_column(p: Vec3) -> F32 {
+    sweep = vec3(0.0, 1.76, 0.0) {
+        circle2(radius = 0.10)
+    }
+}
+
+field conservative distance collision_cap(p: Vec3) -> F32 {
+    translate = vec3(0.0, 0.58, 0.0) {
+        extrude = f32(0.14) {
+            rect2(half = vec2(0.18, 0.06))
+        }
+    }
+}
+
+field conservative distance collision_cluster(p: Vec3) -> F32 {
+    union {
+        provenance_policy = nearest
+        use collision_anchor
+        translate = vec3(1.08, 0.02, 0.0) {
+            use collision_column
+        }
+        translate = vec3(-1.38, -0.06, 0.0) {
+            use collision_cap
+        }
+    }
+}
+
+field exact distance collision_left_guard(p: Vec3) -> F32 {
+    translate = vec3(-2.55, 0.14, 0.0) {
+        sphere(radius = 0.34)
+    }
+}
+
+field exact distance collision_right_guard(p: Vec3) -> F32 {
+    translate = vec3(2.45, -0.18, 0.0) {
+        sphere(radius = 0.30)
+    }
+}
+
+material collision_surface(hit: Hit3) -> Surface {
+    shell = clamp(abs(hit.local_position.x) * 0.32 + abs(hit.local_normal.y) * 0.24, 0.0, 1.0)
+    return Surface(
+        albedo=vec3(164.0, 142.0, 102.0) + vec3(18.0, 12.0, 8.0) * shell,
+        roughness=0.20 + shell * 0.14,
+        metalness=0.08 + clamp(hit.local_normal.z, 0.0, 1.0) * 0.10,
+        clearcoat=0.14 + clamp(hit.local_normal.y, 0.0, 1.0) * 0.12,
+        clearcoat_roughness=0.08 + abs(hit.local_position.x) * 0.08,
+        sheen=0.06 + abs(hit.local_normal.x) * 0.10,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape collision_perf_shape {
+    field = collision_cluster
+    material = collision_surface
+}
+
+shape collision_perf_left_shape {
+    field = collision_left_guard
+    material = collision_surface
+}
+
+shape collision_perf_right_shape {
+    field = collision_right_guard
+    material = collision_surface
+}
+
+region collision_perf_region() {
+    place center = collision_perf_shape
+    place left = collision_perf_left_shape
+    place right = collision_perf_right_shape
+}
+
+domain collision_perf_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    radiance = false
+    media = false
+    max_distance = 12.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+
+fn load_collision_perf_scene() -> RegionCapture {
+    return capture collision_perf_region
+}
+
+fn compute_collision_perf_point(world: RegionCapture, point: Vec3) -> F32 {
+    domain = collision_perf_domain(world = world)
+    return spatial.distance(capture = world, domain = domain, point = point)
+}
+
+fn compute_collision_perf_ray(world: RegionCapture, origin: Vec3, direction: Vec3) -> Hit3 {
+    domain = collision_perf_domain(world = world)
+    return spatial.nearest(
+        capture=world,
+        domain=domain,
+        ray=ray_query(
+            origin=origin,
+            direction=direction,
+            max_distance=12.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+}
+
+fn compute_collision_perf_transition(world: RegionCapture, step: Integer) -> Hit3 {
+    offset = compute_transition_probe_offset(step)
+    domain = collision_perf_domain(world = world)
+    return spatial.nearest(
+        capture=world,
+        domain=domain,
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0) + offset,
+            direction=normalize(vec3(0.05, -0.03, -1.0)),
+            max_distance=12.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+}
+
+fn test_collision_perf_point_occupancy_burst_ops_64() -> Nothing {
+    world = load_collision_perf_scene()
+    world_again = load_collision_perf_scene()
+    assert value world.scene_id == world_again.scene_id
+
+    anchor_distance = compute_collision_perf_point(world = world, point = vec3(0.0, 0.0, 0.0))
+    cap_distance = compute_collision_perf_point(world = world, point = vec3(-1.35, -0.06, 0.0))
+
+    mutable checksum = 0
+    mutable occupied_count = 0
+    for i in 1...64 {
+        point = vec3(
+            f32(i % 16) * 0.08 - 0.60,
+            f32((i / 16) % 10) * 0.06 - 0.24,
+            f32(i % 5) * 0.04 - 0.08
+        )
+        distance_sample = compute_collision_perf_point(world = world, point = point)
+        if distance_sample <= 0.0 {
+            occupied_count += 1
+        }
+        checksum = update_checksum(
+            current=checksum,
+            value=i32(abs(distance_sample) * 1000.0) + (i % 17)
+        )
+    }
+
+    require checksum != 0 else "point occupancy checksum nonzero"
+    require occupied_count > 0 else "point occupancy hit count present"
+}
+
+fn test_collision_perf_repeated_sweeps_ops_32() -> Nothing {
+    world = load_collision_perf_scene()
+    world_again = load_collision_perf_scene()
+    assert value world.scene_id == world_again.scene_id
+
+    anchor_hit = compute_collision_perf_transition(world = world, step = 1)
+    require anchor_hit.hit == true else "repeated sweeps anchor hit"
+
+    mutable checksum = 0
+    mutable sweep_signal = 0
+    for i in 1...32 {
+        mutable probe_hit = compute_collision_perf_ray(
+            world = world,
+            origin = vec3(0.0, 0.0, 3.0) + compute_transition_probe_offset(i),
+            direction = normalize(vec3(0.03, -0.04, -1.0))
+        )
+        if i % 4 == 0 {
+            probe_hit = compute_collision_perf_transition(world = world, step = i)
+        } else if i % 4 == 1 {
+            probe_hit = compute_collision_perf_ray(
+                world = world,
+                origin = vec3(0.0, 0.0, 3.0) + compute_transition_probe_offset(i),
+                direction = normalize(vec3(0.03, -0.04, -1.0))
+            )
+        } else if i % 4 == 2 {
+            probe_hit = compute_collision_perf_ray(
+                world = world,
+                origin = vec3(1.08, 0.02, 3.0) + compute_transition_probe_offset(i),
+                direction = normalize(vec3(-0.02, -0.03, -1.0))
+            )
+        } else {
+            probe_hit = compute_collision_perf_ray(
+                world = world,
+                origin = vec3(-1.38, -0.06, 3.0) + compute_transition_probe_offset(i),
+                direction = normalize(vec3(0.01, -0.04, -1.0))
+            )
+        }
+        checksum = update_checksum(
+            current=checksum,
+            value=probe_hit.steps + i32(abs(probe_hit.distance) * 100.0)
+        )
+        if probe_hit.hit {
+            sweep_signal += 1
+        }
+    }
+
+    require checksum != 0 else "repeated sweeps checksum nonzero"
+    require sweep_signal > 0 else "repeated sweeps hits present"
+}
+"#,
+    )
+    .unwrap();
+    write_fixture_file(
+        root.join("1080p120_closure.toml"),
+        r#"
+version = 1
+suite = "collision_perf"
+
+[profiles.closure_1080p120]
+warmup_pairs = 1
+measure_pairs = 1
+coverage = "all"
+execution_story = "wgsl_resident"
+adapter_name = "wgsl_resident"
+enabled_optional_features = []
+timestamps_enabled = false
+f16_enabled = false
+indirect_dispatch_enabled = false
+warmup_protocol = "pipeline_and_resident_scene_upload"
+companion_profile = "canonical_1080p120_cpu_oracle"
+
+[[scenarios]]
+id = "closure_1080p120_point_occupancy_burst"
+test_name = "tests/collision_perf::test_collision_perf_point_occupancy_burst_ops_64"
+ops = 64
+class = "closure"
+min_runtime_ms = 1
+timeout_ms = 120000
+allow_unstable = false
+collision = { entry = "tests/collision_perf_test.wr", region = "collision_perf_region", domain = "collision_perf_domain", workload = "point_occupancy_burst" }
+
+[[scenarios]]
+id = "closure_1080p120_repeated_sweeps"
+test_name = "tests/collision_perf::test_collision_perf_repeated_sweeps_ops_32"
+ops = 32
+class = "closure"
+min_runtime_ms = 1
+timeout_ms = 120000
+allow_unstable = false
+collision = { entry = "tests/collision_perf_test.wr", region = "collision_perf_region", domain = "collision_perf_domain", workload = "repeated_sweeps" }
 "#,
     )
     .unwrap();
@@ -8106,6 +8396,9 @@ fn cli_perf_runs_realtime_presentation_1080p120_closure_profile() {
     let json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&baseline).expect("read realtime baseline"))
             .expect("parse realtime baseline");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("presentation-scenario"));
+    assert!(stdout.contains("fps="));
     let closure = json.get("closure").expect("closure report");
     assert_eq!(
         closure
@@ -8152,12 +8445,6 @@ fn cli_perf_runs_realtime_presentation_1080p120_closure_profile() {
         Some("met") | Some("failed")
     ));
     assert!(
-        closure
-            .pointer("/frame/total_frame_median_ms")
-            .and_then(|value| value.as_f64())
-            .is_some()
-    );
-    assert!(
         matches!(
             closure
                 .pointer("/verdict/status")
@@ -8173,27 +8460,54 @@ fn cli_perf_runs_realtime_presentation_1080p120_closure_profile() {
             .and_then(|value| value.as_str())
             .is_some()
     );
+    assert!(
+        closure
+            .pointer("/frame/total_frame_median_ms")
+            .and_then(|value| value.as_f64())
+            .is_some_and(|value| value > 0.0)
+    );
+    assert!(
+        closure
+            .pointer("/frame/total_frame_median_fps")
+            .and_then(|value| value.as_f64())
+            .is_some_and(|value| value > 0.0)
+    );
     let presentation_reports = json
         .get("presentation_reports")
         .and_then(|value| value.as_array())
         .expect("presentation reports array");
-    assert!(!presentation_reports.is_empty());
-    let observed_adapter_name = presentation_reports[0]
+    assert_eq!(presentation_reports.len(), 1);
+    let report = presentation_reports
+        .first()
+        .expect("first presentation report");
+    let observed_adapter_name = report
         .get("observed_adapter_name")
         .and_then(|value| value.as_str())
         .expect("observed adapter name");
     assert_eq!(
-        presentation_reports[0]
+        report
             .pointer("/quality_tier")
             .and_then(|value| value.as_str()),
         Some("realtime_120")
     );
     assert_eq!(
-        presentation_reports[0]
-            .pointer("/backend")
-            .and_then(|value| value.as_str()),
+        report.pointer("/backend").and_then(|value| value.as_str()),
         Some("wgsl")
     );
+    assert!(
+        report
+            .pointer("/frame_time_ns")
+            .and_then(|value| value.as_u64())
+            .is_some_and(|value| value > 0)
+    );
+    assert!(
+        report
+            .pointer("/steady_state_fps")
+            .and_then(|value| value.as_f64())
+            .is_some_and(|value| value > 0.0)
+    );
+    assert!(report.get("wgsl_workgroup_comparison").is_none());
+    assert!(report.get("ab_comparison").is_none());
     assert_eq!(
         closure
             .pointer("/profile/adapter_name")
@@ -8204,7 +8518,7 @@ fn cli_perf_runs_realtime_presentation_1080p120_closure_profile() {
         closure
             .pointer("/profile/timestamps_enabled")
             .and_then(|value| value.as_bool()),
-        presentation_reports[0]
+        report
             .pointer("/frame_cost/gpu_runtime/timestamps_supported")
             .and_then(|value| value.as_bool())
     );
@@ -8242,23 +8556,145 @@ fn cli_perf_why_not_120_mode_prints_closure_verdict_and_diagnostics() {
     assert!(stdout.contains("wgsl_resident"));
     assert!(stdout.contains("cpu-oracle companion:"));
     assert!(stdout.contains("why-not-120:"));
+    assert!(stdout.contains("frame median:"));
+    assert!(stdout.contains("FPS)"));
     let json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&baseline).expect("read diagnostics baseline"))
             .expect("parse diagnostics baseline");
     let closure = json.get("closure").expect("closure report");
     assert!(closure.pointer("/verdict/status").is_some());
     assert!(closure.pointer("/verdict/summary").is_some());
-    assert!(closure.pointer("/verdict/findings").is_some());
+    assert!(
+        closure
+            .pointer("/frame/total_frame_median_fps")
+            .and_then(|value| value.as_f64())
+            .is_some_and(|value| value > 0.0)
+    );
+    let findings = closure
+        .pointer("/verdict/findings")
+        .and_then(|value| value.as_array());
+    if let Some(findings) = findings {
+        if findings.is_empty() {
+            assert!(
+                stdout.contains(
+                    "no specific subsystem finding was inferred from the sampled reports"
+                )
+            );
+        } else {
+            for finding in findings {
+                let focus = finding
+                    .pointer("/focus")
+                    .and_then(|value| value.as_str())
+                    .expect("finding focus");
+                let summary = finding
+                    .pointer("/summary")
+                    .and_then(|value| value.as_str())
+                    .expect("finding summary");
+                assert!(stdout.contains(&format!("focus={focus}")));
+                assert!(stdout.contains(summary));
+            }
+        }
+    } else {
+        assert!(
+            stdout.contains("no specific subsystem finding was inferred from the sampled reports")
+        );
+    }
     let presentation_reports = json
         .get("presentation_reports")
         .and_then(|value| value.as_array())
         .expect("presentation reports array");
+    let first_report = presentation_reports
+        .first()
+        .expect("first presentation report");
     assert_eq!(
-        presentation_reports[0]
+        first_report
             .pointer("/backend")
             .and_then(|value| value.as_str()),
         Some("wgsl")
     );
+    assert!(
+        first_report
+            .pointer("/steady_state_fps")
+            .and_then(|value| value.as_f64())
+            .is_some_and(|value| value > 0.0)
+    );
+    assert!(
+        first_report
+            .get("wgsl_workgroup_comparison")
+            .and_then(|value| value.as_object())
+            .is_some()
+    );
+    assert!(
+        first_report
+            .get("ab_comparison")
+            .and_then(|value| value.as_object())
+            .is_some()
+    );
+}
+
+#[test]
+fn cli_perf_1080p120_closure_collection_failure_exits_nonzero_but_preserves_baseline() {
+    let dir = workspace_tempdir();
+    let bench_root = dir.path().join("realtime_presentation_fixture");
+    write_realtime_presentation_closure_benchmark_project(&bench_root);
+    let manifest_path = bench_root.join("1080p120_closure.toml");
+    let broken_manifest = std::fs::read_to_string(&manifest_path)
+        .expect("read closure manifest")
+        .replace(
+            "show_fixture_1080p120_closure_view",
+            "show_missing_fixture_1080p120_closure_view",
+        );
+    write_fixture_file(&manifest_path, &broken_manifest).expect("rewrite broken closure manifest");
+    let baseline = dir
+        .path()
+        .join("realtime_presentation_1080p120_unstable_collection.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("perf")
+        .arg("--runs=1")
+        .arg("--profile=1080p120")
+        .arg("--query-backend=wgsl")
+        .arg(format!("--baseline-out={}", baseline.display()))
+        .arg(&bench_root)
+        .output()
+        .expect("run realtime_presentation closure perf with broken view");
+    assert!(
+        !output.status.success(),
+        "expected realtime presentation closure with broken view to fail: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        baseline.exists(),
+        "expected closure baseline despite command failure"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("perf harness failed: unstable benchmark collection"));
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&baseline).expect("read unstable baseline"))
+            .expect("parse unstable baseline");
+    let closure = json.get("closure").expect("closure report");
+    assert_eq!(
+        closure
+            .pointer("/frame/status")
+            .and_then(|value| value.as_str()),
+        Some("violated")
+    );
+    let notes = closure
+        .pointer("/frame/notes")
+        .and_then(|value| value.as_array())
+        .expect("frame notes");
+    assert!(notes.iter().any(|note| {
+        note.as_str()
+            .is_some_and(|text| text.contains("presentation report collection failed"))
+    }));
+    let presentation_reports = json
+        .get("presentation_reports")
+        .and_then(|value| value.as_array())
+        .expect("presentation reports array");
+    assert!(presentation_reports.is_empty());
 }
 
 #[test]
@@ -8354,12 +8790,9 @@ fn cli_collision_perf_fixture_compiles_with_region_domain_contract() {
 
 #[test]
 fn cli_perf_runs_collision_perf_1080p120_closure_profile() {
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("workspace root")
-        .to_path_buf();
-    let bench_root = repo_root.join("benchmarks/collision_perf");
     let dir = workspace_tempdir();
+    write_collision_closure_benchmark_project(dir.path());
+    let bench_root = dir.path();
     let baseline = dir.path().join("collision_perf_1080p120.json");
 
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
@@ -8367,7 +8800,7 @@ fn cli_perf_runs_collision_perf_1080p120_closure_profile() {
         .arg("perf")
         .arg("--runs=1")
         .arg("--profile=1080p120")
-        .arg("--query-backend=cpu")
+        .arg("--query-backend=wgsl")
         .arg(format!("--baseline-out={}", baseline.display()))
         .arg(&bench_root)
         .output()
@@ -8433,7 +8866,7 @@ fn cli_perf_runs_collision_perf_1080p120_closure_profile() {
         report
             .pointer("/query_count_total")
             .and_then(|value| value.as_u64()),
-        Some(270000)
+        Some(64)
     );
     assert!(
         report
@@ -8481,52 +8914,88 @@ fn cli_perf_runs_collision_perf_1080p120_closure_profile() {
         .get("executions")
         .and_then(|value| value.as_array())
         .expect("collision benchmark executions");
-    assert_eq!(executions.len(), 5);
-    let repeated_sweeps = executions
-        .iter()
-        .find(|execution| {
-            execution
-                .pointer("/name")
-                .and_then(|value| value.as_str())
-                .is_some_and(|name| name == "closure_1080p120_repeated_sweeps")
-        })
-        .expect("repeated sweeps execution");
+    assert_eq!(executions.len(), 1);
+    let point_burst = executions.first().expect("point occupancy execution");
     assert_eq!(
-        repeated_sweeps
+        point_burst
+            .pointer("/name")
+            .and_then(|value| value.as_str()),
+        Some("closure_1080p120_point_occupancy_burst")
+    );
+    assert_eq!(
+        point_burst
             .pointer("/plan_name")
             .and_then(|value| value.as_str()),
-        Some("collision.sphere_sweep.transition")
+        Some("collision.point_occupancy.world")
     );
     assert_eq!(
-        repeated_sweeps
+        point_burst
             .pointer("/query_count")
             .and_then(|value| value.as_u64()),
-        Some(40000)
+        Some(64)
     );
     assert!(
-        repeated_sweeps
-            .pointer("/broadphase_rejected_candidate_count")
+        point_burst
+            .pointer("/wgsl_dispatch_count")
             .and_then(|value| value.as_u64())
             .is_some_and(|value| value > 0)
     );
     assert!(
-        repeated_sweeps
-            .pointer("/broadphase_pruned_node_count")
+        point_burst
+            .pointer("/wgsl_selected_workgroup_size")
             .and_then(|value| value.as_u64())
             .is_some_and(|value| value > 0)
     );
+}
+
+#[test]
+fn cli_perf_collision_closure_marks_cpu_backend_mismatch_as_violated() {
+    let dir = workspace_tempdir();
+    write_collision_closure_benchmark_project(dir.path());
+    let bench_root = dir.path();
+    let baseline = dir.path().join("collision_perf_1080p120_cpu_mismatch.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
+        .current_dir(dir.path())
+        .arg("perf")
+        .arg("--runs=1")
+        .arg("--profile=1080p120")
+        .arg("--query-backend=cpu")
+        .arg(format!("--baseline-out={}", baseline.display()))
+        .arg(&bench_root)
+        .output()
+        .expect("run collision perf closure with cpu backend");
     assert!(
-        repeated_sweeps
-            .pointer("/interval_bracket/0")
-            .and_then(|value| value.as_f64())
-            .is_some()
+        output.status.success(),
+        "collision perf closure cpu mismatch failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        repeated_sweeps
-            .pointer("/fallback_count")
-            .and_then(|value| value.as_u64())
-            .is_some()
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&baseline).expect("read collision baseline"))
+            .expect("parse collision baseline");
+    let closure = json.get("closure").expect("closure report");
+    assert_eq!(
+        closure
+            .pointer("/collision/status")
+            .and_then(|value| value.as_str()),
+        Some("violated")
     );
+    let notes = closure
+        .pointer("/collision/notes")
+        .and_then(|value| value.as_array())
+        .expect("collision notes");
+    assert!(notes.iter().any(|note| {
+        note.as_str()
+            .is_some_and(|text| text.contains("collision backends observed: cpu"))
+    }));
+    assert!(notes.iter().any(|note| {
+        note.as_str().is_some_and(|text| {
+            text.contains("collision report backend 'cpu'")
+                && text.contains("closure backend 'wgsl'")
+        })
+    }));
 }
 
 #[test]

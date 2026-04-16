@@ -123,6 +123,20 @@ pub struct PerfClosureProfile {
     #[serde(default)]
     pub timestamps_enabled: bool,
     #[serde(default)]
+    pub gpu_timestamps_required_if_supported: bool,
+    #[serde(default)]
+    pub max_hot_path_readback_bytes_per_frame: u64,
+    #[serde(default)]
+    pub max_scene_reupload_bytes_per_frame: u64,
+    #[serde(default)]
+    pub max_cpu_screen_sample_allocations_per_frame: u32,
+    #[serde(default)]
+    pub max_attachment_cpu_bounce_count: u32,
+    #[serde(default)]
+    pub max_queue_submit_count_per_frame: u32,
+    #[serde(default)]
+    pub max_dispatch_count_primary_visibility: u32,
+    #[serde(default)]
     pub f16_enabled: bool,
     #[serde(default)]
     pub indirect_dispatch_enabled: bool,
@@ -163,11 +177,29 @@ pub struct PerfClosureLaneStatusReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_degradations: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hot_path_readback_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_reupload_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_screen_sample_allocations: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_cpu_bounce_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_submit_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_visibility_dispatch_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamps_supported: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamped_pass_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_visibility_median_ms: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_visibility_p95_ms: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_frame_median_ms: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_frame_median_fps: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_frame_p95_ms: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -242,6 +274,13 @@ impl PerfClosureProfile {
             requested_limits_profile: "cpu_oracle_reference".to_string(),
             enabled_optional_features: Vec::new(),
             timestamps_enabled: false,
+            gpu_timestamps_required_if_supported: false,
+            max_hot_path_readback_bytes_per_frame: 0,
+            max_scene_reupload_bytes_per_frame: 0,
+            max_cpu_screen_sample_allocations_per_frame: 0,
+            max_attachment_cpu_bounce_count: 0,
+            max_queue_submit_count_per_frame: 64,
+            max_dispatch_count_primary_visibility: 4096,
             f16_enabled: false,
             indirect_dispatch_enabled: false,
             warmup_protocol: "cpu_oracle_baseline_warmup".to_string(),
@@ -307,6 +346,13 @@ impl PerfClosureProfile {
             requested_limits_profile: "wgsl_resident_reference".to_string(),
             enabled_optional_features: vec![],
             timestamps_enabled: false,
+            gpu_timestamps_required_if_supported: true,
+            max_hot_path_readback_bytes_per_frame: 0,
+            max_scene_reupload_bytes_per_frame: 0,
+            max_cpu_screen_sample_allocations_per_frame: 0,
+            max_attachment_cpu_bounce_count: 0,
+            max_queue_submit_count_per_frame: 1,
+            max_dispatch_count_primary_visibility: 0,
             f16_enabled: false,
             indirect_dispatch_enabled: false,
             warmup_protocol: "pipeline_and_resident_scene_upload".to_string(),
@@ -356,6 +402,18 @@ impl PerfClosureProfile {
                 baseline_id: "collision_perf.phase40_cpu_oracle".to_string(),
                 max_runtime_regression_pct: 0.0,
             },
+        }
+    }
+
+    pub fn shader_f16_gate_enabled(&self) -> bool {
+        self.f16_enabled
+    }
+
+    pub fn shader_f16_gate_state(&self) -> &'static str {
+        if self.shader_f16_gate_enabled() {
+            "enabled"
+        } else {
+            "disabled"
         }
     }
 
@@ -627,12 +685,21 @@ impl PerfClosureLaneStatusReport {
             primary_visibility_median_ms: None,
             primary_visibility_p95_ms: None,
             total_frame_median_ms: None,
+            total_frame_median_fps: None,
             total_frame_p95_ms: None,
             collision_runtime_median_ms: None,
             collision_runtime_p95_ms: None,
             collision_baseline_id: None,
             collision_runtime_regression_pct: None,
             dominant_bottleneck_pass: None,
+            hot_path_readback_bytes: None,
+            scene_reupload_bytes: None,
+            cpu_screen_sample_allocations: None,
+            attachment_cpu_bounce_count: None,
+            queue_submit_count: None,
+            primary_visibility_dispatch_count: None,
+            timestamps_supported: None,
+            timestamped_pass_count: None,
             notes: vec![format!(
                 "{} lane not sampled for this suite",
                 protocol.lane.as_str()
@@ -713,7 +780,16 @@ mod tests {
         assert_eq!(profile.adapter_name, "wgsl_resident");
         assert!(profile.enabled_optional_features.is_empty());
         assert_eq!(profile.timestamps_enabled, false);
+        assert_eq!(profile.gpu_timestamps_required_if_supported, true);
+        assert_eq!(profile.max_hot_path_readback_bytes_per_frame, 0);
+        assert_eq!(profile.max_scene_reupload_bytes_per_frame, 0);
+        assert_eq!(profile.max_cpu_screen_sample_allocations_per_frame, 0);
+        assert_eq!(profile.max_attachment_cpu_bounce_count, 0);
+        assert_eq!(profile.max_queue_submit_count_per_frame, 1);
+        assert_eq!(profile.max_dispatch_count_primary_visibility, 0);
         assert_eq!(profile.f16_enabled, false);
+        assert_eq!(profile.shader_f16_gate_enabled(), false);
+        assert_eq!(profile.shader_f16_gate_state(), "disabled");
         assert_eq!(profile.indirect_dispatch_enabled, false);
         assert_eq!(
             profile.warmup_protocol,
@@ -747,6 +823,15 @@ mod tests {
                 "half_res_participants",
             ]
         );
+    }
+
+    #[test]
+    fn shader_f16_gate_helper_reflects_disabled_and_enabled_profiles() {
+        let mut profile = PerfClosureProfile::canonical_1080p120();
+        assert_eq!(profile.shader_f16_gate_state(), "disabled");
+        profile.f16_enabled = true;
+        assert_eq!(profile.shader_f16_gate_enabled(), true);
+        assert_eq!(profile.shader_f16_gate_state(), "enabled");
     }
 
     #[test]

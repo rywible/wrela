@@ -36,7 +36,7 @@ pub use readback::{
 };
 pub use resident_scene::{
     GpuResidentScene, GpuResidentSceneCache, GpuResidentSceneKey, GpuResidentScenePayload,
-    shared_resident_scene_cache_for_request,
+    clear_shared_resident_scene_caches_for_type, shared_resident_scene_cache_for_request,
 };
 pub use upload::{
     BufferPoolKey, FrameUploadArena, GpuBufferPool, UploadError, align_copy_buffer_size, align_up,

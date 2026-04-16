@@ -21,8 +21,14 @@ use crate::query_exec::wgsl::{
 };
 use crate::query_plan::{BatchQueryPlan, DispatchBackend};
 use smol_str::SmolStr;
+use std::time::Instant;
 
 const PRIMARY_HELPER_WORKGROUP_SIZE: u32 = 64;
+
+pub(crate) struct PrimaryVisibilityEncodeStats {
+    pub visibility_elapsed_micros: u128,
+    pub writeout_elapsed_micros: u128,
+}
 
 #[derive(Clone)]
 pub(crate) struct PrimaryVisibilityGpuDispatch {
@@ -94,7 +100,8 @@ impl PrimaryVisibilityGpuDispatch {
         arena: &GpuAttachmentArena,
         contract: &PrimaryVisibilityPassContract,
         gpu_runtime: &mut crate::gpu_runtime::GpuRuntimeMetrics,
-    ) -> Result<u32, PresentationExecError> {
+    ) -> Result<PrimaryVisibilityEncodeStats, PresentationExecError> {
+        let visibility_start = Instant::now();
         gpu_runtime.upload_bytes = gpu_runtime.upload_bytes.saturating_add(
             self.session.initialize_dispatch_state_with_inputs(
                 &self.request.dispatch,
@@ -128,6 +135,9 @@ impl PrimaryVisibilityGpuDispatch {
         )?;
 
         self.session.encode_compute_pass(encoder, profiler);
+        let visibility_elapsed_micros = visibility_start.elapsed().as_micros();
+
+        let writeout_start = Instant::now();
         let result = self.dispatch_result();
 
         let materialize = create_primary_materialize_resources(
@@ -146,8 +156,12 @@ impl PrimaryVisibilityGpuDispatch {
             profiler,
             gpu_runtime,
         )?;
+        let writeout_elapsed_micros = writeout_start.elapsed().as_micros();
 
-        Ok(5)
+        Ok(PrimaryVisibilityEncodeStats {
+            visibility_elapsed_micros,
+            writeout_elapsed_micros,
+        })
     }
 }
 

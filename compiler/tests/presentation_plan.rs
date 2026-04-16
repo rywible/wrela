@@ -109,6 +109,10 @@ fn canonical_view_plan_separates_semantic_contracts_from_execution_binding() {
             && attachment.kind == FrameAttachmentKind::Color
             && attachment.lifetime == AttachmentLifetime::Exported
     }));
+    assert!(plan.passes.iter().any(|pass| matches!(
+        pass.kind,
+        PresentationPassKind::ExportAttachment { ref attachment } if attachment == "color"
+    )));
     assert!(plan.passes.iter().any(|pass| {
         matches!(pass.kind, PresentationPassKind::PrimaryVisibility { .. })
             && pass.query_dependencies == vec![query_contract::SPATIAL_NEAREST_BATCH_WORLD]
@@ -139,8 +143,8 @@ fn canonical_view_plan_separates_semantic_contracts_from_execution_binding() {
             .any(|pass| matches!(pass.kind, PresentationPassKind::TemporalResolve { .. }))
     );
     assert!(
-        plan.export_binding().is_none(),
-        "canonical view plans should leave attachment export to the host/runtime entry point"
+        plan.export_binding().is_some(),
+        "canonical view plans should carry an explicit final-color export binding"
     );
     assert!(
         !format!("{:?}", plan.bindings).contains("__wr_render_capture_to_ppm"),
@@ -154,6 +158,29 @@ fn canonical_view_plan_separates_semantic_contracts_from_execution_binding() {
     assert!(
         !format!("{:?}", plan.frame).contains("__wr_render_capture_to_ppm"),
         "frame contract must not leak helper names"
+    );
+}
+
+#[test]
+fn export_pass_must_be_terminal_in_canonical_plan_validation() {
+    let module = lower_inline_module(view_plan_source());
+    let view = presentation_function(&module, "primary_view");
+    let mut plan = PresentationPlan::from_view_function(view, DispatchBackend::Auto).expect("plan");
+
+    let export_pass = plan.passes.pop().expect("export pass");
+    assert!(matches!(
+        export_pass.kind,
+        PresentationPassKind::ExportAttachment { .. }
+    ));
+    let insert_index = plan.passes.len().saturating_sub(1);
+    plan.passes.insert(insert_index, export_pass);
+
+    let errors = plan.validate();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("must be terminal")),
+        "expected terminal export validation error, got {errors:?}"
     );
 }
 

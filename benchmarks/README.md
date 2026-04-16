@@ -7,9 +7,19 @@ The benchmark harness now focuses on the world-language surface that remains in 
 - `collision_perf`: collision-focused point occupancy, ray-cast, overlap, sweep, and TOI workload coverage with a dedicated CPU-oracle 1080p120 closure companion.
 - `realtime_presentation`: presentation-oriented scene-shape benchmarks for dense constructive geometry, repetition-heavy layouts, a dedicated repeat-aware solver proof lane, thin-stack aliasing, relaxed exact-torus solver coverage, transformed primitive galleries, mixed opaque/conservative scenes, media/radiance scenes, cache-stress motion paths, and camera-motion temporal-reuse / clipmap-churn coverage. The explicit `1080p120` closure lane now represents the WGSL-resident story for those stresses, with the CPU-oracle companion reported alongside it.
 - `1080p120` closure profiles: fixed 1920x1080, 120 FPS protocol manifests for the representative WGSL-resident frame lane plus the companion CPU-oracle collision lane. `wrela perf --profile=1080p120` automatically selects the companion `1080p120_closure.toml` file when it exists and reports both closure stories explicitly.
+  The default `1080p120` run is now the canonical measurement lane: one resident WGSL presentation report per closure scenario, a baseline JSON with per-scenario steady-state FPS plus suite median FPS, and no expensive comparison payloads unless you explicitly request deeper diagnostics.
 
 If you need the junior-friendly walkthrough for reading plans, report dumps, closure output,
 and parity checks, start with [docs/perf/acceleration_playbook.md](../docs/perf/acceleration_playbook.md).
+For the production phase-48 lanes, also use
+[docs/perf/gpu_resident_framegraph_playbook.md](../docs/perf/gpu_resident_framegraph_playbook.md)
+and
+[docs/perf/collision_gpu_batch_playbook.md](../docs/perf/collision_gpu_batch_playbook.md).
+If you are specifically working on the resident framegraph or collision batch lanes, use the
+specialized playbooks alongside it:
+
+- [GPU Resident Framegraph Playbook](../docs/perf/gpu_resident_framegraph_playbook.md)
+- [Collision GPU Batch Playbook](../docs/perf/collision_gpu_batch_playbook.md)
 
 ## Manifests
 
@@ -56,8 +66,11 @@ For the current rendering diagnostic mode, use `cargo run -p wrela -- presentati
 That is the quickest way to inspect pass-level rendering output when `presentation-plan` is not
 enough.
 
+For the canonical measurement lane, use `cargo run -p wrela -- perf <suite-root> --profile=1080p120`.
+That must complete, write the baseline JSON, and report both per-scenario steady-state FPS and the suite median FPS for the fixed 1920x1080 closure protocol.
+
 For closure failure analysis, use `cargo run -p wrela -- perf <suite-root> --profile=1080p120 --why-not-120`.
-That prints the WGSL-resident closure verdict, the CPU-oracle companion profile, the top remaining bottleneck, and a junior-friendly breakdown of the slowest subsystem signals: dense rays, pruning, acceleration caches, visibility vs shading, WGSL traversal, and collision witness reuse.
+That keeps the closure verdict and FPS reporting, but also enables the more expensive WGSL workgroup sweep and hybrid-vs-dense-only comparison payloads so you can investigate the remaining bottleneck.
 
 ## Profiles
 
@@ -69,9 +82,9 @@ Per-scenario overrides are available for `perfcmp` with `--warmup-pairs`, `--mea
 
 ## Realtime Presentation Scenarios
 
-The `realtime_presentation` suite keeps the checks deterministic by combining fixed query grids with checksum-style assertions while also attaching a canonical multi-frame named-view probe per scenario in `bench.toml`. `wrela perf benchmarks/realtime_presentation ...` now derives its scenario runtime lane from presentation frame-cost reports rather than the raw query-fixture wall clock alone, records those presentation probes in the baseline JSON under `presentation_reports`, and prints `presentation-scenario` / `presentation-pass` lines with the quality tier, internal resolution scale history, bottleneck pass, acceleration artifacts, and per-pass work/cost breakdown.
+The `realtime_presentation` suite keeps the checks deterministic by combining fixed query grids with checksum-style assertions while also attaching a canonical multi-frame named-view probe per scenario in `bench.toml`. `wrela perf benchmarks/realtime_presentation ...` now derives its scenario runtime lane from presentation frame-cost reports rather than the raw query-fixture wall clock alone, records those presentation probes in the baseline JSON under `presentation_reports`, and prints `presentation-scenario` / `presentation-pass` lines with the quality tier, internal resolution scale history, steady-state FPS, bottleneck pass, acceleration artifacts, and per-pass work/cost breakdown.
 
-The suite keeps backend selection explicit so benchmark lanes do not silently drift with `auto`. The canonical `1080p120` presentation closure lane is now the WGSL-resident lane, while the CPU oracle remains the companion reference in `compiler/tests/presentation_exec.rs`, the CPU-specific closure profile, and the collision closure lane.
+The suite keeps backend selection explicit so benchmark lanes do not silently drift with `auto`. The canonical `1080p120` presentation closure lane is now the WGSL-resident lane, while the CPU oracle remains the companion reference in `compiler/tests/presentation_exec.rs`, the CPU-specific closure profile, and the collision closure lane. In default `1080p120` mode the presentation closure lane is measurement-first only; `--why-not-120` is the explicit opt-in for workgroup and dense-only diagnostics.
 
 - `presentation_dense_constructive_geometry`: dense constructive solids built from lofts, sweeps, bends, and unions. This stresses candidate selection, hit resolution, and normal stability on heavily composed geometry.
 - `presentation_repetition_heavy_scene`: repetition-heavy structure built from nested linear repetition and instancing. This measures repeat identity, instance stability, and traversal behavior in tiled layouts.
@@ -95,6 +108,9 @@ Closure lane coverage currently includes:
 ## Collision Perf Closure Scenarios
 
 The `collision_perf` closure manifest is the dedicated collision-side companion to the presentation closure lane. It keeps the benchmark protocol fixed while stressing point occupancy, dense ray casts, overlap bursts, repeated sweeps, and TOI transition reuse under the fixed 1080p120 protocol.
+
+If you need to interpret the closure output or compare CPU oracle versus WGSL resident lanes,
+read the specialized playbooks before changing the benchmark manifests.
 
 - `closure_1080p120_point_occupancy_burst`: many point occupancy probes across the canonical collision scene.
 - `closure_1080p120_dense_ray_casts`: dense ray-cast coverage for the collision throughput lane.

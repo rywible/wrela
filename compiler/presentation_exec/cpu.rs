@@ -152,7 +152,6 @@ pub(super) fn execute_plan(
                     if let Some(mask) = cull_mask.as_ref() {
                         tile_cull = mask.stats;
                         if mask.active_samples.len() < primary_screen_samples.len() {
-                            runtime.work_items = mask.active_samples.len() as u32;
                             runtime.notes.push(format!(
                                 "tile_cull active_tiles={}/{} skipped_samples={}",
                                 mask.stats.active_tiles,

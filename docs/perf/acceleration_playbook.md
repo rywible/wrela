@@ -4,6 +4,17 @@ This playbook is for the shared acceleration spine that powers both rendering an
 It is intentionally practical: use it when you want to inspect a plan, understand a report,
 or reproduce a benchmark without guessing which subsystem owns the problem.
 
+For the phase-48 production paths, pair this guide with:
+
+- [GPU-Resident Framegraph Playbook](./gpu_resident_framegraph_playbook.md)
+- [Collision GPU Batch Playbook](./collision_gpu_batch_playbook.md)
+
+If you are working on the resident WGSL framegraph path or the GPU-batched collision path,
+start with the specialized playbooks first:
+
+- [GPU Resident Framegraph Playbook](./gpu_resident_framegraph_playbook.md)
+- [Collision GPU Batch Playbook](./collision_gpu_batch_playbook.md)
+
 ## The Short Version
 
 Treat the CPU path as the oracle. The acceleration stack is correct when the CPU-backed
@@ -23,6 +34,15 @@ If you are looking for the phase 41A closure diagnostic mode, use
 `cargo run -p wrela -- perf <suite-root> --profile=1080p120 --why-not-120`.
 That is the structured failure-analysis report for missed 120 FPS closure targets.
 Use `presentation-debug` after that when you need pass-level attachments and rendered evidence.
+
+For resident-path debugging, remember the split:
+
+- this playbook: shared acceleration, cache, and oracle framing
+- resident framegraph playbook: timed presentation WGSL lane rules
+- collision GPU batch playbook: collision batching structure and certification behavior
+
+For the resident framegraph and collision batch lanes, the key principle stays the same:
+the CPU path is the oracle, while the WGSL path is the representative steady-state story.
 
 ## What Each Command Is For
 
@@ -44,6 +64,11 @@ suite samples them. Use `--profile=1080p120` for the fixed 1920x1080, 120 FPS cl
 
 `perfcmp` is the paired regression check. Use it to compare the current branch against a known
 reference and confirm that a change is either neutral or an intended improvement.
+
+When a report looks suspicious, read the subsystem-specific playbook before guessing:
+
+- [GPU Resident Framegraph Playbook](./gpu_resident_framegraph_playbook.md) explains resident scene cache behavior, attachment storage choices, legal timed-frame helpers, and frame export/debug safety.
+- [Collision GPU Batch Playbook](./collision_gpu_batch_playbook.md) explains batch structure, candidate packing, observability, and CPU fallback for collision queries.
 
 ## Reading The Reports
 

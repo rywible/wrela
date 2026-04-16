@@ -18,6 +18,7 @@ use wrela::presentation_exec::{
     select_presentation_workgroup_size,
 };
 use wrela::presentation_plan::{PresentationPassKind, PresentationPlan};
+use wrela::query_exec::wgsl::override_shader_f16_for_current_thread;
 use wrela::query_exec::{
     QueryExecContext, QueryTraceSolverMode, WGSL_WORKGROUP_SIZE_OVERRIDE_ENV,
     stable_region_scene_capture_id, stable_region_snapshot_handle,
@@ -211,6 +212,21 @@ fn presentation_fixture(
         backend,
     };
     (plan, ctx, input)
+}
+
+fn strip_export_passes(plan: &mut PresentationPlan) {
+    let export_bindings = plan
+        .passes
+        .iter()
+        .filter_map(|pass| match pass.kind {
+            PresentationPassKind::ExportAttachment { .. } => pass.binding.clone(),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    plan.passes
+        .retain(|pass| !matches!(pass.kind, PresentationPassKind::ExportAttachment { .. }));
+    plan.bindings
+        .retain(|binding| !export_bindings.iter().any(|id| binding.id == *id));
 }
 
 fn presentation_fixture_with_state(
@@ -664,6 +680,58 @@ fn cpu_first_color_frame_cost_report_exposes_solver_counters() {
 }
 
 #[test]
+fn cpu_presentation_attachment_reports_make_storage_and_precision_policy_explicit() {
+    let (plan, ctx, input) = presentation_fixture(DispatchBackend::Cpu);
+    let result = execute_plan(&ctx, &plan, &input).expect("cpu presentation execution");
+
+    assert!(
+        result
+            .frame_cost
+            .attachment_bytes
+            .iter()
+            .all(|attachment| attachment.backing.starts_with("cpu_bytes("))
+    );
+    assert!(
+        result
+            .frame_cost
+            .attachment_bytes
+            .iter()
+            .all(|attachment| attachment.backing.contains("storage=buffer"))
+    );
+    assert!(
+        result
+            .frame_cost
+            .attachment_bytes
+            .iter()
+            .all(|attachment| attachment.backing.contains("precision=f32"))
+    );
+    let color_attachment = result
+        .frame_cost
+        .attachment_bytes
+        .iter()
+        .find(|attachment| attachment.attachment == "color")
+        .expect("color attachment report");
+    assert!(color_attachment.backing.contains("optional_precision=f16"));
+    let depth_attachment = result
+        .frame_cost
+        .attachment_bytes
+        .iter()
+        .find(|attachment| attachment.attachment == "depth")
+        .expect("depth attachment report");
+    assert!(!depth_attachment.backing.contains("optional_precision=f16"));
+    assert_eq!(
+        result
+            .attachments
+            .attachment("depth")
+            .expect("depth attachment")
+            .layout
+            .attachment
+            .policy_description(),
+        "storage=buffer precision=f32"
+    );
+}
+
+#[test]
 fn why_not_120_findings_reflect_shared_gpu_runtime_churn() {
     let (plan, ctx, input) = presentation_fixture(DispatchBackend::Cpu);
     let result = execute_plan(&ctx, &plan, &input).expect("cpu presentation execution");
@@ -818,8 +886,10 @@ fn wgsl_first_color_path_matches_cpu_for_final_color_and_semantic_attachments() 
 }
 
 #[test]
-fn wgsl_phase_44_resident_framegraph_reports_gpu_attachment_backing_and_explicit_exception() {
-    let (plan, ctx, input) = presentation_fixture(DispatchBackend::Wgsl);
+fn wgsl_resident_framegraph_reports_gpu_attachment_backing_without_cpu_followup_exception() {
+    let (mut plan, ctx, mut input) = presentation_fixture(DispatchBackend::Wgsl);
+    strip_export_passes(&mut plan);
+    input.materialize_cpu_attachments = false;
     let result = execute_plan(&ctx, &plan, &input).expect("wgsl presentation execution");
 
     assert!(result.screen_samples.is_empty());
@@ -828,31 +898,43 @@ fn wgsl_phase_44_resident_framegraph_reports_gpu_attachment_backing_and_explicit
         0
     );
     assert_eq!(result.frame_cost.gpu_runtime.attachment_decode_count, 0);
-    assert!(result.frame_cost.gpu_runtime.readback_bytes > 0);
-    assert!(result.frame_cost.gpu_runtime.queue_submit_count > 1);
+    assert_eq!(result.frame_cost.gpu_runtime.readback_bytes, 0);
+    assert_eq!(result.frame_cost.gpu_runtime.queue_submit_count, 1);
     assert!(
-        result
+        !result
             .frame_cost
             .framegraph_exceptions
             .iter()
             .any(|exception| exception == "cpu_followup_query_passes")
-    );
-    assert_eq!(
-        result
-            .frame_cost
-            .framegraph_exceptions
-            .iter()
-            .filter(|exception| exception.as_str() == "cpu_followup_query_passes")
-            .count(),
-        1
     );
     assert!(
         result
             .frame_cost
             .attachment_bytes
             .iter()
-            .all(|attachment| attachment.backing == "gpu_buffer")
+            .all(|attachment| attachment.backing.starts_with("gpu_buffer("))
     );
+    assert!(
+        result
+            .frame_cost
+            .attachment_bytes
+            .iter()
+            .all(|attachment| attachment.backing.contains("storage=buffer"))
+    );
+    assert!(
+        result
+            .frame_cost
+            .attachment_bytes
+            .iter()
+            .all(|attachment| attachment.backing.contains("precision=f32"))
+    );
+    let color_attachment = result
+        .frame_cost
+        .attachment_bytes
+        .iter()
+        .find(|attachment| attachment.attachment == "color")
+        .expect("wgsl color attachment report");
+    assert!(color_attachment.backing.contains("optional_precision=f16"));
     let primary_writeout = result
         .frame_cost
         .passes
@@ -860,15 +942,38 @@ fn wgsl_phase_44_resident_framegraph_reports_gpu_attachment_backing_and_explicit
         .find(|pass| pass.pass_kind == "primary_writeout")
         .expect("wgsl primary writeout pass");
     assert!(primary_writeout.dispatch_count > 0);
+    let surface_resolve = result
+        .frame_cost
+        .passes
+        .iter()
+        .find(|pass| pass.pass_kind == "surface_resolve")
+        .expect("wgsl surface resolve pass");
+    if result.frame_cost.gpu_runtime.timestamped_pass_count > 0 {
+        assert!(surface_resolve.gpu_elapsed_micros.is_some());
+    } else {
+        assert!(surface_resolve.dispatch_count > 0);
+    }
+    let participants_resolve = result
+        .frame_cost
+        .passes
+        .iter()
+        .find(|pass| pass.pass_kind == "participants_resolve")
+        .expect("wgsl participants resolve pass");
+    if result.frame_cost.gpu_runtime.timestamped_pass_count > 0 {
+        assert!(participants_resolve.gpu_elapsed_micros.is_some());
+    } else {
+        assert!(participants_resolve.dispatch_count > 0);
+    }
 
     let report = wrela::presentation_exec::render_frame_cost_report(&result.frame_cost);
     assert!(report.contains("backing=gpu_buffer"));
-    assert!(report.contains("framegraph_exceptions=cpu_followup_query_passes"));
+    assert!(!report.contains("cpu_followup_query_passes"));
 }
 
 #[test]
 fn wgsl_no_export_lane_avoids_full_attachment_readback() {
-    let (plan, ctx, input) = presentation_fixture(DispatchBackend::Wgsl);
+    let (mut plan, ctx, input) = presentation_fixture(DispatchBackend::Wgsl);
+    strip_export_passes(&mut plan);
     let fully_materialized =
         execute_plan(&ctx, &plan, &input).expect("wgsl materialized presentation execution");
 
@@ -878,11 +983,25 @@ fn wgsl_no_export_lane_avoids_full_attachment_readback() {
         execute_plan(&ctx, &plan, &resident_input).expect("wgsl resident presentation execution");
 
     assert!(resident.history.is_some());
-    assert!(resident.frame_cost.gpu_runtime.readback_bytes > 0);
-    assert!(
-        resident.frame_cost.gpu_runtime.readback_bytes
-            < fully_materialized.frame_cost.gpu_runtime.readback_bytes
-    );
+    let history = resident
+        .history
+        .as_ref()
+        .expect("resident temporal history");
+    for slot in &history.slots {
+        assert_eq!(
+            history
+                .attachments
+                .decode_attachment(slot.attachment.as_str())
+                .expect("history slot attachment"),
+            resident
+                .attachments
+                .decode_attachment(slot.attachment.as_str())
+                .expect("resident attachment"),
+            "resident history should reflect the post-frame GPU attachment state"
+        );
+    }
+    assert_eq!(resident.frame_cost.gpu_runtime.readback_bytes, 0);
+    assert_eq!(fully_materialized.frame_cost.gpu_runtime.readback_bytes, 0);
     assert_eq!(
         resident
             .frame_cost
@@ -891,6 +1010,106 @@ fn wgsl_no_export_lane_avoids_full_attachment_readback() {
         0
     );
     assert_eq!(resident.frame_cost.gpu_runtime.attachment_decode_count, 0);
+}
+
+#[test]
+fn wgsl_shader_f16_gate_preserves_color_and_records_fallback_state() {
+    let _lock = workgroup_override_test_lock();
+    let _guard = override_shader_f16_for_current_thread(Some(true));
+    let (cpu_plan, cpu_ctx, cpu_input) = presentation_fixture(DispatchBackend::Cpu);
+    let (wgsl_plan, wgsl_ctx, wgsl_input) = presentation_fixture(DispatchBackend::Wgsl);
+
+    let cpu = execute_plan(&cpu_ctx, &cpu_plan, &cpu_input).expect("cpu presentation execution");
+    let wgsl = execute_plan(&wgsl_ctx, &wgsl_plan, &wgsl_input).expect("wgsl f16-gated execution");
+
+    let shader_f16_enabled = wgsl
+        .frame_cost
+        .gpu_runtime
+        .enabled_optional_features
+        .iter()
+        .any(|feature| feature == "shader_f16");
+    let cpu_color = cpu
+        .attachments
+        .decode_attachment("color")
+        .expect("cpu color attachment");
+    let wgsl_color = wgsl
+        .attachments
+        .decode_attachment("color")
+        .expect("wgsl color attachment");
+    if shader_f16_enabled {
+        assert_attachment_vec3_approx_eq(&cpu_color, &wgsl_color, 0.08, "shader f16 parity");
+    } else {
+        assert!(
+            !wgsl
+                .frame_cost
+                .gpu_runtime
+                .enabled_optional_features
+                .iter()
+                .any(|feature| feature == "shader_f16")
+        );
+        assert_attachment_vec3_approx_eq(&cpu_color, &wgsl_color, 0.02, "shader f16 fallback");
+    }
+}
+
+#[test]
+fn wgsl_resident_optional_feature_fallbacks_remain_explicit_without_subgroups_or_indirect_dispatch()
+{
+    let _lock = workgroup_override_test_lock();
+    let (cpu_plan, cpu_ctx, cpu_input) = presentation_fixture(DispatchBackend::Cpu);
+    let (wgsl_plan, wgsl_ctx, wgsl_input) = presentation_fixture(DispatchBackend::Wgsl);
+
+    let cpu = execute_plan(&cpu_ctx, &cpu_plan, &cpu_input).expect("cpu presentation execution");
+    let wgsl =
+        execute_plan(&wgsl_ctx, &wgsl_plan, &wgsl_input).expect("wgsl presentation execution");
+    let features = &wgsl.frame_cost.gpu_runtime.enabled_optional_features;
+
+    assert!(
+        !features.iter().any(|feature| feature == "subgroup"),
+        "resident presentation path should keep subgroup fallback explicit until subgroup kernels exist"
+    );
+    assert!(
+        !features
+            .iter()
+            .any(|feature| feature == "indirect_dispatch"),
+        "resident presentation path should keep indirect-dispatch fallback explicit while the closure lane stays direct"
+    );
+    if wgsl.frame_cost.gpu_runtime.timestamps_supported {
+        assert!(
+            wgsl.frame_cost.gpu_runtime.timestamped_pass_count > 0,
+            "timestamp-capable adapters should record timestamped passes"
+        );
+        assert!(
+            features.iter().any(|feature| feature == "timestamp_query"),
+            "timestamp support should be surfaced in the optional-feature list"
+        );
+    } else {
+        assert_eq!(wgsl.frame_cost.gpu_runtime.timestamped_pass_count, 0);
+        assert!(
+            !features.iter().any(|feature| feature == "timestamp_query"),
+            "timestamp fallback should remain explicit when timestamp queries are unavailable"
+        );
+        assert!(
+            wgsl.frame_cost
+                .passes
+                .iter()
+                .all(|pass| pass.gpu_elapsed_micros.is_none())
+        );
+    }
+
+    let cpu_color = cpu
+        .attachments
+        .decode_attachment("color")
+        .expect("cpu color attachment");
+    let wgsl_color = wgsl
+        .attachments
+        .decode_attachment("color")
+        .expect("wgsl color attachment");
+    assert_attachment_vec3_approx_eq(
+        &cpu_color,
+        &wgsl_color,
+        0.02,
+        "resident feature fallback parity",
+    );
 }
 
 #[test]
@@ -2305,7 +2524,7 @@ fn wgsl_workgroup_selection_rejects_illegal_or_incompatible_sizes() {
     assert_eq!(
         wrela::presentation_exec::select_presentation_workgroup_size(&limits)
             .expect("presentation workgroup selection"),
-        128
+        64
     );
     assert_eq!(
         wrela::presentation_exec::validate_presentation_workgroup_size(64, &limits)
@@ -2412,6 +2631,24 @@ fn adaptive_controller_only_uses_degradations_allowed_by_contract() {
     assert!(!controller.quality().hit_compaction_enabled);
     assert!(!controller.quality().half_res_participants);
     assert!(controller.quality().primary_max_steps < contract.primary_max_steps);
+}
+
+#[test]
+fn adaptive_controller_ignores_pipeline_cache_miss_frames() {
+    let (mut plan, ctx, input) = presentation_fixture(DispatchBackend::Cpu);
+    let mut contract = RealtimeQualityContract::named(RealtimeQualityTier::Realtime60);
+    contract.target_fps = 100_000;
+    plan.frame.quality = contract.clone();
+
+    let mut report = execute_plan(&ctx, &plan, &input)
+        .expect("frame execution")
+        .frame_cost;
+    report.gpu_runtime.pipeline_cache_misses = 1;
+
+    let mut controller = AdaptivePresentationController::new(contract).with_window(1);
+    assert!(!controller.observe_frame(&report));
+    assert_eq!(controller.quality().internal_resolution_scale, 1.0);
+    assert!(controller.quality().active_degradations.is_empty());
 }
 
 fn hit_flag(value: &KernelValue) -> bool {
@@ -2620,6 +2857,17 @@ fn presentation_wgsl_selector_honors_supported_workgroup_override() {
     assert_eq!(
         select_presentation_workgroup_size(&adapter_limits).expect("select override"),
         32
+    );
+}
+
+#[test]
+fn presentation_wgsl_selector_prefers_retuned_resident_default() {
+    let mut adapter_limits = wgpu::Limits::downlevel_defaults();
+    adapter_limits.max_compute_invocations_per_workgroup = 128;
+    adapter_limits.max_compute_workgroup_size_x = 128;
+    assert_eq!(
+        select_presentation_workgroup_size(&adapter_limits).expect("retuned workgroup selection"),
+        64
     );
 }
 
