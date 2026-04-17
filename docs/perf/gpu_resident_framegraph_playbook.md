@@ -2,6 +2,10 @@
 
 This is the production-path playbook for the timed WGSL presentation lane.
 
+From the repo root, use `just perf-closure` for the canonical whole-frame closure workflow.
+The raw `cargo run -p wrela -- ...` commands below are the underlying `wrela` invocations when
+you need resident-lane diagnostics directly.
+
 Use it when you need to answer one of these questions:
 
 - Is this change still on the resident framegraph path?

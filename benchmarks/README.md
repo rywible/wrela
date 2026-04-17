@@ -22,6 +22,19 @@ specialized playbooks alongside it:
 - [GPU Resident Framegraph Playbook](../docs/perf/gpu_resident_framegraph_playbook.md)
 - [Collision GPU Batch Playbook](../docs/perf/collision_gpu_batch_playbook.md)
 
+## Repo Surface
+
+From the repo root, use `just` for the named repo workflows:
+
+```bash
+just perf-smoke
+just perf-closure
+just baseline-devloop
+```
+
+The raw `cargo run -p wrela -- perf ...` commands below are the underlying `wrela` invocations
+for subsystem debugging, ad-hoc comparisons, and flag variations.
+
 ## Manifests
 
 Each suite has a `bench.toml` manifest for the default microbench lane, and the closure profiles use a companion `1080p120_closure.toml`:
@@ -38,7 +51,7 @@ Each suite has a `bench.toml` manifest for the default microbench lane, and the 
 
 Scenario test names must end with `_ops_<N>` where `<N>` matches `ops`, and scenarios should use deterministic checksum assertions in the test body.
 
-## Run Commands
+## Underlying Wrela Perf Commands
 
 ```bash
 cargo run -p wrela -- perf benchmarks/micro --profile=standard --runs=5

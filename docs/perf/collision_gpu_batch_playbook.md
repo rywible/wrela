@@ -2,6 +2,10 @@
 
 This playbook covers the GPU-batched collision path that shares resident scene data with the WGSL query runtime.
 
+From the repo root, use `just perf-smoke` or `just perf-closure` for named repo workflows.
+The raw `cargo run -p wrela -- ...` commands documented elsewhere remain the underlying
+`wrela` invocations when you need collision-specific debugging.
+
 ## What The Production Path Looks Like
 
 The collision production story is:

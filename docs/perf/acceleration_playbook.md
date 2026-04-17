@@ -4,6 +4,10 @@ This playbook is for the shared acceleration spine that powers both rendering an
 It is intentionally practical: use it when you want to inspect a plan, understand a report,
 or reproduce a benchmark without guessing which subsystem owns the problem.
 
+From the repo root, use `just perf-smoke` or `just perf-closure` for the canonical repo
+workflows. The raw `cargo run -p wrela -- ...` commands below are the underlying `wrela`
+invocations for subsystem-specific debugging.
+
 For the phase-48 production paths, pair this guide with:
 
 - [GPU-Resident Framegraph Playbook](./gpu_resident_framegraph_playbook.md)

@@ -2,7 +2,7 @@ fn compute_checksum_mix(current: Integer, value: Integer) -> Integer {
     return (current * 31) + value
 }
 
-fn value_is_even(value: Integer) -> Boolean {
+fn check_value_is_even(value: Integer) -> Boolean {
     return value % 2 == 0
 }
 
@@ -28,7 +28,7 @@ fn test_typed_integer_loop_ops_20000000() -> Nothing {
 fn test_check_given_boolean_lane_ops_12000000() -> Nothing {
     mutable matches = 0
     for i in 1...12000000 {
-        if value_is_even(value=i) {
+        if check_value_is_even(value=i) {
             matches += 1
         }
     }

@@ -406,6 +406,7 @@ RFC 0009 is not complete until all of the following are true:
    - The primary repo docs lead with `just`, not raw `cargo`.
    - A documented `just ship` command exists.
    - The command boundary between `just`, `cargo`, and `wrela` is explicit and stable.
+   - The docs explicitly say that `just` may compose both Rust-native `cargo` verification and authored-world `wrela` verification under one repo workflow.
 
 2. **Developer-loop measurement closure**
    - A baseline developer-loop report exists from Phase 49.
@@ -460,6 +461,7 @@ RFC 0009 is not complete until all of the following are true:
 
 11. **Behavior closure**
     - `cargo test --workspace`
+    - `wrela test --lane full`
     - `just test-all`
     - `just ship`
     - representative perf-smoke commands
@@ -642,6 +644,9 @@ Add canonical recipes for at least:
 `just test` should become the fast default lane.
 `just test-all` should remain the full semantic lane.
 
+Those repo lanes are allowed to compose multiple proving surfaces.
+They do not need to be Rust-only wrappers if the truthful proof for part of the repo is a native `wrela` command.
+
 The primary docs should stop leading with raw `cargo` examples for common repo workflows.
 Raw `cargo` stays valid, but it becomes the substrate, not the front door.
 
@@ -653,9 +658,11 @@ check:
 
 test:
     cargo test -p wrela --test repo_smoke
+    cargo run -p wrela --bin wrela -- test --lane=fast language/spec
 
 test-all:
     cargo test --workspace
+    cargo run -p wrela --bin wrela -- test --lane=full language/spec
 
 perf-smoke:
     cargo run --bin wrela -- perf benchmarks/micro --profile=smoke --runs=1
@@ -696,6 +703,12 @@ The boundary should be:
 - **`wrela`** — authored-world and product-facing workflows (`preview`, `frame`, `perf`, `test`, etc.)
 
 Document this explicitly.
+In particular:
+
+- `cargo test` proves Rust units, Rust integration crates, and implementation-internal harnesses.
+- `wrela test` proves authored `.wr` projects and the native Wrela test-runner semantics.
+- `just` is the repo front door that composes the right `cargo` and `wrela` commands for a named workflow such as `test`, `test-all`, or `ship`.
+
 Also standardize the lane vocabulary:
 
 - `fast`
@@ -709,6 +722,7 @@ Also standardize the lane vocabulary:
 - The repo docs define the boundary explicitly.
 - The same lane names are used consistently in docs and commands.
 - No primary doc gives contradictory advice about which surface to use.
+- A junior engineer can tell when a lane is satisfied by `cargo test`, when it requires `wrela test`, and when `just` runs both.
 
 ## Phase 49 exit criteria
 
@@ -915,6 +929,8 @@ At minimum it should touch:
 - benchmark/perf manifest loading
 
 Keep the smoke tests small, deterministic, and cheap.
+The fast repo lane may combine a cheap Rust smoke harness with a cheap native `wrela test --lane fast` invocation if that is the truthful way to exercise authored-world semantics.
+The full repo lane should likewise compose the complete Rust lane and the required native `wrela test --lane full` lane rather than pretending one replaces the other.
 
 **Code sketch**
 
@@ -934,6 +950,7 @@ fn smoke_query_exec_cpu_roundtrip() {
 - The fast lane exercises every top-level bounded context at least once.
 - The fast lane is measured by the developer-loop harness.
 - The fast lane has an explicit time budget and the scorecard calls out misses instead of normalizing them.
+- The documented repo lanes make clear which proof comes from Rust integration tests and which proof comes from the native `wrela` test runner.
 
 #### Task 51A2 — Refactor giant integration harness roots into modular test crates without increasing crate count
 
@@ -1015,6 +1032,7 @@ Recommended mapping:
 - `full` => all lanes
 
 This preserves existing semantics while making the CLI easier to learn.
+It also makes it possible for `just test` and `just test-all` to call native Wrela test lanes without inventing a second vocabulary.
 
 **Code sketch**
 
@@ -1036,6 +1054,7 @@ pub enum TestLanePreset {
 - `wrela test --lane full` works.
 - Existing lane names still work unless deliberately deprecated and documented.
 - Docs use the same lane vocabulary across `just` and `wrela`.
+- The docs explicitly say that `wrela test` is the native authored-world test runner, not a synonym for `cargo test`.
 
 #### Task 51B2 — Align benchmark docs and perf-smoke naming with the repo lanes
 
@@ -1889,6 +1908,7 @@ Make `just ship` the canonical local closure gate.
 
 The exact contents can change, but the key rule is:
 **one documented command, no guesswork.**
+If the truthful closure gate requires both Rust integration coverage and native authored-world coverage, `just ship` should run both instead of hiding one of them behind vague wording.
 
 **Code sketch**
 
@@ -1906,6 +1926,7 @@ ship:
 - `just ship` exists and is documented as the canonical pre-ship command.
 - The command is measured by the dev-loop harness.
 - The final scorecard includes its timing before and after the RFC work.
+- The docs state whether `just ship` shells out to `cargo`, `wrela`, or both for each verification obligation.
 
 #### Task 56A2 — Remove stale workflow aliases, docs, and legacy guidance
 
