@@ -1,7 +1,0 @@
-fn compute_spec() -> Integer {
-    return 2
-
-}
-fn test_spec_sanity() -> Nothing {
-    assert value compute_spec() == 2
-}

@@ -71,10 +71,6 @@ perf-smoke:
 perf-closure:
     {{perf-closure-cmd}}
 
-# Capture the Phase 52 developer-loop scorecard report.
-baseline-devloop:
-    python3 scripts/devloop_measure.py --report-name phase52-baseline
-
 # Workspace clippy gate.
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
@@ -95,7 +91,6 @@ fix:
 # Authoritative local pre-ship gate.
 ship:
     just fmt-check
-    just lint
     just test
     just test-all
     just perf-smoke

@@ -29,7 +29,7 @@ From the repo root, use `just` for the named repo workflows:
 ```bash
 just perf-smoke
 just perf-closure
-just baseline-devloop
+just ship
 ```
 
 Lane mapping:
@@ -37,8 +37,9 @@ Lane mapping:
 - `just perf-smoke` => `wrela perf --profile=smoke`
 - `just perf-closure` => `wrela perf --profile=1080p120`
 
-The raw `cargo run -p wrela -- perf ...` commands below are the underlying `wrela` invocations
-for subsystem debugging, ad-hoc comparisons, and flag variations.
+The raw `cargo run -p wrela -- perf ...` commands below are escape hatches for
+subsystem debugging, ad-hoc comparisons, and flag variations.
+The canonical repo workflows stay on the named `just` lanes above.
 
 ## Manifests
 

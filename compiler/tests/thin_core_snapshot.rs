@@ -175,7 +175,7 @@ fn thin_core_snapshot_matches_compiler_and_runtime_surfaces() {
     validate_symbol_classes(&snapshot)
         .unwrap_or_else(|err| panic!("invalid symbol class in thin-core snapshot: {err}"));
 
-    let mir_source = read(&compiler_dir.join("mir/lower.rs"));
+    let mir_source = read(&compiler_dir.join("mir/lower/interface_dispatch.rs"));
 
     let mir_intrinsics = extract_prefixed_symbols(
         extract_braced_block(&mir_source, "fn builtin_function_names() -> Vec<SmolStr>"),
