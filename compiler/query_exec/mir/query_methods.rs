@@ -1,3 +1,19 @@
+use super::{
+    BatchQueryExecutionState, BatchQueryInvocationSpec, BatchQueryKind, BatchQueryLoopInputs,
+    BatchQueryPlan, BinaryOp, CandidateStrategy, CaptureKind, CaptureQueryKind, CaptureQueryPlan,
+    DispatchBackend, Expr, FunctionLowerer, KernelPlanStage, Literal, MirStmt, MirType,
+    PlanExecutor, QueryContractDescriptor, QueryItemKind, QueryResultKind, QuerySurfaceKind,
+    ScalarQueryInvocationSpec, SceneSummary, ShapeExecutionMode, SmolStr, TextRange, Value,
+    WorldQueryPlan, batch_query_kind_for_contract_id, lower_batch_query_plan,
+    lower_capture_query_plan, lower_world_query_plan, query_contract,
+    stable_field_scene_capture_id, stable_shape_capture_id, stable_shape_scene_capture_id,
+    validate_batch_query_plan, validate_capture_query_plan, validate_world_query_plan,
+};
+use crate::hir;
+use crate::mir::ir::*;
+use crate::scene_ir;
+use std::collections::{BTreeMap, HashMap, HashSet};
+
 enum ParsedQueryCall<'a> {
     Legacy {
         name: &'a SmolStr,
@@ -65,7 +81,11 @@ impl FunctionLowerer {
         })
     }
 
-    pub(crate) fn parse_capture_builtin(&self, body: &hir::Body, expr_id: hir::Idx<Expr>) -> Option<SmolStr> {
+    pub(crate) fn parse_capture_builtin(
+        &self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+    ) -> Option<SmolStr> {
         let (callee, args) = match &body.exprs[expr_id] {
             Expr::Call { callee, args, .. } => (callee, args),
             _ => return None,
@@ -156,8 +176,7 @@ impl FunctionLowerer {
         } else {
             query_contract::QueryTargetKind::Capture
         };
-        let surface =
-            QuerySurfaceKind::from_axes(target, query_contract::QueryCardinality::Batch);
+        let surface = QuerySurfaceKind::from_axes(target, query_contract::QueryCardinality::Batch);
         let capture_kind = if matches!(target, query_contract::QueryTargetKind::World) {
             CaptureKind::Region
         } else {
@@ -168,7 +187,12 @@ impl FunctionLowerer {
                 query_contract::query_contract_bundle_for_legacy_builtin_capture_candidates(
                     name.as_str(),
                     surface,
-                    &[capture_kind, CaptureKind::Region, CaptureKind::Shape, CaptureKind::Field],
+                    &[
+                        capture_kind,
+                        CaptureKind::Region,
+                        CaptureKind::Shape,
+                        CaptureKind::Field,
+                    ],
                 )?
             }
             ParsedQueryCall::Family { family, member } => {
@@ -184,8 +208,18 @@ impl FunctionLowerer {
         let domain_arg = descriptor.domain_contract.map(|_| "domain");
         self.require_query_args(
             &named,
-            &[Some("capture"), domain_arg, Some(items_arg), Some("backend")],
-            &[Some("capture"), domain_arg, Some(items_arg), Some("backend")],
+            &[
+                Some("capture"),
+                domain_arg,
+                Some(items_arg),
+                Some("backend"),
+            ],
+            &[
+                Some("capture"),
+                domain_arg,
+                Some(items_arg),
+                Some("backend"),
+            ],
         )?;
         Some(BatchQueryInvocationSpec {
             contract_id: descriptor.id,
@@ -407,12 +441,12 @@ impl FunctionLowerer {
     ) -> Option<SceneSummary> {
         let target = self.parse_capture_builtin(body, capture_expr)?;
         match capture_kind {
-            CaptureKind::Field => self.field_scene(&target).map(|scene| {
-                self.scene_summary_from_field(target.clone(), scene)
-            }),
-            CaptureKind::Shape => self.shape_scene(&target).map(|scene| {
-                self.scene_summary_from_shape(target.clone(), scene)
-            }),
+            CaptureKind::Field => self
+                .field_scene(&target)
+                .map(|scene| self.scene_summary_from_field(target.clone(), scene)),
+            CaptureKind::Shape => self
+                .shape_scene(&target)
+                .map(|scene| self.scene_summary_from_shape(target.clone(), scene)),
             CaptureKind::Region => None,
         }
     }
@@ -452,12 +486,14 @@ impl FunctionLowerer {
         let identity_source_count = scene
             .feature_leaves
             .values()
-            .filter_map(|leaf_ref| self.shape_scene(&leaf_ref.scene).and_then(|shape_scene| {
-                shape_scene
-                    .leaves
-                    .get(&leaf_ref.leaf)
-                    .and_then(|leaf| self.field_scene(&leaf.field))
-            }))
+            .filter_map(|leaf_ref| {
+                self.shape_scene(&leaf_ref.scene).and_then(|shape_scene| {
+                    shape_scene
+                        .leaves
+                        .get(&leaf_ref.leaf)
+                        .and_then(|leaf| self.field_scene(&leaf.field))
+                })
+            })
             .map(|field| field.identity_sources.len() as u32)
             .sum();
         SceneSummary {
@@ -499,9 +535,7 @@ impl FunctionLowerer {
         }
         match pruning_strategy {
             crate::query_plan::PruningStrategy::SupportLowerBound
-            | crate::query_plan::PruningStrategy::CullingTable => {
-                ShapeExecutionMode::SupportPruned
-            }
+            | crate::query_plan::PruningStrategy::CullingTable => ShapeExecutionMode::SupportPruned,
             crate::query_plan::PruningStrategy::None
             | crate::query_plan::PruningStrategy::ConservativeTraversal
             | crate::query_plan::PruningStrategy::OpaquePessimizationBoundary => {
@@ -520,7 +554,10 @@ impl FunctionLowerer {
             DispatchBackend::Auto,
             self.shape_scene_summary(shape),
         );
-        Self::shape_execution_mode_from_plan_artifacts(plan.pruning_strategy(), &plan.artifact_contracts)
+        Self::shape_execution_mode_from_plan_artifacts(
+            plan.pruning_strategy(),
+            &plan.artifact_contracts,
+        )
     }
 
     pub(crate) fn shape_point_batch_execution_mode(
@@ -534,7 +571,10 @@ impl FunctionLowerer {
             DispatchBackend::Auto,
             self.shape_scene_summary(shape),
         );
-        Self::shape_execution_mode_from_plan_artifacts(plan.pruning_strategy(), &plan.artifact_contracts)
+        Self::shape_execution_mode_from_plan_artifacts(
+            plan.pruning_strategy(),
+            &plan.artifact_contracts,
+        )
     }
 
     pub(crate) fn shape_capture_execution_mode(
@@ -551,7 +591,11 @@ impl FunctionLowerer {
         )
     }
 
-    pub(crate) fn capture_kind_for_expr(&self, body: &hir::Body, expr_id: hir::Idx<Expr>) -> CaptureKind {
+    pub(crate) fn capture_kind_for_expr(
+        &self,
+        body: &hir::Body,
+        expr_id: hir::Idx<Expr>,
+    ) -> CaptureKind {
         match self.expr_type(body, expr_id) {
             MirType::Named(name) if name.as_str() == "ShapeCapture" => CaptureKind::Shape,
             MirType::Named(name) if name.as_str() == "RegionCapture" => CaptureKind::Region,
@@ -816,12 +860,7 @@ impl FunctionLowerer {
         let inputs =
             self.lower_batch_query_item_inputs(plan.item_kind, items, Value::Local(index), span);
         let execution_value = self.lower_world_batch_scalar_execution_value(
-            plan,
-            capture,
-            domain,
-            backend,
-            &inputs,
-            span,
+            plan, capture, domain, backend, &inputs, span,
         );
         let result_value =
             self.lower_batch_query_result_value(plan.result_kind, execution_value, span);
@@ -1206,7 +1245,12 @@ impl FunctionLowerer {
                     .expect("world medium batch plan must load a point before executing"),
             ),
         };
-        self.lower_call_temp(ret_ty, SmolStr::new(helper), vec![capture, domain, item, backend], span)
+        self.lower_call_temp(
+            ret_ty,
+            SmolStr::new(helper),
+            vec![capture, domain, item, backend],
+            span,
+        )
     }
 
     pub(crate) fn lower_capture_scene_id_value(
@@ -1228,7 +1272,11 @@ impl FunctionLowerer {
         Value::Temp(scene_id)
     }
 
-    pub(crate) fn lower_capture_root_feature_id_value(&mut self, capture: Value, span: TextRange) -> Value {
+    pub(crate) fn lower_capture_root_feature_id_value(
+        &mut self,
+        capture: Value,
+        span: TextRange,
+    ) -> Value {
         let root_feature_id = self.new_temp(MirType::Integer);
         self.push_stmt(MirStmt::Assign {
             place: Place::Temp(root_feature_id),
@@ -1598,7 +1646,11 @@ impl FunctionLowerer {
         self.build_class_instance(&class, span)
     }
 
-    pub(crate) fn build_distance_result_value(&mut self, distance: Value, span: TextRange) -> Value {
+    pub(crate) fn build_distance_result_value(
+        &mut self,
+        distance: Value,
+        span: TextRange,
+    ) -> Value {
         let mut class = self.synthetic_class_target_info("DistanceResult");
         Self::set_class_field_value(&mut class, "distance", distance);
         self.build_class_instance(&class, span)

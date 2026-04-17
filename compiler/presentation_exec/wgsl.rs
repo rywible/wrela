@@ -3285,6 +3285,10 @@ fn presentation_dispatch_config(item_count: u32) -> KernelValue {
             (SmolStr::new("material_enabled"), KernelValue::Bool(false)),
             (SmolStr::new("radiance_enabled"), KernelValue::Bool(false)),
             (SmolStr::new("media_enabled"), KernelValue::Bool(false)),
+            (
+                SmolStr::new("candidate_spans_enabled"),
+                KernelValue::Bool(false),
+            ),
         ],
     })
 }

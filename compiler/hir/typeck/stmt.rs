@@ -1,4 +1,12 @@
-fn check_stmt(
+use super::{
+    BinaryOp, Body, ClassIndex, EnumIndex, Expr, FunctionIndex, Idx, InterfaceIndex, Pattern,
+    SmolStr, SourceSpan, Stmt, TextRange, Type, TypeContext, TypeError, infer_expr, is_assignable,
+    is_identity_primitive, is_numeric, is_result_type, span_from_range, type_label, types_known,
+    valid_binary,
+};
+use std::collections::{HashMap, HashSet};
+
+pub(super) fn check_stmt(
     body: &Body,
     stmt_id: Idx<Stmt>,
     ctx: &mut TypeContext,
@@ -635,7 +643,12 @@ change the return type to Result[...] or handle results with `??`."
     }
 }
 
-fn bind_pattern(pattern: &Pattern, subject_ty: &Type, ctx: &mut TypeContext, enums: &EnumIndex) {
+pub(super) fn bind_pattern(
+    pattern: &Pattern,
+    subject_ty: &Type,
+    ctx: &mut TypeContext,
+    enums: &EnumIndex,
+) {
     match pattern {
         Pattern::Wildcard | Pattern::Literal(_) => {}
         Pattern::Binding(name) => {
@@ -718,8 +731,7 @@ fn bind_pattern(pattern: &Pattern, subject_ty: &Type, ctx: &mut TypeContext, enu
     }
 }
 
-
-struct MatchCoverage {
+pub(super) struct MatchCoverage {
     has_wildcard: bool,
     ok_covered: bool,
     err_covered: bool,
@@ -810,7 +822,7 @@ impl MatchCoverage {
 }
 
 /// Returns None if the match is exhaustive, or Some(missing_variants) if not.
-fn match_missing_variants(
+pub(super) fn match_missing_variants(
     subject_ty: &Type,
     cases: &[crate::hir::MatchCase],
     enums: &EnumIndex,
@@ -841,7 +853,9 @@ fn match_missing_variants(
     if coverage.subject_is_enum {
         if let Some(ref enum_name) = coverage.enum_name {
             if let Some(en) = enums.get(enum_name) {
-                let missing: Vec<SmolStr> = en.variants.keys()
+                let missing: Vec<SmolStr> = en
+                    .variants
+                    .keys()
                     .filter(|v| !coverage.enum_variants_covered.contains(*v))
                     .cloned()
                     .collect();
@@ -855,7 +869,11 @@ fn match_missing_variants(
     Some(Vec::new())
 }
 
-fn match_case_span(body: &Body, case: &crate::hir::MatchCase, fallback: TextRange) -> SourceSpan {
+pub(super) fn match_case_span(
+    body: &Body,
+    case: &crate::hir::MatchCase,
+    fallback: TextRange,
+) -> SourceSpan {
     if let Some(stmt) = case.body.first() {
         return span_from_range(body.stmt_span(*stmt));
     }
@@ -866,7 +884,7 @@ fn match_case_span(body: &Body, case: &crate::hir::MatchCase, fallback: TextRang
 }
 
 #[derive(Debug, Clone, Copy)]
-enum AssertEqualityMode {
+pub(super) enum AssertEqualityMode {
     Value,
     Identity,
 }
@@ -880,7 +898,7 @@ impl AssertEqualityMode {
     }
 }
 
-fn check_assert_approx(
+pub(super) fn check_assert_approx(
     body: &Body,
     lhs_id: Idx<Expr>,
     rhs_id: Idx<Expr>,
@@ -943,7 +961,7 @@ fn check_assert_approx(
     }
 }
 
-fn check_assert_expr(
+pub(super) fn check_assert_expr(
     body: &Body,
     expr_id: Idx<Expr>,
     mode: AssertEqualityMode,

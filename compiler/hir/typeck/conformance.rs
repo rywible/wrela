@@ -1,4 +1,4 @@
-fn interface_method_matches(iface: &InterfaceMethodSig, class: &MethodSig) -> bool {
+pub(super) fn interface_method_matches(iface: &InterfaceMethodSig, class: &MethodSig) -> bool {
     if (iface.kind == InterfaceMethodKind::Check) != (class.kind == FunctionKind::CheckMethod) {
         return false;
     }
@@ -13,7 +13,7 @@ fn interface_method_matches(iface: &InterfaceMethodSig, class: &MethodSig) -> bo
     interface_type_compatible(&iface.ret, &class.ret)
 }
 
-fn interface_type_compatible(expected: &Type, actual: &Type) -> bool {
+pub(super) fn interface_type_compatible(expected: &Type, actual: &Type) -> bool {
     if matches!(expected, Type::Param(_)) || matches!(actual, Type::Param(_)) {
         return true;
     }
@@ -44,11 +44,11 @@ fn interface_type_compatible(expected: &Type, actual: &Type) -> bool {
     }
 }
 
-fn class_subst(class: &ClassSig, class_args: &[Type]) -> HashMap<SmolStr, Type> {
+pub(super) fn class_subst(class: &ClassSig, class_args: &[Type]) -> HashMap<SmolStr, Type> {
     build_type_subst(&class.type_params, class_args)
 }
 
-fn instantiate_method_params(
+pub(super) fn instantiate_method_params(
     class: &ClassSig,
     class_args: &[Type],
     member: &SmolStr,
@@ -67,7 +67,11 @@ fn instantiate_method_params(
     )
 }
 
-fn instantiate_method_ret(class: &ClassSig, class_args: &[Type], member: &SmolStr) -> Option<Type> {
+pub(super) fn instantiate_method_ret(
+    class: &ClassSig,
+    class_args: &[Type],
+    member: &SmolStr,
+) -> Option<Type> {
     let method = class.methods.get(member)?;
     if class.type_params.is_empty() {
         return Some(method.ret.clone());
@@ -76,19 +80,19 @@ fn instantiate_method_ret(class: &ClassSig, class_args: &[Type], member: &SmolSt
     Some(substitute_type(&method.ret, &subst))
 }
 
-fn is_vector_type(ty: &Type) -> bool {
+pub(super) fn is_vector_type(ty: &Type) -> bool {
     matches!(ty, Type::Vec2 | Type::Vec3 | Type::Vec4 | Type::Quat)
 }
 
-fn is_matrix_type(ty: &Type) -> bool {
+pub(super) fn is_matrix_type(ty: &Type) -> bool {
     matches!(ty, Type::Mat3 | Type::Mat4)
 }
 
-fn is_vector_or_matrix_type(ty: &Type) -> bool {
+pub(super) fn is_vector_or_matrix_type(ty: &Type) -> bool {
     is_vector_type(ty) || is_matrix_type(ty)
 }
 
-fn same_vector_kind(left: &Type, right: &Type) -> bool {
+pub(super) fn same_vector_kind(left: &Type, right: &Type) -> bool {
     matches!(
         (left, right),
         (Type::Vec2, Type::Vec2)
@@ -98,14 +102,14 @@ fn same_vector_kind(left: &Type, right: &Type) -> bool {
     )
 }
 
-fn same_matrix_kind(left: &Type, right: &Type) -> bool {
+pub(super) fn same_matrix_kind(left: &Type, right: &Type) -> bool {
     matches!(
         (left, right),
         (Type::Mat3, Type::Mat3) | (Type::Mat4, Type::Mat4)
     )
 }
 
-fn is_scalar_numeric(ty: &Type) -> bool {
+pub(super) fn is_scalar_numeric(ty: &Type) -> bool {
     matches!(
         ty,
         Type::Integer
@@ -119,7 +123,7 @@ fn is_scalar_numeric(ty: &Type) -> bool {
     )
 }
 
-fn valid_unary(op: UnaryOp, operand: &Type) -> bool {
+pub(super) fn valid_unary(op: UnaryOp, operand: &Type) -> bool {
     match op {
         UnaryOp::Neg => is_scalar_numeric(operand) || is_vector_or_matrix_type(operand),
         UnaryOp::Not => *operand == Type::Boolean,
@@ -130,7 +134,7 @@ fn valid_unary(op: UnaryOp, operand: &Type) -> bool {
     }
 }
 
-fn unary_result(op: UnaryOp, operand: &Type) -> Type {
+pub(super) fn unary_result(op: UnaryOp, operand: &Type) -> Type {
     match op {
         UnaryOp::Neg => operand.clone(),
         UnaryOp::Not => Type::Boolean,
@@ -144,7 +148,7 @@ fn unary_result(op: UnaryOp, operand: &Type) -> Type {
     }
 }
 
-fn binary_from_assign(op: BinaryOp) -> BinaryOp {
+pub(super) fn binary_from_assign(op: BinaryOp) -> BinaryOp {
     match op {
         BinaryOp::AddAssign => BinaryOp::Add,
         BinaryOp::SubAssign => BinaryOp::Sub,
@@ -154,7 +158,7 @@ fn binary_from_assign(op: BinaryOp) -> BinaryOp {
     }
 }
 
-fn valid_binary(op: BinaryOp, left: &Type, right: &Type) -> bool {
+pub(super) fn valid_binary(op: BinaryOp, left: &Type, right: &Type) -> bool {
     match op {
         BinaryOp::Add => {
             (same_vector_kind(left, right) || same_matrix_kind(left, right))
@@ -199,7 +203,7 @@ fn valid_binary(op: BinaryOp, left: &Type, right: &Type) -> bool {
     }
 }
 
-fn valid_equality_operands(
+pub(super) fn valid_equality_operands(
     left: &Type,
     right: &Type,
     classes: &ClassIndex,
@@ -217,7 +221,7 @@ fn valid_equality_operands(
         && supports_structural_value_type(right, classes, enums, &mut right_visiting)
 }
 
-fn binary_result(op: BinaryOp, left: &Type, right: &Type) -> Type {
+pub(super) fn binary_result(op: BinaryOp, left: &Type, right: &Type) -> Type {
     match op {
         BinaryOp::Add => {
             if same_vector_kind(left, right) || same_matrix_kind(left, right) {
@@ -282,7 +286,7 @@ fn binary_result(op: BinaryOp, left: &Type, right: &Type) -> Type {
     }
 }
 
-fn numeric_result(left: &Type, right: &Type) -> Type {
+pub(super) fn numeric_result(left: &Type, right: &Type) -> Type {
     if left == right && is_scalar_numeric(left) {
         return left.clone();
     }
@@ -299,18 +303,18 @@ fn numeric_result(left: &Type, right: &Type) -> Type {
     }
 }
 
-fn is_numeric(ty: &Type) -> bool {
+pub(super) fn is_numeric(ty: &Type) -> bool {
     is_scalar_numeric(ty)
 }
 
-fn is_integer_like(ty: &Type) -> bool {
+pub(super) fn is_integer_like(ty: &Type) -> bool {
     matches!(
         ty,
         Type::Integer | Type::I32 | Type::U32 | Type::I64 | Type::U64
     )
 }
 
-fn is_assignable(
+pub(super) fn is_assignable(
     expected: &Type,
     found: &Type,
     classes: &ClassIndex,
@@ -379,15 +383,15 @@ fn is_assignable(
     }
 }
 
-fn is_stored_boolean_named(ty: &Type) -> bool {
+pub(super) fn is_stored_boolean_named(ty: &Type) -> bool {
     matches!(ty, Type::Named(name, args) if name.as_str() == "StoredBoolean" && args.is_empty())
 }
 
-fn types_known(left: &Type, right: &Type) -> bool {
+pub(super) fn types_known(left: &Type, right: &Type) -> bool {
     is_known(left) && is_known(right)
 }
 
-fn is_identity_primitive(ty: &Type) -> bool {
+pub(super) fn is_identity_primitive(ty: &Type) -> bool {
     match ty {
         Type::Integer
         | Type::I32
@@ -405,7 +409,7 @@ fn is_identity_primitive(ty: &Type) -> bool {
     }
 }
 
-fn is_known(ty: &Type) -> bool {
+pub(super) fn is_known(ty: &Type) -> bool {
     match ty {
         Type::Unknown => false,
         Type::Result(ok, err) => is_known(ok) && is_known(err),
@@ -413,11 +417,11 @@ fn is_known(ty: &Type) -> bool {
     }
 }
 
-fn is_result_type(ty: &Type) -> bool {
+pub(super) fn is_result_type(ty: &Type) -> bool {
     matches!(ty, Type::Result(_, _))
 }
 
-fn type_label(ty: &Type) -> String {
+pub(super) fn type_label(ty: &Type) -> String {
     match ty {
         Type::Unknown => "unknown".to_string(),
         Type::Never => "never".to_string(),
@@ -471,7 +475,7 @@ fn type_label(ty: &Type) -> String {
     }
 }
 
-fn collection_method_sig(
+pub(super) fn collection_method_sig(
     object_ty: &Type,
     member: &SmolStr,
 ) -> Option<(Vec<(SmolStr, Type)>, Type)> {
@@ -511,7 +515,7 @@ fn collection_method_sig(
     }
 }
 
-fn unary_op_label(op: UnaryOp) -> &'static str {
+pub(super) fn unary_op_label(op: UnaryOp) -> &'static str {
     match op {
         UnaryOp::Neg => "-",
         UnaryOp::Not => "not",
@@ -524,7 +528,7 @@ fn unary_op_label(op: UnaryOp) -> &'static str {
     }
 }
 
-fn binary_op_label(op: BinaryOp) -> &'static str {
+pub(super) fn binary_op_label(op: BinaryOp) -> &'static str {
     match op {
         BinaryOp::Add => "+",
         BinaryOp::Sub => "-",
@@ -554,19 +558,23 @@ fn binary_op_label(op: BinaryOp) -> &'static str {
     }
 }
 
-fn span_from_range(range: rowan::TextRange) -> SourceSpan {
+pub(super) fn span_from_range(range: rowan::TextRange) -> SourceSpan {
     let start: usize = range.start().into();
     let len: usize = range.len().into();
     SourceSpan::from((start, len))
 }
 
-fn span_from_option_range(range: Option<rowan::TextRange>) -> SourceSpan {
+pub(super) fn span_from_option_range(range: Option<rowan::TextRange>) -> SourceSpan {
     range
         .map(span_from_range)
         .unwrap_or_else(|| SourceSpan::from((0usize, 0usize)))
 }
 
-fn actor_type_for_detach_target(body: &Body, target: Idx<Expr>, classes: &ClassIndex) -> Type {
+pub(super) fn actor_type_for_detach_target(
+    body: &Body,
+    target: Idx<Expr>,
+    classes: &ClassIndex,
+) -> Type {
     match &body.exprs[target] {
         Expr::Variable(name) => {
             if classes.is_class(name) {
@@ -595,7 +603,7 @@ fn actor_type_for_detach_target(body: &Body, target: Idx<Expr>, classes: &ClassI
     }
 }
 
-fn callee_error_span(body: &Body, callee: Idx<Expr>) -> SourceSpan {
+pub(super) fn callee_error_span(body: &Body, callee: Idx<Expr>) -> SourceSpan {
     match &body.exprs[callee] {
         Expr::Binary { op_span, .. } => span_from_range(*op_span),
         Expr::Unary { op_span, .. } => span_from_range(*op_span),
@@ -604,7 +612,7 @@ fn callee_error_span(body: &Body, callee: Idx<Expr>) -> SourceSpan {
     }
 }
 
-fn check_type_param_bounds(
+pub(super) fn check_type_param_bounds(
     type_param_names: &[SmolStr],
     type_param_bounds: &[Vec<SmolStr>],
     type_args: &[Type],
@@ -632,7 +640,7 @@ fn check_type_param_bounds(
     }
 }
 
-fn type_satisfies_bound(ty: &Type, bound: &str, classes: &ClassIndex) -> bool {
+pub(super) fn type_satisfies_bound(ty: &Type, bound: &str, classes: &ClassIndex) -> bool {
     match ty {
         Type::Named(name, _) => {
             if let Some(class) = classes.get(name) {
@@ -646,3 +654,11 @@ fn type_satisfies_bound(ty: &Type, bound: &str, classes: &ClassIndex) -> bool {
         _ => false,
     }
 }
+use super::calls::{build_type_subst, substitute_type};
+use super::context::{is_pool_of_call, pool_of_class_name, supports_structural_value_type};
+use super::{
+    BinaryOp, Body, ClassIndex, ClassSig, EnumIndex, Expr, FunctionKind, Idx, InterfaceIndex,
+    InterfaceMethodKind, InterfaceMethodSig, MethodSig, SmolStr, SourceSpan, Type, TypeError,
+    UnaryOp,
+};
+use std::collections::{HashMap, HashSet};

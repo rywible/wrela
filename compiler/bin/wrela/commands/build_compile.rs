@@ -1,4 +1,17 @@
-fn init_project(path: &str) -> io::Result<()> {
+use super::test_eval_perf::{
+    BenchmarkManifest, TestLane, TestSelection, collect_tests, infer_test_lane,
+    load_function_test_coverage_index, qualified_function_identity, stable_function_id,
+};
+use super::{
+    AstNode, BTreeMap, BTreeSet, Command, CommandSpec, Deserialize, DiagFix, DiagRecord,
+    DiagSeverity, DiagSpan, DiagStage, Duration, EXIT_CODEGEN, EXIT_OK, EXIT_PARSE,
+    EXIT_RUNTIME_SIGNAL, EXIT_TYPE, EXIT_USAGE, HashMap, HashSet, Instant, Output, OutputFormat,
+    ParsedCommandSpec, Path, PathBuf, Serialize, SmolStr, SourceSpan, SystemTime, UNIX_EPOCH,
+    VecDeque, ast, cert_engine, dedupe_records, diag_emit, env, fs, hir, hir_lower, io, mir,
+    mir_descriptor, parser, perf_engine, project_descriptor, replay_trace, suppress_cascades,
+};
+
+pub(crate) fn init_project(path: &str) -> io::Result<()> {
     let root = Path::new(path);
     let src_dir = root.join("src");
     fs::create_dir_all(&src_dir)?;
@@ -13,107 +26,107 @@ fn init_project(path: &str) -> io::Result<()> {
     Ok(())
 }
 
-const CERT_SCHEMA_VERSION: u32 = 4;
-const QUERY_CONTRACT_CATALOG_SCHEMA_VERSION: u32 = 1;
-const CERT_GATE_VERSIONS_MARKER: &str = "wrela-cert-gates-v1";
-const COVERAGE_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
-const COVERAGE_INDEX_SCHEMA_VERSION: u32 = 2;
-const MUTATION_CACHE_SCHEMA_VERSION: u32 = 1;
-const MUTATION_KILL_HISTORY_SCHEMA_VERSION: u32 = 1;
-const MUTATION_CACHE_ENGINE_TAG: &str = "wrela-mutation-cache-v1";
-const RUNTIME_CARGO_TOML: &str = include_str!("../../../../runtime/Cargo.toml");
-const BUDGET_POLICY_VERSION: u32 = 1;
-const DEFAULT_TEST_JOBS: u64 = 1;
-const DEFAULT_TEST_TIMEOUT_MS: u64 = 10_000;
-const DEFAULT_AUTOGEN_MAX_CASES: u64 = 16;
-const DEFAULT_SIM_MAX_CASES: u64 = 256;
-const DEFAULT_FUZZ_MAX_CASES: u64 = 128;
-const DEFAULT_MUTATION_MAX_CASES: u64 = 32;
-const DEFAULT_AUTOGEN_TIME_CAP_MS: u64 = 5_000;
-const DEFAULT_SIM_TIME_CAP_MS: u64 = 10_000;
-const DEFAULT_FUZZ_TIME_CAP_MS: u64 = 15_000;
-const DEFAULT_MUTATION_TIME_CAP_MS: u64 = 20_000;
-const CEILING_TEST_JOBS: u64 = 64;
-const CEILING_TEST_TIMEOUT_MS: u64 = 120_000;
-const CEILING_AUTOGEN_MAX_CASES: u64 = 1_024;
-const CEILING_SIM_MAX_CASES: u64 = 4_096;
-const CEILING_FUZZ_MAX_CASES: u64 = 4_096;
-const CEILING_MUTATION_MAX_CASES: u64 = 512;
-const CEILING_AUTOGEN_TIME_CAP_MS: u64 = 60_000;
-const CEILING_SIM_TIME_CAP_MS: u64 = 120_000;
-const CEILING_FUZZ_TIME_CAP_MS: u64 = 120_000;
-const CEILING_MUTATION_TIME_CAP_MS: u64 = 180_000;
-const PUBLIC_SURFACE_CURRENT_REL_PATH: &str = "tests/.artifacts/public_surface/current.json";
-const PUBLIC_SURFACE_BASELINE_REL_PATH: &str = "tests/public_surface.baseline.json";
-const TEST_HARNESS_META_SCHEMA_VERSION: u32 = 1;
+pub(crate) const CERT_SCHEMA_VERSION: u32 = 4;
+pub(crate) const QUERY_CONTRACT_CATALOG_SCHEMA_VERSION: u32 = 1;
+pub(crate) const CERT_GATE_VERSIONS_MARKER: &str = "wrela-cert-gates-v1";
+pub(crate) const COVERAGE_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+pub(crate) const COVERAGE_INDEX_SCHEMA_VERSION: u32 = 2;
+pub(crate) const MUTATION_CACHE_SCHEMA_VERSION: u32 = 1;
+pub(crate) const MUTATION_KILL_HISTORY_SCHEMA_VERSION: u32 = 1;
+pub(crate) const MUTATION_CACHE_ENGINE_TAG: &str = "wrela-mutation-cache-v1";
+pub(crate) const RUNTIME_CARGO_TOML: &str = include_str!("../../../../runtime/Cargo.toml");
+pub(crate) const BUDGET_POLICY_VERSION: u32 = 1;
+pub(crate) const DEFAULT_TEST_JOBS: u64 = 1;
+pub(crate) const DEFAULT_TEST_TIMEOUT_MS: u64 = 10_000;
+pub(crate) const DEFAULT_AUTOGEN_MAX_CASES: u64 = 16;
+pub(crate) const DEFAULT_SIM_MAX_CASES: u64 = 256;
+pub(crate) const DEFAULT_FUZZ_MAX_CASES: u64 = 128;
+pub(crate) const DEFAULT_MUTATION_MAX_CASES: u64 = 32;
+pub(crate) const DEFAULT_AUTOGEN_TIME_CAP_MS: u64 = 5_000;
+pub(crate) const DEFAULT_SIM_TIME_CAP_MS: u64 = 10_000;
+pub(crate) const DEFAULT_FUZZ_TIME_CAP_MS: u64 = 15_000;
+pub(crate) const DEFAULT_MUTATION_TIME_CAP_MS: u64 = 20_000;
+pub(crate) const CEILING_TEST_JOBS: u64 = 64;
+pub(crate) const CEILING_TEST_TIMEOUT_MS: u64 = 120_000;
+pub(crate) const CEILING_AUTOGEN_MAX_CASES: u64 = 1_024;
+pub(crate) const CEILING_SIM_MAX_CASES: u64 = 4_096;
+pub(crate) const CEILING_FUZZ_MAX_CASES: u64 = 4_096;
+pub(crate) const CEILING_MUTATION_MAX_CASES: u64 = 512;
+pub(crate) const CEILING_AUTOGEN_TIME_CAP_MS: u64 = 60_000;
+pub(crate) const CEILING_SIM_TIME_CAP_MS: u64 = 120_000;
+pub(crate) const CEILING_FUZZ_TIME_CAP_MS: u64 = 120_000;
+pub(crate) const CEILING_MUTATION_TIME_CAP_MS: u64 = 180_000;
+pub(crate) const PUBLIC_SURFACE_CURRENT_REL_PATH: &str =
+    "tests/.artifacts/public_surface/current.json";
+pub(crate) const PUBLIC_SURFACE_BASELINE_REL_PATH: &str = "tests/public_surface.baseline.json";
+pub(crate) const TEST_HARNESS_META_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Serialize, Deserialize)]
-struct CertificationReport {
-    cert_schema_version: u32,
-    generated_at_unix_ms: u128,
-    entry_path: String,
-    workspace_root: String,
-    artifact_path: String,
-    tests_passed: bool,
-    toolchain_version: String,
-    compiler_version: String,
-    compiler_git_sha: Option<String>,
-    runtime_version: String,
-    gate_versions_marker: String,
-    source_hash: String,
-    seeds_used: CertificationSeedsUsed,
-    budgets_used: CertificationBudgetsUsed,
-    coverage_summary_hash: Option<String>,
-    mutation_summary_hash: Option<String>,
-    differential_results_hash: Option<String>,
+pub(crate) struct CertificationReport {
+    pub(crate) cert_schema_version: u32,
+    pub(crate) generated_at_unix_ms: u128,
+    pub(crate) entry_path: String,
+    pub(crate) workspace_root: String,
+    pub(crate) artifact_path: String,
+    pub(crate) tests_passed: bool,
+    pub(crate) toolchain_version: String,
+    pub(crate) compiler_version: String,
+    pub(crate) compiler_git_sha: Option<String>,
+    pub(crate) runtime_version: String,
+    pub(crate) gate_versions_marker: String,
+    pub(crate) source_hash: String,
+    pub(crate) seeds_used: CertificationSeedsUsed,
+    pub(crate) budgets_used: CertificationBudgetsUsed,
+    pub(crate) coverage_summary_hash: Option<String>,
+    pub(crate) mutation_summary_hash: Option<String>,
+    pub(crate) differential_results_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    impact_manifest: Option<CertifiedImpactManifest>,
-    query_contracts: CertifiedQueryContractCatalog,
-    binary_hash: String,
+    pub(crate) impact_manifest: Option<CertifiedImpactManifest>,
+    pub(crate) query_contracts: CertifiedQueryContractCatalog,
+    pub(crate) binary_hash: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct CertifiedQueryContractCatalog {
-    schema_version: u32,
-    contracts: Vec<CertifiedQueryContractItem>,
-    aliases: Vec<CertifiedQueryContractAlias>,
+pub(crate) struct CertifiedQueryContractCatalog {
+    pub(crate) schema_version: u32,
+    pub(crate) contracts: Vec<CertifiedQueryContractItem>,
+    pub(crate) aliases: Vec<CertifiedQueryContractAlias>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct CertifiedQueryContractItem {
-    contract_id: String,
-    contract_version: u32,
-    family: String,
-    question: String,
-    call: String,
-    surface: String,
-    target: String,
-    cardinality: String,
-    capture_kind: String,
-    item_kind: String,
-    result_kind: String,
-    backends: Vec<String>,
-    domain_contract: Option<String>,
-    required_domain_flags: Vec<String>,
-    participant_contract: Option<String>,
-    preserves_local_hit_context: bool,
-    legacy_builtin: String,
+pub(crate) struct CertifiedQueryContractItem {
+    pub(crate) contract_id: String,
+    pub(crate) contract_version: u32,
+    pub(crate) family: String,
+    pub(crate) question: String,
+    pub(crate) call: String,
+    pub(crate) surface: String,
+    pub(crate) target: String,
+    pub(crate) cardinality: String,
+    pub(crate) capture_kind: String,
+    pub(crate) item_kind: String,
+    pub(crate) result_kind: String,
+    pub(crate) backends: Vec<String>,
+    pub(crate) domain_contract: Option<String>,
+    pub(crate) required_domain_flags: Vec<String>,
+    pub(crate) participant_contract: Option<String>,
+    pub(crate) preserves_local_hit_context: bool,
+    pub(crate) legacy_builtin: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct CertifiedQueryContractAlias {
-    alias_id: String,
-    canonical_id: String,
-    reason: String,
+pub(crate) struct CertifiedQueryContractAlias {
+    pub(crate) alias_id: String,
+    pub(crate) canonical_id: String,
+    pub(crate) reason: String,
 }
 
-fn query_contract_catalog_snapshot() -> CertifiedQueryContractCatalog {
+pub(crate) fn query_contract_catalog_snapshot() -> CertifiedQueryContractCatalog {
     let contracts = wrela::query_contract::query_contracts()
         .iter()
         .map(|descriptor| {
             let legacy_builtin =
-                wrela::query_contract::query_legacy_builtin_name(descriptor.id)
-                    .unwrap_or_default();
+                wrela::query_contract::query_legacy_builtin_name(descriptor.id).unwrap_or_default();
             CertifiedQueryContractItem {
                 contract_id: descriptor.id.as_str().to_string(),
                 contract_version: descriptor.version,
@@ -127,10 +140,8 @@ fn query_contract_catalog_snapshot() -> CertifiedQueryContractCatalog {
                 ),
                 surface: wrela::query_contract::query_surface_name(descriptor.surface).to_string(),
                 target: wrela::query_contract::query_target_name(descriptor.target).to_string(),
-                cardinality: wrela::query_contract::query_cardinality_name(
-                    descriptor.cardinality,
-                )
-                .to_string(),
+                cardinality: wrela::query_contract::query_cardinality_name(descriptor.cardinality)
+                    .to_string(),
                 capture_kind: wrela::query_contract::query_capture_kind_name(
                     descriptor.capture_kind,
                 )
@@ -172,13 +183,15 @@ fn query_contract_catalog_snapshot() -> CertifiedQueryContractCatalog {
     }
 }
 
-fn domain_contract_name(kind: wrela::query_contract::DomainContractKind) -> String {
+pub(crate) fn domain_contract_name(kind: wrela::query_contract::DomainContractKind) -> String {
     match kind {
         wrela::query_contract::DomainContractKind::SceneDomain => "scene_domain".to_string(),
     }
 }
 
-fn participant_contract_name(kind: wrela::query_contract::ParticipantContractKind) -> String {
+pub(crate) fn participant_contract_name(
+    kind: wrela::query_contract::ParticipantContractKind,
+) -> String {
     match kind {
         wrela::query_contract::ParticipantContractKind::Radiance => "radiance".to_string(),
         wrela::query_contract::ParticipantContractKind::Medium => "medium".to_string(),
@@ -186,202 +199,202 @@ fn participant_contract_name(kind: wrela::query_contract::ParticipantContractKin
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct CertifiedImpactManifest {
-    source_files: Vec<CertifiedSourceFileFingerprint>,
-    src_modules: Vec<CertifiedSrcModuleSnapshot>,
+pub(crate) struct CertifiedImpactManifest {
+    pub(crate) source_files: Vec<CertifiedSourceFileFingerprint>,
+    pub(crate) src_modules: Vec<CertifiedSrcModuleSnapshot>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct CertifiedSourceFileFingerprint {
-    rel_path: String,
-    hash: String,
+pub(crate) struct CertifiedSourceFileFingerprint {
+    pub(crate) rel_path: String,
+    pub(crate) hash: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct CertifiedSrcModuleSnapshot {
-    module_path: String,
-    rel_path: String,
-    hash: String,
-    uses: Vec<String>,
-    runtime_sensitive: bool,
+pub(crate) struct CertifiedSrcModuleSnapshot {
+    pub(crate) module_path: String,
+    pub(crate) rel_path: String,
+    pub(crate) hash: String,
+    pub(crate) uses: Vec<String>,
+    pub(crate) runtime_sensitive: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct PublicSurfaceSnapshot {
-    version: u32,
-    items: Vec<PublicSurfaceItem>,
+pub(crate) struct PublicSurfaceSnapshot {
+    pub(crate) version: u32,
+    pub(crate) items: Vec<PublicSurfaceItem>,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct PublicSurfaceItem {
-    qualified_name: String,
-    signature: String,
+pub(crate) struct PublicSurfaceItem {
+    pub(crate) qualified_name: String,
+    pub(crate) signature: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    connector_literals: Vec<PublicSurfaceConnectorLiteral>,
+    pub(crate) connector_literals: Vec<PublicSurfaceConnectorLiteral>,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-struct PublicSurfaceConnectorLiteral {
-    service: String,
-    endpoint: String,
-    method: String,
-    url: String,
+pub(crate) struct PublicSurfaceConnectorLiteral {
+    pub(crate) service: String,
+    pub(crate) endpoint: String,
+    pub(crate) method: String,
+    pub(crate) url: String,
 }
 
 #[derive(Serialize, Deserialize)]
-struct CertificationSeedsUsed {
-    sim: u64,
-    autogen: u64,
-    fuzz: u64,
+pub(crate) struct CertificationSeedsUsed {
+    pub(crate) sim: u64,
+    pub(crate) autogen: u64,
+    pub(crate) fuzz: u64,
 }
 
 #[derive(Serialize, Deserialize)]
-struct CertificationBudgetsUsed {
-    policy_version: u32,
-    test_jobs: BudgetValue,
-    test_timeout_ms: BudgetValue,
-    autogen_max_cases: BudgetValue,
-    sim_max_cases: BudgetValue,
-    fuzz_max_cases: BudgetValue,
-    mutation_max_cases: BudgetValue,
-    autogen_time_cap_ms: BudgetValue,
-    sim_time_cap_ms: BudgetValue,
-    fuzz_time_cap_ms: BudgetValue,
-    mutation_time_cap_ms: BudgetValue,
+pub(crate) struct CertificationBudgetsUsed {
+    pub(crate) policy_version: u32,
+    pub(crate) test_jobs: BudgetValue,
+    pub(crate) test_timeout_ms: BudgetValue,
+    pub(crate) autogen_max_cases: BudgetValue,
+    pub(crate) sim_max_cases: BudgetValue,
+    pub(crate) fuzz_max_cases: BudgetValue,
+    pub(crate) mutation_max_cases: BudgetValue,
+    pub(crate) autogen_time_cap_ms: BudgetValue,
+    pub(crate) sim_time_cap_ms: BudgetValue,
+    pub(crate) fuzz_time_cap_ms: BudgetValue,
+    pub(crate) mutation_time_cap_ms: BudgetValue,
 }
 
 #[derive(Debug, Deserialize)]
-struct ConnectorCoverageCassette {
-    request: ConnectorCoverageRequest,
-    response: ConnectorCoverageResponse,
+pub(crate) struct ConnectorCoverageCassette {
+    pub(crate) request: ConnectorCoverageRequest,
+    pub(crate) response: ConnectorCoverageResponse,
 }
 
 #[derive(Debug, Deserialize)]
-struct ConnectorCoverageRequest {
-    service: String,
-    endpoint: String,
+pub(crate) struct ConnectorCoverageRequest {
+    pub(crate) service: String,
+    pub(crate) endpoint: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct ConnectorCoverageResponse {
-    status: u16,
+pub(crate) struct ConnectorCoverageResponse {
+    pub(crate) status: u16,
 }
 
 #[derive(Serialize)]
-struct BuildPerfEvent {
-    event: &'static str,
-    perf: BuildPerfPayload,
+pub(crate) struct BuildPerfEvent {
+    pub(crate) event: &'static str,
+    pub(crate) perf: BuildPerfPayload,
 }
 
 #[derive(Serialize)]
-struct BuildPerfPayload {
-    cache: BuildPerfCache,
-    timings: BuildPerfTimings,
+pub(crate) struct BuildPerfPayload {
+    pub(crate) cache: BuildPerfCache,
+    pub(crate) timings: BuildPerfTimings,
 }
 
 #[derive(Serialize)]
-struct BuildPerfCache {
-    hit: bool,
-    hash: String,
-    reason: String,
+pub(crate) struct BuildPerfCache {
+    pub(crate) hit: bool,
+    pub(crate) hash: String,
+    pub(crate) reason: String,
 }
 
 #[derive(Serialize)]
-struct BuildPerfTimings {
-    certification_ms: u128,
-    cert_collect_tests_ms: u128,
-    cert_compile_harness_ms: u128,
-    cert_determinism_ms: u128,
-    cert_mutation_discovery_ms: u128,
-    cert_mutation_execution_ms: u128,
-    cert_diff_ms: u128,
-    mir_compile_ms: u128,
-    codegen_ms: u128,
-    cert_report_ms: u128,
-    total_ms: u128,
+pub(crate) struct BuildPerfTimings {
+    pub(crate) certification_ms: u128,
+    pub(crate) cert_collect_tests_ms: u128,
+    pub(crate) cert_compile_harness_ms: u128,
+    pub(crate) cert_determinism_ms: u128,
+    pub(crate) cert_mutation_discovery_ms: u128,
+    pub(crate) cert_mutation_execution_ms: u128,
+    pub(crate) cert_diff_ms: u128,
+    pub(crate) mir_compile_ms: u128,
+    pub(crate) codegen_ms: u128,
+    pub(crate) cert_report_ms: u128,
+    pub(crate) total_ms: u128,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub(super) struct BudgetValue {
-    pub(super) value: u64,
-    default: u64,
-    ceiling: u64,
-    provenance: BudgetProvenance,
+pub(crate) struct BudgetValue {
+    pub(crate) value: u64,
+    pub(crate) default: u64,
+    pub(crate) ceiling: u64,
+    pub(crate) provenance: BudgetProvenance,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct BudgetProvenance {
-    source: String,
-    key: String,
-    requested: u64,
-    clamped_to_ceiling: bool,
+pub(crate) struct BudgetProvenance {
+    pub(crate) source: String,
+    pub(crate) key: String,
+    pub(crate) requested: u64,
+    pub(crate) clamped_to_ceiling: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub(super) struct BudgetPolicyV1 {
-    policy_version: u32,
-    pub(super) test_jobs: BudgetValue,
-    pub(super) test_timeout_ms: BudgetValue,
-    autogen_max_cases: BudgetValue,
-    sim_max_cases: BudgetValue,
-    fuzz_max_cases: BudgetValue,
-    pub(super) mutation_max_cases: BudgetValue,
-    autogen_time_cap_ms: BudgetValue,
-    sim_time_cap_ms: BudgetValue,
-    fuzz_time_cap_ms: BudgetValue,
-    pub(super) mutation_time_cap_ms: BudgetValue,
+pub(crate) struct BudgetPolicyV1 {
+    pub(crate) policy_version: u32,
+    pub(crate) test_jobs: BudgetValue,
+    pub(crate) test_timeout_ms: BudgetValue,
+    pub(crate) autogen_max_cases: BudgetValue,
+    pub(crate) sim_max_cases: BudgetValue,
+    pub(crate) fuzz_max_cases: BudgetValue,
+    pub(crate) mutation_max_cases: BudgetValue,
+    pub(crate) autogen_time_cap_ms: BudgetValue,
+    pub(crate) sim_time_cap_ms: BudgetValue,
+    pub(crate) fuzz_time_cap_ms: BudgetValue,
+    pub(crate) mutation_time_cap_ms: BudgetValue,
 }
 
 #[derive(Serialize)]
-struct TestMaintenanceSummary {
-    version: u32,
-    generated_at_unix_ms: u128,
-    workspace_root: String,
-    mode_record: bool,
-    mode_update_public_surface: bool,
-    exit_code: i32,
-    binary_artifacts_emitted: bool,
+pub(crate) struct TestMaintenanceSummary {
+    pub(crate) version: u32,
+    pub(crate) generated_at_unix_ms: u128,
+    pub(crate) workspace_root: String,
+    pub(crate) mode_record: bool,
+    pub(crate) mode_update_public_surface: bool,
+    pub(crate) exit_code: i32,
+    pub(crate) binary_artifacts_emitted: bool,
 }
 
 #[derive(Serialize)]
-struct BuildCertCacheJsonEvent {
-    event: &'static str,
-    cache_hit: bool,
-    cache_hash: String,
-    cache_dir: String,
+pub(crate) struct BuildCertCacheJsonEvent {
+    pub(crate) event: &'static str,
+    pub(crate) cache_hit: bool,
+    pub(crate) cache_hash: String,
+    pub(crate) cache_dir: String,
 }
 
 #[derive(Clone, Serialize)]
-struct CertSelectionJsonEvent {
-    event: &'static str,
-    mode: String,
-    changed_files: Vec<String>,
-    changed_src_modules: Vec<String>,
-    impacted_src_modules: Vec<String>,
-    selected_test_count: usize,
-    selected_stage_count: usize,
-    stages: Vec<CertSelectionStage>,
-    reasons: Vec<String>,
+pub(crate) struct CertSelectionJsonEvent {
+    pub(crate) event: &'static str,
+    pub(crate) mode: String,
+    pub(crate) changed_files: Vec<String>,
+    pub(crate) changed_src_modules: Vec<String>,
+    pub(crate) impacted_src_modules: Vec<String>,
+    pub(crate) selected_test_count: usize,
+    pub(crate) selected_stage_count: usize,
+    pub(crate) stages: Vec<CertSelectionStage>,
+    pub(crate) reasons: Vec<String>,
 }
 
 #[derive(Clone, Serialize)]
-struct CertSelectionStage {
-    lane: String,
-    selected: bool,
-    reason: String,
+pub(crate) struct CertSelectionStage {
+    pub(crate) lane: String,
+    pub(crate) selected: bool,
+    pub(crate) reason: String,
 }
 
 #[derive(Clone, Default)]
-struct CertSelectionReport {
-    mode: String,
-    changed_files: Vec<String>,
-    changed_src_modules: Vec<String>,
-    impacted_src_modules: Vec<String>,
-    stages: Vec<CertSelectionStage>,
-    reasons: Vec<String>,
+pub(crate) struct CertSelectionReport {
+    pub(crate) mode: String,
+    pub(crate) changed_files: Vec<String>,
+    pub(crate) changed_src_modules: Vec<String>,
+    pub(crate) impacted_src_modules: Vec<String>,
+    pub(crate) stages: Vec<CertSelectionStage>,
+    pub(crate) reasons: Vec<String>,
 }
 
-fn write_certification_report(
+pub(crate) fn write_certification_report(
     entry_path: &Path,
     workspace_root: &Path,
     artifact_path: &Path,
@@ -489,7 +502,7 @@ fn write_certification_report(
     Ok(())
 }
 
-fn certification_budgets_used(policy: &BudgetPolicyV1) -> CertificationBudgetsUsed {
+pub(crate) fn certification_budgets_used(policy: &BudgetPolicyV1) -> CertificationBudgetsUsed {
     CertificationBudgetsUsed {
         policy_version: policy.policy_version,
         test_jobs: policy.test_jobs.clone(),
@@ -505,7 +518,7 @@ fn certification_budgets_used(policy: &BudgetPolicyV1) -> CertificationBudgetsUs
     }
 }
 
-fn resolve_compiler_git_sha() -> Option<String> {
+pub(crate) fn resolve_compiler_git_sha() -> Option<String> {
     if let Some(sha) = option_env!("WRELA_GIT_SHA")
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -543,18 +556,18 @@ fn resolve_compiler_git_sha() -> Option<String> {
     if sha.is_empty() { None } else { Some(sha) }
 }
 
-fn resolve_runtime_version() -> String {
+pub(crate) fn resolve_runtime_version() -> String {
     if let Some(version) = parse_cargo_package_version(RUNTIME_CARGO_TOML) {
         return version;
     }
     "unknown".to_string()
 }
 
-fn resolve_toolchain_version() -> String {
+pub(crate) fn resolve_toolchain_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-fn certification_cache_hash(source_hash: &str, toolchain_version: &str) -> String {
+pub(crate) fn certification_cache_hash(source_hash: &str, toolchain_version: &str) -> String {
     let mut hasher = Fnv1a64::new();
     hasher.update(b"wrela-cert-cache-v2");
     hasher.update(&[0]);
@@ -566,7 +579,11 @@ fn certification_cache_hash(source_hash: &str, toolchain_version: &str) -> Strin
     hasher.finish_hex()
 }
 
-fn emit_certification_cache_hit(output_format: OutputFormat, cache_hash: &str, cache_dir: &Path) {
+pub(crate) fn emit_certification_cache_hit(
+    output_format: OutputFormat,
+    cache_hash: &str,
+    cache_dir: &Path,
+) {
     match output_format {
         OutputFormat::Pretty => {
             eprintln!("certification cache hit: {}", cache_hash);
@@ -589,7 +606,7 @@ fn emit_certification_cache_hit(output_format: OutputFormat, cache_hash: &str, c
     }
 }
 
-fn emit_build_perf_event(
+pub(crate) fn emit_build_perf_event(
     output_format: OutputFormat,
     cache_hit: bool,
     cache_hash: String,
@@ -616,7 +633,7 @@ fn emit_build_perf_event(
     );
 }
 
-fn emit_cert_selection_report(
+pub(crate) fn emit_cert_selection_report(
     output_format: OutputFormat,
     report: &CertSelectionReport,
     selected_test_count: usize,
@@ -703,7 +720,7 @@ fn emit_cert_selection_report(
     }
 }
 
-fn resolve_certification_test_selection(
+pub(crate) fn resolve_certification_test_selection(
     workspace_root: &Path,
     output_format: OutputFormat,
 ) -> TestSelection {
@@ -1091,14 +1108,14 @@ fn resolve_certification_test_selection(
     selection
 }
 
-fn selection_reasons_push(selection: &mut TestSelection, reason: String) {
+pub(crate) fn selection_reasons_push(selection: &mut TestSelection, reason: String) {
     let report = selection
         .cert_selection_report
         .get_or_insert_with(CertSelectionReport::default);
     report.reasons.push(reason);
 }
 
-fn changed_function_ids_from_modules(
+pub(crate) fn changed_function_ids_from_modules(
     workspace_root: &Path,
     current_manifest: &CertifiedImpactManifest,
     changed_src_modules: &[String],
@@ -1141,14 +1158,14 @@ fn changed_function_ids_from_modules(
     function_ids
 }
 
-fn read_certification_report(path: &Path) -> Result<CertificationReport, String> {
+pub(crate) fn read_certification_report(path: &Path) -> Result<CertificationReport, String> {
     let payload = fs::read_to_string(path)
         .map_err(|err| format!("failed to read {}: {}", path.display(), err))?;
     serde_json::from_str(&payload)
         .map_err(|err| format!("failed to parse {} as cert json: {}", path.display(), err))
 }
 
-fn diff_changed_files(
+pub(crate) fn diff_changed_files(
     previous: &CertifiedImpactManifest,
     current: &CertifiedImpactManifest,
 ) -> Vec<String> {
@@ -1174,7 +1191,7 @@ fn diff_changed_files(
         .collect()
 }
 
-fn diff_changed_src_modules(
+pub(crate) fn diff_changed_src_modules(
     previous: &CertifiedImpactManifest,
     current: &CertifiedImpactManifest,
 ) -> Vec<String> {
@@ -1200,7 +1217,7 @@ fn diff_changed_src_modules(
         .collect()
 }
 
-fn impacted_src_modules_from_changed(
+pub(crate) fn impacted_src_modules_from_changed(
     src_modules: &[CertifiedSrcModuleSnapshot],
     changed_src_modules: &[String],
 ) -> Vec<String> {
@@ -1239,7 +1256,7 @@ fn impacted_src_modules_from_changed(
     impacted.into_iter().collect()
 }
 
-fn integration_reachability_to_impacted(
+pub(crate) fn integration_reachability_to_impacted(
     workspace_root: &Path,
     manifest: &CertifiedImpactManifest,
     impacted_src_modules: &[String],
@@ -1304,7 +1321,7 @@ fn integration_reachability_to_impacted(
     result
 }
 
-fn module_reaches_impacted(
+pub(crate) fn module_reaches_impacted(
     start: &str,
     adjacency: &HashMap<String, Vec<String>>,
     impacted: &HashSet<&str>,
@@ -1328,7 +1345,7 @@ fn module_reaches_impacted(
     false
 }
 
-fn parse_cargo_package_version(cargo_toml: &str) -> Option<String> {
+pub(crate) fn parse_cargo_package_version(cargo_toml: &str) -> Option<String> {
     let mut in_package = false;
     for raw in cargo_toml.lines() {
         let line = raw.trim();
@@ -1355,7 +1372,7 @@ fn parse_cargo_package_version(cargo_toml: &str) -> Option<String> {
     None
 }
 
-pub(super) fn resolve_budget_policy_v1(
+pub(crate) fn resolve_budget_policy_v1(
     test_jobs: Option<usize>,
     test_timeout_ms: Option<u64>,
 ) -> BudgetPolicyV1 {
@@ -1424,7 +1441,7 @@ pub(super) fn resolve_budget_policy_v1(
     }
 }
 
-fn resolve_budget_value(
+pub(crate) fn resolve_budget_value(
     default: u64,
     ceiling: u64,
     cli_override: Option<(u64, &str)>,
@@ -1439,11 +1456,11 @@ fn resolve_budget_value(
     budget_value(default, ceiling, default, "default", "hardcoded")
 }
 
-fn parse_budget_env_u64(key: &str) -> Option<u64> {
+pub(crate) fn parse_budget_env_u64(key: &str) -> Option<u64> {
     std::env::var(key).ok()?.trim().parse::<u64>().ok()
 }
 
-fn budget_value(
+pub(crate) fn budget_value(
     default: u64,
     ceiling: u64,
     requested: u64,
@@ -1464,7 +1481,7 @@ fn budget_value(
     }
 }
 
-fn verify_certification_report(cert_path: &Path) -> Result<(), String> {
+pub(crate) fn verify_certification_report(cert_path: &Path) -> Result<(), String> {
     if !cert_path.exists() {
         return Err(format!(
             "verify-cert failed:\n  - cert path not found: {}",
@@ -1573,7 +1590,7 @@ fn verify_certification_report(cert_path: &Path) -> Result<(), String> {
     Err(format!("verify-cert failed:\n{body}"))
 }
 
-fn resolve_cert_path(raw: &str, cert_dir: &Path) -> PathBuf {
+pub(crate) fn resolve_cert_path(raw: &str, cert_dir: &Path) -> PathBuf {
     let path = PathBuf::from(raw);
     if path.is_absolute() {
         path
@@ -1582,7 +1599,7 @@ fn resolve_cert_path(raw: &str, cert_dir: &Path) -> PathBuf {
     }
 }
 
-pub(super) fn write_test_maintenance_summary(
+pub(crate) fn write_test_maintenance_summary(
     workspace_root: &Path,
     mode_record: bool,
     mode_update_public_surface: bool,
@@ -1629,13 +1646,13 @@ pub(super) fn write_test_maintenance_summary(
     Ok(())
 }
 
-fn hash_file_fingerprint(path: &Path) -> Result<String, String> {
+pub(crate) fn hash_file_fingerprint(path: &Path) -> Result<String, String> {
     let bytes = fs::read(path)
         .map_err(|err| format!("failed to read hash input {}: {}", path.display(), err))?;
     Ok(fnv1a64_hex(&bytes))
 }
 
-fn hash_source_fingerprint(workspace_root: &Path) -> Result<String, String> {
+pub(crate) fn hash_source_fingerprint(workspace_root: &Path) -> Result<String, String> {
     let mut files: Vec<(String, PathBuf)> = Vec::new();
     collect_hash_files(&workspace_root.join("src"), "src", "wr", &mut files)?;
     collect_hash_files(&workspace_root.join("tests"), "tests", "wr", &mut files)?;
@@ -1664,7 +1681,7 @@ fn hash_source_fingerprint(workspace_root: &Path) -> Result<String, String> {
     Ok(hasher.finish_hex())
 }
 
-fn collect_hash_files(
+pub(crate) fn collect_hash_files(
     dir: &Path,
     dir_label: &str,
     extension: &str,
@@ -1705,15 +1722,15 @@ fn collect_hash_files(
 }
 
 #[derive(Clone)]
-struct WrModuleSource {
-    module_path: String,
-    rel_path: String,
-    source: String,
-    hash: String,
-    uses: Vec<String>,
+pub(crate) struct WrModuleSource {
+    pub(crate) module_path: String,
+    pub(crate) rel_path: String,
+    pub(crate) source: String,
+    pub(crate) hash: String,
+    pub(crate) uses: Vec<String>,
 }
 
-fn build_certified_impact_manifest(
+pub(crate) fn build_certified_impact_manifest(
     workspace_root: &Path,
 ) -> Result<CertifiedImpactManifest, String> {
     let mut files: Vec<(String, PathBuf)> = Vec::new();
@@ -1758,7 +1775,7 @@ fn build_certified_impact_manifest(
     })
 }
 
-fn collect_wr_modules(
+pub(crate) fn collect_wr_modules(
     root: &Path,
     strip_root: &Path,
     root_label: &str,
@@ -1823,7 +1840,11 @@ fn collect_wr_modules(
     Ok(())
 }
 
-fn module_path_for_wr_file(path: &Path, root: &Path, root_label: &str) -> Result<String, String> {
+pub(crate) fn module_path_for_wr_file(
+    path: &Path,
+    root: &Path,
+    root_label: &str,
+) -> Result<String, String> {
     let rel = path
         .strip_prefix(root)
         .map_err(|_| format!("file {} must live under {}", path.display(), root.display()))?;
@@ -1841,7 +1862,7 @@ fn module_path_for_wr_file(path: &Path, root: &Path, root_label: &str) -> Result
     }
 }
 
-fn parse_wr_use_edges(source: &str) -> Vec<String> {
+pub(crate) fn parse_wr_use_edges(source: &str) -> Vec<String> {
     use wrela::parser::ast::AstNode;
 
     let (syntax, parse_errors) = parser::parse_with_errors(source);
@@ -1863,7 +1884,7 @@ fn parse_wr_use_edges(source: &str) -> Vec<String> {
     uses
 }
 
-fn source_looks_runtime_sensitive(source: &str) -> bool {
+pub(crate) fn source_looks_runtime_sensitive(source: &str) -> bool {
     let normalized = source.to_ascii_lowercase();
     [
         "actor", "pool", "runtime", "__wr_", "detach", "mailbox", "sched_",
@@ -1872,7 +1893,7 @@ fn source_looks_runtime_sensitive(source: &str) -> bool {
     .any(|marker| normalized.contains(marker))
 }
 
-fn enforce_public_surface_gate(workspace_root: &Path) -> Result<(), String> {
+pub(crate) fn enforce_public_surface_gate(workspace_root: &Path) -> Result<(), String> {
     let snapshot = build_public_surface_snapshot(workspace_root)?;
     let current_path = workspace_root.join(PUBLIC_SURFACE_CURRENT_REL_PATH);
     write_public_surface_snapshot(&current_path, &snapshot)?;
@@ -1893,7 +1914,7 @@ fn enforce_public_surface_gate(workspace_root: &Path) -> Result<(), String> {
     ))
 }
 
-fn enforce_importable_coverage_gate(
+pub(crate) fn enforce_importable_coverage_gate(
     workspace_root: &Path,
     function_coverage: &BTreeMap<String, u64>,
 ) -> Result<(), String> {
@@ -1903,10 +1924,8 @@ fn enforce_importable_coverage_gate(
         .iter()
         .filter(|item| is_importable_coverage_target(&item.qualified_name))
         .filter_map(|item| {
-            let hits = function_coverage_hits_for_qualified_name(
-                function_coverage,
-                &item.qualified_name,
-            );
+            let hits =
+                function_coverage_hits_for_qualified_name(function_coverage, &item.qualified_name);
             (hits == 0).then_some(item.qualified_name.clone())
         })
         .collect::<Vec<_>>();
@@ -1926,11 +1945,11 @@ fn enforce_importable_coverage_gate(
     ))
 }
 
-fn is_importable_coverage_target(qualified_name: &str) -> bool {
+pub(crate) fn is_importable_coverage_target(qualified_name: &str) -> bool {
     qualified_name.starts_with("domain/") || qualified_name.starts_with("application/")
 }
 
-fn function_coverage_hits_for_qualified_name(
+pub(crate) fn function_coverage_hits_for_qualified_name(
     function_coverage: &BTreeMap<String, u64>,
     qualified_name: &str,
 ) -> u64 {
@@ -1946,7 +1965,7 @@ fn function_coverage_hits_for_qualified_name(
     function_coverage.get(&short_id).copied().unwrap_or(0)
 }
 
-pub(super) fn update_public_surface_baseline(workspace_root: &Path) -> Result<(), String> {
+pub(crate) fn update_public_surface_baseline(workspace_root: &Path) -> Result<(), String> {
     let snapshot = build_public_surface_snapshot(workspace_root)?;
     let current_path = workspace_root.join(PUBLIC_SURFACE_CURRENT_REL_PATH);
     write_public_surface_snapshot(&current_path, &snapshot)?;
@@ -1959,7 +1978,9 @@ pub(super) fn update_public_surface_baseline(workspace_root: &Path) -> Result<()
     Ok(())
 }
 
-fn build_public_surface_snapshot(workspace_root: &Path) -> Result<PublicSurfaceSnapshot, String> {
+pub(crate) fn build_public_surface_snapshot(
+    workspace_root: &Path,
+) -> Result<PublicSurfaceSnapshot, String> {
     use wrela::parser::ast::AstNode;
 
     let src_root = workspace_root.join("src");
@@ -2004,7 +2025,7 @@ fn build_public_surface_snapshot(workspace_root: &Path) -> Result<PublicSurfaceS
     Ok(PublicSurfaceSnapshot { version: 1, items })
 }
 
-fn render_public_function_signature(function: &hir::Function) -> String {
+pub(crate) fn render_public_function_signature(function: &hir::Function) -> String {
     let params = function
         .params
         .iter()
@@ -2025,7 +2046,7 @@ fn render_public_function_signature(function: &hir::Function) -> String {
     format!("({}) -> {ret}", params.join(", "))
 }
 
-fn render_public_surface_type(ty: &hir::TypeRef) -> String {
+pub(crate) fn render_public_surface_type(ty: &hir::TypeRef) -> String {
     if ty.args.is_empty() {
         return ty.name.to_string();
     }
@@ -2038,7 +2059,7 @@ fn render_public_surface_type(ty: &hir::TypeRef) -> String {
     format!("{}[{args}]", ty.name)
 }
 
-fn collect_public_surface_connector_literals(
+pub(crate) fn collect_public_surface_connector_literals(
     body: &hir::Body,
 ) -> Vec<PublicSurfaceConnectorLiteral> {
     let mut literals = BTreeSet::new();
@@ -2046,7 +2067,7 @@ fn collect_public_surface_connector_literals(
     literals.into_iter().collect()
 }
 
-fn collect_public_surface_connector_literals_from_stmts(
+pub(crate) fn collect_public_surface_connector_literals_from_stmts(
     body: &hir::Body,
     stmts: &[hir::arena::Idx<hir::Stmt>],
     out: &mut BTreeSet<PublicSurfaceConnectorLiteral>,
@@ -2131,7 +2152,7 @@ fn collect_public_surface_connector_literals_from_stmts(
     }
 }
 
-fn collect_public_surface_connector_literals_from_expr(
+pub(crate) fn collect_public_surface_connector_literals_from_expr(
     body: &hir::Body,
     expr_idx: hir::arena::Idx<hir::Expr>,
     out: &mut BTreeSet<PublicSurfaceConnectorLiteral>,
@@ -2188,13 +2209,15 @@ fn collect_public_surface_connector_literals_from_expr(
                 }
             }
         }
-        hir::Expr::Closure { body: closure_body, .. } => {
+        hir::Expr::Closure {
+            body: closure_body, ..
+        } => {
             collect_public_surface_connector_literals_from_expr(body, *closure_body, out);
         }
     }
 }
 
-fn is_try_to_http_call(body: &hir::Body, callee: hir::arena::Idx<hir::Expr>) -> bool {
+pub(crate) fn is_try_to_http_call(body: &hir::Body, callee: hir::arena::Idx<hir::Expr>) -> bool {
     match &body.exprs[callee] {
         hir::Expr::Variable(name) => name == "try_to_http_call",
         hir::Expr::TypeApply { callee, .. } => is_try_to_http_call(body, *callee),
@@ -2202,7 +2225,7 @@ fn is_try_to_http_call(body: &hir::Body, callee: hir::arena::Idx<hir::Expr>) -> 
     }
 }
 
-fn extract_try_to_http_literal_tuple(
+pub(crate) fn extract_try_to_http_literal_tuple(
     body: &hir::Body,
     args: &[hir::Arg],
 ) -> Option<PublicSurfaceConnectorLiteral> {
@@ -2254,14 +2277,17 @@ fn extract_try_to_http_literal_tuple(
     })
 }
 
-fn extract_literal_string(body: &hir::Body, expr: hir::arena::Idx<hir::Expr>) -> Option<String> {
+pub(crate) fn extract_literal_string(
+    body: &hir::Body,
+    expr: hir::arena::Idx<hir::Expr>,
+) -> Option<String> {
     match &body.exprs[expr] {
         hir::Expr::Literal(hir::Literal::String(value)) => Some(value.to_string()),
         _ => None,
     }
 }
 
-fn write_public_surface_snapshot(
+pub(crate) fn write_public_surface_snapshot(
     path: &Path,
     snapshot: &PublicSurfaceSnapshot,
 ) -> Result<(), String> {
@@ -2273,14 +2299,14 @@ fn write_public_surface_snapshot(
     fs::write(path, bytes).map_err(|err| format!("failed to write {}: {}", path.display(), err))
 }
 
-fn load_public_surface_snapshot(path: &Path) -> Result<PublicSurfaceSnapshot, String> {
+pub(crate) fn load_public_surface_snapshot(path: &Path) -> Result<PublicSurfaceSnapshot, String> {
     let bytes =
         fs::read(path).map_err(|err| format!("failed to read {}: {}", path.display(), err))?;
     serde_json::from_slice::<PublicSurfaceSnapshot>(&bytes)
         .map_err(|err| format!("failed to parse {}: {}", path.display(), err))
 }
 
-fn summarize_public_surface_diff(
+pub(crate) fn summarize_public_surface_diff(
     baseline: &PublicSurfaceSnapshot,
     current: &PublicSurfaceSnapshot,
 ) -> String {
@@ -2350,7 +2376,7 @@ fn summarize_public_surface_diff(
     lines.join("\n")
 }
 
-pub(super) fn evaluate_connector_contract_gate(workspace_root: &Path) -> Result<(), String> {
+pub(crate) fn evaluate_connector_contract_gate(workspace_root: &Path) -> Result<(), String> {
     let root = fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
     let cassette_root = root.join("tests").join("cassettes");
     if !cassette_root.is_dir() {
@@ -2398,7 +2424,10 @@ pub(super) fn evaluate_connector_contract_gate(workspace_root: &Path) -> Result<
     ))
 }
 
-fn collect_json_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+pub(crate) fn collect_json_files_recursive(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
     let entries =
         fs::read_dir(dir).map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
     let mut children: Vec<PathBuf> = entries
@@ -2418,7 +2447,7 @@ fn collect_json_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()
     Ok(())
 }
 
-fn path_sort_key(path: &Path) -> (usize, String) {
+pub(crate) fn path_sort_key(path: &Path) -> (usize, String) {
     let rank = match (path.is_file(), path.is_dir()) {
         (true, _) => 0,
         (_, true) => 1,
@@ -2427,56 +2456,56 @@ fn path_sort_key(path: &Path) -> (usize, String) {
     (rank, path.to_string_lossy().to_string())
 }
 
-const FNV1A64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-const FNV1A64_PRIME: u64 = 0x100000001b3;
+pub(crate) const FNV1A64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+pub(crate) const FNV1A64_PRIME: u64 = 0x100000001b3;
 
-struct Fnv1a64 {
-    state: u64,
+pub(crate) struct Fnv1a64 {
+    pub(crate) state: u64,
 }
 
 impl Fnv1a64 {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: FNV1A64_OFFSET_BASIS,
         }
     }
 
-    fn update(&mut self, bytes: &[u8]) {
+    pub(crate) fn update(&mut self, bytes: &[u8]) {
         for byte in bytes {
             self.state ^= *byte as u64;
             self.state = self.state.wrapping_mul(FNV1A64_PRIME);
         }
     }
 
-    fn finish_hex(&self) -> String {
+    pub(crate) fn finish_hex(&self) -> String {
         format!("{:016x}", self.state)
     }
 
-    fn finish_u64(&self) -> u64 {
+    pub(crate) fn finish_u64(&self) -> u64 {
         self.state
     }
 }
 
-pub(super) fn fnv1a64_hex(bytes: &[u8]) -> String {
+pub(crate) fn fnv1a64_hex(bytes: &[u8]) -> String {
     let mut hasher = Fnv1a64::new();
     hasher.update(bytes);
     hasher.finish_hex()
 }
 
-fn fnv1a64(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut hasher = Fnv1a64::new();
     hasher.update(bytes);
     hasher.finish_u64()
 }
 
-fn now_unix_ms() -> u128 {
+pub(crate) fn now_unix_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::from_secs(0))
         .as_millis()
 }
 
-fn project_record(
+pub(crate) fn project_record(
     kind: wrela::diag::catalog::ProjectDiagKind,
     severity: DiagSeverity,
     message: String,
@@ -2489,7 +2518,10 @@ fn project_record(
         .with_help(Some(desc.help_template.to_string()))
 }
 
-fn conservative_naming_fixes(err: &hir::naming::NamingError, path: &str) -> Vec<DiagFix> {
+pub(crate) fn conservative_naming_fixes(
+    err: &hir::naming::NamingError,
+    path: &str,
+) -> Vec<DiagFix> {
     let span = err.primary_span();
     let span = DiagSpan {
         path: path.to_string(),
@@ -2548,7 +2580,7 @@ fn conservative_naming_fixes(err: &hir::naming::NamingError, path: &str) -> Vec<
     }
 }
 
-fn to_snake_case(input: &str) -> String {
+pub(crate) fn to_snake_case(input: &str) -> String {
     let mut out = String::new();
     let mut prev_was_sep = true;
     for ch in input.chars() {
@@ -2573,7 +2605,7 @@ fn to_snake_case(input: &str) -> String {
     out
 }
 
-fn to_pascal_case(input: &str) -> String {
+pub(crate) fn to_pascal_case(input: &str) -> String {
     let mut out = String::new();
     let mut cap = true;
     for ch in input.chars() {
@@ -2591,7 +2623,7 @@ fn to_pascal_case(input: &str) -> String {
     out
 }
 
-fn resolve_path_from_owner_spans(
+pub(crate) fn resolve_path_from_owner_spans(
     span: SourceSpan,
     provenance: &hir::project::ProjectProvenance,
     default_path: &str,
@@ -2620,12 +2652,12 @@ fn resolve_path_from_owner_spans(
         .unwrap_or_else(|| default_path.to_string())
 }
 
-pub(super) enum TestTarget {
+pub(crate) enum TestTarget {
     ProjectRoot(PathBuf),
     SingleFile(PathBuf),
 }
 
-pub(super) fn resolve_test_target(path_arg: Option<&str>) -> Result<TestTarget, String> {
+pub(crate) fn resolve_test_target(path_arg: Option<&str>) -> Result<TestTarget, String> {
     let path = PathBuf::from(path_arg.unwrap_or("."));
     if path.is_file() {
         if path.extension().and_then(|s| s.to_str()) == Some("wr") {
@@ -2642,7 +2674,7 @@ pub(super) fn resolve_test_target(path_arg: Option<&str>) -> Result<TestTarget, 
     Err("test target must be an existing project-root directory or .wr file".to_string())
 }
 
-pub(super) fn resolve_benchmark_manifest_path(
+pub(crate) fn resolve_benchmark_manifest_path(
     target: &TestTarget,
     override_path: Option<String>,
 ) -> Option<PathBuf> {
@@ -2656,7 +2688,7 @@ pub(super) fn resolve_benchmark_manifest_path(
     candidate.is_file().then_some(candidate)
 }
 
-pub(super) fn load_benchmark_manifest(path: &Path) -> Result<BenchmarkManifest, String> {
+pub(crate) fn load_benchmark_manifest(path: &Path) -> Result<BenchmarkManifest, String> {
     let text = fs::read_to_string(path)
         .map_err(|err| format!("failed to read {}: {}", path.display(), err))?;
     let manifest: BenchmarkManifest =

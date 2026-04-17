@@ -8,6 +8,7 @@ use wrela::collision_contract::{
 use wrela::collision_plan::{
     CollisionArtifactKind, CollisionPlan, CollisionQueryKind, collision_plans_with_backend,
 };
+use wrela::execution_policy::{RequiredGuaranteeClass, SelectedMethodClass};
 use wrela::hir;
 use wrela::hir::lower as hir_lower;
 use wrela::kernel::{KernelStructValue, KernelValue, lower_world_query_plan};
@@ -275,7 +276,7 @@ fn collision_plans_validate_transition_artifacts_and_witness_declarations() {
 }
 
 #[test]
-fn transition_collision_validation_reports_conservative_and_interval_methods() {
+fn transition_collision_plans_surface_conservative_and_interval_methods() {
     let sweep = CollisionPlan::for_query_with_backend(
         CollisionQueryKind::SphereSweepTransition,
         DispatchBackend::Wgsl,
@@ -284,22 +285,31 @@ fn transition_collision_validation_reports_conservative_and_interval_methods() {
         CollisionQueryKind::SphereTimeOfImpactTransition,
         DispatchBackend::Wgsl,
     );
-    let sweep_errors = sweep.validate();
-    let toi_errors = toi.validate();
-    assert!(sweep_errors.iter().any(|error| {
-        error
-            .message
-            .contains("required_guarantee=conservative_no_false_miss")
-            && error
-                .message
-                .contains("selected_method=conservative_solver")
-    }));
-    assert!(toi_errors.iter().any(|error| {
-        error
-            .message
-            .contains("required_guarantee=interval_bounded")
-            && error.message.contains("selected_method=interval_solver")
-    }));
+
+    assert_eq!(
+        sweep.policy.required_guarantee,
+        RequiredGuaranteeClass::ConservativeNoFalseMiss
+    );
+    assert_eq!(
+        sweep.policy.selected_method,
+        SelectedMethodClass::ConservativeSolver
+    );
+    assert_eq!(
+        toi.policy.required_guarantee,
+        RequiredGuaranteeClass::IntervalBounded
+    );
+    assert_eq!(
+        toi.policy.selected_method,
+        SelectedMethodClass::IntervalSolver
+    );
+    assert!(
+        sweep.validate().is_empty(),
+        "expected sweep transition plan to validate cleanly"
+    );
+    assert!(
+        toi.validate().is_empty(),
+        "expected time-of-impact transition plan to validate cleanly"
+    );
 }
 
 #[test]

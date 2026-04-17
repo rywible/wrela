@@ -1,6 +1,18 @@
+use super::{
+    Arg, BinaryOp, Body, ClassRole, Expr, Function, FunctionKind, FunctionLane, FunctionRole,
+    FunctionTypeInfo, Idx, InterfaceMethodKind, Literal, Module, Pattern, SmolStr, Stmt, Type,
+    TypeError, TypeInfo, TypeRef, Visibility, body_key, check_body_async_usage, check_stmt,
+    class_subst, error_type, infer_expr, instantiate_method_params, instantiate_method_ret,
+    interface_method_matches, interface_type_compatible, literal_type,
+    portable_builtin_type_to_type, portable_named_field_type, portable_named_type,
+    span_from_option_range, span_from_range, substitute_type, type_from_ref, type_from_ref_in_ctx,
+    type_from_ref_with_params,
+};
 use crate::portable::builtin_records;
+use rowan::TextRange;
+use std::collections::{HashMap, HashSet};
 
-fn supports_structural_value_type(
+pub(super) fn supports_structural_value_type(
     ty: &Type,
     classes: &ClassIndex,
     enums: &EnumIndex,
@@ -92,7 +104,7 @@ fn supports_structural_value_type(
     }
 }
 
-fn check_function(
+pub(super) fn check_function(
     func: &Function,
     func_id: Idx<Function>,
     classes: &ClassIndex,
@@ -211,14 +223,17 @@ fn check_function(
     info.functions.insert(func_id.into_raw(), fn_info);
 }
 
-fn body_contains_forbidden_world_return(body: &Body, allow_terminal_top_level_return: bool) -> bool {
+pub(super) fn body_contains_forbidden_world_return(
+    body: &Body,
+    allow_terminal_top_level_return: bool,
+) -> bool {
     body.root_stmts.iter().enumerate().any(|(index, stmt)| {
         let allow_here = allow_terminal_top_level_return && index + 1 == body.root_stmts.len();
         stmt_contains_forbidden_world_return(body, *stmt, allow_here, true)
     })
 }
 
-fn stmt_contains_forbidden_world_return(
+pub(super) fn stmt_contains_forbidden_world_return(
     body: &Body,
     stmt_id: Idx<Stmt>,
     allow_here: bool,
@@ -241,18 +256,18 @@ fn stmt_contains_forbidden_world_return(
             then_branch,
             else_branch: Some(else_branch),
             ..
-        } => then_branch
-            .iter()
-            .copied()
-            .any(|stmt| stmt_contains_forbidden_world_return(body, stmt, false, false))
-            || else_branch
+        } => {
+            then_branch
                 .iter()
                 .copied()
-                .any(|stmt| stmt_contains_forbidden_world_return(body, stmt, false, false)),
+                .any(|stmt| stmt_contains_forbidden_world_return(body, stmt, false, false))
+                || else_branch
+                    .iter()
+                    .copied()
+                    .any(|stmt| stmt_contains_forbidden_world_return(body, stmt, false, false))
+        }
         Stmt::Match {
-            cases,
-            otherwise,
-            ..
+            cases, otherwise, ..
         } => {
             cases.iter().any(|case| {
                 case.body
@@ -271,66 +286,66 @@ fn stmt_contains_forbidden_world_return(
 }
 
 #[derive(Debug, Clone)]
-struct MethodSig {
-    params: Vec<(SmolStr, Type)>,
-    ret: Type,
-    kind: FunctionKind,
+pub(super) struct MethodSig {
+    pub(super) params: Vec<(SmolStr, Type)>,
+    pub(super) ret: Type,
+    pub(super) kind: FunctionKind,
 }
 
 #[derive(Debug, Clone)]
-struct FunctionSig {
-    params: Vec<(SmolStr, Type)>,
-    ret: Type,
+pub(super) struct FunctionSig {
+    pub(super) params: Vec<(SmolStr, Type)>,
+    pub(super) ret: Type,
     #[allow(dead_code)]
-    kind: FunctionKind,
-    type_params: Vec<SmolStr>,
-    type_param_bounds: Vec<Vec<SmolStr>>,
+    pub(super) kind: FunctionKind,
+    pub(super) type_params: Vec<SmolStr>,
+    pub(super) type_param_bounds: Vec<Vec<SmolStr>>,
 }
 
 #[derive(Debug, Clone)]
-struct ClassSig {
-    role: ClassRole,
-    type_params: Vec<SmolStr>,
-    fields: HashMap<SmolStr, Type>,
-    field_mutable: HashMap<SmolStr, bool>,
-    methods: HashMap<SmolStr, MethodSig>,
-    field_order: Vec<SmolStr>,
-    implements: Vec<SmolStr>,
-    name_span: Option<TextRange>,
+pub(super) struct ClassSig {
+    pub(super) role: ClassRole,
+    pub(super) type_params: Vec<SmolStr>,
+    pub(super) fields: HashMap<SmolStr, Type>,
+    pub(super) field_mutable: HashMap<SmolStr, bool>,
+    pub(super) methods: HashMap<SmolStr, MethodSig>,
+    pub(super) field_order: Vec<SmolStr>,
+    pub(super) implements: Vec<SmolStr>,
+    pub(super) name_span: Option<TextRange>,
 }
 
-struct ClassIndex {
-    classes: HashMap<SmolStr, ClassSig>,
-}
-
-#[derive(Debug, Clone)]
-struct EnumSig {
-    type_params: Vec<SmolStr>,
-    variants: HashMap<SmolStr, Vec<(SmolStr, Type)>>,
+pub(super) struct ClassIndex {
+    pub(super) classes: HashMap<SmolStr, ClassSig>,
 }
 
 #[derive(Debug, Clone)]
-struct InterfaceSig {
-    methods: HashMap<SmolStr, InterfaceMethodSig>,
+pub(super) struct EnumSig {
+    pub(super) type_params: Vec<SmolStr>,
+    pub(super) variants: HashMap<SmolStr, Vec<(SmolStr, Type)>>,
 }
 
 #[derive(Debug, Clone)]
-struct InterfaceMethodSig {
-    params: Vec<(SmolStr, Type)>,
-    ret: Type,
-    kind: InterfaceMethodKind,
+pub(super) struct InterfaceSig {
+    pub(super) methods: HashMap<SmolStr, InterfaceMethodSig>,
 }
 
-struct EnumIndex {
-    enums: HashMap<SmolStr, EnumSig>,
+#[derive(Debug, Clone)]
+pub(super) struct InterfaceMethodSig {
+    pub(super) params: Vec<(SmolStr, Type)>,
+    pub(super) ret: Type,
+    pub(super) kind: InterfaceMethodKind,
 }
 
-struct InterfaceIndex {
-    interfaces: HashMap<SmolStr, InterfaceSig>,
+pub(super) struct EnumIndex {
+    pub(super) enums: HashMap<SmolStr, EnumSig>,
+}
+
+pub(super) struct InterfaceIndex {
+    pub(super) interfaces: HashMap<SmolStr, InterfaceSig>,
 }
 
 impl ClassIndex {
-    fn new(module: &Module) -> Self {
+    pub(super) fn new(module: &Module) -> Self {
         let mut classes = HashMap::new();
         for (_idx, class) in module.classes.iter() {
             let type_params: Vec<SmolStr> =
@@ -420,17 +435,17 @@ impl ClassIndex {
         Self { classes }
     }
 
-    fn get(&self, name: &SmolStr) -> Option<&ClassSig> {
+    pub(super) fn get(&self, name: &SmolStr) -> Option<&ClassSig> {
         self.classes.get(name)
     }
 
-    fn is_class(&self, name: &SmolStr) -> bool {
+    pub(super) fn is_class(&self, name: &SmolStr) -> bool {
         self.classes.contains_key(name)
     }
 }
 
 impl EnumIndex {
-    fn new(module: &Module) -> Self {
+    pub(super) fn new(module: &Module) -> Self {
         let mut enums = HashMap::new();
         for (_idx, en) in module.enums.iter() {
             let type_params: Vec<SmolStr> =
@@ -465,13 +480,13 @@ impl EnumIndex {
         Self { enums }
     }
 
-    fn get(&self, name: &SmolStr) -> Option<&EnumSig> {
+    pub(super) fn get(&self, name: &SmolStr) -> Option<&EnumSig> {
         self.enums.get(name)
     }
 }
 
 impl InterfaceIndex {
-    fn new(module: &Module) -> Self {
+    pub(super) fn new(module: &Module) -> Self {
         let mut interfaces = HashMap::new();
         for (_idx, interface) in module.interfaces.iter() {
             let type_params: Vec<SmolStr> = interface
@@ -515,16 +530,16 @@ impl InterfaceIndex {
         Self { interfaces }
     }
 
-    fn get(&self, name: &SmolStr) -> Option<&InterfaceSig> {
+    pub(super) fn get(&self, name: &SmolStr) -> Option<&InterfaceSig> {
         self.interfaces.get(name)
     }
 
-    fn is_interface(&self, name: &SmolStr) -> bool {
+    pub(super) fn is_interface(&self, name: &SmolStr) -> bool {
         self.interfaces.contains_key(name)
     }
 }
 
-fn check_interface_conformance(
+pub(super) fn check_interface_conformance(
     classes: &ClassIndex,
     interfaces: &InterfaceIndex,
     errors: &mut Vec<TypeError>,
@@ -573,18 +588,18 @@ fn check_interface_conformance(
     }
 }
 
-struct FunctionIndex {
-    functions: HashMap<SmolStr, FunctionSig>,
-    portable_functions: HashSet<SmolStr>,
-    kernel_functions: HashSet<SmolStr>,
-    field_functions: HashSet<SmolStr>,
-    shape_functions: HashSet<SmolStr>,
-    region_functions: HashSet<SmolStr>,
-    domain_functions: HashSet<SmolStr>,
+pub(super) struct FunctionIndex {
+    pub(super) functions: HashMap<SmolStr, FunctionSig>,
+    pub(super) portable_functions: HashSet<SmolStr>,
+    pub(super) kernel_functions: HashSet<SmolStr>,
+    pub(super) field_functions: HashSet<SmolStr>,
+    pub(super) shape_functions: HashSet<SmolStr>,
+    pub(super) region_functions: HashSet<SmolStr>,
+    pub(super) domain_functions: HashSet<SmolStr>,
 }
 
 impl FunctionIndex {
-    fn new(module: &Module) -> Self {
+    pub(super) fn new(module: &Module) -> Self {
         let mut method_ids = HashSet::new();
         for (_idx, class) in module.classes.iter() {
             for method_id in &class.methods {
@@ -677,36 +692,36 @@ impl FunctionIndex {
         }
     }
 
-    fn get(&self, name: &SmolStr) -> Option<&FunctionSig> {
+    pub(super) fn get(&self, name: &SmolStr) -> Option<&FunctionSig> {
         self.functions.get(name)
     }
 
-    fn is_portable(&self, name: &SmolStr) -> bool {
+    pub(super) fn is_portable(&self, name: &SmolStr) -> bool {
         self.portable_functions.contains(name)
     }
 
-    fn is_kernel(&self, name: &SmolStr) -> bool {
+    pub(super) fn is_kernel(&self, name: &SmolStr) -> bool {
         self.kernel_functions.contains(name)
     }
 
-    fn is_field(&self, name: &SmolStr) -> bool {
+    pub(super) fn is_field(&self, name: &SmolStr) -> bool {
         self.field_functions.contains(name)
     }
 
-    fn is_shape(&self, name: &SmolStr) -> bool {
+    pub(super) fn is_shape(&self, name: &SmolStr) -> bool {
         self.shape_functions.contains(name)
     }
 
-    fn is_region(&self, name: &SmolStr) -> bool {
+    pub(super) fn is_region(&self, name: &SmolStr) -> bool {
         self.region_functions.contains(name)
     }
 
-    fn is_domain(&self, name: &SmolStr) -> bool {
+    pub(super) fn is_domain(&self, name: &SmolStr) -> bool {
         self.domain_functions.contains(name)
     }
 }
 
-fn builtin_function_is_portable(name: &str) -> bool {
+pub(super) fn builtin_function_is_portable(name: &str) -> bool {
     matches!(
         name,
         "vec2"
@@ -794,7 +809,7 @@ fn builtin_function_is_portable(name: &str) -> bool {
     )
 }
 
-fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
+pub(super) fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
     let err = error_type();
     let mut functions = vec![
         (
@@ -2601,7 +2616,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
         (
             SmolStr::new("circle2"),
             FunctionSig {
-                params: vec![(SmolStr::new("p"), Type::Vec2), (SmolStr::new("radius"), Type::F32)],
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec2),
+                    (SmolStr::new("radius"), Type::F32),
+                ],
                 ret: Type::F32,
                 kind: FunctionKind::Function,
                 type_params: Vec::new(),
@@ -2611,7 +2629,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
         (
             SmolStr::new("rect2"),
             FunctionSig {
-                params: vec![(SmolStr::new("p"), Type::Vec2), (SmolStr::new("half"), Type::Vec2)],
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec2),
+                    (SmolStr::new("half"), Type::Vec2),
+                ],
                 ret: Type::F32,
                 kind: FunctionKind::Function,
                 type_params: Vec::new(),
@@ -2690,7 +2711,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
         (
             SmolStr::new("ellipsoid"),
             FunctionSig {
-                params: vec![(SmolStr::new("p"), Type::Vec3), (SmolStr::new("radii"), Type::Vec3)],
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec3),
+                    (SmolStr::new("radii"), Type::Vec3),
+                ],
                 ret: Type::F32,
                 kind: FunctionKind::Function,
                 type_params: Vec::new(),
@@ -2713,7 +2737,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
         (
             SmolStr::new("rect2"),
             FunctionSig {
-                params: vec![(SmolStr::new("p"), Type::Vec2), (SmolStr::new("half"), Type::Vec2)],
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec2),
+                    (SmolStr::new("half"), Type::Vec2),
+                ],
                 ret: Type::F32,
                 kind: FunctionKind::Function,
                 type_params: Vec::new(),
@@ -2792,7 +2819,10 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
         (
             SmolStr::new("__wr_primitive_ellipsoid"),
             FunctionSig {
-                params: vec![(SmolStr::new("p"), Type::Vec3), (SmolStr::new("radii"), Type::Vec3)],
+                params: vec![
+                    (SmolStr::new("p"), Type::Vec3),
+                    (SmolStr::new("radii"), Type::Vec3),
+                ],
                 ret: Type::F32,
                 kind: FunctionKind::Function,
                 type_params: Vec::new(),
@@ -3338,7 +3368,7 @@ fn builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
     functions
 }
 
-fn query_compat_builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
+pub(super) fn query_compat_builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for binding in crate::query_contract::query_execution_bindings() {
@@ -3362,7 +3392,7 @@ fn query_compat_builtin_functions() -> Vec<(SmolStr, FunctionSig)> {
     out
 }
 
-fn query_compat_builtin_params(
+pub(super) fn query_compat_builtin_params(
     descriptor: &crate::query_contract::QueryContractDescriptor,
 ) -> Vec<(SmolStr, Type)> {
     use crate::query_contract::{QueryCardinality, QueryItemKind, QueryTargetKind};
@@ -3400,7 +3430,10 @@ fn query_compat_builtin_params(
                     Type::List(Box::new(portable_named_type("UnitQuery"))),
                 )),
             }
-            params.push((SmolStr::new("backend"), portable_named_type("DispatchBackend")));
+            params.push((
+                SmolStr::new("backend"),
+                portable_named_type("DispatchBackend"),
+            ));
         }
         QueryCardinality::Scalar => {
             match descriptor.item_kind {
@@ -3418,14 +3451,17 @@ fn query_compat_builtin_params(
                 QueryItemKind::Unit => {}
             }
             if descriptor.target == QueryTargetKind::World {
-                params.push((SmolStr::new("backend"), portable_named_type("DispatchBackend")));
+                params.push((
+                    SmolStr::new("backend"),
+                    portable_named_type("DispatchBackend"),
+                ));
             }
         }
     }
     params
 }
 
-fn query_authored_return_type(
+pub(super) fn query_authored_return_type(
     descriptor: &crate::query_contract::QueryContractDescriptor,
 ) -> Type {
     use crate::query_contract::{QueryCardinality, QueryResultKind};
@@ -3454,21 +3490,21 @@ fn query_authored_return_type(
     }
 }
 
-fn is_pool_of_call(body: &Body, callee: Idx<Expr>) -> bool {
+pub(super) fn is_pool_of_call(body: &Body, callee: Idx<Expr>) -> bool {
     match &body.exprs[callee] {
         Expr::Member { object, member, .. } => is_pool_of_member(body, *object, member),
         _ => false,
     }
 }
 
-fn is_pool_of_member(body: &Body, object: Idx<Expr>, member: &SmolStr) -> bool {
+pub(super) fn is_pool_of_member(body: &Body, object: Idx<Expr>, member: &SmolStr) -> bool {
     if member.as_str() != "of" {
         return false;
     }
     matches!(&body.exprs[object], Expr::Variable(name) if name.as_str() == "Pool")
 }
 
-fn pool_of_class_name(
+pub(super) fn pool_of_class_name(
     body: &Body,
     args: &[crate::hir::Arg],
     classes: &ClassIndex,
@@ -3486,17 +3522,17 @@ fn pool_of_class_name(
     None
 }
 
-struct TypeContext {
-    scopes: Vec<HashMap<SmolStr, Type>>,
-    type_params: Vec<HashSet<SmolStr>>,
-    info: Option<*mut FunctionTypeInfo>,
-    function_lane: FunctionLane,
-    function_role: FunctionRole,
-    function_name: SmolStr,
+pub(super) struct TypeContext {
+    pub(super) scopes: Vec<HashMap<SmolStr, Type>>,
+    pub(super) type_params: Vec<HashSet<SmolStr>>,
+    pub(super) info: Option<*mut FunctionTypeInfo>,
+    pub(super) function_lane: FunctionLane,
+    pub(super) function_role: FunctionRole,
+    pub(super) function_name: SmolStr,
 }
 
 impl TypeContext {
-    fn with_info(info: &mut FunctionTypeInfo) -> Self {
+    pub(super) fn with_info(info: &mut FunctionTypeInfo) -> Self {
         Self {
             scopes: Vec::new(),
             type_params: Vec::new(),
@@ -3507,27 +3543,27 @@ impl TypeContext {
         }
     }
 
-    fn set_function_lane(&mut self, lane: FunctionLane) {
+    pub(super) fn set_function_lane(&mut self, lane: FunctionLane) {
         self.function_lane = lane;
     }
 
-    fn set_function_role(&mut self, role: FunctionRole) {
+    pub(super) fn set_function_role(&mut self, role: FunctionRole) {
         self.function_role = role;
     }
 
-    fn set_function_name(&mut self, name: SmolStr) {
+    pub(super) fn set_function_name(&mut self, name: SmolStr) {
         self.function_name = name;
     }
 
-    fn in_portable_lane(&self) -> bool {
+    pub(super) fn in_portable_lane(&self) -> bool {
         matches!(self.function_lane, FunctionLane::Portable)
     }
 
-    fn in_portable_query_kernel_lane(&self) -> bool {
+    pub(super) fn in_portable_query_kernel_lane(&self) -> bool {
         self.in_portable_lane() && matches!(self.function_role, FunctionRole::Kernel)
     }
 
-    fn current_function_name(&self) -> SmolStr {
+    pub(super) fn current_function_name(&self) -> SmolStr {
         if self.function_name.is_empty() {
             SmolStr::new("<portable>")
         } else {
@@ -3535,28 +3571,28 @@ impl TypeContext {
         }
     }
 
-    fn current_function_role(&self) -> FunctionRole {
+    pub(super) fn current_function_role(&self) -> FunctionRole {
         self.function_role
     }
 
-    fn enter_scope(&mut self) {
+    pub(super) fn enter_scope(&mut self) {
         self.scopes.push(HashMap::new());
     }
 
-    fn exit_scope(&mut self) {
+    pub(super) fn exit_scope(&mut self) {
         self.scopes.pop();
     }
 
-    fn enter_type_params(&mut self, params: &[SmolStr]) {
+    pub(super) fn enter_type_params(&mut self, params: &[SmolStr]) {
         let set = params.iter().cloned().collect();
         self.type_params.push(set);
     }
 
-    fn exit_type_params(&mut self) {
+    pub(super) fn exit_type_params(&mut self) {
         self.type_params.pop();
     }
 
-    fn declare(&mut self, name: SmolStr, ty: Type) {
+    pub(super) fn declare(&mut self, name: SmolStr, ty: Type) {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.clone(), ty.clone());
         }
@@ -3570,7 +3606,7 @@ impl TypeContext {
         }
     }
 
-    fn resolve(&self, name: &SmolStr) -> Option<Type> {
+    pub(super) fn resolve(&self, name: &SmolStr) -> Option<Type> {
         for scope in self.scopes.iter().rev() {
             if let Some(ty) = scope.get(name) {
                 return Some(ty.clone());
@@ -3579,7 +3615,7 @@ impl TypeContext {
         None
     }
 
-    fn assign(&mut self, name: &SmolStr, ty: Type) {
+    pub(super) fn assign(&mut self, name: &SmolStr, ty: Type) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(existing) = scope.get_mut(name) {
                 if matches!(existing, Type::Unknown) && !matches!(ty, Type::Unknown) {
@@ -3601,7 +3637,7 @@ impl TypeContext {
         }
     }
 
-    fn record_expr(&mut self, body: &Body, expr_id: Idx<Expr>, ty: Type) {
+    pub(super) fn record_expr(&mut self, body: &Body, expr_id: Idx<Expr>, ty: Type) {
         if let Some(info) = self.info {
             unsafe {
                 (*info)

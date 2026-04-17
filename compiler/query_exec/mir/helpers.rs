@@ -1,3 +1,26 @@
+use super::{
+    BTreeMap, BatchQueryExecutionState, BatchQueryInvocationSpec, BatchQueryKind,
+    BatchQueryLoopInputs, BatchQueryPlan, BinaryOp, CandidateStrategy, CaptureKind,
+    CaptureQueryKind, CaptureQueryPlan, DispatchBackend, Expr, FieldBounds, FieldSupport,
+    FunctionLowerer, FunctionRole, HashMap, HashSet, HirStmt, InternalKernelKind, KernelPlanStage,
+    Literal, MirFunction, MirStmt, MirType, NativeWgslBridgeConfig, PlanExecutor, PortableAbiType,
+    PruningStrategy, QueryContractDescriptor, QueryItemKind, QueryResultKind, QuerySurfaceKind,
+    ScalarQueryInvocationSpec, SceneSummary, ShapeExecutionMode, SmolStr, TextRange, TypeTagId,
+    UnaryOp, Value, WorldDistanceBackend, WorldMediumBackend, WorldNormalBackend, WorldQueryKind,
+    WorldQueryPlan, WorldRadianceBackend, WorldSurfaceBackend, WorldTraceBackend,
+    batch_query_kind_for_contract_id, builtin_record_by_function, execute_world_normal,
+    lower_batch_query_plan, lower_capture_query_plan, lower_world_query_plan,
+    portable_abi_from_type_ref, portable_value_struct_abi, query_contract, scene_ir,
+    stable_field_scene_capture_id, stable_region_scene_capture_id, stable_shape_capture_id,
+    stable_shape_scene_capture_id, validate_batch_query_plan, validate_capture_query_plan,
+    validate_world_query_plan, vector_component_index, walk_world_distance_shapes,
+    walk_world_medium_shapes, walk_world_radiance_shapes, walk_world_surface_shapes,
+    walk_world_trace_shapes, world_domain_mismatch_message, world_query_semantics,
+};
+use crate::hir;
+use crate::mir::ir::*;
+use crate::query_exec::region::build_region_exec_cases;
+
 pub(crate) fn lower_shape_distance_helper(
     shape: &hir::Shape,
     mode: ShapeExecutionMode,
@@ -1027,10 +1050,7 @@ enum MirStaticSceneValue {
     F32(f32),
     Bool(bool),
     Vec3([f32; 3]),
-    Bounds3 {
-        min: [f32; 3],
-        max: [f32; 3],
-    },
+    Bounds3 { min: [f32; 3], max: [f32; 3] },
 }
 
 pub(crate) fn lower_scene_support_summary_capture_helper(
@@ -1279,7 +1299,13 @@ pub(crate) fn lower_world_support_summary_capture_helper(
     let compute_block = lowerer.new_block();
     let unsupported_block = lowerer.new_block();
     lowerer.current_block = entry;
-    lower_support_summary_backend_guard(&mut lowerer, backend, compute_block, unsupported_block, span);
+    lower_support_summary_backend_guard(
+        &mut lowerer,
+        backend,
+        compute_block,
+        unsupported_block,
+        span,
+    );
 
     lowerer.current_block = compute_block;
     let result = lowerer.new_local(
@@ -1422,7 +1448,8 @@ fn lower_support_summary_backend_guard(
         Value::Const(Literal::Integer(3)),
         span,
     );
-    let cpu_or_vgpu = lowerer.lower_binary_temp(MirType::Boolean, BinaryOp::Or, is_cpu, is_vgpu, span);
+    let cpu_or_vgpu =
+        lowerer.lower_binary_temp(MirType::Boolean, BinaryOp::Or, is_cpu, is_vgpu, span);
     let supported =
         lowerer.lower_binary_temp(MirType::Boolean, BinaryOp::Or, cpu_or_vgpu, is_auto, span);
     lowerer.set_terminator(Terminator::Branch {
@@ -1448,12 +1475,16 @@ fn lower_support_summary_result_value(
     FunctionLowerer::set_class_field_value(
         &mut class,
         "support_class",
-        Value::Const(Literal::Integer(i64::from(support_class_code(parts.support_class)))),
+        Value::Const(Literal::Integer(i64::from(support_class_code(
+            parts.support_class,
+        )))),
     );
     FunctionLowerer::set_class_field_value(
         &mut class,
         "semantics",
-        Value::Const(Literal::Integer(i64::from(distance_semantics_code(parts.semantics)))),
+        Value::Const(Literal::Integer(i64::from(distance_semantics_code(
+            parts.semantics,
+        )))),
     );
     FunctionLowerer::set_class_field_value(
         &mut class,
@@ -1806,9 +1837,9 @@ fn eval_static_scene_value(expr: &scene_ir::SceneValueExpr) -> Option<MirStaticS
                 (UnaryOp::Neg, MirStaticSceneValue::F32(value)) => {
                     Some(MirStaticSceneValue::F32(-value))
                 }
-                (UnaryOp::Neg, MirStaticSceneValue::Vec3(value)) => Some(
-                    MirStaticSceneValue::Vec3([-value[0], -value[1], -value[2]]),
-                ),
+                (UnaryOp::Neg, MirStaticSceneValue::Vec3(value)) => {
+                    Some(MirStaticSceneValue::Vec3([-value[0], -value[1], -value[2]]))
+                }
                 (UnaryOp::Not, MirStaticSceneValue::Bool(value)) => {
                     Some(MirStaticSceneValue::Bool(!value))
                 }
@@ -1820,9 +1851,7 @@ fn eval_static_scene_value(expr: &scene_ir::SceneValueExpr) -> Option<MirStaticS
             let rhs = eval_static_scene_value(rhs)?;
             eval_static_binary(*op, lhs, rhs)
         }
-        scene_ir::SceneValueExpr::Call { callee, args } => {
-            eval_static_call(callee.as_str(), args)
-        }
+        scene_ir::SceneValueExpr::Call { callee, args } => eval_static_call(callee.as_str(), args),
     }
 }
 
@@ -1895,11 +1924,10 @@ fn static_named_or_pos_vec3(
 ) -> Option<[f32; 3]> {
     args.iter()
         .find_map(|arg| match arg {
-            scene_ir::SceneArgExpr::Named { name: arg_name, value }
-                if arg_name.as_str() == name =>
-            {
-                static_vec3(value)
-            }
+            scene_ir::SceneArgExpr::Named {
+                name: arg_name,
+                value,
+            } if arg_name.as_str() == name => static_vec3(value),
             _ => None,
         })
         .or_else(|| args.get(position).and_then(static_arg_vec3))
@@ -1907,15 +1935,17 @@ fn static_named_or_pos_vec3(
 
 fn static_arg_f32(arg: &scene_ir::SceneArgExpr) -> Option<f32> {
     match arg {
-        scene_ir::SceneArgExpr::Positional(value)
-        | scene_ir::SceneArgExpr::Named { value, .. } => static_f32(value),
+        scene_ir::SceneArgExpr::Positional(value) | scene_ir::SceneArgExpr::Named { value, .. } => {
+            static_f32(value)
+        }
     }
 }
 
 fn static_arg_vec3(arg: &scene_ir::SceneArgExpr) -> Option<[f32; 3]> {
     match arg {
-        scene_ir::SceneArgExpr::Positional(value)
-        | scene_ir::SceneArgExpr::Named { value, .. } => static_vec3(value),
+        scene_ir::SceneArgExpr::Positional(value) | scene_ir::SceneArgExpr::Named { value, .. } => {
+            static_vec3(value)
+        }
     }
 }
 
@@ -2383,13 +2413,8 @@ pub(crate) fn lower_scene_trace_capture_helper(
     });
 
     lowerer.current_block = shape_capture_block;
-    let origin = lowerer.lower_get_named_field(
-        Value::Local(ray),
-        "RayQuery",
-        "origin",
-        MirType::Vec3,
-        span,
-    );
+    let origin =
+        lowerer.lower_get_named_field(Value::Local(ray), "RayQuery", "origin", MirType::Vec3, span);
     let direction = lowerer.lower_get_named_field(
         Value::Local(ray),
         "RayQuery",
@@ -3437,13 +3462,8 @@ fn lower_world_domain_flag_guard(
         MirType::Named(SmolStr::new(contract_name)),
         span,
     );
-    let enabled = lowerer.lower_get_named_field(
-        contract,
-        contract_name,
-        flag,
-        MirType::Boolean,
-        span,
-    );
+    let enabled =
+        lowerer.lower_get_named_field(contract, contract_name, flag, MirType::Boolean, span);
     let enabled_block = lowerer.new_block();
     let disabled_block = lowerer.new_block();
     lowerer.set_terminator(Terminator::Branch {
@@ -3683,9 +3703,13 @@ impl WorldNormalBackend for MirWorldNormalBackend<'_> {
         positive: Self::Distance,
         negative: Self::Distance,
     ) -> Result<Self::Distance, Self::Error> {
-        Ok(self
-            .lowerer
-            .lower_binary_temp(MirType::Float, BinaryOp::Sub, positive, negative, self.span))
+        Ok(self.lowerer.lower_binary_temp(
+            MirType::Float,
+            BinaryOp::Sub,
+            positive,
+            negative,
+            self.span,
+        ))
     }
 
     fn compose_normal(
@@ -3773,12 +3797,9 @@ impl WorldTraceBackend for MirWorldTraceBackend<'_> {
             MirType::Float,
             self.span,
         );
-        let current_miss = self.lowerer.lower_unary_temp(
-            MirType::Boolean,
-            UnaryOp::Not,
-            current_hit,
-            self.span,
-        );
+        let current_miss =
+            self.lowerer
+                .lower_unary_temp(MirType::Boolean, UnaryOp::Not, current_hit, self.span);
         let candidate_nearer = self.lowerer.lower_binary_temp(
             MirType::Boolean,
             BinaryOp::Lt,
@@ -3951,11 +3972,7 @@ impl WorldMediumBackend for MirWorldMediumBackend<'_> {
     }
 }
 
-fn lower_wgsl_bridge_failure(
-    lowerer: &mut FunctionLowerer,
-    message: SmolStr,
-    span: TextRange,
-) {
+fn lower_wgsl_bridge_failure(lowerer: &mut FunctionLowerer, message: SmolStr, span: TextRange) {
     let crash_temp = lowerer.new_temp(MirType::Unknown);
     lowerer.push_stmt(MirStmt::Assign {
         place: Place::Temp(crash_temp),
@@ -4022,9 +4039,9 @@ fn lower_world_shape_index_list(
     let values = shapes
         .iter()
         .map(|shape| {
-            *shape_indices.get(shape).unwrap_or_else(|| {
-                panic!("missing WGSL shape index for world shape '{}'", shape)
-            })
+            *shape_indices
+                .get(shape)
+                .unwrap_or_else(|| panic!("missing WGSL shape index for world shape '{}'", shape))
         })
         .collect::<Vec<_>>();
     lower_runtime_u32_list(lowerer, "$world_shape_indices", &values, span)
@@ -4133,12 +4150,7 @@ fn lower_world_wgsl_bridge_call(
         world_shape_indices,
     ];
     call_args.extend(args);
-    Some(lowerer.lower_call_temp(
-        result_type,
-        SmolStr::new(bridge_symbol),
-        call_args,
-        span,
-    ))
+    Some(lowerer.lower_call_temp(result_type, SmolStr::new(bridge_symbol), call_args, span))
 }
 
 fn lower_world_domain_flag_value(
@@ -4312,8 +4324,13 @@ fn lower_native_world_backend_guard(
     });
 
     lowerer.current_block = backend_check_block;
-    let cpu_or_wgsl =
-        lowerer.lower_binary_temp(MirType::Boolean, BinaryOp::Or, is_cpu.clone(), is_wgsl, span);
+    let cpu_or_wgsl = lowerer.lower_binary_temp(
+        MirType::Boolean,
+        BinaryOp::Or,
+        is_cpu.clone(),
+        is_wgsl,
+        span,
+    );
     let direct_block = lowerer.new_block();
     lowerer.set_terminator(Terminator::Branch {
         cond: cpu_or_wgsl,
@@ -4786,13 +4803,8 @@ pub(crate) fn lower_world_trace_capture_helper(
     lowerer.current_block = entry;
     let (capture_scene_id, detail) =
         lower_world_domain_validation(&mut lowerer, capture, domain, semantics.query_name, span);
-    let origin = lowerer.lower_get_named_field(
-        Value::Local(ray),
-        "RayQuery",
-        "origin",
-        MirType::Vec3,
-        span,
-    );
+    let origin =
+        lowerer.lower_get_named_field(Value::Local(ray), "RayQuery", "origin", MirType::Vec3, span);
     let direction = lowerer.lower_get_named_field(
         Value::Local(ray),
         "RayQuery",
@@ -6399,9 +6411,7 @@ pub(crate) fn lower_field_batch_queries_helper(
     lowerer.current_block = invalid_backend_block;
     lower_wgsl_bridge_failure(
         &mut lowerer,
-        SmolStr::new(
-            "scene batch dispatch backend must be cpu, virtual_gpu, wgsl, or auto",
-        ),
+        SmolStr::new("scene batch dispatch backend must be cpu, virtual_gpu, wgsl, or auto"),
         span,
     );
 
@@ -6500,8 +6510,8 @@ pub(crate) fn lower_shape_batch_queries_helper(
     ));
     debug_assert_eq!(plan.capture_kind, CaptureKind::Shape);
     let helper_name = plan.helper_name.clone();
-    let batch_kind =
-        batch_query_kind_for_contract_id(plan.contract_id).expect("batch query plan contract id must resolve");
+    let batch_kind = batch_query_kind_for_contract_id(plan.contract_id)
+        .expect("batch query plan contract id must resolve");
     match batch_kind {
         BatchQueryKind::Nearest | BatchQueryKind::Trace | BatchQueryKind::Occluded => {
             debug_assert!(matches!(
@@ -6635,9 +6645,7 @@ pub(crate) fn lower_shape_batch_queries_helper(
     lowerer.current_block = invalid_backend_block;
     lower_wgsl_bridge_failure(
         &mut lowerer,
-        SmolStr::new(
-            "scene batch dispatch backend must be cpu, virtual_gpu, wgsl, or auto",
-        ),
+        SmolStr::new("scene batch dispatch backend must be cpu, virtual_gpu, wgsl, or auto"),
         span,
     );
 
@@ -6831,9 +6839,7 @@ pub(crate) fn lower_world_batch_queries_helper(
     lowerer.current_block = invalid_backend_block;
     lower_wgsl_bridge_failure(
         &mut lowerer,
-        SmolStr::new(
-            "world batch dispatch backend must be cpu, virtual_gpu, wgsl, or auto",
-        ),
+        SmolStr::new("world batch dispatch backend must be cpu, virtual_gpu, wgsl, or auto"),
         span,
     );
 

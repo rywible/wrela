@@ -1,0 +1,5 @@
+use fetch_constant from core/independent
+
+fn test_independent_flow() -> Nothing {
+    assert value fetch_constant() == 7
+}

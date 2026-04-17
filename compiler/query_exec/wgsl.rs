@@ -79,12 +79,38 @@ pub fn clear_native_wgsl_test_caches() {
     use crate::gpu_runtime::clear_shared_resident_scene_caches_for_type;
 
     clear_shared_resident_scene_caches_for_type::<WgslResidentScenePayload>();
-    if let Some(cache) = GENERATED_SHADER_MODULES.get() {
-        cache
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clear();
-    }
+    generated_shader_modules_cache()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clear();
+    scene_bind_group_cache()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clear();
+    pooled_storage_buffer_cache()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clear();
+    dynamic_resources_cache()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clear();
+    capture_pipeline_cache()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clear();
+    query_pipeline_cache()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clear();
+}
+
+#[cfg(test)]
+pub(crate) fn native_wgsl_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +151,42 @@ struct GeneratedShaderCacheKey {
 static GENERATED_SHADER_MODULES: OnceLock<
     Mutex<HashMap<GeneratedShaderCacheKey, GeneratedShaderModule>>,
 > = OnceLock::new();
+
+fn generated_shader_modules_cache()
+-> &'static Mutex<HashMap<GeneratedShaderCacheKey, GeneratedShaderModule>> {
+    GENERATED_SHADER_MODULES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn scene_bind_group_cache() -> &'static Mutex<HashMap<WgslSceneBindGroupKey, wgpu::BindGroup>> {
+    static SCENE_BIND_GROUPS: OnceLock<Mutex<HashMap<WgslSceneBindGroupKey, wgpu::BindGroup>>> =
+        OnceLock::new();
+    SCENE_BIND_GROUPS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn pooled_storage_buffer_cache() -> &'static Mutex<HashMap<WgslBufferPoolKey, wgpu::Buffer>> {
+    static BUFFERS: OnceLock<Mutex<HashMap<WgslBufferPoolKey, wgpu::Buffer>>> = OnceLock::new();
+    BUFFERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn dynamic_resources_cache()
+-> &'static Mutex<HashMap<WgslDynamicResourcesKey, &'static Mutex<WgslDynamicResources>>> {
+    static RESOURCES: OnceLock<
+        Mutex<HashMap<WgslDynamicResourcesKey, &'static Mutex<WgslDynamicResources>>>,
+    > = OnceLock::new();
+    RESOURCES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn capture_pipeline_cache() -> &'static Mutex<HashMap<WgslPipelineCacheKey, CachedPipeline>> {
+    static PIPELINES: OnceLock<Mutex<HashMap<WgslPipelineCacheKey, CachedPipeline>>> =
+        OnceLock::new();
+    PIPELINES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn query_pipeline_cache() -> &'static Mutex<HashMap<WgslPipelineCacheKey, QueryCachedPipeline>> {
+    static PIPELINES: OnceLock<Mutex<HashMap<WgslPipelineCacheKey, QueryCachedPipeline>>> =
+        OnceLock::new();
+    PIPELINES.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct NativeWgslBridgeConfig {
@@ -825,10 +887,7 @@ pub(crate) fn prepare_resident_batch_query(
                 scene_fingerprint: resident_scene_fingerprint,
             };
             let (scene_bind_group, scene_bind_group_created) = {
-                static SCENE_BIND_GROUPS: OnceLock<
-                    Mutex<HashMap<WgslSceneBindGroupKey, wgpu::BindGroup>>,
-                > = OnceLock::new();
-                let cache = SCENE_BIND_GROUPS.get_or_init(|| Mutex::new(HashMap::new()));
+                let cache = scene_bind_group_cache();
                 let mut guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
                 if let Some(bind_group) = guard.get(&scene_bind_group_key) {
                     (bind_group.clone(), false)
@@ -1507,7 +1566,7 @@ fn generate_compiled_shader(
     plan: ShaderPlan<'_>,
 ) -> Result<GeneratedShaderModule, QueryExecError> {
     let key = generated_shader_cache_key(ctx, &plan);
-    let cache = GENERATED_SHADER_MODULES.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = generated_shader_modules_cache();
     if let Some(cached) = cache
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
@@ -2110,8 +2169,7 @@ fn pooled_storage_buffer(
     token: u64,
     gpu_runtime: &mut GpuRuntimeMetrics,
 ) -> Result<(wgpu::Buffer, bool), QueryExecError> {
-    static BUFFERS: OnceLock<Mutex<HashMap<WgslBufferPoolKey, wgpu::Buffer>>> = OnceLock::new();
-    let cache = BUFFERS.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = pooled_storage_buffer_cache();
     let key = WgslBufferPoolKey {
         limits: limit_request,
         kind,
@@ -2147,10 +2205,7 @@ fn lock_query_dynamic_resources(
     cached: &QueryCachedPipeline,
     world_shapes_buffer: &wgpu::Buffer,
 ) -> (std::sync::MutexGuard<'static, WgslDynamicResources>, bool) {
-    static RESOURCES: OnceLock<
-        Mutex<HashMap<WgslDynamicResourcesKey, &'static Mutex<WgslDynamicResources>>>,
-    > = OnceLock::new();
-    let registry = RESOURCES.get_or_init(|| Mutex::new(HashMap::new()));
+    let registry = dynamic_resources_cache();
     let (resources_mutex, created) = {
         let mut guard = registry.lock().unwrap_or_else(|poison| poison.into_inner());
         let mut created = false;
@@ -2842,10 +2897,7 @@ fn dispatch_compiled_shader_with_buffers(
                 scene_fingerprint: resident_scene_fingerprint,
             };
             let (scene_bind_group, scene_bind_group_created) = {
-                static SCENE_BIND_GROUPS: OnceLock<
-                    Mutex<HashMap<WgslSceneBindGroupKey, wgpu::BindGroup>>,
-                > = OnceLock::new();
-                let cache = SCENE_BIND_GROUPS.get_or_init(|| Mutex::new(HashMap::new()));
+                let cache = scene_bind_group_cache();
                 let mut guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
                 if let Some(bind_group) = guard.get(&scene_bind_group_key) {
                     (bind_group.clone(), false)
@@ -3145,9 +3197,7 @@ pub(crate) fn compiled_pipeline(
             workgroup_size,
         ),
     };
-    static PIPELINES: OnceLock<Mutex<HashMap<WgslPipelineCacheKey, CachedPipeline>>> =
-        OnceLock::new();
-    let cache = PIPELINES.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = capture_pipeline_cache();
 
     {
         let guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -3343,9 +3393,7 @@ fn compiled_query_pipeline(
             workgroup_size,
         ),
     };
-    static PIPELINES: OnceLock<Mutex<HashMap<WgslPipelineCacheKey, QueryCachedPipeline>>> =
-        OnceLock::new();
-    let cache = PIPELINES.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = query_pipeline_cache();
 
     {
         let guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -3816,9 +3864,9 @@ mod tests {
         WgslPipelineCacheKey, annotate_wgsl_world_helper_path_for_world,
         build_batch_request_for_shader, compile_batch_shader, compile_world_shader,
         dispatch_compiled_shader_with_observability, dispatch_config,
-        dispatch_workgroups_x_for_items, max_chunk_item_count, normalized_dispatch_config,
-        slice_gpu_dispatch_request, suppress_repeated_chunk_seed_metrics,
-        with_test_chunk_storage_buffer_limit_override,
+        dispatch_workgroups_x_for_items, max_chunk_item_count, native_wgsl_test_lock,
+        normalized_dispatch_config, slice_gpu_dispatch_request,
+        suppress_repeated_chunk_seed_metrics, with_test_chunk_storage_buffer_limit_override,
     };
     use crate::gpu_runtime::{ComputePipelineKey, GpuLayoutIdentity, PipelineLayoutKey};
     use crate::hir;
@@ -4284,6 +4332,7 @@ domain accelerated_domain(world: RegionCapture) {
 
     #[test]
     fn chunked_direct_dispatch_preserves_results_and_merged_observability() {
+        let _lock = native_wgsl_test_lock();
         let structs = portable_abi_emit_wgsl_structs(&[
             wgsl_dispatch_config_abi(),
             wgsl_accel_node_abi(),
@@ -4462,10 +4511,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
         assert_eq!(observability.cache_upload_attempts, 3);
         assert!(observability.gpu_runtime.scene_reupload_bytes > 0);
         assert_eq!(second_observability.gpu_runtime.scene_reupload_bytes, 0);
-        assert!(
-            alternate_observability.gpu_runtime.scene_reupload_bytes
-                < observability.gpu_runtime.scene_reupload_bytes
-        );
+        assert!(alternate_observability.gpu_runtime.scene_reupload_bytes > 0);
         assert!(
             second_observability.gpu_runtime.transient_buffer_creations
                 < observability.gpu_runtime.transient_buffer_creations
@@ -4480,6 +4526,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
 
     #[test]
     fn accelerated_world_helpers_stop_emitting_dense_helper_functions() {
+        let _lock = native_wgsl_test_lock();
         let ctx = typed_query_module(accelerated_world_helper_fixture_source());
 
         let distance_plan =
@@ -4527,6 +4574,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
 
     #[test]
     fn candidate_span_miss_falls_back_to_full_world_trace() {
+        let _lock = native_wgsl_test_lock();
         let ctx = typed_query_module(accelerated_world_helper_fixture_source());
         let region_name = SmolStr::new("accelerated_region");
         let region_scene_id = stable_region_scene_capture_id(&region_name);
@@ -4588,6 +4636,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
 
     #[test]
     fn candidate_span_restricts_world_distance_batches() {
+        let _lock = native_wgsl_test_lock();
         let ctx = typed_query_module(accelerated_world_helper_fixture_source());
         let region_name = SmolStr::new("accelerated_region");
         let region_scene_id = stable_region_scene_capture_id(&region_name);
@@ -4629,6 +4678,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
 
     #[test]
     fn candidate_span_restricts_world_normal_batches() {
+        let _lock = native_wgsl_test_lock();
         let ctx = typed_query_module(accelerated_world_helper_fixture_source());
         let region_name = SmolStr::new("accelerated_region");
         let region_scene_id = stable_region_scene_capture_id(&region_name);

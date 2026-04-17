@@ -18,6 +18,51 @@ use wrela_runtime::{
 
 type BridgeResult = Result<RuntimeValue, QueryExecError>;
 
+fn world_module_cache() -> &'static Mutex<
+    HashMap<(WorldBridgeKind, String, u32), Result<GeneratedShaderModule, QueryExecError>>,
+> {
+    static MODULES: OnceLock<
+        Mutex<
+            HashMap<(WorldBridgeKind, String, u32), Result<GeneratedShaderModule, QueryExecError>>,
+        >,
+    > = OnceLock::new();
+    MODULES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn batch_module_cache() -> &'static Mutex<
+    HashMap<(BatchBridgeKind, String, u32), Result<GeneratedShaderModule, QueryExecError>>,
+> {
+    static MODULES: OnceLock<
+        Mutex<
+            HashMap<(BatchBridgeKind, String, u32), Result<GeneratedShaderModule, QueryExecError>>,
+        >,
+    > = OnceLock::new();
+    MODULES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn world_batch_module_cache()
+-> &'static Mutex<HashMap<(String, String, u32), Result<GeneratedShaderModule, QueryExecError>>> {
+    static MODULES: OnceLock<
+        Mutex<HashMap<(String, String, u32), Result<GeneratedShaderModule, QueryExecError>>>,
+    > = OnceLock::new();
+    MODULES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn clear_native_wgsl_test_caches() {
+    world_module_cache()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clear();
+    batch_module_cache()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clear();
+    world_batch_module_cache()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clear();
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_wgsl_world_distance_capture(
     source: RuntimeValue,
@@ -281,12 +326,7 @@ fn cached_world_module(
     workgroup_size: RuntimeValue,
     kind: WorldBridgeKind,
 ) -> Result<GeneratedShaderModule, QueryExecError> {
-    static MODULES: OnceLock<
-        Mutex<
-            HashMap<(WorldBridgeKind, String, u32), Result<GeneratedShaderModule, QueryExecError>>,
-        >,
-    > = OnceLock::new();
-    let cache = MODULES.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = world_module_cache();
     let source = runtime_string(source)?;
     let workgroup_size = runtime_workgroup_size(workgroup_size)?;
     let key = (kind, source.clone(), workgroup_size);
@@ -302,12 +342,7 @@ fn cached_batch_module(
     workgroup_size: RuntimeValue,
     kind: BatchBridgeKind,
 ) -> Result<GeneratedShaderModule, QueryExecError> {
-    static MODULES: OnceLock<
-        Mutex<
-            HashMap<(BatchBridgeKind, String, u32), Result<GeneratedShaderModule, QueryExecError>>,
-        >,
-    > = OnceLock::new();
-    let cache = MODULES.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = batch_module_cache();
     let source = runtime_string(source)?;
     let workgroup_size = runtime_workgroup_size(workgroup_size)?;
     let key = (kind, source.clone(), workgroup_size);
@@ -323,10 +358,7 @@ fn cached_world_batch_module(
     workgroup_size: RuntimeValue,
     contract_id: &str,
 ) -> Result<GeneratedShaderModule, QueryExecError> {
-    static MODULES: OnceLock<
-        Mutex<HashMap<(String, String, u32), Result<GeneratedShaderModule, QueryExecError>>>,
-    > = OnceLock::new();
-    let cache = MODULES.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = world_batch_module_cache();
     let source = runtime_string(source)?;
     let workgroup_size = runtime_workgroup_size(workgroup_size)?;
     let key = (contract_id.to_string(), source.clone(), workgroup_size);
@@ -948,8 +980,15 @@ mod tests {
         })
     }
 
+    fn reset_native_wgsl_bridge_state() -> std::sync::MutexGuard<'static, ()> {
+        let guard = crate::query_exec::wgsl::native_wgsl_test_lock();
+        crate::query_exec::clear_native_wgsl_test_caches();
+        guard
+    }
+
     #[test]
     fn world_trace_bridge_matches_direct_wgsl_for_preview_probe() {
+        let _lock = reset_native_wgsl_bridge_state();
         let ctx = preview_context();
         let plan = lower_world_query_plan(&WorldQueryPlan::for_query_with_backend(
             WorldQueryKind::Trace,
@@ -1013,6 +1052,7 @@ mod tests {
 
     #[test]
     fn generic_world_batch_bridge_matches_direct_wgsl_for_nearest_screen_rays() {
+        let _lock = reset_native_wgsl_bridge_state();
         let ctx = preview_context();
         let plan = lower_batch_query_plan(&BatchQueryPlan::for_world_query(
             BatchQueryKind::Nearest,
@@ -1099,6 +1139,7 @@ mod tests {
 
     #[test]
     fn field_distance_batch_bridge_matches_direct_wgsl_distance_records() {
+        let _lock = reset_native_wgsl_bridge_state();
         let ctx = inline_context(
             r#"
 field exact distance scene_field(p: Vec3) -> F32 {
@@ -1169,6 +1210,7 @@ field exact distance scene_field(p: Vec3) -> F32 {
 
     #[test]
     fn shape_trace_batch_bridge_matches_direct_wgsl_and_returns_dense_hits() {
+        let _lock = reset_native_wgsl_bridge_state();
         let ctx = inline_context(
             r#"
 field exact distance scene_field(p: Vec3) -> F32 {

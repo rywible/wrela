@@ -32,6 +32,11 @@ just perf-closure
 just baseline-devloop
 ```
 
+Lane mapping:
+
+- `just perf-smoke` => `wrela perf --profile=smoke`
+- `just perf-closure` => `wrela perf --profile=1080p120`
+
 The raw `cargo run -p wrela -- perf ...` commands below are the underlying `wrela` invocations
 for subsystem debugging, ad-hoc comparisons, and flag variations.
 

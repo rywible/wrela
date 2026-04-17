@@ -1,3 +1,13 @@
+use super::{
+    BinaryOp, Expr, FieldBounds, FieldSupport, FunctionLowerer, HirStmt, Literal, MirStmt,
+    ShapeExecutionMode, SmolStr, TextRange, Value, builtin_record_by_function,
+    stable_field_scene_capture_id, stable_region_scene_capture_id, stable_shape_capture_id,
+    stable_shape_scene_capture_id, vector_component_index,
+};
+use crate::hir;
+use crate::mir::ir::*;
+use crate::scene_ir;
+
 impl FunctionLowerer {
     pub(crate) fn build_default_actor_handle(&mut self, span: TextRange) -> Value {
         let mut class = self.synthetic_class_target_info("ActorHandle");
@@ -88,7 +98,11 @@ impl FunctionLowerer {
         self.build_class_instance(&class, span)
     }
 
-    pub(crate) fn build_scene_capture_value(&mut self, shape_name: &SmolStr, span: TextRange) -> Value {
+    pub(crate) fn build_scene_capture_value(
+        &mut self,
+        shape_name: &SmolStr,
+        span: TextRange,
+    ) -> Value {
         let is_field = self.field_names.contains(shape_name);
         let is_shape = self.shape_names.contains(shape_name);
         let snapshot = if is_field {
@@ -145,7 +159,11 @@ impl FunctionLowerer {
         Value::Temp(temp)
     }
 
-    pub(crate) fn lower_shape_payload_body_value(&mut self, payload: &hir::Body, span: TextRange) -> Value {
+    pub(crate) fn lower_shape_payload_body_value(
+        &mut self,
+        payload: &hir::Body,
+        span: TextRange,
+    ) -> Value {
         if payload.root_stmts.is_empty() {
             return self.build_default_payload(span);
         }
@@ -995,7 +1013,11 @@ impl FunctionLowerer {
         }
     }
 
-    pub(crate) fn lower_profile_radius_from_bounds4(&mut self, bounds4: Value, span: TextRange) -> Value {
+    pub(crate) fn lower_profile_radius_from_bounds4(
+        &mut self,
+        bounds4: Value,
+        span: TextRange,
+    ) -> Value {
         let min_x = self.lower_vec_component_value(bounds4.clone(), 0, span);
         let min_y = self.lower_vec_component_value(bounds4.clone(), 1, span);
         let max_x = self.lower_vec_component_value(bounds4.clone(), 2, span);
@@ -1068,7 +1090,10 @@ impl FunctionLowerer {
         }
     }
 
-    pub(crate) fn scene_value_terminal_callee_name(&self, expr: &scene_ir::SceneValueExpr) -> Option<SmolStr> {
+    pub(crate) fn scene_value_terminal_callee_name(
+        &self,
+        expr: &scene_ir::SceneValueExpr,
+    ) -> Option<SmolStr> {
         match expr {
             scene_ir::SceneValueExpr::Call { callee, .. } => Some(callee.clone()),
             _ => None,
@@ -1381,12 +1406,19 @@ impl FunctionLowerer {
         }
     }
 
-    pub(crate) fn field_wrapper_body_returns_named_call(&self, body: &hir::Body, name: &str) -> bool {
+    pub(crate) fn field_wrapper_body_returns_named_call(
+        &self,
+        body: &hir::Body,
+        name: &str,
+    ) -> bool {
         self.field_wrapper_body_terminal_callee_name(body)
             .is_some_and(|callee_name| callee_name == name)
     }
 
-    pub(crate) fn field_wrapper_body_terminal_callee_name(&self, body: &hir::Body) -> Option<SmolStr> {
+    pub(crate) fn field_wrapper_body_terminal_callee_name(
+        &self,
+        body: &hir::Body,
+    ) -> Option<SmolStr> {
         let Some(expr) = self.field_wrapper_body_terminal_expr(body) else {
             return None;
         };
@@ -1399,7 +1431,10 @@ impl FunctionLowerer {
         }
     }
 
-    pub(crate) fn field_wrapper_body_terminal_expr(&self, body: &hir::Body) -> Option<hir::Idx<Expr>> {
+    pub(crate) fn field_wrapper_body_terminal_expr(
+        &self,
+        body: &hir::Body,
+    ) -> Option<hir::Idx<Expr>> {
         let stmt = *body.root_stmts.last()?;
         match &body.stmts[stmt] {
             HirStmt::Expr(expr) | HirStmt::Return(Some(expr)) => Some(*expr),
@@ -2134,7 +2169,13 @@ impl FunctionLowerer {
         self.lower_call_temp(MirType::Vec2, SmolStr::new("vec2"), vec![x, y], span)
     }
 
-    pub(crate) fn lower_vec3_value(&mut self, x: Value, y: Value, z: Value, span: TextRange) -> Value {
+    pub(crate) fn lower_vec3_value(
+        &mut self,
+        x: Value,
+        y: Value,
+        z: Value,
+        span: TextRange,
+    ) -> Value {
         self.lower_call_temp(MirType::Vec3, SmolStr::new("vec3"), vec![x, y, z], span)
     }
 
@@ -2149,7 +2190,12 @@ impl FunctionLowerer {
         self.lower_call_temp(MirType::Vec4, SmolStr::new("vec4"), vec![x, y, z, w], span)
     }
 
-    pub(crate) fn lower_vec_component_value(&mut self, value: Value, index: i64, span: TextRange) -> Value {
+    pub(crate) fn lower_vec_component_value(
+        &mut self,
+        value: Value,
+        index: i64,
+        span: TextRange,
+    ) -> Value {
         self.lower_call_temp(
             MirType::Float,
             SmolStr::new("__wr_vec_component"),
@@ -2978,7 +3024,12 @@ impl FunctionLowerer {
         )
     }
 
-    pub(crate) fn lower_shape_normal_call(&mut self, shape: &SmolStr, point: Value, span: TextRange) -> Value {
+    pub(crate) fn lower_shape_normal_call(
+        &mut self,
+        shape: &SmolStr,
+        point: Value,
+        span: TextRange,
+    ) -> Value {
         self.lower_shape_normal_call_with_mode(
             shape,
             point,
@@ -3074,7 +3125,12 @@ impl FunctionLowerer {
         )
     }
 
-    pub(crate) fn lower_shape_surface_call(&mut self, shape: &SmolStr, hit: Value, span: TextRange) -> Value {
+    pub(crate) fn lower_shape_surface_call(
+        &mut self,
+        shape: &SmolStr,
+        hit: Value,
+        span: TextRange,
+    ) -> Value {
         if !self.shape_names.contains(shape) {
             return self.build_default_surface(span);
         }
@@ -3139,17 +3195,15 @@ impl FunctionLowerer {
                 next_dist,
                 span,
             ),
-            scene_ir::ShapeMergeProvenancePolicy::Ordered => {
-                Value::Const(Literal::Boolean(true))
-            }
+            scene_ir::ShapeMergeProvenancePolicy::Ordered => Value::Const(Literal::Boolean(true)),
         }
     }
 
     pub(crate) fn shape_node_has_opaque_boundary(&self, node: &scene_ir::ShapeNode) -> bool {
         match node {
-            scene_ir::ShapeNode::Use { target } => {
-                self.shape_scene(target).is_none_or(|scene| scene.opaque_boundary)
-            }
+            scene_ir::ShapeNode::Use { target } => self
+                .shape_scene(target)
+                .is_none_or(|scene| scene.opaque_boundary),
             scene_ir::ShapeNode::Leaf(leaf) => {
                 leaf.opaque_boundary
                     || matches!(
@@ -3161,24 +3215,26 @@ impl FunctionLowerer {
                         .is_none_or(|scene| scene.opaque_boundary)
             }
             scene_ir::ShapeNode::Union { items } | scene_ir::ShapeNode::Intersection { items } => {
-                items.iter().any(|item| self.shape_node_has_opaque_boundary(item))
+                items
+                    .iter()
+                    .any(|item| self.shape_node_has_opaque_boundary(item))
             }
             scene_ir::ShapeNode::Subtract { left, right } => {
-                self.shape_node_has_opaque_boundary(left) || self.shape_node_has_opaque_boundary(right)
+                self.shape_node_has_opaque_boundary(left)
+                    || self.shape_node_has_opaque_boundary(right)
             }
         }
     }
 
     pub(crate) fn shape_node_can_coarse_support_prune(&self, node: &scene_ir::ShapeNode) -> bool {
         match node {
-            scene_ir::ShapeNode::Use { target } => self.shape_scene(target).is_some_and(|scene| {
-                !scene.opaque_boundary && scene.can_coarse_support_pruning
-            }),
-            scene_ir::ShapeNode::Leaf(leaf) => self.field_scene(&leaf.field).is_some_and(|scene| {
-                !scene.opaque_boundary && scene.can_coarse_support_pruning
-            }),
-            scene_ir::ShapeNode::Union { items }
-            | scene_ir::ShapeNode::Intersection { items } => {
+            scene_ir::ShapeNode::Use { target } => self
+                .shape_scene(target)
+                .is_some_and(|scene| !scene.opaque_boundary && scene.can_coarse_support_pruning),
+            scene_ir::ShapeNode::Leaf(leaf) => self
+                .field_scene(&leaf.field)
+                .is_some_and(|scene| !scene.opaque_boundary && scene.can_coarse_support_pruning),
+            scene_ir::ShapeNode::Union { items } | scene_ir::ShapeNode::Intersection { items } => {
                 !items.is_empty()
                     && items
                         .iter()
@@ -3292,8 +3348,12 @@ impl FunctionLowerer {
                     if !mode.allows_support_pruning()
                         || !self.shape_node_can_coarse_support_prune(item)
                     {
-                        let rhs =
-                            self.lower_shape_distance_scene_in_mode(item, point.clone(), span, mode);
+                        let rhs = self.lower_shape_distance_scene_in_mode(
+                            item,
+                            point.clone(),
+                            span,
+                            mode,
+                        );
                         current = self.lower_call_temp(
                             MirType::Float,
                             SmolStr::new("field_union"),
@@ -3690,7 +3750,11 @@ impl FunctionLowerer {
                 self.current_block = left_block;
                 self.assign_use(Place::Local(dist_local), left_dist, span);
                 self.assign_use(Place::Local(payload_local), left_payload.clone(), span);
-                self.assign_use(Place::Local(feature_id_local), left_feature_id.clone(), span);
+                self.assign_use(
+                    Place::Local(feature_id_local),
+                    left_feature_id.clone(),
+                    span,
+                );
                 self.set_terminator(Terminator::Jump {
                     target: merge_block,
                     span,
@@ -3752,11 +3816,7 @@ impl FunctionLowerer {
                     MirType::Named(SmolStr::new("Surface")),
                 );
                 let default_surface = self.build_default_surface(span);
-                self.assign_use(
-                    Place::Local(surface_local),
-                    default_surface,
-                    span,
-                );
+                self.assign_use(Place::Local(surface_local), default_surface, span);
                 let matched_block = self.new_block();
                 let miss_block = self.new_block();
                 let merge_block = self.new_block();
@@ -3786,8 +3846,7 @@ impl FunctionLowerer {
                 self.current_block = merge_block;
                 (matched, Value::Local(surface_local))
             }
-            scene_ir::ShapeNode::Union { items }
-            | scene_ir::ShapeNode::Intersection { items } => {
+            scene_ir::ShapeNode::Union { items } | scene_ir::ShapeNode::Intersection { items } => {
                 let mut iter = items.iter();
                 let Some(first) = iter.next() else {
                     return (
@@ -3967,8 +4026,7 @@ impl FunctionLowerer {
                 let local_normal = self.lower_field_local_normal_call(&leaf.field, point, span);
                 (matched, local_point, local_normal, instance_id, repeat_id)
             }
-            scene_ir::ShapeNode::Union { items }
-            | scene_ir::ShapeNode::Intersection { items } => {
+            scene_ir::ShapeNode::Union { items } | scene_ir::ShapeNode::Intersection { items } => {
                 let mut iter = items.iter();
                 let Some(first) = iter.next() else {
                     return self.lower_shape_default_hit_context_selection(point, span);
@@ -4107,8 +4165,8 @@ impl FunctionLowerer {
                     span,
                 });
                 self.current_block = replace_block;
-                let (right_matched, right_point, right_normal, right_instance, right_repeat) = self
-                    .lower_shape_hit_context_selection_scene(right, feature_id, point, span);
+                let (right_matched, right_point, right_normal, right_instance, right_repeat) =
+                    self.lower_shape_hit_context_selection_scene(right, feature_id, point, span);
                 self.assign_use(Place::Local(matched_local), right_matched, span);
                 self.assign_use(Place::Local(point_local), right_point, span);
                 self.assign_use(Place::Local(normal_local), right_normal, span);
@@ -4151,12 +4209,7 @@ impl FunctionLowerer {
                         span,
                     );
                 };
-                self.lower_shape_radiance_participation_scene(
-                    &scene.root,
-                    point,
-                    direction,
-                    span,
-                )
+                self.lower_shape_radiance_participation_scene(&scene.root, point, direction, span)
             }
             scene_ir::ShapeNode::Leaf(leaf) => {
                 let black = self.lower_call_temp(
@@ -4187,8 +4240,7 @@ impl FunctionLowerer {
                     span,
                 )
             }
-            scene_ir::ShapeNode::Union { items }
-            | scene_ir::ShapeNode::Intersection { items } => {
+            scene_ir::ShapeNode::Union { items } | scene_ir::ShapeNode::Intersection { items } => {
                 let mut total = self.lower_call_temp(
                     MirType::Vec3,
                     SmolStr::new("vec3"),
@@ -4252,8 +4304,7 @@ impl FunctionLowerer {
                     self.lower_field_local_distance_call(&leaf.field, point, span);
                 self.lower_volume_call(volume, local_point, local_surface_distance, span)
             }
-            scene_ir::ShapeNode::Union { items }
-            | scene_ir::ShapeNode::Intersection { items } => {
+            scene_ir::ShapeNode::Union { items } | scene_ir::ShapeNode::Intersection { items } => {
                 let mut total = self.build_default_medium(span);
                 for item in items {
                     let next =
@@ -4265,8 +4316,7 @@ impl FunctionLowerer {
             scene_ir::ShapeNode::Subtract { left, right } => {
                 let left_value =
                     self.lower_shape_medium_participation_scene(left, point.clone(), span);
-                let right_value =
-                    self.lower_shape_medium_participation_scene(right, point, span);
+                let right_value = self.lower_shape_medium_participation_scene(right, point, span);
                 self.lower_additive_medium_combine(left_value, right_value, span)
             }
         }
@@ -5111,13 +5161,22 @@ impl FunctionLowerer {
                     }
                     _ => {
                         let local_point = match kind {
-                            scene_ir::TransformKind::Translate => {
-                                self.lower_scene_wrapped_support_point("translate", param, point, span)
-                            }
+                            scene_ir::TransformKind::Translate => self
+                                .lower_scene_wrapped_support_point("translate", param, point, span),
                             scene_ir::TransformKind::Rotate => self
-                                .lower_scene_wrapped_support_point("field_rotate_point", param, point, span),
+                                .lower_scene_wrapped_support_point(
+                                    "field_rotate_point",
+                                    param,
+                                    point,
+                                    span,
+                                ),
                             scene_ir::TransformKind::AffineTransform => self
-                                .lower_scene_wrapped_support_point("affine_transform", param, point, span),
+                                .lower_scene_wrapped_support_point(
+                                    "affine_transform",
+                                    param,
+                                    point,
+                                    span,
+                                ),
                             scene_ir::TransformKind::Warp => {
                                 self.lower_scene_wrapped_support_point("warp", param, point, span)
                             }
@@ -5222,8 +5281,7 @@ impl FunctionLowerer {
                 current
             }
             scene_ir::FieldNode::Subtract { left, right } => {
-                let left =
-                    self.lower_field_local_distance_scene(field, left, point.clone(), span);
+                let left = self.lower_field_local_distance_scene(field, left, point.clone(), span);
                 let right = self.lower_field_local_distance_scene(field, right, point, span);
                 self.lower_call_temp(
                     MirType::Float,
@@ -5287,19 +5345,10 @@ impl FunctionLowerer {
                 let profile_distance =
                     self.lower_scene_profile_distance_expr(profile, profile_point, span);
                 let point_y = self.lower_get_component(point, MirType::Vec3, "y", span);
-                let abs_y = self.lower_call_temp(
-                    MirType::Float,
-                    SmolStr::new("abs"),
-                    vec![point_y],
-                    span,
-                );
-                let axial = self.lower_binary_temp(
-                    MirType::Float,
-                    BinaryOp::Sub,
-                    abs_y,
-                    half_height,
-                    span,
-                );
+                let abs_y =
+                    self.lower_call_temp(MirType::Float, SmolStr::new("abs"), vec![point_y], span);
+                let axial =
+                    self.lower_binary_temp(MirType::Float, BinaryOp::Sub, abs_y, half_height, span);
                 self.lower_profile_cap_distance_value(profile_distance, axial, span)
             }
             scene_ir::FieldNode::Revolve { profile } => {
@@ -5349,19 +5398,10 @@ impl FunctionLowerer {
                     Value::Const(Literal::Float(0.5)),
                     span,
                 );
-                let abs_z = self.lower_call_temp(
-                    MirType::Float,
-                    SmolStr::new("abs"),
-                    vec![coords_z],
-                    span,
-                );
-                let axial = self.lower_binary_temp(
-                    MirType::Float,
-                    BinaryOp::Sub,
-                    abs_z,
-                    half_length,
-                    span,
-                );
+                let abs_z =
+                    self.lower_call_temp(MirType::Float, SmolStr::new("abs"), vec![coords_z], span);
+                let axial =
+                    self.lower_binary_temp(MirType::Float, BinaryOp::Sub, abs_z, half_length, span);
                 self.lower_profile_cap_distance_value(profile_distance, axial, span)
             }
             scene_ir::FieldNode::Loft { height, from, to } => {
@@ -5420,27 +5460,17 @@ impl FunctionLowerer {
                 let profile_point = self.lower_vec2_value(point_x, point_z, span);
                 let from_distance =
                     self.lower_scene_profile_distance_expr(from, profile_point.clone(), span);
-                let to_distance =
-                    self.lower_scene_profile_distance_expr(to, profile_point, span);
+                let to_distance = self.lower_scene_profile_distance_expr(to, profile_point, span);
                 let mixed = self.lower_call_temp(
                     MirType::Float,
                     SmolStr::new("mix"),
                     vec![from_distance, to_distance, clamped],
                     span,
                 );
-                let abs_y = self.lower_call_temp(
-                    MirType::Float,
-                    SmolStr::new("abs"),
-                    vec![y],
-                    span,
-                );
-                let cap = self.lower_binary_temp(
-                    MirType::Float,
-                    BinaryOp::Sub,
-                    abs_y,
-                    half_height,
-                    span,
-                );
+                let abs_y =
+                    self.lower_call_temp(MirType::Float, SmolStr::new("abs"), vec![y], span);
+                let cap =
+                    self.lower_binary_temp(MirType::Float, BinaryOp::Sub, abs_y, half_height, span);
                 self.lower_profile_cap_distance_value(mixed, cap, span)
             }
             scene_ir::FieldNode::OpaqueLeaf => self.lower_field_distance_call(field, point, span),
@@ -5751,13 +5781,8 @@ impl FunctionLowerer {
                     self.lower_offset_point(point.clone(), [-0.001, 0.0, 0.0], span);
                 let dx_minus =
                     self.lower_field_local_distance_scene(field, node, dx_minus_point, span);
-                let dx = self.lower_binary_temp(
-                    MirType::Float,
-                    BinaryOp::Sub,
-                    dx_plus,
-                    dx_minus,
-                    span,
-                );
+                let dx =
+                    self.lower_binary_temp(MirType::Float, BinaryOp::Sub, dx_plus, dx_minus, span);
                 let dy_plus_point = self.lower_offset_point(point.clone(), [0.0, 0.001, 0.0], span);
                 let dy_plus =
                     self.lower_field_local_distance_scene(field, node, dy_plus_point, span);
@@ -5765,27 +5790,16 @@ impl FunctionLowerer {
                     self.lower_offset_point(point.clone(), [0.0, -0.001, 0.0], span);
                 let dy_minus =
                     self.lower_field_local_distance_scene(field, node, dy_minus_point, span);
-                let dy = self.lower_binary_temp(
-                    MirType::Float,
-                    BinaryOp::Sub,
-                    dy_plus,
-                    dy_minus,
-                    span,
-                );
+                let dy =
+                    self.lower_binary_temp(MirType::Float, BinaryOp::Sub, dy_plus, dy_minus, span);
                 let dz_plus_point = self.lower_offset_point(point.clone(), [0.0, 0.0, 0.001], span);
                 let dz_plus =
                     self.lower_field_local_distance_scene(field, node, dz_plus_point, span);
-                let dz_minus_point =
-                    self.lower_offset_point(point, [0.0, 0.0, -0.001], span);
+                let dz_minus_point = self.lower_offset_point(point, [0.0, 0.0, -0.001], span);
                 let dz_minus =
                     self.lower_field_local_distance_scene(field, node, dz_minus_point, span);
-                let dz = self.lower_binary_temp(
-                    MirType::Float,
-                    BinaryOp::Sub,
-                    dz_plus,
-                    dz_minus,
-                    span,
-                );
+                let dz =
+                    self.lower_binary_temp(MirType::Float, BinaryOp::Sub, dz_plus, dz_minus, span);
                 let gradient = self.lower_call_temp(
                     MirType::Vec3,
                     SmolStr::new("vec3"),
@@ -5934,7 +5948,12 @@ impl FunctionLowerer {
         Value::Temp(temp)
     }
 
-    pub(crate) fn lower_field_normal_call(&mut self, field: &SmolStr, point: Value, span: TextRange) -> Value {
+    pub(crate) fn lower_field_normal_call(
+        &mut self,
+        field: &SmolStr,
+        point: Value,
+        span: TextRange,
+    ) -> Value {
         let dx = self.lower_field_axis_difference(field, point.clone(), [0.001, 0.0, 0.0], span);
         let dy = self.lower_field_axis_difference(field, point.clone(), [0.0, 0.001, 0.0], span);
         let dz = self.lower_field_axis_difference(field, point, [0.0, 0.0, 0.001], span);
@@ -5988,7 +6007,12 @@ impl FunctionLowerer {
         Value::Temp(diff)
     }
 
-    pub(crate) fn lower_offset_point(&mut self, point: Value, offset: [f64; 3], span: TextRange) -> Value {
+    pub(crate) fn lower_offset_point(
+        &mut self,
+        point: Value,
+        offset: [f64; 3],
+        span: TextRange,
+    ) -> Value {
         let offset_vec = self.new_temp(MirType::Vec3);
         self.push_stmt(MirStmt::Assign {
             place: Place::Temp(offset_vec),

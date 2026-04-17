@@ -1,6 +1,7 @@
 # Repo Workflow Lanes
 
-Phase 49 makes `just` the repo front door.
+Phase 52 keeps `just` as the repo front door, turns incremental builds on by default, and adds
+explicit cleanroom escape hatches.
 
 Use the surfaces like this:
 
@@ -12,6 +13,8 @@ Use the surfaces like this:
 
 - `fast`: the default repo verification lane
 - `full`: the full semantic repo verification lane
+- `check-clean`: cleanroom workspace typecheck
+- `test-clean`: cleanroom workspace Rust test pass
 - `perf-smoke`: the cheap perf sanity lane
 - `perf-closure`: the representative whole-frame closure lane
 - `ship`: the local pre-ship gate
@@ -24,19 +27,30 @@ Use the surfaces like this:
 - `just build`
   Runs `cargo build --workspace`.
 
+- `just check-clean`
+  Runs the cleanroom workspace typecheck:
+  `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=.artifacts/cargo-cleanroom/check cargo check --workspace`
+
 - `just test`
   Repo fast lane.
-  It composes a small Rust integrity lane:
-  `cargo test -p wrela --test one_shot_metrics_harness --test spec_project_integrity --test thin_core_snapshot`
-  plus the authored executable spec lane:
-  `cargo run -p wrela -- test language/spec --lane=spec`
+  It composes the Rust smoke harness:
+  `cargo test -p wrela --test repo_smoke`
+  plus the native authored fast lane:
+  `cargo run -p wrela -- test language/spec --lane=fast`
+  The Rust smoke harness touches parsing/frontend, type checking/lowering, query execution,
+  presentation planning, collision execution, CLI smoke, and benchmark/perf manifest loading
+  once each without pretending to replace the broader workspace lane.
 
 - `just test-all`
   Repo full lane.
   It composes the full Rust workspace verification lane:
   `cargo test --workspace`
-  plus the authored spec project:
-  `cargo run -p wrela -- test language/spec`
+  plus the native authored full lane:
+  `cargo run -p wrela -- test language/spec --lane=full`
+
+- `just test-clean`
+  Runs the cleanroom workspace Rust test pass:
+  `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=.artifacts/cargo-cleanroom/test cargo test --workspace`
 
 - `just test-cli`
   Runs `cargo test -p wrela --test cli`.
@@ -59,6 +73,10 @@ Use the surfaces like this:
 
 - `just baseline-devloop`
   Writes the developer-loop report under `.artifacts/devloop/`.
+  The Phase 52 report includes:
+  warm-vs-cleanroom comparisons, per-context compile bursts, and the CLI split assessment.
+  The fast lane still carries an explicit `60000` ms budget and records misses as `missed_budget`
+  instead of normalizing them away.
 
 ## Boundary Rules
 
@@ -69,7 +87,7 @@ Use the surfaces like this:
 That means:
 
 - a Rust-only question such as "does the CLI integration crate still pass?" can use `cargo test -p wrela --test cli`
-- an authored-world question such as "does the executable spec project still run?" uses `cargo run -p wrela -- test language/spec --lane=spec`
+- an authored-world question such as "does the executable spec project still run?" uses `cargo run -p wrela -- test language/spec --lane=fast`
 - a repo question such as "is the fast lane green?" uses `just test`
 
 ## Human-Plus-Agent Workflow Contract
@@ -93,7 +111,8 @@ That means:
 
 ## Notes
 
-- The `wrela test` surface still uses its native lane vocabulary (`spec`, `integration`, `sim`, `model`, `default`).
-  The repo-level `fast` and `full` names live at the `just` layer and may compose multiple lower-level proof surfaces.
+- The `wrela test` surface accepts both preset aliases and legacy lanes.
+  `fast` means `spec + default`, `full` means all lanes, and the legacy names
+  (`spec`, `integration`, `sim`, `model`, `default`) remain valid for narrower targeting.
 - If `just` is not installed yet, you can still use the resolved `cargo` and `wrela` commands above as a temporary escape hatch.
   The repo contract remains `just` first.

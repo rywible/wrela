@@ -1,4 +1,11 @@
-fn check_class_init_args(
+use super::{
+    Arg, Body, ClassIndex, ClassSig, EnumIndex, Expr, FunctionIndex, Idx, InterfaceIndex, Literal,
+    SmolStr, SourceSpan, Type, TypeContext, TypeError, TypeRef, infer_expr, is_assignable,
+    span_from_range, type_label, types_known,
+};
+use std::collections::{HashMap, HashSet};
+
+pub(super) fn check_class_init_args(
     body: &Body,
     expr_id: Idx<Expr>,
     args: &Vec<crate::hir::Arg>,
@@ -148,14 +155,14 @@ fn check_class_init_args(
     }
 }
 
-fn requires_named_args(param_count: usize, args: &[crate::hir::Arg]) -> bool {
+pub(super) fn requires_named_args(param_count: usize, args: &[crate::hir::Arg]) -> bool {
     param_count > 1
         && args
             .iter()
             .any(|arg| matches!(arg, crate::hir::Arg::Positional { .. }))
 }
 
-fn infer_list(
+pub(super) fn infer_list(
     body: &Body,
     items: &Vec<Idx<Expr>>,
     ctx: &mut TypeContext,
@@ -205,7 +212,7 @@ fn infer_list(
     }
 }
 
-fn infer_map(
+pub(super) fn infer_map(
     body: &Body,
     items: &Vec<(Idx<Expr>, Idx<Expr>)>,
     ctx: &mut TypeContext,
@@ -267,7 +274,7 @@ fn infer_map(
     }
 }
 
-fn literal_type(lit: &Literal) -> Type {
+pub(super) fn literal_type(lit: &Literal) -> Type {
     match lit {
         Literal::Integer(_) => Type::Integer,
         Literal::Float(_) => Type::Float,
@@ -277,15 +284,15 @@ fn literal_type(lit: &Literal) -> Type {
     }
 }
 
-fn error_type() -> Type {
+pub(super) fn error_type() -> Type {
     Type::Named(SmolStr::new("Error"), Vec::new())
 }
 
-fn type_from_ref(ty: &TypeRef) -> Type {
+pub(super) fn type_from_ref(ty: &TypeRef) -> Type {
     type_from_ref_with_params(ty, &HashSet::new())
 }
 
-fn type_from_ref_in_ctx(ty: &TypeRef, ctx: &TypeContext) -> Type {
+pub(super) fn type_from_ref_in_ctx(ty: &TypeRef, ctx: &TypeContext) -> Type {
     if ctx.type_params.is_empty() {
         return type_from_ref(ty);
     }
@@ -296,7 +303,7 @@ fn type_from_ref_in_ctx(ty: &TypeRef, ctx: &TypeContext) -> Type {
     type_from_ref_with_params(ty, &params)
 }
 
-fn type_from_ref_with_params(ty: &TypeRef, params: &HashSet<SmolStr>) -> Type {
+pub(super) fn type_from_ref_with_params(ty: &TypeRef, params: &HashSet<SmolStr>) -> Type {
     let args: Vec<Type> = ty
         .args
         .iter()
@@ -365,7 +372,7 @@ fn type_from_ref_with_params(ty: &TypeRef, params: &HashSet<SmolStr>) -> Type {
     }
 }
 
-fn build_type_subst(params: &[SmolStr], args: &[Type]) -> HashMap<SmolStr, Type> {
+pub(super) fn build_type_subst(params: &[SmolStr], args: &[Type]) -> HashMap<SmolStr, Type> {
     let mut subst = HashMap::new();
     for (idx, name) in params.iter().enumerate() {
         if let Some(arg) = args.get(idx) {
@@ -375,7 +382,7 @@ fn build_type_subst(params: &[SmolStr], args: &[Type]) -> HashMap<SmolStr, Type>
     subst
 }
 
-fn substitute_type(ty: &Type, subst: &HashMap<SmolStr, Type>) -> Type {
+pub(super) fn substitute_type(ty: &Type, subst: &HashMap<SmolStr, Type>) -> Type {
     match ty {
         Type::Param(name) => subst.get(name).cloned().unwrap_or(Type::Unknown),
         Type::List(inner) => Type::List(Box::new(substitute_type(inner, subst))),
@@ -397,7 +404,7 @@ fn substitute_type(ty: &Type, subst: &HashMap<SmolStr, Type>) -> Type {
     }
 }
 
-fn resolve_type_args(
+pub(super) fn resolve_type_args(
     name: &SmolStr,
     params: &[SmolStr],
     type_args: &[TypeRef],

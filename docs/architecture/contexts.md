@@ -27,7 +27,7 @@ Use this map operationally:
   `compiler/tests/spec_project_integrity.rs`,
   `compiler/tests/project_e2e.rs`,
   `compiler/tests/thin_core_snapshot.rs`, and
-  `cargo run -p wrela -- test language/spec --lane=spec`.
+  `cargo run -p wrela -- test language/spec --lane=fast`.
 
 ### Semantic compilation pipeline
 

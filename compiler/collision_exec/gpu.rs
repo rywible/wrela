@@ -119,15 +119,14 @@ pub(crate) fn execute_batched_point_distance_query(
     domain: KernelValue,
     point: [f32; 3],
 ) -> Result<(KernelValue, QueryExecutionObservability), CollisionExecError> {
-    let (value, observability) = execute_single_result_dispatch(
-        prepare_batched_point_distance_dispatch(
+    let (value, observability) =
+        execute_single_result_dispatch(prepare_batched_point_distance_dispatch(
             ctx,
             snapshot,
             capture,
             domain,
             &[point_query_value(point)],
-        )?,
-    )?;
+        )?)?;
     let distance = match value {
         KernelValue::Struct(result) => result
             .fields
@@ -196,15 +195,14 @@ pub(crate) fn execute_batched_point_normal_query(
     domain: KernelValue,
     point: [f32; 3],
 ) -> Result<(KernelValue, QueryExecutionObservability), CollisionExecError> {
-    let (value, observability) = execute_single_result_dispatch(
-        prepare_batched_point_normal_dispatch(
+    let (value, observability) =
+        execute_single_result_dispatch(prepare_batched_point_normal_dispatch(
             ctx,
             snapshot,
             capture,
             domain,
             &[point_query_value(point)],
-        )?,
-    )?;
+        )?)?;
     let normal = match value {
         KernelValue::Struct(result) => result
             .fields

@@ -807,7 +807,7 @@ mod tests {
         assert_eq!(cpu_oracle.backend.as_str(), "cpu");
         assert_eq!(profile.frame.lane, PerfClosureLaneKind::Frame);
         assert_eq!(profile.collision.lane, PerfClosureLaneKind::Collision);
-        assert_eq!(profile.collision.suite, "collision_perf");
+        assert_eq!(profile.collision.suite, "whole_frame");
         assert_eq!(
             profile
                 .legal_degradations

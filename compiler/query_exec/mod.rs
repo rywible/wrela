@@ -162,6 +162,7 @@ pub fn selected_wgsl_workgroup_size() -> Result<u32, QueryExecError> {
 
 pub fn clear_native_wgsl_test_caches() {
     wgsl::clear_native_wgsl_test_caches();
+    native_bridge::clear_native_wgsl_test_caches();
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

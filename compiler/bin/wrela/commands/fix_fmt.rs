@@ -1,4 +1,22 @@
-fn collect_safe_fixes(
+use super::build_compile::{
+    conservative_naming_fixes, project_record, resolve_path_from_owner_spans,
+};
+use super::check_analyze::{
+    hole_binding_type_lookup, resolve_entry_path, semantic_hole_payload_and_fixes,
+    type_payload_and_fixes,
+};
+use super::shared::{naming_policy_severity, naming_policy_tier};
+use super::test_eval_perf::DiagnosticScope;
+use super::{
+    AstNode, BTreeMap, BTreeSet, Command, CommandSpec, Deserialize, DiagFix, DiagRecord,
+    DiagSeverity, DiagSpan, DiagStage, Duration, EXIT_CODEGEN, EXIT_OK, EXIT_PARSE,
+    EXIT_RUNTIME_SIGNAL, EXIT_TYPE, EXIT_USAGE, HashMap, HashSet, Instant, Output, OutputFormat,
+    ParsedCommandSpec, Path, PathBuf, Serialize, SmolStr, SourceSpan, SystemTime, UNIX_EPOCH,
+    VecDeque, ast, cert_engine, dedupe_records, diag_emit, env, fs, hir, hir_lower, io, mir,
+    mir_descriptor, parser, perf_engine, project_descriptor, replay_trace, suppress_cascades,
+};
+
+pub(crate) fn collect_safe_fixes(
     entry_path: &Path,
     output_format: OutputFormat,
     include_review: bool,
@@ -176,7 +194,7 @@ fn collect_safe_fixes(
     Ok(attach_expected_source_fragments(fixes, &source_by_path))
 }
 
-fn attach_expected_source_fragments(
+pub(crate) fn attach_expected_source_fragments(
     mut fixes: Vec<DiagFix>,
     source_by_path: &HashMap<PathBuf, String>,
 ) -> Vec<DiagFix> {
@@ -192,7 +210,7 @@ fn attach_expected_source_fragments(
     fixes
 }
 
-fn attach_expected_source_for_fix(fix: &mut DiagFix, source: &str) {
+pub(crate) fn attach_expected_source_for_fix(fix: &mut DiagFix, source: &str) {
     if fix.expected_source.is_some() {
         return;
     }
@@ -204,42 +222,42 @@ fn attach_expected_source_for_fix(fix: &mut DiagFix, source: &str) {
     fix.expected_source = source.get(start..end).map(ToString::to_string);
 }
 
-fn attach_expected_source_for_fixes(fixes: &mut [DiagFix], source: &str) {
+pub(crate) fn attach_expected_source_for_fixes(fixes: &mut [DiagFix], source: &str) {
     for fix in fixes {
         attach_expected_source_for_fix(fix, source);
     }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct FixApplyReport {
-    applied: usize,
-    touched_files: usize,
-    touched_paths: Vec<String>,
+pub(crate) struct FixApplyReport {
+    pub(crate) applied: usize,
+    pub(crate) touched_files: usize,
+    pub(crate) touched_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct FixApplyError {
-    message: String,
-    applied: usize,
-    touched_files: usize,
+pub(crate) struct FixApplyError {
+    pub(crate) message: String,
+    pub(crate) applied: usize,
+    pub(crate) touched_files: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-struct FixSummary {
-    attempted: usize,
-    applied: usize,
-    skipped: usize,
-    errors: usize,
-    touched_files: usize,
+pub(crate) struct FixSummary {
+    pub(crate) attempted: usize,
+    pub(crate) applied: usize,
+    pub(crate) skipped: usize,
+    pub(crate) errors: usize,
+    pub(crate) touched_files: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct FixSummaryEvent {
-    event: &'static str,
-    summary: FixSummary,
+pub(crate) struct FixSummaryEvent {
+    pub(crate) event: &'static str,
+    pub(crate) summary: FixSummary,
 }
 
-fn emit_fix_summary(output_format: OutputFormat, summary: FixSummary) {
+pub(crate) fn emit_fix_summary(output_format: OutputFormat, summary: FixSummary) {
     if !matches!(output_format, OutputFormat::Json) {
         return;
     }
@@ -254,22 +272,22 @@ fn emit_fix_summary(output_format: OutputFormat, summary: FixSummary) {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-struct FmtSummary {
-    iterations: usize,
-    attempted: usize,
-    applied: usize,
-    touched_files: usize,
-    targets_scanned: usize,
-    failed_targets: usize,
+pub(crate) struct FmtSummary {
+    pub(crate) iterations: usize,
+    pub(crate) attempted: usize,
+    pub(crate) applied: usize,
+    pub(crate) touched_files: usize,
+    pub(crate) targets_scanned: usize,
+    pub(crate) failed_targets: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct FmtSummaryEvent {
-    event: &'static str,
-    summary: FmtSummary,
+pub(crate) struct FmtSummaryEvent {
+    pub(crate) event: &'static str,
+    pub(crate) summary: FmtSummary,
 }
 
-fn emit_fmt_summary(output_format: OutputFormat, summary: FmtSummary) {
+pub(crate) fn emit_fmt_summary(output_format: OutputFormat, summary: FmtSummary) {
     if !matches!(output_format, OutputFormat::Json) {
         return;
     }
@@ -283,7 +301,7 @@ fn emit_fmt_summary(output_format: OutputFormat, summary: FmtSummary) {
     );
 }
 
-fn run_format_loop(
+pub(crate) fn run_format_loop(
     entry_path: &Path,
     output_format: OutputFormat,
     include_review: bool,
@@ -295,7 +313,8 @@ fn run_format_loop(
     let diagnostic_scope = DiagnosticScope::from_entrypoint(entry_path, workspace_diagnostics);
 
     for _ in 0..MAX_PASSES {
-        let fixes = collect_safe_fixes(entry_path, output_format, include_review, &diagnostic_scope)?;
+        let fixes =
+            collect_safe_fixes(entry_path, output_format, include_review, &diagnostic_scope)?;
         if fixes.is_empty() {
             break;
         }
@@ -328,7 +347,7 @@ fn run_format_loop(
     Ok(summary)
 }
 
-fn resolve_format_targets(path_arg: Option<&str>) -> Result<Vec<PathBuf>, String> {
+pub(crate) fn resolve_format_targets(path_arg: Option<&str>) -> Result<Vec<PathBuf>, String> {
     let input = path_arg.unwrap_or(".");
     let raw = PathBuf::from(input);
     if raw.is_dir() {
@@ -344,7 +363,7 @@ fn resolve_format_targets(path_arg: Option<&str>) -> Result<Vec<PathBuf>, String
     Ok(vec![entry])
 }
 
-fn collect_wr_files_for_format(root: &Path) -> Result<Vec<PathBuf>, String> {
+pub(crate) fn collect_wr_files_for_format(root: &Path) -> Result<Vec<PathBuf>, String> {
     let src_dir = root.join("src");
     let tests_dir = root.join("tests");
     let language_dir = root.join("language");
@@ -375,7 +394,7 @@ fn collect_wr_files_for_format(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
-fn collect_wr_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+pub(crate) fn collect_wr_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries = fs::read_dir(dir)
         .map_err(|err| format!("failed to read directory {}: {err}", dir.display()))?;
     let mut paths = entries
@@ -399,7 +418,7 @@ fn collect_wr_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), 
     Ok(())
 }
 
-fn apply_source_fixes(fixes: &[DiagFix]) -> Result<FixApplyReport, FixApplyError> {
+pub(crate) fn apply_source_fixes(fixes: &[DiagFix]) -> Result<FixApplyReport, FixApplyError> {
     let mut fixes_by_path: BTreeMap<&str, Vec<&DiagFix>> = BTreeMap::new();
     for fix in fixes {
         fixes_by_path
@@ -497,7 +516,7 @@ fn apply_source_fixes(fixes: &[DiagFix]) -> Result<FixApplyReport, FixApplyError
     Ok(report)
 }
 
-fn normalize_formatted_wr_file(path: &str) -> Result<(), String> {
+pub(crate) fn normalize_formatted_wr_file(path: &str) -> Result<(), String> {
     let source = fs::read_to_string(path).map_err(|err| format!("failed to read {path}: {err}"))?;
     let normalized = normalize_wr_blank_lines(&source);
     if normalized != source {
@@ -506,7 +525,7 @@ fn normalize_formatted_wr_file(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn normalize_wr_blank_lines(source: &str) -> String {
+pub(crate) fn normalize_wr_blank_lines(source: &str) -> String {
     let ends_with_newline = source.ends_with('\n');
     let mut out = String::with_capacity(source.len());
     let mut blank_run = 0usize;

@@ -1,4 +1,10 @@
-fn check_async_actor_usage(
+use super::{
+    Body, ClassIndex, Expr, Function, FunctionKind, FunctionRole, FunctionTypeInfo, Idx, Module,
+    SmolStr, Stmt, Type, TypeError, TypeInfo, TypeRef, UnaryOp, body_key, span_from_range,
+};
+use std::collections::{HashMap, HashSet};
+
+pub(super) fn check_async_actor_usage(
     module: &Module,
     info: &TypeInfo,
     classes: &ClassIndex,
@@ -102,7 +108,7 @@ fn check_async_actor_usage(
     }
 }
 
-fn build_call_maps(
+pub(super) fn build_call_maps(
     module: &Module,
 ) -> (
     HashMap<SmolStr, Idx<Function>>,
@@ -136,7 +142,7 @@ fn build_call_maps(
     (function_by_name, class_method_ids)
 }
 
-fn build_func_labels(
+pub(super) fn build_func_labels(
     module: &Module,
     class_method_ids: &HashMap<SmolStr, HashMap<SmolStr, Idx<Function>>>,
 ) -> HashMap<usize, String> {
@@ -157,7 +163,7 @@ fn build_func_labels(
     labels
 }
 
-fn build_call_chain(
+pub(super) fn build_call_chain(
     start: Idx<Function>,
     cause: &HashMap<usize, Option<Idx<Function>>>,
     func_labels: &HashMap<usize, String>,
@@ -181,7 +187,7 @@ fn build_call_chain(
     format!("{hint} Async call chain: {}.", parts.join(" -> "))
 }
 
-fn collect_direct_await_and_sync_calls(
+pub(super) fn collect_direct_await_and_sync_calls(
     body: &Body,
     fn_info: Option<&FunctionTypeInfo>,
     function_by_name: &HashMap<SmolStr, Idx<Function>>,
@@ -202,7 +208,7 @@ fn collect_direct_await_and_sync_calls(
     }
 }
 
-fn visit_stmt_for_async(
+pub(super) fn visit_stmt_for_async(
     body: &Body,
     stmt_id: Idx<Stmt>,
     fn_info: Option<&FunctionTypeInfo>,
@@ -415,7 +421,7 @@ fn visit_stmt_for_async(
     }
 }
 
-fn visit_expr_for_async(
+pub(super) fn visit_expr_for_async(
     body: &Body,
     expr_id: Idx<Expr>,
     fn_info: Option<&FunctionTypeInfo>,
@@ -613,7 +619,9 @@ fn visit_expr_for_async(
                 }
             }
         }
-        Expr::Closure { body: closure_body, .. } => {
+        Expr::Closure {
+            body: closure_body, ..
+        } => {
             visit_expr_for_async(
                 body,
                 *closure_body,
@@ -628,7 +636,7 @@ fn visit_expr_for_async(
     }
 }
 
-fn check_body_async_usage(
+pub(super) fn check_body_async_usage(
     body: &Body,
     fn_info: Option<&FunctionTypeInfo>,
     classes: &ClassIndex,
@@ -658,7 +666,7 @@ fn check_body_async_usage(
     }
 }
 
-fn check_stmt_async_usage(
+pub(super) fn check_stmt_async_usage(
     body: &Body,
     stmt_id: Idx<Stmt>,
     fn_info: Option<&FunctionTypeInfo>,
@@ -1000,7 +1008,7 @@ fn check_stmt_async_usage(
     }
 }
 
-fn check_expr_async_usage(
+pub(super) fn check_expr_async_usage(
     body: &Body,
     expr_id: Idx<Expr>,
     fn_info: Option<&FunctionTypeInfo>,
@@ -1298,7 +1306,9 @@ fn check_expr_async_usage(
                 }
             }
         }
-        Expr::Closure { body: closure_body, .. } => {
+        Expr::Closure {
+            body: closure_body, ..
+        } => {
             check_expr_async_usage(
                 body,
                 *closure_body,

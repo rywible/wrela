@@ -1,11 +1,11 @@
 use crate::acceleration::build::{SharedAccelerationCatalog, build_shared_acceleration_forests};
 use crate::hir;
 use crate::hir::typeck::TypeInfo;
-use crate::query_plan::SceneSummary;
 use crate::query_exec::ids::{
     stable_field_snapshot_handle, stable_region_snapshot_handle, stable_shape_snapshot_handle,
 };
 use crate::query_exec::region::{RegionExecCase, build_region_exec_cases};
+use crate::query_plan::SceneSummary;
 use crate::scene_ir;
 use crate::scene_ir::{DistanceSemantics, SupportClass};
 use crate::scene_ir::{ShapeLeafId, ShapeLeafRef, ShapeLeafScene};
@@ -326,7 +326,10 @@ impl QueryExecContext {
 
     pub fn region_scene_summary(&self, name: &SmolStr, detail: i32) -> Option<SceneSummary> {
         let scene_id = self.region_scene_id(name);
-        let region_case = self.region_cases.iter().find(|case| case.scene_id == scene_id)?;
+        let region_case = self
+            .region_cases
+            .iter()
+            .find(|case| case.scene_id == scene_id)?;
         let shapes = region_case.shapes_for_detail(detail).ok()?;
         let mut summaries = Vec::with_capacity(shapes.len());
         for shape_name in shapes {

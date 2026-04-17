@@ -1,4 +1,18 @@
-fn infer_expr(
+use super::{
+    Arg, BinaryOp, Body, ClassIndex, EnumIndex, Expr, FunctionIndex, FunctionRole, Idx,
+    InterfaceIndex, Literal, SmolStr, Type, TypeContext, TypeError, TypeRef, UnaryOp,
+    actor_type_for_detach_target, binary_from_assign, binary_op_label, binary_result, body_key,
+    build_type_subst, callee_error_span, check_class_init_args, check_type_param_bounds,
+    class_subst, collection_method_sig, error_type, infer_list, infer_map,
+    instantiate_method_params, instantiate_method_ret, is_assignable, is_pool_of_call,
+    is_pool_of_member, is_portable_named_data_type_name, literal_type, portable_named_field_type,
+    portable_named_type, requires_named_args, resolve_type_args, same_vector_kind, span_from_range,
+    substitute_type, type_from_ref, type_from_ref_in_ctx, type_label, types_known, unary_op_label,
+    unary_result, valid_binary, valid_equality_operands, valid_unary,
+};
+use std::collections::{HashMap, HashSet};
+
+pub(super) fn infer_expr(
     body: &Body,
     expr_id: Idx<Expr>,
     ctx: &mut TypeContext,
@@ -784,9 +798,7 @@ fn infer_expr(
                     ret_ty = Some(Type::Unknown);
                     valid_callee = true;
                 }
-                if !valid_callee
-                    && let Some(family) = query_family_object(body, *object, ctx)
-                {
+                if !valid_callee && let Some(family) = query_family_object(body, *object, ctx) {
                     if let Some(ret) = infer_family_query_member_builtin(
                         body,
                         expr_id,
@@ -1355,7 +1367,7 @@ Result from a Result-returning function."
     ty
 }
 
-fn check_call_args(
+pub(super) fn check_call_args(
     body: &Body,
     expr_id: Idx<Expr>,
     args: &Vec<crate::hir::Arg>,
@@ -1499,7 +1511,7 @@ fn check_call_args(
     }
 }
 
-fn builtin_allows_positional_args(name: &SmolStr) -> bool {
+pub(super) fn builtin_allows_positional_args(name: &SmolStr) -> bool {
     name.as_str().starts_with("__wr_")
         || matches!(
             name.as_str(),
@@ -1540,7 +1552,7 @@ fn builtin_allows_positional_args(name: &SmolStr) -> bool {
         )
 }
 
-fn call_named_arg_value(args: &[crate::hir::Arg], name: &str) -> Option<Idx<Expr>> {
+pub(super) fn call_named_arg_value(args: &[crate::hir::Arg], name: &str) -> Option<Idx<Expr>> {
     for arg in args {
         if let crate::hir::Arg::Named {
             name: arg_name,
@@ -1555,7 +1567,7 @@ fn call_named_arg_value(args: &[crate::hir::Arg], name: &str) -> Option<Idx<Expr
     None
 }
 
-fn infer_compute_builtin_call(
+pub(super) fn infer_compute_builtin_call(
     body: &Body,
     expr_id: Idx<Expr>,
     name: &SmolStr,
@@ -2226,7 +2238,7 @@ fn infer_compute_builtin_call(
     }
 }
 
-fn infer_exact_builtin_call(
+pub(super) fn infer_exact_builtin_call(
     body: &Body,
     expr_id: Idx<Expr>,
     args: &Vec<crate::hir::Arg>,
@@ -2260,7 +2272,7 @@ fn infer_exact_builtin_call(
     Some(ret.clone())
 }
 
-fn infer_capture_builtin(
+pub(super) fn infer_capture_builtin(
     body: &Body,
     expr_id: Idx<Expr>,
     args: &Vec<crate::hir::Arg>,
@@ -2304,7 +2316,9 @@ fn infer_capture_builtin(
         let is_valid = match &body.exprs[target_expr] {
             Expr::Variable(name) => {
                 ctx.resolve(name).is_none()
-                    && (functions.is_field(name) || functions.is_shape(name) || functions.is_region(name))
+                    && (functions.is_field(name)
+                        || functions.is_shape(name)
+                        || functions.is_region(name))
             }
             _ => false,
         };
@@ -2327,7 +2341,7 @@ fn infer_capture_builtin(
     })
 }
 
-fn direct_capture_target_name(body: &Body, expr_id: Idx<Expr>) -> Option<SmolStr> {
+pub(super) fn direct_capture_target_name(body: &Body, expr_id: Idx<Expr>) -> Option<SmolStr> {
     let Expr::Call { callee, args, .. } = &body.exprs[expr_id] else {
         return None;
     };
@@ -2344,7 +2358,7 @@ fn direct_capture_target_name(body: &Body, expr_id: Idx<Expr>) -> Option<SmolStr
     Some(target.clone())
 }
 
-fn infer_scene_backend_builtin(
+pub(super) fn infer_scene_backend_builtin(
     body: &Body,
     expr_id: Idx<Expr>,
     name: &SmolStr,
@@ -2383,7 +2397,7 @@ fn infer_scene_backend_builtin(
     )
 }
 
-fn infer_legacy_query_builtin(
+pub(super) fn infer_legacy_query_builtin(
     body: &Body,
     expr_id: Idx<Expr>,
     name: &SmolStr,
@@ -2430,7 +2444,9 @@ fn infer_legacy_query_builtin(
         ),
         (_, None) => candidates
             .iter()
-            .find_map(|descriptor| (descriptor.surface == surface).then_some(descriptor.capture_kind))
+            .find_map(|descriptor| {
+                (descriptor.surface == surface).then_some(descriptor.capture_kind)
+            })
             .unwrap_or(CaptureKind::Field),
     };
     let Some(descriptor) = candidates
@@ -2513,7 +2529,7 @@ fn infer_legacy_query_builtin(
     Some(family_query_return_type(descriptor))
 }
 
-fn legacy_query_contract_candidates(
+pub(super) fn legacy_query_contract_candidates(
     legacy_builtin_name: &str,
 ) -> Vec<&'static crate::query_contract::QueryContractDescriptor> {
     crate::query_contract::query_execution_bindings()
@@ -2523,7 +2539,7 @@ fn legacy_query_contract_candidates(
         .collect()
 }
 
-fn legacy_query_surface(
+pub(super) fn legacy_query_surface(
     candidates: &[&crate::query_contract::QueryContractDescriptor],
     args: &[crate::hir::Arg],
 ) -> crate::query_contract::QuerySurfaceKind {
@@ -2554,7 +2570,7 @@ fn legacy_query_surface(
     QuerySurfaceKind::CaptureScalar
 }
 
-fn expected_legacy_query_capture_label(
+pub(super) fn expected_legacy_query_capture_label(
     legacy_builtin_name: &str,
     surface: crate::query_contract::QuerySurfaceKind,
 ) -> Option<&'static str> {
@@ -2568,7 +2584,7 @@ fn expected_legacy_query_capture_label(
     capture_kind_label(kinds.as_slice())
 }
 
-fn query_family_object(
+pub(super) fn query_family_object(
     body: &Body,
     object: Idx<Expr>,
     ctx: &mut TypeContext,
@@ -2584,7 +2600,7 @@ fn query_family_object(
     Some(family)
 }
 
-fn family_query_call_name(
+pub(super) fn family_query_call_name(
     family: crate::query_contract::QueryFamilyId,
     member: &SmolStr,
 ) -> SmolStr {
@@ -2595,7 +2611,7 @@ fn family_query_call_name(
     ))
 }
 
-fn infer_family_query_member_builtin(
+pub(super) fn infer_family_query_member_builtin(
     body: &Body,
     expr_id: Idx<Expr>,
     family: crate::query_contract::QueryFamilyId,
@@ -2610,7 +2626,9 @@ fn infer_family_query_member_builtin(
     allow_result: bool,
     in_result_fn: bool,
 ) -> Option<Type> {
-    use crate::query_contract::{QueryCardinality, QueryFamilyCallSurface, QuerySurfaceKind, QueryTargetKind};
+    use crate::query_contract::{
+        QueryCardinality, QueryFamilyCallSurface, QuerySurfaceKind, QueryTargetKind,
+    };
 
     let family_member = crate::query_contract::query_family_member(family, member.as_str())?;
     let query_name = family_query_call_name(family, member);
@@ -2741,7 +2759,7 @@ fn infer_family_query_member_builtin(
     Some(family_query_return_type(descriptor))
 }
 
-fn infer_capture_kind_for_query_arg(
+pub(super) fn infer_capture_kind_for_query_arg(
     body: &Body,
     capture_expr: Idx<Expr>,
     ctx: &mut TypeContext,
@@ -2786,7 +2804,7 @@ fn infer_capture_kind_for_query_arg(
     }
 }
 
-fn family_query_params(
+pub(super) fn family_query_params(
     descriptor: &crate::query_contract::QueryContractDescriptor,
     args: &Vec<crate::hir::Arg>,
 ) -> Vec<(SmolStr, Type)> {
@@ -2825,7 +2843,9 @@ fn family_query_params(
     params
 }
 
-fn scalar_item_param(kind: crate::query_contract::QueryItemKind) -> Option<(&'static str, Type)> {
+pub(super) fn scalar_item_param(
+    kind: crate::query_contract::QueryItemKind,
+) -> Option<(&'static str, Type)> {
     use crate::query_contract::QueryItemKind;
     match kind {
         QueryItemKind::Unit => None,
@@ -2838,7 +2858,9 @@ fn scalar_item_param(kind: crate::query_contract::QueryItemKind) -> Option<(&'st
     }
 }
 
-fn batch_item_arg_name(kind: crate::query_contract::QueryItemKind) -> Option<&'static str> {
+pub(super) fn batch_item_arg_name(
+    kind: crate::query_contract::QueryItemKind,
+) -> Option<&'static str> {
     use crate::query_contract::QueryItemKind;
     match kind {
         QueryItemKind::PointQuery => Some("points"),
@@ -2849,7 +2871,7 @@ fn batch_item_arg_name(kind: crate::query_contract::QueryItemKind) -> Option<&'s
     }
 }
 
-fn batch_item_type(kind: crate::query_contract::QueryItemKind) -> Type {
+pub(super) fn batch_item_type(kind: crate::query_contract::QueryItemKind) -> Type {
     use crate::query_contract::QueryItemKind;
     match kind {
         QueryItemKind::PointQuery => portable_named_type("PointQuery"),
@@ -2860,7 +2882,7 @@ fn batch_item_type(kind: crate::query_contract::QueryItemKind) -> Type {
     }
 }
 
-fn family_query_return_type(
+pub(super) fn family_query_return_type(
     descriptor: &crate::query_contract::QueryContractDescriptor,
 ) -> Type {
     use crate::query_contract::{QueryCardinality, QueryResultKind};
@@ -2889,7 +2911,7 @@ fn family_query_return_type(
     }
 }
 
-fn validate_family_query_capture_argument(
+pub(super) fn validate_family_query_capture_argument(
     body: &Body,
     capture_expr: Idx<Expr>,
     descriptor: &crate::query_contract::QueryContractDescriptor,
@@ -2974,7 +2996,9 @@ fn validate_family_query_capture_argument(
     }
 }
 
-fn expected_capture_label(capture_kind: crate::query_contract::CaptureKind) -> &'static str {
+pub(super) fn expected_capture_label(
+    capture_kind: crate::query_contract::CaptureKind,
+) -> &'static str {
     match capture_kind {
         crate::query_contract::CaptureKind::Field => "FieldCapture",
         crate::query_contract::CaptureKind::Shape => "ShapeCapture",
@@ -2982,7 +3006,7 @@ fn expected_capture_label(capture_kind: crate::query_contract::CaptureKind) -> &
     }
 }
 
-fn expected_family_query_capture_label(
+pub(super) fn expected_family_query_capture_label(
     family: crate::query_contract::QueryFamilyId,
     question: crate::query_contract::QueryQuestionId,
     surface: crate::query_contract::QuerySurfaceKind,
@@ -3001,7 +3025,9 @@ fn expected_family_query_capture_label(
     capture_kind_label(kinds.as_slice())
 }
 
-fn capture_kind_label(kinds: &[crate::query_contract::CaptureKind]) -> Option<&'static str> {
+pub(super) fn capture_kind_label(
+    kinds: &[crate::query_contract::CaptureKind],
+) -> Option<&'static str> {
     use crate::query_contract::CaptureKind;
 
     match kinds {
@@ -3013,7 +3039,7 @@ fn capture_kind_label(kinds: &[crate::query_contract::CaptureKind]) -> Option<&'
     }
 }
 
-fn validate_region_capture_argument(
+pub(super) fn validate_region_capture_argument(
     body: &Body,
     capture_expr: Idx<Expr>,
     ctx: &mut TypeContext,
@@ -3057,7 +3083,7 @@ fn validate_region_capture_argument(
     }
 }
 
-fn validate_scene_domain_argument(
+pub(super) fn validate_scene_domain_argument(
     body: &Body,
     domain_expr: Idx<Expr>,
     ctx: &mut TypeContext,
@@ -3082,8 +3108,7 @@ fn validate_scene_domain_argument(
         allow_result,
         in_result_fn,
     );
-    if found != Type::Unknown && !is_assignable(&scene_domain_type(), &found, classes, interfaces)
-    {
+    if found != Type::Unknown && !is_assignable(&scene_domain_type(), &found, classes, interfaces) {
         errors.push(TypeError::ArgumentTypeMismatch {
             name: SmolStr::new("domain"),
             expected: "SceneDomain".to_string(),
@@ -3093,35 +3118,35 @@ fn validate_scene_domain_argument(
     }
 }
 
-fn field_capture_type() -> Type {
+pub(super) fn field_capture_type() -> Type {
     portable_named_type("FieldCapture")
 }
 
-fn shape_capture_type() -> Type {
+pub(super) fn shape_capture_type() -> Type {
     portable_named_type("ShapeCapture")
 }
 
-fn region_capture_type() -> Type {
+pub(super) fn region_capture_type() -> Type {
     portable_named_type("RegionCapture")
 }
 
-fn detail_tier_type() -> Type {
+pub(super) fn detail_tier_type() -> Type {
     portable_named_type("DetailTier")
 }
 
-fn is_region_capture_type(ty: &Type) -> bool {
+pub(super) fn is_region_capture_type(ty: &Type) -> bool {
     *ty == region_capture_type()
 }
 
-fn dispatch_backend_type() -> Type {
+pub(super) fn dispatch_backend_type() -> Type {
     portable_named_type("DispatchBackend")
 }
 
-fn scene_domain_type() -> Type {
+pub(super) fn scene_domain_type() -> Type {
     portable_named_type("SceneDomain")
 }
 
-fn infer_math_builtin_call(
+pub(super) fn infer_math_builtin_call(
     body: &Body,
     expr_id: Idx<Expr>,
     name: &SmolStr,
@@ -4251,22 +4276,20 @@ fn infer_math_builtin_call(
         "dispatch_backend_cpu"
         | "dispatch_backend_virtual_gpu"
         | "dispatch_backend_wgsl"
-        | "dispatch_backend_auto" => {
-            infer_scene_backend_builtin(
-                body,
-                expr_id,
-                name,
-                args,
-                ctx,
-                classes,
-                enums,
-                interfaces,
-                functions,
-                errors,
-                allow_result,
-                in_result_fn,
-            )
-        }
+        | "dispatch_backend_auto" => infer_scene_backend_builtin(
+            body,
+            expr_id,
+            name,
+            args,
+            ctx,
+            classes,
+            enums,
+            interfaces,
+            functions,
+            errors,
+            allow_result,
+            in_result_fn,
+        ),
         "min" | "max" | "pow" => infer_componentwise_binary_builtin(
             body,
             expr_id,
@@ -4382,7 +4405,7 @@ fn infer_math_builtin_call(
     }
 }
 
-fn infer_call_arg_type(
+pub(super) fn infer_call_arg_type(
     body: &Body,
     arg: &crate::hir::Arg,
     ctx: &mut TypeContext,
@@ -4412,7 +4435,7 @@ fn infer_call_arg_type(
     )
 }
 
-fn infer_componentwise_unary_builtin(
+pub(super) fn infer_componentwise_unary_builtin(
     body: &Body,
     expr_id: Idx<Expr>,
     args: &Vec<crate::hir::Arg>,
@@ -4463,7 +4486,7 @@ fn infer_componentwise_unary_builtin(
     Some(Type::Unknown)
 }
 
-fn infer_componentwise_binary_builtin(
+pub(super) fn infer_componentwise_binary_builtin(
     body: &Body,
     expr_id: Idx<Expr>,
     args: &Vec<crate::hir::Arg>,
@@ -4562,7 +4585,7 @@ fn infer_componentwise_binary_builtin(
     }
 }
 
-fn infer_componentwise_ternary_builtin(
+pub(super) fn infer_componentwise_ternary_builtin(
     body: &Body,
     expr_id: Idx<Expr>,
     args: &Vec<crate::hir::Arg>,
@@ -4664,7 +4687,7 @@ fn infer_componentwise_ternary_builtin(
     Some(value_ty)
 }
 
-fn infer_scalar_cast_builtin(
+pub(super) fn infer_scalar_cast_builtin(
     body: &Body,
     expr_id: Idx<Expr>,
     args: &Vec<crate::hir::Arg>,
@@ -4709,7 +4732,7 @@ fn infer_scalar_cast_builtin(
     Some(Type::Unknown)
 }
 
-fn push_math_builtin_arg_mismatch(
+pub(super) fn push_math_builtin_arg_mismatch(
     name: &str,
     found: &Type,
     args: &[crate::hir::Arg],
@@ -4733,7 +4756,7 @@ fn push_math_builtin_arg_mismatch(
     });
 }
 
-fn is_scalar_numeric_type(ty: &Type) -> bool {
+pub(super) fn is_scalar_numeric_type(ty: &Type) -> bool {
     matches!(
         ty,
         Type::Integer
@@ -4747,15 +4770,15 @@ fn is_scalar_numeric_type(ty: &Type) -> bool {
     )
 }
 
-fn is_vector_like_type(ty: &Type) -> bool {
+pub(super) fn is_vector_like_type(ty: &Type) -> bool {
     matches!(ty, Type::Vec2 | Type::Vec3 | Type::Vec4 | Type::Quat)
 }
 
-fn is_vector_only_type(ty: &Type) -> bool {
+pub(super) fn is_vector_only_type(ty: &Type) -> bool {
     matches!(ty, Type::Vec2 | Type::Vec3 | Type::Vec4)
 }
 
-fn is_same_vector_kind(left: &Type, right: &Type) -> bool {
+pub(super) fn is_same_vector_kind(left: &Type, right: &Type) -> bool {
     matches!(
         (left, right),
         (Type::Vec2, Type::Vec2)
@@ -4765,7 +4788,7 @@ fn is_same_vector_kind(left: &Type, right: &Type) -> bool {
     )
 }
 
-fn same_vector_like_kind(left: &Type, right: &Type) -> Option<Type> {
+pub(super) fn same_vector_like_kind(left: &Type, right: &Type) -> Option<Type> {
     match (left, right) {
         (Type::Vec2, Type::Vec2) => Some(Type::Vec2),
         (Type::Vec3, Type::Vec3) => Some(Type::Vec3),
@@ -4775,13 +4798,13 @@ fn same_vector_like_kind(left: &Type, right: &Type) -> Option<Type> {
     }
 }
 
-fn arg_matches_componentwise_shape(arg: &Type, shape: &Type) -> bool {
+pub(super) fn arg_matches_componentwise_shape(arg: &Type, shape: &Type) -> bool {
     matches!(arg, Type::Unknown)
         || is_scalar_numeric_type(arg)
         || (is_vector_like_type(arg) && is_same_vector_kind(arg, shape))
 }
 
-fn vector_component_type(object_ty: &Type, member: &SmolStr) -> Option<Type> {
+pub(super) fn vector_component_type(object_ty: &Type, member: &SmolStr) -> Option<Type> {
     let member = member.as_str();
     match object_ty {
         Type::Vec2 => match member {

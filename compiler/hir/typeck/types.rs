@@ -1,15 +1,14 @@
+use super::{async_effects::*, calls::*, conformance::*, context::*, expr::*, stmt::*};
 use crate::hir::{
-    body_key,
     Arg, BinaryOp, Body, ClassRole, Expr, FieldBounds, FieldClass, FieldDefault, FieldExpr,
-    FieldGraph, FieldMetadata, FieldPrimitive, FieldSupport, Function, FunctionKind, FunctionLane,
-    FunctionRole, Idx, InterfaceMethodKind, Literal, Module, Pattern, RegionItemMetadata, Shape,
-    ShapeExpr, ShapeGraph, ShapeLeaf, Stmt, TypeRef, UnaryOp, Visibility,
+    FieldGraph, FieldMetadata, FieldPrimitive, FieldSupport, Function, FunctionLane, FunctionRole,
+    Idx, Literal, Module, Pattern, RegionItemMetadata, Shape, ShapeExpr, ShapeGraph, ShapeLeaf,
+    Stmt, TypeRef, UnaryOp, Visibility, body_key,
 };
 use crate::portable::{
     PortableBuiltinAtom, PortableBuiltinType, builtin_record, is_builtin_record_name,
 };
 use miette::{Diagnostic, SourceSpan};
-use rowan::TextRange;
 use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
@@ -52,15 +51,15 @@ pub enum Type {
     Sampler,
 }
 
-fn portable_named_type(name: &str) -> Type {
+pub(super) fn portable_named_type(name: &str) -> Type {
     Type::Named(SmolStr::new(name), Vec::new())
 }
 
-fn is_portable_named_data_type_name(name: &str) -> bool {
+pub(super) fn is_portable_named_data_type_name(name: &str) -> bool {
     is_builtin_record_name(name)
 }
 
-fn scene_domain_compat_field_type(member: &str) -> Option<Type> {
+pub(super) fn scene_domain_compat_field_type(member: &str) -> Option<Type> {
     match member {
         "geometry_detail" => Some(Type::I32),
         "material" | "radiance" | "media" => Some(Type::Boolean),
@@ -68,7 +67,7 @@ fn scene_domain_compat_field_type(member: &str) -> Option<Type> {
     }
 }
 
-fn portable_named_field_type(name: &str, member: &str) -> Option<Type> {
+pub(super) fn portable_named_field_type(name: &str, member: &str) -> Option<Type> {
     if name == "SceneDomain"
         && let Some(field_ty) = scene_domain_compat_field_type(member)
     {
@@ -79,7 +78,7 @@ fn portable_named_field_type(name: &str, member: &str) -> Option<Type> {
     Some(portable_builtin_type_to_type(field.ty))
 }
 
-fn portable_builtin_type_to_type(ty: PortableBuiltinType) -> Type {
+pub(super) fn portable_builtin_type_to_type(ty: PortableBuiltinType) -> Type {
     match ty {
         PortableBuiltinType::Atom(atom) => match atom {
             PortableBuiltinAtom::Bool => Type::Boolean,
@@ -403,7 +402,9 @@ pub enum TypeError {
         help: String,
     },
 
-    #[error("shape '{shape}' requires {binding} to reference a top-level {expected} declaration, found '{target}'")]
+    #[error(
+        "shape '{shape}' requires {binding} to reference a top-level {expected} declaration, found '{target}'"
+    )]
     #[diagnostic(code(lang::ty::shape_binding_target_invalid))]
     ShapeBindingTargetInvalid {
         shape: SmolStr,
@@ -482,7 +483,9 @@ pub enum TypeError {
         help: String,
     },
 
-    #[error("field '{field}' {clause} clause '{explicit}' conflicts with inferred {clause} '{inferred}'")]
+    #[error(
+        "field '{field}' {clause} clause '{explicit}' conflicts with inferred {clause} '{inferred}'"
+    )]
     #[diagnostic(code(lang::ty::field_clause_conflict))]
     FieldClauseConflict {
         field: SmolStr,
@@ -920,14 +923,17 @@ pub fn check_module(module: &Module) -> Vec<TypeError> {
     errors
 }
 
-fn module_is_deterministic_game_module(module: &Module) -> bool {
+pub(super) fn module_is_deterministic_game_module(module: &Module) -> bool {
     module
         .functions
         .iter()
         .any(|(_, func)| matches!(func.role, FunctionRole::System))
 }
 
-fn enforce_deterministic_fixed_lane_policy(module: &Module, errors: &mut Vec<TypeError>) {
+pub(super) fn enforce_deterministic_fixed_lane_policy(
+    module: &Module,
+    errors: &mut Vec<TypeError>,
+) {
     for (_idx, function) in module.functions.iter() {
         for param in &function.params {
             if let Some(ty) = &param.ty {
@@ -984,7 +990,7 @@ fn enforce_deterministic_fixed_lane_policy(module: &Module, errors: &mut Vec<Typ
     }
 }
 
-fn collect_forbidden_float_type_refs(ty: &TypeRef, errors: &mut Vec<TypeError>) {
+pub(super) fn collect_forbidden_float_type_refs(ty: &TypeRef, errors: &mut Vec<TypeError>) {
     if ty.name.as_str() == "Float" {
         errors.push(TypeError::DeterministicFloatTypeForbidden {
             span: span_from_option_range(ty.name_span),
@@ -995,7 +1001,7 @@ fn collect_forbidden_float_type_refs(ty: &TypeRef, errors: &mut Vec<TypeError>) 
     }
 }
 
-fn collect_forbidden_float_literals_in_field_default(
+pub(super) fn collect_forbidden_float_literals_in_field_default(
     default: &FieldDefault,
     fallback_span: SourceSpan,
     errors: &mut Vec<TypeError>,
@@ -1021,7 +1027,7 @@ fn collect_forbidden_float_literals_in_field_default(
     }
 }
 
-fn collect_forbidden_float_literals_in_stmts(
+pub(super) fn collect_forbidden_float_literals_in_stmts(
     body: &Body,
     stmts: &[Idx<Stmt>],
     errors: &mut Vec<TypeError>,
@@ -1031,7 +1037,7 @@ fn collect_forbidden_float_literals_in_stmts(
     }
 }
 
-fn collect_forbidden_float_literals_in_stmt(
+pub(super) fn collect_forbidden_float_literals_in_stmt(
     body: &Body,
     stmt_id: Idx<Stmt>,
     errors: &mut Vec<TypeError>,
@@ -1126,7 +1132,7 @@ fn collect_forbidden_float_literals_in_stmt(
     }
 }
 
-fn collect_forbidden_float_literals_in_pattern(
+pub(super) fn collect_forbidden_float_literals_in_pattern(
     pattern: &Pattern,
     fallback_span: SourceSpan,
     errors: &mut Vec<TypeError>,
@@ -1151,7 +1157,7 @@ fn collect_forbidden_float_literals_in_pattern(
     }
 }
 
-fn collect_forbidden_float_literals_in_expr(
+pub(super) fn collect_forbidden_float_literals_in_expr(
     body: &Body,
     expr_id: Idx<Expr>,
     errors: &mut Vec<TypeError>,
@@ -1228,7 +1234,7 @@ fn collect_forbidden_float_literals_in_expr(
     }
 }
 
-fn validate_boundary_type_refs(module: &Module, errors: &mut Vec<TypeError>) {
+pub(super) fn validate_boundary_type_refs(module: &Module, errors: &mut Vec<TypeError>) {
     for (_idx, func) in module.functions.iter() {
         if func.visibility != Visibility::Public {
             continue;
@@ -1271,7 +1277,11 @@ fn validate_boundary_type_refs(module: &Module, errors: &mut Vec<TypeError>) {
     }
 }
 
-fn validate_value_classes(module: &Module, classes: &ClassIndex, errors: &mut Vec<TypeError>) {
+pub(super) fn validate_value_classes(
+    module: &Module,
+    classes: &ClassIndex,
+    errors: &mut Vec<TypeError>,
+) {
     for (_idx, class) in module.classes.iter() {
         if !matches!(class.role, ClassRole::Value) {
             continue;
@@ -1312,7 +1322,7 @@ fn validate_value_classes(module: &Module, classes: &ClassIndex, errors: &mut Ve
     }
 }
 
-fn supports_fixed_value_type(
+pub(super) fn supports_fixed_value_type(
     ty: &Type,
     classes: &ClassIndex,
     visiting: &mut HashSet<SmolStr>,
@@ -1365,7 +1375,7 @@ fn supports_fixed_value_type(
     }
 }
 
-fn validate_portable_lane_functions(
+pub(super) fn validate_portable_lane_functions(
     module: &Module,
     classes: &ClassIndex,
     enums: &EnumIndex,
@@ -1381,30 +1391,12 @@ fn validate_portable_lane_functions(
         if matches!(func.role, FunctionRole::Field | FunctionRole::Shape) {
             validate_field_boundary(func, errors);
             if matches!(func.role, FunctionRole::Field) {
-                validate_field_clause_types(
-                    func,
-                    classes,
-                    enums,
-                    interfaces,
-                    functions,
-                    errors,
-                );
+                validate_field_clause_types(func, classes, enums, interfaces, functions, errors);
                 validate_field_graph_wrapper_types(
-                    func,
-                    classes,
-                    enums,
-                    interfaces,
-                    functions,
-                    errors,
+                    func, classes, enums, interfaces, functions, errors,
                 );
                 validate_field_graph_exactness(
-                    func,
-                    &top_level,
-                    classes,
-                    enums,
-                    interfaces,
-                    functions,
-                    errors,
+                    func, &top_level, classes, enums, interfaces, functions, errors,
                 );
             }
         } else if matches!(func.role, FunctionRole::Radiance) {
@@ -1435,7 +1427,7 @@ fn validate_portable_lane_functions(
     }
 }
 
-fn validate_shape_declarations(
+pub(super) fn validate_shape_declarations(
     module: &Module,
     classes: &ClassIndex,
     enums: &EnumIndex,
@@ -1475,7 +1467,12 @@ fn validate_shape_declarations(
     let shape_graphs: HashMap<SmolStr, &ShapeGraph> = module
         .shapes
         .iter()
-        .filter_map(|(_, shape)| shape.graph.as_ref().map(|graph| (shape.name.clone(), graph)))
+        .filter_map(|(_, shape)| {
+            shape
+                .graph
+                .as_ref()
+                .map(|graph| (shape.name.clone(), graph))
+        })
         .collect();
     let top_level = portable_function_sets(module);
 
@@ -1504,7 +1501,7 @@ fn validate_shape_declarations(
     }
 }
 
-fn validate_shape_expr(
+pub(super) fn validate_shape_expr(
     expr: &ShapeExpr,
     shape: &Shape,
     shape_names: &HashSet<SmolStr>,
@@ -1668,20 +1665,13 @@ fn validate_shape_expr(
                 }
             }
             validate_shape_payload(
-                leaf,
-                shape,
-                top_level,
-                classes,
-                enums,
-                interfaces,
-                functions,
-                errors,
+                leaf, shape, top_level, classes, enums, interfaces, functions, errors,
             );
         }
     }
 }
 
-fn validate_region_domain_render_declarations(
+pub(super) fn validate_region_domain_render_declarations(
     module: &Module,
     classes: &ClassIndex,
     enums: &EnumIndex,
@@ -1710,7 +1700,7 @@ fn validate_region_domain_render_declarations(
     }
 }
 
-fn validate_region_declaration(
+pub(super) fn validate_region_declaration(
     func: &Function,
     shape_names: &HashSet<SmolStr>,
     _classes: &ClassIndex,
@@ -1767,7 +1757,7 @@ fn validate_region_declaration(
     }
 }
 
-fn validate_region_items(
+pub(super) fn validate_region_items(
     function: &SmolStr,
     items: &[RegionItemMetadata],
     shape_names: &HashSet<SmolStr>,
@@ -1803,9 +1793,7 @@ fn validate_region_items(
                 });
                 let _ = items;
             }
-            RegionItemMetadata::Conditional {
-                ..
-            } => {
+            RegionItemMetadata::Conditional { .. } => {
                 errors.push(TypeError::PortableConstructForbidden {
                     function: function.clone(),
                     construct: "a conditional region item".to_string(),
@@ -1817,7 +1805,7 @@ fn validate_region_items(
     }
 }
 
-fn validate_domain_declaration(
+pub(super) fn validate_domain_declaration(
     func: &Function,
     classes: &ClassIndex,
     enums: &EnumIndex,
@@ -1850,7 +1838,9 @@ fn validate_domain_declaration(
                     .and_then(|ty| ty.name_span)
                     .map(span_from_range)
                     .unwrap_or_else(|| span_from_option_range(func.name_span)),
-                help: "Domain declarations lower to `SceneDomain` so capture routing stays explicit.".to_string(),
+                help:
+                    "Domain declarations lower to `SceneDomain` so capture routing stays explicit."
+                        .to_string(),
             });
         }
     }
@@ -1872,7 +1862,11 @@ fn validate_domain_declaration(
             help: "Domain declarations use a leading `world` parameter to make capture specialization explicit.".to_string(),
         });
     }
-    let found = world.ty.as_ref().map(type_from_ref).unwrap_or(Type::Unknown);
+    let found = world
+        .ty
+        .as_ref()
+        .map(type_from_ref)
+        .unwrap_or(Type::Unknown);
     if found != portable_named_type("RegionCapture") {
         errors.push(TypeError::PortableBoundaryTypeForbidden {
             function: func.name.clone(),
@@ -1898,7 +1892,7 @@ fn validate_domain_declaration(
     validate_world_decl_body(func, classes, enums, interfaces, functions, errors);
 }
 
-fn validate_render_declaration(
+pub(super) fn validate_render_declaration(
     func: &Function,
     classes: &ClassIndex,
     enums: &EnumIndex,
@@ -1982,7 +1976,11 @@ fn validate_render_declaration(
             ),
         });
     }
-    let found = world.ty.as_ref().map(type_from_ref).unwrap_or(Type::Unknown);
+    let found = world
+        .ty
+        .as_ref()
+        .map(type_from_ref)
+        .unwrap_or(Type::Unknown);
     if found != portable_named_type("RegionCapture") {
         errors.push(TypeError::PortableBoundaryTypeForbidden {
             function: func.name.clone(),
@@ -2012,7 +2010,11 @@ fn validate_render_declaration(
             ),
         });
     }
-    let found = camera.ty.as_ref().map(type_from_ref).unwrap_or(Type::Unknown);
+    let found = camera
+        .ty
+        .as_ref()
+        .map(type_from_ref)
+        .unwrap_or(Type::Unknown);
     if found != portable_named_type("Camera") {
         errors.push(TypeError::PortableBoundaryTypeForbidden {
             function: func.name.clone(),
@@ -2041,7 +2043,7 @@ fn validate_render_declaration(
     validate_world_decl_body(func, classes, enums, interfaces, functions, errors);
 }
 
-fn validate_world_decl_body(
+pub(super) fn validate_world_decl_body(
     func: &Function,
     _classes: &ClassIndex,
     _enums: &EnumIndex,
@@ -2184,7 +2186,7 @@ fn validate_world_decl_body(
     }
 }
 
-fn matches_world_geometry_detail_expr(expr: &Expr) -> bool {
+pub(super) fn matches_world_geometry_detail_expr(expr: &Expr) -> bool {
     matches!(
         expr,
         Expr::Variable(name) if matches!(name.as_str(), "coarse" | "fine")
@@ -2194,7 +2196,7 @@ fn matches_world_geometry_detail_expr(expr: &Expr) -> bool {
     )
 }
 
-fn validate_semantic_world_params<'a, I>(
+pub(super) fn validate_semantic_world_params<'a, I>(
     func: &Function,
     kind: &'static str,
     params: I,
@@ -2230,7 +2232,7 @@ fn validate_semantic_world_params<'a, I>(
     }
 }
 
-fn supports_semantic_world_boundary_type(
+pub(super) fn supports_semantic_world_boundary_type(
     ty: &Type,
     classes: &ClassIndex,
     enums: &EnumIndex,
@@ -2246,19 +2248,19 @@ fn supports_semantic_world_boundary_type(
         || matches!(ty, Type::Named(name, _) if enums.get(name).is_some())
 }
 
-fn is_capture_boundary_type(ty: &Type) -> bool {
+pub(super) fn is_capture_boundary_type(ty: &Type) -> bool {
     matches!(ty, Type::Named(name, args) if name.as_str() == "RegionCapture" && args.is_empty())
 }
 
-fn is_detail_tier_boundary_type(ty: &Type) -> bool {
+pub(super) fn is_detail_tier_boundary_type(ty: &Type) -> bool {
     matches!(ty, Type::Named(name, args) if name.as_str() == "DetailTier" && args.is_empty())
 }
 
-fn is_scene_domain_boundary_type(ty: &Type) -> bool {
+pub(super) fn is_scene_domain_boundary_type(ty: &Type) -> bool {
     matches!(ty, Type::Named(name, args) if name.as_str() == "SceneDomain" && args.is_empty())
 }
 
-fn validate_shape_payload(
+pub(super) fn validate_shape_payload(
     leaf: &ShapeLeaf,
     shape: &Shape,
     top_level: &PortableFunctionSets,
@@ -2293,16 +2295,7 @@ fn validate_shape_payload(
     ctx.set_function_name(shape.name.clone());
     ctx.enter_scope();
     let found = infer_expr(
-        body,
-        value_expr,
-        &mut ctx,
-        classes,
-        enums,
-        interfaces,
-        functions,
-        errors,
-        false,
-        false,
+        body, value_expr, &mut ctx, classes, enums, interfaces, functions, errors, false, false,
         false,
     );
     if found != portable_named_type("Payload") {
@@ -2316,7 +2309,7 @@ fn validate_shape_payload(
     ctx.exit_scope();
 }
 
-fn shape_payload_value_expr(body: &Body) -> Option<Idx<Expr>> {
+pub(super) fn shape_payload_value_expr(body: &Body) -> Option<Idx<Expr>> {
     let stmt = *body.root_stmts.last()?;
     match &body.stmts[stmt] {
         Stmt::Expr(expr) => Some(*expr),
@@ -2325,7 +2318,7 @@ fn shape_payload_value_expr(body: &Body) -> Option<Idx<Expr>> {
     }
 }
 
-struct PortableFunctionSets {
+pub(super) struct PortableFunctionSets {
     all: HashSet<SmolStr>,
     portable: HashSet<SmolStr>,
     pure_helpers: HashSet<SmolStr>,
@@ -2337,7 +2330,7 @@ struct PortableFunctionSets {
     field_classes: HashMap<SmolStr, FieldClass>,
 }
 
-fn portable_function_sets(module: &Module) -> PortableFunctionSets {
+pub(super) fn portable_function_sets(module: &Module) -> PortableFunctionSets {
     let mut method_ids = HashSet::new();
     for (_idx, class) in module.classes.iter() {
         for method_id in &class.methods {
@@ -2400,7 +2393,7 @@ fn portable_function_sets(module: &Module) -> PortableFunctionSets {
     }
 }
 
-fn validate_field_boundary(func: &Function, errors: &mut Vec<TypeError>) {
+pub(super) fn validate_field_boundary(func: &Function, errors: &mut Vec<TypeError>) {
     if func.params.len() != 1 {
         errors.push(TypeError::PortableConstructForbidden {
             function: func.name.clone(),
@@ -2459,7 +2452,7 @@ fn validate_field_boundary(func: &Function, errors: &mut Vec<TypeError>) {
     }
 }
 
-fn validate_field_graph_exactness(
+pub(super) fn validate_field_graph_exactness(
     func: &Function,
     top_level: &PortableFunctionSets,
     classes: &ClassIndex,
@@ -2496,7 +2489,7 @@ fn validate_field_graph_exactness(
     validate_field_authored_support_contract(func, graph, errors);
 }
 
-fn validate_field_graph_wrapper_types(
+pub(super) fn validate_field_graph_wrapper_types(
     func: &Function,
     classes: &ClassIndex,
     enums: &EnumIndex,
@@ -2518,7 +2511,7 @@ fn validate_field_graph_wrapper_types(
     );
 }
 
-fn validate_field_clause_types(
+pub(super) fn validate_field_clause_types(
     func: &Function,
     classes: &ClassIndex,
     enums: &EnumIndex,
@@ -2553,7 +2546,7 @@ fn validate_field_clause_types(
     }
 }
 
-fn validate_field_wrapper_expr_types(
+pub(super) fn validate_field_wrapper_expr_types(
     expr: &FieldExpr,
     func: &Function,
     classes: &ClassIndex,
@@ -2572,7 +2565,9 @@ fn validate_field_wrapper_expr_types(
             }
         }
         FieldExpr::Subtract { left, right } => {
-            validate_field_wrapper_expr_types(left, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                left, func, classes, enums, interfaces, functions, errors,
+            );
             validate_field_wrapper_expr_types(
                 right, func, classes, enums, interfaces, functions, errors,
             );
@@ -2589,7 +2584,9 @@ fn validate_field_wrapper_expr_types(
                 functions,
                 errors,
             );
-            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                body, func, classes, enums, interfaces, functions, errors,
+            );
         }
         FieldExpr::Rotate { rotate, body } => {
             validate_field_wrapper_operand_type(
@@ -2603,7 +2600,9 @@ fn validate_field_wrapper_expr_types(
                 functions,
                 errors,
             );
-            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                body, func, classes, enums, interfaces, functions, errors,
+            );
         }
         FieldExpr::UniformScale { scale, body } => {
             validate_field_wrapper_operand_type(
@@ -2617,7 +2616,9 @@ fn validate_field_wrapper_expr_types(
                 functions,
                 errors,
             );
-            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                body, func, classes, enums, interfaces, functions, errors,
+            );
         }
         FieldExpr::AffineTransform { transform, body } => {
             validate_field_wrapper_operand_type(
@@ -2631,7 +2632,9 @@ fn validate_field_wrapper_expr_types(
                 functions,
                 errors,
             );
-            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                body, func, classes, enums, interfaces, functions, errors,
+            );
         }
         FieldExpr::Warp { warp, body } => {
             validate_field_wrapper_operand_type(
@@ -2645,7 +2648,9 @@ fn validate_field_wrapper_expr_types(
                 functions,
                 errors,
             );
-            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                body, func, classes, enums, interfaces, functions, errors,
+            );
         }
         FieldExpr::RepeatLinear { repeat, body } => {
             validate_field_wrapper_operand_type(
@@ -2659,7 +2664,9 @@ fn validate_field_wrapper_expr_types(
                 functions,
                 errors,
             );
-            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                body, func, classes, enums, interfaces, functions, errors,
+            );
         }
         FieldExpr::RepeatGrid { repeat, body } => {
             validate_field_wrapper_operand_type(
@@ -2673,7 +2680,9 @@ fn validate_field_wrapper_expr_types(
                 functions,
                 errors,
             );
-            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                body, func, classes, enums, interfaces, functions, errors,
+            );
         }
         FieldExpr::RadialRepeat { radial, body } => {
             validate_field_wrapper_operand_type(
@@ -2687,7 +2696,9 @@ fn validate_field_wrapper_expr_types(
                 functions,
                 errors,
             );
-            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                body, func, classes, enums, interfaces, functions, errors,
+            );
         }
         FieldExpr::MirrorArray { mirror, body } => {
             validate_field_wrapper_operand_type(
@@ -2701,7 +2712,9 @@ fn validate_field_wrapper_expr_types(
                 functions,
                 errors,
             );
-            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                body, func, classes, enums, interfaces, functions, errors,
+            );
         }
         FieldExpr::InstanceArray { instance, body } => {
             validate_field_wrapper_operand_type(
@@ -2715,7 +2728,9 @@ fn validate_field_wrapper_expr_types(
                 functions,
                 errors,
             );
-            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                body, func, classes, enums, interfaces, functions, errors,
+            );
         }
         FieldExpr::Bend { bend, body } => {
             validate_field_wrapper_operand_type(
@@ -2729,7 +2744,9 @@ fn validate_field_wrapper_expr_types(
                 functions,
                 errors,
             );
-            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                body, func, classes, enums, interfaces, functions, errors,
+            );
         }
         FieldExpr::Twist { twist: bend, body } => {
             validate_field_wrapper_operand_type(
@@ -2743,7 +2760,9 @@ fn validate_field_wrapper_expr_types(
                 functions,
                 errors,
             );
-            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                body, func, classes, enums, interfaces, functions, errors,
+            );
         }
         FieldExpr::Taper { taper, body } => {
             validate_field_wrapper_operand_type(
@@ -2757,7 +2776,9 @@ fn validate_field_wrapper_expr_types(
                 functions,
                 errors,
             );
-            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                body, func, classes, enums, interfaces, functions, errors,
+            );
         }
         FieldExpr::Displace { displace, body } => {
             validate_field_wrapper_operand_type(
@@ -2771,7 +2792,9 @@ fn validate_field_wrapper_expr_types(
                 functions,
                 errors,
             );
-            validate_field_wrapper_expr_types(body, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                body, func, classes, enums, interfaces, functions, errors,
+            );
         }
         FieldExpr::Extrude { height, .. } => {
             validate_field_wrapper_operand_type(
@@ -2813,7 +2836,8 @@ fn validate_field_wrapper_expr_types(
                 errors,
             );
         }
-        FieldExpr::SmoothUnion { smoothing, items } | FieldExpr::SmoothIntersection { smoothing, items } => {
+        FieldExpr::SmoothUnion { smoothing, items }
+        | FieldExpr::SmoothIntersection { smoothing, items } => {
             validate_field_wrapper_operand_type(
                 if matches!(expr, FieldExpr::SmoothUnion { .. }) {
                     "smooth_union"
@@ -2830,7 +2854,9 @@ fn validate_field_wrapper_expr_types(
                 errors,
             );
             for item in items {
-                validate_field_wrapper_expr_types(item, func, classes, enums, interfaces, functions, errors);
+                validate_field_wrapper_expr_types(
+                    item, func, classes, enums, interfaces, functions, errors,
+                );
             }
         }
         FieldExpr::SmoothSubtract {
@@ -2849,13 +2875,17 @@ fn validate_field_wrapper_expr_types(
                 functions,
                 errors,
             );
-            validate_field_wrapper_expr_types(left, func, classes, enums, interfaces, functions, errors);
-            validate_field_wrapper_expr_types(right, func, classes, enums, interfaces, functions, errors);
+            validate_field_wrapper_expr_types(
+                left, func, classes, enums, interfaces, functions, errors,
+            );
+            validate_field_wrapper_expr_types(
+                right, func, classes, enums, interfaces, functions, errors,
+            );
         }
     }
 }
 
-fn infer_field_wrapper_body_type(
+pub(super) fn infer_field_wrapper_body_type(
     body: &Body,
     func: &Function,
     classes: &ClassIndex,
@@ -2890,7 +2920,7 @@ fn infer_field_wrapper_body_type(
     Some((value_expr, found))
 }
 
-fn field_wrapper_value_expr(body: &Body) -> Option<Idx<Expr>> {
+pub(super) fn field_wrapper_value_expr(body: &Body) -> Option<Idx<Expr>> {
     let stmt = *body.root_stmts.last()?;
     match &body.stmts[stmt] {
         Stmt::Expr(expr) => Some(*expr),
@@ -2904,9 +2934,14 @@ pub fn classify_wrapper_operand_constant(body: &Body) -> Option<WrapperOperandCo
     classify_wrapper_operand_expr(body, expr)
 }
 
-fn classify_wrapper_operand_expr(body: &Body, expr_id: Idx<Expr>) -> Option<WrapperOperandConstant> {
+pub(super) fn classify_wrapper_operand_expr(
+    body: &Body,
+    expr_id: Idx<Expr>,
+) -> Option<WrapperOperandConstant> {
     match &body.exprs[expr_id] {
-        Expr::Literal(Literal::Integer(value)) => Some(WrapperOperandConstant::Scalar(*value as f64)),
+        Expr::Literal(Literal::Integer(value)) => {
+            Some(WrapperOperandConstant::Scalar(*value as f64))
+        }
         Expr::Literal(Literal::Float(value)) => Some(WrapperOperandConstant::Scalar(*value)),
         Expr::Unary {
             op: UnaryOp::Neg,
@@ -2987,9 +3022,7 @@ fn classify_wrapper_operand_expr(body: &Body, expr_id: Idx<Expr>) -> Option<Wrap
                             Some(WrapperOperandConstant::Scalar(value.abs()))
                         }
                         WrapperOperandConstant::Vec3([x, y, z]) => Some(
-                            WrapperOperandConstant::Scalar(
-                                (x * x + y * y + z * z).sqrt(),
-                            ),
+                            WrapperOperandConstant::Scalar((x * x + y * y + z * z).sqrt()),
                         ),
                     }
                 }
@@ -3057,9 +3090,7 @@ fn classify_wrapper_operand_expr(body: &Body, expr_id: Idx<Expr>) -> Option<Wrap
                         (
                             WrapperOperandConstant::Vec3([lx, ly, lz]),
                             WrapperOperandConstant::Vec3([rx, ry, rz]),
-                        ) => Some(WrapperOperandConstant::Scalar(
-                            lx * rx + ly * ry + lz * rz,
-                        )),
+                        ) => Some(WrapperOperandConstant::Scalar(lx * rx + ly * ry + lz * rz)),
                         _ => None,
                     }
                 }
@@ -3118,7 +3149,7 @@ fn classify_wrapper_operand_expr(body: &Body, expr_id: Idx<Expr>) -> Option<Wrap
     }
 }
 
-fn field_wrapper_label(expr: &FieldExpr) -> &'static str {
+pub(super) fn field_wrapper_label(expr: &FieldExpr) -> &'static str {
     match expr {
         FieldExpr::Translate { .. } => "translate",
         FieldExpr::Rotate { .. } => "rotate",
@@ -3150,7 +3181,7 @@ fn field_wrapper_label(expr: &FieldExpr) -> &'static str {
     }
 }
 
-fn validate_field_wrapper_operand_type(
+pub(super) fn validate_field_wrapper_operand_type(
     node: &'static str,
     expected: Type,
     body: &Body,
@@ -3175,7 +3206,7 @@ fn validate_field_wrapper_operand_type(
     }
 }
 
-fn field_exact_point_independent_vec3(
+pub(super) fn field_exact_point_independent_vec3(
     node: &'static str,
     operand: &Body,
     body: &FieldExpr,
@@ -3190,7 +3221,11 @@ fn field_exact_point_independent_vec3(
     if point_param.is_some_and(|name| body_references_variable(operand, name)) {
         return Err(exactness_violation(
             node,
-            format!("{} operand references sample point '{}'", node, point_param.expect("point param")),
+            format!(
+                "{} operand references sample point '{}'",
+                node,
+                point_param.expect("point param")
+            ),
             format!(
                 "Exact `{node}` fields must be point-independent. Use a semantically constant Vec3 operand or downgrade the field to conservative handling."
             ),
@@ -3202,7 +3237,9 @@ fn field_exact_point_independent_vec3(
         return Err(exactness_violation(
             node,
             format!("unable to infer the {node} operand type"),
-            format!("Exact `{node}` fields must use a Vec3 operand so the compiler can classify exactness."),
+            format!(
+                "Exact `{node}` fields must use a Vec3 operand so the compiler can classify exactness."
+            ),
         ));
     };
     if ty != Type::Vec3 {
@@ -3227,13 +3264,17 @@ fn field_exact_point_independent_vec3(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct FieldExactnessViolation {
+pub(super) struct FieldExactnessViolation {
     node: String,
     detail: String,
     help: String,
 }
 
-fn exactness_violation(node: &str, detail: impl Into<String>, help: impl Into<String>) -> FieldExactnessViolation {
+pub(super) fn exactness_violation(
+    node: &str,
+    detail: impl Into<String>,
+    help: impl Into<String>,
+) -> FieldExactnessViolation {
     FieldExactnessViolation {
         node: node.to_string(),
         detail: detail.into(),
@@ -3241,7 +3282,7 @@ fn exactness_violation(node: &str, detail: impl Into<String>, help: impl Into<St
     }
 }
 
-fn field_exactness_capability(
+pub(super) fn field_exactness_capability(
     expr: &FieldExpr,
     func: &Function,
     top_level: &PortableFunctionSets,
@@ -3300,20 +3341,18 @@ fn field_exactness_capability(
             "boolean subtraction is conservative-only in this phase",
             "Subtract composition is still conservative and does not prove exactness yet.",
         )),
-        FieldExpr::Translate { translate, body } => {
-            field_exact_point_independent_vec3(
-                "translate",
-                translate,
-                body,
-                point_param,
-                func,
-                top_level,
-                classes,
-                enums,
-                interfaces,
-                functions,
-            )
-        }
+        FieldExpr::Translate { translate, body } => field_exact_point_independent_vec3(
+            "translate",
+            translate,
+            body,
+            point_param,
+            func,
+            top_level,
+            classes,
+            enums,
+            interfaces,
+            functions,
+        ),
         FieldExpr::Rotate { rotate, body } => field_exact_point_independent_vec3(
             "rotate",
             rotate,
@@ -3353,13 +3392,7 @@ fn field_exactness_capability(
             match classify_wrapper_operand_constant(scale) {
                 Some(WrapperOperandConstant::Scalar(value)) if value > 0.0 => {
                     field_exactness_capability(
-                        body,
-                        func,
-                        top_level,
-                        classes,
-                        enums,
-                        interfaces,
-                        functions,
+                        body, func, top_level, classes, enums, interfaces, functions,
                     )
                 }
                 Some(WrapperOperandConstant::Scalar(value)) => Err(exactness_violation(
@@ -3474,13 +3507,13 @@ fn field_exactness_capability(
     }
 }
 
-fn body_references_variable(body: &Body, name: &SmolStr) -> bool {
+pub(super) fn body_references_variable(body: &Body, name: &SmolStr) -> bool {
     body.exprs
         .iter()
         .any(|(_, expr)| matches!(expr, Expr::Variable(found) if found == name))
 }
 
-fn validate_field_authored_support_contract(
+pub(super) fn validate_field_authored_support_contract(
     func: &Function,
     graph: &FieldGraph,
     errors: &mut Vec<TypeError>,
@@ -3492,8 +3525,7 @@ fn validate_field_authored_support_contract(
         return;
     };
     let support_cause = field_support_conflict_source(&graph.root);
-    if graph.trace.support != FieldSupport::Unknown && explicit_support != graph.trace.support
-    {
+    if graph.trace.support != FieldSupport::Unknown && explicit_support != graph.trace.support {
         errors.push(TypeError::FieldClauseConflict {
             field: func.name.clone(),
             clause: "support",
@@ -3509,8 +3541,7 @@ fn validate_field_authored_support_contract(
             },
         });
     }
-    if graph.trace.bounds != FieldBounds::Unknown && explicit_bounds != graph.trace.bounds
-    {
+    if graph.trace.bounds != FieldBounds::Unknown && explicit_bounds != graph.trace.bounds {
         errors.push(TypeError::FieldClauseConflict {
             field: func.name.clone(),
             clause: "bounds",
@@ -3528,7 +3559,9 @@ fn validate_field_authored_support_contract(
     }
 }
 
-fn authored_field_clause_metadata(field: &FieldMetadata) -> Option<(FieldSupport, FieldBounds)> {
+pub(super) fn authored_field_clause_metadata(
+    field: &FieldMetadata,
+) -> Option<(FieldSupport, FieldBounds)> {
     if field.authored_support.is_some() || field.authored_bounds.is_some() {
         Some((FieldSupport::Bounded, FieldBounds::Bounded))
     } else {
@@ -3536,17 +3569,18 @@ fn authored_field_clause_metadata(field: &FieldMetadata) -> Option<(FieldSupport
     }
 }
 
-fn field_support_conflict_source(expr: &FieldExpr) -> Option<String> {
+pub(super) fn field_support_conflict_source(expr: &FieldExpr) -> Option<String> {
     match expr {
         FieldExpr::Use { target } => Some(format!("field reference '{target}'")),
         FieldExpr::Primitive { primitive, .. } => {
             Some(format!("primitive '{}'", field_primitive_name(*primitive)))
         }
-        FieldExpr::Union { items } | FieldExpr::Intersection { items } => items
-            .iter()
-            .find_map(field_support_conflict_source),
-        FieldExpr::Subtract { left, right } => field_support_conflict_source(left)
-            .or_else(|| field_support_conflict_source(right)),
+        FieldExpr::Union { items } | FieldExpr::Intersection { items } => {
+            items.iter().find_map(field_support_conflict_source)
+        }
+        FieldExpr::Subtract { left, right } => {
+            field_support_conflict_source(left).or_else(|| field_support_conflict_source(right))
+        }
         FieldExpr::Translate { body, .. }
         | FieldExpr::Rotate { body, .. }
         | FieldExpr::UniformScale { body, .. }
@@ -3566,12 +3600,10 @@ fn field_support_conflict_source(expr: &FieldExpr) -> Option<String> {
         | FieldExpr::Revolve { .. }
         | FieldExpr::Sweep { .. }
         | FieldExpr::Loft { .. } => Some(format!("operator '{}'", field_wrapper_label(expr))),
-        FieldExpr::SmoothUnion { items, .. } | FieldExpr::SmoothIntersection { items, .. } => {
-            items
-                .iter()
-                .find_map(field_support_conflict_source)
-                .or_else(|| Some(format!("operator '{}'", field_wrapper_label(expr))))
-        }
+        FieldExpr::SmoothUnion { items, .. } | FieldExpr::SmoothIntersection { items, .. } => items
+            .iter()
+            .find_map(field_support_conflict_source)
+            .or_else(|| Some(format!("operator '{}'", field_wrapper_label(expr)))),
         FieldExpr::SmoothSubtract { left, right, .. } => field_support_conflict_source(left)
             .or_else(|| field_support_conflict_source(right))
             .or_else(|| Some("operator 'smooth_subtract'".to_string())),
@@ -3579,7 +3611,7 @@ fn field_support_conflict_source(expr: &FieldExpr) -> Option<String> {
     }
 }
 
-fn field_primitive_name(primitive: FieldPrimitive) -> &'static str {
+pub(super) fn field_primitive_name(primitive: FieldPrimitive) -> &'static str {
     match primitive {
         FieldPrimitive::Sphere => "sphere",
         FieldPrimitive::Box => "box",
@@ -3598,7 +3630,7 @@ fn field_primitive_name(primitive: FieldPrimitive) -> &'static str {
     }
 }
 
-fn field_primitive_exactness(primitive: FieldPrimitive) -> FieldClass {
+pub(super) fn field_primitive_exactness(primitive: FieldPrimitive) -> FieldClass {
     match primitive {
         FieldPrimitive::Ellipsoid => FieldClass::Conservative,
         FieldPrimitive::Sphere
@@ -3617,7 +3649,7 @@ fn field_primitive_exactness(primitive: FieldPrimitive) -> FieldClass {
     }
 }
 
-fn field_support_name(support: FieldSupport) -> String {
+pub(super) fn field_support_name(support: FieldSupport) -> String {
     match support {
         FieldSupport::Unknown => "Unknown".to_string(),
         FieldSupport::Bounded => "Bounded".to_string(),
@@ -3626,7 +3658,7 @@ fn field_support_name(support: FieldSupport) -> String {
     }
 }
 
-fn field_bounds_name(bounds: FieldBounds) -> String {
+pub(super) fn field_bounds_name(bounds: FieldBounds) -> String {
     match bounds {
         FieldBounds::Unknown => "Unknown".to_string(),
         FieldBounds::Bounded => "Bounded".to_string(),
@@ -3634,7 +3666,7 @@ fn field_bounds_name(bounds: FieldBounds) -> String {
     }
 }
 
-fn validate_field_clause_type(
+pub(super) fn validate_field_clause_type(
     field: &SmolStr,
     clause: &'static str,
     expected: &'static str,
@@ -3674,7 +3706,7 @@ pub(crate) fn validate_bounds_clause_type(
     validate_field_clause_type(field, "bounds", "Bounds3", found, span)
 }
 
-fn validate_material_boundary(func: &Function, errors: &mut Vec<TypeError>) {
+pub(super) fn validate_material_boundary(func: &Function, errors: &mut Vec<TypeError>) {
     if func.params.len() != 1 {
         errors.push(TypeError::PortableConstructForbidden {
             function: func.name.clone(),
@@ -3735,7 +3767,7 @@ fn validate_material_boundary(func: &Function, errors: &mut Vec<TypeError>) {
     }
 }
 
-fn validate_radiance_boundary(func: &Function, errors: &mut Vec<TypeError>) {
+pub(super) fn validate_radiance_boundary(func: &Function, errors: &mut Vec<TypeError>) {
     if func.params.is_empty() || func.params.len() > 3 {
         errors.push(TypeError::PortableConstructForbidden {
             function: func.name.clone(),
@@ -3828,7 +3860,7 @@ fn validate_radiance_boundary(func: &Function, errors: &mut Vec<TypeError>) {
     }
 }
 
-fn validate_volume_boundary(func: &Function, errors: &mut Vec<TypeError>) {
+pub(super) fn validate_volume_boundary(func: &Function, errors: &mut Vec<TypeError>) {
     if func.params.is_empty() || func.params.len() > 2 {
         errors.push(TypeError::PortableConstructForbidden {
             function: func.name.clone(),
@@ -3900,7 +3932,7 @@ fn validate_volume_boundary(func: &Function, errors: &mut Vec<TypeError>) {
     }
 }
 
-fn validate_portable_function_boundary(
+pub(super) fn validate_portable_function_boundary(
     func: &Function,
     classes: &ClassIndex,
     errors: &mut Vec<TypeError>,
@@ -3959,7 +3991,7 @@ fn validate_portable_function_boundary(
     }
 }
 
-fn validate_pure_function_boundary(
+pub(super) fn validate_pure_function_boundary(
     func: &Function,
     classes: &ClassIndex,
     errors: &mut Vec<TypeError>,
@@ -4018,7 +4050,7 @@ fn validate_pure_function_boundary(
     }
 }
 
-fn supports_portable_boundary_type(
+pub(super) fn supports_portable_boundary_type(
     ty: &Type,
     classes: &ClassIndex,
     visiting: &mut HashSet<SmolStr>,
@@ -4039,12 +4071,7 @@ fn supports_portable_boundary_type(
         | Type::Texture2D
         | Type::Sampler
         | Type::Param(_) => false,
-        Type::Never
-        | Type::Boolean
-        | Type::I32
-        | Type::U32
-        | Type::F32
-        | Type::Nil => true,
+        Type::Never | Type::Boolean | Type::I32 | Type::U32 | Type::F32 | Type::Nil => true,
         Type::I64 | Type::U64 => false,
         Type::Vec2 | Type::Vec3 | Type::Vec4 | Type::Mat3 | Type::Mat4 | Type::Quat => true,
         Type::GpuBuffer(inner) => supports_portable_boundary_type(inner, classes, visiting),
@@ -4076,7 +4103,7 @@ fn supports_portable_boundary_type(
     }
 }
 
-fn supports_pure_helper_boundary_type(
+pub(super) fn supports_pure_helper_boundary_type(
     ty: &Type,
     classes: &ClassIndex,
     visiting: &mut HashSet<SmolStr>,
@@ -4100,12 +4127,7 @@ fn supports_pure_helper_boundary_type(
         | Type::Texture2D
         | Type::Sampler
         | Type::Param(_) => false,
-        Type::Never
-        | Type::Boolean
-        | Type::I32
-        | Type::U32
-        | Type::F32
-        | Type::Nil => true,
+        Type::Never | Type::Boolean | Type::I32 | Type::U32 | Type::F32 | Type::Nil => true,
         Type::I64 | Type::U64 => false,
         Type::Vec2 | Type::Vec3 | Type::Vec4 | Type::Mat3 | Type::Mat4 | Type::Quat => true,
         Type::Array(inner, len) => {
@@ -4147,7 +4169,7 @@ fn supports_pure_helper_boundary_type(
     }
 }
 
-fn validate_portable_block(
+pub(super) fn validate_portable_block(
     body: &Body,
     stmts: &[Idx<Stmt>],
     function: &SmolStr,
@@ -4478,7 +4500,7 @@ fn validate_portable_block(
     }
 }
 
-fn validate_portable_expr(
+pub(super) fn validate_portable_expr(
     body: &Body,
     expr_id: Idx<Expr>,
     function: &SmolStr,
@@ -4751,7 +4773,7 @@ fn validate_portable_expr(
     }
 }
 
-fn validate_portable_call(
+pub(super) fn validate_portable_call(
     body: &Body,
     expr_id: Idx<Expr>,
     callee: &Idx<Expr>,
@@ -4927,7 +4949,8 @@ fn validate_portable_call(
                     });
                     return;
                 }
-                if functions.radiances.contains(name) || functions.field_classes.contains_key(name) {
+                if functions.radiances.contains(name) || functions.field_classes.contains_key(name)
+                {
                     return;
                 }
                 if functions.pure_helpers.contains(name) {
@@ -5032,7 +5055,11 @@ fn validate_portable_call(
     }
 }
 
-fn portable_member_object_type(body: &Body, expr_id: Idx<Expr>, classes: &ClassIndex) -> Type {
+pub(super) fn portable_member_object_type(
+    body: &Body,
+    expr_id: Idx<Expr>,
+    classes: &ClassIndex,
+) -> Type {
     match &body.exprs[expr_id] {
         Expr::Variable(_) => Type::Unknown,
         Expr::Member { object, member, .. } => {
@@ -5063,7 +5090,7 @@ fn portable_member_object_type(body: &Body, expr_id: Idx<Expr>, classes: &ClassI
     }
 }
 
-fn portable_unary_rejection(op: UnaryOp) -> Option<(&'static str, &'static str)> {
+pub(super) fn portable_unary_rejection(op: UnaryOp) -> Option<(&'static str, &'static str)> {
     match op {
         UnaryOp::Await => Some((
             "`await`",
@@ -5089,7 +5116,7 @@ fn portable_unary_rejection(op: UnaryOp) -> Option<(&'static str, &'static str)>
     }
 }
 
-fn is_portable_safe_builtin_call(name: &str) -> bool {
+pub(super) fn is_portable_safe_builtin_call(name: &str) -> bool {
     matches!(
         name,
         "vec2"
@@ -5201,15 +5228,15 @@ fn is_portable_safe_builtin_call(name: &str) -> bool {
     )
 }
 
-fn is_pure_helper_safe_builtin_call(name: &str) -> bool {
+pub(super) fn is_pure_helper_safe_builtin_call(name: &str) -> bool {
     is_field_safe_builtin_call(name) && !is_field_composition_builtin_call(name)
 }
 
-fn is_portable_64_bit_builtin_call(name: &str) -> bool {
+pub(super) fn is_portable_64_bit_builtin_call(name: &str) -> bool {
     matches!(name, "i64" | "u64")
 }
 
-fn is_field_safe_builtin_call(name: &str) -> bool {
+pub(super) fn is_field_safe_builtin_call(name: &str) -> bool {
     matches!(
         name,
         "vec2"
@@ -5308,7 +5335,7 @@ fn is_field_safe_builtin_call(name: &str) -> bool {
     )
 }
 
-fn is_host_only_builtin_call(name: &str) -> bool {
+pub(super) fn is_host_only_builtin_call(name: &str) -> bool {
     name.starts_with("__wr_")
         || matches!(
             name,
@@ -5334,7 +5361,7 @@ fn is_host_only_builtin_call(name: &str) -> bool {
         )
 }
 
-fn is_kernel_query_builtin_call(name: &str) -> bool {
+pub(super) fn is_kernel_query_builtin_call(name: &str) -> bool {
     matches!(
         name,
         "capture"
@@ -5364,7 +5391,7 @@ fn is_kernel_query_builtin_call(name: &str) -> bool {
     )
 }
 
-fn is_field_composition_builtin_call(name: &str) -> bool {
+pub(super) fn is_field_composition_builtin_call(name: &str) -> bool {
     matches!(
         name,
         "field_union"
@@ -5390,7 +5417,7 @@ fn is_field_composition_builtin_call(name: &str) -> bool {
     )
 }
 
-fn field_builtin_exactness(name: &str) -> Option<FieldClass> {
+pub(super) fn field_builtin_exactness(name: &str) -> Option<FieldClass> {
     match name {
         "field_translate_point"
         | "field_rotate_point"
@@ -5418,7 +5445,7 @@ fn field_builtin_exactness(name: &str) -> Option<FieldClass> {
     }
 }
 
-fn collect_boundary_missing_type_args(ty: &TypeRef, errors: &mut Vec<TypeError>) {
+pub(super) fn collect_boundary_missing_type_args(ty: &TypeRef, errors: &mut Vec<TypeError>) {
     if is_boundary_generic_name(ty.name.as_str()) && ty.args.is_empty() {
         errors.push(TypeError::BoundaryMissingTypeArgs {
             name: ty.name.clone(),
@@ -5430,6 +5457,6 @@ fn collect_boundary_missing_type_args(ty: &TypeRef, errors: &mut Vec<TypeError>)
     }
 }
 
-fn is_boundary_generic_name(name: &str) -> bool {
+pub(super) fn is_boundary_generic_name(name: &str) -> bool {
     matches!(name, "List" | "Map" | "Result" | "Actor" | "Pending")
 }

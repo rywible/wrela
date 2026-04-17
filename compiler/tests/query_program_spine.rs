@@ -147,6 +147,8 @@ fn presentation_projection_is_deterministic_and_exposes_shared_artifact_reuse() 
             "shade_primary",
             "motion_resolve",
             "temporal_resolve",
+            "export_attachment",
+            "shared_acceleration",
         ]
     );
     assert!(projection.spine.semantic_artifacts.iter().any(|artifact| {
@@ -279,6 +281,7 @@ fn collision_projection_is_deterministic_and_exposes_policy_and_store_loads() {
             "build_broadphase_candidates",
             "sweep_sphere_first_contact",
             "materialize_output",
+            "shared_acceleration",
         ]
     );
     assert!(projection.spine.nodes.iter().any(|node| {
@@ -498,17 +501,17 @@ fn shared_spine_report_proves_dependency_and_lifetime_analysis_for_presentation(
 }
 
 #[test]
-fn shared_spine_policy_summary_flags_illegal_collision_backends() {
+fn shared_spine_policy_summary_flags_illegal_exact_oracle_backends_and_accepts_transition_wgsl() {
     let exact_projection = project_collision_plan(&CollisionPlan::for_query_with_backend(
         CollisionQueryKind::PointOccupancyWorld,
         DispatchBackend::Wgsl,
     ));
     let exact_report = shared_spine_report(&exact_projection);
-    let unsupported_projection = project_collision_plan(&CollisionPlan::for_query_with_backend(
+    let transition_projection = project_collision_plan(&CollisionPlan::for_query_with_backend(
         CollisionQueryKind::SphereSweepTransition,
         DispatchBackend::Wgsl,
     ));
-    let unsupported_report = shared_spine_report(&unsupported_projection);
+    let transition_report = shared_spine_report(&transition_projection);
 
     assert_eq!(exact_report.observer_kind, ObserverKind::Collision);
     assert_eq!(exact_report.execution_owner, "CollisionPlan");
@@ -525,17 +528,9 @@ fn shared_spine_policy_summary_flags_illegal_collision_backends() {
             })
     );
     assert!(exact_report.backend.dispatch_observable);
-    assert_eq!(
-        unsupported_report.policy.status,
-        SpineAnalysisStatus::Invalid
-    );
-    assert!(
-        unsupported_report
-            .policy
-            .illegal_combinations
-            .iter()
-            .any(|reason| reason.contains("supported_backends=cpu"))
-    );
+    assert_eq!(transition_report.policy.status, SpineAnalysisStatus::Valid);
+    assert!(transition_report.policy.illegal_combinations.is_empty());
+    assert!(transition_report.backend.dispatch_observable);
     assert!(
         exact_report
             .observability

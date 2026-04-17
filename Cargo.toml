@@ -14,9 +14,9 @@ panic = "abort"
 [profile.dev]
 debug = 0
 split-debuginfo = "off"
-incremental = false
+incremental = true
 
 [profile.test]
 debug = 0
 split-debuginfo = "off"
-incremental = false
+incremental = true

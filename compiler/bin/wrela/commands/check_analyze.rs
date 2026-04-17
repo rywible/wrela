@@ -1,4 +1,18 @@
-fn resolve_entry_path(path_arg: Option<&str>) -> Result<PathBuf, String> {
+use super::build_compile::{
+    conservative_naming_fixes, project_record, resolve_path_from_owner_spans,
+};
+use super::fix_fmt::attach_expected_source_for_fixes;
+use super::shared::{naming_policy_severity, naming_policy_tier};
+use super::{
+    AstNode, BTreeMap, BTreeSet, Command, CommandSpec, Deserialize, DiagFix, DiagRecord,
+    DiagSeverity, DiagSpan, DiagStage, Duration, EXIT_CODEGEN, EXIT_OK, EXIT_PARSE,
+    EXIT_RUNTIME_SIGNAL, EXIT_TYPE, EXIT_USAGE, HashMap, HashSet, Instant, Output, OutputFormat,
+    ParsedCommandSpec, Path, PathBuf, Serialize, SmolStr, SourceSpan, SystemTime, UNIX_EPOCH,
+    VecDeque, ast, cert_engine, dedupe_records, diag_emit, env, fs, hir, hir_lower, io, mir,
+    mir_descriptor, parser, perf_engine, project_descriptor, replay_trace, suppress_cascades,
+};
+
+pub(crate) fn resolve_entry_path(path_arg: Option<&str>) -> Result<PathBuf, String> {
     let path = match path_arg {
         Some(path) => PathBuf::from(path),
         None => return Err("missing input path".to_string()),
@@ -16,7 +30,7 @@ fn resolve_entry_path(path_arg: Option<&str>) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn project_root_for_entry(entry_path: &Path) -> PathBuf {
+pub(crate) fn project_root_for_entry(entry_path: &Path) -> PathBuf {
     for ancestor in entry_path.ancestors() {
         if ancestor.file_name().is_some_and(|name| name == "src")
             && let Some(parent) = ancestor.parent()
@@ -27,7 +41,7 @@ fn project_root_for_entry(entry_path: &Path) -> PathBuf {
     entry_path.parent().unwrap_or(entry_path).to_path_buf()
 }
 
-fn integration_mode_entry_path_is_allowed(entry_path: &Path) -> bool {
+pub(crate) fn integration_mode_entry_path_is_allowed(entry_path: &Path) -> bool {
     let workspace_root = project_root_for_entry(entry_path);
     let src_root = workspace_root.join("src");
     let relative = match entry_path.strip_prefix(&src_root) {
@@ -39,7 +53,7 @@ fn integration_mode_entry_path_is_allowed(entry_path: &Path) -> bool {
         || relative_text.starts_with("infrastructure/integrations/")
 }
 
-fn compile_to_mir(
+pub(crate) fn compile_to_mir(
     entry_path: &Path,
     output_format: OutputFormat,
     emit_mir: bool,
@@ -323,7 +337,9 @@ fn compile_to_mir(
     Ok(mir_module)
 }
 
-fn hole_binding_type_lookup(type_info: &hir::typeck::TypeInfo) -> HashMap<String, String> {
+pub(crate) fn hole_binding_type_lookup(
+    type_info: &hir::typeck::TypeInfo,
+) -> HashMap<String, String> {
     let mut by_name = BTreeMap::<String, BTreeSet<String>>::new();
     for info in type_info.functions.values() {
         for (name, ty) in &info.local_types {
@@ -345,7 +361,7 @@ fn hole_binding_type_lookup(type_info: &hir::typeck::TypeInfo) -> HashMap<String
         .collect()
 }
 
-fn semantic_hole_payload_and_fixes(
+pub(crate) fn semantic_hole_payload_and_fixes(
     err: &hir::semantic::SemanticError,
     path: &str,
     binding_types: &HashMap<String, String>,
@@ -480,7 +496,7 @@ fn semantic_hole_payload_and_fixes(
     }
 }
 
-fn type_payload_and_fixes(
+pub(crate) fn type_payload_and_fixes(
     err: &hir::typeck::TypeError,
     path: &str,
     source_text: &str,
@@ -614,7 +630,7 @@ fn type_payload_and_fixes(
     }
 }
 
-fn boundary_generic_replacement(name: &str) -> Option<&'static str> {
+pub(crate) fn boundary_generic_replacement(name: &str) -> Option<&'static str> {
     match name {
         "List" => Some("List[Integer]"),
         "Map" => Some("Map[String, Integer]"),
@@ -625,7 +641,7 @@ fn boundary_generic_replacement(name: &str) -> Option<&'static str> {
     }
 }
 
-fn build_named_args_replacement(
+pub(crate) fn build_named_args_replacement(
     source_text: &str,
     call_span: SourceSpan,
     param_names: &[smol_str::SmolStr],
@@ -698,7 +714,9 @@ fn build_named_args_replacement(
     Some((rewritten, all_positional))
 }
 
-fn pick_primary_hole_candidate(candidates: &[smol_str::SmolStr]) -> Option<&smol_str::SmolStr> {
+pub(crate) fn pick_primary_hole_candidate(
+    candidates: &[smol_str::SmolStr],
+) -> Option<&smol_str::SmolStr> {
     candidates.iter().max_by_key(|candidate| {
         let name = candidate.as_str();
         let first = name.chars().next();
@@ -717,7 +735,7 @@ fn pick_primary_hole_candidate(candidates: &[smol_str::SmolStr]) -> Option<&smol
     })
 }
 
-fn temp_exe_path() -> String {
+pub(crate) fn temp_exe_path() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::from_secs(0))

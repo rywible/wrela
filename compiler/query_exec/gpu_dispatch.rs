@@ -6,8 +6,8 @@ use crate::query_exec::cpu::QueryExecError;
 use crate::query_exec::wgsl::{
     GpuDispatchRequest, NativeWgpuContext, ResidentBatchQuerySession,
     build_batch_request_for_shader_with_snapshot,
-    build_batch_request_without_items_for_shader_with_snapshot, compile_batch_shader,
-    encode_slice, normalized_dispatch_config, prepare_resident_batch_query,
+    build_batch_request_without_items_for_shader_with_snapshot, compile_batch_shader, encode_slice,
+    normalized_dispatch_config, prepare_resident_batch_query,
 };
 use crate::query_exec::{QueryExecContext, QueryExecutionObservability};
 use std::sync::Arc;

@@ -1,72 +1,84 @@
 # Developer-Loop Playbook
 
-Phase 49 measures developer throughput the same way later phases measure rendering and perf closure:
-truthfully, with explicit cache state, explicit exclusions, and stable scenario ids.
+Phase 52 measures throughput the way the repo measures everything else: with explicit cache state,
+explicit cleanroom escape hatches, and stable scenario ids that map to real edit contexts.
 
-## What This Measures
+## What Phase 52 Proves
 
-The harness under `scripts/devloop_measure.py` measures repo workflow lanes and representative
-edit scopes. It writes machine-readable reports under `.artifacts/devloop/`.
+The harness under `scripts/devloop_measure.py` now answers four questions:
+
+- what the default warm incremental loop costs
+- what the rare cleanroom truth-first path costs
+- how large the compile burst is after representative edit scopes
+- whether the first CLI crate split is justified yet
+
+Reports are written under `.artifacts/devloop/`.
 
 The canonical entry points are:
 
 - `just baseline-devloop`
-- `python3 scripts/devloop_measure.py --report-name phase49-baseline`
+- `python3 scripts/devloop_measure.py --report-name phase52-baseline`
 
-## Warm Versus Cold
+The default baseline covers the core compile-loop scenarios:
+warm check, cleanroom check, warm workspace test, cleanroom workspace test, the three edit-scope
+bursts, and the fast repo lane.
+
+## Cache-State Contract
 
 Do not hide cache state.
 
 - `warm` means the same resolved command completed once on the same git SHA in the same worktree
   before the measured run.
-- For edit-scope scenarios, warm means the priming run happens before the representative file is
-  touched, and the measured run happens immediately after that touch.
-- `cold` means no priming run was performed for the measured command in the current worktree.
+- edit-scope scenarios warm first, then `touch` the representative file, then run the measured
+  command immediately afterward.
+- `cleanroom` means `CARGO_INCREMENTAL=0` plus an isolated `CARGO_TARGET_DIR` under
+  `.artifacts/cargo-cleanroom/`.
 
-The default Phase 49 baseline uses warm measurements.
+The default developer loop is warm incremental.
+The cleanroom path exists for truth-first verification, not as the day-to-day default.
 
 ## Scenario Protocol
 
-The harness records both the canonical repo command and the raw command it actually executed.
-That lets the report stay aligned with the `just` surface while still being runnable on a machine
-that only has the repo substrate installed.
+Each scenario records both the canonical repo command and the exact resolved command it executed.
+That keeps the report aligned with the `just` surface while still making the underlying substrate
+explicit.
 
-### Core Scenarios
+### Warm Incremental Scenarios
 
 - `check_warm`
   Canonical command: `just check`
   Resolved command: `cargo check --workspace`
-  Excludes test execution, linking, and authored-world proof surfaces.
 
-- `build_no_run_warm`
-  Canonical command: `cargo test --workspace --no-run`
-  Resolved command: `cargo test --workspace --no-run`
-  Excludes test execution.
+- `test_workspace_warm`
+  Canonical command: `cargo test --workspace`
+  Resolved command: `cargo test --workspace`
 
-- `rust_fast_lane`
+- `fast_verify`
   Canonical command: `just test`
-  Resolved command: the fast Rust integrity lane plus `wrela test language/spec --lane=spec`
-  Excludes the full Rust workspace sweep and closure perf lane.
+  Resolved command: `cargo test -p wrela --test repo_smoke` plus
+  `cargo run -p wrela -- test language/spec --lane=fast`
+  Hard budget: `60000` ms
 
-- `rust_full_lane`
+- `full_verify`
   Canonical command: `just test-all`
-  Resolved command: the full Rust workspace sweep plus `wrela test language/spec`
-  Excludes lint, fmt-check, and closure perf.
+  Resolved command: `cargo test --workspace` plus
+  `cargo run -p wrela -- test language/spec --lane=full`
 
-- `perf_smoke`
-  Canonical command: `just perf-smoke`
-  Resolved command: `cargo run -p wrela -- perf benchmarks/micro --profile=smoke --runs=1`
-  Excludes the representative 1080p120 closure protocol.
+### Cleanroom Scenarios
 
-- `ship`
-  Canonical command: `just ship`
-  Resolved command: `fmt-check`, `lint`, `test`, `test-all`, then `perf-smoke`
-  Excludes `perf-closure`.
+- `check_cleanroom`
+  Canonical command: `just check-clean`
+  Resolved command:
+  `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=.artifacts/cargo-cleanroom/check cargo check --workspace`
 
-### Representative Edit-Context Scenarios
+- `test_cleanroom`
+  Canonical command: `just test-clean`
+  Resolved command:
+  `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=.artifacts/cargo-cleanroom/test cargo test --workspace`
 
-These scenarios use `touch`-style representative edits so later phases can compare blast radius
-without mutating source content.
+### Compile-Burst Scenarios
+
+These are touch-only representative edits. They do not mutate source contents.
 
 - `frontend_edit_check`
   Touch `compiler/parser/mod.rs`, then run `just check`
@@ -77,36 +89,48 @@ without mutating source content.
 - `cli_edit_check`
   Touch `compiler/bin/wrela/cli_args.rs`, then run `just check`
 
-- `full_workspace_no_run`
-  Run `cargo test --workspace --no-run`
-
-- `fast_verify`
-  Run `just test`
-
-- `full_verify`
-  Run `just test-all`
-
 ## Report Shape
 
-Each report records:
+Each Phase 52 report records:
 
-- scenario id
-- canonical command text
-- resolved command text
-- elapsed wall-clock duration
-- success or failure
-- exit code
-- machine tag
-- git SHA
-- cache state (`warm` or `cold`)
-- scenario exclusions and notes
-- representative touched files when applicable
+- scenario ids, canonical commands, and resolved commands
+- elapsed wall-clock timings
+- success/failure and exit codes
+- machine tag, git SHA, and git-dirty state
+- warmup metadata and touched files
+- fast-lane scorecard status (`within_budget`, `missed_budget`, `failed`, or `measured`)
+- `warm_vs_cleanroom` comparisons for workspace check and workspace test
+- `compile_bursts` for frontend, query-exec, and CLI edit scopes
+- `cli_boundary_assessment`, including the split decision and blockers if the split is deferred
 
-The Phase 49 baseline report is written to:
+The stable baseline report is written to:
 
-- `.artifacts/devloop/phase49-baseline.json`
-- `.artifacts/devloop/phase49-baseline-<timestamp>.json`
+- `.artifacts/devloop/phase52-baseline.json`
+- `.artifacts/devloop/phase52-baseline-<timestamp>.json`
 
-Failures are part of the truth.
-If a lane is red during the Phase 49 baseline run, the report should record that failure rather
-than silently narrowing the lane.
+## Reproducing The Phase 52 Evidence
+
+Use the default baseline when you want the full checked-in picture:
+
+```bash
+just baseline-devloop
+```
+
+Use targeted reruns when you only need one slice:
+
+```bash
+python3 scripts/devloop_measure.py --scenario check_warm --scenario check_cleanroom --report-name phase52-check-compare
+python3 scripts/devloop_measure.py --scenario test_workspace_warm --scenario test_cleanroom --report-name phase52-test-compare
+python3 scripts/devloop_measure.py --scenario frontend_edit_check --scenario query_exec_edit_check --scenario cli_edit_check --report-name phase52-edit-bursts
+```
+
+## Interpreting The CLI Decision
+
+The Phase 52 report does not assume the CLI split is good just because it is a plausible boundary.
+
+- If the CLI boundary materially reduces unrelated rebuilds, the report should say so.
+- If it does not yet reduce them, the report should carry the explicit blockers and point to
+  `../architecture/crate_split_decision.md`.
+
+That is why the module split work and the crate-split decision are separate deliverables in this
+phase.

@@ -84,6 +84,21 @@ fn stable_region_scene_capture_id(region_name: &SmolStr) -> i64 {
     stable_region_scene_capture_id_i64(region_name)
 }
 
-include!("mir_query_methods.rs");
-include!("mir_scene_semantics.rs");
-include!("mir_helpers.rs");
+mod helpers;
+mod query_methods;
+mod scene_semantics;
+
+pub(crate) use helpers::{
+    lower_field_batch_queries_helper, lower_scene_distance_capture_helper,
+    lower_scene_medium_capture_helper, lower_scene_normal_capture_helper,
+    lower_scene_occluded_capture_helper, lower_scene_radiance_capture_helper,
+    lower_scene_support_summary_capture_helper, lower_scene_surface_capture_helper,
+    lower_scene_surface_queries_helper, lower_scene_trace_capture_helper,
+    lower_scene_trace_queries_helper, lower_shape_batch_queries_helper,
+    lower_shape_distance_helper, lower_shape_surface_helper, lower_shape_trace_helper,
+    lower_world_batch_queries_helper, lower_world_distance_capture_helper,
+    lower_world_medium_capture_helper, lower_world_normal_capture_helper,
+    lower_world_occluded_capture_helper, lower_world_radiance_capture_helper,
+    lower_world_support_summary_capture_helper, lower_world_surface_capture_helper,
+    lower_world_trace_capture_helper,
+};

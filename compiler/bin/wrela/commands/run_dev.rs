@@ -1,4 +1,14 @@
-fn run_dev_loop(
+use super::check_analyze::{compile_to_mir, temp_exe_path};
+use super::{
+    AstNode, BTreeMap, BTreeSet, Command, CommandSpec, Deserialize, DiagFix, DiagRecord,
+    DiagSeverity, DiagSpan, DiagStage, Duration, EXIT_CODEGEN, EXIT_OK, EXIT_PARSE,
+    EXIT_RUNTIME_SIGNAL, EXIT_TYPE, EXIT_USAGE, HashMap, HashSet, Instant, Output, OutputFormat,
+    ParsedCommandSpec, Path, PathBuf, Serialize, SmolStr, SourceSpan, SystemTime, UNIX_EPOCH,
+    VecDeque, ast, cert_engine, dedupe_records, diag_emit, env, fs, hir, hir_lower, io, mir,
+    mir_descriptor, parser, perf_engine, project_descriptor, replay_trace, suppress_cascades,
+};
+
+pub(crate) fn run_dev_loop(
     entry_path: &Path,
     poll_ms: u64,
     output_format: OutputFormat,
@@ -60,7 +70,7 @@ fn run_dev_loop(
     }
 }
 
-fn find_src_root(entry_path: &Path) -> Option<PathBuf> {
+pub(crate) fn find_src_root(entry_path: &Path) -> Option<PathBuf> {
     for ancestor in entry_path.ancestors() {
         if ancestor.file_name().map(|n| n == "src").unwrap_or(false) {
             return Some(ancestor.to_path_buf());
@@ -69,13 +79,13 @@ fn find_src_root(entry_path: &Path) -> Option<PathBuf> {
     None
 }
 
-fn snapshot_sources(root: &Path) -> Vec<(PathBuf, SystemTime)> {
+pub(crate) fn snapshot_sources(root: &Path) -> Vec<(PathBuf, SystemTime)> {
     let mut out = Vec::new();
     collect_sources(root, &mut out);
     out
 }
 
-fn sources_changed(root: &Path, last: &mut Vec<(PathBuf, SystemTime)>) -> bool {
+pub(crate) fn sources_changed(root: &Path, last: &mut Vec<(PathBuf, SystemTime)>) -> bool {
     let mut current = Vec::new();
     collect_sources(root, &mut current);
     if current.len() != last.len() {
@@ -93,7 +103,7 @@ fn sources_changed(root: &Path, last: &mut Vec<(PathBuf, SystemTime)>) -> bool {
     false
 }
 
-fn collect_sources(root: &Path, out: &mut Vec<(PathBuf, SystemTime)>) {
+pub(crate) fn collect_sources(root: &Path, out: &mut Vec<(PathBuf, SystemTime)>) {
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(_) => return,
@@ -111,18 +121,18 @@ fn collect_sources(root: &Path, out: &mut Vec<(PathBuf, SystemTime)>) {
     }
 }
 
-fn is_source_file(path: &Path) -> bool {
+pub(crate) fn is_source_file(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|s| s.to_str()),
         Some("wr") | Some("sp")
     )
 }
 
-fn sleep_ms(ms: u64) {
+pub(crate) fn sleep_ms(ms: u64) {
     std::thread::sleep(Duration::from_millis(ms));
 }
 
-fn update_toolchain(prefix_override: Option<&str>) -> Result<(), String> {
+pub(crate) fn update_toolchain(prefix_override: Option<&str>) -> Result<(), String> {
     let prefix = prefix_override
         .map(PathBuf::from)
         .or_else(|| env::var("PREFIX").ok().map(PathBuf::from))
@@ -186,7 +196,7 @@ fn update_toolchain(prefix_override: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-fn resolve_target_triple() -> Result<&'static str, String> {
+pub(crate) fn resolve_target_triple() -> Result<&'static str, String> {
     let os = env::consts::OS;
     let arch = env::consts::ARCH;
     match (os, arch) {
@@ -198,7 +208,7 @@ fn resolve_target_triple() -> Result<&'static str, String> {
     }
 }
 
-fn fetch_latest_tag() -> Result<String, String> {
+pub(crate) fn fetch_latest_tag() -> Result<String, String> {
     let mut curl = Command::new("curl");
     curl.args([
         "-fsSL",
@@ -221,7 +231,7 @@ fn fetch_latest_tag() -> Result<String, String> {
     })
 }
 
-fn parse_first_tag(body: &str) -> Option<String> {
+pub(crate) fn parse_first_tag(body: &str) -> Option<String> {
     let key = "\"tag_name\"";
     let pos = body.find(key)?;
     let after = &body[pos + key.len()..];

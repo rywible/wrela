@@ -1,0 +1,5 @@
+use compute_answer from core/math
+
+fn test_math_flow() -> Nothing {
+    assert value compute_answer() == 41
+}

@@ -1,4 +1,26 @@
-fn discover_tests_for_target(target: &TestTarget) -> Result<Vec<TestCase>, String> {
+use super::build_compile::{
+    BudgetPolicyV1, COVERAGE_INDEX_SCHEMA_VERSION, COVERAGE_SNAPSHOT_SCHEMA_VERSION,
+    CertSelectionReport, DEFAULT_TEST_TIMEOUT_MS, Fnv1a64, MUTATION_CACHE_ENGINE_TAG,
+    MUTATION_CACHE_SCHEMA_VERSION, MUTATION_KILL_HISTORY_SCHEMA_VERSION,
+    TEST_HARNESS_META_SCHEMA_VERSION, TestTarget, build_public_surface_snapshot,
+    collect_wr_modules, conservative_naming_fixes, emit_cert_selection_report, fnv1a64,
+    fnv1a64_hex, hash_source_fingerprint, is_importable_coverage_target, load_benchmark_manifest,
+    now_unix_ms, path_sort_key, project_record, resolve_path_from_owner_spans,
+    resolve_toolchain_version,
+};
+use super::shared::{
+    naming_policy_severity, naming_policy_tier, project_naming_diagnostics, repro,
+};
+use super::{
+    AstNode, BTreeMap, BTreeSet, Command, CommandSpec, Deserialize, DiagFix, DiagRecord,
+    DiagSeverity, DiagSpan, DiagStage, Duration, EXIT_CODEGEN, EXIT_OK, EXIT_PARSE,
+    EXIT_RUNTIME_SIGNAL, EXIT_TYPE, EXIT_USAGE, HashMap, HashSet, Instant, Output, OutputFormat,
+    ParsedCommandSpec, Path, PathBuf, Serialize, SmolStr, SourceSpan, SystemTime, UNIX_EPOCH,
+    VecDeque, ast, cert_engine, dedupe_records, diag_emit, env, fs, hir, hir_lower, io, mir,
+    mir_descriptor, parser, perf_engine, project_descriptor, replay_trace, suppress_cascades,
+};
+
+pub(crate) fn discover_tests_for_target(target: &TestTarget) -> Result<Vec<TestCase>, String> {
     match target {
         TestTarget::ProjectRoot(root) => {
             let tests_root = root.join("tests");
@@ -13,7 +35,7 @@ fn discover_tests_for_target(target: &TestTarget) -> Result<Vec<TestCase>, Strin
     }
 }
 
-pub(super) fn build_benchmark_selection(
+pub(crate) fn build_benchmark_selection(
     target: &TestTarget,
     manifest_path: &Path,
     profile: PerfProfile,
@@ -41,28 +63,28 @@ pub(super) fn build_benchmark_selection(
 }
 
 #[derive(Clone)]
-struct TestCase {
-    id: String,
-    lane: TestLane,
-    name: String,
-    module_path: String,
-    func_name: String,
-    is_serial: bool,
-    allows_env_set: bool,
-    allows_fs_escape: bool,
-    has_oracle: bool,
-    generated_call_body: Option<String>,
-    generated_case_kind: Option<GeneratedCaseKind>,
-    generated_entry_source: Option<String>,
-    autogen_module_source: Option<String>,
-    autogen_seed: Option<u64>,
-    autogen_span: Option<String>,
-    sim_seed: Option<u64>,
-    canonical_id: String,
+pub(crate) struct TestCase {
+    pub(crate) id: String,
+    pub(crate) lane: TestLane,
+    pub(crate) name: String,
+    pub(crate) module_path: String,
+    pub(crate) func_name: String,
+    pub(crate) is_serial: bool,
+    pub(crate) allows_env_set: bool,
+    pub(crate) allows_fs_escape: bool,
+    pub(crate) has_oracle: bool,
+    pub(crate) generated_call_body: Option<String>,
+    pub(crate) generated_case_kind: Option<GeneratedCaseKind>,
+    pub(crate) generated_entry_source: Option<String>,
+    pub(crate) autogen_module_source: Option<String>,
+    pub(crate) autogen_seed: Option<u64>,
+    pub(crate) autogen_span: Option<String>,
+    pub(crate) sim_seed: Option<u64>,
+    pub(crate) canonical_id: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TestLane {
+pub(crate) enum TestLane {
     Spec,
     Integration,
     Sim,
@@ -70,14 +92,26 @@ enum TestLane {
     Default,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TestLanePreset {
+    Fast,
+    Full,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TestLaneSelection {
+    Single(TestLane),
+    Preset(TestLanePreset),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum GeneratedCaseKind {
+pub(crate) enum GeneratedCaseKind {
     Autogen,
     Fuzz,
 }
 
 impl TestLane {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             TestLane::Spec => "spec",
             TestLane::Integration => "integration",
@@ -88,20 +122,32 @@ impl TestLane {
     }
 }
 
+impl TestLaneSelection {
+    pub(crate) fn matches(self, lane: TestLane) -> bool {
+        match self {
+            TestLaneSelection::Single(selected) => lane == selected,
+            TestLaneSelection::Preset(TestLanePreset::Fast) => {
+                matches!(lane, TestLane::Spec | TestLane::Default)
+            }
+            TestLaneSelection::Preset(TestLanePreset::Full) => true,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
-pub(super) enum HttpCassetteMode {
+pub(crate) enum HttpCassetteMode {
     Replay,
     Record,
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum DifferentialPipeline {
+pub(crate) enum DifferentialPipeline {
     Baseline,
     Alt,
 }
 
 impl DifferentialPipeline {
-    fn as_env_value(self) -> &'static str {
+    pub(crate) fn as_env_value(self) -> &'static str {
         match self {
             DifferentialPipeline::Baseline => "baseline",
             DifferentialPipeline::Alt => "alt",
@@ -110,191 +156,191 @@ impl DifferentialPipeline {
 }
 
 #[derive(Clone)]
-struct AutogenCheckDecl {
-    module_path: String,
-    func_name: String,
-    params: Vec<AutogenCheckParam>,
-    module_source: String,
-    source_span: Option<String>,
+pub(crate) struct AutogenCheckDecl {
+    pub(crate) module_path: String,
+    pub(crate) func_name: String,
+    pub(crate) params: Vec<AutogenCheckParam>,
+    pub(crate) module_source: String,
+    pub(crate) source_span: Option<String>,
 }
 
-const REPRO_SCHEMA_VERSION: u32 = 2;
+pub(crate) const REPRO_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
-enum ReproArtifact {
+pub(crate) enum ReproArtifact {
     Autogen(AutogenReproArtifact),
     Fuzz(FuzzReproArtifact),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct AutogenReproArtifact {
-    version: u32,
-    generated_at_unix_ms: u64,
-    workspace_root: String,
-    test_id: String,
-    module_path: String,
-    func_name: String,
-    seed: u64,
-    span: Option<String>,
-    original_call: String,
-    shrunk_call: Option<String>,
-    replay_call: String,
-    failure: String,
+pub(crate) struct AutogenReproArtifact {
+    pub(crate) version: u32,
+    pub(crate) generated_at_unix_ms: u64,
+    pub(crate) workspace_root: String,
+    pub(crate) test_id: String,
+    pub(crate) module_path: String,
+    pub(crate) func_name: String,
+    pub(crate) seed: u64,
+    pub(crate) span: Option<String>,
+    pub(crate) original_call: String,
+    pub(crate) shrunk_call: Option<String>,
+    pub(crate) replay_call: String,
+    pub(crate) failure: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct FuzzReproArtifact {
-    version: u32,
-    generated_at_unix_ms: u64,
-    workspace_root: String,
-    test_id: String,
-    module_path: String,
-    func_name: String,
-    seed: u64,
-    span: Option<String>,
-    call: String,
-    uses_bytes_helper: bool,
-    failure: String,
+pub(crate) struct FuzzReproArtifact {
+    pub(crate) version: u32,
+    pub(crate) generated_at_unix_ms: u64,
+    pub(crate) workspace_root: String,
+    pub(crate) test_id: String,
+    pub(crate) module_path: String,
+    pub(crate) func_name: String,
+    pub(crate) seed: u64,
+    pub(crate) span: Option<String>,
+    pub(crate) call: String,
+    pub(crate) uses_bytes_helper: bool,
+    pub(crate) failure: String,
 }
 
 #[derive(Clone)]
-struct AutogenCheckParam {
-    name: String,
-    ty: AutogenScalarType,
+pub(crate) struct AutogenCheckParam {
+    pub(crate) name: String,
+    pub(crate) ty: AutogenScalarType,
 }
 
 #[derive(Clone)]
-struct FuzzTargetDecl {
-    module_path: String,
-    func_name: String,
-    param_name: String,
-    param_ty: FuzzParamType,
-    module_source: String,
-    source_span: Option<String>,
+pub(crate) struct FuzzTargetDecl {
+    pub(crate) module_path: String,
+    pub(crate) func_name: String,
+    pub(crate) param_name: String,
+    pub(crate) param_ty: FuzzParamType,
+    pub(crate) module_source: String,
+    pub(crate) source_span: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum FuzzParamType {
+pub(crate) enum FuzzParamType {
     String,
     Bytes,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum AutogenScalarType {
+pub(crate) enum AutogenScalarType {
     Integer,
     Boolean,
     String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct MutationGateReport {
-    version: u32,
-    generated_at_unix_ms: u128,
-    discovery_ms: u128,
-    execution_ms: u128,
-    compile_total_ms: u128,
-    test_run_total_ms: u128,
-    parallel_workers: usize,
-    cache_hits: usize,
-    cache_misses: usize,
-    cache_invalidations: usize,
-    total_mutants: usize,
-    valid_mutants: usize,
-    invalid_mutants: usize,
-    killed_mutants: usize,
-    survived_mutants: usize,
-    no_covering_tests_mutants: usize,
-    kill_rate_pct: f64,
-    domain_application_kill_rate_pct: Option<f64>,
-    mutants: Vec<MutationMutantResult>,
+pub(crate) struct MutationGateReport {
+    pub(crate) version: u32,
+    pub(crate) generated_at_unix_ms: u128,
+    pub(crate) discovery_ms: u128,
+    pub(crate) execution_ms: u128,
+    pub(crate) compile_total_ms: u128,
+    pub(crate) test_run_total_ms: u128,
+    pub(crate) parallel_workers: usize,
+    pub(crate) cache_hits: usize,
+    pub(crate) cache_misses: usize,
+    pub(crate) cache_invalidations: usize,
+    pub(crate) total_mutants: usize,
+    pub(crate) valid_mutants: usize,
+    pub(crate) invalid_mutants: usize,
+    pub(crate) killed_mutants: usize,
+    pub(crate) survived_mutants: usize,
+    pub(crate) no_covering_tests_mutants: usize,
+    pub(crate) kill_rate_pct: f64,
+    pub(crate) domain_application_kill_rate_pct: Option<f64>,
+    pub(crate) mutants: Vec<MutationMutantResult>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct MutationMutantResult {
-    function: String,
-    function_id: String,
-    mutation_type: String,
-    tests_ran: Vec<String>,
-    compile_ms: u128,
-    test_run_ms: u128,
-    status: String,
-    reason: Option<String>,
+pub(crate) struct MutationMutantResult {
+    pub(crate) function: String,
+    pub(crate) function_id: String,
+    pub(crate) mutation_type: String,
+    pub(crate) tests_ran: Vec<String>,
+    pub(crate) compile_ms: u128,
+    pub(crate) test_run_ms: u128,
+    pub(crate) status: String,
+    pub(crate) reason: Option<String>,
 }
 
-pub(super) struct MutationGateOutcome {
-    pub(super) summary_hash: Option<String>,
-    pub(super) discovery_ms: u128,
-    pub(super) execution_ms: u128,
+pub(crate) struct MutationGateOutcome {
+    pub(crate) summary_hash: Option<String>,
+    pub(crate) discovery_ms: u128,
+    pub(crate) execution_ms: u128,
 }
 
-struct MutationExecutionResult {
-    job_index: usize,
-    mutant: MutationMutantResult,
-    cache_hits: usize,
-    cache_misses: usize,
-    cache_invalidations: usize,
-}
-
-#[derive(Clone)]
-struct MutationCandidateJob {
-    job_index: usize,
-    candidate: MirMutationCandidate,
-    tests_to_run: Vec<TestCase>,
+pub(crate) struct MutationExecutionResult {
+    pub(crate) job_index: usize,
+    pub(crate) mutant: MutationMutantResult,
+    pub(crate) cache_hits: usize,
+    pub(crate) cache_misses: usize,
+    pub(crate) cache_invalidations: usize,
 }
 
 #[derive(Clone)]
-struct MutationExecutionContext {
-    workspace_root: PathBuf,
-    source_hash: String,
-    toolchain_version: String,
-    cache_root: PathBuf,
-    cache_enabled: bool,
+pub(crate) struct MutationCandidateJob {
+    pub(crate) job_index: usize,
+    pub(crate) candidate: MirMutationCandidate,
+    pub(crate) tests_to_run: Vec<TestCase>,
+}
+
+#[derive(Clone)]
+pub(crate) struct MutationExecutionContext {
+    pub(crate) workspace_root: PathBuf,
+    pub(crate) source_hash: String,
+    pub(crate) toolchain_version: String,
+    pub(crate) cache_root: PathBuf,
+    pub(crate) cache_enabled: bool,
 }
 
 #[derive(Serialize, Deserialize)]
-struct MutationCacheMetadata {
-    schema_version: u32,
-    toolchain_version: String,
-    source_hash: String,
-    candidate_key: String,
-    mutant_binary_path: String,
-    build_status: String,
-    invalid_reason: Option<String>,
-    compile_ms: u128,
+pub(crate) struct MutationCacheMetadata {
+    pub(crate) schema_version: u32,
+    pub(crate) toolchain_version: String,
+    pub(crate) source_hash: String,
+    pub(crate) candidate_key: String,
+    pub(crate) mutant_binary_path: String,
+    pub(crate) build_status: String,
+    pub(crate) invalid_reason: Option<String>,
+    pub(crate) compile_ms: u128,
 }
 
 #[derive(Default, Serialize, Deserialize)]
-struct MutationKillHistoryArtifact {
-    schema_version: u32,
-    entries: BTreeMap<String, MutationKillHistoryEntry>,
+pub(crate) struct MutationKillHistoryArtifact {
+    pub(crate) schema_version: u32,
+    pub(crate) entries: BTreeMap<String, MutationKillHistoryEntry>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct MutationKillHistoryEntry {
-    kills: u64,
-    attempts: u64,
-    last_seen_unix_ms: u128,
+pub(crate) struct MutationKillHistoryEntry {
+    pub(crate) kills: u64,
+    pub(crate) attempts: u64,
+    pub(crate) last_seen_unix_ms: u128,
 }
 
-struct MutantCompileSuccess {
-    exe_path: PathBuf,
-    compile_ms: u128,
-    cache_hits: usize,
-    cache_misses: usize,
-    cache_invalidations: usize,
+pub(crate) struct MutantCompileSuccess {
+    pub(crate) exe_path: PathBuf,
+    pub(crate) compile_ms: u128,
+    pub(crate) cache_hits: usize,
+    pub(crate) cache_misses: usize,
+    pub(crate) cache_invalidations: usize,
 }
 
-struct MutantCompileFailure {
-    reason: String,
-    compile_ms: u128,
-    cache_hits: usize,
-    cache_misses: usize,
-    cache_invalidations: usize,
+pub(crate) struct MutantCompileFailure {
+    pub(crate) reason: String,
+    pub(crate) compile_ms: u128,
+    pub(crate) cache_hits: usize,
+    pub(crate) cache_misses: usize,
+    pub(crate) cache_invalidations: usize,
 }
 
 impl HttpCassetteMode {
-    fn as_env_value(self) -> &'static str {
+    pub(crate) fn as_env_value(self) -> &'static str {
         match self {
             HttpCassetteMode::Replay => "replay",
             HttpCassetteMode::Record => "record",
@@ -303,27 +349,27 @@ impl HttpCassetteMode {
 }
 
 #[derive(Clone, Default)]
-pub(super) struct TestSelection {
-    list: bool,
-    id: Option<String>,
-    filter: Option<String>,
-    lane: Option<TestLane>,
-    include_ids: Option<HashSet<String>>,
-    cert_selection_report: Option<CertSelectionReport>,
+pub(crate) struct TestSelection {
+    pub(crate) list: bool,
+    pub(crate) id: Option<String>,
+    pub(crate) filter: Option<String>,
+    pub(crate) lane: Option<TestLaneSelection>,
+    pub(crate) include_ids: Option<HashSet<String>>,
+    pub(crate) cert_selection_report: Option<CertSelectionReport>,
 }
 
-pub(super) fn test_selection_has_filters(selection: &TestSelection) -> bool {
+pub(crate) fn test_selection_has_filters(selection: &TestSelection) -> bool {
     selection.list || selection.id.is_some() || selection.filter.is_some()
 }
 
-pub(super) fn set_test_selection_include_ids(
+pub(crate) fn set_test_selection_include_ids(
     selection: &mut TestSelection,
     include_ids: HashSet<String>,
 ) {
     selection.include_ids = Some(include_ids);
 }
 
-pub(super) fn budget_jobs_timeout(budget_policy: &BudgetPolicyV1) -> (usize, Duration) {
+pub(crate) fn budget_jobs_timeout(budget_policy: &BudgetPolicyV1) -> (usize, Duration) {
     (
         budget_policy.test_jobs.value as usize,
         Duration::from_millis(budget_policy.test_timeout_ms.value),
@@ -331,201 +377,201 @@ pub(super) fn budget_jobs_timeout(budget_policy: &BudgetPolicyV1) -> (usize, Dur
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-struct MetricsDump {
-    messages_sent: u64,
-    messages_dropped: u64,
-    pending_resolved: u64,
-    pending_dropped: u64,
-    mailbox_high_water: u64,
-    rc_inc: u64,
-    rc_dec: u64,
-    alloc_list: u64,
-    alloc_map: u64,
-    alloc_string: u64,
-    alloc_bytes: u64,
-    alloc_result: u64,
-    alloc_pending: u64,
-    mailbox_enqueue_ok: u64,
-    mailbox_enqueue_fail: u64,
-    mailbox_dequeue: u64,
+pub(crate) struct MetricsDump {
+    pub(crate) messages_sent: u64,
+    pub(crate) messages_dropped: u64,
+    pub(crate) pending_resolved: u64,
+    pub(crate) pending_dropped: u64,
+    pub(crate) mailbox_high_water: u64,
+    pub(crate) rc_inc: u64,
+    pub(crate) rc_dec: u64,
+    pub(crate) alloc_list: u64,
+    pub(crate) alloc_map: u64,
+    pub(crate) alloc_string: u64,
+    pub(crate) alloc_bytes: u64,
+    pub(crate) alloc_result: u64,
+    pub(crate) alloc_pending: u64,
+    pub(crate) mailbox_enqueue_ok: u64,
+    pub(crate) mailbox_enqueue_fail: u64,
+    pub(crate) mailbox_dequeue: u64,
     #[serde(default)]
-    sched_dispatched: u64,
+    pub(crate) sched_dispatched: u64,
     #[serde(default)]
-    sched_skipped_no_credit: u64,
+    pub(crate) sched_skipped_no_credit: u64,
     #[serde(default)]
-    sched_profile_switch: u64,
+    pub(crate) sched_profile_switch: u64,
     #[serde(default)]
-    sched_starvation_violation: u64,
+    pub(crate) sched_starvation_violation: u64,
     #[serde(default)]
-    sched_cross_shard_migration: u64,
+    pub(crate) sched_cross_shard_migration: u64,
     #[serde(default)]
-    pub(super) abi_typed_lane: u64,
+    pub(crate) abi_typed_lane: u64,
     #[serde(default)]
-    pub(super) abi_boxed_lane: u64,
+    pub(crate) abi_boxed_lane: u64,
     #[serde(default)]
-    queue_cas_retry_total: u64,
+    pub(crate) queue_cas_retry_total: u64,
     #[serde(default)]
-    mailbox_wake_coalesced_count: u64,
+    pub(crate) mailbox_wake_coalesced_count: u64,
     #[serde(default)]
-    mailbox_rescue_wake_count: u64,
+    pub(crate) mailbox_rescue_wake_count: u64,
     #[serde(default)]
-    sched_local_dispatch_count: u64,
+    pub(crate) sched_local_dispatch_count: u64,
     #[serde(default)]
-    sched_global_dispatch_count: u64,
+    pub(crate) sched_global_dispatch_count: u64,
     #[serde(default)]
-    sched_plan_recompute_count: u64,
+    pub(crate) sched_plan_recompute_count: u64,
     #[serde(default)]
-    sched_steal_attempts: u64,
+    pub(crate) sched_steal_attempts: u64,
     #[serde(default)]
-    sched_steal_success: u64,
+    pub(crate) sched_steal_success: u64,
     #[serde(default)]
-    sched_migration_blocked_hysteresis: u64,
+    pub(crate) sched_migration_blocked_hysteresis: u64,
     #[serde(default)]
-    sched_migration_blocked_cooldown: u64,
+    pub(crate) sched_migration_blocked_cooldown: u64,
     #[serde(default)]
-    queue_enqueue_p99_ns: u128,
+    pub(crate) queue_enqueue_p99_ns: u128,
     #[serde(default)]
-    queue_dequeue_p99_ns: u128,
+    pub(crate) queue_dequeue_p99_ns: u128,
     #[serde(default)]
-    queue_age_p99_ns: u128,
+    pub(crate) queue_age_p99_ns: u128,
     #[serde(default)]
-    sched_dispatch_loop_ns_p99: u128,
+    pub(crate) sched_dispatch_loop_ns_p99: u128,
     #[serde(default)]
-    queue_burst_drain_avg: f64,
+    pub(crate) queue_burst_drain_avg: f64,
     #[serde(default)]
-    scene_trace: u64,
+    pub(crate) scene_trace: u64,
     #[serde(default)]
-    field_sample: u64,
+    pub(crate) field_sample: u64,
     #[serde(default)]
-    scene_trace_support_pruned_branch: u64,
+    pub(crate) scene_trace_support_pruned_branch: u64,
     #[serde(default)]
-    scene_trace_candidate_branch: u64,
+    pub(crate) scene_trace_candidate_branch: u64,
     #[serde(default)]
-    scene_trace_exact_path: u64,
+    pub(crate) scene_trace_exact_path: u64,
     #[serde(default)]
-    scene_trace_conservative_path: u64,
+    pub(crate) scene_trace_conservative_path: u64,
     #[serde(default)]
-    scene_trace_hit_count: u64,
+    pub(crate) scene_trace_hit_count: u64,
     #[serde(default)]
-    scene_trace_hit_steps_total: u64,
+    pub(crate) scene_trace_hit_steps_total: u64,
     #[serde(default)]
-    scene_trace_hit_field_samples_total: u64,
+    pub(crate) scene_trace_hit_field_samples_total: u64,
     #[serde(default)]
-    scene_trace_steps_le_1: u64,
+    pub(crate) scene_trace_steps_le_1: u64,
     #[serde(default)]
-    scene_trace_steps_le_4: u64,
+    pub(crate) scene_trace_steps_le_4: u64,
     #[serde(default)]
-    scene_trace_steps_le_8: u64,
+    pub(crate) scene_trace_steps_le_8: u64,
     #[serde(default)]
-    scene_trace_steps_le_16: u64,
+    pub(crate) scene_trace_steps_le_16: u64,
     #[serde(default)]
-    scene_trace_steps_gt_16: u64,
+    pub(crate) scene_trace_steps_gt_16: u64,
     #[serde(default)]
-    scene_trace_blend_cost: u64,
+    pub(crate) scene_trace_blend_cost: u64,
     #[serde(default)]
-    scene_trace_deformation_cost: u64,
+    pub(crate) scene_trace_deformation_cost: u64,
     #[serde(default)]
-    function_coverage: BTreeMap<String, u64>,
+    pub(crate) function_coverage: BTreeMap<String, u64>,
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
-pub(super) struct MetricsTotals {
-    messages_sent: u64,
-    messages_dropped: u64,
-    pending_resolved: u64,
-    pending_dropped: u64,
-    mailbox_high_water: u64,
-    rc_inc: u64,
-    rc_dec: u64,
-    alloc_list: u64,
-    alloc_map: u64,
-    alloc_string: u64,
-    alloc_bytes: u64,
-    alloc_result: u64,
-    alloc_pending: u64,
-    mailbox_enqueue_ok: u64,
-    mailbox_enqueue_fail: u64,
-    mailbox_dequeue: u64,
-    sched_dispatched: u64,
-    sched_skipped_no_credit: u64,
+pub(crate) struct MetricsTotals {
+    pub(crate) messages_sent: u64,
+    pub(crate) messages_dropped: u64,
+    pub(crate) pending_resolved: u64,
+    pub(crate) pending_dropped: u64,
+    pub(crate) mailbox_high_water: u64,
+    pub(crate) rc_inc: u64,
+    pub(crate) rc_dec: u64,
+    pub(crate) alloc_list: u64,
+    pub(crate) alloc_map: u64,
+    pub(crate) alloc_string: u64,
+    pub(crate) alloc_bytes: u64,
+    pub(crate) alloc_result: u64,
+    pub(crate) alloc_pending: u64,
+    pub(crate) mailbox_enqueue_ok: u64,
+    pub(crate) mailbox_enqueue_fail: u64,
+    pub(crate) mailbox_dequeue: u64,
+    pub(crate) sched_dispatched: u64,
+    pub(crate) sched_skipped_no_credit: u64,
     #[serde(default)]
-    sched_profile_switch: u64,
+    pub(crate) sched_profile_switch: u64,
     #[serde(default)]
-    sched_starvation_violation: u64,
+    pub(crate) sched_starvation_violation: u64,
     #[serde(default)]
-    sched_cross_shard_migration: u64,
+    pub(crate) sched_cross_shard_migration: u64,
     #[serde(default)]
-    pub(super) abi_typed_lane: u64,
+    pub(crate) abi_typed_lane: u64,
     #[serde(default)]
-    pub(super) abi_boxed_lane: u64,
+    pub(crate) abi_boxed_lane: u64,
     #[serde(default)]
-    queue_cas_retry_total: u64,
+    pub(crate) queue_cas_retry_total: u64,
     #[serde(default)]
-    mailbox_wake_coalesced_count: u64,
+    pub(crate) mailbox_wake_coalesced_count: u64,
     #[serde(default)]
-    mailbox_rescue_wake_count: u64,
+    pub(crate) mailbox_rescue_wake_count: u64,
     #[serde(default)]
-    sched_local_dispatch_count: u64,
+    pub(crate) sched_local_dispatch_count: u64,
     #[serde(default)]
-    sched_global_dispatch_count: u64,
+    pub(crate) sched_global_dispatch_count: u64,
     #[serde(default)]
-    sched_plan_recompute_count: u64,
+    pub(crate) sched_plan_recompute_count: u64,
     #[serde(default)]
-    sched_steal_attempts: u64,
+    pub(crate) sched_steal_attempts: u64,
     #[serde(default)]
-    sched_steal_success: u64,
+    pub(crate) sched_steal_success: u64,
     #[serde(default)]
-    sched_migration_blocked_hysteresis: u64,
+    pub(crate) sched_migration_blocked_hysteresis: u64,
     #[serde(default)]
-    sched_migration_blocked_cooldown: u64,
+    pub(crate) sched_migration_blocked_cooldown: u64,
     #[serde(default)]
-    queue_enqueue_p99_ns: u128,
+    pub(crate) queue_enqueue_p99_ns: u128,
     #[serde(default)]
-    queue_dequeue_p99_ns: u128,
+    pub(crate) queue_dequeue_p99_ns: u128,
     #[serde(default)]
-    queue_age_p99_ns: u128,
+    pub(crate) queue_age_p99_ns: u128,
     #[serde(default)]
-    sched_dispatch_loop_ns_p99: u128,
+    pub(crate) sched_dispatch_loop_ns_p99: u128,
     #[serde(default)]
-    queue_burst_drain_avg: f64,
+    pub(crate) queue_burst_drain_avg: f64,
     #[serde(default)]
-    scene_trace: u64,
+    pub(crate) scene_trace: u64,
     #[serde(default)]
-    field_sample: u64,
+    pub(crate) field_sample: u64,
     #[serde(default)]
-    scene_trace_support_pruned_branch: u64,
+    pub(crate) scene_trace_support_pruned_branch: u64,
     #[serde(default)]
-    scene_trace_candidate_branch: u64,
+    pub(crate) scene_trace_candidate_branch: u64,
     #[serde(default)]
-    scene_trace_exact_path: u64,
+    pub(crate) scene_trace_exact_path: u64,
     #[serde(default)]
-    scene_trace_conservative_path: u64,
+    pub(crate) scene_trace_conservative_path: u64,
     #[serde(default)]
-    scene_trace_hit_count: u64,
+    pub(crate) scene_trace_hit_count: u64,
     #[serde(default)]
-    scene_trace_hit_steps_total: u64,
+    pub(crate) scene_trace_hit_steps_total: u64,
     #[serde(default)]
-    scene_trace_hit_field_samples_total: u64,
+    pub(crate) scene_trace_hit_field_samples_total: u64,
     #[serde(default)]
-    scene_trace_steps_le_1: u64,
+    pub(crate) scene_trace_steps_le_1: u64,
     #[serde(default)]
-    scene_trace_steps_le_4: u64,
+    pub(crate) scene_trace_steps_le_4: u64,
     #[serde(default)]
-    scene_trace_steps_le_8: u64,
+    pub(crate) scene_trace_steps_le_8: u64,
     #[serde(default)]
-    scene_trace_steps_le_16: u64,
+    pub(crate) scene_trace_steps_le_16: u64,
     #[serde(default)]
-    scene_trace_steps_gt_16: u64,
+    pub(crate) scene_trace_steps_gt_16: u64,
     #[serde(default)]
-    scene_trace_blend_cost: u64,
+    pub(crate) scene_trace_blend_cost: u64,
     #[serde(default)]
-    scene_trace_deformation_cost: u64,
+    pub(crate) scene_trace_deformation_cost: u64,
     #[serde(default)]
-    function_coverage: BTreeMap<String, u64>,
+    pub(crate) function_coverage: BTreeMap<String, u64>,
 }
 
 impl MetricsTotals {
-    fn add(&mut self, metrics: &MetricsDump) {
+    pub(crate) fn add(&mut self, metrics: &MetricsDump) {
         self.messages_sent += metrics.messages_sent;
         self.messages_dropped += metrics.messages_dropped;
         self.pending_resolved += metrics.pending_resolved;
@@ -592,7 +638,7 @@ impl MetricsTotals {
         }
     }
 
-    fn total_allocs(&self) -> u64 {
+    pub(crate) fn total_allocs(&self) -> u64 {
         self.alloc_list
             + self.alloc_map
             + self.alloc_string
@@ -602,191 +648,191 @@ impl MetricsTotals {
     }
 }
 
-pub(super) struct TestExecution {
-    pub(super) exit: i32,
-    pub(super) summary: Option<PerfSummary>,
-    pub(super) differential_results_hash: Option<String>,
-    pub(super) mutation_summary_hash: Option<String>,
-    pub(super) cert_timings: CertPerfTimings,
+pub(crate) struct TestExecution {
+    pub(crate) exit: i32,
+    pub(crate) summary: Option<PerfSummary>,
+    pub(crate) differential_results_hash: Option<String>,
+    pub(crate) mutation_summary_hash: Option<String>,
+    pub(crate) cert_timings: CertPerfTimings,
 }
 
 #[derive(Clone, Copy, Default)]
-pub(super) struct CertPerfTimings {
-    pub(super) collect_tests_ms: u128,
-    pub(super) compile_harness_ms: u128,
-    pub(super) determinism_ms: u128,
-    pub(super) mutation_discovery_ms: u128,
-    pub(super) mutation_execution_ms: u128,
-    pub(super) differential_ms: u128,
+pub(crate) struct CertPerfTimings {
+    pub(crate) collect_tests_ms: u128,
+    pub(crate) compile_harness_ms: u128,
+    pub(crate) determinism_ms: u128,
+    pub(crate) mutation_discovery_ms: u128,
+    pub(crate) mutation_execution_ms: u128,
+    pub(crate) differential_ms: u128,
 }
 
-struct TestRun {
-    metrics: Option<MetricsDump>,
-    runtime_ns: u128,
+pub(crate) struct TestRun {
+    pub(crate) metrics: Option<MetricsDump>,
+    pub(crate) runtime_ns: u128,
 }
 
 #[derive(Clone)]
-pub(super) struct TestHarness {
-    exe_path: PathBuf,
-    compile_ns: u128,
-    cache_hit: bool,
+pub(crate) struct TestHarness {
+    pub(crate) exe_path: PathBuf,
+    pub(crate) compile_ns: u128,
+    pub(crate) cache_hit: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct TestHarnessMeta {
-    schema_version: u32,
-    compiler_version: String,
-    selected_tests_fingerprint: String,
-    source_fingerprint: String,
+pub(crate) struct TestHarnessMeta {
+    pub(crate) schema_version: u32,
+    pub(crate) compiler_version: String,
+    pub(crate) selected_tests_fingerprint: String,
+    pub(crate) source_fingerprint: String,
 }
 
 #[derive(Default)]
-pub(super) struct RunOnceTimings {
-    pub(super) collect_tests_ms: u128,
-    pub(super) compile_harness_ms: u128,
+pub(crate) struct RunOnceTimings {
+    pub(crate) collect_tests_ms: u128,
+    pub(crate) compile_harness_ms: u128,
 }
 
 #[derive(Serialize)]
-struct TestJsonSummary {
-    run: TestJsonRunMetadata,
-    tests: Vec<TestJsonCase>,
-    timings: TestJsonTimings,
+pub(crate) struct TestJsonSummary {
+    pub(crate) run: TestJsonRunMetadata,
+    pub(crate) tests: Vec<TestJsonCase>,
+    pub(crate) timings: TestJsonTimings,
 }
 
 #[derive(Serialize)]
-struct TestJsonRunMetadata {
-    seed: u64,
-    lane: String,
-    jobs: usize,
-    harness_cache_hit: bool,
-    budgets_used: BudgetPolicyV1,
+pub(crate) struct TestJsonRunMetadata {
+    pub(crate) seed: u64,
+    pub(crate) lane: String,
+    pub(crate) jobs: usize,
+    pub(crate) harness_cache_hit: bool,
+    pub(crate) budgets_used: BudgetPolicyV1,
 }
 
 #[derive(Serialize)]
-struct TestJsonCase {
-    id: String,
-    name: String,
-    lane: String,
-    status: String,
-    duration_ms: u128,
+pub(crate) struct TestJsonCase {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) lane: String,
+    pub(crate) status: String,
+    pub(crate) duration_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    pub(crate) error: Option<String>,
 }
 
 #[derive(Serialize)]
-struct TestJsonTimings {
-    discovery_ms: u128,
-    selection_ms: u128,
-    compile_harness_ms: u128,
-    execution_ms: u128,
-    total_ms: u128,
+pub(crate) struct TestJsonTimings {
+    pub(crate) discovery_ms: u128,
+    pub(crate) selection_ms: u128,
+    pub(crate) compile_harness_ms: u128,
+    pub(crate) execution_ms: u128,
+    pub(crate) total_ms: u128,
 }
 
-pub(super) const TEST_JSON_SUMMARY_SEED: u64 = 0x5A17;
+pub(crate) const TEST_JSON_SUMMARY_SEED: u64 = 0x5A17;
 
 #[derive(Clone)]
-pub(super) struct DeterminismSignature {
-    pub(super) hash: String,
-    pub(super) outcomes: Vec<DeterminismOutcome>,
+pub(crate) struct DeterminismSignature {
+    pub(crate) hash: String,
+    pub(crate) outcomes: Vec<DeterminismOutcome>,
 }
 
 #[derive(Clone, Serialize, PartialEq, Eq)]
-pub(super) struct DeterminismOutcome {
-    id: String,
-    name: String,
-    lane: String,
-    status: String,
-    error: Option<String>,
+pub(crate) struct DeterminismOutcome {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) lane: String,
+    pub(crate) status: String,
+    pub(crate) error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct PerfCaseSample {
+pub(crate) struct PerfCaseSample {
     #[serde(default)]
-    id: String,
-    pub(super) name: String,
-    compile_ns: u128,
-    pub(super) runtime_ns: u128,
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) compile_ns: u128,
+    pub(crate) runtime_ns: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
-    metrics: Option<MetricsDump>,
+    pub(crate) metrics: Option<MetricsDump>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct PerfSummary {
-    sample_count: usize,
-    pub(super) compile_throughput_tests_per_sec: f64,
-    pub(super) runtime_p50_ns: u128,
-    pub(super) runtime_p95_ns: u128,
-    pub(super) runtime_p99_ns: u128,
-    pub(super) allocs_per_request: f64,
-    rc_inc: u64,
-    rc_dec: u64,
-    rc_ops_total: u64,
-    pub(super) dispatch_hit_ratio: f64,
+pub(crate) struct PerfSummary {
+    pub(crate) sample_count: usize,
+    pub(crate) compile_throughput_tests_per_sec: f64,
+    pub(crate) runtime_p50_ns: u128,
+    pub(crate) runtime_p95_ns: u128,
+    pub(crate) runtime_p99_ns: u128,
+    pub(crate) allocs_per_request: f64,
+    pub(crate) rc_inc: u64,
+    pub(crate) rc_dec: u64,
+    pub(crate) rc_ops_total: u64,
+    pub(crate) dispatch_hit_ratio: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    check_fallback_rate: Option<f64>,
+    pub(crate) check_fallback_rate: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    avg_check_batch_size: Option<f64>,
+    pub(crate) avg_check_batch_size: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    check_oracle_eval_ns_p50: Option<u128>,
+    pub(crate) check_oracle_eval_ns_p50: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    check_oracle_eval_ns_p95: Option<u128>,
+    pub(crate) check_oracle_eval_ns_p95: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    effect_annihilation_rewrite_count: Option<u64>,
+    pub(crate) effect_annihilation_rewrite_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) scheduler_dispatch_p99_ns: Option<u128>,
+    pub(crate) scheduler_dispatch_p99_ns: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    scheduler_starvation_violations: Option<u64>,
+    pub(crate) scheduler_starvation_violations: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    rewrite_compile_overhead_pct: Option<f64>,
+    pub(crate) rewrite_compile_overhead_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    rewrite_applied_count: Option<u64>,
+    pub(crate) rewrite_applied_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    actor_msgs_per_sec_p50: Option<f64>,
+    pub(crate) actor_msgs_per_sec_p50: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    actor_msgs_per_sec_p95: Option<f64>,
+    pub(crate) actor_msgs_per_sec_p95: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    queue_enqueue_p99_ns: Option<u128>,
+    pub(crate) queue_enqueue_p99_ns: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    queue_dequeue_p99_ns: Option<u128>,
+    pub(crate) queue_dequeue_p99_ns: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) queue_age_p99_ns: Option<u128>,
+    pub(crate) queue_age_p99_ns: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    mailbox_wake_coalesced_count: Option<u64>,
+    pub(crate) mailbox_wake_coalesced_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    mailbox_rescue_wake_count: Option<u64>,
+    pub(crate) mailbox_rescue_wake_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    queue_cas_retry_total: Option<u64>,
+    pub(crate) queue_cas_retry_total: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) cases: Option<Vec<PerfCaseSample>>,
-    pub(super) metrics: MetricsTotals,
+    pub(crate) cases: Option<Vec<PerfCaseSample>>,
+    pub(crate) metrics: MetricsTotals,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-pub(super) struct KpiThresholds {
+pub(crate) struct KpiThresholds {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) check_fallback_max: Option<f64>,
+    pub(crate) check_fallback_max: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) check_batch_min: Option<f64>,
+    pub(crate) check_batch_min: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) scheduler_p99_improve_min_pct: Option<f64>,
+    pub(crate) scheduler_p99_improve_min_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) rewrite_overhead_max_pct: Option<f64>,
+    pub(crate) rewrite_overhead_max_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) actor_throughput_improve_min_pct: Option<f64>,
+    pub(crate) actor_throughput_improve_min_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) queue_age_p99_max_regress_pct: Option<f64>,
+    pub(crate) queue_age_p99_max_regress_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) starvation_violations_max: Option<f64>,
+    pub(crate) starvation_violations_max: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) scheduler_throughput_improve_min_pct: Option<f64>,
+    pub(crate) scheduler_throughput_improve_min_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) scheduler_loop_p99_max_regress_pct: Option<f64>,
+    pub(crate) scheduler_loop_p99_max_regress_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) scheduler_local_hit_min: Option<f64>,
+    pub(crate) scheduler_local_hit_min: Option<f64>,
 }
 
 impl KpiThresholds {
-    pub(super) fn any_set(&self) -> bool {
+    pub(crate) fn any_set(&self) -> bool {
         self.check_fallback_max.is_some()
             || self.check_batch_min.is_some()
             || self.scheduler_p99_improve_min_pct.is_some()
@@ -801,40 +847,40 @@ impl KpiThresholds {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct PerfCv {
-    pub(super) compile_throughput_pct: f64,
-    pub(super) runtime_p50_pct: f64,
-    pub(super) runtime_p95_pct: f64,
-    pub(super) runtime_p99_pct: f64,
+pub(crate) struct PerfCv {
+    pub(crate) compile_throughput_pct: f64,
+    pub(crate) runtime_p50_pct: f64,
+    pub(crate) runtime_p95_pct: f64,
+    pub(crate) runtime_p99_pct: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct PerfReport {
-    pub(super) version: u32,
-    pub(super) generated_at_unix_ms: u128,
-    pub(super) runs: usize,
-    pub(super) cv: PerfCv,
-    pub(super) summary: PerfSummary,
-    pub(super) samples: Vec<PerfSummary>,
+pub(crate) struct PerfReport {
+    pub(crate) version: u32,
+    pub(crate) generated_at_unix_ms: u128,
+    pub(crate) runs: usize,
+    pub(crate) cv: PerfCv,
+    pub(crate) summary: PerfSummary,
+    pub(crate) samples: Vec<PerfSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) closure: Option<wrela::perf_target::PerfClosureReport>,
+    pub(crate) closure: Option<wrela::perf_target::PerfClosureReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) presentation_reports: Option<Vec<PresentationBenchmarkReport>>,
+    pub(crate) presentation_reports: Option<Vec<PresentationBenchmarkReport>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) whole_frame_reports: Option<Vec<WholeFrameBenchmarkReport>>,
+    pub(crate) whole_frame_reports: Option<Vec<WholeFrameBenchmarkReport>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) collision_reports: Option<Vec<CollisionBenchmarkReport>>,
+    pub(crate) collision_reports: Option<Vec<CollisionBenchmarkReport>>,
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct PerfGateConfig {
-    pub(super) baseline_path: PathBuf,
-    pub(super) max_regression_pct: f64,
-    pub(super) kpi_thresholds: KpiThresholds,
+pub(crate) struct PerfGateConfig {
+    pub(crate) baseline_path: PathBuf,
+    pub(crate) max_regression_pct: f64,
+    pub(crate) kpi_thresholds: KpiThresholds,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) enum PerfProfile {
+pub(crate) enum PerfProfile {
     Smoke,
     Standard,
     Deep,
@@ -842,7 +888,7 @@ pub(super) enum PerfProfile {
 }
 
 impl PerfProfile {
-    fn parse(value: &str) -> Option<Self> {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "smoke" => Some(Self::Smoke),
             "standard" => Some(Self::Standard),
@@ -854,7 +900,7 @@ impl PerfProfile {
         }
     }
 
-    pub(super) fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Smoke => "smoke",
             Self::Standard => "standard",
@@ -865,224 +911,224 @@ impl PerfProfile {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(super) struct BenchmarkManifest {
-    version: u32,
-    pub(super) suite: String,
+pub(crate) struct BenchmarkManifest {
+    pub(crate) version: u32,
+    pub(crate) suite: String,
     #[serde(default)]
-    pub(super) optional: bool,
+    pub(crate) optional: bool,
     #[serde(default)]
-    pub(super) profiles: BenchmarkProfiles,
-    scenarios: Vec<BenchmarkScenario>,
+    pub(crate) profiles: BenchmarkProfiles,
+    pub(crate) scenarios: Vec<BenchmarkScenario>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub(super) struct BenchmarkProfiles {
+pub(crate) struct BenchmarkProfiles {
     #[serde(default)]
-    smoke: Option<BenchmarkProfileConfig>,
+    pub(crate) smoke: Option<BenchmarkProfileConfig>,
     #[serde(default)]
-    standard: Option<BenchmarkProfileConfig>,
+    pub(crate) standard: Option<BenchmarkProfileConfig>,
     #[serde(default)]
-    deep: Option<BenchmarkProfileConfig>,
+    pub(crate) deep: Option<BenchmarkProfileConfig>,
     #[serde(default)]
-    closure_1080p120: Option<BenchmarkProfileConfig>,
+    pub(crate) closure_1080p120: Option<BenchmarkProfileConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(super) struct BenchmarkProfileConfig {
-    pub(super) warmup_pairs: usize,
-    pub(super) measure_pairs: usize,
-    pub(super) coverage: String,
+pub(crate) struct BenchmarkProfileConfig {
+    pub(crate) warmup_pairs: usize,
+    pub(crate) measure_pairs: usize,
+    pub(crate) coverage: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub(super) struct BenchmarkScenario {
-    pub(super) id: String,
-    pub(super) test_name: String,
-    pub(super) ops: u64,
-    pub(super) class: String,
+pub(crate) struct BenchmarkScenario {
+    pub(crate) id: String,
+    pub(crate) test_name: String,
+    pub(crate) ops: u64,
+    pub(crate) class: String,
     #[serde(default)]
-    pub(super) min_runtime_ms: Option<u64>,
+    pub(crate) min_runtime_ms: Option<u64>,
     #[serde(default)]
-    pub(super) timeout_ms: Option<u64>,
+    pub(crate) timeout_ms: Option<u64>,
     #[serde(default)]
-    pub(super) allow_unstable: bool,
+    pub(crate) allow_unstable: bool,
     #[serde(default)]
-    pub(super) presentation: Option<BenchmarkPresentationSpec>,
+    pub(crate) presentation: Option<BenchmarkPresentationSpec>,
     #[serde(default)]
-    pub(super) collision: Option<BenchmarkCollisionSpec>,
+    pub(crate) collision: Option<BenchmarkCollisionSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
-pub(super) struct BenchmarkPresentationSpec {
-    pub(super) view: String,
-    pub(super) region: String,
+pub(crate) struct BenchmarkPresentationSpec {
+    pub(crate) view: String,
+    pub(crate) region: String,
     #[serde(default)]
-    pub(super) entry: Option<String>,
+    pub(crate) entry: Option<String>,
     #[serde(default)]
-    pub(super) domain: Option<String>,
+    pub(crate) domain: Option<String>,
     #[serde(default)]
-    pub(super) width: Option<u32>,
+    pub(crate) width: Option<u32>,
     #[serde(default)]
-    pub(super) height: Option<u32>,
+    pub(crate) height: Option<u32>,
     #[serde(default)]
-    pub(super) frames: Option<u32>,
-    pub(super) camera_position: [f32; 3],
-    pub(super) camera_forward: [f32; 3],
-    pub(super) camera_up: [f32; 3],
-    pub(super) vertical_fov_degrees: f32,
+    pub(crate) frames: Option<u32>,
+    pub(crate) camera_position: [f32; 3],
+    pub(crate) camera_forward: [f32; 3],
+    pub(crate) camera_up: [f32; 3],
+    pub(crate) vertical_fov_degrees: f32,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
-pub(super) struct BenchmarkCollisionSpec {
+pub(crate) struct BenchmarkCollisionSpec {
     #[serde(default)]
-    pub(super) entry: Option<String>,
-    pub(super) region: String,
-    pub(super) domain: String,
-    pub(super) workload: String,
+    pub(crate) entry: Option<String>,
+    pub(crate) region: String,
+    pub(crate) domain: String,
+    pub(crate) workload: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(super) struct PresentationWgslWorkgroupComparison {
-    pub(super) selected_workgroup_size: u32,
-    pub(super) candidate_workgroup_sizes: Vec<u32>,
-    pub(super) candidate_frame_time_ns: Vec<u128>,
-    pub(super) frame_time_ns_delta_vs_selected: Vec<i128>,
-    pub(super) frame_time_ns_delta_vs_selected_pct: Vec<f64>,
+pub(crate) struct PresentationWgslWorkgroupComparison {
+    pub(crate) selected_workgroup_size: u32,
+    pub(crate) candidate_workgroup_sizes: Vec<u32>,
+    pub(crate) candidate_frame_time_ns: Vec<u128>,
+    pub(crate) frame_time_ns_delta_vs_selected: Vec<i128>,
+    pub(crate) frame_time_ns_delta_vs_selected_pct: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(super) struct PresentationBenchmarkReport {
-    pub(super) scenario_id: String,
-    pub(super) test_name: String,
-    pub(super) view: String,
-    pub(super) region: String,
-    pub(super) domain: String,
-    pub(super) backend: String,
+pub(crate) struct PresentationBenchmarkReport {
+    pub(crate) scenario_id: String,
+    pub(crate) test_name: String,
+    pub(crate) view: String,
+    pub(crate) region: String,
+    pub(crate) domain: String,
+    pub(crate) backend: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) observed_adapter_name: Option<String>,
-    pub(super) query_trace_solver_mode: String,
+    pub(crate) observed_adapter_name: Option<String>,
+    pub(crate) query_trace_solver_mode: String,
     #[serde(default)]
-    pub(super) selected_workgroup_size: u32,
-    pub(super) frames_executed: u32,
-    pub(super) frame_time_ns: u128,
+    pub(crate) selected_workgroup_size: u32,
+    pub(crate) frames_executed: u32,
+    pub(crate) frame_time_ns: u128,
     #[serde(default)]
-    pub(super) steady_state_fps: f64,
-    pub(super) field_samples: u32,
-    pub(super) quality_tier: String,
-    pub(super) target_fps: u32,
-    pub(super) internal_resolution_scale: f32,
-    pub(super) reconstructed_output: bool,
-    pub(super) quality_history: Vec<String>,
-    pub(super) internal_resolution_history: Vec<f32>,
-    pub(super) bottleneck_pass: Option<String>,
-    pub(super) active_acceleration_artifacts: Vec<String>,
-    pub(super) performance_gain_sources: Vec<String>,
-    pub(super) frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
+    pub(crate) steady_state_fps: f64,
+    pub(crate) field_samples: u32,
+    pub(crate) quality_tier: String,
+    pub(crate) target_fps: u32,
+    pub(crate) internal_resolution_scale: f32,
+    pub(crate) reconstructed_output: bool,
+    pub(crate) quality_history: Vec<String>,
+    pub(crate) internal_resolution_history: Vec<f32>,
+    pub(crate) bottleneck_pass: Option<String>,
+    pub(crate) active_acceleration_artifacts: Vec<String>,
+    pub(crate) performance_gain_sources: Vec<String>,
+    pub(crate) frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(super) frame_cost_history: Vec<wrela::presentation_exec::PresentationFrameCostReport>,
+    pub(crate) frame_cost_history: Vec<wrela::presentation_exec::PresentationFrameCostReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) wgsl_workgroup_comparison: Option<PresentationWgslWorkgroupComparison>,
+    pub(crate) wgsl_workgroup_comparison: Option<PresentationWgslWorkgroupComparison>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) ab_comparison: Option<PresentationBenchmarkComparison>,
+    pub(crate) ab_comparison: Option<PresentationBenchmarkComparison>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(super) struct PresentationBenchmarkComparison {
-    pub(super) dense_only_query_trace_solver_mode: String,
-    pub(super) dense_only_frame_time_ns: u128,
-    pub(super) frame_time_ns_delta_vs_dense_only: i128,
-    pub(super) frame_time_ns_delta_vs_dense_only_pct: f64,
-    pub(super) dense_only_average_trace_steps: f32,
-    pub(super) average_trace_steps_delta_vs_dense_only: f32,
-    pub(super) dense_only_field_samples: u32,
-    pub(super) field_samples_delta_vs_dense_only: i64,
-    pub(super) dense_only_candidate_count_before_pruning: u32,
-    pub(super) candidate_count_before_pruning_delta_vs_dense_only: i64,
-    pub(super) dense_only_candidate_count_after_pruning: u32,
-    pub(super) candidate_count_after_pruning_delta_vs_dense_only: i64,
+pub(crate) struct PresentationBenchmarkComparison {
+    pub(crate) dense_only_query_trace_solver_mode: String,
+    pub(crate) dense_only_frame_time_ns: u128,
+    pub(crate) frame_time_ns_delta_vs_dense_only: i128,
+    pub(crate) frame_time_ns_delta_vs_dense_only_pct: f64,
+    pub(crate) dense_only_average_trace_steps: f32,
+    pub(crate) average_trace_steps_delta_vs_dense_only: f32,
+    pub(crate) dense_only_field_samples: u32,
+    pub(crate) field_samples_delta_vs_dense_only: i64,
+    pub(crate) dense_only_candidate_count_before_pruning: u32,
+    pub(crate) candidate_count_before_pruning_delta_vs_dense_only: i64,
+    pub(crate) dense_only_candidate_count_after_pruning: u32,
+    pub(crate) candidate_count_after_pruning_delta_vs_dense_only: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(super) struct CollisionBenchmarkReport {
-    pub(super) suite: String,
-    pub(super) backend: String,
-    pub(super) command: String,
-    pub(super) query_count_total: u64,
-    pub(super) total_runtime_ns: u128,
-    pub(super) queries_per_sec: f64,
-    pub(super) average_candidate_count: f64,
-    pub(super) average_rejected_candidate_count: f64,
-    pub(super) average_pruned_node_count: f64,
-    pub(super) average_interval_subdivisions: f64,
-    pub(super) average_interval_refinements: f64,
-    pub(super) average_certificate_successes: f64,
-    pub(super) witness_reuse_rate: f64,
-    pub(super) fallback_rate: f64,
-    pub(super) available_count_total: u64,
-    pub(super) consumed_count_total: u64,
-    pub(super) rejected_count_total: u64,
-    pub(super) unavailable_count_total: u64,
+pub(crate) struct CollisionBenchmarkReport {
+    pub(crate) suite: String,
+    pub(crate) backend: String,
+    pub(crate) command: String,
+    pub(crate) query_count_total: u64,
+    pub(crate) total_runtime_ns: u128,
+    pub(crate) queries_per_sec: f64,
+    pub(crate) average_candidate_count: f64,
+    pub(crate) average_rejected_candidate_count: f64,
+    pub(crate) average_pruned_node_count: f64,
+    pub(crate) average_interval_subdivisions: f64,
+    pub(crate) average_interval_refinements: f64,
+    pub(crate) average_certificate_successes: f64,
+    pub(crate) witness_reuse_rate: f64,
+    pub(crate) fallback_rate: f64,
+    pub(crate) available_count_total: u64,
+    pub(crate) consumed_count_total: u64,
+    pub(crate) rejected_count_total: u64,
+    pub(crate) unavailable_count_total: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(super) executions: Vec<CollisionBenchmarkExecutionReport>,
+    pub(crate) executions: Vec<CollisionBenchmarkExecutionReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(super) struct CollisionBenchmarkExecutionReport {
-    pub(super) name: String,
-    pub(super) plan_name: String,
-    pub(super) contract_id: String,
+pub(crate) struct CollisionBenchmarkExecutionReport {
+    pub(crate) name: String,
+    pub(crate) plan_name: String,
+    pub(crate) contract_id: String,
     #[serde(default)]
-    pub(super) query_count: u64,
-    pub(super) runtime_ns: u128,
-    pub(super) queries_per_sec: f64,
-    pub(super) broadphase_candidate_count: u32,
-    pub(super) broadphase_rejected_candidate_count: u32,
-    pub(super) broadphase_pruned_node_count: u32,
+    pub(crate) query_count: u64,
+    pub(crate) runtime_ns: u128,
+    pub(crate) queries_per_sec: f64,
+    pub(crate) broadphase_candidate_count: u32,
+    pub(crate) broadphase_rejected_candidate_count: u32,
+    pub(crate) broadphase_pruned_node_count: u32,
     #[serde(default)]
-    pub(super) candidate_reduction_effectiveness: f32,
-    pub(super) interval_subdivisions: u32,
-    pub(super) interval_refinements: u32,
-    pub(super) certificate_successes: u32,
+    pub(crate) candidate_reduction_effectiveness: f32,
+    pub(crate) interval_subdivisions: u32,
+    pub(crate) interval_refinements: u32,
+    pub(crate) certificate_successes: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) interval_bracket: Option<[f32; 2]>,
+    pub(crate) interval_bracket: Option<[f32; 2]>,
     #[serde(default)]
-    pub(super) fallback_count: u32,
+    pub(crate) fallback_count: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) contact_normal_provenance: Option<String>,
+    pub(crate) contact_normal_provenance: Option<String>,
     #[serde(default)]
-    pub(super) wgsl_dispatch_count: u32,
+    pub(crate) wgsl_dispatch_count: u32,
     #[serde(default)]
-    pub(super) wgsl_dispatch_items: u32,
+    pub(crate) wgsl_dispatch_items: u32,
     #[serde(default)]
-    pub(super) wgsl_selected_workgroup_size: u32,
+    pub(crate) wgsl_selected_workgroup_size: u32,
     #[serde(default)]
-    pub(super) wgsl_resident_shared_snapshot_artifacts: u32,
+    pub(crate) wgsl_resident_shared_snapshot_artifacts: u32,
     #[serde(default)]
-    pub(super) cpu_certification_query_count: u32,
-    pub(super) available_count: u32,
-    pub(super) consumed_count: u32,
-    pub(super) rejected_count: u32,
-    pub(super) unavailable_count: u32,
-    pub(super) witness_reuse_rate: f64,
-    pub(super) fallback_rate: f64,
+    pub(crate) cpu_certification_query_count: u32,
+    pub(crate) available_count: u32,
+    pub(crate) consumed_count: u32,
+    pub(crate) rejected_count: u32,
+    pub(crate) unavailable_count: u32,
+    pub(crate) witness_reuse_rate: f64,
+    pub(crate) fallback_rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(super) struct WholeFrameBenchmarkReport {
-    pub(super) scenario_id: String,
-    pub(super) test_name: String,
-    pub(super) presentation_frame_time_ns: u128,
-    pub(super) collision_runtime_ns: u128,
-    pub(super) total_runtime_ns: u128,
-    pub(super) steady_state_fps: f64,
+pub(crate) struct WholeFrameBenchmarkReport {
+    pub(crate) scenario_id: String,
+    pub(crate) test_name: String,
+    pub(crate) presentation_frame_time_ns: u128,
+    pub(crate) collision_runtime_ns: u128,
+    pub(crate) total_runtime_ns: u128,
+    pub(crate) steady_state_fps: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) presentation_bottleneck_pass: Option<String>,
-    pub(super) collision_fallback_rate: f64,
-    pub(super) collision_witness_reuse_rate: f64,
+    pub(crate) presentation_bottleneck_pass: Option<String>,
+    pub(crate) collision_fallback_rate: f64,
+    pub(crate) collision_witness_reuse_rate: f64,
 }
 
 impl BenchmarkManifest {
-    pub(super) fn scenarios_for_profile(&self, profile: PerfProfile) -> Vec<&BenchmarkScenario> {
+    pub(crate) fn scenarios_for_profile(&self, profile: PerfProfile) -> Vec<&BenchmarkScenario> {
         let coverage = self
             .profiles
             .config_for(profile)
@@ -1100,7 +1146,7 @@ impl BenchmarkManifest {
 }
 
 impl BenchmarkProfiles {
-    pub(super) fn config_for(&self, profile: PerfProfile) -> Option<&BenchmarkProfileConfig> {
+    pub(crate) fn config_for(&self, profile: PerfProfile) -> Option<&BenchmarkProfileConfig> {
         match profile {
             PerfProfile::Smoke => self.smoke.as_ref(),
             PerfProfile::Standard => self.standard.as_ref(),
@@ -1111,41 +1157,41 @@ impl BenchmarkProfiles {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct PerfCmpConfig {
-    pub(super) baseline_ref: String,
-    pub(super) candidate_ref: String,
-    pub(super) manifest_path: PathBuf,
-    pub(super) benchmark_root: PathBuf,
-    pub(super) profile: PerfProfile,
-    pub(super) warmup_pairs_override: Option<usize>,
-    pub(super) measure_pairs_override: Option<usize>,
-    pub(super) min_effect_pct: f64,
-    pub(super) confidence_pct: f64,
-    pub(super) output_json: PathBuf,
-    pub(super) output_format: OutputFormat,
-    pub(super) test_timeout_ms: Option<u64>,
-    pub(super) perf_debug: bool,
+pub(crate) struct PerfCmpConfig {
+    pub(crate) baseline_ref: String,
+    pub(crate) candidate_ref: String,
+    pub(crate) manifest_path: PathBuf,
+    pub(crate) benchmark_root: PathBuf,
+    pub(crate) profile: PerfProfile,
+    pub(crate) warmup_pairs_override: Option<usize>,
+    pub(crate) measure_pairs_override: Option<usize>,
+    pub(crate) min_effect_pct: f64,
+    pub(crate) confidence_pct: f64,
+    pub(crate) output_json: PathBuf,
+    pub(crate) output_format: OutputFormat,
+    pub(crate) test_timeout_ms: Option<u64>,
+    pub(crate) perf_debug: bool,
 }
 
-struct EvalCommandInput {
-    trace: bool,
-    path_arg: Option<String>,
-    program_args: Vec<String>,
-    runs: Option<usize>,
-    output_format: OutputFormat,
+pub(crate) struct EvalCommandInput {
+    pub(crate) trace: bool,
+    pub(crate) path_arg: Option<String>,
+    pub(crate) program_args: Vec<String>,
+    pub(crate) runs: Option<usize>,
+    pub(crate) output_format: OutputFormat,
 }
 
-const EVAL_ONE_SHOT_SCHEMA_VERSION: u32 = 2;
+pub(crate) const EVAL_ONE_SHOT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum EvalOneShotCommandKind {
+pub(crate) enum EvalOneShotCommandKind {
     Check,
     Test,
 }
 
 impl EvalOneShotCommandKind {
-    fn as_cli_command(self) -> &'static str {
+    pub(crate) fn as_cli_command(self) -> &'static str {
         match self {
             Self::Check => "check",
             Self::Test => "test",
@@ -1154,94 +1200,94 @@ impl EvalOneShotCommandKind {
 }
 
 #[derive(Clone, Deserialize, Serialize)]
-struct EvalOneShotManifest {
-    schema_version: u32,
-    suite_id: String,
-    cases: Vec<EvalOneShotCase>,
+pub(crate) struct EvalOneShotManifest {
+    pub(crate) schema_version: u32,
+    pub(crate) suite_id: String,
+    pub(crate) cases: Vec<EvalOneShotCase>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
-struct EvalOneShotCase {
-    id: String,
-    workspace_dir: String,
-    command: EvalOneShotCommandKind,
-    target: String,
+pub(crate) struct EvalOneShotCase {
+    pub(crate) id: String,
+    pub(crate) workspace_dir: String,
+    pub(crate) command: EvalOneShotCommandKind,
+    pub(crate) target: String,
     #[serde(default = "default_eval_one_shot_max_loops")]
-    max_loops: u32,
-    attempts: Vec<EvalOneShotAttempt>,
+    pub(crate) max_loops: u32,
+    pub(crate) attempts: Vec<EvalOneShotAttempt>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
-struct EvalOneShotAttempt {
-    id: String,
+pub(crate) struct EvalOneShotAttempt {
+    pub(crate) id: String,
     #[serde(default = "default_eval_one_shot_visible_to_agent")]
-    visible_to_agent: bool,
+    pub(crate) visible_to_agent: bool,
     #[serde(default)]
-    machine_applicable: bool,
+    pub(crate) machine_applicable: bool,
     #[serde(default)]
-    writes: Vec<EvalOneShotWrite>,
+    pub(crate) writes: Vec<EvalOneShotWrite>,
     #[serde(default)]
-    deletes: Vec<String>,
+    pub(crate) deletes: Vec<String>,
     #[serde(default)]
-    noop: bool,
+    pub(crate) noop: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
-struct EvalOneShotWrite {
-    path: String,
-    content: String,
+pub(crate) struct EvalOneShotWrite {
+    pub(crate) path: String,
+    pub(crate) content: String,
 }
 
 #[derive(Clone, Serialize)]
-struct EvalOneShotCaseReport {
-    passed: bool,
-    id: String,
-    loops_to_green: Option<u32>,
-    parse_survived: bool,
-    machine_applicable_fix_applied: bool,
-    retries: u32,
-    hidden_retries: u32,
-    execution_ms_total: u128,
+pub(crate) struct EvalOneShotCaseReport {
+    pub(crate) passed: bool,
+    pub(crate) id: String,
+    pub(crate) loops_to_green: Option<u32>,
+    pub(crate) parse_survived: bool,
+    pub(crate) machine_applicable_fix_applied: bool,
+    pub(crate) retries: u32,
+    pub(crate) hidden_retries: u32,
+    pub(crate) execution_ms_total: u128,
 }
 
 #[derive(Serialize)]
-struct EvalOneShotCaseReportStable {
-    id: String,
-    passed: bool,
-    loops_to_green: Option<u32>,
-    parse_survived: bool,
-    machine_applicable_fix_applied: bool,
-    retries: u32,
-    hidden_retries: u32,
+pub(crate) struct EvalOneShotCaseReportStable {
+    pub(crate) id: String,
+    pub(crate) passed: bool,
+    pub(crate) loops_to_green: Option<u32>,
+    pub(crate) parse_survived: bool,
+    pub(crate) machine_applicable_fix_applied: bool,
+    pub(crate) retries: u32,
+    pub(crate) hidden_retries: u32,
 }
 
 #[derive(Serialize)]
-struct EvalOneShotReport {
-    schema_version: u32,
-    suite_id: String,
-    command: String,
-    runs: usize,
-    sample_size: usize,
-    pass_rate: f64,
-    median_loops_to_green: f64,
-    parse_survival_rate: f64,
-    machine_applicable_fix_apply_rate: f64,
-    retries_observed: u32,
-    hidden_retry_failures: usize,
-    cases: Vec<EvalOneShotCaseReport>,
-    corpus_hash: String,
-    report_hash: String,
+pub(crate) struct EvalOneShotReport {
+    pub(crate) schema_version: u32,
+    pub(crate) suite_id: String,
+    pub(crate) command: String,
+    pub(crate) runs: usize,
+    pub(crate) sample_size: usize,
+    pub(crate) pass_rate: f64,
+    pub(crate) median_loops_to_green: f64,
+    pub(crate) parse_survival_rate: f64,
+    pub(crate) machine_applicable_fix_apply_rate: f64,
+    pub(crate) retries_observed: u32,
+    pub(crate) hidden_retry_failures: usize,
+    pub(crate) cases: Vec<EvalOneShotCaseReport>,
+    pub(crate) corpus_hash: String,
+    pub(crate) report_hash: String,
 }
 
-fn default_eval_one_shot_max_loops() -> u32 {
+pub(crate) fn default_eval_one_shot_max_loops() -> u32 {
     3
 }
 
-fn default_eval_one_shot_visible_to_agent() -> bool {
+pub(crate) fn default_eval_one_shot_visible_to_agent() -> bool {
     true
 }
 
-fn execute_eval_command(input: EvalCommandInput) -> i32 {
+pub(crate) fn execute_eval_command(input: EvalCommandInput) -> i32 {
     if input.trace {
         eprintln!("build: command eval");
     }
@@ -1348,7 +1394,9 @@ fn execute_eval_command(input: EvalCommandInput) -> i32 {
     EXIT_OK
 }
 
-fn load_eval_one_shot_manifest(path: &Path) -> Result<(EvalOneShotManifest, String), String> {
+pub(crate) fn load_eval_one_shot_manifest(
+    path: &Path,
+) -> Result<(EvalOneShotManifest, String), String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read one-shot corpus {}: {err}", path.display()))?;
     let value: serde_json::Value =
@@ -1367,7 +1415,9 @@ fn load_eval_one_shot_manifest(path: &Path) -> Result<(EvalOneShotManifest, Stri
     Ok((manifest, fnv1a64_hex(&corpus_bytes)))
 }
 
-fn validate_eval_one_shot_manifest(manifest: &EvalOneShotManifest) -> Result<(), String> {
+pub(crate) fn validate_eval_one_shot_manifest(
+    manifest: &EvalOneShotManifest,
+) -> Result<(), String> {
     if manifest.schema_version != EVAL_ONE_SHOT_SCHEMA_VERSION {
         return Err(format!(
             "unsupported one-shot schema_version {}; expected {}",
@@ -1453,7 +1503,7 @@ fn validate_eval_one_shot_manifest(manifest: &EvalOneShotManifest) -> Result<(),
     Ok(())
 }
 
-fn eval_one_shot_relative_path_is_safe(path: &str, allow_dot: bool) -> bool {
+pub(crate) fn eval_one_shot_relative_path_is_safe(path: &str, allow_dot: bool) -> bool {
     if path.trim().is_empty() {
         return false;
     }
@@ -1474,7 +1524,7 @@ fn eval_one_shot_relative_path_is_safe(path: &str, allow_dot: bool) -> bool {
     allow_dot || saw_normal
 }
 
-fn run_eval_one_shot_cases(
+pub(crate) fn run_eval_one_shot_cases(
     manifest_path: &Path,
     manifest: &EvalOneShotManifest,
 ) -> Result<Vec<EvalOneShotCaseReport>, String> {
@@ -1578,7 +1628,7 @@ fn run_eval_one_shot_cases(
     Ok(reports)
 }
 
-fn copy_dir_recursive_sorted(src: &Path, dst: &Path) -> Result<(), String> {
+pub(crate) fn copy_dir_recursive_sorted(src: &Path, dst: &Path) -> Result<(), String> {
     if !src.is_dir() {
         return Err(format!("source directory missing: {}", src.display()));
     }
@@ -1625,7 +1675,7 @@ fn copy_dir_recursive_sorted(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn apply_eval_one_shot_attempt(
+pub(crate) fn apply_eval_one_shot_attempt(
     case: &EvalOneShotCase,
     attempt: &EvalOneShotAttempt,
     workspace_root: &Path,
@@ -1676,7 +1726,7 @@ fn apply_eval_one_shot_attempt(
     Ok(())
 }
 
-fn run_eval_one_shot_attempt(
+pub(crate) fn run_eval_one_shot_attempt(
     cli_path: &Path,
     workspace_root: &Path,
     command: EvalOneShotCommandKind,
@@ -1698,7 +1748,7 @@ fn run_eval_one_shot_attempt(
     Ok((output, started.elapsed().as_millis()))
 }
 
-fn eval_one_shot_attempt_has_parse_failure(output: &Output) -> bool {
+pub(crate) fn eval_one_shot_attempt_has_parse_failure(output: &Output) -> bool {
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout
         .lines()
@@ -1722,7 +1772,7 @@ fn eval_one_shot_attempt_has_parse_failure(output: &Output) -> bool {
         || stderr.contains("lexical error")
 }
 
-fn summarize_eval_one_shot(
+pub(crate) fn summarize_eval_one_shot(
     manifest: &EvalOneShotManifest,
     case_reports: &[EvalOneShotCaseReport],
     runs: usize,
@@ -1818,7 +1868,7 @@ fn summarize_eval_one_shot(
     }
 }
 
-pub(super) fn run_tests_once(
+pub(crate) fn run_tests_once(
     target: &TestTarget,
     budget_policy: &BudgetPolicyV1,
     jobs: usize,
@@ -2237,7 +2287,7 @@ pub(super) fn run_tests_once(
     (EXIT_OK, Some(summary), Some(signature))
 }
 
-fn build_determinism_signature(cases: &[TestJsonCase]) -> DeterminismSignature {
+pub(crate) fn build_determinism_signature(cases: &[TestJsonCase]) -> DeterminismSignature {
     let outcomes: Vec<DeterminismOutcome> = cases
         .iter()
         .map(|case| DeterminismOutcome {
@@ -2254,7 +2304,7 @@ fn build_determinism_signature(cases: &[TestJsonCase]) -> DeterminismSignature {
     DeterminismSignature { hash, outcomes }
 }
 
-pub(super) fn first_signature_mismatch_detail(
+pub(crate) fn first_signature_mismatch_detail(
     first: &[DeterminismOutcome],
     second: &[DeterminismOutcome],
 ) -> Option<String> {
@@ -2276,7 +2326,7 @@ pub(super) fn first_signature_mismatch_detail(
     None
 }
 
-fn configure_runtime_for_test_lane(perf_lane: bool, _perf_debug: bool) {
+pub(crate) fn configure_runtime_for_test_lane(perf_lane: bool, _perf_debug: bool) {
     if !perf_lane {
         return;
     }
@@ -2292,7 +2342,7 @@ fn configure_runtime_for_test_lane(perf_lane: bool, _perf_debug: bool) {
     }
 }
 
-fn build_perf_summary(
+pub(crate) fn build_perf_summary(
     compile_ns: &[u128],
     runtime_ns: &[u128],
     metrics_count: usize,
@@ -2369,7 +2419,7 @@ fn build_perf_summary(
     }
 }
 
-pub(super) fn overlay_perf_summary_runtime_cases(
+pub(crate) fn overlay_perf_summary_runtime_cases(
     base: &PerfSummary,
     cases: &[(String, String, u128)],
 ) -> PerfSummary {
@@ -2402,11 +2452,11 @@ pub(super) fn overlay_perf_summary_runtime_cases(
     summary
 }
 
-pub(super) fn emit_perf_summary(summary: &PerfSummary, perf_debug: bool) {
+pub(crate) fn emit_perf_summary(summary: &PerfSummary, perf_debug: bool) {
     print_perf_summary(summary, perf_debug);
 }
 
-fn print_perf_summary(summary: &PerfSummary, perf_debug: bool) {
+pub(crate) fn print_perf_summary(summary: &PerfSummary, perf_debug: bool) {
     println!(
         "perf: compile_tps={:.2} p50_ns={} p95_ns={} p99_ns={} allocs/request={:.2} rc_ops={} dispatch_hit_ratio={:.4}",
         summary.compile_throughput_tests_per_sec,
@@ -2472,26 +2522,26 @@ fn print_perf_summary(summary: &PerfSummary, perf_debug: bool) {
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
-struct CheckLaneKpis {
-    typed_lane_total: u64,
-    boxed_lane_total: u64,
-    typed_lane_ratio: f64,
+pub(crate) struct CheckLaneKpis {
+    pub(crate) typed_lane_total: u64,
+    pub(crate) boxed_lane_total: u64,
+    pub(crate) typed_lane_ratio: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
-struct SceneTraceKpis {
-    trace_total: u64,
-    field_sample_total: u64,
-    candidate_total: u64,
-    pruned_total: u64,
-    prune_ratio: f64,
-    exact_total: u64,
-    conservative_total: u64,
-    hit_total: u64,
-    avg_hit_steps: f64,
+pub(crate) struct SceneTraceKpis {
+    pub(crate) trace_total: u64,
+    pub(crate) field_sample_total: u64,
+    pub(crate) candidate_total: u64,
+    pub(crate) pruned_total: u64,
+    pub(crate) prune_ratio: f64,
+    pub(crate) exact_total: u64,
+    pub(crate) conservative_total: u64,
+    pub(crate) hit_total: u64,
+    pub(crate) avg_hit_steps: f64,
 }
 
-fn check_lane_kpis_from_summary(summary: &PerfSummary) -> CheckLaneKpis {
+pub(crate) fn check_lane_kpis_from_summary(summary: &PerfSummary) -> CheckLaneKpis {
     let typed = summary.metrics.abi_typed_lane;
     let boxed = summary.metrics.abi_boxed_lane;
     let total = typed + boxed;
@@ -2507,7 +2557,7 @@ fn check_lane_kpis_from_summary(summary: &PerfSummary) -> CheckLaneKpis {
     }
 }
 
-fn scene_trace_kpis_from_summary(summary: &PerfSummary) -> SceneTraceKpis {
+pub(crate) fn scene_trace_kpis_from_summary(summary: &PerfSummary) -> SceneTraceKpis {
     let candidate_total = summary.metrics.scene_trace_candidate_branch;
     let pruned_total = summary.metrics.scene_trace_support_pruned_branch;
     let total_considered = candidate_total.saturating_add(pruned_total);
@@ -2535,7 +2585,7 @@ fn scene_trace_kpis_from_summary(summary: &PerfSummary) -> SceneTraceKpis {
     }
 }
 
-pub(super) fn aggregate_perf_samples(samples: &[PerfSummary]) -> PerfSummary {
+pub(crate) fn aggregate_perf_samples(samples: &[PerfSummary]) -> PerfSummary {
     if samples.len() == 1 {
         return samples[0].clone();
     }
@@ -2664,7 +2714,7 @@ pub(super) fn aggregate_perf_samples(samples: &[PerfSummary]) -> PerfSummary {
     }
 }
 
-fn average_optional_f64(
+pub(crate) fn average_optional_f64(
     samples: &[PerfSummary],
     pick: impl Fn(&PerfSummary) -> Option<f64>,
 ) -> Option<f64> {
@@ -2676,7 +2726,7 @@ fn average_optional_f64(
     }
 }
 
-fn average_optional_u64(
+pub(crate) fn average_optional_u64(
     samples: &[PerfSummary],
     pick: impl Fn(&PerfSummary) -> Option<u64>,
 ) -> Option<u64> {
@@ -2688,7 +2738,7 @@ fn average_optional_u64(
     }
 }
 
-fn median_optional_u128(
+pub(crate) fn median_optional_u128(
     samples: &[PerfSummary],
     pick: impl Fn(&PerfSummary) -> Option<u128>,
 ) -> Option<u128> {
@@ -2701,7 +2751,7 @@ fn median_optional_u128(
     }
 }
 
-fn coefficient_of_variation(values: &[f64]) -> f64 {
+pub(crate) fn coefficient_of_variation(values: &[f64]) -> f64 {
     if values.len() <= 1 {
         return 0.0;
     }
@@ -2720,7 +2770,7 @@ fn coefficient_of_variation(values: &[f64]) -> f64 {
     (variance.sqrt() / mean) * 100.0
 }
 
-pub(super) fn compute_cv(samples: &[PerfSummary]) -> PerfCv {
+pub(crate) fn compute_cv(samples: &[PerfSummary]) -> PerfCv {
     let cv_samples: &[PerfSummary] = if samples.len() > 3 {
         &samples[1..]
     } else {
@@ -2750,7 +2800,7 @@ pub(super) fn compute_cv(samples: &[PerfSummary]) -> PerfCv {
     }
 }
 
-pub(super) fn load_perf_baseline_summary(path: &Path) -> Result<PerfSummary, String> {
+pub(crate) fn load_perf_baseline_summary(path: &Path) -> Result<PerfSummary, String> {
     let bytes = fs::read(path).map_err(|err| err.to_string())?;
     if let Ok(report) = serde_json::from_slice::<PerfReport>(&bytes) {
         return Ok(report.summary);
@@ -2758,7 +2808,7 @@ pub(super) fn load_perf_baseline_summary(path: &Path) -> Result<PerfSummary, Str
     serde_json::from_slice::<PerfSummary>(&bytes).map_err(|err| err.to_string())
 }
 
-pub(super) fn evaluate_perf_gate(
+pub(crate) fn evaluate_perf_gate(
     current: &PerfSummary,
     baseline: &PerfSummary,
     max_regression_pct: f64,
@@ -2940,19 +2990,19 @@ pub(super) fn evaluate_perf_gate(
     failures
 }
 
-fn float_exceeds_limit(current: f64, limit: f64) -> bool {
+pub(crate) fn float_exceeds_limit(current: f64, limit: f64) -> bool {
     current - limit > float_compare_tolerance(current, limit)
 }
 
-fn float_below_limit(current: f64, limit: f64) -> bool {
+pub(crate) fn float_below_limit(current: f64, limit: f64) -> bool {
     limit - current > float_compare_tolerance(current, limit)
 }
 
-fn float_compare_tolerance(left: f64, right: f64) -> f64 {
+pub(crate) fn float_compare_tolerance(left: f64, right: f64) -> f64 {
     1e-9_f64.max(left.abs().max(right.abs()) * 1e-9)
 }
 
-fn percentile(samples: &[u128], pct: f64) -> u128 {
+pub(crate) fn percentile(samples: &[u128], pct: f64) -> u128 {
     if samples.is_empty() {
         return 0;
     }
@@ -2961,7 +3011,11 @@ fn percentile(samples: &[u128], pct: f64) -> u128 {
     samples[rank.min(n - 1)]
 }
 
-fn collect_tests(root: &Path, tests_root: &Path, out: &mut Vec<TestCase>) -> io::Result<()> {
+pub(crate) fn collect_tests(
+    root: &Path,
+    tests_root: &Path,
+    out: &mut Vec<TestCase>,
+) -> io::Result<()> {
     let mut children: Vec<PathBuf> = fs::read_dir(root)?
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
@@ -3041,7 +3095,7 @@ mod perf_gate_tests {
     }
 }
 
-fn is_generated_test_wrapper_dir(path: &Path, tests_root: &Path) -> bool {
+pub(crate) fn is_generated_test_wrapper_dir(path: &Path, tests_root: &Path) -> bool {
     let Ok(rel) = path.strip_prefix(tests_root) else {
         return false;
     };
@@ -3053,7 +3107,7 @@ fn is_generated_test_wrapper_dir(path: &Path, tests_root: &Path) -> bool {
     )
 }
 
-fn enforce_test_file_suffix(path: &Path) -> io::Result<()> {
+pub(crate) fn enforce_test_file_suffix(path: &Path) -> io::Result<()> {
     let name = path.file_name().and_then(|s| s.to_str()).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -3069,7 +3123,7 @@ fn enforce_test_file_suffix(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn module_path_for_test_file(path: &Path, tests_root: &Path) -> io::Result<String> {
+pub(crate) fn module_path_for_test_file(path: &Path, tests_root: &Path) -> io::Result<String> {
     let rel = path.strip_prefix(tests_root).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -3091,7 +3145,7 @@ fn module_path_for_test_file(path: &Path, tests_root: &Path) -> io::Result<Strin
     Ok(format!("tests/{}", parts.join("/")))
 }
 
-fn module_path_for_single_file(path: &Path) -> io::Result<String> {
+pub(crate) fn module_path_for_single_file(path: &Path) -> io::Result<String> {
     let stem = path.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -3101,7 +3155,7 @@ fn module_path_for_single_file(path: &Path) -> io::Result<String> {
     Ok(stem.to_string())
 }
 
-fn collect_tests_from_source(
+pub(crate) fn collect_tests_from_source(
     source: &str,
     module_path: &str,
     source_path: &Path,
@@ -3213,14 +3267,14 @@ fn collect_tests_from_source(
 }
 
 #[derive(Default)]
-struct ParsedTestAttributes {
-    serial: bool,
-    allows_env_set: bool,
-    allows_fs_escape: bool,
-    unknown: Vec<String>,
+pub(crate) struct ParsedTestAttributes {
+    pub(crate) serial: bool,
+    pub(crate) allows_env_set: bool,
+    pub(crate) allows_fs_escape: bool,
+    pub(crate) unknown: Vec<String>,
 }
 
-fn parse_test_attributes(func: &hir::Function) -> ParsedTestAttributes {
+pub(crate) fn parse_test_attributes(func: &hir::Function) -> ParsedTestAttributes {
     let mut parsed = ParsedTestAttributes::default();
     for attr in &func.attributes {
         match attr.name.as_str() {
@@ -3233,7 +3287,7 @@ fn parse_test_attributes(func: &hir::Function) -> ParsedTestAttributes {
     parsed
 }
 
-fn collect_autogen_spec_tests(
+pub(crate) fn collect_autogen_spec_tests(
     workspace_root: &Path,
     max_cases: u64,
     time_cap_ms: u64,
@@ -3246,7 +3300,9 @@ fn collect_autogen_spec_tests(
     Ok(generate_autogen_spec_tests(&checks, max_cases, time_cap_ms))
 }
 
-fn discover_autogen_checks(workspace_root: &Path) -> Result<Vec<AutogenCheckDecl>, String> {
+pub(crate) fn discover_autogen_checks(
+    workspace_root: &Path,
+) -> Result<Vec<AutogenCheckDecl>, String> {
     use wrela::parser::ast::AstNode;
 
     let mut modules = Vec::new();
@@ -3295,7 +3351,7 @@ fn discover_autogen_checks(workspace_root: &Path) -> Result<Vec<AutogenCheckDecl
     Ok(discovered)
 }
 
-fn autogen_check_decl_from_function(
+pub(crate) fn autogen_check_decl_from_function(
     module_path: &str,
     func_name: &str,
     func: &hir::Function,
@@ -3325,7 +3381,7 @@ fn autogen_check_decl_from_function(
     })
 }
 
-fn autogen_scalar_type_from_ref(ty: &hir::TypeRef) -> Option<AutogenScalarType> {
+pub(crate) fn autogen_scalar_type_from_ref(ty: &hir::TypeRef) -> Option<AutogenScalarType> {
     if !ty.args.is_empty() {
         return None;
     }
@@ -3337,11 +3393,11 @@ fn autogen_scalar_type_from_ref(ty: &hir::TypeRef) -> Option<AutogenScalarType> 
     }
 }
 
-fn autogen_type_ref_is_scalar(ty: &hir::TypeRef, expected: AutogenScalarType) -> bool {
+pub(crate) fn autogen_type_ref_is_scalar(ty: &hir::TypeRef, expected: AutogenScalarType) -> bool {
     autogen_scalar_type_from_ref(ty) == Some(expected)
 }
 
-fn generate_autogen_spec_tests(
+pub(crate) fn generate_autogen_spec_tests(
     checks: &[AutogenCheckDecl],
     max_cases: usize,
     time_cap_ms: u64,
@@ -3404,14 +3460,18 @@ fn generate_autogen_spec_tests(
     generated
 }
 
-fn stable_autogen_test_id(module_path: &str, func_name: &str, case_index: usize) -> String {
+pub(crate) fn stable_autogen_test_id(
+    module_path: &str,
+    func_name: &str,
+    case_index: usize,
+) -> String {
     format!(
         "autogen:{}",
         fnv1a64_hex(format!("{module_path}::{func_name}::{case_index}").as_bytes())
     )
 }
 
-fn autogen_given_call(check: &AutogenCheckDecl, case_index: usize) -> String {
+pub(crate) fn autogen_given_call(check: &AutogenCheckDecl, case_index: usize) -> String {
     if check.params.is_empty() {
         return format!("{}()", check.func_name);
     }
@@ -3429,14 +3489,14 @@ fn autogen_given_call(check: &AutogenCheckDecl, case_index: usize) -> String {
     format!("{}({})", check.func_name, args.join(", "))
 }
 
-fn autogen_standalone_entry_source(module_source: &str, call_body: &str) -> String {
+pub(crate) fn autogen_standalone_entry_source(module_source: &str, call_body: &str) -> String {
     let rewritten = module_source.replacen("fn run(", "fn autogen_hidden_run(", 1);
     format!(
         "{rewritten}\n\nfn run() -> Integer {{\n    assert value ({call_body}) == true\n    return 0\n}}\n"
     )
 }
 
-fn autogen_scalar_literal(
+pub(crate) fn autogen_scalar_literal(
     ty: AutogenScalarType,
     module_path: &str,
     func_name: &str,
@@ -3452,7 +3512,7 @@ fn autogen_scalar_literal(
     autogen_random_literal(ty, seed)
 }
 
-fn autogen_boundary_literal(ty: AutogenScalarType, boundary_index: usize) -> String {
+pub(crate) fn autogen_boundary_literal(ty: AutogenScalarType, boundary_index: usize) -> String {
     match ty {
         AutogenScalarType::Integer => {
             let values = ["0", "1", "-1", "2147483647", "-2147483648"];
@@ -3472,7 +3532,7 @@ fn autogen_boundary_literal(ty: AutogenScalarType, boundary_index: usize) -> Str
     }
 }
 
-fn autogen_random_literal(ty: AutogenScalarType, seed: u64) -> String {
+pub(crate) fn autogen_random_literal(ty: AutogenScalarType, seed: u64) -> String {
     let mut state = autogen_mix64(seed ^ 0xA670);
     match ty {
         AutogenScalarType::Integer => {
@@ -3507,7 +3567,7 @@ fn autogen_random_literal(ty: AutogenScalarType, seed: u64) -> String {
     }
 }
 
-fn autogen_mix64(mut value: u64) -> u64 {
+pub(crate) fn autogen_mix64(mut value: u64) -> u64 {
     value ^= value >> 30;
     value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
     value ^= value >> 27;
@@ -3515,7 +3575,7 @@ fn autogen_mix64(mut value: u64) -> u64 {
     value ^ (value >> 31)
 }
 
-fn collect_fuzz_tests(
+pub(crate) fn collect_fuzz_tests(
     workspace_root: &Path,
     max_cases: u64,
     time_cap_ms: u64,
@@ -3528,7 +3588,7 @@ fn collect_fuzz_tests(
     Ok(generate_fuzz_tests(&targets, max_cases, time_cap_ms))
 }
 
-fn discover_fuzz_targets(workspace_root: &Path) -> Result<Vec<FuzzTargetDecl>, String> {
+pub(crate) fn discover_fuzz_targets(workspace_root: &Path) -> Result<Vec<FuzzTargetDecl>, String> {
     use wrela::parser::ast::AstNode;
 
     let mut modules = Vec::new();
@@ -3568,7 +3628,7 @@ fn discover_fuzz_targets(workspace_root: &Path) -> Result<Vec<FuzzTargetDecl>, S
     Ok(discovered)
 }
 
-fn fuzz_target_decl_from_function(
+pub(crate) fn fuzz_target_decl_from_function(
     module_path: &str,
     func_name: &str,
     func: &hir::Function,
@@ -3598,7 +3658,7 @@ fn fuzz_target_decl_from_function(
     })
 }
 
-fn fuzz_param_type_from_ref(ty: &hir::TypeRef) -> Option<FuzzParamType> {
+pub(crate) fn fuzz_param_type_from_ref(ty: &hir::TypeRef) -> Option<FuzzParamType> {
     if !ty.args.is_empty() {
         return None;
     }
@@ -3609,7 +3669,7 @@ fn fuzz_param_type_from_ref(ty: &hir::TypeRef) -> Option<FuzzParamType> {
     }
 }
 
-fn generate_fuzz_tests(
+pub(crate) fn generate_fuzz_tests(
     targets: &[FuzzTargetDecl],
     max_cases: usize,
     time_cap_ms: u64,
@@ -3671,14 +3731,14 @@ fn generate_fuzz_tests(
     generated
 }
 
-fn stable_fuzz_test_id(module_path: &str, func_name: &str, case_index: usize) -> String {
+pub(crate) fn stable_fuzz_test_id(module_path: &str, func_name: &str, case_index: usize) -> String {
     format!(
         "fuzz:{}",
         fnv1a64_hex(format!("{module_path}::{func_name}::{case_index}").as_bytes())
     )
 }
 
-fn fuzz_given_call(target: &FuzzTargetDecl, seed: u64, case_index: usize) -> String {
+pub(crate) fn fuzz_given_call(target: &FuzzTargetDecl, seed: u64, case_index: usize) -> String {
     let values = fuzz_input_bytes(seed, case_index);
     let arg = match target.param_ty {
         FuzzParamType::String => fuzz_string_literal(&values),
@@ -3694,7 +3754,7 @@ fn fuzz_given_call(target: &FuzzTargetDecl, seed: u64, case_index: usize) -> Str
     format!("{}({}={arg})", target.func_name, target.param_name)
 }
 
-fn fuzz_input_bytes(seed: u64, case_index: usize) -> Vec<u8> {
+pub(crate) fn fuzz_input_bytes(seed: u64, case_index: usize) -> Vec<u8> {
     let mut state = autogen_mix64(seed ^ 0xF022_9E37 ^ case_index as u64);
     let len = ((state % 24) + 1) as usize;
     let mut out = Vec::with_capacity(len);
@@ -3705,7 +3765,7 @@ fn fuzz_input_bytes(seed: u64, case_index: usize) -> Vec<u8> {
     out
 }
 
-fn fuzz_string_literal(bytes: &[u8]) -> String {
+pub(crate) fn fuzz_string_literal(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() + 2);
     out.push('"');
     for byte in bytes {
@@ -3724,7 +3784,7 @@ fn fuzz_string_literal(bytes: &[u8]) -> String {
     out
 }
 
-fn fuzz_standalone_entry_source(
+pub(crate) fn fuzz_standalone_entry_source(
     module_source: &str,
     call_body: &str,
     include_bytes_helper: bool,
@@ -3740,18 +3800,18 @@ fn fuzz_standalone_entry_source(
     )
 }
 
-fn is_test_function_name(name: &str) -> bool {
+pub(crate) fn is_test_function_name(name: &str) -> bool {
     name.starts_with("test_")
 }
 
-fn function_has_oracle(func: &hir::Function) -> bool {
+pub(crate) fn function_has_oracle(func: &hir::Function) -> bool {
     let Some(body) = func.body.as_ref() else {
         return false;
     };
     body_has_oracle(body, &body.root_stmts)
 }
 
-fn body_has_oracle(body: &hir::Body, stmts: &[hir::Idx<hir::Stmt>]) -> bool {
+pub(crate) fn body_has_oracle(body: &hir::Body, stmts: &[hir::Idx<hir::Stmt>]) -> bool {
     for stmt_id in stmts {
         match &body.stmts[*stmt_id] {
             hir::Stmt::Assert { .. } | hir::Stmt::Require { .. } => return true,
@@ -3809,19 +3869,19 @@ fn body_has_oracle(body: &hir::Body, stmts: &[hir::Idx<hir::Stmt>]) -> bool {
     false
 }
 
-fn stable_test_id(module_path: &str, func_name: &str) -> String {
+pub(crate) fn stable_test_id(module_path: &str, func_name: &str) -> String {
     fnv1a64_hex(format!("{module_path}::{func_name}").as_bytes())
 }
 
-fn stable_function_id(function_identity: &str) -> String {
+pub(crate) fn stable_function_id(function_identity: &str) -> String {
     fnv1a64(function_identity.as_bytes()).to_string()
 }
 
-fn qualified_function_identity(module_path: &str, function_name: &str) -> String {
+pub(crate) fn qualified_function_identity(module_path: &str, function_name: &str) -> String {
     format!("{module_path}::{function_name}")
 }
 
-fn infer_test_lane(module_path: &str) -> TestLane {
+pub(crate) fn infer_test_lane(module_path: &str) -> TestLane {
     let canonical = module_path.replace('\\', "/").to_ascii_lowercase();
     let segments: Vec<&str> = canonical
         .split('/')
@@ -3842,18 +3902,20 @@ fn infer_test_lane(module_path: &str) -> TestLane {
     }
 }
 
-fn parse_test_lane_filter(value: &str) -> Option<TestLane> {
+pub(crate) fn parse_test_lane_filter(value: &str) -> Option<TestLaneSelection> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "spec" => Some(TestLane::Spec),
-        "integration" => Some(TestLane::Integration),
-        "sim" => Some(TestLane::Sim),
-        "model" => Some(TestLane::Model),
-        "default" => Some(TestLane::Default),
+        "fast" => Some(TestLaneSelection::Preset(TestLanePreset::Fast)),
+        "full" => Some(TestLaneSelection::Preset(TestLanePreset::Full)),
+        "spec" => Some(TestLaneSelection::Single(TestLane::Spec)),
+        "integration" => Some(TestLaneSelection::Single(TestLane::Integration)),
+        "sim" => Some(TestLaneSelection::Single(TestLane::Sim)),
+        "model" => Some(TestLaneSelection::Single(TestLane::Model)),
+        "default" => Some(TestLaneSelection::Single(TestLane::Default)),
         _ => None,
     }
 }
 
-fn enforce_serial_test_cap(tests: &[TestCase]) -> Result<(), String> {
+pub(crate) fn enforce_serial_test_cap(tests: &[TestCase]) -> Result<(), String> {
     let total = tests.len();
     if total == 0 {
         return Ok(());
@@ -3873,7 +3935,7 @@ fn enforce_serial_test_cap(tests: &[TestCase]) -> Result<(), String> {
     ))
 }
 
-fn select_tests(mut tests: Vec<TestCase>, selection: &TestSelection) -> Vec<TestCase> {
+pub(crate) fn select_tests(mut tests: Vec<TestCase>, selection: &TestSelection) -> Vec<TestCase> {
     if let Some(include_ids) = selection.include_ids.as_ref() {
         tests.retain(|test| include_ids.contains(&test.id));
     }
@@ -3889,12 +3951,12 @@ fn select_tests(mut tests: Vec<TestCase>, selection: &TestSelection) -> Vec<Test
         });
     }
     if let Some(lane) = selection.lane {
-        tests.retain(|test| test.lane == lane);
+        tests.retain(|test| lane.matches(test.lane));
     }
     tests
 }
 
-fn expand_sim_seed_cases(
+pub(crate) fn expand_sim_seed_cases(
     tests: Vec<TestCase>,
     sim_seed_override: Option<u64>,
     certify_mode: bool,
@@ -3925,7 +3987,7 @@ fn expand_sim_seed_cases(
     expanded
 }
 
-fn sim_seed_variant(test: &TestCase, seed: u64) -> TestCase {
+pub(crate) fn sim_seed_variant(test: &TestCase, seed: u64) -> TestCase {
     let mut variant = test.clone();
     variant.sim_seed = Some(seed);
     variant.id = format!("{}::seed:{seed}", test.id);
@@ -3933,7 +3995,7 @@ fn sim_seed_variant(test: &TestCase, seed: u64) -> TestCase {
     variant
 }
 
-fn list_tests(tests: &[TestCase]) {
+pub(crate) fn list_tests(tests: &[TestCase]) {
     for test in tests {
         let mut attrs = Vec::new();
         if test.is_serial {
@@ -3961,7 +4023,7 @@ fn list_tests(tests: &[TestCase]) {
     println!("tests: {} listed", tests.len());
 }
 
-fn summarize_run_lane(tests: &[TestCase]) -> String {
+pub(crate) fn summarize_run_lane(tests: &[TestCase]) -> String {
     let Some(first) = tests.first() else {
         return "none".to_string();
     };
@@ -3973,7 +4035,7 @@ fn summarize_run_lane(tests: &[TestCase]) -> String {
     }
 }
 
-fn summarize_run_lane_from_json_cases(cases: &[TestJsonCase]) -> String {
+pub(crate) fn summarize_run_lane_from_json_cases(cases: &[TestJsonCase]) -> String {
     let Some(first) = cases.first() else {
         return "none".to_string();
     };
@@ -3985,14 +4047,14 @@ fn summarize_run_lane_from_json_cases(cases: &[TestJsonCase]) -> String {
     }
 }
 
-fn emit_test_json_summary(summary: &TestJsonSummary) {
+pub(crate) fn emit_test_json_summary(summary: &TestJsonSummary) {
     println!(
         "{}",
         serde_json::to_string(summary).unwrap_or_else(|_| "{}".to_string())
     );
 }
 
-fn compile_test_harness(
+pub(crate) fn compile_test_harness(
     workspace_root: &Path,
     compile_root: &Path,
     tests_root: Option<&Path>,
@@ -4180,7 +4242,7 @@ fn compile_test_harness(
     Ok(harness)
 }
 
-fn selected_test_fingerprint(tests: &[TestCase]) -> String {
+pub(crate) fn selected_test_fingerprint(tests: &[TestCase]) -> String {
     let mut hasher = Fnv1a64::new();
     for test in tests {
         hasher.update(test.id.as_bytes());
@@ -4193,7 +4255,7 @@ fn selected_test_fingerprint(tests: &[TestCase]) -> String {
     hasher.finish_hex()
 }
 
-fn harness_source_fingerprint(
+pub(crate) fn harness_source_fingerprint(
     compile_root: &Path,
     tests_root: Option<&Path>,
 ) -> Result<String, String> {
@@ -4223,7 +4285,10 @@ fn harness_source_fingerprint(
     Ok(hasher.finish_hex())
 }
 
-fn collect_harness_source_files(root: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+pub(crate) fn collect_harness_source_files(
+    root: &Path,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
     if !root.is_dir() {
         return Ok(());
     }
@@ -4261,7 +4326,7 @@ fn collect_harness_source_files(root: &Path, out: &mut Vec<PathBuf>) -> Result<(
     Ok(())
 }
 
-fn test_case_dispatch_stmt(test: &TestCase) -> String {
+pub(crate) fn test_case_dispatch_stmt(test: &TestCase) -> String {
     if let Some(call_body) = test.generated_call_body.as_ref() {
         format!("assert value ({call_body}) == true")
     } else {
@@ -4269,7 +4334,7 @@ fn test_case_dispatch_stmt(test: &TestCase) -> String {
     }
 }
 
-fn harness_import_module_path(module_path: &str) -> String {
+pub(crate) fn harness_import_module_path(module_path: &str) -> String {
     if let Some(stripped) = module_path.strip_prefix("tests/default/") {
         format!("tests/{stripped}")
     } else {
@@ -4277,7 +4342,7 @@ fn harness_import_module_path(module_path: &str) -> String {
     }
 }
 
-fn has_duplicate_test_function_names(tests: &[&TestCase]) -> bool {
+pub(crate) fn has_duplicate_test_function_names(tests: &[&TestCase]) -> bool {
     let mut names = HashSet::new();
     for test in tests {
         if !names.insert(test.func_name.clone()) {
@@ -4287,7 +4352,7 @@ fn has_duplicate_test_function_names(tests: &[&TestCase]) -> bool {
     false
 }
 
-fn run_single_test(
+pub(crate) fn run_single_test(
     harness_exe_path: &Path,
     workspace_root: &Path,
     test: &TestCase,
@@ -4396,7 +4461,7 @@ fn run_single_test(
     })
 }
 
-fn run_single_test_with_timeout_retry(
+pub(crate) fn run_single_test_with_timeout_retry(
     harness_exe_path: &Path,
     workspace_root: &Path,
     test: &TestCase,
@@ -4434,7 +4499,7 @@ fn run_single_test_with_timeout_retry(
     Err("timeout".to_string())
 }
 
-fn execute_test_case(
+pub(crate) fn execute_test_case(
     harness_exe_path: &Path,
     workspace_root: &Path,
     test: &TestCase,
@@ -4561,7 +4626,7 @@ fn execute_test_case(
     }
 }
 
-fn write_sim_trace_artifact(
+pub(crate) fn write_sim_trace_artifact(
     workspace_root: &Path,
     test: &TestCase,
     failure: &str,
@@ -4583,7 +4648,7 @@ fn write_sim_trace_artifact(
     )
 }
 
-fn write_model_trace_artifact(
+pub(crate) fn write_model_trace_artifact(
     workspace_root: &Path,
     test: &TestCase,
     failure: &str,
@@ -4606,7 +4671,7 @@ fn write_model_trace_artifact(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum AutogenValue {
+pub(crate) enum AutogenValue {
     Integer(i64),
     Boolean(bool),
     String(String),
@@ -4614,7 +4679,7 @@ enum AutogenValue {
     Raw(String),
 }
 
-fn shrink_autogen_call(
+pub(crate) fn shrink_autogen_call(
     harness_exe_path: &Path,
     workspace_root: &Path,
     test: &TestCase,
@@ -4676,7 +4741,7 @@ fn shrink_autogen_call(
     }
 }
 
-fn autogen_call_still_fails(
+pub(crate) fn autogen_call_still_fails(
     harness_exe_path: &Path,
     workspace_root: &Path,
     test: &TestCase,
@@ -4702,7 +4767,7 @@ fn autogen_call_still_fails(
     .is_err()
 }
 
-fn autogen_test_with_call(test: &TestCase, call_body: &str) -> Option<TestCase> {
+pub(crate) fn autogen_test_with_call(test: &TestCase, call_body: &str) -> Option<TestCase> {
     let module_source = test.autogen_module_source.as_ref()?;
     let mut candidate = test.clone();
     candidate.generated_call_body = Some(call_body.to_string());
@@ -4711,7 +4776,7 @@ fn autogen_test_with_call(test: &TestCase, call_body: &str) -> Option<TestCase> 
     Some(candidate)
 }
 
-fn parse_autogen_call(call: &str) -> Option<(String, Vec<(String, AutogenValue)>)> {
+pub(crate) fn parse_autogen_call(call: &str) -> Option<(String, Vec<(String, AutogenValue)>)> {
     let trimmed = call.trim();
     let lparen = trimmed.find('(')?;
     if !trimmed.ends_with(')') {
@@ -4735,7 +4800,7 @@ fn parse_autogen_call(call: &str) -> Option<(String, Vec<(String, AutogenValue)>
     Some((func_name, args))
 }
 
-fn parse_autogen_value(raw: &str) -> AutogenValue {
+pub(crate) fn parse_autogen_value(raw: &str) -> AutogenValue {
     let trimmed = raw.trim();
     if trimmed == "true" {
         return AutogenValue::Boolean(true);
@@ -4763,7 +4828,7 @@ fn parse_autogen_value(raw: &str) -> AutogenValue {
     AutogenValue::Raw(trimmed.to_string())
 }
 
-fn render_autogen_call(func_name: &str, args: &[(String, AutogenValue)]) -> String {
+pub(crate) fn render_autogen_call(func_name: &str, args: &[(String, AutogenValue)]) -> String {
     if args.is_empty() {
         return format!("{func_name}()");
     }
@@ -4775,7 +4840,7 @@ fn render_autogen_call(func_name: &str, args: &[(String, AutogenValue)]) -> Stri
     format!("{func_name}({rendered_args})")
 }
 
-fn render_autogen_value(value: &AutogenValue) -> String {
+pub(crate) fn render_autogen_value(value: &AutogenValue) -> String {
     match value {
         AutogenValue::Integer(v) => v.to_string(),
         AutogenValue::Boolean(v) => {
@@ -4798,7 +4863,7 @@ fn render_autogen_value(value: &AutogenValue) -> String {
     }
 }
 
-fn shrink_value_candidates(value: &AutogenValue) -> Vec<AutogenValue> {
+pub(crate) fn shrink_value_candidates(value: &AutogenValue) -> Vec<AutogenValue> {
     let mut candidates = Vec::new();
     match value {
         AutogenValue::Integer(v) => {
@@ -4844,7 +4909,7 @@ fn shrink_value_candidates(value: &AutogenValue) -> Vec<AutogenValue> {
     dedupe_autogen_values(candidates)
 }
 
-fn dedupe_autogen_values(values: Vec<AutogenValue>) -> Vec<AutogenValue> {
+pub(crate) fn dedupe_autogen_values(values: Vec<AutogenValue>) -> Vec<AutogenValue> {
     let mut out = Vec::new();
     for value in values {
         if !out.contains(&value) {
@@ -4854,7 +4919,7 @@ fn dedupe_autogen_values(values: Vec<AutogenValue>) -> Vec<AutogenValue> {
     out
 }
 
-fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
+pub(crate) fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
     let mut parts = Vec::new();
     let mut start = 0usize;
     let mut depth = 0usize;
@@ -4884,12 +4949,12 @@ fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
     parts
 }
 
-fn synthetic_slowdown_ms() -> Option<u64> {
+pub(crate) fn synthetic_slowdown_ms() -> Option<u64> {
     let raw = env::var("WRELA_TEST_SLOWDOWN_MS").ok()?;
     raw.parse::<u64>().ok()
 }
 
-fn sanitize_test_path_component(value: &str) -> String {
+pub(crate) fn sanitize_test_path_component(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
         if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
@@ -4905,7 +4970,7 @@ fn sanitize_test_path_component(value: &str) -> String {
     }
 }
 
-fn inherited_test_env_keys() -> &'static [&'static str] {
+pub(crate) fn inherited_test_env_keys() -> &'static [&'static str] {
     &[
         "PATH",
         "HOME",
@@ -4927,12 +4992,12 @@ fn inherited_test_env_keys() -> &'static [&'static str] {
     ]
 }
 
-fn read_metrics_dump(path: &Path) -> Option<MetricsDump> {
+pub(crate) fn read_metrics_dump(path: &Path) -> Option<MetricsDump> {
     let data = fs::read(path).ok()?;
     serde_json::from_slice(&data).ok()
 }
 
-fn write_function_coverage_snapshot(
+pub(crate) fn write_function_coverage_snapshot(
     path: &Path,
     snapshot: &BTreeMap<String, u64>,
 ) -> Result<(), String> {
@@ -4959,7 +5024,9 @@ fn write_function_coverage_snapshot(
     fs::write(path, payload).map_err(|err| format!("failed to write {}: {}", path.display(), err))
 }
 
-fn load_function_coverage_snapshot(path: &Path) -> Result<BTreeMap<String, u64>, String> {
+pub(crate) fn load_function_coverage_snapshot(
+    path: &Path,
+) -> Result<BTreeMap<String, u64>, String> {
     #[derive(Deserialize)]
     struct FunctionCoverageSnapshotArtifact {
         schema_version: u32,
@@ -4980,7 +5047,10 @@ fn load_function_coverage_snapshot(path: &Path) -> Result<BTreeMap<String, u64>,
     Ok(artifact.function_coverage)
 }
 
-fn certification_coverage_index_path(workspace_root: &Path, cert_cache_hash: &str) -> PathBuf {
+pub(crate) fn certification_coverage_index_path(
+    workspace_root: &Path,
+    cert_cache_hash: &str,
+) -> PathBuf {
     workspace_root
         .join("target")
         .join("wrela_cert")
@@ -4988,7 +5058,7 @@ fn certification_coverage_index_path(workspace_root: &Path, cert_cache_hash: &st
         .join(format!("{cert_cache_hash}.json"))
 }
 
-fn write_function_test_coverage_index(
+pub(crate) fn write_function_test_coverage_index(
     path: &Path,
     index: &BTreeMap<String, Vec<String>>,
 ) -> Result<(), String> {
@@ -5015,7 +5085,7 @@ fn write_function_test_coverage_index(
     fs::write(path, payload).map_err(|err| format!("failed to write {}: {}", path.display(), err))
 }
 
-fn load_function_test_coverage_index(
+pub(crate) fn load_function_test_coverage_index(
     workspace_root: &Path,
     cert_cache_hash: &str,
 ) -> Result<BTreeMap<String, Vec<String>>, String> {
@@ -5040,7 +5110,7 @@ fn load_function_test_coverage_index(
     Ok(artifact.function_to_tests)
 }
 
-fn build_function_test_coverage_index(
+pub(crate) fn build_function_test_coverage_index(
     summary: Option<&PerfSummary>,
 ) -> BTreeMap<String, Vec<String>> {
     let mut grouped: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -5076,7 +5146,7 @@ fn build_function_test_coverage_index(
         .collect()
 }
 
-fn canonicalize_function_coverage(
+pub(crate) fn canonicalize_function_coverage(
     function_coverage: &BTreeMap<String, u64>,
 ) -> BTreeMap<String, u64> {
     let mut normalized: BTreeMap<String, u64> = BTreeMap::new();
@@ -5090,7 +5160,7 @@ fn canonicalize_function_coverage(
     normalized
 }
 
-fn normalize_function_coverage_key(function_id: &str) -> String {
+pub(crate) fn normalize_function_coverage_key(function_id: &str) -> String {
     if function_id.chars().all(|ch| ch.is_ascii_digit()) {
         return function_id.to_string();
     }
@@ -5100,7 +5170,7 @@ fn normalize_function_coverage_key(function_id: &str) -> String {
     function_id.to_string()
 }
 
-pub(super) fn run_mutation_gate(
+pub(crate) fn run_mutation_gate(
     workspace_root: &Path,
     summary: &PerfSummary,
     max_cases: usize,
@@ -5399,7 +5469,7 @@ pub(super) fn run_mutation_gate(
     })
 }
 
-fn compile_mutation_discovery_module(
+pub(crate) fn compile_mutation_discovery_module(
     workspace_root: &Path,
     importable_by_module: &BTreeMap<String, BTreeMap<String, ImportableFunctionInfo>>,
 ) -> Result<mir::ir::MirModule, String> {
@@ -5446,7 +5516,7 @@ fn compile_mutation_discovery_module(
 }
 
 #[derive(Clone, Copy)]
-enum MutationSite {
+pub(crate) enum MutationSite {
     Branch { block_idx: usize },
     Comparison { block_idx: usize, stmt_idx: usize },
     IntegerLiteralUse { block_idx: usize, stmt_idx: usize },
@@ -5456,22 +5526,22 @@ enum MutationSite {
 }
 
 #[derive(Clone)]
-struct MirMutationCandidate {
-    qualified_name: String,
-    function_name: String,
-    function_id: String,
-    mutation_type: &'static str,
-    op_index: usize,
-    site: MutationSite,
+pub(crate) struct MirMutationCandidate {
+    pub(crate) qualified_name: String,
+    pub(crate) function_name: String,
+    pub(crate) function_id: String,
+    pub(crate) mutation_type: &'static str,
+    pub(crate) op_index: usize,
+    pub(crate) site: MutationSite,
 }
 
 #[derive(Clone)]
-struct ImportableFunctionInfo {
-    qualified_name: String,
-    function_id: String,
+pub(crate) struct ImportableFunctionInfo {
+    pub(crate) qualified_name: String,
+    pub(crate) function_id: String,
 }
 
-fn discover_mir_mutation_candidates(
+pub(crate) fn discover_mir_mutation_candidates(
     module: &mir::ir::MirModule,
     importable_functions: &BTreeMap<String, ImportableFunctionInfo>,
 ) -> Vec<MirMutationCandidate> {
@@ -5579,7 +5649,9 @@ fn discover_mir_mutation_candidates(
     candidates
 }
 
-fn discover_authored_tests_for_mutation(workspace_root: &Path) -> Result<Vec<TestCase>, String> {
+pub(crate) fn discover_authored_tests_for_mutation(
+    workspace_root: &Path,
+) -> Result<Vec<TestCase>, String> {
     let tests_root = workspace_root.join("tests");
     if !tests_root.is_dir() {
         return Ok(Vec::new());
@@ -5590,7 +5662,7 @@ fn discover_authored_tests_for_mutation(workspace_root: &Path) -> Result<Vec<Tes
     Ok(expand_sim_seed_cases(discovered, None, true))
 }
 
-fn mutation_candidate_key(candidate: &MirMutationCandidate) -> String {
+pub(crate) fn mutation_candidate_key(candidate: &MirMutationCandidate) -> String {
     let site = match candidate.site {
         MutationSite::Branch { block_idx } => format!("branch:{block_idx}"),
         MutationSite::Comparison {
@@ -5630,7 +5702,7 @@ fn mutation_candidate_key(candidate: &MirMutationCandidate) -> String {
     )
 }
 
-fn select_covering_test_ids_for_mutation(
+pub(crate) fn select_covering_test_ids_for_mutation(
     coverage_index: &BTreeMap<String, Vec<String>>,
     candidate: &MirMutationCandidate,
 ) -> Vec<String> {
@@ -5649,7 +5721,7 @@ fn select_covering_test_ids_for_mutation(
     selected.into_iter().collect()
 }
 
-fn resolve_mutation_workers() -> usize {
+pub(crate) fn resolve_mutation_workers() -> usize {
     const DEFAULT_WORKER_CAP: usize = 4;
     const ABSOLUTE_WORKER_CAP: usize = 16;
     let default_workers = std::thread::available_parallelism()
@@ -5662,7 +5734,7 @@ fn resolve_mutation_workers() -> usize {
     requested.clamp(1, ABSOLUTE_WORKER_CAP)
 }
 
-fn run_mutation_job(
+pub(crate) fn run_mutation_job(
     context: &MutationExecutionContext,
     job: &MutationCandidateJob,
 ) -> (MutationMutantResult, usize, usize, usize) {
@@ -5743,7 +5815,7 @@ fn run_mutation_job(
     )
 }
 
-fn compile_mutant_binary_for_tests(
+pub(crate) fn compile_mutant_binary_for_tests(
     context: &MutationExecutionContext,
     candidate: &MirMutationCandidate,
     tests: &[TestCase],
@@ -5901,22 +5973,26 @@ fn compile_mutant_binary_for_tests(
     })
 }
 
-fn mutation_cache_enabled() -> bool {
+pub(crate) fn mutation_cache_enabled() -> bool {
     match std::env::var("WRELA_MUTATION_CACHE") {
         Ok(value) => !matches!(value.to_ascii_lowercase().as_str(), "off" | "false" | "0"),
         Err(_) => true,
     }
 }
 
-fn mutation_cache_root(workspace_root: &Path) -> PathBuf {
+pub(crate) fn mutation_cache_root(workspace_root: &Path) -> PathBuf {
     workspace_root.join("target").join("wrela_mutation_cache")
 }
 
-fn mutation_kill_history_path(cache_root: &Path) -> PathBuf {
+pub(crate) fn mutation_kill_history_path(cache_root: &Path) -> PathBuf {
     cache_root.join("kill_history.json")
 }
 
-fn mutation_cache_key(source_hash: &str, toolchain_version: &str, candidate_key: &str) -> String {
+pub(crate) fn mutation_cache_key(
+    source_hash: &str,
+    toolchain_version: &str,
+    candidate_key: &str,
+) -> String {
     let mut hasher = Fnv1a64::new();
     hasher.update(MUTATION_CACHE_ENGINE_TAG.as_bytes());
     hasher.update(&[0]);
@@ -5928,7 +6004,7 @@ fn mutation_cache_key(source_hash: &str, toolchain_version: &str, candidate_key:
     hasher.finish_hex()
 }
 
-fn persist_invalid_mutation_cache_entry(
+pub(crate) fn persist_invalid_mutation_cache_entry(
     context: &MutationExecutionContext,
     candidate: &MirMutationCandidate,
     reason: &str,
@@ -5955,12 +6031,12 @@ fn persist_invalid_mutation_cache_entry(
     write_json_atomic(&metadata_path, &metadata)
 }
 
-fn load_mutation_cache_metadata(path: &Path) -> Option<MutationCacheMetadata> {
+pub(crate) fn load_mutation_cache_metadata(path: &Path) -> Option<MutationCacheMetadata> {
     let bytes = fs::read(path).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
-fn load_mutation_kill_history(path: &Path) -> MutationKillHistoryArtifact {
+pub(crate) fn load_mutation_kill_history(path: &Path) -> MutationKillHistoryArtifact {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -5988,18 +6064,22 @@ fn load_mutation_kill_history(path: &Path) -> MutationKillHistoryArtifact {
     artifact
 }
 
-fn write_mutation_kill_history(
+pub(crate) fn write_mutation_kill_history(
     path: &Path,
     history: &MutationKillHistoryArtifact,
 ) -> Result<(), String> {
     write_json_atomic(path, history)
 }
 
-fn mutation_history_key(function_id: &str, mutation_type: &str, test_id: &str) -> String {
+pub(crate) fn mutation_history_key(
+    function_id: &str,
+    mutation_type: &str,
+    test_id: &str,
+) -> String {
     format!("{function_id}|{mutation_type}|{test_id}")
 }
 
-fn order_tests_for_mutation_candidate(
+pub(crate) fn order_tests_for_mutation_candidate(
     candidate: &MirMutationCandidate,
     mut tests: Vec<TestCase>,
     history: &MutationKillHistoryArtifact,
@@ -6023,7 +6103,7 @@ fn order_tests_for_mutation_candidate(
     tests
 }
 
-fn update_mutation_kill_history_from_mutants(
+pub(crate) fn update_mutation_kill_history_from_mutants(
     history: &mut MutationKillHistoryArtifact,
     mutants: &[MutationMutantResult],
 ) {
@@ -6055,13 +6135,13 @@ fn update_mutation_kill_history_from_mutants(
     }
 }
 
-fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+pub(crate) fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(value)
         .map_err(|err| format!("failed to serialize {}: {}", path.display(), err))?;
     write_bytes_atomic(path, &bytes)
 }
 
-fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let Some(parent) = path.parent() else {
         return Err(format!(
             "atomic write target has no parent: {}",
@@ -6089,7 +6169,7 @@ fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn mutation_dispatch_entry_source(
+pub(crate) fn mutation_dispatch_entry_source(
     workspace_root: &Path,
     mutation_key: &str,
     tests: &[TestCase],
@@ -6151,7 +6231,7 @@ fn mutation_dispatch_entry_source(
     Ok((source, wrappers_root))
 }
 
-fn apply_mir_mutation(
+pub(crate) fn apply_mir_mutation(
     module: &mut mir::ir::MirModule,
     candidate: &MirMutationCandidate,
 ) -> Result<(), String> {
@@ -6262,7 +6342,7 @@ fn apply_mir_mutation(
     Ok(())
 }
 
-fn mutation_assign_stmt(
+pub(crate) fn mutation_assign_stmt(
     function: &mut mir::ir::MirFunction,
     block_idx: usize,
     stmt_idx: usize,
@@ -6281,7 +6361,7 @@ fn mutation_assign_stmt(
     Ok(value)
 }
 
-fn invertible_comparison(op: hir::BinaryOp) -> Option<hir::BinaryOp> {
+pub(crate) fn invertible_comparison(op: hir::BinaryOp) -> Option<hir::BinaryOp> {
     match op {
         hir::BinaryOp::Eq => Some(hir::BinaryOp::Ne),
         hir::BinaryOp::Ne => Some(hir::BinaryOp::Eq),
@@ -6293,7 +6373,7 @@ fn invertible_comparison(op: hir::BinaryOp) -> Option<hir::BinaryOp> {
     }
 }
 
-fn perturb_integer(value: i64) -> i64 {
+pub(crate) fn perturb_integer(value: i64) -> i64 {
     if value >= 0 {
         value.saturating_add(1)
     } else {
@@ -6301,7 +6381,7 @@ fn perturb_integer(value: i64) -> i64 {
     }
 }
 
-fn run_with_timeout(
+pub(crate) fn run_with_timeout(
     exe: &Path,
     timeout: Duration,
     metrics_path: Option<&Path>,
@@ -6350,7 +6430,7 @@ fn run_with_timeout(
     }
 }
 
-fn compile_to_mir_with_root(
+pub(crate) fn compile_to_mir_with_root(
     entry_path: &Path,
     root_dir: &Path,
     tests_dir: Option<&Path>,
@@ -6480,13 +6560,13 @@ fn compile_to_mir_with_root(
 }
 
 #[derive(Debug, Clone)]
-enum DiagnosticScope {
+pub(crate) enum DiagnosticScope {
     Workspace,
     TargetFile { normalized_path: String },
 }
 
 impl DiagnosticScope {
-    fn from_entrypoint(entry_path: &Path, workspace_diagnostics: bool) -> Self {
+    pub(crate) fn from_entrypoint(entry_path: &Path, workspace_diagnostics: bool) -> Self {
         if workspace_diagnostics {
             return DiagnosticScope::Workspace;
         }
@@ -6495,7 +6575,7 @@ impl DiagnosticScope {
         }
     }
 
-    fn allows_path(&self, path: &Path) -> bool {
+    pub(crate) fn allows_path(&self, path: &Path) -> bool {
         match self {
             DiagnosticScope::Workspace => true,
             DiagnosticScope::TargetFile { normalized_path } => {
@@ -6504,12 +6584,12 @@ impl DiagnosticScope {
         }
     }
 
-    fn allows_path_str(&self, path: &str) -> bool {
+    pub(crate) fn allows_path_str(&self, path: &str) -> bool {
         self.allows_path(Path::new(path))
     }
 }
 
-fn normalize_path_key(path: &Path) -> String {
+pub(crate) fn normalize_path_key(path: &Path) -> String {
     fs::canonicalize(path)
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()

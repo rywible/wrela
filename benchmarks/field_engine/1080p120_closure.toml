@@ -5,6 +5,14 @@ suite = "field_engine"
 warmup_pairs = 4
 measure_pairs = 12
 coverage = "all"
+execution_story = "cpu_oracle"
+adapter_name = "cpu_oracle"
+enabled_optional_features = []
+timestamps_enabled = false
+f16_enabled = false
+indirect_dispatch_enabled = false
+warmup_protocol = "cpu_oracle_baseline_warmup"
+companion_profile = "canonical_1080p120_wgsl_resident"
 
 # Repetition identity stability closure lane: keeps the repeat-heavy authored
 # field regression in the fixed 1080p120 protocol.

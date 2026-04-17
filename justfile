@@ -1,9 +1,13 @@
 # wrela development task runner
 
-fast-rust-tests := "cargo test -p wrela --test one_shot_metrics_harness --test spec_project_integrity --test thin_core_snapshot"
-fast-authored-tests := "cargo run -p wrela -- test language/spec --lane=spec"
+fast-rust-tests := "cargo test -p wrela --test repo_smoke"
+fast-authored-tests := "cargo run -p wrela -- test language/spec --lane=fast"
 full-rust-tests := "cargo test --workspace"
-full-authored-tests := "cargo run -p wrela -- test language/spec"
+full-authored-tests := "cargo run -p wrela -- test language/spec --lane=full"
+cleanroom-check-dir := ".artifacts/cargo-cleanroom/check"
+cleanroom-test-dir := ".artifacts/cargo-cleanroom/test"
+cleanroom-check := "CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=.artifacts/cargo-cleanroom/check cargo check --workspace"
+cleanroom-test := "CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=.artifacts/cargo-cleanroom/test cargo test --workspace"
 query-tests := "cargo test -p wrela --test query_contract_registry --test query_program_spine --test phase9_query_plan"
 perf-smoke-cmd := "cargo run -p wrela -- perf benchmarks/micro --profile=smoke --runs=1"
 perf-closure-cmd := "cargo run -p wrela -- perf benchmarks/whole_frame --profile=1080p120 --query-backend=wgsl"
@@ -15,6 +19,11 @@ default:
 check:
     cargo check --workspace
 
+# Cleanroom workspace typecheck with incremental disabled and isolated artifacts.
+check-clean:
+    rm -rf {{cleanroom-check-dir}}
+    {{cleanroom-check}}
+
 # Workspace build without running tests.
 build:
     cargo build --workspace
@@ -23,12 +32,17 @@ build:
 build-release:
     cargo build --workspace --release
 
-# Fast repo lane: small Rust integrity proofs plus the executable spec lane.
+# Fast repo lane: repo smoke coverage plus the native authored fast lane.
 test:
     {{fast-rust-tests}}
     {{fast-authored-tests}}
 
-# Full repo lane: full Rust workspace verification plus the authored spec project.
+# Cleanroom Rust workspace verification with incremental disabled and isolated artifacts.
+test-clean:
+    rm -rf {{cleanroom-test-dir}}
+    {{cleanroom-test}}
+
+# Full repo lane: full Rust workspace verification plus the native authored full lane.
 test-all:
     {{full-rust-tests}}
     {{full-authored-tests}}
@@ -57,9 +71,9 @@ perf-smoke:
 perf-closure:
     {{perf-closure-cmd}}
 
-# Capture the Phase 49 developer-loop baseline report.
+# Capture the Phase 52 developer-loop scorecard report.
 baseline-devloop:
-    python3 scripts/devloop_measure.py --report-name phase49-baseline
+    python3 scripts/devloop_measure.py --report-name phase52-baseline
 
 # Workspace clippy gate.
 lint:

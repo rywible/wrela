@@ -215,7 +215,7 @@ options:\n\
   --list                list discovered tests with stable id/lane metadata\n\
   --id=ID               run/list a single test by stable id\n\
   --filter=PATTERN      run/list tests matching pattern\n\
-  --lane=NAME           run/list tests for lane (spec|integration|sim|model|default); valid for test/perf\n\
+  --lane=NAME           run/list tests for lane (fast|full|spec|integration|sim|model|default); fast=spec+default, full=all lanes; valid for test/perf\n\
   --seed=N              schedule seed for sim tests; valid for test/perf\n\
   --benchmark-manifest=PATH  benchmark manifest path (bench.toml)\n\
   --profile=NAME        benchmark profile (smoke|standard|deep|1080p120)\n\

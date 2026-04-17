@@ -1,6 +1,18 @@
-use super::*;
+use super::super::super::contracts::{EXIT_CODEGEN, EXIT_OK, EXIT_USAGE, OutputFormat};
+use super::super::build_compile::BudgetPolicyV1;
+use super::super::build_compile::now_unix_ms;
+use super::super::test_eval_perf::{
+    AutogenReproArtifact, DifferentialPipeline, FuzzReproArtifact, GeneratedCaseKind,
+    HttpCassetteMode, REPRO_SCHEMA_VERSION, ReproArtifact, TEST_JSON_SUMMARY_SEED, TestCase,
+    TestJsonCase, TestJsonRunMetadata, TestJsonSummary, TestJsonTimings, TestLane,
+    autogen_standalone_entry_source, emit_test_json_summary, fuzz_standalone_entry_source,
+    run_single_test, sanitize_test_path_component, shrink_autogen_call,
+};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-pub(super) fn run_repro_artifact(
+pub(crate) fn run_repro_artifact(
     workspace_root: &Path,
     repro_artifact_path: &Path,
     timeout: Duration,
@@ -395,7 +407,7 @@ fn load_autogen_module_source(workspace_root: &Path, module_path: &str) -> Resul
     ))
 }
 
-pub(super) fn write_autogen_repro_artifact(
+pub(crate) fn write_autogen_repro_artifact(
     workspace_root: &Path,
     harness_exe_path: &Path,
     test: &TestCase,
@@ -457,7 +469,7 @@ pub(super) fn write_autogen_repro_artifact(
     Ok((artifact_path, shrunk_call))
 }
 
-pub(super) fn write_fuzz_repro_artifact(
+pub(crate) fn write_fuzz_repro_artifact(
     workspace_root: &Path,
     test: &TestCase,
     failure: &str,

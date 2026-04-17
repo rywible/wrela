@@ -31,7 +31,7 @@ just baseline-devloop
 ```
 
 See [docs/dev/lanes.md](docs/dev/lanes.md) for the command-surface contract and
-[docs/dev/devloop_playbook.md](docs/dev/devloop_playbook.md) for the Phase 49 developer-loop
+[docs/dev/devloop_playbook.md](docs/dev/devloop_playbook.md) for the Phase 51 developer-loop
 measurement protocol and baseline-report workflow.
 
 ## Architecture And Orientation
@@ -59,9 +59,9 @@ independent final review before closure.
   workflows such as `preview`, `frame`, `perf`, and `test`.
 
 Repo lanes are allowed to compose both Rust and authored-world proof surfaces. In particular,
-`just test` runs a small Rust integrity lane plus `wrela test` over `language/spec`, while
-`just test-all` keeps the full Rust workspace verification lane and the authored spec project
-in the same front-door workflow.
+`just test` runs the Rust `repo_smoke` harness plus `wrela test language/spec --lane=fast`,
+while `just test-all` keeps the full Rust workspace verification lane and
+`wrela test language/spec --lane=full` in the same front-door workflow.
 
 ## Wrela CLI Examples
 
@@ -97,6 +97,9 @@ For repo workflows, prefer the named `just` lanes:
 just perf-smoke
 just perf-closure
 ```
+
+`just perf-smoke` is the repo wrapper for `wrela perf --profile=smoke`, while
+`just perf-closure` is the repo wrapper for `wrela perf --profile=1080p120`.
 
 When you need the underlying `wrela perf` invocations directly, use:
 

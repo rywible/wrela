@@ -1,8 +1,47 @@
-use super::cli_args::{CommandSpec, ParsedCommandSpec};
-use super::contracts::{
+#![allow(unused_imports)]
+
+use super::super::cli_args::{CommandSpec, ParsedCommandSpec};
+use super::super::contracts::{
     EXIT_CODEGEN, EXIT_OK, EXIT_PARSE, EXIT_RUNTIME_SIGNAL, EXIT_TYPE, EXIT_USAGE, OutputFormat,
 };
-use super::{cert_engine, diag_emit, perf_engine, replay_trace};
+use super::super::{cert_engine, diag_emit, perf_engine, replay_trace};
+use super::build_compile::{
+    BudgetPolicyV1, BuildPerfTimings, TestTarget, certification_cache_hash, emit_build_perf_event,
+    emit_certification_cache_hit, enforce_importable_coverage_gate, enforce_public_surface_gate,
+    hash_source_fingerprint, init_project, load_benchmark_manifest, project_record,
+    query_contract_catalog_snapshot, resolve_benchmark_manifest_path, resolve_budget_policy_v1,
+    resolve_certification_test_selection, resolve_path_from_owner_spans, resolve_test_target,
+    resolve_toolchain_version, verify_certification_report, write_certification_report,
+};
+use super::check_analyze::{
+    compile_to_mir, integration_mode_entry_path_is_allowed, project_root_for_entry,
+    resolve_entry_path, temp_exe_path,
+};
+use super::fix_fmt::{
+    FixSummary, FmtSummary, apply_source_fixes, collect_safe_fixes, emit_fix_summary,
+    emit_fmt_summary, resolve_format_targets, run_format_loop,
+};
+use super::run_dev::{find_src_root, run_dev_loop, update_toolchain};
+use super::test_eval_perf::{
+    BenchmarkManifest, CertPerfTimings, CheckLaneKpis, CollisionBenchmarkExecutionReport,
+    CollisionBenchmarkReport, DiagnosticScope, DifferentialPipeline, EvalCommandInput,
+    HttpCassetteMode, KpiThresholds, PerfCmpConfig, PerfCv, PerfGateConfig, PerfProfile,
+    PerfReport, PerfSummary, PresentationBenchmarkComparison, PresentationBenchmarkReport,
+    PresentationWgslWorkgroupComparison, RunOnceTimings, TEST_JSON_SUMMARY_SEED, TestExecution,
+    TestHarness, TestHarnessMeta, TestJsonCase, TestJsonSummary, TestJsonTimings, TestLane,
+    TestLanePreset, TestLaneSelection, TestSelection, WholeFrameBenchmarkReport,
+    aggregate_perf_samples, autogen_boundary_literal, autogen_check_decl_from_function,
+    budget_jobs_timeout, build_benchmark_selection, build_function_test_coverage_index,
+    canonicalize_function_coverage, certification_coverage_index_path, coefficient_of_variation,
+    collect_tests, compute_cv, discover_tests_for_target, emit_perf_summary,
+    emit_test_json_summary, enforce_serial_test_cap, evaluate_perf_gate, execute_eval_command,
+    first_signature_mismatch_detail, infer_test_lane, list_tests, load_function_coverage_snapshot,
+    load_perf_baseline_summary, module_path_for_single_file, parse_test_lane_filter,
+    qualified_function_identity, run_tests_once, select_tests, set_test_selection_include_ids,
+    stable_function_id, stable_test_id, summarize_run_lane, summarize_run_lane_from_json_cases,
+    test_selection_has_filters, write_function_coverage_snapshot,
+    write_function_test_coverage_index,
+};
 use miette::SourceSpan;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -25,9 +64,9 @@ use wrela::parser::ast::AstNode;
 #[path = "../../../query_program_debug/mod.rs"]
 mod query_program_debug;
 #[path = "../repro.rs"]
-mod repro;
+pub(crate) mod repro;
 
-pub(super) fn run_repro_artifact(
+pub(crate) fn run_repro_artifact(
     workspace_root: &Path,
     repro_artifact_path: &Path,
     timeout: Duration,
@@ -45,7 +84,7 @@ pub(super) fn run_repro_artifact(
     )
 }
 
-fn naming_policy_tier(error: &hir::naming::NamingError) -> &'static str {
+pub(crate) fn naming_policy_tier(error: &hir::naming::NamingError) -> &'static str {
     match error {
         hir::naming::NamingError::ResultPrefixRequired { .. }
         | hir::naming::NamingError::FactoryPrefixRequired { .. }
@@ -63,7 +102,10 @@ fn naming_policy_tier(error: &hir::naming::NamingError) -> &'static str {
     }
 }
 
-fn naming_policy_severity(error: &hir::naming::NamingError, strict_naming: bool) -> DiagSeverity {
+pub(crate) fn naming_policy_severity(
+    error: &hir::naming::NamingError,
+    strict_naming: bool,
+) -> DiagSeverity {
     let tier = naming_policy_tier(error);
     if strict_naming && (tier == "strong" || tier == "style") {
         DiagSeverity::Error
@@ -72,7 +114,7 @@ fn naming_policy_severity(error: &hir::naming::NamingError, strict_naming: bool)
     }
 }
 
-fn project_naming_diagnostics(
+pub(crate) fn project_naming_diagnostics(
     project: &hir::project::LoadedProject,
 ) -> Vec<(PathBuf, String, hir::naming::NamingError)> {
     let mut diagnostics = Vec::new();
@@ -89,7 +131,7 @@ fn project_naming_diagnostics(
     diagnostics
 }
 
-fn execute_query_contracts_command(
+pub(crate) fn execute_query_contracts_command(
     output_format: OutputFormat,
     path_arg: Option<String>,
     program_args: Vec<String>,
@@ -143,7 +185,7 @@ fn execute_query_contracts_command(
     }
 }
 
-fn execute_collision_contracts_command(
+pub(crate) fn execute_collision_contracts_command(
     output_format: OutputFormat,
     path_arg: Option<String>,
     program_args: Vec<String>,
@@ -202,7 +244,7 @@ fn execute_collision_contracts_command(
     }
 }
 
-fn execute_collision_plan_command(
+pub(crate) fn execute_collision_plan_command(
     output_format: OutputFormat,
     path_arg: Option<String>,
     program_args: Vec<String>,
@@ -227,7 +269,7 @@ fn execute_collision_plan_command(
     print_collision_plan_human(&dump);
 }
 
-fn execute_collision_run_command(
+pub(crate) fn execute_collision_run_command(
     output_format: OutputFormat,
     path_arg: Option<String>,
     program_args: Vec<String>,
@@ -271,86 +313,86 @@ fn execute_collision_run_command(
 }
 
 #[derive(Serialize)]
-struct CollisionContractCatalogDump {
-    schema_version: u32,
-    contracts: Vec<CollisionContractCatalogItemDump>,
+pub(crate) struct CollisionContractCatalogDump {
+    pub(crate) schema_version: u32,
+    pub(crate) contracts: Vec<CollisionContractCatalogItemDump>,
 }
 
 #[derive(Serialize)]
-struct CollisionContractCatalogItemDump {
-    contract_id: String,
-    contract_version: u32,
-    family: String,
-    question: String,
-    target: String,
-    authority: CollisionAuthorityRequirementDump,
-    input_kind: String,
-    input_record: String,
-    output_kind: String,
-    output_record: String,
-    witness_schema: CollisionWitnessSchemaDump,
-    policy: CollisionExecutionPolicyDump,
-    backends: Vec<String>,
+pub(crate) struct CollisionContractCatalogItemDump {
+    pub(crate) contract_id: String,
+    pub(crate) contract_version: u32,
+    pub(crate) family: String,
+    pub(crate) question: String,
+    pub(crate) target: String,
+    pub(crate) authority: CollisionAuthorityRequirementDump,
+    pub(crate) input_kind: String,
+    pub(crate) input_record: String,
+    pub(crate) output_kind: String,
+    pub(crate) output_record: String,
+    pub(crate) witness_schema: CollisionWitnessSchemaDump,
+    pub(crate) policy: CollisionExecutionPolicyDump,
+    pub(crate) backends: Vec<String>,
 }
 
 #[derive(Serialize)]
-struct CollisionWitnessSchemaDump {
-    name: String,
-    kind: String,
-    fields: Vec<CollisionWitnessFieldDump>,
+pub(crate) struct CollisionWitnessSchemaDump {
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    pub(crate) fields: Vec<CollisionWitnessFieldDump>,
 }
 
 #[derive(Serialize)]
-struct CollisionWitnessFieldDump {
-    name: String,
-    ty: String,
+pub(crate) struct CollisionWitnessFieldDump {
+    pub(crate) name: String,
+    pub(crate) ty: String,
 }
 
 #[derive(Serialize)]
-struct CollisionExecutionPolicyDump {
-    backend_preference: String,
-    required_guarantee: String,
-    selected_method: String,
+pub(crate) struct CollisionExecutionPolicyDump {
+    pub(crate) backend_preference: String,
+    pub(crate) required_guarantee: String,
+    pub(crate) selected_method: String,
 }
 
 #[derive(Serialize)]
-struct CollisionAuthorityRequirementDump {
-    scope: String,
-    requires_previous_snapshot: bool,
-    required_evidence_scope: String,
+pub(crate) struct CollisionAuthorityRequirementDump {
+    pub(crate) scope: String,
+    pub(crate) requires_previous_snapshot: bool,
+    pub(crate) required_evidence_scope: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    transition_compatibility: Option<String>,
+    pub(crate) transition_compatibility: Option<String>,
 }
 
 #[derive(Serialize)]
-struct CollisionPlanCatalogDump {
-    schema_version: u32,
-    backend: String,
-    plans: Vec<CollisionPlanDumpItem>,
+pub(crate) struct CollisionPlanCatalogDump {
+    pub(crate) schema_version: u32,
+    pub(crate) backend: String,
+    pub(crate) plans: Vec<CollisionPlanDumpItem>,
 }
 
 #[derive(Serialize)]
-struct CollisionRunReport {
-    schema_version: u32,
-    backend: String,
-    executions: Vec<CollisionExecutionDump>,
+pub(crate) struct CollisionRunReport {
+    pub(crate) schema_version: u32,
+    pub(crate) backend: String,
+    pub(crate) executions: Vec<CollisionExecutionDump>,
 }
 
 #[derive(Serialize)]
-struct CollisionExecutionDump {
-    name: String,
-    plan_name: String,
-    contract_id: String,
-    target: String,
-    authority_scope: String,
-    runtime_ns: u128,
-    result: CollisionResultDump,
-    trace: CollisionExecutionTraceDump,
+pub(crate) struct CollisionExecutionDump {
+    pub(crate) name: String,
+    pub(crate) plan_name: String,
+    pub(crate) contract_id: String,
+    pub(crate) target: String,
+    pub(crate) authority_scope: String,
+    pub(crate) runtime_ns: u128,
+    pub(crate) result: CollisionResultDump,
+    pub(crate) trace: CollisionExecutionTraceDump,
 }
 
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum CollisionResultDump {
+pub(crate) enum CollisionResultDump {
     Occupancy {
         occupied: bool,
         classification: String,
@@ -381,513 +423,513 @@ enum CollisionResultDump {
 }
 
 #[derive(Serialize)]
-struct CollisionPointWitnessDump {
-    sample_point: [f32; 3],
-    nearest_point_on_world: [f32; 3],
-    world_normal: [f32; 3],
-    signed_distance: f32,
-    normal_provenance: String,
+pub(crate) struct CollisionPointWitnessDump {
+    pub(crate) sample_point: [f32; 3],
+    pub(crate) nearest_point_on_world: [f32; 3],
+    pub(crate) world_normal: [f32; 3],
+    pub(crate) signed_distance: f32,
+    pub(crate) normal_provenance: String,
 }
 
 #[derive(Serialize)]
-struct CollisionRayWitnessDump {
-    travel_distance: f32,
-    position: [f32; 3],
-    normal: [f32; 3],
-    root_shape_id: u32,
-    feature_id: u32,
-    normal_provenance: String,
+pub(crate) struct CollisionRayWitnessDump {
+    pub(crate) travel_distance: f32,
+    pub(crate) position: [f32; 3],
+    pub(crate) normal: [f32; 3],
+    pub(crate) root_shape_id: u32,
+    pub(crate) feature_id: u32,
+    pub(crate) normal_provenance: String,
 }
 
 #[derive(Serialize)]
-struct CollisionSphereWitnessDump {
-    point_on_probe: [f32; 3],
-    point_on_world: [f32; 3],
-    world_normal: [f32; 3],
-    signed_separation: f32,
-    normal_provenance: String,
+pub(crate) struct CollisionSphereWitnessDump {
+    pub(crate) point_on_probe: [f32; 3],
+    pub(crate) point_on_world: [f32; 3],
+    pub(crate) world_normal: [f32; 3],
+    pub(crate) signed_separation: f32,
+    pub(crate) normal_provenance: String,
 }
 
 #[derive(Serialize)]
-struct CollisionSweepWitnessDump {
-    contact_fraction_upper_bound: f32,
-    point_on_probe: [f32; 3],
-    point_on_world: [f32; 3],
-    contact_normal: [f32; 3],
-    normal_flavor: String,
-    normal_provenance: String,
+pub(crate) struct CollisionSweepWitnessDump {
+    pub(crate) contact_fraction_upper_bound: f32,
+    pub(crate) point_on_probe: [f32; 3],
+    pub(crate) point_on_world: [f32; 3],
+    pub(crate) contact_normal: [f32; 3],
+    pub(crate) normal_flavor: String,
+    pub(crate) normal_provenance: String,
 }
 
 #[derive(Serialize)]
-struct CollisionTimeOfImpactWitnessDump {
-    time_fraction_upper_bound: f32,
-    point_on_probe: [f32; 3],
-    point_on_world: [f32; 3],
-    contact_normal: [f32; 3],
-    normal_flavor: String,
-    normal_provenance: String,
+pub(crate) struct CollisionTimeOfImpactWitnessDump {
+    pub(crate) time_fraction_upper_bound: f32,
+    pub(crate) point_on_probe: [f32; 3],
+    pub(crate) point_on_world: [f32; 3],
+    pub(crate) contact_normal: [f32; 3],
+    pub(crate) normal_flavor: String,
+    pub(crate) normal_provenance: String,
 }
 
 #[derive(Serialize)]
-struct CollisionNoHitCertificateDump {
-    valid_through_fraction: f32,
-    guarantee: String,
+pub(crate) struct CollisionNoHitCertificateDump {
+    pub(crate) valid_through_fraction: f32,
+    pub(crate) guarantee: String,
 }
 
 #[derive(Serialize)]
-struct CollisionExecutionTraceDump {
-    contract_id: String,
-    family: String,
-    question: String,
-    backend: String,
-    snapshot: Option<wrela::world_identity::SnapshotIdentityReport>,
-    transition: Option<CollisionTransitionDump>,
-    required_guarantee: String,
-    selected_method: String,
-    executed_query_contracts: Vec<String>,
-    broadphase_candidate_count: u32,
-    broadphase_rejected_candidate_count: u32,
-    broadphase_pruned_node_count: u32,
+pub(crate) struct CollisionExecutionTraceDump {
+    pub(crate) contract_id: String,
+    pub(crate) family: String,
+    pub(crate) question: String,
+    pub(crate) backend: String,
+    pub(crate) snapshot: Option<wrela::world_identity::SnapshotIdentityReport>,
+    pub(crate) transition: Option<CollisionTransitionDump>,
+    pub(crate) required_guarantee: String,
+    pub(crate) selected_method: String,
+    pub(crate) executed_query_contracts: Vec<String>,
+    pub(crate) broadphase_candidate_count: u32,
+    pub(crate) broadphase_rejected_candidate_count: u32,
+    pub(crate) broadphase_pruned_node_count: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    interval_bracket: Option<[f32; 2]>,
-    interval_subdivisions: u32,
-    interval_refinements: u32,
-    certificate_successes: u32,
-    fallback_count: u32,
+    pub(crate) interval_bracket: Option<[f32; 2]>,
+    pub(crate) interval_subdivisions: u32,
+    pub(crate) interval_refinements: u32,
+    pub(crate) certificate_successes: u32,
+    pub(crate) fallback_count: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    contact_normal_provenance: Option<String>,
-    reuse_metrics: CollisionReuseMetricsDump,
-    reuse_decisions: Vec<CollisionReuseDecisionDump>,
+    pub(crate) contact_normal_provenance: Option<String>,
+    pub(crate) reuse_metrics: CollisionReuseMetricsDump,
+    pub(crate) reuse_decisions: Vec<CollisionReuseDecisionDump>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    wgsl_metrics: Option<CollisionWgslMetricsDump>,
+    pub(crate) wgsl_metrics: Option<CollisionWgslMetricsDump>,
 }
 
 #[derive(Serialize)]
-struct CollisionTransitionDump {
-    current_snapshot_epoch: u32,
-    previous_snapshot_epoch: u32,
-    change_class: String,
+pub(crate) struct CollisionTransitionDump {
+    pub(crate) current_snapshot_epoch: u32,
+    pub(crate) previous_snapshot_epoch: u32,
+    pub(crate) change_class: String,
 }
 
 #[derive(Serialize)]
-struct CollisionReuseMetricsDump {
-    available_count: u32,
-    consumed_count: u32,
-    rejected_count: u32,
-    unavailable_count: u32,
-    diagnostics: Vec<String>,
+pub(crate) struct CollisionReuseMetricsDump {
+    pub(crate) available_count: u32,
+    pub(crate) consumed_count: u32,
+    pub(crate) rejected_count: u32,
+    pub(crate) unavailable_count: u32,
+    pub(crate) diagnostics: Vec<String>,
 }
 
 #[derive(Serialize)]
-struct CollisionReuseDecisionDump {
-    artifact_id: String,
-    kind: String,
-    verdict: String,
-    reason: String,
-    detail: String,
+pub(crate) struct CollisionReuseDecisionDump {
+    pub(crate) artifact_id: String,
+    pub(crate) kind: String,
+    pub(crate) verdict: String,
+    pub(crate) reason: String,
+    pub(crate) detail: String,
 }
 
 #[derive(Serialize)]
-struct CollisionWgslMetricsDump {
-    dispatch_count: u32,
-    dispatch_items: u32,
-    candidate_reduction_effectiveness: f32,
-    selected_workgroup_size: u32,
-    resident_shared_snapshot_artifacts: u32,
-    cpu_certification_query_count: u32,
+pub(crate) struct CollisionWgslMetricsDump {
+    pub(crate) dispatch_count: u32,
+    pub(crate) dispatch_items: u32,
+    pub(crate) candidate_reduction_effectiveness: f32,
+    pub(crate) selected_workgroup_size: u32,
+    pub(crate) resident_shared_snapshot_artifacts: u32,
+    pub(crate) cpu_certification_query_count: u32,
 }
 
 #[derive(Serialize)]
-struct CollisionPlanDumpItem {
-    name: String,
-    contract_id: String,
-    contract_version: u32,
-    family: String,
-    question: String,
-    target: String,
-    authority_scope: String,
-    backend: String,
-    policy: CollisionExecutionPolicyDump,
-    inputs: Vec<CollisionPlanInputDump>,
-    passes: Vec<CollisionPlanPassDump>,
-    artifacts: Vec<CollisionArtifactBindingDump>,
-    artifact_uses: Vec<ObserverArtifactUseDump>,
-    outputs: Vec<CollisionPlanOutputDump>,
-    observer_projection: query_program_debug::ObserverProjectionDump,
-    validation: ObserverValidationSummaryDump,
+pub(crate) struct CollisionPlanDumpItem {
+    pub(crate) name: String,
+    pub(crate) contract_id: String,
+    pub(crate) contract_version: u32,
+    pub(crate) family: String,
+    pub(crate) question: String,
+    pub(crate) target: String,
+    pub(crate) authority_scope: String,
+    pub(crate) backend: String,
+    pub(crate) policy: CollisionExecutionPolicyDump,
+    pub(crate) inputs: Vec<CollisionPlanInputDump>,
+    pub(crate) passes: Vec<CollisionPlanPassDump>,
+    pub(crate) artifacts: Vec<CollisionArtifactBindingDump>,
+    pub(crate) artifact_uses: Vec<ObserverArtifactUseDump>,
+    pub(crate) outputs: Vec<CollisionPlanOutputDump>,
+    pub(crate) observer_projection: query_program_debug::ObserverProjectionDump,
+    pub(crate) validation: ObserverValidationSummaryDump,
 }
 
 #[derive(Serialize)]
-struct CollisionArtifactBindingDump {
-    id: String,
-    kind: String,
-    record: String,
-    contract: ObserverSemanticArtifactDump,
+pub(crate) struct CollisionArtifactBindingDump {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) record: String,
+    pub(crate) contract: ObserverSemanticArtifactDump,
 }
 
 #[derive(Serialize)]
-struct CollisionPlanInputDump {
-    name: String,
-    kind: String,
-    record: String,
+pub(crate) struct CollisionPlanInputDump {
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    pub(crate) record: String,
 }
 
 #[derive(Serialize)]
-struct CollisionPlanOutputDump {
-    name: String,
-    kind: String,
-    record: String,
+pub(crate) struct CollisionPlanOutputDump {
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    pub(crate) record: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    witness_schema: Option<CollisionWitnessSchemaDump>,
+    pub(crate) witness_schema: Option<CollisionWitnessSchemaDump>,
 }
 
 #[derive(Serialize)]
-struct CollisionPlanPassDump {
-    id: String,
-    kind: String,
-    consumes: Vec<String>,
-    materializes: Vec<String>,
-    query_dependencies: Vec<String>,
+pub(crate) struct CollisionPlanPassDump {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) consumes: Vec<String>,
+    pub(crate) materializes: Vec<String>,
+    pub(crate) query_dependencies: Vec<String>,
 }
 
 #[derive(Serialize)]
-struct PresentationPlanDump {
-    schema_version: u32,
-    entry_path: String,
-    plans: Vec<PresentationPlanDumpItem>,
+pub(crate) struct PresentationPlanDump {
+    pub(crate) schema_version: u32,
+    pub(crate) entry_path: String,
+    pub(crate) plans: Vec<PresentationPlanDumpItem>,
 }
 
 #[derive(Serialize)]
-struct PresentationDebugDump {
-    schema_version: u32,
-    view: String,
-    region: String,
-    domain: String,
-    query_trace_solver_mode: String,
-    backend: String,
-    semantic_domain: String,
-    execution_policy: String,
-    snapshot: wrela::world_identity::SnapshotIdentityReport,
-    frames_executed: u32,
-    color_ppm: Option<String>,
-    depth_ppm: Option<String>,
-    world_normal_ppm: Option<String>,
-    stats_path: String,
-    stats: String,
-    frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
-    frame_cost_history: Vec<wrela::presentation_exec::PresentationFrameCostReport>,
+pub(crate) struct PresentationDebugDump {
+    pub(crate) schema_version: u32,
+    pub(crate) view: String,
+    pub(crate) region: String,
+    pub(crate) domain: String,
+    pub(crate) query_trace_solver_mode: String,
+    pub(crate) backend: String,
+    pub(crate) semantic_domain: String,
+    pub(crate) execution_policy: String,
+    pub(crate) snapshot: wrela::world_identity::SnapshotIdentityReport,
+    pub(crate) frames_executed: u32,
+    pub(crate) color_ppm: Option<String>,
+    pub(crate) depth_ppm: Option<String>,
+    pub(crate) world_normal_ppm: Option<String>,
+    pub(crate) stats_path: String,
+    pub(crate) stats: String,
+    pub(crate) frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
+    pub(crate) frame_cost_history: Vec<wrela::presentation_exec::PresentationFrameCostReport>,
 }
 
 #[derive(Serialize)]
-struct FrameContractsDump {
-    schema_version: u32,
-    entry_path: String,
-    views: Vec<FrameContractsDumpItem>,
+pub(crate) struct FrameContractsDump {
+    pub(crate) schema_version: u32,
+    pub(crate) entry_path: String,
+    pub(crate) views: Vec<FrameContractsDumpItem>,
 }
 
 #[derive(Serialize)]
-struct FrameContractsDumpItem {
-    name: String,
-    frame: PresentationFrameDump,
-    frame_artifacts: Vec<PresentationFrameArtifactDump>,
-    bindings: Vec<PresentationBindingDump>,
+pub(crate) struct FrameContractsDumpItem {
+    pub(crate) name: String,
+    pub(crate) frame: PresentationFrameDump,
+    pub(crate) frame_artifacts: Vec<PresentationFrameArtifactDump>,
+    pub(crate) bindings: Vec<PresentationBindingDump>,
 }
 
 #[derive(Serialize)]
-struct PreviewReportDump {
-    schema_version: u32,
-    view: String,
-    region: String,
-    domain: String,
-    attachment: String,
-    backend: String,
-    semantic_domain: String,
-    execution_policy: String,
-    snapshot: wrela::world_identity::SnapshotIdentityReport,
-    width: u32,
-    height: u32,
-    stats: String,
-    frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
+pub(crate) struct PreviewReportDump {
+    pub(crate) schema_version: u32,
+    pub(crate) view: String,
+    pub(crate) region: String,
+    pub(crate) domain: String,
+    pub(crate) attachment: String,
+    pub(crate) backend: String,
+    pub(crate) semantic_domain: String,
+    pub(crate) execution_policy: String,
+    pub(crate) snapshot: wrela::world_identity::SnapshotIdentityReport,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) stats: String,
+    pub(crate) frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
 }
 
 #[derive(Serialize)]
-struct FrameBundleDump {
-    schema_version: u32,
-    view: String,
-    region: String,
-    domain: String,
-    backend: String,
-    semantic_domain: String,
-    execution_policy: String,
-    snapshot: wrela::world_identity::SnapshotIdentityReport,
-    width: u32,
-    height: u32,
-    frame_index: u32,
-    attachments: Vec<serde_json::Value>,
-    frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
+pub(crate) struct FrameBundleDump {
+    pub(crate) schema_version: u32,
+    pub(crate) view: String,
+    pub(crate) region: String,
+    pub(crate) domain: String,
+    pub(crate) backend: String,
+    pub(crate) semantic_domain: String,
+    pub(crate) execution_policy: String,
+    pub(crate) snapshot: wrela::world_identity::SnapshotIdentityReport,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) frame_index: u32,
+    pub(crate) attachments: Vec<serde_json::Value>,
+    pub(crate) frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
 }
 
 #[derive(Serialize)]
-struct PresentationPlanDumpItem {
-    name: String,
-    view: PresentationViewDump,
-    frame: PresentationFrameDump,
-    passes: Vec<PresentationPassDump>,
-    frame_artifacts: Vec<PresentationFrameArtifactDump>,
-    semantic_artifacts: Vec<ObserverSemanticArtifactDump>,
-    artifact_uses: Vec<ObserverArtifactUseDump>,
-    bindings: Vec<PresentationBindingDump>,
-    observer_projection: query_program_debug::ObserverProjectionDump,
-    normalized_projection: query_program_debug::NormalizedCurrentPlanProjection,
-    validation: ObserverValidationSummaryDump,
+pub(crate) struct PresentationPlanDumpItem {
+    pub(crate) name: String,
+    pub(crate) view: PresentationViewDump,
+    pub(crate) frame: PresentationFrameDump,
+    pub(crate) passes: Vec<PresentationPassDump>,
+    pub(crate) frame_artifacts: Vec<PresentationFrameArtifactDump>,
+    pub(crate) semantic_artifacts: Vec<ObserverSemanticArtifactDump>,
+    pub(crate) artifact_uses: Vec<ObserverArtifactUseDump>,
+    pub(crate) bindings: Vec<PresentationBindingDump>,
+    pub(crate) observer_projection: query_program_debug::ObserverProjectionDump,
+    pub(crate) normalized_projection: query_program_debug::NormalizedCurrentPlanProjection,
+    pub(crate) validation: ObserverValidationSummaryDump,
 }
 
 #[derive(Serialize)]
-struct PresentationViewDump {
-    canonical_projection: bool,
-    canonical_projection_input: String,
-    screen_lattice: PresentationScreenLatticeDump,
-    canonical_view_ray: PresentationViewRayDump,
-    allows_legacy_projection_override: bool,
-    compatibility_projection: PresentationCompatibilityProjectionDump,
+pub(crate) struct PresentationViewDump {
+    pub(crate) canonical_projection: bool,
+    pub(crate) canonical_projection_input: String,
+    pub(crate) screen_lattice: PresentationScreenLatticeDump,
+    pub(crate) canonical_view_ray: PresentationViewRayDump,
+    pub(crate) allows_legacy_projection_override: bool,
+    pub(crate) compatibility_projection: PresentationCompatibilityProjectionDump,
 }
 
 #[derive(Serialize)]
-struct PresentationScreenLatticeDump {
-    sample_position: String,
-    origin: String,
-    width_source: String,
-    height_source: String,
+pub(crate) struct PresentationScreenLatticeDump {
+    pub(crate) sample_position: String,
+    pub(crate) origin: String,
+    pub(crate) width_source: String,
+    pub(crate) height_source: String,
 }
 
 #[derive(Serialize)]
-struct PresentationViewRayDump {
-    space: String,
-    normalized_direction: bool,
-    projection_input: String,
+pub(crate) struct PresentationViewRayDump {
+    pub(crate) space: String,
+    pub(crate) normalized_direction: bool,
+    pub(crate) projection_input: String,
 }
 
 #[derive(Serialize)]
-struct PresentationCompatibilityProjectionDump {
-    legacy_path_active: bool,
-    authored_world_up_override: bool,
-    authored_view_scale_override: bool,
+pub(crate) struct PresentationCompatibilityProjectionDump {
+    pub(crate) legacy_path_active: bool,
+    pub(crate) authored_world_up_override: bool,
+    pub(crate) authored_view_scale_override: bool,
 }
 
 #[derive(Serialize)]
-struct PresentationFrameDump {
-    outputs: Vec<PresentationAttachmentDump>,
-    primary_hit: Option<PresentationPrimaryHitDump>,
-    temporal_reuse: Option<String>,
-    temporal_change_class: Option<String>,
-    quality: PresentationQualityDump,
-    lighting: PresentationLightingDump,
-    observability: Vec<String>,
+pub(crate) struct PresentationFrameDump {
+    pub(crate) outputs: Vec<PresentationAttachmentDump>,
+    pub(crate) primary_hit: Option<PresentationPrimaryHitDump>,
+    pub(crate) temporal_reuse: Option<String>,
+    pub(crate) temporal_change_class: Option<String>,
+    pub(crate) quality: PresentationQualityDump,
+    pub(crate) lighting: PresentationLightingDump,
+    pub(crate) observability: Vec<String>,
 }
 
 #[derive(Serialize)]
-struct PresentationQualityDump {
-    tier: String,
-    target_fps: u32,
-    internal_resolution_scale: f32,
-    allow_dynamic_resolution: bool,
-    primary_max_steps: i32,
-    allow_radiance: bool,
-    allow_media: bool,
-    temporal_mode: String,
-    allow_half_res_participants: bool,
-    allow_hit_compaction: bool,
-    degradation_order: Vec<String>,
+pub(crate) struct PresentationQualityDump {
+    pub(crate) tier: String,
+    pub(crate) target_fps: u32,
+    pub(crate) internal_resolution_scale: f32,
+    pub(crate) allow_dynamic_resolution: bool,
+    pub(crate) primary_max_steps: i32,
+    pub(crate) allow_radiance: bool,
+    pub(crate) allow_media: bool,
+    pub(crate) temporal_mode: String,
+    pub(crate) allow_half_res_participants: bool,
+    pub(crate) allow_hit_compaction: bool,
+    pub(crate) degradation_order: Vec<String>,
 }
 
 #[derive(Serialize)]
-struct PresentationPrimaryHitDump {
-    attachment: String,
-    record: String,
-    fields: Vec<String>,
-    depth_semantics: String,
-    sample_identity: String,
+pub(crate) struct PresentationPrimaryHitDump {
+    pub(crate) attachment: String,
+    pub(crate) record: String,
+    pub(crate) fields: Vec<String>,
+    pub(crate) depth_semantics: String,
+    pub(crate) sample_identity: String,
 }
 
 #[derive(Serialize)]
-struct PresentationAttachmentDump {
-    name: String,
-    kind: String,
-    element_schema: String,
-    lifetime: String,
-    resolution: String,
-    scale: String,
-    clear_policy: String,
+pub(crate) struct PresentationAttachmentDump {
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    pub(crate) element_schema: String,
+    pub(crate) lifetime: String,
+    pub(crate) resolution: String,
+    pub(crate) scale: String,
+    pub(crate) clear_policy: String,
 }
 
 #[derive(Serialize)]
-struct PresentationLightingDump {
-    key_light: PresentationLightingInputDump,
-    fill_direction: PresentationLightingInputDump,
-    fill_strength: PresentationLightingInputDump,
-    ambient_color: PresentationLightingInputDump,
-    allows_legacy_plural_lights_metadata: bool,
+pub(crate) struct PresentationLightingDump {
+    pub(crate) key_light: PresentationLightingInputDump,
+    pub(crate) fill_direction: PresentationLightingInputDump,
+    pub(crate) fill_strength: PresentationLightingInputDump,
+    pub(crate) ambient_color: PresentationLightingInputDump,
+    pub(crate) allows_legacy_plural_lights_metadata: bool,
 }
 
 #[derive(Serialize)]
-struct PresentationLightingInputDump {
-    binding: String,
-    element_schema: String,
-    source: String,
-    temporary_compatibility_alias: bool,
+pub(crate) struct PresentationLightingInputDump {
+    pub(crate) binding: String,
+    pub(crate) element_schema: String,
+    pub(crate) source: String,
+    pub(crate) temporary_compatibility_alias: bool,
 }
 
 #[derive(Serialize)]
-struct PresentationPassDump {
-    id: String,
-    kind: String,
+pub(crate) struct PresentationPassDump {
+    pub(crate) id: String,
+    pub(crate) kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    screen_samples: Option<PresentationScreenSamplePassDump>,
-    consumes: Vec<String>,
-    materializes: Vec<String>,
-    binding: Option<String>,
-    query_dependencies: Vec<PresentationQueryDependencyDump>,
-    future_acceleration_hooks: Vec<String>,
-    observability: Vec<String>,
+    pub(crate) screen_samples: Option<PresentationScreenSamplePassDump>,
+    pub(crate) consumes: Vec<String>,
+    pub(crate) materializes: Vec<String>,
+    pub(crate) binding: Option<String>,
+    pub(crate) query_dependencies: Vec<PresentationQueryDependencyDump>,
+    pub(crate) future_acceleration_hooks: Vec<String>,
+    pub(crate) observability: Vec<String>,
 }
 
 #[derive(Serialize)]
-struct PresentationScreenSamplePassDump {
-    viewport_width_source: String,
-    viewport_height_source: String,
-    samples_per_pixel: u32,
-    jitter_source: String,
-    item_count_expression: String,
-    output_item_record: String,
+pub(crate) struct PresentationScreenSamplePassDump {
+    pub(crate) viewport_width_source: String,
+    pub(crate) viewport_height_source: String,
+    pub(crate) samples_per_pixel: u32,
+    pub(crate) jitter_source: String,
+    pub(crate) item_count_expression: String,
+    pub(crate) output_item_record: String,
 }
 
 #[derive(Serialize)]
-struct PresentationQueryDependencyDump {
-    contract_id: String,
+pub(crate) struct PresentationQueryDependencyDump {
+    pub(crate) contract_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    family: Option<String>,
+    pub(crate) family: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    question: Option<String>,
+    pub(crate) question: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    surface: Option<String>,
+    pub(crate) surface: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    target: Option<String>,
+    pub(crate) target: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    cardinality: Option<String>,
+    pub(crate) cardinality: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    call: Option<String>,
+    pub(crate) call: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    evidence: Option<PresentationEvidenceDump>,
+    pub(crate) evidence: Option<PresentationEvidenceDump>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    solver_diagnostics: Option<PresentationRaySolverDump>,
+    pub(crate) solver_diagnostics: Option<PresentationRaySolverDump>,
 }
 
 #[derive(Serialize)]
-struct PresentationEvidenceDump {
-    subject: String,
-    origin: String,
-    scope: String,
-    refinement_path: Vec<String>,
-    distance_refinement_path: Vec<String>,
-    support_refinement_path: Vec<String>,
-    differential_refinement_path: Vec<String>,
-    identity_refinement_path: Vec<String>,
-    temporal_refinement_path: Vec<String>,
-    distance_semantics: String,
-    support_class: String,
-    support_lower_bound_pruning: String,
-    support_conservative_bounds: String,
-    lipschitz: String,
-    analytic_intersection: String,
-    derivative: String,
-    stable_feature_id: bool,
-    stable_instance_id: bool,
-    stable_repeat_id: bool,
-    temporal_stability: String,
-    temporal_change_class: String,
-    temporal_stationary: String,
-    temporal_rigid_over_interval: String,
-    temporal_topology_stable: String,
-    temporal_bounded_velocity: String,
+pub(crate) struct PresentationEvidenceDump {
+    pub(crate) subject: String,
+    pub(crate) origin: String,
+    pub(crate) scope: String,
+    pub(crate) refinement_path: Vec<String>,
+    pub(crate) distance_refinement_path: Vec<String>,
+    pub(crate) support_refinement_path: Vec<String>,
+    pub(crate) differential_refinement_path: Vec<String>,
+    pub(crate) identity_refinement_path: Vec<String>,
+    pub(crate) temporal_refinement_path: Vec<String>,
+    pub(crate) distance_semantics: String,
+    pub(crate) support_class: String,
+    pub(crate) support_lower_bound_pruning: String,
+    pub(crate) support_conservative_bounds: String,
+    pub(crate) lipschitz: String,
+    pub(crate) analytic_intersection: String,
+    pub(crate) derivative: String,
+    pub(crate) stable_feature_id: bool,
+    pub(crate) stable_instance_id: bool,
+    pub(crate) stable_repeat_id: bool,
+    pub(crate) temporal_stability: String,
+    pub(crate) temporal_change_class: String,
+    pub(crate) temporal_stationary: String,
+    pub(crate) temporal_rigid_over_interval: String,
+    pub(crate) temporal_topology_stable: String,
+    pub(crate) temporal_bounded_velocity: String,
 }
 
 #[derive(Serialize)]
-struct PresentationRaySolverDump {
-    plan_id: String,
-    subject: String,
-    methods: Vec<String>,
-    mixed_selections: Vec<PresentationRaySolverSelectionDump>,
-    artifact_reuse_intents: Vec<PresentationRaySolverIntentDump>,
-    continuation_intents: Vec<PresentationRaySolverIntentDump>,
-    fallback: String,
-    unavailable_facts: Vec<String>,
+pub(crate) struct PresentationRaySolverDump {
+    pub(crate) plan_id: String,
+    pub(crate) subject: String,
+    pub(crate) methods: Vec<String>,
+    pub(crate) mixed_selections: Vec<PresentationRaySolverSelectionDump>,
+    pub(crate) artifact_reuse_intents: Vec<PresentationRaySolverIntentDump>,
+    pub(crate) continuation_intents: Vec<PresentationRaySolverIntentDump>,
+    pub(crate) fallback: String,
+    pub(crate) unavailable_facts: Vec<String>,
 }
 
 #[derive(Serialize)]
-struct PresentationRaySolverSelectionDump {
-    subject: String,
-    candidate_class: String,
-    method: String,
-    required_guarantee: String,
-    selected_method_class: String,
-    evidence_policy_summary: String,
+pub(crate) struct PresentationRaySolverSelectionDump {
+    pub(crate) subject: String,
+    pub(crate) candidate_class: String,
+    pub(crate) method: String,
+    pub(crate) required_guarantee: String,
+    pub(crate) selected_method_class: String,
+    pub(crate) evidence_policy_summary: String,
 }
 
 #[derive(Serialize)]
-struct PresentationRaySolverIntentDump {
-    selection: PresentationRaySolverSelectionDump,
-    disposition: String,
-    reasons: Vec<String>,
+pub(crate) struct PresentationRaySolverIntentDump {
+    pub(crate) selection: PresentationRaySolverSelectionDump,
+    pub(crate) disposition: String,
+    pub(crate) reasons: Vec<String>,
 }
 
 #[derive(Serialize)]
-struct PresentationFrameArtifactDump {
-    id: String,
-    attachment: String,
-    producer_pass: String,
-    materialized: bool,
+pub(crate) struct PresentationFrameArtifactDump {
+    pub(crate) id: String,
+    pub(crate) attachment: String,
+    pub(crate) producer_pass: String,
+    pub(crate) materialized: bool,
 }
 
 #[derive(Serialize)]
-struct ObserverSemanticArtifactDump {
-    id: String,
-    kind: String,
-    logical_schema: String,
-    snapshot_relation: String,
-    acceleration_kind: Option<String>,
-    acceleration_observer: Option<String>,
-    acceleration_residency: Option<String>,
-    acceleration_usage_site: Option<String>,
-    validity: String,
-    producer: String,
-    consumer: String,
+pub(crate) struct ObserverSemanticArtifactDump {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) logical_schema: String,
+    pub(crate) snapshot_relation: String,
+    pub(crate) acceleration_kind: Option<String>,
+    pub(crate) acceleration_observer: Option<String>,
+    pub(crate) acceleration_residency: Option<String>,
+    pub(crate) acceleration_usage_site: Option<String>,
+    pub(crate) validity: String,
+    pub(crate) producer: String,
+    pub(crate) consumer: String,
 }
 
 #[derive(Serialize)]
-struct ObserverArtifactUseDump {
-    actor: String,
-    artifact_id: String,
-    kind: String,
-    source: String,
-    required_validity: Option<String>,
+pub(crate) struct ObserverArtifactUseDump {
+    pub(crate) actor: String,
+    pub(crate) artifact_id: String,
+    pub(crate) kind: String,
+    pub(crate) source: String,
+    pub(crate) required_validity: Option<String>,
 }
 
 #[derive(Serialize)]
-struct ObserverValidationSummaryDump {
-    status: String,
-    errors: Vec<String>,
+pub(crate) struct ObserverValidationSummaryDump {
+    pub(crate) status: String,
+    pub(crate) errors: Vec<String>,
 }
 
 #[derive(Serialize)]
-struct PresentationBindingDump {
-    id: String,
-    pass_kind: String,
-    recipe: String,
-    default_backend: String,
-    execution: String,
+pub(crate) struct PresentationBindingDump {
+    pub(crate) id: String,
+    pub(crate) pass_kind: String,
+    pub(crate) recipe: String,
+    pub(crate) default_backend: String,
+    pub(crate) execution: String,
 }
 
-fn observer_semantic_artifact_dump(
+pub(crate) fn observer_semantic_artifact_dump(
     artifact: wrela::artifact_contract::SemanticArtifactContract,
 ) -> ObserverSemanticArtifactDump {
     let acceleration = artifact.acceleration.as_ref();
@@ -915,7 +957,7 @@ fn observer_semantic_artifact_dump(
     }
 }
 
-fn observer_artifact_use_dump(
+pub(crate) fn observer_artifact_use_dump(
     use_record: wrela::artifact_contract::ArtifactUse,
 ) -> ObserverArtifactUseDump {
     ObserverArtifactUseDump {
@@ -929,7 +971,7 @@ fn observer_artifact_use_dump(
     }
 }
 
-fn observer_validation_summary(
+pub(crate) fn observer_validation_summary(
     errors: impl IntoIterator<Item = String>,
 ) -> ObserverValidationSummaryDump {
     let errors = errors.into_iter().collect::<Vec<_>>();
@@ -958,7 +1000,9 @@ mod observer_report_tests {
     }
 }
 
-fn print_observer_projection_human(projection: &query_program_debug::ObserverProjectionDump) {
+pub(crate) fn print_observer_projection_human(
+    projection: &query_program_debug::ObserverProjectionDump,
+) {
     println!(
         "  shared spine: observer={} owner={} inputs={} nodes={} dependencies={} outputs={} lossy_boundaries={}",
         projection.observer_kind,
@@ -1055,7 +1099,7 @@ fn print_observer_projection_human(projection: &query_program_debug::ObserverPro
     );
 }
 
-fn format_spine_bindings(bindings: &[query_program_debug::SpineBindingDump]) -> String {
+pub(crate) fn format_spine_bindings(bindings: &[query_program_debug::SpineBindingDump]) -> String {
     if bindings.is_empty() {
         "none".to_string()
     } else {
@@ -1067,7 +1111,10 @@ fn format_spine_bindings(bindings: &[query_program_debug::SpineBindingDump]) -> 
     }
 }
 
-fn format_spine_node_labels(nodes: &[query_program_debug::SpineNodeDump], family: &str) -> String {
+pub(crate) fn format_spine_node_labels(
+    nodes: &[query_program_debug::SpineNodeDump],
+    family: &str,
+) -> String {
     let labels = nodes
         .iter()
         .filter(|node| node.family == family)
@@ -1080,7 +1127,7 @@ fn format_spine_node_labels(nodes: &[query_program_debug::SpineNodeDump], family
     }
 }
 
-fn format_spine_artifacts(nodes: &[query_program_debug::SpineNodeDump]) -> String {
+pub(crate) fn format_spine_artifacts(nodes: &[query_program_debug::SpineNodeDump]) -> String {
     let artifacts = nodes
         .iter()
         .filter(|node| node.family == "artifact_store")
@@ -1100,7 +1147,7 @@ fn format_spine_artifacts(nodes: &[query_program_debug::SpineNodeDump]) -> Strin
     }
 }
 
-fn format_spine_lossy_boundaries(
+pub(crate) fn format_spine_lossy_boundaries(
     boundaries: &[query_program_debug::SpineLossyBoundaryDump],
 ) -> String {
     if boundaries.is_empty() {
@@ -1114,7 +1161,7 @@ fn format_spine_lossy_boundaries(
     }
 }
 
-fn format_shared_nodes(values: &[String]) -> String {
+pub(crate) fn format_shared_nodes(values: &[String]) -> String {
     if values.is_empty() {
         "none".to_string()
     } else {
@@ -1122,7 +1169,7 @@ fn format_shared_nodes(values: &[String]) -> String {
     }
 }
 
-fn format_shared_store_backed_loads(
+pub(crate) fn format_shared_store_backed_loads(
     loads: &[query_program_debug::SpineArtifactAccessSummaryDump],
 ) -> String {
     if loads.is_empty() {
@@ -1143,7 +1190,7 @@ fn format_shared_store_backed_loads(
     }
 }
 
-fn format_shared_policy_requirements(
+pub(crate) fn format_shared_policy_requirements(
     requirements: &[query_program_debug::SpinePolicyRequirementSummaryDump],
 ) -> String {
     if requirements.is_empty() {
@@ -1177,7 +1224,7 @@ fn format_shared_policy_requirements(
     }
 }
 
-fn format_shared_observability_boundaries(
+pub(crate) fn format_shared_observability_boundaries(
     boundaries: &[query_program_debug::SpineObservabilityBoundaryReportDump],
 ) -> String {
     if boundaries.is_empty() {
@@ -1196,7 +1243,10 @@ fn format_shared_observability_boundaries(
     }
 }
 
-fn print_shared_issues(label: &str, issues: &[query_program_debug::SharedSpineIssueDump]) {
+pub(crate) fn print_shared_issues(
+    label: &str,
+    issues: &[query_program_debug::SharedSpineIssueDump],
+) {
     if issues.is_empty() {
         return;
     }
@@ -1206,7 +1256,7 @@ fn print_shared_issues(label: &str, issues: &[query_program_debug::SharedSpineIs
     }
 }
 
-fn execute_presentation_plan_command(
+pub(crate) fn execute_presentation_plan_command(
     output_format: OutputFormat,
     path_arg: Option<String>,
     program_args: Vec<String>,
@@ -1238,7 +1288,7 @@ fn execute_presentation_plan_command(
     }
 }
 
-fn collision_contract_catalog_snapshot() -> CollisionContractCatalogDump {
+pub(crate) fn collision_contract_catalog_snapshot() -> CollisionContractCatalogDump {
     let contracts = wrela::collision_contract::collision_contracts()
         .iter()
         .map(collision_contract_dump)
@@ -1249,7 +1299,9 @@ fn collision_contract_catalog_snapshot() -> CollisionContractCatalogDump {
     }
 }
 
-fn collision_plan_dump(backend: wrela::query_plan::DispatchBackend) -> CollisionPlanCatalogDump {
+pub(crate) fn collision_plan_dump(
+    backend: wrela::query_plan::DispatchBackend,
+) -> CollisionPlanCatalogDump {
     let plans = wrela::collision_plan::collision_plans_with_backend(backend)
         .iter()
         .map(collision_plan_dump_item)
@@ -1261,7 +1313,7 @@ fn collision_plan_dump(backend: wrela::query_plan::DispatchBackend) -> Collision
     }
 }
 
-fn print_collision_plan_human(dump: &CollisionPlanCatalogDump) {
+pub(crate) fn print_collision_plan_human(dump: &CollisionPlanCatalogDump) {
     println!("collision plan schema v{}", dump.schema_version);
     println!("backend: {}", dump.backend);
     if dump.plans.is_empty() {
@@ -1393,7 +1445,7 @@ fn print_collision_plan_human(dump: &CollisionPlanCatalogDump) {
     }
 }
 
-fn collision_contract_dump(
+pub(crate) fn collision_contract_dump(
     descriptor: &wrela::collision_contract::CollisionContractDescriptor,
 ) -> CollisionContractCatalogItemDump {
     CollisionContractCatalogItemDump {
@@ -1421,7 +1473,9 @@ fn collision_contract_dump(
     }
 }
 
-fn collision_plan_dump_item(plan: &wrela::collision_plan::CollisionPlan) -> CollisionPlanDumpItem {
+pub(crate) fn collision_plan_dump_item(
+    plan: &wrela::collision_plan::CollisionPlan,
+) -> CollisionPlanDumpItem {
     let validation = observer_validation_summary(
         plan.validate()
             .into_iter()
@@ -1492,7 +1546,7 @@ fn collision_plan_dump_item(plan: &wrela::collision_plan::CollisionPlan) -> Coll
     }
 }
 
-fn collision_artifact_binding_dump(
+pub(crate) fn collision_artifact_binding_dump(
     binding: wrela::collision_plan::CollisionArtifactBinding,
 ) -> CollisionArtifactBindingDump {
     CollisionArtifactBindingDump {
@@ -1503,7 +1557,7 @@ fn collision_artifact_binding_dump(
     }
 }
 
-fn collision_witness_schema_dump(
+pub(crate) fn collision_witness_schema_dump(
     schema: &wrela::collision_contract::CollisionWitnessSchema,
 ) -> CollisionWitnessSchemaDump {
     CollisionWitnessSchemaDump {
@@ -1520,7 +1574,7 @@ fn collision_witness_schema_dump(
     }
 }
 
-fn collision_execution_policy_dump(
+pub(crate) fn collision_execution_policy_dump(
     policy: wrela::collision_contract::CollisionExecutionPolicy,
 ) -> CollisionExecutionPolicyDump {
     CollisionExecutionPolicyDump {
@@ -1530,7 +1584,7 @@ fn collision_execution_policy_dump(
     }
 }
 
-fn collision_authority_requirement_dump(
+pub(crate) fn collision_authority_requirement_dump(
     authority: wrela::collision_contract::CollisionAuthorityRequirement,
 ) -> CollisionAuthorityRequirementDump {
     CollisionAuthorityRequirementDump {
@@ -1544,7 +1598,7 @@ fn collision_authority_requirement_dump(
     }
 }
 
-fn collision_run_report(
+pub(crate) fn collision_run_report(
     backend: wrela::query_plan::DispatchBackend,
 ) -> Result<CollisionRunReport, String> {
     let query_ctx = collision_demo_context()?;
@@ -1767,7 +1821,7 @@ fn collision_run_report(
     })
 }
 
-fn collision_execution_dump(
+pub(crate) fn collision_execution_dump(
     name: &str,
     plan: &wrela::collision_plan::CollisionPlan,
     result: wrela::collision_contract::CollisionResult,
@@ -1789,7 +1843,7 @@ fn collision_execution_dump(
     }
 }
 
-fn collision_result_dump(
+pub(crate) fn collision_result_dump(
     result: wrela::collision_contract::CollisionResult,
 ) -> CollisionResultDump {
     match result {
@@ -1835,7 +1889,7 @@ fn collision_result_dump(
     }
 }
 
-fn collision_point_witness_dump(
+pub(crate) fn collision_point_witness_dump(
     witness: wrela::collision_contract::CollisionPointWitness,
 ) -> CollisionPointWitnessDump {
     CollisionPointWitnessDump {
@@ -1850,7 +1904,7 @@ fn collision_point_witness_dump(
     }
 }
 
-fn collision_ray_witness_dump(
+pub(crate) fn collision_ray_witness_dump(
     witness: wrela::collision_contract::CollisionRayWitness,
 ) -> CollisionRayWitnessDump {
     CollisionRayWitnessDump {
@@ -1866,7 +1920,7 @@ fn collision_ray_witness_dump(
     }
 }
 
-fn collision_sphere_witness_dump(
+pub(crate) fn collision_sphere_witness_dump(
     witness: wrela::collision_contract::CollisionSphereWitness,
 ) -> CollisionSphereWitnessDump {
     CollisionSphereWitnessDump {
@@ -1881,7 +1935,7 @@ fn collision_sphere_witness_dump(
     }
 }
 
-fn collision_sweep_witness_dump(
+pub(crate) fn collision_sweep_witness_dump(
     witness: wrela::collision_contract::CollisionSweepWitness,
 ) -> CollisionSweepWitnessDump {
     CollisionSweepWitnessDump {
@@ -1900,7 +1954,7 @@ fn collision_sweep_witness_dump(
     }
 }
 
-fn collision_toi_witness_dump(
+pub(crate) fn collision_toi_witness_dump(
     witness: wrela::collision_contract::CollisionTimeOfImpactWitness,
 ) -> CollisionTimeOfImpactWitnessDump {
     CollisionTimeOfImpactWitnessDump {
@@ -1919,7 +1973,7 @@ fn collision_toi_witness_dump(
     }
 }
 
-fn collision_no_hit_certificate_dump(
+pub(crate) fn collision_no_hit_certificate_dump(
     certificate: wrela::collision_contract::CollisionNoHitCertificate,
 ) -> CollisionNoHitCertificateDump {
     CollisionNoHitCertificateDump {
@@ -1928,7 +1982,7 @@ fn collision_no_hit_certificate_dump(
     }
 }
 
-fn collision_execution_trace_dump(
+pub(crate) fn collision_execution_trace_dump(
     trace: wrela::collision_plan::CollisionExecutionTrace,
 ) -> CollisionExecutionTraceDump {
     CollisionExecutionTraceDump {
@@ -1993,7 +2047,7 @@ fn collision_execution_trace_dump(
     }
 }
 
-fn print_collision_run_human(report: &CollisionRunReport) {
+pub(crate) fn print_collision_run_human(report: &CollisionRunReport) {
     println!("collision run schema v{}", report.schema_version);
     println!("backend: {}", report.backend);
     for execution in &report.executions {
@@ -2095,7 +2149,7 @@ fn print_collision_run_human(report: &CollisionRunReport) {
     }
 }
 
-fn collision_result_human(result: &CollisionResultDump) -> String {
+pub(crate) fn collision_result_human(result: &CollisionResultDump) -> String {
     match result {
         CollisionResultDump::Occupancy {
             occupied,
@@ -2194,7 +2248,7 @@ fn collision_result_human(result: &CollisionResultDump) -> String {
     }
 }
 
-fn collision_demo_context() -> Result<wrela::query_exec::QueryExecContext, String> {
+pub(crate) fn collision_demo_context() -> Result<wrela::query_exec::QueryExecContext, String> {
     let node = parser::parse(collision_demo_source());
     let root =
         ast::Root::cast(node).ok_or_else(|| "collision demo source did not parse".to_string())?;
@@ -2215,7 +2269,7 @@ fn collision_demo_context() -> Result<wrela::query_exec::QueryExecContext, Strin
     ))
 }
 
-fn collision_demo_source() -> &'static str {
+pub(crate) fn collision_demo_source() -> &'static str {
     r#"
 field exact distance collision_field(p: Vec3) -> F32 {
     sphere(radius = 0.5)
@@ -2279,7 +2333,7 @@ domain collision_domain(world: RegionCapture) {
 "#
 }
 
-fn collision_demo_domain(scene_id: u32) -> wrela::kernel::KernelValue {
+pub(crate) fn collision_demo_domain(scene_id: u32) -> wrela::kernel::KernelValue {
     wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
         name: SmolStr::new("SceneDomain"),
         fields: vec![
@@ -2327,7 +2381,7 @@ fn collision_demo_domain(scene_id: u32) -> wrela::kernel::KernelValue {
     })
 }
 
-fn collision_demo_transition(
+pub(crate) fn collision_demo_transition(
     current_epoch: u32,
     previous_epoch: u32,
     change_class: wrela::state_advance::ChangeClass,
@@ -2359,7 +2413,7 @@ fn collision_demo_transition(
     })
 }
 
-fn collision_demo_capture(scene_id: u32, epoch: u32) -> wrela::kernel::KernelValue {
+pub(crate) fn collision_demo_capture(scene_id: u32, epoch: u32) -> wrela::kernel::KernelValue {
     wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
         name: SmolStr::new("RegionCapture"),
         fields: vec![
@@ -2375,7 +2429,7 @@ fn collision_demo_capture(scene_id: u32, epoch: u32) -> wrela::kernel::KernelVal
     })
 }
 
-fn collision_demo_point(point: [f32; 3]) -> wrela::kernel::KernelValue {
+pub(crate) fn collision_demo_point(point: [f32; 3]) -> wrela::kernel::KernelValue {
     wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
         name: SmolStr::new("CollisionPointInput"),
         fields: vec![(
@@ -2385,7 +2439,10 @@ fn collision_demo_point(point: [f32; 3]) -> wrela::kernel::KernelValue {
     })
 }
 
-fn collision_demo_ray(origin: [f32; 3], direction: [f32; 3]) -> wrela::kernel::KernelValue {
+pub(crate) fn collision_demo_ray(
+    origin: [f32; 3],
+    direction: [f32; 3],
+) -> wrela::kernel::KernelValue {
     wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
         name: SmolStr::new("CollisionRayInput"),
         fields: vec![
@@ -2417,7 +2474,7 @@ fn collision_demo_ray(origin: [f32; 3], direction: [f32; 3]) -> wrela::kernel::K
     })
 }
 
-fn collision_demo_probe(center: [f32; 3], radius: f32) -> wrela::kernel::KernelValue {
+pub(crate) fn collision_demo_probe(center: [f32; 3], radius: f32) -> wrela::kernel::KernelValue {
     wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
         name: SmolStr::new("CollisionSphereProbe"),
         fields: vec![
@@ -2433,7 +2490,7 @@ fn collision_demo_probe(center: [f32; 3], radius: f32) -> wrela::kernel::KernelV
     })
 }
 
-fn collision_demo_sweep(
+pub(crate) fn collision_demo_sweep(
     start_center: [f32; 3],
     end_center: [f32; 3],
     radius: f32,
@@ -2466,22 +2523,22 @@ fn collision_demo_sweep(
 }
 
 #[derive(Debug)]
-struct PresentationDebugOptions {
-    view: Option<String>,
-    region: Option<String>,
-    domain: Option<String>,
-    query_trace_solver_mode: wrela::query_exec::QueryTraceSolverMode,
-    out_dir: Option<PathBuf>,
-    skip_export: bool,
-    width: Option<u32>,
-    height: Option<u32>,
-    camera_position: [f32; 3],
-    camera_forward: [f32; 3],
-    camera_up: [f32; 3],
-    vertical_fov_degrees: f32,
-    frame_index: u32,
-    delta_seconds: f32,
-    frames: u32,
+pub(crate) struct PresentationDebugOptions {
+    pub(crate) view: Option<String>,
+    pub(crate) region: Option<String>,
+    pub(crate) domain: Option<String>,
+    pub(crate) query_trace_solver_mode: wrela::query_exec::QueryTraceSolverMode,
+    pub(crate) out_dir: Option<PathBuf>,
+    pub(crate) skip_export: bool,
+    pub(crate) width: Option<u32>,
+    pub(crate) height: Option<u32>,
+    pub(crate) camera_position: [f32; 3],
+    pub(crate) camera_forward: [f32; 3],
+    pub(crate) camera_up: [f32; 3],
+    pub(crate) vertical_fov_degrees: f32,
+    pub(crate) frame_index: u32,
+    pub(crate) delta_seconds: f32,
+    pub(crate) frames: u32,
 }
 
 pub(crate) const WRELA_PRESENTATION_DEBUG_WARM_QUALITY_PIPELINES_ENV: &str =
@@ -2490,76 +2547,76 @@ pub(crate) const WRELA_PRESENTATION_DEBUG_ADAPTIVE_WINDOW_ENV: &str =
     "WRELA_PRESENTATION_DEBUG_ADAPTIVE_WINDOW";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FrameAttachmentFormat {
+pub(crate) enum FrameAttachmentFormat {
     Json,
     Ppm,
 }
 
 #[derive(Debug)]
-struct PreviewCommandOptions {
-    view: Option<String>,
-    region: Option<String>,
-    domain: Option<String>,
-    width: Option<u32>,
-    height: Option<u32>,
-    camera_position: [f32; 3],
-    camera_forward: [f32; 3],
-    camera_up: [f32; 3],
-    vertical_fov_degrees: f32,
-    frame_index: u32,
-    delta_seconds: f32,
-    attachment: String,
-    json_report: bool,
+pub(crate) struct PreviewCommandOptions {
+    pub(crate) view: Option<String>,
+    pub(crate) region: Option<String>,
+    pub(crate) domain: Option<String>,
+    pub(crate) width: Option<u32>,
+    pub(crate) height: Option<u32>,
+    pub(crate) camera_position: [f32; 3],
+    pub(crate) camera_forward: [f32; 3],
+    pub(crate) camera_up: [f32; 3],
+    pub(crate) vertical_fov_degrees: f32,
+    pub(crate) frame_index: u32,
+    pub(crate) delta_seconds: f32,
+    pub(crate) attachment: String,
+    pub(crate) json_report: bool,
 }
 
 #[derive(Debug)]
-struct FrameCommandOptions {
-    view: Option<String>,
-    region: Option<String>,
-    domain: Option<String>,
-    width: Option<u32>,
-    height: Option<u32>,
-    camera_position: [f32; 3],
-    camera_forward: [f32; 3],
-    camera_up: [f32; 3],
-    vertical_fov_degrees: f32,
-    frame_index: u32,
-    delta_seconds: f32,
-    attachments: Vec<String>,
-    attachment_format: FrameAttachmentFormat,
+pub(crate) struct FrameCommandOptions {
+    pub(crate) view: Option<String>,
+    pub(crate) region: Option<String>,
+    pub(crate) domain: Option<String>,
+    pub(crate) width: Option<u32>,
+    pub(crate) height: Option<u32>,
+    pub(crate) camera_position: [f32; 3],
+    pub(crate) camera_forward: [f32; 3],
+    pub(crate) camera_up: [f32; 3],
+    pub(crate) vertical_fov_degrees: f32,
+    pub(crate) frame_index: u32,
+    pub(crate) delta_seconds: f32,
+    pub(crate) attachments: Vec<String>,
+    pub(crate) attachment_format: FrameAttachmentFormat,
 }
 
-struct CompiledPresentationBundle {
-    module: hir::Module,
-    query_ctx: wrela::query_exec::QueryExecContext,
-    plans: Vec<wrela::presentation_plan::PresentationPlan>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct PreparedPresentationExecution {
-    plan: wrela::presentation_plan::PresentationPlan,
-    input: wrela::presentation_exec::PresentationExecutionInput,
-    semantic_domain: String,
-    execution_policy: wrela::presentation_exec::PresentationExecutionPolicy,
-    camera: wrela::presentation_contract::CanonicalCameraInput,
-    viewport: wrela::presentation_contract::CanonicalViewportInput,
+pub(crate) struct CompiledPresentationBundle {
+    pub(crate) module: hir::Module,
+    pub(crate) query_ctx: wrela::query_exec::QueryExecContext,
+    pub(crate) plans: Vec<wrela::presentation_plan::PresentationPlan>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct DomainExecutionInputs {
-    frame_domain: wrela::kernel::KernelValue,
-    semantic_domain: String,
-    execution_policy: wrela::presentation_exec::PresentationExecutionPolicy,
+pub(crate) struct PreparedPresentationExecution {
+    pub(crate) plan: wrela::presentation_plan::PresentationPlan,
+    pub(crate) input: wrela::presentation_exec::PresentationExecutionInput,
+    pub(crate) semantic_domain: String,
+    pub(crate) execution_policy: wrela::presentation_exec::PresentationExecutionPolicy,
+    pub(crate) camera: wrela::presentation_contract::CanonicalCameraInput,
+    pub(crate) viewport: wrela::presentation_contract::CanonicalViewportInput,
 }
 
-struct ReadyPresentationExecution {
-    bundle: CompiledPresentationBundle,
-    prepared: PreparedPresentationExecution,
-    region_name: SmolStr,
-    domain_name: SmolStr,
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DomainExecutionInputs {
+    pub(crate) frame_domain: wrela::kernel::KernelValue,
+    pub(crate) semantic_domain: String,
+    pub(crate) execution_policy: wrela::presentation_exec::PresentationExecutionPolicy,
 }
 
-fn execute_presentation_debug_command(
+pub(crate) struct ReadyPresentationExecution {
+    pub(crate) bundle: CompiledPresentationBundle,
+    pub(crate) prepared: PreparedPresentationExecution,
+    pub(crate) region_name: SmolStr,
+    pub(crate) domain_name: SmolStr,
+}
+
+pub(crate) fn execute_presentation_debug_command(
     output_format: OutputFormat,
     path_arg: Option<String>,
     program_args: Vec<String>,
@@ -2791,7 +2848,7 @@ fn execute_presentation_debug_command(
     }
 }
 
-fn env_flag_truthy(name: &str) -> bool {
+pub(crate) fn env_flag_truthy(name: &str) -> bool {
     env::var(name)
         .ok()
         .map(|value| {
@@ -2803,13 +2860,13 @@ fn env_flag_truthy(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn env_usize_override(name: &str) -> Option<usize> {
+pub(crate) fn env_usize_override(name: &str) -> Option<usize> {
     env::var(name)
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
 }
 
-fn warm_presentation_debug_quality_pipelines(
+pub(crate) fn warm_presentation_debug_quality_pipelines(
     ctx: &wrela::query_exec::QueryExecContext,
     plan: &wrela::presentation_plan::PresentationPlan,
     input: &wrela::presentation_exec::PresentationExecutionInput,
@@ -2843,7 +2900,7 @@ fn warm_presentation_debug_quality_pipelines(
     Ok(())
 }
 
-fn execute_preview_command(
+pub(crate) fn execute_preview_command(
     output_format: OutputFormat,
     path_arg: Option<String>,
     program_args: Vec<String>,
@@ -2970,7 +3027,7 @@ fn execute_preview_command(
     print!("{ppm}");
 }
 
-fn execute_frame_command(
+pub(crate) fn execute_frame_command(
     output_format: OutputFormat,
     path_arg: Option<String>,
     program_args: Vec<String>,
@@ -3131,7 +3188,7 @@ fn execute_frame_command(
     }
 }
 
-fn execute_frame_contracts_command(
+pub(crate) fn execute_frame_contracts_command(
     output_format: OutputFormat,
     path_arg: Option<String>,
     program_args: Vec<String>,
@@ -3240,7 +3297,7 @@ fn execute_frame_contracts_command(
     }
 }
 
-fn load_prepared_presentation_execution(
+pub(crate) fn load_prepared_presentation_execution(
     entry_path: &Path,
     output_format: OutputFormat,
     query_backend: wrela::query_plan::DispatchBackend,
@@ -3313,7 +3370,7 @@ fn load_prepared_presentation_execution(
     })
 }
 
-fn selected_frame_attachment_names(
+pub(crate) fn selected_frame_attachment_names(
     result: &wrela::presentation_exec::PresentationExecutionResult,
     requested: &[String],
 ) -> Result<Vec<String>, wrela::presentation_exec::PresentationExecError> {
@@ -3336,7 +3393,7 @@ fn selected_frame_attachment_names(
     Ok(resolved)
 }
 
-fn compile_presentation_plans(
+pub(crate) fn compile_presentation_plans(
     entry_path: &Path,
     output_format: OutputFormat,
     query_backend: wrela::query_plan::DispatchBackend,
@@ -3344,7 +3401,7 @@ fn compile_presentation_plans(
     compile_presentation_bundle(entry_path, output_format, query_backend).map(|bundle| bundle.plans)
 }
 
-fn compile_presentation_bundle(
+pub(crate) fn compile_presentation_bundle(
     entry_path: &Path,
     output_format: OutputFormat,
     query_backend: wrela::query_plan::DispatchBackend,
@@ -3454,9 +3511,9 @@ fn compile_presentation_bundle(
     })
 }
 
-type PreviewEvalBindings = HashMap<SmolStr, wrela::kernel::KernelValue>;
+pub(crate) type PreviewEvalBindings = HashMap<SmolStr, wrela::kernel::KernelValue>;
 
-fn prepare_presentation_execution(
+pub(crate) fn prepare_presentation_execution(
     module: &hir::Module,
     query_ctx: &wrela::query_exec::QueryExecContext,
     base_plan: &wrela::presentation_plan::PresentationPlan,
@@ -3540,7 +3597,9 @@ fn prepare_presentation_execution(
     })
 }
 
-fn strip_presentation_export_attachment(plan: &mut wrela::presentation_plan::PresentationPlan) {
+pub(crate) fn strip_presentation_export_attachment(
+    plan: &mut wrela::presentation_plan::PresentationPlan,
+) {
     let export_binding_ids = plan
         .passes
         .iter()
@@ -3564,7 +3623,7 @@ fn strip_presentation_export_attachment(plan: &mut wrela::presentation_plan::Pre
         .retain(|binding| !export_binding_ids.contains(&binding.id));
 }
 
-fn bind_presentation_function_params(
+pub(crate) fn bind_presentation_function_params(
     function: &hir::Function,
     region_snapshot: &wrela::world_identity::WorldSnapshotHandle,
     camera: wrela::presentation_contract::CanonicalCameraInput,
@@ -3584,7 +3643,7 @@ fn bind_presentation_function_params(
     bindings
 }
 
-fn authored_presentation_lighting_inputs(
+pub(crate) fn authored_presentation_lighting_inputs(
     view_func: &hir::Function,
     bindings: &PreviewEvalBindings,
 ) -> Result<wrela::presentation_contract::PresentationLightingInputs, String> {
@@ -3695,7 +3754,7 @@ fn authored_presentation_lighting_inputs(
     })
 }
 
-fn authored_compatibility_projection_input(
+pub(crate) fn authored_compatibility_projection_input(
     plan: &wrela::presentation_plan::PresentationPlan,
     view_func: &hir::Function,
     bindings: &PreviewEvalBindings,
@@ -3732,7 +3791,7 @@ fn authored_compatibility_projection_input(
     ))
 }
 
-fn preview_eval_body(
+pub(crate) fn preview_eval_body(
     body: &hir::Body,
     base_bindings: &PreviewEvalBindings,
     context: &str,
@@ -3770,7 +3829,7 @@ fn preview_eval_body(
     last_value.ok_or_else(|| format!("{context} requires a terminal expression"))
 }
 
-fn preview_eval_expr(
+pub(crate) fn preview_eval_expr(
     body: &hir::Body,
     expr_id: hir::Idx<hir::Expr>,
     bindings: &PreviewEvalBindings,
@@ -3820,7 +3879,7 @@ fn preview_eval_expr(
     }
 }
 
-fn preview_eval_call(
+pub(crate) fn preview_eval_call(
     callee: &SmolStr,
     body: &hir::Body,
     args: &[hir::Arg],
@@ -3925,7 +3984,7 @@ fn preview_eval_call(
     }
 }
 
-fn preview_eval_call_arguments(
+pub(crate) fn preview_eval_call_arguments(
     body: &hir::Body,
     args: &[hir::Arg],
     bindings: &PreviewEvalBindings,
@@ -3949,7 +4008,7 @@ fn preview_eval_call_arguments(
     Ok((positional, named))
 }
 
-fn preview_named_or_pos_expr(
+pub(crate) fn preview_named_or_pos_expr(
     args: &[hir::Arg],
     name: &str,
     index: usize,
@@ -3973,7 +4032,7 @@ fn preview_named_or_pos_expr(
         })
 }
 
-fn preview_named_or_pos_value(
+pub(crate) fn preview_named_or_pos_value(
     named: &mut PreviewEvalBindings,
     positional: &[wrela::kernel::KernelValue],
     name: &str,
@@ -3986,7 +4045,10 @@ fn preview_named_or_pos_value(
         .ok_or_else(|| format!("{context} is missing `{name}`"))
 }
 
-fn preview_capture_region_name(body: &hir::Body, expr_id: hir::Idx<hir::Expr>) -> Option<SmolStr> {
+pub(crate) fn preview_capture_region_name(
+    body: &hir::Body,
+    expr_id: hir::Idx<hir::Expr>,
+) -> Option<SmolStr> {
     match &body.exprs[expr_id] {
         hir::Expr::Variable(name) => Some(name.clone()),
         hir::Expr::Call { callee, .. } => match &body.exprs[*callee] {
@@ -3997,7 +4059,7 @@ fn preview_capture_region_name(body: &hir::Body, expr_id: hir::Idx<hir::Expr>) -
     }
 }
 
-fn preview_literal_value(
+pub(crate) fn preview_literal_value(
     literal: &hir::Literal,
     context: &str,
 ) -> Result<wrela::kernel::KernelValue, String> {
@@ -4009,7 +4071,7 @@ fn preview_literal_value(
     }
 }
 
-fn preview_apply_unary(
+pub(crate) fn preview_apply_unary(
     op: hir::UnaryOp,
     value: wrela::kernel::KernelValue,
     context: &str,
@@ -4030,7 +4092,7 @@ fn preview_apply_unary(
     }
 }
 
-fn preview_apply_binary(
+pub(crate) fn preview_apply_binary(
     lhs: wrela::kernel::KernelValue,
     op: hir::BinaryOp,
     rhs: wrela::kernel::KernelValue,
@@ -4091,7 +4153,7 @@ fn preview_apply_binary(
     }
 }
 
-fn preview_numeric_binary(
+pub(crate) fn preview_numeric_binary(
     lhs: wrela::kernel::KernelValue,
     rhs: wrela::kernel::KernelValue,
     integer_op: impl FnOnce(i32, i32) -> i32,
@@ -4108,7 +4170,7 @@ fn preview_numeric_binary(
     }
 }
 
-fn preview_scalar_f32(value: &wrela::kernel::KernelValue) -> Result<f32, String> {
+pub(crate) fn preview_scalar_f32(value: &wrela::kernel::KernelValue) -> Result<f32, String> {
     match value {
         wrela::kernel::KernelValue::I32(value) => Ok(*value as f32),
         wrela::kernel::KernelValue::U32(value) => Ok(*value as f32),
@@ -4117,7 +4179,7 @@ fn preview_scalar_f32(value: &wrela::kernel::KernelValue) -> Result<f32, String>
     }
 }
 
-fn preview_struct_field(
+pub(crate) fn preview_struct_field(
     value: &wrela::kernel::KernelValue,
     field_name: &str,
     context: &str,
@@ -4135,11 +4197,17 @@ fn preview_struct_field(
         .ok_or_else(|| format!("{context} could not find field `{field_name}`"))
 }
 
-fn preview_expect_f32(value: &wrela::kernel::KernelValue, context: &str) -> Result<f32, String> {
+pub(crate) fn preview_expect_f32(
+    value: &wrela::kernel::KernelValue,
+    context: &str,
+) -> Result<f32, String> {
     preview_scalar_f32(value).map_err(|_| format!("{context} expected an f32-compatible value"))
 }
 
-fn preview_expect_i32(value: &wrela::kernel::KernelValue, context: &str) -> Result<i32, String> {
+pub(crate) fn preview_expect_i32(
+    value: &wrela::kernel::KernelValue,
+    context: &str,
+) -> Result<i32, String> {
     match value {
         wrela::kernel::KernelValue::I32(value) => Ok(*value),
         wrela::kernel::KernelValue::U32(value) => Ok(*value as i32),
@@ -4148,7 +4216,10 @@ fn preview_expect_i32(value: &wrela::kernel::KernelValue, context: &str) -> Resu
     }
 }
 
-fn preview_expect_u32(value: &wrela::kernel::KernelValue, context: &str) -> Result<u32, String> {
+pub(crate) fn preview_expect_u32(
+    value: &wrela::kernel::KernelValue,
+    context: &str,
+) -> Result<u32, String> {
     match value {
         wrela::kernel::KernelValue::I32(value) => Ok((*value).max(0) as u32),
         wrela::kernel::KernelValue::U32(value) => Ok(*value),
@@ -4157,7 +4228,7 @@ fn preview_expect_u32(value: &wrela::kernel::KernelValue, context: &str) -> Resu
     }
 }
 
-fn preview_expect_vec3(
+pub(crate) fn preview_expect_vec3(
     value: &wrela::kernel::KernelValue,
     context: &str,
 ) -> Result<[f32; 3], String> {
@@ -4167,7 +4238,7 @@ fn preview_expect_vec3(
     }
 }
 
-fn preview_expect_light(
+pub(crate) fn preview_expect_light(
     value: &wrela::kernel::KernelValue,
     context: &str,
 ) -> Result<wrela::presentation_contract::CanonicalLightInput, String> {
@@ -4186,7 +4257,7 @@ fn preview_expect_light(
     })
 }
 
-fn preview_camera_value(
+pub(crate) fn preview_camera_value(
     camera: wrela::presentation_contract::CanonicalCameraInput,
 ) -> wrela::kernel::KernelValue {
     wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
@@ -4212,7 +4283,7 @@ fn preview_camera_value(
     })
 }
 
-fn default_preview_key_light() -> wrela::presentation_contract::CanonicalLightInput {
+pub(crate) fn default_preview_key_light() -> wrela::presentation_contract::CanonicalLightInput {
     wrela::presentation_contract::CanonicalLightInput {
         position: [2.4, 2.8, 2.4],
         direction: normalize_preview_vec3([-0.8, -0.9, -0.9]),
@@ -4221,7 +4292,7 @@ fn default_preview_key_light() -> wrela::presentation_contract::CanonicalLightIn
     }
 }
 
-fn normalize_preview_vec3(value: [f32; 3]) -> [f32; 3] {
+pub(crate) fn normalize_preview_vec3(value: [f32; 3]) -> [f32; 3] {
     let len_sq = value[0] * value[0] + value[1] * value[1] + value[2] * value[2];
     if len_sq <= f32::EPSILON {
         return value;
@@ -4230,7 +4301,7 @@ fn normalize_preview_vec3(value: [f32; 3]) -> [f32; 3] {
     [value[0] * inv_len, value[1] * inv_len, value[2] * inv_len]
 }
 
-fn parse_query_trace_solver_mode(
+pub(crate) fn parse_query_trace_solver_mode(
     value: &str,
 ) -> Result<wrela::query_exec::QueryTraceSolverMode, String> {
     match value.trim().to_ascii_lowercase().as_str() {
@@ -4242,7 +4313,9 @@ fn parse_query_trace_solver_mode(
     }
 }
 
-fn parse_presentation_debug_options(args: &[String]) -> Result<PresentationDebugOptions, String> {
+pub(crate) fn parse_presentation_debug_options(
+    args: &[String],
+) -> Result<PresentationDebugOptions, String> {
     let mut options = PresentationDebugOptions {
         view: None,
         region: None,
@@ -4344,7 +4417,9 @@ fn parse_presentation_debug_options(args: &[String]) -> Result<PresentationDebug
     Ok(options)
 }
 
-fn parse_preview_command_options(args: &[String]) -> Result<PreviewCommandOptions, String> {
+pub(crate) fn parse_preview_command_options(
+    args: &[String],
+) -> Result<PreviewCommandOptions, String> {
     let mut options = PreviewCommandOptions {
         view: None,
         region: None,
@@ -4435,7 +4510,7 @@ fn parse_preview_command_options(args: &[String]) -> Result<PreviewCommandOption
     Ok(options)
 }
 
-fn parse_frame_command_options(args: &[String]) -> Result<FrameCommandOptions, String> {
+pub(crate) fn parse_frame_command_options(args: &[String]) -> Result<FrameCommandOptions, String> {
     let mut options = FrameCommandOptions {
         view: None,
         region: None,
@@ -4539,7 +4614,7 @@ fn parse_frame_command_options(args: &[String]) -> Result<FrameCommandOptions, S
     Ok(options)
 }
 
-fn parse_frame_contracts_view(args: &[String]) -> Result<Option<String>, String> {
+pub(crate) fn parse_frame_contracts_view(args: &[String]) -> Result<Option<String>, String> {
     let mut view = None;
     let mut index = 0usize;
     while index < args.len() {
@@ -4568,7 +4643,7 @@ fn parse_frame_contracts_view(args: &[String]) -> Result<Option<String>, String>
     Ok(view)
 }
 
-fn parse_vec3_flag(value: &str, flag: &str) -> Result<[f32; 3], String> {
+pub(crate) fn parse_vec3_flag(value: &str, flag: &str) -> Result<[f32; 3], String> {
     let lanes = value
         .split(',')
         .map(|lane| lane.trim().parse::<f32>())
@@ -4580,7 +4655,7 @@ fn parse_vec3_flag(value: &str, flag: &str) -> Result<[f32; 3], String> {
     Ok([lanes[0], lanes[1], lanes[2]])
 }
 
-fn select_view_plan<'a>(
+pub(crate) fn select_view_plan<'a>(
     bundle: &'a CompiledPresentationBundle,
     requested: Option<&str>,
 ) -> Result<&'a wrela::presentation_plan::PresentationPlan, String> {
@@ -4608,7 +4683,10 @@ fn select_view_plan<'a>(
     }
 }
 
-fn select_region_name(module: &hir::Module, requested: Option<&str>) -> Result<SmolStr, String> {
+pub(crate) fn select_region_name(
+    module: &hir::Module,
+    requested: Option<&str>,
+) -> Result<SmolStr, String> {
     let mut candidates = module
         .functions
         .iter()
@@ -4628,7 +4706,7 @@ fn select_region_name(module: &hir::Module, requested: Option<&str>) -> Result<S
     }
 }
 
-fn select_domain_name(
+pub(crate) fn select_domain_name(
     module: &hir::Module,
     view: &hir::Function,
     requested: Option<&str>,
@@ -4665,7 +4743,7 @@ fn select_domain_name(
     }
 }
 
-fn body_called_function_name(body: &hir::Body) -> Option<SmolStr> {
+pub(crate) fn body_called_function_name(body: &hir::Body) -> Option<SmolStr> {
     let expr_id = body_terminal_expr_id(body)?;
     let hir::Expr::Call { callee, .. } = &body.exprs[expr_id] else {
         return None;
@@ -4676,7 +4754,7 @@ fn body_called_function_name(body: &hir::Body) -> Option<SmolStr> {
     Some(name.clone())
 }
 
-fn body_terminal_expr_id(body: &hir::Body) -> Option<hir::Idx<hir::Expr>> {
+pub(crate) fn body_terminal_expr_id(body: &hir::Body) -> Option<hir::Idx<hir::Expr>> {
     let stmt = body.root_stmts.last()?;
     match body.stmts[*stmt] {
         hir::Stmt::Expr(expr) => Some(expr),
@@ -4685,7 +4763,9 @@ fn body_terminal_expr_id(body: &hir::Body) -> Option<hir::Idx<hir::Expr>> {
     }
 }
 
-fn body_terminal_call_args<'a>(body: &'a hir::Body) -> Option<(&'a SmolStr, &'a [hir::Arg])> {
+pub(crate) fn body_terminal_call_args<'a>(
+    body: &'a hir::Body,
+) -> Option<(&'a SmolStr, &'a [hir::Arg])> {
     let expr_id = body_terminal_expr_id(body)?;
     let hir::Expr::Call { callee, args, .. } = &body.exprs[expr_id] else {
         return None;
@@ -4696,7 +4776,7 @@ fn body_terminal_call_args<'a>(body: &'a hir::Body) -> Option<(&'a SmolStr, &'a 
     Some((name, args.as_slice()))
 }
 
-fn helper_call_named_expr_id(
+pub(crate) fn helper_call_named_expr_id(
     body: &hir::Body,
     helper_name: &str,
     arg_name: &str,
@@ -4711,7 +4791,7 @@ fn helper_call_named_expr_id(
     })
 }
 
-fn resolve_view_dimension(
+pub(crate) fn resolve_view_dimension(
     view: &hir::Function,
     override_value: Option<u32>,
     width: bool,
@@ -4748,17 +4828,17 @@ fn resolve_view_dimension(
     })
 }
 
-fn eval_body_u32(body: &hir::Body) -> Option<u32> {
+pub(crate) fn eval_body_u32(body: &hir::Body) -> Option<u32> {
     let expr_id = body_terminal_expr_id(body)?;
     eval_expr_u32(body, expr_id)
 }
 
-fn eval_body_i32_in_module(module: &hir::Module, body: &hir::Body) -> Option<i32> {
+pub(crate) fn eval_body_i32_in_module(module: &hir::Module, body: &hir::Body) -> Option<i32> {
     let expr_id = body_terminal_expr_id(body)?;
     eval_expr_i32_in_module(module, body, expr_id)
 }
 
-fn eval_expr_i32_in_module(
+pub(crate) fn eval_expr_i32_in_module(
     module: &hir::Module,
     body: &hir::Body,
     expr_id: hir::Idx<hir::Expr>,
@@ -4766,16 +4846,16 @@ fn eval_expr_i32_in_module(
     eval_expr_f32_in_module(module, body, expr_id).map(|value| value as i32)
 }
 
-fn eval_body_f32_in_module(module: &hir::Module, body: &hir::Body) -> Option<f32> {
+pub(crate) fn eval_body_f32_in_module(module: &hir::Module, body: &hir::Body) -> Option<f32> {
     let expr_id = body_terminal_expr_id(body)?;
     eval_expr_f32_in_module(module, body, expr_id)
 }
 
-fn eval_expr_u32(body: &hir::Body, expr_id: hir::Idx<hir::Expr>) -> Option<u32> {
+pub(crate) fn eval_expr_u32(body: &hir::Body, expr_id: hir::Idx<hir::Expr>) -> Option<u32> {
     eval_expr_f32(body, expr_id).map(|value| value.max(0.0) as u32)
 }
 
-fn eval_expr_f32(body: &hir::Body, expr_id: hir::Idx<hir::Expr>) -> Option<f32> {
+pub(crate) fn eval_expr_f32(body: &hir::Body, expr_id: hir::Idx<hir::Expr>) -> Option<f32> {
     match &body.exprs[expr_id] {
         hir::Expr::Literal(hir::Literal::Integer(value)) => Some(*value as f32),
         hir::Expr::Literal(hir::Literal::Float(value)) => Some(*value as f32),
@@ -4783,7 +4863,7 @@ fn eval_expr_f32(body: &hir::Body, expr_id: hir::Idx<hir::Expr>) -> Option<f32> 
     }
 }
 
-fn eval_expr_f32_in_module(
+pub(crate) fn eval_expr_f32_in_module(
     module: &hir::Module,
     body: &hir::Body,
     expr_id: hir::Idx<hir::Expr>,
@@ -4833,7 +4913,7 @@ fn eval_expr_f32_in_module(
     eval(module, body, expr_id, &mut stack)
 }
 
-fn domain_execution_inputs(
+pub(crate) fn domain_execution_inputs(
     module: &hir::Module,
     domain: &hir::Function,
     region_name: &SmolStr,
@@ -4883,15 +4963,15 @@ fn domain_execution_inputs(
     })
 }
 
-fn authored_domain_f32(module: &hir::Module, body: Option<&hir::Body>) -> Option<f32> {
+pub(crate) fn authored_domain_f32(module: &hir::Module, body: Option<&hir::Body>) -> Option<f32> {
     body.and_then(|body| eval_body_f32_in_module(module, body))
 }
 
-fn authored_domain_i32(module: &hir::Module, body: Option<&hir::Body>) -> Option<i32> {
+pub(crate) fn authored_domain_i32(module: &hir::Module, body: Option<&hir::Body>) -> Option<i32> {
     body.and_then(|body| eval_body_i32_in_module(module, body))
 }
 
-fn presentation_plan_dump(
+pub(crate) fn presentation_plan_dump(
     entry_path: &Path,
     plans: &[wrela::presentation_plan::PresentationPlan],
 ) -> PresentationPlanDump {
@@ -4902,7 +4982,7 @@ fn presentation_plan_dump(
     }
 }
 
-fn presentation_plan_dump_item(
+pub(crate) fn presentation_plan_dump_item(
     plan: &wrela::presentation_plan::PresentationPlan,
 ) -> PresentationPlanDumpItem {
     let validation = observer_validation_summary(
@@ -5077,7 +5157,7 @@ fn presentation_plan_dump_item(
     }
 }
 
-fn print_presentation_plan_human(dump: &PresentationPlanDump) {
+pub(crate) fn print_presentation_plan_human(dump: &PresentationPlanDump) {
     println!("presentation plan schema v{}", dump.schema_version);
     println!("entry: {}", dump.entry_path);
     if dump.plans.is_empty() {
@@ -5327,7 +5407,7 @@ fn print_presentation_plan_human(dump: &PresentationPlanDump) {
     }
 }
 
-fn canonical_projection_input_name(
+pub(crate) fn canonical_projection_input_name(
     input: wrela::presentation_contract::CanonicalProjectionInput,
 ) -> String {
     match input {
@@ -5337,7 +5417,7 @@ fn canonical_projection_input_name(
     }
 }
 
-fn screen_sample_position_name(
+pub(crate) fn screen_sample_position_name(
     position: wrela::presentation_contract::ScreenLatticeSamplePosition,
 ) -> &'static str {
     match position {
@@ -5345,7 +5425,7 @@ fn screen_sample_position_name(
     }
 }
 
-fn screen_lattice_origin_name(
+pub(crate) fn screen_lattice_origin_name(
     origin: wrela::presentation_contract::ScreenLatticeOrigin,
 ) -> &'static str {
     match origin {
@@ -5353,13 +5433,15 @@ fn screen_lattice_origin_name(
     }
 }
 
-fn view_ray_space_name(space: wrela::presentation_contract::CanonicalViewRaySpace) -> &'static str {
+pub(crate) fn view_ray_space_name(
+    space: wrela::presentation_contract::CanonicalViewRaySpace,
+) -> &'static str {
     match space {
         wrela::presentation_contract::CanonicalViewRaySpace::World => "World",
     }
 }
 
-fn depth_semantics_name(
+pub(crate) fn depth_semantics_name(
     semantics: wrela::presentation_contract::DepthAttachmentSemantics,
 ) -> &'static str {
     match semantics {
@@ -5369,7 +5451,7 @@ fn depth_semantics_name(
     }
 }
 
-fn frame_attachment_kind_name(
+pub(crate) fn frame_attachment_kind_name(
     kind: wrela::presentation_contract::FrameAttachmentKind,
 ) -> &'static str {
     match kind {
@@ -5384,7 +5466,9 @@ fn frame_attachment_kind_name(
     }
 }
 
-fn attachment_lifetime_name(lifetime: wrela::presentation_contract::AttachmentLifetime) -> String {
+pub(crate) fn attachment_lifetime_name(
+    lifetime: wrela::presentation_contract::AttachmentLifetime,
+) -> String {
     match lifetime {
         wrela::presentation_contract::AttachmentLifetime::Transient => "Transient".to_string(),
         wrela::presentation_contract::AttachmentLifetime::Exported => "Exported".to_string(),
@@ -5394,7 +5478,7 @@ fn attachment_lifetime_name(lifetime: wrela::presentation_contract::AttachmentLi
     }
 }
 
-fn attachment_element_schema_name(
+pub(crate) fn attachment_element_schema_name(
     schema: &wrela::presentation_contract::AttachmentElementSchema,
 ) -> String {
     match schema {
@@ -5408,7 +5492,7 @@ fn attachment_element_schema_name(
     }
 }
 
-fn attachment_resolution_name(
+pub(crate) fn attachment_resolution_name(
     resolution: wrela::presentation_contract::AttachmentResolutionClass,
 ) -> &'static str {
     match resolution {
@@ -5420,13 +5504,13 @@ fn attachment_resolution_name(
     }
 }
 
-fn attachment_resolution_scale_name(
+pub(crate) fn attachment_resolution_scale_name(
     scale: wrela::presentation_contract::AttachmentResolutionScale,
 ) -> String {
     format!("{}x{}", scale.divisor_x, scale.divisor_y)
 }
 
-fn attachment_clear_policy_name(
+pub(crate) fn attachment_clear_policy_name(
     clear_policy: wrela::presentation_contract::AttachmentClearPolicy,
 ) -> &'static str {
     match clear_policy {
@@ -5436,7 +5520,9 @@ fn attachment_clear_policy_name(
     }
 }
 
-fn temporal_reuse_name(reuse: wrela::presentation_contract::TemporalReuseMode) -> &'static str {
+pub(crate) fn temporal_reuse_name(
+    reuse: wrela::presentation_contract::TemporalReuseMode,
+) -> &'static str {
     match reuse {
         wrela::presentation_contract::TemporalReuseMode::Disabled => "Disabled",
         wrela::presentation_contract::TemporalReuseMode::ReprojectColor => "ReprojectColor",
@@ -5446,7 +5532,7 @@ fn temporal_reuse_name(reuse: wrela::presentation_contract::TemporalReuseMode) -
     }
 }
 
-fn contract_observability_names(
+pub(crate) fn contract_observability_names(
     observability: &wrela::presentation_contract::PresentationObservabilityProfile,
 ) -> Vec<String> {
     let mut names = Vec::new();
@@ -5468,7 +5554,7 @@ fn contract_observability_names(
     names
 }
 
-fn pass_observability_names(
+pub(crate) fn pass_observability_names(
     observability: &wrela::presentation_plan::PresentationObservability,
 ) -> Vec<String> {
     let mut names = Vec::new();
@@ -5490,7 +5576,7 @@ fn pass_observability_names(
     names
 }
 
-fn presentation_lighting_input_dump(
+pub(crate) fn presentation_lighting_input_dump(
     contract: &wrela::presentation_contract::LightingInputContract,
 ) -> PresentationLightingInputDump {
     PresentationLightingInputDump {
@@ -5501,7 +5587,7 @@ fn presentation_lighting_input_dump(
     }
 }
 
-fn format_lighting_input_dump(contract: &PresentationLightingInputDump) -> String {
+pub(crate) fn format_lighting_input_dump(contract: &PresentationLightingInputDump) -> String {
     format!(
         "{}:{}:{}:compat_alias={}",
         contract.binding,
@@ -5511,7 +5597,7 @@ fn format_lighting_input_dump(contract: &PresentationLightingInputDump) -> Strin
     )
 }
 
-fn lighting_input_source_name(
+pub(crate) fn lighting_input_source_name(
     source: wrela::presentation_contract::LightingInputBindingSource,
 ) -> &'static str {
     match source {
@@ -5524,7 +5610,9 @@ fn lighting_input_source_name(
     }
 }
 
-fn presentation_pass_kind_name(kind: &wrela::presentation_plan::PresentationPassKind) -> String {
+pub(crate) fn presentation_pass_kind_name(
+    kind: &wrela::presentation_plan::PresentationPassKind,
+) -> String {
     match kind {
         wrela::presentation_plan::PresentationPassKind::GenerateScreenSamples { .. } => {
             "GenerateScreenSamples".to_string()
@@ -5581,7 +5669,7 @@ fn presentation_pass_kind_name(kind: &wrela::presentation_plan::PresentationPass
     }
 }
 
-fn presentation_screen_sample_pass_dump(
+pub(crate) fn presentation_screen_sample_pass_dump(
     kind: &wrela::presentation_plan::PresentationPassKind,
 ) -> Option<PresentationScreenSamplePassDump> {
     match kind {
@@ -5599,7 +5687,7 @@ fn presentation_screen_sample_pass_dump(
     }
 }
 
-fn collision_pass_kind_name(kind: &wrela::collision_plan::CollisionPassKind) -> String {
+pub(crate) fn collision_pass_kind_name(kind: &wrela::collision_plan::CollisionPassKind) -> String {
     match kind {
         wrela::collision_plan::CollisionPassKind::GatherCandidates { .. } => {
             "gather_candidates".to_string()
@@ -5628,7 +5716,7 @@ fn collision_pass_kind_name(kind: &wrela::collision_plan::CollisionPassKind) -> 
     }
 }
 
-fn presentation_recipe_name(
+pub(crate) fn presentation_recipe_name(
     recipe: wrela::presentation_binding::PresentationPassRecipeKind,
 ) -> &'static str {
     match recipe {
@@ -5658,7 +5746,7 @@ fn presentation_recipe_name(
     }
 }
 
-fn presentation_binding_execution_name(
+pub(crate) fn presentation_binding_execution_name(
     binding: &wrela::presentation_binding::PresentationBindingSummary,
 ) -> &'static str {
     match binding.recipe {
@@ -5694,7 +5782,7 @@ fn presentation_binding_execution_name(
     }
 }
 
-fn dispatch_backend_name(backend: wrela::query_plan::DispatchBackend) -> &'static str {
+pub(crate) fn dispatch_backend_name(backend: wrela::query_plan::DispatchBackend) -> &'static str {
     match backend {
         wrela::query_plan::DispatchBackend::Cpu => "cpu",
         wrela::query_plan::DispatchBackend::VirtualGpu => "virtual_gpu",
@@ -5703,7 +5791,7 @@ fn dispatch_backend_name(backend: wrela::query_plan::DispatchBackend) -> &'stati
     }
 }
 
-fn acceleration_hook_name(
+pub(crate) fn acceleration_hook_name(
     hook: wrela::presentation_plan::PresentationAccelerationHook,
 ) -> &'static str {
     match hook {
@@ -5718,7 +5806,9 @@ fn acceleration_hook_name(
     }
 }
 
-fn distance_semantics_name(semantics: wrela::scene_ir::DistanceSemantics) -> &'static str {
+pub(crate) fn distance_semantics_name(
+    semantics: wrela::scene_ir::DistanceSemantics,
+) -> &'static str {
     match semantics {
         wrela::scene_ir::DistanceSemantics::ExactSignedDistance => "exact-signed-distance",
         wrela::scene_ir::DistanceSemantics::ConservativeLowerBound => "conservative-lower-bound",
@@ -5726,7 +5816,7 @@ fn distance_semantics_name(semantics: wrela::scene_ir::DistanceSemantics) -> &'s
     }
 }
 
-fn support_class_name(class: wrela::scene_ir::SupportClass) -> &'static str {
+pub(crate) fn support_class_name(class: wrela::scene_ir::SupportClass) -> &'static str {
     match class {
         wrela::scene_ir::SupportClass::Unknown => "unknown",
         wrela::scene_ir::SupportClass::Bounded => "bounded",
@@ -5735,7 +5825,7 @@ fn support_class_name(class: wrela::scene_ir::SupportClass) -> &'static str {
     }
 }
 
-fn fact_availability_name(value: wrela::query_solver::FactAvailability) -> &'static str {
+pub(crate) fn fact_availability_name(value: wrela::query_solver::FactAvailability) -> &'static str {
     match value {
         wrela::query_solver::FactAvailability::Available => "available",
         wrela::query_solver::FactAvailability::Unavailable => "unavailable",
@@ -5743,7 +5833,7 @@ fn fact_availability_name(value: wrela::query_solver::FactAvailability) -> &'sta
     }
 }
 
-fn lipschitz_status_name(value: wrela::query_solver::LipschitzStatus) -> &'static str {
+pub(crate) fn lipschitz_status_name(value: wrela::query_solver::LipschitzStatus) -> &'static str {
     match value {
         wrela::query_solver::LipschitzStatus::ExactKnown => "exact-known",
         wrela::query_solver::LipschitzStatus::ConservativeKnown => "conservative-known",
@@ -5752,7 +5842,9 @@ fn lipschitz_status_name(value: wrela::query_solver::LipschitzStatus) -> &'stati
     }
 }
 
-fn analytic_status_name(value: wrela::query_solver::AnalyticIntersectionStatus) -> &'static str {
+pub(crate) fn analytic_status_name(
+    value: wrela::query_solver::AnalyticIntersectionStatus,
+) -> &'static str {
     match value {
         wrela::query_solver::AnalyticIntersectionStatus::Available => "available",
         wrela::query_solver::AnalyticIntersectionStatus::CandidateOnly => "candidate-only",
@@ -5761,7 +5853,9 @@ fn analytic_status_name(value: wrela::query_solver::AnalyticIntersectionStatus) 
     }
 }
 
-fn temporal_stability_name(value: wrela::query_solver::TemporalStability) -> &'static str {
+pub(crate) fn temporal_stability_name(
+    value: wrela::query_solver::TemporalStability,
+) -> &'static str {
     match value {
         wrela::query_solver::TemporalStability::CompileInvariant => "compile-invariant",
         wrela::query_solver::TemporalStability::TransitionCompatible => "transition-compatible",
@@ -5771,7 +5865,7 @@ fn temporal_stability_name(value: wrela::query_solver::TemporalStability) -> &'s
     }
 }
 
-fn presentation_temporal_change_class_name(
+pub(crate) fn presentation_temporal_change_class_name(
     value: wrela::presentation_contract::TemporalChangeClass,
 ) -> &'static str {
     match value {
@@ -5785,7 +5879,7 @@ fn presentation_temporal_change_class_name(
     }
 }
 
-fn semantic_temporal_change_class_name(
+pub(crate) fn semantic_temporal_change_class_name(
     value: wrela::semantic_evidence::TemporalChangeClass,
 ) -> &'static str {
     match value {
@@ -5799,7 +5893,7 @@ fn semantic_temporal_change_class_name(
     }
 }
 
-fn presentation_refinement_path_dump(
+pub(crate) fn presentation_refinement_path_dump(
     steps: &[wrela::query_plan::SemanticEvidenceRefinementStep],
 ) -> Vec<String> {
     steps
@@ -5815,7 +5909,7 @@ fn presentation_refinement_path_dump(
         .collect()
 }
 
-fn presentation_evidence_dump_from_summary(
+pub(crate) fn presentation_evidence_dump_from_summary(
     summary: &wrela::query_plan::SemanticEvidenceSummary,
 ) -> PresentationEvidenceDump {
     PresentationEvidenceDump {
@@ -5864,7 +5958,7 @@ fn presentation_evidence_dump_from_summary(
     }
 }
 
-fn presentation_solver_dump(
+pub(crate) fn presentation_solver_dump(
     summary: &wrela::query_solver::RaySolverDiagnosticSummary,
 ) -> PresentationRaySolverDump {
     PresentationRaySolverDump {
@@ -5899,7 +5993,7 @@ fn presentation_solver_dump(
     }
 }
 
-fn presentation_ray_solver_selection_dump(
+pub(crate) fn presentation_ray_solver_selection_dump(
     selection: &wrela::query_solver::RaySolverMixedSelection,
 ) -> PresentationRaySolverSelectionDump {
     PresentationRaySolverSelectionDump {
@@ -5918,7 +6012,7 @@ fn presentation_ray_solver_selection_dump(
     }
 }
 
-fn presentation_ray_solver_artifact_reuse_intent_dump(
+pub(crate) fn presentation_ray_solver_artifact_reuse_intent_dump(
     intent: &wrela::query_solver::RaySolverArtifactReuseIntent,
 ) -> PresentationRaySolverIntentDump {
     PresentationRaySolverIntentDump {
@@ -5932,7 +6026,7 @@ fn presentation_ray_solver_artifact_reuse_intent_dump(
     }
 }
 
-fn presentation_ray_solver_continuation_intent_dump(
+pub(crate) fn presentation_ray_solver_continuation_intent_dump(
     intent: &wrela::query_solver::RaySolverContinuationIntent,
 ) -> PresentationRaySolverIntentDump {
     PresentationRaySolverIntentDump {
@@ -5946,7 +6040,7 @@ fn presentation_ray_solver_continuation_intent_dump(
     }
 }
 
-fn ray_solver_intent_disposition_name(
+pub(crate) fn ray_solver_intent_disposition_name(
     disposition: wrela::query_solver::RaySolverIntentDisposition,
 ) -> &'static str {
     match disposition {
@@ -5956,7 +6050,7 @@ fn ray_solver_intent_disposition_name(
     }
 }
 
-fn presentation_query_dependency_metadata(
+pub(crate) fn presentation_query_dependency_metadata(
     contract_id: wrela::query_plan::QueryContractId,
 ) -> (
     Option<PresentationEvidenceDump>,
@@ -6003,7 +6097,7 @@ fn presentation_query_dependency_metadata(
     (None, None)
 }
 
-fn presentation_query_dependency_dump(
+pub(crate) fn presentation_query_dependency_dump(
     contract_id: wrela::query_plan::QueryContractId,
 ) -> PresentationQueryDependencyDump {
     let descriptor = wrela::query_contract::query_contract(contract_id);
@@ -6226,7 +6320,7 @@ pub fn execute(spec: CommandSpec) {
             Some(lane) => Some(lane),
             None => {
                 eprintln!(
-                    "error: invalid --lane value `{raw_lane}` (expected one of spec|integration|sim|model|default)"
+                    "error: invalid --lane value `{raw_lane}` (expected one of fast|full|spec|integration|sim|model|default)"
                 );
                 std::process::exit(EXIT_USAGE);
             }
