@@ -34,6 +34,21 @@ See [docs/dev/lanes.md](docs/dev/lanes.md) for the command-surface contract and
 [docs/dev/devloop_playbook.md](docs/dev/devloop_playbook.md) for the Phase 49 developer-loop
 measurement protocol and baseline-report workflow.
 
+## Architecture And Orientation
+
+When you are orienting to a change, start with:
+
+- [docs/architecture/contexts.md](docs/architecture/contexts.md) for the bounded
+  context map, dependency directions, and approved seams
+- [docs/architecture/glossary.md](docs/architecture/glossary.md) for temporary
+  migration vocabulary during the RFC 0009 refactor window
+- [docs/dev/lanes.md](docs/dev/lanes.md) for canonical proving lanes and the
+  human-plus-agent workflow contract
+
+Changes should name the touched context, start from that context's entrypoints,
+prove the work with its listed lane or test surface, and finish with an
+independent final review before closure.
+
 ## Command Surface Boundary
 
 - `just` is the repo workflow surface. Use it for named lanes such as `test`, `test-all`,

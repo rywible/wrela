@@ -72,6 +72,25 @@ That means:
 - an authored-world question such as "does the executable spec project still run?" uses `cargo run -p wrela -- test language/spec --lane=spec`
 - a repo question such as "is the fast lane green?" uses `just test`
 
+## Human-Plus-Agent Workflow Contract
+
+- Start by mapping the touched files to the named contexts in
+  `../architecture/contexts.md`.
+- Use one canonical command per workflow.
+  Prefer `just` for repo lanes, `cargo` for Rust-internal escape hatches, and
+  `wrela` for authored-world workflows.
+- Prefer machine-readable output when it helps automation or verification.
+  Examples in this repo include `--json`, `--json-report`, and the devloop
+  reports written under `.artifacts/devloop/`.
+- Slice work so ownership and proof stay explicit.
+  A good task names the touched context, the owned files or module roots, and
+  the lane or tests that will prove the change.
+- When a dense module root is touched in later phases, its header should explain
+  what it owns, what it does not own, its primary entrypoints, and the key
+  invariants or "why" notes a contributor needs.
+- Closure still requires an independent final review after the proving lane is
+  green.
+
 ## Notes
 
 - The `wrela test` surface still uses its native lane vocabulary (`spec`, `integration`, `sim`, `model`, `default`).
