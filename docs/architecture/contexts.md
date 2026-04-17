@@ -41,6 +41,11 @@ Use this map operationally:
   `cargo run -p wrela -- frame-contracts`.
 - Primary public nouns: `Type`, `TypeInfo`, `QueryPlan`, `PresentationPlan`,
   `CollisionPlan`, `SemanticEvidenceSummary`.
+- Phase 53 seam roots:
+  `compiler/mir/lower/mod.rs` exposes `lower_module`,
+  `lower_module_with_types`, and `lower_module_with_types_and_backend`.
+  Statement, expression, kernel, and interface lowering stay private to that
+  tree.
 - Prove it with `compiler/tests/codegen_v2.rs`, `compiler/tests/pir.rs`,
   `compiler/tests/kernel.rs`, `compiler/tests/semantic_evidence.rs`,
   `compiler/tests/presentation_plan.rs`,
@@ -60,6 +65,12 @@ Use this map operationally:
 - Primary public nouns: `QueryContractId`, `DispatchBackend`,
   `QueryProgramSpine`, `QueryExecContext`, `BatchQueryExecutionTrace`,
   `SemanticCostReport`.
+- Phase 53 seam roots:
+  `compiler/query_exec/cpu/mod.rs` owns the CPU entrypoints and
+  `QueryExecError`; `compiler/query_exec/wgsl/codegen/mod.rs` owns shader
+  generation plus the ABI helpers required by the runtime; and
+  `compiler/query_exec/mir/mod.rs` is the explicit bridge back into MIR
+  lowering, exporting only named query and capture helper lowerers.
 - Prove it with `compiler/tests/query_contract_registry.rs`,
   `compiler/tests/query_program_spine.rs`, `compiler/tests/query_exec.rs`,
   `compiler/tests/ray_solver_plan.rs`,
@@ -79,6 +90,11 @@ Use this map operationally:
 - Primary public nouns: `FrameContract`, `PresentationPlan`,
   `PresentationExecutionInput`, `PresentationFramegraph`,
   `PresentationQualityReport`.
+- Phase 53 seam roots:
+  `compiler/presentation_exec/wgsl/mod.rs` is the WGSL backend entrypoint seen
+  by the surrounding presentation executor (`execute_plan`). Pass execution,
+  pipeline construction, staging uploads, and shader source helpers stay
+  private to that backend tree.
 - Prove it with `compiler/tests/presentation_plan.rs`,
   `compiler/tests/presentation_exec.rs`,
   `compiler/tests/preview_project.rs`,
@@ -133,6 +149,12 @@ Use this map operationally:
   `docs/dev/devloop_playbook.md`.
 - Primary public nouns: repo lanes such as `test`, `test-all`, `perf-smoke`,
   and `ship`, plus `wrela` subcommands and JSON report surfaces.
+- Phase 53 seam roots:
+  `compiler/bin/wrela/commands/mod.rs` is the CLI dispatch surface, and
+  `compiler/bin/wrela/perf_engine/mod.rs` is the perf/perfcmp/matrix surface.
+  Callers should go through `execute`, `execute_perf_command`,
+  `execute_perfcmp_command`, and `execute_matrix_command` instead of reaching
+  into collection, closure, or worktree helpers.
 - Prove it with `compiler/tests/cli.rs`,
   `compiler/tests/one_shot_metrics_harness.rs`,
   `just baseline-devloop`, and benchmark manifests under `benchmarks/*`.

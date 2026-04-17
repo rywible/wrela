@@ -1,3 +1,19 @@
+//! Owns GPU post-processing passes and their attachment/runtime wiring.
+//! Does not own framegraph scheduling or primary-visibility query execution.
+//!
+//! Key invariants:
+//! - post passes must consume and produce attachments consistent with the
+//!   surrounding presentation contract.
+//! - GPU metrics gathered here must remain attributable to the actual post pass
+//!   that ran.
+//!
+//! Primary entrypoints:
+//! - GPU post-processing helpers in this module
+//!
+//! Failure modes / common pitfalls:
+//! - treating post-process attachment formats as interchangeable hides contract
+//!   drift until much later in execution.
+
 use crate::gpu_runtime::{GpuPassProfiler, GpuRuntimeMetrics};
 use crate::kernel::{KernelStructValue, KernelValue, lower_batch_query_plan};
 use crate::portable::{PortableAbiType, PortableStructField, portable_builtin_record_abi};

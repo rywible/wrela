@@ -1,3 +1,20 @@
+//! Owns temporal reuse, continuation accounting, and temporal resolve helpers
+//! for presentation execution.
+//! Does not own the rest of the framegraph or closure verdict policy.
+//!
+//! Key invariants:
+//! - temporal helpers may reuse prior-frame data, but only within the change
+//!   class and contract limits encoded by the temporal policy.
+//! - continuation accounting must reflect consumed, rejected, and unavailable
+//!   history distinctly so diagnostics stay truthful.
+//!
+//! Primary entrypoints:
+//! - temporal resolve/helpers in this module
+//!
+//! Failure modes / common pitfalls:
+//! - collapsing rejected and unavailable temporal history into one path hides
+//!   whether the bug is policy, validity, or simple absence.
+
 use crate::kernel::{KernelStructValue, KernelValue};
 use crate::presentation_contract::TemporalChangeClass;
 use crate::presentation_contract::{

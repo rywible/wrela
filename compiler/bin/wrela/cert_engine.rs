@@ -1,8 +1,28 @@
-use super::command_handlers::{
-    self, BudgetPolicyV1, CertPerfTimings, DifferentialPipeline, HttpCassetteMode, KpiThresholds,
-    PerfGateConfig, TestExecution, TestSelection, TestTarget, budget_jobs_timeout,
-    resolve_budget_policy_v1, resolve_test_target,
-};
+//! Owns certification/test orchestration that spans build outputs, perf gates,
+//! repro artifacts, and replay-trace reporting.
+//! Does not own low-level build compilation, standalone repro execution, or CLI
+//! parsing.
+//!
+//! Key invariants:
+//! - certification status is derived from the executed test/perf evidence, not
+//!   from requested-but-skipped lanes.
+//! - replay-trace and repro helpers must preserve the artifact paths emitted to
+//!   users and automation.
+//! - certification summaries fail closed when required evidence or gate inputs
+//!   are missing.
+//!
+//! Primary entrypoints:
+//! - `run_test_command`
+//! - `run_verify_cert_command`
+//! - `run_replay_trace_command`
+//!
+//! Failure modes / common pitfalls:
+//! - mixing command-specific CLI validation back into this module would undo the
+//!   typed command split.
+//! - letting perf/test timing summaries drift from the certification verdict
+//!   makes the report surface misleading.
+
+use super::command_handlers::{build_compile, test_eval_perf};
 use super::contracts::{EXIT_CODEGEN, EXIT_OK, EXIT_USAGE, OutputFormat};
 use super::diag_emit;
 use super::replay_trace;
@@ -11,6 +31,12 @@ use miette::SourceSpan;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use wrela::diag::{DiagRecord, DiagSeverity, DiagStage};
+
+use build_compile::{BudgetPolicyV1, TestTarget, resolve_budget_policy_v1, resolve_test_target};
+use test_eval_perf::{
+    CertPerfTimings, DifferentialPipeline, HttpCassetteMode, KpiThresholds, PerfGateConfig,
+    TestExecution, TestSelection, budget_jobs_timeout,
+};
 
 pub(super) struct TestCommandInput {
     pub(super) trace: bool,
@@ -50,7 +76,7 @@ pub(super) fn execute_test_command(input: TestCommandInput) -> i32 {
     if input.replay_trace_path.is_some()
         && (input.test_record
             || input.test_update_public_surface
-            || command_handlers::test_selection_has_filters(&input.test_selection)
+            || test_eval_perf::test_selection_has_filters(&input.test_selection)
             || input.repro_artifact_path.is_some()
             || input.test_seed.is_some())
     {
@@ -90,7 +116,7 @@ pub(super) fn execute_test_command(input: TestCommandInput) -> i32 {
     if input.repro_artifact_path.is_some()
         && (input.test_record
             || input.test_update_public_surface
-            || command_handlers::test_selection_has_filters(&input.test_selection))
+            || test_eval_perf::test_selection_has_filters(&input.test_selection))
     {
         eprintln!(
             "error: --repro cannot be combined with --record, --update-public-surface, --list, --id, or --filter"
@@ -168,12 +194,12 @@ pub(super) fn execute_test_command(input: TestCommandInput) -> i32 {
         };
         if input.test_update_public_surface
             && exit == EXIT_OK
-            && let Err(err) = command_handlers::update_public_surface_baseline(&workspace_root)
+            && let Err(err) = build_compile::update_public_surface_baseline(&workspace_root)
         {
             eprintln!("public surface update error: {err}");
             return EXIT_CODEGEN;
         }
-        if let Err(err) = command_handlers::write_test_maintenance_summary(
+        if let Err(err) = build_compile::write_test_maintenance_summary(
             &workspace_root,
             input.test_record,
             input.test_update_public_surface,
@@ -208,8 +234,8 @@ pub(super) fn run_tests(
 ) -> TestExecution {
     let mut cert_timings = CertPerfTimings::default();
     let mut harness_cache = std::collections::HashMap::new();
-    let mut first_run_timings = command_handlers::RunOnceTimings::default();
-    let (exit, summary, signature) = command_handlers::run_tests_once(
+    let mut first_run_timings = test_eval_perf::RunOnceTimings::default();
+    let (exit, summary, signature) = test_eval_perf::run_tests_once(
         target,
         budget_policy,
         jobs,
@@ -252,9 +278,9 @@ pub(super) fn run_tests(
                 cert_timings,
             };
         };
-        let mut alt_timings = command_handlers::RunOnceTimings::default();
+        let mut alt_timings = test_eval_perf::RunOnceTimings::default();
         let diff_start = Instant::now();
-        let (alt_exit, _, alt_signature) = command_handlers::run_tests_once(
+        let (alt_exit, _, alt_signature) = test_eval_perf::run_tests_once(
             target,
             budget_policy,
             jobs,
@@ -286,7 +312,7 @@ pub(super) fn run_tests(
             };
         };
         cert_timings.differential_ms += diff_start.elapsed().as_millis();
-        differential_results_hash = Some(command_handlers::fnv1a64_hex(
+        differential_results_hash = Some(build_compile::fnv1a64_hex(
             format!("{}:{}", first_signature.hash, alt_signature.hash).as_bytes(),
         ));
         if alt_exit != exit || first_signature.hash != alt_signature.hash {
@@ -295,7 +321,7 @@ pub(super) fn run_tests(
             eprintln!("  alt exit: {alt_exit}");
             eprintln!("  baseline signature: {}", first_signature.hash);
             eprintln!("  alt signature: {}", alt_signature.hash);
-            if let Some(detail) = command_handlers::first_signature_mismatch_detail(
+            if let Some(detail) = test_eval_perf::first_signature_mismatch_detail(
                 &first_signature.outcomes,
                 &alt_signature.outcomes,
             ) {
@@ -309,8 +335,8 @@ pub(super) fn run_tests(
                 cert_timings,
             };
         }
-        let mut replay_timings = command_handlers::RunOnceTimings::default();
-        let (repeat_exit, _, repeat_signature) = command_handlers::run_tests_once(
+        let mut replay_timings = test_eval_perf::RunOnceTimings::default();
+        let (repeat_exit, _, repeat_signature) = test_eval_perf::run_tests_once(
             target,
             budget_policy,
             jobs,
@@ -346,13 +372,13 @@ pub(super) fn run_tests(
         if repeat_exit != exit || first_signature.hash != second_signature.hash {
             eprintln!(
                 "determinism gate failed: certified suite produced inconsistent outcomes with seed {:#x}",
-                command_handlers::TEST_JSON_SUMMARY_SEED
+                test_eval_perf::TEST_JSON_SUMMARY_SEED
             );
             eprintln!("  first run exit: {exit}");
             eprintln!("  replay exit: {repeat_exit}");
             eprintln!("  first signature: {}", first_signature.hash);
             eprintln!("  replay signature: {}", second_signature.hash);
-            if let Some(detail) = command_handlers::first_signature_mismatch_detail(
+            if let Some(detail) = test_eval_perf::first_signature_mismatch_detail(
                 &first_signature.outcomes,
                 &second_signature.outcomes,
             ) {
@@ -378,7 +404,7 @@ pub(super) fn run_tests(
         };
     }
     if let (Some(gate), Some(perf_summary)) = (perf_gate, summary.as_ref()) {
-        let baseline = match command_handlers::load_perf_baseline_summary(&gate.baseline_path) {
+        let baseline = match test_eval_perf::load_perf_baseline_summary(&gate.baseline_path) {
             Ok(baseline) => baseline,
             Err(err) => {
                 eprintln!(
@@ -395,7 +421,7 @@ pub(super) fn run_tests(
                 };
             }
         };
-        let failures = command_handlers::evaluate_perf_gate(
+        let failures = test_eval_perf::evaluate_perf_gate(
             perf_summary,
             &baseline,
             gate.max_regression_pct,
@@ -421,7 +447,7 @@ pub(super) fn run_tests(
     }
     if enforce_determinism_gate
         && let TestTarget::ProjectRoot(root) = target
-        && let Err(err) = command_handlers::evaluate_connector_contract_gate(root)
+        && let Err(err) = build_compile::evaluate_connector_contract_gate(root)
     {
         eprintln!("connector contract gate failed:\n{err}");
         return TestExecution {
@@ -436,7 +462,7 @@ pub(super) fn run_tests(
         && let TestTarget::ProjectRoot(root) = target
         && let Some(perf_summary) = summary.as_ref()
     {
-        match command_handlers::run_mutation_gate(
+        match test_eval_perf::run_mutation_gate(
             root,
             perf_summary,
             budget_policy.mutation_max_cases.value as usize,

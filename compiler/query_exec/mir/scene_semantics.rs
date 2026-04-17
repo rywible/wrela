@@ -1,8 +1,30 @@
+//! Owns MIR lowering helpers for scene-semantic values, default handles, and the
+//! authored scene payload structures referenced by query lowering.
+//! Does not own query-method parsing or batch/capture helper lowering.
+//!
+//! Key invariants:
+//! - default semantic handles/payloads must remain deterministic so CPU and
+//!   backend-lowered paths share the same fallback meaning.
+//! - semantic helper construction preserves authored field/shape capture ids
+//!   needed by later lowering stages.
+//! - scene-value lowering may synthesize structures, but it must not invent
+//!   semantic relationships absent from the source program.
+//!
+//! Primary entrypoints:
+//! - `FunctionLowerer::build_default_actor_handle`
+//! - `FunctionLowerer::lower_scene_value_expr`
+//! - `FunctionLowerer::lower_scene_semantic_expr`
+//!
+//! Failure modes / common pitfalls:
+//! - changing default payload layout here without updating later consumers causes
+//!   subtle backend drift.
+//! - mixing contract parsing into semantic construction would blur two distinct
+//!   compiler stages.
+
 use super::{
     BinaryOp, Expr, FieldBounds, FieldSupport, FunctionLowerer, HirStmt, Literal, MirStmt,
     ShapeExecutionMode, SmolStr, TextRange, Value, builtin_record_by_function,
-    stable_field_scene_capture_id, stable_region_scene_capture_id, stable_shape_capture_id,
-    stable_shape_scene_capture_id, vector_component_index,
+    vector_component_index,
 };
 use crate::hir;
 use crate::mir::ir::*;

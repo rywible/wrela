@@ -1,3 +1,27 @@
+//! Owns the query-MIR lowering seam: stable ids, shared query/capture lowering
+//! imports, and the bridge modules consumed by higher MIR lowering stages.
+//! Does not own general MIR entrypoint construction or the public query
+//! contract/catalog surface.
+//!
+//! Key invariants:
+//! - this seam re-exports split helper modules without reintroducing a godfile;
+//!   responsibility stays with the named leaf modules.
+//! - stable capture ids and shared helper imports must stay aligned across query,
+//!   capture, and WGSL lowering paths.
+//! - scene semantics remain internal to the query-MIR seam so higher layers can
+//!   depend on a narrower set of bridge entrypoints.
+//!
+//! Primary entrypoints:
+//! - the split lowering modules declared below
+//! - `stable_*_capture_id_i64`
+//! - `executable_region_shapes`
+//!
+//! Failure modes / common pitfalls:
+//! - stuffing new lowering logic directly into this seam root weakens the module
+//!   split completed in Phases 52-53.
+//! - drifting stable-id helpers or shared imports here can desynchronize sibling
+//!   lowerers in ways that are hard to spot from call sites.
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::hir::{
@@ -22,9 +46,7 @@ use crate::query_exec::ids::{
     stable_shape_capture_id as stable_shape_capture_id_u32,
     stable_shape_scene_capture_id as stable_shape_scene_capture_id_u32,
 };
-use crate::query_exec::region::{
-    build_region_exec_cases, executable_region_shape_lists, world_domain_mismatch_message,
-};
+use crate::query_exec::region::{executable_region_shape_lists, world_domain_mismatch_message};
 use crate::query_exec::spec::{
     BatchQueryExecutionState, BatchQueryInvocationSpec, BatchQueryLoopInputs,
     ScalarQueryInvocationSpec,
@@ -84,21 +106,35 @@ fn stable_region_scene_capture_id(region_name: &SmolStr) -> i64 {
     stable_region_scene_capture_id_i64(region_name)
 }
 
-mod helpers;
+mod batch_query_lowering;
 mod query_methods;
+mod scene_capture_lowering;
+mod scene_medium_capture_lowering;
 mod scene_semantics;
+mod shape_helper_lowering;
+mod support_summary_lowering;
+mod world_capture_lowering;
 
-pub(crate) use helpers::{
-    lower_field_batch_queries_helper, lower_scene_distance_capture_helper,
-    lower_scene_medium_capture_helper, lower_scene_normal_capture_helper,
-    lower_scene_occluded_capture_helper, lower_scene_radiance_capture_helper,
-    lower_scene_support_summary_capture_helper, lower_scene_surface_capture_helper,
-    lower_scene_surface_queries_helper, lower_scene_trace_capture_helper,
+pub(crate) use batch_query_lowering::{
+    lower_field_batch_queries_helper, lower_scene_surface_queries_helper,
     lower_scene_trace_queries_helper, lower_shape_batch_queries_helper,
+    lower_world_batch_queries_helper,
+};
+pub(crate) use scene_capture_lowering::{
+    lower_scene_distance_capture_helper, lower_scene_normal_capture_helper,
+    lower_scene_occluded_capture_helper, lower_scene_radiance_capture_helper,
+    lower_scene_surface_capture_helper, lower_scene_trace_capture_helper,
+};
+pub(crate) use scene_medium_capture_lowering::lower_scene_medium_capture_helper;
+pub(crate) use shape_helper_lowering::{
     lower_shape_distance_helper, lower_shape_surface_helper, lower_shape_trace_helper,
-    lower_world_batch_queries_helper, lower_world_distance_capture_helper,
-    lower_world_medium_capture_helper, lower_world_normal_capture_helper,
-    lower_world_occluded_capture_helper, lower_world_radiance_capture_helper,
-    lower_world_support_summary_capture_helper, lower_world_surface_capture_helper,
+};
+pub(crate) use support_summary_lowering::{
+    lower_scene_support_summary_capture_helper, lower_world_support_summary_capture_helper,
+};
+pub(crate) use world_capture_lowering::{
+    lower_world_distance_capture_helper, lower_world_medium_capture_helper,
+    lower_world_normal_capture_helper, lower_world_occluded_capture_helper,
+    lower_world_radiance_capture_helper, lower_world_surface_capture_helper,
     lower_world_trace_capture_helper,
 };

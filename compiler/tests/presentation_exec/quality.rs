@@ -1,3 +1,26 @@
+//! Owns integration tests for presentation quality policy, clipmap reuse/update
+//! behavior, and CPU/WGSL parity across quality-driven execution changes.
+//! Does not own production presentation execution logic or benchmark closure
+//! verdict construction.
+//!
+//! Key invariants:
+//! - each test asserts user-visible quality semantics, not incidental internal
+//!   struct shapes.
+//! - CPU and WGSL comparisons in this module must exercise the same authored
+//!   plan/input fixtures so parity regressions are meaningful.
+//! - clipmap quality tests must validate typed artifact state as well as the
+//!   rendered report surface.
+//!
+//! Primary entrypoints:
+//! - the test cases in this module
+//! - `presentation_fixture`
+//!
+//! Failure modes / common pitfalls:
+//! - weakening fixture parity between CPU and WGSL backends can make quality
+//!   assertions pass for the wrong reason.
+//! - asserting only on rendered text would miss the typed state guarantees Phase
+//!   54 is trying to preserve.
+
 use super::*;
 
 #[test]
@@ -402,12 +425,10 @@ fn frame_cost_reports_view_distance_clipmap_reuse_update_and_fallback() {
         budget_clipmap.build_mode,
         wrela::acceleration::clipmap::ViewDistanceClipmapBuildMode::Fallback
     );
-    assert!(
-        budget_clipmap
-            .fallback_reasons
-            .iter()
-            .any(|reason| reason == "upload-budget-exceeded")
-    );
+    assert!(budget_clipmap.fallback_reasons.iter().any(|reason| {
+        *reason
+            == wrela::acceleration::clipmap::ViewDistanceClipmapFallbackReason::UploadBudgetExceeded
+    }));
     assert!(
         wrela::presentation_exec::render_frame_cost_report(&budget.frame_cost)
             .contains("view_distance_clipmap")

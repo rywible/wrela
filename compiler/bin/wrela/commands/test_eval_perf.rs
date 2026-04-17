@@ -1,3 +1,24 @@
+//! Owns the shared test/eval/perf command runtime: test discovery, harness
+//! compilation, metrics aggregation, and human/JSON report assembly.
+//! Does not own CLI token parsing or perf closure verdict policy.
+//!
+//! Key invariants:
+//! - internal lane/scenario selection stays typed until the render boundary.
+//! - summaries must describe the executed lane and measured runtime cases, not a
+//!   caller's requested-but-skipped plan.
+//! - human and JSON report surfaces are projections of the same metrics state.
+//!
+//! Primary entrypoints:
+//! - `run_tests_once`
+//! - `execute_eval_command`
+//! - `overlay_perf_summary_runtime_cases`
+//!
+//! Failure modes / common pitfalls:
+//! - mixing selection logic with render-only strings makes perf and test
+//!   reporting drift.
+//! - updating one summary surface without the other creates false confidence in
+//!   maintenance closure output.
+
 use super::build_compile::{
     BudgetPolicyV1, COVERAGE_INDEX_SCHEMA_VERSION, COVERAGE_SNAPSHOT_SCHEMA_VERSION,
     CertSelectionReport, DEFAULT_TEST_TIMEOUT_MS, Fnv1a64, MUTATION_CACHE_ENGINE_TAG,
@@ -8,9 +29,6 @@ use super::build_compile::{
     now_unix_ms, path_sort_key, project_record, resolve_path_from_owner_spans,
     resolve_toolchain_version,
 };
-use super::shared::{
-    naming_policy_severity, naming_policy_tier, project_naming_diagnostics, repro,
-};
 use super::{
     AstNode, BTreeMap, BTreeSet, Command, CommandSpec, Deserialize, DiagFix, DiagRecord,
     DiagSeverity, DiagSpan, DiagStage, Duration, EXIT_CODEGEN, EXIT_OK, EXIT_PARSE,
@@ -19,6 +37,7 @@ use super::{
     VecDeque, ast, cert_engine, dedupe_records, diag_emit, env, fs, hir, hir_lower, io, mir,
     mir_descriptor, parser, perf_engine, project_descriptor, replay_trace, suppress_cascades,
 };
+use super::{naming_policy_severity, naming_policy_tier, project_naming_diagnostics, repro};
 
 pub(crate) fn discover_tests_for_target(target: &TestTarget) -> Result<Vec<TestCase>, String> {
     match target {
@@ -298,6 +317,13 @@ pub(crate) struct MutationExecutionContext {
     pub(crate) cache_enabled: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MutationCacheBuildStatus {
+    Ok,
+    Invalid,
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct MutationCacheMetadata {
     pub(crate) schema_version: u32,
@@ -305,7 +331,7 @@ pub(crate) struct MutationCacheMetadata {
     pub(crate) source_hash: String,
     pub(crate) candidate_key: String,
     pub(crate) mutant_binary_path: String,
-    pub(crate) build_status: String,
+    pub(crate) build_status: MutationCacheBuildStatus,
     pub(crate) invalid_reason: Option<String>,
     pub(crate) compile_ms: u128,
 }
@@ -888,18 +914,6 @@ pub(crate) enum PerfProfile {
 }
 
 impl PerfProfile {
-    pub(crate) fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "smoke" => Some(Self::Smoke),
-            "standard" => Some(Self::Standard),
-            "deep" => Some(Self::Deep),
-            "1080p120" | "canonical_1080p120" | "closure" | "realtime_120" => {
-                Some(Self::Closure1080p120)
-            }
-            _ => None,
-        }
-    }
-
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Smoke => "smoke",
@@ -908,6 +922,124 @@ impl PerfProfile {
             Self::Closure1080p120 => "1080p120",
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(transparent)]
+pub(crate) struct PerfScenarioId(String);
+
+impl PerfScenarioId {
+    pub(crate) fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    pub(crate) fn whole_frame_closure_kind(&self) -> Option<WholeFrameClosureScenarioKind> {
+        match self.as_str() {
+            "closure_1080p120_dense_constructive_dense_ray_casts" => {
+                Some(WholeFrameClosureScenarioKind::Dense)
+            }
+            "closure_1080p120_repetition_heavy_repeated_sweeps" => {
+                Some(WholeFrameClosureScenarioKind::Repetition)
+            }
+            "closure_1080p120_thin_stack_point_occupancy" => {
+                Some(WholeFrameClosureScenarioKind::ThinStack)
+            }
+            "closure_1080p120_media_radiance_overlap_burst" => {
+                Some(WholeFrameClosureScenarioKind::Media)
+            }
+            "closure_1080p120_camera_motion_toi_reuse" => {
+                Some(WholeFrameClosureScenarioKind::CameraMotion)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl From<String> for PerfScenarioId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for PerfScenarioId {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl std::fmt::Display for PerfScenarioId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl PartialEq<&str> for PerfScenarioId {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<PerfScenarioId> for &str {
+    fn eq(&self, other: &PerfScenarioId) -> bool {
+        *self == other.as_str()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BenchmarkCoverage {
+    All,
+    Critical,
+}
+
+impl BenchmarkCoverage {
+    pub(crate) fn includes(self, class: BenchmarkScenarioClass) -> bool {
+        match self {
+            Self::All => true,
+            Self::Critical => class.is_critical(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BenchmarkScenarioClass {
+    Critical,
+    Informational,
+    Closure,
+}
+
+impl BenchmarkScenarioClass {
+    pub(crate) fn is_closure(self) -> bool {
+        matches!(self, Self::Closure)
+    }
+
+    pub(crate) fn is_critical(self) -> bool {
+        matches!(self, Self::Critical)
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Critical => "critical",
+            Self::Informational => "informational",
+            Self::Closure => "closure",
+        }
+    }
+}
+
+impl std::fmt::Display for BenchmarkScenarioClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WholeFrameClosureScenarioKind {
+    Dense,
+    Repetition,
+    ThinStack,
+    Media,
+    CameraMotion,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -937,15 +1069,15 @@ pub(crate) struct BenchmarkProfiles {
 pub(crate) struct BenchmarkProfileConfig {
     pub(crate) warmup_pairs: usize,
     pub(crate) measure_pairs: usize,
-    pub(crate) coverage: String,
+    pub(crate) coverage: BenchmarkCoverage,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct BenchmarkScenario {
-    pub(crate) id: String,
+    pub(crate) id: PerfScenarioId,
     pub(crate) test_name: String,
     pub(crate) ops: u64,
-    pub(crate) class: String,
+    pub(crate) class: BenchmarkScenarioClass,
     #[serde(default)]
     pub(crate) min_runtime_ms: Option<u64>,
     #[serde(default)]
@@ -998,7 +1130,7 @@ pub(crate) struct PresentationWgslWorkgroupComparison {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct PresentationBenchmarkReport {
-    pub(crate) scenario_id: String,
+    pub(crate) scenario_id: PerfScenarioId,
     pub(crate) test_name: String,
     pub(crate) view: String,
     pub(crate) region: String,
@@ -1074,7 +1206,7 @@ pub(crate) struct CollisionBenchmarkReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct CollisionBenchmarkExecutionReport {
-    pub(crate) name: String,
+    pub(crate) name: PerfScenarioId,
     pub(crate) plan_name: String,
     pub(crate) contract_id: String,
     #[serde(default)]
@@ -1115,7 +1247,7 @@ pub(crate) struct CollisionBenchmarkExecutionReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct WholeFrameBenchmarkReport {
-    pub(crate) scenario_id: String,
+    pub(crate) scenario_id: PerfScenarioId,
     pub(crate) test_name: String,
     pub(crate) presentation_frame_time_ns: u128,
     pub(crate) collision_runtime_ns: u128,
@@ -1132,16 +1264,12 @@ impl BenchmarkManifest {
         let coverage = self
             .profiles
             .config_for(profile)
-            .map(|cfg| cfg.coverage.to_ascii_lowercase())
-            .unwrap_or_else(|| "all".to_string());
-        if coverage == "critical" {
-            self.scenarios
-                .iter()
-                .filter(|scenario| scenario.class.eq_ignore_ascii_case("critical"))
-                .collect()
-        } else {
-            self.scenarios.iter().collect()
-        }
+            .map(|cfg| cfg.coverage)
+            .unwrap_or(BenchmarkCoverage::All);
+        self.scenarios
+            .iter()
+            .filter(|scenario| coverage.includes(scenario.class))
+            .collect()
     }
 }
 
@@ -2419,9 +2547,9 @@ pub(crate) fn build_perf_summary(
     }
 }
 
-pub(crate) fn overlay_perf_summary_runtime_cases(
+pub(crate) fn overlay_perf_summary_runtime_cases<I: ToString, N: ToString>(
     base: &PerfSummary,
-    cases: &[(String, String, u128)],
+    cases: &[(I, N, u128)],
 ) -> PerfSummary {
     let mut summary = base.clone();
     let mut runtime_sorted: Vec<u128> =
@@ -2438,11 +2566,14 @@ pub(crate) fn overlay_perf_summary_runtime_cases(
         summary.runtime_p99_ns = percentile(&runtime_sorted, 0.99);
     }
     summary.cases = Some(
+        // Rendering boundary: callers keep typed lane/scenario identity
+        // internally, and this projection is where those ids intentionally
+        // collapse to strings for human/JSON reporting.
         cases
             .iter()
             .map(|(id, name, runtime_ns)| PerfCaseSample {
-                id: id.clone(),
-                name: name.clone(),
+                id: id.to_string(),
+                name: name.to_string(),
                 compile_ns: 0,
                 runtime_ns: *runtime_ns,
                 metrics: None,
@@ -3899,19 +4030,6 @@ pub(crate) fn infer_test_lane(module_path: &str) -> TestLane {
         "sim" => TestLane::Sim,
         "model" => TestLane::Model,
         _ => TestLane::Default,
-    }
-}
-
-pub(crate) fn parse_test_lane_filter(value: &str) -> Option<TestLaneSelection> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "fast" => Some(TestLaneSelection::Preset(TestLanePreset::Fast)),
-        "full" => Some(TestLaneSelection::Preset(TestLanePreset::Full)),
-        "spec" => Some(TestLaneSelection::Single(TestLane::Spec)),
-        "integration" => Some(TestLaneSelection::Single(TestLane::Integration)),
-        "sim" => Some(TestLaneSelection::Single(TestLane::Sim)),
-        "model" => Some(TestLaneSelection::Single(TestLane::Model)),
-        "default" => Some(TestLaneSelection::Single(TestLane::Default)),
-        _ => None,
     }
 }
 
@@ -5837,7 +5955,12 @@ pub(crate) fn compile_mutant_binary_for_tests(
             && metadata.toolchain_version == context.toolchain_version
             && metadata.source_hash == context.source_hash
             && metadata.candidate_key == candidate_key;
-        if valid_metadata && metadata.build_status == "ok" && cache_bin_path.is_file() {
+        // Keep cache build-state typed so reuse/invalid decisions cannot drift
+        // from wording-only changes in the serialized metadata.
+        if valid_metadata
+            && metadata.build_status == MutationCacheBuildStatus::Ok
+            && cache_bin_path.is_file()
+        {
             return Ok(MutantCompileSuccess {
                 exe_path: cache_bin_path,
                 compile_ms: 0,
@@ -5846,7 +5969,7 @@ pub(crate) fn compile_mutant_binary_for_tests(
                 cache_invalidations: 0,
             });
         }
-        if valid_metadata && metadata.build_status == "invalid" {
+        if valid_metadata && metadata.build_status == MutationCacheBuildStatus::Invalid {
             return Err(MutantCompileFailure {
                 reason: metadata
                     .invalid_reason
@@ -5957,7 +6080,7 @@ pub(crate) fn compile_mutant_binary_for_tests(
             source_hash: context.source_hash.clone(),
             candidate_key,
             mutant_binary_path: exe_path.display().to_string(),
-            build_status: "ok".to_string(),
+            build_status: MutationCacheBuildStatus::Ok,
             invalid_reason: None,
             compile_ms,
         };
@@ -6024,7 +6147,7 @@ pub(crate) fn persist_invalid_mutation_cache_entry(
         source_hash: context.source_hash.clone(),
         candidate_key,
         mutant_binary_path: entry_dir.join("mutant_bin").display().to_string(),
-        build_status: "invalid".to_string(),
+        build_status: MutationCacheBuildStatus::Invalid,
         invalid_reason: Some(reason.to_string()),
         compile_ms,
     };

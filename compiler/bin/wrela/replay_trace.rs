@@ -1,3 +1,25 @@
+//! Owns replay-trace artifact schema types plus validation helpers used by the
+//! certification/debugging command surfaces.
+//! Does not own CLI parsing or certification verdict policy.
+//!
+//! Key invariants:
+//! - replay validation reports drift against the recorded artifact, not against
+//!   ad hoc runtime state.
+//! - schema versioning stays explicit so older traces fail clearly instead of
+//!   being misinterpreted.
+//! - mismatch kinds remain stable because downstream reports treat them as
+//!   machine-readable evidence.
+//!
+//! Primary entrypoints:
+//! - `validate_replay_trace`
+//! - `write_replay_trace`
+//! - `load_replay_trace`
+//!
+//! Failure modes / common pitfalls:
+//! - collapsing distinct mismatch cases into one generic error makes replay
+//!   regressions much harder to triage.
+//! - silently accepting schema drift would undermine trace portability.
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};

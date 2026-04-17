@@ -1,3 +1,25 @@
+//! Owns safe diagnostic fix collection, format-target discovery, and the
+//! minimal source normalization helpers behind `fix` and `fmt`.
+//! Does not own MIR compilation, CLI parsing, or build/perf reporting.
+//!
+//! Key invariants:
+//! - only explicitly safe fixes are auto-applied unless review-only fixes are
+//!   requested.
+//! - expected-source fragments must be attached before fix application so the
+//!   report surface stays auditable.
+//! - formatting target discovery must stay rooted in authored `.wr` files.
+//!
+//! Primary entrypoints:
+//! - `collect_safe_fixes`
+//! - `run_format_loop`
+//! - `apply_source_fixes`
+//!
+//! Failure modes / common pitfalls:
+//! - mixing analyzer compilation and fix application in one flow makes it harder
+//!   to keep the fix summary truthful.
+//! - treating workspace traversal as formatting logic quickly obscures what files
+//!   are actually in scope.
+
 use super::build_compile::{
     conservative_naming_fixes, project_record, resolve_path_from_owner_spans,
 };
@@ -5,7 +27,6 @@ use super::check_analyze::{
     hole_binding_type_lookup, resolve_entry_path, semantic_hole_payload_and_fixes,
     type_payload_and_fixes,
 };
-use super::shared::{naming_policy_severity, naming_policy_tier};
 use super::test_eval_perf::DiagnosticScope;
 use super::{
     AstNode, BTreeMap, BTreeSet, Command, CommandSpec, Deserialize, DiagFix, DiagRecord,
@@ -15,6 +36,7 @@ use super::{
     VecDeque, ast, cert_engine, dedupe_records, diag_emit, env, fs, hir, hir_lower, io, mir,
     mir_descriptor, parser, perf_engine, project_descriptor, replay_trace, suppress_cascades,
 };
+use super::{naming_policy_severity, naming_policy_tier};
 
 pub(crate) fn collect_safe_fixes(
     entry_path: &Path,

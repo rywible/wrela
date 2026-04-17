@@ -1,8 +1,29 @@
+//! Owns entry-path resolution, MIR compilation, and analyzer-side diagnostic
+//! projections shared by `check`, `analyze`, and fix flows.
+//! Does not own CLI parsing, fix application, or build/perf reporting.
+//!
+//! Key invariants:
+//! - path resolution must canonicalize directories to the authored entry file
+//!   before compilation starts.
+//! - semantic-hole/type payload helpers project diagnostics from the compiled
+//!   module state that actually produced the record.
+//! - integration-mode gate checks stay consistent with the build/run surfaces.
+//!
+//! Primary entrypoints:
+//! - `resolve_entry_path`
+//! - `compile_to_mir`
+//! - `semantic_hole_payload_and_fixes`
+//!
+//! Failure modes / common pitfalls:
+//! - bypassing `resolve_entry_path` can make workspace-relative diagnostics and
+//!   emitted fixes point at the wrong file.
+//! - copying analyzer-only fix heuristics into unrelated command code quickly
+//!   makes the CLI surface inconsistent.
+
 use super::build_compile::{
     conservative_naming_fixes, project_record, resolve_path_from_owner_spans,
 };
 use super::fix_fmt::attach_expected_source_for_fixes;
-use super::shared::{naming_policy_severity, naming_policy_tier};
 use super::{
     AstNode, BTreeMap, BTreeSet, Command, CommandSpec, Deserialize, DiagFix, DiagRecord,
     DiagSeverity, DiagSpan, DiagStage, Duration, EXIT_CODEGEN, EXIT_OK, EXIT_PARSE,
@@ -11,6 +32,7 @@ use super::{
     VecDeque, ast, cert_engine, dedupe_records, diag_emit, env, fs, hir, hir_lower, io, mir,
     mir_descriptor, parser, perf_engine, project_descriptor, replay_trace, suppress_cascades,
 };
+use super::{naming_policy_severity, naming_policy_tier};
 
 pub(crate) fn resolve_entry_path(path_arg: Option<&str>) -> Result<PathBuf, String> {
     let path = match path_arg {

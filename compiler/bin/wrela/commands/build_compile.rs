@@ -1,3 +1,26 @@
+//! Owns build/compile orchestration, certification artifact emission, and the
+//! CLI-facing projections of compiled module metadata.
+//! Does not own CLI token parsing, fix/fmt flows, or perf report aggregation.
+//!
+//! Key invariants:
+//! - build outputs and certification sidecars must describe the exact compiled
+//!   entry module and selected test target.
+//! - public-surface and coverage gates fail closed when required evidence is
+//!   missing.
+//! - helper record serialization stays aligned with the human-readable build
+//!   summaries emitted from the same source state.
+//!
+//! Primary entrypoints:
+//! - `init_project`
+//! - `project_record`
+//! - `verify_certification_report`
+//!
+//! Failure modes / common pitfalls:
+//! - skipping canonical path resolution here can make certification artifacts
+//!   point at the wrong workspace roots.
+//! - letting build-only helpers absorb unrelated command logic turns this file
+//!   back into a monolith.
+
 use super::test_eval_perf::{
     BenchmarkManifest, TestLane, TestSelection, collect_tests, infer_test_lane,
     load_function_test_coverage_index, qualified_function_identity, stable_function_id,

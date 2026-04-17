@@ -1,3 +1,20 @@
+//! Owns attachment/resource allocation, encoding, and history-aware resource
+//! helpers for presentation execution.
+//! Does not own pass scheduling or shader execution.
+//!
+//! Key invariants:
+//! - resource allocation must preserve attachment schema and history semantics
+//!   from the active frame contract.
+//! - encoding/decoding helpers here are part of the runtime truth surface, not
+//!   debug-only conveniences.
+//!
+//! Primary entrypoints:
+//! - attachment/resource helpers in this module
+//!
+//! Failure modes / common pitfalls:
+//! - reusing an attachment with the wrong schema or history lifetime silently
+//!   invalidates downstream passes.
+
 use crate::artifact_layout::{PhysicalLayoutPlan, PhysicalLayoutStrategy};
 use crate::kernel::{KernelStructValue, KernelValue};
 use crate::portable::{

@@ -1,6 +1,7 @@
 use crate::acceleration::clipmap::{
-    ViewDistanceClipmapArtifact, ViewDistanceClipmapBuildMode, render_view_distance_clipmap_report,
-    view_distance_clipmap_layout_signature, view_distance_clipmap_runtime_signature,
+    ViewDistanceClipmapArtifact, ViewDistanceClipmapBuildMode, ViewDistanceClipmapFallbackReason,
+    render_view_distance_clipmap_report, view_distance_clipmap_layout_signature,
+    view_distance_clipmap_runtime_signature,
 };
 use crate::execution_policy::PresentationExecutionPolicy;
 use crate::presentation_contract::RealtimeQualityState;
@@ -9,7 +10,10 @@ use crate::presentation_exec::TileCullingMask;
 use crate::world_identity::WorldSnapshotHandle;
 use smol_str::SmolStr;
 
-use super::{FrameStateTemporalComponents, PassRuntimeStats, internal_resolution_viewport};
+use super::{
+    FrameStateTemporalComponents, PassRuntimeStats, PresentationClipmapPassMetadata,
+    internal_resolution_viewport,
+};
 
 pub(crate) fn build_view_distance_clipmap_artifact(
     semantic_root: &str,
@@ -57,17 +61,18 @@ pub(crate) fn build_view_distance_clipmap_artifact(
             || previous.snapshot.epoch != snapshot_report.epoch
         {
             build_mode = ViewDistanceClipmapBuildMode::Fallback;
-            fallback_reasons.push(SmolStr::new("snapshot-mismatch"));
+            fallback_reasons.push(ViewDistanceClipmapFallbackReason::SnapshotMismatch);
         } else if previous.layout_signature != layout_signature {
             build_mode = ViewDistanceClipmapBuildMode::Fallback;
-            fallback_reasons.push(SmolStr::new("layout-mismatch"));
+            fallback_reasons.push(ViewDistanceClipmapFallbackReason::LayoutMismatch);
         } else if camera_motion <= 0.001 {
             build_mode = ViewDistanceClipmapBuildMode::Reused;
         } else if camera_motion <= 0.25 {
             build_mode = ViewDistanceClipmapBuildMode::Updated;
         } else {
             build_mode = ViewDistanceClipmapBuildMode::Fallback;
-            fallback_reasons.push(SmolStr::new("camera-motion-exceeded-reuse-threshold"));
+            fallback_reasons
+                .push(ViewDistanceClipmapFallbackReason::CameraMotionExceededReuseThreshold);
         }
     }
 
@@ -89,12 +94,12 @@ pub(crate) fn build_view_distance_clipmap_artifact(
         * u64::from(band_width)
         * 64;
     if upload_bytes > upload_budget {
-        fallback_reasons.push(SmolStr::new("upload-budget-exceeded"));
+        fallback_reasons.push(ViewDistanceClipmapFallbackReason::UploadBudgetExceeded);
         build_mode = ViewDistanceClipmapBuildMode::Fallback;
         upload_bytes = upload_budget;
     }
     if tile_cull.is_none() {
-        fallback_reasons.push(SmolStr::new("tile-culling-unavailable"));
+        fallback_reasons.push(ViewDistanceClipmapFallbackReason::TileCullingUnavailable);
         build_mode = ViewDistanceClipmapBuildMode::Fallback;
     }
 
@@ -161,6 +166,10 @@ pub(crate) fn clipmap_pass_runtime(
         dispatch_count: artifact.upload_count + artifact.eviction_count,
         attachment_bytes_read: artifact.build_bytes,
         attachment_bytes_written: artifact.upload_bytes,
+        clipmap: Some(PresentationClipmapPassMetadata {
+            status: artifact.build_mode,
+            fallback_reasons: artifact.fallback_reasons.clone(),
+        }),
         notes: vec![render_view_distance_clipmap_report(artifact)],
     }
 }

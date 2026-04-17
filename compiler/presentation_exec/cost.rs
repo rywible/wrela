@@ -1,3 +1,21 @@
+//! Owns presentation cost modeling and closure-facing cost summaries.
+//! Does not own actual presentation execution or benchmark collection.
+//!
+//! Key invariants:
+//! - cost summaries must describe the execution path that actually ran.
+//! - quality and degradation reasoning here must stay aligned with presentation
+//!   contract terminology used elsewhere.
+//!
+//! Primary entrypoints:
+//! - cost/report helpers in this module
+//!
+//! Failure modes / common pitfalls:
+//! - mixing closure heuristics with raw execution timing here makes reports
+//!   precise-looking but semantically misleading.
+
+use crate::acceleration::clipmap::{
+    ViewDistanceClipmapBuildMode, ViewDistanceClipmapFallbackReason,
+};
 use crate::execution_policy::{
     PresentationExecutionPolicy, RayBudgetPolicy, RequiredGuaranteeClass, SelectedMethodClass,
 };
@@ -10,6 +28,12 @@ use crate::query_plan::DispatchBackend;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PresentationClipmapPassMetadata {
+    pub status: ViewDistanceClipmapBuildMode,
+    pub fallback_reasons: Vec<ViewDistanceClipmapFallbackReason>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PresentationPassCost {
     pub pass_id: String,
     pub pass_kind: String,
@@ -19,6 +43,8 @@ pub struct PresentationPassCost {
     pub dispatch_count: u32,
     pub attachment_bytes_read: u64,
     pub attachment_bytes_written: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clipmap: Option<PresentationClipmapPassMetadata>,
     pub notes: Vec<String>,
 }
 

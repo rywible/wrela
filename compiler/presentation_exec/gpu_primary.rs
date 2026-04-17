@@ -1,3 +1,19 @@
+//! Owns GPU primary-visibility dispatch helpers and attachment decode/encode
+//! support for the presentation pipeline.
+//! Does not own framegraph scheduling or non-primary presentation passes.
+//!
+//! Key invariants:
+//! - primary-hit attachment layouts must stay ABI-compatible with the portable
+//!   records the CPU path understands.
+//! - dispatch/readback metadata here must describe the executed primary path.
+//!
+//! Primary entrypoints:
+//! - primary-visibility GPU helpers in this module
+//!
+//! Failure modes / common pitfalls:
+//! - changing hit attachment layout without updating decode helpers creates
+//!   backend-only bugs that look like shading mistakes.
+
 use crate::gpu_runtime::GpuPassProfiler;
 use crate::kernel::KernelValue;
 use crate::kernel::lower_batch_query_plan;

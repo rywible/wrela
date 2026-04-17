@@ -1,15 +1,27 @@
 use crate::query_exec::ids::stable_semantic_id;
 use crate::world_identity::SnapshotIdentityReport;
+use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 pub const VIEW_DISTANCE_CLIPMAP_SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum ViewDistanceClipmapBuildMode {
     Reused,
     Updated,
     Rebuilt,
     Fallback,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ViewDistanceClipmapFallbackReason {
+    SnapshotMismatch,
+    LayoutMismatch,
+    CameraMotionExceededReuseThreshold,
+    UploadBudgetExceeded,
+    TileCullingUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +45,7 @@ pub struct ViewDistanceClipmapArtifact {
     pub upload_bytes: u64,
     pub eviction_count: u32,
     pub usage_count: u32,
-    pub fallback_reasons: Vec<SmolStr>,
+    pub fallback_reasons: Vec<ViewDistanceClipmapFallbackReason>,
     pub layout_signature: u64,
     pub runtime_signature: u64,
 }
@@ -50,6 +62,24 @@ impl ViewDistanceClipmapArtifact {
 
     pub fn is_reused(&self) -> bool {
         matches!(self.build_mode, ViewDistanceClipmapBuildMode::Reused)
+    }
+
+    pub fn has_fallback_reason(&self, reason: ViewDistanceClipmapFallbackReason) -> bool {
+        self.fallback_reasons.contains(&reason)
+    }
+}
+
+impl ViewDistanceClipmapFallbackReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ViewDistanceClipmapFallbackReason::SnapshotMismatch => "snapshot-mismatch",
+            ViewDistanceClipmapFallbackReason::LayoutMismatch => "layout-mismatch",
+            ViewDistanceClipmapFallbackReason::CameraMotionExceededReuseThreshold => {
+                "camera-motion-exceeded-reuse-threshold"
+            }
+            ViewDistanceClipmapFallbackReason::UploadBudgetExceeded => "upload-budget-exceeded",
+            ViewDistanceClipmapFallbackReason::TileCullingUnavailable => "tile-culling-unavailable",
+        }
     }
 }
 

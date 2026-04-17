@@ -1,3 +1,27 @@
+//! Owns presentation-plan execution across CPU and WGSL backends, including
+//! framegraph orchestration, artifact reuse, and report/debug surfaces.
+//! Does not own authored presentation contracts, query planning, or generic GPU
+//! runtime policy selection outside presentation execution.
+//!
+//! Key invariants:
+//! - artifact reuse must preserve the attachment/layout meaning promised by the
+//!   active presentation contract.
+//! - CPU and WGSL execution paths must report the method that actually produced
+//!   the frame so closure and debug surfaces stay truthful.
+//! - framegraph scheduling may reorder work for throughput, but attachment
+//!   lifetimes and readback boundaries must remain explicit.
+//!
+//! Primary entrypoints:
+//! - `execute_plan`
+//! - `AdaptivePresentationSession::execute_frame`
+//! - `build_frame_cost_report`
+//!
+//! Failure modes / common pitfalls:
+//! - reusing attachments across incompatible framegraph state invalidates both
+//!   debug output and closure evidence.
+//! - mixing controller-side convenience logic into this module makes ownership
+//!   of runtime truth hard to reason about.
+
 pub(crate) mod clipmap;
 pub mod controller;
 pub mod cost;
@@ -57,9 +81,9 @@ use thiserror::Error;
 
 pub use self::controller::AdaptivePresentationController;
 pub use cost::{
-    PresentationAttachmentBytes, PresentationFrameCostReport, PresentationPassCost,
-    PresentationQualityReport, quality_report, radiance_mode_name, render_execution_policy_report,
-    render_frame_cost_report, render_semantic_domain_report,
+    PresentationAttachmentBytes, PresentationClipmapPassMetadata, PresentationFrameCostReport,
+    PresentationPassCost, PresentationQualityReport, quality_report, radiance_mode_name,
+    render_execution_policy_report, render_frame_cost_report, render_semantic_domain_report,
 };
 pub use framegraph::{PresentationFramegraph, PresentationFramegraphPass};
 pub use gpu_resources::{
@@ -231,6 +255,7 @@ pub(crate) struct PassRuntimeStats {
     pub dispatch_count: u32,
     pub attachment_bytes_read: u64,
     pub attachment_bytes_written: u64,
+    pub clipmap: Option<PresentationClipmapPassMetadata>,
     pub notes: Vec<String>,
 }
 
@@ -1982,6 +2007,9 @@ fn runtime_primary_solver_summary(
 fn presentation_artifact_reuse_resolution(
     artifact_contracts: &[ArtifactContract],
 ) -> RaySolverArtifactReuseResolution {
+    // Only solver-compatible artifacts count here. Pulling in generic
+    // presentation attachments would make the diagnostic summary claim reuse the
+    // primary-visibility solver path cannot actually consume.
     let compatible_artifacts = artifact_contracts
         .iter()
         .filter_map(|artifact| match artifact.schema {
@@ -2161,6 +2189,7 @@ pub(crate) fn build_frame_cost_report(
             dispatch_count: pass.dispatch_count,
             attachment_bytes_read: pass.attachment_bytes_read,
             attachment_bytes_written: pass.attachment_bytes_written,
+            clipmap: pass.clipmap,
             notes: pass.notes,
         })
         .collect::<Vec<_>>();

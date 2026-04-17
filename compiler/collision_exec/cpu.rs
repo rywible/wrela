@@ -1,3 +1,22 @@
+//! Owns CPU-authoritative collision execution, artifact reuse, witness assembly,
+//! and optional GPU-accelerated callouts guarded by CPU semantics.
+//! Does not own collision planning or public collision contract definitions.
+//!
+//! Key invariants:
+//! - returned collision results and witnesses are CPU-authoritative even when
+//!   helper data comes from cached artifacts or GPU candidate generation.
+//! - reuse and witness seeding stay subject to collision-specific validity and
+//!   compatibility policy.
+//!
+//! Primary entrypoints:
+//! - `execute`
+//! - `execute_with_store`
+//! - reuse helpers in this module
+//!
+//! Failure modes / common pitfalls:
+//! - treating rendering-oriented reuse evidence as collision-valid witness data
+//!   silently corrupts the CPU oracle.
+
 use crate::acceleration::{AccelerationForest, AccelerationNode, BoundDescriptorKind};
 use crate::artifact_key::ArtifactReuseKey;
 use crate::artifact_store::{
@@ -1785,6 +1804,10 @@ fn load_transition_reuse(
         normal_provenance: None,
         certificate: None,
     };
+    // Invariant: witness and continuation artifacts flow through the same
+    // collision-only reuse gate. Rendering-only certificates may be reusable for
+    // presentation, but collision must reject them so witness reuse metrics stay
+    // semantically truthful.
     for artifact_id in [witness_artifact, continuation_artifact] {
         let artifact = artifact_binding_by_id(plan, artifact_id)?;
         let decision = if let Some(transition) = transition {

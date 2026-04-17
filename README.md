@@ -49,6 +49,13 @@ Changes should name the touched context, start from that context's entrypoints,
 prove the work with its listed lane or test surface, and finish with an
 independent final review before closure.
 
+The Phase 53 seam roots are now explicit: `compiler/mir/lower/`,
+`compiler/query_exec/cpu/`, `compiler/query_exec/wgsl/codegen/`,
+`compiler/presentation_exec/wgsl/`, `compiler/bin/wrela/commands/`, and
+`compiler/bin/wrela/perf_engine/`. Start from those `mod.rs` roots when you
+change those areas; the leaf files inside them are ownership slices, not new
+cross-context import points.
+
 ## Command Surface Boundary
 
 - `just` is the repo workflow surface. Use it for named lanes such as `test`, `test-all`,

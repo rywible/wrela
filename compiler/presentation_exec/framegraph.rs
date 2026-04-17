@@ -1,3 +1,20 @@
+//! Owns presentation framegraph submission structure, readback scheduling, and
+//! attachment-slot lifetime bookkeeping.
+//! Does not own shader execution or high-level plan selection.
+//!
+//! Key invariants:
+//! - framegraph ordering may optimize submission structure, but resource
+//!   lifetimes and readback boundaries must remain explicit.
+//! - attachment slots must not be reused across incompatible pass contracts.
+//!
+//! Primary entrypoints:
+//! - `PresentationFramegraph`
+//! - framegraph submission/readback helpers in this module
+//!
+//! Failure modes / common pitfalls:
+//! - hidden resource lifetime coupling here turns later rendering bugs into
+//!   hard-to-debug framegraph corruption.
+
 use crate::gpu_runtime::{
     GpuPassProfiler, GpuRuntimeContext, ReadbackRequest, ReadbackResult, ReadbackTicket,
     collect_storage_buffer_readback, schedule_storage_buffer_readback,

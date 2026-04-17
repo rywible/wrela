@@ -1,3 +1,23 @@
+//! Owns CLI diagnostic rendering for pretty, JSON, and SARIF output formats.
+//! Does not own diagnostic production or command selection logic.
+//!
+//! Key invariants:
+//! - each output format is a projection of the same diagnostic record set.
+//! - cascaded diagnostics are suppressed before rendering so summaries stay
+//!   truthful to the intended public surface.
+//! - JSON/SARIF fields must preserve stable keys because tooling consumes them.
+//!
+//! Primary entrypoints:
+//! - `emit_project_diagnostics`
+//! - `emit_json_diagnostics`
+//! - `emit_sarif_diagnostics`
+//!
+//! Failure modes / common pitfalls:
+//! - ad hoc format-specific filtering here can make different output modes tell
+//!   different stories about the same failure.
+//! - losing source-span fidelity in projection code makes automated fixes and
+//!   editor integrations much less trustworthy.
+
 #![allow(unused_assignments)]
 
 use super::contracts::OutputFormat;

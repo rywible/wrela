@@ -1,7 +1,31 @@
+//! Owns standalone repro artifact execution and artifact creation helpers used
+//! by certification and debugging flows.
+//! Does not own CLI parsing, certification verdict policy, or the main test
+//! harness selection logic.
+//!
+//! Key invariants:
+//! - repro artifacts must round-trip the exact test case metadata needed to
+//!   reproduce failures outside the original lane.
+//! - autogen and fuzz repro paths share the same summary/report surface so users
+//!   can compare them directly.
+//! - generated standalone sources must stay aligned with the serialized repro
+//!   schema version.
+//!
+//! Primary entrypoints:
+//! - `run_repro_artifact`
+//! - `write_autogen_repro_artifact`
+//! - `write_fuzz_repro_artifact`
+//!
+//! Failure modes / common pitfalls:
+//! - reading module sources relative to the wrong workspace root silently makes
+//!   repro artifacts non-portable.
+//! - letting repro-only summary code drift from the main test summary schema
+//!   produces misleading debugging artifacts.
+
 use super::super::super::contracts::{EXIT_CODEGEN, EXIT_OK, EXIT_USAGE, OutputFormat};
-use super::super::build_compile::BudgetPolicyV1;
-use super::super::build_compile::now_unix_ms;
-use super::super::test_eval_perf::{
+use super::build_compile::BudgetPolicyV1;
+use super::build_compile::now_unix_ms;
+use super::test_eval_perf::{
     AutogenReproArtifact, DifferentialPipeline, FuzzReproArtifact, GeneratedCaseKind,
     HttpCassetteMode, REPRO_SCHEMA_VERSION, ReproArtifact, TEST_JSON_SUMMARY_SEED, TestCase,
     TestJsonCase, TestJsonRunMetadata, TestJsonSummary, TestJsonTimings, TestLane,

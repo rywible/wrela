@@ -1,3 +1,19 @@
+//! Owns presentation debug dumps and file-oriented debug rendering helpers.
+//! Does not own presentation execution itself or closure verdict policy.
+//!
+//! Key invariants:
+//! - debug output must reflect the same attachment/contracts the live execution
+//!   path produced.
+//! - file/debug serialization here is an observation layer, not a place to
+//!   reinterpret runtime meaning.
+//!
+//! Primary entrypoints:
+//! - presentation debug rendering helpers in this module
+//!
+//! Failure modes / common pitfalls:
+//! - synthesizing debug-friendly values here that differ from runtime truth
+//!   creates very convincing but misleading artifacts.
+
 use crate::kernel::KernelValue;
 use crate::presentation_contract::{
     AttachmentElementSchema, FrameAttachmentContract, FrameAttachmentKind,

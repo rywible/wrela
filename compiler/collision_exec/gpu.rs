@@ -1,3 +1,19 @@
+//! Owns GPU-assisted collision dispatch preparation, submission, and readback.
+//! Does not own collision truth; CPU execution remains the semantic oracle.
+//!
+//! Key invariants:
+//! - GPU dispatch helpers may accelerate batch execution, but decoded values and
+//!   observability must still map back to the collision contract exactly.
+//! - upload/readback accounting must reflect the dispatch that actually ran.
+//!
+//! Primary entrypoints:
+//! - `prepare_batched_*_dispatch`
+//! - `execute_batched_*`
+//!
+//! Failure modes / common pitfalls:
+//! - assuming a successful readback implies semantic correctness skips the CPU
+//!   parity boundary this module is supposed to respect.
+
 use crate::collision_contract::CollisionRayInput;
 use crate::collision_plan::{CollisionExecError, CollisionExecutionTrace, CollisionPlan};
 use crate::gpu_runtime::{GpuPassProfiler, GpuRuntimeMetrics};

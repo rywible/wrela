@@ -1,3 +1,26 @@
+//! Owns MIR lowering for query-method calls on authored fields/shapes/worlds and
+//! the contract-driven parsing of those call families.
+//! Does not own capture-helper lowering or WGSL code generation.
+//!
+//! Key invariants:
+//! - parsed query calls preserve the selected contract family and backend intent
+//!   before lowering chooses helper plans.
+//! - legacy query spellings are normalized explicitly rather than inferred later
+//!   from partially lowered MIR.
+//! - argument-name helpers stay aligned with contract descriptors so lowering
+//!   errors point at the authored call shape.
+//!
+//! Primary entrypoints:
+//! - `FunctionLowerer::lower_query_call`
+//! - `FunctionLowerer::lower_query_method`
+//! - `FunctionLowerer::lower_query_method_family`
+//!
+//! Failure modes / common pitfalls:
+//! - letting legacy and family parsing drift apart can make equivalent authored
+//!   calls lower differently.
+//! - bypassing descriptor validation here weakens the compiler's contract-first
+//!   architecture.
+
 use super::{
     BatchQueryExecutionState, BatchQueryInvocationSpec, BatchQueryKind, BatchQueryLoopInputs,
     BatchQueryPlan, BinaryOp, CandidateStrategy, CaptureKind, CaptureQueryKind, CaptureQueryPlan,

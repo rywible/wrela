@@ -1,9 +1,9 @@
-use super::command_handlers::{
-    self, HttpCassetteMode, TestTarget, budget_jobs_timeout, resolve_budget_policy_v1,
-    resolve_test_target,
-};
+use super::command_handlers::{build_compile, run_repro_artifact, test_eval_perf};
 use super::contracts::{EXIT_USAGE, OutputFormat};
 use std::path::Path;
+
+use build_compile::{TestTarget, resolve_budget_policy_v1, resolve_test_target};
+use test_eval_perf::{HttpCassetteMode, budget_jobs_timeout};
 
 pub struct ReproCommandInput {
     pub path_arg: Option<String>,
@@ -31,7 +31,7 @@ pub fn run_repro_command(input: ReproCommandInput) -> i32 {
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf(),
     };
-    command_handlers::run_repro_artifact(
+    run_repro_artifact(
         &workspace_root,
         Path::new(&input.repro_artifact_path),
         timeout,

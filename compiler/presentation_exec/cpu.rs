@@ -1,3 +1,19 @@
+//! Owns the CPU-backed presentation execution path and its pass-level helpers.
+//! Does not own high-level plan selection or WGSL runtime execution.
+//!
+//! Key invariants:
+//! - CPU presentation remains the semantic oracle for pass ordering and
+//!   attachment meaning when WGSL paths are compared.
+//! - pass helpers may reuse attachments/history, but they must preserve the
+//!   contract semantics the surrounding plan expects.
+//!
+//! Primary entrypoints:
+//! - CPU presentation execution helpers in this module
+//!
+//! Failure modes / common pitfalls:
+//! - letting CPU-only convenience behavior leak into shared report surfaces
+//!   makes backend parity harder to reason about.
+
 use crate::kernel::{KernelValue, lower_batch_query_plan};
 use crate::presentation_contract::RealtimeRadianceMode;
 use crate::presentation_exec::clipmap::{
