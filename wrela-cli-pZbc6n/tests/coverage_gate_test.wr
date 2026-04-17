@@ -1,5 +1,0 @@
-use calculate_invoice from application/orders
-
-fn test_importable_coverage() -> Nothing {
-    assert value calculate_invoice() == 7
-}

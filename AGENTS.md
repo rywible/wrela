@@ -34,6 +34,32 @@ When there is tension between short-term feature delivery and preserving the sem
 
 - When completing a planned phase, verify the full acceptance criteria, run appropriate end-to-end gates, then perform an independent review before calling the phase complete.
 
+## Workflow Surface
+
+- `just` is the canonical repo front door. Prefer named repo lanes over raw `cargo` for routine work.
+
+- `cargo` is the Rust substrate and low-level escape hatch for narrow debugging or implementation-local checks.
+
+- `wrela` is the authored-world and product-facing workflow surface (`test`, `perf`, `preview`, and similar commands). `just` is allowed to compose both `cargo` and `wrela` when the truthful proof spans both surfaces.
+
+- The current canonical `just` lanes are: `check`, `check-clean`, `build`, `build-release`, `test`, `test-clean`, `test-all`, `test-runtime`, `test-compiler`, `test-cli`, `test-query`, `perf-smoke`, `perf-closure`, `lint`, `fmt`, `fmt-check`, `fix`, and `ship`.
+
+## Intended Dev Loop
+
+- Start with the cheapest truthful lane for the change. Prefer focused lanes like `just test-runtime`, `just test-compiler`, `just test-cli`, or `just test-query` before broader repo lanes.
+
+- Use `just check` for fast compile feedback while iterating.
+
+- Use `just test` as the fast default repo lane. It is allowed to combine Rust-native and authored-world proof when both are part of the real contract.
+
+- Use `just test-all` for the full local semantic lane.
+
+- Use `just perf-smoke` for cheap perf sanity when touching perf-sensitive code, and `just perf-closure` only when working the representative 1080p120 closure lane.
+
+- Use `just check-clean` and `just test-clean` when you need cleanroom validation with isolated artifacts and incremental compilation disabled.
+
+- Run `just ship` before handoff unless the task explicitly scopes a smaller proof surface.
+
 ## Completion Gate
 
 After completing acceptance criteria for a given project, that project is not complete until you launch a new subagent to review your work for correctness, architecture, maintainability, and performance. It should also verify that the project has been fully completed based on the tasks in the plan and expected outcomes. Take that feedback into account and fix whatever comes up from this independent review. This should always be your last task. When you launch the subagent, in your message, tell it that it is a review subagent. Provide the subagent with any test findings that you already ran.

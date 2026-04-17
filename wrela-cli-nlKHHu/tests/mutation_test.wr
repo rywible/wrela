@@ -1,0 +1,6 @@
+use compute_logic_bonus, compute_logic_value from domain/logic
+
+fn test_logic_behavior() -> Nothing {
+    assert value compute_logic_value(input=1) == 2
+    assert value compute_logic_bonus(input=1) == 3
+}
