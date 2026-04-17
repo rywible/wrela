@@ -45,7 +45,9 @@ pub(super) fn build_world_batch_args(
     domain: &KernelValue,
     item: &KernelValue,
 ) -> Result<Vec<KernelValue>, QueryExecError> {
-    let mut args = vec![capture.clone(), domain.clone()];
+    let mut args = Vec::with_capacity(3);
+    args.push(capture.clone());
+    args.push(domain.clone());
     match world_kind_for_plan(plan)? {
         WorldQueryKind::Distance | WorldQueryKind::Normal | WorldQueryKind::Medium => {
             let point = expect_struct(Some(item), "PointQuery")?;
@@ -329,6 +331,7 @@ impl CpuWorldDistanceBackend<'_, '_> {
             node_index: tree.root,
             lower_bound: f32::NEG_INFINITY,
         }];
+        let mut pending = Vec::new();
         while let Some(current) = pop_best_point_traversal(&mut stack) {
             self.evaluator.note_acceleration_node_visit();
             if current.lower_bound > self.result {
@@ -344,7 +347,8 @@ impl CpuWorldDistanceBackend<'_, '_> {
                 self.accumulate_world_distance_shape(shape)?;
                 continue;
             }
-            let mut pending = Vec::new();
+            pending.clear();
+            pending.reserve(tree.children_of(current.node_index).len());
             for child_index in tree.children_of(current.node_index) {
                 let Some(child) = tree.node(*child_index) else {
                     continue;
@@ -365,7 +369,7 @@ impl CpuWorldDistanceBackend<'_, '_> {
                     lower_bound,
                 });
             }
-            push_ordered_point_traversals(&mut stack, pending);
+            push_ordered_point_traversals(&mut stack, &mut pending);
         }
         Ok(())
     }
@@ -555,6 +559,7 @@ impl CpuWorldTraceBackend<'_, '_> {
             node_index: tree.root,
             start_t: root_start_t,
         }];
+        let mut pending = Vec::new();
         while let Some(current) = pop_best_ray_traversal(&mut stack) {
             self.evaluator.note_acceleration_node_visit();
             if current.start_t > self.best_distance.min(self.max_distance) {
@@ -628,7 +633,8 @@ impl CpuWorldTraceBackend<'_, '_> {
                 continue;
             }
 
-            let mut pending = Vec::new();
+            pending.clear();
+            pending.reserve(tree.children_of(current.node_index).len());
             for child_index in tree.children_of(current.node_index) {
                 let Some(child) = tree.node(*child_index) else {
                     continue;
@@ -672,7 +678,7 @@ impl CpuWorldTraceBackend<'_, '_> {
                     start_t,
                 });
             }
-            push_ordered_ray_traversals(&mut stack, pending);
+            push_ordered_ray_traversals(&mut stack, &mut pending);
         }
         Ok(())
     }

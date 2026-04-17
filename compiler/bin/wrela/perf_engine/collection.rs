@@ -105,17 +105,20 @@ pub(crate) fn execute_perf_command(mut input: PerfCommandInput) -> i32 {
                 return EXIT_USAGE;
             }
         };
-        let max_timeout_ms = manifest
-            .scenarios_for_profile(input.perf_profile)
-            .iter()
-            .filter_map(|scenario| scenario.timeout_ms)
-            .max();
+        let scenario_selection = manifest.scenario_selection(input.perf_profile);
+        let max_timeout_ms = scenario_selection.max_timeout_ms();
         if let Some(max_timeout_ms) = max_timeout_ms {
             timeout = timeout.max(std::time::Duration::from_millis(max_timeout_ms));
         }
-        benchmark_manifest = Some(manifest.clone());
+        benchmark_manifest = Some(manifest);
         runtime_only_cv_gate = true;
-        match build_benchmark_selection(&target, path, input.perf_profile) {
+        match test_eval_perf::build_benchmark_selection_from_manifest(
+            &target,
+            benchmark_manifest
+                .as_ref()
+                .expect("benchmark manifest should be loaded"),
+            input.perf_profile,
+        ) {
             Ok(selection_ids) => {
                 test_eval_perf::set_test_selection_include_ids(
                     &mut input.test_selection,
@@ -180,48 +183,29 @@ pub(super) fn run_perf_harness(
     perf_profile: PerfProfile,
 ) -> i32 {
     let query_backend = effective_perf_query_backend(perf_profile, query_backend);
-    let presentation_benchmarks_active = benchmark_manifest.is_some_and(|manifest| {
-        manifest
-            .scenarios_for_profile(perf_profile)
-            .iter()
-            .any(|scenario| scenario.presentation.is_some())
-    });
-    let collision_benchmarks_active = benchmark_manifest.is_some_and(|manifest| {
-        manifest
-            .scenarios_for_profile(perf_profile)
-            .iter()
-            .any(|scenario| scenario.collision.is_some())
-    });
+    let benchmark_scenarios =
+        benchmark_manifest.map(|manifest| manifest.scenario_selection(perf_profile));
+    let presentation_benchmarks_active = benchmark_scenarios
+        .as_ref()
+        .is_some_and(|selection| selection.includes_presentation());
+    let collision_benchmarks_active = benchmark_scenarios
+        .as_ref()
+        .is_some_and(|selection| selection.includes_collision());
     let whole_frame_benchmarks_active =
         presentation_benchmarks_active && collision_benchmarks_active;
     let presentation_collection_mode = presentation_benchmarks_active
         .then(|| presentation_benchmark_collection_mode(perf_profile, perf_why_not_120));
-    let expected_presentation_report_count = benchmark_manifest
-        .map(|manifest| {
-            manifest
-                .scenarios_for_profile(perf_profile)
-                .iter()
-                .filter(|scenario| scenario.presentation.is_some())
-                .count()
-        })
+    let expected_presentation_report_count = benchmark_scenarios
+        .as_ref()
+        .map(|selection| selection.presentation_count())
         .unwrap_or(0);
-    let expected_collision_execution_count = benchmark_manifest
-        .map(|manifest| {
-            manifest
-                .scenarios_for_profile(perf_profile)
-                .iter()
-                .filter(|scenario| scenario.collision.is_some())
-                .count()
-        })
+    let expected_collision_execution_count = benchmark_scenarios
+        .as_ref()
+        .map(|selection| selection.collision_count())
         .unwrap_or(0);
-    let expected_whole_frame_report_count = benchmark_manifest
-        .map(|manifest| {
-            manifest
-                .scenarios_for_profile(perf_profile)
-                .iter()
-                .filter(|scenario| scenario.presentation.is_some() && scenario.collision.is_some())
-                .count()
-        })
+    let expected_whole_frame_report_count = benchmark_scenarios
+        .as_ref()
+        .map(|selection| selection.whole_frame_count())
         .unwrap_or(0);
     let mut samples = Vec::new();
     let mut collision_summary_samples = Vec::new();
@@ -296,6 +280,12 @@ pub(super) fn run_perf_harness(
                     );
                     return EXIT_CODEGEN;
                 };
+                let Some(scenarios) = benchmark_scenarios.as_ref() else {
+                    eprintln!(
+                        "perf harness error: whole-frame benchmarks require benchmark scenarios"
+                    );
+                    return EXIT_CODEGEN;
+                };
                 let collect_once_for_closure = matches!(perf_profile, PerfProfile::Closure1080p120);
                 let collect_reports_this_run = !collect_once_for_closure
                     || latest_presentation_reports.is_none()
@@ -312,8 +302,7 @@ pub(super) fn run_perf_harness(
                 ) = if collect_reports_this_run {
                     let presentation_collection = match collect_presentation_benchmark_reports(
                         benchmark_root,
-                        manifest,
-                        perf_profile,
+                        scenarios.scenarios(),
                         query_backend,
                         presentation_collection_mode
                             .expect("presentation benchmarks should set collection mode"),
@@ -329,7 +318,7 @@ pub(super) fn run_perf_harness(
                     let collision_collection = match collect_collision_benchmark_reports(
                         benchmark_root,
                         manifest,
-                        perf_profile,
+                        scenarios.scenarios(),
                         query_backend,
                     ) {
                         Ok(collection) => collection,
@@ -473,9 +462,15 @@ pub(super) fn run_perf_harness(
                     eprintln!("perf harness error: presentation benchmarks require a project root");
                     return EXIT_CODEGEN;
                 };
-                let Some(manifest) = benchmark_manifest else {
+                if benchmark_manifest.is_none() {
                     eprintln!(
                         "perf harness error: presentation benchmarks require a benchmark manifest"
+                    );
+                    return EXIT_CODEGEN;
+                }
+                let Some(scenarios) = benchmark_scenarios.as_ref() else {
+                    eprintln!(
+                        "perf harness error: presentation benchmarks require benchmark scenarios"
                     );
                     return EXIT_CODEGEN;
                 };
@@ -486,8 +481,7 @@ pub(super) fn run_perf_harness(
                 let presentation_reports = if collect_reports_this_run {
                     let report_collection = match collect_presentation_benchmark_reports(
                         benchmark_root,
-                        manifest,
-                        perf_profile,
+                        scenarios.scenarios(),
                         query_backend,
                         presentation_collection_mode
                             .expect("presentation benchmarks should set collection mode"),
@@ -566,10 +560,16 @@ pub(super) fn run_perf_harness(
                     );
                     return EXIT_CODEGEN;
                 };
+                let Some(scenarios) = benchmark_scenarios.as_ref() else {
+                    eprintln!(
+                        "perf harness error: collision benchmarks require benchmark scenarios"
+                    );
+                    return EXIT_CODEGEN;
+                };
                 let report_collection = match collect_collision_benchmark_reports(
                     benchmark_root,
                     manifest,
-                    perf_profile,
+                    scenarios.scenarios(),
                     query_backend,
                 ) {
                     Ok(collection) => collection,
@@ -905,8 +905,7 @@ pub(super) fn should_warm_closure_quality_pipelines(
 
 fn collect_presentation_benchmark_reports(
     benchmark_root: &Path,
-    manifest: &BenchmarkManifest,
-    profile: PerfProfile,
+    scenarios: &[&test_eval_perf::BenchmarkScenario],
     query_backend: wrela::query_plan::DispatchBackend,
     collection_mode: PresentationBenchmarkCollectionMode,
 ) -> Result<PresentationBenchmarkReportCollection, String> {
@@ -916,7 +915,7 @@ fn collect_presentation_benchmark_reports(
         reports: Vec::new(),
         errors: Vec::new(),
     };
-    for scenario in manifest.scenarios_for_profile(profile) {
+    for scenario in scenarios {
         let Some(spec) = scenario.presentation.as_ref() else {
             continue;
         };
@@ -938,7 +937,7 @@ fn collect_presentation_benchmark_reports(
 fn collect_collision_benchmark_reports(
     benchmark_root: &Path,
     manifest: &BenchmarkManifest,
-    profile: PerfProfile,
+    scenarios: &[&test_eval_perf::BenchmarkScenario],
     query_backend: wrela::query_plan::DispatchBackend,
 ) -> Result<CollisionBenchmarkReportCollection, String> {
     let backend = collision_benchmark_backend(query_backend)?;
@@ -948,7 +947,7 @@ fn collect_collision_benchmark_reports(
     };
     let mut contexts = HashMap::<PathBuf, CollisionBenchmarkContext>::new();
     let mut scenario_results = Vec::new();
-    for scenario in manifest.scenarios_for_profile(profile) {
+    for scenario in scenarios {
         let Some(spec) = scenario.collision.as_ref() else {
             continue;
         };

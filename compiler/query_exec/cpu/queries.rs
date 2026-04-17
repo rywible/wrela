@@ -1141,6 +1141,7 @@ impl<'a> DirectQueryOps<'a> {
             node_index: tree.root,
             lower_bound: f32::NEG_INFINITY,
         }];
+        let mut pending = Vec::new();
 
         while let Some(current) = pop_best_point_traversal(&mut stack) {
             self.note_acceleration_node_visit();
@@ -1160,7 +1161,8 @@ impl<'a> DirectQueryOps<'a> {
                 continue;
             }
 
-            let mut pending = Vec::new();
+            pending.clear();
+            pending.reserve(tree.children_of(current.node_index).len());
             for child_index in tree.children_of(current.node_index) {
                 let Some(child) = tree.node(*child_index) else {
                     continue;
@@ -1180,7 +1182,7 @@ impl<'a> DirectQueryOps<'a> {
                     lower_bound,
                 });
             }
-            push_ordered_point_traversals(&mut stack, pending);
+            push_ordered_point_traversals(&mut stack, &mut pending);
         }
 
         if best.is_finite() {

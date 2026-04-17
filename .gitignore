@@ -6,6 +6,19 @@ test_output.txt
 .vscode
 __pycache__
 .artifacts
+!.artifacts/
+.artifacts/*
+!.artifacts/devloop/
+.artifacts/devloop/*
+!.artifacts/devloop/phase55-hot-path-hygiene.json
+!.artifacts/devloop/phase55-micro-smoke.toml
+!.artifacts/devloop/phase55-query-collision-probe/
+.artifacts/devloop/phase55-query-collision-probe/*
+!.artifacts/devloop/phase55-query-collision-probe/Cargo.toml
+!.artifacts/devloop/phase55-query-collision-probe/src/
+.artifacts/devloop/phase55-query-collision-probe/src/*
+!.artifacts/devloop/phase55-query-collision-probe/src/main.rs
+.artifacts/devloop/phase55-query-collision-probe/Cargo.lock
 
 # Generated compilation artifacts
 cert.json

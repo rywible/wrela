@@ -600,14 +600,15 @@ fn pop_best_point_traversal(stack: &mut Vec<CpuPointTraversal>) -> Option<CpuPoi
 
 fn push_ordered_point_traversals(
     stack: &mut Vec<CpuPointTraversal>,
-    mut items: Vec<CpuPointTraversal>,
+    items: &mut Vec<CpuPointTraversal>,
 ) {
     items.sort_by(|left, right| {
         left.lower_bound
             .partial_cmp(&right.lower_bound)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    stack.extend(items.into_iter().rev());
+    stack.extend(items.iter().rev().copied());
+    items.clear();
 }
 
 fn pop_best_ray_traversal(stack: &mut Vec<CpuRayTraversal>) -> Option<CpuRayTraversal> {
@@ -623,13 +624,14 @@ fn pop_best_ray_traversal(stack: &mut Vec<CpuRayTraversal>) -> Option<CpuRayTrav
     Some(stack.swap_remove(best_index))
 }
 
-fn push_ordered_ray_traversals(stack: &mut Vec<CpuRayTraversal>, mut items: Vec<CpuRayTraversal>) {
+fn push_ordered_ray_traversals(stack: &mut Vec<CpuRayTraversal>, items: &mut Vec<CpuRayTraversal>) {
     items.sort_by(|left, right| {
         left.start_t
             .partial_cmp(&right.start_t)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    stack.extend(items.into_iter().rev());
+    stack.extend(items.iter().rev().copied());
+    items.clear();
 }
 
 #[derive(Debug, Clone)]

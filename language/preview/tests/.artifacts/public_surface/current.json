@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "qualified_name": "main::accent_surface",
+      "signature": "(hit: Hit3) -> Surface"
+    },
+    {
+      "qualified_name": "main::base_surface",
+      "signature": "(hit: Hit3) -> Surface"
+    },
+    {
+      "qualified_name": "main::blended_core",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::carved_tower",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::compute_scene_color",
+      "signature": "(scene_capture: ShapeCapture, camera_position: Vec3, light: Light, ray_direction: Vec3) -> Vec3"
+    },
+    {
+      "qualified_name": "main::compute_scene_hit",
+      "signature": "(scene_capture: ShapeCapture, origin: Vec3, direction: Vec3) -> Hit3"
+    },
+    {
+      "qualified_name": "main::compute_scene_surface",
+      "signature": "(scene_capture: ShapeCapture, hit: Hit3) -> Surface"
+    },
+    {
+      "qualified_name": "main::compute_shadow_visibility",
+      "signature": "(scene_capture: ShapeCapture, hit_position: Vec3, hit_normal: Vec3, light: Light) -> F32"
+    },
+    {
+      "qualified_name": "main::core_surface",
+      "signature": "(hit: Hit3) -> Surface"
+    },
+    {
+      "qualified_name": "main::crown_cap",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::fin",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::floor_slab",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::foot",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::frame_surface",
+      "signature": "(hit: Hit3) -> Surface"
+    },
+    {
+      "qualified_name": "main::hex_tower",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::render_ppm",
+      "signature": "() -> String"
+    },
+    {
+      "qualified_name": "main::rounded_core",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::run",
+      "signature": "() -> Integer"
+    },
+    {
+      "qualified_name": "main::scene",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::spear_tip",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::window_frame",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::windowed_spire",
+      "signature": "(p: Vec3) -> F32"
+    }
+  ]
+}

@@ -1,0 +1,83 @@
+{
+  "phase": 55,
+  "title": "low_risk_performance_sweep_and_hot_path_hygiene",
+  "recorded_on": "2026-04-17",
+  "allocation_hygiene": {
+    "notes": [
+      "The checked-in query/collision probe is the canonical reproduction path.",
+      "Allocation count is the stable primary proof surface; compare milliseconds across warmed repeated runs."
+    ],
+    "cpu_world_distance_probe": {
+      "probe_manifest_path": ".artifacts/devloop/phase55-query-collision-probe/Cargo.toml",
+      "scene": "generated cluttered region with 96 shapes",
+      "iterations": 200,
+      "before": {
+        "allocations": 122200,
+        "elapsed_ms": 134.833
+      },
+      "after": {
+        "allocations": 121000,
+        "elapsed_ms": 126.398
+      },
+      "delta": {
+        "allocations": -1200,
+        "allocation_pct": -0.98,
+        "elapsed_ms": -8.435,
+        "elapsed_pct": -6.26
+      }
+    },
+    "cpu_collision_point_occupancy_probe": {
+      "probe_manifest_path": ".artifacts/devloop/phase55-query-collision-probe/Cargo.toml",
+      "scene": "generated cluttered region with 96 shapes",
+      "iterations": 500,
+      "before": {
+        "elapsed_ms": 418.428
+      },
+      "after": {
+        "elapsed_ms": 397.328
+      },
+      "delta": {
+        "elapsed_ms": -21.1,
+        "elapsed_pct": -5.04
+      }
+    }
+  },
+  "indexed_lookup_and_tooling_hygiene": {
+    "perf_manifest_selection": {
+      "before_manifest_loads_per_invocation": 2,
+      "after_manifest_loads_per_invocation": 1,
+      "verification_test": "cargo test -p wrela --bin wrela execute_perf_command_reuses_the_loaded_manifest_for_selection"
+    },
+    "perf_smoke_wall_clock": {
+      "benchmark_root": "benchmarks/micro",
+      "profile": "smoke",
+      "scenario_count": 1,
+      "manifest_path": ".artifacts/devloop/phase55-micro-smoke.toml",
+      "before_runs_s": [
+        0.25201149999884365,
+        0.2221343330002128,
+        0.2250364579995221
+      ],
+      "before_mean_s": 0.23306076366619286,
+      "after_runs_s": [
+        0.22858287499911967,
+        0.2175422089985659,
+        0.223323165999318
+      ],
+      "after_mean_s": 0.22314941666566787,
+      "delta_s": -0.009911347000525,
+      "delta_pct": -4.25,
+      "notes": [
+        "The comparable after sample is the stabilized rerun.",
+        "An earlier first post-edit sweep observed one 0.7671471670000756 second cold outlier before the steady rerun."
+      ]
+    }
+  },
+  "verification": {
+    "tests": [
+      "cargo test -p wrela --bin wrela execute_perf_command_reuses_the_loaded_manifest_for_selection",
+      "cargo test -p wrela --test query_exec query_exec_cpu_runs_capture_world_and_batch_queries_with_shared_results",
+      "cargo test -p wrela --test collision_exec shared_broadphase_prunes_far_shapes_on_cluttered_collision_scene"
+    ]
+  }
+}

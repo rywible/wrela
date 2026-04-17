@@ -1,0 +1,10 @@
+[package]
+name = "wrela_phase55_query_collision_probe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wrela = { path = "../../../compiler" }
+smol_str = "0.3.5"
+
+[workspace]

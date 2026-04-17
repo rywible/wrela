@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "qualified_name": "main::accent_surface",
+      "signature": "(hit: Hit3) -> Surface"
+    },
+    {
+      "qualified_name": "main::arch_cut",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::arch_wall",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::boolean_surface",
+      "signature": "(hit: Hit3) -> Surface"
+    },
+    {
+      "qualified_name": "main::brace",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::door_cut",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::ground",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::ground_surface",
+      "signature": "(hit: Hit3) -> Surface"
+    },
+    {
+      "qualified_name": "main::lintel",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::relief_cut",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::render_ppm",
+      "signature": "(world: RegionCapture, camera: Camera) -> String"
+    },
+    {
+      "qualified_name": "main::run",
+      "signature": "() -> Integer"
+    },
+    {
+      "qualified_name": "main::scene",
+      "signature": "(p: Vec3) -> F32"
+    },
+    {
+      "qualified_name": "main::scene_domain",
+      "signature": "(world: RegionCapture) -> SceneDomain"
+    },
+    {
+      "qualified_name": "main::scene_radiance",
+      "signature": "(p: Vec3, direction: Vec3, feature_id: U32) -> Vec3"
+    },
+    {
+      "qualified_name": "main::scene_region",
+      "signature": "() -> RegionCapture"
+    },
+    {
+      "qualified_name": "main::scene_volume",
+      "signature": "(p: Vec3, surface_distance: F32) -> Medium"
+    },
+    {
+      "qualified_name": "main::wall_panel",
+      "signature": "(p: Vec3) -> F32"
+    }
+  ]
+}

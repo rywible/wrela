@@ -54,6 +54,31 @@ the edit-scope burst is not the bottleneck yet, while the real day-to-day pain s
 workspace-wide Rust test surface. The cleanroom deltas still show why the non-incremental path
 must stay explicit and rare.
 
+## Phase 55 Hot-Path Snapshot
+
+Phase 55 keeps the Phase 52 compile-loop baseline intact and adds a measured
+runtime/tooling hygiene slice. The checked evidence lives at:
+
+- `.artifacts/devloop/phase55-hot-path-hygiene.json`
+
+From that artifact on 2026-04-17:
+
+- CPU world-distance probe on a generated 96-shape clutter scene (`200` queries):
+  `122200` allocations -> `121000` allocations (`-1200`, `-0.98%`), and
+  `134.833` ms -> `126.398` ms (`-8.435` ms, `-6.26%`).
+- CPU collision point-occupancy probe on the same scene (`500` executions):
+  `418.428` ms -> `397.328` ms (`-21.100` ms, `-5.04%`).
+- One-scenario `wrela perf --runs=1 --profile=smoke` wall-clock timing:
+  `0.233` s mean before -> `0.223` s mean after on the stabilized three-run sweep
+  (`-4.25%`).
+- `wrela perf` benchmark-manifest loads per invocation:
+  `2` -> `1`, proven by
+  `cargo test -p wrela --bin wrela execute_perf_command_reuses_the_loaded_manifest_for_selection`.
+
+That Phase 55 snapshot is intentionally narrow: it proves that the obvious hot-path churn dropped
+without changing semantics, while confirming that the dominant repo-scale developer pain is still
+the workspace-wide test surface captured in the Phase 52 baseline.
+
 ## How To Reproduce
 
 Run the full baseline:
@@ -72,6 +97,28 @@ Run only the compile-burst probes:
 
 ```bash
 python3 scripts/devloop_measure.py --scenario frontend_edit_check --scenario query_exec_edit_check --scenario cli_edit_check --report-name phase52-edit-bursts
+```
+
+Reproduce the checked-in Phase 55 perf smoke sample:
+
+```bash
+target/debug/wrela perf --runs=1 --profile=smoke --benchmark-manifest=.artifacts/devloop/phase55-micro-smoke.toml --baseline-out=/tmp/phase55-micro-smoke.json benchmarks/micro
+```
+
+Reproduce the checked-in Phase 55 query and collision probe:
+
+```bash
+cargo run --quiet --manifest-path .artifacts/devloop/phase55-query-collision-probe/Cargo.toml
+```
+
+That probe's allocation count is the stable primary proof surface.
+Its single-run milliseconds are noisier, so compare timing across warmed repeated runs instead of
+treating one cold invocation as the scorecard number.
+
+Verify the Phase 55 manifest-reuse proof directly:
+
+```bash
+cargo test -p wrela --bin wrela execute_perf_command_reuses_the_loaded_manifest_for_selection
 ```
 
 ## Interpretation Rules

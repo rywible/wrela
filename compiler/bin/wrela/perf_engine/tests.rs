@@ -495,6 +495,65 @@ fn real_whole_frame_closure_manifest_matches_expected_protocol() {
 }
 
 #[test]
+fn execute_perf_command_reuses_the_loaded_manifest_for_selection() {
+    let bench_root = workspace_root().join("benchmarks").join("micro");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("micro_smoke.toml");
+    let baseline_path = temp.path().join("micro_smoke.json");
+    fs::write(
+        &manifest_path,
+        r#"
+version = 1
+suite = "micro_perf_engine_test"
+
+[profiles.smoke]
+warmup_pairs = 1
+measure_pairs = 1
+coverage = "critical"
+
+[[scenarios]]
+id = "check_given_boolean_lane"
+test_name = "tests/micro::test_check_given_boolean_lane_ops_12000000"
+ops = 12000000
+class = "critical"
+min_runtime_ms = 1
+timeout_ms = 120000
+allow_unstable = false
+"#,
+    )
+    .expect("write micro perf manifest");
+
+    build_compile::reset_benchmark_manifest_load_count();
+    let exit = execute_perf_command(PerfCommandInput {
+        trace: false,
+        program_args: Vec::new(),
+        path_arg: Some(bench_root.display().to_string()),
+        perf_runs: Some(1),
+        test_jobs: None,
+        test_timeout_ms: None,
+        benchmark_manifest_path: Some(manifest_path.display().to_string()),
+        perf_profile: PerfProfile::Smoke,
+        perf_baseline_out: Some(baseline_path.display().to_string()),
+        perf_gate_path: None,
+        perf_max_regression_pct: None,
+        perf_cv_max_pct: None,
+        perf_why_not_120: false,
+        kpi_thresholds: KpiThresholds::default(),
+        output_format: OutputFormat::Json,
+        perf_debug: false,
+        test_selection: TestSelection::default(),
+        query_backend: wrela::query_plan::DispatchBackend::Auto,
+    });
+    assert_eq!(exit, EXIT_OK);
+    assert!(
+        baseline_path.exists(),
+        "expected perf baseline at {}",
+        baseline_path.display()
+    );
+    assert_eq!(build_compile::benchmark_manifest_load_count(), 1);
+}
+
+#[test]
 fn frame_closure_status_records_report_collection_failures_as_violations() {
     let profile = PerfClosureProfile::canonical_1080p120();
     let report = build_frame_closure_status(

@@ -61,11 +61,13 @@ use presentation_command::{
     WRELA_PRESENTATION_DEBUG_ADAPTIVE_WINDOW_ENV,
     WRELA_PRESENTATION_DEBUG_WARM_QUALITY_PIPELINES_ENV,
 };
+#[cfg(test)]
+use test_eval_perf::build_benchmark_selection;
 use test_eval_perf::{
     BenchmarkManifest, CollisionBenchmarkReport, DifferentialPipeline, KpiThresholds,
     PerfCmpConfig, PerfGateConfig, PerfProfile, PerfReport, PresentationBenchmarkComparison,
     PresentationBenchmarkReport, PresentationWgslWorkgroupComparison, TestSelection,
-    WholeFrameBenchmarkReport, budget_jobs_timeout, build_benchmark_selection,
+    WholeFrameBenchmarkReport, budget_jobs_timeout,
 };
 
 mod closure;

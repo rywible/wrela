@@ -1,0 +1,16 @@
+version = 1
+suite = "phase55_micro_repo_smoke"
+
+[profiles.smoke]
+warmup_pairs = 1
+measure_pairs = 1
+coverage = "critical"
+
+[[scenarios]]
+id = "check_given_boolean_lane"
+test_name = "tests/micro::test_check_given_boolean_lane_ops_12000000"
+ops = 12000000
+class = "critical"
+min_runtime_ms = 1
+timeout_ms = 120000
+allow_unstable = false

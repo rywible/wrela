@@ -2711,7 +2711,24 @@ pub(crate) fn resolve_benchmark_manifest_path(
     candidate.is_file().then_some(candidate)
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static BENCHMARK_MANIFEST_LOAD_COUNT: std::cell::Cell<usize> = std::cell::Cell::new(0);
+}
+
+#[cfg(test)]
+pub(crate) fn reset_benchmark_manifest_load_count() {
+    BENCHMARK_MANIFEST_LOAD_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn benchmark_manifest_load_count() -> usize {
+    BENCHMARK_MANIFEST_LOAD_COUNT.with(|count| count.get())
+}
+
 pub(crate) fn load_benchmark_manifest(path: &Path) -> Result<BenchmarkManifest, String> {
+    #[cfg(test)]
+    BENCHMARK_MANIFEST_LOAD_COUNT.with(|count| count.set(count.get() + 1));
     let text = fs::read_to_string(path)
         .map_err(|err| format!("failed to read {}: {}", path.display(), err))?;
     let manifest: BenchmarkManifest =

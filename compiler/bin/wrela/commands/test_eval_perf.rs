@@ -54,19 +54,29 @@ pub(crate) fn discover_tests_for_target(target: &TestTarget) -> Result<Vec<TestC
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn build_benchmark_selection(
     target: &TestTarget,
     manifest_path: &Path,
     profile: PerfProfile,
 ) -> Result<HashSet<String>, String> {
     let manifest = load_benchmark_manifest(manifest_path)?;
+    build_benchmark_selection_from_manifest(target, &manifest, profile)
+}
+
+pub(crate) fn build_benchmark_selection_from_manifest(
+    target: &TestTarget,
+    manifest: &BenchmarkManifest,
+    profile: PerfProfile,
+) -> Result<HashSet<String>, String> {
     let tests = discover_tests_for_target(target)?;
     let test_by_name: HashMap<&str, &TestCase> = tests
         .iter()
         .map(|test| (test.name.as_str(), test))
         .collect();
     let mut include_ids = HashSet::new();
-    for scenario in manifest.scenarios_for_profile(profile) {
+    let selection = manifest.scenario_selection(profile);
+    for scenario in selection.scenarios() {
         let Some(test) = test_by_name.get(scenario.test_name.as_str()) else {
             return Err(format!(
                 "scenario `{}` references unknown test `{}`",
@@ -1259,6 +1269,15 @@ pub(crate) struct WholeFrameBenchmarkReport {
     pub(crate) collision_witness_reuse_rate: f64,
 }
 
+pub(crate) struct BenchmarkProfileScenarioSelection<'a> {
+    scenarios: Vec<&'a BenchmarkScenario>,
+    includes_presentation: bool,
+    includes_collision: bool,
+    presentation_count: usize,
+    collision_count: usize,
+    whole_frame_count: usize,
+}
+
 impl BenchmarkManifest {
     pub(crate) fn scenarios_for_profile(&self, profile: PerfProfile) -> Vec<&BenchmarkScenario> {
         let coverage = self
@@ -1270,6 +1289,71 @@ impl BenchmarkManifest {
             .iter()
             .filter(|scenario| coverage.includes(scenario.class))
             .collect()
+    }
+
+    pub(crate) fn scenario_selection(
+        &self,
+        profile: PerfProfile,
+    ) -> BenchmarkProfileScenarioSelection<'_> {
+        BenchmarkProfileScenarioSelection::new(self.scenarios_for_profile(profile))
+    }
+}
+
+impl<'a> BenchmarkProfileScenarioSelection<'a> {
+    fn new(scenarios: Vec<&'a BenchmarkScenario>) -> Self {
+        let mut includes_presentation = false;
+        let mut includes_collision = false;
+        let mut presentation_count = 0usize;
+        let mut collision_count = 0usize;
+        let mut whole_frame_count = 0usize;
+        for scenario in &scenarios {
+            let has_presentation = scenario.presentation.is_some();
+            let has_collision = scenario.collision.is_some();
+            includes_presentation |= has_presentation;
+            includes_collision |= has_collision;
+            presentation_count += usize::from(has_presentation);
+            collision_count += usize::from(has_collision);
+            whole_frame_count += usize::from(has_presentation && has_collision);
+        }
+        Self {
+            scenarios,
+            includes_presentation,
+            includes_collision,
+            presentation_count,
+            collision_count,
+            whole_frame_count,
+        }
+    }
+
+    pub(crate) fn scenarios(&self) -> &[&'a BenchmarkScenario] {
+        &self.scenarios
+    }
+
+    pub(crate) fn max_timeout_ms(&self) -> Option<u64> {
+        self.scenarios
+            .iter()
+            .filter_map(|scenario| scenario.timeout_ms)
+            .max()
+    }
+
+    pub(crate) fn includes_presentation(&self) -> bool {
+        self.includes_presentation
+    }
+
+    pub(crate) fn includes_collision(&self) -> bool {
+        self.includes_collision
+    }
+
+    pub(crate) fn presentation_count(&self) -> usize {
+        self.presentation_count
+    }
+
+    pub(crate) fn collision_count(&self) -> usize {
+        self.collision_count
+    }
+
+    pub(crate) fn whole_frame_count(&self) -> usize {
+        self.whole_frame_count
     }
 }
 
