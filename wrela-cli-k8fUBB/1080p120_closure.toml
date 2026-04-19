@@ -1,0 +1,27 @@
+
+version = 1
+suite = "collision_perf"
+
+[profiles.closure_1080p120]
+warmup_pairs = 1
+measure_pairs = 1
+coverage = "all"
+execution_story = "wgsl_resident"
+adapter_name = "wgsl_resident"
+enabled_optional_features = []
+timestamps_enabled = false
+f16_enabled = false
+indirect_dispatch_enabled = false
+warmup_protocol = "pipeline_and_resident_scene_upload"
+companion_profile = "canonical_1080p120_cpu_oracle"
+
+[[scenarios]]
+id = "closure_1080p120_point_occupancy_burst"
+test_name = "tests/collision_perf::test_collision_perf_point_occupancy_burst_ops_64"
+ops = 64
+class = "closure"
+min_runtime_ms = 1
+timeout_ms = 120000
+allow_unstable = false
+collision = { entry = "tests/collision_perf_test.wr", region = "collision_perf_region", domain = "collision_perf_domain", workload = "point_occupancy_burst" }
+
