@@ -1556,6 +1556,8 @@ fn benchmark_manifest_scenarios_resolve_via_discovery() {
         "benchmarks/realtime_presentation/bench.toml",
         "benchmarks/collision_perf/bench.toml",
         "benchmarks/collision_perf/1080p120_closure.toml",
+        "benchmarks/engine_frame/bench.toml",
+        "benchmarks/engine_frame/1080p120_closure.toml",
         "benchmarks/whole_frame/bench.toml",
         "benchmarks/whole_frame/1080p120_closure.toml",
     ];
@@ -1688,7 +1690,9 @@ fn benchmark_manifest_scenarios_resolve_via_discovery() {
                         .and_then(|value| value.as_str())
                         .is_some()
                 );
-            } else if manifest_rel.starts_with("benchmarks/whole_frame/") {
+            } else if manifest_rel.starts_with("benchmarks/whole_frame/")
+                || manifest_rel.starts_with("benchmarks/engine_frame/")
+            {
                 let presentation = scenario
                     .get("presentation")
                     .and_then(|value| value.as_table())

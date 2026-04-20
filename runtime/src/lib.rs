@@ -2039,10 +2039,18 @@ pub extern "C" fn wr_metrics_scene_trace() -> Value {
     Value::nil()
 }
 
+pub fn metrics_add_scene_trace(count: u64) {
+    metrics::add_scene_trace(count);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_metrics_field_sample() -> Value {
     metrics::inc_field_sample();
     Value::nil()
+}
+
+pub fn metrics_add_field_samples(count: u64) {
+    metrics::add_field_samples(count);
 }
 
 #[unsafe(no_mangle)]
@@ -2051,10 +2059,18 @@ pub extern "C" fn wr_metrics_scene_trace_support_pruned_branch() -> Value {
     Value::nil()
 }
 
+pub fn metrics_add_scene_trace_support_pruned_branches(count: u64) {
+    metrics::add_scene_trace_support_pruned_branches(count);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_metrics_scene_trace_candidate_branch() -> Value {
     metrics::inc_scene_trace_candidate_branch();
     Value::nil()
+}
+
+pub fn metrics_add_scene_trace_candidate_branches(count: u64) {
+    metrics::add_scene_trace_candidate_branches(count);
 }
 
 #[unsafe(no_mangle)]
@@ -2063,10 +2079,18 @@ pub extern "C" fn wr_metrics_scene_trace_exact_path() -> Value {
     Value::nil()
 }
 
+pub fn metrics_add_scene_trace_exact_paths(count: u64) {
+    metrics::add_scene_trace_exact_paths(count);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn wr_metrics_scene_trace_conservative_path() -> Value {
     metrics::inc_scene_trace_conservative_path();
     Value::nil()
+}
+
+pub fn metrics_add_scene_trace_conservative_paths(count: u64) {
+    metrics::add_scene_trace_conservative_paths(count);
 }
 
 #[unsafe(no_mangle)]

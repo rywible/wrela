@@ -26,6 +26,7 @@
 //! collection/orchestration lane spanning manifest selection, benchmark runs,
 //! gate inputs, and report assembly.
 use super::*;
+use std::ffi::OsString;
 
 pub(crate) struct PerfCommandInput {
     pub(crate) trace: bool,
@@ -46,6 +47,32 @@ pub(crate) struct PerfCommandInput {
     pub(crate) perf_debug: bool,
     pub(crate) test_selection: TestSelection,
     pub(crate) query_backend: wrela::query_plan::DispatchBackend,
+}
+
+struct ScopedEnvVar {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl ScopedEnvVar {
+    fn set(key: &'static str, value: Option<&str>) -> Self {
+        let previous = env::var_os(key);
+        match value {
+            Some(value) => unsafe { env::set_var(key, value) },
+            None => unsafe { env::remove_var(key) },
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for ScopedEnvVar {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.as_ref() {
+            unsafe { env::set_var(self.key, previous) };
+        } else {
+            unsafe { env::remove_var(self.key) };
+        }
+    }
 }
 
 pub(crate) fn execute_perf_command(mut input: PerfCommandInput) -> i32 {
@@ -183,6 +210,22 @@ pub(super) fn run_perf_harness(
     perf_profile: PerfProfile,
 ) -> i32 {
     let query_backend = effective_perf_query_backend(perf_profile, query_backend);
+    let closure_protocol = matches!(perf_profile, PerfProfile::Closure1080p120)
+        .then(PerfClosureProfile::canonical_1080p120);
+    let closure_timestamps_enabled = closure_protocol
+        .as_ref()
+        .filter(|_| query_backend == wrela::query_plan::DispatchBackend::Wgsl)
+        .is_some_and(|profile| profile.timestamps_enabled);
+    let _timestamp_env = ScopedEnvVar::set(
+        wrela::query_exec::wgsl::QUERY_GPU_TIMESTAMPS_ENV,
+        closure_timestamps_enabled.then_some("1"),
+    );
+    let _timestamp_override = wrela::query_exec::wgsl::override_gpu_timestamps_for_current_thread(
+        closure_protocol
+            .as_ref()
+            .filter(|_| query_backend == wrela::query_plan::DispatchBackend::Wgsl)
+            .map(|profile| profile.timestamps_enabled),
+    );
     let benchmark_scenarios =
         benchmark_manifest.map(|manifest| manifest.scenario_selection(perf_profile));
     let presentation_benchmarks_active = benchmark_scenarios
@@ -195,6 +238,8 @@ pub(super) fn run_perf_harness(
         presentation_benchmarks_active && collision_benchmarks_active;
     let presentation_collection_mode = presentation_benchmarks_active
         .then(|| presentation_benchmark_collection_mode(perf_profile, perf_why_not_120));
+    let skip_authored_composite_harness =
+        should_skip_authored_composite_harness(whole_frame_benchmarks_active, perf_profile);
     let expected_presentation_report_count = benchmark_scenarios
         .as_ref()
         .map(|selection| selection.presentation_count())
@@ -213,14 +258,25 @@ pub(super) fn run_perf_harness(
     let mut presentation_report_samples = Vec::new();
     let mut presentation_report_errors = Vec::new();
     let mut latest_whole_frame_reports = None;
+    let mut latest_engine_frame_reports = None;
     let mut whole_frame_report_samples = Vec::new();
+    let mut engine_frame_report_samples = Vec::new();
     let mut whole_frame_report_errors = Vec::new();
+    let mut engine_frame_report_errors = Vec::new();
     let mut latest_collision_reports = None;
     let mut collision_report_samples = Vec::new();
     let mut collision_report_errors = Vec::new();
     let mut late_failures = Vec::<String>::new();
+    if skip_authored_composite_harness && matches!(output_format, OutputFormat::Pretty) {
+        println!(
+            "perf-note: composite closure skips authored whole-frame harness execution and uses collected presentation/collision reports"
+        );
+    }
     for idx in 0..warmup_runs {
         println!("perf-warmup {}/{}", idx + 1, warmup_runs);
+        if skip_authored_composite_harness {
+            continue;
+        }
         let (exit, _, _) = test_eval_perf::run_tests_once(
             target,
             budget_policy,
@@ -246,28 +302,33 @@ pub(super) fn run_perf_harness(
     }
     for idx in 0..runs {
         println!("perf-run {}/{}", idx + 1, runs);
-        let (exit, summary, _) = test_eval_perf::run_tests_once(
-            target,
-            budget_policy,
-            jobs,
-            timeout,
-            output_format,
-            perf_debug,
-            true,
-            selection,
-            false,
-            !presentation_benchmarks_active,
-            test_eval_perf::HttpCassetteMode::Replay,
-            None,
-            query_backend,
-            false,
-            DifferentialPipeline::Baseline,
-            None,
-            None,
-        );
-        if exit != EXIT_OK {
-            return exit;
-        }
+        let summary = if skip_authored_composite_harness {
+            Some(empty_perf_summary())
+        } else {
+            let (exit, summary, _) = test_eval_perf::run_tests_once(
+                target,
+                budget_policy,
+                jobs,
+                timeout,
+                output_format,
+                perf_debug,
+                true,
+                selection,
+                false,
+                !presentation_benchmarks_active,
+                test_eval_perf::HttpCassetteMode::Replay,
+                None,
+                query_backend,
+                false,
+                DifferentialPipeline::Baseline,
+                None,
+                None,
+            );
+            if exit != EXIT_OK {
+                return exit;
+            }
+            summary
+        };
         if let Some(summary) = summary {
             if whole_frame_benchmarks_active {
                 let TestTarget::ProjectRoot(benchmark_root) = target else {
@@ -290,7 +351,8 @@ pub(super) fn run_perf_harness(
                 let collect_reports_this_run = !collect_once_for_closure
                     || latest_presentation_reports.is_none()
                     || latest_collision_reports.is_none()
-                    || latest_whole_frame_reports.is_none();
+                    || latest_whole_frame_reports.is_none()
+                    || latest_engine_frame_reports.is_none();
                 let (
                     presentation_reports,
                     presentation_errors,
@@ -298,6 +360,8 @@ pub(super) fn run_perf_harness(
                     collision_errors,
                     whole_frame_reports,
                     whole_frame_errors,
+                    engine_frame_reports,
+                    engine_frame_errors,
                     report_collection_errors,
                 ) = if collect_reports_this_run {
                     let presentation_collection = match collect_presentation_benchmark_reports(
@@ -369,6 +433,21 @@ pub(super) fn run_perf_harness(
                             Vec::new()
                         }
                     };
+                    let mut engine_frame_errors = Vec::new();
+                    let engine_frame_reports = match build_engine_frame_benchmark_reports(
+                        &presentation_collection.reports,
+                        &collision_collection.reports,
+                        closure_protocol
+                            .as_ref()
+                            .map(|profile| &profile.engine_frame_budget),
+                    ) {
+                        Ok(reports) => reports,
+                        Err(err) => {
+                            engine_frame_errors.push(err.clone());
+                            report_collection_errors.push(err);
+                            Vec::new()
+                        }
+                    };
                     if whole_frame_reports.len() != expected_whole_frame_report_count {
                         let error = format!(
                             "whole-frame report collection returned {} report(s) for {} expected composite scenario(s)",
@@ -378,6 +457,15 @@ pub(super) fn run_perf_harness(
                         whole_frame_errors.push(error.clone());
                         report_collection_errors.push(error);
                     }
+                    if engine_frame_reports.len() != expected_whole_frame_report_count {
+                        let error = format!(
+                            "engine-frame report collection returned {} report(s) for {} expected composite scenario(s)",
+                            engine_frame_reports.len(),
+                            expected_whole_frame_report_count
+                        );
+                        engine_frame_errors.push(error.clone());
+                        report_collection_errors.push(error);
+                    }
                     (
                         presentation_collection.reports,
                         presentation_errors,
@@ -385,6 +473,8 @@ pub(super) fn run_perf_harness(
                         collision_errors,
                         whole_frame_reports,
                         whole_frame_errors,
+                        engine_frame_reports,
+                        engine_frame_errors,
                         report_collection_errors,
                     )
                 } else {
@@ -401,21 +491,29 @@ pub(super) fn run_perf_harness(
                                 .clone()
                                 .expect("closure whole-frame benchmarks should have cached whole-frame reports"),
                             Vec::new(),
+                            latest_engine_frame_reports
+                                .clone()
+                                .expect("closure whole-frame benchmarks should have cached engine-frame reports"),
+                            Vec::new(),
                             Vec::new(),
                         )
                 };
-                let whole_frame_runtime_cases =
-                    whole_frame_runtime_cases_from_reports(&whole_frame_reports);
+                let composite_runtime_cases = if manifest.suite.eq_ignore_ascii_case("engine_frame")
+                {
+                    engine_frame_runtime_cases_from_reports(&engine_frame_reports)
+                } else {
+                    whole_frame_runtime_cases_from_reports(&whole_frame_reports)
+                };
                 let collision_runtime_cases = collision_reports
                     .iter()
                     .flat_map(collision_runtime_cases_by_scenario_id)
                     .collect::<Vec<_>>();
-                let summary = if whole_frame_runtime_cases.is_empty() {
+                let summary = if composite_runtime_cases.is_empty() {
                     summary
                 } else {
                     test_eval_perf::overlay_perf_summary_runtime_cases(
                         &summary,
-                        &whole_frame_runtime_cases,
+                        &composite_runtime_cases,
                     )
                 };
                 if !collision_runtime_cases.is_empty() {
@@ -432,6 +530,7 @@ pub(super) fn run_perf_harness(
                         print_presentation_benchmark_reports(&presentation_reports);
                         print_collision_benchmark_reports(&collision_reports);
                         print_whole_frame_benchmark_reports(&whole_frame_reports);
+                        print_engine_frame_benchmark_reports(&engine_frame_reports);
                     }
                     for error in &report_collection_errors {
                         eprintln!("whole-frame-benchmark-error: {error}");
@@ -450,11 +549,14 @@ pub(super) fn run_perf_harness(
                     presentation_report_errors.extend(presentation_errors);
                     whole_frame_report_samples.extend(whole_frame_reports.iter().cloned());
                     whole_frame_report_errors.extend(whole_frame_errors);
+                    engine_frame_report_samples.extend(engine_frame_reports.iter().cloned());
+                    engine_frame_report_errors.extend(engine_frame_errors);
                     collision_report_samples.extend(collision_reports.iter().cloned());
                     collision_report_errors.extend(collision_errors);
                     latest_presentation_reports = Some(presentation_reports.clone());
                     latest_collision_reports = Some(collision_reports.clone());
                     latest_whole_frame_reports = Some(whole_frame_reports.clone());
+                    latest_engine_frame_reports = Some(engine_frame_reports.clone());
                 }
                 samples.push(summary);
             } else if presentation_benchmarks_active {
@@ -718,6 +820,8 @@ pub(super) fn run_perf_harness(
         &presentation_report_errors,
         &whole_frame_report_samples,
         &whole_frame_report_errors,
+        &engine_frame_report_samples,
+        &engine_frame_report_errors,
         &collision_report_samples,
         &collision_report_errors,
         perf_profile,
@@ -737,6 +841,7 @@ pub(super) fn run_perf_harness(
         closure: closure_report,
         presentation_reports: latest_presentation_reports,
         whole_frame_reports: latest_whole_frame_reports,
+        engine_frame_reports: latest_engine_frame_reports,
         collision_reports: latest_collision_reports,
     };
     if let Some(parent) = baseline_out.parent()
@@ -806,7 +911,12 @@ struct CollisionBenchmarkReportCollection {
 #[derive(Debug, Clone, Default)]
 struct CollisionBenchmarkScenarioMetrics {
     query_count: u64,
+    total_batch_count: u64,
     total_runtime_ns: u128,
+    timestamps_supported: bool,
+    total_timestamped_pass_count: u64,
+    total_gpu_time_total_micros: u128,
+    max_gpu_time_micros: u128,
     total_candidate_count: u64,
     total_rejected_candidate_count: u64,
     total_pruned_node_count: u64,
@@ -819,6 +929,10 @@ struct CollisionBenchmarkScenarioMetrics {
     total_wgsl_dispatch_items: u64,
     total_wgsl_resident_shared_snapshot_artifacts: u64,
     total_cpu_certification_query_count: u64,
+    total_hot_path_readback_bytes: u64,
+    total_queue_submit_count: u64,
+    total_scene_reupload_bytes: u64,
+    total_candidate_table_overflow_fallback_count: u64,
     max_wgsl_selected_workgroup_size: u32,
     available_count_total: u64,
     consumed_count_total: u64,
@@ -961,6 +1075,15 @@ fn collect_collision_benchmark_reports(
         let ctx = contexts
             .get(&entry_path)
             .expect("collision benchmark context inserted");
+        for _ in 0..collision_benchmark_warmup_run_count(backend) {
+            if let Err(err) = run_collision_benchmark_scenario(ctx, scenario, spec, backend) {
+                collection.errors.push(format!(
+                    "collision benchmark warmup `{}` failed: {err}",
+                    scenario.id
+                ));
+                continue;
+            }
+        }
         match run_collision_benchmark_scenario(ctx, scenario, spec, backend) {
             Ok(result) => scenario_results.push(result),
             Err(err) => collection.errors.push(err),
@@ -999,6 +1122,16 @@ pub(super) fn collision_benchmark_backend(
         other => Err(format!(
             "collision benchmarks only support cpu, auto, or wgsl query backends, not {other:?}"
         )),
+    }
+}
+
+pub(super) fn collision_benchmark_warmup_run_count(
+    backend: wrela::query_plan::DispatchBackend,
+) -> usize {
+    if matches!(backend, wrela::query_plan::DispatchBackend::Wgsl) {
+        1
+    } else {
+        0
     }
 }
 
@@ -1220,7 +1353,21 @@ fn build_collision_benchmark_execution(
             plan_name: plan.name.to_string(),
             contract_id: plan.contract_id.as_str().to_string(),
             query_count: metrics.query_count,
+            batch_count: metrics.total_batch_count.min(u64::from(u32::MAX)) as u32,
+            dispatch_count: metrics.total_wgsl_dispatch_count.min(u64::from(u32::MAX)) as u32,
+            dispatch_items: metrics.total_wgsl_dispatch_items.min(u64::from(u32::MAX)) as u32,
+            average_items_per_dispatch: if metrics.total_wgsl_dispatch_count == 0 {
+                metrics.query_count as f32
+            } else {
+                metrics.total_wgsl_dispatch_items as f32 / metrics.total_wgsl_dispatch_count as f32
+            },
             runtime_ns: metrics.total_runtime_ns,
+            timestamps_supported: metrics.timestamps_supported,
+            timestamped_pass_count: metrics
+                .total_timestamped_pass_count
+                .min(u64::from(u32::MAX)) as u32,
+            gpu_time_total_ns: metrics.total_gpu_time_total_micros.saturating_mul(1_000),
+            gpu_time_max_ns: metrics.max_gpu_time_micros.saturating_mul(1_000),
             queries_per_sec,
             broadphase_candidate_count: collision_average_u32(
                 metrics.total_candidate_count,
@@ -1264,6 +1411,13 @@ fn build_collision_benchmark_execution(
             cpu_certification_query_count: metrics
                 .total_cpu_certification_query_count
                 .min(u64::from(u32::MAX)) as u32,
+            hot_path_readback_bytes: metrics.total_hot_path_readback_bytes,
+            queue_submit_count: metrics.total_queue_submit_count.min(u64::from(u32::MAX)) as u32,
+            scene_reupload_bytes: metrics.total_scene_reupload_bytes,
+            candidate_table_overflow_fallback_count: metrics
+                .total_candidate_table_overflow_fallback_count
+                .min(u64::from(u32::MAX))
+                as u32,
             available_count: metrics.available_count_total.min(u64::from(u32::MAX)) as u32,
             consumed_count: metrics.consumed_count_total.min(u64::from(u32::MAX)) as u32,
             rejected_count: metrics.rejected_count_total.min(u64::from(u32::MAX)) as u32,
@@ -1307,6 +1461,7 @@ fn record_collision_trace(
     trace: &wrela::collision_plan::CollisionExecutionTrace,
 ) {
     metrics.query_count = metrics.query_count.saturating_add(1);
+    metrics.total_batch_count = metrics.total_batch_count.saturating_add(1);
     metrics.total_runtime_ns = metrics.total_runtime_ns.saturating_add(runtime_ns);
     metrics.total_candidate_count = metrics
         .total_candidate_count
@@ -1376,6 +1531,49 @@ fn record_collision_trace(
         Some(existing) if existing == provenance => {}
         Some("mixed") => {}
         Some(_) => metrics.contact_normal_provenance = Some("mixed".to_string()),
+    }
+}
+
+fn collision_metrics_from_batch_report(
+    runtime_ns: u128,
+    report: &wrela::collision_plan::CollisionBatchExecutionReport,
+) -> CollisionBenchmarkScenarioMetrics {
+    CollisionBenchmarkScenarioMetrics {
+        query_count: report.query_count,
+        total_batch_count: u64::from(report.batch_count),
+        total_runtime_ns: runtime_ns,
+        timestamps_supported: report.timestamps_supported,
+        total_timestamped_pass_count: u64::from(report.timestamped_pass_count),
+        total_gpu_time_total_micros: report.gpu_time_total_micros,
+        max_gpu_time_micros: report.gpu_time_max_micros,
+        total_candidate_count: report.total_candidate_count,
+        total_rejected_candidate_count: report.total_rejected_candidate_count,
+        total_pruned_node_count: report.total_pruned_node_count,
+        total_candidate_reduction_effectiveness: report.total_candidate_reduction_effectiveness
+            * report.query_count as f64,
+        total_interval_subdivisions: report.total_interval_subdivisions,
+        total_interval_refinements: report.total_interval_refinements,
+        total_certificate_successes: report.total_certificate_successes,
+        total_fallback_count: u64::from(report.fallback_count),
+        total_wgsl_dispatch_count: u64::from(report.dispatch_count),
+        total_wgsl_dispatch_items: u64::from(report.dispatch_items),
+        total_wgsl_resident_shared_snapshot_artifacts: u64::from(
+            report.wgsl_resident_shared_snapshot_artifacts,
+        ),
+        total_cpu_certification_query_count: u64::from(report.cpu_certification_query_count),
+        total_hot_path_readback_bytes: report.hot_path_readback_bytes,
+        total_queue_submit_count: u64::from(report.queue_submit_count),
+        total_scene_reupload_bytes: report.scene_reupload_bytes,
+        total_candidate_table_overflow_fallback_count: u64::from(
+            report.candidate_table_overflow_fallback_count,
+        ),
+        max_wgsl_selected_workgroup_size: report.wgsl_selected_workgroup_size,
+        available_count_total: report.available_count_total,
+        consumed_count_total: report.consumed_count_total,
+        rejected_count_total: report.rejected_count_total,
+        unavailable_count_total: report.unavailable_count_total,
+        last_interval_bracket: report.last_interval_bracket,
+        contact_normal_provenance: report.contact_normal_provenance.clone(),
     }
 }
 
@@ -1504,6 +1702,244 @@ pub(super) fn collision_transition_probe_offset(step: u64) -> [f32; 3] {
     ]
 }
 
+fn collision_batch_chunk_size(ops: u64, backend: wrela::query_plan::DispatchBackend) -> usize {
+    if matches!(backend, wrela::query_plan::DispatchBackend::Wgsl) {
+        ops.clamp(1, 8192) as usize
+    } else {
+        ops.clamp(1, 128) as usize
+    }
+}
+
+fn collision_transition_batch_chunk_size(
+    ops: u64,
+    backend: wrela::query_plan::DispatchBackend,
+) -> usize {
+    if matches!(backend, wrela::query_plan::DispatchBackend::Wgsl) {
+        ops.clamp(1, 4096) as usize
+    } else {
+        ops.clamp(1, 32) as usize
+    }
+}
+
+fn collision_batch_certification_policy(
+    backend: wrela::query_plan::DispatchBackend,
+) -> wrela::collision_plan::CollisionCertificationPolicy {
+    if matches!(backend, wrela::query_plan::DispatchBackend::Wgsl) {
+        wrela::collision_plan::CollisionCertificationPolicy::MetricsOnly
+    } else {
+        wrela::collision_plan::CollisionCertificationPolicy::CpuOracleParity
+    }
+}
+
+fn build_collision_point_occupancy_batch(
+    scenario: &test_eval_perf::BenchmarkScenario,
+    plan: &wrela::collision_plan::CollisionPlan,
+    scene_id: u32,
+    domain: KernelValue,
+) -> wrela::collision_plan::CollisionWorkloadBatch {
+    let items = (1..=scenario.ops)
+        .map(
+            |i| wrela::collision_plan::CollisionBatchItem::PointOccupancy {
+                point: [
+                    (i % 16) as f32 * 0.08 - 0.60,
+                    ((i / 16) % 10) as f32 * 0.06 - 0.24,
+                    (i % 5) as f32 * 0.04 - 0.08,
+                ],
+            },
+        )
+        .collect::<Vec<_>>();
+    wrela::collision_plan::CollisionWorkloadBatch::new(
+        scenario.id.as_str(),
+        "point_occupancy_burst",
+        scenario.id.as_str(),
+        plan.clone(),
+        plan.contract_id,
+        format!("collision:{scene_id}:1"),
+        collision_benchmark_capture(scene_id, 1),
+        domain,
+        wrela::collision_plan::CollisionCandidateGroupingPolicy::SharedCandidateDigest,
+        collision_batch_certification_policy(plan.backend),
+        items,
+        collision_batch_chunk_size(scenario.ops, plan.backend),
+    )
+}
+
+fn build_collision_dense_ray_cast_batch(
+    scenario: &test_eval_perf::BenchmarkScenario,
+    plan: &wrela::collision_plan::CollisionPlan,
+    scene_id: u32,
+    domain: KernelValue,
+) -> wrela::collision_plan::CollisionWorkloadBatch {
+    let items = (1..=scenario.ops)
+        .map(|i| {
+            let origin = [
+                (i % 12) as f32 * 0.12 - 0.66,
+                ((i / 12) % 8) as f32 * 0.08 - 0.28,
+                3.2 + (i % 3) as f32 * 0.02,
+            ];
+            let direction = [
+                ((i % 5) as i32 - 2) as f32 * 0.04,
+                ((i % 7) as i32 - 3) as f32 * -0.03,
+                -1.0,
+            ];
+            wrela::collision_plan::CollisionBatchItem::RayCast {
+                ray: wrela::collision_contract::CollisionRayInput {
+                    origin,
+                    direction,
+                    max_distance: 12.0,
+                    min_step: 0.05,
+                    hit_epsilon: 0.001,
+                    max_steps: 96,
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    wrela::collision_plan::CollisionWorkloadBatch::new(
+        scenario.id.as_str(),
+        "dense_ray_casts",
+        scenario.id.as_str(),
+        plan.clone(),
+        plan.contract_id,
+        format!("collision:{scene_id}:1"),
+        collision_benchmark_capture(scene_id, 1),
+        domain,
+        wrela::collision_plan::CollisionCandidateGroupingPolicy::SharedCandidateDigest,
+        collision_batch_certification_policy(plan.backend),
+        items,
+        collision_batch_chunk_size(scenario.ops, plan.backend),
+    )
+}
+
+fn build_collision_overlap_batch(
+    scenario: &test_eval_perf::BenchmarkScenario,
+    plan: &wrela::collision_plan::CollisionPlan,
+    scene_id: u32,
+    domain: KernelValue,
+) -> wrela::collision_plan::CollisionWorkloadBatch {
+    let items = (1..=scenario.ops)
+        .map(|i| {
+            let (anchor_x, anchor_y) = match i % 3 {
+                0 => (0.0, 0.0),
+                1 => (1.08, 0.02),
+                _ => (-1.38, -0.06),
+            };
+            let center = [
+                anchor_x + (i % 6) as f32 * 0.04 - 0.10,
+                anchor_y + ((i / 6) % 5) as f32 * 0.03 - 0.06,
+                (i % 4) as f32 * 0.03 - 0.05,
+            ];
+            let radius = 0.16 + (i % 4) as f32 * 0.02;
+            wrela::collision_plan::CollisionBatchItem::SphereOverlap { center, radius }
+        })
+        .collect::<Vec<_>>();
+    wrela::collision_plan::CollisionWorkloadBatch::new(
+        scenario.id.as_str(),
+        "overlap_burst",
+        scenario.id.as_str(),
+        plan.clone(),
+        plan.contract_id,
+        format!("collision:{scene_id}:1"),
+        collision_benchmark_capture(scene_id, 1),
+        domain,
+        wrela::collision_plan::CollisionCandidateGroupingPolicy::SharedCandidateDigest,
+        collision_batch_certification_policy(plan.backend),
+        items,
+        collision_batch_chunk_size(scenario.ops, plan.backend),
+    )
+}
+
+fn build_collision_repeated_sweeps_batch(
+    scenario: &test_eval_perf::BenchmarkScenario,
+    plan: &wrela::collision_plan::CollisionPlan,
+    scene_id: u32,
+    domain: KernelValue,
+) -> wrela::collision_plan::CollisionWorkloadBatch {
+    let current_epoch = 2;
+    let previous_epoch = 1;
+    let archetype_count = scenario.ops.clamp(1, 8);
+    let items = (1..=scenario.ops)
+        .map(|i| {
+            let offset = collision_transition_probe_offset(((i - 1) % archetype_count) + 1);
+            let start_center = [offset[0], offset[1], 2.9 + offset[2]];
+            let end_center = [offset[0] + 0.05, offset[1] - 0.03, -1.1 + offset[2]];
+            wrela::collision_plan::CollisionBatchItem::SphereSweep {
+                transition: wrela::collision_contract::CollisionSnapshotTransitionInput {
+                    current_snapshot_epoch: current_epoch,
+                    previous_snapshot_epoch: previous_epoch,
+                    change_class: wrela::state_advance::ChangeClass::Presentation,
+                },
+                sweep: wrela::collision_contract::CollisionSphereSweepInput {
+                    start_center,
+                    end_center,
+                    radius: 0.25,
+                    contact_tolerance: 0.001,
+                    max_iterations: 64,
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    wrela::collision_plan::CollisionWorkloadBatch::new(
+        scenario.id.as_str(),
+        "repeated_sweeps",
+        scenario.id.as_str(),
+        plan.clone(),
+        plan.contract_id,
+        format!("collision:{scene_id}:transition"),
+        collision_benchmark_capture(scene_id, current_epoch),
+        domain,
+        wrela::collision_plan::CollisionCandidateGroupingPolicy::SharedBroadphaseRegion,
+        collision_batch_certification_policy(plan.backend),
+        items,
+        collision_transition_batch_chunk_size(scenario.ops, plan.backend),
+    )
+}
+
+fn build_collision_toi_batch(
+    scenario: &test_eval_perf::BenchmarkScenario,
+    plan: &wrela::collision_plan::CollisionPlan,
+    scene_id: u32,
+    domain: KernelValue,
+) -> wrela::collision_plan::CollisionWorkloadBatch {
+    let current_epoch = 2;
+    let previous_epoch = 1;
+    let archetype_count = scenario.ops.clamp(1, 8);
+    let items = (1..=scenario.ops)
+        .map(|i| {
+            let offset = collision_transition_probe_offset(((i - 1) % archetype_count) + 1);
+            let start_center = [offset[0], offset[1], 2.4 + offset[2]];
+            let end_center = [offset[0] + 0.04, offset[1] - 0.02, -0.9 + offset[2]];
+            wrela::collision_plan::CollisionBatchItem::SphereTimeOfImpact {
+                transition: wrela::collision_contract::CollisionSnapshotTransitionInput {
+                    current_snapshot_epoch: current_epoch,
+                    previous_snapshot_epoch: previous_epoch,
+                    change_class: wrela::state_advance::ChangeClass::Presentation,
+                },
+                sweep: wrela::collision_contract::CollisionSphereSweepInput {
+                    start_center,
+                    end_center,
+                    radius: 0.20,
+                    contact_tolerance: 0.001,
+                    max_iterations: 64,
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    wrela::collision_plan::CollisionWorkloadBatch::new(
+        scenario.id.as_str(),
+        "toi_transition_reuse",
+        scenario.id.as_str(),
+        plan.clone(),
+        plan.contract_id,
+        format!("collision:{scene_id}:transition"),
+        collision_benchmark_capture(scene_id, current_epoch),
+        domain,
+        wrela::collision_plan::CollisionCandidateGroupingPolicy::SharedBroadphaseRegion,
+        collision_batch_certification_policy(plan.backend),
+        items,
+        collision_transition_batch_chunk_size(scenario.ops, plan.backend),
+    )
+}
+
 fn run_collision_point_occupancy_burst(
     ctx: &QueryExecContext,
     scenario: &test_eval_perf::BenchmarkScenario,
@@ -1515,27 +1951,15 @@ fn run_collision_point_occupancy_burst(
         wrela::collision_plan::CollisionQueryKind::PointOccupancyWorld,
         backend,
     );
-    let capture = collision_benchmark_capture(scene_id, 1);
-    let mut metrics = CollisionBenchmarkScenarioMetrics::default();
-    for i in 1..=scenario.ops {
-        let point = [
-            (i % 16) as f32 * 0.08 - 0.60,
-            ((i / 16) % 10) as f32 * 0.06 - 0.24,
-            (i % 5) as f32 * 0.04 - 0.08,
-        ];
-        let started = Instant::now();
-        let (_, trace) = plan
-            .execute(
-                ctx,
-                &[
-                    capture.clone(),
-                    domain.clone(),
-                    collision_benchmark_point(point),
-                ],
-            )
-            .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
-        record_collision_trace(&mut metrics, started.elapsed().as_nanos(), &trace);
+    let batch = build_collision_point_occupancy_batch(scenario, &plan, scene_id, domain);
+    let started = Instant::now();
+    let report = if matches!(backend, wrela::query_plan::DispatchBackend::Wgsl) {
+        wrela::collision_exec::execute_batch_metrics_only(&batch, ctx)
+    } else {
+        wrela::collision_exec::execute_batch(&batch, ctx, None).map(|result| result.report)
     }
+    .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
+    let metrics = collision_metrics_from_batch_report(started.elapsed().as_nanos(), &report);
     Ok(build_collision_benchmark_execution(
         &scenario.id,
         &plan,
@@ -1554,32 +1978,15 @@ fn run_collision_dense_ray_casts(
         wrela::collision_plan::CollisionQueryKind::RayCastWorld,
         backend,
     );
-    let capture = collision_benchmark_capture(scene_id, 1);
-    let mut metrics = CollisionBenchmarkScenarioMetrics::default();
-    for i in 1..=scenario.ops {
-        let origin = [
-            (i % 12) as f32 * 0.12 - 0.66,
-            ((i / 12) % 8) as f32 * 0.08 - 0.28,
-            3.2 + (i % 3) as f32 * 0.02,
-        ];
-        let direction = [
-            ((i % 5) as i32 - 2) as f32 * 0.04,
-            ((i % 7) as i32 - 3) as f32 * -0.03,
-            -1.0,
-        ];
-        let started = Instant::now();
-        let (_, trace) = plan
-            .execute(
-                ctx,
-                &[
-                    capture.clone(),
-                    domain.clone(),
-                    collision_benchmark_ray(origin, direction),
-                ],
-            )
-            .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
-        record_collision_trace(&mut metrics, started.elapsed().as_nanos(), &trace);
+    let batch = build_collision_dense_ray_cast_batch(scenario, &plan, scene_id, domain);
+    let started = Instant::now();
+    let report = if matches!(backend, wrela::query_plan::DispatchBackend::Wgsl) {
+        wrela::collision_exec::execute_batch_metrics_only(&batch, ctx)
+    } else {
+        wrela::collision_exec::execute_batch(&batch, ctx, None).map(|result| result.report)
     }
+    .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
+    let metrics = collision_metrics_from_batch_report(started.elapsed().as_nanos(), &report);
     Ok(build_collision_benchmark_execution(
         &scenario.id,
         &plan,
@@ -1598,33 +2005,15 @@ fn run_collision_overlap_burst(
         wrela::collision_plan::CollisionQueryKind::SphereOverlapWorld,
         backend,
     );
-    let capture = collision_benchmark_capture(scene_id, 1);
-    let mut metrics = CollisionBenchmarkScenarioMetrics::default();
-    for i in 1..=scenario.ops {
-        let (anchor_x, anchor_y) = match i % 3 {
-            0 => (0.0, 0.0),
-            1 => (1.08, 0.02),
-            _ => (-1.38, -0.06),
-        };
-        let center = [
-            anchor_x + (i % 6) as f32 * 0.04 - 0.10,
-            anchor_y + ((i / 6) % 5) as f32 * 0.03 - 0.06,
-            (i % 4) as f32 * 0.03 - 0.05,
-        ];
-        let radius = 0.16 + (i % 4) as f32 * 0.02;
-        let started = Instant::now();
-        let (_, trace) = plan
-            .execute(
-                ctx,
-                &[
-                    capture.clone(),
-                    domain.clone(),
-                    collision_benchmark_probe(center, radius),
-                ],
-            )
-            .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
-        record_collision_trace(&mut metrics, started.elapsed().as_nanos(), &trace);
+    let batch = build_collision_overlap_batch(scenario, &plan, scene_id, domain);
+    let started = Instant::now();
+    let report = if matches!(backend, wrela::query_plan::DispatchBackend::Wgsl) {
+        wrela::collision_exec::execute_batch_metrics_only(&batch, ctx)
+    } else {
+        wrela::collision_exec::execute_batch(&batch, ctx, None).map(|result| result.report)
     }
+    .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
+    let metrics = collision_metrics_from_batch_report(started.elapsed().as_nanos(), &report);
     Ok(build_collision_benchmark_execution(
         &scenario.id,
         &plan,
@@ -1643,32 +2032,15 @@ fn run_collision_repeated_sweeps(
         wrela::collision_plan::CollisionQueryKind::SphereSweepTransition,
         backend,
     );
-    let mut metrics = CollisionBenchmarkScenarioMetrics::default();
-    let mut store = wrela::collision_exec::cpu::CollisionArtifactStore::default();
-    for i in 1..=scenario.ops {
-        let cycle_epoch = ((i - 1) % 255 + 1) as u32;
-        if cycle_epoch == 1 {
-            store = wrela::collision_exec::cpu::CollisionArtifactStore::default();
-        }
-        let previous_epoch = if cycle_epoch == 1 { 0 } else { cycle_epoch - 1 };
-        let offset = collision_transition_probe_offset(i);
-        let start_center = [offset[0], offset[1], 2.9 + offset[2]];
-        let end_center = [offset[0] + 0.05, offset[1] - 0.03, -1.1 + offset[2]];
-        let started = Instant::now();
-        let (_, trace) = wrela::collision_exec::cpu::execute_with_store(
-            &plan,
-            ctx,
-            &[
-                collision_benchmark_capture(scene_id, cycle_epoch),
-                domain.clone(),
-                collision_benchmark_transition(cycle_epoch, previous_epoch),
-                collision_benchmark_sweep(start_center, end_center, 0.25),
-            ],
-            &mut store,
-        )
-        .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
-        record_collision_trace(&mut metrics, started.elapsed().as_nanos(), &trace);
+    let batch = build_collision_repeated_sweeps_batch(scenario, &plan, scene_id, domain);
+    let started = Instant::now();
+    let report = if matches!(backend, wrela::query_plan::DispatchBackend::Wgsl) {
+        wrela::collision_exec::execute_batch_metrics_only(&batch, ctx)
+    } else {
+        wrela::collision_exec::execute_batch(&batch, ctx, None).map(|result| result.report)
     }
+    .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
+    let metrics = collision_metrics_from_batch_report(started.elapsed().as_nanos(), &report);
     Ok(build_collision_benchmark_execution(
         &scenario.id,
         &plan,
@@ -1687,32 +2059,15 @@ fn run_collision_toi_transition_reuse(
         wrela::collision_plan::CollisionQueryKind::SphereTimeOfImpactTransition,
         backend,
     );
-    let mut metrics = CollisionBenchmarkScenarioMetrics::default();
-    let mut store = wrela::collision_exec::cpu::CollisionArtifactStore::default();
-    for i in 1..=scenario.ops {
-        let cycle_epoch = ((i - 1) % 255 + 1) as u32;
-        if cycle_epoch == 1 {
-            store = wrela::collision_exec::cpu::CollisionArtifactStore::default();
-        }
-        let previous_epoch = if cycle_epoch == 1 { 0 } else { cycle_epoch - 1 };
-        let offset = collision_transition_probe_offset(i);
-        let start_center = [offset[0], offset[1], 2.4 + offset[2]];
-        let end_center = [offset[0] + 0.04, offset[1] - 0.02, -0.9 + offset[2]];
-        let started = Instant::now();
-        let (_, trace) = wrela::collision_exec::cpu::execute_with_store(
-            &plan,
-            ctx,
-            &[
-                collision_benchmark_capture(scene_id, cycle_epoch),
-                domain.clone(),
-                collision_benchmark_transition(cycle_epoch, previous_epoch),
-                collision_benchmark_sweep(start_center, end_center, 0.20),
-            ],
-            &mut store,
-        )
-        .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
-        record_collision_trace(&mut metrics, started.elapsed().as_nanos(), &trace);
+    let batch = build_collision_toi_batch(scenario, &plan, scene_id, domain);
+    let started = Instant::now();
+    let report = if matches!(backend, wrela::query_plan::DispatchBackend::Wgsl) {
+        wrela::collision_exec::execute_batch_metrics_only(&batch, ctx)
+    } else {
+        wrela::collision_exec::execute_batch(&batch, ctx, None).map(|result| result.report)
     }
+    .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
+    let metrics = collision_metrics_from_batch_report(started.elapsed().as_nanos(), &report);
     Ok(build_collision_benchmark_execution(
         &scenario.id,
         &plan,
@@ -1815,6 +2170,314 @@ pub(super) fn build_whole_frame_benchmark_reports(
     Ok(reports)
 }
 
+#[derive(Clone)]
+struct PerfEngineFrameSubsystem {
+    descriptor: wrela::engine_frame::EngineSubsystemDescriptor,
+    report: wrela::engine_frame::EngineSubsystemReport,
+    active_degradations: Vec<String>,
+    violations: Vec<String>,
+}
+
+impl wrela::engine_frame::EngineSubsystemWork for PerfEngineFrameSubsystem {
+    fn descriptor(&self) -> wrela::engine_frame::EngineSubsystemDescriptor {
+        self.descriptor.clone()
+    }
+
+    fn prepare(
+        &mut self,
+        _ctx: &mut wrela::engine_frame::EngineFrameContext,
+    ) -> Result<(), wrela::engine_frame::EngineFrameError> {
+        Ok(())
+    }
+
+    fn encode(
+        &mut self,
+        _ctx: &mut wrela::engine_frame::EngineFrameContext,
+    ) -> Result<(), wrela::engine_frame::EngineFrameError> {
+        Ok(())
+    }
+
+    fn finish(
+        &mut self,
+        ctx: &mut wrela::engine_frame::EngineFrameContext,
+    ) -> Result<wrela::engine_frame::EngineSubsystemReport, wrela::engine_frame::EngineFrameError>
+    {
+        extend_unique_strings(
+            &mut ctx.active_degradations,
+            self.active_degradations.iter().cloned(),
+        );
+        extend_unique_strings(&mut ctx.violations, self.violations.iter().cloned());
+        Ok(self.report.clone())
+    }
+}
+
+fn extend_unique_strings(target: &mut Vec<String>, values: impl IntoIterator<Item = String>) {
+    for value in values {
+        if !target.contains(&value) {
+            target.push(value);
+        }
+    }
+}
+
+fn ns_to_micros(value: u128) -> u128 {
+    value / 1_000
+}
+
+pub(super) fn build_engine_frame_benchmark_reports(
+    presentation_reports: &[PresentationBenchmarkReport],
+    collision_reports: &[CollisionBenchmarkReport],
+    engine_frame_budget: Option<&wrela::perf_target::PerfClosureEngineFrameBudget>,
+) -> Result<Vec<EngineFrameBenchmarkReport>, String> {
+    let mut collision_by_scenario = HashMap::new();
+    for report in collision_reports {
+        for execution in &report.executions {
+            if collision_by_scenario
+                .insert(execution.name.clone(), (report.backend.clone(), execution))
+                .is_some()
+            {
+                return Err(format!(
+                    "engine-frame report join saw duplicate collision execution for scenario '{}'",
+                    execution.name
+                ));
+            }
+        }
+    }
+
+    let mut reports = Vec::with_capacity(presentation_reports.len());
+    for presentation in presentation_reports {
+        let Some((collision_backend, collision)) =
+            collision_by_scenario.remove(&presentation.scenario_id)
+        else {
+            return Err(format!(
+                "engine-frame report join missing collision execution for scenario '{}'",
+                presentation.scenario_id
+            ));
+        };
+        let presentation_frame_count = u128::from(presentation.frames_executed.max(1));
+        let presentation_runtime_micros = ns_to_micros(
+            presentation
+                .frame_time_ns
+                .checked_div(presentation_frame_count)
+                .unwrap_or(presentation.frame_time_ns),
+        );
+        let presentation_frames =
+            presentation_frame_history(&presentation.frame_cost, &presentation.frame_cost_history);
+        let presentation_gpu_critical_path_micros = presentation_frames
+            .iter()
+            .filter_map(|frame| {
+                (frame.gpu_runtime.gpu_time_total_micros > 0)
+                    .then_some(frame.gpu_runtime.gpu_time_total_micros)
+            })
+            .max();
+        let presentation_queue_submit_count = presentation_frames
+            .iter()
+            .map(|frame| frame.gpu_runtime.queue_submit_count)
+            .max()
+            .unwrap_or(0);
+        let presentation_hot_path_readback_bytes = presentation_frames
+            .iter()
+            .map(|frame| {
+                hot_path_readback_bytes_without_timestamp_traffic(
+                    frame.gpu_runtime.readback_bytes,
+                    frame.gpu_runtime.timestamps_supported,
+                    frame.gpu_runtime.timestamped_pass_count,
+                )
+            })
+            .max()
+            .unwrap_or(0);
+        let presentation_scene_reupload_bytes = presentation_frames
+            .iter()
+            .map(|frame| frame.gpu_runtime.scene_reupload_bytes)
+            .max()
+            .unwrap_or(0);
+        let state_advance_notes = if engine_frame_budget.is_some() {
+            vec![
+                "reserved-slot-unsampled".to_string(),
+                "scheduler-adapter".to_string(),
+            ]
+        } else {
+            vec![
+                "compatibility-slot-unsampled".to_string(),
+                "scheduler-adapter".to_string(),
+            ]
+        };
+        let collision_uses_gpu = collision_backend.eq_ignore_ascii_case("wgsl")
+            || collision.wgsl_dispatch_count > 0
+            || collision.queue_submit_count > 0;
+        let collision_has_timestamped_gpu_measurement =
+            collision.timestamps_supported && collision.timestamped_pass_count > 0;
+        let collision_gpu_critical_path_micros = if collision_has_timestamped_gpu_measurement {
+            Some(ns_to_micros(collision.gpu_time_total_ns))
+        } else {
+            collision_uses_gpu.then(|| ns_to_micros(collision.runtime_ns))
+        };
+        let mut collision_notes = vec![
+            "scheduler-adapter".to_string(),
+            format!("batch_count={}", collision.batch_count),
+            format!("dispatch_count={}", collision.dispatch_count),
+            format!(
+                "average_items_per_dispatch={:.2}",
+                collision.average_items_per_dispatch
+            ),
+            format!(
+                "cpu_certification_query_count={}",
+                collision.cpu_certification_query_count
+            ),
+            format!(
+                "candidate_table_overflow_fallback_count={}",
+                collision.candidate_table_overflow_fallback_count
+            ),
+        ];
+        if collision_has_timestamped_gpu_measurement {
+            collision_notes.push(format!(
+                "gpu_timestamped_pass_count={}",
+                collision.timestamped_pass_count
+            ));
+        } else if collision_gpu_critical_path_micros.unwrap_or(0) > 0 {
+            collision_notes.push("gpu_critical_path_proxy=runtime_ns".to_string());
+        }
+        let mut subsystems: Vec<Box<dyn wrela::engine_frame::EngineSubsystemWork>> = vec![
+            Box::new(PerfEngineFrameSubsystem {
+                descriptor: wrela::engine_frame::EngineSubsystemDescriptor {
+                    kind: wrela::engine_frame::EngineSubsystemKind::StateAdvance,
+                    label: "state_advance".to_string(),
+                    runs_after: vec![],
+                    requires_gpu: false,
+                    allows_hot_path_readback: false,
+                },
+                report: wrela::engine_frame::EngineSubsystemReport {
+                    kind: wrela::engine_frame::EngineSubsystemKind::StateAdvance,
+                    label: "state_advance".into(),
+                    work_items: 0,
+                    cpu_critical_path_micros: 0,
+                    gpu_critical_path_micros: None,
+                    queue_submit_count: 0,
+                    hot_path_readback_bytes: 0,
+                    scene_reupload_bytes: 0,
+                    wait_time_micros: 0,
+                    notes: state_advance_notes,
+                },
+                active_degradations: Vec::new(),
+                violations: Vec::new(),
+            }),
+            Box::new(PerfEngineFrameSubsystem {
+                descriptor: wrela::engine_frame::EngineSubsystemDescriptor {
+                    kind: wrela::engine_frame::EngineSubsystemKind::Presentation,
+                    label: "presentation".to_string(),
+                    runs_after: vec![wrela::engine_frame::EngineSubsystemKind::StateAdvance],
+                    requires_gpu: true,
+                    allows_hot_path_readback: false,
+                },
+                report: wrela::engine_frame::EngineSubsystemReport {
+                    kind: wrela::engine_frame::EngineSubsystemKind::Presentation,
+                    label: "presentation".into(),
+                    work_items: u64::from(presentation.frames_executed.max(1)),
+                    cpu_critical_path_micros: presentation_runtime_micros,
+                    gpu_critical_path_micros: presentation_gpu_critical_path_micros,
+                    queue_submit_count: presentation_queue_submit_count,
+                    hot_path_readback_bytes: presentation_hot_path_readback_bytes,
+                    scene_reupload_bytes: presentation_scene_reupload_bytes,
+                    wait_time_micros: 0,
+                    notes: vec!["scheduler-adapter".to_string()],
+                },
+                active_degradations: presentation.frame_cost.quality.active_degradations.clone(),
+                violations: Vec::new(),
+            }),
+            Box::new(PerfEngineFrameSubsystem {
+                descriptor: wrela::engine_frame::EngineSubsystemDescriptor {
+                    kind: wrela::engine_frame::EngineSubsystemKind::Collision,
+                    label: "collision".to_string(),
+                    runs_after: vec![wrela::engine_frame::EngineSubsystemKind::Presentation],
+                    requires_gpu: collision_uses_gpu,
+                    allows_hot_path_readback: false,
+                },
+                report: wrela::engine_frame::EngineSubsystemReport {
+                    kind: wrela::engine_frame::EngineSubsystemKind::Collision,
+                    label: "collision".into(),
+                    work_items: collision.query_count,
+                    cpu_critical_path_micros: ns_to_micros(collision.runtime_ns),
+                    gpu_critical_path_micros: collision_gpu_critical_path_micros,
+                    queue_submit_count: collision.queue_submit_count,
+                    hot_path_readback_bytes: collision.hot_path_readback_bytes,
+                    scene_reupload_bytes: collision.scene_reupload_bytes,
+                    wait_time_micros: 0,
+                    notes: collision_notes,
+                },
+                active_degradations: Vec::new(),
+                violations: Vec::new(),
+            }),
+        ];
+        let mut scheduler = wrela::engine_frame::EngineFrameScheduler {
+            budget: engine_frame_budget.cloned(),
+        };
+        let scheduler_report = scheduler
+            .run_frame(presentation.scenario_id.to_string(), 0, &mut subsystems)
+            .map_err(|err| {
+                format!(
+                    "engine-frame scheduler failed for scenario '{}': {err}",
+                    presentation.scenario_id
+                )
+            })?;
+        let state_advance_runtime_ns = scheduler_report
+            .subsystem(wrela::engine_frame::EngineSubsystemKind::StateAdvance)
+            .map(|report| report.cpu_critical_path_micros.saturating_mul(1_000))
+            .unwrap_or(0);
+        let presentation_runtime_ns = scheduler_report
+            .subsystem(wrela::engine_frame::EngineSubsystemKind::Presentation)
+            .map(|report| report.cpu_critical_path_micros.saturating_mul(1_000))
+            .unwrap_or(presentation.frame_time_ns);
+        let collision_runtime_ns = scheduler_report
+            .subsystem(wrela::engine_frame::EngineSubsystemKind::Collision)
+            .map(|report| report.cpu_critical_path_micros.saturating_mul(1_000))
+            .unwrap_or(collision.runtime_ns);
+        reports.push(EngineFrameBenchmarkReport {
+            scenario_id: presentation.scenario_id.clone(),
+            test_name: presentation.test_name.clone(),
+            frame_count: presentation.frames_executed.max(1),
+            frame_wall_time_ns: scheduler_report
+                .frame_wall_time_micros
+                .saturating_mul(1_000),
+            cpu_critical_path_ns: scheduler_report
+                .cpu_critical_path_micros
+                .saturating_mul(1_000),
+            gpu_critical_path_ns: scheduler_report
+                .gpu_critical_path_micros
+                .map(|value| value.saturating_mul(1_000)),
+            present_wait_ns: scheduler_report.present_wait_micros.saturating_mul(1_000),
+            readback_wait_ns: scheduler_report.readback_wait_micros.saturating_mul(1_000),
+            steady_state_fps: fps_from_frame_time_ns(
+                scheduler_report
+                    .frame_wall_time_micros
+                    .saturating_mul(1_000),
+                1,
+            ),
+            presentation_runtime_ns,
+            collision_runtime_ns,
+            state_advance_runtime_ns,
+            future_subsystem_reserve_ns: (scheduler_report.future_subsystem_reserve.reserved_micros
+                as i128
+                + scheduler_report.future_subsystem_reserve.remaining_micros)
+                .max(0) as u128
+                * 1_000,
+            queue_submit_count: scheduler_report.gpu_runtime.queue_submit_count,
+            hot_path_readback_bytes: scheduler_report.gpu_runtime.readback_bytes,
+            scene_reupload_bytes: scheduler_report.gpu_runtime.scene_reupload_bytes,
+            active_degradations: scheduler_report.active_degradations,
+            violations: scheduler_report.violations,
+            subsystem_reports: scheduler_report.subsystems,
+        });
+    }
+
+    if let Some(extra) = collision_by_scenario.keys().next() {
+        return Err(format!(
+            "engine-frame report join found collision execution '{}' without a matching presentation scenario",
+            extra
+        ));
+    }
+
+    Ok(reports)
+}
+
 pub(super) fn whole_frame_runtime_cases_from_reports(
     reports: &[WholeFrameBenchmarkReport],
 ) -> Vec<(test_eval_perf::PerfScenarioId, String, u128)> {
@@ -1825,6 +2488,21 @@ pub(super) fn whole_frame_runtime_cases_from_reports(
                 report.scenario_id.clone(),
                 report.test_name.clone(),
                 report.total_runtime_ns,
+            )
+        })
+        .collect()
+}
+
+pub(super) fn engine_frame_runtime_cases_from_reports(
+    reports: &[EngineFrameBenchmarkReport],
+) -> Vec<(test_eval_perf::PerfScenarioId, String, u128)> {
+    reports
+        .iter()
+        .map(|report| {
+            (
+                report.scenario_id.clone(),
+                report.test_name.clone(),
+                report.frame_wall_time_ns,
             )
         })
         .collect()
@@ -2549,4 +3227,170 @@ pub(super) fn resolve_perf_benchmark_manifest_path(
     }
     let candidate = root.join("bench.toml");
     candidate.is_file().then_some(candidate)
+}
+
+fn should_skip_authored_composite_harness(
+    whole_frame_benchmarks_active: bool,
+    perf_profile: PerfProfile,
+) -> bool {
+    whole_frame_benchmarks_active && matches!(perf_profile, PerfProfile::Closure1080p120)
+}
+
+fn empty_perf_summary() -> test_eval_perf::PerfSummary {
+    test_eval_perf::PerfSummary {
+        sample_count: 0,
+        compile_throughput_tests_per_sec: 0.0,
+        runtime_p50_ns: 0,
+        runtime_p95_ns: 0,
+        runtime_p99_ns: 0,
+        allocs_per_request: 0.0,
+        rc_inc: 0,
+        rc_dec: 0,
+        rc_ops_total: 0,
+        dispatch_hit_ratio: 1.0,
+        check_fallback_rate: None,
+        avg_check_batch_size: None,
+        check_oracle_eval_ns_p50: None,
+        check_oracle_eval_ns_p95: None,
+        effect_annihilation_rewrite_count: None,
+        scheduler_dispatch_p99_ns: None,
+        scheduler_starvation_violations: None,
+        rewrite_compile_overhead_pct: None,
+        rewrite_applied_count: None,
+        actor_msgs_per_sec_p50: None,
+        actor_msgs_per_sec_p95: None,
+        queue_enqueue_p99_ns: None,
+        queue_dequeue_p99_ns: None,
+        queue_age_p99_ns: None,
+        mailbox_wake_coalesced_count: None,
+        mailbox_rescue_wake_count: None,
+        queue_cas_retry_total: None,
+        cases: None,
+        metrics: test_eval_perf::MetricsTotals::default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wrela::collision_plan::CollisionBatchItem;
+
+    fn sample_benchmark_scenario(id: &str, ops: u64) -> test_eval_perf::BenchmarkScenario {
+        test_eval_perf::BenchmarkScenario {
+            id: id.into(),
+            test_name: format!("tests/whole_frame::{id}"),
+            ops,
+            class: test_eval_perf::BenchmarkScenarioClass::Closure,
+            min_runtime_ms: None,
+            timeout_ms: None,
+            allow_unstable: false,
+            presentation: None,
+            collision: None,
+        }
+    }
+
+    fn capture_epoch(value: &KernelValue) -> u32 {
+        let KernelValue::Struct(value) = value else {
+            panic!("expected capture struct, found {value:?}");
+        };
+        value
+            .fields
+            .iter()
+            .find(|(name, _)| name.as_str() == "epoch")
+            .and_then(|(_, value)| match value {
+                KernelValue::U32(epoch) => Some(*epoch),
+                _ => None,
+            })
+            .expect("capture epoch")
+    }
+
+    #[test]
+    fn transition_batches_keep_item_epochs_aligned_with_batch_capture() {
+        let sweep_plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
+            wrela::collision_plan::CollisionQueryKind::SphereSweepTransition,
+            wrela::query_plan::DispatchBackend::Wgsl,
+        );
+        let toi_plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
+            wrela::collision_plan::CollisionQueryKind::SphereTimeOfImpactTransition,
+            wrela::query_plan::DispatchBackend::Wgsl,
+        );
+
+        let sweep_batch = build_collision_repeated_sweeps_batch(
+            &sample_benchmark_scenario("closure_sweeps", 4),
+            &sweep_plan,
+            7,
+            KernelValue::Nothing,
+        );
+        let toi_batch = build_collision_toi_batch(
+            &sample_benchmark_scenario("closure_toi", 4),
+            &toi_plan,
+            7,
+            KernelValue::Nothing,
+        );
+
+        let sweep_capture_epoch = capture_epoch(&sweep_batch.capture);
+        for item in &sweep_batch.items {
+            let CollisionBatchItem::SphereSweep { transition, .. } = item else {
+                panic!("expected sphere sweep item, found {item:?}");
+            };
+            assert_eq!(transition.current_snapshot_epoch, sweep_capture_epoch);
+        }
+
+        let toi_capture_epoch = capture_epoch(&toi_batch.capture);
+        for item in &toi_batch.items {
+            let CollisionBatchItem::SphereTimeOfImpact { transition, .. } = item else {
+                panic!("expected toi item, found {item:?}");
+            };
+            assert_eq!(transition.current_snapshot_epoch, toi_capture_epoch);
+        }
+    }
+
+    #[test]
+    fn composite_closure_skips_authored_harness_only_for_1080p120() {
+        assert!(should_skip_authored_composite_harness(
+            true,
+            PerfProfile::Closure1080p120
+        ));
+        assert!(!should_skip_authored_composite_harness(
+            true,
+            PerfProfile::Standard
+        ));
+        assert!(!should_skip_authored_composite_harness(
+            false,
+            PerfProfile::Closure1080p120
+        ));
+    }
+
+    #[test]
+    fn transition_reuse_batches_repeat_a_small_archetype_set() {
+        let sweep_plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
+            wrela::collision_plan::CollisionQueryKind::SphereSweepTransition,
+            wrela::query_plan::DispatchBackend::Wgsl,
+        );
+        let toi_plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
+            wrela::collision_plan::CollisionQueryKind::SphereTimeOfImpactTransition,
+            wrela::query_plan::DispatchBackend::Wgsl,
+        );
+        let scenario = sample_benchmark_scenario("closure_transition_reuse", 32);
+
+        let sweep_batch =
+            build_collision_repeated_sweeps_batch(&scenario, &sweep_plan, 7, KernelValue::Nothing);
+        let toi_batch = build_collision_toi_batch(&scenario, &toi_plan, 7, KernelValue::Nothing);
+
+        let sweep_unique = sweep_batch
+            .items
+            .iter()
+            .map(|item| format!("{item:?}"))
+            .collect::<std::collections::BTreeSet<_>>();
+        let toi_unique = toi_batch
+            .items
+            .iter()
+            .map(|item| format!("{item:?}"))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert!(sweep_unique.len() < sweep_batch.items.len());
+        assert!(toi_unique.len() < toi_batch.items.len());
+        assert_eq!(sweep_unique.len(), 8);
+        assert_eq!(toi_unique.len(), 8);
+    }
 }

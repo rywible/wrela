@@ -720,6 +720,7 @@ pub(crate) struct TestHarnessMeta {
     pub(crate) compiler_version: String,
     pub(crate) selected_tests_fingerprint: String,
     pub(crate) source_fingerprint: String,
+    pub(crate) host_executable_fingerprint: String,
 }
 
 #[derive(Default)]
@@ -904,6 +905,8 @@ pub(crate) struct PerfReport {
     pub(crate) presentation_reports: Option<Vec<PresentationBenchmarkReport>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) whole_frame_reports: Option<Vec<WholeFrameBenchmarkReport>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) engine_frame_reports: Option<Vec<EngineFrameBenchmarkReport>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) collision_reports: Option<Vec<CollisionBenchmarkReport>>,
 }
@@ -1221,7 +1224,23 @@ pub(crate) struct CollisionBenchmarkExecutionReport {
     pub(crate) contract_id: String,
     #[serde(default)]
     pub(crate) query_count: u64,
+    #[serde(default)]
+    pub(crate) batch_count: u32,
+    #[serde(default)]
+    pub(crate) dispatch_count: u32,
+    #[serde(default)]
+    pub(crate) dispatch_items: u32,
+    #[serde(default)]
+    pub(crate) average_items_per_dispatch: f32,
     pub(crate) runtime_ns: u128,
+    #[serde(default)]
+    pub(crate) timestamps_supported: bool,
+    #[serde(default)]
+    pub(crate) timestamped_pass_count: u32,
+    #[serde(default)]
+    pub(crate) gpu_time_total_ns: u128,
+    #[serde(default)]
+    pub(crate) gpu_time_max_ns: u128,
     pub(crate) queries_per_sec: f64,
     pub(crate) broadphase_candidate_count: u32,
     pub(crate) broadphase_rejected_candidate_count: u32,
@@ -1247,6 +1266,14 @@ pub(crate) struct CollisionBenchmarkExecutionReport {
     pub(crate) wgsl_resident_shared_snapshot_artifacts: u32,
     #[serde(default)]
     pub(crate) cpu_certification_query_count: u32,
+    #[serde(default)]
+    pub(crate) hot_path_readback_bytes: u64,
+    #[serde(default)]
+    pub(crate) queue_submit_count: u32,
+    #[serde(default)]
+    pub(crate) scene_reupload_bytes: u64,
+    #[serde(default)]
+    pub(crate) candidate_table_overflow_fallback_count: u32,
     pub(crate) available_count: u32,
     pub(crate) consumed_count: u32,
     pub(crate) rejected_count: u32,
@@ -1267,6 +1294,32 @@ pub(crate) struct WholeFrameBenchmarkReport {
     pub(crate) presentation_bottleneck_pass: Option<String>,
     pub(crate) collision_fallback_rate: f64,
     pub(crate) collision_witness_reuse_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct EngineFrameBenchmarkReport {
+    pub(crate) scenario_id: PerfScenarioId,
+    pub(crate) test_name: String,
+    pub(crate) frame_count: u32,
+    pub(crate) frame_wall_time_ns: u128,
+    pub(crate) cpu_critical_path_ns: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) gpu_critical_path_ns: Option<u128>,
+    pub(crate) present_wait_ns: u128,
+    pub(crate) readback_wait_ns: u128,
+    pub(crate) steady_state_fps: f64,
+    pub(crate) presentation_runtime_ns: u128,
+    pub(crate) collision_runtime_ns: u128,
+    pub(crate) state_advance_runtime_ns: u128,
+    pub(crate) future_subsystem_reserve_ns: u128,
+    pub(crate) queue_submit_count: u32,
+    pub(crate) hot_path_readback_bytes: u64,
+    pub(crate) scene_reupload_bytes: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) active_degradations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) violations: Vec<String>,
+    pub(crate) subsystem_reports: Vec<wrela::engine_frame::EngineSubsystemReport>,
 }
 
 pub(crate) struct BenchmarkProfileScenarioSelection<'a> {
@@ -3308,6 +3361,13 @@ mod perf_gate_tests {
             "{failures:?}"
         );
     }
+
+    #[test]
+    fn inherited_test_env_keys_preserve_gpu_timestamp_opt_in() {
+        assert!(
+            inherited_test_env_keys().contains(&wrela::query_exec::wgsl::QUERY_GPU_TIMESTAMPS_ENV)
+        );
+    }
 }
 
 pub(crate) fn is_generated_test_wrapper_dir(path: &Path, tests_root: &Path) -> bool {
@@ -4304,6 +4364,7 @@ pub(crate) fn compile_test_harness(
         compiler_version: env!("CARGO_PKG_VERSION").to_string(),
         selected_tests_fingerprint: selected_test_fingerprint(tests),
         source_fingerprint: harness_source_fingerprint(compile_root, tests_root)?,
+        host_executable_fingerprint: host_executable_fingerprint()?,
     };
     if exe_path.is_file()
         && let Ok(bytes) = fs::read(&meta_path)
@@ -4485,6 +4546,29 @@ pub(crate) fn harness_source_fingerprint(
         hasher.update(&[0xff]);
     }
     Ok(hasher.finish_hex())
+}
+
+pub(crate) fn host_executable_fingerprint() -> Result<String, String> {
+    let exe_path = env::current_exe()
+        .map_err(|err| format!("failed to locate current executable for harness cache: {err}"))?;
+    let meta = fs::metadata(&exe_path).map_err(|err| {
+        format!(
+            "failed to stat current executable for harness cache {}: {err}",
+            exe_path.display()
+        )
+    })?;
+    let modified_ns = meta
+        .modified()
+        .ok()
+        .and_then(|stamp| stamp.duration_since(UNIX_EPOCH).ok())
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    Ok(format!(
+        "{}:{}:{}",
+        exe_path.display(),
+        meta.len(),
+        modified_ns
+    ))
 }
 
 pub(crate) fn collect_harness_source_files(
@@ -5191,6 +5275,7 @@ pub(crate) fn inherited_test_env_keys() -> &'static [&'static str] {
         "SSL_CERT_DIR",
         "LD_LIBRARY_PATH",
         "DYLD_LIBRARY_PATH",
+        wrela::query_exec::wgsl::QUERY_GPU_TIMESTAMPS_ENV,
     ]
 }
 

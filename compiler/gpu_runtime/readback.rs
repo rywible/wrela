@@ -2,6 +2,18 @@ use crate::gpu_runtime::{GpuRuntimeContext, upload::normalize_buffer_size};
 use smol_str::SmolStr;
 use std::sync::mpsc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GpuReadbackPolicy {
+    LegacyImmediate,
+    NoReadback,
+}
+
+impl GpuReadbackPolicy {
+    pub const fn should_schedule_value_readback(self) -> bool {
+        matches!(self, Self::LegacyImmediate)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ReadbackReason {
     Attachment { attachment: SmolStr },
@@ -75,6 +87,18 @@ pub fn schedule_storage_buffer_readback(
         request,
         readback_buffer,
     }
+}
+
+pub fn schedule_storage_buffer_readback_with_policy(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    source: &wgpu::Buffer,
+    request: ReadbackRequest,
+    policy: GpuReadbackPolicy,
+) -> Option<ReadbackTicket> {
+    policy
+        .should_schedule_value_readback()
+        .then(|| schedule_storage_buffer_readback(device, encoder, source, request))
 }
 
 pub fn collect_storage_buffer_readback(

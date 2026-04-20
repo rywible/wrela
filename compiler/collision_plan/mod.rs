@@ -28,6 +28,11 @@ use smol_str::SmolStr;
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
+pub mod batch;
+pub mod candidate_table;
+pub use batch::*;
+pub use candidate_table::*;
+
 pub const COLLISION_PLAN_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

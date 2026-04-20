@@ -5363,6 +5363,90 @@ fn main() -> Integer {
 }
 
 #[test]
+fn native_v2_phase10_wgsl_world_query_updates_runtime_field_sample_metrics() {
+    if std::env::var("WR_SKIP_NATIVE").is_ok() {
+        return;
+    }
+    let source = r#"
+field exact distance scene_field(p: Vec3) -> F32 {
+    sphere(radius = 0.6)
+}
+
+material scene_surface(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.2, 0.3, 0.6),
+        roughness=0.3,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape scene_shape {
+    field = scene_field
+    material = scene_surface
+}
+
+region scene_region() {
+    place scene = scene_shape
+}
+
+domain scene_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = false
+    radiance = false
+    media = false
+    max_distance = 6.0
+    min_step = 0.05
+    hit_epsilon = 0.001
+    max_steps = 96
+}
+
+fn main() -> Integer {
+    world = capture scene_region
+    domain = scene_domain(world = world)
+    field_samples_before = __wr_metrics_get(__wr_metrics_field_sample_id())
+    hit_samples_before = __wr_metrics_get(__wr_metrics_scene_trace_hit_field_samples_total_id())
+    hit = spatial.nearest(
+        capture=world,
+        domain=domain,
+        ray=ray_query(
+            origin=vec3(0.0, 0.0, 3.0),
+            direction=vec3(0.0, 0.0, -1.0),
+            max_distance=6.0,
+            min_step=0.05,
+            hit_epsilon=0.001,
+            max_steps=96
+        )
+    )
+    field_samples_after = __wr_metrics_get(__wr_metrics_field_sample_id())
+    hit_samples_after = __wr_metrics_get(__wr_metrics_scene_trace_hit_field_samples_total_id())
+    if not hit.hit { return 1 }
+    if field_samples_after <= field_samples_before { return 2 }
+    if hit_samples_after <= hit_samples_before { return 3 }
+    if hit_samples_after - hit_samples_before != field_samples_after - field_samples_before { return 4 }
+    return 0
+}
+"#;
+
+    let output = compile_and_run_native_inline_source_with_backend(
+        source,
+        "wr_v2_phase10_wgsl_world_query_metrics_smoke",
+        DispatchBackend::Wgsl,
+    );
+    let expected = expected_int_exit(0);
+    assert_eq!(
+        output.status.code().unwrap_or(-1),
+        expected,
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn native_v2_phase10_wgsl_preview_project_sampled_queries_match_cpu() {
     if std::env::var("WR_SKIP_NATIVE").is_ok() {
         return;

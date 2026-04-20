@@ -106,6 +106,18 @@ pub struct PerfClosureCollisionBaseline {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PerfClosureEngineFrameBudget {
+    pub frame_wall_time_median_ms: f32,
+    pub frame_wall_time_p95_ms: f32,
+    pub presentation_median_ms: f32,
+    pub collision_median_ms: f32,
+    pub state_advance_median_ms: f32,
+    pub future_subsystem_reserve_ms: f32,
+    pub max_queue_submit_count_per_frame: u32,
+    pub max_hot_path_readback_bytes_per_frame: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PerfClosureProfile {
     pub version: u32,
     pub name: String,
@@ -154,6 +166,7 @@ pub struct PerfClosureProfile {
     pub primary_visibility_budget: PerfClosureMetricBudget,
     pub collision: PerfClosureLaneProtocol,
     pub collision_baseline: PerfClosureCollisionBaseline,
+    pub engine_frame_budget: PerfClosureEngineFrameBudget,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -216,6 +229,39 @@ pub struct PerfClosureLaneStatusReport {
     pub notes: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PerfClosureEngineFrameStatusReport {
+    pub status: PerfClosureLaneStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_wall_time_median_ms: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_wall_time_p95_ms: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_critical_path_median_ms: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_critical_path_median_ms: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation_median_ms: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collision_median_ms: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_advance_median_ms: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub future_subsystem_reserve_ms: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_submit_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hot_path_readback_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_reupload_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_degradations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub violations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PerfClosureVerdictStatus {
@@ -252,6 +298,7 @@ pub struct PerfClosureReport {
     pub cpu_oracle_profile: Option<PerfClosureProfile>,
     pub frame: PerfClosureLaneStatusReport,
     pub collision: PerfClosureLaneStatusReport,
+    pub engine_frame: PerfClosureEngineFrameStatusReport,
     #[serde(default)]
     pub verdict: PerfClosureVerdict,
 }
@@ -300,12 +347,12 @@ impl PerfClosureProfile {
             measured_runs: 12,
             frame: PerfClosureLaneProtocol {
                 lane: PerfClosureLaneKind::Frame,
-                protocol_id: "whole_frame.1080p120.frame".to_string(),
-                suite: "whole_frame".to_string(),
-                scene_set_id: "whole_frame_1080p120_frame".to_string(),
-                view_set_id: "whole_frame_1080p120_views".to_string(),
-                camera_path_id: "whole_frame_camera_path_fixed".to_string(),
-                motion_fixture_id: Some("whole_frame_camera_motion_fixture".to_string()),
+                protocol_id: "engine_frame.1080p120.frame".to_string(),
+                suite: "engine_frame".to_string(),
+                scene_set_id: "engine_frame_1080p120_frame".to_string(),
+                view_set_id: "engine_frame_1080p120_views".to_string(),
+                camera_path_id: "engine_frame_camera_path_fixed".to_string(),
+                motion_fixture_id: Some("engine_frame_camera_motion_fixture".to_string()),
                 fixed_seed: 0x1080_0120,
             },
             frame_budget: PerfClosureMetricBudget {
@@ -318,17 +365,27 @@ impl PerfClosureProfile {
             },
             collision: PerfClosureLaneProtocol {
                 lane: PerfClosureLaneKind::Collision,
-                protocol_id: "whole_frame.1080p120.collision".to_string(),
-                suite: "whole_frame".to_string(),
-                scene_set_id: "whole_frame_1080p120_collision".to_string(),
-                view_set_id: "whole_frame_1080p120_collision_cases".to_string(),
-                camera_path_id: "whole_frame_collision_probe_path".to_string(),
-                motion_fixture_id: Some("whole_frame_collision_motion_fixture".to_string()),
+                protocol_id: "engine_frame.1080p120.collision".to_string(),
+                suite: "engine_frame".to_string(),
+                scene_set_id: "engine_frame_1080p120_collision".to_string(),
+                view_set_id: "engine_frame_1080p120_collision_cases".to_string(),
+                camera_path_id: "engine_frame_collision_probe_path".to_string(),
+                motion_fixture_id: Some("engine_frame_collision_motion_fixture".to_string()),
                 fixed_seed: 0x1080_0121,
             },
             collision_baseline: PerfClosureCollisionBaseline {
                 baseline_id: "collision_perf.phase40_cpu_oracle".to_string(),
                 max_runtime_regression_pct: 0.0,
+            },
+            engine_frame_budget: PerfClosureEngineFrameBudget {
+                frame_wall_time_median_ms: 8.33,
+                frame_wall_time_p95_ms: 8.33,
+                presentation_median_ms: 4.50,
+                collision_median_ms: 2.50,
+                state_advance_median_ms: 0.25,
+                future_subsystem_reserve_ms: 1.00,
+                max_queue_submit_count_per_frame: 2,
+                max_hot_path_readback_bytes_per_frame: 0,
             },
         }
     }
@@ -345,7 +402,7 @@ impl PerfClosureProfile {
             backend_contract: "wgsl_resident_with_cpu_oracle_reference".to_string(),
             requested_limits_profile: "wgsl_resident_reference".to_string(),
             enabled_optional_features: vec![],
-            timestamps_enabled: false,
+            timestamps_enabled: true,
             gpu_timestamps_required_if_supported: true,
             max_hot_path_readback_bytes_per_frame: 0,
             max_scene_reupload_bytes_per_frame: 0,
@@ -372,12 +429,12 @@ impl PerfClosureProfile {
             measured_runs: 12,
             frame: PerfClosureLaneProtocol {
                 lane: PerfClosureLaneKind::Frame,
-                protocol_id: "whole_frame.1080p120.frame".to_string(),
-                suite: "whole_frame".to_string(),
-                scene_set_id: "whole_frame_1080p120_frame".to_string(),
-                view_set_id: "whole_frame_1080p120_views".to_string(),
-                camera_path_id: "whole_frame_camera_path_fixed".to_string(),
-                motion_fixture_id: Some("whole_frame_camera_motion_fixture".to_string()),
+                protocol_id: "engine_frame.1080p120.frame".to_string(),
+                suite: "engine_frame".to_string(),
+                scene_set_id: "engine_frame_1080p120_frame".to_string(),
+                view_set_id: "engine_frame_1080p120_views".to_string(),
+                camera_path_id: "engine_frame_camera_path_fixed".to_string(),
+                motion_fixture_id: Some("engine_frame_camera_motion_fixture".to_string()),
                 fixed_seed: 0x1080_0120,
             },
             frame_budget: PerfClosureMetricBudget {
@@ -390,17 +447,27 @@ impl PerfClosureProfile {
             },
             collision: PerfClosureLaneProtocol {
                 lane: PerfClosureLaneKind::Collision,
-                protocol_id: "whole_frame.1080p120.collision".to_string(),
-                suite: "whole_frame".to_string(),
-                scene_set_id: "whole_frame_1080p120_collision".to_string(),
-                view_set_id: "whole_frame_1080p120_collision_cases".to_string(),
-                camera_path_id: "whole_frame_collision_probe_path".to_string(),
-                motion_fixture_id: Some("whole_frame_collision_motion_fixture".to_string()),
+                protocol_id: "engine_frame.1080p120.collision".to_string(),
+                suite: "engine_frame".to_string(),
+                scene_set_id: "engine_frame_1080p120_collision".to_string(),
+                view_set_id: "engine_frame_1080p120_collision_cases".to_string(),
+                camera_path_id: "engine_frame_collision_probe_path".to_string(),
+                motion_fixture_id: Some("engine_frame_collision_motion_fixture".to_string()),
                 fixed_seed: 0x1080_0121,
             },
             collision_baseline: PerfClosureCollisionBaseline {
                 baseline_id: "collision_perf.phase40_cpu_oracle".to_string(),
                 max_runtime_regression_pct: 0.0,
+            },
+            engine_frame_budget: PerfClosureEngineFrameBudget {
+                frame_wall_time_median_ms: 8.33,
+                frame_wall_time_p95_ms: 8.33,
+                presentation_median_ms: 4.50,
+                collision_median_ms: 2.50,
+                state_advance_median_ms: 0.25,
+                future_subsystem_reserve_ms: 1.00,
+                max_queue_submit_count_per_frame: 2,
+                max_hot_path_readback_bytes_per_frame: 0,
             },
         }
     }
@@ -548,6 +615,7 @@ impl PerfClosureProfile {
                     .to_string(),
             );
         }
+        errors.extend(validate_engine_frame_budget(&self.engine_frame_budget));
         errors
     }
 
@@ -603,12 +671,12 @@ impl PerfClosureProfile {
             errors.push("performance closure camera_path_id must not be empty".to_string());
         }
         match lane.lane {
-            PerfClosureLaneKind::Frame if lane.suite != "whole_frame" => errors.push(
-                "frame closure lane suite must be whole_frame for the canonical profile"
+            PerfClosureLaneKind::Frame if lane.suite != "engine_frame" => errors.push(
+                "frame closure lane suite must be engine_frame for the canonical profile"
                     .to_string(),
             ),
-            PerfClosureLaneKind::Collision if lane.suite != "whole_frame" => errors.push(
-                "collision closure lane suite must be whole_frame for the canonical profile"
+            PerfClosureLaneKind::Collision if lane.suite != "engine_frame" => errors.push(
+                "collision closure lane suite must be engine_frame for the canonical profile"
                     .to_string(),
             ),
             _ => {}
@@ -623,6 +691,7 @@ impl PerfClosureReport {
             cpu_oracle_profile: None,
             frame: PerfClosureLaneStatusReport::unsampled(&profile.frame),
             collision: PerfClosureLaneStatusReport::unsampled(&profile.collision),
+            engine_frame: PerfClosureEngineFrameStatusReport::unsampled(),
             profile,
             verdict: PerfClosureVerdict::not_applicable(),
         }
@@ -708,6 +777,28 @@ impl PerfClosureLaneStatusReport {
     }
 }
 
+impl PerfClosureEngineFrameStatusReport {
+    pub fn unsampled() -> Self {
+        Self {
+            status: PerfClosureLaneStatus::NotSampled,
+            frame_wall_time_median_ms: None,
+            frame_wall_time_p95_ms: None,
+            cpu_critical_path_median_ms: None,
+            gpu_critical_path_median_ms: None,
+            presentation_median_ms: None,
+            collision_median_ms: None,
+            state_advance_median_ms: None,
+            future_subsystem_reserve_ms: None,
+            queue_submit_count: None,
+            hot_path_readback_bytes: None,
+            scene_reupload_bytes: None,
+            active_degradations: Vec::new(),
+            violations: Vec::new(),
+            notes: vec!["engine_frame lane not sampled for this suite".to_string()],
+        }
+    }
+}
+
 pub fn quality_degradation_step_name(step: PerfClosureDegradationStep) -> &'static str {
     match step {
         PerfClosureDegradationStep::ReduceInternalResolution => "reduce_internal_resolution",
@@ -760,6 +851,47 @@ fn validate_metric_budget(name: &str, budget: &PerfClosureMetricBudget) -> Vec<S
     errors
 }
 
+fn validate_engine_frame_budget(budget: &PerfClosureEngineFrameBudget) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (name, value) in [
+        (
+            "frame_wall_time_median_ms",
+            budget.frame_wall_time_median_ms,
+        ),
+        ("frame_wall_time_p95_ms", budget.frame_wall_time_p95_ms),
+        ("presentation_median_ms", budget.presentation_median_ms),
+        ("collision_median_ms", budget.collision_median_ms),
+        ("state_advance_median_ms", budget.state_advance_median_ms),
+        (
+            "future_subsystem_reserve_ms",
+            budget.future_subsystem_reserve_ms,
+        ),
+    ] {
+        if !(value.is_finite() && value > 0.0) {
+            errors.push(format!(
+                "performance closure engine_frame_budget.{name} must be finite and positive"
+            ));
+        }
+    }
+    if budget.frame_wall_time_p95_ms < budget.frame_wall_time_median_ms {
+        errors.push(
+            "performance closure engine_frame_budget.frame_wall_time_p95_ms must be greater than or equal to frame_wall_time_median_ms"
+                .to_string(),
+        );
+    }
+    let subsystem_total = budget.presentation_median_ms
+        + budget.collision_median_ms
+        + budget.state_advance_median_ms
+        + budget.future_subsystem_reserve_ms;
+    if subsystem_total > budget.frame_wall_time_median_ms + f32::EPSILON {
+        errors.push(format!(
+            "performance closure engine_frame_budget subsystem budgets ({subsystem_total:.2} ms) exceed frame_wall_time_median_ms ({:.2} ms)",
+            budget.frame_wall_time_median_ms
+        ));
+    }
+    errors
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -779,7 +911,7 @@ mod tests {
         assert_eq!(profile.backend.as_str(), "wgsl");
         assert_eq!(profile.adapter_name, "wgsl_resident");
         assert!(profile.enabled_optional_features.is_empty());
-        assert_eq!(profile.timestamps_enabled, false);
+        assert_eq!(profile.timestamps_enabled, true);
         assert_eq!(profile.gpu_timestamps_required_if_supported, true);
         assert_eq!(profile.max_hot_path_readback_bytes_per_frame, 0);
         assert_eq!(profile.max_scene_reupload_bytes_per_frame, 0);
@@ -791,6 +923,25 @@ mod tests {
         assert_eq!(profile.shader_f16_gate_enabled(), false);
         assert_eq!(profile.shader_f16_gate_state(), "disabled");
         assert_eq!(profile.indirect_dispatch_enabled, false);
+        assert_eq!(profile.engine_frame_budget.frame_wall_time_median_ms, 8.33);
+        assert_eq!(profile.engine_frame_budget.frame_wall_time_p95_ms, 8.33);
+        assert_eq!(profile.engine_frame_budget.presentation_median_ms, 4.50);
+        assert_eq!(profile.engine_frame_budget.collision_median_ms, 2.50);
+        assert_eq!(profile.engine_frame_budget.state_advance_median_ms, 0.25);
+        assert_eq!(
+            profile.engine_frame_budget.future_subsystem_reserve_ms,
+            1.00
+        );
+        assert_eq!(
+            profile.engine_frame_budget.max_queue_submit_count_per_frame,
+            2
+        );
+        assert_eq!(
+            profile
+                .engine_frame_budget
+                .max_hot_path_readback_bytes_per_frame,
+            0
+        );
         assert_eq!(
             profile.warmup_protocol,
             "pipeline_and_resident_scene_upload"
@@ -807,7 +958,8 @@ mod tests {
         assert_eq!(cpu_oracle.backend.as_str(), "cpu");
         assert_eq!(profile.frame.lane, PerfClosureLaneKind::Frame);
         assert_eq!(profile.collision.lane, PerfClosureLaneKind::Collision);
-        assert_eq!(profile.collision.suite, "whole_frame");
+        assert_eq!(profile.frame.suite, "engine_frame");
+        assert_eq!(profile.collision.suite, "engine_frame");
         assert_eq!(
             profile
                 .legal_degradations
@@ -856,6 +1008,24 @@ mod tests {
         let report = super::PerfClosureReport::unsampled(profile);
         assert_eq!(report.frame.status, PerfClosureLaneStatus::NotSampled);
         assert_eq!(report.collision.status, PerfClosureLaneStatus::NotSampled);
+        assert_eq!(
+            report.engine_frame.status,
+            PerfClosureLaneStatus::NotSampled
+        );
         assert!(report.cpu_oracle_profile.is_none());
+    }
+
+    #[test]
+    fn invalid_engine_frame_budget_is_rejected() {
+        let mut profile = PerfClosureProfile::canonical_1080p120();
+        profile.engine_frame_budget.frame_wall_time_median_ms = 1.0;
+        profile.engine_frame_budget.frame_wall_time_p95_ms = 1.0;
+        let errors = profile.validate();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("engine_frame_budget subsystem budgets")),
+            "{errors:?}"
+        );
     }
 }

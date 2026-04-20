@@ -48,12 +48,14 @@ use wgpu::util::DeviceExt;
 const QUERY_WGSL_STORAGE_BUFFERS_PER_SHADER_STAGE: u32 = 10;
 const QUERY_WGSL_ACCEL_FLAG_LEAF: u32 = 1;
 const QUERY_WGSL_ACCEL_FLAG_HAS_BOUNDS: u32 = 2;
-const QUERY_WGSL_OBSERVABILITY_U32S: usize = 18;
+const QUERY_WGSL_OBSERVABILITY_U32S: usize = 19;
+pub const QUERY_GPU_TIMESTAMPS_ENV: &str = "WRELA_QUERY_GPU_TIMESTAMPS";
 
 pub(crate) type NativeWgpuContext = GpuRuntimeContext;
 
 thread_local! {
     static SHADER_F16_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
+    static TIMESTAMP_QUERY_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
 }
 
 pub struct ShaderF16OverrideGuard {
@@ -73,6 +75,31 @@ pub fn override_shader_f16_for_current_thread(enabled: Option<bool>) -> ShaderF1
         previous
     });
     ShaderF16OverrideGuard { previous }
+}
+
+pub struct TimestampQueryOverrideGuard {
+    previous: Option<bool>,
+}
+
+impl Drop for TimestampQueryOverrideGuard {
+    fn drop(&mut self) {
+        TIMESTAMP_QUERY_OVERRIDE.with(|cell| cell.set(self.previous));
+    }
+}
+
+pub fn override_gpu_timestamps_for_current_thread(
+    enabled: Option<bool>,
+) -> TimestampQueryOverrideGuard {
+    let previous = TIMESTAMP_QUERY_OVERRIDE.with(|cell| {
+        let previous = cell.get();
+        cell.set(enabled);
+        previous
+    });
+    TimestampQueryOverrideGuard { previous }
+}
+
+pub(crate) fn gpu_timestamps_requested_for_current_thread() -> bool {
+    requested_timestamp_query_feature()
 }
 
 pub fn clear_native_wgsl_test_caches() {
@@ -197,6 +224,7 @@ pub(crate) struct NativeWgslBridgeConfig {
 #[derive(Clone)]
 pub(crate) struct ResidentBatchQuerySession {
     pub(crate) native: Arc<NativeWgpuContext>,
+    dynamic_resources: &'static Mutex<WgslDynamicResources>,
     pub(crate) pipeline: wgpu::ComputePipeline,
     pub(crate) scene_bind_group: wgpu::BindGroup,
     pub(crate) frame_bind_group: wgpu::BindGroup,
@@ -243,26 +271,44 @@ impl ResidentBatchQuerySession {
         let dispatch_bytes = encode_value(&codegen::wgsl_dispatch_config_abi(), dispatch)?;
         let observability_bytes = [0u8; QUERY_WGSL_OBSERVABILITY_U32S * std::mem::size_of::<u32>()];
         let side_channel_bytes = side_channel_bytes.unwrap_or(&[0u8; std::mem::size_of::<u32>()]);
-        self.native
-            .queue
-            .write_buffer(&self.dispatch_buffer, 0, &dispatch_bytes);
+        let mut upload_bytes = 0u64;
+        let mut dynamic_resources = self
+            .dynamic_resources
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let dispatch_fingerprint = stable_semantic_id(&[&dispatch_bytes]);
+        if dynamic_resources.last_dispatch_fingerprint != Some(dispatch_fingerprint) {
+            self.native
+                .queue
+                .write_buffer(&self.dispatch_buffer, 0, &dispatch_bytes);
+            dynamic_resources.last_dispatch_fingerprint = Some(dispatch_fingerprint);
+            upload_bytes = upload_bytes.saturating_add(storage_buffer_size(&dispatch_bytes));
+        }
         if let Some(input_bytes) = input_bytes
             && !input_bytes.is_empty()
         {
-            self.native
-                .queue
-                .write_buffer(&self.input_buffer, 0, input_bytes);
+            let input_fingerprint = stable_semantic_id(&[input_bytes]);
+            if dynamic_resources.last_input_fingerprint != Some(input_fingerprint) {
+                self.native
+                    .queue
+                    .write_buffer(&self.input_buffer, 0, input_bytes);
+                dynamic_resources.last_input_fingerprint = Some(input_fingerprint);
+                upload_bytes = upload_bytes.saturating_add(storage_buffer_size(input_bytes));
+            }
         }
         self.native
             .queue
             .write_buffer(&self.observability_buffer, 0, &observability_bytes);
-        self.native
-            .queue
-            .write_buffer(&self.continuation_seed_buffer, 0, side_channel_bytes);
-        Ok(storage_buffer_size(&dispatch_bytes)
-            .saturating_add(storage_buffer_size(input_bytes.unwrap_or(&[])))
-            .saturating_add(observability_bytes.len() as u64)
-            .saturating_add(storage_buffer_size(side_channel_bytes)))
+        upload_bytes = upload_bytes.saturating_add(observability_bytes.len() as u64);
+        let continuation_fingerprint = stable_semantic_id(&[side_channel_bytes]);
+        if dynamic_resources.last_continuation_seed_fingerprint != Some(continuation_fingerprint) {
+            self.native
+                .queue
+                .write_buffer(&self.continuation_seed_buffer, 0, side_channel_bytes);
+            dynamic_resources.last_continuation_seed_fingerprint = Some(continuation_fingerprint);
+            upload_bytes = upload_bytes.saturating_add(storage_buffer_size(side_channel_bytes));
+        }
+        Ok(upload_bytes)
     }
 
     pub(crate) fn encode_compute_pass(
@@ -271,6 +317,21 @@ impl ResidentBatchQuerySession {
         profiler: &mut GpuPassProfiler,
     ) {
         let timestamp_writes = profiler.compute_pass_timestamp_writes();
+        self.encode_compute_pass_with_timestamp_writes(encoder, timestamp_writes);
+    }
+
+    pub(crate) fn encode_compute_pass_without_timestamps(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        self.encode_compute_pass_with_timestamp_writes(encoder, None);
+    }
+
+    fn encode_compute_pass_with_timestamp_writes(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
+    ) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("wrela.wgsl.compute_pass"),
             timestamp_writes,
@@ -944,12 +1005,13 @@ pub(crate) fn prepare_resident_batch_query(
             as u64,
         continuation_buffer_size: storage_buffer_size(&payloads.continuation_seed_bytes),
     };
-    let (dynamic_resources, dynamic_resources_created) = lock_query_dynamic_resources(
-        &native,
-        dynamic_resources_key,
-        &cached,
-        &world_shapes_buffer,
-    );
+    let (dynamic_resources_mutex, dynamic_resources, dynamic_resources_created) =
+        lock_query_dynamic_resources(
+            &native,
+            dynamic_resources_key,
+            &cached,
+            &world_shapes_buffer,
+        );
     if dynamic_resources_created {
         gpu_runtime.transient_buffer_creations =
             gpu_runtime.transient_buffer_creations.saturating_add(5);
@@ -958,6 +1020,7 @@ pub(crate) fn prepare_resident_batch_query(
         u32::from(scene_bind_group_created) + if dynamic_resources_created { 3 } else { 0 };
     Ok(ResidentBatchQuerySession {
         native,
+        dynamic_resources: dynamic_resources_mutex,
         pipeline: cached.pipeline.clone(),
         scene_bind_group,
         frame_bind_group: dynamic_resources.frame_bind_group.clone(),
@@ -1963,6 +2026,9 @@ struct WgslDynamicResources {
     frame_bind_group: wgpu::BindGroup,
     pass_bind_group: wgpu::BindGroup,
     scratch_bind_group: wgpu::BindGroup,
+    last_dispatch_fingerprint: Option<u64>,
+    last_input_fingerprint: Option<u64>,
+    last_continuation_seed_fingerprint: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -2204,7 +2270,11 @@ fn lock_query_dynamic_resources(
     key: WgslDynamicResourcesKey,
     cached: &QueryCachedPipeline,
     world_shapes_buffer: &wgpu::Buffer,
-) -> (std::sync::MutexGuard<'static, WgslDynamicResources>, bool) {
+) -> (
+    &'static Mutex<WgslDynamicResources>,
+    std::sync::MutexGuard<'static, WgslDynamicResources>,
+    bool,
+) {
     let registry = dynamic_resources_cache();
     let (resources_mutex, created) = {
         let mut guard = registry.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -2290,6 +2360,9 @@ fn lock_query_dynamic_resources(
                 frame_bind_group,
                 pass_bind_group,
                 scratch_bind_group,
+                last_dispatch_fingerprint: None,
+                last_input_fingerprint: None,
+                last_continuation_seed_fingerprint: None,
             })))
         });
         (resources_mutex, created)
@@ -2297,7 +2370,7 @@ fn lock_query_dynamic_resources(
     let resources = resources_mutex
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
-    (resources, created)
+    (resources_mutex, resources, created)
 }
 
 fn write_pooled_buffer(native: &NativeWgpuContext, buffer: &wgpu::Buffer, bytes: &[u8]) -> u64 {
@@ -2953,7 +3026,7 @@ fn dispatch_compiled_shader_with_buffers(
         observability_buffer_size,
         continuation_buffer_size: continuation_seed_buffer_size,
     };
-    let (dynamic_resources, dynamic_resources_created) =
+    let (_dynamic_resources_mutex, dynamic_resources, dynamic_resources_created) =
         lock_query_dynamic_resources(native, dynamic_resources_key, &cached, &world_shapes_buffer);
     if dynamic_resources_created {
         gpu_runtime.transient_buffer_creations =
@@ -3513,6 +3586,7 @@ fn decode_wgsl_observability(
         solver_analytic_hits: read_u32(15),
         solver_generated_dense_fallback_rays: read_u32(16),
         solver_support_rejections: read_u32(17),
+        field_samples: read_u32(18),
         dispatch_count: 1,
         dispatch_items,
         dispatch_workgroups_x: dispatch_workgroups_x_for_items(
@@ -3561,10 +3635,22 @@ fn requested_shader_f16_feature() -> bool {
     )
 }
 
+fn requested_timestamp_query_feature() -> bool {
+    if let Some(enabled) = TIMESTAMP_QUERY_OVERRIDE.with(Cell::get) {
+        return enabled;
+    }
+    matches!(
+        env::var(QUERY_GPU_TIMESTAMPS_ENV),
+        Ok(value) if matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
+    )
+}
+
 fn query_runtime_limit_request(
     required_request: WgslLimitRequest,
 ) -> Result<WgslLimitRequest, QueryExecError> {
     let shader_f16_enabled = required_request.f16_enabled || requested_shader_f16_feature();
+    let timestamps_enabled =
+        required_request.timestamps_enabled || requested_timestamp_query_feature();
     let adapter_context = shared_wgpu_context(WgslLimitRequest::default()).map_err(|message| {
         QueryExecError::Unsupported {
             message: format!("native WGSL backend initialization failed: {message}"),
@@ -3607,6 +3693,7 @@ fn query_runtime_limit_request(
         max_storage_buffer_binding_size: adapter_context
             .adapter_limits
             .max_storage_buffer_binding_size,
+        timestamps_enabled,
         f16_enabled: shader_f16_enabled,
         ..WgslLimitRequest::default()
     })
@@ -3869,6 +3956,7 @@ mod tests {
         suppress_repeated_chunk_seed_metrics, with_test_chunk_storage_buffer_limit_override,
     };
     use crate::gpu_runtime::{ComputePipelineKey, GpuLayoutIdentity, PipelineLayoutKey};
+    use crate::gpu_runtime::{GpuPassProfiler, readback::GpuReadbackPolicy};
     use crate::hir;
     use crate::hir::lower as hir_lower;
     use crate::kernel::{
@@ -3881,6 +3969,7 @@ mod tests {
     use crate::query_contract;
     use crate::query_exec::QueryExecContext;
     use crate::query_exec::QueryExecutionObservability;
+    use crate::query_exec::gpu_dispatch::GpuQueryDispatcher;
     use crate::query_exec::ids::{stable_region_scene_capture_id, stable_region_snapshot_handle};
     use crate::query_exec::wgsl::codegen::{
         wgsl_accel_node_abi, wgsl_cache_brick_abi, wgsl_dispatch_config_abi, wgsl_shape_meta_abi,
@@ -4122,6 +4211,42 @@ domain accelerated_domain(world: RegionCapture) {
             KernelValue::Vec3(value) => *value,
             other => panic!("expected Vec3, got {other:?}"),
         }
+    }
+
+    fn legacy_immediate_query_dispatcher() -> GpuQueryDispatcher {
+        let ctx = typed_query_module(accelerated_world_helper_fixture_source());
+        let region_name = SmolStr::new("accelerated_region");
+        let region_scene_id = stable_region_scene_capture_id(&region_name);
+        let domain = scene_domain(region_scene_id, 1, true, true, true);
+        let plan = lower_batch_query_plan(
+            &BatchQueryPlan::for_contract(
+                query_contract::SPATIAL_NEAREST_BATCH_WORLD,
+                DispatchBackend::Wgsl,
+                None,
+            )
+            .expect("world nearest batch plan"),
+        );
+        let dispatcher = GpuQueryDispatcher::from_batch_plan(
+            &ctx,
+            &plan,
+            &[
+                KernelValue::Capture(region_name),
+                domain,
+                KernelValue::Array(vec![ray_query_with_limits(
+                    [6.0, 0.0, 3.0],
+                    [0.0, 0.0, -1.0],
+                    12.0,
+                    0.05,
+                    0.001,
+                    96,
+                )]),
+            ],
+        )
+        .expect("world nearest dispatcher");
+        dispatcher
+            .initialize_dispatch_state()
+            .expect("dispatcher initialization");
+        dispatcher
     }
 
     #[test]
@@ -4392,6 +4517,7 @@ struct WgslObservabilityBuffer {{
   solver_analytic_hits: atomic<u32>,
   solver_generated_dense_fallback_rays: atomic<u32>,
   solver_support_rejections: atomic<u32>,
+  field_samples: atomic<u32>,
 }}
 
 @group(0) @binding(0)
@@ -4430,6 +4556,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
   if (index == 0u) {{
     atomicAdd(&observability_metrics.cache_resident_shared_snapshot_artifacts, 3u);
     atomicAdd(&observability_metrics.cache_upload_attempts, 3u);
+    atomicAdd(&observability_metrics.field_samples, 7u);
   }}
   output_items.values[index] = input_items.values[index];
 }}
@@ -4509,9 +4636,18 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
         assert_eq!(observability.dispatch_items, 6);
         assert_eq!(observability.cache_resident_shared_snapshot_artifacts, 3);
         assert_eq!(observability.cache_upload_attempts, 3);
+        assert_eq!(observability.field_samples, 14);
         assert!(observability.gpu_runtime.scene_reupload_bytes > 0);
+        assert!(observability.gpu_runtime.upload_bytes > 0);
         assert_eq!(second_observability.gpu_runtime.scene_reupload_bytes, 0);
+        assert!(
+            second_observability.gpu_runtime.upload_bytes < observability.gpu_runtime.upload_bytes
+        );
         assert!(alternate_observability.gpu_runtime.scene_reupload_bytes > 0);
+        assert!(
+            alternate_observability.gpu_runtime.upload_bytes
+                > second_observability.gpu_runtime.upload_bytes
+        );
         assert!(
             second_observability.gpu_runtime.transient_buffer_creations
                 < observability.gpu_runtime.transient_buffer_creations
@@ -4522,6 +4658,81 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
                 .transient_bind_group_creations
                 < observability.gpu_runtime.transient_bind_group_creations
         );
+    }
+
+    #[test]
+    fn gpu_query_ticket_can_be_encoded_without_immediate_value_readback() {
+        let _lock = native_wgsl_test_lock();
+        let dispatcher = legacy_immediate_query_dispatcher();
+        let native = dispatcher.native().clone();
+        let mut encoder = native
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("wrela.query_exec.ticket.no_readback.encoder"),
+            });
+        let mut profiler = GpuPassProfiler::new(&native, 1);
+
+        let ticket = dispatcher.encode_compute_pass_with_readback_policy(
+            &mut encoder,
+            &mut profiler,
+            GpuReadbackPolicy::NoReadback,
+        );
+
+        assert_eq!(ticket.readback_policy(), GpuReadbackPolicy::NoReadback);
+        assert!(!ticket.has_value_readback());
+        assert!(ticket.dispatch_result().values.size_bytes > 0);
+    }
+
+    #[test]
+    fn gpu_query_no_readback_policy_schedules_no_value_readback() {
+        let _lock = native_wgsl_test_lock();
+        let dispatcher = legacy_immediate_query_dispatcher();
+        let native = dispatcher.native().clone();
+        let mut encoder = native
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("wrela.query_exec.ticket.no_readback_policy.encoder"),
+            });
+        let mut profiler = GpuPassProfiler::new(&native, 1);
+
+        let ticket = dispatcher.encode_compute_pass_with_readback_policy(
+            &mut encoder,
+            &mut profiler,
+            GpuReadbackPolicy::NoReadback,
+        );
+
+        assert!(!GpuReadbackPolicy::NoReadback.should_schedule_value_readback());
+        assert!(!ticket.has_value_readback());
+    }
+
+    #[test]
+    fn gpu_query_legacy_immediate_collection_decodes_correctly() {
+        let _lock = native_wgsl_test_lock();
+        let dispatcher = legacy_immediate_query_dispatcher();
+        let native = dispatcher.native().clone();
+        let mut encoder = native
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("wrela.query_exec.ticket.legacy_immediate.encoder"),
+            });
+        let mut profiler = GpuPassProfiler::new(&native, 1);
+
+        let ticket = dispatcher.encode_compute_pass_with_readback_policy(
+            &mut encoder,
+            &mut profiler,
+            GpuReadbackPolicy::LegacyImmediate,
+        );
+        assert!(ticket.has_value_readback());
+
+        native.queue.submit(Some(encoder.finish()));
+
+        let (values, observability) = ticket.collect().expect("legacy immediate ticket collect");
+        let hit = expect_struct(values.first().expect("batch hit"), "Hit3");
+        let payload = expect_struct(field(hit, "payload"), "Payload");
+        assert_eq!(expect_u32(field(payload, "entity_id")), 104);
+        assert!(observability.dispatch_count > 0);
+        assert!(observability.field_samples > 0);
+        assert!(observability.gpu_runtime.readback_bytes > 0);
     }
 
     #[test]
@@ -4631,6 +4842,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
         let payload = expect_struct(field(hit, "payload"), "Payload");
         assert_eq!(expect_u32(field(payload, "entity_id")), 104);
         assert!(observability.acceleration_node_visits > 0);
+        assert!(observability.field_samples > 0);
         assert_eq!(observability.cache_budget_rejections, 0);
     }
 
@@ -4669,11 +4881,13 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
             .expect("near_shape scene index");
         request.candidate_spans = vec![0, 1, near_shape_index];
 
-        let (values, _) = dispatch_compiled_shader_with_observability(&generated, request)
-            .expect("candidate-span distance dispatch");
+        let (values, observability) =
+            dispatch_compiled_shader_with_observability(&generated, request)
+                .expect("candidate-span distance dispatch");
 
         let result = expect_struct(values.first().expect("distance value"), "DistanceResult");
         assert!(expect_f32(field(result, "distance")) > 10.0);
+        assert!(observability.field_samples > 0);
     }
 
     #[test]

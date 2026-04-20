@@ -114,6 +114,7 @@ pub(super) fn emit_bindings(
     writeln!(out, "  solver_analytic_hits: atomic<u32>,").ok();
     writeln!(out, "  solver_generated_dense_fallback_rays: atomic<u32>,").ok();
     writeln!(out, "  solver_support_rejections: atomic<u32>,").ok();
+    writeln!(out, "  field_samples: atomic<u32>,").ok();
     writeln!(out, "}}\n").ok();
     writeln!(
         out,

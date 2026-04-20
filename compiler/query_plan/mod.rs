@@ -69,7 +69,7 @@ pub fn semantic_evidence_summary_from_evidence(
     evidence.summary()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BatchQueryKind {
     Distance,
     Normal,

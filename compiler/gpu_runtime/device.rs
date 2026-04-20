@@ -3,7 +3,8 @@ use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 use crate::gpu_runtime::layout::{
     GPU_RUNTIME_BIND_GROUP_COUNT, GPU_RUNTIME_FEATURE_SHADER_F16,
-    GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY, GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY_INSIDE_PASSES,
+    GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY, GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY_INSIDE_ENCODERS,
+    GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY_INSIDE_PASSES,
 };
 use wgpu::util::initialize_adapter_from_env_or_default;
 
@@ -45,6 +46,12 @@ impl GpuRuntimeContext {
         self.timestamp_support
     }
 
+    pub fn encoder_timestamps_supported(&self) -> bool {
+        self.requested_features.contains(
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS,
+        )
+    }
+
     pub fn requested_limits_profile_name(&self) -> String {
         format!(
             "storage_buffers_per_stage={} storage_binding_bytes={} bind_groups={} workgroup_x={}",
@@ -65,6 +72,12 @@ impl GpuRuntimeContext {
         }
         if self
             .requested_features
+            .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
+        {
+            mask |= GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        }
+        if self
+            .requested_features
             .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES)
         {
             mask |= GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY_INSIDE_PASSES;
@@ -82,6 +95,12 @@ impl GpuRuntimeContext {
             .contains(wgpu::Features::TIMESTAMP_QUERY)
         {
             features.insert("timestamp_query".to_string());
+        }
+        if self
+            .requested_features
+            .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
+        {
+            features.insert("timestamp_query_inside_encoders".to_string());
         }
         if self
             .requested_features
@@ -124,11 +143,20 @@ fn requested_optional_features(
     request: GpuLimitRequest,
     adapter_features: wgpu::Features,
 ) -> wgpu::Features {
-    let timestamp_features =
-        wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
     let mut requested = wgpu::Features::empty();
-    if request.timestamps_enabled && adapter_features.contains(timestamp_features) {
-        requested |= timestamp_features;
+    let encoder_or_pass_features = wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+        | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+    if request.timestamps_enabled
+        && adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY)
+        && adapter_features.intersects(encoder_or_pass_features)
+    {
+        requested |= wgpu::Features::TIMESTAMP_QUERY;
+        if adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS) {
+            requested |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        }
+        if adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES) {
+            requested |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+        }
     }
     if request.f16_enabled && adapter_features.contains(wgpu::Features::SHADER_F16) {
         requested |= wgpu::Features::SHADER_F16;
@@ -172,9 +200,8 @@ fn init_shared_wgpu_context(request: GpuLimitRequest) -> Result<GpuRuntimeContex
     }
 
     let requested_features = requested_optional_features(request, adapter.features());
-    let timestamp_features =
-        wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
-    let timestamp_support = requested_features.contains(timestamp_features);
+    let timestamp_support = requested_features
+        .contains(wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES);
     let selected_workgroup_size = [128u32, 64, 32]
         .into_iter()
         .find(|candidate| {
@@ -229,26 +256,38 @@ mod tests {
     fn default_limit_request_disables_optional_features() {
         let requested = requested_optional_features(
             GpuLimitRequest::default(),
-            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES,
+            wgpu::Features::TIMESTAMP_QUERY
+                | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+                | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES,
         );
 
         assert_eq!(requested, wgpu::Features::empty());
     }
 
     #[test]
-    fn timestamp_features_require_explicit_opt_in_and_full_support() {
+    fn timestamp_features_request_encoder_or_pass_writes_when_available() {
         let request = GpuLimitRequest {
             timestamps_enabled: true,
             ..GpuLimitRequest::default()
         };
-        let full_support =
-            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+        let full_support = wgpu::Features::TIMESTAMP_QUERY
+            | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+            | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
 
         let requested = requested_optional_features(request, full_support);
         assert_eq!(requested, full_support);
 
-        let partial_support = requested_optional_features(request, wgpu::Features::TIMESTAMP_QUERY);
-        assert_eq!(partial_support, wgpu::Features::empty());
+        let encoder_only = requested_optional_features(
+            request,
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS,
+        );
+        assert_eq!(
+            encoder_only,
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+        );
+
+        let query_only = requested_optional_features(request, wgpu::Features::TIMESTAMP_QUERY);
+        assert_eq!(query_only, wgpu::Features::empty());
     }
 }
 

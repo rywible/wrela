@@ -1467,6 +1467,11 @@ pub(super) fn emit_field_dispatch_functions(
         "fn field_distance_dispatch(field_index: u32, point: vec3<f32>) -> f32 {{"
     )
     .ok();
+    writeln!(
+        out,
+        "  atomicAdd(&observability_metrics.field_samples, 1u);"
+    )
+    .ok();
     writeln!(out, "  switch field_index {{").ok();
     for (field_name, scene) in &ctx.scene.fields {
         let field_index = scene_index.field(field_name)?;
@@ -1528,6 +1533,11 @@ pub(super) fn emit_field_dispatch_functions(
     writeln!(
         out,
         "fn field_terminal_distance_dispatch(field_index: u32, terminal_node_id: u32, point: vec3<f32>) -> f32 {{"
+    )
+    .ok();
+    writeln!(
+        out,
+        "  atomicAdd(&observability_metrics.field_samples, 1u);"
     )
     .ok();
     writeln!(out, "  switch field_index {{").ok();
@@ -1670,6 +1680,11 @@ pub(super) fn emit_shape_dispatch_functions(
     writeln!(
         out,
         "fn shape_distance_dispatch(shape_index: u32, point: vec3<f32>) -> f32 {{"
+    )
+    .ok();
+    writeln!(
+        out,
+        "  atomicAdd(&observability_metrics.field_samples, 1u);"
     )
     .ok();
     writeln!(out, "  switch shape_index {{").ok();

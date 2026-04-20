@@ -82,7 +82,7 @@ pub(crate) const CEILING_MUTATION_TIME_CAP_MS: u64 = 180_000;
 pub(crate) const PUBLIC_SURFACE_CURRENT_REL_PATH: &str =
     "tests/.artifacts/public_surface/current.json";
 pub(crate) const PUBLIC_SURFACE_BASELINE_REL_PATH: &str = "tests/public_surface.baseline.json";
-pub(crate) const TEST_HARNESS_META_SCHEMA_VERSION: u32 = 1;
+pub(crate) const TEST_HARNESS_META_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct CertificationReport {

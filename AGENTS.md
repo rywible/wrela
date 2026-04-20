@@ -6,13 +6,13 @@
 
 - `wrela` is the authored-world and product-facing workflow surface (`test`, `perf`, `preview`, and similar commands). `just` is allowed to compose both `cargo` and `wrela` when the truthful proof spans both surfaces.
 
-- The current canonical `just` lanes are: `check`, `check-clean`, `build`, `build-release`, `test`, `test-clean`, `test-all`, `test-runtime`, `test-compiler`, `test-cli`, `test-query`, `perf-smoke`, `perf-closure`, `lint`, `fmt`, `fmt-check`, `fix`, and `ship`.
+- The current canonical `just` lanes are: `check`, `check-clean`, `build`, `build-release`, `test`, `test-clean`, `test-all`, `test-runtime`, `test-compiler`, `test-cli`, `test-query`, `test-engine-frame`, `perf-smoke`, `perf-engine-closure`, `perf-closure`, `lint`, `fmt`, `fmt-check`, `fix`, and `ship`.
 
 ## Intended Dev Loop
 
 - You have carte blanche to use subagents as needed.
 
-- Start with the cheapest truthful lane for the change. Prefer focused lanes like `just test-runtime`, `just test-compiler`, `just test-cli`, or `just test-query` before broader repo lanes.
+- Start with the cheapest truthful lane for the change. Prefer focused lanes like `just test-runtime`, `just test-compiler`, `just test-cli`, `just test-query`, or `just test-engine-frame` before broader repo lanes.
 
 - Use `just check` for fast compile feedback while iterating.
 
@@ -20,7 +20,7 @@
 
 - Use `just test-all` for the full local semantic lane.
 
-- Use `just perf-smoke` for cheap perf sanity when touching perf-sensitive code, and `just perf-closure` only when working the representative 1080p120 closure lane.
+- Use `just perf-smoke` for cheap perf sanity when touching perf-sensitive code. Use `just perf-engine-closure` for the canonical representative 1080p120 engine-frame lane; `just perf-closure` is the compatibility alias for the same proof surface.
 
 - Use `just check-clean` and `just test-clean` when you need cleanroom validation with isolated artifacts and incremental compilation disabled.
 

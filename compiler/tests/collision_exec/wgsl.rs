@@ -138,6 +138,268 @@ fn static_collision_paths_execute_on_wgsl_and_use_world_queries() {
 }
 
 #[test]
+fn point_occupancy_batch_metrics_only_avoids_per_query_dispatch_and_readback() {
+    let ctx = typed_query_module(collision_fixture_source());
+    let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_region"));
+    let plan = CollisionPlan::for_query_with_backend(
+        CollisionQueryKind::PointOccupancyWorld,
+        wrela::query_contract::DispatchBackend::Wgsl,
+    );
+    let batch = wrela::collision_exec::CollisionWorkloadBatch::new(
+        "point occupancy metrics batch",
+        "collision_perf_point_occupancy_batch",
+        "collision_perf_point_occupancy_batch",
+        plan,
+        wrela::collision_contract::COLLISION_POINT_OCCUPANCY_WORLD,
+        "snapshot:collision:point_metrics",
+        region_capture(scene_id, 1),
+        scene_domain(scene_id),
+        wrela::collision_exec::CollisionCandidateGroupingPolicy::SharedCandidateDigest,
+        wrela::collision_exec::CollisionCertificationPolicy::MetricsOnly,
+        (0..32)
+            .map(
+                |index| wrela::collision_exec::CollisionBatchItem::PointOccupancy {
+                    point: [index as f32 * 0.02 - 0.32, 0.0, 0.25],
+                },
+            )
+            .collect(),
+        16,
+    )
+    .checked()
+    .expect("valid point occupancy metrics batch");
+
+    let report =
+        wrela::collision_exec::execute_batch_metrics_only(&batch, &ctx).expect("wgsl point batch");
+    assert_eq!(report.query_count, 32);
+    assert!(report.dispatch_count > 0);
+    assert!(report.dispatch_count < report.query_count as u32);
+    assert!(report.average_items_per_dispatch > 1.0);
+    assert_eq!(report.hot_path_readback_bytes, 0);
+    assert!(report.queue_submit_count > 0);
+    assert_eq!(report.cpu_certification_query_count, 0);
+}
+
+#[test]
+fn ray_cast_batch_metrics_only_uses_chunked_wgsl_dispatches() {
+    let ctx = typed_query_module(collision_fixture_source());
+    let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_region"));
+    let plan = CollisionPlan::for_query_with_backend(
+        CollisionQueryKind::RayCastWorld,
+        wrela::query_contract::DispatchBackend::Wgsl,
+    );
+    let batch = wrela::collision_exec::CollisionWorkloadBatch::new(
+        "ray cast metrics batch",
+        "collision_perf_dense_ray_casts",
+        "collision_perf_dense_ray_casts",
+        plan,
+        wrela::collision_contract::COLLISION_RAY_CAST_WORLD,
+        "snapshot:collision:ray_metrics",
+        region_capture(scene_id, 1),
+        scene_domain(scene_id),
+        wrela::collision_exec::CollisionCandidateGroupingPolicy::SharedCandidateDigest,
+        wrela::collision_exec::CollisionCertificationPolicy::MetricsOnly,
+        (0..24)
+            .map(|index| wrela::collision_exec::CollisionBatchItem::RayCast {
+                ray: wrela::collision_contract::CollisionRayInput {
+                    origin: [index as f32 * 0.01 - 0.12, 0.0, 2.0],
+                    direction: [0.0, 0.0, -1.0],
+                    max_distance: 6.0,
+                    min_step: 0.05,
+                    hit_epsilon: 0.001,
+                    max_steps: 96,
+                },
+            })
+            .collect(),
+        12,
+    )
+    .checked()
+    .expect("valid ray cast metrics batch");
+
+    let report =
+        wrela::collision_exec::execute_batch_metrics_only(&batch, &ctx).expect("wgsl ray batch");
+    assert_eq!(report.query_count, 24);
+    assert!(report.dispatch_count > 0);
+    assert!(report.dispatch_count < report.query_count as u32);
+    assert!(report.average_items_per_dispatch > 1.0);
+    assert_eq!(report.hot_path_readback_bytes, 0);
+    assert!(report.queue_submit_count > 0);
+    assert_eq!(report.cpu_certification_query_count, 0);
+}
+
+#[test]
+fn sphere_overlap_batch_metrics_only_uses_batched_wgsl_distance_dispatches() {
+    let ctx = typed_query_module(collision_fixture_source());
+    let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_region"));
+    let plan = CollisionPlan::for_query_with_backend(
+        CollisionQueryKind::SphereOverlapWorld,
+        wrela::query_contract::DispatchBackend::Wgsl,
+    );
+    let batch = wrela::collision_exec::CollisionWorkloadBatch::new(
+        "sphere overlap metrics batch",
+        "collision_perf_overlap_burst",
+        "collision_perf_overlap_burst",
+        plan,
+        wrela::collision_contract::COLLISION_SPHERE_OVERLAP_WORLD,
+        "snapshot:collision:overlap_metrics",
+        region_capture(scene_id, 1),
+        scene_domain(scene_id),
+        wrela::collision_exec::CollisionCandidateGroupingPolicy::SharedCandidateDigest,
+        wrela::collision_exec::CollisionCertificationPolicy::MetricsOnly,
+        (0..48)
+            .map(
+                |index| wrela::collision_exec::CollisionBatchItem::SphereOverlap {
+                    center: [index as f32 * 0.02 - 0.48, 0.0, 0.1],
+                    radius: 0.20,
+                },
+            )
+            .collect(),
+        24,
+    )
+    .checked()
+    .expect("valid sphere overlap metrics batch");
+
+    let report = wrela::collision_exec::execute_batch_metrics_only(&batch, &ctx)
+        .expect("wgsl sphere overlap batch");
+    assert_eq!(report.query_count, 48);
+    assert!(report.dispatch_count > 0);
+    assert!(report.dispatch_count < report.query_count as u32);
+    assert!(report.average_items_per_dispatch > 1.0);
+    assert_eq!(report.hot_path_readback_bytes, 0);
+    assert!(report.queue_submit_count > 0);
+    assert_eq!(report.cpu_certification_query_count, 0);
+}
+
+#[test]
+fn transition_batch_metrics_only_batches_gpu_sampling_and_counts_cpu_certification() {
+    let ctx = typed_query_module(collision_fixture_source());
+    let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_region"));
+
+    for kind in [
+        CollisionQueryKind::SphereSweepTransition,
+        CollisionQueryKind::SphereTimeOfImpactTransition,
+    ] {
+        let plan = CollisionPlan::for_query_with_backend(
+            kind,
+            wrela::query_contract::DispatchBackend::Wgsl,
+        );
+        let items = (0..64)
+            .map(|index| {
+                let start_center = [index as f32 * 0.01 - 0.32, 0.0, 2.0];
+                let end_center = [start_center[0], start_center[1], -2.0];
+                let transition = wrela::collision_contract::CollisionSnapshotTransitionInput {
+                    current_snapshot_epoch: 2,
+                    previous_snapshot_epoch: 1,
+                    change_class: ChangeClass::Presentation,
+                };
+                let sweep = wrela::collision_contract::CollisionSphereSweepInput {
+                    start_center,
+                    end_center,
+                    radius: 0.25,
+                    contact_tolerance: 0.001,
+                    max_iterations: 64,
+                };
+                match kind {
+                    CollisionQueryKind::SphereSweepTransition => {
+                        wrela::collision_exec::CollisionBatchItem::SphereSweep { transition, sweep }
+                    }
+                    CollisionQueryKind::SphereTimeOfImpactTransition => {
+                        wrela::collision_exec::CollisionBatchItem::SphereTimeOfImpact {
+                            transition,
+                            sweep,
+                        }
+                    }
+                    _ => unreachable!("transition-only loop"),
+                }
+            })
+            .collect::<Vec<_>>();
+        let batch = wrela::collision_exec::CollisionWorkloadBatch::new(
+            format!("transition metrics batch {kind:?}"),
+            format!("transition_metrics_{kind:?}"),
+            format!("transition_metrics_{kind:?}"),
+            plan,
+            match kind {
+                CollisionQueryKind::SphereSweepTransition => {
+                    wrela::collision_contract::COLLISION_SPHERE_SWEEP_TRANSITION
+                }
+                CollisionQueryKind::SphereTimeOfImpactTransition => {
+                    wrela::collision_contract::COLLISION_TIME_OF_IMPACT_TRANSITION
+                }
+                _ => unreachable!("transition-only loop"),
+            },
+            "snapshot:collision:transition_metrics",
+            region_capture(scene_id, 2),
+            scene_domain(scene_id),
+            wrela::collision_exec::CollisionCandidateGroupingPolicy::SharedBroadphaseRegion,
+            wrela::collision_exec::CollisionCertificationPolicy::MetricsOnly,
+            items,
+            32,
+        )
+        .checked()
+        .expect("valid transition metrics batch");
+
+        let report = wrela::collision_exec::execute_batch_metrics_only(&batch, &ctx)
+            .expect("wgsl transition metrics batch");
+        assert_eq!(report.query_count, 64);
+        assert!(report.dispatch_count > 0);
+        assert!(report.dispatch_count < report.query_count as u32);
+        assert!(report.average_items_per_dispatch > 1.0);
+        assert_eq!(report.hot_path_readback_bytes, 0);
+        assert!(report.queue_submit_count > 0);
+        assert!(report.cpu_certification_query_count > 0);
+        assert!(report.total_interval_subdivisions > 0);
+    }
+}
+
+#[test]
+fn transition_batch_metrics_only_reuses_identical_transition_items() {
+    let ctx = typed_query_module(collision_fixture_source());
+    let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_region"));
+    let plan = CollisionPlan::for_query_with_backend(
+        CollisionQueryKind::SphereSweepTransition,
+        wrela::query_contract::DispatchBackend::Wgsl,
+    );
+    let transition = wrela::collision_contract::CollisionSnapshotTransitionInput {
+        current_snapshot_epoch: 2,
+        previous_snapshot_epoch: 1,
+        change_class: ChangeClass::Presentation,
+    };
+    let sweep = wrela::collision_contract::CollisionSphereSweepInput {
+        start_center: [0.0, 0.0, 2.0],
+        end_center: [0.0, 0.0, -2.0],
+        radius: 0.25,
+        contact_tolerance: 0.001,
+        max_iterations: 64,
+    };
+    let batch = wrela::collision_exec::CollisionWorkloadBatch::new(
+        "transition metrics reuse batch",
+        "transition_metrics_reuse",
+        "transition_metrics_reuse",
+        plan,
+        wrela::collision_contract::COLLISION_SPHERE_SWEEP_TRANSITION,
+        "snapshot:collision:transition_metrics_reuse",
+        region_capture(scene_id, 2),
+        scene_domain(scene_id),
+        wrela::collision_exec::CollisionCandidateGroupingPolicy::SharedBroadphaseRegion,
+        wrela::collision_exec::CollisionCertificationPolicy::MetricsOnly,
+        (0..64)
+            .map(|_| wrela::collision_exec::CollisionBatchItem::SphereSweep { transition, sweep })
+            .collect(),
+        64,
+    )
+    .checked()
+    .expect("valid repeated transition metrics batch");
+
+    let report = wrela::collision_exec::execute_batch_metrics_only(&batch, &ctx)
+        .expect("wgsl repeated transition metrics batch");
+    assert_eq!(report.query_count, 64);
+    assert!(report.cpu_certification_query_count > 0);
+    assert!(report.cpu_certification_query_count < report.query_count as u32);
+    assert!(report.available_count_total > 0);
+    assert_eq!(report.available_count_total, report.consumed_count_total);
+    assert!(report.witness_reuse_rate > 0.9);
+}
+
+#[test]
 fn wgsl_collision_trace_reports_candidate_reduction_effectiveness() {
     let ctx = typed_query_module(collision_clutter_fixture_source());
     let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_clutter_region"));

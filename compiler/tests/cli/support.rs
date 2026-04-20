@@ -835,7 +835,7 @@ collision = { entry = "tests/collision_perf_test.wr", region = "collision_perf_r
     .unwrap();
 }
 
-fn write_whole_frame_closure_benchmark_project(root: &std::path::Path) {
+fn write_composite_frame_closure_benchmark_project(root: &std::path::Path, suite: &str) {
     let src_dir = root.join("src");
     let tests_dir = root.join("tests");
     std::fs::create_dir_all(&src_dir).unwrap();
@@ -973,9 +973,9 @@ fn test_whole_frame_fixture_ops_64() -> Nothing {
     .unwrap();
     write_fixture_file(
         root.join("1080p120_closure.toml"),
-        r#"
+        &r#"
 version = 1
-suite = "whole_frame"
+suite = "__SUITE__"
 
 [profiles.closure_1080p120]
 warmup_pairs = 1
@@ -1000,9 +1000,18 @@ timeout_ms = 20000
 allow_unstable = false
 presentation = { entry = "tests/whole_frame_test.wr", view = "show_fixture_1080p120_closure_view", region = "fixture_region", domain = "fixture_domain", width = 64, height = 64, frames = 1, camera_position = [0.0, 0.0, 2.4], camera_forward = [0.0, 0.0, -1.0], camera_up = [0.0, 1.0, 0.0], vertical_fov_degrees = 45.0 }
 collision = { entry = "tests/whole_frame_test.wr", region = "fixture_region", domain = "fixture_domain", workload = "dense_ray_casts" }
-"#,
+"#
+        .replace("__SUITE__", suite),
     )
     .unwrap();
+}
+
+fn write_whole_frame_closure_benchmark_project(root: &std::path::Path) {
+    write_composite_frame_closure_benchmark_project(root, "whole_frame");
+}
+
+fn write_engine_frame_closure_benchmark_project(root: &std::path::Path) {
+    write_composite_frame_closure_benchmark_project(root, "engine_frame");
 }
 
 fn write_virtual_gpu_compute_project(root: &std::path::Path) {

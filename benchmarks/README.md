@@ -6,9 +6,10 @@ The benchmark harness now focuses on the world-language surface that remains in 
 - `field_engine`: authored field/scene query cases for repetition, thin features, local frames, mixed-solver dense-oracle closure, radiance/media, opaque-pessimization regressions, and a collision-heavy transition proxy lane for the closure protocol.
 - `collision_perf`: collision-focused point occupancy, ray-cast, overlap, sweep, and TOI workload coverage with a dedicated CPU-oracle 1080p120 closure companion.
 - `realtime_presentation`: presentation-oriented scene-shape benchmarks for dense constructive geometry, repetition-heavy layouts, a dedicated repeat-aware solver proof lane, thin-stack aliasing, relaxed exact-torus solver coverage, transformed primitive galleries, mixed opaque/conservative scenes, media/radiance scenes, cache-stress motion paths, and camera-motion temporal-reuse / clipmap-churn coverage. This suite remains the rendering subsystem lane for debugging and regression hunting.
-- `whole_frame`: the canonical representative lane for fixed-1920x1080, 120 FPS closure work. Each scenario charges both resident presentation and representative collision work in the same suite and emits presentation, collision, and joined whole-frame reports.
+- `engine_frame`: the canonical representative lane for fixed-1920x1080, 120 FPS closure work. Each scenario charges both resident presentation and representative collision work in the same suite and emits presentation, collision, compatibility `whole_frame`, and canonical `engine_frame` reports.
+- `whole_frame`: the compatibility/debug composite suite. It keeps the older joined whole-frame report surface available for comparison, but it is no longer the canonical closure lane.
 - `1080p120` closure profiles: fixed 1920x1080, 120 FPS protocol manifests for the representative WGSL-resident whole-frame lane plus the companion CPU-oracle lane. `wrela perf --profile=1080p120` automatically selects the companion `1080p120_closure.toml` file when it exists and reports the closure stories explicitly.
-  The default `1080p120` run is now truth-first: the canonical measurement lane is `whole_frame`, the baseline JSON includes `presentation_reports`, `collision_reports`, and `whole_frame_reports`, and expensive comparison payloads stay behind `--why-not-120`.
+  The default `1080p120` run is now truth-first: the canonical measurement lane is `engine_frame`, the baseline JSON includes `presentation_reports`, `collision_reports`, `whole_frame_reports`, and `engine_frame_reports`, and expensive comparison payloads stay behind `--why-not-120`.
 
 If you need the junior-friendly walkthrough for reading plans, report dumps, closure output,
 and parity checks, start with [docs/perf/acceleration_playbook.md](../docs/perf/acceleration_playbook.md).
@@ -28,6 +29,7 @@ From the repo root, use `just` for the named repo workflows:
 
 ```bash
 just perf-smoke
+just perf-engine-closure
 just perf-closure
 just ship
 ```
@@ -35,9 +37,10 @@ just ship
 Lane mapping:
 
 - `just perf-smoke` => `wrela perf --profile=smoke`
-- `just perf-closure` => `wrela perf --profile=1080p120`
+- `just perf-engine-closure` => `wrela perf benchmarks/engine_frame --profile=1080p120`
+- `just perf-closure` => compatibility alias for `just perf-engine-closure`
 
-The raw `cargo run -p wrela -- perf ...` commands below are escape hatches for
+The raw `cargo run --release -p wrela -- perf ...` commands below are escape hatches for
 subsystem debugging, ad-hoc comparisons, and flag variations.
 The canonical repo workflows stay on the named `just` lanes above.
 
@@ -48,10 +51,12 @@ Each suite has a `bench.toml` manifest for the default microbench lane, and the 
 - `benchmarks/micro/bench.toml`
 - `benchmarks/field_engine/bench.toml`
 - `benchmarks/collision_perf/bench.toml`
+- `benchmarks/engine_frame/bench.toml`
 - `benchmarks/realtime_presentation/bench.toml`
 - `benchmarks/whole_frame/bench.toml`
 - `benchmarks/field_engine/1080p120_closure.toml`
 - `benchmarks/collision_perf/1080p120_closure.toml`
+- `benchmarks/engine_frame/1080p120_closure.toml`
 - `benchmarks/realtime_presentation/1080p120_closure.toml`
 - `benchmarks/whole_frame/1080p120_closure.toml`
 
@@ -60,43 +65,43 @@ Scenario test names must end with `_ops_<N>` where `<N>` matches `ops`, and scen
 ## Underlying Wrela Perf Commands
 
 ```bash
-cargo run -p wrela -- perf benchmarks/micro --profile=standard --runs=5
-cargo run -p wrela -- perf benchmarks/field_engine --profile=standard --runs=5 --query-backend=cpu
-cargo run -p wrela -- perf benchmarks/collision_perf --profile=standard --runs=5 --query-backend=cpu
-cargo run -p wrela -- perf benchmarks/field_engine --profile=standard --runs=5 --query-backend=wgsl
-cargo run -p wrela -- perf benchmarks/realtime_presentation --profile=standard --runs=5 --query-backend=cpu
-cargo run -p wrela -- perf benchmarks/whole_frame --profile=standard --runs=5 --query-backend=wgsl
+cargo run --release -p wrela -- perf benchmarks/micro --profile=standard --runs=5
+cargo run --release -p wrela -- perf benchmarks/field_engine --profile=standard --runs=5 --query-backend=cpu
+cargo run --release -p wrela -- perf benchmarks/collision_perf --profile=standard --runs=5 --query-backend=cpu
+cargo run --release -p wrela -- perf benchmarks/field_engine --profile=standard --runs=5 --query-backend=wgsl
+cargo run --release -p wrela -- perf benchmarks/realtime_presentation --profile=standard --runs=5 --query-backend=cpu
+cargo run --release -p wrela -- perf benchmarks/engine_frame --profile=standard --runs=5 --query-backend=wgsl
 ```
 
 Paired comparison:
 
 ```bash
-cargo run -p wrela -- perfcmp benchmarks/field_engine \
+cargo run --release -p wrela -- perfcmp benchmarks/field_engine \
   --profile=standard \
   --baseline-ref=origin/main \
   --candidate-ref=HEAD
-cargo run -p wrela -- perfcmp benchmarks/collision_perf \
+cargo run --release -p wrela -- perfcmp benchmarks/collision_perf \
   --profile=standard \
   --baseline-ref=origin/main \
   --candidate-ref=HEAD
-cargo run -p wrela -- perfcmp benchmarks/realtime_presentation \
+cargo run --release -p wrela -- perfcmp benchmarks/realtime_presentation \
   --profile=standard \
   --baseline-ref=origin/main \
   --candidate-ref=HEAD
-cargo run -p wrela -- perfcmp benchmarks/whole_frame \
+cargo run --release -p wrela -- perfcmp benchmarks/engine_frame \
   --profile=standard \
   --baseline-ref=origin/main \
   --candidate-ref=HEAD
 ```
 
-For the current rendering diagnostic mode, use `cargo run -p wrela -- presentation-debug <path>`.
+For the current rendering diagnostic mode, use `cargo run --release -p wrela -- presentation-debug <path>`.
 That is the quickest way to inspect pass-level rendering output when `presentation-plan` is not
 enough.
 
-For the canonical measurement lane, use `cargo run -p wrela -- perf benchmarks/whole_frame --profile=1080p120`.
-That must complete, write the baseline JSON, emit `presentation_reports`, `collision_reports`, and `whole_frame_reports`, and report both per-scenario steady-state FPS and the suite median FPS for the fixed 1920x1080 closure protocol.
+For the canonical measurement lane, use `cargo run --release -p wrela -- perf benchmarks/engine_frame --profile=1080p120`.
+That must complete, write the baseline JSON, emit `presentation_reports`, `collision_reports`, `whole_frame_reports`, and `engine_frame_reports`, and report both per-scenario steady-state FPS and the suite median FPS for the fixed 1920x1080 closure protocol.
 
-For closure failure analysis, use `cargo run -p wrela -- perf <suite-root> --profile=1080p120 --why-not-120`.
+For closure failure analysis, use `cargo run --release -p wrela -- perf <suite-root> --profile=1080p120 --why-not-120`.
 That keeps the closure verdict and FPS reporting, but also enables the more expensive WGSL workgroup sweep and hybrid-vs-dense-only comparison payloads so you can investigate the remaining bottleneck.
 
 ## Profiles
@@ -111,7 +116,7 @@ Per-scenario overrides are available for `perfcmp` with `--warmup-pairs`, `--mea
 
 The `realtime_presentation` suite keeps the checks deterministic by combining fixed query grids with checksum-style assertions while also attaching a canonical multi-frame named-view probe per scenario in `bench.toml`. `wrela perf benchmarks/realtime_presentation ...` now derives its scenario runtime lane from presentation frame-cost reports rather than the raw query-fixture wall clock alone, records those presentation probes in the baseline JSON under `presentation_reports`, and prints `presentation-scenario` / `presentation-pass` lines with the quality tier, internal resolution scale history, steady-state FPS, bottleneck pass, acceleration artifacts, and per-pass work/cost breakdown.
 
-The suite keeps backend selection explicit so benchmark lanes do not silently drift with `auto`. The canonical `1080p120` closure lane now lives in `whole_frame`; `realtime_presentation` remains the presentation subsystem probe, while the CPU oracle remains the companion reference in `compiler/tests/presentation_exec.rs`, the CPU-specific closure profile, and the collision closure lane. In default `1080p120` mode the rendering lane is measurement-first only; `--why-not-120` is the explicit opt-in for workgroup and dense-only diagnostics.
+The suite keeps backend selection explicit so benchmark lanes do not silently drift with `auto`. The canonical `1080p120` closure lane now lives in `engine_frame`; `whole_frame` remains the compatibility/debug companion, `realtime_presentation` remains the presentation subsystem probe, while the CPU oracle remains the companion reference in `compiler/tests/presentation_exec.rs`, the CPU-specific closure profile, and the collision closure lane. In default `1080p120` mode the rendering lane is measurement-first only; `--why-not-120` is the explicit opt-in for workgroup and dense-only diagnostics.
 
 - `presentation_dense_constructive_geometry`: dense constructive solids built from lofts, sweeps, bends, and unions. This stresses candidate selection, hit resolution, and normal stability on heavily composed geometry.
 - `presentation_repetition_heavy_scene`: repetition-heavy structure built from nested linear repetition and instancing. This measures repeat identity, instance stability, and traversal behavior in tiled layouts.
@@ -119,7 +124,7 @@ The suite keeps backend selection explicit so benchmark lanes do not silently dr
 - `presentation_thin_stack_alias_prone`: thin stacked layers and near-touching surfaces. This exercises alias-prone rays, epsilon sensitivity, and shallow-angle normal consistency.
 - `presentation_media_radiance_scene`: radiance- and media-enabled presentation content. This covers surface sampling, radiance lookup, medium evaluation, and the frame path for volumetric scenes.
 
-The `1080p120_closure.toml` protocol files define fixed closure lanes. Their scenario ids are prefixed with `closure_1080p120_` so they stay visually distinct from the microbench scenes, and their view definitions use `realtime_quality(target_fps = 120)` with fixed 1920x1080 framing. The canonical representative lane is `whole_frame`, while `realtime_presentation` and `collision_perf` remain subsystem suites.
+The `1080p120_closure.toml` protocol files define fixed closure lanes. Their scenario ids are prefixed with `closure_1080p120_` so they stay visually distinct from the microbench scenes, and their view definitions use `realtime_quality(target_fps = 120)` with fixed 1920x1080 framing. The canonical representative lane is `engine_frame`, while `whole_frame` remains the compatibility/debug companion and `realtime_presentation` / `collision_perf` remain subsystem suites.
 
 Closure lane coverage currently includes:
 
@@ -145,9 +150,9 @@ read the specialized playbooks before changing the benchmark manifests.
 - `closure_1080p120_repeated_sweeps`: repeated sweep-like probes through static clutter.
 - `closure_1080p120_toi_transition_reuse`: transition-scoped TOI-style reuse coverage for the collision closure lane.
 
-## Whole Frame Closure Scenarios
+## Engine Frame Closure Scenarios
 
-The `whole_frame` closure manifest is the canonical 1080p120 lane. Each scenario pairs a fixed presentation view with a representative collision workload so the closure report charges the combined frame instead of sampling the subsystems independently.
+The `engine_frame` closure manifest is the canonical 1080p120 lane. Each scenario pairs a fixed presentation view with a representative collision workload so the closure report charges the combined frame instead of sampling the subsystems independently. The `whole_frame` manifest stays available as the compatibility/debug companion when you want the older joined-report surface too.
 
 - `closure_1080p120_dense_constructive_dense_ray_casts`: dense constructive presentation plus dense ray casts.
 - `closure_1080p120_repetition_heavy_repeated_sweeps`: repetition-heavy presentation plus repeated sweeps.

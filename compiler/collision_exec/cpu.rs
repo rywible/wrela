@@ -32,9 +32,10 @@ use crate::collision_contract::{
     CollisionTimeOfImpactWitness,
 };
 use crate::collision_plan::{
-    CollisionArtifactBinding, CollisionExecError, CollisionExecutionTrace, CollisionPass,
+    CollisionArtifactBinding, CollisionBatchExecutionReport, CollisionBatchResult,
+    CollisionCandidateTable, CollisionExecError, CollisionExecutionTrace, CollisionPass,
     CollisionPassKind, CollisionPlan, CollisionReuseDecision, CollisionReuseMetrics,
-    CollisionReuseReason, CollisionReuseVerdict, CollisionWgslMetrics,
+    CollisionReuseReason, CollisionReuseVerdict, CollisionWgslMetrics, CollisionWorkloadBatch,
     collision_artifact_kind_name, collision_reuse_reason_name, collision_reuse_verdict_name,
 };
 use crate::execution_policy::QueryExecutionPolicy;
@@ -56,7 +57,9 @@ use crate::query_solver::{
 };
 use crate::world_identity::WorldSnapshotHandle;
 use smol_str::SmolStr;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CollisionArtifactPayload {
@@ -105,6 +108,28 @@ pub struct CollisionContinuationSeed {
 }
 
 pub type CollisionArtifactStore = ArtifactStore<CollisionArtifactPayload>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CollisionCandidateTableCacheKey {
+    contract_id: crate::collision_contract::CollisionContractId,
+    snapshot_id: SmolStr,
+    snapshot_epoch: u64,
+    candidate_grouping: crate::collision_plan::CollisionCandidateGroupingPolicy,
+    query_count: usize,
+    capture_name: SmolStr,
+    capture_fingerprint: u64,
+    domain_fingerprint: u64,
+    items_fingerprint: u64,
+    scene_shapes_fingerprint: u64,
+}
+
+fn collision_candidate_table_cache()
+-> &'static Mutex<HashMap<CollisionCandidateTableCacheKey, CollisionCandidateTable>> {
+    static CACHE: OnceLock<
+        Mutex<HashMap<CollisionCandidateTableCacheKey, CollisionCandidateTable>>,
+    > = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Debug, Clone, PartialEq)]
 enum CollisionMaterializedValue {
@@ -944,6 +969,371 @@ pub fn execute_with_store(
             wgsl_metrics,
         },
     ))
+}
+
+pub fn execute_batch_cpu(
+    batch: &CollisionWorkloadBatch,
+    ctx: &QueryExecContext,
+    store: Option<&mut CollisionArtifactStore>,
+) -> Result<CollisionBatchResult, CollisionExecError> {
+    let validation = batch.validate();
+    if !validation.is_empty() {
+        return Err(CollisionExecError::Validation {
+            messages: validation.into_iter().map(|error| error.message).collect(),
+        });
+    }
+
+    let mut plan = batch.plan.clone();
+    plan.backend = crate::query_plan::DispatchBackend::Cpu;
+
+    let mut local_store;
+    let store = match store {
+        Some(store) => store,
+        None => {
+            local_store = CollisionArtifactStore::default();
+            &mut local_store
+        }
+    };
+
+    let mut results = Vec::with_capacity(batch.items.len());
+    let mut report = CollisionBatchExecutionReport::new(batch);
+
+    for chunk in batch.chunks() {
+        report.record_dispatch(chunk.len());
+        for item in chunk {
+            let args = batch.args_for_item(item);
+            let (result, trace) = execute_with_store(&plan, ctx, &args, store)?;
+            report.record_trace(&trace);
+            results.push(result);
+        }
+    }
+
+    report.finish();
+    Ok(CollisionBatchResult { results, report })
+}
+
+pub fn execute_batch_cpu_with_store(
+    batch: &CollisionWorkloadBatch,
+    ctx: &QueryExecContext,
+    store: &mut CollisionArtifactStore,
+) -> Result<CollisionBatchResult, CollisionExecError> {
+    execute_batch_cpu(batch, ctx, Some(store))
+}
+
+pub(crate) fn build_candidate_table_for_batch(
+    batch: &CollisionWorkloadBatch,
+    ctx: &QueryExecContext,
+    items: &[crate::collision_plan::CollisionBatchItem],
+    fixed_capacity: usize,
+) -> Result<CollisionCandidateTable, CollisionExecError> {
+    let (_, capture_name, snapshot) = resolve_region_capture(ctx, Some(&batch.capture))?;
+    let representative_indices = crate::collision_plan::representative_candidate_item_indices(
+        items.len(),
+        batch.candidate_grouping,
+    );
+    let cache_key = collision_candidate_table_cache_key(
+        ctx,
+        batch,
+        items,
+        &representative_indices,
+        &capture_name,
+        &snapshot,
+    );
+    if let Some(cached) = collision_candidate_table_cache()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .get(&cache_key)
+        .cloned()
+    {
+        return Ok(cached);
+    }
+    let (support_value, _) = execute_world_query_contract(
+        ctx,
+        DispatchBackend::Cpu,
+        None,
+        &snapshot,
+        query_contract::SUPPORT_SUMMARY_WORLD,
+        &[batch.capture.clone(), batch.domain.clone()],
+    )?;
+    let support_summary = parse_collision_support_summary(&support_value)?;
+    let mut candidate_names = BTreeSet::new();
+    let mut sampled_candidate_count = 0u64;
+    let mut sampled_rejected_candidate_count = 0u64;
+    let mut sampled_pruned_node_count = 0u64;
+    for index in representative_indices.iter().copied() {
+        let item = &items[index];
+        let item_args = item.to_kernel_args();
+        let collision_input =
+            item_args
+                .last()
+                .ok_or_else(|| CollisionExecError::ExecutionUnavailable {
+                    message: "collision batch item is missing a lowered collision input"
+                        .to_string(),
+                })?;
+        let broadphase = build_broadphase_candidates(
+            ctx,
+            &capture_name,
+            &batch.domain,
+            collision_input,
+            &support_summary,
+        )?;
+        sampled_candidate_count =
+            sampled_candidate_count.saturating_add(broadphase.candidate_shape_names.len() as u64);
+        sampled_rejected_candidate_count = sampled_rejected_candidate_count
+            .saturating_add(u64::from(broadphase.rejected_candidate_count));
+        sampled_pruned_node_count =
+            sampled_pruned_node_count.saturating_add(u64::from(broadphase.pruned_node_count));
+        candidate_names.extend(broadphase.candidate_shape_names);
+    }
+    let sample_count = representative_indices.len().max(1);
+    let total_candidate_count =
+        scale_sampled_candidate_counter(sampled_candidate_count, items.len(), sample_count);
+    let total_rejected_candidate_count = scale_sampled_candidate_counter(
+        sampled_rejected_candidate_count,
+        items.len(),
+        sample_count,
+    );
+    let total_pruned_node_count =
+        scale_sampled_candidate_counter(sampled_pruned_node_count, items.len(), sample_count);
+    let table = CollisionCandidateTable::from_shared_candidates(
+        candidate_names.into_iter().collect(),
+        items.len(),
+        fixed_capacity,
+        total_candidate_count,
+        total_rejected_candidate_count,
+        total_pruned_node_count,
+    );
+    collision_candidate_table_cache()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .insert(cache_key, table.clone());
+    Ok(table)
+}
+
+fn collision_candidate_table_cache_key(
+    ctx: &QueryExecContext,
+    batch: &CollisionWorkloadBatch,
+    items: &[crate::collision_plan::CollisionBatchItem],
+    representative_indices: &[usize],
+    capture_name: &SmolStr,
+    snapshot: &WorldSnapshotHandle,
+) -> CollisionCandidateTableCacheKey {
+    CollisionCandidateTableCacheKey {
+        contract_id: batch.contract_id,
+        snapshot_id: batch.snapshot_id.clone(),
+        snapshot_epoch: snapshot.epoch().0,
+        candidate_grouping: batch.candidate_grouping,
+        query_count: items.len(),
+        capture_name: capture_name.clone(),
+        capture_fingerprint: kernel_value_fingerprint(&batch.capture),
+        domain_fingerprint: kernel_value_fingerprint(&batch.domain),
+        items_fingerprint: collision_batch_item_iter_fingerprint(
+            representative_indices.iter().map(|index| &items[*index]),
+        ),
+        scene_shapes_fingerprint: hash_iter_fingerprint(ctx.scene.shapes.keys()),
+    }
+}
+
+fn kernel_value_fingerprint(value: &KernelValue) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hash_kernel_value(&mut hasher, value);
+    hasher.finish()
+}
+
+fn collision_batch_item_iter_fingerprint<'a>(
+    values: impl IntoIterator<Item = &'a crate::collision_plan::CollisionBatchItem>,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for value in values {
+        hash_collision_batch_item(&mut hasher, value);
+    }
+    hasher.finish()
+}
+
+fn hash_iter_fingerprint<'a, T>(values: impl IntoIterator<Item = &'a T>) -> u64
+where
+    T: Hash + 'a,
+{
+    let mut hasher = DefaultHasher::new();
+    for value in values {
+        value.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn hash_collision_batch_item(
+    hasher: &mut impl Hasher,
+    item: &crate::collision_plan::CollisionBatchItem,
+) {
+    match item {
+        crate::collision_plan::CollisionBatchItem::PointOccupancy { point } => {
+            0u8.hash(hasher);
+            hash_f32_array(hasher, point);
+        }
+        crate::collision_plan::CollisionBatchItem::RayCast { ray } => {
+            1u8.hash(hasher);
+            hash_collision_ray_input(hasher, ray);
+        }
+        crate::collision_plan::CollisionBatchItem::SphereOverlap { center, radius } => {
+            2u8.hash(hasher);
+            hash_f32_array(hasher, center);
+            radius.to_bits().hash(hasher);
+        }
+        crate::collision_plan::CollisionBatchItem::SphereSweep { transition, sweep } => {
+            3u8.hash(hasher);
+            hash_collision_transition_input(hasher, transition);
+            hash_collision_sweep_input(hasher, sweep);
+        }
+        crate::collision_plan::CollisionBatchItem::SphereTimeOfImpact { transition, sweep } => {
+            4u8.hash(hasher);
+            hash_collision_transition_input(hasher, transition);
+            hash_collision_sweep_input(hasher, sweep);
+        }
+    }
+}
+
+fn hash_collision_transition_input(
+    hasher: &mut impl Hasher,
+    value: &CollisionSnapshotTransitionInput,
+) {
+    value.current_snapshot_epoch.hash(hasher);
+    value.previous_snapshot_epoch.hash(hasher);
+    value.change_class.hash(hasher);
+}
+
+fn hash_collision_ray_input(hasher: &mut impl Hasher, value: &CollisionRayInput) {
+    hash_f32_array(hasher, &value.origin);
+    hash_f32_array(hasher, &value.direction);
+    value.max_distance.to_bits().hash(hasher);
+    value.min_step.to_bits().hash(hasher);
+    value.hit_epsilon.to_bits().hash(hasher);
+    value.max_steps.hash(hasher);
+}
+
+fn hash_collision_sweep_input(hasher: &mut impl Hasher, value: &CollisionSphereSweepInput) {
+    hash_f32_array(hasher, &value.start_center);
+    hash_f32_array(hasher, &value.end_center);
+    value.radius.to_bits().hash(hasher);
+    value.contact_tolerance.to_bits().hash(hasher);
+    value.max_iterations.hash(hasher);
+}
+
+fn hash_kernel_value(hasher: &mut impl Hasher, value: &KernelValue) {
+    match value {
+        KernelValue::Nothing => 0u8.hash(hasher),
+        KernelValue::Bool(v) => {
+            1u8.hash(hasher);
+            v.hash(hasher);
+        }
+        KernelValue::I32(v) => {
+            2u8.hash(hasher);
+            v.hash(hasher);
+        }
+        KernelValue::U32(v) => {
+            3u8.hash(hasher);
+            v.hash(hasher);
+        }
+        KernelValue::F32(v) => {
+            4u8.hash(hasher);
+            v.to_bits().hash(hasher);
+        }
+        KernelValue::Vec2(v) => {
+            5u8.hash(hasher);
+            hash_f32_array(hasher, v);
+        }
+        KernelValue::Vec3(v) => {
+            6u8.hash(hasher);
+            hash_f32_array(hasher, v);
+        }
+        KernelValue::Vec4(v) => {
+            7u8.hash(hasher);
+            hash_f32_array(hasher, v);
+        }
+        KernelValue::Mat3(v) => {
+            8u8.hash(hasher);
+            hash_f32_array(hasher, v);
+        }
+        KernelValue::Mat4(v) => {
+            9u8.hash(hasher);
+            hash_f32_array(hasher, v);
+        }
+        KernelValue::Quat(v) => {
+            10u8.hash(hasher);
+            hash_f32_array(hasher, v);
+        }
+        KernelValue::Array(values) => {
+            11u8.hash(hasher);
+            values.len().hash(hasher);
+            for value in values {
+                hash_kernel_value(hasher, value);
+            }
+        }
+        KernelValue::Struct(value) => {
+            12u8.hash(hasher);
+            value.name.hash(hasher);
+            value.fields.len().hash(hasher);
+            for (name, field_value) in &value.fields {
+                name.hash(hasher);
+                hash_kernel_value(hasher, field_value);
+            }
+        }
+        KernelValue::Capture(name) => {
+            13u8.hash(hasher);
+            name.hash(hasher);
+        }
+        KernelValue::DispatchBackend(backend) => {
+            14u8.hash(hasher);
+            backend.hash(hasher);
+        }
+        KernelValue::GpuBuffer(handle) => {
+            15u8.hash(hasher);
+            handle.hash(hasher);
+        }
+        KernelValue::GpuAtomicI32(handle) => {
+            16u8.hash(hasher);
+            handle.hash(hasher);
+        }
+        KernelValue::GpuAtomicU32(handle) => {
+            17u8.hash(hasher);
+            handle.hash(hasher);
+        }
+    }
+}
+
+fn hash_f32_array<const N: usize>(hasher: &mut impl Hasher, values: &[f32; N]) {
+    for value in values {
+        value.to_bits().hash(hasher);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn clear_candidate_table_cache_for_tests() {
+    collision_candidate_table_cache()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clear();
+}
+
+#[cfg(test)]
+pub(crate) fn candidate_table_cache_len_for_tests() -> usize {
+    collision_candidate_table_cache()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .len()
+}
+
+fn scale_sampled_candidate_counter(
+    sampled_total: u64,
+    item_count: usize,
+    sample_count: usize,
+) -> u64 {
+    if item_count == 0 || sample_count == 0 {
+        return 0;
+    }
+    if sample_count >= item_count {
+        return sampled_total;
+    }
+    ((sampled_total as f64 / sample_count as f64) * item_count as f64).round() as u64
 }
 
 fn resolve_backend(backend: DispatchBackend) -> Result<DispatchBackend, CollisionExecError> {

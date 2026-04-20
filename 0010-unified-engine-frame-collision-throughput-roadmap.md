@@ -531,11 +531,11 @@ Initial canonical values should be conservative and easy to revisit:
 engine_frame_budget: PerfClosureEngineFrameBudget {
     frame_wall_time_median_ms: 8.33,
     frame_wall_time_p95_ms: 8.33,
-    presentation_median_ms: 5.50,
-    collision_median_ms: 1.50,
+    presentation_median_ms: 4.50,
+    collision_median_ms: 2.50,
     state_advance_median_ms: 0.25,
     future_subsystem_reserve_ms: 1.00,
-    max_queue_submit_count_per_frame: 1,
+    max_queue_submit_count_per_frame: 2,
     max_hot_path_readback_bytes_per_frame: 0,
 }
 ```

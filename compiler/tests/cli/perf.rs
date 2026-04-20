@@ -544,11 +544,11 @@ fn cli_perf_runs_realtime_presentation_1080p120_closure_profile() {
 }
 
 #[test]
-fn cli_perf_runs_whole_frame_1080p120_closure_profile() {
+fn cli_perf_runs_engine_frame_1080p120_closure_profile() {
     let dir = workspace_tempdir();
-    let bench_root = dir.path().join("whole_frame_fixture");
-    write_whole_frame_closure_benchmark_project(&bench_root);
-    let baseline = dir.path().join("whole_frame_1080p120.json");
+    let bench_root = dir.path().join("engine_frame_fixture");
+    write_engine_frame_closure_benchmark_project(&bench_root);
+    let baseline = dir.path().join("engine_frame_1080p120.json");
 
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .current_dir(dir.path())
@@ -558,34 +558,39 @@ fn cli_perf_runs_whole_frame_1080p120_closure_profile() {
         .arg(format!("--baseline-out={}", baseline.display()))
         .arg(&bench_root)
         .output()
-        .expect("run whole_frame closure perf");
+        .expect("run engine_frame closure perf");
     assert!(
         output.status.success(),
-        "whole frame closure perf failed: stdout={}\nstderr={}",
+        "engine frame closure perf failed: stdout={}\nstderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 
     let json: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&baseline).expect("read whole-frame baseline"))
-            .expect("parse whole-frame baseline");
+        serde_json::from_slice(&std::fs::read(&baseline).expect("read engine-frame baseline"))
+            .expect("parse engine-frame baseline");
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout
+            .contains("perf-note: composite closure skips authored whole-frame harness execution")
+    );
     assert!(stdout.contains("presentation-scenario"));
     assert!(stdout.contains("collision-scenario"));
     assert!(stdout.contains("whole-frame-scenario"));
+    assert!(stdout.contains("engine-frame-scenario"));
 
     let closure = json.get("closure").expect("closure report");
     assert_eq!(
         closure
             .pointer("/frame/suite")
             .and_then(|value| value.as_str()),
-        Some("whole_frame")
+        Some("engine_frame")
     );
     assert_eq!(
         closure
             .pointer("/collision/suite")
             .and_then(|value| value.as_str()),
-        Some("whole_frame")
+        Some("engine_frame")
     );
     assert!(matches!(
         closure
@@ -617,9 +622,14 @@ fn cli_perf_runs_whole_frame_1080p120_closure_profile() {
         .get("whole_frame_reports")
         .and_then(|value| value.as_array())
         .expect("whole-frame reports array");
+    let engine_frame_reports = json
+        .get("engine_frame_reports")
+        .and_then(|value| value.as_array())
+        .expect("engine-frame reports array");
     assert_eq!(presentation_reports.len(), 1);
     assert_eq!(collision_reports.len(), 1);
     assert_eq!(whole_frame_reports.len(), 1);
+    assert_eq!(engine_frame_reports.len(), 1);
     assert_eq!(
         presentation_reports[0]
             .pointer("/backend")
@@ -644,14 +654,20 @@ fn cli_perf_runs_whole_frame_1080p120_closure_profile() {
             .and_then(|value| value.as_f64())
             .is_some_and(|value| value > 0.0)
     );
+    assert!(
+        engine_frame_reports[0]
+            .pointer("/frame_wall_time_ns")
+            .and_then(|value| value.as_u64())
+            .is_some_and(|value| value > 0)
+    );
 }
 
 #[test]
 fn cli_perf_why_not_120_mode_prints_closure_verdict_and_diagnostics() {
     let dir = workspace_tempdir();
-    let bench_root = dir.path().join("whole_frame_fixture");
-    write_whole_frame_closure_benchmark_project(&bench_root);
-    let baseline = dir.path().join("whole_frame_1080p120_diagnostics.json");
+    let bench_root = dir.path().join("engine_frame_fixture");
+    write_engine_frame_closure_benchmark_project(&bench_root);
+    let baseline = dir.path().join("engine_frame_1080p120_diagnostics.json");
 
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .current_dir(dir.path())
@@ -663,19 +679,24 @@ fn cli_perf_why_not_120_mode_prints_closure_verdict_and_diagnostics() {
         .arg(format!("--baseline-out={}", baseline.display()))
         .arg(&bench_root)
         .output()
-        .expect("run whole_frame closure perf diagnostics");
+        .expect("run engine_frame closure perf diagnostics");
     assert!(
         output.status.success(),
-        "whole-frame closure diagnostics failed: stdout={}\nstderr={}",
+        "engine-frame closure diagnostics failed: stdout={}\nstderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout
+            .contains("perf-note: composite closure skips authored whole-frame harness execution")
+    );
     assert!(stdout.contains("closure verdict:"));
     assert!(stdout.contains("wgsl_resident"));
     assert!(stdout.contains("cpu-oracle companion:"));
     assert!(stdout.contains("why-not-120:"));
     assert!(stdout.contains("frame median:"));
+    assert!(stdout.contains("engine-frame median:"));
     assert!(stdout.contains("FPS)"));
     let json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&baseline).expect("read diagnostics baseline"))
@@ -754,8 +775,8 @@ fn cli_perf_why_not_120_mode_prints_closure_verdict_and_diagnostics() {
 #[test]
 fn cli_perf_1080p120_closure_collection_failure_exits_nonzero_but_preserves_baseline() {
     let dir = workspace_tempdir();
-    let bench_root = dir.path().join("whole_frame_fixture");
-    write_whole_frame_closure_benchmark_project(&bench_root);
+    let bench_root = dir.path().join("engine_frame_fixture");
+    write_engine_frame_closure_benchmark_project(&bench_root);
     let manifest_path = bench_root.join("1080p120_closure.toml");
     let broken_manifest = std::fs::read_to_string(&manifest_path)
         .expect("read closure manifest")
@@ -766,7 +787,7 @@ fn cli_perf_1080p120_closure_collection_failure_exits_nonzero_but_preserves_base
     write_fixture_file(&manifest_path, &broken_manifest).expect("rewrite broken closure manifest");
     let baseline = dir
         .path()
-        .join("whole_frame_1080p120_unstable_collection.json");
+        .join("engine_frame_1080p120_unstable_collection.json");
 
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .current_dir(dir.path())
@@ -777,10 +798,10 @@ fn cli_perf_1080p120_closure_collection_failure_exits_nonzero_but_preserves_base
         .arg(format!("--baseline-out={}", baseline.display()))
         .arg(&bench_root)
         .output()
-        .expect("run whole-frame closure perf with broken view");
+        .expect("run engine-frame closure perf with broken view");
     assert!(
         !output.status.success(),
-        "expected whole-frame closure with broken view to fail: stdout={}\nstderr={}",
+        "expected engine-frame closure with broken view to fail: stdout={}\nstderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -808,7 +829,7 @@ fn cli_perf_1080p120_closure_collection_failure_exits_nonzero_but_preserves_base
     assert!(notes.iter().any(|note| {
         note.as_str().is_some_and(|text| {
             text.contains("presentation report collection failed")
-                || text.contains("whole-frame report collection failed")
+                || text.contains("engine-frame report collection failed")
         })
     }));
     let presentation_reports = json
@@ -1077,9 +1098,9 @@ fn cli_perf_runs_collision_perf_1080p120_closure_profile() {
 #[test]
 fn cli_perf_collision_closure_marks_cpu_backend_mismatch_as_violated() {
     let dir = workspace_tempdir();
-    let bench_root = dir.path().join("whole_frame_fixture");
-    write_whole_frame_closure_benchmark_project(&bench_root);
-    let baseline = dir.path().join("whole_frame_1080p120_cpu_mismatch.json");
+    let bench_root = dir.path().join("engine_frame_fixture");
+    write_engine_frame_closure_benchmark_project(&bench_root);
+    let baseline = dir.path().join("engine_frame_1080p120_cpu_mismatch.json");
 
     let output = Command::new(env!("CARGO_BIN_EXE_wrela"))
         .current_dir(dir.path())
@@ -1090,17 +1111,17 @@ fn cli_perf_collision_closure_marks_cpu_backend_mismatch_as_violated() {
         .arg(format!("--baseline-out={}", baseline.display()))
         .arg(&bench_root)
         .output()
-        .expect("run whole-frame closure with cpu backend");
+        .expect("run engine-frame closure with cpu backend");
     assert!(
         output.status.success(),
-        "whole-frame closure cpu mismatch failed: stdout={}\nstderr={}",
+        "engine-frame closure cpu mismatch failed: stdout={}\nstderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 
     let json: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&baseline).expect("read whole-frame baseline"))
-            .expect("parse whole-frame baseline");
+        serde_json::from_slice(&std::fs::read(&baseline).expect("read engine-frame baseline"))
+            .expect("parse engine-frame baseline");
     let closure = json.get("closure").expect("closure report");
     assert_eq!(
         closure

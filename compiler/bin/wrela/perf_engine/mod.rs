@@ -64,10 +64,11 @@ use presentation_command::{
 #[cfg(test)]
 use test_eval_perf::build_benchmark_selection;
 use test_eval_perf::{
-    BenchmarkManifest, CollisionBenchmarkReport, DifferentialPipeline, KpiThresholds,
-    PerfCmpConfig, PerfGateConfig, PerfProfile, PerfReport, PresentationBenchmarkComparison,
-    PresentationBenchmarkReport, PresentationWgslWorkgroupComparison, TestSelection,
-    WholeFrameBenchmarkReport, budget_jobs_timeout,
+    BenchmarkManifest, CollisionBenchmarkReport, DifferentialPipeline, EngineFrameBenchmarkReport,
+    KpiThresholds, PerfCmpConfig, PerfGateConfig, PerfProfile, PerfReport,
+    PresentationBenchmarkComparison, PresentationBenchmarkReport,
+    PresentationWgslWorkgroupComparison, TestSelection, WholeFrameBenchmarkReport,
+    budget_jobs_timeout,
 };
 
 mod closure;

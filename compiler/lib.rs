@@ -20,6 +20,7 @@ pub mod collision_contract;
 pub mod collision_exec;
 pub mod collision_plan;
 pub mod diag;
+pub mod engine_frame;
 pub mod execution_policy;
 pub mod gpu_runtime;
 pub mod hir;

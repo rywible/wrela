@@ -6,7 +6,8 @@ use crate::query_exec::wgsl::codegen::{
     wgsl_dispatch_config_abi, wgsl_item_abi_for_descriptor, wgsl_result_abi_for_descriptor,
 };
 use crate::query_exec::wgsl::{
-    GeneratedShaderModule, GpuDispatchRequest, dispatch_compiled_shader, dispatch_config,
+    GeneratedShaderModule, GpuDispatchRequest, dispatch_compiled_shader_with_observability,
+    dispatch_config,
 };
 use smol_str::SmolStr;
 use std::collections::HashMap;
@@ -477,7 +478,7 @@ fn world_batch_query(
     }
     let shape_indices = runtime_u32_list(world_shape_indices)?;
     let items = runtime_items_for_query_item(descriptor.item_kind, items)?;
-    let values = dispatch_compiled_shader(
+    let (values, observability) = dispatch_compiled_shader_with_observability(
         &module,
         GpuDispatchRequest {
             dispatch: dispatch_config(
@@ -505,6 +506,7 @@ fn world_batch_query(
             resident_scene_selection_signature: 0,
         },
     )?;
+    record_runtime_metrics_from_observability(&observability);
     kernel_array_to_runtime(&values)
 }
 
@@ -517,7 +519,7 @@ fn world_query(
     let module = module.clone()?;
     let shape_indices = runtime_u32_list(world_shape_indices)?;
     let item = kind.item_from_runtime(args)?;
-    let result = dispatch_compiled_shader(
+    let (values, observability) = dispatch_compiled_shader_with_observability(
         &module,
         GpuDispatchRequest {
             dispatch: dispatch_config(
@@ -544,12 +546,15 @@ fn world_query(
             resident_scene_detail: 0,
             resident_scene_selection_signature: 0,
         },
-    )?
-    .into_iter()
-    .next()
-    .ok_or_else(|| QueryExecError::Unsupported {
-        message: "native WGSL bridge produced no world result".to_string(),
-    })?;
+    )?;
+    record_runtime_metrics_from_observability(&observability);
+    record_runtime_scene_trace_outcome(&kind, values.first(), &observability);
+    let result = values
+        .into_iter()
+        .next()
+        .ok_or_else(|| QueryExecError::Unsupported {
+            message: "native WGSL bridge produced no world result".to_string(),
+        })?;
     kernel_to_runtime(&result)
 }
 
@@ -586,7 +591,7 @@ fn batch_query(
         message: format!("invalid capture index {capture_index}"),
     })?;
     let items = kind.items_from_runtime(items)?;
-    let values = dispatch_compiled_shader(
+    let (values, observability) = dispatch_compiled_shader_with_observability(
         &module,
         GpuDispatchRequest {
             dispatch: dispatch_config(
@@ -614,7 +619,66 @@ fn batch_query(
             resident_scene_selection_signature: 0,
         },
     )?;
+    record_runtime_metrics_from_observability(&observability);
     kernel_array_to_runtime(&values)
+}
+
+fn record_runtime_metrics_from_observability(
+    observability: &crate::query_exec::QueryExecutionObservability,
+) {
+    wrela_runtime::metrics_add_field_samples(u64::from(observability.field_samples));
+    wrela_runtime::metrics_add_scene_trace_candidate_branches(u64::from(
+        observability.candidates_before_pruning,
+    ));
+    wrela_runtime::metrics_add_scene_trace_support_pruned_branches(u64::from(
+        observability.support_pruned_candidates,
+    ));
+}
+
+fn record_runtime_scene_trace_outcome(
+    kind: &WorldBridgeKind,
+    value: Option<&KernelValue>,
+    observability: &crate::query_exec::QueryExecutionObservability,
+) {
+    if !matches!(kind, WorldBridgeKind::Nearest) {
+        return;
+    }
+    wrela_runtime::metrics_add_scene_trace(1);
+    let (hit, steps) = trace_hit_metrics_from_kernel_value(value)
+        .unwrap_or((observability.hit_count > 0, observability.trace_steps));
+    if hit {
+        let steps = RuntimeValue::from_int(i64::from(steps));
+        let field_samples = RuntimeValue::from_int(i64::from(observability.field_samples));
+        wrela_runtime::wr_metrics_scene_trace_hit(steps, field_samples);
+    }
+}
+
+fn trace_hit_metrics_from_kernel_value(value: Option<&KernelValue>) -> Option<(bool, u32)> {
+    let KernelValue::Struct(value) = value? else {
+        return None;
+    };
+    if value.name.as_str() != "Hit3" {
+        return None;
+    }
+    let hit = value
+        .fields
+        .iter()
+        .find(|(name, _)| name.as_str() == "hit")
+        .and_then(|(_, value)| match value {
+            KernelValue::Bool(hit) => Some(*hit),
+            _ => None,
+        })?;
+    let steps = value
+        .fields
+        .iter()
+        .find(|(name, _)| name.as_str() == "steps")
+        .and_then(|(_, value)| match value {
+            KernelValue::I32(steps) => Some((*steps).max(0) as u32),
+            KernelValue::U32(steps) => Some(*steps),
+            _ => None,
+        })
+        .unwrap_or_default();
+    Some((hit, steps))
 }
 
 fn kernel_array_to_runtime(values: &[KernelValue]) -> Result<RuntimeValue, QueryExecError> {

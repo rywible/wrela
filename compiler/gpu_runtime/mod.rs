@@ -18,17 +18,17 @@ pub use device::{
 };
 pub use layout::{
     GPU_RUNTIME_BIND_GROUP_COUNT, GPU_RUNTIME_FEATURE_SHADER_F16,
-    GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY, GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY_INSIDE_PASSES,
-    GPU_RUNTIME_FRAME_BIND_GROUP_INDEX, GPU_RUNTIME_PASS_BIND_GROUP_INDEX,
-    GPU_RUNTIME_SCENE_BIND_GROUP_INDEX, GPU_RUNTIME_SCHEMA_VERSION,
-    GPU_RUNTIME_SCRATCH_BIND_GROUP_INDEX, GpuLayoutIdentity,
+    GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY, GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY_INSIDE_ENCODERS,
+    GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY_INSIDE_PASSES, GPU_RUNTIME_FRAME_BIND_GROUP_INDEX,
+    GPU_RUNTIME_PASS_BIND_GROUP_INDEX, GPU_RUNTIME_SCENE_BIND_GROUP_INDEX,
+    GPU_RUNTIME_SCHEMA_VERSION, GPU_RUNTIME_SCRATCH_BIND_GROUP_INDEX, GpuLayoutIdentity,
 };
 pub use metrics::{GpuRuntimeMetrics, classify_execution_bound};
 pub use pipeline_cache::{
     BindGroupLayoutCache, ComputePipelineCache, ComputePipelineKey, GpuResourceCache,
     PipelineLayoutCache, PipelineLayoutKey, shader_signature,
 };
-pub use profiler::GpuPassProfiler;
+pub use profiler::{GpuEncoderProfiler, GpuPassProfiler};
 pub use readback::{
     ReadbackReason, ReadbackRequest, ReadbackResult, ReadbackTicket,
     collect_storage_buffer_readback, collect_storage_buffer_readback_bytes,

@@ -10,8 +10,9 @@ pub const GPU_RUNTIME_PASS_BIND_GROUP_INDEX: u32 = 2;
 pub const GPU_RUNTIME_SCRATCH_BIND_GROUP_INDEX: u32 = 3;
 
 pub const GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY: u64 = 1 << 0;
-pub const GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY_INSIDE_PASSES: u64 = 1 << 1;
-pub const GPU_RUNTIME_FEATURE_SHADER_F16: u64 = 1 << 2;
+pub const GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY_INSIDE_ENCODERS: u64 = 1 << 1;
+pub const GPU_RUNTIME_FEATURE_TIMESTAMP_QUERY_INSIDE_PASSES: u64 = 1 << 2;
+pub const GPU_RUNTIME_FEATURE_SHADER_F16: u64 = 1 << 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct GpuLayoutIdentity {

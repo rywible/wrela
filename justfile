@@ -9,8 +9,9 @@ cleanroom-test-dir := ".artifacts/cargo-cleanroom/test"
 cleanroom-check := "CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=.artifacts/cargo-cleanroom/check cargo check --workspace"
 cleanroom-test := "CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=.artifacts/cargo-cleanroom/test cargo test --workspace"
 query-tests := "cargo test -p wrela --test query_contract_registry --test query_program_spine --test phase9_query_plan"
+engine-frame-tests := "cargo test -p wrela --test engine_frame"
 perf-smoke-cmd := "cargo run -p wrela -- perf benchmarks/micro --profile=smoke --runs=1"
-perf-closure-cmd := "cargo run -p wrela -- perf benchmarks/whole_frame --profile=1080p120 --query-backend=wgsl"
+perf-engine-closure-cmd := "cargo run --release -p wrela -- perf benchmarks/engine_frame --profile=1080p120 --query-backend=wgsl"
 
 default:
     @just --list
@@ -63,13 +64,21 @@ test-cli:
 test-query:
     {{query-tests}}
 
+# Focused engine-frame/reporting lane.
+test-engine-frame:
+    {{engine-frame-tests}}
+
 # Cheap perf sanity lane.
 perf-smoke:
     {{perf-smoke-cmd}}
 
-# Representative whole-frame closure lane.
+# Canonical engine-frame closure lane.
+perf-engine-closure:
+    {{perf-engine-closure-cmd}}
+
+# Canonical closure alias.
 perf-closure:
-    {{perf-closure-cmd}}
+    {{perf-engine-closure-cmd}}
 
 # Workspace clippy gate.
 lint:

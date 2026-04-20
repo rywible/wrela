@@ -35,6 +35,22 @@ fn sanitize_git_ref_for_filename_replaces_unsafe_chars() {
 }
 
 #[test]
+fn collision_benchmark_warmup_run_count_only_warms_wgsl_reports() {
+    assert_eq!(
+        super::collection::collision_benchmark_warmup_run_count(
+            wrela::query_plan::DispatchBackend::Wgsl
+        ),
+        1
+    );
+    assert_eq!(
+        super::collection::collision_benchmark_warmup_run_count(
+            wrela::query_plan::DispatchBackend::Cpu
+        ),
+        0
+    );
+}
+
+#[test]
 fn classify_perfcmp_verdict_respects_effect_threshold() {
     assert_eq!(classify_perfcmp_verdict(3.5, 8.0, 2.0), PerfCmpVerdict::Win);
     assert_eq!(
@@ -422,13 +438,13 @@ fn real_collision_perf_closure_manifest_matches_expected_protocol() {
 }
 
 #[test]
-fn real_whole_frame_closure_manifest_matches_expected_protocol() {
-    let bench_root = workspace_root().join("benchmarks").join("whole_frame");
+fn real_engine_frame_closure_manifest_matches_expected_protocol() {
+    let bench_root = workspace_root().join("benchmarks").join("engine_frame");
     let manifest_path = bench_root.join("1080p120_closure.toml");
     let raw_manifest = fs::read_to_string(&manifest_path).expect("read closure manifest");
     let manifest_toml: toml::Value = toml::from_str(&raw_manifest).expect("parse closure toml");
     let manifest = load_benchmark_manifest(&manifest_path).expect("load closure manifest");
-    assert_eq!(manifest.suite, "whole_frame");
+    assert_eq!(manifest.suite, "engine_frame");
     assert_eq!(
         manifest_toml
             .get("profiles")
@@ -558,8 +574,11 @@ fn frame_closure_status_records_report_collection_failures_as_violations() {
     let profile = PerfClosureProfile::canonical_1080p120();
     let report = build_frame_closure_status(
         &profile,
+        None,
         &[],
         &["scenario `dense` timed out".to_string()],
+        &[],
+        &[],
         &[],
         &[],
         0,
@@ -588,6 +607,7 @@ fn frame_closure_status_rejects_backend_mismatch_for_wgsl_resident_profile() {
 
     let report = build_frame_closure_status(
         &profile,
+        None,
         &[PresentationBenchmarkReport {
             scenario_id: "closure_fixture".into(),
             test_name: "tests/fixture".to_string(),
@@ -622,6 +642,8 @@ fn frame_closure_status_rejects_backend_mismatch_for_wgsl_resident_profile() {
             wgsl_workgroup_comparison: None,
             ab_comparison: None,
         }],
+        &[],
+        &[],
         &[],
         &[],
         &[],
@@ -699,7 +721,10 @@ fn frame_closure_status_applies_execution_model_hard_gates_and_records_observati
 
     let report = build_frame_closure_status(
         &profile,
+        None,
         std::slice::from_ref(&presentation_report),
+        &[],
+        &[],
         &[],
         &[],
         &[],
@@ -729,6 +754,7 @@ fn frame_closure_status_applies_execution_model_hard_gates_and_records_observati
         &profile,
         &report,
         &collision_status,
+        &wrela::perf_target::PerfClosureEngineFrameStatusReport::unsampled(),
         std::slice::from_ref(&presentation_report),
         &[],
     );
@@ -801,7 +827,15 @@ fn whole_frame_benchmark_reports_join_presentation_and_collision_by_scenario_id(
             plan_name: "dense_ray_casts".to_string(),
             contract_id: "whole_frame_collision".to_string(),
             query_count: 7_200,
+            batch_count: 1,
+            dispatch_count: 4,
+            dispatch_items: 256,
+            average_items_per_dispatch: 64.0,
             runtime_ns: 2_500_000,
+            timestamps_supported: false,
+            timestamped_pass_count: 0,
+            gpu_time_total_ns: 0,
+            gpu_time_max_ns: 0,
             queries_per_sec: 2_880_000.0,
             broadphase_candidate_count: 5,
             broadphase_rejected_candidate_count: 2,
@@ -818,6 +852,10 @@ fn whole_frame_benchmark_reports_join_presentation_and_collision_by_scenario_id(
             wgsl_selected_workgroup_size: 64,
             wgsl_resident_shared_snapshot_artifacts: 1,
             cpu_certification_query_count: 0,
+            hot_path_readback_bytes: 0,
+            queue_submit_count: 1,
+            scene_reupload_bytes: 0,
+            candidate_table_overflow_fallback_count: 0,
             available_count: 10,
             consumed_count: 7,
             rejected_count: 2,
@@ -856,6 +894,972 @@ fn whole_frame_benchmark_reports_join_presentation_and_collision_by_scenario_id(
                 .to_string(),
             8_500_000,
         )]
+    );
+}
+
+#[test]
+fn engine_frame_benchmark_reports_assemble_presentation_and_collision_subsystems() {
+    let mut frame_cost = sample_presentation_frame_cost(64, 64, 1.0, 128, 2.0, 16, 8, 6_000);
+    frame_cost.gpu_runtime.queue_submit_count = 1;
+    frame_cost.gpu_runtime.timestamps_supported = true;
+    frame_cost.gpu_runtime.timestamped_pass_count = 2;
+    frame_cost.gpu_runtime.readback_bytes = 32;
+    frame_cost.gpu_runtime.scene_reupload_bytes = 64;
+    let presentation_reports = vec![PresentationBenchmarkReport {
+        scenario_id: "closure_1080p120_dense_constructive_dense_ray_casts".into(),
+        test_name:
+            "tests/whole_frame::test_whole_frame_dense_constructive_dense_ray_casts_ops_7200"
+                .to_string(),
+        view: "show_dense_constructive_1080p120_closure_view".to_string(),
+        region: "dense_constructive_region".to_string(),
+        domain: "dense_constructive_domain".to_string(),
+        backend: "wgsl".to_string(),
+        observed_adapter_name: None,
+        query_trace_solver_mode: "hybrid".to_string(),
+        selected_workgroup_size: 64,
+        frames_executed: 7,
+        frame_time_ns: 42_000_000,
+        steady_state_fps: fps_from_frame_time_ns(42_000_000, 7),
+        field_samples: 128,
+        quality_tier: "realtime_120".to_string(),
+        target_fps: 120,
+        internal_resolution_scale: 1.0,
+        reconstructed_output: false,
+        quality_history: vec!["realtime_120".to_string()],
+        internal_resolution_history: vec![1.0],
+        bottleneck_pass: Some("surface_resolve".to_string()),
+        active_acceleration_artifacts: vec!["view_tile_culling".to_string()],
+        performance_gain_sources: vec!["tile_culling".to_string()],
+        frame_cost,
+        frame_cost_history: vec![],
+        wgsl_workgroup_comparison: None,
+        ab_comparison: None,
+    }];
+    let collision_reports = vec![CollisionBenchmarkReport {
+        suite: "whole_frame".to_string(),
+        backend: "wgsl".to_string(),
+        command: "collision-suite".to_string(),
+        query_count_total: 7_200,
+        total_runtime_ns: 2_500_000,
+        queries_per_sec: 2_880_000.0,
+        average_candidate_count: 5.0,
+        average_rejected_candidate_count: 2.0,
+        average_pruned_node_count: 1.0,
+        average_interval_subdivisions: 0.5,
+        average_interval_refinements: 0.2,
+        average_certificate_successes: 0.0,
+        witness_reuse_rate: 0.75,
+        fallback_rate: 0.10,
+        available_count_total: 10,
+        consumed_count_total: 7,
+        rejected_count_total: 2,
+        unavailable_count_total: 1,
+        executions: vec![test_eval_perf::CollisionBenchmarkExecutionReport {
+            name: "closure_1080p120_dense_constructive_dense_ray_casts".into(),
+            plan_name: "dense_ray_casts".to_string(),
+            contract_id: "whole_frame_collision".to_string(),
+            query_count: 7_200,
+            batch_count: 1,
+            dispatch_count: 4,
+            dispatch_items: 256,
+            average_items_per_dispatch: 64.0,
+            runtime_ns: 2_500_000,
+            timestamps_supported: true,
+            timestamped_pass_count: 4,
+            gpu_time_total_ns: 1_250_000,
+            gpu_time_max_ns: 450_000,
+            queries_per_sec: 2_880_000.0,
+            broadphase_candidate_count: 5,
+            broadphase_rejected_candidate_count: 2,
+            broadphase_pruned_node_count: 1,
+            candidate_reduction_effectiveness: 0.5,
+            interval_subdivisions: 1,
+            interval_refinements: 0,
+            certificate_successes: 0,
+            interval_bracket: None,
+            fallback_count: 720,
+            contact_normal_provenance: None,
+            wgsl_dispatch_count: 4,
+            wgsl_dispatch_items: 256,
+            wgsl_selected_workgroup_size: 64,
+            wgsl_resident_shared_snapshot_artifacts: 1,
+            cpu_certification_query_count: 0,
+            hot_path_readback_bytes: 0,
+            queue_submit_count: 1,
+            scene_reupload_bytes: 64,
+            candidate_table_overflow_fallback_count: 0,
+            available_count: 10,
+            consumed_count: 7,
+            rejected_count: 2,
+            unavailable_count: 1,
+            witness_reuse_rate: 0.70,
+            fallback_rate: 0.10,
+        }],
+    }];
+
+    let profile = PerfClosureProfile::canonical_1080p120();
+    let reports = build_engine_frame_benchmark_reports(
+        &presentation_reports,
+        &collision_reports,
+        Some(&profile.engine_frame_budget),
+    )
+    .expect("build engine-frame reports");
+    assert_eq!(reports.len(), 1);
+    assert_eq!(
+        reports[0].scenario_id,
+        "closure_1080p120_dense_constructive_dense_ray_casts"
+    );
+    assert_eq!(reports[0].frame_count, 7);
+    assert_eq!(reports[0].frame_wall_time_ns, 8_500_000);
+    assert!(
+        (reports[0].steady_state_fps - fps_from_frame_time_ns(8_500_000, 1)).abs() < f64::EPSILON
+    );
+    assert_eq!(reports[0].state_advance_runtime_ns, 0);
+    assert_eq!(reports[0].queue_submit_count, 2);
+    assert_eq!(reports[0].hot_path_readback_bytes, 0);
+    assert_eq!(reports[0].scene_reupload_bytes, 128);
+    assert_eq!(reports[0].gpu_critical_path_ns, Some(1_250_000));
+    assert_eq!(reports[0].future_subsystem_reserve_ns, 0);
+    assert_eq!(reports[0].subsystem_reports.len(), 3);
+    assert_eq!(reports[0].subsystem_reports[0].label, "state_advance");
+    assert_eq!(reports[0].subsystem_reports[0].cpu_critical_path_micros, 0);
+    assert!(
+        reports[0].subsystem_reports[0]
+            .notes
+            .iter()
+            .any(|note| note == "reserved-slot-unsampled")
+    );
+    assert_eq!(reports[0].subsystem_reports[1].label, "presentation");
+    assert_eq!(reports[0].subsystem_reports[1].hot_path_readback_bytes, 0);
+    assert_eq!(reports[0].subsystem_reports[2].label, "collision");
+    assert_eq!(
+        reports[0].subsystem_reports[2].gpu_critical_path_micros,
+        Some(1_250)
+    );
+    assert!(
+        reports[0].subsystem_reports[2]
+            .notes
+            .iter()
+            .any(|note| note == "gpu_timestamped_pass_count=4")
+    );
+    assert!(
+        !reports[0].subsystem_reports[2]
+            .notes
+            .iter()
+            .any(|note| note == "gpu_critical_path_proxy=runtime_ns")
+    );
+    assert!(
+        !reports[0]
+            .violations
+            .iter()
+            .any(|violation| violation == "engine_frame_hot_path_readback_budget_exceeded")
+    );
+    assert!(
+        reports[0]
+            .violations
+            .iter()
+            .any(|violation| violation == "engine_frame_future_reserve_exhausted")
+    );
+}
+
+#[test]
+fn engine_frame_benchmark_reports_preserve_exact_future_reserve_budget() {
+    let mut frame_cost = sample_presentation_frame_cost(64, 64, 1.0, 128, 2.0, 16, 8, 6_000);
+    frame_cost.gpu_runtime.queue_submit_count = 1;
+    let presentation_reports = vec![PresentationBenchmarkReport {
+        scenario_id: "closure_fixture".into(),
+        test_name: "tests/whole_frame::test_fixture_ops_1".to_string(),
+        view: "closure_fixture_view".to_string(),
+        region: "closure_fixture_region".to_string(),
+        domain: "closure_fixture_domain".to_string(),
+        backend: "wgsl".to_string(),
+        observed_adapter_name: None,
+        query_trace_solver_mode: "hybrid".to_string(),
+        selected_workgroup_size: 64,
+        frames_executed: 7,
+        frame_time_ns: 42_560_000,
+        steady_state_fps: fps_from_frame_time_ns(42_560_000, 7),
+        field_samples: 128,
+        quality_tier: "realtime_120".to_string(),
+        target_fps: 120,
+        internal_resolution_scale: 1.0,
+        reconstructed_output: false,
+        quality_history: vec!["realtime_120".to_string()],
+        internal_resolution_history: vec![1.0],
+        bottleneck_pass: Some("surface_resolve".to_string()),
+        active_acceleration_artifacts: vec![],
+        performance_gain_sources: vec![],
+        frame_cost,
+        frame_cost_history: vec![],
+        wgsl_workgroup_comparison: None,
+        ab_comparison: None,
+    }];
+    let collision_reports = vec![CollisionBenchmarkReport {
+        suite: "whole_frame".to_string(),
+        backend: "wgsl".to_string(),
+        command: "collision-suite".to_string(),
+        query_count_total: 1,
+        total_runtime_ns: 1_250_000,
+        queries_per_sec: 0.0,
+        average_candidate_count: 0.0,
+        average_rejected_candidate_count: 0.0,
+        average_pruned_node_count: 0.0,
+        average_interval_subdivisions: 0.0,
+        average_interval_refinements: 0.0,
+        average_certificate_successes: 0.0,
+        witness_reuse_rate: 0.0,
+        fallback_rate: 0.0,
+        available_count_total: 0,
+        consumed_count_total: 0,
+        rejected_count_total: 0,
+        unavailable_count_total: 0,
+        executions: vec![test_eval_perf::CollisionBenchmarkExecutionReport {
+            name: "closure_fixture".into(),
+            plan_name: "dense_ray_casts".to_string(),
+            contract_id: "whole_frame_collision".to_string(),
+            query_count: 1,
+            batch_count: 1,
+            dispatch_count: 1,
+            dispatch_items: 1,
+            average_items_per_dispatch: 1.0,
+            runtime_ns: 1_250_000,
+            timestamps_supported: false,
+            timestamped_pass_count: 0,
+            gpu_time_total_ns: 0,
+            gpu_time_max_ns: 0,
+            queries_per_sec: 800_000.0,
+            broadphase_candidate_count: 1,
+            broadphase_rejected_candidate_count: 0,
+            broadphase_pruned_node_count: 0,
+            candidate_reduction_effectiveness: 1.0,
+            interval_subdivisions: 0,
+            interval_refinements: 0,
+            certificate_successes: 0,
+            interval_bracket: None,
+            fallback_count: 0,
+            contact_normal_provenance: None,
+            wgsl_dispatch_count: 1,
+            wgsl_dispatch_items: 1,
+            wgsl_selected_workgroup_size: 64,
+            wgsl_resident_shared_snapshot_artifacts: 0,
+            cpu_certification_query_count: 0,
+            hot_path_readback_bytes: 0,
+            queue_submit_count: 1,
+            scene_reupload_bytes: 0,
+            candidate_table_overflow_fallback_count: 0,
+            available_count: 0,
+            consumed_count: 0,
+            rejected_count: 0,
+            unavailable_count: 0,
+            witness_reuse_rate: 0.0,
+            fallback_rate: 0.0,
+        }],
+    }];
+
+    let profile = PerfClosureProfile::canonical_1080p120();
+    let reports = build_engine_frame_benchmark_reports(
+        &presentation_reports,
+        &collision_reports,
+        Some(&profile.engine_frame_budget),
+    )
+    .expect("build engine-frame reports");
+
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].frame_wall_time_ns, 7_330_000);
+    assert_eq!(reports[0].future_subsystem_reserve_ns, 1_000_000);
+    assert!(
+        !reports[0]
+            .violations
+            .iter()
+            .any(|violation| violation == "engine_frame_future_reserve_exhausted")
+    );
+}
+
+#[test]
+fn engine_frame_benchmark_reports_use_measured_presentation_frame_maxima() {
+    let mut final_frame = sample_presentation_frame_cost(64, 64, 1.0, 128, 2.0, 16, 8, 6_000);
+    final_frame.gpu_runtime.gpu_time_total_micros = 700;
+    final_frame.gpu_runtime.queue_submit_count = 1;
+    final_frame.gpu_runtime.timestamps_supported = true;
+    final_frame.gpu_runtime.timestamped_pass_count = 2;
+    final_frame.gpu_runtime.readback_bytes = 32;
+    final_frame.gpu_runtime.scene_reupload_bytes = 64;
+
+    let mut peak_frame = final_frame.clone();
+    peak_frame.gpu_runtime.gpu_time_total_micros = 900;
+    peak_frame.gpu_runtime.queue_submit_count = 3;
+    peak_frame.gpu_runtime.timestamped_pass_count = 1;
+    peak_frame.gpu_runtime.readback_bytes = 48;
+    peak_frame.gpu_runtime.scene_reupload_bytes = 128;
+    let final_history_frame = final_frame.clone();
+
+    let presentation_reports = vec![PresentationBenchmarkReport {
+        scenario_id: "closure_1080p120_dense_constructive_dense_ray_casts".into(),
+        test_name:
+            "tests/whole_frame::test_whole_frame_dense_constructive_dense_ray_casts_ops_7200"
+                .to_string(),
+        view: "show_dense_constructive_1080p120_closure_view".to_string(),
+        region: "dense_constructive_region".to_string(),
+        domain: "dense_constructive_domain".to_string(),
+        backend: "wgsl".to_string(),
+        observed_adapter_name: None,
+        query_trace_solver_mode: "hybrid".to_string(),
+        selected_workgroup_size: 64,
+        frames_executed: 2,
+        frame_time_ns: 12_000_000,
+        steady_state_fps: fps_from_frame_time_ns(12_000_000, 2),
+        field_samples: 128,
+        quality_tier: "realtime_120".to_string(),
+        target_fps: 120,
+        internal_resolution_scale: 1.0,
+        reconstructed_output: false,
+        quality_history: vec!["realtime_120".to_string(), "realtime_120".to_string()],
+        internal_resolution_history: vec![1.0, 1.0],
+        bottleneck_pass: Some("surface_resolve".to_string()),
+        active_acceleration_artifacts: vec!["view_tile_culling".to_string()],
+        performance_gain_sources: vec!["tile_culling".to_string()],
+        frame_cost: final_frame,
+        frame_cost_history: vec![peak_frame, final_history_frame],
+        wgsl_workgroup_comparison: None,
+        ab_comparison: None,
+    }];
+    let collision_reports = vec![CollisionBenchmarkReport {
+        suite: "whole_frame".to_string(),
+        backend: "wgsl".to_string(),
+        command: "collision-suite".to_string(),
+        query_count_total: 7_200,
+        total_runtime_ns: 2_500_000,
+        queries_per_sec: 2_880_000.0,
+        average_candidate_count: 5.0,
+        average_rejected_candidate_count: 2.0,
+        average_pruned_node_count: 1.0,
+        average_interval_subdivisions: 0.5,
+        average_interval_refinements: 0.2,
+        average_certificate_successes: 0.0,
+        witness_reuse_rate: 0.75,
+        fallback_rate: 0.10,
+        available_count_total: 10,
+        consumed_count_total: 7,
+        rejected_count_total: 2,
+        unavailable_count_total: 1,
+        executions: vec![test_eval_perf::CollisionBenchmarkExecutionReport {
+            name: "closure_1080p120_dense_constructive_dense_ray_casts".into(),
+            plan_name: "dense_ray_casts".to_string(),
+            contract_id: "whole_frame_collision".to_string(),
+            query_count: 7_200,
+            batch_count: 1,
+            dispatch_count: 4,
+            dispatch_items: 256,
+            average_items_per_dispatch: 64.0,
+            runtime_ns: 2_500_000,
+            timestamps_supported: false,
+            timestamped_pass_count: 0,
+            gpu_time_total_ns: 0,
+            gpu_time_max_ns: 0,
+            queries_per_sec: 2_880_000.0,
+            broadphase_candidate_count: 5,
+            broadphase_rejected_candidate_count: 2,
+            broadphase_pruned_node_count: 1,
+            candidate_reduction_effectiveness: 0.5,
+            interval_subdivisions: 1,
+            interval_refinements: 0,
+            certificate_successes: 0,
+            interval_bracket: None,
+            fallback_count: 720,
+            contact_normal_provenance: None,
+            wgsl_dispatch_count: 4,
+            wgsl_dispatch_items: 256,
+            wgsl_selected_workgroup_size: 64,
+            wgsl_resident_shared_snapshot_artifacts: 1,
+            cpu_certification_query_count: 0,
+            hot_path_readback_bytes: 0,
+            queue_submit_count: 0,
+            scene_reupload_bytes: 0,
+            candidate_table_overflow_fallback_count: 0,
+            available_count: 10,
+            consumed_count: 7,
+            rejected_count: 2,
+            unavailable_count: 1,
+            witness_reuse_rate: 0.70,
+            fallback_rate: 0.10,
+        }],
+    }];
+
+    let profile = PerfClosureProfile::canonical_1080p120();
+    let reports = build_engine_frame_benchmark_reports(
+        &presentation_reports,
+        &collision_reports,
+        Some(&profile.engine_frame_budget),
+    )
+    .expect("build engine-frame reports");
+
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].queue_submit_count, 3);
+    assert_eq!(reports[0].hot_path_readback_bytes, 32);
+    assert_eq!(reports[0].scene_reupload_bytes, 128);
+    assert_eq!(reports[0].gpu_critical_path_ns, Some(3_400_000));
+    assert!(
+        reports[0]
+            .violations
+            .iter()
+            .any(|violation| violation == "engine_frame_hot_path_readback_budget_exceeded")
+    );
+    assert!(
+        reports[0]
+            .violations
+            .iter()
+            .any(|violation| violation == "engine_frame_queue_submit_budget_exceeded")
+    );
+}
+
+#[test]
+fn engine_frame_benchmark_reports_keep_timestamped_collision_zeroes_off_runtime_proxy() {
+    let mut frame_cost = sample_presentation_frame_cost(64, 64, 1.0, 128, 2.0, 16, 8, 6_000);
+    frame_cost.gpu_runtime.queue_submit_count = 1;
+    let presentation_reports = vec![PresentationBenchmarkReport {
+        scenario_id: "closure_fixture".into(),
+        test_name: "tests/whole_frame::test_fixture_ops_1".to_string(),
+        view: "closure_fixture_view".to_string(),
+        region: "closure_fixture_region".to_string(),
+        domain: "closure_fixture_domain".to_string(),
+        backend: "wgsl".to_string(),
+        observed_adapter_name: None,
+        query_trace_solver_mode: "hybrid".to_string(),
+        selected_workgroup_size: 64,
+        frames_executed: 1,
+        frame_time_ns: 6_000_000,
+        steady_state_fps: fps_from_frame_time_ns(6_000_000, 1),
+        field_samples: 128,
+        quality_tier: "realtime_120".to_string(),
+        target_fps: 120,
+        internal_resolution_scale: 1.0,
+        reconstructed_output: false,
+        quality_history: vec!["realtime_120".to_string()],
+        internal_resolution_history: vec![1.0],
+        bottleneck_pass: Some("surface_resolve".to_string()),
+        active_acceleration_artifacts: vec!["view_tile_culling".to_string()],
+        performance_gain_sources: vec!["tile_culling".to_string()],
+        frame_cost,
+        frame_cost_history: vec![],
+        wgsl_workgroup_comparison: None,
+        ab_comparison: None,
+    }];
+    let collision_reports = vec![CollisionBenchmarkReport {
+        suite: "whole_frame".to_string(),
+        backend: "wgsl".to_string(),
+        command: "collision-suite".to_string(),
+        query_count_total: 64,
+        total_runtime_ns: 2_500_000,
+        queries_per_sec: 25_600.0,
+        average_candidate_count: 5.0,
+        average_rejected_candidate_count: 2.0,
+        average_pruned_node_count: 1.0,
+        average_interval_subdivisions: 0.5,
+        average_interval_refinements: 0.2,
+        average_certificate_successes: 0.0,
+        witness_reuse_rate: 0.75,
+        fallback_rate: 0.10,
+        available_count_total: 10,
+        consumed_count_total: 7,
+        rejected_count_total: 2,
+        unavailable_count_total: 1,
+        executions: vec![test_eval_perf::CollisionBenchmarkExecutionReport {
+            name: "closure_fixture".into(),
+            plan_name: "dense_ray_casts".to_string(),
+            contract_id: "whole_frame_collision".to_string(),
+            query_count: 64,
+            batch_count: 1,
+            dispatch_count: 1,
+            dispatch_items: 64,
+            average_items_per_dispatch: 64.0,
+            runtime_ns: 2_500_000,
+            timestamps_supported: true,
+            timestamped_pass_count: 1,
+            gpu_time_total_ns: 0,
+            gpu_time_max_ns: 0,
+            queries_per_sec: 25_600.0,
+            broadphase_candidate_count: 5,
+            broadphase_rejected_candidate_count: 2,
+            broadphase_pruned_node_count: 1,
+            candidate_reduction_effectiveness: 0.5,
+            interval_subdivisions: 1,
+            interval_refinements: 0,
+            certificate_successes: 0,
+            interval_bracket: None,
+            fallback_count: 6,
+            contact_normal_provenance: None,
+            wgsl_dispatch_count: 1,
+            wgsl_dispatch_items: 64,
+            wgsl_selected_workgroup_size: 64,
+            wgsl_resident_shared_snapshot_artifacts: 1,
+            cpu_certification_query_count: 0,
+            hot_path_readback_bytes: 0,
+            queue_submit_count: 1,
+            scene_reupload_bytes: 0,
+            candidate_table_overflow_fallback_count: 0,
+            available_count: 10,
+            consumed_count: 7,
+            rejected_count: 2,
+            unavailable_count: 1,
+            witness_reuse_rate: 0.75,
+            fallback_rate: 0.10,
+        }],
+    }];
+
+    let profile = PerfClosureProfile::canonical_1080p120();
+    let reports = build_engine_frame_benchmark_reports(
+        &presentation_reports,
+        &collision_reports,
+        Some(&profile.engine_frame_budget),
+    )
+    .expect("build engine-frame reports");
+
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].subsystem_reports[2].label, "collision");
+    assert_eq!(
+        reports[0].subsystem_reports[2].gpu_critical_path_micros,
+        Some(0)
+    );
+    assert!(
+        reports[0].subsystem_reports[2]
+            .notes
+            .iter()
+            .any(|note| note == "gpu_timestamped_pass_count=1")
+    );
+    assert!(
+        !reports[0].subsystem_reports[2]
+            .notes
+            .iter()
+            .any(|note| note == "gpu_critical_path_proxy=runtime_ns")
+    );
+}
+
+#[test]
+fn engine_frame_runtime_cases_follow_scheduler_wall_time() {
+    let runtime_cases = engine_frame_runtime_cases_from_reports(&[EngineFrameBenchmarkReport {
+        scenario_id: "closure_fixture".into(),
+        test_name: "tests/whole_frame::test_fixture".to_string(),
+        frame_count: 1,
+        frame_wall_time_ns: 8_750_000,
+        cpu_critical_path_ns: 8_750_000,
+        gpu_critical_path_ns: Some(6_000_000),
+        present_wait_ns: 0,
+        readback_wait_ns: 0,
+        steady_state_fps: fps_from_frame_time_ns(8_750_000, 1),
+        presentation_runtime_ns: 6_000_000,
+        collision_runtime_ns: 2_500_000,
+        state_advance_runtime_ns: 250_000,
+        future_subsystem_reserve_ns: 1_000_000,
+        queue_submit_count: 2,
+        hot_path_readback_bytes: 0,
+        scene_reupload_bytes: 64,
+        active_degradations: vec!["enable_hit_compaction".to_string()],
+        violations: vec![],
+        subsystem_reports: vec![],
+    }]);
+    assert_eq!(
+        runtime_cases,
+        vec![(
+            "closure_fixture".into(),
+            "tests/whole_frame::test_fixture".to_string(),
+            8_750_000,
+        )]
+    );
+}
+
+#[test]
+fn frame_closure_status_uses_engine_frame_per_frame_runtime_without_dividing_by_frame_count() {
+    let mut profile = PerfClosureProfile::canonical_1080p120();
+    profile.output_width = 64;
+    profile.output_height = 64;
+    profile.warmup_runs = 0;
+    profile.measured_runs = 1;
+    profile.frame_budget.median_ms = 100.0;
+    profile.frame_budget.p95_ms = 100.0;
+    profile.primary_visibility_budget.median_ms = 100.0;
+    profile.primary_visibility_budget.p95_ms = 100.0;
+
+    let mut frame_cost = sample_presentation_frame_cost(64, 64, 1.0, 128, 2.0, 16, 8, 1_000);
+    frame_cost.quality.tier = "realtime_120".to_string();
+    frame_cost.quality.target_fps = 120;
+
+    let presentation_report = PresentationBenchmarkReport {
+        scenario_id: "closure_fixture".into(),
+        test_name: "tests/fixture".to_string(),
+        view: "view".to_string(),
+        region: "region".to_string(),
+        domain: "domain".to_string(),
+        backend: "wgsl".to_string(),
+        observed_adapter_name: Some("Test Adapter".to_string()),
+        query_trace_solver_mode: "hybrid".to_string(),
+        selected_workgroup_size: 64,
+        frames_executed: 7,
+        frame_time_ns: 63_000_000,
+        steady_state_fps: fps_from_frame_time_ns(63_000_000, 7),
+        field_samples: 128,
+        quality_tier: "realtime_120".to_string(),
+        target_fps: 120,
+        internal_resolution_scale: 1.0,
+        reconstructed_output: false,
+        quality_history: vec!["realtime_120".to_string()],
+        internal_resolution_history: vec![1.0],
+        bottleneck_pass: Some("primary_visibility".to_string()),
+        active_acceleration_artifacts: vec![],
+        performance_gain_sources: vec![],
+        frame_cost,
+        frame_cost_history: vec![],
+        wgsl_workgroup_comparison: None,
+        ab_comparison: None,
+    };
+
+    let report = build_frame_closure_status(
+        &profile,
+        Some("engine_frame"),
+        std::slice::from_ref(&presentation_report),
+        &[],
+        &[],
+        &[],
+        &[EngineFrameBenchmarkReport {
+            scenario_id: "closure_fixture".into(),
+            test_name: "tests/fixture".to_string(),
+            frame_count: 7,
+            frame_wall_time_ns: 9_000_000,
+            cpu_critical_path_ns: 9_000_000,
+            gpu_critical_path_ns: Some(7_000_000),
+            present_wait_ns: 0,
+            readback_wait_ns: 0,
+            steady_state_fps: fps_from_frame_time_ns(9_000_000, 1),
+            presentation_runtime_ns: 6_000_000,
+            collision_runtime_ns: 2_500_000,
+            state_advance_runtime_ns: 500_000,
+            future_subsystem_reserve_ns: 1_000_000,
+            queue_submit_count: 1,
+            hot_path_readback_bytes: 0,
+            scene_reupload_bytes: 0,
+            active_degradations: vec![],
+            violations: vec![],
+            subsystem_reports: vec![],
+        }],
+        &[],
+        0,
+        1,
+    );
+
+    assert_eq!(report.total_frame_median_ms, Some(9.0));
+    assert_eq!(report.total_frame_p95_ms, Some(9.0));
+    let total_frame_median_fps = report
+        .total_frame_median_fps
+        .expect("engine-frame suite should compute frame fps");
+    assert!((total_frame_median_fps - (1000.0 / 9.0)).abs() < 0.01);
+}
+
+#[test]
+fn engine_frame_closure_status_records_budget_and_scheduler_violations() {
+    let mut profile = PerfClosureProfile::canonical_1080p120();
+    profile.warmup_runs = 0;
+    profile.measured_runs = 1;
+    let report = build_engine_frame_closure_status(
+        &profile,
+        &[EngineFrameBenchmarkReport {
+            scenario_id: "closure_fixture".into(),
+            test_name: "tests/whole_frame::test_fixture".to_string(),
+            frame_count: 1,
+            frame_wall_time_ns: 9_000_000,
+            cpu_critical_path_ns: 9_000_000,
+            gpu_critical_path_ns: Some(6_500_000),
+            present_wait_ns: 0,
+            readback_wait_ns: 0,
+            steady_state_fps: fps_from_frame_time_ns(9_000_000, 1),
+            presentation_runtime_ns: 6_000_000,
+            collision_runtime_ns: 2_000_000,
+            state_advance_runtime_ns: 500_000,
+            future_subsystem_reserve_ns: 500_000,
+            queue_submit_count: 2,
+            hot_path_readback_bytes: 32,
+            scene_reupload_bytes: 64,
+            active_degradations: vec!["enable_hit_compaction".to_string()],
+            violations: vec!["engine_frame_future_reserve_exhausted".to_string()],
+            subsystem_reports: vec![],
+        }],
+        &[],
+        0,
+        1,
+    );
+    assert_eq!(report.status, PerfClosureLaneStatus::Violated);
+    assert_eq!(report.frame_wall_time_median_ms, Some(9.0));
+    assert_eq!(report.presentation_median_ms, Some(6.0));
+    assert_eq!(report.collision_median_ms, Some(2.0));
+    assert_eq!(report.state_advance_median_ms, Some(0.5));
+    assert_eq!(report.future_subsystem_reserve_ms, Some(0.5));
+    assert_eq!(report.queue_submit_count, Some(2));
+    assert_eq!(report.hot_path_readback_bytes, Some(32));
+    assert!(
+        report
+            .active_degradations
+            .contains(&"enable_hit_compaction".to_string())
+    );
+    assert!(
+        report
+            .violations
+            .contains(&"engine_frame_future_reserve_exhausted".to_string())
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("engine-frame reports collected"))
+    );
+    assert!(!report.notes.iter().any(|note| note.contains("not sampled")));
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("engine frame median"))
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("engine-frame hot-path readback"))
+    );
+}
+
+#[test]
+fn engine_frame_closure_status_uses_true_percentiles_for_multi_sample_reports() {
+    let mut profile = PerfClosureProfile::canonical_1080p120();
+    profile.warmup_runs = 0;
+    profile.measured_runs = 5;
+    let reports = [3_000_000u128, 5_000_000, 7_000_000, 11_000_000, 13_000_000]
+        .into_iter()
+        .map(|frame_wall_time_ns| EngineFrameBenchmarkReport {
+            scenario_id: format!("closure_fixture_{frame_wall_time_ns}").into(),
+            test_name: "tests/whole_frame::test_fixture".to_string(),
+            frame_count: 1,
+            frame_wall_time_ns,
+            cpu_critical_path_ns: frame_wall_time_ns,
+            gpu_critical_path_ns: Some(frame_wall_time_ns.saturating_sub(1_000_000)),
+            present_wait_ns: 0,
+            readback_wait_ns: 0,
+            steady_state_fps: fps_from_frame_time_ns(frame_wall_time_ns, 1),
+            presentation_runtime_ns: 2_000_000,
+            collision_runtime_ns: 1_000_000,
+            state_advance_runtime_ns: 250_000,
+            future_subsystem_reserve_ns: 2_000_000,
+            queue_submit_count: 1,
+            hot_path_readback_bytes: 0,
+            scene_reupload_bytes: 0,
+            active_degradations: vec![],
+            violations: vec![],
+            subsystem_reports: vec![],
+        })
+        .collect::<Vec<_>>();
+    let report = build_engine_frame_closure_status(&profile, &reports, &[], 0, reports.len());
+
+    assert_eq!(report.frame_wall_time_median_ms, Some(7.0));
+    assert_eq!(report.frame_wall_time_p95_ms, Some(13.0));
+    assert_eq!(report.cpu_critical_path_median_ms, Some(7.0));
+    assert_eq!(report.gpu_critical_path_median_ms, Some(6.0));
+}
+
+#[test]
+fn engine_frame_closure_status_keeps_reserved_state_advance_out_of_observed_medians() {
+    let profile = PerfClosureProfile::canonical_1080p120();
+    let report = build_engine_frame_closure_status(
+        &profile,
+        &[EngineFrameBenchmarkReport {
+            scenario_id: "closure_fixture".into(),
+            test_name: "tests/whole_frame::test_fixture".to_string(),
+            frame_count: 1,
+            frame_wall_time_ns: 8_000_000,
+            cpu_critical_path_ns: 8_000_000,
+            gpu_critical_path_ns: Some(3_000_000),
+            present_wait_ns: 0,
+            readback_wait_ns: 0,
+            steady_state_fps: fps_from_frame_time_ns(8_000_000, 1),
+            presentation_runtime_ns: 5_000_000,
+            collision_runtime_ns: 3_000_000,
+            state_advance_runtime_ns: 0,
+            future_subsystem_reserve_ns: 1_000_000,
+            queue_submit_count: 2,
+            hot_path_readback_bytes: 0,
+            scene_reupload_bytes: 0,
+            active_degradations: vec![],
+            violations: vec![],
+            subsystem_reports: vec![
+                wrela::engine_frame::EngineSubsystemReport {
+                    kind: wrela::engine_frame::EngineSubsystemKind::StateAdvance,
+                    label: "state_advance".into(),
+                    work_items: 0,
+                    cpu_critical_path_micros: 0,
+                    gpu_critical_path_micros: None,
+                    queue_submit_count: 0,
+                    hot_path_readback_bytes: 0,
+                    scene_reupload_bytes: 0,
+                    wait_time_micros: 0,
+                    notes: vec![
+                        "reserved-slot-unsampled".to_string(),
+                        "scheduler-adapter".to_string(),
+                    ],
+                },
+                wrela::engine_frame::EngineSubsystemReport {
+                    kind: wrela::engine_frame::EngineSubsystemKind::Collision,
+                    label: "collision".into(),
+                    work_items: 1,
+                    cpu_critical_path_micros: 3_000,
+                    gpu_critical_path_micros: Some(3_000),
+                    queue_submit_count: 1,
+                    hot_path_readback_bytes: 0,
+                    scene_reupload_bytes: 0,
+                    wait_time_micros: 0,
+                    notes: vec![
+                        "scheduler-adapter".to_string(),
+                        "gpu_critical_path_proxy=runtime_ns".to_string(),
+                    ],
+                },
+            ],
+        }],
+        &[],
+        0,
+        1,
+    );
+
+    assert_eq!(report.state_advance_median_ms, None);
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("reserve is accounted separately"))
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("collision gpu critical path uses runtime proxy"))
+    );
+}
+
+#[test]
+fn closure_verdict_fails_when_engine_frame_lane_is_violated() {
+    let profile = PerfClosureProfile::canonical_1080p120();
+    let verdict = build_closure_verdict(
+        &profile,
+        &PerfClosureLaneStatusReport::unsampled(&profile.frame),
+        &PerfClosureLaneStatusReport::unsampled(&profile.collision),
+        &wrela::perf_target::PerfClosureEngineFrameStatusReport {
+            status: PerfClosureLaneStatus::Violated,
+            frame_wall_time_median_ms: Some(9.5),
+            frame_wall_time_p95_ms: Some(10.0),
+            cpu_critical_path_median_ms: Some(9.5),
+            gpu_critical_path_median_ms: Some(6.0),
+            presentation_median_ms: Some(5.0),
+            collision_median_ms: Some(1.0),
+            state_advance_median_ms: Some(0.25),
+            future_subsystem_reserve_ms: Some(0.5),
+            queue_submit_count: Some(2),
+            hot_path_readback_bytes: Some(16),
+            scene_reupload_bytes: Some(0),
+            active_degradations: vec![],
+            violations: vec!["engine_frame_future_reserve_exhausted".to_string()],
+            notes: vec![],
+        },
+        &[],
+        &[],
+    );
+    assert_eq!(verdict.status, PerfClosureVerdictStatus::Failed);
+    assert_eq!(
+        verdict.top_remaining_bottleneck.as_deref(),
+        Some("engine_frame_hot_path_readback")
+    );
+    assert!(
+        verdict
+            .findings
+            .iter()
+            .any(|finding| finding.subsystem == "engine_frame"
+                && finding.focus == "engine_frame_hot_path_readback_budget")
+    );
+}
+
+#[test]
+fn closure_verdict_keeps_frame_lane_as_compatibility_signal_for_engine_frame_suite() {
+    let profile = PerfClosureProfile::canonical_1080p120();
+    let frame_status = PerfClosureLaneStatusReport {
+        lane: profile.frame.lane,
+        protocol_id: profile.frame.protocol_id.clone(),
+        suite: profile.frame.suite.clone(),
+        status: PerfClosureLaneStatus::Violated,
+        measured_output_width: Some(profile.output_width),
+        measured_output_height: Some(profile.output_height),
+        min_internal_resolution_scale_observed: Some(1.0),
+        max_internal_resolution_scale_observed: Some(1.0),
+        reconstructed_output_detected: Some(false),
+        active_acceleration_artifacts: vec!["view_distance_clipmap".to_string()],
+        active_degradations: vec![],
+        hot_path_readback_bytes: Some(0),
+        scene_reupload_bytes: Some(0),
+        cpu_screen_sample_allocations: Some(0),
+        attachment_cpu_bounce_count: Some(0),
+        queue_submit_count: Some(1),
+        primary_visibility_dispatch_count: Some(0),
+        timestamps_supported: Some(false),
+        timestamped_pass_count: Some(0),
+        primary_visibility_median_ms: Some(0.1),
+        primary_visibility_p95_ms: Some(0.2),
+        total_frame_median_ms: Some(0.4),
+        total_frame_median_fps: Some(2500.0),
+        total_frame_p95_ms: Some(0.6),
+        collision_runtime_median_ms: None,
+        collision_runtime_p95_ms: None,
+        collision_baseline_id: None,
+        collision_runtime_regression_pct: None,
+        dominant_bottleneck_pass: Some("surface_resolve".to_string()),
+        notes: vec!["compatibility/debug frame note".to_string()],
+    };
+    let collision_status = PerfClosureLaneStatusReport {
+        status: PerfClosureLaneStatus::Validated,
+        notes: vec!["collision closure validated".to_string()],
+        ..PerfClosureLaneStatusReport::unsampled(&profile.collision)
+    };
+    let engine_frame_status = wrela::perf_target::PerfClosureEngineFrameStatusReport {
+        status: PerfClosureLaneStatus::Validated,
+        frame_wall_time_median_ms: Some(2.0),
+        frame_wall_time_p95_ms: Some(3.0),
+        cpu_critical_path_median_ms: Some(2.0),
+        gpu_critical_path_median_ms: None,
+        presentation_median_ms: Some(0.8),
+        collision_median_ms: Some(0.7),
+        state_advance_median_ms: Some(0.25),
+        future_subsystem_reserve_ms: Some(1.0),
+        queue_submit_count: Some(1),
+        hot_path_readback_bytes: Some(0),
+        scene_reupload_bytes: Some(0),
+        active_degradations: vec![],
+        violations: vec![],
+        notes: vec!["engine-frame closure met the canonical 1080p120 contract".to_string()],
+    };
+
+    let verdict = build_closure_verdict(
+        &profile,
+        &frame_status,
+        &collision_status,
+        &engine_frame_status,
+        &[],
+        &[],
+    );
+
+    assert_eq!(verdict.status, PerfClosureVerdictStatus::Met);
+    assert!(verdict.top_remaining_bottleneck.is_none());
+}
+
+#[test]
+fn high_volume_collision_collection_uses_batch_entrypoints_instead_of_per_query_execute_loops() {
+    let source = include_str!("collection.rs");
+    assert!(
+        source.contains("execute_batch_metrics_only"),
+        "expected batch-based WGSL collision collection in perf_engine::collection"
+    );
+    assert!(
+        !source.contains("plan.execute("),
+        "high-volume collision collection should not call plan.execute(...) directly anymore"
     );
 }
 
@@ -942,9 +1946,12 @@ fn frame_closure_status_uses_whole_frame_totals_for_whole_frame_suite() {
 
     let report = build_frame_closure_status(
         &profile,
+        Some("whole_frame"),
         &[presentation_report],
         &[],
         &whole_frame_reports,
+        &[],
+        &[],
         &[],
         0,
         1,
@@ -1034,9 +2041,12 @@ fn frame_closure_status_fails_closed_for_unknown_whole_frame_scenario_ids() {
 
     let report = build_frame_closure_status(
         &profile,
+        Some("whole_frame"),
         &[presentation_report],
         &[],
         &whole_frame_reports,
+        &[],
+        &[],
         &[],
         0,
         1,
@@ -1216,6 +2226,7 @@ fn closure_verdict_surface_names_the_top_bottleneck_and_subsystem_findings() {
         &profile,
         &frame_status,
         &collision_status,
+        &wrela::perf_target::PerfClosureEngineFrameStatusReport::unsampled(),
         &[presentation_report],
         &[collision_report],
     );

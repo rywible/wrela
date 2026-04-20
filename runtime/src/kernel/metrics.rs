@@ -502,20 +502,38 @@ pub fn inc_sched_ready_overflow_fallback() {
 pub fn inc_scene_trace() {
     bump(METRIC_SCENE_TRACE)
 }
+pub fn add_scene_trace(count: u64) {
+    bump_by(METRIC_SCENE_TRACE, count)
+}
 pub fn inc_field_sample() {
     bump(METRIC_FIELD_SAMPLE)
+}
+pub fn add_field_samples(count: u64) {
+    bump_by(METRIC_FIELD_SAMPLE, count)
 }
 pub fn inc_scene_trace_support_pruned_branch() {
     bump(METRIC_SCENE_TRACE_SUPPORT_PRUNED_BRANCH)
 }
+pub fn add_scene_trace_support_pruned_branches(count: u64) {
+    bump_by(METRIC_SCENE_TRACE_SUPPORT_PRUNED_BRANCH, count)
+}
 pub fn inc_scene_trace_candidate_branch() {
     bump(METRIC_SCENE_TRACE_CANDIDATE_BRANCH)
+}
+pub fn add_scene_trace_candidate_branches(count: u64) {
+    bump_by(METRIC_SCENE_TRACE_CANDIDATE_BRANCH, count)
 }
 pub fn inc_scene_trace_exact_path() {
     bump(METRIC_SCENE_TRACE_EXACT_PATH)
 }
+pub fn add_scene_trace_exact_paths(count: u64) {
+    bump_by(METRIC_SCENE_TRACE_EXACT_PATH, count)
+}
 pub fn inc_scene_trace_conservative_path() {
     bump(METRIC_SCENE_TRACE_CONSERVATIVE_PATH)
+}
+pub fn add_scene_trace_conservative_paths(count: u64) {
+    bump_by(METRIC_SCENE_TRACE_CONSERVATIVE_PATH, count)
 }
 pub fn inc_scene_trace_hit(steps: u64, field_samples: u64) {
     bump(METRIC_SCENE_TRACE_HIT_COUNT);
