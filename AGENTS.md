@@ -10,6 +10,8 @@
 
 ## Intended Dev Loop
 
+- You have carte blanche to use subagents as needed.
+
 - Start with the cheapest truthful lane for the change. Prefer focused lanes like `just test-runtime`, `just test-compiler`, `just test-cli`, or `just test-query` before broader repo lanes.
 
 - Use `just check` for fast compile feedback while iterating.
