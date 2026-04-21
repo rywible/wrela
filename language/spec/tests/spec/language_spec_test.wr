@@ -189,7 +189,7 @@ fn test_functions_and_return() -> Nothing {
 
 value SubstrateSample {
     flag: Bool
-    count: I32
+    quantity: I32
     measure: F32
 }
 
@@ -198,9 +198,9 @@ fn compute_middle_value(values: Array[I32, 3]) -> I32 {
 }
 
 fn test_value_declarations_and_scalar_aliases() -> Nothing {
-    sample = SubstrateSample(flag=true, count=7, measure=1.25)
+    sample = SubstrateSample(flag=true, quantity=7, measure=1.25)
     assert value sample.flag == true
-    assert value sample.count == 7
+    assert value sample.quantity == 7
     assert approx sample.measure ~= 1.251 within 0.01
 }
 

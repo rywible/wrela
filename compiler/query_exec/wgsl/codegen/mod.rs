@@ -90,6 +90,7 @@ pub(crate) struct GeneratedShader {
     pub(crate) item_abi: PortableAbiType,
     pub(crate) result_abi: PortableAbiType,
     pub(crate) shape_meta_values: Vec<KernelValue>,
+    pub(crate) cache_observability_seed: CacheObservabilitySeed,
 }
 
 #[derive(Debug, Clone)]
@@ -106,12 +107,12 @@ struct NormalizedShaderBehavior {
     world_support_lower_bound_pruning: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct CacheObservabilitySeed {
-    resident_shared_snapshot_artifacts: u32,
-    resident_observer_local_artifacts: u32,
-    upload_attempts: u32,
-    upload_rejections: u32,
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct CacheObservabilitySeed {
+    pub(crate) resident_shared_snapshot_artifacts: u32,
+    pub(crate) resident_observer_local_artifacts: u32,
+    pub(crate) upload_attempts: u32,
+    pub(crate) upload_rejections: u32,
 }
 
 impl NormalizedShaderBehavior {
@@ -370,6 +371,7 @@ pub(crate) fn generate_shader(
         item_abi,
         result_abi,
         shape_meta_values,
+        cache_observability_seed: cache_seed,
     })
 }
 

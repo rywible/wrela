@@ -30,6 +30,7 @@ use crate::query_exec::cpu::{default_medium, default_surface};
 use smol_str::SmolStr;
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -169,9 +170,74 @@ pub struct FrameAttachmentLayout {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct AttachmentBytes(Arc<Vec<u8>>);
+
+impl AttachmentBytes {
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(Arc::new(bytes))
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.as_slice().to_vec()
+    }
+
+    pub fn into_vec(self) -> Vec<u8> {
+        Arc::unwrap_or_clone(self.0)
+    }
+
+    pub fn copy_from_slice(&mut self, bytes: &[u8]) {
+        let target = self.make_mut();
+        target.clear();
+        target.extend_from_slice(bytes);
+    }
+
+    fn make_mut(&mut self) -> &mut Vec<u8> {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl Default for AttachmentBytes {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
+impl From<Vec<u8>> for AttachmentBytes {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::new(bytes)
+    }
+}
+
+impl std::ops::Deref for AttachmentBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl AsRef<[u8]> for AttachmentBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct AttachmentResource {
     pub layout: FrameAttachmentLayout,
-    pub bytes: Vec<u8>,
+    pub bytes: AttachmentBytes,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -201,6 +267,41 @@ pub fn allocate_attachment_resources_without_history(
         }
     }
     allocate_attachment_resources_with_history(&fresh_frame, width, height, None)
+}
+
+pub fn allocate_attachment_layout_resources_without_history(
+    frame: &FrameContract,
+    width: u32,
+    height: u32,
+) -> Result<AttachmentResourceSet, PresentationResourceError> {
+    let mut fresh_frame = frame.clone();
+    for attachment in &mut fresh_frame.outputs {
+        if attachment.clear_policy == AttachmentClearPolicy::PreservePrevious {
+            attachment.clear_policy = AttachmentClearPolicy::SemanticDefault;
+        }
+    }
+    let mut attachments = BTreeMap::new();
+    for attachment in &fresh_frame.outputs {
+        let layout_plan = frame_attachment_layout_plan_with_strategy(
+            &fresh_frame,
+            attachment,
+            width,
+            height,
+            PhysicalLayoutStrategy::DenseBuffer,
+        )?;
+        attachments.insert(
+            attachment.name.clone(),
+            AttachmentResource {
+                layout: layout_plan.materialize(),
+                bytes: AttachmentBytes::default(),
+            },
+        );
+    }
+    Ok(AttachmentResourceSet {
+        width,
+        height,
+        attachments,
+    })
 }
 
 pub fn allocate_attachment_resources_with_history(
@@ -339,6 +440,12 @@ impl AttachmentResourceSet {
         self.attachments.get_mut(name)
     }
 
+    pub fn has_complete_cpu_mirrors(&self) -> bool {
+        self.attachments
+            .values()
+            .all(AttachmentResource::has_complete_cpu_mirror)
+    }
+
     pub fn decode_attachment(
         &self,
         name: &str,
@@ -355,6 +462,10 @@ impl AttachmentResourceSet {
 }
 
 impl AttachmentResource {
+    pub fn has_complete_cpu_mirror(&self) -> bool {
+        self.bytes.len() >= self.layout.total_size as usize
+    }
+
     pub fn element_count(&self) -> usize {
         self.layout.plan.physical.element_count as usize
     }
@@ -366,15 +477,16 @@ impl AttachmentResource {
     ) -> Result<(), PresentationResourceError> {
         let range = self.element_range(index)?;
         let encoded = portable_abi_encode_value(&self.layout.element_abi, value)?;
-        self.bytes[range.clone()].fill(0);
+        let bytes = self.bytes.make_mut();
+        bytes[range.clone()].fill(0);
         let copy_len = encoded.len().min(range.len());
-        self.bytes[range.start..range.start + copy_len].copy_from_slice(&encoded[..copy_len]);
+        bytes[range.start..range.start + copy_len].copy_from_slice(&encoded[..copy_len]);
         Ok(())
     }
 
     pub fn decode(&self, index: usize) -> Result<KernelValue, PresentationResourceError> {
         let range = self.element_range(index)?;
-        portable_abi_decode_value(&self.layout.element_abi, &self.bytes[range])
+        portable_abi_decode_value(&self.layout.element_abi, &self.bytes.as_slice()[range])
             .map_err(PresentationResourceError::from)
     }
 
@@ -396,9 +508,9 @@ fn initialize_attachment_bytes(
     attachment: &FrameAttachmentContract,
     layout: &FrameAttachmentLayoutPlan,
     previous: Option<&AttachmentResourceSet>,
-) -> Result<Vec<u8>, PresentationResourceError> {
+) -> Result<AttachmentBytes, PresentationResourceError> {
     match attachment.clear_policy {
-        AttachmentClearPolicy::Zero => Ok(vec![0; layout.physical.total_size as usize]),
+        AttachmentClearPolicy::Zero => Ok(vec![0; layout.physical.total_size as usize].into()),
         AttachmentClearPolicy::SemanticDefault => {
             let mut bytes = vec![0; layout.physical.total_size as usize];
             let encoded = portable_abi_encode_value(
@@ -411,7 +523,7 @@ fn initialize_attachment_bytes(
                 let copy_len = encoded.len().min(range.len());
                 bytes[range.start..range.start + copy_len].copy_from_slice(&encoded[..copy_len]);
             }
-            Ok(bytes)
+            Ok(bytes.into())
         }
         AttachmentClearPolicy::PreservePrevious => {
             let prior = previous
@@ -490,6 +602,26 @@ fn zero_value_for_schema(schema: &AttachmentElementSchema) -> KernelValue {
         AttachmentElementSchema::Vec2F32 => KernelValue::Vec2([0.0, 0.0]),
         AttachmentElementSchema::Vec3F32 => KernelValue::Vec3([0.0, 0.0, 0.0]),
         AttachmentElementSchema::Vec4F32 => KernelValue::Vec4([0.0, 0.0, 0.0, 0.0]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AttachmentBytes;
+    use std::sync::Arc;
+
+    #[test]
+    fn attachment_bytes_clone_is_copy_on_write() {
+        let original = AttachmentBytes::new(vec![1, 2, 3, 4]);
+        let mut shared = original.clone();
+
+        assert!(Arc::ptr_eq(&original.0, &shared.0));
+
+        shared.make_mut()[0] = 9;
+
+        assert_eq!(original.as_slice(), &[1, 2, 3, 4]);
+        assert_eq!(shared.as_slice(), &[9, 2, 3, 4]);
+        assert!(!Arc::ptr_eq(&original.0, &shared.0));
     }
 }
 

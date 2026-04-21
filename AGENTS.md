@@ -6,7 +6,7 @@
 
 - `wrela` is the authored-world and product-facing workflow surface (`test`, `perf`, `preview`, and similar commands). `just` is allowed to compose both `cargo` and `wrela` when the truthful proof spans both surfaces.
 
-- The current canonical `just` lanes are: `check`, `check-clean`, `build`, `build-release`, `test`, `test-clean`, `test-all`, `test-runtime`, `test-compiler`, `test-cli`, `test-query`, `test-engine-frame`, `perf-smoke`, `perf-engine-closure`, `perf-closure`, `lint`, `fmt`, `fmt-check`, `fix`, and `ship`.
+- The current canonical `just` lanes are: `check`, `check-clean`, `build`, `build-release`, `test`, `test-clean`, `test-all`, `test-runtime`, `test-compiler`, `test-cli`, `test-query`, `test-engine-frame`, `perf-smoke`, `perf-engine-closure`, `perf-engine-audit`, `perf-closure`, `lint`, `fmt`, `fmt-check`, `fix`, and `ship`.
 
 ## Intended Dev Loop
 
@@ -21,6 +21,7 @@
 - Use `just test-all` for the full local semantic lane.
 
 - Use `just perf-smoke` for cheap perf sanity when touching perf-sensitive code. Use `just perf-engine-closure` for the canonical representative 1080p120 engine-frame lane; `just perf-closure` is the compatibility alias for the same proof surface.
+- Use `just perf-engine-audit` when the honest live lane needs explanation. It runs the canonical engine-frame suite in audit mode, limits collection to a single closure scenario by default, and prints live-vs-self-reported-vs-compatibility measurement breakdowns. Override the default scenario with `WRELA_PERF_ENGINE_AUDIT_SCENARIO=<scenario-id>`.
 
 - Use `just check-clean` and `just test-clean` when you need cleanroom validation with isolated artifacts and incremental compilation disabled.
 

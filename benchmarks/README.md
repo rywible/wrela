@@ -30,6 +30,7 @@ From the repo root, use `just` for the named repo workflows:
 ```bash
 just perf-smoke
 just perf-engine-closure
+just perf-engine-audit
 just perf-closure
 just ship
 ```
@@ -38,7 +39,10 @@ Lane mapping:
 
 - `just perf-smoke` => `wrela perf --profile=smoke`
 - `just perf-engine-closure` => `wrela perf benchmarks/engine_frame --profile=1080p120`
+- `just perf-engine-audit` => audit-only single-scenario version of the canonical engine-frame closure lane with live-vs-compatibility measurement breakdowns
 - `just perf-closure` => compatibility alias for `just perf-engine-closure`
+
+`just perf-engine-audit` is intentionally non-canonical. It enables `WRELA_PERF_ENGINE_AUDIT=1`, keeps the live `engine_frame` lane as the measured source of truth, trims the closure manifest to one representative engine-frame scenario by default, and prints live wall time, self-reported subsystem runtime, orchestration gap, compatibility `whole_frame` joins, and per-subsystem measurement policy summaries. Override the default representative scenario with `WRELA_PERF_ENGINE_AUDIT_SCENARIO=<scenario-id>`.
 
 The raw `cargo run --release -p wrela -- perf ...` commands below are escape hatches for
 subsystem debugging, ad-hoc comparisons, and flag variations.

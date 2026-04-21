@@ -233,6 +233,19 @@ fn wgsl_no_export_lane_avoids_full_attachment_readback() {
         .as_ref()
         .expect("resident temporal history");
     for slot in &history.slots {
+        let history_attachment = history
+            .attachments
+            .attachment(slot.attachment.as_str())
+            .expect("history slot attachment");
+        let resident_attachment = resident
+            .attachments
+            .attachment(slot.attachment.as_str())
+            .expect("resident attachment");
+        assert_eq!(
+            history_attachment.layout.compatibility_signature(),
+            resident_attachment.layout.compatibility_signature(),
+            "resident history should preserve attachment layout metadata"
+        );
         assert_eq!(
             history
                 .attachments
@@ -255,6 +268,183 @@ fn wgsl_no_export_lane_avoids_full_attachment_readback() {
         0
     );
     assert_eq!(resident.frame_cost.gpu_runtime.attachment_decode_count, 0);
+}
+
+#[test]
+fn wgsl_runtime_summary_can_skip_hot_path_gpu_timing_readback() {
+    let (mut plan, ctx, input) = presentation_fixture(DispatchBackend::Wgsl);
+    strip_export_passes(&mut plan);
+    let mut summary_input = input.clone();
+    summary_input.materialize_cpu_attachments = false;
+    summary_input.runtime_summary_only = true;
+    summary_input.collect_gpu_timing_readback = false;
+
+    let result = execute_plan(&ctx, &plan, &summary_input).expect("wgsl runtime-summary execution");
+
+    assert_eq!(result.frame_cost.gpu_runtime.readback_bytes, 0);
+    assert!(!result.frame_cost.gpu_runtime.timestamps_supported);
+    assert_eq!(result.frame_cost.gpu_runtime.timestamped_pass_count, 0);
+    assert!(
+        result
+            .frame_cost
+            .passes
+            .iter()
+            .all(|pass| pass.gpu_elapsed_micros.is_none())
+    );
+    assert_eq!(result.query_trace.plan_trace.item_count, 16);
+    assert!(
+        result.query_trace.plan_trace.iterations.is_empty(),
+        "runtime-summary WGSL traces should keep aggregate item counts without reconstructing every per-item iteration"
+    );
+}
+
+#[test]
+fn wgsl_summary_session_can_fall_back_to_materialized_frame_after_layout_only_history() {
+    let (mut plan, ctx, mut input) = presentation_fixture(DispatchBackend::Wgsl);
+    strip_export_passes(&mut plan);
+    let mut session = AdaptivePresentationSession::new(plan.frame.quality.clone());
+
+    input.materialize_cpu_attachments = false;
+    input.runtime_summary_only = true;
+    input.collect_gpu_timing_readback = false;
+    let summary = session
+        .execute_frame(&ctx, &plan, &input)
+        .expect("summary session frame");
+    assert!(summary.history.is_some());
+
+    let mut steady_state_input = input.clone();
+    steady_state_input.frame_state = frame_state_value(
+        CanonicalCameraInput {
+            position: [0.0, 0.0, 2.0],
+            forward: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            vertical_fov_degrees: 75.0,
+        },
+        CanonicalCameraInput {
+            position: [0.0, 0.0, 2.0],
+            forward: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            vertical_fov_degrees: 75.0,
+        },
+        CanonicalViewportInput {
+            width: 4,
+            height: 4,
+        },
+        [0.0, 0.0],
+        1,
+        1.0 / 60.0,
+    );
+    let steady_state_summary = session
+        .execute_frame(&ctx, &plan, &steady_state_input)
+        .expect("steady-state summary frame");
+    assert!(
+        steady_state_summary
+            .history
+            .as_ref()
+            .expect("summary history")
+            .attachments
+            .attachments
+            .values()
+            .all(|attachment| attachment.bytes.is_empty())
+    );
+    assert!(
+        steady_state_summary
+            .attachments
+            .attachments
+            .values()
+            .all(|attachment| attachment.bytes.is_empty())
+    );
+
+    let mut materialized_input = steady_state_input.clone();
+    materialized_input.materialize_cpu_attachments = true;
+    materialized_input.runtime_summary_only = false;
+    materialized_input.collect_gpu_timing_readback = true;
+    materialized_input.frame_state = frame_state_value(
+        CanonicalCameraInput {
+            position: [0.0, 0.0, 2.0],
+            forward: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            vertical_fov_degrees: 75.0,
+        },
+        CanonicalCameraInput {
+            position: [0.0, 0.0, 2.0],
+            forward: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            vertical_fov_degrees: 75.0,
+        },
+        CanonicalViewportInput {
+            width: 4,
+            height: 4,
+        },
+        [0.0, 0.0],
+        2,
+        1.0 / 60.0,
+    );
+
+    let materialized = session
+        .execute_frame(&ctx, &plan, &materialized_input)
+        .expect("materialized frame after summary-only history");
+    assert!(
+        materialized
+            .attachments
+            .attachments
+            .values()
+            .all(|attachment| !attachment.bytes.is_empty())
+    );
+}
+
+#[test]
+fn wgsl_summary_session_reuses_write_first_attachment_buffers_after_warm_frame() {
+    let (mut plan, ctx, mut input) = presentation_fixture(DispatchBackend::Wgsl);
+    strip_export_passes(&mut plan);
+    let mut session = AdaptivePresentationSession::new(plan.frame.quality.clone());
+
+    input.materialize_cpu_attachments = false;
+    input.runtime_summary_only = true;
+    input.collect_gpu_timing_readback = false;
+    let cold = session
+        .execute_frame(&ctx, &plan, &input)
+        .expect("cold summary session frame");
+    assert!(
+        cold.frame_cost.gpu_runtime.attachment_buffer_creations > 0,
+        "the first resident summary frame should still allocate attachment buffers"
+    );
+
+    let mut steady_state_input = input.clone();
+    steady_state_input.frame_state = frame_state_value(
+        CanonicalCameraInput {
+            position: [0.0, 0.0, 2.0],
+            forward: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            vertical_fov_degrees: 75.0,
+        },
+        CanonicalCameraInput {
+            position: [0.0, 0.0, 2.0],
+            forward: [0.0, 0.0, -1.0],
+            up: [0.0, 1.0, 0.0],
+            vertical_fov_degrees: 75.0,
+        },
+        CanonicalViewportInput {
+            width: 4,
+            height: 4,
+        },
+        [0.0, 0.0],
+        1,
+        1.0 / 60.0,
+    );
+    let warm = session
+        .execute_frame(&ctx, &plan, &steady_state_input)
+        .expect("warm summary session frame");
+
+    assert!(
+        warm.frame_cost.gpu_runtime.attachment_buffer_reuses > 0,
+        "steady-state resident frames should reuse compatible write-first attachment buffers"
+    );
+    assert!(
+        warm.frame_cost.gpu_runtime.attachment_buffer_creations
+            < cold.frame_cost.gpu_runtime.attachment_buffer_creations,
+        "steady-state resident frames should churn fewer attachment buffers than the cold frame"
+    );
 }
 
 #[test]

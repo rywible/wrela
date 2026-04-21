@@ -51,7 +51,7 @@ fn row_aligned_output_layout_packs_wgsl_results_into_attachment_plan() {
     .expect("row-aligned wgsl dispatch");
     let resource = AttachmentResource {
         layout: layout.materialize(),
-        bytes: dispatch.bytes,
+        bytes: dispatch.bytes.into(),
     };
 
     assert_eq!(
@@ -112,7 +112,7 @@ fn forced_chunking_preserves_row_aligned_output_and_reports_dispatch_count() {
     .expect("forced chunked wgsl dispatch");
     let resource = AttachmentResource {
         layout: layout.materialize(),
-        bytes: dispatch.bytes,
+        bytes: dispatch.bytes.into(),
     };
 
     assert_eq!(dispatch.dispatch_count, 2);

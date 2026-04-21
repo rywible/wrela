@@ -194,7 +194,7 @@ pub(crate) fn batch_cost_report(
     trace: &KernelBatchQueryTrace,
     observability: &QueryExecutionObservability,
 ) -> SemanticCostReport {
-    let item_count = trace.iterations.len() as u32;
+    let item_count = trace.item_count;
     let context = SemanticCostContext {
         scope: SemanticQueryScope::Batch {
             kind: batch_query_kind_for_contract_id(plan.contract_id)
@@ -366,12 +366,14 @@ pub fn render_semantic_cost_report(report: &SemanticCostReport) -> String {
             .join(",")
     };
     out.push_str(&format!(
-        "gpu_runtime timestamps_supported={} timestamped_pass_count={} gpu_time_total_micros={} gpu_time_max_micros={} queue_submit_count={} upload_bytes={} readback_bytes={} transient_buffer_creations={} transient_bind_group_creations={} cpu_screen_sample_allocations={} attachment_decode_count={} attachment_encode_count={} primary_visibility_packet_fanout_count={} dispatch_fragmentation_count={} scene_reupload_bytes={} pipeline_cache_hits={} pipeline_cache_misses={} requested_limits_profile={} enabled_optional_features={}\n",
+        "gpu_runtime timestamps_supported={} timestamped_pass_count={} gpu_time_total_micros={} gpu_time_max_micros={} queue_submit_count={} attachment_buffer_creations={} attachment_buffer_reuses={} upload_bytes={} readback_bytes={} transient_buffer_creations={} transient_bind_group_creations={} cpu_screen_sample_allocations={} attachment_decode_count={} attachment_encode_count={} primary_visibility_packet_fanout_count={} dispatch_fragmentation_count={} scene_reupload_bytes={} pipeline_cache_hits={} pipeline_cache_misses={} requested_limits_profile={} enabled_optional_features={}\n",
         report.counters.gpu_runtime.timestamps_supported,
         report.counters.gpu_runtime.timestamped_pass_count,
         report.counters.gpu_runtime.gpu_time_total_micros,
         report.counters.gpu_runtime.gpu_time_max_micros,
         report.counters.gpu_runtime.queue_submit_count,
+        report.counters.gpu_runtime.attachment_buffer_creations,
+        report.counters.gpu_runtime.attachment_buffer_reuses,
         report.counters.gpu_runtime.upload_bytes,
         report.counters.gpu_runtime.readback_bytes,
         report.counters.gpu_runtime.transient_buffer_creations,

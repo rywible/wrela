@@ -166,6 +166,7 @@ pub(crate) struct GeneratedShaderModule {
     pub(crate) item_abi: PortableAbiType,
     pub(crate) result_abi: PortableAbiType,
     pub(crate) shape_meta_values: Vec<KernelValue>,
+    pub(crate) cache_observability_seed: codegen::CacheObservabilitySeed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -253,6 +254,18 @@ impl ResidentBatchQuerySession {
 
     pub(crate) fn initial_gpu_runtime(&self) -> GpuRuntimeMetrics {
         self.initial_gpu_runtime.clone()
+    }
+
+    pub(crate) fn summary_observability_without_readback(
+        &self,
+        gpu_runtime: GpuRuntimeMetrics,
+    ) -> QueryExecutionObservability {
+        summary_wgsl_observability(
+            &self.diagnostics,
+            self.item_count,
+            self.layout_signature,
+            gpu_runtime,
+        )
     }
 
     pub(crate) fn initialize_dispatch_state(
@@ -402,6 +415,7 @@ struct WgslDispatchDiagnostics {
     selected_workgroup_size: u32,
     used_max_storage_buffer_bytes: u64,
     requested_max_storage_buffer_bytes: u64,
+    cache_observability_seed: codegen::CacheObservabilitySeed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -717,6 +731,14 @@ pub(crate) fn prepare_resident_batch_query(
     generated: &GeneratedShaderModule,
     request: &GpuDispatchRequest,
 ) -> Result<ResidentBatchQuerySession, QueryExecError> {
+    let prepared_payload = prepare_resident_batch_query_payload(generated, request)?;
+    prepare_resident_batch_query_with_prepared_payload(generated, request, &prepared_payload)
+}
+
+pub(crate) fn prepare_resident_batch_query_payload(
+    generated: &GeneratedShaderModule,
+    request: &GpuDispatchRequest,
+) -> Result<PreparedResidentBatchQueryPayload, QueryExecError> {
     let item_count = dispatch_item_count(request)?;
     if item_count == 0 {
         return Err(QueryExecError::Unsupported {
@@ -763,6 +785,25 @@ pub(crate) fn prepare_resident_batch_query(
     .into_iter()
     .max()
     .unwrap_or(4);
+    Ok(PreparedResidentBatchQueryPayload {
+        item_count,
+        payloads,
+        input_buffer_size,
+        output_buffer_size,
+        used_max_storage_buffer_bytes,
+    })
+}
+
+pub(crate) fn prepare_resident_batch_query_with_prepared_payload(
+    generated: &GeneratedShaderModule,
+    request: &GpuDispatchRequest,
+    prepared_payload: &PreparedResidentBatchQueryPayload,
+) -> Result<ResidentBatchQuerySession, QueryExecError> {
+    let item_count = prepared_payload.item_count;
+    let payloads = &prepared_payload.payloads;
+    let input_buffer_size = prepared_payload.input_buffer_size;
+    let output_buffer_size = prepared_payload.output_buffer_size;
+    let used_max_storage_buffer_bytes = prepared_payload.used_max_storage_buffer_bytes;
     let required_limit_request = WgslLimitRequest {
         max_storage_buffers_per_shader_stage: QUERY_WGSL_STORAGE_BUFFERS_PER_SHADER_STAGE,
         max_storage_buffer_binding_size: used_max_storage_buffer_bytes,
@@ -774,6 +815,7 @@ pub(crate) fn prepare_resident_batch_query(
         selected_workgroup_size,
         used_max_storage_buffer_bytes,
         requested_max_storage_buffer_bytes: native.requested_limits.max_storage_buffer_binding_size,
+        cache_observability_seed: generated.cache_observability_seed,
     };
     let mut gpu_runtime = GpuRuntimeMetrics::default();
     gpu_runtime.note_context_metadata(&native);
@@ -1650,6 +1692,7 @@ fn generate_compiled_shader(
         item_abi: generated.item_abi,
         result_abi: generated.result_abi,
         shape_meta_values: generated.shape_meta_values,
+        cache_observability_seed: generated.cache_observability_seed,
     };
     cache
         .lock()
@@ -2041,6 +2084,15 @@ struct WgslDispatchPayloadBytes {
     shape_meta_bytes: Vec<u8>,
     world_shape_bytes: Vec<u8>,
     continuation_seed_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedResidentBatchQueryPayload {
+    item_count: u32,
+    payloads: WgslDispatchPayloadBytes,
+    input_buffer_size: u64,
+    output_buffer_size: u64,
+    used_max_storage_buffer_bytes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -2524,6 +2576,7 @@ fn dispatch_compiled_shader_single_with_observability(
         selected_workgroup_size,
         used_max_storage_buffer_bytes,
         requested_max_storage_buffer_bytes: native.requested_limits.max_storage_buffer_binding_size,
+        cache_observability_seed: generated.cache_observability_seed,
     };
     let outcome = dispatch_compiled_shader_with_buffers(
         generated,
@@ -3567,26 +3620,45 @@ fn decode_wgsl_observability(
             .map(u32::from_le_bytes)
             .unwrap_or_default()
     };
+    let mut observability =
+        summary_wgsl_observability(diagnostics, dispatch_items, layout_signature, gpu_runtime);
+    observability.acceleration_node_visits = read_u32(0);
+    observability.shape_leaf_visits = read_u32(1);
+    observability.acceleration_pruned_nodes = read_u32(2);
+    observability.ray_support_interval_rejections = read_u32(3);
+    observability.ray_support_entry_jumps = read_u32(4);
+    observability.cache_brick_visits = read_u32(5);
+    observability.cache_brick_hits = read_u32(6);
+    observability.cache_brick_misses = read_u32(7);
+    observability.cache_interval_advances = read_u32(8);
+    observability.cache_resident_shared_snapshot_artifacts = read_u32(9);
+    observability.cache_resident_observer_local_artifacts = read_u32(10);
+    observability.cache_upload_attempts = read_u32(11);
+    observability.cache_upload_rejections = read_u32(12);
+    observability.cache_budget_rejections = read_u32(13);
+    observability.cache_dense_fallback_rays = read_u32(14);
+    observability.solver_analytic_hits = read_u32(15);
+    observability.solver_generated_dense_fallback_rays = read_u32(16);
+    observability.solver_support_rejections = read_u32(17);
+    observability.field_samples = read_u32(18);
+    observability
+}
+
+fn summary_wgsl_observability(
+    diagnostics: &WgslDispatchDiagnostics,
+    dispatch_items: u32,
+    layout_signature: u64,
+    gpu_runtime: GpuRuntimeMetrics,
+) -> QueryExecutionObservability {
     QueryExecutionObservability {
-        acceleration_node_visits: read_u32(0),
-        shape_leaf_visits: read_u32(1),
-        acceleration_pruned_nodes: read_u32(2),
-        ray_support_interval_rejections: read_u32(3),
-        ray_support_entry_jumps: read_u32(4),
-        cache_brick_visits: read_u32(5),
-        cache_brick_hits: read_u32(6),
-        cache_brick_misses: read_u32(7),
-        cache_interval_advances: read_u32(8),
-        cache_resident_shared_snapshot_artifacts: read_u32(9),
-        cache_resident_observer_local_artifacts: read_u32(10),
-        cache_upload_attempts: read_u32(11),
-        cache_upload_rejections: read_u32(12),
-        cache_budget_rejections: read_u32(13),
-        cache_dense_fallback_rays: read_u32(14),
-        solver_analytic_hits: read_u32(15),
-        solver_generated_dense_fallback_rays: read_u32(16),
-        solver_support_rejections: read_u32(17),
-        field_samples: read_u32(18),
+        cache_resident_shared_snapshot_artifacts: diagnostics
+            .cache_observability_seed
+            .resident_shared_snapshot_artifacts,
+        cache_resident_observer_local_artifacts: diagnostics
+            .cache_observability_seed
+            .resident_observer_local_artifacts,
+        cache_upload_attempts: diagnostics.cache_observability_seed.upload_attempts,
+        cache_upload_rejections: diagnostics.cache_observability_seed.upload_rejections,
         dispatch_count: 1,
         dispatch_items,
         dispatch_workgroups_x: dispatch_workgroups_x_for_items(
@@ -4571,6 +4643,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
             shape_meta_abi: wgsl_shape_meta_abi(),
             item_abi: PortableAbiType::U32,
             result_abi: PortableAbiType::U32,
+            cache_observability_seed: crate::query_exec::wgsl::codegen::CacheObservabilitySeed {
+                resident_shared_snapshot_artifacts: 3,
+                resident_observer_local_artifacts: 0,
+                upload_attempts: 3,
+                upload_rejections: 0,
+            },
             shape_meta_values: vec![KernelValue::Struct(KernelStructValue {
                 name: SmolStr::new("WgslShapeMeta"),
                 fields: vec![

@@ -12,6 +12,8 @@ pub struct GpuRuntimeMetrics {
     pub gpu_time_total_micros: u128,
     pub gpu_time_max_micros: u128,
     pub queue_submit_count: u32,
+    pub attachment_buffer_creations: u32,
+    pub attachment_buffer_reuses: u32,
     pub transient_buffer_creations: u32,
     pub transient_bind_group_creations: u32,
     pub upload_bytes: u64,
@@ -63,6 +65,12 @@ impl GpuRuntimeMetrics {
         self.queue_submit_count = self
             .queue_submit_count
             .saturating_add(other.queue_submit_count);
+        self.attachment_buffer_creations = self
+            .attachment_buffer_creations
+            .saturating_add(other.attachment_buffer_creations);
+        self.attachment_buffer_reuses = self
+            .attachment_buffer_reuses
+            .saturating_add(other.attachment_buffer_reuses);
         self.transient_buffer_creations = self
             .transient_buffer_creations
             .saturating_add(other.transient_buffer_creations);
@@ -134,6 +142,7 @@ pub fn classify_execution_bound(
         return "cpu_submission_readback_bound";
     }
     if metrics.cpu_screen_sample_allocations > 0
+        || metrics.attachment_buffer_creations > 0
         || metrics.attachment_decode_count > 0
         || metrics.attachment_encode_count > 0
     {

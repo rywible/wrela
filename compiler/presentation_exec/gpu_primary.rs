@@ -32,8 +32,10 @@ use crate::query_contract::QueryContractId;
 use crate::query_exec::QueryExecContext;
 use crate::query_exec::gpu_dispatch::{GpuDispatchResult, GpuQueryBufferHandle};
 use crate::query_exec::wgsl::{
-    GpuDispatchRequest, ResidentBatchQuerySession, build_batch_request_without_items_for_shader,
-    compile_batch_shader, compiled_pipeline, encode_slice, prepare_resident_batch_query,
+    GeneratedShaderModule, GpuDispatchRequest, PreparedResidentBatchQueryPayload,
+    ResidentBatchQuerySession, build_batch_request_without_items_for_shader, compile_batch_shader,
+    compiled_pipeline, encode_slice, prepare_resident_batch_query_payload,
+    prepare_resident_batch_query_with_prepared_payload,
 };
 use crate::query_plan::{BatchQueryPlan, DispatchBackend};
 use smol_str::SmolStr;
@@ -44,6 +46,47 @@ const PRIMARY_HELPER_WORKGROUP_SIZE: u32 = 64;
 pub(crate) struct PrimaryVisibilityEncodeStats {
     pub visibility_elapsed_micros: u128,
     pub writeout_elapsed_micros: u128,
+}
+
+#[derive(Clone)]
+pub(crate) struct PreparedPrimaryVisibilityQuery {
+    generated: GeneratedShaderModule,
+    request: GpuDispatchRequest,
+    side_channel_bytes: Option<Vec<u8>>,
+    prepared_payload: PreparedResidentBatchQueryPayload,
+}
+
+impl PreparedPrimaryVisibilityQuery {
+    pub(crate) fn instantiate_dispatch(
+        &self,
+        camera: CanonicalCameraInput,
+        primary_viewport: CanonicalViewportInput,
+        viewport: CanonicalViewportInput,
+        jitter_pixels: [f32; 2],
+        ray_budget: CanonicalRayBudget,
+        legacy_projection: bool,
+        compatibility_projection: Option<LegacyCompatibilityProjectionInput>,
+    ) -> Result<PrimaryVisibilityGpuDispatch, PresentationExecError> {
+        let session = prepare_resident_batch_query_with_prepared_payload(
+            &self.generated,
+            &self.request,
+            &self.prepared_payload,
+        )
+        .map_err(PresentationExecError::Query)?;
+        Ok(PrimaryVisibilityGpuDispatch {
+            viewport,
+            primary_viewport,
+            request: self.request.clone(),
+            session,
+            input_bytes: None,
+            side_channel_bytes: self.side_channel_bytes.clone(),
+            camera,
+            jitter_pixels,
+            ray_budget,
+            legacy_projection,
+            compatibility_projection,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -196,6 +239,35 @@ pub(crate) fn prepare_primary_visibility_dispatch(
     legacy_projection: bool,
     compatibility_projection: Option<LegacyCompatibilityProjectionInput>,
 ) -> Result<PrimaryVisibilityGpuDispatch, PresentationExecError> {
+    prepare_primary_visibility_query(
+        ctx,
+        contract_id,
+        capture,
+        frame_domain,
+        candidate_shape_names,
+        candidate_spans,
+        primary_viewport,
+    )?
+    .instantiate_dispatch(
+        camera,
+        primary_viewport,
+        viewport,
+        jitter_pixels,
+        ray_budget,
+        legacy_projection,
+        compatibility_projection,
+    )
+}
+
+pub(crate) fn prepare_primary_visibility_query(
+    ctx: &QueryExecContext,
+    contract_id: QueryContractId,
+    capture: KernelValue,
+    frame_domain: KernelValue,
+    candidate_shape_names: Option<Vec<SmolStr>>,
+    candidate_spans: Vec<u32>,
+    primary_viewport: CanonicalViewportInput,
+) -> Result<PreparedPrimaryVisibilityQuery, PresentationExecError> {
     let batch_plan = BatchQueryPlan::for_contract(contract_id, DispatchBackend::Wgsl, None)
         .map_err(|message| PresentationExecError::UnsupportedPlan {
             message: message.to_string(),
@@ -230,20 +302,13 @@ pub(crate) fn prepare_primary_visibility_dispatch(
         candidate_spans
     };
     let side_channel_bytes = finalize_candidate_span_side_channel(&mut request)?;
-    let session =
-        prepare_resident_batch_query(&generated, &request).map_err(PresentationExecError::Query)?;
-    Ok(PrimaryVisibilityGpuDispatch {
-        viewport,
-        primary_viewport,
+    let prepared_payload = prepare_resident_batch_query_payload(&generated, &request)
+        .map_err(PresentationExecError::Query)?;
+    Ok(PreparedPrimaryVisibilityQuery {
+        generated,
         request,
-        session,
-        input_bytes: None,
         side_channel_bytes,
-        camera,
-        jitter_pixels,
-        ray_budget,
-        legacy_projection,
-        compatibility_projection,
+        prepared_payload,
     })
 }
 
@@ -1149,7 +1214,7 @@ mod tests {
                         wgsl_storage_type: "Abi_Hit3".to_string(),
                     },
                 },
-                bytes.clone(),
+                bytes.clone().into(),
             ),
         );
         let contract = PrimaryVisibilityPassContract {

@@ -41,6 +41,7 @@ pub struct KernelBatchQueryTrace {
     pub contract_version: u32,
     pub helper_name: String,
     pub begins_virtual_gpu_dispatch: bool,
+    pub item_count: u32,
     pub iterations: Vec<KernelBatchIterationTrace>,
     pub ends_virtual_gpu_dispatch: bool,
 }
@@ -329,7 +330,28 @@ pub fn interpret_batch_query(
         contract_version: plan.contract_version,
         helper_name: plan.helper_name.to_string(),
         begins_virtual_gpu_dispatch: plan.requires_virtual_gpu_dispatch(),
+        item_count,
         iterations,
+        ends_virtual_gpu_dispatch: plan.requires_virtual_gpu_dispatch(),
+    }
+}
+
+pub fn summarize_batch_query(
+    plan: &KernelBatchQueryPlan,
+    item_count: u32,
+) -> KernelBatchQueryTrace {
+    let descriptor = query_contract::query_contract(plan.contract_id)
+        .expect("kernel batch query plan must reference a registered query contract");
+    KernelBatchQueryTrace {
+        contract_id: plan.contract_id,
+        family: plan.family,
+        question: descriptor.question,
+        surface: plan.surface,
+        contract_version: plan.contract_version,
+        helper_name: plan.helper_name.to_string(),
+        begins_virtual_gpu_dispatch: plan.requires_virtual_gpu_dispatch(),
+        item_count,
+        iterations: Vec::new(),
         ends_virtual_gpu_dispatch: plan.requires_virtual_gpu_dispatch(),
     }
 }

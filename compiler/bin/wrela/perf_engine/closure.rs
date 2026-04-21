@@ -49,6 +49,36 @@ fn collision_gpu_critical_path_uses_runtime_proxy(report: &EngineFrameBenchmarkR
         .unwrap_or(false)
 }
 
+fn engine_frame_report_uses_timestamp_traffic(report: &EngineFrameBenchmarkReport) -> bool {
+    report.timestamped_pass_count > 0
+        || report.timing_readback_bytes > 0
+        || report.measurement_policy.gpu_timing
+            == wrela::engine_frame::EngineGpuTimingPolicy::Timestamped
+        || report.subsystem_reports.iter().any(|subsystem| {
+            subsystem.timestamped_pass_count > 0
+                || subsystem.timing_readback_bytes > 0
+                || subsystem.measurement_policy.gpu_timing
+                    == wrela::engine_frame::EngineGpuTimingPolicy::Timestamped
+        })
+}
+
+fn engine_frame_report_uses_hot_path_readback(report: &EngineFrameBenchmarkReport) -> bool {
+    report.hot_path_readback_bytes > 0
+        || report.measurement_policy.hot_path_readback_allowed
+        || report.subsystem_reports.iter().any(|subsystem| {
+            subsystem.hot_path_readback_bytes > 0
+                || subsystem.measurement_policy.hot_path_readback_allowed
+        })
+}
+
+fn engine_frame_report_uses_export_readback(report: &EngineFrameBenchmarkReport) -> bool {
+    report.measurement_policy.export_readback_allowed
+        || report
+            .subsystem_reports
+            .iter()
+            .any(|subsystem| subsystem.measurement_policy.export_readback_allowed)
+}
+
 pub(super) fn frame_cost_total_ns(
     report: &wrela::presentation_exec::PresentationFrameCostReport,
 ) -> u128 {
@@ -260,6 +290,76 @@ pub(super) fn build_engine_frame_closure_status(
             "state_advance runtime remains unsampled; reserve is accounted separately".to_string(),
         );
     }
+    if !profile.timestamps_enabled {
+        let timestamped_scenarios = engine_frame_reports
+            .iter()
+            .filter(|report| engine_frame_report_uses_timestamp_traffic(report))
+            .map(|report| report.scenario_id.to_string())
+            .collect::<Vec<_>>();
+        if !timestamped_scenarios.is_empty() {
+            violations.push(format!(
+                "engine-frame timestamp traffic is disabled by the closure profile but observed in scenario(s): {}",
+                timestamped_scenarios.join(", ")
+            ));
+        }
+    }
+    if profile.gpu_timestamps_required_if_supported
+        && profile
+            .enabled_optional_features
+            .iter()
+            .any(|feature| feature == "timestamp_query")
+    {
+        let missing_timestamp_scenarios = engine_frame_reports
+            .iter()
+            .filter(|report| {
+                report.subsystem_reports.iter().any(|subsystem| {
+                    let timestamp_required = match subsystem.kind {
+                        wrela::engine_frame::EngineSubsystemKind::Presentation => true,
+                        wrela::engine_frame::EngineSubsystemKind::Collision => {
+                            subsystem.queue_submit_count > 0
+                                || subsystem.gpu_critical_path_micros.is_some()
+                                || !matches!(
+                                    subsystem.measurement_policy.gpu_timing,
+                                    wrela::engine_frame::EngineGpuTimingPolicy::Disabled
+                                )
+                        }
+                        _ => false,
+                    };
+                    timestamp_required && subsystem.timestamped_pass_count == 0
+                })
+            })
+            .map(|report| report.scenario_id.to_string())
+            .collect::<Vec<_>>();
+        if !missing_timestamp_scenarios.is_empty() {
+            violations.push(format!(
+                "engine-frame timestamp traffic was requested and the adapter reported timestamp_query support, but no timestamped presentation/collision pass was observed in scenario(s): {}",
+                missing_timestamp_scenarios.join(", ")
+            ));
+        }
+    }
+    let hot_path_readback_scenarios = engine_frame_reports
+        .iter()
+        .filter(|report| engine_frame_report_uses_hot_path_readback(report))
+        .map(|report| report.scenario_id.to_string())
+        .collect::<Vec<_>>();
+    if !hot_path_readback_scenarios.is_empty() && profile.max_hot_path_readback_bytes_per_frame == 0
+    {
+        violations.push(format!(
+            "engine-frame hot-path readback is disabled by the closure profile but observed in scenario(s): {}",
+            hot_path_readback_scenarios.join(", ")
+        ));
+    }
+    let export_readback_scenarios = engine_frame_reports
+        .iter()
+        .filter(|report| engine_frame_report_uses_export_readback(report))
+        .map(|report| report.scenario_id.to_string())
+        .collect::<Vec<_>>();
+    if !export_readback_scenarios.is_empty() {
+        violations.push(format!(
+            "engine-frame export/readback is disabled by the closure profile but observed in scenario(s): {}",
+            export_readback_scenarios.join(", ")
+        ));
+    }
     if engine_frame_reports
         .iter()
         .any(collision_gpu_critical_path_uses_runtime_proxy)
@@ -389,6 +489,9 @@ pub(super) fn apply_observed_wgsl_runtime_metadata(
     {
         profile.requested_limits_profile = requested_limits_profile.to_string();
     }
+    profile.timestamps_enabled = wgsl_reports
+        .iter()
+        .any(|report| report.frame_cost.gpu_runtime.timestamps_supported);
     profile.enabled_optional_features = wgsl_reports
         .iter()
         .flat_map(|report| {
@@ -402,11 +505,6 @@ pub(super) fn apply_observed_wgsl_runtime_metadata(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    profile.timestamps_enabled = wgsl_reports.iter().any(|report| {
-        presentation_frame_history(&report.frame_cost, &report.frame_cost_history)
-            .into_iter()
-            .any(|frame| frame.gpu_runtime.timestamps_supported)
-    });
     profile.f16_enabled = profile
         .enabled_optional_features
         .iter()
@@ -1818,6 +1916,11 @@ pub(super) fn print_presentation_benchmark_reports(reports: &[PresentationBenchm
         let effective_history =
             presentation_frame_history(&report.frame_cost, &report.frame_cost_history);
         let solver_counters = aggregate_presentation_solver_counters(&effective_history);
+        let field_samples = if report.observability_sampled {
+            report.field_samples.to_string()
+        } else {
+            format!("unsampled({})", report.observability_notes.join("|"))
+        };
         println!(
             "presentation-scenario {} test={} backend={} query_trace_solver_mode={} selected_workgroup_size={} frames={} frame_time_ns={} fps={:.2} field_samples={} quality={} target_fps={} scale={:.2} scale_history={} reconstructed_output={} bottleneck_pass={} acceleration={} gain_sources={}",
             report.scenario_id,
@@ -1828,7 +1931,7 @@ pub(super) fn print_presentation_benchmark_reports(reports: &[PresentationBenchm
             report.frames_executed,
             report.frame_time_ns,
             report.steady_state_fps,
-            report.field_samples,
+            field_samples,
             report.quality_tier,
             report.target_fps,
             report.internal_resolution_scale,
@@ -1866,26 +1969,33 @@ pub(super) fn print_presentation_benchmark_reports(reports: &[PresentationBenchm
                 comparison.dense_only_candidate_count_after_pruning,
             );
         }
-        println!(
-            "  solver counters relaxed_attempts={} relaxed_no_root_advances={} relaxed_brackets={} relaxed_unresolved={} interval_attempts={} interval_no_root_advances={} interval_brackets={} interval_unresolved={} refinement_attempts={} refinement_failures={} repeat_attempts={} repeat_supported={} repeat_inapplicable={} repeat_unsupported={} repeat_unsupported_form={} repeat_unsupported_bounds={} repeat_cells_enumerated={}",
-            solver_counters.solver_relaxed_attempts,
-            solver_counters.solver_relaxed_no_root_advances,
-            solver_counters.solver_relaxed_brackets,
-            solver_counters.solver_relaxed_unresolved,
-            solver_counters.solver_interval_attempts,
-            solver_counters.solver_interval_no_root_advances,
-            solver_counters.solver_interval_brackets,
-            solver_counters.solver_interval_unresolved,
-            solver_counters.solver_refinement_attempts,
-            solver_counters.solver_refinement_failures,
-            solver_counters.solver_repeat_attempts,
-            solver_counters.solver_repeat_supported,
-            solver_counters.solver_repeat_inapplicable,
-            solver_counters.solver_repeat_unsupported,
-            solver_counters.solver_repeat_unsupported_form,
-            solver_counters.solver_repeat_unsupported_bounds,
-            solver_counters.solver_repeat_cells_enumerated,
-        );
+        if report.observability_sampled {
+            println!(
+                "  solver counters relaxed_attempts={} relaxed_no_root_advances={} relaxed_brackets={} relaxed_unresolved={} interval_attempts={} interval_no_root_advances={} interval_brackets={} interval_unresolved={} refinement_attempts={} refinement_failures={} repeat_attempts={} repeat_supported={} repeat_inapplicable={} repeat_unsupported={} repeat_unsupported_form={} repeat_unsupported_bounds={} repeat_cells_enumerated={}",
+                solver_counters.solver_relaxed_attempts,
+                solver_counters.solver_relaxed_no_root_advances,
+                solver_counters.solver_relaxed_brackets,
+                solver_counters.solver_relaxed_unresolved,
+                solver_counters.solver_interval_attempts,
+                solver_counters.solver_interval_no_root_advances,
+                solver_counters.solver_interval_brackets,
+                solver_counters.solver_interval_unresolved,
+                solver_counters.solver_refinement_attempts,
+                solver_counters.solver_refinement_failures,
+                solver_counters.solver_repeat_attempts,
+                solver_counters.solver_repeat_supported,
+                solver_counters.solver_repeat_inapplicable,
+                solver_counters.solver_repeat_unsupported,
+                solver_counters.solver_repeat_unsupported_form,
+                solver_counters.solver_repeat_unsupported_bounds,
+                solver_counters.solver_repeat_cells_enumerated,
+            );
+        } else {
+            println!(
+                "  solver counters unsampled notes={}",
+                report.observability_notes.join("|")
+            );
+        }
         for pass in &report.frame_cost.passes {
             println!(
                 "presentation-pass {} {} kind={} items={} elapsed_us={} dispatches={} bytes_read={} bytes_written={} notes={}",
@@ -1989,34 +2099,85 @@ pub(super) fn print_whole_frame_benchmark_reports(reports: &[WholeFrameBenchmark
     }
 }
 
-pub(super) fn print_engine_frame_benchmark_reports(reports: &[EngineFrameBenchmarkReport]) {
-    println!("engine-frame-benchmarks:");
+fn engine_runtime_source_name(source: wrela::engine_frame::EngineRuntimeSource) -> &'static str {
+    match source {
+        wrela::engine_frame::EngineRuntimeSource::TimelineSpans => "timeline_spans",
+        wrela::engine_frame::EngineRuntimeSource::SelfReported => "self_reported",
+        wrela::engine_frame::EngineRuntimeSource::CompatibilityJoin => "compatibility_join",
+        wrela::engine_frame::EngineRuntimeSource::ReservedSlotUnsampled => {
+            "reserved_slot_unsampled"
+        }
+    }
+}
+
+fn engine_gpu_timing_policy_name(
+    policy: wrela::engine_frame::EngineGpuTimingPolicy,
+) -> &'static str {
+    match policy {
+        wrela::engine_frame::EngineGpuTimingPolicy::Disabled => "disabled",
+        wrela::engine_frame::EngineGpuTimingPolicy::Timestamped => "timestamped",
+        wrela::engine_frame::EngineGpuTimingPolicy::RuntimeProxy => "runtime_proxy",
+    }
+}
+
+fn engine_measurement_policy_summary(
+    policy: &wrela::engine_frame::EngineMeasurementPolicy,
+) -> String {
+    format!(
+        "runtime_source={} gpu_timing={} hot_path_readback_allowed={} export_readback_allowed={}",
+        engine_runtime_source_name(policy.runtime_source),
+        engine_gpu_timing_policy_name(policy.gpu_timing),
+        policy.hot_path_readback_allowed,
+        policy.export_readback_allowed
+    )
+}
+
+fn format_optional_ns(value: Option<u128>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+pub(super) fn render_engine_frame_benchmark_reports(
+    reports: &[EngineFrameBenchmarkReport],
+) -> String {
+    let mut rendered = String::new();
+    writeln!(rendered, "engine-frame-benchmarks:").expect("write engine-frame header");
     for report in reports {
-        println!(
-            "engine-frame-scenario {} test={} frame_count={} frame_wall_time_ns={} cpu_critical_path_ns={} gpu_critical_path_ns={} fps={:.2} presentation_runtime_ns={} collision_runtime_ns={} state_advance_runtime_ns={} future_subsystem_reserve_ns={} queue_submit_count={} hot_path_readback_bytes={} scene_reupload_bytes={} active_degradations={} violations={}",
+        writeln!(
+            rendered,
+            "engine-frame-scenario {} test={} frame_count={} frame_wall_time_ns={} cpu_critical_path_ns={} gpu_critical_path_ns={} fps={:.2} presentation_runtime_ns={} presentation_self_reported_runtime_ns={} presentation_orchestration_gap_ns={} collision_runtime_ns={} collision_self_reported_runtime_ns={} collision_orchestration_gap_ns={} state_advance_runtime_ns={} state_advance_self_reported_runtime_ns={} state_advance_orchestration_gap_ns={} future_subsystem_reserve_ns={} queue_submit_count={} hot_path_readback_bytes={} scene_reupload_bytes={} timestamped_pass_count={} timing_readback_bytes={} measurement_policy=\"{}\" active_degradations={} violations={}",
             report.scenario_id,
             report.test_name,
             report.frame_count,
             report.frame_wall_time_ns,
             report.cpu_critical_path_ns,
-            report
-                .gpu_critical_path_ns
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "none".to_string()),
+            format_optional_ns(report.gpu_critical_path_ns),
             report.steady_state_fps,
             report.presentation_runtime_ns,
+            format_optional_ns(report.presentation_self_reported_runtime_ns),
+            report.presentation_orchestration_gap_ns,
             report.collision_runtime_ns,
+            format_optional_ns(report.collision_self_reported_runtime_ns),
+            report.collision_orchestration_gap_ns,
             report.state_advance_runtime_ns,
+            format_optional_ns(report.state_advance_self_reported_runtime_ns),
+            report.state_advance_orchestration_gap_ns,
             report.future_subsystem_reserve_ns,
             report.queue_submit_count,
             report.hot_path_readback_bytes,
             report.scene_reupload_bytes,
+            report.timestamped_pass_count,
+            report.timing_readback_bytes,
+            engine_measurement_policy_summary(&report.measurement_policy),
             report.active_degradations.join(","),
             report.violations.join(","),
-        );
+        )
+        .expect("write engine-frame benchmark report");
         for subsystem in &report.subsystem_reports {
-            println!(
-                "  engine-subsystem {} kind={:?} items={} cpu_critical_path_us={} gpu_critical_path_us={} queue_submits={} hot_path_readback_bytes={} scene_reupload_bytes={} notes={}",
+            writeln!(
+                rendered,
+                "  engine-subsystem {} kind={:?} items={} cpu_critical_path_us={} gpu_critical_path_us={} executed_wall_time_us={} self_reported_runtime_us={} orchestration_gap_us={} queue_submits={} hot_path_readback_bytes={} scene_reupload_bytes={} timestamped_pass_count={} timing_readback_bytes={} measurement_policy=\"{}\" notes={}",
                 subsystem.label,
                 subsystem.kind,
                 subsystem.work_items,
@@ -2025,9 +2186,93 @@ pub(super) fn print_engine_frame_benchmark_reports(reports: &[EngineFrameBenchma
                     .gpu_critical_path_micros
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "none".to_string()),
+                subsystem.executed_wall_time_micros,
+                subsystem
+                    .self_reported_runtime_micros
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                subsystem.orchestration_gap_micros,
                 subsystem.queue_submit_count,
                 subsystem.hot_path_readback_bytes,
                 subsystem.scene_reupload_bytes,
+                subsystem.timestamped_pass_count,
+                subsystem.timing_readback_bytes,
+                engine_measurement_policy_summary(&subsystem.measurement_policy),
+                subsystem.notes.join("|"),
+            )
+            .expect("write engine-frame subsystem report");
+        }
+    }
+    rendered
+}
+
+pub(super) fn print_engine_frame_benchmark_reports(reports: &[EngineFrameBenchmarkReport]) {
+    print!("{}", render_engine_frame_benchmark_reports(reports));
+}
+
+pub(super) fn print_engine_frame_audit_report(
+    presentation_reports: &[PresentationBenchmarkReport],
+    whole_frame_reports: &[WholeFrameBenchmarkReport],
+    engine_frame_reports: &[EngineFrameBenchmarkReport],
+) {
+    let mut presentation_by_scenario = HashMap::new();
+    for report in presentation_reports {
+        presentation_by_scenario.insert(report.scenario_id.clone(), report);
+    }
+    let mut whole_frame_by_scenario = HashMap::new();
+    for report in whole_frame_reports {
+        whole_frame_by_scenario.insert(report.scenario_id.clone(), report);
+    }
+    println!("engine-frame-audit:");
+    for report in engine_frame_reports {
+        let compatibility = whole_frame_by_scenario.get(&report.scenario_id);
+        let presentation = presentation_by_scenario.get(&report.scenario_id);
+        println!(
+            "audit-scenario {} live_frame_wall_time_ns={} compatibility_total_runtime_ns={} compatibility_presentation_frame_time_ns={} compatibility_collision_runtime_ns={} presentation_debug_frame_time_ns={} presentation_live_executed_ns={} presentation_live_self_reported_ns={} presentation_live_gap_ns={} collision_live_executed_ns={} collision_live_self_reported_ns={} collision_live_gap_ns={} state_advance_live_executed_ns={} state_advance_live_self_reported_ns={} state_advance_live_gap_ns={} measurement_policy=\"{}\" timestamped_pass_count={} timing_readback_bytes={}",
+            report.scenario_id,
+            report.frame_wall_time_ns,
+            compatibility
+                .map(|value| value.total_runtime_ns.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            compatibility
+                .map(|value| value.presentation_frame_time_ns.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            compatibility
+                .map(|value| value.collision_runtime_ns.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            presentation
+                .map(|value| value.frame_time_ns.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            report.presentation_runtime_ns,
+            format_optional_ns(report.presentation_self_reported_runtime_ns),
+            report.presentation_orchestration_gap_ns,
+            report.collision_runtime_ns,
+            format_optional_ns(report.collision_self_reported_runtime_ns),
+            report.collision_orchestration_gap_ns,
+            report.state_advance_runtime_ns,
+            format_optional_ns(report.state_advance_self_reported_runtime_ns),
+            report.state_advance_orchestration_gap_ns,
+            engine_measurement_policy_summary(&report.measurement_policy),
+            report.timestamped_pass_count,
+            report.timing_readback_bytes,
+        );
+        for subsystem in &report.subsystem_reports {
+            println!(
+                "  audit-subsystem {} kind={:?} executed_wall_time_us={} self_reported_runtime_us={} orchestration_gap_us={} queue_submits={} hot_path_readback_bytes={} scene_reupload_bytes={} timestamped_pass_count={} timing_readback_bytes={} measurement_policy=\"{}\" notes={}",
+                subsystem.label,
+                subsystem.kind,
+                subsystem.executed_wall_time_micros,
+                subsystem
+                    .self_reported_runtime_micros
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                subsystem.orchestration_gap_micros,
+                subsystem.queue_submit_count,
+                subsystem.hot_path_readback_bytes,
+                subsystem.scene_reupload_bytes,
+                subsystem.timestamped_pass_count,
+                subsystem.timing_readback_bytes,
+                engine_measurement_policy_summary(&subsystem.measurement_policy),
                 subsystem.notes.join("|"),
             );
         }

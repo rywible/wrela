@@ -27,6 +27,10 @@ use crate::presentation_plan::quality_tier_name;
 use crate::query_plan::DispatchBackend;
 use serde::{Deserialize, Serialize};
 
+const fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PresentationClipmapPassMetadata {
     pub status: ViewDistanceClipmapBuildMode,
@@ -141,6 +145,10 @@ pub struct PresentationFrameCostReport {
     pub interval_proof_successes: u32,
     pub observer_continuation_seed_hits: u32,
     pub field_samples: u32,
+    #[serde(default = "default_true")]
+    pub observability_sampled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub observability_notes: Vec<String>,
     pub cpu_time_total_micros: u128,
     pub execution_bound: String,
     pub gpu_runtime: crate::gpu_runtime::GpuRuntimeMetrics,
@@ -305,54 +313,76 @@ pub fn render_frame_cost_report(report: &PresentationFrameCostReport) -> String 
             report.continuation_diagnostics.join(" | ")
         ));
     }
-    out.push_str(&format!(
-        "acceleration_node_visits={} union_cluster_visits={} ray_support_interval_rejections={} ray_support_entry_jumps={} repeat_cell_skips={} cache_brick_visits={} cache_brick_hits={} cache_brick_misses={} cache_interval_advances={} accepted_relaxed_steps={} rejected_relaxed_steps={} analytic_transformed_hits={} interval_subdivisions={} interval_proof_successes={} observer_continuation_seed_hits={}\n",
-        report.acceleration_node_visits,
-        report.union_cluster_visits,
-        report.ray_support_interval_rejections,
-        report.ray_support_entry_jumps,
-        report.repeat_cell_skips,
-        report.cache_brick_visits,
-        report.cache_brick_hits,
-        report.cache_brick_misses,
-        report.cache_interval_advances,
-        report.accepted_relaxed_steps,
-        report.rejected_relaxed_steps,
-        report.analytic_transformed_hits,
-        report.interval_subdivisions,
-        report.interval_proof_successes,
-        report.observer_continuation_seed_hits,
-    ));
-    out.push_str(&format!(
-        "solver_relaxed_attempts={} solver_relaxed_no_root_advances={} solver_relaxed_brackets={} solver_relaxed_unresolved={} solver_interval_attempts={} solver_interval_no_root_advances={} solver_interval_brackets={} solver_interval_unresolved={} solver_refinement_attempts={} solver_refinement_failures={} solver_repeat_attempts={} solver_repeat_supported={} solver_repeat_inapplicable={} solver_repeat_unsupported={} solver_repeat_unsupported_form={} solver_repeat_unsupported_bounds={} solver_repeat_cells_enumerated={}\n",
-        report.solver_relaxed_attempts,
-        report.solver_relaxed_no_root_advances,
-        report.solver_relaxed_brackets,
-        report.solver_relaxed_unresolved,
-        report.solver_interval_attempts,
-        report.solver_interval_no_root_advances,
-        report.solver_interval_brackets,
-        report.solver_interval_unresolved,
-        report.solver_refinement_attempts,
-        report.solver_refinement_failures,
-        report.solver_repeat_attempts,
-        report.solver_repeat_supported,
-        report.solver_repeat_inapplicable,
-        report.solver_repeat_unsupported,
-        report.solver_repeat_unsupported_form,
-        report.solver_repeat_unsupported_bounds,
-        report.solver_repeat_cells_enumerated,
-    ));
-    out.push_str(&format!(
-        "primary_hit_rate={:.3} average_trace_steps={:.3} max_trace_steps={} field_samples={} candidates_before={} candidates_after={} support_prune_effectiveness={:.3}\n",
-        report.primary_hit_rate,
-        report.average_trace_steps,
-        report.max_trace_steps,
-        report.field_samples,
-        report.candidate_count_before_pruning,
-        report.candidate_count_after_pruning,
-        report.support_prune_effectiveness,
-    ));
+    if report.observability_sampled {
+        out.push_str("observability=sampled\n");
+        out.push_str(&format!(
+            "acceleration_node_visits={} union_cluster_visits={} ray_support_interval_rejections={} ray_support_entry_jumps={} repeat_cell_skips={} cache_brick_visits={} cache_brick_hits={} cache_brick_misses={} cache_interval_advances={} accepted_relaxed_steps={} rejected_relaxed_steps={} analytic_transformed_hits={} interval_subdivisions={} interval_proof_successes={} observer_continuation_seed_hits={}\n",
+            report.acceleration_node_visits,
+            report.union_cluster_visits,
+            report.ray_support_interval_rejections,
+            report.ray_support_entry_jumps,
+            report.repeat_cell_skips,
+            report.cache_brick_visits,
+            report.cache_brick_hits,
+            report.cache_brick_misses,
+            report.cache_interval_advances,
+            report.accepted_relaxed_steps,
+            report.rejected_relaxed_steps,
+            report.analytic_transformed_hits,
+            report.interval_subdivisions,
+            report.interval_proof_successes,
+            report.observer_continuation_seed_hits,
+        ));
+        out.push_str(&format!(
+            "solver_relaxed_attempts={} solver_relaxed_no_root_advances={} solver_relaxed_brackets={} solver_relaxed_unresolved={} solver_interval_attempts={} solver_interval_no_root_advances={} solver_interval_brackets={} solver_interval_unresolved={} solver_refinement_attempts={} solver_refinement_failures={} solver_repeat_attempts={} solver_repeat_supported={} solver_repeat_inapplicable={} solver_repeat_unsupported={} solver_repeat_unsupported_form={} solver_repeat_unsupported_bounds={} solver_repeat_cells_enumerated={}\n",
+            report.solver_relaxed_attempts,
+            report.solver_relaxed_no_root_advances,
+            report.solver_relaxed_brackets,
+            report.solver_relaxed_unresolved,
+            report.solver_interval_attempts,
+            report.solver_interval_no_root_advances,
+            report.solver_interval_brackets,
+            report.solver_interval_unresolved,
+            report.solver_refinement_attempts,
+            report.solver_refinement_failures,
+            report.solver_repeat_attempts,
+            report.solver_repeat_supported,
+            report.solver_repeat_inapplicable,
+            report.solver_repeat_unsupported,
+            report.solver_repeat_unsupported_form,
+            report.solver_repeat_unsupported_bounds,
+            report.solver_repeat_cells_enumerated,
+        ));
+        out.push_str(&format!(
+            "primary_hit_rate={:.3} average_trace_steps={:.3} max_trace_steps={} field_samples={} candidates_before={} candidates_after={} support_prune_effectiveness={:.3}\n",
+            report.primary_hit_rate,
+            report.average_trace_steps,
+            report.max_trace_steps,
+            report.field_samples,
+            report.candidate_count_before_pruning,
+            report.candidate_count_after_pruning,
+            report.support_prune_effectiveness,
+        ));
+    } else {
+        let observability_notes = if report.observability_notes.is_empty() {
+            "none".to_string()
+        } else {
+            report.observability_notes.join(",")
+        };
+        out.push_str(&format!(
+            "observability=unsampled notes={}\n",
+            observability_notes
+        ));
+        out.push_str(
+            "acceleration_node_visits=unsampled union_cluster_visits=unsampled ray_support_interval_rejections=unsampled ray_support_entry_jumps=unsampled repeat_cell_skips=unsampled cache_brick_visits=unsampled cache_brick_hits=unsampled cache_brick_misses=unsampled cache_interval_advances=unsampled accepted_relaxed_steps=unsampled rejected_relaxed_steps=unsampled analytic_transformed_hits=unsampled interval_subdivisions=unsampled interval_proof_successes=unsampled observer_continuation_seed_hits=unsampled\n",
+        );
+        out.push_str(
+            "solver_relaxed_attempts=unsampled solver_relaxed_no_root_advances=unsampled solver_relaxed_brackets=unsampled solver_relaxed_unresolved=unsampled solver_interval_attempts=unsampled solver_interval_no_root_advances=unsampled solver_interval_brackets=unsampled solver_interval_unresolved=unsampled solver_refinement_attempts=unsampled solver_refinement_failures=unsampled solver_repeat_attempts=unsampled solver_repeat_supported=unsampled solver_repeat_inapplicable=unsampled solver_repeat_unsupported=unsampled solver_repeat_unsupported_form=unsampled solver_repeat_unsupported_bounds=unsampled solver_repeat_cells_enumerated=unsampled\n",
+        );
+        out.push_str(
+            "primary_hit_rate=unsampled average_trace_steps=unsampled max_trace_steps=unsampled field_samples=unsampled candidates_before=unsampled candidates_after=unsampled support_prune_effectiveness=unsampled\n",
+        );
+    }
     out.push_str(&format!(
         "tile_cull_total_tiles={} tile_cull_active_tiles={} tile_cull_efficiency={:.3} surface_resolve_count={} participant_resolve_count={} history_reuse_rate={:.3}\n",
         report.tile_cull_total_tiles,
@@ -387,10 +417,12 @@ pub fn render_frame_cost_report(report: &PresentationFrameCostReport) -> String 
         report.gpu_runtime.enabled_optional_features.join(",")
     };
     out.push_str(&format!(
-        "gpu_runtime timestamped_pass_count={} gpu_time_max_micros={} queue_submit_count={} upload_bytes={} readback_bytes={} transient_buffer_creations={} transient_bind_group_creations={} cpu_screen_sample_allocations={} attachment_decode_count={} attachment_encode_count={} primary_visibility_packet_fanout_count={} dispatch_fragmentation_count={} scene_reupload_bytes={} pipeline_cache_hits={} pipeline_cache_misses={} requested_limits_profile={} enabled_optional_features={}\n",
+        "gpu_runtime timestamped_pass_count={} gpu_time_max_micros={} queue_submit_count={} attachment_buffer_creations={} attachment_buffer_reuses={} upload_bytes={} readback_bytes={} transient_buffer_creations={} transient_bind_group_creations={} cpu_screen_sample_allocations={} attachment_decode_count={} attachment_encode_count={} primary_visibility_packet_fanout_count={} dispatch_fragmentation_count={} scene_reupload_bytes={} pipeline_cache_hits={} pipeline_cache_misses={} requested_limits_profile={} enabled_optional_features={}\n",
         report.gpu_runtime.timestamped_pass_count,
         report.gpu_runtime.gpu_time_max_micros,
         report.gpu_runtime.queue_submit_count,
+        report.gpu_runtime.attachment_buffer_creations,
+        report.gpu_runtime.attachment_buffer_reuses,
         report.gpu_runtime.upload_bytes,
         report.gpu_runtime.readback_bytes,
         report.gpu_runtime.transient_buffer_creations,
@@ -639,4 +671,118 @@ pub fn explain_why_not_120_findings(
     }
 
     findings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gpu_runtime::GpuRuntimeMetrics;
+
+    fn sample_frame_cost_report(observability_sampled: bool) -> PresentationFrameCostReport {
+        PresentationFrameCostReport {
+            semantic_domain: "bench_domain".to_string(),
+            execution_policy: "required=best-effort selected=heuristic-solver backend=wgsl"
+                .to_string(),
+            legal_degradations: vec![],
+            output_width: 64,
+            output_height: 64,
+            internal_width: 64,
+            internal_height: 64,
+            quality: PresentationQualityReport {
+                tier: "realtime_120".to_string(),
+                target_fps: 120,
+                output_width: 64,
+                output_height: 64,
+                internal_width: 64,
+                internal_height: 64,
+                internal_resolution_scale: 1.0,
+                achieved_native_output: true,
+                reconstructed_output: false,
+                temporal_mode: "TemporalAA".to_string(),
+                radiance_mode: "full".to_string(),
+                media_enabled: true,
+                half_res_participants: false,
+                hit_compaction_enabled: false,
+                active_degradations: vec![],
+            },
+            primary_hit_rate: 0.75,
+            average_trace_steps: 8.0,
+            max_trace_steps: 24,
+            candidate_count_before_pruning: 16,
+            candidate_count_after_pruning: 8,
+            support_prune_effectiveness: 0.5,
+            tile_cull_total_tiles: 16,
+            tile_cull_active_tiles: 8,
+            tile_cull_efficiency: 0.5,
+            tile_candidate_total_samples: 64,
+            tile_candidate_active_samples: 32,
+            tile_candidate_reduction: 32,
+            tile_candidate_effectiveness: 0.5,
+            tile_candidate_packet_count: 2,
+            tile_candidate_packet_size: 16,
+            packet_compaction_ratio: 1.0,
+            packet_scheduling_active: true,
+            selected_workgroup_size: 64,
+            surface_resolve_count: 64,
+            participant_resolve_count: 32,
+            history_reuse_rate: 0.5,
+            continuation_diagnostics: vec![],
+            acceleration_node_visits: 4,
+            union_cluster_visits: 2,
+            ray_support_interval_rejections: 1,
+            ray_support_entry_jumps: 1,
+            repeat_cell_skips: 1,
+            cache_brick_visits: 1,
+            cache_brick_hits: 1,
+            cache_brick_misses: 0,
+            cache_interval_advances: 1,
+            accepted_relaxed_steps: 1,
+            rejected_relaxed_steps: 0,
+            solver_relaxed_attempts: 1,
+            solver_relaxed_no_root_advances: 0,
+            solver_relaxed_brackets: 1,
+            solver_relaxed_unresolved: 0,
+            solver_interval_attempts: 1,
+            solver_interval_no_root_advances: 0,
+            solver_interval_brackets: 1,
+            solver_interval_unresolved: 0,
+            solver_refinement_attempts: 1,
+            solver_refinement_failures: 0,
+            solver_repeat_attempts: 1,
+            solver_repeat_supported: 1,
+            solver_repeat_inapplicable: 0,
+            solver_repeat_unsupported: 0,
+            solver_repeat_unsupported_form: 0,
+            solver_repeat_unsupported_bounds: 0,
+            solver_repeat_cells_enumerated: 1,
+            analytic_transformed_hits: 1,
+            interval_subdivisions: 1,
+            interval_proof_successes: 1,
+            observer_continuation_seed_hits: 1,
+            field_samples: 64,
+            observability_sampled,
+            observability_notes: (!observability_sampled)
+                .then(|| vec!["runtime_summary_only".to_string()])
+                .unwrap_or_default(),
+            cpu_time_total_micros: 1000,
+            execution_bound: "wgsl_queue_submit_wall_clock".to_string(),
+            gpu_runtime: GpuRuntimeMetrics::default(),
+            attachment_bytes: vec![],
+            passes: vec![],
+            framegraph_exceptions: vec![],
+            active_acceleration_artifacts: vec![],
+            bottleneck_pass: Some("primary_visibility".to_string()),
+            performance_gain_sources: vec!["backend_speed".to_string()],
+        }
+    }
+
+    #[test]
+    fn render_frame_cost_report_marks_unsampled_observability() {
+        let rendered = render_frame_cost_report(&sample_frame_cost_report(false));
+
+        assert!(rendered.contains("observability=unsampled"));
+        assert!(rendered.contains("field_samples=unsampled"));
+        assert!(rendered.contains("solver_relaxed_attempts=unsampled"));
+        assert!(!rendered.contains("field_samples=64"));
+    }
 }

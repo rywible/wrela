@@ -115,13 +115,16 @@ pub enum PresentationExecError {
     Resource(#[from] PresentationResourceError),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct PresentationExecutionInput {
     pub region_snapshot: WorldSnapshotHandle,
     pub frame_domain: KernelValue,
     pub frame_state: KernelValue,
     pub history: Option<PresentationTemporalHistory>,
+    pub resident_history_attachments: Option<GpuAttachmentArena>,
     pub materialize_cpu_attachments: bool,
+    pub runtime_summary_only: bool,
+    pub collect_gpu_timing_readback: bool,
     pub lighting: PresentationLightingInputs,
     pub compatibility_projection: Option<LegacyCompatibilityProjectionInput>,
     pub execution_policy: PresentationExecutionPolicy,
@@ -155,6 +158,26 @@ impl PresentationExecutionInput {
 
     pub fn region_capture_value(&self) -> KernelValue {
         self.region_snapshot.capture_value()
+    }
+}
+
+impl PartialEq for PresentationExecutionInput {
+    fn eq(&self, other: &Self) -> bool {
+        self.region_snapshot == other.region_snapshot
+            && self.frame_domain == other.frame_domain
+            && self.frame_state == other.frame_state
+            && self.history == other.history
+            && self.resident_history_attachments.is_some()
+                == other.resident_history_attachments.is_some()
+            && self.materialize_cpu_attachments == other.materialize_cpu_attachments
+            && self.runtime_summary_only == other.runtime_summary_only
+            && self.collect_gpu_timing_readback == other.collect_gpu_timing_readback
+            && self.lighting == other.lighting
+            && self.compatibility_projection == other.compatibility_projection
+            && self.execution_policy == other.execution_policy
+            && self.query_trace_solver_mode == other.query_trace_solver_mode
+            && self.quality_override == other.quality_override
+            && self.backend == other.backend
     }
 }
 
@@ -225,7 +248,7 @@ pub struct PresentationMetrics {
     pub gpu_runtime: GpuRuntimeMetrics,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct PresentationExecutionResult {
     pub plan_name: SmolStr,
     pub backend: DispatchBackend,
@@ -234,15 +257,34 @@ pub struct PresentationExecutionResult {
     pub screen_samples: Vec<KernelValue>,
     pub attachments: AttachmentResourceSet,
     pub history: Option<PresentationTemporalHistory>,
+    pub resident_history_attachments: Option<GpuAttachmentArena>,
     pub metrics: PresentationMetrics,
     pub frame_cost: PresentationFrameCostReport,
     pub query_trace: BatchQueryExecutionTrace,
+}
+
+impl PartialEq for PresentationExecutionResult {
+    fn eq(&self, other: &Self) -> bool {
+        self.plan_name == other.plan_name
+            && self.backend == other.backend
+            && self.width == other.width
+            && self.height == other.height
+            && self.screen_samples == other.screen_samples
+            && self.attachments == other.attachments
+            && self.history == other.history
+            && self.resident_history_attachments.is_some()
+                == other.resident_history_attachments.is_some()
+            && self.metrics == other.metrics
+            && self.frame_cost == other.frame_cost
+            && self.query_trace == other.query_trace
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct AdaptivePresentationSession {
     controller: AdaptivePresentationController,
     history: Option<PresentationTemporalHistory>,
+    resident_history_attachments: Option<GpuAttachmentArena>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -760,6 +802,7 @@ impl AdaptivePresentationSession {
         Self {
             controller: AdaptivePresentationController::new(contract),
             history: None,
+            resident_history_attachments: None,
         }
     }
 
@@ -784,9 +827,11 @@ impl AdaptivePresentationSession {
     ) -> Result<PresentationExecutionResult, PresentationExecError> {
         let mut frame_input = input.clone();
         frame_input.history = self.history.clone();
+        frame_input.resident_history_attachments = self.resident_history_attachments.clone();
         frame_input.quality_override = Some(self.controller.quality().clone());
         let result = execute_plan(ctx, plan, &frame_input)?;
         self.history = result.history.clone();
+        self.resident_history_attachments = result.resident_history_attachments.clone();
         let _ = self.controller.observe_frame(&result.frame_cost);
         Ok(result)
     }
@@ -840,7 +885,7 @@ pub(crate) fn adjusted_ray_budget(
 pub(crate) fn full_attachment_byte_size(attachments: &AttachmentResourceSet, name: &str) -> u64 {
     attachments
         .attachment(name)
-        .map(|attachment| attachment.bytes.len() as u64)
+        .map(|attachment| attachment.layout.total_size as u64)
         .unwrap_or_default()
 }
 
@@ -855,7 +900,7 @@ pub(crate) fn attachment_byte_reports(
             attachment: name.to_string(),
             width: attachment.layout.width,
             height: attachment.layout.height,
-            total_size_bytes: attachment.bytes.len() as u64,
+            total_size_bytes: attachment.layout.total_size as u64,
             backing: attachment_backing_report(
                 arena
                     .and_then(|gpu_attachments| gpu_attachments.attachment(name.as_str()))
@@ -1133,6 +1178,11 @@ pub(crate) fn tile_culling_mask(
     if !saw_coverage {
         return Ok(None);
     }
+    let total_tiles = tiles_x.saturating_mul(tiles_y);
+    let active_tiles = active.iter().filter(|tile| **tile).count() as u32;
+    if tile_culling_can_use_dense_dispatch(candidate_table.enabled, active_tiles, total_tiles) {
+        return Ok(None);
+    }
     let mut coarse_active_samples = Vec::new();
     let mut skipped_samples = Vec::new();
     for y in 0..viewport.height {
@@ -1148,7 +1198,6 @@ pub(crate) fn tile_culling_mask(
             }
         }
     }
-    let active_tiles = active.iter().filter(|tile| **tile).count() as u32;
     let active_samples = if candidate_table.enabled {
         coarse_active_samples.clone()
     } else {
@@ -1163,6 +1212,14 @@ pub(crate) fn tile_culling_mask(
         },
         candidate_table,
     }))
+}
+
+fn tile_culling_can_use_dense_dispatch(
+    candidate_table_enabled: bool,
+    active_tiles: u32,
+    total_tiles: u32,
+) -> bool {
+    !candidate_table_enabled && total_tiles > 0 && active_tiles == total_tiles
 }
 
 fn mark_projected_bounds_tiles(
@@ -1675,18 +1732,20 @@ fn allocate_execution_attachments(
 ) -> Result<AttachmentResourceSet, PresentationExecError> {
     if let Some(history) = history {
         if history_slots_match(frame, frame_state, width, height, current_snapshot, history)? {
-            match crate::presentation_exec::allocate_frame_attachment_resources_with_history(
-                frame,
-                width,
-                height,
-                Some(&history.attachments),
-            ) {
-                Ok(resources) => return Ok(resources),
-                Err(
-                    PresentationResourceError::MissingHistoryAttachment { .. }
-                    | PresentationResourceError::HistoryLayoutMismatch { .. },
-                ) => {}
-                Err(err) => return Err(PresentationExecError::Resource(err)),
+            if history.attachments.has_complete_cpu_mirrors() {
+                match crate::presentation_exec::allocate_frame_attachment_resources_with_history(
+                    frame,
+                    width,
+                    height,
+                    Some(&history.attachments),
+                ) {
+                    Ok(resources) => return Ok(resources),
+                    Err(
+                        PresentationResourceError::MissingHistoryAttachment { .. }
+                        | PresentationResourceError::HistoryLayoutMismatch { .. },
+                    ) => {}
+                    Err(err) => return Err(PresentationExecError::Resource(err)),
+                }
             }
         }
     }
@@ -2282,6 +2341,8 @@ pub(crate) fn build_frame_cost_report(
         interval_proof_successes: metrics.interval_proof_successes,
         observer_continuation_seed_hits: metrics.observer_continuation_seed_hits,
         field_samples: metrics.field_samples,
+        observability_sampled: true,
+        observability_notes: Vec::new(),
         cpu_time_total_micros,
         execution_bound,
         gpu_runtime: metrics.gpu_runtime.clone(),
@@ -2964,6 +3025,7 @@ mod tests {
         CanonicalCameraInput, CanonicalViewportInput, TileCandidateQueueState,
         build_tile_candidate_artifact, build_tile_candidate_span_words,
         projected_bounds_tile_range, tile_candidate_dispatch_packets,
+        tile_culling_can_use_dense_dispatch,
     };
     use smol_str::SmolStr;
 
@@ -3115,5 +3177,12 @@ mod tests {
         .expect("coverage should remain available");
 
         assert_eq!(coverage, (0, 1, 0, 1));
+    }
+
+    #[test]
+    fn dense_dispatch_short_circuits_when_tile_culling_has_no_benefit() {
+        assert!(tile_culling_can_use_dense_dispatch(false, 16, 16));
+        assert!(!tile_culling_can_use_dense_dispatch(true, 16, 16));
+        assert!(!tile_culling_can_use_dense_dispatch(false, 15, 16));
     }
 }

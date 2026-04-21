@@ -807,7 +807,7 @@ fn presentation_attachment_resources_seed_semantic_defaults_and_preserve_history
     }));
     assert_eq!(
         resources.attachment("history_depth").unwrap().bytes,
-        prior_pattern
+        prior_pattern.into()
     );
 }
 

@@ -12,6 +12,7 @@ query-tests := "cargo test -p wrela --test query_contract_registry --test query_
 engine-frame-tests := "cargo test -p wrela --test engine_frame"
 perf-smoke-cmd := "cargo run -p wrela -- perf benchmarks/micro --profile=smoke --runs=1"
 perf-engine-closure-cmd := "cargo run --release -p wrela -- perf benchmarks/engine_frame --profile=1080p120 --query-backend=wgsl"
+perf-engine-audit-cmd := "WRELA_PERF_ENGINE_AUDIT=1 cargo run --release -p wrela -- perf benchmarks/engine_frame --profile=1080p120 --query-backend=wgsl --perf-debug"
 
 default:
     @just --list
@@ -75,6 +76,10 @@ perf-smoke:
 # Canonical engine-frame closure lane.
 perf-engine-closure:
     {{perf-engine-closure-cmd}}
+
+# Non-canonical audit lane for live-vs-compatibility engine-frame measurements.
+perf-engine-audit:
+    {{perf-engine-audit-cmd}}
 
 # Canonical closure alias.
 perf-closure:

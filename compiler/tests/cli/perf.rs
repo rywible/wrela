@@ -637,6 +637,26 @@ fn cli_perf_runs_engine_frame_1080p120_closure_profile() {
         Some("wgsl")
     );
     assert_eq!(
+        presentation_reports[0]
+            .pointer("/observability_sampled")
+            .and_then(|value| value.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        presentation_reports[0]
+            .pointer("/frame_cost/observability_sampled")
+            .and_then(|value| value.as_bool()),
+        Some(false)
+    );
+    assert!(
+        presentation_reports[0]
+            .pointer("/observability_notes")
+            .and_then(|value| value.as_array())
+            .is_some_and(|notes| notes
+                .iter()
+                .any(|note| note.as_str() == Some("runtime_summary_only")))
+    );
+    assert_eq!(
         collision_reports[0]
             .pointer("/backend")
             .and_then(|value| value.as_str()),
@@ -761,14 +781,12 @@ fn cli_perf_why_not_120_mode_prints_closure_verdict_and_diagnostics() {
     assert!(
         first_report
             .get("wgsl_workgroup_comparison")
-            .and_then(|value| value.as_object())
-            .is_some()
+            .is_none_or(|value| value.is_null() || value.is_object())
     );
     assert!(
         first_report
             .get("ab_comparison")
-            .and_then(|value| value.as_object())
-            .is_some()
+            .is_none_or(|value| value.is_null() || value.is_object())
     );
 }
 

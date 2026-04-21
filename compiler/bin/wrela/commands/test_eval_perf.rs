@@ -75,7 +75,7 @@ pub(crate) fn build_benchmark_selection_from_manifest(
         .map(|test| (test.name.as_str(), test))
         .collect();
     let mut include_ids = HashSet::new();
-    let selection = manifest.scenario_selection(profile);
+    let selection = manifest.scenario_selection_for_execution(profile);
     for scenario in selection.scenarios() {
         let Some(test) = test_by_name.get(scenario.test_name.as_str()) else {
             return Err(format!(
@@ -309,6 +309,10 @@ pub(crate) struct MutationExecutionResult {
     pub(crate) cache_hits: usize,
     pub(crate) cache_misses: usize,
     pub(crate) cache_invalidations: usize,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 #[derive(Clone)]
@@ -1159,6 +1163,10 @@ pub(crate) struct PresentationBenchmarkReport {
     #[serde(default)]
     pub(crate) steady_state_fps: f64,
     pub(crate) field_samples: u32,
+    #[serde(default = "default_true")]
+    pub(crate) observability_sampled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) observability_notes: Vec<String>,
     pub(crate) quality_tier: String,
     pub(crate) target_fps: u32,
     pub(crate) internal_resolution_scale: f32,
@@ -1311,15 +1319,45 @@ pub(crate) struct EngineFrameBenchmarkReport {
     pub(crate) presentation_runtime_ns: u128,
     pub(crate) collision_runtime_ns: u128,
     pub(crate) state_advance_runtime_ns: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) presentation_self_reported_runtime_ns: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) collision_self_reported_runtime_ns: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) state_advance_self_reported_runtime_ns: Option<u128>,
+    #[serde(default, skip_serializing_if = "is_zero_u128")]
+    pub(crate) presentation_orchestration_gap_ns: u128,
+    #[serde(default, skip_serializing_if = "is_zero_u128")]
+    pub(crate) collision_orchestration_gap_ns: u128,
+    #[serde(default, skip_serializing_if = "is_zero_u128")]
+    pub(crate) state_advance_orchestration_gap_ns: u128,
+    #[serde(default)]
+    pub(crate) measurement_policy: wrela::engine_frame::EngineMeasurementPolicy,
     pub(crate) future_subsystem_reserve_ns: u128,
     pub(crate) queue_submit_count: u32,
     pub(crate) hot_path_readback_bytes: u64,
     pub(crate) scene_reupload_bytes: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub(crate) timestamped_pass_count: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub(crate) timing_readback_bytes: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) active_degradations: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) violations: Vec<String>,
     pub(crate) subsystem_reports: Vec<wrela::engine_frame::EngineSubsystemReport>,
+}
+
+fn is_zero_u128(value: &u128) -> bool {
+    *value == 0
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 pub(crate) struct BenchmarkProfileScenarioSelection<'a> {
@@ -1344,16 +1382,53 @@ impl BenchmarkManifest {
             .collect()
     }
 
+    pub(crate) fn scenarios_for_execution(&self, profile: PerfProfile) -> Vec<&BenchmarkScenario> {
+        let mut scenarios = self.scenarios_for_profile(profile);
+        if !engine_frame_audit_enabled_for_manifest(self, profile) {
+            return scenarios;
+        }
+        if let Some(scenario_id) = engine_frame_audit_scenario_filter() {
+            scenarios.retain(|scenario| scenario.id.as_str() == scenario_id);
+        } else {
+            scenarios.truncate(1);
+        }
+        scenarios
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn scenario_selection(
         &self,
         profile: PerfProfile,
     ) -> BenchmarkProfileScenarioSelection<'_> {
         BenchmarkProfileScenarioSelection::new(self.scenarios_for_profile(profile))
     }
+
+    pub(crate) fn scenario_selection_for_execution(
+        &self,
+        profile: PerfProfile,
+    ) -> BenchmarkProfileScenarioSelection<'_> {
+        BenchmarkProfileScenarioSelection::new(self.scenarios_for_execution(profile))
+    }
+}
+
+fn engine_frame_audit_enabled_for_manifest(
+    manifest: &BenchmarkManifest,
+    profile: PerfProfile,
+) -> bool {
+    env::var_os(PERF_ENGINE_AUDIT_ENV).is_some()
+        && matches!(profile, PerfProfile::Closure1080p120)
+        && manifest.suite.eq_ignore_ascii_case("engine_frame")
+}
+
+fn engine_frame_audit_scenario_filter() -> Option<String> {
+    env::var(PERF_ENGINE_AUDIT_SCENARIO_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 impl<'a> BenchmarkProfileScenarioSelection<'a> {
-    fn new(scenarios: Vec<&'a BenchmarkScenario>) -> Self {
+    pub(crate) fn new(scenarios: Vec<&'a BenchmarkScenario>) -> Self {
         let mut includes_presentation = false;
         let mut includes_collision = false;
         let mut presentation_count = 0usize;
@@ -1447,6 +1522,8 @@ pub(crate) struct EvalCommandInput {
 }
 
 pub(crate) const EVAL_ONE_SHOT_SCHEMA_VERSION: u32 = 2;
+pub(crate) const PERF_ENGINE_AUDIT_ENV: &str = "WRELA_PERF_ENGINE_AUDIT";
+pub(crate) const PERF_ENGINE_AUDIT_SCENARIO_ENV: &str = "WRELA_PERF_ENGINE_AUDIT_SCENARIO";
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]

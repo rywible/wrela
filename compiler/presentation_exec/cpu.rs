@@ -704,6 +704,7 @@ pub(super) fn execute_plan(
         screen_samples,
         attachments,
         history,
+        resident_history_attachments: None,
         metrics,
         frame_cost,
         query_trace: primary_trace,

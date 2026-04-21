@@ -8,7 +8,7 @@ pub use interp::{
     KernelBatchIterationTrace, KernelBatchQueryTrace, KernelBufferValue, KernelExecError,
     KernelInvocation, KernelRuntimeState, KernelStructValue, KernelValue, execute_dispatch,
     execute_dispatch_on, execute_entry, execute_entry_on, execute_function, execute_function_on,
-    interpret_batch_query, interpret_dispatch,
+    interpret_batch_query, interpret_dispatch, summarize_batch_query,
 };
 pub use ir::{
     KernelBatchItemContract, KernelBatchQueryPlan, KernelBlock, KernelCaptureQueryPlan,

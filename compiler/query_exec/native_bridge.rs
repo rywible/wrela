@@ -386,6 +386,8 @@ fn world_module_from_parts(
         item_abi: wgsl_item_abi_for_descriptor(descriptor)?,
         result_abi: wgsl_result_abi_for_descriptor(descriptor)?,
         shape_meta_values: Vec::new(),
+        cache_observability_seed: crate::query_exec::wgsl::codegen::CacheObservabilitySeed::default(
+        ),
     })
 }
 
@@ -413,6 +415,8 @@ fn world_batch_module_from_parts(
         item_abi: wgsl_item_abi_for_descriptor(descriptor)?,
         result_abi: wgsl_result_abi_for_descriptor(descriptor)?,
         shape_meta_values: Vec::new(),
+        cache_observability_seed: crate::query_exec::wgsl::codegen::CacheObservabilitySeed::default(
+        ),
     })
 }
 
@@ -432,6 +436,8 @@ fn batch_module_from_parts(
         item_abi: wgsl_item_abi_for_descriptor(descriptor)?,
         result_abi: wgsl_result_abi_for_descriptor(descriptor)?,
         shape_meta_values: Vec::new(),
+        cache_observability_seed: crate::query_exec::wgsl::codegen::CacheObservabilitySeed::default(
+        ),
     })
 }
 

@@ -27,6 +27,7 @@
 //! gate inputs, and report assembly.
 use super::*;
 use std::ffi::OsString;
+use std::sync::{Arc, Mutex};
 
 pub(crate) struct PerfCommandInput {
     pub(crate) trace: bool,
@@ -73,6 +74,16 @@ impl Drop for ScopedEnvVar {
             unsafe { env::remove_var(self.key) };
         }
     }
+}
+
+fn perf_engine_audit_enabled(
+    benchmark_manifest: Option<&BenchmarkManifest>,
+    perf_profile: PerfProfile,
+) -> bool {
+    env::var_os(test_eval_perf::PERF_ENGINE_AUDIT_ENV).is_some()
+        && matches!(perf_profile, PerfProfile::Closure1080p120)
+        && benchmark_manifest
+            .is_some_and(|manifest| manifest.suite.eq_ignore_ascii_case("engine_frame"))
 }
 
 pub(crate) fn execute_perf_command(mut input: PerfCommandInput) -> i32 {
@@ -132,7 +143,7 @@ pub(crate) fn execute_perf_command(mut input: PerfCommandInput) -> i32 {
                 return EXIT_USAGE;
             }
         };
-        let scenario_selection = manifest.scenario_selection(input.perf_profile);
+        let scenario_selection = manifest.scenario_selection_for_execution(input.perf_profile);
         let max_timeout_ms = scenario_selection.max_timeout_ms();
         if let Some(max_timeout_ms) = max_timeout_ms {
             timeout = timeout.max(std::time::Duration::from_millis(max_timeout_ms));
@@ -212,22 +223,27 @@ pub(super) fn run_perf_harness(
     let query_backend = effective_perf_query_backend(perf_profile, query_backend);
     let closure_protocol = matches!(perf_profile, PerfProfile::Closure1080p120)
         .then(PerfClosureProfile::canonical_1080p120);
-    let closure_timestamps_enabled = closure_protocol
+    let closure_gpu_timing_requested = closure_protocol
         .as_ref()
         .filter(|_| query_backend == wrela::query_plan::DispatchBackend::Wgsl)
-        .is_some_and(|profile| profile.timestamps_enabled);
+        .is_some_and(|profile| {
+            profile.timestamps_enabled || profile.gpu_timestamps_required_if_supported
+        });
     let _timestamp_env = ScopedEnvVar::set(
         wrela::query_exec::wgsl::QUERY_GPU_TIMESTAMPS_ENV,
-        closure_timestamps_enabled.then_some("1"),
+        closure_gpu_timing_requested.then_some("1"),
     );
     let _timestamp_override = wrela::query_exec::wgsl::override_gpu_timestamps_for_current_thread(
         closure_protocol
             .as_ref()
             .filter(|_| query_backend == wrela::query_plan::DispatchBackend::Wgsl)
-            .map(|profile| profile.timestamps_enabled),
+            .map(|profile| {
+                profile.timestamps_enabled || profile.gpu_timestamps_required_if_supported
+            }),
     );
     let benchmark_scenarios =
-        benchmark_manifest.map(|manifest| manifest.scenario_selection(perf_profile));
+        benchmark_manifest.map(|manifest| manifest.scenario_selection_for_execution(perf_profile));
+    let engine_frame_audit = perf_engine_audit_enabled(benchmark_manifest, perf_profile);
     let presentation_benchmarks_active = benchmark_scenarios
         .as_ref()
         .is_some_and(|selection| selection.includes_presentation());
@@ -364,119 +380,219 @@ pub(super) fn run_perf_harness(
                     engine_frame_errors,
                     report_collection_errors,
                 ) = if collect_reports_this_run {
-                    let presentation_collection = match collect_presentation_benchmark_reports(
-                        benchmark_root,
-                        scenarios.scenarios(),
-                        query_backend,
-                        presentation_collection_mode
-                            .expect("presentation benchmarks should set collection mode"),
-                    ) {
-                        Ok(collection) => collection,
-                        Err(err) => {
-                            eprintln!(
-                                "perf harness error: failed to collect presentation reports: {err}"
+                    let live_engine_frame_collection =
+                        match collect_live_engine_frame_benchmark_reports(
+                            benchmark_root,
+                            scenarios.scenarios(),
+                            query_backend,
+                            closure_gpu_timing_requested,
+                            closure_protocol
+                                .as_ref()
+                                .map(|profile| &profile.engine_frame_budget),
+                        ) {
+                            Ok(collection) => collection,
+                            Err(err) => {
+                                eprintln!(
+                                    "perf harness error: failed to collect engine-frame reports: {err}"
+                                );
+                                return EXIT_CODEGEN;
+                            }
+                        };
+                    let engine_frame_suite = manifest.suite.eq_ignore_ascii_case("engine_frame");
+                    if engine_frame_suite {
+                        let mut presentation_errors = Vec::new();
+                        let mut collision_errors = Vec::new();
+                        let mut whole_frame_errors = Vec::new();
+                        let mut engine_frame_errors = live_engine_frame_collection.errors;
+                        let mut report_collection_errors = engine_frame_errors.clone();
+                        let presentation_reports =
+                            live_engine_frame_collection.presentation_reports;
+                        let collision_results = live_engine_frame_collection.collision_results;
+                        let collision_backend = match collision_benchmark_backend(query_backend) {
+                            Ok(backend) => backend,
+                            Err(err) => {
+                                eprintln!(
+                                    "perf harness error: failed to derive engine-frame collision backend: {err}"
+                                );
+                                return EXIT_CODEGEN;
+                            }
+                        };
+                        let collision_reports = if collision_results.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![collision_benchmark_report_from_scenarios(
+                                manifest,
+                                collision_backend,
+                                &collision_results,
+                            )]
+                        };
+                        let whole_frame_reports = match build_whole_frame_benchmark_reports(
+                            &presentation_reports,
+                            &collision_reports,
+                        ) {
+                            Ok(reports) => reports,
+                            Err(err) => {
+                                whole_frame_errors.push(err.clone());
+                                report_collection_errors.push(err);
+                                Vec::new()
+                            }
+                        };
+                        let engine_frame_reports = live_engine_frame_collection.reports;
+                        if presentation_reports.len() != expected_presentation_report_count {
+                            let error = format!(
+                                "engine-frame presentation collection returned {} report(s) for {} expected scenario(s)",
+                                presentation_reports.len(),
+                                expected_presentation_report_count
                             );
-                            return EXIT_CODEGEN;
+                            presentation_errors.push(error.clone());
+                            report_collection_errors.push(error);
                         }
-                    };
-                    let collision_collection = match collect_collision_benchmark_reports(
-                        benchmark_root,
-                        manifest,
-                        scenarios.scenarios(),
-                        query_backend,
-                    ) {
-                        Ok(collection) => collection,
-                        Err(err) => {
-                            eprintln!(
-                                "perf harness error: failed to collect collision reports: {err}"
+                        let collision_execution_count = collision_reports
+                            .iter()
+                            .map(|report| report.executions.len())
+                            .sum::<usize>();
+                        if collision_execution_count != expected_collision_execution_count {
+                            let error = format!(
+                                "engine-frame collision collection returned {} execution(s) for {} expected scenario(s)",
+                                collision_execution_count, expected_collision_execution_count
                             );
-                            return EXIT_CODEGEN;
+                            collision_errors.push(error.clone());
+                            report_collection_errors.push(error);
                         }
-                    };
-                    let mut presentation_errors = presentation_collection.errors;
-                    let mut collision_errors = collision_collection.errors;
-                    let mut whole_frame_errors = Vec::new();
-                    let mut report_collection_errors = Vec::new();
-                    if presentation_collection.reports.len() != expected_presentation_report_count {
-                        let error = format!(
-                            "presentation benchmark collection returned {} report(s) for {} expected scenario(s) in {} mode",
-                            presentation_collection.reports.len(),
-                            expected_presentation_report_count,
+                        if whole_frame_reports.len() != expected_whole_frame_report_count {
+                            let error = format!(
+                                "engine-frame compatibility join returned {} report(s) for {} expected composite scenario(s)",
+                                whole_frame_reports.len(),
+                                expected_whole_frame_report_count
+                            );
+                            whole_frame_errors.push(error.clone());
+                            report_collection_errors.push(error);
+                        }
+                        if engine_frame_reports.len() != expected_whole_frame_report_count {
+                            let error = format!(
+                                "engine-frame report collection returned {} report(s) for {} expected composite scenario(s)",
+                                engine_frame_reports.len(),
+                                expected_whole_frame_report_count
+                            );
+                            engine_frame_errors.push(error.clone());
+                            report_collection_errors.push(error);
+                        }
+                        (
+                            presentation_reports,
+                            presentation_errors,
+                            collision_reports,
+                            collision_errors,
+                            whole_frame_reports,
+                            whole_frame_errors,
+                            engine_frame_reports,
+                            engine_frame_errors,
+                            report_collection_errors,
+                        )
+                    } else {
+                        let presentation_collection = match collect_presentation_benchmark_reports(
+                            benchmark_root,
+                            scenarios.scenarios(),
+                            query_backend,
                             presentation_collection_mode
-                                .expect("presentation benchmarks should set collection mode")
-                                .as_str()
-                        );
-                        presentation_errors.push(error.clone());
-                        report_collection_errors.push(error);
-                    }
-                    let collision_execution_count = collision_collection
-                        .reports
-                        .iter()
-                        .map(|report| report.executions.len())
-                        .sum::<usize>();
-                    if collision_execution_count != expected_collision_execution_count {
-                        let error = format!(
-                            "collision benchmark collection returned {} execution(s) for {} expected scenario(s)",
-                            collision_execution_count, expected_collision_execution_count
-                        );
-                        collision_errors.push(error.clone());
-                        report_collection_errors.push(error);
-                    }
-                    let whole_frame_reports = match build_whole_frame_benchmark_reports(
-                        &presentation_collection.reports,
-                        &collision_collection.reports,
-                    ) {
-                        Ok(reports) => reports,
-                        Err(err) => {
-                            whole_frame_errors.push(err.clone());
-                            report_collection_errors.push(err);
-                            Vec::new()
+                                .expect("presentation benchmarks should set collection mode"),
+                        ) {
+                            Ok(collection) => collection,
+                            Err(err) => {
+                                eprintln!(
+                                    "perf harness error: failed to collect presentation reports: {err}"
+                                );
+                                return EXIT_CODEGEN;
+                            }
+                        };
+                        let collision_collection = match collect_collision_benchmark_reports(
+                            benchmark_root,
+                            manifest,
+                            scenarios.scenarios(),
+                            query_backend,
+                        ) {
+                            Ok(collection) => collection,
+                            Err(err) => {
+                                eprintln!(
+                                    "perf harness error: failed to collect collision reports: {err}"
+                                );
+                                return EXIT_CODEGEN;
+                            }
+                        };
+                        let mut presentation_errors = presentation_collection.errors;
+                        let mut collision_errors = collision_collection.errors;
+                        let mut whole_frame_errors = Vec::new();
+                        let mut report_collection_errors = Vec::new();
+                        if presentation_collection.reports.len()
+                            != expected_presentation_report_count
+                        {
+                            let error = format!(
+                                "presentation benchmark collection returned {} report(s) for {} expected scenario(s) in {} mode",
+                                presentation_collection.reports.len(),
+                                expected_presentation_report_count,
+                                presentation_collection_mode
+                                    .expect("presentation benchmarks should set collection mode")
+                                    .as_str()
+                            );
+                            presentation_errors.push(error.clone());
+                            report_collection_errors.push(error);
                         }
-                    };
-                    let mut engine_frame_errors = Vec::new();
-                    let engine_frame_reports = match build_engine_frame_benchmark_reports(
-                        &presentation_collection.reports,
-                        &collision_collection.reports,
-                        closure_protocol
-                            .as_ref()
-                            .map(|profile| &profile.engine_frame_budget),
-                    ) {
-                        Ok(reports) => reports,
-                        Err(err) => {
-                            engine_frame_errors.push(err.clone());
-                            report_collection_errors.push(err);
-                            Vec::new()
+                        let collision_execution_count = collision_collection
+                            .reports
+                            .iter()
+                            .map(|report| report.executions.len())
+                            .sum::<usize>();
+                        if collision_execution_count != expected_collision_execution_count {
+                            let error = format!(
+                                "collision benchmark collection returned {} execution(s) for {} expected scenario(s)",
+                                collision_execution_count, expected_collision_execution_count
+                            );
+                            collision_errors.push(error.clone());
+                            report_collection_errors.push(error);
                         }
-                    };
-                    if whole_frame_reports.len() != expected_whole_frame_report_count {
-                        let error = format!(
-                            "whole-frame report collection returned {} report(s) for {} expected composite scenario(s)",
-                            whole_frame_reports.len(),
-                            expected_whole_frame_report_count
-                        );
-                        whole_frame_errors.push(error.clone());
-                        report_collection_errors.push(error);
+                        let whole_frame_reports = match build_whole_frame_benchmark_reports(
+                            &presentation_collection.reports,
+                            &collision_collection.reports,
+                        ) {
+                            Ok(reports) => reports,
+                            Err(err) => {
+                                whole_frame_errors.push(err.clone());
+                                report_collection_errors.push(err);
+                                Vec::new()
+                            }
+                        };
+                        let mut engine_frame_errors = live_engine_frame_collection.errors;
+                        report_collection_errors.extend(engine_frame_errors.iter().cloned());
+                        let engine_frame_reports = live_engine_frame_collection.reports;
+                        if whole_frame_reports.len() != expected_whole_frame_report_count {
+                            let error = format!(
+                                "whole-frame report collection returned {} report(s) for {} expected composite scenario(s)",
+                                whole_frame_reports.len(),
+                                expected_whole_frame_report_count
+                            );
+                            whole_frame_errors.push(error.clone());
+                            report_collection_errors.push(error);
+                        }
+                        if engine_frame_reports.len() != expected_whole_frame_report_count {
+                            let error = format!(
+                                "engine-frame report collection returned {} report(s) for {} expected composite scenario(s)",
+                                engine_frame_reports.len(),
+                                expected_whole_frame_report_count
+                            );
+                            engine_frame_errors.push(error.clone());
+                            report_collection_errors.push(error);
+                        }
+                        (
+                            presentation_collection.reports,
+                            presentation_errors,
+                            collision_collection.reports,
+                            collision_errors,
+                            whole_frame_reports,
+                            whole_frame_errors,
+                            engine_frame_reports,
+                            engine_frame_errors,
+                            report_collection_errors,
+                        )
                     }
-                    if engine_frame_reports.len() != expected_whole_frame_report_count {
-                        let error = format!(
-                            "engine-frame report collection returned {} report(s) for {} expected composite scenario(s)",
-                            engine_frame_reports.len(),
-                            expected_whole_frame_report_count
-                        );
-                        engine_frame_errors.push(error.clone());
-                        report_collection_errors.push(error);
-                    }
-                    (
-                        presentation_collection.reports,
-                        presentation_errors,
-                        collision_collection.reports,
-                        collision_errors,
-                        whole_frame_reports,
-                        whole_frame_errors,
-                        engine_frame_reports,
-                        engine_frame_errors,
-                        report_collection_errors,
-                    )
                 } else {
                     (
                             latest_presentation_reports
@@ -531,6 +647,13 @@ pub(super) fn run_perf_harness(
                         print_collision_benchmark_reports(&collision_reports);
                         print_whole_frame_benchmark_reports(&whole_frame_reports);
                         print_engine_frame_benchmark_reports(&engine_frame_reports);
+                        if engine_frame_audit {
+                            print_engine_frame_audit_report(
+                                &presentation_reports,
+                                &whole_frame_reports,
+                                &engine_frame_reports,
+                            );
+                        }
                     }
                     for error in &report_collection_errors {
                         eprintln!("whole-frame-benchmark-error: {error}");
@@ -908,6 +1031,13 @@ struct CollisionBenchmarkReportCollection {
     errors: Vec<String>,
 }
 
+struct EngineFrameBenchmarkReportCollection {
+    reports: Vec<EngineFrameBenchmarkReport>,
+    presentation_reports: Vec<PresentationBenchmarkReport>,
+    collision_results: Vec<CollisionBenchmarkScenarioResult>,
+    errors: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 struct CollisionBenchmarkScenarioMetrics {
     query_count: u64,
@@ -1075,8 +1205,15 @@ fn collect_collision_benchmark_reports(
         let ctx = contexts
             .get(&entry_path)
             .expect("collision benchmark context inserted");
+        let prepared = match prepare_collision_benchmark_scenario(ctx, scenario, spec, backend) {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                collection.errors.push(err);
+                continue;
+            }
+        };
         for _ in 0..collision_benchmark_warmup_run_count(backend) {
-            if let Err(err) = run_collision_benchmark_scenario(ctx, scenario, spec, backend) {
+            if let Err(err) = execute_prepared_collision_benchmark_scenario(&ctx.ctx, &prepared) {
                 collection.errors.push(format!(
                     "collision benchmark warmup `{}` failed: {err}",
                     scenario.id
@@ -1084,7 +1221,7 @@ fn collect_collision_benchmark_reports(
                 continue;
             }
         }
-        match run_collision_benchmark_scenario(ctx, scenario, spec, backend) {
+        match execute_prepared_collision_benchmark_scenario(&ctx.ctx, &prepared) {
             Ok(result) => scenario_results.push(result),
             Err(err) => collection.errors.push(err),
         }
@@ -1101,14 +1238,22 @@ fn collect_collision_benchmark_reports(
     Ok(collection)
 }
 
+#[derive(Debug, Clone)]
 struct CollisionBenchmarkScenarioResult {
     execution: test_eval_perf::CollisionBenchmarkExecutionReport,
     metrics: CollisionBenchmarkScenarioMetrics,
 }
 
+#[derive(Debug, Clone)]
 struct CollisionBenchmarkContext {
     ctx: QueryExecContext,
     module: hir::Module,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedCollisionBenchmarkScenario {
+    scenario_id: test_eval_perf::PerfScenarioId,
+    batch: wrela::collision_plan::CollisionWorkloadBatch,
 }
 
 pub(super) fn collision_benchmark_backend(
@@ -1194,35 +1339,96 @@ fn compile_collision_benchmark_context(
     })
 }
 
-fn run_collision_benchmark_scenario(
+fn prepare_collision_benchmark_scenario(
     context: &CollisionBenchmarkContext,
     scenario: &test_eval_perf::BenchmarkScenario,
     spec: &test_eval_perf::BenchmarkCollisionSpec,
     backend: wrela::query_plan::DispatchBackend,
-) -> Result<CollisionBenchmarkScenarioResult, String> {
+) -> Result<PreparedCollisionBenchmarkScenario, String> {
     let scene_id = stable_region_scene_capture_id(&SmolStr::new(spec.region.as_str()));
     let domain = collision_benchmark_domain(&context.module, &spec.domain, &spec.region)?;
-    match spec.workload.as_str() {
-        "point_occupancy_burst" => {
-            run_collision_point_occupancy_burst(&context.ctx, scenario, scene_id, domain, backend)
-        }
-        "dense_ray_casts" => {
-            run_collision_dense_ray_casts(&context.ctx, scenario, scene_id, domain, backend)
-        }
-        "overlap_burst" => {
-            run_collision_overlap_burst(&context.ctx, scenario, scene_id, domain, backend)
-        }
-        "repeated_sweeps" => {
-            run_collision_repeated_sweeps(&context.ctx, scenario, scene_id, domain, backend)
-        }
-        "toi_transition_reuse" => {
-            run_collision_toi_transition_reuse(&context.ctx, scenario, scene_id, domain, backend)
-        }
+    let batch = match spec.workload.as_str() {
+        "point_occupancy_burst" => build_collision_point_occupancy_batch(
+            scenario,
+            &wrela::collision_plan::CollisionPlan::for_query_with_backend(
+                wrela::collision_plan::CollisionQueryKind::PointOccupancyWorld,
+                backend,
+            ),
+            scene_id,
+            domain,
+        ),
+        "dense_ray_casts" => build_collision_dense_ray_cast_batch(
+            scenario,
+            &wrela::collision_plan::CollisionPlan::for_query_with_backend(
+                wrela::collision_plan::CollisionQueryKind::RayCastWorld,
+                backend,
+            ),
+            scene_id,
+            domain,
+        ),
+        "overlap_burst" => build_collision_overlap_batch(
+            scenario,
+            &wrela::collision_plan::CollisionPlan::for_query_with_backend(
+                wrela::collision_plan::CollisionQueryKind::SphereOverlapWorld,
+                backend,
+            ),
+            scene_id,
+            domain,
+        ),
+        "repeated_sweeps" => build_collision_repeated_sweeps_batch(
+            scenario,
+            &wrela::collision_plan::CollisionPlan::for_query_with_backend(
+                wrela::collision_plan::CollisionQueryKind::SphereSweepTransition,
+                backend,
+            ),
+            scene_id,
+            domain,
+        ),
+        "toi_transition_reuse" => build_collision_toi_batch(
+            scenario,
+            &wrela::collision_plan::CollisionPlan::for_query_with_backend(
+                wrela::collision_plan::CollisionQueryKind::SphereTimeOfImpactTransition,
+                backend,
+            ),
+            scene_id,
+            domain,
+        ),
         other => Err(format!(
             "collision benchmark scenario `{}` declares unsupported workload `{other}`",
             scenario.id
-        )),
+        ))?,
+    };
+    Ok(PreparedCollisionBenchmarkScenario {
+        scenario_id: scenario.id.clone(),
+        batch,
+    })
+}
+
+fn execute_prepared_collision_benchmark_scenario(
+    ctx: &QueryExecContext,
+    prepared: &PreparedCollisionBenchmarkScenario,
+) -> Result<CollisionBenchmarkScenarioResult, String> {
+    let started = Instant::now();
+    let report = if matches!(
+        prepared.batch.plan.backend,
+        wrela::query_plan::DispatchBackend::Wgsl
+    ) {
+        wrela::collision_exec::execute_batch_metrics_only(&prepared.batch, ctx)
+    } else {
+        wrela::collision_exec::execute_batch(&prepared.batch, ctx, None).map(|result| result.report)
     }
+    .map_err(|err| {
+        format!(
+            "collision benchmark `{}` failed: {err}",
+            prepared.scenario_id
+        )
+    })?;
+    let metrics = collision_metrics_from_batch_report(started.elapsed().as_nanos(), &report);
+    Ok(build_collision_benchmark_execution(
+        &prepared.scenario_id,
+        &prepared.batch.plan,
+        metrics,
+    ))
 }
 
 fn collision_benchmark_report_from_scenarios(
@@ -1940,141 +2146,6 @@ fn build_collision_toi_batch(
     )
 }
 
-fn run_collision_point_occupancy_burst(
-    ctx: &QueryExecContext,
-    scenario: &test_eval_perf::BenchmarkScenario,
-    scene_id: u32,
-    domain: KernelValue,
-    backend: wrela::query_plan::DispatchBackend,
-) -> Result<CollisionBenchmarkScenarioResult, String> {
-    let plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
-        wrela::collision_plan::CollisionQueryKind::PointOccupancyWorld,
-        backend,
-    );
-    let batch = build_collision_point_occupancy_batch(scenario, &plan, scene_id, domain);
-    let started = Instant::now();
-    let report = if matches!(backend, wrela::query_plan::DispatchBackend::Wgsl) {
-        wrela::collision_exec::execute_batch_metrics_only(&batch, ctx)
-    } else {
-        wrela::collision_exec::execute_batch(&batch, ctx, None).map(|result| result.report)
-    }
-    .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
-    let metrics = collision_metrics_from_batch_report(started.elapsed().as_nanos(), &report);
-    Ok(build_collision_benchmark_execution(
-        &scenario.id,
-        &plan,
-        metrics,
-    ))
-}
-
-fn run_collision_dense_ray_casts(
-    ctx: &QueryExecContext,
-    scenario: &test_eval_perf::BenchmarkScenario,
-    scene_id: u32,
-    domain: KernelValue,
-    backend: wrela::query_plan::DispatchBackend,
-) -> Result<CollisionBenchmarkScenarioResult, String> {
-    let plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
-        wrela::collision_plan::CollisionQueryKind::RayCastWorld,
-        backend,
-    );
-    let batch = build_collision_dense_ray_cast_batch(scenario, &plan, scene_id, domain);
-    let started = Instant::now();
-    let report = if matches!(backend, wrela::query_plan::DispatchBackend::Wgsl) {
-        wrela::collision_exec::execute_batch_metrics_only(&batch, ctx)
-    } else {
-        wrela::collision_exec::execute_batch(&batch, ctx, None).map(|result| result.report)
-    }
-    .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
-    let metrics = collision_metrics_from_batch_report(started.elapsed().as_nanos(), &report);
-    Ok(build_collision_benchmark_execution(
-        &scenario.id,
-        &plan,
-        metrics,
-    ))
-}
-
-fn run_collision_overlap_burst(
-    ctx: &QueryExecContext,
-    scenario: &test_eval_perf::BenchmarkScenario,
-    scene_id: u32,
-    domain: KernelValue,
-    backend: wrela::query_plan::DispatchBackend,
-) -> Result<CollisionBenchmarkScenarioResult, String> {
-    let plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
-        wrela::collision_plan::CollisionQueryKind::SphereOverlapWorld,
-        backend,
-    );
-    let batch = build_collision_overlap_batch(scenario, &plan, scene_id, domain);
-    let started = Instant::now();
-    let report = if matches!(backend, wrela::query_plan::DispatchBackend::Wgsl) {
-        wrela::collision_exec::execute_batch_metrics_only(&batch, ctx)
-    } else {
-        wrela::collision_exec::execute_batch(&batch, ctx, None).map(|result| result.report)
-    }
-    .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
-    let metrics = collision_metrics_from_batch_report(started.elapsed().as_nanos(), &report);
-    Ok(build_collision_benchmark_execution(
-        &scenario.id,
-        &plan,
-        metrics,
-    ))
-}
-
-fn run_collision_repeated_sweeps(
-    ctx: &QueryExecContext,
-    scenario: &test_eval_perf::BenchmarkScenario,
-    scene_id: u32,
-    domain: KernelValue,
-    backend: wrela::query_plan::DispatchBackend,
-) -> Result<CollisionBenchmarkScenarioResult, String> {
-    let plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
-        wrela::collision_plan::CollisionQueryKind::SphereSweepTransition,
-        backend,
-    );
-    let batch = build_collision_repeated_sweeps_batch(scenario, &plan, scene_id, domain);
-    let started = Instant::now();
-    let report = if matches!(backend, wrela::query_plan::DispatchBackend::Wgsl) {
-        wrela::collision_exec::execute_batch_metrics_only(&batch, ctx)
-    } else {
-        wrela::collision_exec::execute_batch(&batch, ctx, None).map(|result| result.report)
-    }
-    .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
-    let metrics = collision_metrics_from_batch_report(started.elapsed().as_nanos(), &report);
-    Ok(build_collision_benchmark_execution(
-        &scenario.id,
-        &plan,
-        metrics,
-    ))
-}
-
-fn run_collision_toi_transition_reuse(
-    ctx: &QueryExecContext,
-    scenario: &test_eval_perf::BenchmarkScenario,
-    scene_id: u32,
-    domain: KernelValue,
-    backend: wrela::query_plan::DispatchBackend,
-) -> Result<CollisionBenchmarkScenarioResult, String> {
-    let plan = wrela::collision_plan::CollisionPlan::for_query_with_backend(
-        wrela::collision_plan::CollisionQueryKind::SphereTimeOfImpactTransition,
-        backend,
-    );
-    let batch = build_collision_toi_batch(scenario, &plan, scene_id, domain);
-    let started = Instant::now();
-    let report = if matches!(backend, wrela::query_plan::DispatchBackend::Wgsl) {
-        wrela::collision_exec::execute_batch_metrics_only(&batch, ctx)
-    } else {
-        wrela::collision_exec::execute_batch(&batch, ctx, None).map(|result| result.report)
-    }
-    .map_err(|err| format!("collision benchmark `{}` failed: {err}", scenario.id))?;
-    let metrics = collision_metrics_from_batch_report(started.elapsed().as_nanos(), &report);
-    Ok(build_collision_benchmark_execution(
-        &scenario.id,
-        &plan,
-        metrics,
-    ))
-}
-
 pub(super) fn collision_runtime_cases_from_report(
     report: &test_eval_perf::CollisionBenchmarkReport,
 ) -> Vec<(String, test_eval_perf::PerfScenarioId, u128)> {
@@ -2109,6 +2180,660 @@ pub(super) fn collision_runtime_cases_by_scenario_id(
             )
         })
         .collect()
+}
+
+#[derive(Debug, Clone)]
+struct PresentationEngineFrameMetrics {
+    runtime_micros: u128,
+    gpu_critical_path_micros: Option<u128>,
+    queue_submit_count: u32,
+    hot_path_readback_bytes: u64,
+    scene_reupload_bytes: u64,
+    timestamped_pass_count: u32,
+    timing_readback_bytes: u64,
+}
+
+fn presentation_engine_frame_metrics(
+    presentation: &PresentationBenchmarkReport,
+) -> PresentationEngineFrameMetrics {
+    let presentation_frame_count = u128::from(presentation.frames_executed.max(1));
+    let runtime_micros = ns_to_micros(
+        presentation
+            .frame_time_ns
+            .checked_div(presentation_frame_count)
+            .unwrap_or(presentation.frame_time_ns),
+    );
+    let presentation_frames =
+        presentation_frame_history(&presentation.frame_cost, &presentation.frame_cost_history);
+    let frame_metrics = presentation_frames
+        .iter()
+        .map(presentation_frame_engine_frame_metrics)
+        .collect::<Vec<_>>();
+    let gpu_critical_path_micros = frame_metrics
+        .iter()
+        .filter_map(|metrics| metrics.gpu_critical_path_micros)
+        .max();
+    let queue_submit_count = frame_metrics
+        .iter()
+        .map(|metrics| metrics.queue_submit_count)
+        .max()
+        .unwrap_or(0);
+    let hot_path_readback_bytes = frame_metrics
+        .iter()
+        .map(|metrics| metrics.hot_path_readback_bytes)
+        .max()
+        .unwrap_or(0);
+    let scene_reupload_bytes = frame_metrics
+        .iter()
+        .map(|metrics| metrics.scene_reupload_bytes)
+        .max()
+        .unwrap_or(0);
+    let timestamped_pass_count = frame_metrics
+        .iter()
+        .map(|metrics| metrics.timestamped_pass_count)
+        .max()
+        .unwrap_or(0);
+    let timing_readback_bytes = frame_metrics
+        .iter()
+        .map(|metrics| metrics.timing_readback_bytes)
+        .max()
+        .unwrap_or(0);
+    PresentationEngineFrameMetrics {
+        runtime_micros,
+        gpu_critical_path_micros,
+        queue_submit_count,
+        hot_path_readback_bytes,
+        scene_reupload_bytes,
+        timestamped_pass_count,
+        timing_readback_bytes,
+    }
+}
+
+fn presentation_frame_engine_frame_metrics(
+    frame_cost: &wrela::presentation_exec::PresentationFrameCostReport,
+) -> PresentationEngineFrameMetrics {
+    let hot_path_readback_bytes = hot_path_readback_bytes_without_timestamp_traffic(
+        frame_cost.gpu_runtime.readback_bytes,
+        frame_cost.gpu_runtime.timestamps_supported,
+        frame_cost.gpu_runtime.timestamped_pass_count,
+    );
+    PresentationEngineFrameMetrics {
+        runtime_micros: ns_to_micros(frame_cost_total_ns(frame_cost)),
+        gpu_critical_path_micros: (frame_cost.gpu_runtime.gpu_time_total_micros > 0)
+            .then_some(frame_cost.gpu_runtime.gpu_time_total_micros),
+        queue_submit_count: frame_cost.gpu_runtime.queue_submit_count,
+        hot_path_readback_bytes,
+        scene_reupload_bytes: frame_cost.gpu_runtime.scene_reupload_bytes,
+        timestamped_pass_count: frame_cost.gpu_runtime.timestamped_pass_count,
+        timing_readback_bytes: frame_cost
+            .gpu_runtime
+            .readback_bytes
+            .saturating_sub(hot_path_readback_bytes),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CollisionEngineFrameMetrics {
+    uses_gpu: bool,
+    gpu_critical_path_micros: Option<u128>,
+    timestamped_pass_count: u32,
+    timing_readback_bytes: u64,
+    measurement_policy: wrela::engine_frame::EngineMeasurementPolicy,
+    notes: Vec<String>,
+}
+
+fn collision_engine_frame_metrics(
+    backend: &str,
+    collision: &test_eval_perf::CollisionBenchmarkExecutionReport,
+    note_prefix: &str,
+) -> CollisionEngineFrameMetrics {
+    let uses_gpu = backend.eq_ignore_ascii_case("wgsl")
+        || collision.wgsl_dispatch_count > 0
+        || collision.queue_submit_count > 0;
+    let has_timestamped_gpu_measurement =
+        collision.timestamps_supported && collision.timestamped_pass_count > 0;
+    let gpu_critical_path_micros = if has_timestamped_gpu_measurement {
+        Some(ns_to_micros(collision.gpu_time_total_ns))
+    } else {
+        uses_gpu.then(|| ns_to_micros(collision.runtime_ns))
+    };
+    let measurement_policy = wrela::engine_frame::EngineMeasurementPolicy {
+        runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+        gpu_timing: if has_timestamped_gpu_measurement {
+            wrela::engine_frame::EngineGpuTimingPolicy::Timestamped
+        } else if gpu_critical_path_micros.unwrap_or(0) > 0 {
+            wrela::engine_frame::EngineGpuTimingPolicy::RuntimeProxy
+        } else {
+            wrela::engine_frame::EngineGpuTimingPolicy::Disabled
+        },
+        hot_path_readback_allowed: false,
+        export_readback_allowed: false,
+    };
+    let mut notes = vec![
+        note_prefix.to_string(),
+        format!("batch_count={}", collision.batch_count),
+        format!("dispatch_count={}", collision.dispatch_count),
+        format!(
+            "average_items_per_dispatch={:.2}",
+            collision.average_items_per_dispatch
+        ),
+        format!(
+            "cpu_certification_query_count={}",
+            collision.cpu_certification_query_count
+        ),
+        format!(
+            "candidate_table_overflow_fallback_count={}",
+            collision.candidate_table_overflow_fallback_count
+        ),
+    ];
+    if has_timestamped_gpu_measurement {
+        notes.push(format!(
+            "gpu_timestamped_pass_count={}",
+            collision.timestamped_pass_count
+        ));
+    } else if gpu_critical_path_micros.unwrap_or(0) > 0 {
+        notes.push("gpu_critical_path_proxy=runtime_ns".to_string());
+    }
+    CollisionEngineFrameMetrics {
+        uses_gpu,
+        gpu_critical_path_micros,
+        timestamped_pass_count: collision.timestamped_pass_count,
+        timing_readback_bytes: timing_readback_bytes_from_timestamp_passes(
+            collision.timestamps_supported,
+            collision.timestamped_pass_count,
+        ),
+        measurement_policy,
+        notes,
+    }
+}
+
+fn aggregate_subsystem_gpu_critical_path_ns(
+    subsystem_reports: &[wrela::engine_frame::EngineSubsystemReport],
+) -> Option<u128> {
+    let total_micros = subsystem_reports
+        .iter()
+        .filter_map(|report| report.gpu_critical_path_micros)
+        .sum::<u128>();
+    (total_micros > 0).then_some(total_micros.saturating_mul(1_000))
+}
+
+fn timing_readback_bytes_from_timestamp_passes(
+    timestamps_supported: bool,
+    timestamped_pass_count: u32,
+) -> u64 {
+    if timestamps_supported {
+        u64::from(timestamped_pass_count).saturating_mul(16)
+    } else {
+        0
+    }
+}
+
+fn subsystem_report_metric(
+    subsystem_reports: &[wrela::engine_frame::EngineSubsystemReport],
+    kind: wrela::engine_frame::EngineSubsystemKind,
+) -> Option<&wrela::engine_frame::EngineSubsystemReport> {
+    subsystem_reports.iter().find(|report| report.kind == kind)
+}
+
+fn aggregate_engine_frame_measurement_policy(
+    subsystem_reports: &[wrela::engine_frame::EngineSubsystemReport],
+) -> wrela::engine_frame::EngineMeasurementPolicy {
+    if subsystem_reports.iter().any(|report| {
+        report.measurement_policy.runtime_source
+            == wrela::engine_frame::EngineRuntimeSource::CompatibilityJoin
+    }) {
+        return wrela::engine_frame::EngineMeasurementPolicy {
+            runtime_source: wrela::engine_frame::EngineRuntimeSource::CompatibilityJoin,
+            gpu_timing: if subsystem_reports.iter().any(|report| {
+                report.measurement_policy.gpu_timing
+                    == wrela::engine_frame::EngineGpuTimingPolicy::RuntimeProxy
+            }) {
+                wrela::engine_frame::EngineGpuTimingPolicy::RuntimeProxy
+            } else if subsystem_reports.iter().any(|report| {
+                report.measurement_policy.gpu_timing
+                    == wrela::engine_frame::EngineGpuTimingPolicy::Timestamped
+            }) {
+                wrela::engine_frame::EngineGpuTimingPolicy::Timestamped
+            } else {
+                wrela::engine_frame::EngineGpuTimingPolicy::Disabled
+            },
+            hot_path_readback_allowed: subsystem_reports
+                .iter()
+                .any(|report| report.measurement_policy.hot_path_readback_allowed),
+            export_readback_allowed: subsystem_reports
+                .iter()
+                .any(|report| report.measurement_policy.export_readback_allowed),
+        };
+    }
+    wrela::engine_frame::EngineMeasurementPolicy {
+        runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+        gpu_timing: if subsystem_reports.iter().any(|report| {
+            report.measurement_policy.gpu_timing
+                == wrela::engine_frame::EngineGpuTimingPolicy::RuntimeProxy
+        }) {
+            wrela::engine_frame::EngineGpuTimingPolicy::RuntimeProxy
+        } else if subsystem_reports.iter().any(|report| {
+            report.measurement_policy.gpu_timing
+                == wrela::engine_frame::EngineGpuTimingPolicy::Timestamped
+        }) {
+            wrela::engine_frame::EngineGpuTimingPolicy::Timestamped
+        } else {
+            wrela::engine_frame::EngineGpuTimingPolicy::Disabled
+        },
+        hot_path_readback_allowed: subsystem_reports
+            .iter()
+            .any(|report| report.measurement_policy.hot_path_readback_allowed),
+        export_readback_allowed: subsystem_reports
+            .iter()
+            .any(|report| report.measurement_policy.export_readback_allowed),
+    }
+}
+
+fn subsystem_timeline_wall_micros(
+    timeline: &wrela::engine_frame::EngineFrameTimeline,
+    kind: &wrela::engine_frame::EngineSubsystemKind,
+) -> u128 {
+    let mut intervals = timeline
+        .spans
+        .iter()
+        .filter(|span| span.subsystem == *kind)
+        .map(|span| (span.started_micros, span.ended_micros))
+        .collect::<Vec<_>>();
+    interval_union_duration(&mut intervals)
+}
+
+fn interval_union_duration(intervals: &mut Vec<(u128, u128)>) -> u128 {
+    if intervals.is_empty() {
+        return 0;
+    }
+    intervals.sort_unstable_by_key(|interval| interval.0);
+    let mut total = 0_u128;
+    let mut current = intervals[0];
+    for interval in intervals.iter().copied().skip(1) {
+        if interval.0 <= current.1 {
+            current.1 = current.1.max(interval.1);
+        } else {
+            total = total.saturating_add(current.1.saturating_sub(current.0));
+            current = interval;
+        }
+    }
+    total.saturating_add(current.1.saturating_sub(current.0))
+}
+
+fn engine_frame_future_reserve_ns(report: &wrela::engine_frame::EngineFrameReport) -> u128 {
+    (report.future_subsystem_reserve.reserved_micros as i128
+        + report.future_subsystem_reserve.remaining_micros)
+        .max(0) as u128
+        * 1_000
+}
+
+fn average_u128(values: impl Iterator<Item = u128>) -> u128 {
+    let (sum, count) = values.fold((0_u128, 0_u128), |(sum, count), value| {
+        (sum.saturating_add(value), count.saturating_add(1))
+    });
+    if count == 0 { 0 } else { sum / count }
+}
+
+fn average_u64(values: impl Iterator<Item = u64>) -> u64 {
+    let (sum, count) = values.fold((0_u128, 0_u128), |(sum, count), value| {
+        (
+            sum.saturating_add(u128::from(value)),
+            count.saturating_add(1),
+        )
+    });
+    if count == 0 {
+        0
+    } else {
+        (sum / count).min(u128::from(u64::MAX)) as u64
+    }
+}
+
+fn average_option_u128(values: impl Iterator<Item = Option<u128>>) -> Option<u128> {
+    let (sum, count) = values.fold((0_u128, 0_u128), |(sum, count), value| match value {
+        Some(value) => (sum.saturating_add(value), count.saturating_add(1)),
+        None => (sum, count),
+    });
+    if count == 0 { None } else { Some(sum / count) }
+}
+
+fn aggregate_engine_frame_subsystem_reports(
+    frame_reports: &[wrela::engine_frame::EngineFrameReport],
+) -> Vec<wrela::engine_frame::EngineSubsystemReport> {
+    let mut ordered_kinds = Vec::<wrela::engine_frame::EngineSubsystemKind>::new();
+    for frame in frame_reports {
+        for subsystem in &frame.subsystems {
+            if !ordered_kinds.contains(&subsystem.kind) {
+                ordered_kinds.push(subsystem.kind.clone());
+            }
+        }
+    }
+    ordered_kinds
+        .into_iter()
+        .filter_map(|kind| {
+            let matching = frame_reports
+                .iter()
+                .filter_map(|frame| frame.subsystem(kind.clone()))
+                .collect::<Vec<_>>();
+            let latest = matching.last()?;
+            let mut notes = Vec::new();
+            for subsystem in &matching {
+                extend_unique_strings(&mut notes, subsystem.notes.iter().cloned());
+            }
+            Some(wrela::engine_frame::EngineSubsystemReport {
+                kind,
+                label: latest.label.clone(),
+                work_items: average_u64(matching.iter().map(|subsystem| subsystem.work_items)),
+                cpu_critical_path_micros: average_u128(
+                    matching
+                        .iter()
+                        .map(|subsystem| subsystem.cpu_critical_path_micros),
+                ),
+                gpu_critical_path_micros: average_option_u128(
+                    matching
+                        .iter()
+                        .map(|subsystem| subsystem.gpu_critical_path_micros),
+                ),
+                executed_wall_time_micros: average_u128(
+                    matching
+                        .iter()
+                        .map(|subsystem| subsystem.executed_wall_time_micros),
+                ),
+                self_reported_runtime_micros: average_option_u128(
+                    matching
+                        .iter()
+                        .map(|subsystem| subsystem.self_reported_runtime_micros),
+                ),
+                orchestration_gap_micros: average_u128(
+                    matching
+                        .iter()
+                        .map(|subsystem| subsystem.orchestration_gap_micros),
+                ),
+                measurement_policy: latest.measurement_policy.clone(),
+                queue_submit_count: matching
+                    .iter()
+                    .map(|subsystem| subsystem.queue_submit_count)
+                    .max()
+                    .unwrap_or(0),
+                hot_path_readback_bytes: matching
+                    .iter()
+                    .map(|subsystem| subsystem.hot_path_readback_bytes)
+                    .max()
+                    .unwrap_or(0),
+                scene_reupload_bytes: matching
+                    .iter()
+                    .map(|subsystem| subsystem.scene_reupload_bytes)
+                    .max()
+                    .unwrap_or(0),
+                timestamped_pass_count: matching
+                    .iter()
+                    .map(|subsystem| subsystem.timestamped_pass_count)
+                    .max()
+                    .unwrap_or(0),
+                timing_readback_bytes: matching
+                    .iter()
+                    .map(|subsystem| subsystem.timing_readback_bytes)
+                    .max()
+                    .unwrap_or(0),
+                wait_time_micros: average_u128(
+                    matching.iter().map(|subsystem| subsystem.wait_time_micros),
+                ),
+                notes,
+            })
+        })
+        .collect()
+}
+
+pub(super) fn aggregate_engine_frame_sequence_reports(
+    scenario_id: test_eval_perf::PerfScenarioId,
+    test_name: String,
+    frame_reports: &[wrela::engine_frame::EngineFrameReport],
+    measured_frame_count: usize,
+) -> Result<EngineFrameBenchmarkReport, String> {
+    if frame_reports.is_empty() {
+        return Err("engine-frame aggregation requires at least one measured frame".to_string());
+    }
+    let measured_count = measured_frame_count.max(1).min(frame_reports.len());
+    let measured_reports = &frame_reports[frame_reports.len() - measured_count..];
+    let subsystem_reports = aggregate_engine_frame_subsystem_reports(measured_reports);
+    let mut active_degradations = Vec::new();
+    let mut violations = Vec::new();
+    for report in measured_reports {
+        extend_unique_strings(
+            &mut active_degradations,
+            report.active_degradations.iter().cloned(),
+        );
+        extend_unique_strings(&mut violations, report.violations.iter().cloned());
+    }
+    let presentation_runtime_ns = subsystem_reports
+        .iter()
+        .find(|subsystem| subsystem.kind == wrela::engine_frame::EngineSubsystemKind::Presentation)
+        .map(|subsystem| subsystem.cpu_critical_path_micros.saturating_mul(1_000))
+        .unwrap_or_default();
+    let collision_runtime_ns = subsystem_reports
+        .iter()
+        .find(|subsystem| subsystem.kind == wrela::engine_frame::EngineSubsystemKind::Collision)
+        .map(|subsystem| subsystem.cpu_critical_path_micros.saturating_mul(1_000))
+        .unwrap_or_default();
+    let state_advance_runtime_ns = subsystem_reports
+        .iter()
+        .find(|subsystem| subsystem.kind == wrela::engine_frame::EngineSubsystemKind::StateAdvance)
+        .map(|subsystem| subsystem.cpu_critical_path_micros.saturating_mul(1_000))
+        .unwrap_or_default();
+    let presentation_self_reported_runtime_ns = subsystem_report_metric(
+        &subsystem_reports,
+        wrela::engine_frame::EngineSubsystemKind::Presentation,
+    )
+    .and_then(|subsystem| subsystem.self_reported_runtime_micros)
+    .map(|micros| micros.saturating_mul(1_000));
+    let collision_self_reported_runtime_ns = subsystem_report_metric(
+        &subsystem_reports,
+        wrela::engine_frame::EngineSubsystemKind::Collision,
+    )
+    .and_then(|subsystem| subsystem.self_reported_runtime_micros)
+    .map(|micros| micros.saturating_mul(1_000));
+    let state_advance_self_reported_runtime_ns = subsystem_report_metric(
+        &subsystem_reports,
+        wrela::engine_frame::EngineSubsystemKind::StateAdvance,
+    )
+    .and_then(|subsystem| subsystem.self_reported_runtime_micros)
+    .map(|micros| micros.saturating_mul(1_000));
+    let presentation_orchestration_gap_ns = subsystem_report_metric(
+        &subsystem_reports,
+        wrela::engine_frame::EngineSubsystemKind::Presentation,
+    )
+    .map(|subsystem| subsystem.orchestration_gap_micros.saturating_mul(1_000))
+    .unwrap_or(0);
+    let collision_orchestration_gap_ns = subsystem_report_metric(
+        &subsystem_reports,
+        wrela::engine_frame::EngineSubsystemKind::Collision,
+    )
+    .map(|subsystem| subsystem.orchestration_gap_micros.saturating_mul(1_000))
+    .unwrap_or(0);
+    let state_advance_orchestration_gap_ns = subsystem_report_metric(
+        &subsystem_reports,
+        wrela::engine_frame::EngineSubsystemKind::StateAdvance,
+    )
+    .map(|subsystem| subsystem.orchestration_gap_micros.saturating_mul(1_000))
+    .unwrap_or(0);
+    let frame_wall_time_ns = average_u128(
+        measured_reports
+            .iter()
+            .map(|report| report.frame_wall_time_micros.saturating_mul(1_000)),
+    );
+    Ok(EngineFrameBenchmarkReport {
+        scenario_id,
+        test_name,
+        frame_count: measured_count as u32,
+        frame_wall_time_ns,
+        cpu_critical_path_ns: average_u128(
+            measured_reports
+                .iter()
+                .map(|report| report.cpu_critical_path_micros.saturating_mul(1_000)),
+        ),
+        gpu_critical_path_ns: average_option_u128(
+            measured_reports
+                .iter()
+                .map(|report| report.gpu_critical_path_micros.map(|micros| micros * 1_000)),
+        ),
+        present_wait_ns: average_u128(
+            measured_reports
+                .iter()
+                .map(|report| report.present_wait_micros.saturating_mul(1_000)),
+        ),
+        readback_wait_ns: average_u128(
+            measured_reports
+                .iter()
+                .map(|report| report.readback_wait_micros.saturating_mul(1_000)),
+        ),
+        steady_state_fps: fps_from_frame_time_ns(frame_wall_time_ns, 1),
+        presentation_runtime_ns,
+        collision_runtime_ns,
+        state_advance_runtime_ns,
+        presentation_self_reported_runtime_ns,
+        collision_self_reported_runtime_ns,
+        state_advance_self_reported_runtime_ns,
+        presentation_orchestration_gap_ns,
+        collision_orchestration_gap_ns,
+        state_advance_orchestration_gap_ns,
+        measurement_policy: aggregate_engine_frame_measurement_policy(&subsystem_reports),
+        future_subsystem_reserve_ns: measured_reports
+            .iter()
+            .map(engine_frame_future_reserve_ns)
+            .min()
+            .unwrap_or(0),
+        queue_submit_count: measured_reports
+            .iter()
+            .map(|report| report.gpu_runtime.queue_submit_count)
+            .max()
+            .unwrap_or(0),
+        hot_path_readback_bytes: measured_reports
+            .iter()
+            .map(|report| {
+                hot_path_readback_bytes_without_timestamp_traffic(
+                    report.gpu_runtime.readback_bytes,
+                    report.gpu_runtime.timestamps_supported,
+                    report.gpu_runtime.timestamped_pass_count,
+                )
+            })
+            .max()
+            .unwrap_or(0),
+        scene_reupload_bytes: measured_reports
+            .iter()
+            .map(|report| report.gpu_runtime.scene_reupload_bytes)
+            .max()
+            .unwrap_or(0),
+        timestamped_pass_count: subsystem_reports
+            .iter()
+            .map(|subsystem| subsystem.timestamped_pass_count)
+            .sum(),
+        timing_readback_bytes: subsystem_reports
+            .iter()
+            .map(|subsystem| subsystem.timing_readback_bytes)
+            .sum(),
+        active_degradations,
+        violations,
+        subsystem_reports,
+    })
+}
+
+fn engine_frame_benchmark_report_from_scheduler_report(
+    scenario_id: test_eval_perf::PerfScenarioId,
+    test_name: String,
+    scheduler_report: &wrela::engine_frame::EngineFrameReport,
+) -> EngineFrameBenchmarkReport {
+    let state_advance_runtime_ns = scheduler_report
+        .subsystem(wrela::engine_frame::EngineSubsystemKind::StateAdvance)
+        .map(|report| report.cpu_critical_path_micros.saturating_mul(1_000))
+        .unwrap_or(0);
+    let presentation_runtime_ns = scheduler_report
+        .subsystem(wrela::engine_frame::EngineSubsystemKind::Presentation)
+        .map(|report| report.cpu_critical_path_micros.saturating_mul(1_000))
+        .unwrap_or_default();
+    let collision_runtime_ns = scheduler_report
+        .subsystem(wrela::engine_frame::EngineSubsystemKind::Collision)
+        .map(|report| report.cpu_critical_path_micros.saturating_mul(1_000))
+        .unwrap_or_default();
+    let subsystem_reports = scheduler_report.subsystems.clone();
+    EngineFrameBenchmarkReport {
+        scenario_id,
+        test_name,
+        frame_count: 1,
+        frame_wall_time_ns: scheduler_report
+            .frame_wall_time_micros
+            .saturating_mul(1_000),
+        cpu_critical_path_ns: scheduler_report
+            .cpu_critical_path_micros
+            .saturating_mul(1_000),
+        gpu_critical_path_ns: aggregate_subsystem_gpu_critical_path_ns(
+            &scheduler_report.subsystems,
+        ),
+        present_wait_ns: scheduler_report.present_wait_micros.saturating_mul(1_000),
+        readback_wait_ns: scheduler_report.readback_wait_micros.saturating_mul(1_000),
+        steady_state_fps: scheduler_report.steady_state_fps,
+        presentation_runtime_ns,
+        collision_runtime_ns,
+        state_advance_runtime_ns,
+        presentation_self_reported_runtime_ns: subsystem_report_metric(
+            &subsystem_reports,
+            wrela::engine_frame::EngineSubsystemKind::Presentation,
+        )
+        .and_then(|report| report.self_reported_runtime_micros)
+        .map(|micros| micros.saturating_mul(1_000)),
+        collision_self_reported_runtime_ns: subsystem_report_metric(
+            &subsystem_reports,
+            wrela::engine_frame::EngineSubsystemKind::Collision,
+        )
+        .and_then(|report| report.self_reported_runtime_micros)
+        .map(|micros| micros.saturating_mul(1_000)),
+        state_advance_self_reported_runtime_ns: subsystem_report_metric(
+            &subsystem_reports,
+            wrela::engine_frame::EngineSubsystemKind::StateAdvance,
+        )
+        .and_then(|report| report.self_reported_runtime_micros)
+        .map(|micros| micros.saturating_mul(1_000)),
+        presentation_orchestration_gap_ns: subsystem_report_metric(
+            &subsystem_reports,
+            wrela::engine_frame::EngineSubsystemKind::Presentation,
+        )
+        .map(|report| report.orchestration_gap_micros.saturating_mul(1_000))
+        .unwrap_or(0),
+        collision_orchestration_gap_ns: subsystem_report_metric(
+            &subsystem_reports,
+            wrela::engine_frame::EngineSubsystemKind::Collision,
+        )
+        .map(|report| report.orchestration_gap_micros.saturating_mul(1_000))
+        .unwrap_or(0),
+        state_advance_orchestration_gap_ns: subsystem_report_metric(
+            &subsystem_reports,
+            wrela::engine_frame::EngineSubsystemKind::StateAdvance,
+        )
+        .map(|report| report.orchestration_gap_micros.saturating_mul(1_000))
+        .unwrap_or(0),
+        measurement_policy: aggregate_engine_frame_measurement_policy(&subsystem_reports),
+        future_subsystem_reserve_ns: (scheduler_report.future_subsystem_reserve.reserved_micros
+            as i128
+            + scheduler_report.future_subsystem_reserve.remaining_micros)
+            .max(0) as u128
+            * 1_000,
+        queue_submit_count: scheduler_report.gpu_runtime.queue_submit_count,
+        hot_path_readback_bytes: hot_path_readback_bytes_without_timestamp_traffic(
+            scheduler_report.gpu_runtime.readback_bytes,
+            scheduler_report.gpu_runtime.timestamps_supported,
+            scheduler_report.gpu_runtime.timestamped_pass_count,
+        ),
+        scene_reupload_bytes: scheduler_report.gpu_runtime.scene_reupload_bytes,
+        timestamped_pass_count: subsystem_reports
+            .iter()
+            .map(|subsystem| subsystem.timestamped_pass_count)
+            .sum(),
+        timing_readback_bytes: subsystem_reports
+            .iter()
+            .map(|subsystem| subsystem.timing_readback_bytes)
+            .sum(),
+        active_degradations: scheduler_report.active_degradations.clone(),
+        violations: scheduler_report.violations.clone(),
+        subsystem_reports,
+    }
 }
 
 pub(super) fn build_whole_frame_benchmark_reports(
@@ -2171,43 +2896,64 @@ pub(super) fn build_whole_frame_benchmark_reports(
 }
 
 #[derive(Clone)]
-struct PerfEngineFrameSubsystem {
+struct PerfEngineFrameAdapter {
     descriptor: wrela::engine_frame::EngineSubsystemDescriptor,
     report: wrela::engine_frame::EngineSubsystemReport,
     active_degradations: Vec<String>,
     violations: Vec<String>,
 }
 
-impl wrela::engine_frame::EngineSubsystemWork for PerfEngineFrameSubsystem {
-    fn descriptor(&self) -> wrela::engine_frame::EngineSubsystemDescriptor {
-        self.descriptor.clone()
-    }
-
-    fn prepare(
+impl wrela::engine_frame::EngineSubsystemAdapter for PerfEngineFrameAdapter {
+    fn build(
         &mut self,
-        _ctx: &mut wrela::engine_frame::EngineFrameContext,
-    ) -> Result<(), wrela::engine_frame::EngineFrameError> {
-        Ok(())
-    }
-
-    fn encode(
-        &mut self,
-        _ctx: &mut wrela::engine_frame::EngineFrameContext,
-    ) -> Result<(), wrela::engine_frame::EngineFrameError> {
-        Ok(())
-    }
-
-    fn finish(
-        &mut self,
-        ctx: &mut wrela::engine_frame::EngineFrameContext,
-    ) -> Result<wrela::engine_frame::EngineSubsystemReport, wrela::engine_frame::EngineFrameError>
+        builder: &mut wrela::engine_frame::EngineGraphBuilder,
+    ) -> Result<wrela::engine_frame::EngineSubsystemPlan, wrela::engine_frame::EngineFrameError>
     {
-        extend_unique_strings(
-            &mut ctx.active_degradations,
-            self.active_degradations.iter().cloned(),
+        let descriptor = self.descriptor.clone();
+        let report = self.report.clone();
+        let active_degradations = self.active_degradations.clone();
+        let violations = self.violations.clone();
+        let mut root_jobs = Vec::new();
+        let mut terminal_jobs = Vec::new();
+        let cpu_job = builder.add_synthetic_job(
+            descriptor.kind.clone(),
+            format!("{}.cpu", descriptor.label),
+            wrela::engine_frame::EngineJobAffinity::Cpu,
+            wrela::engine_frame::EngineSpanDomain::Cpu,
+            Vec::new(),
+            descriptor.requires_gpu
+                && report.queue_submit_count > 0
+                && report.gpu_critical_path_micros.is_none(),
+            report.cpu_critical_path_micros,
         );
-        extend_unique_strings(&mut ctx.violations, self.violations.iter().cloned());
-        Ok(self.report.clone())
+        root_jobs.push(cpu_job);
+        terminal_jobs.push(cpu_job);
+        if let Some(gpu_critical_path_micros) = report.gpu_critical_path_micros {
+            let gpu_job = builder.add_synthetic_job(
+                descriptor.kind.clone(),
+                format!("{}.gpu", descriptor.label),
+                wrela::engine_frame::EngineJobAffinity::Gpu,
+                wrela::engine_frame::EngineSpanDomain::Gpu,
+                Vec::new(),
+                report.queue_submit_count > 0,
+                gpu_critical_path_micros,
+            );
+            root_jobs.push(gpu_job);
+            terminal_jobs.push(gpu_job);
+        }
+        Ok(wrela::engine_frame::EngineSubsystemPlan::new(
+            descriptor,
+            root_jobs,
+            terminal_jobs,
+            move |_timeline, ctx| {
+                extend_unique_strings(
+                    &mut ctx.active_degradations,
+                    active_degradations.iter().cloned(),
+                );
+                extend_unique_strings(&mut ctx.violations, violations.iter().cloned());
+                Ok(report.clone())
+            },
+        ))
     }
 }
 
@@ -2253,43 +2999,7 @@ pub(super) fn build_engine_frame_benchmark_reports(
                 presentation.scenario_id
             ));
         };
-        let presentation_frame_count = u128::from(presentation.frames_executed.max(1));
-        let presentation_runtime_micros = ns_to_micros(
-            presentation
-                .frame_time_ns
-                .checked_div(presentation_frame_count)
-                .unwrap_or(presentation.frame_time_ns),
-        );
-        let presentation_frames =
-            presentation_frame_history(&presentation.frame_cost, &presentation.frame_cost_history);
-        let presentation_gpu_critical_path_micros = presentation_frames
-            .iter()
-            .filter_map(|frame| {
-                (frame.gpu_runtime.gpu_time_total_micros > 0)
-                    .then_some(frame.gpu_runtime.gpu_time_total_micros)
-            })
-            .max();
-        let presentation_queue_submit_count = presentation_frames
-            .iter()
-            .map(|frame| frame.gpu_runtime.queue_submit_count)
-            .max()
-            .unwrap_or(0);
-        let presentation_hot_path_readback_bytes = presentation_frames
-            .iter()
-            .map(|frame| {
-                hot_path_readback_bytes_without_timestamp_traffic(
-                    frame.gpu_runtime.readback_bytes,
-                    frame.gpu_runtime.timestamps_supported,
-                    frame.gpu_runtime.timestamped_pass_count,
-                )
-            })
-            .max()
-            .unwrap_or(0);
-        let presentation_scene_reupload_bytes = presentation_frames
-            .iter()
-            .map(|frame| frame.gpu_runtime.scene_reupload_bytes)
-            .max()
-            .unwrap_or(0);
+        let presentation_metrics = presentation_engine_frame_metrics(presentation);
         let state_advance_notes = if engine_frame_budget.is_some() {
             vec![
                 "reserved-slot-unsampled".to_string(),
@@ -2301,43 +3011,13 @@ pub(super) fn build_engine_frame_benchmark_reports(
                 "scheduler-adapter".to_string(),
             ]
         };
-        let collision_uses_gpu = collision_backend.eq_ignore_ascii_case("wgsl")
-            || collision.wgsl_dispatch_count > 0
-            || collision.queue_submit_count > 0;
-        let collision_has_timestamped_gpu_measurement =
-            collision.timestamps_supported && collision.timestamped_pass_count > 0;
-        let collision_gpu_critical_path_micros = if collision_has_timestamped_gpu_measurement {
-            Some(ns_to_micros(collision.gpu_time_total_ns))
-        } else {
-            collision_uses_gpu.then(|| ns_to_micros(collision.runtime_ns))
-        };
-        let mut collision_notes = vec![
-            "scheduler-adapter".to_string(),
-            format!("batch_count={}", collision.batch_count),
-            format!("dispatch_count={}", collision.dispatch_count),
-            format!(
-                "average_items_per_dispatch={:.2}",
-                collision.average_items_per_dispatch
-            ),
-            format!(
-                "cpu_certification_query_count={}",
-                collision.cpu_certification_query_count
-            ),
-            format!(
-                "candidate_table_overflow_fallback_count={}",
-                collision.candidate_table_overflow_fallback_count
-            ),
-        ];
-        if collision_has_timestamped_gpu_measurement {
-            collision_notes.push(format!(
-                "gpu_timestamped_pass_count={}",
-                collision.timestamped_pass_count
-            ));
-        } else if collision_gpu_critical_path_micros.unwrap_or(0) > 0 {
-            collision_notes.push("gpu_critical_path_proxy=runtime_ns".to_string());
-        }
-        let mut subsystems: Vec<Box<dyn wrela::engine_frame::EngineSubsystemWork>> = vec![
-            Box::new(PerfEngineFrameSubsystem {
+        let collision_metrics = collision_engine_frame_metrics(
+            collision_backend.as_str(),
+            collision,
+            "scheduler-adapter",
+        );
+        let mut subsystems: Vec<Box<dyn wrela::engine_frame::EngineSubsystemAdapter>> = vec![
+            Box::new(PerfEngineFrameAdapter {
                 descriptor: wrela::engine_frame::EngineSubsystemDescriptor {
                     kind: wrela::engine_frame::EngineSubsystemKind::StateAdvance,
                     label: "state_advance".to_string(),
@@ -2351,16 +3031,28 @@ pub(super) fn build_engine_frame_benchmark_reports(
                     work_items: 0,
                     cpu_critical_path_micros: 0,
                     gpu_critical_path_micros: None,
+                    executed_wall_time_micros: 0,
+                    self_reported_runtime_micros: None,
+                    orchestration_gap_micros: 0,
+                    measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                        runtime_source:
+                            wrela::engine_frame::EngineRuntimeSource::ReservedSlotUnsampled,
+                        gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+                        hot_path_readback_allowed: false,
+                        export_readback_allowed: false,
+                    },
                     queue_submit_count: 0,
                     hot_path_readback_bytes: 0,
                     scene_reupload_bytes: 0,
+                    timestamped_pass_count: 0,
+                    timing_readback_bytes: 0,
                     wait_time_micros: 0,
                     notes: state_advance_notes,
                 },
                 active_degradations: Vec::new(),
                 violations: Vec::new(),
             }),
-            Box::new(PerfEngineFrameSubsystem {
+            Box::new(PerfEngineFrameAdapter {
                 descriptor: wrela::engine_frame::EngineSubsystemDescriptor {
                     kind: wrela::engine_frame::EngineSubsystemKind::Presentation,
                     label: "presentation".to_string(),
@@ -2372,23 +3064,38 @@ pub(super) fn build_engine_frame_benchmark_reports(
                     kind: wrela::engine_frame::EngineSubsystemKind::Presentation,
                     label: "presentation".into(),
                     work_items: u64::from(presentation.frames_executed.max(1)),
-                    cpu_critical_path_micros: presentation_runtime_micros,
-                    gpu_critical_path_micros: presentation_gpu_critical_path_micros,
-                    queue_submit_count: presentation_queue_submit_count,
-                    hot_path_readback_bytes: presentation_hot_path_readback_bytes,
-                    scene_reupload_bytes: presentation_scene_reupload_bytes,
+                    cpu_critical_path_micros: presentation_metrics.runtime_micros,
+                    gpu_critical_path_micros: presentation_metrics.gpu_critical_path_micros,
+                    executed_wall_time_micros: presentation_metrics.runtime_micros,
+                    self_reported_runtime_micros: Some(presentation_metrics.runtime_micros),
+                    orchestration_gap_micros: 0,
+                    measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                        runtime_source: wrela::engine_frame::EngineRuntimeSource::CompatibilityJoin,
+                        gpu_timing: if presentation_metrics.timestamped_pass_count > 0 {
+                            wrela::engine_frame::EngineGpuTimingPolicy::Timestamped
+                        } else {
+                            wrela::engine_frame::EngineGpuTimingPolicy::Disabled
+                        },
+                        hot_path_readback_allowed: false,
+                        export_readback_allowed: false,
+                    },
+                    queue_submit_count: presentation_metrics.queue_submit_count,
+                    hot_path_readback_bytes: presentation_metrics.hot_path_readback_bytes,
+                    scene_reupload_bytes: presentation_metrics.scene_reupload_bytes,
+                    timestamped_pass_count: presentation_metrics.timestamped_pass_count,
+                    timing_readback_bytes: presentation_metrics.timing_readback_bytes,
                     wait_time_micros: 0,
                     notes: vec!["scheduler-adapter".to_string()],
                 },
                 active_degradations: presentation.frame_cost.quality.active_degradations.clone(),
                 violations: Vec::new(),
             }),
-            Box::new(PerfEngineFrameSubsystem {
+            Box::new(PerfEngineFrameAdapter {
                 descriptor: wrela::engine_frame::EngineSubsystemDescriptor {
                     kind: wrela::engine_frame::EngineSubsystemKind::Collision,
                     label: "collision".to_string(),
                     runs_after: vec![wrela::engine_frame::EngineSubsystemKind::Presentation],
-                    requires_gpu: collision_uses_gpu,
+                    requires_gpu: collision_metrics.uses_gpu,
                     allows_hot_path_readback: false,
                 },
                 report: wrela::engine_frame::EngineSubsystemReport {
@@ -2396,20 +3103,28 @@ pub(super) fn build_engine_frame_benchmark_reports(
                     label: "collision".into(),
                     work_items: collision.query_count,
                     cpu_critical_path_micros: ns_to_micros(collision.runtime_ns),
-                    gpu_critical_path_micros: collision_gpu_critical_path_micros,
+                    gpu_critical_path_micros: collision_metrics.gpu_critical_path_micros,
+                    executed_wall_time_micros: ns_to_micros(collision.runtime_ns),
+                    self_reported_runtime_micros: Some(ns_to_micros(collision.runtime_ns)),
+                    orchestration_gap_micros: 0,
+                    measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                        runtime_source: wrela::engine_frame::EngineRuntimeSource::CompatibilityJoin,
+                        ..collision_metrics.measurement_policy.clone()
+                    },
                     queue_submit_count: collision.queue_submit_count,
                     hot_path_readback_bytes: collision.hot_path_readback_bytes,
                     scene_reupload_bytes: collision.scene_reupload_bytes,
+                    timestamped_pass_count: collision_metrics.timestamped_pass_count,
+                    timing_readback_bytes: collision_metrics.timing_readback_bytes,
                     wait_time_micros: 0,
-                    notes: collision_notes,
+                    notes: collision_metrics.notes,
                 },
                 active_degradations: Vec::new(),
                 violations: Vec::new(),
             }),
         ];
-        let mut scheduler = wrela::engine_frame::EngineFrameScheduler {
-            budget: engine_frame_budget.cloned(),
-        };
+        let mut scheduler = wrela::engine_frame::EngineFrameScheduler::default();
+        scheduler.budget = engine_frame_budget.cloned();
         let scheduler_report = scheduler
             .run_frame(presentation.scenario_id.to_string(), 0, &mut subsystems)
             .map_err(|err| {
@@ -2418,54 +3133,21 @@ pub(super) fn build_engine_frame_benchmark_reports(
                     presentation.scenario_id
                 )
             })?;
-        let state_advance_runtime_ns = scheduler_report
-            .subsystem(wrela::engine_frame::EngineSubsystemKind::StateAdvance)
-            .map(|report| report.cpu_critical_path_micros.saturating_mul(1_000))
-            .unwrap_or(0);
-        let presentation_runtime_ns = scheduler_report
+        let mut benchmark_report = engine_frame_benchmark_report_from_scheduler_report(
+            presentation.scenario_id.clone(),
+            presentation.test_name.clone(),
+            &scheduler_report,
+        );
+        benchmark_report.frame_count = presentation.frames_executed.max(1);
+        benchmark_report.presentation_runtime_ns = scheduler_report
             .subsystem(wrela::engine_frame::EngineSubsystemKind::Presentation)
             .map(|report| report.cpu_critical_path_micros.saturating_mul(1_000))
             .unwrap_or(presentation.frame_time_ns);
-        let collision_runtime_ns = scheduler_report
+        benchmark_report.collision_runtime_ns = scheduler_report
             .subsystem(wrela::engine_frame::EngineSubsystemKind::Collision)
             .map(|report| report.cpu_critical_path_micros.saturating_mul(1_000))
             .unwrap_or(collision.runtime_ns);
-        reports.push(EngineFrameBenchmarkReport {
-            scenario_id: presentation.scenario_id.clone(),
-            test_name: presentation.test_name.clone(),
-            frame_count: presentation.frames_executed.max(1),
-            frame_wall_time_ns: scheduler_report
-                .frame_wall_time_micros
-                .saturating_mul(1_000),
-            cpu_critical_path_ns: scheduler_report
-                .cpu_critical_path_micros
-                .saturating_mul(1_000),
-            gpu_critical_path_ns: scheduler_report
-                .gpu_critical_path_micros
-                .map(|value| value.saturating_mul(1_000)),
-            present_wait_ns: scheduler_report.present_wait_micros.saturating_mul(1_000),
-            readback_wait_ns: scheduler_report.readback_wait_micros.saturating_mul(1_000),
-            steady_state_fps: fps_from_frame_time_ns(
-                scheduler_report
-                    .frame_wall_time_micros
-                    .saturating_mul(1_000),
-                1,
-            ),
-            presentation_runtime_ns,
-            collision_runtime_ns,
-            state_advance_runtime_ns,
-            future_subsystem_reserve_ns: (scheduler_report.future_subsystem_reserve.reserved_micros
-                as i128
-                + scheduler_report.future_subsystem_reserve.remaining_micros)
-                .max(0) as u128
-                * 1_000,
-            queue_submit_count: scheduler_report.gpu_runtime.queue_submit_count,
-            hot_path_readback_bytes: scheduler_report.gpu_runtime.readback_bytes,
-            scene_reupload_bytes: scheduler_report.gpu_runtime.scene_reupload_bytes,
-            active_degradations: scheduler_report.active_degradations,
-            violations: scheduler_report.violations,
-            subsystem_reports: scheduler_report.subsystems,
-        });
+        reports.push(benchmark_report);
     }
 
     if let Some(extra) = collision_by_scenario.keys().next() {
@@ -2617,6 +3299,714 @@ pub(super) fn run_presentation_benchmark_measurement_report(
         warm_quality_pipelines,
     )?;
     presentation_report_from_debug_output(scenario, dump)
+}
+
+struct EngineFrameScenarioMeasurement {
+    presentation_report: PresentationBenchmarkReport,
+    collision_result: CollisionBenchmarkScenarioResult,
+    engine_frame_report: EngineFrameBenchmarkReport,
+}
+
+struct PreparedLivePresentationEngineFrame {
+    ready: presentation_command::ReadyPresentationExecution,
+    frame_count: u32,
+    adaptive_window: Option<usize>,
+}
+
+struct LivePresentationEngineFrameState {
+    ready: presentation_command::ReadyPresentationExecution,
+    session: wrela::presentation_exec::AdaptivePresentationSession,
+}
+
+impl LivePresentationEngineFrameState {
+    fn new(prepared: PreparedLivePresentationEngineFrame) -> Self {
+        let PreparedLivePresentationEngineFrame {
+            ready,
+            adaptive_window,
+            ..
+        } = prepared;
+        let mut session = wrela::presentation_exec::AdaptivePresentationSession::new(
+            ready.prepared.plan.frame.quality.clone(),
+        );
+        if let Some(window) = adaptive_window {
+            session = session.with_window(window);
+        }
+        Self { ready, session }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LivePresentationFrameMeasurement {
+    frame_offset: u32,
+    backend: wrela::query_plan::DispatchBackend,
+    frame_cost: wrela::presentation_exec::PresentationFrameCostReport,
+}
+
+struct LivePresentationEngineFrameAdapter {
+    descriptor: wrela::engine_frame::EngineSubsystemDescriptor,
+    state: Arc<Mutex<LivePresentationEngineFrameState>>,
+    frame_offset: u32,
+    collect_gpu_timing_readback: bool,
+    scenario: test_eval_perf::BenchmarkScenario,
+    result: Arc<Mutex<Option<LivePresentationFrameMeasurement>>>,
+}
+
+impl wrela::engine_frame::EngineSubsystemAdapter for LivePresentationEngineFrameAdapter {
+    fn build(
+        &mut self,
+        builder: &mut wrela::engine_frame::EngineGraphBuilder,
+    ) -> Result<wrela::engine_frame::EngineSubsystemPlan, wrela::engine_frame::EngineFrameError>
+    {
+        let descriptor = self.descriptor.clone();
+        let state = Arc::clone(&self.state);
+        let frame_offset = self.frame_offset;
+        let collect_gpu_timing_readback = self.collect_gpu_timing_readback;
+        let scenario = self.scenario.clone();
+        let result = Arc::clone(&self.result);
+        let job = builder.add_job(
+            descriptor.kind.clone(),
+            format!("{}.execute", descriptor.label),
+            wrela::engine_frame::EngineJobAffinity::External,
+            wrela::engine_frame::EngineSpanDomain::External,
+            Vec::new(),
+            true,
+            move || {
+                let mut state = state.lock().map_err(|_| {
+                    wrela::engine_frame::EngineFrameError::Message(
+                        "presentation engine-frame state lock poisoned".to_string(),
+                    )
+                })?;
+                let mut frame_input = state.ready.prepared.input.clone();
+                frame_input.materialize_cpu_attachments = false;
+                frame_input.runtime_summary_only = true;
+                frame_input.collect_gpu_timing_readback = collect_gpu_timing_readback;
+                frame_input.frame_state = wrela::presentation_exec::frame_state_value(
+                    state.ready.prepared.camera,
+                    state.ready.prepared.camera,
+                    state.ready.prepared.viewport,
+                    [0.0, 0.0],
+                    frame_offset,
+                    1.0 / 60.0,
+                );
+                let frame_result = {
+                    let state = &mut *state;
+                    state
+                        .session
+                        .execute_frame(
+                            &state.ready.bundle.query_ctx,
+                            &state.ready.prepared.plan,
+                            &frame_input,
+                        )
+                        .map_err(|err| {
+                            wrela::engine_frame::EngineFrameError::Message(format!(
+                                "engine-frame presentation execution failed for scenario `{}` frame {}: {err}",
+                                scenario.id, frame_offset
+                            ))
+                        })?
+                };
+                drop(state);
+                result
+                    .lock()
+                    .map_err(|_| {
+                        wrela::engine_frame::EngineFrameError::Message(
+                            "presentation engine-frame result lock poisoned".to_string(),
+                        )
+                    })?
+                    .replace(LivePresentationFrameMeasurement {
+                        frame_offset,
+                        backend: frame_result.backend,
+                        frame_cost: frame_result.frame_cost,
+                    });
+                Ok(())
+            },
+        );
+        let report_result = Arc::clone(&self.result);
+        let report_kind = descriptor.kind.clone();
+        Ok(wrela::engine_frame::EngineSubsystemPlan::new(
+            descriptor.clone(),
+            vec![job],
+            vec![job],
+            move |timeline, ctx| {
+                let measurement = report_result
+                    .lock()
+                    .map_err(|_| {
+                        wrela::engine_frame::EngineFrameError::Message(
+                            "presentation engine-frame report lock poisoned".to_string(),
+                        )
+                    })?
+                    .clone()
+                    .ok_or_else(|| {
+                        wrela::engine_frame::EngineFrameError::Message(
+                            "presentation engine-frame execution produced no report".to_string(),
+                        )
+                    })?;
+                extend_unique_strings(
+                    &mut ctx.active_degradations,
+                    measurement
+                        .frame_cost
+                        .quality
+                        .active_degradations
+                        .iter()
+                        .cloned(),
+                );
+                let metrics = presentation_frame_engine_frame_metrics(&measurement.frame_cost);
+                let executed_wall_micros = subsystem_timeline_wall_micros(timeline, &report_kind);
+                let runtime_gap_micros =
+                    executed_wall_micros.saturating_sub(metrics.runtime_micros);
+                Ok(wrela::engine_frame::EngineSubsystemReport {
+                    kind: descriptor.kind.clone(),
+                    label: descriptor.label.clone(),
+                    work_items: 1,
+                    cpu_critical_path_micros: executed_wall_micros,
+                    gpu_critical_path_micros: metrics.gpu_critical_path_micros,
+                    executed_wall_time_micros: executed_wall_micros,
+                    self_reported_runtime_micros: Some(metrics.runtime_micros),
+                    orchestration_gap_micros: runtime_gap_micros,
+                    measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                        runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+                        gpu_timing: if metrics.timestamped_pass_count > 0 {
+                            wrela::engine_frame::EngineGpuTimingPolicy::Timestamped
+                        } else {
+                            wrela::engine_frame::EngineGpuTimingPolicy::Disabled
+                        },
+                        hot_path_readback_allowed: false,
+                        export_readback_allowed: false,
+                    },
+                    queue_submit_count: metrics.queue_submit_count,
+                    hot_path_readback_bytes: metrics.hot_path_readback_bytes,
+                    scene_reupload_bytes: metrics.scene_reupload_bytes,
+                    timestamped_pass_count: metrics.timestamped_pass_count,
+                    timing_readback_bytes: metrics.timing_readback_bytes,
+                    wait_time_micros: runtime_gap_micros,
+                    notes: vec![
+                        "engine-frame-live".to_string(),
+                        format!("frame_offset={}", measurement.frame_offset),
+                    ],
+                })
+            },
+        ))
+    }
+}
+
+struct LiveCollisionEngineFrameAdapter {
+    descriptor: wrela::engine_frame::EngineSubsystemDescriptor,
+    query_ctx: QueryExecContext,
+    prepared: Arc<PreparedCollisionBenchmarkScenario>,
+    frame_offset: u32,
+    result: Arc<Mutex<Option<CollisionBenchmarkScenarioResult>>>,
+}
+
+pub(super) fn live_presentation_engine_frame_descriptor(
+    query_backend: wrela::query_plan::DispatchBackend,
+) -> wrela::engine_frame::EngineSubsystemDescriptor {
+    wrela::engine_frame::EngineSubsystemDescriptor {
+        kind: wrela::engine_frame::EngineSubsystemKind::Presentation,
+        label: "presentation".to_string(),
+        runs_after: vec![wrela::engine_frame::EngineSubsystemKind::StateAdvance],
+        requires_gpu: matches!(query_backend, wrela::query_plan::DispatchBackend::Wgsl),
+        allows_hot_path_readback: false,
+    }
+}
+
+pub(super) fn live_collision_engine_frame_descriptor(
+    collision_backend: wrela::query_plan::DispatchBackend,
+) -> wrela::engine_frame::EngineSubsystemDescriptor {
+    wrela::engine_frame::EngineSubsystemDescriptor {
+        kind: wrela::engine_frame::EngineSubsystemKind::Collision,
+        label: "collision".to_string(),
+        runs_after: vec![wrela::engine_frame::EngineSubsystemKind::StateAdvance],
+        requires_gpu: matches!(collision_backend, wrela::query_plan::DispatchBackend::Wgsl),
+        allows_hot_path_readback: false,
+    }
+}
+
+fn live_engine_frame_executor_config() -> wrela_runtime::engine_executor::EngineExecutorConfig {
+    wrela_runtime::engine_executor::EngineExecutorConfig {
+        external_worker_threads: 2,
+        ..wrela_runtime::engine_executor::EngineExecutorConfig::default()
+    }
+}
+
+impl wrela::engine_frame::EngineSubsystemAdapter for LiveCollisionEngineFrameAdapter {
+    fn build(
+        &mut self,
+        builder: &mut wrela::engine_frame::EngineGraphBuilder,
+    ) -> Result<wrela::engine_frame::EngineSubsystemPlan, wrela::engine_frame::EngineFrameError>
+    {
+        let descriptor = self.descriptor.clone();
+        let query_ctx = self.query_ctx.clone();
+        let prepared_for_job = Arc::clone(&self.prepared);
+        let prepared_for_report = Arc::clone(&self.prepared);
+        let frame_offset = self.frame_offset;
+        let result = Arc::clone(&self.result);
+        let job = builder.add_job(
+            descriptor.kind.clone(),
+            format!("{}.execute", descriptor.label),
+            wrela::engine_frame::EngineJobAffinity::External,
+            wrela::engine_frame::EngineSpanDomain::External,
+            Vec::new(),
+            matches!(
+                prepared_for_job.batch.plan.backend,
+                wrela::query_plan::DispatchBackend::Wgsl
+            ),
+            move || {
+                let report =
+                    execute_prepared_collision_benchmark_scenario(&query_ctx, &prepared_for_job)
+                        .map_err(wrela::engine_frame::EngineFrameError::Message)?;
+                result
+                    .lock()
+                    .map_err(|_| {
+                        wrela::engine_frame::EngineFrameError::Message(
+                            "collision engine-frame result lock poisoned".to_string(),
+                        )
+                    })?
+                    .replace(report);
+                Ok(())
+            },
+        );
+        let report_result = Arc::clone(&self.result);
+        let report_kind = descriptor.kind.clone();
+        Ok(wrela::engine_frame::EngineSubsystemPlan::new(
+            descriptor.clone(),
+            vec![job],
+            vec![job],
+            move |timeline, _ctx| {
+                let report = report_result
+                    .lock()
+                    .map_err(|_| {
+                        wrela::engine_frame::EngineFrameError::Message(
+                            "collision engine-frame report lock poisoned".to_string(),
+                        )
+                    })?
+                    .clone()
+                    .ok_or_else(|| {
+                        wrela::engine_frame::EngineFrameError::Message(
+                            "collision engine-frame execution produced no report".to_string(),
+                        )
+                    })?;
+                let metrics = collision_engine_frame_metrics(
+                    perf_dispatch_backend_name(prepared_for_report.batch.plan.backend),
+                    &report.execution,
+                    "engine-frame-live",
+                );
+                let executed_wall_micros = subsystem_timeline_wall_micros(timeline, &report_kind);
+                let self_reported_runtime_micros = ns_to_micros(report.execution.runtime_ns);
+                let runtime_gap_micros =
+                    executed_wall_micros.saturating_sub(self_reported_runtime_micros);
+                let mut notes = metrics.notes;
+                notes.push(format!("frame_offset={frame_offset}"));
+                notes.push(format!(
+                    "self_reported_runtime_micros={self_reported_runtime_micros}"
+                ));
+                Ok(wrela::engine_frame::EngineSubsystemReport {
+                    kind: descriptor.kind.clone(),
+                    label: descriptor.label.clone(),
+                    work_items: report.execution.query_count,
+                    cpu_critical_path_micros: executed_wall_micros,
+                    gpu_critical_path_micros: metrics.gpu_critical_path_micros,
+                    executed_wall_time_micros: executed_wall_micros,
+                    self_reported_runtime_micros: Some(self_reported_runtime_micros),
+                    orchestration_gap_micros: runtime_gap_micros,
+                    measurement_policy: metrics.measurement_policy.clone(),
+                    queue_submit_count: report.execution.queue_submit_count,
+                    hot_path_readback_bytes: report.execution.hot_path_readback_bytes,
+                    scene_reupload_bytes: report.execution.scene_reupload_bytes,
+                    timestamped_pass_count: metrics.timestamped_pass_count,
+                    timing_readback_bytes: metrics.timing_readback_bytes,
+                    wait_time_micros: runtime_gap_micros,
+                    notes,
+                })
+            },
+        ))
+    }
+}
+
+fn collect_live_engine_frame_benchmark_reports(
+    benchmark_root: &Path,
+    scenarios: &[&test_eval_perf::BenchmarkScenario],
+    query_backend: wrela::query_plan::DispatchBackend,
+    collect_gpu_timing_readback: bool,
+    engine_frame_budget: Option<&wrela::perf_target::PerfClosureEngineFrameBudget>,
+) -> Result<EngineFrameBenchmarkReportCollection, String> {
+    let collision_backend = collision_benchmark_backend(query_backend)?;
+    let mut collection = EngineFrameBenchmarkReportCollection {
+        reports: Vec::new(),
+        presentation_reports: Vec::new(),
+        collision_results: Vec::new(),
+        errors: Vec::new(),
+    };
+    let mut collision_contexts = HashMap::<PathBuf, CollisionBenchmarkContext>::new();
+    for scenario in scenarios {
+        let (Some(presentation_spec), Some(collision_spec)) =
+            (scenario.presentation.as_ref(), scenario.collision.as_ref())
+        else {
+            continue;
+        };
+        let entry_path = collision_benchmark_entry_path(benchmark_root, collision_spec);
+        if !collision_contexts.contains_key(&entry_path) {
+            collision_contexts.insert(
+                entry_path.clone(),
+                compile_collision_benchmark_context(&entry_path)?,
+            );
+        }
+        let context = collision_contexts
+            .get(&entry_path)
+            .expect("collision benchmark context inserted")
+            .clone();
+        let prepared_collision = match prepare_collision_benchmark_scenario(
+            &context,
+            scenario,
+            collision_spec,
+            collision_backend,
+        ) {
+            Ok(prepared) => Arc::new(prepared),
+            Err(err) => {
+                collection.errors.push(err);
+                continue;
+            }
+        };
+        for _ in 0..collision_benchmark_warmup_run_count(collision_backend) {
+            if let Err(err) =
+                execute_prepared_collision_benchmark_scenario(&context.ctx, &prepared_collision)
+            {
+                collection.errors.push(format!(
+                    "engine-frame collision warmup `{}` failed: {err}",
+                    scenario.id
+                ));
+            }
+        }
+        match run_live_engine_frame_benchmark_scenario(
+            benchmark_root,
+            scenario,
+            presentation_spec,
+            context.ctx.clone(),
+            Arc::clone(&prepared_collision),
+            query_backend,
+            collect_gpu_timing_readback,
+            engine_frame_budget,
+        ) {
+            Ok(measurement) => {
+                collection
+                    .presentation_reports
+                    .push(measurement.presentation_report);
+                collection
+                    .collision_results
+                    .push(measurement.collision_result);
+                collection.reports.push(measurement.engine_frame_report);
+            }
+            Err(err) => collection.errors.push(err),
+        }
+    }
+    Ok(collection)
+}
+
+fn run_live_engine_frame_benchmark_scenario(
+    benchmark_root: &Path,
+    scenario: &test_eval_perf::BenchmarkScenario,
+    presentation_spec: &test_eval_perf::BenchmarkPresentationSpec,
+    collision_query_ctx: QueryExecContext,
+    prepared_collision: Arc<PreparedCollisionBenchmarkScenario>,
+    query_backend: wrela::query_plan::DispatchBackend,
+    collect_gpu_timing_readback: bool,
+    engine_frame_budget: Option<&wrela::perf_target::PerfClosureEngineFrameBudget>,
+) -> Result<EngineFrameScenarioMeasurement, String> {
+    let state_advance_notes = vec!["reserved-slot-unsampled".to_string()];
+    let prepared_presentation = prepare_live_engine_frame_presentation(
+        benchmark_root,
+        scenario,
+        presentation_spec,
+        query_backend,
+        should_warm_closure_quality_pipelines(scenario),
+    )?;
+    let frame_count = prepared_presentation.frame_count.max(1);
+    let presentation_state = Arc::new(Mutex::new(LivePresentationEngineFrameState::new(
+        prepared_presentation,
+    )));
+    let mut scheduler = wrela::engine_frame::EngineFrameScheduler::with_executor_config(
+        live_engine_frame_executor_config(),
+    );
+    scheduler.budget = engine_frame_budget.cloned();
+    let mut scheduler_reports = Vec::with_capacity(frame_count as usize);
+    let mut presentation_frames = Vec::with_capacity(frame_count as usize);
+    let mut collision_frames = Vec::with_capacity(frame_count as usize);
+    for frame_offset in 0..frame_count {
+        let presentation_result = Arc::new(Mutex::new(None));
+        let collision_result = Arc::new(Mutex::new(None));
+        let mut subsystems: Vec<Box<dyn wrela::engine_frame::EngineSubsystemAdapter>> = vec![
+            Box::new(PerfEngineFrameAdapter {
+                descriptor: wrela::engine_frame::EngineSubsystemDescriptor {
+                    kind: wrela::engine_frame::EngineSubsystemKind::StateAdvance,
+                    label: "state_advance".to_string(),
+                    runs_after: vec![],
+                    requires_gpu: false,
+                    allows_hot_path_readback: false,
+                },
+                report: wrela::engine_frame::EngineSubsystemReport {
+                    kind: wrela::engine_frame::EngineSubsystemKind::StateAdvance,
+                    label: "state_advance".into(),
+                    work_items: 0,
+                    cpu_critical_path_micros: 0,
+                    gpu_critical_path_micros: None,
+                    executed_wall_time_micros: 0,
+                    self_reported_runtime_micros: None,
+                    orchestration_gap_micros: 0,
+                    measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                        runtime_source:
+                            wrela::engine_frame::EngineRuntimeSource::ReservedSlotUnsampled,
+                        gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+                        hot_path_readback_allowed: false,
+                        export_readback_allowed: false,
+                    },
+                    queue_submit_count: 0,
+                    hot_path_readback_bytes: 0,
+                    scene_reupload_bytes: 0,
+                    timestamped_pass_count: 0,
+                    timing_readback_bytes: 0,
+                    wait_time_micros: 0,
+                    notes: state_advance_notes.clone(),
+                },
+                active_degradations: Vec::new(),
+                violations: Vec::new(),
+            }),
+            Box::new(LivePresentationEngineFrameAdapter {
+                descriptor: live_presentation_engine_frame_descriptor(query_backend),
+                state: Arc::clone(&presentation_state),
+                frame_offset,
+                collect_gpu_timing_readback,
+                scenario: scenario.clone(),
+                result: Arc::clone(&presentation_result),
+            }),
+            Box::new(LiveCollisionEngineFrameAdapter {
+                descriptor: live_collision_engine_frame_descriptor(
+                    prepared_collision.batch.plan.backend,
+                ),
+                query_ctx: collision_query_ctx.clone(),
+                prepared: Arc::clone(&prepared_collision),
+                frame_offset,
+                result: Arc::clone(&collision_result),
+            }),
+        ];
+        let scheduler_report = scheduler
+            .run_frame(scenario.id.to_string(), frame_offset, &mut subsystems)
+            .map_err(|err| {
+                format!(
+                    "engine-frame scheduler failed for scenario '{}' frame {}: {err}",
+                    scenario.id, frame_offset
+                )
+            })?;
+        let presentation_frame = presentation_result
+            .lock()
+            .map_err(|_| "presentation engine-frame result lock poisoned".to_string())?
+            .clone()
+            .ok_or_else(|| {
+                format!(
+                    "engine-frame scheduler completed without a presentation report for scenario '{}' frame {}",
+                    scenario.id, frame_offset
+                )
+            })?;
+        let collision_frame = collision_result
+            .lock()
+            .map_err(|_| "collision engine-frame result lock poisoned".to_string())?
+            .clone()
+            .ok_or_else(|| {
+                format!(
+                    "engine-frame scheduler completed without a collision report for scenario '{}' frame {}",
+                    scenario.id, frame_offset
+                )
+            })?;
+        scheduler_reports.push(scheduler_report);
+        presentation_frames.push(presentation_frame);
+        collision_frames.push(collision_frame);
+    }
+    let presentation_report = {
+        let state = presentation_state
+            .lock()
+            .map_err(|_| "presentation engine-frame state lock poisoned".to_string())?;
+        presentation_report_from_live_engine_frame_measurements(
+            scenario,
+            &state.ready,
+            &presentation_frames,
+        )?
+    };
+    let measured_frame_count = presentation_report.frames_executed.max(1) as usize;
+    let measured_collision_start = collision_frames
+        .len()
+        .saturating_sub(measured_frame_count.max(1));
+    let collision_result = collision_frames[measured_collision_start..]
+        .last()
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "engine-frame scheduler produced no measured collision frame for scenario '{}'",
+                scenario.id
+            )
+        })?;
+    let engine_frame_report = aggregate_engine_frame_sequence_reports(
+        scenario.id.clone(),
+        scenario.test_name.clone(),
+        &scheduler_reports,
+        measured_frame_count,
+    )?;
+    Ok(EngineFrameScenarioMeasurement {
+        presentation_report,
+        collision_result,
+        engine_frame_report,
+    })
+}
+
+fn prepare_live_engine_frame_presentation(
+    benchmark_root: &Path,
+    scenario: &test_eval_perf::BenchmarkScenario,
+    spec: &test_eval_perf::BenchmarkPresentationSpec,
+    query_backend: wrela::query_plan::DispatchBackend,
+    warm_quality_pipelines: bool,
+) -> Result<PreparedLivePresentationEngineFrame, String> {
+    let entry_path = spec
+        .entry
+        .as_ref()
+        .map(|entry| benchmark_root.join(entry))
+        .unwrap_or_else(|| benchmark_root.to_path_buf());
+    let mut ready = presentation_command::load_prepared_presentation_execution(
+        &entry_path,
+        OutputFormat::Json,
+        query_backend,
+        Some(spec.view.as_str()),
+        Some(spec.region.as_str()),
+        spec.domain.as_deref(),
+        wrela::presentation_contract::CanonicalCameraInput {
+            position: spec.camera_position,
+            forward: spec.camera_forward,
+            up: spec.camera_up,
+            vertical_fov_degrees: spec.vertical_fov_degrees,
+        },
+        Some(spec.width.unwrap_or(64)),
+        Some(spec.height.unwrap_or(64)),
+        0,
+        1.0 / 60.0,
+        QueryTraceSolverMode::Hybrid,
+    )
+    .map_err(|code| {
+        format!(
+            "engine-frame presentation prepare failed for scenario `{}` with exit code {code}",
+            scenario.id
+        )
+    })?;
+    // The engine-frame closure lane measures runtime summaries, not exported
+    // debug artifacts. Removing the export pass keeps the canonical timed path
+    // GPU-resident and avoids counting full-frame color readback as frame work.
+    presentation_command::strip_prepared_presentation_export(&mut ready.prepared);
+    if warm_quality_pipelines {
+        presentation_command::warm_presentation_debug_quality_pipelines(
+            &ready.bundle.query_ctx,
+            &ready.prepared.plan,
+            &ready.prepared.input,
+            ready.prepared.camera,
+            ready.prepared.viewport,
+            0,
+            1.0 / 60.0,
+        )
+        .map_err(|err| {
+            format!(
+                "engine-frame presentation warmup failed for scenario `{}`: {err}",
+                scenario.id
+            )
+        })?;
+    }
+    Ok(PreparedLivePresentationEngineFrame {
+        ready,
+        frame_count: spec.frames.unwrap_or(1).max(1),
+        adaptive_window: warm_quality_pipelines.then_some(1),
+    })
+}
+
+fn presentation_report_from_live_engine_frame_measurements(
+    scenario: &test_eval_perf::BenchmarkScenario,
+    ready: &presentation_command::ReadyPresentationExecution,
+    frames: &[LivePresentationFrameMeasurement],
+) -> Result<PresentationBenchmarkReport, String> {
+    let last_frame = frames.last().ok_or_else(|| {
+        format!(
+            "engine-frame presentation executed zero frames for scenario `{}`",
+            scenario.id
+        )
+    })?;
+    presentation_report_from_debug_output(
+        scenario,
+        PresentationDebugCommandOutput {
+            view: ready.prepared.plan.name.to_string(),
+            region: ready.region_name.to_string(),
+            domain: ready.domain_name.to_string(),
+            backend: perf_dispatch_backend_name(last_frame.backend).to_string(),
+            query_trace_solver_mode: QueryTraceSolverMode::Hybrid.as_str().to_string(),
+            frames_executed: frames.len() as u32,
+            frame_cost: last_frame.frame_cost.clone(),
+            frame_cost_history: frames
+                .iter()
+                .map(|measurement| measurement.frame_cost.clone())
+                .collect(),
+        },
+    )
+}
+
+fn run_prepared_presentation_benchmark_measurement(
+    prepared: PreparedLivePresentationEngineFrame,
+    scenario: &test_eval_perf::BenchmarkScenario,
+) -> Result<PresentationBenchmarkReport, String> {
+    let PreparedLivePresentationEngineFrame {
+        ready,
+        frame_count,
+        adaptive_window,
+    } = prepared;
+    let mut session = wrela::presentation_exec::AdaptivePresentationSession::new(
+        ready.prepared.plan.frame.quality.clone(),
+    );
+    if let Some(window) = adaptive_window {
+        session = session.with_window(window);
+    }
+    let mut frame_cost_history = Vec::with_capacity(frame_count as usize);
+    let mut result = None;
+    for frame_offset in 0..frame_count {
+        let mut frame_input = ready.prepared.input.clone();
+        frame_input.materialize_cpu_attachments = false;
+        frame_input.runtime_summary_only = true;
+        frame_input.frame_state = wrela::presentation_exec::frame_state_value(
+            ready.prepared.camera,
+            ready.prepared.camera,
+            ready.prepared.viewport,
+            [0.0, 0.0],
+            frame_offset,
+            1.0 / 60.0,
+        );
+        let frame_result = session
+            .execute_frame(&ready.bundle.query_ctx, &ready.prepared.plan, &frame_input)
+            .map_err(|err| {
+                format!(
+                    "engine-frame presentation execution failed for scenario `{}`: {err}",
+                    scenario.id
+                )
+            })?;
+        frame_cost_history.push(frame_result.frame_cost.clone());
+        result = Some(frame_result);
+    }
+    let result = result.ok_or_else(|| {
+        format!(
+            "engine-frame presentation executed zero frames for scenario `{}`",
+            scenario.id
+        )
+    })?;
+    presentation_report_from_debug_output(
+        scenario,
+        PresentationDebugCommandOutput {
+            view: ready.prepared.plan.name.to_string(),
+            region: ready.region_name.to_string(),
+            domain: ready.domain_name.to_string(),
+            backend: perf_dispatch_backend_name(result.backend).to_string(),
+            query_trace_solver_mode: QueryTraceSolverMode::Hybrid.as_str().to_string(),
+            frames_executed: frame_count,
+            frame_cost: result.frame_cost,
+            frame_cost_history,
+        },
+    )
 }
 
 pub(super) fn run_presentation_benchmark_reports_for_workgroup_sizes(
@@ -2864,6 +4254,15 @@ pub(super) fn presentation_report_from_debug_output(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
+    let observability_sampled = measured_history
+        .iter()
+        .all(|frame| frame.observability_sampled);
+    let observability_notes = measured_history
+        .iter()
+        .flat_map(|frame| frame.observability_notes.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
     Ok(PresentationBenchmarkReport {
         scenario_id: scenario.id.clone(),
         test_name: scenario.test_name.clone(),
@@ -2882,6 +4281,8 @@ pub(super) fn presentation_report_from_debug_output(
         frame_time_ns: aggregate.frame_time_ns,
         steady_state_fps: fps_from_frame_time_ns(aggregate.frame_time_ns, measured_frames_executed),
         field_samples: aggregate.field_samples,
+        observability_sampled,
+        observability_notes,
         quality_tier: dump.frame_cost.quality.tier.clone(),
         target_fps: dump.frame_cost.quality.target_fps,
         internal_resolution_scale: dump.frame_cost.quality.internal_resolution_scale,

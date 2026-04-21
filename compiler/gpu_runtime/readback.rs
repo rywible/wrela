@@ -12,6 +12,10 @@ impl GpuReadbackPolicy {
     pub const fn should_schedule_value_readback(self) -> bool {
         matches!(self, Self::LegacyImmediate)
     }
+
+    pub const fn should_collect_observability_readback(self) -> bool {
+        matches!(self, Self::LegacyImmediate)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

@@ -1,7 +1,9 @@
 use crate::gpu_runtime::GpuRuntimeContext;
+use crate::gpu_runtime::GpuRuntimeMetrics;
 use crate::presentation_contract::FrameContract;
 use crate::presentation_exec::resources::{
-    AttachmentResource, AttachmentResourceSet, FrameAttachmentLayout, PresentationResourceError,
+    AttachmentBytes, AttachmentResource, AttachmentResourceSet, FrameAttachmentLayout,
+    PresentationResourceError,
 };
 use smol_str::SmolStr;
 use std::collections::BTreeMap;
@@ -17,7 +19,7 @@ pub enum GpuAttachmentArenaError {
 
 #[derive(Debug, Clone)]
 pub enum AttachmentBacking {
-    CpuBytes(Vec<u8>),
+    CpuBytes(AttachmentBytes),
     GpuBuffer {
         buffer: wgpu::Buffer,
         readback_reason: Option<ReadbackReason>,
@@ -53,7 +55,7 @@ pub struct GpuAttachmentSlot {
 }
 
 impl GpuAttachmentSlot {
-    pub fn new_cpu(layout: FrameAttachmentLayout, bytes: Vec<u8>) -> Self {
+    pub fn new_cpu(layout: FrameAttachmentLayout, bytes: AttachmentBytes) -> Self {
         Self {
             layout,
             backing: AttachmentBacking::CpuBytes(bytes),
@@ -129,33 +131,63 @@ impl GpuAttachmentArena {
     pub fn from_attachment_resources_gpu(
         context: &GpuRuntimeContext,
         resources: &AttachmentResourceSet,
-    ) -> Self {
+    ) -> (Self, GpuRuntimeMetrics) {
         let mut arena = Self::new(resources.width, resources.height);
+        let mut gpu_runtime = GpuRuntimeMetrics::default();
         for (name, attachment) in &resources.attachments {
-            let size = attachment.bytes.len().max(4) as u64;
-            let buffer = context.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(&format!("wrela.presentation.attachment.{name}")),
-                size,
-                usage: wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_SRC
-                    | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            if !attachment.bytes.is_empty() {
-                context.queue.write_buffer(&buffer, 0, &attachment.bytes);
-            }
             arena.attachments.insert(
                 name.clone(),
-                GpuAttachmentSlot::new_gpu(
-                    attachment.layout.clone(),
-                    buffer,
-                    Some(ReadbackReason::Attachment {
-                        attachment: name.clone(),
-                    }),
-                ),
+                gpu_slot_from_attachment_resources(context, name, attachment),
             );
+            gpu_runtime.attachment_buffer_creations =
+                gpu_runtime.attachment_buffer_creations.saturating_add(1);
         }
-        arena
+        (arena, gpu_runtime)
+    }
+
+    pub fn from_attachment_resources_gpu_reusing_history(
+        context: &GpuRuntimeContext,
+        resources: &AttachmentResourceSet,
+        previous: &GpuAttachmentArena,
+        reusable_write_first_attachments: &std::collections::BTreeSet<SmolStr>,
+    ) -> (Self, GpuRuntimeMetrics) {
+        let mut arena = Self::new(resources.width, resources.height);
+        let mut gpu_runtime = GpuRuntimeMetrics::default();
+        for (name, attachment) in &resources.attachments {
+            let reusable_previous = previous
+                .attachment(name)
+                .filter(|slot| {
+                    slot.layout.compatibility_signature()
+                        == attachment.layout.compatibility_signature()
+                        && slot.gpu_buffer().is_some()
+                })
+                .cloned();
+            let reused = if attachment.layout.attachment.clear_policy
+                == crate::presentation_contract::AttachmentClearPolicy::PreservePrevious
+            {
+                reusable_previous
+            } else if attachment.bytes.is_empty() && reusable_write_first_attachments.contains(name)
+            {
+                reusable_previous
+            } else {
+                None
+            };
+            let reused_existing = reused.is_some();
+            arena.attachments.insert(
+                name.clone(),
+                reused.unwrap_or_else(|| {
+                    gpu_slot_from_attachment_resources(context, name, attachment)
+                }),
+            );
+            if reused_existing {
+                gpu_runtime.attachment_buffer_reuses =
+                    gpu_runtime.attachment_buffer_reuses.saturating_add(1);
+            } else {
+                gpu_runtime.attachment_buffer_creations =
+                    gpu_runtime.attachment_buffer_creations.saturating_add(1);
+            }
+        }
+        (arena, gpu_runtime)
     }
 
     pub fn attachment(&self, name: &str) -> Option<&GpuAttachmentSlot> {
@@ -209,7 +241,7 @@ impl GpuAttachmentArena {
                 name.clone(),
                 AttachmentResource {
                     layout: slot.layout.clone(),
-                    bytes: bytes.to_vec(),
+                    bytes: bytes.to_vec().into(),
                 },
             );
         }
@@ -245,4 +277,32 @@ impl GpuAttachmentArena {
         *self = Self::from_attachment_resources(&resources);
         Ok(())
     }
+}
+
+fn gpu_slot_from_attachment_resources(
+    context: &GpuRuntimeContext,
+    name: &SmolStr,
+    attachment: &AttachmentResource,
+) -> GpuAttachmentSlot {
+    let size = u64::from(attachment.layout.total_size.max(4));
+    let buffer = context.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(&format!("wrela.presentation.attachment.{name}")),
+        size,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    if !attachment.bytes.is_empty() {
+        context
+            .queue
+            .write_buffer(&buffer, 0, attachment.bytes.as_slice());
+    }
+    GpuAttachmentSlot::new_gpu(
+        attachment.layout.clone(),
+        buffer,
+        Some(ReadbackReason::Attachment {
+            attachment: name.clone(),
+        }),
+    )
 }

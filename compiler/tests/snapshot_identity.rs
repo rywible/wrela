@@ -163,7 +163,10 @@ fn presentation_input(
             1.0 / 60.0,
         ),
         history,
+        resident_history_attachments: None,
         materialize_cpu_attachments: true,
+        runtime_summary_only: false,
+        collect_gpu_timing_readback: true,
         lighting: PresentationLightingInputs {
             key_light: CanonicalLightInput {
                 position: [1.8, 2.4, 2.2],

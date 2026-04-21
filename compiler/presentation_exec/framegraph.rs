@@ -16,8 +16,8 @@
 //!   hard-to-debug framegraph corruption.
 
 use crate::gpu_runtime::{
-    GpuPassProfiler, GpuRuntimeContext, ReadbackRequest, ReadbackResult, ReadbackTicket,
-    collect_storage_buffer_readback, schedule_storage_buffer_readback,
+    GpuPassProfiler, GpuRuntimeContext, GpuRuntimeMetrics, ReadbackRequest, ReadbackResult,
+    ReadbackTicket, collect_storage_buffer_readback, schedule_storage_buffer_readback,
 };
 use crate::presentation_binding::PresentationBindingId;
 use crate::presentation_exec::gpu_resources::{GpuAttachmentArena, GpuAttachmentSlot};
@@ -26,6 +26,7 @@ use crate::presentation_exec::resources::{
 };
 use crate::presentation_plan::{PresentationPassKind, PresentationPlan};
 use smol_str::SmolStr;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -50,6 +51,7 @@ pub struct PresentationFramegraph {
     max_timestamped_passes: u32,
     documented_exceptions: Vec<SmolStr>,
     queue_submit_count: u32,
+    gpu_runtime: GpuRuntimeMetrics,
 }
 
 pub struct PresentationFramegraphSubmission {
@@ -96,6 +98,7 @@ impl PresentationFramegraph {
             max_timestamped_passes: 0,
             documented_exceptions: Vec::new(),
             queue_submit_count: 0,
+            gpu_runtime: GpuRuntimeMetrics::default(),
         }
     }
 
@@ -122,10 +125,12 @@ impl PresentationFramegraph {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("wrela.presentation.framegraph.encoder"),
             });
+        let (attachments, gpu_runtime) =
+            GpuAttachmentArena::from_attachment_resources_gpu(&native, &attachments);
         Self {
             plan,
             passes,
-            attachments: GpuAttachmentArena::from_attachment_resources_gpu(&native, &attachments),
+            attachments,
             native: Some(native.clone()),
             encoder: Some(encoder),
             profiler: Some(GpuPassProfiler::new(&native, max_timestamped_passes)),
@@ -133,6 +138,54 @@ impl PresentationFramegraph {
             max_timestamped_passes,
             documented_exceptions: Vec::new(),
             queue_submit_count: 0,
+            gpu_runtime,
+        }
+    }
+
+    pub fn from_plan_and_gpu_resources_with_previous(
+        plan: PresentationPlan,
+        attachments: AttachmentResourceSet,
+        native: Arc<GpuRuntimeContext>,
+        max_timestamped_passes: u32,
+        previous: &GpuAttachmentArena,
+    ) -> Self {
+        let passes = plan
+            .passes
+            .iter()
+            .map(|pass| PresentationFramegraphPass {
+                id: pass.id.clone(),
+                kind: pass.kind.clone(),
+                consumes: pass.consumes.clone(),
+                materializes: pass.materializes.clone(),
+                binding: pass.binding.clone(),
+                query_dependencies: pass.query_dependencies.clone(),
+            })
+            .collect();
+        let encoder = native
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("wrela.presentation.framegraph.encoder"),
+            });
+        let reusable_write_first_attachments = reusable_write_first_attachments(&plan);
+        let (attachments, gpu_runtime) =
+            GpuAttachmentArena::from_attachment_resources_gpu_reusing_history(
+                &native,
+                &attachments,
+                previous,
+                &reusable_write_first_attachments,
+            );
+        Self {
+            plan,
+            passes,
+            attachments,
+            native: Some(native.clone()),
+            encoder: Some(encoder),
+            profiler: Some(GpuPassProfiler::new(&native, max_timestamped_passes)),
+            readbacks: Vec::new(),
+            max_timestamped_passes,
+            documented_exceptions: Vec::new(),
+            queue_submit_count: 0,
+            gpu_runtime,
         }
     }
 
@@ -175,6 +228,10 @@ impl PresentationFramegraph {
         self.native
             .as_ref()
             .ok_or(PresentationFramegraphError::MissingGpuContext)
+    }
+
+    pub fn initial_gpu_runtime(&self) -> GpuRuntimeMetrics {
+        self.gpu_runtime.clone()
     }
 
     pub fn encoder_mut(
@@ -268,6 +325,7 @@ impl PresentationFramegraph {
 
     pub fn submit_segment(
         &mut self,
+        collect_timing_readback: bool,
     ) -> Result<PresentationFramegraphSubmission, PresentationFramegraphError> {
         let native = self.native()?.clone();
         let mut encoder = self
@@ -278,8 +336,12 @@ impl PresentationFramegraph {
             .profiler
             .take()
             .ok_or(PresentationFramegraphError::MissingGpuContext)?;
-        profiler.resolve_into(&mut encoder);
-        let timing_ticket = profiler.schedule_readback(&native.device, &mut encoder);
+        let timing_ticket = if collect_timing_readback {
+            profiler.resolve_into(&mut encoder);
+            profiler.schedule_readback(&native.device, &mut encoder)
+        } else {
+            None
+        };
         native.queue.submit(Some(encoder.finish()));
         self.queue_submit_count = self.queue_submit_count.saturating_add(1);
 
@@ -298,7 +360,7 @@ impl PresentationFramegraph {
             .transpose()?
             .map(|result| result.bytes)
             .unwrap_or_default();
-        let timestamps_supported = profiler.timestamps_supported();
+        let timestamps_supported = collect_timing_readback && profiler.timestamps_supported();
         let gpu_elapsed_micros = profiler.decode_elapsed_micros(&timing_bytes);
         let documented_exceptions = std::mem::take(&mut self.documented_exceptions);
         self.encoder = Some(native.device.create_command_encoder(
@@ -323,4 +385,25 @@ impl PresentationFramegraph {
     pub fn queue_submit_count(&self) -> u32 {
         self.queue_submit_count
     }
+}
+
+fn reusable_write_first_attachments(plan: &PresentationPlan) -> BTreeSet<SmolStr> {
+    let mut materialized = BTreeSet::<SmolStr>::new();
+    let mut requires_initial_contents = BTreeSet::<SmolStr>::new();
+    for pass in &plan.passes {
+        for attachment in &pass.consumes {
+            if !materialized.contains(attachment) {
+                requires_initial_contents.insert(attachment.clone());
+            }
+        }
+        for attachment in &pass.materializes {
+            materialized.insert(attachment.clone());
+        }
+    }
+    plan.frame
+        .outputs
+        .iter()
+        .map(|attachment| attachment.name.clone())
+        .filter(|attachment| !requires_initial_contents.contains(attachment))
+        .collect()
 }

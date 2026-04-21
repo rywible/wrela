@@ -193,7 +193,10 @@ fn presentation_fixture(
         ),
         frame_state: frame_state_value(camera, camera, viewport, [0.0, 0.0], 0, 1.0 / 60.0),
         history: None,
+        resident_history_attachments: None,
         materialize_cpu_attachments: true,
+        runtime_summary_only: false,
+        collect_gpu_timing_readback: true,
         lighting: PresentationLightingInputs {
             key_light: CanonicalLightInput {
                 position: [1.8, 2.4, 2.2],
@@ -275,7 +278,10 @@ fn presentation_fixture_with_state(
             previous_snapshot_epoch,
         ),
         history,
+        resident_history_attachments: None,
         materialize_cpu_attachments: true,
+        runtime_summary_only: false,
+        collect_gpu_timing_readback: true,
         lighting: PresentationLightingInputs {
             key_light: CanonicalLightInput {
                 position: [1.8, 2.4, 2.2],
@@ -492,4 +498,3 @@ fn mean_color_delta(lhs: &[KernelValue], rhs: &[KernelValue]) -> f32 {
     }
     total / count.max(1.0)
 }
-

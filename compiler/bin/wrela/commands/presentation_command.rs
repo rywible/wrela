@@ -783,6 +783,10 @@ pub(crate) fn load_prepared_presentation_execution(
     })
 }
 
+pub(crate) fn strip_prepared_presentation_export(prepared: &mut PreparedPresentationExecution) {
+    strip_presentation_export_attachment(&mut prepared.plan);
+}
+
 pub(crate) fn selected_frame_attachment_names(
     result: &wrela::presentation_exec::PresentationExecutionResult,
     requested: &[String],

@@ -252,26 +252,28 @@ impl GpuQueryDispatcher {
             ),
             readback_policy,
         );
-        let observability_readback = readback_policy.should_schedule_value_readback().then(|| {
-            schedule_storage_buffer_readback(
-                &self.session.native.device,
-                encoder,
-                &dispatch_result
-                    .metrics
-                    .as_ref()
-                    .expect("resident batch query always has observability metrics")
-                    .buffer,
-                ReadbackRequest::new(
-                    ReadbackReason::Custom("query-observability".into()),
-                    "wrela.query_exec.observability.readback",
-                    dispatch_result
+        let observability_readback = readback_policy
+            .should_collect_observability_readback()
+            .then(|| {
+                schedule_storage_buffer_readback(
+                    &self.session.native.device,
+                    encoder,
+                    &dispatch_result
                         .metrics
                         .as_ref()
                         .expect("resident batch query always has observability metrics")
-                        .size_bytes,
-                ),
-            )
-        });
+                        .buffer,
+                    ReadbackRequest::new(
+                        ReadbackReason::Custom("query-observability".into()),
+                        "wrela.query_exec.observability.readback",
+                        dispatch_result
+                            .metrics
+                            .as_ref()
+                            .expect("resident batch query always has observability metrics")
+                            .size_bytes,
+                    ),
+                )
+            });
         GpuQueryTicket {
             session: self.session.clone(),
             dispatch_result,
@@ -323,6 +325,11 @@ impl GpuQueryTicket {
         self,
     ) -> Result<QueryExecutionObservability, QueryExecError> {
         let session = self.session.clone();
+        if !self.readback_policy.should_collect_observability_readback() {
+            return Ok(
+                session.summary_observability_without_readback(session.initial_gpu_runtime())
+            );
+        }
         let (observability_bytes, gpu_runtime) = self.collect_observability_readback()?;
         Ok(session.decode_observability(&observability_bytes, gpu_runtime))
     }

@@ -622,6 +622,8 @@ fn frame_closure_status_rejects_backend_mismatch_for_wgsl_resident_profile() {
             frame_time_ns: 1_000_000,
             steady_state_fps: 1000.0,
             field_samples: 128,
+            observability_sampled: true,
+            observability_notes: vec![],
             quality_tier: "realtime_120".to_string(),
             target_fps: 120,
             internal_resolution_scale: 1.0,
@@ -704,6 +706,8 @@ fn frame_closure_status_applies_execution_model_hard_gates_and_records_observati
         frame_time_ns: 1_000_000,
         steady_state_fps: 1000.0,
         field_samples: 128,
+        observability_sampled: true,
+        observability_notes: vec![],
         quality_tier: "realtime_120".to_string(),
         target_fps: 120,
         internal_resolution_scale: 1.0,
@@ -789,6 +793,8 @@ fn whole_frame_benchmark_reports_join_presentation_and_collision_by_scenario_id(
         frame_time_ns: 6_000_000,
         steady_state_fps: fps_from_frame_time_ns(6_000_000, 1),
         field_samples: 128,
+        observability_sampled: true,
+        observability_notes: vec![],
         quality_tier: "realtime_120".to_string(),
         target_fps: 120,
         internal_resolution_scale: 1.0,
@@ -921,6 +927,8 @@ fn engine_frame_benchmark_reports_assemble_presentation_and_collision_subsystems
         frame_time_ns: 42_000_000,
         steady_state_fps: fps_from_frame_time_ns(42_000_000, 7),
         field_samples: 128,
+        observability_sampled: true,
+        observability_notes: vec![],
         quality_tier: "realtime_120".to_string(),
         target_fps: 120,
         internal_resolution_scale: 1.0,
@@ -1063,6 +1071,122 @@ fn engine_frame_benchmark_reports_assemble_presentation_and_collision_subsystems
 }
 
 #[test]
+fn engine_frame_benchmark_reports_keep_timestamp_readback_out_of_hot_path_bytes() {
+    let mut frame_cost = sample_presentation_frame_cost(1920, 1080, 1.0, 128, 2.0, 16, 8, 3_000);
+    frame_cost.gpu_runtime.timestamps_supported = true;
+    frame_cost.gpu_runtime.timestamped_pass_count = 2;
+    frame_cost.gpu_runtime.readback_bytes = 32;
+
+    let presentation_reports = vec![PresentationBenchmarkReport {
+        scenario_id: "closure_1080p120_dense_constructive_dense_ray_casts".into(),
+        test_name:
+            "tests/whole_frame::test_whole_frame_dense_constructive_dense_ray_casts_ops_7200"
+                .to_string(),
+        view: "show_dense_constructive_1080p120_closure_view".to_string(),
+        region: "bench".to_string(),
+        domain: "world".to_string(),
+        backend: "wgsl".to_string(),
+        observed_adapter_name: None,
+        query_trace_solver_mode: "hybrid".to_string(),
+        selected_workgroup_size: 64,
+        frames_executed: 3,
+        frame_time_ns: 3_000_000,
+        steady_state_fps: fps_from_frame_time_ns(3_000_000, 1),
+        field_samples: 0,
+        observability_sampled: true,
+        observability_notes: vec![],
+        quality_tier: "realtime_120".to_string(),
+        target_fps: 120,
+        internal_resolution_scale: 1.0,
+        reconstructed_output: false,
+        quality_history: vec!["realtime_120".to_string()],
+        internal_resolution_history: vec![1.0],
+        bottleneck_pass: Some("surface_resolve".to_string()),
+        active_acceleration_artifacts: vec!["view_distance_clipmap".to_string()],
+        performance_gain_sources: vec!["backend_speed".to_string()],
+        frame_cost,
+        frame_cost_history: vec![],
+        wgsl_workgroup_comparison: None,
+        ab_comparison: None,
+    }];
+    let collision_reports = vec![CollisionBenchmarkReport {
+        suite: "engine_frame".to_string(),
+        backend: "cpu".to_string(),
+        command: "collision-suite".to_string(),
+        query_count_total: 1,
+        total_runtime_ns: 1_000_000,
+        queries_per_sec: 1_000_000.0,
+        average_candidate_count: 1.0,
+        average_rejected_candidate_count: 0.0,
+        average_pruned_node_count: 0.0,
+        average_interval_subdivisions: 0.0,
+        average_interval_refinements: 0.0,
+        average_certificate_successes: 0.0,
+        witness_reuse_rate: 0.0,
+        fallback_rate: 0.0,
+        available_count_total: 0,
+        consumed_count_total: 0,
+        rejected_count_total: 0,
+        unavailable_count_total: 0,
+        executions: vec![test_eval_perf::CollisionBenchmarkExecutionReport {
+            name: "closure_1080p120_dense_constructive_dense_ray_casts".into(),
+            plan_name: "point".to_string(),
+            contract_id: "whole_frame_collision".to_string(),
+            query_count: 1,
+            batch_count: 1,
+            dispatch_count: 0,
+            dispatch_items: 1,
+            average_items_per_dispatch: 1.0,
+            runtime_ns: 1_000_000,
+            timestamps_supported: false,
+            timestamped_pass_count: 0,
+            gpu_time_total_ns: 0,
+            gpu_time_max_ns: 0,
+            queries_per_sec: 1_000_000.0,
+            broadphase_candidate_count: 1,
+            broadphase_rejected_candidate_count: 0,
+            broadphase_pruned_node_count: 0,
+            candidate_reduction_effectiveness: 1.0,
+            interval_subdivisions: 0,
+            interval_refinements: 0,
+            certificate_successes: 0,
+            interval_bracket: None,
+            fallback_count: 0,
+            contact_normal_provenance: None,
+            wgsl_dispatch_count: 0,
+            wgsl_dispatch_items: 0,
+            wgsl_selected_workgroup_size: 0,
+            wgsl_resident_shared_snapshot_artifacts: 0,
+            cpu_certification_query_count: 0,
+            hot_path_readback_bytes: 0,
+            queue_submit_count: 0,
+            scene_reupload_bytes: 0,
+            candidate_table_overflow_fallback_count: 0,
+            available_count: 0,
+            consumed_count: 0,
+            rejected_count: 0,
+            unavailable_count: 0,
+            witness_reuse_rate: 0.0,
+            fallback_rate: 0.0,
+        }],
+    }];
+
+    let profile = PerfClosureProfile::canonical_1080p120();
+    let reports = build_engine_frame_benchmark_reports(
+        &presentation_reports,
+        &collision_reports,
+        Some(&profile.engine_frame_budget),
+    )
+    .expect("build engine-frame reports");
+
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].hot_path_readback_bytes, 0);
+    assert_eq!(reports[0].timing_readback_bytes, 32);
+    assert_eq!(reports[0].subsystem_reports[1].hot_path_readback_bytes, 0);
+    assert_eq!(reports[0].subsystem_reports[1].timing_readback_bytes, 32);
+}
+
+#[test]
 fn engine_frame_benchmark_reports_preserve_exact_future_reserve_budget() {
     let mut frame_cost = sample_presentation_frame_cost(64, 64, 1.0, 128, 2.0, 16, 8, 6_000);
     frame_cost.gpu_runtime.queue_submit_count = 1;
@@ -1080,6 +1204,8 @@ fn engine_frame_benchmark_reports_preserve_exact_future_reserve_budget() {
         frame_time_ns: 42_560_000,
         steady_state_fps: fps_from_frame_time_ns(42_560_000, 7),
         field_samples: 128,
+        observability_sampled: true,
+        observability_notes: vec![],
         quality_tier: "realtime_120".to_string(),
         target_fps: 120,
         internal_resolution_scale: 1.0,
@@ -1209,6 +1335,8 @@ fn engine_frame_benchmark_reports_use_measured_presentation_frame_maxima() {
         frame_time_ns: 12_000_000,
         steady_state_fps: fps_from_frame_time_ns(12_000_000, 2),
         field_samples: 128,
+        observability_sampled: true,
+        observability_notes: vec![],
         quality_tier: "realtime_120".to_string(),
         target_fps: 120,
         internal_resolution_scale: 1.0,
@@ -1330,6 +1458,8 @@ fn engine_frame_benchmark_reports_keep_timestamped_collision_zeroes_off_runtime_
         frame_time_ns: 6_000_000,
         steady_state_fps: fps_from_frame_time_ns(6_000_000, 1),
         field_samples: 128,
+        observability_sampled: true,
+        observability_notes: vec![],
         quality_tier: "realtime_120".to_string(),
         target_fps: 120,
         internal_resolution_scale: 1.0,
@@ -1449,10 +1579,24 @@ fn engine_frame_runtime_cases_follow_scheduler_wall_time() {
         presentation_runtime_ns: 6_000_000,
         collision_runtime_ns: 2_500_000,
         state_advance_runtime_ns: 250_000,
+        presentation_self_reported_runtime_ns: Some(5_900_000),
+        collision_self_reported_runtime_ns: Some(2_400_000),
+        state_advance_self_reported_runtime_ns: None,
+        presentation_orchestration_gap_ns: 100_000,
+        collision_orchestration_gap_ns: 100_000,
+        state_advance_orchestration_gap_ns: 0,
+        measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+            runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+            gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+            hot_path_readback_allowed: false,
+            export_readback_allowed: false,
+        },
         future_subsystem_reserve_ns: 1_000_000,
         queue_submit_count: 2,
         hot_path_readback_bytes: 0,
         scene_reupload_bytes: 64,
+        timestamped_pass_count: 0,
+        timing_readback_bytes: 0,
         active_degradations: vec!["enable_hit_compaction".to_string()],
         violations: vec![],
         subsystem_reports: vec![],
@@ -1465,6 +1609,103 @@ fn engine_frame_runtime_cases_follow_scheduler_wall_time() {
             8_750_000,
         )]
     );
+}
+
+#[test]
+fn aggregate_engine_frame_sequence_reports_uses_measured_tail_average_and_budget_maxima() {
+    let reports = vec![
+        sample_engine_frame_scheduler_report(0, 12_000, 8_000, 4_000, 1, 0, 32),
+        sample_engine_frame_scheduler_report(1, 8_000, 5_000, 3_000, 1, 16, 64),
+        sample_engine_frame_scheduler_report(2, 9_000, 6_000, 3_000, 2, 32, 128),
+    ];
+
+    let report = super::collection::aggregate_engine_frame_sequence_reports(
+        "closure_fixture".into(),
+        "tests/whole_frame::test_fixture".to_string(),
+        &reports,
+        2,
+    )
+    .expect("aggregate engine-frame sequence reports");
+
+    assert_eq!(report.frame_count, 2);
+    assert_eq!(report.frame_wall_time_ns, 8_500_000);
+    assert_eq!(report.cpu_critical_path_ns, 8_500_000);
+    assert_eq!(report.gpu_critical_path_ns, Some(3_500_000));
+    assert_eq!(report.presentation_runtime_ns, 5_500_000);
+    assert_eq!(report.collision_runtime_ns, 3_000_000);
+    assert_eq!(report.state_advance_runtime_ns, 0);
+    assert_eq!(report.future_subsystem_reserve_ns, 1_500_000);
+    assert_eq!(report.queue_submit_count, 2);
+    assert_eq!(report.hot_path_readback_bytes, 32);
+    assert_eq!(report.scene_reupload_bytes, 128);
+    assert_eq!(report.subsystem_reports.len(), 3);
+    assert_eq!(report.subsystem_reports[1].label, "presentation");
+    assert_eq!(report.subsystem_reports[1].cpu_critical_path_micros, 5_500);
+    assert_eq!(report.subsystem_reports[1].queue_submit_count, 2);
+    assert_eq!(report.subsystem_reports[1].hot_path_readback_bytes, 32);
+    assert_eq!(report.subsystem_reports[1].scene_reupload_bytes, 128);
+    assert!(
+        report
+            .active_degradations
+            .contains(&"reduce_internal_resolution".to_string())
+    );
+    assert!(
+        !report
+            .active_degradations
+            .contains(&"warmup-only".to_string())
+    );
+    assert!(
+        report
+            .violations
+            .contains(&"engine_frame_future_reserve_exhausted".to_string())
+    );
+}
+
+#[test]
+fn aggregate_engine_frame_sequence_reports_keep_timestamp_readback_out_of_hot_path_bytes() {
+    let mut measured_report =
+        sample_engine_frame_scheduler_report(1, 8_000, 5_000, 3_000, 1, 0, 64);
+    measured_report.gpu_runtime.timestamps_supported = true;
+    measured_report.gpu_runtime.timestamped_pass_count = 2;
+    measured_report.gpu_runtime.readback_bytes = 32;
+    measured_report.subsystems[1].timestamped_pass_count = 2;
+    measured_report.subsystems[1].timing_readback_bytes = 32;
+    measured_report.subsystems[1].hot_path_readback_bytes = 0;
+
+    let report = super::collection::aggregate_engine_frame_sequence_reports(
+        "closure_fixture".into(),
+        "tests/whole_frame::test_fixture".to_string(),
+        &[
+            sample_engine_frame_scheduler_report(0, 12_000, 8_000, 4_000, 1, 0, 32),
+            measured_report,
+        ],
+        1,
+    )
+    .expect("aggregate engine-frame sequence reports");
+
+    assert_eq!(report.hot_path_readback_bytes, 0);
+    assert_eq!(report.timing_readback_bytes, 32);
+}
+
+#[test]
+fn live_engine_frame_descriptors_allow_presentation_and_collision_overlap() {
+    let presentation = super::collection::live_presentation_engine_frame_descriptor(
+        wrela::query_plan::DispatchBackend::Wgsl,
+    );
+    let collision = super::collection::live_collision_engine_frame_descriptor(
+        wrela::query_plan::DispatchBackend::Wgsl,
+    );
+
+    assert_eq!(
+        presentation.runs_after,
+        vec![wrela::engine_frame::EngineSubsystemKind::StateAdvance]
+    );
+    assert_eq!(
+        collision.runs_after,
+        vec![wrela::engine_frame::EngineSubsystemKind::StateAdvance]
+    );
+    assert!(presentation.requires_gpu);
+    assert!(collision.requires_gpu);
 }
 
 #[test]
@@ -1497,6 +1738,8 @@ fn frame_closure_status_uses_engine_frame_per_frame_runtime_without_dividing_by_
         frame_time_ns: 63_000_000,
         steady_state_fps: fps_from_frame_time_ns(63_000_000, 7),
         field_samples: 128,
+        observability_sampled: true,
+        observability_notes: vec![],
         quality_tier: "realtime_120".to_string(),
         target_fps: 120,
         internal_resolution_scale: 1.0,
@@ -1532,10 +1775,24 @@ fn frame_closure_status_uses_engine_frame_per_frame_runtime_without_dividing_by_
             presentation_runtime_ns: 6_000_000,
             collision_runtime_ns: 2_500_000,
             state_advance_runtime_ns: 500_000,
+            presentation_self_reported_runtime_ns: Some(5_500_000),
+            collision_self_reported_runtime_ns: Some(2_400_000),
+            state_advance_self_reported_runtime_ns: None,
+            presentation_orchestration_gap_ns: 500_000,
+            collision_orchestration_gap_ns: 100_000,
+            state_advance_orchestration_gap_ns: 0,
+            measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+                gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+                hot_path_readback_allowed: false,
+                export_readback_allowed: false,
+            },
             future_subsystem_reserve_ns: 1_000_000,
             queue_submit_count: 1,
             hot_path_readback_bytes: 0,
             scene_reupload_bytes: 0,
+            timestamped_pass_count: 0,
+            timing_readback_bytes: 0,
             active_degradations: vec![],
             violations: vec![],
             subsystem_reports: vec![],
@@ -1573,10 +1830,24 @@ fn engine_frame_closure_status_records_budget_and_scheduler_violations() {
             presentation_runtime_ns: 6_000_000,
             collision_runtime_ns: 2_000_000,
             state_advance_runtime_ns: 500_000,
+            presentation_self_reported_runtime_ns: Some(5_600_000),
+            collision_self_reported_runtime_ns: Some(1_900_000),
+            state_advance_self_reported_runtime_ns: None,
+            presentation_orchestration_gap_ns: 400_000,
+            collision_orchestration_gap_ns: 100_000,
+            state_advance_orchestration_gap_ns: 0,
+            measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+                gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+                hot_path_readback_allowed: false,
+                export_readback_allowed: false,
+            },
             future_subsystem_reserve_ns: 500_000,
             queue_submit_count: 2,
             hot_path_readback_bytes: 32,
             scene_reupload_bytes: 64,
+            timestamped_pass_count: 0,
+            timing_readback_bytes: 0,
             active_degradations: vec!["enable_hit_compaction".to_string()],
             violations: vec!["engine_frame_future_reserve_exhausted".to_string()],
             subsystem_reports: vec![],
@@ -1625,6 +1896,276 @@ fn engine_frame_closure_status_records_budget_and_scheduler_violations() {
 }
 
 #[test]
+fn engine_frame_closure_status_fails_when_live_subsystem_budgets_are_exceeded() {
+    let mut profile = PerfClosureProfile::canonical_1080p120();
+    profile.warmup_runs = 0;
+    profile.measured_runs = 1;
+    let report = build_engine_frame_closure_status(
+        &profile,
+        &[EngineFrameBenchmarkReport {
+            scenario_id: "closure_fixture".into(),
+            test_name: "tests/whole_frame::test_fixture".to_string(),
+            frame_count: 1,
+            frame_wall_time_ns: 7_000_000,
+            cpu_critical_path_ns: 7_000_000,
+            gpu_critical_path_ns: Some(4_000_000),
+            present_wait_ns: 0,
+            readback_wait_ns: 0,
+            steady_state_fps: fps_from_frame_time_ns(7_000_000, 1),
+            presentation_runtime_ns: 5_500_000,
+            collision_runtime_ns: 4_000_000,
+            state_advance_runtime_ns: 750_000,
+            presentation_self_reported_runtime_ns: Some(4_500_000),
+            collision_self_reported_runtime_ns: Some(3_500_000),
+            state_advance_self_reported_runtime_ns: None,
+            presentation_orchestration_gap_ns: 1_000_000,
+            collision_orchestration_gap_ns: 500_000,
+            state_advance_orchestration_gap_ns: 0,
+            measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+                gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+                hot_path_readback_allowed: false,
+                export_readback_allowed: false,
+            },
+            future_subsystem_reserve_ns: 1_500_000,
+            queue_submit_count: 2,
+            hot_path_readback_bytes: 0,
+            scene_reupload_bytes: 0,
+            timestamped_pass_count: 0,
+            timing_readback_bytes: 0,
+            active_degradations: vec![],
+            violations: vec![],
+            subsystem_reports: vec![],
+        }],
+        &[],
+        0,
+        1,
+    );
+
+    assert_eq!(report.status, PerfClosureLaneStatus::Violated);
+    assert_eq!(report.frame_wall_time_median_ms, Some(7.0));
+    assert_eq!(report.presentation_median_ms, Some(5.5));
+    assert_eq!(report.collision_median_ms, Some(4.0));
+    assert_eq!(report.state_advance_median_ms, Some(0.75));
+    assert_eq!(report.future_subsystem_reserve_ms, Some(1.5));
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("presentation median 5.50 ms exceeds budget 4.50 ms"))
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("collision median 4.00 ms exceeds budget 2.50 ms"))
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("state_advance median 0.75 ms exceeds budget 0.25 ms"))
+    );
+}
+
+#[test]
+fn engine_frame_closure_status_rejects_disabled_timestamp_and_readback_traffic() {
+    let mut profile = PerfClosureProfile::canonical_1080p120();
+    profile.timestamps_enabled = false;
+    profile.gpu_timestamps_required_if_supported = false;
+    profile.warmup_runs = 0;
+    profile.measured_runs = 1;
+
+    let report = build_engine_frame_closure_status(
+        &profile,
+        &[EngineFrameBenchmarkReport {
+            scenario_id: "closure_fixture".into(),
+            test_name: "tests/whole_frame::test_fixture".to_string(),
+            frame_count: 1,
+            frame_wall_time_ns: 7_000_000,
+            cpu_critical_path_ns: 7_000_000,
+            gpu_critical_path_ns: Some(2_000_000),
+            present_wait_ns: 0,
+            readback_wait_ns: 0,
+            steady_state_fps: fps_from_frame_time_ns(7_000_000, 1),
+            presentation_runtime_ns: 4_000_000,
+            collision_runtime_ns: 2_000_000,
+            state_advance_runtime_ns: 0,
+            presentation_self_reported_runtime_ns: Some(3_500_000),
+            collision_self_reported_runtime_ns: Some(1_500_000),
+            state_advance_self_reported_runtime_ns: None,
+            presentation_orchestration_gap_ns: 500_000,
+            collision_orchestration_gap_ns: 500_000,
+            state_advance_orchestration_gap_ns: 0,
+            measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+                gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Timestamped,
+                hot_path_readback_allowed: true,
+                export_readback_allowed: true,
+            },
+            future_subsystem_reserve_ns: 2_000_000,
+            queue_submit_count: 1,
+            hot_path_readback_bytes: 8,
+            scene_reupload_bytes: 0,
+            timestamped_pass_count: 1,
+            timing_readback_bytes: 16,
+            active_degradations: vec![],
+            violations: vec![],
+            subsystem_reports: vec![wrela::engine_frame::EngineSubsystemReport {
+                kind: wrela::engine_frame::EngineSubsystemKind::Collision,
+                label: "collision".to_string(),
+                work_items: 64,
+                cpu_critical_path_micros: 2_000,
+                gpu_critical_path_micros: Some(2_000),
+                executed_wall_time_micros: 2_000,
+                self_reported_runtime_micros: Some(1_500),
+                orchestration_gap_micros: 500,
+                measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                    runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+                    gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Timestamped,
+                    hot_path_readback_allowed: true,
+                    export_readback_allowed: true,
+                },
+                queue_submit_count: 1,
+                hot_path_readback_bytes: 8,
+                scene_reupload_bytes: 0,
+                timestamped_pass_count: 1,
+                timing_readback_bytes: 16,
+                wait_time_micros: 500,
+                notes: vec![],
+            }],
+        }],
+        &[],
+        0,
+        1,
+    );
+
+    assert_eq!(report.status, PerfClosureLaneStatus::Violated);
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("timestamp traffic is disabled"))
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("hot-path readback is disabled"))
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("export/readback is disabled"))
+    );
+}
+
+#[test]
+fn engine_frame_closure_status_requires_timestamp_traffic_when_requested_and_supported() {
+    let mut profile = PerfClosureProfile::canonical_1080p120();
+    profile.timestamps_enabled = true;
+    profile.gpu_timestamps_required_if_supported = true;
+    profile.enabled_optional_features = vec!["timestamp_query".to_string()];
+    profile.warmup_runs = 0;
+    profile.measured_runs = 1;
+
+    let report = build_engine_frame_closure_status(
+        &profile,
+        &[EngineFrameBenchmarkReport {
+            scenario_id: "closure_fixture".into(),
+            test_name: "tests/whole_frame::test_fixture".to_string(),
+            frame_count: 1,
+            frame_wall_time_ns: 7_000_000,
+            cpu_critical_path_ns: 7_000_000,
+            gpu_critical_path_ns: Some(2_000_000),
+            present_wait_ns: 0,
+            readback_wait_ns: 0,
+            steady_state_fps: fps_from_frame_time_ns(7_000_000, 1),
+            presentation_runtime_ns: 4_000_000,
+            collision_runtime_ns: 2_000_000,
+            state_advance_runtime_ns: 0,
+            presentation_self_reported_runtime_ns: Some(3_500_000),
+            collision_self_reported_runtime_ns: Some(1_500_000),
+            state_advance_self_reported_runtime_ns: None,
+            presentation_orchestration_gap_ns: 500_000,
+            collision_orchestration_gap_ns: 500_000,
+            state_advance_orchestration_gap_ns: 0,
+            measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+                gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+                hot_path_readback_allowed: false,
+                export_readback_allowed: false,
+            },
+            future_subsystem_reserve_ns: 2_000_000,
+            queue_submit_count: 1,
+            hot_path_readback_bytes: 0,
+            scene_reupload_bytes: 0,
+            timestamped_pass_count: 0,
+            timing_readback_bytes: 0,
+            active_degradations: vec![],
+            violations: vec![],
+            subsystem_reports: vec![
+                wrela::engine_frame::EngineSubsystemReport {
+                    kind: wrela::engine_frame::EngineSubsystemKind::Presentation,
+                    label: "presentation".to_string(),
+                    work_items: 1,
+                    cpu_critical_path_micros: 4_000,
+                    gpu_critical_path_micros: Some(0),
+                    executed_wall_time_micros: 4_000,
+                    self_reported_runtime_micros: Some(3_500),
+                    orchestration_gap_micros: 500,
+                    measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                        runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+                        gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+                        hot_path_readback_allowed: false,
+                        export_readback_allowed: false,
+                    },
+                    queue_submit_count: 1,
+                    hot_path_readback_bytes: 0,
+                    scene_reupload_bytes: 0,
+                    timestamped_pass_count: 0,
+                    timing_readback_bytes: 0,
+                    wait_time_micros: 500,
+                    notes: vec![],
+                },
+                wrela::engine_frame::EngineSubsystemReport {
+                    kind: wrela::engine_frame::EngineSubsystemKind::Collision,
+                    label: "collision".to_string(),
+                    work_items: 64,
+                    cpu_critical_path_micros: 2_000,
+                    gpu_critical_path_micros: Some(0),
+                    executed_wall_time_micros: 2_000,
+                    self_reported_runtime_micros: Some(1_500),
+                    orchestration_gap_micros: 500,
+                    measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                        runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+                        gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+                        hot_path_readback_allowed: false,
+                        export_readback_allowed: false,
+                    },
+                    queue_submit_count: 1,
+                    hot_path_readback_bytes: 0,
+                    scene_reupload_bytes: 0,
+                    timestamped_pass_count: 0,
+                    timing_readback_bytes: 0,
+                    wait_time_micros: 500,
+                    notes: vec![],
+                },
+            ],
+        }],
+        &[],
+        0,
+        1,
+    );
+
+    assert_eq!(report.status, PerfClosureLaneStatus::Violated);
+    assert!(report.notes.iter().any(|note| note.contains(
+        "timestamp traffic was requested and the adapter reported timestamp_query support"
+    )));
+}
+
+#[test]
 fn engine_frame_closure_status_uses_true_percentiles_for_multi_sample_reports() {
     let mut profile = PerfClosureProfile::canonical_1080p120();
     profile.warmup_runs = 0;
@@ -1644,10 +2185,24 @@ fn engine_frame_closure_status_uses_true_percentiles_for_multi_sample_reports() 
             presentation_runtime_ns: 2_000_000,
             collision_runtime_ns: 1_000_000,
             state_advance_runtime_ns: 250_000,
+            presentation_self_reported_runtime_ns: Some(2_000_000),
+            collision_self_reported_runtime_ns: Some(1_000_000),
+            state_advance_self_reported_runtime_ns: None,
+            presentation_orchestration_gap_ns: 0,
+            collision_orchestration_gap_ns: 0,
+            state_advance_orchestration_gap_ns: 0,
+            measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+                gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+                hot_path_readback_allowed: false,
+                export_readback_allowed: false,
+            },
             future_subsystem_reserve_ns: 2_000_000,
             queue_submit_count: 1,
             hot_path_readback_bytes: 0,
             scene_reupload_bytes: 0,
+            timestamped_pass_count: 0,
+            timing_readback_bytes: 0,
             active_degradations: vec![],
             violations: vec![],
             subsystem_reports: vec![],
@@ -1679,10 +2234,24 @@ fn engine_frame_closure_status_keeps_reserved_state_advance_out_of_observed_medi
             presentation_runtime_ns: 5_000_000,
             collision_runtime_ns: 3_000_000,
             state_advance_runtime_ns: 0,
+            presentation_self_reported_runtime_ns: Some(5_000_000),
+            collision_self_reported_runtime_ns: Some(3_000_000),
+            state_advance_self_reported_runtime_ns: None,
+            presentation_orchestration_gap_ns: 0,
+            collision_orchestration_gap_ns: 0,
+            state_advance_orchestration_gap_ns: 0,
+            measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+                gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::RuntimeProxy,
+                hot_path_readback_allowed: false,
+                export_readback_allowed: false,
+            },
             future_subsystem_reserve_ns: 1_000_000,
             queue_submit_count: 2,
             hot_path_readback_bytes: 0,
             scene_reupload_bytes: 0,
+            timestamped_pass_count: 0,
+            timing_readback_bytes: 0,
             active_degradations: vec![],
             violations: vec![],
             subsystem_reports: vec![
@@ -1692,9 +2261,21 @@ fn engine_frame_closure_status_keeps_reserved_state_advance_out_of_observed_medi
                     work_items: 0,
                     cpu_critical_path_micros: 0,
                     gpu_critical_path_micros: None,
+                    executed_wall_time_micros: 0,
+                    self_reported_runtime_micros: None,
+                    orchestration_gap_micros: 0,
+                    measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                        runtime_source:
+                            wrela::engine_frame::EngineRuntimeSource::ReservedSlotUnsampled,
+                        gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+                        hot_path_readback_allowed: false,
+                        export_readback_allowed: false,
+                    },
                     queue_submit_count: 0,
                     hot_path_readback_bytes: 0,
                     scene_reupload_bytes: 0,
+                    timestamped_pass_count: 0,
+                    timing_readback_bytes: 0,
                     wait_time_micros: 0,
                     notes: vec![
                         "reserved-slot-unsampled".to_string(),
@@ -1707,9 +2288,20 @@ fn engine_frame_closure_status_keeps_reserved_state_advance_out_of_observed_medi
                     work_items: 1,
                     cpu_critical_path_micros: 3_000,
                     gpu_critical_path_micros: Some(3_000),
+                    executed_wall_time_micros: 3_000,
+                    self_reported_runtime_micros: Some(3_000),
+                    orchestration_gap_micros: 0,
+                    measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                        runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+                        gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::RuntimeProxy,
+                        hot_path_readback_allowed: false,
+                        export_readback_allowed: false,
+                    },
                     queue_submit_count: 1,
                     hot_path_readback_bytes: 0,
                     scene_reupload_bytes: 0,
+                    timestamped_pass_count: 0,
+                    timing_readback_bytes: 0,
                     wait_time_micros: 0,
                     notes: vec![
                         "scheduler-adapter".to_string(),
@@ -1736,6 +2328,77 @@ fn engine_frame_closure_status_keeps_reserved_state_advance_out_of_observed_medi
             .iter()
             .any(|note| note.contains("collision gpu critical path uses runtime proxy"))
     );
+}
+
+#[test]
+fn render_engine_frame_benchmark_reports_includes_typed_measurement_fields() {
+    let rendered =
+        super::closure::render_engine_frame_benchmark_reports(&[EngineFrameBenchmarkReport {
+            scenario_id: "closure_fixture".into(),
+            test_name: "tests/whole_frame::test_fixture".to_string(),
+            frame_count: 1,
+            frame_wall_time_ns: 8_000_000,
+            cpu_critical_path_ns: 8_000_000,
+            gpu_critical_path_ns: Some(3_000_000),
+            present_wait_ns: 0,
+            readback_wait_ns: 0,
+            steady_state_fps: fps_from_frame_time_ns(8_000_000, 1),
+            presentation_runtime_ns: 5_000_000,
+            collision_runtime_ns: 3_000_000,
+            state_advance_runtime_ns: 0,
+            presentation_self_reported_runtime_ns: Some(4_500_000),
+            collision_self_reported_runtime_ns: Some(2_500_000),
+            state_advance_self_reported_runtime_ns: None,
+            presentation_orchestration_gap_ns: 500_000,
+            collision_orchestration_gap_ns: 500_000,
+            state_advance_orchestration_gap_ns: 0,
+            measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+                gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+                hot_path_readback_allowed: false,
+                export_readback_allowed: false,
+            },
+            future_subsystem_reserve_ns: 1_000_000,
+            queue_submit_count: 1,
+            hot_path_readback_bytes: 0,
+            scene_reupload_bytes: 0,
+            timestamped_pass_count: 0,
+            timing_readback_bytes: 0,
+            active_degradations: vec![],
+            violations: vec![],
+            subsystem_reports: vec![wrela::engine_frame::EngineSubsystemReport {
+                kind: wrela::engine_frame::EngineSubsystemKind::Presentation,
+                label: "presentation".to_string(),
+                work_items: 1,
+                cpu_critical_path_micros: 5_000,
+                gpu_critical_path_micros: Some(3_000),
+                executed_wall_time_micros: 5_000,
+                self_reported_runtime_micros: Some(4_500),
+                orchestration_gap_micros: 500,
+                measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                    runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+                    gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+                    hot_path_readback_allowed: false,
+                    export_readback_allowed: false,
+                },
+                queue_submit_count: 1,
+                hot_path_readback_bytes: 0,
+                scene_reupload_bytes: 0,
+                timestamped_pass_count: 0,
+                timing_readback_bytes: 0,
+                wait_time_micros: 500,
+                notes: vec!["engine-frame-live".to_string()],
+            }],
+        }]);
+
+    assert!(rendered.contains("presentation_self_reported_runtime_ns=4500000"));
+    assert!(rendered.contains("presentation_orchestration_gap_ns=500000"));
+    assert!(
+        rendered.contains("measurement_policy=\"runtime_source=timeline_spans gpu_timing=disabled")
+    );
+    assert!(rendered.contains("executed_wall_time_us=5000"));
+    assert!(rendered.contains("self_reported_runtime_us=4500"));
+    assert!(rendered.contains("orchestration_gap_us=500"));
 }
 
 #[test]
@@ -1916,6 +2579,8 @@ fn frame_closure_status_uses_whole_frame_totals_for_whole_frame_suite() {
         frame_time_ns: 3_000_000,
         steady_state_fps: fps_from_frame_time_ns(3_000_000, 1),
         field_samples: 128,
+        observability_sampled: true,
+        observability_notes: vec![],
         quality_tier: "realtime_120".to_string(),
         target_fps: 120,
         internal_resolution_scale: 1.0,
@@ -2013,6 +2678,8 @@ fn frame_closure_status_fails_closed_for_unknown_whole_frame_scenario_ids() {
         frame_time_ns: 3_000_000,
         steady_state_fps: fps_from_frame_time_ns(3_000_000, 1),
         field_samples: 128,
+        observability_sampled: true,
+        observability_notes: vec![],
         quality_tier: "realtime_120".to_string(),
         target_fps: 120,
         internal_resolution_scale: 1.0,
@@ -2085,6 +2752,8 @@ fn closure_profile_prefers_observed_wgsl_runtime_metadata() {
             frame_time_ns: 1_000_000,
             steady_state_fps: 1000.0,
             field_samples: 128,
+            observability_sampled: true,
+            observability_notes: vec![],
             quality_tier: "realtime_120".to_string(),
             target_fps: 120,
             internal_resolution_scale: 1.0,
@@ -2116,8 +2785,55 @@ fn closure_profile_prefers_observed_wgsl_runtime_metadata() {
 }
 
 #[test]
+fn closure_profile_keeps_requested_timestamp_policy_when_observed_reports_skip_timestamps() {
+    let mut profile = PerfClosureProfile::canonical_1080p120();
+    let mut frame_cost = sample_presentation_frame_cost(64, 64, 1.0, 128, 2.0, 16, 8, 1_000);
+    frame_cost.gpu_runtime.timestamps_supported = false;
+    frame_cost.gpu_runtime.enabled_optional_features = vec!["timestamp_query".to_string()];
+
+    apply_observed_wgsl_runtime_metadata(
+        &mut profile,
+        &[PresentationBenchmarkReport {
+            scenario_id: "closure_fixture".into(),
+            test_name: "tests/fixture".to_string(),
+            view: "view".to_string(),
+            region: "region".to_string(),
+            domain: "domain".to_string(),
+            backend: "wgsl".to_string(),
+            observed_adapter_name: Some("Test Adapter".to_string()),
+            query_trace_solver_mode: "hybrid".to_string(),
+            selected_workgroup_size: 64,
+            frames_executed: 1,
+            frame_time_ns: 1_000_000,
+            steady_state_fps: 1000.0,
+            field_samples: 128,
+            observability_sampled: true,
+            observability_notes: vec![],
+            quality_tier: "realtime_120".to_string(),
+            target_fps: 120,
+            internal_resolution_scale: 1.0,
+            reconstructed_output: false,
+            quality_history: vec!["realtime_120".to_string()],
+            internal_resolution_history: vec![1.0],
+            bottleneck_pass: Some("primary_visibility".to_string()),
+            active_acceleration_artifacts: vec![],
+            performance_gain_sources: vec![],
+            frame_cost,
+            frame_cost_history: vec![],
+            wgsl_workgroup_comparison: None,
+            ab_comparison: None,
+        }],
+    );
+
+    assert!(!profile.timestamps_enabled);
+    assert!(!profile.gpu_timestamps_required_if_supported);
+}
+
+#[test]
 fn closure_verdict_surface_names_the_top_bottleneck_and_subsystem_findings() {
-    let profile = PerfClosureProfile::canonical_1080p120();
+    let mut profile = PerfClosureProfile::canonical_1080p120();
+    profile.frame.suite = "whole_frame".to_string();
+    profile.collision.suite = "whole_frame".to_string();
     let mut frame_status = PerfClosureLaneStatusReport::unsampled(&profile.frame);
     frame_status.status = PerfClosureLaneStatus::Violated;
     frame_status.total_frame_median_ms = Some(11.0);
@@ -2185,6 +2901,8 @@ fn closure_verdict_surface_names_the_top_bottleneck_and_subsystem_findings() {
         frame_time_ns: 11_000_000,
         steady_state_fps: fps_from_frame_time_ns(11_000_000, 1),
         field_samples: 100,
+        observability_sampled: true,
+        observability_notes: vec![],
         quality_tier: "realtime_120".to_string(),
         target_fps: 120,
         internal_resolution_scale: 1.0,
@@ -2273,6 +2991,42 @@ fn closure_verdict_surface_names_the_top_bottleneck_and_subsystem_findings() {
             .iter()
             .any(|finding| finding.subsystem == "collision"
                 && finding.focus == "witness_reuse_invalid_or_unsupported")
+    );
+}
+
+#[test]
+fn closure_verdict_fail_closes_when_standalone_collision_lane_regresses_under_engine_frame_suite() {
+    let profile = PerfClosureProfile::canonical_1080p120();
+    let frame_status = PerfClosureLaneStatusReport::unsampled(&profile.frame);
+
+    let mut collision_status = PerfClosureLaneStatusReport::unsampled(&profile.collision);
+    collision_status.status = PerfClosureLaneStatus::Violated;
+    collision_status.collision_runtime_regression_pct = Some(25.0);
+
+    let mut engine_frame_status =
+        wrela::perf_target::PerfClosureEngineFrameStatusReport::unsampled();
+    engine_frame_status.status = PerfClosureLaneStatus::Validated;
+    engine_frame_status.frame_wall_time_median_ms = Some(5.0);
+    engine_frame_status.frame_wall_time_p95_ms = Some(5.5);
+    engine_frame_status.future_subsystem_reserve_ms = Some(1.5);
+    engine_frame_status.queue_submit_count = Some(2);
+    engine_frame_status.hot_path_readback_bytes = Some(0);
+    engine_frame_status.presentation_median_ms = Some(3.0);
+    engine_frame_status.collision_median_ms = Some(4.0);
+
+    let verdict = build_closure_verdict(
+        &profile,
+        &frame_status,
+        &collision_status,
+        &engine_frame_status,
+        &[],
+        &[],
+    );
+
+    assert_eq!(verdict.status, PerfClosureVerdictStatus::Failed);
+    assert_eq!(
+        verdict.top_remaining_bottleneck.as_deref(),
+        Some("collision_runtime_regression")
     );
 }
 
@@ -2567,6 +3321,8 @@ fn sample_presentation_frame_cost(
         solver_repeat_unsupported_bounds: 0,
         solver_repeat_cells_enumerated: 0,
         field_samples,
+        observability_sampled: true,
+        observability_notes: vec![],
         cpu_time_total_micros: 0,
         execution_bound: "cpu_wall_clock_only".to_string(),
         gpu_runtime: Default::default(),
@@ -2587,6 +3343,128 @@ fn sample_presentation_frame_cost(
         active_acceleration_artifacts: vec![],
         bottleneck_pass: Some("primary_visibility".to_string()),
         performance_gain_sources: vec!["backend_speed".to_string()],
+    }
+}
+
+fn sample_engine_frame_scheduler_report(
+    frame_index: u32,
+    frame_wall_time_micros: u128,
+    presentation_micros: u128,
+    collision_micros: u128,
+    queue_submit_count: u32,
+    hot_path_readback_bytes: u64,
+    scene_reupload_bytes: u64,
+) -> wrela::engine_frame::EngineFrameReport {
+    let active_degradations = if frame_index == 0 {
+        vec!["warmup-only".to_string()]
+    } else {
+        vec!["reduce_internal_resolution".to_string()]
+    };
+    let violations = if frame_index == 2 {
+        vec!["engine_frame_future_reserve_exhausted".to_string()]
+    } else {
+        Vec::new()
+    };
+    let gpu_critical_path_micros = 2_000 + u128::from(frame_index) * 1_000;
+    let future_subsystem_reserve = wrela::engine_frame::EngineFutureReserveReport {
+        reserved_micros: 1_000,
+        remaining_micros: if frame_index == 2 { 500 } else { 1_000 },
+        exhausted: frame_index == 2,
+    };
+    let timeline_measurement_policy = wrela::engine_frame::EngineMeasurementPolicy {
+        runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+        gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+        hot_path_readback_allowed: false,
+        export_readback_allowed: false,
+    };
+
+    wrela::engine_frame::EngineFrameReport {
+        scenario_id: "closure_fixture".to_string(),
+        frame_index,
+        frame_wall_time_micros,
+        cpu_critical_path_micros: frame_wall_time_micros,
+        gpu_critical_path_micros: Some(gpu_critical_path_micros),
+        present_wait_micros: 0,
+        gpu_wait_micros: 0,
+        readback_wait_micros: 0,
+        steady_state_fps: 0.0,
+        gpu_runtime: wrela::gpu_runtime::GpuRuntimeMetrics {
+            queue_submit_count,
+            readback_bytes: hot_path_readback_bytes,
+            scene_reupload_bytes,
+            ..Default::default()
+        },
+        timeline_version: wrela::engine_frame::ENGINE_FRAME_TIMELINE_VERSION,
+        critical_path_span_ids: vec![],
+        cpu_busy_micros: frame_wall_time_micros,
+        gpu_busy_micros: gpu_critical_path_micros,
+        overlap_ratio: 0.0,
+        queue_submission_spans: vec![],
+        subsystem_span_ranges: vec![],
+        subsystems: vec![
+            wrela::engine_frame::EngineSubsystemReport {
+                kind: wrela::engine_frame::EngineSubsystemKind::StateAdvance,
+                label: "state_advance".to_string(),
+                work_items: 0,
+                cpu_critical_path_micros: 0,
+                gpu_critical_path_micros: None,
+                executed_wall_time_micros: 0,
+                self_reported_runtime_micros: None,
+                orchestration_gap_micros: 0,
+                measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                    runtime_source: wrela::engine_frame::EngineRuntimeSource::ReservedSlotUnsampled,
+                    gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+                    hot_path_readback_allowed: false,
+                    export_readback_allowed: false,
+                },
+                queue_submit_count: 0,
+                hot_path_readback_bytes: 0,
+                scene_reupload_bytes: 0,
+                timestamped_pass_count: 0,
+                timing_readback_bytes: 0,
+                wait_time_micros: 0,
+                notes: vec!["reserved-slot-unsampled".to_string()],
+            },
+            wrela::engine_frame::EngineSubsystemReport {
+                kind: wrela::engine_frame::EngineSubsystemKind::Presentation,
+                label: "presentation".to_string(),
+                work_items: 1,
+                cpu_critical_path_micros: presentation_micros,
+                gpu_critical_path_micros: Some(1_000 + u128::from(frame_index) * 500),
+                executed_wall_time_micros: presentation_micros,
+                self_reported_runtime_micros: Some(presentation_micros),
+                orchestration_gap_micros: 0,
+                measurement_policy: timeline_measurement_policy.clone(),
+                queue_submit_count,
+                hot_path_readback_bytes,
+                scene_reupload_bytes,
+                timestamped_pass_count: 0,
+                timing_readback_bytes: 0,
+                wait_time_micros: 0,
+                notes: vec![format!("presentation-frame={frame_index}")],
+            },
+            wrela::engine_frame::EngineSubsystemReport {
+                kind: wrela::engine_frame::EngineSubsystemKind::Collision,
+                label: "collision".to_string(),
+                work_items: 64,
+                cpu_critical_path_micros: collision_micros,
+                gpu_critical_path_micros: Some(1_000 + u128::from(frame_index) * 500),
+                executed_wall_time_micros: collision_micros,
+                self_reported_runtime_micros: Some(collision_micros),
+                orchestration_gap_micros: 0,
+                measurement_policy: timeline_measurement_policy,
+                queue_submit_count,
+                hot_path_readback_bytes: 0,
+                scene_reupload_bytes: 0,
+                timestamped_pass_count: 0,
+                timing_readback_bytes: 0,
+                wait_time_micros: 0,
+                notes: vec![format!("collision-frame={frame_index}")],
+            },
+        ],
+        future_subsystem_reserve,
+        active_degradations,
+        violations,
     }
 }
 
@@ -2672,6 +3550,8 @@ fn presentation_report_from_debug_output_carries_quality_and_pass_data() {
                 internal_width: 32,
                 internal_height: 32,
                 field_samples: 512,
+                observability_sampled: true,
+                observability_notes: vec![],
                 cpu_time_total_micros: 0,
                 execution_bound: "cpu_wall_clock_only".to_string(),
                 gpu_runtime: Default::default(),
@@ -2793,6 +3673,8 @@ fn presentation_report_from_debug_output_carries_quality_and_pass_data() {
                     internal_width: 64,
                     internal_height: 64,
                     field_samples: 512,
+                    observability_sampled: true,
+                    observability_notes: vec![],
                     cpu_time_total_micros: 0,
                     execution_bound: "cpu_wall_clock_only".to_string(),
                     gpu_runtime: Default::default(),
@@ -2895,6 +3777,8 @@ fn presentation_report_from_debug_output_carries_quality_and_pass_data() {
                     internal_width: 32,
                     internal_height: 32,
                     field_samples: 512,
+                    observability_sampled: true,
+                    observability_notes: vec![],
                     cpu_time_total_micros: 0,
                     execution_bound: "cpu_wall_clock_only".to_string(),
                     gpu_runtime: Default::default(),
@@ -3061,6 +3945,51 @@ fn presentation_report_from_debug_output_drops_cold_start_frame_for_closure_scen
 }
 
 #[test]
+fn presentation_report_from_debug_output_marks_runtime_summary_observability_unsampled() {
+    let scenario = test_eval_perf::BenchmarkScenario {
+        id: "closure_fixture".into(),
+        test_name: "tests/fixture::closure_ops_64".to_string(),
+        ops: 64,
+        class: test_eval_perf::BenchmarkScenarioClass::Closure,
+        min_runtime_ms: None,
+        timeout_ms: None,
+        allow_unstable: false,
+        presentation: None,
+        collision: None,
+    };
+    let mut summary = sample_presentation_frame_cost(64, 64, 1.0, 0, 0.0, 0, 0, 2_000);
+    summary.observability_sampled = false;
+    summary.observability_notes = vec![
+        "runtime_summary_only".to_string(),
+        "query_observability_unsampled".to_string(),
+    ];
+    let dump = PresentationDebugCommandOutput {
+        view: "bench_view".to_string(),
+        region: "bench_region".to_string(),
+        domain: "bench_domain".to_string(),
+        backend: "wgsl".to_string(),
+        query_trace_solver_mode: "hybrid".to_string(),
+        frames_executed: 1,
+        frame_cost: summary.clone(),
+        frame_cost_history: vec![],
+    };
+
+    let report = presentation_report_from_debug_output(&scenario, dump)
+        .expect("summary-only report should parse");
+
+    assert!(!report.observability_sampled);
+    assert_eq!(
+        report.observability_notes,
+        vec![
+            "query_observability_unsampled".to_string(),
+            "runtime_summary_only".to_string(),
+        ]
+    );
+    assert!(!report.frame_cost.observability_sampled);
+    assert_eq!(report.field_samples, 0);
+}
+
+#[test]
 fn closure_profile_defaults_to_measurement_collection_until_why_not_is_requested() {
     assert_eq!(
         presentation_benchmark_collection_mode(PerfProfile::Closure1080p120, false),
@@ -3173,6 +4102,8 @@ fn presentation_workgroup_comparison_tracks_candidate_deltas() {
         frame_time_ns,
         steady_state_fps: fps_from_frame_time_ns(frame_time_ns, 1),
         field_samples: 512,
+        observability_sampled: true,
+        observability_notes: vec![],
         quality_tier: "realtime_120".to_string(),
         target_fps: 120,
         internal_resolution_scale: 1.0,

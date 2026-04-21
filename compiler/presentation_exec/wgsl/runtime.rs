@@ -149,7 +149,7 @@ pub(super) fn apply_attachment_readbacks(
             .strip_prefix("wrela.presentation.readback.")
             && let Some(attachment) = attachments.attachment_mut(attachment_name)
         {
-            attachment.bytes = result.bytes.clone();
+            attachment.bytes = result.bytes.clone().into();
         }
     }
     Ok(())
@@ -224,7 +224,9 @@ pub(super) fn upload_attachment_to_gpu(
         return Ok(());
     };
     if !cpu_attachment.bytes.is_empty() {
-        native.queue.write_buffer(buffer, 0, &cpu_attachment.bytes);
+        native
+            .queue
+            .write_buffer(buffer, 0, cpu_attachment.bytes.as_slice());
         gpu_runtime.upload_bytes = gpu_runtime
             .upload_bytes
             .saturating_add(cpu_attachment.bytes.len() as u64);
@@ -237,6 +239,7 @@ pub(super) fn build_primary_batch_query_trace(
     snapshot: &crate::world_identity::WorldSnapshotHandle,
     plan: &crate::kernel::ir::KernelBatchQueryPlan,
     item_count: u32,
+    summarize_iterations: bool,
     observability: QueryExecutionObservability,
 ) -> Result<BatchQueryExecutionTrace, PresentationExecError> {
     let descriptor = crate::query_contract::query_contract(contract_id).ok_or_else(|| {
@@ -244,7 +247,11 @@ pub(super) fn build_primary_batch_query_trace(
             message: format!("missing query contract '{}'", contract_id.as_str()),
         }
     })?;
-    let plan_trace = interpret_batch_query(plan, item_count);
+    let plan_trace = if summarize_iterations {
+        crate::kernel::summarize_batch_query(plan, item_count)
+    } else {
+        interpret_batch_query(plan, item_count)
+    };
     let cost_report = crate::query_exec::cost::batch_cost_report(
         DispatchBackend::Wgsl,
         plan,

@@ -1063,7 +1063,7 @@ pub(super) fn legacy_test_only_shade_primary_wgsl(
         workgroup_size,
         gpu_runtime,
     )?;
-    output_attachment.bytes = dispatch.bytes;
+    output_attachment.bytes = dispatch.bytes.into();
     gpu_runtime.attachment_encode_count = gpu_runtime.attachment_encode_count.saturating_add(1);
     Ok(dispatch.dispatch_count)
 }
@@ -1104,7 +1104,7 @@ pub(super) fn legacy_test_only_composite_color_wgsl(
         workgroup_size,
         gpu_runtime,
     )?;
-    output_attachment.bytes = dispatch.bytes;
+    output_attachment.bytes = dispatch.bytes.into();
     gpu_runtime.attachment_encode_count = gpu_runtime.attachment_encode_count.saturating_add(1);
     Ok(dispatch.dispatch_count)
 }
@@ -1148,12 +1148,12 @@ pub(super) fn legacy_test_only_temporal_resolve_wgsl(
     attachments
         .attachment_mut(contract.output_attachment.as_str())
         .expect("temporal output attachment")
-        .bytes = dispatch.bytes.clone();
+        .bytes = dispatch.bytes.clone().into();
     gpu_runtime.attachment_encode_count = gpu_runtime.attachment_encode_count.saturating_add(2);
     if let Some(history_color) =
         attachments.attachment_mut(contract.history_color_attachment.as_str())
     {
-        history_color.bytes = dispatch.bytes;
+        history_color.bytes = dispatch.bytes.into();
     }
     if let Some(history_primary_hit_attachment) = &contract.history_primary_hit_attachment {
         let primary_hits =

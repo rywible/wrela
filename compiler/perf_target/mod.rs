@@ -402,8 +402,8 @@ impl PerfClosureProfile {
             backend_contract: "wgsl_resident_with_cpu_oracle_reference".to_string(),
             requested_limits_profile: "wgsl_resident_reference".to_string(),
             enabled_optional_features: vec![],
-            timestamps_enabled: true,
-            gpu_timestamps_required_if_supported: true,
+            timestamps_enabled: false,
+            gpu_timestamps_required_if_supported: false,
             max_hot_path_readback_bytes_per_frame: 0,
             max_scene_reupload_bytes_per_frame: 0,
             max_cpu_screen_sample_allocations_per_frame: 0,
@@ -911,8 +911,8 @@ mod tests {
         assert_eq!(profile.backend.as_str(), "wgsl");
         assert_eq!(profile.adapter_name, "wgsl_resident");
         assert!(profile.enabled_optional_features.is_empty());
-        assert_eq!(profile.timestamps_enabled, true);
-        assert_eq!(profile.gpu_timestamps_required_if_supported, true);
+        assert_eq!(profile.timestamps_enabled, false);
+        assert_eq!(profile.gpu_timestamps_required_if_supported, false);
         assert_eq!(profile.max_hot_path_readback_bytes_per_frame, 0);
         assert_eq!(profile.max_scene_reupload_bytes_per_frame, 0);
         assert_eq!(profile.max_cpu_screen_sample_allocations_per_frame, 0);

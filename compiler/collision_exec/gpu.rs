@@ -2710,7 +2710,7 @@ domain collision_domain(world: RegionCapture) {
     }
 
     #[test]
-    fn metrics_only_collision_dispatch_reads_real_observability_bytes() {
+    fn metrics_only_collision_dispatch_skips_observability_readback_and_keeps_static_summary() {
         let ctx = typed_query_module(fixture_source());
         let scene_id = stable_region_scene_capture_id(&SmolStr::new("collision_region"));
         let batch = CollisionWorkloadBatch::new(
@@ -2752,48 +2752,58 @@ domain collision_domain(world: RegionCapture) {
 
         let direct_ticket = prepare_point_occupancy_metrics_ticket(&batch, &ctx, &batch.items)
             .expect("direct metrics ticket");
-        let expected_observabilities = direct_ticket
+        let direct_observabilities = direct_ticket
             .dispatches
             .into_iter()
             .map(|direct_dispatch| {
-                let mut expected = direct_dispatch
+                let selected_workgroup_size = direct_dispatch.dispatcher.selected_workgroup_size();
+                let expected = direct_dispatch
                     .ticket
                     .collect_observability_only()
                     .expect("direct observability");
-                expected.gpu_runtime.upload_bytes = expected
-                    .gpu_runtime
-                    .upload_bytes
-                    .saturating_add(direct_dispatch.upload_bytes);
-                expected
+                (selected_workgroup_size, expected)
             })
             .collect::<Vec<_>>();
 
         assert_eq!(helper_observabilities.len(), 2);
-        assert_eq!(expected_observabilities.len(), 2);
-        for (helper_observability, expected) in helper_observabilities
-            .iter()
-            .zip(expected_observabilities.iter())
+        assert_eq!(direct_observabilities.len(), 2);
+        for (helper_observability, (selected_workgroup_size, direct_observability)) in
+            helper_observabilities
+                .iter()
+                .zip(direct_observabilities.iter())
         {
-            assert!(expected.field_samples > 0);
-            assert!(expected.gpu_runtime.readback_bytes > 0);
+            assert_eq!(direct_observability.gpu_runtime.readback_bytes, 0);
+            assert_eq!(direct_observability.field_samples, 0);
             assert_eq!(
-                helper_observability.observability.field_samples,
-                expected.field_samples
+                direct_observability.wgsl_selected_workgroup_size,
+                *selected_workgroup_size
             );
-            assert_eq!(
-                helper_observability.observability.shape_leaf_visits,
-                expected.shape_leaf_visits
-            );
-            assert_eq!(
-                helper_observability.observability.acceleration_pruned_nodes,
-                expected.acceleration_pruned_nodes
+            assert!(
+                direct_observability.cache_resident_shared_snapshot_artifacts > 0,
+                "metrics-only observability should keep the resident cache seed",
             );
             assert_eq!(
                 helper_observability
                     .observability
                     .gpu_runtime
                     .readback_bytes,
-                expected.gpu_runtime.readback_bytes
+                0
+            );
+            assert_eq!(
+                helper_observability.observability.field_samples,
+                direct_observability.field_samples
+            );
+            assert_eq!(
+                helper_observability
+                    .observability
+                    .wgsl_selected_workgroup_size,
+                direct_observability.wgsl_selected_workgroup_size
+            );
+            assert_eq!(
+                helper_observability
+                    .observability
+                    .cache_resident_shared_snapshot_artifacts,
+                direct_observability.cache_resident_shared_snapshot_artifacts
             );
         }
     }
