@@ -22,6 +22,7 @@ pub mod collision_plan;
 pub mod diag;
 pub mod engine_frame;
 pub mod execution_policy;
+pub mod frame_live;
 pub mod gpu_runtime;
 pub mod hir;
 pub mod kernel;

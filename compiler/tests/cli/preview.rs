@@ -193,6 +193,51 @@ fn cli_frame_ppm_exports_selected_attachment() {
 }
 
 #[test]
+fn cli_frame_live_headless_emits_selection_json() {
+    let temp = workspace_tempdir();
+    write_presentation_plan_fixture(temp.path());
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_wrela"));
+    cmd.arg("frame-live")
+        .arg(temp.path())
+        .arg("--view")
+        .arg("cli_plan_view")
+        .arg("--width")
+        .arg("8")
+        .arg("--height")
+        .arg("8")
+        .arg("--json")
+        .env("WRELA_FRAME_LIVE_HEADLESS", "1");
+    let output = run_command_with_timeout(&mut cmd, Duration::from_secs(10));
+    assert!(
+        output.status.success(),
+        "frame-live headless failed: stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let record: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("frame-live selection json");
+    assert_eq!(
+        record.get("generation").and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        record.get("hit").and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        record.get("field_name").and_then(|value| value.as_str()),
+        Some("cli_plan_field")
+    );
+    assert_eq!(
+        record
+            .pointer("/primary_source/kind")
+            .and_then(|value| value.as_str()),
+        Some("field")
+    );
+}
+
+#[test]
 fn cli_check_hard_errors_legacy_render_declarations() {
     let temp = workspace_tempdir();
     let src_dir = temp.path().join("src");

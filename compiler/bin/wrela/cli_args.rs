@@ -177,6 +177,29 @@ pub struct FrameCommandArgs {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct FrameLiveCommandOptions {
+    pub view: Option<String>,
+    pub region: Option<String>,
+    pub domain: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub camera_position: [f32; 3],
+    pub camera_forward: [f32; 3],
+    pub camera_up: [f32; 3],
+    pub vertical_fov_degrees: f32,
+    pub frame_index: u32,
+    pub delta_seconds: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameLiveCommandArgs {
+    pub output_format: OutputFormat,
+    pub path_arg: Option<String>,
+    pub query_backend: DispatchBackend,
+    pub options: FrameLiveCommandOptions,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct FrameContractsCommandArgs {
     pub output_format: OutputFormat,
     pub path_arg: Option<String>,
@@ -371,6 +394,7 @@ pub enum ParsedCommand {
     CollisionRun(CollisionCommandArgs),
     Preview(PreviewCommandArgs),
     Frame(FrameCommandArgs),
+    FrameLive(FrameLiveCommandArgs),
     FrameContracts(FrameContractsCommandArgs),
     PresentationPlan(PresentationPlanCommandArgs),
     PresentationDebug(PresentationDebugCommandArgs),
@@ -400,6 +424,7 @@ enum CommandName {
     CollisionRun,
     Preview,
     Frame,
+    FrameLive,
     FrameContracts,
     PresentationPlan,
     PresentationDebug,
@@ -484,6 +509,7 @@ impl ParsedCommand {
             ParsedCommand::CollisionRun(_) => "collision-run",
             ParsedCommand::Preview(_) => "preview",
             ParsedCommand::Frame(_) => "frame",
+            ParsedCommand::FrameLive(_) => "frame-live",
             ParsedCommand::FrameContracts(_) => "frame-contracts",
             ParsedCommand::PresentationPlan(_) => "presentation-plan",
             ParsedCommand::PresentationDebug(_) => "presentation-debug",
@@ -528,6 +554,7 @@ impl CommandName {
             Self::CollisionRun => "collision-run",
             Self::Preview => "preview",
             Self::Frame => "frame",
+            Self::FrameLive => "frame-live",
             Self::FrameContracts => "frame-contracts",
             Self::PresentationPlan => "presentation-plan",
             Self::PresentationDebug => "presentation-debug",
@@ -564,6 +591,7 @@ impl CommandName {
             "collision-run" => Some(Self::CollisionRun),
             "preview" => Some(Self::Preview),
             "frame" => Some(Self::Frame),
+            "frame-live" => Some(Self::FrameLive),
             "frame-contracts" => Some(Self::FrameContracts),
             "presentation-plan" => Some(Self::PresentationPlan),
             "presentation-debug" => Some(Self::PresentationDebug),
@@ -610,6 +638,7 @@ fn build_parsed_command(command: CommandName, state: ParseState) -> Result<Parse
         command,
         CommandName::Preview
             | CommandName::Frame
+            | CommandName::FrameLive
             | CommandName::FrameContracts
             | CommandName::PresentationPlan
             | CommandName::PresentationDebug
@@ -930,6 +959,12 @@ fn build_parsed_command(command: CommandName, state: ParseState) -> Result<Parse
                 options,
             })
         }
+        CommandName::FrameLive => ParsedCommand::FrameLive(FrameLiveCommandArgs {
+            output_format: state.output_format,
+            path_arg: state.path_arg,
+            query_backend,
+            options: parse_frame_live_command_options(&state.program_args)?,
+        }),
         CommandName::FrameContracts => ParsedCommand::FrameContracts(FrameContractsCommandArgs {
             output_format: state.output_format,
             path_arg: state.path_arg,
@@ -1516,6 +1551,91 @@ fn parse_frame_contracts_view(args: &[String]) -> Result<Option<String>, String>
         index += 1;
     }
     Ok(view)
+}
+
+fn parse_frame_live_command_options(args: &[String]) -> Result<FrameLiveCommandOptions, String> {
+    let mut options = FrameLiveCommandOptions {
+        view: None,
+        region: None,
+        domain: None,
+        width: None,
+        height: None,
+        camera_position: [0.0, 0.0, 2.5],
+        camera_forward: [0.0, 0.0, -1.0],
+        camera_up: [0.0, 1.0, 0.0],
+        vertical_fov_degrees: 60.0,
+        frame_index: 0,
+        delta_seconds: 1.0 / 60.0,
+    };
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = &args[index];
+        let (flag, inline_value) = match arg.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--") => (flag, Some(value.to_string())),
+            _ => (arg.as_str(), None),
+        };
+        let take_value = |inline_value: &Option<String>,
+                          args: &[String],
+                          index: &mut usize|
+         -> Result<String, String> {
+            if let Some(value) = inline_value {
+                return Ok(value.clone());
+            }
+            *index += 1;
+            args.get(*index)
+                .cloned()
+                .ok_or_else(|| format!("missing value for {flag}"))
+        };
+        match flag {
+            "--view" => options.view = Some(take_value(&inline_value, args, &mut index)?),
+            "--region" => options.region = Some(take_value(&inline_value, args, &mut index)?),
+            "--domain" => options.domain = Some(take_value(&inline_value, args, &mut index)?),
+            "--width" => {
+                options.width = Some(
+                    take_value(&inline_value, args, &mut index)?
+                        .parse()
+                        .map_err(|_| "invalid --width value".to_string())?,
+                )
+            }
+            "--height" => {
+                options.height = Some(
+                    take_value(&inline_value, args, &mut index)?
+                        .parse()
+                        .map_err(|_| "invalid --height value".to_string())?,
+                )
+            }
+            "--camera-position" => {
+                options.camera_position =
+                    parse_vec3_flag(&take_value(&inline_value, args, &mut index)?, flag)?
+            }
+            "--camera-forward" => {
+                options.camera_forward =
+                    parse_vec3_flag(&take_value(&inline_value, args, &mut index)?, flag)?
+            }
+            "--camera-up" => {
+                options.camera_up =
+                    parse_vec3_flag(&take_value(&inline_value, args, &mut index)?, flag)?
+            }
+            "--fov" => {
+                options.vertical_fov_degrees = take_value(&inline_value, args, &mut index)?
+                    .parse()
+                    .map_err(|_| "invalid --fov value".to_string())?
+            }
+            "--frame-index" => {
+                options.frame_index = take_value(&inline_value, args, &mut index)?
+                    .parse()
+                    .map_err(|_| "invalid --frame-index value".to_string())?
+            }
+            "--delta-seconds" => {
+                options.delta_seconds = take_value(&inline_value, args, &mut index)?
+                    .parse()
+                    .map_err(|_| "invalid --delta-seconds value".to_string())?
+            }
+            _ => return Err(format!("unexpected argument `{arg}`")),
+        }
+        index += 1;
+    }
+    Ok(options)
 }
 
 fn validate_preview_command_args(
@@ -2474,6 +2594,7 @@ mod tests {
             &["collision-run"],
             &["preview"],
             &["frame"],
+            &["frame-live"],
             &["frame-contracts"],
             &["presentation-plan"],
             &["presentation-debug"],
@@ -2604,6 +2725,27 @@ mod tests {
             ])
             .contains("`frame --attachment-format=ppm` requires exactly one selected attachment")
         );
+    }
+
+    #[test]
+    fn parse_frame_live_is_typed_after_parsing() {
+        match parse_ready(&[
+            "frame-live",
+            "language/preview",
+            "--view=main",
+            "--width=640",
+            "--height=360",
+            "--json",
+        ]) {
+            ParsedCommand::FrameLive(args) => {
+                assert_eq!(args.output_format, OutputFormat::Json);
+                assert_eq!(args.path_arg.as_deref(), Some("language/preview"));
+                assert_eq!(args.options.view.as_deref(), Some("main"));
+                assert_eq!(args.options.width, Some(640));
+                assert_eq!(args.options.height, Some(360));
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
     }
 
     #[test]

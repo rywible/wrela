@@ -11,6 +11,7 @@
 //! Primary entrypoints:
 //! - `execute_preview_command`
 //! - `execute_frame_command`
+//! - `execute_frame_live_command`
 //! - `execute_presentation_debug_command`
 //!
 //! Failure modes / common pitfalls:
@@ -51,35 +52,10 @@ pub(crate) const WRELA_PRESENTATION_DEBUG_WARM_QUALITY_PIPELINES_ENV: &str =
 pub(crate) const WRELA_PRESENTATION_DEBUG_ADAPTIVE_WINDOW_ENV: &str =
     "WRELA_PRESENTATION_DEBUG_ADAPTIVE_WINDOW";
 
-pub(crate) struct CompiledPresentationBundle {
-    pub(crate) module: hir::Module,
-    pub(crate) query_ctx: wrela::query_exec::QueryExecContext,
-    pub(crate) plans: Vec<wrela::presentation_plan::PresentationPlan>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PreparedPresentationExecution {
-    pub(crate) plan: wrela::presentation_plan::PresentationPlan,
-    pub(crate) input: wrela::presentation_exec::PresentationExecutionInput,
-    pub(crate) semantic_domain: String,
-    pub(crate) execution_policy: wrela::presentation_exec::PresentationExecutionPolicy,
-    pub(crate) camera: wrela::presentation_contract::CanonicalCameraInput,
-    pub(crate) viewport: wrela::presentation_contract::CanonicalViewportInput,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct DomainExecutionInputs {
-    pub(crate) frame_domain: wrela::kernel::KernelValue,
-    pub(crate) semantic_domain: String,
-    pub(crate) execution_policy: wrela::presentation_exec::PresentationExecutionPolicy,
-}
-
-pub(crate) struct ReadyPresentationExecution {
-    pub(crate) bundle: CompiledPresentationBundle,
-    pub(crate) prepared: PreparedPresentationExecution,
-    pub(crate) region_name: SmolStr,
-    pub(crate) domain_name: SmolStr,
-}
+pub(crate) use wrela::frame_live::{
+    CompiledPresentationBundle, DomainExecutionInputs, PreparedPresentationExecution,
+    ReadyPresentationExecution,
+};
 
 pub(crate) fn execute_presentation_debug_command(args: PresentationDebugCommandArgs) {
     let entry_path = match resolve_entry_path(args.path_arg.as_deref()) {
@@ -611,6 +587,10 @@ pub(crate) fn execute_frame_command(args: FrameCommandArgs) {
     }
 }
 
+pub(crate) fn execute_frame_live_command(_args: FrameLiveCommandArgs) {
+    super::frame_live::execute_frame_live_command(_args);
+}
+
 pub(crate) fn execute_frame_contracts_command(args: FrameContractsCommandArgs) {
     let entry_path = match resolve_entry_path(args.path_arg.as_deref()) {
         Ok(path) => path,
@@ -724,63 +704,20 @@ pub(crate) fn load_prepared_presentation_execution(
     delta_seconds: f32,
     query_trace_solver_mode: wrela::query_exec::QueryTraceSolverMode,
 ) -> Result<ReadyPresentationExecution, i32> {
-    let bundle = compile_presentation_bundle(entry_path, output_format, query_backend)?;
-    let plan = match select_view_plan(&bundle, requested_view) {
-        Ok(plan) => plan,
-        Err(err) => {
-            eprintln!("error: {err}");
-            return Err(EXIT_USAGE);
-        }
-    };
-    let view_func = bundle
-        .module
-        .functions
-        .iter()
-        .find(|(_, func)| func.name == plan.name)
-        .map(|(_, func)| func)
-        .expect("selected presentation plan should map back to a function");
-    let region_name = match select_region_name(&bundle.module, requested_region) {
-        Ok(name) => name,
-        Err(err) => {
-            eprintln!("error: {err}");
-            return Err(EXIT_USAGE);
-        }
-    };
-    let domain_name = match select_domain_name(&bundle.module, view_func, requested_domain) {
-        Ok(name) => name,
-        Err(err) => {
-            eprintln!("error: {err}");
-            return Err(EXIT_USAGE);
-        }
-    };
-    let prepared = match prepare_presentation_execution(
-        &bundle.module,
-        &bundle.query_ctx,
-        plan,
-        view_func,
-        region_name.clone(),
-        domain_name.clone(),
+    wrela::frame_live::load_prepared_presentation_execution(
+        entry_path,
+        query_backend,
+        requested_view,
+        requested_region,
+        requested_domain,
         camera,
         width,
         height,
         frame_index,
         delta_seconds,
-        query_backend,
         query_trace_solver_mode,
-        false,
-    ) {
-        Ok(prepared) => prepared,
-        Err(err) => {
-            eprintln!("error: {err}");
-            return Err(EXIT_USAGE);
-        }
-    };
-    Ok(ReadyPresentationExecution {
-        bundle,
-        prepared,
-        region_name,
-        domain_name,
-    })
+    )
+    .map_err(|err| emit_shared_presentation_error(output_format, &err))
 }
 
 pub(crate) fn strip_prepared_presentation_export(prepared: &mut PreparedPresentationExecution) {
@@ -823,109 +760,30 @@ pub(crate) fn compile_presentation_bundle(
     output_format: OutputFormat,
     query_backend: wrela::query_plan::DispatchBackend,
 ) -> Result<CompiledPresentationBundle, i32> {
-    let project = match hir::project::load_project_with_entrypoint(entry_path, false) {
-        Ok(project) => project,
-        Err(errors) => {
-            let mut records = Vec::new();
-            for err in errors {
-                let record = project_record(
-                    err.kind,
-                    DiagSeverity::Error,
-                    err.message,
-                    err.path.display().to_string(),
-                    err.span,
-                );
-                records.push((record, err.source));
-            }
-            diag_emit::emit_deduped_records_with_sources(output_format, records);
-            return Err(EXIT_PARSE);
-        }
-    };
+    wrela::frame_live::compile_presentation_bundle(entry_path, query_backend)
+        .map_err(|err| emit_shared_presentation_error(output_format, &err))
+}
 
-    let module = project.module.clone();
-    let source = project.entry_source.clone();
-    let source_name = entry_path.display().to_string();
-    let mut source_by_path = project.module_sources.clone();
-    let provenance = project.provenance.clone();
-    source_by_path
-        .entry(entry_path.to_path_buf())
-        .or_insert_with(|| source.clone());
-
-    let semantic = hir::semantic::check_module(&module);
-    let (type_errors, type_info) = hir::typeck::check_module_with_info(&module);
-    let mut records = Vec::new();
-    for err in semantic.errors {
-        let path = resolve_path_from_owner_spans(err.primary_span(), &provenance, &source_name);
-        records.push(DiagRecord::from_diagnostic(
-            DiagStage::Semantic,
-            DiagSeverity::Error,
-            &err,
-            path,
-            err.primary_span(),
-        ));
+fn emit_shared_presentation_error(
+    output_format: OutputFormat,
+    err: &wrela::frame_live::FrameLiveError,
+) -> i32 {
+    if err.diagnostics().is_empty() {
+        eprintln!("error: {}", err.message());
+    } else {
+        let records = err
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| (diagnostic.record.clone(), diagnostic.source.clone()))
+            .collect();
+        diag_emit::emit_deduped_records_with_sources(output_format, records);
     }
-    for err in type_errors {
-        let path = resolve_path_from_owner_spans(err.primary_span(), &provenance, &source_name);
-        records.push(DiagRecord::from_diagnostic(
-            DiagStage::Type,
-            DiagSeverity::Error,
-            &err,
-            path,
-            err.primary_span(),
-        ));
+    match err.kind() {
+        wrela::frame_live::FrameLiveErrorKind::Usage => EXIT_USAGE,
+        wrela::frame_live::FrameLiveErrorKind::Parse => EXIT_PARSE,
+        wrela::frame_live::FrameLiveErrorKind::Type => EXIT_TYPE,
+        wrela::frame_live::FrameLiveErrorKind::Codegen => EXIT_CODEGEN,
     }
-    if !records.is_empty() {
-        for record in suppress_cascades(dedupe_records(records)) {
-            let source_for_record = source_by_path
-                .get(std::path::Path::new(
-                    &record
-                        .labels
-                        .first()
-                        .map(|label| label.span.path.clone())
-                        .unwrap_or_else(|| source_name.clone()),
-                ))
-                .cloned()
-                .unwrap_or_else(|| source.clone());
-            diag_emit::emit_diag_record(output_format, &record, &source_for_record);
-        }
-        return Err(EXIT_TYPE);
-    }
-
-    let mir_module =
-        mir::lower::lower_module_with_types_and_backend(&module, &type_info, query_backend);
-    let mut mir_errors = Vec::new();
-    for err in mir::validate::validate_module(&mir_module) {
-        mir_errors.push(DiagRecord::new(
-            DiagStage::Mir,
-            DiagSeverity::Error,
-            err.message,
-            source_name.clone(),
-            SourceSpan::from((0usize, 0usize)),
-        ));
-    }
-    if !mir_errors.is_empty() {
-        for record in mir_errors {
-            diag_emit::emit_diag_record(output_format, &record, &source);
-        }
-        return Err(EXIT_CODEGEN);
-    }
-
-    let query_ctx = wrela::query_exec::QueryExecContext::compile(&module, &type_info);
-    let plans = wrela::presentation_plan::plans_for_module(&module, query_backend);
-    for plan in &plans {
-        let validation_errors = plan.validate();
-        if !validation_errors.is_empty() {
-            for err in validation_errors {
-                eprintln!("presentation plan validation error: {}", err.message);
-            }
-            return Err(EXIT_CODEGEN);
-        }
-    }
-    Ok(CompiledPresentationBundle {
-        module,
-        query_ctx,
-        plans,
-    })
 }
 
 pub(crate) fn select_view_plan<'a>(

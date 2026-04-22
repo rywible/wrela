@@ -34,6 +34,16 @@ build:
 build-release:
     cargo build --workspace --release
 
+# Bundle the macOS frame-live app for human/agent use.
+bundle-frame-live-app:
+    cargo build --release -p wrela_frame_live_app
+    rm -rf ".artifacts/apps/Wrela Frame Live.app"
+    mkdir -p ".artifacts/apps/Wrela Frame Live.app/Contents/MacOS"
+    mkdir -p ".artifacts/apps/Wrela Frame Live.app/Contents/Resources"
+    cp apps/frame_live_app/mac/Info.plist ".artifacts/apps/Wrela Frame Live.app/Contents/Info.plist"
+    cp target/release/wrela_frame_live_app ".artifacts/apps/Wrela Frame Live.app/Contents/MacOS/Wrela Frame Live"
+    chmod +x ".artifacts/apps/Wrela Frame Live.app/Contents/MacOS/Wrela Frame Live"
+
 # Fast repo lane: repo smoke coverage plus the native authored fast lane.
 test:
     {{fast-rust-tests}}

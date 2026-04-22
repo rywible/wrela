@@ -176,6 +176,12 @@ pub fn execute(spec: CommandSpec) {
             }
             execute_frame_command(args);
         }
+        ParsedCommand::FrameLive(args) => {
+            if trace {
+                eprintln!("build: command frame-live");
+            }
+            execute_frame_live_command(args);
+        }
         ParsedCommand::FrameContracts(args) => {
             if trace {
                 eprintln!("build: command frame-contracts");

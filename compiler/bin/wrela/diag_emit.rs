@@ -202,6 +202,7 @@ commands:\n\
   collision-run         execute representative collision plans and emit runtime diagnostics\n\
   preview <path>        emit a named view attachment (default: color) as PPM\n\
   frame <path>          evaluate a named view and emit typed frame attachments or PPM\n\
+  frame-live <path>     open a live frame window with click-to-log selection output\n\
   frame-contracts <path>  inspect compiled frame contracts for named views\n\
   presentation-plan <path>  inspect compiled presentation contracts and pass plan\n\
   presentation-debug <path> run presentation passes and export color/depth/normal debug attachments\n\

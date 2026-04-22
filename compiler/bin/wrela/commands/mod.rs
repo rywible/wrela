@@ -53,6 +53,7 @@ mod collision_command;
 mod command_dispatch;
 mod contracts_command;
 pub(crate) mod fix_fmt;
+mod frame_live;
 mod naming_policy;
 mod observer_projection;
 pub(crate) mod presentation_command;
