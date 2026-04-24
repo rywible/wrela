@@ -2331,6 +2331,114 @@ fn engine_frame_closure_status_keeps_reserved_state_advance_out_of_observed_medi
 }
 
 #[test]
+fn engine_frame_closure_status_rejects_reserved_or_compatibility_authority() {
+    let profile = PerfClosureProfile::canonical_1080p120();
+    let report = build_engine_frame_closure_status(
+        &profile,
+        &[EngineFrameBenchmarkReport {
+            scenario_id: "closure_fixture".into(),
+            test_name: "tests/whole_frame::test_fixture".to_string(),
+            frame_count: 1,
+            frame_wall_time_ns: 8_000_000,
+            cpu_critical_path_ns: 8_000_000,
+            gpu_critical_path_ns: Some(3_000_000),
+            present_wait_ns: 0,
+            readback_wait_ns: 0,
+            steady_state_fps: fps_from_frame_time_ns(8_000_000, 1),
+            presentation_runtime_ns: 4_000_000,
+            collision_runtime_ns: 2_000_000,
+            state_advance_runtime_ns: 0,
+            presentation_self_reported_runtime_ns: Some(4_000_000),
+            collision_self_reported_runtime_ns: Some(2_000_000),
+            state_advance_self_reported_runtime_ns: None,
+            presentation_orchestration_gap_ns: 0,
+            collision_orchestration_gap_ns: 0,
+            state_advance_orchestration_gap_ns: 0,
+            measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+                gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+                hot_path_readback_allowed: false,
+                export_readback_allowed: false,
+            },
+            future_subsystem_reserve_ns: 1_000_000,
+            queue_submit_count: 1,
+            hot_path_readback_bytes: 0,
+            scene_reupload_bytes: 0,
+            timestamped_pass_count: 0,
+            timing_readback_bytes: 0,
+            active_degradations: vec![],
+            violations: vec![],
+            subsystem_reports: vec![
+                wrela::engine_frame::EngineSubsystemReport {
+                    kind: wrela::engine_frame::EngineSubsystemKind::StateAdvance,
+                    label: "state_advance".into(),
+                    work_items: 0,
+                    cpu_critical_path_micros: 0,
+                    gpu_critical_path_micros: None,
+                    executed_wall_time_micros: 0,
+                    self_reported_runtime_micros: None,
+                    orchestration_gap_micros: 0,
+                    measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                        runtime_source:
+                            wrela::engine_frame::EngineRuntimeSource::ReservedSlotUnsampled,
+                        gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+                        hot_path_readback_allowed: false,
+                        export_readback_allowed: false,
+                    },
+                    queue_submit_count: 0,
+                    hot_path_readback_bytes: 0,
+                    scene_reupload_bytes: 0,
+                    timestamped_pass_count: 0,
+                    timing_readback_bytes: 0,
+                    wait_time_micros: 0,
+                    notes: vec!["reserved-slot-unsampled".to_string()],
+                },
+                wrela::engine_frame::EngineSubsystemReport {
+                    kind: wrela::engine_frame::EngineSubsystemKind::Presentation,
+                    label: "presentation".into(),
+                    work_items: 1,
+                    cpu_critical_path_micros: 4_000,
+                    gpu_critical_path_micros: Some(3_000),
+                    executed_wall_time_micros: 4_000,
+                    self_reported_runtime_micros: Some(4_000),
+                    orchestration_gap_micros: 0,
+                    measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
+                        runtime_source: wrela::engine_frame::EngineRuntimeSource::CompatibilityJoin,
+                        gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
+                        hot_path_readback_allowed: false,
+                        export_readback_allowed: false,
+                    },
+                    queue_submit_count: 1,
+                    hot_path_readback_bytes: 0,
+                    scene_reupload_bytes: 0,
+                    timestamped_pass_count: 0,
+                    timing_readback_bytes: 0,
+                    wait_time_micros: 0,
+                    notes: vec!["compatibility-join".to_string()],
+                },
+            ],
+        }],
+        &[],
+        0,
+        1,
+    );
+
+    assert_eq!(report.status, PerfClosureLaneStatus::Violated);
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("reserved state_advance"))
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("compatibility-joined subsystem"))
+    );
+}
+
+#[test]
 fn render_engine_frame_benchmark_reports_includes_typed_measurement_fields() {
     let rendered =
         super::closure::render_engine_frame_benchmark_reports(&[EngineFrameBenchmarkReport {
@@ -3381,6 +3489,13 @@ fn sample_engine_frame_scheduler_report(
     wrela::engine_frame::EngineFrameReport {
         scenario_id: "closure_fixture".to_string(),
         frame_index,
+        identity: Default::default(),
+        state_advance: None,
+        resource_ledger: Default::default(),
+        readback_ledger: Default::default(),
+        query_ledger: Default::default(),
+        gpu_frame_ledger: Default::default(),
+        budget_directives: Default::default(),
         frame_wall_time_micros,
         cpu_critical_path_micros: frame_wall_time_micros,
         gpu_critical_path_micros: Some(gpu_critical_path_micros),

@@ -2414,6 +2414,39 @@ system tick[stage=fixed, reads=[Clock], writes=[FrameClock]]() -> Nothing {
     }
 
     #[test]
+    fn test_game_root_and_command_definition_parse() {
+        use ast::AstNode;
+        use ast::Stmt;
+        let text = "\
+command MoveForward {
+    strength: Integer
+}
+game TraversalGame {
+    fixed_tick = 120
+    space = TraversalWorld
+    main_view = player_view
+    startup = initialize_game
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let node = parse(text);
+        let root = ast::Root::cast(node).unwrap();
+        let statements = root.statements().collect::<Vec<_>>();
+        assert!(
+            statements
+                .iter()
+                .any(|stmt| matches!(stmt, Stmt::CommandDef(_)))
+        );
+        assert!(
+            statements
+                .iter()
+                .any(|stmt| matches!(stmt, Stmt::GameDef(_)))
+        );
+    }
+
+    #[test]
     fn test_shader_related_attributes_parse_as_ordinary_names() {
         use ast::{AstNode, Stmt};
         let text = "\

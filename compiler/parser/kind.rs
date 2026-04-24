@@ -129,6 +129,8 @@ pub enum SyntaxKind {
     ComponentDef,
     ResourceDef,
     EventDef,
+    CommandDef,
+    GameDef,
     ValueDef,
     EnumDef,
     EnumVariant,

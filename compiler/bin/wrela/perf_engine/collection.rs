@@ -2378,35 +2378,21 @@ fn subsystem_report_metric(
 fn aggregate_engine_frame_measurement_policy(
     subsystem_reports: &[wrela::engine_frame::EngineSubsystemReport],
 ) -> wrela::engine_frame::EngineMeasurementPolicy {
-    if subsystem_reports.iter().any(|report| {
+    let runtime_source = if subsystem_reports.iter().any(|report| {
         report.measurement_policy.runtime_source
             == wrela::engine_frame::EngineRuntimeSource::CompatibilityJoin
     }) {
-        return wrela::engine_frame::EngineMeasurementPolicy {
-            runtime_source: wrela::engine_frame::EngineRuntimeSource::CompatibilityJoin,
-            gpu_timing: if subsystem_reports.iter().any(|report| {
-                report.measurement_policy.gpu_timing
-                    == wrela::engine_frame::EngineGpuTimingPolicy::RuntimeProxy
-            }) {
-                wrela::engine_frame::EngineGpuTimingPolicy::RuntimeProxy
-            } else if subsystem_reports.iter().any(|report| {
-                report.measurement_policy.gpu_timing
-                    == wrela::engine_frame::EngineGpuTimingPolicy::Timestamped
-            }) {
-                wrela::engine_frame::EngineGpuTimingPolicy::Timestamped
-            } else {
-                wrela::engine_frame::EngineGpuTimingPolicy::Disabled
-            },
-            hot_path_readback_allowed: subsystem_reports
-                .iter()
-                .any(|report| report.measurement_policy.hot_path_readback_allowed),
-            export_readback_allowed: subsystem_reports
-                .iter()
-                .any(|report| report.measurement_policy.export_readback_allowed),
-        };
-    }
+        wrela::engine_frame::EngineRuntimeSource::CompatibilityJoin
+    } else if subsystem_reports.iter().any(|report| {
+        report.measurement_policy.runtime_source
+            == wrela::engine_frame::EngineRuntimeSource::ReservedSlotUnsampled
+    }) {
+        wrela::engine_frame::EngineRuntimeSource::ReservedSlotUnsampled
+    } else {
+        wrela::engine_frame::EngineRuntimeSource::TimelineSpans
+    };
     wrela::engine_frame::EngineMeasurementPolicy {
-        runtime_source: wrela::engine_frame::EngineRuntimeSource::TimelineSpans,
+        runtime_source,
         gpu_timing: if subsystem_reports.iter().any(|report| {
             report.measurement_policy.gpu_timing
                 == wrela::engine_frame::EngineGpuTimingPolicy::RuntimeProxy
@@ -2519,6 +2505,10 @@ fn aggregate_engine_frame_subsystem_reports(
             for subsystem in &matching {
                 extend_unique_strings(&mut notes, subsystem.notes.iter().cloned());
             }
+            let matching_reports = matching
+                .iter()
+                .map(|subsystem| (*subsystem).clone())
+                .collect::<Vec<_>>();
             Some(wrela::engine_frame::EngineSubsystemReport {
                 kind,
                 label: latest.label.clone(),
@@ -2548,7 +2538,7 @@ fn aggregate_engine_frame_subsystem_reports(
                         .iter()
                         .map(|subsystem| subsystem.orchestration_gap_micros),
                 ),
-                measurement_policy: latest.measurement_policy.clone(),
+                measurement_policy: aggregate_engine_frame_measurement_policy(&matching_reports),
                 queue_submit_count: matching
                     .iter()
                     .map(|subsystem| subsystem.queue_submit_count)
@@ -3453,6 +3443,16 @@ impl wrela::engine_frame::EngineSubsystemAdapter for LivePresentationEngineFrame
                 let executed_wall_micros = subsystem_timeline_wall_micros(timeline, &report_kind);
                 let runtime_gap_micros =
                     executed_wall_micros.saturating_sub(metrics.runtime_micros);
+                let mut notes = vec![
+                    "engine-frame-live".to_string(),
+                    format!("frame_offset={}", measurement.frame_offset),
+                ];
+                if let Some(epoch) = ctx.published_snapshot_epoch {
+                    notes.push(format!("consumed_snapshot_epoch={epoch}"));
+                } else {
+                    ctx.violations
+                        .push("presentation_missing_published_snapshot_epoch".to_string());
+                }
                 Ok(wrela::engine_frame::EngineSubsystemReport {
                     kind: descriptor.kind.clone(),
                     label: descriptor.label.clone(),
@@ -3478,10 +3478,7 @@ impl wrela::engine_frame::EngineSubsystemAdapter for LivePresentationEngineFrame
                     timestamped_pass_count: metrics.timestamped_pass_count,
                     timing_readback_bytes: metrics.timing_readback_bytes,
                     wait_time_micros: runtime_gap_micros,
-                    notes: vec![
-                        "engine-frame-live".to_string(),
-                        format!("frame_offset={}", measurement.frame_offset),
-                    ],
+                    notes,
                 })
             },
         ))
@@ -3570,7 +3567,7 @@ impl wrela::engine_frame::EngineSubsystemAdapter for LiveCollisionEngineFrameAda
             descriptor.clone(),
             vec![job],
             vec![job],
-            move |timeline, _ctx| {
+            move |timeline, ctx| {
                 let report = report_result
                     .lock()
                     .map_err(|_| {
@@ -3598,6 +3595,12 @@ impl wrela::engine_frame::EngineSubsystemAdapter for LiveCollisionEngineFrameAda
                 notes.push(format!(
                     "self_reported_runtime_micros={self_reported_runtime_micros}"
                 ));
+                if let Some(epoch) = ctx.published_snapshot_epoch {
+                    notes.push(format!("consumed_snapshot_epoch={epoch}"));
+                } else {
+                    ctx.violations
+                        .push("collision_missing_published_snapshot_epoch".to_string());
+                }
                 Ok(wrela::engine_frame::EngineSubsystemReport {
                     kind: descriptor.kind.clone(),
                     label: descriptor.label.clone(),
@@ -3700,6 +3703,74 @@ fn collect_live_engine_frame_benchmark_reports(
     Ok(collection)
 }
 
+#[derive(Default)]
+struct PerfNoopStateAdvanceExecutor;
+
+impl wrela::engine_frame::EngineStateAdvanceExecutor for PerfNoopStateAdvanceExecutor {
+    fn advance(
+        &mut self,
+        input: wrela::engine_frame::EngineStateAdvanceInput,
+    ) -> Result<wrela::state_advance::StateAdvanceResult, wrela::engine_frame::EngineFrameError>
+    {
+        let previous = input.previous_snapshot.clone();
+        let next = previous.with_epoch(wrela::world_identity::SnapshotEpoch(
+            previous.epoch().0.saturating_add(1),
+        ));
+        Ok(wrela::state_advance::StateAdvanceResult::new(
+            wrela::state_advance::WorldTransitionRecord::new(
+                Some(previous),
+                next,
+                Some(input.previous_clock),
+                input.current_clock,
+                input.inputs,
+                Vec::new(),
+            ),
+            wrela::state_advance::ChangeSummary::new(
+                wrela::state_advance::ChangeClass::None,
+                "perf engine-frame no-op transition",
+            ),
+        ))
+    }
+}
+
+fn live_engine_frame_runtime_input(
+    scenario_id: &test_eval_perf::PerfScenarioId,
+    frame_offset: u32,
+    previous_snapshot: wrela::world_identity::WorldSnapshotHandle,
+    engine_frame_budget: Option<&wrela::perf_target::PerfClosureEngineFrameBudget>,
+) -> wrela::engine_frame::EngineFrameInput {
+    let previous_epoch = previous_snapshot.epoch().0;
+    let current_epoch = previous_epoch.saturating_add(1);
+    let previous_tick = u64::from(frame_offset);
+    let current_tick = previous_tick.saturating_add(1);
+    let mut policy = wrela::engine_frame::EngineFrameRuntimePolicy::closure();
+    policy.budget = engine_frame_budget.cloned();
+    wrela::engine_frame::EngineFrameInput {
+        scenario_id: scenario_id.to_string(),
+        frame_index: frame_offset,
+        previous_snapshot,
+        previous_clock: wrela::time_semantics::TemporalClock::new(
+            wrela::time_semantics::SnapshotEpoch::new(previous_epoch),
+            wrela::time_semantics::SimulationTick::new(previous_tick),
+            wrela::time_semantics::PresentationFrame::new(previous_tick),
+            wrela::time_semantics::WallClockStamp::new(previous_tick.saturating_mul(16_666)),
+        ),
+        current_clock: wrela::time_semantics::TemporalClock::new(
+            wrela::time_semantics::SnapshotEpoch::new(current_epoch),
+            wrela::time_semantics::SimulationTick::new(current_tick),
+            wrela::time_semantics::PresentationFrame::new(current_tick),
+            wrela::time_semantics::WallClockStamp::new(current_tick.saturating_mul(16_666)),
+        ),
+        tick_inputs: wrela::state_advance::TickInputBatch::new(
+            wrela::time_semantics::SimulationTick::new(current_tick),
+            Vec::new(),
+        ),
+        policy,
+        query_requests: Vec::new(),
+        readback_requests: Vec::new(),
+    }
+}
+
 fn run_live_engine_frame_benchmark_scenario(
     benchmark_root: &Path,
     scenario: &test_eval_perf::BenchmarkScenario,
@@ -3710,7 +3781,6 @@ fn run_live_engine_frame_benchmark_scenario(
     collect_gpu_timing_readback: bool,
     engine_frame_budget: Option<&wrela::perf_target::PerfClosureEngineFrameBudget>,
 ) -> Result<EngineFrameScenarioMeasurement, String> {
-    let state_advance_notes = vec!["reserved-slot-unsampled".to_string()];
     let prepared_presentation = prepare_live_engine_frame_presentation(
         benchmark_root,
         scenario,
@@ -3722,52 +3792,20 @@ fn run_live_engine_frame_benchmark_scenario(
     let presentation_state = Arc::new(Mutex::new(LivePresentationEngineFrameState::new(
         prepared_presentation,
     )));
-    let mut scheduler = wrela::engine_frame::EngineFrameScheduler::with_executor_config(
+    let mut runtime = wrela::engine_frame::EngineFrameRuntime::with_executor_config(
+        Box::new(PerfNoopStateAdvanceExecutor),
         live_engine_frame_executor_config(),
     );
-    scheduler.budget = engine_frame_budget.cloned();
+    let mut previous_snapshot = wrela::query_exec::stable_region_snapshot_handle(&SmolStr::new(
+        presentation_spec.region.as_str(),
+    ));
     let mut scheduler_reports = Vec::with_capacity(frame_count as usize);
     let mut presentation_frames = Vec::with_capacity(frame_count as usize);
     let mut collision_frames = Vec::with_capacity(frame_count as usize);
     for frame_offset in 0..frame_count {
         let presentation_result = Arc::new(Mutex::new(None));
         let collision_result = Arc::new(Mutex::new(None));
-        let mut subsystems: Vec<Box<dyn wrela::engine_frame::EngineSubsystemAdapter>> = vec![
-            Box::new(PerfEngineFrameAdapter {
-                descriptor: wrela::engine_frame::EngineSubsystemDescriptor {
-                    kind: wrela::engine_frame::EngineSubsystemKind::StateAdvance,
-                    label: "state_advance".to_string(),
-                    runs_after: vec![],
-                    requires_gpu: false,
-                    allows_hot_path_readback: false,
-                },
-                report: wrela::engine_frame::EngineSubsystemReport {
-                    kind: wrela::engine_frame::EngineSubsystemKind::StateAdvance,
-                    label: "state_advance".into(),
-                    work_items: 0,
-                    cpu_critical_path_micros: 0,
-                    gpu_critical_path_micros: None,
-                    executed_wall_time_micros: 0,
-                    self_reported_runtime_micros: None,
-                    orchestration_gap_micros: 0,
-                    measurement_policy: wrela::engine_frame::EngineMeasurementPolicy {
-                        runtime_source:
-                            wrela::engine_frame::EngineRuntimeSource::ReservedSlotUnsampled,
-                        gpu_timing: wrela::engine_frame::EngineGpuTimingPolicy::Disabled,
-                        hot_path_readback_allowed: false,
-                        export_readback_allowed: false,
-                    },
-                    queue_submit_count: 0,
-                    hot_path_readback_bytes: 0,
-                    scene_reupload_bytes: 0,
-                    timestamped_pass_count: 0,
-                    timing_readback_bytes: 0,
-                    wait_time_micros: 0,
-                    notes: state_advance_notes.clone(),
-                },
-                active_degradations: Vec::new(),
-                violations: Vec::new(),
-            }),
+        let subsystems: Vec<Box<dyn wrela::engine_frame::EngineSubsystemAdapter>> = vec![
             Box::new(LivePresentationEngineFrameAdapter {
                 descriptor: live_presentation_engine_frame_descriptor(query_backend),
                 state: Arc::clone(&presentation_state),
@@ -3786,14 +3824,42 @@ fn run_live_engine_frame_benchmark_scenario(
                 result: Arc::clone(&collision_result),
             }),
         ];
-        let scheduler_report = scheduler
-            .run_frame(scenario.id.to_string(), frame_offset, &mut subsystems)
+        let mut runtime_input = live_engine_frame_runtime_input(
+            &scenario.id,
+            frame_offset,
+            previous_snapshot.clone(),
+            engine_frame_budget,
+        );
+        runtime_input
+            .query_requests
+            .push(wrela::engine_frame::EngineQueryRequest {
+                owner: wrela::engine_frame::EngineSubsystemKind::Presentation,
+                contract_id: format!("presentation:{}", presentation_spec.region),
+                query_kind: "primary_visibility".to_string(),
+                required_this_tick: false,
+            });
+        runtime_input
+            .query_requests
+            .push(wrela::engine_frame::EngineQueryRequest {
+                owner: wrela::engine_frame::EngineSubsystemKind::Collision,
+                contract_id: prepared_collision
+                    .batch
+                    .plan
+                    .contract_id
+                    .as_str()
+                    .to_string(),
+                query_kind: prepared_collision.batch.plan.name.to_string(),
+                required_this_tick: true,
+            });
+        let runtime_output = runtime
+            .run_frame_with_subsystems(runtime_input, subsystems)
             .map_err(|err| {
                 format!(
-                    "engine-frame scheduler failed for scenario '{}' frame {}: {err}",
+                    "engine-frame runtime failed for scenario '{}' frame {}: {err}",
                     scenario.id, frame_offset
                 )
             })?;
+        previous_snapshot = runtime_output.snapshot.clone();
         let presentation_frame = presentation_result
             .lock()
             .map_err(|_| "presentation engine-frame result lock poisoned".to_string())?
@@ -3814,7 +3880,7 @@ fn run_live_engine_frame_benchmark_scenario(
                     scenario.id, frame_offset
                 )
             })?;
-        scheduler_reports.push(scheduler_report);
+        scheduler_reports.push(runtime_output.report);
         presentation_frames.push(presentation_frame);
         collision_frames.push(collision_frame);
     }

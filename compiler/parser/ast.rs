@@ -42,6 +42,8 @@ pub enum Stmt {
     ClassDef(ClassDef),
     ResourceDef(ResourceDef),
     EventDef(EventDef),
+    CommandDef(CommandDef),
+    GameDef(GameDef),
     ValueDef(ValueDef),
     EnumDef(EnumDef),
     FuncDef(FuncDef),
@@ -85,6 +87,8 @@ impl AstNode for Stmt {
                 | SyntaxKind::ClassDef
                 | SyntaxKind::ResourceDef
                 | SyntaxKind::EventDef
+                | SyntaxKind::CommandDef
+                | SyntaxKind::GameDef
                 | SyntaxKind::ValueDef
                 | SyntaxKind::EnumDef
                 | SyntaxKind::FuncDef
@@ -126,6 +130,8 @@ impl AstNode for Stmt {
             SyntaxKind::ClassDef => ClassDef::cast(node).map(Stmt::ClassDef),
             SyntaxKind::ResourceDef => ResourceDef::cast(node).map(Stmt::ResourceDef),
             SyntaxKind::EventDef => EventDef::cast(node).map(Stmt::EventDef),
+            SyntaxKind::CommandDef => CommandDef::cast(node).map(Stmt::CommandDef),
+            SyntaxKind::GameDef => GameDef::cast(node).map(Stmt::GameDef),
             SyntaxKind::ValueDef => ValueDef::cast(node).map(Stmt::ValueDef),
             SyntaxKind::EnumDef => EnumDef::cast(node).map(Stmt::EnumDef),
             SyntaxKind::FuncDef => FuncDef::cast(node).map(Stmt::FuncDef),
@@ -176,6 +182,8 @@ impl AstNode for Stmt {
             Stmt::ClassDef(it) => it.syntax(),
             Stmt::ResourceDef(it) => it.syntax(),
             Stmt::EventDef(it) => it.syntax(),
+            Stmt::CommandDef(it) => it.syntax(),
+            Stmt::GameDef(it) => it.syntax(),
             Stmt::ValueDef(it) => it.syntax(),
             Stmt::EnumDef(it) => it.syntax(),
             Stmt::FuncDef(it) => it.syntax(),
@@ -552,6 +560,93 @@ macro_rules! impl_class_like_def {
 
 impl_class_like_def!(ResourceDef, SyntaxKind::ResourceDef);
 impl_class_like_def!(EventDef, SyntaxKind::EventDef);
+
+pub struct CommandDef(SyntaxNode);
+impl AstNode for CommandDef {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::CommandDef
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(Self(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl CommandDef {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|it| it.kind() == SyntaxKind::Ident)
+            .nth(1)
+    }
+
+    pub fn type_params(&self) -> impl Iterator<Item = SyntaxToken> {
+        self.0
+            .children()
+            .filter(|it| it.kind() == SyntaxKind::TypeParamList)
+            .flat_map(|node| node.children_with_tokens())
+            .filter_map(|it| it.into_token())
+            .filter(|it| it.kind() == SyntaxKind::Ident)
+    }
+
+    pub fn is_a(&self) -> Option<SyntaxToken> {
+        self.0
+            .children()
+            .find(|it| it.kind() == SyntaxKind::IsAClause)
+            .and_then(|node| {
+                node.children_with_tokens()
+                    .filter_map(|it| it.into_token())
+                    .filter(|it| it.kind() == SyntaxKind::Ident)
+                    .last()
+            })
+    }
+
+    pub fn fields(&self) -> impl Iterator<Item = FieldDef> {
+        self.0.children().filter_map(FieldDef::cast)
+    }
+
+    pub fn methods(&self) -> impl Iterator<Item = MethodDef> {
+        self.0.children().filter_map(MethodDef::cast)
+    }
+}
+
+pub struct GameDef(SyntaxNode);
+impl AstNode for GameDef {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::GameDef
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(Self(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl GameDef {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|it| it.kind() == SyntaxKind::Ident)
+            .nth(1)
+    }
+
+    pub fn assignments(&self) -> impl Iterator<Item = VarAssign> {
+        self.0.children().filter_map(VarAssign::cast)
+    }
+}
 
 pub struct ValueDef(SyntaxNode);
 impl AstNode for ValueDef {

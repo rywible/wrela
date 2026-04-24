@@ -1,10 +1,21 @@
 use crate::gpu_runtime::GpuRuntimeMetrics;
 use serde::{Deserialize, Serialize};
 
+mod runtime;
 mod scheduler;
 
 pub const ENGINE_FRAME_TIMELINE_VERSION: u32 = 2;
 
+pub use runtime::{
+    EngineBudgetDirectives, EngineFrameIdentityReport, EngineFrameInput, EngineFrameOutput,
+    EngineFrameRuntime, EngineFrameRuntimePolicy, EngineGpuFrameContext, EngineGpuFrameLedger,
+    EngineQueryBatchReport, EngineQueryLedger, EngineQueryRequest, EngineQueryResidentHandle,
+    EngineQueryResults, EngineReadbackCategory, EngineReadbackLedger, EngineReadbackManager,
+    EngineReadbackReadiness, EngineReadbackRequest, EngineReadbackTicketReport,
+    EngineResourceAccess, EngineResourceAccessMode, EngineResourceEpochState, EngineResourceId,
+    EngineResourceLedger, EngineResourceResidency, EngineResourceState, EngineStateAdvanceExecutor,
+    EngineStateAdvanceInput, EngineStateAdvanceReport,
+};
 pub use scheduler::{
     EngineBudgetDecision, EngineBudgetGovernor, EngineFrameContext, EngineFrameError,
     EngineFrameGraph, EngineFrameScheduler, EngineGraphBuilder, EngineSubsystemAdapter,
@@ -179,6 +190,20 @@ pub struct EngineFutureReserveReport {
 pub struct EngineFrameReport {
     pub scenario_id: String,
     pub frame_index: u32,
+    #[serde(default)]
+    pub identity: EngineFrameIdentityReport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_advance: Option<EngineStateAdvanceReport>,
+    #[serde(default)]
+    pub resource_ledger: EngineResourceLedger,
+    #[serde(default)]
+    pub readback_ledger: EngineReadbackLedger,
+    #[serde(default)]
+    pub query_ledger: EngineQueryLedger,
+    #[serde(default)]
+    pub gpu_frame_ledger: EngineGpuFrameLedger,
+    #[serde(default)]
+    pub budget_directives: EngineBudgetDirectives,
     pub frame_wall_time_micros: u128,
     pub cpu_critical_path_micros: u128,
     pub gpu_critical_path_micros: Option<u128>,

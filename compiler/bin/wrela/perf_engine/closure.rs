@@ -79,6 +79,53 @@ fn engine_frame_report_uses_export_readback(report: &EngineFrameBenchmarkReport)
             .any(|subsystem| subsystem.measurement_policy.export_readback_allowed)
 }
 
+fn engine_frame_report_uses_non_authoritative_runtime(
+    report: &EngineFrameBenchmarkReport,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    if matches!(
+        report.measurement_policy.runtime_source,
+        wrela::engine_frame::EngineRuntimeSource::CompatibilityJoin
+            | wrela::engine_frame::EngineRuntimeSource::ReservedSlotUnsampled
+    ) {
+        violations.push(format!(
+            "scenario '{}' engine-frame report uses non-authoritative runtime_source={}",
+            report.scenario_id,
+            engine_runtime_source_name(report.measurement_policy.runtime_source)
+        ));
+    }
+    for subsystem in &report.subsystem_reports {
+        match (
+            &subsystem.kind,
+            subsystem.measurement_policy.runtime_source,
+        ) {
+            (
+                wrela::engine_frame::EngineSubsystemKind::StateAdvance,
+                wrela::engine_frame::EngineRuntimeSource::ReservedSlotUnsampled,
+            ) => violations.push(format!(
+                "scenario '{}' uses reserved state_advance instead of a kernel-owned transition",
+                report.scenario_id
+            )),
+            (
+                _,
+                wrela::engine_frame::EngineRuntimeSource::CompatibilityJoin,
+            ) => violations.push(format!(
+                "scenario '{}' uses compatibility-joined subsystem '{}' in canonical engine-frame closure",
+                report.scenario_id, subsystem.label
+            )),
+            (
+                _,
+                wrela::engine_frame::EngineRuntimeSource::ReservedSlotUnsampled,
+            ) => violations.push(format!(
+                "scenario '{}' uses reserved unsampled subsystem '{}' in canonical engine-frame closure",
+                report.scenario_id, subsystem.label
+            )),
+            _ => {}
+        }
+    }
+    violations
+}
+
 pub(super) fn frame_cost_total_ns(
     report: &wrela::presentation_exec::PresentationFrameCostReport,
 ) -> u128 {
@@ -368,6 +415,12 @@ pub(super) fn build_engine_frame_closure_status(
             "collision gpu critical path uses runtime proxy until per-subsystem collision gpu timing exists"
                 .to_string(),
         );
+    }
+    for authority_violation in engine_frame_reports
+        .iter()
+        .flat_map(engine_frame_report_uses_non_authoritative_runtime)
+    {
+        violations.push(authority_violation);
     }
     if let Some(frame_wall_time_median_ms) = report.frame_wall_time_median_ms
         && frame_wall_time_median_ms > profile.engine_frame_budget.frame_wall_time_median_ms

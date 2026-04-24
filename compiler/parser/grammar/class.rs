@@ -29,6 +29,19 @@ pub fn event_def(p: &mut Parser) {
     );
 }
 
+pub fn command_def(p: &mut Parser) {
+    let m = p.start();
+    if p.at_ident_text("command") {
+        p.bump();
+    } else {
+        p.error_with_message("expected 'command' to start a command declaration", true);
+    }
+    p.expect_with_message(SyntaxKind::Ident, "expected type name after 'command'");
+    parse_type_params(p);
+    parse_class_body(p);
+    m.complete(p, SyntaxKind::CommandDef);
+}
+
 pub fn value_def(p: &mut Parser) {
     let m = p.start();
     if p.at_ident_text("value") {

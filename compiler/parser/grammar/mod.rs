@@ -43,6 +43,14 @@ pub(crate) fn parse_statement(p: &mut Parser) {
         class::event_def(p);
         return;
     }
+    if p.at_ident_text("command") {
+        class::command_def(p);
+        return;
+    }
+    if p.at_ident_text("game") {
+        game_def(p);
+        return;
+    }
     if is_value_start(p) {
         class::value_def(p);
         return;
@@ -131,7 +139,40 @@ fn parse_root_statement(p: &mut Parser) {
         func::shape_decl(p);
         return;
     }
+    if p.at_ident_text("command") {
+        class::command_def(p);
+        return;
+    }
+    if p.at_ident_text("game") {
+        game_def(p);
+        return;
+    }
     parse_statement(p);
+}
+
+fn game_def(p: &mut Parser) {
+    let m = p.start();
+    if p.at_ident_text("game") {
+        p.bump();
+    } else {
+        p.error_with_message("expected 'game' to start a game declaration", true);
+    }
+    p.expect_with_message(SyntaxKind::Ident, "expected game name after 'game'");
+    expect_block_intro(p, "expected '{' after game declaration");
+    if p.at(SyntaxKind::LBrace) {
+        p.bump();
+        while !p.at(SyntaxKind::RBrace) && !p.is_at_eof() {
+            if is_var_assign_start(p) {
+                parse_var_assign(p);
+            } else {
+                p.error();
+                p.recover_until(&[SyntaxKind::Newline, SyntaxKind::RBrace]);
+                p.expect_stmt_boundary();
+            }
+        }
+        p.expect(SyntaxKind::RBrace);
+    }
+    m.complete(p, SyntaxKind::GameDef);
 }
 
 fn parse_assert(p: &mut Parser) {

@@ -1,7 +1,7 @@
 #![allow(unused_assignments)]
 
 use crate::hir::{
-    Arg, BinaryOp, Body, Class, Expr, Function, FunctionKind, FunctionRole, Idx,
+    Arg, BinaryOp, Body, Class, ClassRole, Expr, Function, FunctionKind, FunctionRole, Idx,
     InterfaceMethodKind, Literal, MatchCase, Module, Objective, Pattern, Stmt, SystemMetadata,
     TypeRef, UnaryOp,
 };
@@ -437,10 +437,14 @@ pub enum SemanticError {
         span: SourceSpan,
     },
 
-    #[error("system '{system}' metadata stage must be `fixed`")]
+    #[error(
+        "system '{system}' metadata stage must be one of `input`, `fixed`, `post_fixed`, or `late`"
+    )]
     #[diagnostic(
         code(lang::sem::invalid_system_stage),
-        help("Set `stage=fixed` in system metadata.")
+        help(
+            "Set `stage=input`, `stage=fixed`, `stage=post_fixed`, or `stage=late` in system metadata."
+        )
     )]
     InvalidSystemStage {
         system: SmolStr,
@@ -450,17 +454,77 @@ pub enum SemanticError {
     },
 
     #[error(
-        "system '{system}' metadata `{access}` references unknown class-like declaration '{name}'"
+        "system '{system}' metadata `{access}` references unknown resource declaration '{name}'"
     )]
     #[diagnostic(
         code(lang::sem::unknown_system_metadata_target),
-        help("Declare the class-like declaration first, or remove it from this metadata list.")
+        help("Declare the resource first, or remove it from this metadata list.")
     )]
     UnknownSystemMetadataTarget {
         system: SmolStr,
         access: &'static str,
         name: SmolStr,
         #[label("unknown class-like declaration in metadata")]
+        span: SourceSpan,
+    },
+
+    #[error("module declares multiple game roots")]
+    #[diagnostic(
+        code(lang::sem::duplicate_game_root),
+        help("Keep one authoritative `game` root per module.")
+    )]
+    DuplicateGameRoot {
+        game: SmolStr,
+        #[label("extra game root")]
+        span: SourceSpan,
+    },
+
+    #[error("game '{game}' is missing required `{field}` entry")]
+    #[diagnostic(
+        code(lang::sem::missing_game_root_entry),
+        help("Declare `fixed_tick`, `space`, `main_view`, and `startup` in the game root.")
+    )]
+    MissingGameRootEntry {
+        game: SmolStr,
+        field: &'static str,
+        #[label("game root declared here")]
+        span: SourceSpan,
+    },
+
+    #[error("game '{game}' has invalid `fixed_tick` value")]
+    #[diagnostic(
+        code(lang::sem::invalid_game_fixed_tick),
+        help("Use a positive integer tick rate, for example `fixed_tick = 120`.")
+    )]
+    InvalidGameFixedTick {
+        game: SmolStr,
+        #[label("invalid fixed tick")]
+        span: SourceSpan,
+    },
+
+    #[error("game '{game}' uses unknown entry `{key}`")]
+    #[diagnostic(
+        code(lang::sem::unknown_game_root_entry),
+        help("Supported game entries are `fixed_tick`, `space`, `main_view`, and `startup`.")
+    )]
+    UnknownGameRootEntry {
+        game: SmolStr,
+        key: SmolStr,
+        #[label("unknown game entry")]
+        span: SourceSpan,
+    },
+
+    #[error("game '{game}' `{field}` references unknown {expected} '{name}'")]
+    #[diagnostic(
+        code(lang::sem::unknown_game_root_reference),
+        help("Point the game root at declarations that exist in this module.")
+    )]
+    UnknownGameRootReference {
+        game: SmolStr,
+        field: &'static str,
+        expected: &'static str,
+        name: SmolStr,
+        #[label("unresolved game root reference")]
         span: SourceSpan,
     },
 
@@ -615,6 +679,11 @@ impl SemanticError {
             SemanticError::InvalidAttributeArgValue { span, .. } => *span,
             SemanticError::InvalidSystemStage { span, .. } => *span,
             SemanticError::UnknownSystemMetadataTarget { span, .. } => *span,
+            SemanticError::DuplicateGameRoot { span, .. } => *span,
+            SemanticError::MissingGameRootEntry { span, .. } => *span,
+            SemanticError::InvalidGameFixedTick { span, .. } => *span,
+            SemanticError::UnknownGameRootEntry { span, .. } => *span,
+            SemanticError::UnknownGameRootReference { span, .. } => *span,
             SemanticError::SystemWriteWriteConflict { span, .. } => *span,
             SemanticError::SystemReadWriteHazard { span, .. } => *span,
             SemanticError::SystemUndeclaredResourceAccess { span, .. } => *span,
@@ -673,6 +742,7 @@ struct Checker<'a> {
     loop_depth: usize,
     method_ids: HashSet<usize>,
     class_names: HashSet<SmolStr>,
+    resource_names: HashSet<SmolStr>,
     in_method: bool,
     in_check: bool,
     in_certified_flow: bool,
@@ -689,6 +759,7 @@ pub fn check_module(module: &Module) -> SemanticDiagnostics {
     checker.check_module();
     let mut errors = checker.errors;
     let mut warnings = checker.warnings;
+    errors.extend(check_game_roots(module));
     errors.extend(check_system_conflicts(module));
     errors.extend(check_missing_resource_decls(module));
     errors.extend(check_system_dependency_cycles(module));
@@ -700,8 +771,12 @@ impl<'a> Checker<'a> {
     fn new(module: &'a Module) -> Self {
         let mut method_ids = HashSet::new();
         let mut class_names = HashSet::new();
+        let mut resource_names = HashSet::new();
         for class in module.classes.iter().map(|(_, c)| c) {
             class_names.insert(class.name.clone());
+            if matches!(class.role, ClassRole::Resource) {
+                resource_names.insert(class.name.clone());
+            }
             for method in &class.methods {
                 method_ids.insert(method.into_raw());
             }
@@ -719,6 +794,7 @@ impl<'a> Checker<'a> {
             loop_depth: 0,
             method_ids,
             class_names,
+            resource_names,
             in_method: false,
             in_check: false,
             in_certified_flow: false,
@@ -1012,7 +1088,10 @@ impl<'a> Checker<'a> {
             .system_metadata
             .as_ref()
             .and_then(|meta| meta.stage.clone());
-        if !matches!(stage.as_deref(), Some("fixed")) {
+        if !matches!(
+            stage.as_deref(),
+            Some("input" | "fixed" | "post_fixed" | "late")
+        ) {
             self.errors.push(SemanticError::InvalidSystemStage {
                 system: func.name.clone(),
                 found: stage,
@@ -1025,7 +1104,7 @@ impl<'a> Checker<'a> {
         };
 
         for name in &metadata.reads {
-            if !self.class_names.contains(name) {
+            if !self.resource_names.contains(name) {
                 self.errors
                     .push(SemanticError::UnknownSystemMetadataTarget {
                         system: func.name.clone(),
@@ -1036,7 +1115,7 @@ impl<'a> Checker<'a> {
             }
         }
         for name in &metadata.writes {
-            if !self.class_names.contains(name) {
+            if !self.resource_names.contains(name) {
                 self.errors
                     .push(SemanticError::UnknownSystemMetadataTarget {
                         system: func.name.clone(),
@@ -3355,6 +3434,131 @@ fn builtin_bindings() -> Vec<(SmolStr, BindingKind)> {
     bindings
 }
 
+// ── Game root analysis ────────────────────────────────────────────────────────
+
+fn check_game_roots(module: &Module) -> Vec<SemanticError> {
+    let mut errors = Vec::new();
+    if module.games.is_empty() {
+        return errors;
+    }
+
+    for game in module.games.iter().skip(1) {
+        errors.push(SemanticError::DuplicateGameRoot {
+            game: game.name.clone(),
+            span: span_from_option(game.name_span),
+        });
+    }
+
+    let class_names = module
+        .classes
+        .iter()
+        .map(|(_, class)| class.name.clone())
+        .collect::<HashSet<_>>();
+    let region_names = module
+        .functions
+        .iter()
+        .filter_map(|(_, func)| (func.role == FunctionRole::Region).then_some(func.name.clone()))
+        .collect::<HashSet<_>>();
+    let view_names = module
+        .functions
+        .iter()
+        .filter_map(|(_, func)| (func.role == FunctionRole::View).then_some(func.name.clone()))
+        .collect::<HashSet<_>>();
+    let startup_names = module
+        .functions
+        .iter()
+        .filter_map(|(_, func)| {
+            (!matches!(
+                func.role,
+                FunctionRole::Field
+                    | FunctionRole::Region
+                    | FunctionRole::Domain
+                    | FunctionRole::Render
+                    | FunctionRole::View
+                    | FunctionRole::Radiance
+                    | FunctionRole::Volume
+                    | FunctionRole::Shape
+                    | FunctionRole::Material
+            ))
+            .then_some(func.name.clone())
+        })
+        .collect::<HashSet<_>>();
+
+    for game in &module.games {
+        let game_span = span_from_option(game.name_span);
+        if !game.fixed_tick_present {
+            errors.push(SemanticError::MissingGameRootEntry {
+                game: game.name.clone(),
+                field: "fixed_tick",
+                span: game_span,
+            });
+        } else if game.fixed_tick_hz.is_none_or(|hz| hz == 0) {
+            errors.push(SemanticError::InvalidGameFixedTick {
+                game: game.name.clone(),
+                span: span_from_option(game.fixed_tick_span),
+            });
+        }
+
+        for (key, span) in &game.unknown_keys {
+            errors.push(SemanticError::UnknownGameRootEntry {
+                game: game.name.clone(),
+                key: key.clone(),
+                span: span_from_option(*span),
+            });
+        }
+
+        match &game.space {
+            Some(name) if class_names.contains(name) || region_names.contains(name) => {}
+            Some(name) => errors.push(SemanticError::UnknownGameRootReference {
+                game: game.name.clone(),
+                field: "space",
+                expected: "space/region",
+                name: name.clone(),
+                span: span_from_option(game.space_span),
+            }),
+            None => errors.push(SemanticError::MissingGameRootEntry {
+                game: game.name.clone(),
+                field: "space",
+                span: game_span,
+            }),
+        }
+
+        match &game.main_view {
+            Some(name) if view_names.contains(name) => {}
+            Some(name) => errors.push(SemanticError::UnknownGameRootReference {
+                game: game.name.clone(),
+                field: "main_view",
+                expected: "view",
+                name: name.clone(),
+                span: span_from_option(game.main_view_span),
+            }),
+            None => errors.push(SemanticError::MissingGameRootEntry {
+                game: game.name.clone(),
+                field: "main_view",
+                span: game_span,
+            }),
+        }
+
+        match &game.startup {
+            Some(name) if startup_names.contains(name) => {}
+            Some(name) => errors.push(SemanticError::UnknownGameRootReference {
+                game: game.name.clone(),
+                field: "startup",
+                expected: "startup function",
+                name: name.clone(),
+                span: span_from_option(game.startup_span),
+            }),
+            None => errors.push(SemanticError::MissingGameRootEntry {
+                game: game.name.clone(),
+                field: "startup",
+                span: game_span,
+            }),
+        }
+    }
+
+    errors
+}
+
 // ── System scheduling analysis ────────────────────────────────────────────────
 
 fn collect_system_functions(module: &Module) -> Vec<(SmolStr, &SystemMetadata)> {
@@ -3393,10 +3597,11 @@ fn check_system_conflicts(module: &Module) -> Vec<SemanticError> {
             for j in (i + 1)..n {
                 let (name_a, meta_a) = &stage_systems[i];
                 let (name_b, meta_b) = &stage_systems[j];
+                let ordered = systems_are_ordered(name_a, meta_a, name_b, meta_b);
 
                 // Write-write conflicts
                 for res in &meta_a.writes {
-                    if meta_b.writes.contains(res) {
+                    if meta_b.writes.contains(res) && !ordered {
                         errors.push(SemanticError::SystemWriteWriteConflict {
                             system_a: name_a.clone(),
                             system_b: name_b.clone(),
@@ -3408,7 +3613,7 @@ fn check_system_conflicts(module: &Module) -> Vec<SemanticError> {
 
                 // Read-write hazards: a writes what b reads
                 for res in &meta_a.writes {
-                    if meta_b.reads.contains(res) {
+                    if meta_b.reads.contains(res) && !ordered {
                         errors.push(SemanticError::SystemReadWriteHazard {
                             writer: name_a.clone(),
                             reader: name_b.clone(),
@@ -3420,7 +3625,7 @@ fn check_system_conflicts(module: &Module) -> Vec<SemanticError> {
 
                 // Read-write hazards: b writes what a reads
                 for res in &meta_b.writes {
-                    if meta_a.reads.contains(res) {
+                    if meta_a.reads.contains(res) && !ordered {
                         errors.push(SemanticError::SystemReadWriteHazard {
                             writer: name_b.clone(),
                             reader: name_a.clone(),
@@ -3436,12 +3641,25 @@ fn check_system_conflicts(module: &Module) -> Vec<SemanticError> {
     errors
 }
 
+fn systems_are_ordered(
+    name_a: &SmolStr,
+    meta_a: &SystemMetadata,
+    name_b: &SmolStr,
+    meta_b: &SystemMetadata,
+) -> bool {
+    meta_a.before.contains(name_b)
+        || meta_a.after.contains(name_b)
+        || meta_b.before.contains(name_a)
+        || meta_b.after.contains(name_a)
+}
+
 fn check_missing_resource_decls(module: &Module) -> Vec<SemanticError> {
     let mut errors = Vec::new();
 
     let resource_names: HashSet<SmolStr> = module
         .classes
         .iter()
+        .filter(|(_, cls)| matches!(cls.role, ClassRole::Resource))
         .map(|(_, cls)| cls.name.clone())
         .collect();
 
@@ -4583,14 +4801,23 @@ fn draw() -> Nothing {
     }
 
     #[test]
-    fn test_system_metadata_accepts_fixed_stage_with_known_class_likes() {
-        let input = r#"class PositionNode {
+    fn test_system_metadata_accepts_runtime_stages_with_known_resources() {
+        let input = r#"resource PositionNode {
     x: Integer
 }
-class FrameClock {
+resource FrameClock {
     tick: Integer
 }
+system collect_input[stage=input, writes=[FrameClock]]() -> Nothing {
+    return
+}
 system tick[stage=fixed, reads=[PositionNode], writes=[FrameClock]]() -> Nothing {
+    return
+}
+system post[stage=post_fixed, reads=[FrameClock]]() -> Nothing {
+    return
+}
+system late_camera[stage=late, reads=[PositionNode]]() -> Nothing {
     return
 }
 "#;
@@ -4613,8 +4840,88 @@ system tick[stage=fixed, reads=[PositionNode], writes=[FrameClock]]() -> Nothing
     }
 
     #[test]
+    fn test_game_root_validates_authoritative_entries() {
+        let input = r#"region TraversalWorld() {
+}
+view player_view(world: RegionCapture) {
+    viewport = viewport(width = 4, height = 3)
+}
+fn initialize_game() -> Nothing {
+    return
+}
+game TraversalGame {
+    fixed_tick = 120
+    space = TraversalWorld
+    main_view = player_view
+    startup = initialize_game
+}
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(
+            !diagnostics.errors.iter().any(|err| matches!(
+                err,
+                SemanticError::MissingGameRootEntry { .. }
+                    | SemanticError::InvalidGameFixedTick { .. }
+                    | SemanticError::UnknownGameRootEntry { .. }
+                    | SemanticError::UnknownGameRootReference { .. }
+            )),
+            "{:?}",
+            diagnostics.errors
+        );
+    }
+
+    #[test]
+    fn test_game_root_rejects_malformed_authority_entries() {
+        let input = r#"game BrokenGame {
+    fixed_tick = hz(120)
+    space = MissingWorld
+    main_view = missing_view
+    startup = missing_startup
+    future_reserve = 1
+}
+game ExtraGame {
+    fixed_tick = 60
+    space = MissingWorld
+    main_view = missing_view
+    startup = missing_startup
+}
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::InvalidGameFixedTick { game, .. } if game == "BrokenGame"))
+        );
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::UnknownGameRootEntry { key, .. } if key == "future_reserve"))
+        );
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::DuplicateGameRoot { game, .. } if game == "ExtraGame"))
+        );
+        assert!(
+            diagnostics
+                .errors
+                .iter()
+                .any(|err| matches!(err, SemanticError::UnknownGameRootReference { field, name, .. } if *field == "main_view" && name == "missing_view"))
+        );
+    }
+
+    #[test]
     fn test_system_metadata_rejects_unknown_stage() {
-        let input = r#"class PositionNode {
+        let input = r#"resource PositionNode {
     x: Integer
 }
 system tick[stage=update, reads=[PositionNode], writes=[PositionNode]]() -> Nothing {
@@ -4636,7 +4943,7 @@ system tick[stage=update, reads=[PositionNode], writes=[PositionNode]]() -> Noth
 
     #[test]
     fn test_system_metadata_requires_stage() {
-        let input = r#"class PositionNode {
+        let input = r#"resource PositionNode {
     x: Integer
 }
 system tick[reads=[PositionNode], writes=[PositionNode]]() -> Nothing {
@@ -4658,7 +4965,7 @@ system tick[reads=[PositionNode], writes=[PositionNode]]() -> Nothing {
 
     #[test]
     fn test_system_metadata_rejects_unknown_reads_and_writes_targets() {
-        let input = r#"class PositionNode {
+        let input = r#"resource PositionNode {
     x: Integer
 }
 system tick[stage=fixed, reads=[MissingRead], writes=[MissingWrite]]() -> Nothing {
@@ -4685,11 +4992,40 @@ system tick[stage=fixed, reads=[MissingRead], writes=[MissingWrite]]() -> Nothin
         }));
     }
 
+    #[test]
+    fn test_system_metadata_rejects_non_resource_targets() {
+        let input = r#"class PositionNode {
+    x: Integer
+}
+system tick[stage=fixed, reads=[PositionNode], writes=[PositionNode]]() -> Nothing {
+    return
+}
+"#;
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+        let diagnostics = check_module(&module);
+        assert!(diagnostics.errors.iter().any(|err| {
+            matches!(
+                err,
+                SemanticError::UnknownSystemMetadataTarget { system, access, name, .. }
+                    if system == "tick" && *access == "reads" && name == "PositionNode"
+            )
+        }));
+        assert!(diagnostics.errors.iter().any(|err| {
+            matches!(
+                err,
+                SemanticError::UnknownSystemMetadataTarget { system, access, name, .. }
+                    if system == "tick" && *access == "writes" && name == "PositionNode"
+            )
+        }));
+    }
+
     // ── WS4 pair-programmer tests ─────────────────────────────────────────────
 
     #[test]
     fn test_system_write_write_conflict_same_stage() {
-        let input = r#"class Health {
+        let input = r#"resource Health {
     value: Integer
 }
 system sys_a[stage=fixed, writes=[Health]]() -> Nothing {
@@ -4718,7 +5054,7 @@ system sys_b[stage=fixed, writes=[Health]]() -> Nothing {
 
     #[test]
     fn test_system_read_write_hazard() {
-        let input = r#"class Physics {
+        let input = r#"resource Physics {
     velocity: Integer
 }
 system writer[stage=fixed, writes=[Physics]]() -> Nothing {
@@ -4747,10 +5083,10 @@ system reader[stage=fixed, reads=[Physics]]() -> Nothing {
 
     #[test]
     fn test_system_no_conflict_disjoint_writes() {
-        let input = r#"class Transform {
+        let input = r#"resource Transform {
     x: Integer
 }
-class Velocity {
+resource Velocity {
     value: Integer
 }
 system mover[stage=fixed, writes=[Transform]]() -> Nothing {
@@ -4789,6 +5125,7 @@ system updater[stage=fixed, writes=[Velocity]]() -> Nothing {
             enums: Arena::new(),
             interfaces: Arena::new(),
             shapes: Arena::new(),
+            games: Vec::new(),
             uses: Vec::new(),
         };
         module.functions.alloc(Function {
@@ -4854,13 +5191,13 @@ system updater[stage=fixed, writes=[Velocity]]() -> Nothing {
 
     #[test]
     fn test_no_false_positive_valid_systems() {
-        let input = r#"class Input {
+        let input = r#"resource Input {
     buttons: Integer
 }
-class Position {
+resource Position {
     x: Integer
 }
-system input_sys[stage=fixed, writes=[Input]]() -> Nothing {
+system input_sys[stage=input, writes=[Input]]() -> Nothing {
     return
 }
 system move_sys[stage=fixed, reads=[Input], writes=[Position]]() -> Nothing {

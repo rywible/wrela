@@ -60,6 +60,7 @@ impl Module {
             enums: Arena::new(),
             interfaces: Arena::new(),
             shapes: Arena::new(),
+            games: Vec::new(),
             uses: Vec::new(),
         }
     }
@@ -149,6 +150,18 @@ impl LoweringContext {
                     let class = self.lower_class_like(c, ClassRole::Resource);
                     self.module.classes.alloc(class);
                 }
+                ast::Stmt::EventDef(c) => {
+                    let class = self.lower_class_like(c, ClassRole::Event);
+                    self.module.classes.alloc(class);
+                }
+                ast::Stmt::CommandDef(c) => {
+                    let class = self.lower_class_like(c, ClassRole::Command);
+                    self.module.classes.alloc(class);
+                }
+                ast::Stmt::GameDef(g) => {
+                    let game = self.lower_game_def(g);
+                    self.module.games.push(game);
+                }
                 ast::Stmt::ValueDef(c) => {
                     let class = self.lower_class_like(c, ClassRole::Value);
                     self.module.classes.alloc(class);
@@ -220,6 +233,18 @@ impl LoweringContext {
                             ast::Stmt::ResourceDef(c) => {
                                 let class = self.lower_class_like(c, ClassRole::Resource);
                                 self.module.classes.alloc(class);
+                            }
+                            ast::Stmt::EventDef(c) => {
+                                let class = self.lower_class_like(c, ClassRole::Event);
+                                self.module.classes.alloc(class);
+                            }
+                            ast::Stmt::CommandDef(c) => {
+                                let class = self.lower_class_like(c, ClassRole::Command);
+                                self.module.classes.alloc(class);
+                            }
+                            ast::Stmt::GameDef(g) => {
+                                let game = self.lower_game_def(g);
+                                self.module.games.push(game);
                             }
                             ast::Stmt::ValueDef(c) => {
                                 let class = self.lower_class_like(c, ClassRole::Value);
@@ -2559,6 +2584,66 @@ impl LoweringContext {
         }
     }
 
+    fn lower_game_def(&mut self, g: ast::GameDef) -> GameRoot {
+        let name = g.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let name_span = g.name().map(|t| t.text_range());
+        let mut fixed_tick_hz = None;
+        let mut fixed_tick_present = false;
+        let mut fixed_tick_span = None;
+        let mut space = None;
+        let mut space_span = None;
+        let mut main_view = None;
+        let mut main_view_span = None;
+        let mut startup = None;
+        let mut startup_span = None;
+        let mut unknown_keys = Vec::new();
+
+        for assignment in g.assignments() {
+            let Some(key_token) = assignment.name() else {
+                continue;
+            };
+            let key = key_token.text().to_string();
+            let Some(value) = assignment.value() else {
+                continue;
+            };
+            match key.as_str() {
+                "fixed_tick" => {
+                    fixed_tick_present = true;
+                    fixed_tick_span = Some(value.syntax().text_range());
+                    fixed_tick_hz = value.syntax().text().to_string().trim().parse::<u64>().ok();
+                }
+                "space" => {
+                    space_span = Some(value.syntax().text_range());
+                    space = game_ident_value(&value);
+                }
+                "main_view" => {
+                    main_view_span = Some(value.syntax().text_range());
+                    main_view = game_ident_value(&value);
+                }
+                "startup" => {
+                    startup_span = Some(value.syntax().text_range());
+                    startup = game_ident_value(&value);
+                }
+                _ => unknown_keys.push((SmolStr::new(key), Some(key_token.text_range()))),
+            }
+        }
+
+        GameRoot {
+            name,
+            name_span,
+            fixed_tick_hz,
+            fixed_tick_present,
+            fixed_tick_span,
+            space,
+            space_span,
+            main_view,
+            main_view_span,
+            startup,
+            startup_span,
+            unknown_keys,
+        }
+    }
+
     fn lower_enum(&mut self, e: ast::EnumDef) -> Enum {
         let name = e.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
         let name_span = e.name().map(|t| t.text_range());
@@ -2765,6 +2850,58 @@ trait ClassLikeDef {
 impl ClassLikeDef for ast::ResourceDef {
     fn syntax(&self) -> &SyntaxNode {
         <ast::ResourceDef as AstNode>::syntax(self)
+    }
+
+    fn name(&self) -> Option<SyntaxToken> {
+        self.name()
+    }
+
+    fn type_params(&self) -> Box<dyn Iterator<Item = SyntaxToken> + '_> {
+        Box::new(self.type_params())
+    }
+
+    fn is_a(&self) -> Option<SyntaxToken> {
+        self.is_a()
+    }
+
+    fn fields(&self) -> Box<dyn Iterator<Item = ast::FieldDef> + '_> {
+        Box::new(self.fields())
+    }
+
+    fn methods(&self) -> Box<dyn Iterator<Item = ast::MethodDef> + '_> {
+        Box::new(self.methods())
+    }
+}
+
+impl ClassLikeDef for ast::CommandDef {
+    fn syntax(&self) -> &SyntaxNode {
+        <ast::CommandDef as AstNode>::syntax(self)
+    }
+
+    fn name(&self) -> Option<SyntaxToken> {
+        self.name()
+    }
+
+    fn type_params(&self) -> Box<dyn Iterator<Item = SyntaxToken> + '_> {
+        Box::new(self.type_params())
+    }
+
+    fn is_a(&self) -> Option<SyntaxToken> {
+        self.is_a()
+    }
+
+    fn fields(&self) -> Box<dyn Iterator<Item = ast::FieldDef> + '_> {
+        Box::new(self.fields())
+    }
+
+    fn methods(&self) -> Box<dyn Iterator<Item = ast::MethodDef> + '_> {
+        Box::new(self.methods())
+    }
+}
+
+impl ClassLikeDef for ast::EventDef {
+    fn syntax(&self) -> &SyntaxNode {
+        <ast::EventDef as AstNode>::syntax(self)
     }
 
     fn name(&self) -> Option<SyntaxToken> {
@@ -3036,6 +3173,13 @@ fn parse_system_metadata(node: &SyntaxNode) -> Option<SystemMetadata> {
         before,
         after,
     })
+}
+
+fn game_ident_value(expr: &ast::Expr) -> Option<SmolStr> {
+    match expr {
+        ast::Expr::Ident(ident) => ident.name().map(|token| SmolStr::new(token.text())),
+        _ => None,
+    }
 }
 
 fn split_top_level_commas(input: &str) -> Vec<&str> {
@@ -4459,6 +4603,47 @@ system tick[stage=fixed, reads=[Clock], writes=[FrameClock]]() -> Nothing {
         assert_eq!(metadata.stage.as_deref(), Some("fixed"));
         assert_eq!(metadata.reads, vec![SmolStr::new("Clock")]);
         assert_eq!(metadata.writes, vec![SmolStr::new("FrameClock")]);
+    }
+
+    #[test]
+    fn test_lower_game_root_and_typed_input_payloads() {
+        let input = "\
+command MoveForward {
+    strength: Integer
+}
+event JumpPressed {
+    actor: Integer
+}
+game TraversalGame {
+    fixed_tick = 120
+    space = TraversalWorld
+    main_view = player_view
+    startup = initialize_game
+}
+";
+        let node = parse(input);
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+
+        assert_eq!(module.games.len(), 1);
+        let game = &module.games[0];
+        assert_eq!(game.name, "TraversalGame");
+        assert_eq!(game.fixed_tick_hz, Some(120));
+        assert_eq!(game.space.as_deref(), Some("TraversalWorld"));
+        assert_eq!(game.main_view.as_deref(), Some("player_view"));
+        assert_eq!(game.startup.as_deref(), Some("initialize_game"));
+        assert!(
+            module
+                .classes
+                .iter()
+                .any(|(_, class)| class.name == "MoveForward" && class.role == ClassRole::Command)
+        );
+        assert!(
+            module
+                .classes
+                .iter()
+                .any(|(_, class)| class.name == "JumpPressed" && class.role == ClassRole::Event)
+        );
     }
 
     #[test]

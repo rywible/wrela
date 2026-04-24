@@ -13,6 +13,7 @@ pub struct Module {
     pub enums: Arena<Enum>,
     pub interfaces: Arena<Interface>,
     pub shapes: Arena<Shape>,
+    pub games: Vec<GameRoot>,
     pub uses: Vec<UseStmt>,
 }
 
@@ -47,7 +48,25 @@ pub struct TypeParam {
 pub enum ClassRole {
     Class,
     Resource,
+    Event,
+    Command,
     Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameRoot {
+    pub name: SmolStr,
+    pub name_span: Option<TextRange>,
+    pub fixed_tick_hz: Option<u64>,
+    pub fixed_tick_present: bool,
+    pub fixed_tick_span: Option<TextRange>,
+    pub space: Option<SmolStr>,
+    pub space_span: Option<TextRange>,
+    pub main_view: Option<SmolStr>,
+    pub main_view_span: Option<TextRange>,
+    pub startup: Option<SmolStr>,
+    pub startup_span: Option<TextRange>,
+    pub unknown_keys: Vec<(SmolStr, Option<TextRange>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

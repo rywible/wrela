@@ -1,7 +1,9 @@
 use super::{
-    ENGINE_FRAME_TIMELINE_VERSION, EngineFenceId, EngineFrameReport, EngineFrameTimeline,
-    EngineFutureReserveReport, EngineJobAffinity, EngineJobHandle, EngineSpanDomain, EngineSpanId,
-    EngineSpanRecord, EngineSubsystemKind, EngineSubsystemReport, EngineSubsystemSpanRange,
+    ENGINE_FRAME_TIMELINE_VERSION, EngineBudgetDirectives, EngineFenceId,
+    EngineFrameIdentityReport, EngineFrameReport, EngineFrameTimeline, EngineFutureReserveReport,
+    EngineGpuFrameLedger, EngineJobAffinity, EngineJobHandle, EngineQueryLedger,
+    EngineReadbackLedger, EngineResourceLedger, EngineSpanDomain, EngineSpanId, EngineSpanRecord,
+    EngineSubsystemKind, EngineSubsystemReport, EngineSubsystemSpanRange,
 };
 use crate::gpu_runtime::GpuRuntimeMetrics;
 use crate::perf_target::PerfClosureEngineFrameBudget;
@@ -22,6 +24,8 @@ pub struct EngineSubsystemDescriptor {
 
 #[derive(Debug, Default)]
 pub struct EngineFrameContext {
+    pub input_snapshot_epoch: Option<u64>,
+    pub published_snapshot_epoch: Option<u64>,
     pub active_degradations: Vec<String>,
     pub violations: Vec<String>,
 }
@@ -337,7 +341,10 @@ impl EngineFrameScheduler {
             gpu_busy_micros,
             timeline_spans.frame_wall_time_micros,
         );
+        let scheduler_owned_queue_submits = timeline.queue_submission_spans.len() as u32;
         let queue_submit_count = observed_engine_frame_queue_submit_count(&reports);
+        let private_queue_submits =
+            queue_submit_count.saturating_sub(scheduler_owned_queue_submits);
         let hot_path_readback_bytes = reports
             .iter()
             .map(|report| report.hot_path_readback_bytes)
@@ -349,6 +356,27 @@ impl EngineFrameScheduler {
         let mut report = EngineFrameReport {
             scenario_id,
             frame_index,
+            identity: EngineFrameIdentityReport::default(),
+            state_advance: None,
+            resource_ledger: EngineResourceLedger::default(),
+            readback_ledger: EngineReadbackLedger::default(),
+            query_ledger: EngineQueryLedger::default(),
+            gpu_frame_ledger: EngineGpuFrameLedger {
+                scheduler_owned_queue_submits,
+                private_queue_submits,
+                resident_cache_hits: 0,
+                resident_cache_misses: 0,
+                upload_bytes: scene_reupload_bytes,
+                readback_ticket_count: 0,
+                attachment_cpu_bounce_count: 0,
+                cpu_screen_sample_allocations: 0,
+                violations: if private_queue_submits > 0 {
+                    vec!["engine_frame_private_gpu_submit_detected".to_string()]
+                } else {
+                    Vec::new()
+                },
+            },
+            budget_directives: EngineBudgetDirectives::default(),
             frame_wall_time_micros: timeline_spans.frame_wall_time_micros,
             cpu_critical_path_micros,
             gpu_critical_path_micros: (gpu_critical_path_micros > 0)

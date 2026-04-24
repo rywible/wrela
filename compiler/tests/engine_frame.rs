@@ -1,12 +1,23 @@
+use smol_str::SmolStr;
 use std::sync::{Arc, Mutex};
 use wrela::engine_frame::{
-    EngineFrameContext, EngineFrameError, EngineFrameReport, EngineFrameScheduler,
-    EngineFrameTimeline, EngineGpuTimingPolicy, EngineGraphBuilder, EngineJobAffinity,
-    EngineMeasurementPolicy, EngineRuntimeSource, EngineSpanDomain, EngineSpanId,
-    EngineSubsystemAdapter, EngineSubsystemDescriptor, EngineSubsystemKind, EngineSubsystemPlan,
-    EngineSubsystemReport, EngineSubsystemSpanRange,
+    EngineFrameContext, EngineFrameError, EngineFrameInput, EngineFrameReport, EngineFrameRuntime,
+    EngineFrameRuntimePolicy, EngineFrameScheduler, EngineFrameTimeline, EngineGpuTimingPolicy,
+    EngineGraphBuilder, EngineJobAffinity, EngineMeasurementPolicy, EngineQueryRequest,
+    EngineReadbackCategory, EngineReadbackManager, EngineReadbackReadiness, EngineReadbackRequest,
+    EngineResourceAccessMode, EngineResourceEpochState, EngineResourceId, EngineResourceResidency,
+    EngineRuntimeSource, EngineSpanDomain, EngineSpanId, EngineStateAdvanceExecutor,
+    EngineStateAdvanceInput, EngineSubsystemAdapter, EngineSubsystemDescriptor,
+    EngineSubsystemKind, EngineSubsystemPlan, EngineSubsystemReport, EngineSubsystemSpanRange,
 };
 use wrela::gpu_runtime::GpuRuntimeMetrics;
+use wrela::query_exec::stable_region_snapshot_handle;
+use wrela::state_advance::{
+    ChangeClass, ChangeSummary, StateAdvanceResult, TickInputBatch, TickInputEvent, TickInputKind,
+    WorldTransitionRecord,
+};
+use wrela::time_semantics::{PresentationFrame, SimulationTick, TemporalClock, WallClockStamp};
+use wrela::world_identity::SnapshotEpoch;
 use wrela_runtime::engine_executor::EngineExecutorConfig;
 
 fn timeline_measurement_policy() -> EngineMeasurementPolicy {
@@ -18,11 +29,476 @@ fn timeline_measurement_policy() -> EngineMeasurementPolicy {
     }
 }
 
+#[derive(Default)]
+struct NoopStateAdvanceExecutor;
+
+impl EngineStateAdvanceExecutor for NoopStateAdvanceExecutor {
+    fn advance(
+        &mut self,
+        input: EngineStateAdvanceInput,
+    ) -> Result<StateAdvanceResult, EngineFrameError> {
+        let previous = input.previous_snapshot.clone();
+        let next = previous.with_epoch(SnapshotEpoch(previous.epoch().0.saturating_add(1)));
+        Ok(StateAdvanceResult::new(
+            WorldTransitionRecord::new(
+                Some(previous),
+                next,
+                Some(input.previous_clock),
+                input.current_clock,
+                input.inputs,
+                Vec::new(),
+            ),
+            ChangeSummary::new(ChangeClass::Structural, "noop test advance"),
+        ))
+    }
+}
+
+struct IncompatibleStateAdvanceExecutor;
+
+impl EngineStateAdvanceExecutor for IncompatibleStateAdvanceExecutor {
+    fn advance(
+        &mut self,
+        input: EngineStateAdvanceInput,
+    ) -> Result<StateAdvanceResult, EngineFrameError> {
+        let previous = input.previous_snapshot.clone();
+        let next = previous.with_epoch(SnapshotEpoch(previous.epoch().0.saturating_add(1)));
+        Ok(StateAdvanceResult::new(
+            WorldTransitionRecord::new(
+                Some(previous),
+                next,
+                Some(input.previous_clock),
+                input.current_clock,
+                input.inputs,
+                Vec::new(),
+            ),
+            ChangeSummary::new(ChangeClass::Incompatible, "test incompatible advance"),
+        ))
+    }
+}
+
+fn runtime_input() -> EngineFrameInput {
+    let tick = SimulationTick::new(41);
+    let previous_snapshot =
+        stable_region_snapshot_handle(&SmolStr::new("engine_frame_runtime_test"));
+    EngineFrameInput {
+        scenario_id: "runtime_kernel_fixture".to_string(),
+        frame_index: 7,
+        previous_snapshot,
+        previous_clock: TemporalClock::new(
+            wrela::time_semantics::SnapshotEpoch::new(1),
+            SimulationTick::new(40),
+            PresentationFrame::new(6),
+            WallClockStamp::new(1000),
+        ),
+        current_clock: TemporalClock::new(
+            wrela::time_semantics::SnapshotEpoch::new(2),
+            tick,
+            PresentationFrame::new(7),
+            WallClockStamp::new(1016),
+        ),
+        tick_inputs: TickInputBatch::new(
+            tick,
+            vec![TickInputEvent::new(
+                tick,
+                TickInputKind::Command,
+                "player",
+                "MoveForward(strength=1.0)",
+            )],
+        ),
+        policy: EngineFrameRuntimePolicy::closure(),
+        query_requests: Vec::new(),
+        readback_requests: Vec::new(),
+    }
+}
+
+#[test]
+fn engine_frame_runtime_state_advance_publishes_authoritative_snapshot() {
+    let mut runtime = EngineFrameRuntime::new(Box::new(NoopStateAdvanceExecutor));
+    let output = runtime
+        .run_frame(runtime_input())
+        .expect("runtime frame should advance");
+
+    assert_eq!(output.snapshot.epoch(), SnapshotEpoch(2));
+    assert_eq!(output.report.identity.input_snapshot_epoch, 1);
+    assert_eq!(output.report.identity.output_snapshot_epoch, Some(2));
+    assert_eq!(output.report.state_advance.as_ref().unwrap().input_count, 1);
+    assert!(
+        output
+            .report
+            .resource_ledger
+            .accesses
+            .iter()
+            .any(|access| matches!(
+                (&access.resource, access.mode),
+                (
+                    EngineResourceId::WorldSnapshot { epoch: 2 },
+                    EngineResourceAccessMode::Write
+                )
+            ))
+    );
+    assert!(
+        output
+            .report
+            .subsystems
+            .iter()
+            .any(
+                |subsystem| subsystem.kind == EngineSubsystemKind::StateAdvance
+                    && subsystem.measurement_policy.runtime_source
+                        == EngineRuntimeSource::TimelineSpans
+            )
+    );
+}
+
+#[test]
+fn engine_frame_runtime_rejects_incompatible_state_advance() {
+    let mut runtime = EngineFrameRuntime::new(Box::new(IncompatibleStateAdvanceExecutor));
+    let error = runtime
+        .run_frame(runtime_input())
+        .expect_err("incompatible transition should fail the frame");
+    assert!(format!("{error}").contains("state advance change is incompatible"));
+}
+
+#[test]
+fn engine_frame_runtime_rejects_hot_path_readbacks_in_closure_policy() {
+    let mut input = runtime_input();
+    input.readback_requests.push(EngineReadbackRequest {
+        owner: EngineSubsystemKind::Query,
+        reason: "query-result".to_string(),
+        category: EngineReadbackCategory::Gameplay,
+        bytes: 64,
+        required_for_frame_completion: true,
+    });
+    let mut runtime = EngineFrameRuntime::new(Box::new(NoopStateAdvanceExecutor));
+    let error = runtime
+        .run_frame(input)
+        .expect_err("closure policy should reject hot-path readback");
+    assert!(format!("{error}").contains("hot-path readback rejected"));
+}
+
+#[test]
+fn engine_frame_runtime_dedupes_queries_on_snapshot_and_contract() {
+    let mut input = runtime_input();
+    input.query_requests = vec![
+        EngineQueryRequest {
+            owner: EngineSubsystemKind::Collision,
+            contract_id: "nearest-hit".to_string(),
+            query_kind: "spatial.nearest".to_string(),
+            required_this_tick: true,
+        },
+        EngineQueryRequest {
+            owner: EngineSubsystemKind::Presentation,
+            contract_id: "nearest-hit".to_string(),
+            query_kind: "spatial.nearest".to_string(),
+            required_this_tick: true,
+        },
+    ];
+    let mut runtime = EngineFrameRuntime::new(Box::new(NoopStateAdvanceExecutor));
+    let output = runtime
+        .run_frame(input)
+        .expect("runtime frame should batch queries");
+
+    assert_eq!(output.query_results.batches.len(), 1);
+    assert_eq!(output.query_results.batches[0].request_count, 2);
+    assert_eq!(output.query_results.batches[0].snapshot_epoch, 2);
+    assert_eq!(output.report.query_ledger.batches.len(), 1);
+}
+
+#[test]
+fn engine_frame_runtime_records_gpu_resident_query_handles_without_value_readback() {
+    let mut input = runtime_input();
+    input.query_requests = vec![EngineQueryRequest {
+        owner: EngineSubsystemKind::Collision,
+        contract_id: "nearest-hit".to_string(),
+        query_kind: "spatial.nearest".to_string(),
+        required_this_tick: true,
+    }];
+    let mut runtime = EngineFrameRuntime::new(Box::new(NoopStateAdvanceExecutor));
+    let output = runtime
+        .run_frame(input)
+        .expect("runtime frame should publish resident query handles");
+
+    assert_eq!(output.query_results.resident_handles.len(), 1);
+    let handle = &output.query_results.resident_handles[0];
+    assert_eq!(handle.snapshot_epoch, 2);
+    assert_eq!(handle.residency, EngineResourceResidency::GpuResident);
+    assert!(!handle.value_readback_scheduled);
+    assert_eq!(output.report.gpu_frame_ledger.readback_ticket_count, 0);
+    assert!(output.report.resource_ledger.states.iter().any(|state| {
+        state.resource == handle.resource
+            && state.residency == EngineResourceResidency::GpuResident
+            && state.epoch_state == EngineResourceEpochState::Valid { epoch: 2 }
+    }));
+}
+
+#[test]
+fn engine_frame_resource_ledger_rejects_wrong_epoch_consumers() {
+    let mut input = runtime_input();
+    input.query_requests = vec![EngineQueryRequest {
+        owner: EngineSubsystemKind::Presentation,
+        contract_id: "visibility".to_string(),
+        query_kind: "surface.sample".to_string(),
+        required_this_tick: true,
+    }];
+    let mut runtime = EngineFrameRuntime::new(Box::new(NoopStateAdvanceExecutor));
+    let output = runtime
+        .run_frame(input)
+        .expect("runtime frame should publish resource states");
+    let query_buffer = output.query_results.resident_handles[0].resource.clone();
+
+    assert!(
+        output
+            .report
+            .resource_ledger
+            .is_valid_for_epoch(&query_buffer, 2)
+    );
+    assert!(
+        !output
+            .report
+            .resource_ledger
+            .is_valid_for_epoch(&query_buffer, 1)
+    );
+}
+
+#[test]
+fn engine_frame_runtime_records_deferred_readback_tickets() {
+    let mut input = runtime_input();
+    input.readback_requests.push(EngineReadbackRequest {
+        owner: EngineSubsystemKind::Query,
+        reason: "debug-sampled-query".to_string(),
+        category: EngineReadbackCategory::Oracle,
+        bytes: 32,
+        required_for_frame_completion: false,
+    });
+    let mut runtime = EngineFrameRuntime::new(Box::new(NoopStateAdvanceExecutor));
+    let output = runtime
+        .run_frame(input)
+        .expect("deferred oracle readback should be ticketed");
+
+    assert_eq!(output.report.readback_ledger.tickets.len(), 1);
+    let ticket = &output.report.readback_ledger.tickets[0];
+    assert_eq!(ticket.owner, EngineSubsystemKind::Query);
+    assert_eq!(ticket.reason, "debug-sampled-query");
+    assert_eq!(ticket.bytes, 32);
+    assert_eq!(ticket.snapshot_epoch, 2);
+    assert_eq!(ticket.readiness, EngineReadbackReadiness::Deferred);
+    assert_eq!(output.report.gpu_frame_ledger.readback_ticket_count, 1);
+}
+
+#[test]
+fn engine_frame_runtime_rejects_attachment_cpu_bounce_in_closure_policy() {
+    let mut input = runtime_input();
+    input.readback_requests.push(EngineReadbackRequest {
+        owner: EngineSubsystemKind::Presentation,
+        reason: "color-attachment-cpu-bounce".to_string(),
+        category: EngineReadbackCategory::AttachmentCpuBounce,
+        bytes: 256,
+        required_for_frame_completion: true,
+    });
+    let mut runtime = EngineFrameRuntime::new(Box::new(NoopStateAdvanceExecutor));
+    let error = runtime
+        .run_frame(input)
+        .expect_err("closure policy should reject attachment CPU bounce");
+    assert!(format!("{error}").contains("attachment CPU bounce rejected"));
+}
+
+#[test]
+fn engine_readback_manager_is_the_policy_authority_for_deferred_tickets() {
+    let manager = EngineReadbackManager::new(EngineFrameRuntimePolicy::closure());
+    let ledger = manager
+        .register_frame_readbacks(
+            9,
+            vec![EngineReadbackRequest {
+                owner: EngineSubsystemKind::Collision,
+                reason: "collision-audit-sample".to_string(),
+                category: EngineReadbackCategory::Oracle,
+                bytes: 48,
+                required_for_frame_completion: false,
+            }],
+        )
+        .expect("oracle readback should be deferred under closure policy");
+
+    assert_eq!(ledger.accepted.len(), 1);
+    assert_eq!(ledger.tickets.len(), 1);
+    assert_eq!(ledger.tickets[0].snapshot_epoch, 9);
+    assert_eq!(
+        ledger.tickets[0].readiness,
+        EngineReadbackReadiness::Deferred
+    );
+}
+
+#[test]
+fn engine_frame_runtime_rejects_subsystem_reported_hot_path_readbacks() {
+    struct HotReadbackAdapter;
+
+    impl EngineSubsystemAdapter for HotReadbackAdapter {
+        fn build(
+            &mut self,
+            builder: &mut EngineGraphBuilder,
+        ) -> Result<EngineSubsystemPlan, EngineFrameError> {
+            let descriptor = EngineSubsystemDescriptor {
+                kind: EngineSubsystemKind::Collision,
+                label: "collision".to_string(),
+                runs_after: vec![EngineSubsystemKind::StateAdvance],
+                requires_gpu: true,
+                allows_hot_path_readback: false,
+            };
+            let job = builder.add_synthetic_job(
+                descriptor.kind.clone(),
+                "collision.execute".to_string(),
+                EngineJobAffinity::Gpu,
+                EngineSpanDomain::Gpu,
+                Vec::new(),
+                true,
+                1,
+            );
+            Ok(EngineSubsystemPlan::new(
+                descriptor.clone(),
+                vec![job],
+                vec![job],
+                move |_timeline: &EngineFrameTimeline, _ctx: &mut EngineFrameContext| {
+                    Ok(EngineSubsystemReport {
+                        kind: descriptor.kind.clone(),
+                        label: descriptor.label.clone(),
+                        work_items: 1,
+                        cpu_critical_path_micros: 1,
+                        gpu_critical_path_micros: Some(1),
+                        executed_wall_time_micros: 1,
+                        self_reported_runtime_micros: Some(1),
+                        orchestration_gap_micros: 0,
+                        measurement_policy: timeline_measurement_policy(),
+                        queue_submit_count: 1,
+                        hot_path_readback_bytes: 4,
+                        scene_reupload_bytes: 0,
+                        timestamped_pass_count: 0,
+                        timing_readback_bytes: 0,
+                        wait_time_micros: 0,
+                        notes: Vec::new(),
+                    })
+                },
+            ))
+        }
+    }
+
+    let mut runtime = EngineFrameRuntime::new(Box::new(NoopStateAdvanceExecutor));
+    let error = runtime
+        .run_frame_with_subsystems(runtime_input(), vec![Box::new(HotReadbackAdapter)])
+        .expect_err("closure policy should reject subsystem-reported readbacks");
+
+    assert!(format!("{error}").contains("hot-path readback rejected"));
+}
+
+#[test]
+fn engine_frame_runtime_runs_kernel_subsystems_after_authoritative_state_advance() {
+    struct QueryKernelAdapter {
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl EngineSubsystemAdapter for QueryKernelAdapter {
+        fn build(
+            &mut self,
+            builder: &mut EngineGraphBuilder,
+        ) -> Result<EngineSubsystemPlan, EngineFrameError> {
+            let descriptor = EngineSubsystemDescriptor {
+                kind: EngineSubsystemKind::Query,
+                label: "query".to_string(),
+                runs_after: vec![EngineSubsystemKind::StateAdvance],
+                requires_gpu: true,
+                allows_hot_path_readback: false,
+            };
+            let log = Arc::clone(&self.log);
+            let job = builder.add_job(
+                descriptor.kind.clone(),
+                "query.execute".to_string(),
+                EngineJobAffinity::Gpu,
+                EngineSpanDomain::Gpu,
+                Vec::new(),
+                true,
+                move || {
+                    log.lock().expect("log").push("query".to_string());
+                    Ok(())
+                },
+            );
+            Ok(EngineSubsystemPlan::new(
+                descriptor.clone(),
+                vec![job],
+                vec![job],
+                move |_timeline: &EngineFrameTimeline, ctx: &mut EngineFrameContext| {
+                    if ctx.published_snapshot_epoch != Some(2) {
+                        return Err(EngineFrameError::Message(format!(
+                            "query did not receive published snapshot epoch: {:?}",
+                            ctx.published_snapshot_epoch
+                        )));
+                    }
+                    Ok(EngineSubsystemReport {
+                        kind: descriptor.kind.clone(),
+                        label: descriptor.label.clone(),
+                        work_items: 1,
+                        cpu_critical_path_micros: 0,
+                        gpu_critical_path_micros: Some(0),
+                        executed_wall_time_micros: 0,
+                        self_reported_runtime_micros: Some(0),
+                        orchestration_gap_micros: 0,
+                        measurement_policy: timeline_measurement_policy(),
+                        queue_submit_count: 0,
+                        hot_path_readback_bytes: 0,
+                        scene_reupload_bytes: 0,
+                        timestamped_pass_count: 0,
+                        timing_readback_bytes: 0,
+                        wait_time_micros: 0,
+                        notes: vec![
+                            "kernel-owned".to_string(),
+                            "consumed_snapshot_epoch=2".to_string(),
+                        ],
+                    })
+                },
+            ))
+        }
+    }
+
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut runtime = EngineFrameRuntime::new(Box::new(NoopStateAdvanceExecutor));
+    let output = runtime
+        .run_frame_with_subsystems(
+            runtime_input(),
+            vec![Box::new(QueryKernelAdapter {
+                log: Arc::clone(&log),
+            })],
+        )
+        .expect("runtime should execute state advance plus kernel subsystem");
+
+    assert_eq!(log.lock().expect("log").as_slice(), ["query"]);
+    assert!(
+        output
+            .report
+            .subsystem(EngineSubsystemKind::StateAdvance)
+            .is_some()
+    );
+    assert!(
+        output
+            .report
+            .subsystem(EngineSubsystemKind::Query)
+            .is_some()
+    );
+    assert_eq!(output.report.identity.output_snapshot_epoch, Some(2));
+    assert!(output.report.resource_ledger.accesses.iter().any(|access| {
+        access.subsystem == EngineSubsystemKind::Query
+            && access.resource == (EngineResourceId::WorldSnapshot { epoch: 2 })
+            && access.mode == EngineResourceAccessMode::Read
+    }));
+}
+
 #[test]
 fn engine_frame_report_round_trips_through_json() {
     let report = EngineFrameReport {
         scenario_id: "closure_fixture".to_string(),
         frame_index: 3,
+        identity: Default::default(),
+        state_advance: None,
+        resource_ledger: Default::default(),
+        readback_ledger: Default::default(),
+        query_ledger: Default::default(),
+        gpu_frame_ledger: Default::default(),
+        budget_directives: Default::default(),
         frame_wall_time_micros: 8_100,
         cpu_critical_path_micros: 5_400,
         gpu_critical_path_micros: Some(3_200),
@@ -741,5 +1217,13 @@ fn engine_frame_scheduler_records_budget_violations_and_reserve_accounting() {
         report
             .violations
             .contains(&"engine_frame_future_reserve_exhausted".to_string())
+    );
+    assert_eq!(report.gpu_frame_ledger.scheduler_owned_queue_submits, 2);
+    assert_eq!(report.gpu_frame_ledger.private_queue_submits, 1);
+    assert!(
+        report
+            .gpu_frame_ledger
+            .violations
+            .contains(&"engine_frame_private_gpu_submit_detected".to_string())
     );
 }

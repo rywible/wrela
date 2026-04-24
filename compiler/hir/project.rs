@@ -354,6 +354,7 @@ pub fn load_project_with_roots(
         enums: Default::default(),
         interfaces: Default::default(),
         shapes: Default::default(),
+        games: Vec::new(),
         uses: Vec::new(),
     };
 
@@ -640,6 +641,7 @@ pub fn load_project_with_roots(
                 .interface_owner_path_by_name
                 .insert(interface.name.clone(), module.path.clone());
         }
+        merged.games.extend(module.module.games.iter().cloned());
     }
 
     let entry_source = loader
