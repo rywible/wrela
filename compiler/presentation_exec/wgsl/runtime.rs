@@ -41,8 +41,11 @@ pub(super) fn presentation_framegraph_error(
 pub(super) fn note_framegraph_submission_metrics(
     submission: &PresentationFramegraphSubmission,
     gpu_runtime: &mut GpuRuntimeMetrics,
+    queue_submit_delta: u32,
 ) {
-    gpu_runtime.queue_submit_count = gpu_runtime.queue_submit_count.saturating_add(1);
+    gpu_runtime.queue_submit_count = gpu_runtime
+        .queue_submit_count
+        .saturating_add(queue_submit_delta);
     gpu_runtime.transient_buffer_creations = gpu_runtime
         .transient_buffer_creations
         .saturating_add(submission.readbacks.len() as u32)
@@ -270,4 +273,34 @@ pub(super) fn build_primary_batch_query_trace(
         observability,
         cost_report,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_submission(queue_submit_count: u32) -> PresentationFramegraphSubmission {
+        PresentationFramegraphSubmission {
+            readbacks: Vec::new(),
+            gpu_elapsed_micros: Vec::new(),
+            timestamps_supported: false,
+            documented_exceptions: Vec::new(),
+            queue_submit_count,
+            swapchain_observation_labels: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn submission_metrics_add_queue_submit_delta_to_existing_runtime_submits() {
+        let mut gpu_runtime = GpuRuntimeMetrics {
+            queue_submit_count: 3,
+            ..GpuRuntimeMetrics::default()
+        };
+
+        note_framegraph_submission_metrics(&empty_submission(4), &mut gpu_runtime, 1);
+        assert_eq!(gpu_runtime.queue_submit_count, 4);
+
+        note_framegraph_submission_metrics(&empty_submission(5), &mut gpu_runtime, 1);
+        assert_eq!(gpu_runtime.queue_submit_count, 5);
+    }
 }

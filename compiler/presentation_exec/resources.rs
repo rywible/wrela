@@ -575,7 +575,8 @@ fn semantic_default_value(attachment: &FrameAttachmentContract) -> KernelValue {
         | FrameAttachmentKind::Radiance
         | FrameAttachmentKind::Medium
         | FrameAttachmentKind::Motion
-        | FrameAttachmentKind::Color => zero_value_for_schema(&attachment.element_schema),
+        | FrameAttachmentKind::Color
+        | FrameAttachmentKind::SwapchainColor => zero_value_for_schema(&attachment.element_schema),
     }
 }
 

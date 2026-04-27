@@ -5,6 +5,7 @@ edition = "2024"
 license = "MIT"
 description = "The Wrela programming language compiler"
 repository = "https://github.com/ryanwible/wrela"
+build = "build.rs"
 
 [features]
 default = []
@@ -39,6 +40,8 @@ toml = "0.8"
 pollster = "0.4"
 wgpu = "29.0.1"
 naga = { version = "29.0.1", features = ["wgsl-in"] }
+ciborium = "0.2.2"
+zstd = "0.13"
 
 [dev-dependencies]
 proptest = "1.9.0"

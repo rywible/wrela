@@ -172,6 +172,21 @@ impl<'a> Parser<'a> {
         }
     }
 
+    pub fn peek_nth_non_trivia_text(&self, target: usize) -> &str {
+        let mut raw = 0;
+        let mut seen = 0;
+        loop {
+            let kind = self.source.peek_at(raw);
+            if !kind.is_trivia() {
+                if seen == target {
+                    return self.source.text_at(raw);
+                }
+                seen += 1;
+            }
+            raw += 1;
+        }
+    }
+
     pub fn bump(&mut self) {
         loop {
             let kind = self.source.peek();
@@ -625,6 +640,72 @@ return x
 ";
         let (_node, errors) = parse_with_errors(text);
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn runtime_foundation_declarations_parse_as_root_items() {
+        let text = "\
+input_map Controls {
+    action MoveForward = key.w | gamepad.left_stick_y < -0.2
+}
+body PlayerBody(mass_scale: F32) {
+    mass: 1
+    class: dynamic
+}
+move Dash(speed: F32) {
+    duration: 0.2
+    phase Windup {
+        start: 0.0
+    }
+}
+moveset PlayerMoves {
+    include: Dash
+    state idle {
+        on input.strike => draw
+    }
+}
+@audio_rt audio field Gain(sample: F32) -> F32 {
+    return sample
+}
+voice Beep(freq: F32) {
+    gain: 1
+}
+@audio_rt media field Thumbnail(path: String) -> F32 {
+    return 0.0
+}
+system tick() -> Nothing {
+    return
+}
+";
+        let (node, errors) = parse_with_errors(text);
+        assert!(errors.is_empty(), "{errors:?}");
+        let kinds = node
+            .descendants()
+            .map(|node| format!("{:?}", node.kind()))
+            .collect::<Vec<_>>();
+        assert!(kinds.iter().any(|kind| kind == "InputMapDef"));
+        assert!(kinds.iter().any(|kind| kind == "InputMapAction"));
+        assert!(kinds.iter().any(|kind| kind == "BodyDef"));
+        assert!(kinds.iter().any(|kind| kind == "MoveDef"));
+        assert!(kinds.iter().any(|kind| kind == "MovesetDef"));
+        assert!(kinds.iter().any(|kind| kind == "AudioFieldDecl"));
+        assert!(kinds.iter().any(|kind| kind == "VoiceDecl"));
+        assert!(kinds.iter().any(|kind| kind == "MediaFieldDecl"));
+        assert!(kinds.iter().any(|kind| kind == "SystemDef"));
+    }
+
+    #[test]
+    fn runtime_placeholder_audio_block_no_longer_parses_cleanly() {
+        let text = "\
+audio main {
+    master_gain = 1
+}
+";
+        let (_node, errors) = parse_with_errors(text);
+        assert!(
+            !errors.is_empty(),
+            "legacy placeholder audio block parsed without errors"
+        );
     }
 
     #[test]

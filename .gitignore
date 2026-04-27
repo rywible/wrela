@@ -40,3 +40,9 @@ benchmarks/**/presentation_debug/
 .cursor
 .opencode
 .env
+
+# RFC 0011 L2: scratch working directories produced by `wrela-cli` integration
+# tests (e.g. `cargo test -p wrela --test cli`). Each test creates a temp
+# `wrela-cli-XXXXXX/` next to the binary; never check those into git.
+wrela-cli-*/
+

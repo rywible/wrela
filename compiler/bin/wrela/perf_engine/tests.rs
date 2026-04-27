@@ -2532,6 +2532,8 @@ fn closure_verdict_fails_when_engine_frame_lane_is_violated() {
             active_degradations: vec![],
             violations: vec!["engine_frame_future_reserve_exhausted".to_string()],
             notes: vec![],
+            motion_to_photon_median_ms: None,
+            motion_to_photon_budget_ms: None,
         },
         &[],
         &[],
@@ -2606,6 +2608,8 @@ fn closure_verdict_keeps_frame_lane_as_compatibility_signal_for_engine_frame_sui
         active_degradations: vec![],
         violations: vec![],
         notes: vec!["engine-frame closure met the canonical 1080p120 contract".to_string()],
+        motion_to_photon_median_ms: None,
+        motion_to_photon_budget_ms: None,
     };
 
     let verdict = build_closure_verdict(
@@ -3516,6 +3520,7 @@ fn sample_engine_frame_scheduler_report(
         overlap_ratio: 0.0,
         queue_submission_spans: vec![],
         subsystem_span_ranges: vec![],
+        timeline_spans: vec![],
         subsystems: vec![
             wrela::engine_frame::EngineSubsystemReport {
                 kind: wrela::engine_frame::EngineSubsystemKind::StateAdvance,
@@ -3580,6 +3585,8 @@ fn sample_engine_frame_scheduler_report(
         future_subsystem_reserve,
         active_degradations,
         violations,
+        latency: wrela::engine_frame::MotionToPhotonContract::default(),
+        closure_findings: Vec::new(),
     }
 }
 

@@ -103,6 +103,10 @@ impl<P> GpuResidentSceneCache<P> {
         self.entries.get(key).cloned()
     }
 
+    pub fn remove(&mut self, key: &GpuResidentSceneKey) -> Option<Arc<GpuResidentScene<P>>> {
+        self.entries.remove(key)
+    }
+
     pub fn get_or_insert_with<E, F>(
         &mut self,
         key: GpuResidentSceneKey,

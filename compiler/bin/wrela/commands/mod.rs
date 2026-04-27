@@ -54,6 +54,7 @@ mod command_dispatch;
 mod contracts_command;
 pub(crate) mod fix_fmt;
 mod frame_live;
+mod live_command;
 mod naming_policy;
 mod observer_projection;
 pub(crate) mod presentation_command;
@@ -71,8 +72,8 @@ use build_compile::{
     BudgetPolicyV1, BuildPerfTimings, TestTarget, certification_cache_hash, emit_build_perf_event,
     emit_certification_cache_hit, enforce_importable_coverage_gate, enforce_public_surface_gate,
     evaluate_connector_contract_gate, fnv1a64_hex, hash_source_fingerprint, init_project,
-    load_benchmark_manifest, project_record, query_contract_catalog_snapshot,
-    resolve_benchmark_manifest_path, resolve_budget_policy_v1,
+    init_project_with_template, load_benchmark_manifest, project_record,
+    query_contract_catalog_snapshot, resolve_benchmark_manifest_path, resolve_budget_policy_v1,
     resolve_certification_test_selection, resolve_path_from_owner_spans, resolve_test_target,
     resolve_toolchain_version, update_public_surface_baseline, verify_certification_report,
     write_certification_report, write_test_maintenance_summary,

@@ -1161,6 +1161,7 @@ fn frame_attachment_kind_name(kind: FrameAttachmentKind) -> &'static str {
         FrameAttachmentKind::Medium => "medium",
         FrameAttachmentKind::Motion => "motion",
         FrameAttachmentKind::Color => "color",
+        FrameAttachmentKind::SwapchainColor => "swapchain_color",
     }
 }
 

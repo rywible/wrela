@@ -21,6 +21,13 @@ pub fn lower_root_body(root: ast::Root) -> Option<Body> {
             ast::Stmt::FuncDef(_)
             | ast::Stmt::KernelDef(_)
             | ast::Stmt::SystemDef(_)
+            | ast::Stmt::InputMapDef(_)
+            | ast::Stmt::BodyDef(_)
+            | ast::Stmt::MoveDef(_)
+            | ast::Stmt::MovesetDef(_)
+            | ast::Stmt::AudioFieldDecl(_)
+            | ast::Stmt::VoiceDecl(_)
+            | ast::Stmt::MediaFieldDecl(_)
             | ast::Stmt::FieldDecl(_)
             | ast::Stmt::RegionDecl(_)
             | ast::Stmt::DomainDecl(_)
@@ -89,191 +96,189 @@ impl LoweringContext {
     fn lower_module(&mut self, root: ast::Root) -> Module {
         for stmt in root.statements() {
             match stmt {
-                ast::Stmt::FuncDef(f) => {
-                    let func = self.lower_func(f);
-                    self.module.functions.alloc(func);
-                }
-                ast::Stmt::KernelDef(f) => {
-                    let func = self.lower_kernel_def(f);
-                    self.module.functions.alloc(func);
-                }
-                ast::Stmt::SystemDef(f) => {
-                    let func = self.lower_system_def(f);
-                    self.module.functions.alloc(func);
-                }
-                ast::Stmt::FieldDecl(f) => {
-                    let func = self.lower_field_decl(f);
-                    self.module.functions.alloc(func);
-                }
-                ast::Stmt::RegionDecl(r) => {
-                    let func = self.lower_region_decl(r);
-                    self.module.functions.alloc(func);
-                }
-                ast::Stmt::DomainDecl(d) => {
-                    let func = self.lower_domain_decl(d);
-                    self.module.functions.alloc(func);
-                }
-                ast::Stmt::RenderDecl(r) => {
-                    let func = self.lower_render_decl(r);
-                    self.module.functions.alloc(func);
-                }
-                ast::Stmt::ViewDecl(v) => {
-                    let func = self.lower_view_decl(v);
-                    self.module.functions.alloc(func);
-                }
-                ast::Stmt::RadianceDecl(f) => {
-                    let func = self.lower_radiance_decl(f);
-                    self.module.functions.alloc(func);
-                }
-                ast::Stmt::VolumeDecl(f) => {
-                    let func = self.lower_volume_decl(f);
-                    self.module.functions.alloc(func);
-                }
-                ast::Stmt::MaterialDecl(f) => {
-                    let func = self.lower_material_decl(f);
-                    self.module.functions.alloc(func);
-                }
-                ast::Stmt::ShapeDecl(s) => {
-                    let shape = self.lower_shape_decl(s);
-                    self.module.shapes.alloc(shape);
-                }
-                ast::Stmt::ClassDef(c) => {
-                    if self.class_is_interface(&c) {
-                        let interface = self.lower_interface_from_class(c);
-                        self.module.interfaces.alloc(interface);
-                    } else {
-                        let class = self.lower_class(c);
-                        self.module.classes.alloc(class);
-                    }
-                }
-                ast::Stmt::ResourceDef(c) => {
-                    let class = self.lower_class_like(c, ClassRole::Resource);
-                    self.module.classes.alloc(class);
-                }
-                ast::Stmt::EventDef(c) => {
-                    let class = self.lower_class_like(c, ClassRole::Event);
-                    self.module.classes.alloc(class);
-                }
-                ast::Stmt::CommandDef(c) => {
-                    let class = self.lower_class_like(c, ClassRole::Command);
-                    self.module.classes.alloc(class);
-                }
-                ast::Stmt::GameDef(g) => {
-                    let game = self.lower_game_def(g);
-                    self.module.games.push(game);
-                }
-                ast::Stmt::ValueDef(c) => {
-                    let class = self.lower_class_like(c, ClassRole::Value);
-                    self.module.classes.alloc(class);
-                }
-                ast::Stmt::EnumDef(e) => {
-                    let en = self.lower_enum(e);
-                    self.module.enums.alloc(en);
-                }
                 ast::Stmt::PrivateBlock(block) => {
                     for stmt in block.statements() {
-                        match stmt {
-                            ast::Stmt::FuncDef(f) => {
-                                let func = self.lower_func(f);
-                                self.module.functions.alloc(func);
-                            }
-                            ast::Stmt::KernelDef(f) => {
-                                let func = self.lower_kernel_def(f);
-                                self.module.functions.alloc(func);
-                            }
-                            ast::Stmt::SystemDef(f) => {
-                                let func = self.lower_system_def(f);
-                                self.module.functions.alloc(func);
-                            }
-                            ast::Stmt::FieldDecl(f) => {
-                                let func = self.lower_field_decl(f);
-                                self.module.functions.alloc(func);
-                            }
-                            ast::Stmt::RegionDecl(r) => {
-                                let func = self.lower_region_decl(r);
-                                self.module.functions.alloc(func);
-                            }
-                            ast::Stmt::DomainDecl(d) => {
-                                let func = self.lower_domain_decl(d);
-                                self.module.functions.alloc(func);
-                            }
-                            ast::Stmt::RenderDecl(r) => {
-                                let func = self.lower_render_decl(r);
-                                self.module.functions.alloc(func);
-                            }
-                            ast::Stmt::ViewDecl(v) => {
-                                let func = self.lower_view_decl(v);
-                                self.module.functions.alloc(func);
-                            }
-                            ast::Stmt::RadianceDecl(f) => {
-                                let func = self.lower_radiance_decl(f);
-                                self.module.functions.alloc(func);
-                            }
-                            ast::Stmt::VolumeDecl(f) => {
-                                let func = self.lower_volume_decl(f);
-                                self.module.functions.alloc(func);
-                            }
-                            ast::Stmt::MaterialDecl(f) => {
-                                let func = self.lower_material_decl(f);
-                                self.module.functions.alloc(func);
-                            }
-                            ast::Stmt::ShapeDecl(s) => {
-                                let shape = self.lower_shape_decl(s);
-                                self.module.shapes.alloc(shape);
-                            }
-                            ast::Stmt::ClassDef(c) => {
-                                if self.class_is_interface(&c) {
-                                    let interface = self.lower_interface_from_class(c);
-                                    self.module.interfaces.alloc(interface);
-                                } else {
-                                    let class = self.lower_class(c);
-                                    self.module.classes.alloc(class);
-                                }
-                            }
-                            ast::Stmt::ResourceDef(c) => {
-                                let class = self.lower_class_like(c, ClassRole::Resource);
-                                self.module.classes.alloc(class);
-                            }
-                            ast::Stmt::EventDef(c) => {
-                                let class = self.lower_class_like(c, ClassRole::Event);
-                                self.module.classes.alloc(class);
-                            }
-                            ast::Stmt::CommandDef(c) => {
-                                let class = self.lower_class_like(c, ClassRole::Command);
-                                self.module.classes.alloc(class);
-                            }
-                            ast::Stmt::GameDef(g) => {
-                                let game = self.lower_game_def(g);
-                                self.module.games.push(game);
-                            }
-                            ast::Stmt::ValueDef(c) => {
-                                let class = self.lower_class_like(c, ClassRole::Value);
-                                self.module.classes.alloc(class);
-                            }
-                            ast::Stmt::EnumDef(e) => {
-                                let en = self.lower_enum(e);
-                                self.module.enums.alloc(en);
-                            }
-                            _ => {}
-                        }
+                        self.lower_module_decl_stmt(stmt);
                     }
                 }
-                ast::Stmt::UseStmt(u) => {
-                    let (names, module, module_span) = parse_use_stmt(&u);
-                    self.module.uses.push(UseStmt {
-                        names,
-                        module,
-                        module_span,
-                        span: u.syntax().text_range(),
-                    });
-                }
-                _ => {
-                    // Top-level executable statements are rejected; entrypoint is `run`.
+                stmt => {
+                    self.lower_module_decl_stmt(stmt);
                 }
             }
         }
         self.finalize_field_metadata();
         std::mem::take(&mut self.module)
+    }
+
+    fn lower_module_decl_stmt(&mut self, stmt: ast::Stmt) -> bool {
+        match stmt {
+            ast::Stmt::FuncDef(f) => {
+                let func = self.lower_func(f);
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::KernelDef(f) => {
+                let func = self.lower_kernel_def(f);
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::SystemDef(f) => {
+                let func = self.lower_system_def(f);
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::InputMapDef(d) => {
+                let metadata = RuntimeFunctionMetadata::InputMap(self.lower_input_map_metadata(&d));
+                let func = self.lower_named_runtime_decl(
+                    d.name(),
+                    d.syntax(),
+                    FunctionRole::InputMap,
+                    Vec::new(),
+                    Some(metadata),
+                );
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::BodyDef(d) => {
+                let params = d.params().map(|p| self.lower_param(p)).collect();
+                let metadata = RuntimeFunctionMetadata::Clauses(
+                    self.lower_runtime_clauses_metadata(d.clauses()),
+                );
+                let func = self.lower_named_runtime_decl(
+                    d.name(),
+                    d.syntax(),
+                    FunctionRole::Body,
+                    params,
+                    Some(metadata),
+                );
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::MoveDef(d) => {
+                let params = d.params().map(|p| self.lower_param(p)).collect();
+                let metadata = RuntimeFunctionMetadata::Clauses(
+                    self.lower_runtime_clauses_metadata(d.clauses()),
+                );
+                let func = self.lower_named_runtime_decl(
+                    d.name(),
+                    d.syntax(),
+                    FunctionRole::Move,
+                    params,
+                    Some(metadata),
+                );
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::MovesetDef(d) => {
+                let metadata = RuntimeFunctionMetadata::Clauses(
+                    self.lower_runtime_clauses_metadata(d.clauses()),
+                );
+                let func = self.lower_named_runtime_decl(
+                    d.name(),
+                    d.syntax(),
+                    FunctionRole::Moveset,
+                    Vec::new(),
+                    Some(metadata),
+                );
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::AudioFieldDecl(f) => {
+                let func = self.lower_audio_field_decl(f);
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::VoiceDecl(v) => {
+                let params = v.params().map(|p| self.lower_param(p)).collect();
+                let metadata = RuntimeFunctionMetadata::Clauses(
+                    self.lower_runtime_clauses_metadata(v.clauses()),
+                );
+                let func = self.lower_named_runtime_decl(
+                    v.name(),
+                    v.syntax(),
+                    FunctionRole::Voice,
+                    params,
+                    Some(metadata),
+                );
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::MediaFieldDecl(f) => {
+                let func = self.lower_media_field_decl(f);
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::FieldDecl(f) => {
+                let func = self.lower_field_decl(f);
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::RegionDecl(r) => {
+                let func = self.lower_region_decl(r);
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::DomainDecl(d) => {
+                let func = self.lower_domain_decl(d);
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::RenderDecl(r) => {
+                let func = self.lower_render_decl(r);
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::ViewDecl(v) => {
+                let func = self.lower_view_decl(v);
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::RadianceDecl(f) => {
+                let func = self.lower_radiance_decl(f);
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::VolumeDecl(f) => {
+                let func = self.lower_volume_decl(f);
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::MaterialDecl(f) => {
+                let func = self.lower_material_decl(f);
+                self.module.functions.alloc(func);
+            }
+            ast::Stmt::ShapeDecl(s) => {
+                let shape = self.lower_shape_decl(s);
+                self.module.shapes.alloc(shape);
+            }
+            ast::Stmt::ClassDef(c) => {
+                if self.class_is_interface(&c) {
+                    let interface = self.lower_interface_from_class(c);
+                    self.module.interfaces.alloc(interface);
+                } else {
+                    let class = self.lower_class(c);
+                    self.module.classes.alloc(class);
+                }
+            }
+            ast::Stmt::ResourceDef(c) => {
+                let class = self.lower_class_like(c, ClassRole::Resource);
+                self.module.classes.alloc(class);
+            }
+            ast::Stmt::EventDef(c) => {
+                let class = self.lower_class_like(c, ClassRole::Event);
+                self.module.classes.alloc(class);
+            }
+            ast::Stmt::CommandDef(c) => {
+                let class = self.lower_class_like(c, ClassRole::Command);
+                self.module.classes.alloc(class);
+            }
+            ast::Stmt::GameDef(g) => {
+                let game = self.lower_game_def(g);
+                self.module.games.push(game);
+            }
+            ast::Stmt::ValueDef(c) => {
+                let class = self.lower_class_like(c, ClassRole::Value);
+                self.module.classes.alloc(class);
+            }
+            ast::Stmt::EnumDef(e) => {
+                let en = self.lower_enum(e);
+                self.module.enums.alloc(en);
+            }
+            ast::Stmt::UseStmt(u) => {
+                let (names, module, module_span) = parse_use_stmt(&u);
+                self.module.uses.push(UseStmt {
+                    names,
+                    module,
+                    module_span,
+                    span: u.syntax().text_range(),
+                });
+            }
+            _ => return false,
+        }
+        true
     }
 
     fn finalize_field_metadata(&mut self) {
@@ -1129,6 +1134,7 @@ impl LoweringContext {
             presentation: None,
             field_graph: None,
             system_metadata: None,
+            runtime_metadata: None,
             type_params,
             params,
             ret_type,
@@ -1166,6 +1172,7 @@ impl LoweringContext {
             presentation: None,
             field_graph: None,
             system_metadata: parse_system_metadata(f.syntax()),
+            runtime_metadata: None,
             type_params,
             params,
             ret_type,
@@ -1203,7 +1210,184 @@ impl LoweringContext {
             presentation: None,
             field_graph: None,
             system_metadata: None,
+            runtime_metadata: None,
             type_params,
+            params,
+            ret_type,
+            body: Some(body_ctx.body),
+        }
+    }
+
+    fn lower_named_runtime_decl(
+        &mut self,
+        name: Option<SyntaxToken>,
+        syntax: &SyntaxNode,
+        role: FunctionRole,
+        params: Vec<Param>,
+        runtime_metadata: Option<RuntimeFunctionMetadata>,
+    ) -> Function {
+        let name_span = name.as_ref().map(|t| t.text_range());
+        let name = name
+            .as_ref()
+            .map(|t| SmolStr::new(t.text()))
+            .unwrap_or_default();
+
+        Function {
+            name,
+            name_span,
+            attributes: Vec::new(),
+            visibility: visibility_for_node_default(syntax),
+            kind: FunctionKind::Function,
+            role,
+            field: None,
+            region: None,
+            domain: None,
+            domain_execution_policy: None,
+            presentation: None,
+            field_graph: None,
+            system_metadata: None,
+            runtime_metadata,
+            type_params: Vec::new(),
+            params,
+            ret_type: None,
+            body: Some(Self::empty_body()),
+        }
+    }
+
+    fn lower_input_map_metadata(&self, d: &ast::InputMapDef) -> InputMapMetadata {
+        InputMapMetadata {
+            actions: d
+                .actions()
+                .map(|action| InputMapActionMetadata {
+                    name: action
+                        .name()
+                        .map(|token| SmolStr::new(token.text()))
+                        .unwrap_or_default(),
+                    name_span: action.name().map(|token| token.text_range()),
+                    bindings: action
+                        .bindings()
+                        .map(|binding| {
+                            let comparison =
+                                binding
+                                    .comparison_op()
+                                    .map(|op| InputBindingComparisonMetadata {
+                                        op: SmolStr::new(op.text()),
+                                        value: SmolStr::new(
+                                            binding.comparison_value_text().unwrap_or_default(),
+                                        ),
+                                        value_span: None,
+                                    });
+                            InputBindingMetadata {
+                                path: SmolStr::new(binding.path_text()),
+                                path_span: None,
+                                comparison,
+                            }
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    fn lower_runtime_clauses_metadata(
+        &self,
+        clauses: impl Iterator<Item = ast::RuntimeClause>,
+    ) -> RuntimeClausesMetadata {
+        RuntimeClausesMetadata {
+            clauses: clauses
+                .map(|clause| self.lower_runtime_clause_metadata(clause))
+                .collect(),
+        }
+    }
+
+    fn lower_runtime_clause_metadata(&self, clause: ast::RuntimeClause) -> RuntimeClauseMetadata {
+        RuntimeClauseMetadata {
+            name: clause
+                .name()
+                .map(|token| SmolStr::new(token.text()))
+                .unwrap_or_default(),
+            name_span: clause.name().map(|token| token.text_range()),
+            value: clause.value_text().map(SmolStr::new),
+            nested: clause.nested(),
+            clauses: clause
+                .clauses()
+                .map(|child| self.lower_runtime_clause_metadata(child))
+                .collect(),
+        }
+    }
+
+    fn lower_audio_field_decl(&mut self, f: ast::AudioFieldDecl) -> Function {
+        let name = f.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let name_span = f.name().map(|t| t.text_range());
+        let visibility = visibility_for_node_default(f.syntax());
+        let audio_rt = f.audio_rt();
+        let params = f.params().map(|p| self.lower_param(p)).collect();
+        let ret_type = f.ret_type().map(|t| self.lower_type_ref(t));
+
+        let mut body_ctx = BodyLoweringContext::new();
+        for stmt in f.statements() {
+            let s = body_ctx.lower_stmt(stmt);
+            body_ctx.body.root_stmts.push(s);
+        }
+        Self::finalize_implicit_return(&mut body_ctx.body, ret_type.as_ref());
+
+        Function {
+            name,
+            name_span,
+            attributes: Vec::new(),
+            visibility,
+            kind: FunctionKind::Function,
+            role: FunctionRole::AudioField,
+            field: None,
+            region: None,
+            domain: None,
+            domain_execution_policy: None,
+            presentation: None,
+            field_graph: None,
+            system_metadata: None,
+            runtime_metadata: Some(RuntimeFunctionMetadata::AudioField(RuntimeFieldMetadata {
+                audio_rt,
+            })),
+            type_params: Vec::new(),
+            params,
+            ret_type,
+            body: Some(body_ctx.body),
+        }
+    }
+
+    fn lower_media_field_decl(&mut self, f: ast::MediaFieldDecl) -> Function {
+        let name = f.name().map(|t| SmolStr::new(t.text())).unwrap_or_default();
+        let name_span = f.name().map(|t| t.text_range());
+        let visibility = visibility_for_node_default(f.syntax());
+        let audio_rt = f.audio_rt();
+        let params = f.params().map(|p| self.lower_param(p)).collect();
+        let ret_type = f.ret_type().map(|t| self.lower_type_ref(t));
+
+        let mut body_ctx = BodyLoweringContext::new();
+        for stmt in f.statements() {
+            let s = body_ctx.lower_stmt(stmt);
+            body_ctx.body.root_stmts.push(s);
+        }
+        Self::finalize_implicit_return(&mut body_ctx.body, ret_type.as_ref());
+
+        Function {
+            name,
+            name_span,
+            attributes: Vec::new(),
+            visibility,
+            kind: FunctionKind::Function,
+            role: FunctionRole::MediaField,
+            field: None,
+            region: None,
+            domain: None,
+            domain_execution_policy: None,
+            presentation: None,
+            field_graph: None,
+            system_metadata: None,
+            runtime_metadata: Some(RuntimeFunctionMetadata::MediaField(RuntimeFieldMetadata {
+                audio_rt,
+            })),
+            type_params: Vec::new(),
             params,
             ret_type,
             body: Some(body_ctx.body),
@@ -1285,6 +1469,7 @@ impl LoweringContext {
             presentation: None,
             field_graph,
             system_metadata: None,
+            runtime_metadata: None,
             type_params: Vec::new(),
             params,
             ret_type,
@@ -1317,6 +1502,7 @@ impl LoweringContext {
             presentation: None,
             field_graph: None,
             system_metadata: None,
+            runtime_metadata: None,
             type_params: Vec::new(),
             params,
             ret_type: Some(TypeRef {
@@ -1351,6 +1537,7 @@ impl LoweringContext {
             presentation: None,
             field_graph: None,
             system_metadata: None,
+            runtime_metadata: None,
             type_params: Vec::new(),
             params,
             ret_type: Some(TypeRef {
@@ -1390,6 +1577,7 @@ impl LoweringContext {
             presentation: Some(metadata),
             field_graph: None,
             system_metadata: None,
+            runtime_metadata: None,
             type_params: Vec::new(),
             params,
             ret_type: Some(render_ret_type),
@@ -1425,6 +1613,7 @@ impl LoweringContext {
             presentation: Some(metadata),
             field_graph: None,
             system_metadata: None,
+            runtime_metadata: None,
             type_params: Vec::new(),
             params,
             ret_type: Some(view_ret_type),
@@ -1460,6 +1649,7 @@ impl LoweringContext {
             presentation: None,
             field_graph: None,
             system_metadata: None,
+            runtime_metadata: None,
             type_params: Vec::new(),
             params,
             ret_type,
@@ -1495,6 +1685,7 @@ impl LoweringContext {
             presentation: None,
             field_graph: None,
             system_metadata: None,
+            runtime_metadata: None,
             type_params: Vec::new(),
             params,
             ret_type,
@@ -1530,6 +1721,7 @@ impl LoweringContext {
             presentation: None,
             field_graph: None,
             system_metadata: None,
+            runtime_metadata: None,
             type_params: Vec::new(),
             params,
             ret_type,
@@ -2751,6 +2943,7 @@ impl LoweringContext {
             presentation: None,
             field_graph: None,
             system_metadata: None,
+            runtime_metadata: None,
             type_params: Vec::new(),
             params,
             ret_type,
@@ -2763,6 +2956,7 @@ impl LoweringContext {
             name: p.name().map(|t| SmolStr::new(t.text())).unwrap_or_default(),
             name_span: p.name().map(|t| t.text_range()),
             ty: p.ty().map(|t| self.lower_type_ref(t)),
+            mutable: p.is_mutable(),
         }
     }
 
@@ -3087,7 +3281,17 @@ fn lower_attribute_arg_value(value: &SyntaxToken) -> SmolStr {
 
 fn parse_system_metadata(node: &SyntaxNode) -> Option<SystemMetadata> {
     let text = node.text().to_string();
-    let start = text.find('[')?;
+    let phase = parse_phase_attribute(&text);
+    let Some(start) = text.find('[') else {
+        return Some(SystemMetadata {
+            phase,
+            stage: None,
+            reads: Vec::new(),
+            writes: Vec::new(),
+            before: Vec::new(),
+            after: Vec::new(),
+        });
+    };
     let mut depth = 0usize;
     let mut end = None;
     for (idx, ch) in text.char_indices().skip(start) {
@@ -3104,7 +3308,16 @@ fn parse_system_metadata(node: &SyntaxNode) -> Option<SystemMetadata> {
             }
         }
     }
-    let end = end?;
+    let Some(end) = end else {
+        return Some(SystemMetadata {
+            phase,
+            stage: None,
+            reads: Vec::new(),
+            writes: Vec::new(),
+            before: Vec::new(),
+            after: Vec::new(),
+        });
+    };
     let body = &text[start + 1..end];
     let mut stage = None;
     let mut reads = Vec::new();
@@ -3167,12 +3380,27 @@ fn parse_system_metadata(node: &SyntaxNode) -> Option<SystemMetadata> {
         }
     }
     Some(SystemMetadata {
+        phase,
         stage,
         reads,
         writes,
         before,
         after,
     })
+}
+
+fn parse_phase_attribute(text: &str) -> Option<SmolStr> {
+    let start = text.find("@phase")?;
+    let rest = &text[start + "@phase".len()..];
+    let open = rest.find('(')?;
+    let rest = &rest[open + 1..];
+    let close = rest.find(')')?;
+    let value = rest[..close].trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(SmolStr::new(value.trim_matches('"')))
+    }
 }
 
 fn game_ident_value(expr: &ast::Expr) -> Option<SmolStr> {
@@ -4148,7 +4376,7 @@ fn first_token_of_kind(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::parse;
+    use crate::parser::{parse, parse_with_errors};
 
     #[test]
     fn test_lower_minimal() {
@@ -4603,6 +4831,279 @@ system tick[stage=fixed, reads=[Clock], writes=[FrameClock]]() -> Nothing {
         assert_eq!(metadata.stage.as_deref(), Some("fixed"));
         assert_eq!(metadata.reads, vec![SmolStr::new("Clock")]);
         assert_eq!(metadata.writes, vec![SmolStr::new("FrameClock")]);
+    }
+
+    #[test]
+    fn runtime_foundation_declarations_lower_to_distinct_function_roles() {
+        let input = "\
+input_map Controls {
+    action MoveForward = key.w | gamepad.left_stick_y < -0.2
+}
+body PlayerBody(mass_scale: F32) {
+    mass = 1
+    class: dynamic
+    collider {
+        shape = capsule
+    }
+}
+move Dash(speed: F32) {
+    duration = 0.2
+    phase Windup {
+        start: 0.0
+    }
+    clip \"sfx/{id}.wav\" {
+        gain: 1.0
+    }
+}
+moveset PlayerMoves {
+    include = Dash
+    state idle {
+        on input.strike => draw
+    }
+}
+@audio_rt audio field Gain(sample: F32) -> F32 {
+    return sample
+}
+voice Beep(freq: F32) {
+    gain = 1
+}
+@audio_rt media field Thumbnail(path: String) -> F32 {
+    return 0.0
+}
+";
+        let (node, errors) = parse_with_errors(input);
+        assert!(errors.is_empty(), "{errors:?}");
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+
+        let mut roles = module
+            .functions
+            .iter()
+            .map(|(_, func)| (func.name.to_string(), func.role))
+            .collect::<Vec<_>>();
+        roles.sort_by(|left, right| left.0.cmp(&right.0));
+
+        assert_eq!(
+            roles,
+            vec![
+                ("Beep".to_string(), FunctionRole::Voice),
+                ("Controls".to_string(), FunctionRole::InputMap),
+                ("Dash".to_string(), FunctionRole::Move),
+                ("Gain".to_string(), FunctionRole::AudioField),
+                ("PlayerBody".to_string(), FunctionRole::Body),
+                ("PlayerMoves".to_string(), FunctionRole::Moveset),
+                ("Thumbnail".to_string(), FunctionRole::MediaField),
+            ]
+        );
+
+        let controls = module
+            .functions
+            .iter()
+            .find_map(|(_, func)| (func.name == "Controls").then_some(func))
+            .expect("Controls should lower");
+        let RuntimeFunctionMetadata::InputMap(input_map) = controls
+            .runtime_metadata
+            .as_ref()
+            .expect("input_map metadata should be preserved")
+        else {
+            panic!("expected input_map metadata");
+        };
+        assert_eq!(input_map.actions.len(), 1);
+        assert_eq!(input_map.actions[0].name, "MoveForward");
+        assert_eq!(input_map.actions[0].bindings.len(), 2);
+        assert_eq!(input_map.actions[0].bindings[0].path, "key.w");
+        assert_eq!(
+            input_map.actions[0].bindings[1].path,
+            "gamepad.left_stick_y"
+        );
+        let comparison = input_map.actions[0].bindings[1]
+            .comparison
+            .as_ref()
+            .expect("stick binding comparison should be preserved");
+        assert_eq!(comparison.op, "<");
+        assert_eq!(comparison.value, "-0.2");
+
+        let body = module
+            .functions
+            .iter()
+            .find_map(|(_, func)| (func.name == "PlayerBody").then_some(func))
+            .expect("PlayerBody should lower");
+        assert_eq!(body.params.len(), 1);
+        let RuntimeFunctionMetadata::Clauses(body_metadata) = body
+            .runtime_metadata
+            .as_ref()
+            .expect("body metadata should be preserved")
+        else {
+            panic!("expected body runtime clause metadata");
+        };
+        assert_eq!(body_metadata.clauses[0].name, "mass");
+        assert_eq!(body_metadata.clauses[0].value.as_deref(), Some("1"));
+        let body_class = body_metadata
+            .clauses
+            .iter()
+            .find(|clause| clause.name == "class")
+            .expect("keyword-like body clause should be preserved");
+        assert_eq!(body_class.value.as_deref(), Some("dynamic"));
+        let collider = body_metadata
+            .clauses
+            .iter()
+            .find(|clause| clause.name == "collider")
+            .expect("nested body clause should be preserved");
+        assert!(collider.nested);
+        assert_eq!(collider.clauses[0].name, "shape");
+
+        let dash = module
+            .functions
+            .iter()
+            .find_map(|(_, func)| (func.name == "Dash").then_some(func))
+            .expect("Dash should lower");
+        assert_eq!(dash.params.len(), 1);
+        let RuntimeFunctionMetadata::Clauses(dash_metadata) = dash
+            .runtime_metadata
+            .as_ref()
+            .expect("move metadata should be preserved")
+        else {
+            panic!("expected move runtime clause metadata");
+        };
+        assert_eq!(dash_metadata.clauses[0].name, "duration");
+        assert_eq!(dash_metadata.clauses[0].value.as_deref(), Some("0.2"));
+        let phase = dash_metadata
+            .clauses
+            .iter()
+            .find(|clause| clause.name == "phase")
+            .expect("move phase clause should be preserved");
+        assert_eq!(phase.value.as_deref(), Some("Windup"));
+        assert!(phase.nested);
+        assert_eq!(phase.clauses[0].name, "start");
+        let clip = dash_metadata
+            .clauses
+            .iter()
+            .find(|clause| clause.name == "clip")
+            .expect("move clip clause should be preserved");
+        assert_eq!(clip.value.as_deref(), Some("sfx/{id}.wav"));
+        assert!(clip.nested);
+        assert_eq!(clip.clauses[0].name, "gain");
+
+        let moveset = module
+            .functions
+            .iter()
+            .find_map(|(_, func)| (func.name == "PlayerMoves").then_some(func))
+            .expect("PlayerMoves should lower");
+        let RuntimeFunctionMetadata::Clauses(moveset_metadata) = moveset
+            .runtime_metadata
+            .as_ref()
+            .expect("moveset metadata should be preserved")
+        else {
+            panic!("expected moveset runtime clause metadata");
+        };
+        assert_eq!(moveset_metadata.clauses[0].name, "include");
+        assert_eq!(moveset_metadata.clauses[0].value.as_deref(), Some("Dash"));
+        let state = moveset_metadata
+            .clauses
+            .iter()
+            .find(|clause| clause.name == "state")
+            .expect("moveset state clause should be preserved");
+        assert_eq!(state.value.as_deref(), Some("idle"));
+        assert!(state.nested);
+        assert_eq!(state.clauses[0].name, "on");
+        assert_eq!(
+            state.clauses[0].value.as_deref(),
+            Some("input.strike => draw")
+        );
+
+        let voice = module
+            .functions
+            .iter()
+            .find_map(|(_, func)| (func.name == "Beep").then_some(func))
+            .expect("Beep should lower");
+        let RuntimeFunctionMetadata::Clauses(voice_metadata) = voice
+            .runtime_metadata
+            .as_ref()
+            .expect("voice metadata should be preserved")
+        else {
+            panic!("expected voice runtime clause metadata");
+        };
+        assert_eq!(voice_metadata.clauses[0].name, "gain");
+        assert_eq!(voice_metadata.clauses[0].value.as_deref(), Some("1"));
+
+        let gain = module
+            .functions
+            .iter()
+            .find_map(|(_, func)| (func.name == "Gain").then_some(func))
+            .expect("Gain should lower");
+        let RuntimeFunctionMetadata::AudioField(audio_metadata) = gain
+            .runtime_metadata
+            .as_ref()
+            .expect("audio metadata should be preserved")
+        else {
+            panic!("expected audio field metadata");
+        };
+        assert!(audio_metadata.audio_rt);
+
+        let thumbnail = module
+            .functions
+            .iter()
+            .find_map(|(_, func)| (func.name == "Thumbnail").then_some(func))
+            .expect("Thumbnail should lower");
+        let RuntimeFunctionMetadata::MediaField(media_metadata) = thumbnail
+            .runtime_metadata
+            .as_ref()
+            .expect("media metadata should be preserved")
+        else {
+            panic!("expected media field metadata");
+        };
+        assert!(media_metadata.audio_rt);
+    }
+
+    #[test]
+    fn runtime_foundation_private_declarations_lower_with_metadata() {
+        let input = "\
+private {
+    body HiddenBody {
+        class: dynamic
+    }
+    @audio_rt audio field HiddenGain(sample: F32) -> F32 {
+        return sample
+    }
+}
+";
+        let (node, errors) = parse_with_errors(input);
+        assert!(errors.is_empty(), "{errors:?}");
+        let root = ast::Root::cast(node).unwrap();
+        let module = lower(root);
+
+        let body = module
+            .functions
+            .iter()
+            .find_map(|(_, func)| (func.name == "HiddenBody").then_some(func))
+            .expect("private body should lower");
+        assert_eq!(body.role, FunctionRole::Body);
+        assert_eq!(body.visibility, Visibility::Private);
+        let RuntimeFunctionMetadata::Clauses(body_metadata) = body
+            .runtime_metadata
+            .as_ref()
+            .expect("private body metadata should be preserved")
+        else {
+            panic!("expected body runtime clause metadata");
+        };
+        assert_eq!(body_metadata.clauses[0].name, "class");
+        assert_eq!(body_metadata.clauses[0].value.as_deref(), Some("dynamic"));
+
+        let audio = module
+            .functions
+            .iter()
+            .find_map(|(_, func)| (func.name == "HiddenGain").then_some(func))
+            .expect("private audio field should lower");
+        assert_eq!(audio.role, FunctionRole::AudioField);
+        assert_eq!(audio.visibility, Visibility::Private);
+        let RuntimeFunctionMetadata::AudioField(audio_metadata) = audio
+            .runtime_metadata
+            .as_ref()
+            .expect("private audio metadata should be preserved")
+        else {
+            panic!("expected audio field metadata");
+        };
+        assert!(audio_metadata.audio_rt);
     }
 
     #[test]

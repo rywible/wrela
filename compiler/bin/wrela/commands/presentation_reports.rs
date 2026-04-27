@@ -814,6 +814,7 @@ pub(crate) fn frame_attachment_kind_name(
         wrela::presentation_contract::FrameAttachmentKind::Medium => "Medium",
         wrela::presentation_contract::FrameAttachmentKind::Motion => "Motion",
         wrela::presentation_contract::FrameAttachmentKind::Color => "Color",
+        wrela::presentation_contract::FrameAttachmentKind::SwapchainColor => "SwapchainColor",
     }
 }
 

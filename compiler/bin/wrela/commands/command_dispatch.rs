@@ -21,6 +21,7 @@
 
 use super::collision_command::*;
 use super::contracts_command::*;
+use super::live_command::execute_live_command;
 use super::presentation_command::*;
 use super::preview_eval::{
     authored_presentation_lighting_inputs, bind_presentation_function_params,
@@ -126,7 +127,7 @@ pub fn execute(spec: CommandSpec) {
                 eprintln!("build: command init");
             }
             let target = args.target.as_deref().unwrap_or(".");
-            if let Err(err) = init_project(target) {
+            if let Err(err) = init_project_with_template(target, args.template.as_deref()) {
                 eprintln!("init error: {err}");
                 std::process::exit(EXIT_USAGE);
             }
@@ -181,6 +182,12 @@ pub fn execute(spec: CommandSpec) {
                 eprintln!("build: command frame-live");
             }
             execute_frame_live_command(args);
+        }
+        ParsedCommand::Live(args) => {
+            if trace {
+                eprintln!("build: command live");
+            }
+            execute_live_command(args);
         }
         ParsedCommand::FrameContracts(args) => {
             if trace {

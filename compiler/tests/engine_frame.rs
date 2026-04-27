@@ -9,6 +9,7 @@ use wrela::engine_frame::{
     EngineRuntimeSource, EngineSpanDomain, EngineSpanId, EngineStateAdvanceExecutor,
     EngineStateAdvanceInput, EngineSubsystemAdapter, EngineSubsystemDescriptor,
     EngineSubsystemKind, EngineSubsystemPlan, EngineSubsystemReport, EngineSubsystemSpanRange,
+    MotionToPhotonContract, TickInputSource,
 };
 use wrela::gpu_runtime::GpuRuntimeMetrics;
 use wrela::query_exec::stable_region_snapshot_handle;
@@ -96,7 +97,7 @@ fn runtime_input() -> EngineFrameInput {
             PresentationFrame::new(7),
             WallClockStamp::new(1016),
         ),
-        tick_inputs: TickInputBatch::new(
+        tick_inputs: TickInputSource::eager(TickInputBatch::new(
             tick,
             vec![TickInputEvent::new(
                 tick,
@@ -104,7 +105,7 @@ fn runtime_input() -> EngineFrameInput {
                 "player",
                 "MoveForward(strength=1.0)",
             )],
-        ),
+        )),
         policy: EngineFrameRuntimePolicy::closure(),
         query_requests: Vec::new(),
         readback_requests: Vec::new(),
@@ -530,6 +531,7 @@ fn engine_frame_report_round_trips_through_json() {
                 end_span_id: Some(EngineSpanId(2)),
             },
         ],
+        timeline_spans: Vec::new(),
         subsystems: vec![
             EngineSubsystemReport {
                 kind: EngineSubsystemKind::Presentation,
@@ -575,6 +577,8 @@ fn engine_frame_report_round_trips_through_json() {
         },
         active_degradations: vec!["enable_hit_compaction".to_string()],
         violations: Vec::new(),
+        latency: MotionToPhotonContract::default(),
+        closure_findings: Vec::new(),
     };
 
     let json = serde_json::to_string(&report).expect("serialize engine frame report");

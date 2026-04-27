@@ -24,11 +24,15 @@ use crate::presentation_exec::gpu_resources::{GpuAttachmentArena, GpuAttachmentS
 use crate::presentation_exec::resources::{
     AttachmentResourceSet, PresentationResourceError, allocate_attachment_resources_without_history,
 };
+use crate::presentation_exec::swapchain::DynSwapchainHandle;
 use crate::presentation_plan::{PresentationPassKind, PresentationPlan};
 use smol_str::SmolStr;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use thiserror::Error;
+
+pub const SWAPCHAIN_ACQUIRE_LABEL: &str = "presentation.swapchain_acquire";
+pub const SWAPCHAIN_PRESENT_LABEL: &str = "presentation.swapchain_present";
 
 #[derive(Debug)]
 pub struct PresentationFramegraphPass {
@@ -52,6 +56,9 @@ pub struct PresentationFramegraph {
     documented_exceptions: Vec<SmolStr>,
     queue_submit_count: u32,
     gpu_runtime: GpuRuntimeMetrics,
+    /// When set, acquire/present are owned by the framegraph (RFC 0011).
+    pub swapchain: Option<DynSwapchainHandle>,
+    swapchain_presented: bool,
 }
 
 pub struct PresentationFramegraphSubmission {
@@ -60,6 +67,7 @@ pub struct PresentationFramegraphSubmission {
     pub timestamps_supported: bool,
     pub documented_exceptions: Vec<SmolStr>,
     pub queue_submit_count: u32,
+    pub swapchain_observation_labels: Vec<SmolStr>,
 }
 
 #[derive(Debug, Error)]
@@ -71,6 +79,10 @@ pub enum PresentationFramegraphError {
 }
 
 impl PresentationFramegraph {
+    pub const fn swapchain_reporting_labels() -> [&'static str; 2] {
+        [SWAPCHAIN_ACQUIRE_LABEL, SWAPCHAIN_PRESENT_LABEL]
+    }
+
     pub fn from_plan_and_resources(
         plan: PresentationPlan,
         attachments: AttachmentResourceSet,
@@ -99,6 +111,8 @@ impl PresentationFramegraph {
             documented_exceptions: Vec::new(),
             queue_submit_count: 0,
             gpu_runtime: GpuRuntimeMetrics::default(),
+            swapchain: None,
+            swapchain_presented: false,
         }
     }
 
@@ -139,7 +153,24 @@ impl PresentationFramegraph {
             documented_exceptions: Vec::new(),
             queue_submit_count: 0,
             gpu_runtime,
+            swapchain: None,
+            swapchain_presented: false,
         }
+    }
+
+    /// GPU-backed framegraph with optional swapchain integration (RFC 0011).
+    /// When `swapchain` is `Some`, [`submit_segment`] acquires and presents a surface texture.
+    pub fn from_plan_and_gpu_resources_with_swapchain(
+        plan: PresentationPlan,
+        attachments: AttachmentResourceSet,
+        native: Arc<GpuRuntimeContext>,
+        max_timestamped_passes: u32,
+        swapchain: Option<DynSwapchainHandle>,
+    ) -> Self {
+        let mut graph =
+            Self::from_plan_and_gpu_resources(plan, attachments, native, max_timestamped_passes);
+        graph.swapchain = swapchain;
+        graph
     }
 
     pub fn from_plan_and_gpu_resources_with_previous(
@@ -186,6 +217,8 @@ impl PresentationFramegraph {
             documented_exceptions: Vec::new(),
             queue_submit_count: 0,
             gpu_runtime,
+            swapchain: None,
+            swapchain_presented: false,
         }
     }
 
@@ -336,6 +369,43 @@ impl PresentationFramegraph {
             .profiler
             .take()
             .ok_or(PresentationFramegraphError::MissingGpuContext)?;
+        let mut swapchain_observation_labels = Vec::new();
+        let acquired_surface = if let Some(swapchain) = &self.swapchain
+            && !self.swapchain_presented
+        {
+            swapchain_observation_labels.push(SmolStr::new_static(SWAPCHAIN_ACQUIRE_LABEL));
+            Some(
+                swapchain
+                    .acquire()
+                    .map_err(|err| PresentationFramegraphError::Runtime(err.to_string()))?,
+            )
+        } else {
+            None
+        };
+        if let Some(surface) = acquired_surface.as_ref() {
+            let view = surface
+                .texture()
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            {
+                let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("wrela.presentation.swapchain.present"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+            }
+        }
         let timing_ticket = if collect_timing_readback {
             profiler.resolve_into(&mut encoder);
             profiler.schedule_readback(&native.device, &mut encoder)
@@ -344,6 +414,16 @@ impl PresentationFramegraph {
         };
         native.queue.submit(Some(encoder.finish()));
         self.queue_submit_count = self.queue_submit_count.saturating_add(1);
+        if let Some(surface) = acquired_surface {
+            // M5: AcquiredTexture::present consumes ownership and routes back
+            // through the swapchain that issued it. The drop guard makes
+            // forgetting to call this a debug-only panic.
+            swapchain_observation_labels.push(SmolStr::new_static(SWAPCHAIN_PRESENT_LABEL));
+            surface
+                .present()
+                .map_err(|err| PresentationFramegraphError::Runtime(err.to_string()))?;
+            self.swapchain_presented = true;
+        }
 
         let mut readbacks = Vec::new();
         for ticket in self.readbacks.drain(..) {
@@ -375,6 +455,7 @@ impl PresentationFramegraph {
             timestamps_supported,
             documented_exceptions,
             queue_submit_count: self.queue_submit_count,
+            swapchain_observation_labels,
         })
     }
 

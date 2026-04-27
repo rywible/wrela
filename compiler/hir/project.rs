@@ -3279,6 +3279,7 @@ fn make_main_wrapper() -> crate::hir::Function {
         presentation: None,
         field_graph: None,
         system_metadata: None,
+        runtime_metadata: None,
         type_params: Vec::new(),
         params: Vec::new(),
         ret_type: None,

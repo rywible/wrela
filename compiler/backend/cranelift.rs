@@ -664,12 +664,18 @@ fn linker_command() -> Result<LinkerCommand, CodegenError> {
 
 #[cfg(target_os = "macos")]
 fn append_macos_native_support_link_args(cmd: &mut Command) {
+    cmd.arg("-framework").arg("AppKit");
+    cmd.arg("-framework").arg("Carbon");
+    cmd.arg("-framework").arg("CoreGraphics");
     cmd.arg("-framework").arg("QuartzCore");
     cmd.arg("-framework").arg("Metal");
     cmd.arg("-framework").arg("Foundation");
     cmd.arg("-framework").arg("Security");
     cmd.arg("-framework").arg("CoreFoundation");
     cmd.arg("-framework").arg("SystemConfiguration");
+    cmd.arg("-framework").arg("AudioToolbox");
+    cmd.arg("-framework").arg("AudioUnit");
+    cmd.arg("-framework").arg("CoreAudio");
     cmd.arg("-lobjc");
     cmd.arg("-liconv");
     cmd.arg("-lc++");

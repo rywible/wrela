@@ -25,6 +25,10 @@ pub struct TickInputEvent {
     pub kind: TickInputKind,
     pub source: SmolStr,
     pub detail: SmolStr,
+    /// Wall-clock time when the platform observed this input (RFC 0011).
+    pub wall_clock: WallClockStamp,
+    /// Monotonic nanoseconds for latency staging (RFC 0011).
+    pub monotonic_nanos: u64,
 }
 
 impl TickInputEvent {
@@ -39,6 +43,26 @@ impl TickInputEvent {
             kind,
             source: source.into(),
             detail: detail.into(),
+            wall_clock: WallClockStamp::new(0),
+            monotonic_nanos: 0,
+        }
+    }
+
+    pub fn with_timestamps(
+        tick: SimulationTick,
+        kind: TickInputKind,
+        source: impl Into<SmolStr>,
+        detail: impl Into<SmolStr>,
+        wall_clock: WallClockStamp,
+        monotonic_nanos: u64,
+    ) -> Self {
+        Self {
+            tick,
+            kind,
+            source: source.into(),
+            detail: detail.into(),
+            wall_clock,
+            monotonic_nanos,
         }
     }
 }

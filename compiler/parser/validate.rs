@@ -92,6 +92,8 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                         | SyntaxKind::RadianceDecl
                         | SyntaxKind::VolumeDecl
                         | SyntaxKind::MaterialDecl
+                        | SyntaxKind::AudioFieldDecl
+                        | SyntaxKind::MediaFieldDecl
                 ) {
                     let (name_message, return_message, name_present, has_return_type) = match kind {
                         SyntaxKind::FieldDecl => {
@@ -129,6 +131,32 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                             (
                                 "volume field declaration requires a name",
                                 "volume field requires an explicit return type",
+                                name_present,
+                                has_return_type,
+                            )
+                        }
+                        SyntaxKind::AudioFieldDecl => {
+                            let audio = ast::AudioFieldDecl::cast(node.clone());
+                            let name_present =
+                                audio.as_ref().and_then(|decl| decl.name()).is_some();
+                            let has_return_type =
+                                audio.as_ref().and_then(|decl| decl.ret_type()).is_some();
+                            (
+                                "audio field declaration requires a name",
+                                "audio field requires an explicit return type",
+                                name_present,
+                                has_return_type,
+                            )
+                        }
+                        SyntaxKind::MediaFieldDecl => {
+                            let media = ast::MediaFieldDecl::cast(node.clone());
+                            let name_present =
+                                media.as_ref().and_then(|decl| decl.name()).is_some();
+                            let has_return_type =
+                                media.as_ref().and_then(|decl| decl.ret_type()).is_some();
+                            (
+                                "media field declaration requires a name",
+                                "media field requires an explicit return type",
                                 name_present,
                                 has_return_type,
                             )
@@ -402,6 +430,13 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                                 | SyntaxKind::EventDef
                                 | SyntaxKind::FuncDef
                                 | SyntaxKind::KernelDef
+                                | SyntaxKind::InputMapDef
+                                | SyntaxKind::BodyDef
+                                | SyntaxKind::MoveDef
+                                | SyntaxKind::MovesetDef
+                                | SyntaxKind::AudioFieldDecl
+                                | SyntaxKind::VoiceDecl
+                                | SyntaxKind::MediaFieldDecl
                                 | SyntaxKind::FieldDecl
                                 | SyntaxKind::RadianceDecl
                                 | SyntaxKind::VolumeDecl
@@ -415,7 +450,7 @@ pub fn validate(root: &SyntaxNode) -> Vec<ValidationError> {
                             errors.push(ValidationError {
                                 kind: ValidationDiagKind::AstRule,
                                 message: "private blocks at the top level may only \
-contain functions, fields, radiance/volume fields, materials, regions, domains, renders, and classes"
+contain functions, runtime declarations, fields, radiance/volume fields, materials, regions, domains, renders, and classes"
                                     .to_string(),
                                 span: span_for_node(&stmt),
                             });
@@ -647,6 +682,8 @@ fn is_function_like_definition(kind: SyntaxKind) -> bool {
             | SyntaxKind::FieldDecl
             | SyntaxKind::RadianceDecl
             | SyntaxKind::VolumeDecl
+            | SyntaxKind::AudioFieldDecl
+            | SyntaxKind::MediaFieldDecl
             | SyntaxKind::MaterialDecl
     )
 }
@@ -1000,6 +1037,23 @@ private {
         let text = "\
 kernel fn shade() -> Integer {
     return 1
+}
+";
+        let root = parse(text);
+        let errors = validate(&root);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn runtime_foundation_private_block_allows_runtime_declarations() {
+        let text = "\
+private {
+    body HiddenBody {
+        class: dynamic
+    }
+    @audio_rt audio field HiddenGain(sample: F32) -> F32 {
+        return sample
+    }
 }
 ";
         let root = parse(text);

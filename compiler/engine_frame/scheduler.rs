@@ -1,9 +1,11 @@
+use super::latency::{MeasurementQuality, MotionToPhotonContract};
 use super::{
     ENGINE_FRAME_TIMELINE_VERSION, EngineBudgetDirectives, EngineFenceId,
     EngineFrameIdentityReport, EngineFrameReport, EngineFrameTimeline, EngineFutureReserveReport,
     EngineGpuFrameLedger, EngineJobAffinity, EngineJobHandle, EngineQueryLedger,
-    EngineReadbackLedger, EngineResourceLedger, EngineSpanDomain, EngineSpanId, EngineSpanRecord,
-    EngineSubsystemKind, EngineSubsystemReport, EngineSubsystemSpanRange,
+    EngineReadbackLedger, EngineResourceAccess, EngineResourceLedger, EngineResourceState,
+    EngineSpanDomain, EngineSpanId, EngineSpanRecord, EngineSubsystemKind, EngineSubsystemReport,
+    EngineSubsystemSpanRange,
 };
 use crate::gpu_runtime::GpuRuntimeMetrics;
 use crate::perf_target::PerfClosureEngineFrameBudget;
@@ -28,6 +30,22 @@ pub struct EngineFrameContext {
     pub published_snapshot_epoch: Option<u64>,
     pub active_degradations: Vec<String>,
     pub violations: Vec<String>,
+    /// Monotonic nanosecond timestamp for the StateAdvance input sampling
+    /// point, compatible with
+    /// [`TickInputEvent::monotonic_nanos`](crate::state_advance::TickInputEvent::monotonic_nanos).
+    /// Scheduler spans remain frame-relative; do not treat this as a
+    /// scheduler span-zero/frame-origin timestamp.
+    pub state_advance_input_sample_nanos: Option<u64>,
+    /// Monotonic nanoseconds of the earliest raw input event that was
+    /// observed for this frame. Adapters should populate this so the
+    /// motion-to-photon contract can be computed honestly (RFC 0011 H3).
+    pub earliest_input_arrival_nanos: Option<u64>,
+    /// Count of non-zero input timestamps that were later than the
+    /// StateAdvance input sample point. These indicate mixed clock domains or
+    /// otherwise invalid sampler timestamps.
+    pub future_input_timestamp_count: usize,
+    pub resource_accesses: Vec<EngineResourceAccess>,
+    pub resource_states: Vec<EngineResourceState>,
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -36,6 +54,8 @@ pub enum EngineFrameError {
     DependencyCycle,
     #[error("engine frame job graph referenced a missing job")]
     MissingJob,
+    #[error("duplicate engine subsystem adapter for kind {0:?}")]
+    DuplicateSubsystemKind(EngineSubsystemKind),
     #[error("{0}")]
     Message(String),
 }
@@ -91,6 +111,10 @@ impl EngineSubsystemPlan {
 }
 
 pub trait EngineSubsystemAdapter {
+    /// Called once per frame before [`EngineSubsystemAdapter::build`] so adapters can
+    /// capture per-frame inputs (snapshot epoch, shared state slots, etc.).
+    fn prepare_frame(&mut self, _input: &super::EngineFrameInput) {}
+
     fn build(
         &mut self,
         builder: &mut EngineGraphBuilder,
@@ -304,12 +328,26 @@ impl EngineFrameScheduler {
         frame_index: u32,
         adapters: &mut [Box<dyn EngineSubsystemAdapter>],
     ) -> Result<EngineFrameReport, EngineFrameError> {
+        let mut refs: Vec<&mut dyn EngineSubsystemAdapter> = adapters
+            .iter_mut()
+            .map(|adapter| adapter.as_mut() as &mut dyn EngineSubsystemAdapter)
+            .collect::<Vec<_>>();
+        self.run_frame_borrowed(scenario_id, frame_index, &mut refs)
+    }
+
+    pub fn run_frame_borrowed(
+        &mut self,
+        scenario_id: impl Into<String>,
+        frame_index: u32,
+        adapters: &mut [&mut dyn EngineSubsystemAdapter],
+    ) -> Result<EngineFrameReport, EngineFrameError> {
         let scenario_id = scenario_id.into();
         let mut builder = EngineGraphBuilder::default();
         let mut subsystem_plans = Vec::with_capacity(adapters.len());
         for adapter in adapters {
             subsystem_plans.push(adapter.build(&mut builder)?);
         }
+        validate_unique_subsystem_kinds(&subsystem_plans)?;
         let mut graph = builder.finish(subsystem_plans);
         wire_subsystem_dependencies(&mut graph)?;
         let (timeline, timeline_spans) = execute_graph(&mut graph, &self.executor)?;
@@ -353,12 +391,35 @@ impl EngineFrameScheduler {
             .iter()
             .map(|report| report.scene_reupload_bytes)
             .sum::<u64>();
+        let state_advance_input_sample_nanos = ctx.state_advance_input_sample_nanos;
+        let mut violations = ctx.violations;
+        let mut active_degradations = ctx.active_degradations;
+        if ctx.future_input_timestamp_count > 0 {
+            extend_unique_strings(
+                &mut violations,
+                ["latency.input_timestamp_after_sample".to_string()],
+            );
+            extend_unique_strings(
+                &mut active_degradations,
+                ["latency.input_timestamp_domain_invalid".to_string()],
+            );
+        }
+        let latency = motion_to_photon_contract_from_timeline(
+            &timeline,
+            timeline_spans.frame_wall_time_micros,
+            ctx.earliest_input_arrival_nanos,
+            state_advance_input_sample_nanos,
+        );
         let mut report = EngineFrameReport {
             scenario_id,
             frame_index,
             identity: EngineFrameIdentityReport::default(),
             state_advance: None,
-            resource_ledger: EngineResourceLedger::default(),
+            resource_ledger: EngineResourceLedger {
+                accesses: ctx.resource_accesses,
+                states: ctx.resource_states,
+                violations: Vec::new(),
+            },
             readback_ledger: EngineReadbackLedger::default(),
             query_ledger: EngineQueryLedger::default(),
             gpu_frame_ledger: EngineGpuFrameLedger {
@@ -404,10 +465,13 @@ impl EngineFrameScheduler {
             overlap_ratio,
             queue_submission_spans: timeline.queue_submission_spans.clone(),
             subsystem_span_ranges: timeline.subsystem_span_ranges.clone(),
+            timeline_spans: timeline.spans.clone(),
             subsystems: reports,
             future_subsystem_reserve: EngineFutureReserveReport::default(),
-            active_degradations: ctx.active_degradations,
-            violations: ctx.violations,
+            active_degradations,
+            violations,
+            latency,
+            closure_findings: Vec::new(),
         };
 
         if let Some(budget) = &self.budget {
@@ -441,6 +505,17 @@ impl EngineFrameScheduler {
 #[derive(Debug, Clone, Default)]
 struct TimelineDerivedMetrics {
     frame_wall_time_micros: u128,
+}
+
+fn validate_unique_subsystem_kinds(plans: &[EngineSubsystemPlan]) -> Result<(), EngineFrameError> {
+    let mut seen = std::collections::BTreeSet::<EngineSubsystemKind>::new();
+    for plan in plans {
+        let kind = &plan.descriptor.kind;
+        if !seen.insert(kind.clone()) {
+            return Err(EngineFrameError::DuplicateSubsystemKind(kind.clone()));
+        }
+    }
+    Ok(())
 }
 
 fn wire_subsystem_dependencies(graph: &mut EngineFrameGraph) -> Result<(), EngineFrameError> {
@@ -694,6 +769,142 @@ fn subsystem_span_ranges(
             }
         })
         .collect()
+}
+
+/// Derive motion-to-photon stages from the executed job timeline using real
+/// span boundaries (RFC 0011 H3 acceptance: honest measurements).
+///
+/// The contract is computed from actual `started_micros` / `ended_micros`
+/// boundaries rather than from a proportional share of wall time. The five
+/// stages are derived as follows:
+///
+/// 1. `event_arrival_to_state_advance_nanos`: from the earliest input
+///    event monotonic timestamp (when known) to the StateAdvance input
+///    sample timestamp. This requires a compatible monotonic
+///    `state_advance_input_sample_nanos`; otherwise we fall back to
+///    (state-advance-start - frame-start), i.e. frame-relative state-start
+///    latency. We do not compare monotonic event timestamps directly to
+///    frame-relative scheduler spans.
+/// 2. `state_advance_to_render_submit_nanos`: from the end of `StateAdvance`
+///    to the first GPU/queue-submission span (or, lacking GPU work, to the
+///    end of the last CPU-side post-state span).
+/// 3. `render_submit_to_gpu_complete_nanos`: total elapsed in GPU domain
+///    spans plus any `GpuWait` time stacked on the critical path.
+/// 4. `gpu_complete_to_present_callback_nanos`: total `PresentWait` domain
+///    duration.
+/// 5. `estimated_present_to_photons_nanos`: panel/scan-out latency estimate.
+///    Defaults to 0; hosts are expected to plumb a real value when known.
+fn motion_to_photon_contract_from_timeline(
+    timeline: &EngineFrameTimeline,
+    frame_wall_time_micros: u128,
+    earliest_input_arrival_nanos: Option<u64>,
+    state_advance_input_sample_nanos: Option<u64>,
+) -> MotionToPhotonContract {
+    if frame_wall_time_micros == 0 && timeline.spans.is_empty() {
+        return MotionToPhotonContract::synthetic_idle();
+    }
+    let spans = &timeline.spans;
+    let frame_start_micros = spans
+        .iter()
+        .map(|span| span.started_micros)
+        .min()
+        .unwrap_or(0);
+    let frame_end_micros = spans
+        .iter()
+        .map(|span| span.ended_micros)
+        .max()
+        .unwrap_or(frame_start_micros);
+
+    let state_advance_start_micros = spans
+        .iter()
+        .filter(|span| span.subsystem == EngineSubsystemKind::StateAdvance)
+        .map(|span| span.started_micros)
+        .min();
+    let state_advance_end_micros = spans
+        .iter()
+        .filter(|span| span.subsystem == EngineSubsystemKind::StateAdvance)
+        .map(|span| span.ended_micros)
+        .max();
+
+    let render_submit_start_micros = spans
+        .iter()
+        .filter(|span| span.queue_submission || span.domain == EngineSpanDomain::Gpu)
+        .map(|span| span.started_micros)
+        .min();
+    let gpu_complete_end_micros = spans
+        .iter()
+        .filter(|span| span.domain == EngineSpanDomain::Gpu)
+        .map(|span| span.ended_micros)
+        .max();
+    let present_start_micros = spans
+        .iter()
+        .filter(|span| span.domain == EngineSpanDomain::PresentWait)
+        .map(|span| span.started_micros)
+        .min();
+    let present_end_micros = spans
+        .iter()
+        .filter(|span| span.domain == EngineSpanDomain::PresentWait)
+        .map(|span| span.ended_micros)
+        .max();
+
+    let mu_to_ns = |mu: u128| (mu.saturating_mul(1000)).min(u64::MAX as u128) as u64;
+
+    let frame_start_nanos = mu_to_ns(frame_start_micros);
+    let state_start_nanos = state_advance_start_micros.map(mu_to_ns);
+    let state_end_nanos = state_advance_end_micros.map(mu_to_ns);
+    let render_submit_nanos = render_submit_start_micros.map(mu_to_ns);
+    let gpu_end_nanos = gpu_complete_end_micros.map(mu_to_ns);
+    let present_start_nanos = present_start_micros.map(mu_to_ns);
+    let present_end_nanos = present_end_micros.map(mu_to_ns);
+
+    // Stage 1: event arrival -> StateAdvance input sample
+    let stage1 = match (
+        state_start_nanos,
+        earliest_input_arrival_nanos,
+        state_advance_input_sample_nanos,
+    ) {
+        (_, Some(arrival), Some(sample)) => sample.saturating_sub(arrival),
+        (Some(state_start), _, _) => state_start.saturating_sub(frame_start_nanos),
+        (None, _, _) => 0,
+    };
+    // Stage 2: state_advance_end -> render_submit_start
+    let stage2 = match (state_end_nanos, render_submit_nanos) {
+        (Some(state_end), Some(submit)) if submit > state_end => submit - state_end,
+        (Some(state_end), None) => mu_to_ns(frame_end_micros).saturating_sub(state_end),
+        _ => 0,
+    };
+    // Stage 3: render_submit -> gpu_complete
+    let stage3 = match (render_submit_nanos, gpu_end_nanos) {
+        (Some(submit), Some(end)) if end > submit => end - submit,
+        _ => duration_for_domain(spans, EngineSpanDomain::Gpu)
+            .saturating_add(duration_for_domain(spans, EngineSpanDomain::GpuWait))
+            .saturating_mul(1000)
+            .min(u64::MAX as u128) as u64,
+    };
+    // Stage 4: gpu_complete -> present_callback (return)
+    let stage4 = match (gpu_end_nanos, present_end_nanos, present_start_nanos) {
+        (Some(gpu_end), Some(present_end), _) if present_end > gpu_end => present_end - gpu_end,
+        (None, Some(present_end), Some(present_start)) => present_end.saturating_sub(present_start),
+        _ => duration_for_domain(spans, EngineSpanDomain::PresentWait)
+            .saturating_mul(1000)
+            .min(u64::MAX as u128) as u64,
+    };
+
+    let mut contract = MotionToPhotonContract {
+        event_arrival_to_state_advance_nanos: stage1,
+        state_advance_to_render_submit_nanos: stage2,
+        render_submit_to_gpu_complete_nanos: stage3,
+        gpu_complete_to_present_callback_nanos: stage4,
+        estimated_present_to_photons_nanos: 0,
+        total_estimate_nanos: 0,
+        measurement_quality: if earliest_input_arrival_nanos.is_some() {
+            MeasurementQuality::EstimatedFromCpuClock
+        } else {
+            MeasurementQuality::EstimatedFromCpuClock
+        },
+    };
+    contract.recompute_total();
+    contract
 }
 
 fn critical_path_split(

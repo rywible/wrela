@@ -1,0 +1,11 @@
+[package]
+name = "surface_and_input"
+version = "0.1.0"
+
+[engine]
+stdlib = "0.1"
+default_view = "main_view"
+
+[backends]
+query = "wgsl"
+collision = "wgsl"

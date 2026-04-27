@@ -7,11 +7,13 @@ compile_error!("wrela_runtime requires 64-bit targets");
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+pub mod audio;
 mod data;
 pub mod domain_abi;
 pub mod engine_executor;
 mod host;
 mod kernel;
+pub mod platform;
 pub mod reactor;
 pub mod state_advance;
 mod unsafe_primitives;

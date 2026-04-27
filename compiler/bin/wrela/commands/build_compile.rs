@@ -35,6 +35,10 @@ use super::{
 };
 
 pub(crate) fn init_project(path: &str) -> io::Result<()> {
+    init_project_with_template(path, None)
+}
+
+pub(crate) fn init_project_with_template(path: &str, template: Option<&str>) -> io::Result<()> {
     let root = Path::new(path);
     let src_dir = root.join("src");
     fs::create_dir_all(&src_dir)?;
@@ -45,7 +49,72 @@ pub(crate) fn init_project(path: &str) -> io::Result<()> {
             "src/main.wr already exists",
         ));
     }
-    fs::write(main_path, "fn run() -> Integer {\n    return 0\n}\n")?;
+    let source = match template {
+        Some("hello_window") => {
+            r#"field exact distance hello_field(p: Vec3) -> F32 {
+    sphere(radius = 0.6)
+}
+
+material hello_material(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.3, 0.5, 0.9),
+        roughness=0.35,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape hello_shape {
+    field = hello_field
+    material = hello_material
+}
+
+region hello_region() {
+    place scene = hello_shape
+}
+
+domain hello_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    max_distance = 12.0
+    min_step = 0.02
+    hit_epsilon = 0.0008
+    max_steps = 96
+}
+
+view main_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = hello_domain(world = world)
+    viewport = viewport(width = 640, height = 360)
+    quality = realtime_quality(target_fps = 60)
+    outputs = frame_outputs(color = true)
+}
+
+fn run() -> Integer {
+    return 0
+}
+"#
+        }
+        Some(other) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown template `{other}`"),
+            ));
+        }
+        None => "fn run() -> Integer {\n    return 0\n}\n",
+    };
+    fs::write(main_path, source)?;
+    if matches!(template, Some("hello_window")) {
+        fs::write(
+            root.join("wrela.toml"),
+            "[package]\nname = \"hello_window\"\nversion = \"0.1.0\"\n\n[engine]\nstdlib = \"0.1\"\ndefault_view = \"main_view\"\n\n[backends]\nquery = \"wgsl\"\ncollision = \"wgsl\"\n",
+        )?;
+    }
     Ok(())
 }
 

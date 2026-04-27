@@ -1,0 +1,44 @@
+resource InputFrame {
+    tick: Integer
+}
+
+resource PlayerInput {
+    move_x: F32
+}
+
+resource Transform {
+    x: F32
+    y: F32
+}
+
+resource Velocity {
+    x: F32
+    y: F32
+}
+
+resource EventEmitter[T] {
+    total: Integer
+}
+
+event FrameEvent {
+    tick: Integer
+}
+
+@phase(pre_sim)
+system load_input(input: InputFrame, @mut player_input: PlayerInput) -> Nothing {
+    return
+}
+
+@phase(sim)
+system update_transforms(player_input: PlayerInput, velocity: Velocity, @mut transform: Transform) -> Nothing {
+    return
+}
+
+@phase(post_sim)
+system emit_frame_events(transform: Transform, events: EventEmitter[FrameEvent]) -> Nothing {
+    return
+}
+
+fn run() -> Integer {
+    return 0
+}

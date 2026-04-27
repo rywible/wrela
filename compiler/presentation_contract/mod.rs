@@ -19,6 +19,8 @@ pub enum FrameAttachmentKind {
     Medium,
     Motion,
     Color,
+    /// Swapchain-backed color target (RFC 0011); not allocated via attachment arena.
+    SwapchainColor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -595,7 +597,9 @@ impl LightingInputContract {
 impl FrameAttachmentContract {
     pub const fn policy(&self) -> AttachmentPolicy {
         match self.kind {
-            FrameAttachmentKind::Radiance | FrameAttachmentKind::Color => {
+            FrameAttachmentKind::Radiance
+            | FrameAttachmentKind::Color
+            | FrameAttachmentKind::SwapchainColor => {
                 AttachmentPolicy::buffer_f32_with_optional_f16()
             }
             FrameAttachmentKind::PrimaryHit
@@ -675,6 +679,18 @@ impl FrameAttachmentContract {
         Self {
             name: name.into(),
             kind: FrameAttachmentKind::Color,
+            element_schema: AttachmentElementSchema::Vec3F32,
+            lifetime: AttachmentLifetime::Transient,
+            resolution: AttachmentResolutionClass::Viewport,
+            scale: AttachmentResolutionScale::full(),
+            clear_policy: AttachmentClearPolicy::Zero,
+        }
+    }
+
+    pub fn swapchain_color(name: impl Into<SmolStr>) -> Self {
+        Self {
+            name: name.into(),
+            kind: FrameAttachmentKind::SwapchainColor,
             element_schema: AttachmentElementSchema::Vec3F32,
             lifetime: AttachmentLifetime::Transient,
             resolution: AttachmentResolutionClass::Viewport,

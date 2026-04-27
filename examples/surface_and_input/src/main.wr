@@ -1,0 +1,47 @@
+field exact distance demo_field(p: Vec3) -> F32 {
+    sphere(radius = 0.6)
+}
+
+material demo_material(hit: Hit3) -> Surface {
+    return Surface(
+        albedo=vec3(0.3, 0.5, 0.9),
+        roughness=0.35,
+        metalness=0.0,
+        clearcoat=0.0,
+        clearcoat_roughness=0.0,
+        sheen=0.0,
+        emissive=vec3(0.0, 0.0, 0.0)
+    )
+}
+
+shape demo_shape {
+    field = demo_field
+    material = demo_material
+}
+
+region demo_region() {
+    place scene = demo_shape
+}
+
+domain demo_domain(world: RegionCapture) {
+    geometry_detail = 1
+    material = true
+    max_distance = 12.0
+    min_step = 0.02
+    hit_epsilon = 0.0008
+    max_steps = 96
+}
+
+view main_view(
+    world: RegionCapture,
+    camera: Camera
+) {
+    domain = demo_domain(world = world)
+    viewport = viewport(width = 640, height = 360)
+    quality = realtime_quality(target_fps = 60)
+    outputs = frame_outputs(color = true)
+}
+
+fn run() -> Integer {
+    return 0
+}

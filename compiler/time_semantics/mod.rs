@@ -79,7 +79,9 @@ pub enum ChangeClass {
     Structural = 2,
     Topology = 3,
     Identity = 4,
-    Incompatible = 5,
+    /// Interactive simulation / gameplay state (RFC 0011 live policy ceiling).
+    Behavior = 5,
+    Incompatible = 6,
 }
 
 impl ChangeClass {

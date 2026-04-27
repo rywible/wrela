@@ -16,6 +16,7 @@ collision-run         execute representative collision plans and emit runtime di
 preview <path>        emit a named view attachment (default: color) as PPM
 frame <path>          evaluate a named view and emit typed frame attachments or PPM
 frame-live <path>     open a live frame window with click-to-log selection output
+live <path>           launch the reference host; add --headless --json for JSON reports
 frame-contracts <path>  inspect compiled frame contracts for named views
 presentation-plan <path>  inspect compiled presentation contracts and pass plan
 presentation-debug <path> run presentation passes and export color/depth/normal debug attachments
@@ -36,6 +37,7 @@ options:
 --emit-obj=PATH       emit object file
 --emit-bin=PATH       emit executable
 --query-backend=NAME  compile direct world/view queries with backend (cpu|virtual_gpu|wgsl|auto)
+init flag:            --template=hello_window
 preview/frame flags:  --view NAME --region NAME --domain NAME --attachment NAME --width N --height N
 frame flags:          --attachment-format=json|ppm
 preview flag:         --json-report

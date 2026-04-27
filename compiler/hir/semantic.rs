@@ -988,6 +988,7 @@ impl<'a> Checker<'a> {
         self.current_function_role = func.role;
         for attr in &func.attributes {
             match attr.name.as_str() {
+                "phase" if matches!(func.role, FunctionRole::System) => {}
                 "serial" | "allows_env_set" | "allows_fs_escape" => {
                     if !attr.args.is_empty() {
                         self.errors.push(SemanticError::AttributeArgsNotAllowed {
@@ -1084,17 +1085,17 @@ impl<'a> Checker<'a> {
 
     fn check_system_metadata(&mut self, func: &Function) {
         let span = span_from_option(func.name_span);
-        let stage = func
+        let phase = func
             .system_metadata
             .as_ref()
-            .and_then(|meta| meta.stage.clone());
+            .and_then(|meta| meta.phase.clone().or_else(|| meta.stage.clone()));
         if !matches!(
-            stage.as_deref(),
-            Some("input" | "fixed" | "post_fixed" | "late")
+            phase.as_deref(),
+            Some("pre_sim" | "sim" | "post_sim" | "input" | "fixed" | "post_fixed" | "late")
         ) {
             self.errors.push(SemanticError::InvalidSystemStage {
                 system: func.name.clone(),
-                found: stage,
+                found: phase,
                 span,
             });
         }
@@ -3471,6 +3472,13 @@ fn check_game_roots(module: &Module) -> Vec<SemanticError> {
             (!matches!(
                 func.role,
                 FunctionRole::Field
+                    | FunctionRole::InputMap
+                    | FunctionRole::Body
+                    | FunctionRole::Move
+                    | FunctionRole::Moveset
+                    | FunctionRole::AudioField
+                    | FunctionRole::Voice
+                    | FunctionRole::MediaField
                     | FunctionRole::Region
                     | FunctionRole::Domain
                     | FunctionRole::Render
@@ -5142,12 +5150,14 @@ system updater[stage=fixed, writes=[Velocity]]() -> Nothing {
             domain_execution_policy: None,
             presentation: None,
             system_metadata: Some(SystemMetadata {
+                phase: Some(SmolStr::new("sim")),
                 stage: Some(SmolStr::new("fixed")),
                 reads: Vec::new(),
                 writes: Vec::new(),
                 before: Vec::new(),
                 after: vec![SmolStr::new("sys_b")],
             }),
+            runtime_metadata: None,
             type_params: Vec::new(),
             params: Vec::new(),
             ret_type: None,
@@ -5167,12 +5177,14 @@ system updater[stage=fixed, writes=[Velocity]]() -> Nothing {
             domain_execution_policy: None,
             presentation: None,
             system_metadata: Some(SystemMetadata {
+                phase: Some(SmolStr::new("sim")),
                 stage: Some(SmolStr::new("fixed")),
                 reads: Vec::new(),
                 writes: Vec::new(),
                 before: Vec::new(),
                 after: vec![SmolStr::new("sys_a")],
             }),
+            runtime_metadata: None,
             type_params: Vec::new(),
             params: Vec::new(),
             ret_type: None,

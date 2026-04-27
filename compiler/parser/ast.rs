@@ -49,6 +49,13 @@ pub enum Stmt {
     FuncDef(FuncDef),
     KernelDef(KernelDef),
     SystemDef(SystemDef),
+    InputMapDef(InputMapDef),
+    BodyDef(BodyDef),
+    MoveDef(MoveDef),
+    MovesetDef(MovesetDef),
+    AudioFieldDecl(AudioFieldDecl),
+    VoiceDecl(VoiceDecl),
+    MediaFieldDecl(MediaFieldDecl),
     FieldDecl(FieldDecl),
     RegionDecl(RegionDecl),
     DomainDecl(DomainDecl),
@@ -94,6 +101,13 @@ impl AstNode for Stmt {
                 | SyntaxKind::FuncDef
                 | SyntaxKind::KernelDef
                 | SyntaxKind::SystemDef
+                | SyntaxKind::InputMapDef
+                | SyntaxKind::BodyDef
+                | SyntaxKind::MoveDef
+                | SyntaxKind::MovesetDef
+                | SyntaxKind::AudioFieldDecl
+                | SyntaxKind::VoiceDecl
+                | SyntaxKind::MediaFieldDecl
                 | SyntaxKind::FieldDecl
                 | SyntaxKind::RegionDecl
                 | SyntaxKind::DomainDecl
@@ -137,6 +151,13 @@ impl AstNode for Stmt {
             SyntaxKind::FuncDef => FuncDef::cast(node).map(Stmt::FuncDef),
             SyntaxKind::KernelDef => KernelDef::cast(node).map(Stmt::KernelDef),
             SyntaxKind::SystemDef => SystemDef::cast(node).map(Stmt::SystemDef),
+            SyntaxKind::InputMapDef => InputMapDef::cast(node).map(Stmt::InputMapDef),
+            SyntaxKind::BodyDef => BodyDef::cast(node).map(Stmt::BodyDef),
+            SyntaxKind::MoveDef => MoveDef::cast(node).map(Stmt::MoveDef),
+            SyntaxKind::MovesetDef => MovesetDef::cast(node).map(Stmt::MovesetDef),
+            SyntaxKind::AudioFieldDecl => AudioFieldDecl::cast(node).map(Stmt::AudioFieldDecl),
+            SyntaxKind::VoiceDecl => VoiceDecl::cast(node).map(Stmt::VoiceDecl),
+            SyntaxKind::MediaFieldDecl => MediaFieldDecl::cast(node).map(Stmt::MediaFieldDecl),
             SyntaxKind::FieldDecl => FieldDecl::cast(node).map(Stmt::FieldDecl),
             SyntaxKind::RegionDecl => RegionDecl::cast(node).map(Stmt::RegionDecl),
             SyntaxKind::DomainDecl => DomainDecl::cast(node).map(Stmt::DomainDecl),
@@ -189,6 +210,13 @@ impl AstNode for Stmt {
             Stmt::FuncDef(it) => it.syntax(),
             Stmt::KernelDef(it) => it.syntax(),
             Stmt::SystemDef(it) => it.syntax(),
+            Stmt::InputMapDef(it) => it.syntax(),
+            Stmt::BodyDef(it) => it.syntax(),
+            Stmt::MoveDef(it) => it.syntax(),
+            Stmt::MovesetDef(it) => it.syntax(),
+            Stmt::AudioFieldDecl(it) => it.syntax(),
+            Stmt::VoiceDecl(it) => it.syntax(),
+            Stmt::MediaFieldDecl(it) => it.syntax(),
             Stmt::FieldDecl(it) => it.syntax(),
             Stmt::RegionDecl(it) => it.syntax(),
             Stmt::DomainDecl(it) => it.syntax(),
@@ -1054,6 +1082,348 @@ macro_rules! impl_function_like_def {
 
 impl_function_like_def!(SystemDef, SyntaxKind::SystemDef);
 impl_function_like_def!(KernelDef, SyntaxKind::KernelDef);
+
+fn runtime_name_after_keywords(node: &SyntaxNode, keywords: &[&str]) -> Option<SyntaxToken> {
+    let mut matched = 0usize;
+    for token in node
+        .children_with_tokens()
+        .filter_map(|it| it.into_token())
+        .filter(|it| it.kind() == SyntaxKind::Ident)
+    {
+        if matched < keywords.len() {
+            if token.text() == keywords[matched] {
+                matched += 1;
+            }
+            continue;
+        }
+        return Some(token);
+    }
+    None
+}
+
+fn runtime_clauses(node: &SyntaxNode) -> Vec<RuntimeClause> {
+    node.children()
+        .filter_map(Block::cast)
+        .next()
+        .into_iter()
+        .flat_map(|block| {
+            block
+                .0
+                .children()
+                .filter_map(RuntimeClause::cast)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+macro_rules! impl_named_runtime_decl {
+    ($name:ident, $kind:expr, $keywords:expr) => {
+        pub struct $name(SyntaxNode);
+        impl AstNode for $name {
+            fn can_cast(kind: SyntaxKind) -> bool {
+                kind == $kind
+            }
+            fn cast(node: SyntaxNode) -> Option<Self> {
+                if Self::can_cast(node.kind()) {
+                    Some(Self(node))
+                } else {
+                    None
+                }
+            }
+            fn syntax(&self) -> &SyntaxNode {
+                &self.0
+            }
+        }
+
+        impl $name {
+            pub fn name(&self) -> Option<SyntaxToken> {
+                runtime_name_after_keywords(&self.0, $keywords)
+            }
+
+            pub fn params(&self) -> impl Iterator<Item = Param> {
+                self.0
+                    .children()
+                    .filter(|it| it.kind() == SyntaxKind::ParamList)
+                    .flat_map(|node| node.children())
+                    .filter_map(Param::cast)
+            }
+
+            pub fn clauses(&self) -> impl Iterator<Item = RuntimeClause> {
+                runtime_clauses(&self.0).into_iter()
+            }
+        }
+    };
+}
+
+macro_rules! impl_runtime_callable_decl {
+    ($name:ident, $kind:expr, $keywords:expr) => {
+        pub struct $name(SyntaxNode);
+        impl AstNode for $name {
+            fn can_cast(kind: SyntaxKind) -> bool {
+                kind == $kind
+            }
+            fn cast(node: SyntaxNode) -> Option<Self> {
+                if Self::can_cast(node.kind()) {
+                    Some(Self(node))
+                } else {
+                    None
+                }
+            }
+            fn syntax(&self) -> &SyntaxNode {
+                &self.0
+            }
+        }
+
+        impl $name {
+            pub fn name(&self) -> Option<SyntaxToken> {
+                runtime_name_after_keywords(&self.0, $keywords)
+            }
+
+            pub fn attributes(&self) -> impl Iterator<Item = Attribute> {
+                self.0.children().filter_map(Attribute::cast)
+            }
+
+            pub fn audio_rt(&self) -> bool {
+                self.attributes()
+                    .filter_map(|attr| attr.name())
+                    .any(|name| name.text() == "audio_rt")
+            }
+
+            pub fn params(&self) -> impl Iterator<Item = Param> {
+                self.0
+                    .children()
+                    .filter(|it| it.kind() == SyntaxKind::ParamList)
+                    .flat_map(|node| node.children())
+                    .filter_map(Param::cast)
+            }
+
+            pub fn ret_type(&self) -> Option<TypeRef> {
+                self.0.children().filter_map(TypeRef::cast).next()
+            }
+
+            pub fn statements(&self) -> impl Iterator<Item = Stmt> {
+                self.0
+                    .children()
+                    .filter_map(Block::cast)
+                    .next()
+                    .into_iter()
+                    .flat_map(|b| {
+                        b.0.children()
+                            .filter_map(Stmt::cast)
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                    })
+            }
+
+            pub fn clauses(&self) -> impl Iterator<Item = RuntimeClause> {
+                runtime_clauses(&self.0).into_iter()
+            }
+        }
+    };
+}
+
+pub struct InputMapAction(SyntaxNode);
+impl AstNode for InputMapAction {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::InputMapAction
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(InputMapAction(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl InputMapAction {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        runtime_name_after_keywords(&self.0, &["action"])
+    }
+
+    pub fn bindings(&self) -> impl Iterator<Item = InputBinding> {
+        self.0.children().filter_map(InputBinding::cast)
+    }
+}
+
+pub struct InputBinding(SyntaxNode);
+impl AstNode for InputBinding {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::InputBinding
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(InputBinding(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl InputBinding {
+    pub fn path_text(&self) -> String {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|token| !token.kind().is_trivia())
+            .take_while(|token| !is_input_binding_comparator(token.kind()))
+            .map(|token| token.text().to_string())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    pub fn comparison_op(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|token| is_input_binding_comparator(token.kind()))
+    }
+
+    pub fn comparison_value_text(&self) -> Option<String> {
+        let mut seen_op = false;
+        let value = self
+            .0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|token| !token.kind().is_trivia())
+            .filter_map(|token| {
+                if seen_op {
+                    Some(token.text().to_string())
+                } else if is_input_binding_comparator(token.kind()) {
+                    seen_op = true;
+                    None
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        (!value.is_empty()).then_some(value)
+    }
+}
+
+fn is_input_binding_comparator(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::Less
+            | SyntaxKind::LessEq
+            | SyntaxKind::Greater
+            | SyntaxKind::GreaterEq
+            | SyntaxKind::EqEq
+            | SyntaxKind::BangEq
+    )
+}
+
+pub struct RuntimeClause(SyntaxNode);
+impl AstNode for RuntimeClause {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::RuntimeClause
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(node.kind()) {
+            Some(RuntimeClause(node))
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
+impl RuntimeClause {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|token| is_name_like_label_token(token.kind()))
+    }
+
+    pub fn value_text(&self) -> Option<String> {
+        let name = self.name()?;
+        let name_end = name.text_range().end();
+        let value_end = self
+            .0
+            .children()
+            .find(|node| node.kind() == SyntaxKind::Block)
+            .map(|node| node.text_range().start())
+            .unwrap_or_else(|| self.0.text_range().end());
+        let mut text = String::new();
+        for token in self
+            .0
+            .descendants_with_tokens()
+            .filter_map(|item| item.into_token())
+        {
+            let range = token.text_range();
+            if range.end() <= name_end || range.start() >= value_end {
+                continue;
+            }
+            match token.kind() {
+                SyntaxKind::StringStart | SyntaxKind::StringPart => {
+                    text.push_str(token.text().strip_suffix('{').unwrap_or(token.text()));
+                }
+                SyntaxKind::StringEnd => {
+                    text.push_str(token.text().strip_suffix('"').unwrap_or(token.text()));
+                }
+                _ => text.push_str(token.text()),
+            }
+        }
+        let mut rest = text.trim();
+        if rest.starts_with('=') || rest.starts_with(':') {
+            rest = rest[1..].trim_start();
+        }
+        (!rest.is_empty()).then(|| rest.to_string())
+    }
+
+    pub fn nested(&self) -> bool {
+        self.0
+            .children()
+            .any(|node| node.kind() == SyntaxKind::Block)
+    }
+
+    pub fn clauses(&self) -> impl Iterator<Item = RuntimeClause> {
+        runtime_clauses(&self.0).into_iter()
+    }
+}
+
+impl_named_runtime_decl!(InputMapDef, SyntaxKind::InputMapDef, &["input_map"]);
+impl_named_runtime_decl!(BodyDef, SyntaxKind::BodyDef, &["body"]);
+impl_named_runtime_decl!(MoveDef, SyntaxKind::MoveDef, &["move"]);
+impl_named_runtime_decl!(MovesetDef, SyntaxKind::MovesetDef, &["moveset"]);
+impl_runtime_callable_decl!(
+    AudioFieldDecl,
+    SyntaxKind::AudioFieldDecl,
+    &["audio", "field"]
+);
+impl_runtime_callable_decl!(VoiceDecl, SyntaxKind::VoiceDecl, &["voice"]);
+impl_runtime_callable_decl!(
+    MediaFieldDecl,
+    SyntaxKind::MediaFieldDecl,
+    &["media", "field"]
+);
+
+impl InputMapDef {
+    pub fn actions(&self) -> impl Iterator<Item = InputMapAction> {
+        self.0
+            .children()
+            .filter_map(Block::cast)
+            .next()
+            .into_iter()
+            .flat_map(|block| {
+                block
+                    .0
+                    .children()
+                    .filter_map(InputMapAction::cast)
+                    .collect::<Vec<_>>()
+            })
+    }
+}
 
 pub enum FieldClass {
     Exact,
@@ -3997,14 +4367,39 @@ impl AstNode for Param {
 
 impl Param {
     pub fn name(&self) -> Option<SyntaxToken> {
-        self.0
+        let mut name = None;
+        for token in self
+            .0
             .children_with_tokens()
             .filter_map(|it| it.into_token())
-            .find(|it| it.kind() == SyntaxKind::Ident)
+            .filter(|it| !it.kind().is_trivia())
+        {
+            if token.kind() == SyntaxKind::Colon {
+                break;
+            }
+            if token.kind() == SyntaxKind::Ident && token.text() != "mut" {
+                name = Some(token);
+            }
+        }
+        name
     }
 
     pub fn ty(&self) -> Option<TypeRef> {
         self.0.children().filter_map(TypeRef::cast).next()
+    }
+
+    pub fn is_mutable(&self) -> bool {
+        let tokens = self
+            .0
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .filter(|it| !it.kind().is_trivia())
+            .collect::<Vec<_>>();
+        tokens.windows(2).any(|window| {
+            window[0].kind() == SyntaxKind::At
+                && window[1].kind() == SyntaxKind::Ident
+                && window[1].text() == "mut"
+        })
     }
 }
 

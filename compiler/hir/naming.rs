@@ -306,7 +306,7 @@ impl<'a> Checker<'a> {
         let is_class_scope = self.class_method_ids.contains(&func_id);
         let is_bypass = is_bypass_name(func.name.as_str());
 
-        if !is_bypass {
+        if !is_bypass && !is_runtime_declaration_role(func.role) {
             let kind = match func.role {
                 FunctionRole::Field => "field",
                 FunctionRole::Material => "material",
@@ -373,6 +373,8 @@ impl<'a> Checker<'a> {
                     | FunctionRole::Material
                     | FunctionRole::Radiance
                     | FunctionRole::Volume
+                    | FunctionRole::AudioField
+                    | FunctionRole::MediaField
             ) {
                 self.check_return_name_rules(func, ret, is_class_scope);
             }
@@ -380,7 +382,14 @@ impl<'a> Checker<'a> {
 
         if !matches!(
             func.role,
-            FunctionRole::Domain | FunctionRole::Render | FunctionRole::View
+            FunctionRole::Domain
+                | FunctionRole::Render
+                | FunctionRole::View
+                | FunctionRole::InputMap
+                | FunctionRole::Body
+                | FunctionRole::Move
+                | FunctionRole::Moveset
+                | FunctionRole::Voice
         ) {
             let fn_types = self.type_info.functions.get(&func_id);
             func.visit_analysis_bodies(|body| self.check_body_locals(body, fn_types));
@@ -733,6 +742,19 @@ impl<'a> Checker<'a> {
             });
         }
     }
+}
+
+fn is_runtime_declaration_role(role: FunctionRole) -> bool {
+    matches!(
+        role,
+        FunctionRole::InputMap
+            | FunctionRole::Body
+            | FunctionRole::Move
+            | FunctionRole::Moveset
+            | FunctionRole::AudioField
+            | FunctionRole::Voice
+            | FunctionRole::MediaField
+    )
 }
 
 fn build_class_method_ids(module: &Module) -> HashSet<usize> {

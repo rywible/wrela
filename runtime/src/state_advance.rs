@@ -59,7 +59,8 @@ pub enum ChangeClass {
     Structural = 2,
     Topology = 3,
     Identity = 4,
-    Incompatible = 5,
+    Behavior = 5,
+    Incompatible = 6,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,26 +82,53 @@ pub enum TickInputKind {
     System,
 }
 
+/// Mirrors `wrela::state_advance::TickInputEvent`. Carries the wall-clock and
+/// monotonic timestamps that downstream latency tooling stages off of (RFC 0011
+/// Phase 62.95).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TickInputEvent {
     pub tick: SimulationTick,
     pub kind: TickInputKind,
-    pub source: String,
-    pub detail: String,
+    pub source: smol_str::SmolStr,
+    pub detail: smol_str::SmolStr,
+    /// Wall-clock time when the platform observed this input.
+    pub wall_clock: WallClockStamp,
+    /// Monotonic nanoseconds for latency staging.
+    pub monotonic_nanos: u64,
 }
 
 impl TickInputEvent {
     pub fn new(
         tick: SimulationTick,
         kind: TickInputKind,
-        source: impl Into<String>,
-        detail: impl Into<String>,
+        source: impl Into<smol_str::SmolStr>,
+        detail: impl Into<smol_str::SmolStr>,
     ) -> Self {
         Self {
             tick,
             kind,
             source: source.into(),
             detail: detail.into(),
+            wall_clock: WallClockStamp::new(0),
+            monotonic_nanos: 0,
+        }
+    }
+
+    pub fn with_timestamps(
+        tick: SimulationTick,
+        kind: TickInputKind,
+        source: impl Into<smol_str::SmolStr>,
+        detail: impl Into<smol_str::SmolStr>,
+        wall_clock: WallClockStamp,
+        monotonic_nanos: u64,
+    ) -> Self {
+        Self {
+            tick,
+            kind,
+            source: source.into(),
+            detail: detail.into(),
+            wall_clock,
+            monotonic_nanos,
         }
     }
 }

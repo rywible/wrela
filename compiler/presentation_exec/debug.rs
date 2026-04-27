@@ -317,7 +317,9 @@ pub fn render_attachment_ppm_string(
             message: format!("missing attachment '{attachment_name}'"),
         })?;
     match attachment.layout.attachment.kind {
-        FrameAttachmentKind::Color => render_named_color_ppm_string(result, attachment_name),
+        FrameAttachmentKind::Color | FrameAttachmentKind::SwapchainColor => {
+            render_named_color_ppm_string(result, attachment_name)
+        }
         FrameAttachmentKind::Depth => render_depth_ppm_string(result, attachment_name),
         FrameAttachmentKind::WorldNormal => render_world_normal_ppm_string(result, attachment_name),
         kind => Err(PresentationExecError::UnsupportedPlan {

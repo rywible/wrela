@@ -1,6 +1,7 @@
 pub mod class;
 pub mod expr;
 pub mod func;
+pub mod runtime;
 pub mod types;
 
 use crate::parser::Parser;
@@ -100,6 +101,14 @@ pub(crate) fn parse_statement(p: &mut Parser) {
 }
 
 fn parse_root_statement(p: &mut Parser) {
+    if runtime::at_audio_rt_audio_field(p) {
+        runtime::audio_field_decl(p);
+        return;
+    }
+    if runtime::at_audio_rt_media_field(p) {
+        runtime::media_field_decl(p);
+        return;
+    }
     if func::attributed_func_or_check_def(p) {
         return;
     }
@@ -145,6 +154,34 @@ fn parse_root_statement(p: &mut Parser) {
     }
     if p.at_ident_text("game") {
         game_def(p);
+        return;
+    }
+    if p.at_ident_text("input_map") {
+        runtime::input_map_def(p);
+        return;
+    }
+    if p.at_ident_text("body") {
+        runtime::body_def(p);
+        return;
+    }
+    if p.at_ident_text("audio") {
+        runtime::audio_field_decl(p);
+        return;
+    }
+    if p.at_ident_text("move") {
+        runtime::move_def(p);
+        return;
+    }
+    if p.at_ident_text("moveset") {
+        runtime::moveset_def(p);
+        return;
+    }
+    if p.at_ident_text("voice") {
+        runtime::voice_decl(p);
+        return;
+    }
+    if p.at_ident_text("media") {
+        runtime::media_field_decl(p);
         return;
     }
     parse_statement(p);
@@ -762,6 +799,10 @@ pub(crate) fn parse_param_list(p: &mut Parser) {
 
 fn parse_param(p: &mut Parser) {
     let m = p.start();
+    if p.at(SyntaxKind::At) {
+        p.bump();
+        p.expect_with_message(SyntaxKind::Ident, "expected parameter attribute after '@'");
+    }
     p.expect(SyntaxKind::Ident);
     p.expect(SyntaxKind::Colon);
     types::parse_type(p);

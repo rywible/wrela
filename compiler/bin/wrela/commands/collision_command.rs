@@ -1486,7 +1486,8 @@ pub(crate) fn collision_demo_transition(
         wrela::state_advance::ChangeClass::Structural => 2,
         wrela::state_advance::ChangeClass::Topology => 3,
         wrela::state_advance::ChangeClass::Identity => 4,
-        wrela::state_advance::ChangeClass::Incompatible => 5,
+        wrela::state_advance::ChangeClass::Behavior => 5,
+        wrela::state_advance::ChangeClass::Incompatible => 6,
     };
     wrela::kernel::KernelValue::Struct(wrela::kernel::KernelStructValue {
         name: SmolStr::new("CollisionSnapshotTransitionInput"),

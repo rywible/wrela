@@ -3739,36 +3739,33 @@ fn live_engine_frame_runtime_input(
     previous_snapshot: wrela::world_identity::WorldSnapshotHandle,
     engine_frame_budget: Option<&wrela::perf_target::PerfClosureEngineFrameBudget>,
 ) -> wrela::engine_frame::EngineFrameInput {
-    let previous_epoch = previous_snapshot.epoch().0;
-    let current_epoch = previous_epoch.saturating_add(1);
-    let previous_tick = u64::from(frame_offset);
-    let current_tick = previous_tick.saturating_add(1);
     let mut policy = wrela::engine_frame::EngineFrameRuntimePolicy::closure();
     policy.budget = engine_frame_budget.cloned();
-    wrela::engine_frame::EngineFrameInput {
+    let config = wrela::engine_frame::LiveProjectConfig {
         scenario_id: scenario_id.to_string(),
-        frame_index: frame_offset,
+        default_query_requests: Vec::new(),
+        simulation_hz_override: None,
+    };
+    let step = 16_666u64;
+    let wall = u64::from(frame_offset).saturating_mul(step);
+    let (previous_clock, current_clock) = wrela::engine_frame::live_temporal_clocks_for_frame(
+        &previous_snapshot,
+        frame_offset,
+        wall,
+        step,
+    );
+    wrela::engine_frame::build_engine_frame_input(
+        &config,
+        frame_offset,
         previous_snapshot,
-        previous_clock: wrela::time_semantics::TemporalClock::new(
-            wrela::time_semantics::SnapshotEpoch::new(previous_epoch),
-            wrela::time_semantics::SimulationTick::new(previous_tick),
-            wrela::time_semantics::PresentationFrame::new(previous_tick),
-            wrela::time_semantics::WallClockStamp::new(previous_tick.saturating_mul(16_666)),
-        ),
-        current_clock: wrela::time_semantics::TemporalClock::new(
-            wrela::time_semantics::SnapshotEpoch::new(current_epoch),
-            wrela::time_semantics::SimulationTick::new(current_tick),
-            wrela::time_semantics::PresentationFrame::new(current_tick),
-            wrela::time_semantics::WallClockStamp::new(current_tick.saturating_mul(16_666)),
-        ),
-        tick_inputs: wrela::state_advance::TickInputBatch::new(
-            wrela::time_semantics::SimulationTick::new(current_tick),
+        previous_clock,
+        current_clock,
+        wrela::engine_frame::TickInputSource::eager(wrela::state_advance::TickInputBatch::new(
+            current_clock.simulation_tick,
             Vec::new(),
-        ),
+        )),
         policy,
-        query_requests: Vec::new(),
-        readback_requests: Vec::new(),
-    }
+    )
 }
 
 fn run_live_engine_frame_benchmark_scenario(

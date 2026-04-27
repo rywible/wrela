@@ -3536,7 +3536,8 @@ fn expect_change_class(
         2 => Ok(crate::state_advance::ChangeClass::Structural),
         3 => Ok(crate::state_advance::ChangeClass::Topology),
         4 => Ok(crate::state_advance::ChangeClass::Identity),
-        5 => Ok(crate::state_advance::ChangeClass::Incompatible),
+        5 => Ok(crate::state_advance::ChangeClass::Behavior),
+        6 => Ok(crate::state_advance::ChangeClass::Incompatible),
         other => Err(type_mismatch(
             "ChangeClass",
             format!("unknown_change_class_id={other}"),

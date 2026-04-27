@@ -260,6 +260,12 @@ pub struct PerfClosureEngineFrameStatusReport {
     pub violations: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// Sampled motion-to-photon median (ms) when the benchmark lane records latency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion_to_photon_median_ms: Option<f32>,
+    /// Budget used with `motion_to_photon_median_ms` for closure findings (ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion_to_photon_budget_ms: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -795,6 +801,8 @@ impl PerfClosureEngineFrameStatusReport {
             active_degradations: Vec::new(),
             violations: Vec::new(),
             notes: vec!["engine_frame lane not sampled for this suite".to_string()],
+            motion_to_photon_median_ms: None,
+            motion_to_photon_budget_ms: None,
         }
     }
 }

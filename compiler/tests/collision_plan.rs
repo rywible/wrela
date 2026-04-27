@@ -166,7 +166,8 @@ fn collision_transition_input(
         ChangeClass::Structural => 2,
         ChangeClass::Topology => 3,
         ChangeClass::Identity => 4,
-        ChangeClass::Incompatible => 5,
+        ChangeClass::Behavior => 5,
+        ChangeClass::Incompatible => 6,
     };
     KernelValue::Struct(KernelStructValue {
         name: SmolStr::new("CollisionSnapshotTransitionInput"),

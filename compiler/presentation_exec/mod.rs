@@ -31,6 +31,7 @@ pub mod framegraph;
 mod gpu_primary;
 pub mod gpu_resources;
 pub mod resources;
+pub mod swapchain;
 mod temporal;
 mod wgsl;
 

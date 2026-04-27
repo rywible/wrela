@@ -1,16 +1,18 @@
+use super::latency::{PresentModePolicy, TickInputSource, input_arrival_timestamp_stats};
 use super::{
     EngineFrameError, EngineFrameReport, EngineFrameScheduler, EngineFrameTimeline,
     EngineGpuTimingPolicy, EngineGraphBuilder, EngineJobAffinity, EngineMeasurementPolicy,
     EngineRuntimeSource, EngineSpanDomain, EngineSubsystemAdapter, EngineSubsystemDescriptor,
     EngineSubsystemKind, EngineSubsystemPlan, EngineSubsystemReport,
 };
-use crate::perf_target::PerfClosureEngineFrameBudget;
+use crate::perf_target::{PerfClosureEngineFrameBudget, PerfClosureProfile};
 use crate::state_advance::{ChangeClass, StateAdvanceResult, TickInputBatch};
 use crate::time_semantics::TemporalClock;
 use crate::world_identity::WorldSnapshotHandle;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Debug, Clone)]
 pub struct EngineFrameInput {
@@ -19,10 +21,16 @@ pub struct EngineFrameInput {
     pub previous_snapshot: WorldSnapshotHandle,
     pub previous_clock: TemporalClock,
     pub current_clock: TemporalClock,
-    pub tick_inputs: TickInputBatch,
+    pub tick_inputs: TickInputSource,
     pub policy: EngineFrameRuntimePolicy,
     pub query_requests: Vec<EngineQueryRequest>,
     pub readback_requests: Vec<EngineReadbackRequest>,
+}
+
+impl EngineFrameInput {
+    pub fn expected_simulation_tick(&self) -> crate::state_advance::SimulationTick {
+        self.current_clock.simulation_tick
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +38,38 @@ pub struct EngineFrameOutput {
     pub snapshot: WorldSnapshotHandle,
     pub query_results: EngineQueryResults,
     pub report: EngineFrameReport,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MaterializedTickInputSlot {
+    inner: Arc<RwLock<Option<TickInputBatch>>>,
+}
+
+impl MaterializedTickInputSlot {
+    fn publish(&self, batch: TickInputBatch) -> Result<(), EngineFrameError> {
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| EngineFrameError::Message("tick input slot lock poisoned".into()))?;
+        *guard = Some(batch);
+        Ok(())
+    }
+
+    pub fn snapshot(&self) -> Result<Option<TickInputBatch>, EngineFrameError> {
+        self.inner
+            .read()
+            .map_err(|_| EngineFrameError::Message("tick input slot lock poisoned".into()))
+            .map(|guard| guard.clone())
+    }
+
+    fn clear(&self) -> Result<(), EngineFrameError> {
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| EngineFrameError::Message("tick input slot lock poisoned".into()))?;
+        *guard = None;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +94,10 @@ pub struct EngineFrameRuntimePolicy {
     pub allow_private_gpu_submits: bool,
     pub max_change_class: ChangeClass,
     pub budget: Option<PerfClosureEngineFrameBudget>,
+    /// When `Some`, `EngineFrameReport.latency.total_estimate_nanos` is compared each frame.
+    pub motion_to_photon_target_ms: Option<f64>,
+    pub max_frames_in_flight: u32,
+    pub present_mode_policy: PresentModePolicy,
 }
 
 impl EngineFrameRuntimePolicy {
@@ -64,6 +108,39 @@ impl EngineFrameRuntimePolicy {
             allow_private_gpu_submits: false,
             max_change_class: ChangeClass::Identity,
             budget: None,
+            motion_to_photon_target_ms: None,
+            max_frames_in_flight: 2,
+            present_mode_policy: PresentModePolicy::Fifo,
+        }
+    }
+
+    /// Interactive gameplay default (RFC 0011): latency-first, canonical engine-frame budget.
+    pub fn live() -> Self {
+        Self {
+            allow_hot_path_gameplay_readbacks: false,
+            allow_debug_export_readbacks: false,
+            allow_private_gpu_submits: false,
+            max_change_class: ChangeClass::Behavior,
+            budget: Some(
+                PerfClosureProfile::canonical_1080p120_wgsl_resident().engine_frame_budget,
+            ),
+            motion_to_photon_target_ms: Some(16.0),
+            max_frames_in_flight: 1,
+            present_mode_policy: PresentModePolicy::PreferMailboxThenVrrFifoThenFifo,
+        }
+    }
+
+    /// Inspector / tools overlay: permissive readbacks, no motion-to-photon gate.
+    pub fn tools() -> Self {
+        Self {
+            allow_hot_path_gameplay_readbacks: true,
+            allow_debug_export_readbacks: true,
+            allow_private_gpu_submits: true,
+            max_change_class: ChangeClass::Identity,
+            budget: None,
+            motion_to_photon_target_ms: None,
+            max_frames_in_flight: 2,
+            present_mode_policy: PresentModePolicy::Fifo,
         }
     }
 }
@@ -99,6 +176,13 @@ pub struct EngineStateAdvanceReport {
 #[serde(rename_all = "snake_case")]
 pub enum EngineResourceId {
     WorldSnapshot { epoch: u64 },
+    InputFrame { epoch: u64 },
+    ResidentRegion { region_id: String, epoch: u64 },
+    PhysicsBodyState { epoch: u64 },
+    PhysicsContactLedger { tick: u64 },
+    PhysicsMoveState { body_id: u64, tick: u64 },
+    AudioVoiceLedger { epoch: u64 },
+    SaveRecord { epoch: u64 },
     ResidentScene { epoch: u64 },
     DynamicStateBuffer { epoch: u64 },
     Transient(String),
@@ -365,6 +449,10 @@ pub struct EngineBudgetDirectives {
 pub struct EngineFrameRuntime {
     state_advance: Arc<Mutex<Box<dyn EngineStateAdvanceExecutor>>>,
     scheduler: EngineFrameScheduler,
+    materialized_tick_inputs: MaterializedTickInputSlot,
+    /// Shared with [`ResidencySubsystemAdapter::with_state_outcome`] and similar adapters
+    /// so post-state-advance subsystems observe the same `WorldSnapshotHandle` as state advance.
+    state_advance_outcome: Arc<Mutex<Option<Result<StateAdvanceResult, EngineFrameError>>>>,
 }
 
 impl EngineFrameRuntime {
@@ -372,6 +460,8 @@ impl EngineFrameRuntime {
         Self {
             state_advance: Arc::new(Mutex::new(state_advance)),
             scheduler: EngineFrameScheduler::default(),
+            materialized_tick_inputs: MaterializedTickInputSlot::default(),
+            state_advance_outcome: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -382,7 +472,20 @@ impl EngineFrameRuntime {
         Self {
             state_advance: Arc::new(Mutex::new(state_advance)),
             scheduler: EngineFrameScheduler::with_executor_config(executor_config),
+            materialized_tick_inputs: MaterializedTickInputSlot::default(),
+            state_advance_outcome: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Clone this handle into [`crate::engine_frame::ResidencySubsystemAdapter::with_state_outcome`].
+    pub fn state_advance_outcome_slot(
+        &self,
+    ) -> Arc<Mutex<Option<Result<StateAdvanceResult, EngineFrameError>>>> {
+        Arc::clone(&self.state_advance_outcome)
+    }
+
+    pub fn materialized_tick_input_slot(&self) -> MaterializedTickInputSlot {
+        self.materialized_tick_inputs.clone()
     }
 
     pub fn run_frame(
@@ -397,25 +500,46 @@ impl EngineFrameRuntime {
         input: EngineFrameInput,
         mut subsystem_adapters: Vec<Box<dyn EngineSubsystemAdapter>>,
     ) -> Result<EngineFrameOutput, EngineFrameError> {
-        let readback_manager = EngineReadbackManager::new(input.policy.clone());
-        readback_manager.validate_requests(&input.readback_requests)?;
-        self.scheduler.budget = input.policy.budget.clone();
+        self.run_frame_with_persistent_subsystems(input, &mut subsystem_adapters)
+    }
 
-        let state_input = EngineStateAdvanceInput {
+    pub fn run_frame_with_persistent_subsystems(
+        &mut self,
+        input: EngineFrameInput,
+        subsystem_adapters: &mut [Box<dyn EngineSubsystemAdapter>],
+    ) -> Result<EngineFrameOutput, EngineFrameError> {
+        let readback_manager = EngineReadbackManager::new(input.policy.clone());
+        self.scheduler.budget = input.policy.budget.clone();
+        self.materialized_tick_inputs.clear()?;
+        {
+            let mut slot = self.state_advance_outcome.lock().map_err(|_| {
+                EngineFrameError::Message("state advance outcome slot lock poisoned".into())
+            })?;
+            *slot = None;
+        }
+
+        for adapter in subsystem_adapters.iter_mut() {
+            adapter.prepare_frame(&input);
+        }
+
+        let state_result = Arc::clone(&self.state_advance_outcome);
+        let mut state_adapter = StateAdvanceRuntimeAdapter {
+            executor: Arc::clone(&self.state_advance),
             previous_snapshot: input.previous_snapshot.clone(),
             previous_clock: input.previous_clock,
             current_clock: input.current_clock,
-            inputs: input.tick_inputs.clone(),
+            tick_source: input.tick_inputs.clone(),
+            max_change_class: input.policy.max_change_class,
+            materialized_tick_inputs: self.materialized_tick_inputs.clone(),
+            result: Arc::clone(&state_result),
         };
-        let state_result = Arc::new(Mutex::new(None));
-        let mut adapters: Vec<Box<dyn EngineSubsystemAdapter>> =
-            vec![Box::new(StateAdvanceRuntimeAdapter {
-                executor: Arc::clone(&self.state_advance),
-                input: state_input,
-                result: Arc::clone(&state_result),
-            })];
-        adapters.append(&mut subsystem_adapters);
-        let mut report = self.scheduler.run_frame(
+        let mut adapters: Vec<&mut dyn EngineSubsystemAdapter> = vec![&mut state_adapter];
+        adapters.extend(
+            subsystem_adapters
+                .iter_mut()
+                .map(|adapter| adapter.as_mut() as &mut dyn EngineSubsystemAdapter),
+        );
+        let mut report = self.scheduler.run_frame_borrowed(
             input.scenario_id.clone(),
             input.frame_index,
             &mut adapters,
@@ -429,16 +553,6 @@ impl EngineFrameRuntime {
             })??;
 
         validate_state_advance(&input, &state_advance)?;
-        if !input
-            .policy
-            .max_change_class
-            .allows(state_advance.change_summary.class)
-        {
-            return Err(EngineFrameError::Message(format!(
-                "state advance change is incompatible with frame policy: {:?}",
-                state_advance.change_summary.class
-            )));
-        }
 
         let snapshot = state_advance.transition_record.to_snapshot.clone();
         let output_epoch = snapshot.epoch().0;
@@ -463,11 +577,13 @@ impl EngineFrameRuntime {
         let resource_ledger = build_resource_ledger(
             &input.previous_snapshot,
             output_epoch,
+            input.current_clock.simulation_tick.get(),
             &query_results,
             &report,
         );
-        let mut readback_requests = input.readback_requests;
+        let mut readback_requests = input.readback_requests.clone();
         readback_requests.extend(subsystem_reported_readback_requests(&report));
+        readback_manager.validate_requests(&readback_requests)?;
         let readback_ledger =
             readback_manager.register_frame_readbacks(output_epoch, readback_requests)?;
         let mut gpu_frame_ledger = report.gpu_frame_ledger.clone();
@@ -487,6 +603,7 @@ impl EngineFrameRuntime {
         };
         report.gpu_frame_ledger = gpu_frame_ledger;
         report.budget_directives = budget_directives(&input.policy);
+        apply_latency_budget_to_report(&input.policy, &mut report);
 
         Ok(EngineFrameOutput {
             snapshot,
@@ -498,7 +615,12 @@ impl EngineFrameRuntime {
 
 struct StateAdvanceRuntimeAdapter {
     executor: Arc<Mutex<Box<dyn EngineStateAdvanceExecutor>>>,
-    input: EngineStateAdvanceInput,
+    previous_snapshot: WorldSnapshotHandle,
+    previous_clock: TemporalClock,
+    current_clock: TemporalClock,
+    tick_source: TickInputSource,
+    max_change_class: ChangeClass,
+    materialized_tick_inputs: MaterializedTickInputSlot,
     result: Arc<Mutex<Option<Result<StateAdvanceResult, EngineFrameError>>>>,
 }
 
@@ -515,10 +637,26 @@ impl EngineSubsystemAdapter for StateAdvanceRuntimeAdapter {
             allows_hot_path_readback: false,
         };
         let executor = Arc::clone(&self.executor);
-        let input = self.input.clone();
+        let previous_snapshot = self.previous_snapshot.clone();
+        let previous_clock = self.previous_clock;
+        let current_clock = self.current_clock;
+        let tick_source = self.tick_source.clone();
+        let max_change_class = self.max_change_class;
         let result_for_job = Arc::clone(&self.result);
         let result_for_report = Arc::clone(&self.result);
-        let input_count = input.inputs.inputs.len() as u64;
+        let materialized_tick_inputs = self.materialized_tick_inputs.clone();
+        let materialized_tick_inputs_for_report = self.materialized_tick_inputs.clone();
+        let tick_for_batch = current_clock.simulation_tick;
+        let wall_deadline = current_clock.wall_clock;
+        // The late-sampling deadline is the StateAdvance input sample time;
+        // it shares the `TickInputEvent::monotonic_nanos` origin by
+        // `LateInputSampler` contract and is not a scheduler span origin.
+        let state_advance_input_sample_nanos = Arc::new(AtomicU64::new(wall_deadline.get()));
+        let state_advance_input_sample_nanos_for_job =
+            Arc::clone(&state_advance_input_sample_nanos);
+        let state_advance_input_sample_nanos_for_report =
+            Arc::clone(&state_advance_input_sample_nanos);
+        let tick_source_for_report = tick_source.clone();
         let job = builder.add_job(
             descriptor.kind.clone(),
             "state_advance.advance".to_string(),
@@ -527,14 +665,47 @@ impl EngineSubsystemAdapter for StateAdvanceRuntimeAdapter {
             Vec::new(),
             false,
             move || {
+                let sample_deadline = tick_source.sample_deadline(wall_deadline);
+                state_advance_input_sample_nanos_for_job
+                    .store(sample_deadline.get(), Ordering::Release);
+                let inputs =
+                    tick_source.materialize_for_simulation_tick(tick_for_batch, sample_deadline);
+                let materialized_inputs = inputs.clone();
+                let input = EngineStateAdvanceInput {
+                    previous_snapshot: previous_snapshot.clone(),
+                    previous_clock,
+                    current_clock,
+                    inputs,
+                };
                 let mut executor = executor.lock().map_err(|_| {
                     EngineFrameError::Message("state advance executor lock poisoned".into())
                 })?;
                 let advanced = executor.advance(input);
-                *result_for_job.lock().map_err(|_| {
+                let mut guard = result_for_job.lock().map_err(|_| {
                     EngineFrameError::Message("state advance result lock poisoned".into())
-                })? = Some(advanced);
-                Ok(())
+                })?;
+                match advanced {
+                    Ok(advanced) => {
+                        if let Err(err) = validate_state_advance_result(
+                            &previous_snapshot,
+                            tick_for_batch,
+                            &advanced,
+                        )
+                        .and_then(|_| {
+                            validate_state_advance_change_class(max_change_class, &advanced)
+                        }) {
+                            *guard = Some(Err(err.clone()));
+                            return Err(err);
+                        }
+                        materialized_tick_inputs.publish(materialized_inputs)?;
+                        *guard = Some(Ok(advanced));
+                        Ok(())
+                    }
+                    Err(err) => {
+                        *guard = Some(Err(err.clone()));
+                        Err(err)
+                    }
+                }
             },
         );
         Ok(EngineSubsystemPlan::new(
@@ -542,6 +713,39 @@ impl EngineSubsystemAdapter for StateAdvanceRuntimeAdapter {
             vec![job],
             vec![job],
             move |timeline: &EngineFrameTimeline, ctx| {
+                let state_advance_input_sample_nanos =
+                    state_advance_input_sample_nanos_for_report.load(Ordering::Acquire);
+                ctx.state_advance_input_sample_nanos = Some(state_advance_input_sample_nanos);
+                if let TickInputSource::Late(sampler) = &tick_source_for_report {
+                    let ring_state = sampler.ring_state();
+                    if ring_state.overflow {
+                        if !ctx
+                            .violations
+                            .iter()
+                            .any(|v| v == "presentation.input_ring_overflow")
+                        {
+                            ctx.violations
+                                .push("presentation.input_ring_overflow".to_string());
+                        }
+                        sampler.clear_overflow();
+                    }
+                }
+                if let Some(batch) = materialized_tick_inputs_for_report.snapshot()? {
+                    let stats =
+                        input_arrival_timestamp_stats(&batch, state_advance_input_sample_nanos);
+                    if let Some(earliest) = stats.earliest_valid_arrival_nanos {
+                        ctx.earliest_input_arrival_nanos = Some(
+                            ctx.earliest_input_arrival_nanos
+                                .map(|prev| prev.min(earliest))
+                                .unwrap_or(earliest),
+                        );
+                    }
+                    if stats.has_future_timestamp() {
+                        ctx.future_input_timestamp_count = ctx
+                            .future_input_timestamp_count
+                            .saturating_add(stats.future_timestamp_count);
+                    }
+                }
                 let executed =
                     subsystem_elapsed_micros(timeline, EngineSubsystemKind::StateAdvance);
                 if let Some(result) = result_for_report
@@ -566,10 +770,19 @@ impl EngineSubsystemAdapter for StateAdvanceRuntimeAdapter {
                             .push(format!("state_advance_error_before_report={err}")),
                     }
                 }
+                let work_items = result_for_report
+                    .lock()
+                    .map_err(|_| {
+                        EngineFrameError::Message("state advance result lock poisoned".into())
+                    })?
+                    .as_ref()
+                    .and_then(|slot| slot.as_ref().ok())
+                    .map(|result| result.transition_record.inputs.inputs.len() as u64)
+                    .unwrap_or(0);
                 Ok(EngineSubsystemReport {
                     kind: descriptor.kind.clone(),
                     label: descriptor.label.clone(),
-                    work_items: input_count,
+                    work_items,
                     cpu_critical_path_micros: executed,
                     gpu_critical_path_micros: None,
                     executed_wall_time_micros: executed,
@@ -701,17 +914,34 @@ fn validate_state_advance(
     input: &EngineFrameInput,
     result: &StateAdvanceResult,
 ) -> Result<(), EngineFrameError> {
-    if result.transition_record.inputs.tick != input.tick_inputs.tick {
+    validate_state_advance_result(
+        &input.previous_snapshot,
+        input.expected_simulation_tick(),
+        result,
+    )
+}
+
+fn validate_state_advance_result(
+    previous_snapshot: &WorldSnapshotHandle,
+    expected_simulation_tick: crate::state_advance::SimulationTick,
+    result: &StateAdvanceResult,
+) -> Result<(), EngineFrameError> {
+    if previous_snapshot.epoch().0 == u64::MAX {
+        return Err(EngineFrameError::Message(
+            "snapshot epoch reached u64::MAX; advance would wrap".into(),
+        ));
+    }
+    if result.transition_record.inputs.tick != expected_simulation_tick {
         return Err(EngineFrameError::Message(
             "state advance returned a transition for the wrong simulation tick".into(),
         ));
     }
-    if result.transition_record.from_snapshot.as_ref() != Some(&input.previous_snapshot) {
+    if result.transition_record.from_snapshot.as_ref() != Some(previous_snapshot) {
         return Err(EngineFrameError::Message(
             "state advance did not consume the frame input snapshot".into(),
         ));
     }
-    let expected_epoch = input.previous_snapshot.epoch().0.saturating_add(1);
+    let expected_epoch = previous_snapshot.epoch().0.saturating_add(1);
     if result.transition_record.to_snapshot.epoch().0 != expected_epoch {
         return Err(EngineFrameError::Message(format!(
             "state advance must publish exactly one next snapshot epoch: expected {expected_epoch}, got {}",
@@ -728,13 +958,28 @@ fn validate_state_advance(
     Ok(())
 }
 
+fn validate_state_advance_change_class(
+    max_change_class: ChangeClass,
+    result: &StateAdvanceResult,
+) -> Result<(), EngineFrameError> {
+    if !max_change_class.allows(result.change_summary.class) {
+        return Err(EngineFrameError::Message(format!(
+            "state advance change is incompatible with frame policy: {:?}",
+            result.change_summary.class
+        )));
+    }
+    Ok(())
+}
+
 fn build_resource_ledger(
     previous_snapshot: &WorldSnapshotHandle,
     output_epoch: u64,
+    simulation_tick: u64,
     query_results: &EngineQueryResults,
     report: &EngineFrameReport,
 ) -> EngineResourceLedger {
-    let mut accesses = vec![
+    let mut accesses = report.resource_ledger.accesses.clone();
+    accesses.extend([
         EngineResourceAccess {
             subsystem: EngineSubsystemKind::StateAdvance,
             resource: EngineResourceId::WorldSnapshot {
@@ -749,8 +994,9 @@ fn build_resource_ledger(
             },
             mode: EngineResourceAccessMode::Write,
         },
-    ];
-    let mut states = vec![
+    ]);
+    let mut states = report.resource_ledger.states.clone();
+    states.extend([
         EngineResourceState {
             resource: EngineResourceId::WorldSnapshot {
                 epoch: previous_snapshot.epoch().0,
@@ -771,7 +1017,13 @@ fn build_resource_ledger(
             },
             producer: EngineSubsystemKind::StateAdvance,
         },
-        EngineResourceState {
+    ]);
+    let gpu_scene_touched = report.gpu_frame_ledger.upload_bytes > 0
+        || report.subsystems.iter().any(|subsystem| {
+            subsystem.scene_reupload_bytes > 0 || subsystem.queue_submit_count > 0
+        });
+    if gpu_scene_touched {
+        states.push(EngineResourceState {
             resource: EngineResourceId::ResidentScene {
                 epoch: output_epoch,
             },
@@ -780,8 +1032,8 @@ fn build_resource_ledger(
                 epoch: output_epoch,
             },
             producer: EngineSubsystemKind::GpuRuntime,
-        },
-        EngineResourceState {
+        });
+        states.push(EngineResourceState {
             resource: EngineResourceId::DynamicStateBuffer {
                 epoch: output_epoch,
             },
@@ -790,8 +1042,8 @@ fn build_resource_ledger(
                 epoch: output_epoch,
             },
             producer: EngineSubsystemKind::GpuRuntime,
-        },
-    ];
+        });
+    }
     for batch in &query_results.batches {
         accesses.push(EngineResourceAccess {
             subsystem: EngineSubsystemKind::Query,
@@ -811,6 +1063,126 @@ fn build_resource_ledger(
     }
     for subsystem in &report.subsystems {
         match subsystem.kind {
+            EngineSubsystemKind::Input => {
+                accesses.push(EngineResourceAccess {
+                    subsystem: subsystem.kind.clone(),
+                    resource: EngineResourceId::InputFrame {
+                        epoch: output_epoch,
+                    },
+                    mode: EngineResourceAccessMode::Write,
+                });
+                states.push(EngineResourceState {
+                    resource: EngineResourceId::InputFrame {
+                        epoch: output_epoch,
+                    },
+                    residency: EngineResourceResidency::CpuAuthoritative,
+                    epoch_state: EngineResourceEpochState::Valid {
+                        epoch: output_epoch,
+                    },
+                    producer: subsystem.kind.clone(),
+                });
+            }
+            EngineSubsystemKind::System => {
+                accesses.push(EngineResourceAccess {
+                    subsystem: subsystem.kind.clone(),
+                    resource: EngineResourceId::InputFrame {
+                        epoch: output_epoch,
+                    },
+                    mode: EngineResourceAccessMode::Read,
+                });
+                accesses.push(EngineResourceAccess {
+                    subsystem: subsystem.kind.clone(),
+                    resource: EngineResourceId::WorldSnapshot {
+                        epoch: previous_snapshot.epoch().0,
+                    },
+                    mode: EngineResourceAccessMode::Read,
+                });
+            }
+            EngineSubsystemKind::Residency => {
+                accesses.push(EngineResourceAccess {
+                    subsystem: subsystem.kind.clone(),
+                    resource: EngineResourceId::WorldSnapshot {
+                        epoch: output_epoch,
+                    },
+                    mode: EngineResourceAccessMode::Read,
+                });
+            }
+            EngineSubsystemKind::Physics => {
+                accesses.push(EngineResourceAccess {
+                    subsystem: subsystem.kind.clone(),
+                    resource: EngineResourceId::WorldSnapshot {
+                        epoch: output_epoch,
+                    },
+                    mode: EngineResourceAccessMode::Read,
+                });
+                states.push(EngineResourceState {
+                    resource: EngineResourceId::PhysicsBodyState {
+                        epoch: output_epoch,
+                    },
+                    residency: EngineResourceResidency::Shared,
+                    epoch_state: EngineResourceEpochState::Valid {
+                        epoch: output_epoch,
+                    },
+                    producer: subsystem.kind.clone(),
+                });
+                states.push(EngineResourceState {
+                    resource: EngineResourceId::PhysicsContactLedger {
+                        tick: simulation_tick,
+                    },
+                    residency: EngineResourceResidency::CpuAuthoritative,
+                    epoch_state: EngineResourceEpochState::Valid {
+                        epoch: output_epoch,
+                    },
+                    producer: subsystem.kind.clone(),
+                });
+            }
+            EngineSubsystemKind::Audio => {
+                accesses.push(EngineResourceAccess {
+                    subsystem: subsystem.kind.clone(),
+                    resource: EngineResourceId::AudioVoiceLedger {
+                        epoch: output_epoch,
+                    },
+                    mode: EngineResourceAccessMode::Write,
+                });
+                states.push(EngineResourceState {
+                    resource: EngineResourceId::AudioVoiceLedger {
+                        epoch: output_epoch,
+                    },
+                    residency: EngineResourceResidency::CpuAuthoritative,
+                    epoch_state: EngineResourceEpochState::Valid {
+                        epoch: output_epoch,
+                    },
+                    producer: subsystem.kind.clone(),
+                });
+            }
+            EngineSubsystemKind::Save => {
+                if subsystem.work_items > 0 {
+                    accesses.push(EngineResourceAccess {
+                        subsystem: subsystem.kind.clone(),
+                        resource: EngineResourceId::WorldSnapshot {
+                            epoch: output_epoch,
+                        },
+                        mode: EngineResourceAccessMode::Read,
+                    });
+                    accesses.push(EngineResourceAccess {
+                        subsystem: subsystem.kind.clone(),
+                        resource: EngineResourceId::SaveRecord {
+                            epoch: output_epoch,
+                        },
+                        mode: EngineResourceAccessMode::Write,
+                    });
+                    states.push(EngineResourceState {
+                        resource: EngineResourceId::SaveRecord {
+                            epoch: output_epoch,
+                        },
+                        residency: EngineResourceResidency::CpuAuthoritative,
+                        epoch_state: EngineResourceEpochState::Valid {
+                            epoch: output_epoch,
+                        },
+                        producer: subsystem.kind.clone(),
+                    });
+                }
+            }
             EngineSubsystemKind::Presentation
             | EngineSubsystemKind::Collision
             | EngineSubsystemKind::Query => accesses.push(EngineResourceAccess {
@@ -836,7 +1208,7 @@ fn build_resource_ledger(
     EngineResourceLedger {
         accesses,
         states,
-        violations: Vec::new(),
+        violations: report.resource_ledger.violations.clone(),
     }
 }
 
@@ -845,25 +1217,22 @@ struct EngineQueryService;
 
 impl EngineQueryService {
     fn execute(&self, output_epoch: u64, requests: Vec<EngineQueryRequest>) -> EngineQueryResults {
-        let mut batches = BTreeMap::<(String, String, bool), EngineQueryBatchReport>::new();
+        let mut batches = BTreeMap::<(String, String), EngineQueryBatchReport>::new();
         for request in requests {
-            let key = (
-                request.contract_id.clone(),
-                request.query_kind.clone(),
-                request.required_this_tick,
-            );
+            let key = (request.contract_id.clone(), request.query_kind.clone());
             let batch = batches
                 .entry(key)
                 .or_insert_with(|| EngineQueryBatchReport {
                     snapshot_epoch: output_epoch,
                     contract_id: request.contract_id.clone(),
                     query_kind: request.query_kind.clone(),
-                    required_this_tick: request.required_this_tick,
+                    required_this_tick: false,
                     request_count: 0,
                     owners: Vec::new(),
                     resident: true,
                     value_readback_scheduled: false,
                 });
+            batch.required_this_tick |= request.required_this_tick;
             batch.request_count = batch.request_count.saturating_add(1);
             if !batch.owners.contains(&request.owner) {
                 batch.owners.push(request.owner);
@@ -885,6 +1254,68 @@ impl EngineQueryService {
         EngineQueryResults {
             batches,
             resident_handles,
+        }
+    }
+}
+
+/// When `policy.motion_to_photon_target_ms` is set, append a violation if the report exceeds it.
+///
+/// RFC 0011 M4: also drives the canonical `MotionToPhotonBudgetRule` closure
+/// finding so the live policy budget produces the same actionable evidence the
+/// perf-closure machinery emits in benchmark runs.
+pub fn apply_latency_budget_to_report(
+    policy: &EngineFrameRuntimePolicy,
+    report: &mut EngineFrameReport,
+) {
+    if let Some(ms) = policy.motion_to_photon_target_ms {
+        let limit_ns = (ms * 1_000_000.0).max(0.0) as u64;
+        if report.latency.total_estimate_nanos > limit_ns {
+            report
+                .violations
+                .push("presentation.motion_to_photon_over_budget".into());
+            report
+                .active_degradations
+                .push("latency.tighten_present_mode_and_rebudget_subsystems".into());
+        }
+    }
+
+    let observed_ms = (report.latency.total_estimate_nanos as f64 / 1_000_000.0) as f32;
+    let status_report = crate::perf_target::PerfClosureEngineFrameStatusReport {
+        status: crate::perf_target::PerfClosureLaneStatus::Sampled,
+        frame_wall_time_median_ms: None,
+        frame_wall_time_p95_ms: None,
+        cpu_critical_path_median_ms: None,
+        gpu_critical_path_median_ms: None,
+        presentation_median_ms: None,
+        collision_median_ms: None,
+        state_advance_median_ms: None,
+        future_subsystem_reserve_ms: None,
+        queue_submit_count: None,
+        hot_path_readback_bytes: None,
+        scene_reupload_bytes: None,
+        active_degradations: report.active_degradations.clone(),
+        violations: report.violations.clone(),
+        notes: report
+            .subsystems
+            .iter()
+            .flat_map(|subsystem| subsystem.notes.clone())
+            .collect(),
+        motion_to_photon_median_ms: Some(observed_ms),
+        motion_to_photon_budget_ms: policy.motion_to_photon_target_ms.map(|ms| ms as f32),
+    };
+    let budget = policy.budget.clone().unwrap_or_else(|| {
+        crate::perf_target::PerfClosureProfile::canonical_1080p120_wgsl_resident()
+            .engine_frame_budget
+    });
+    let findings =
+        crate::engine_frame::collect_engine_frame_budget_findings(&budget, &status_report);
+    for finding in findings {
+        if !report.closure_findings.iter().any(|existing| {
+            existing.subsystem == finding.subsystem
+                && existing.focus == finding.focus
+                && existing.evidence == finding.evidence
+        }) {
+            report.closure_findings.push(finding);
         }
     }
 }
@@ -920,6 +1351,7 @@ fn change_class_label(class: ChangeClass) -> &'static str {
         ChangeClass::Structural => "structural",
         ChangeClass::Topology => "topology",
         ChangeClass::Identity => "identity",
+        ChangeClass::Behavior => "behavior",
         ChangeClass::Incompatible => "incompatible",
     }
 }

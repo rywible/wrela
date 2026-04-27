@@ -76,6 +76,7 @@ pub enum ParsedPerfProfile {
 #[derive(Debug, Clone, PartialEq)]
 pub struct InitCommandArgs {
     pub target: Option<String>,
+    pub template: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -197,6 +198,24 @@ pub struct FrameLiveCommandArgs {
     pub path_arg: Option<String>,
     pub query_backend: DispatchBackend,
     pub options: FrameLiveCommandOptions,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveCommandOptions {
+    pub headless: bool,
+    pub frames: u32,
+    /// RFC 0011 M3: when set, exit with `EXIT_USAGE` if any frame produces a
+    /// motion-to-photon closure finding. The `just perf-latency` lane sets
+    /// this so a regression on the live latency budget fails CI loudly.
+    pub enforce_latency_budget: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveCommandArgs {
+    pub output_format: OutputFormat,
+    pub path_arg: Option<String>,
+    pub query_backend: DispatchBackend,
+    pub options: LiveCommandOptions,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -395,6 +414,7 @@ pub enum ParsedCommand {
     Preview(PreviewCommandArgs),
     Frame(FrameCommandArgs),
     FrameLive(FrameLiveCommandArgs),
+    Live(LiveCommandArgs),
     FrameContracts(FrameContractsCommandArgs),
     PresentationPlan(PresentationPlanCommandArgs),
     PresentationDebug(PresentationDebugCommandArgs),
@@ -425,6 +445,7 @@ enum CommandName {
     Preview,
     Frame,
     FrameLive,
+    Live,
     FrameContracts,
     PresentationPlan,
     PresentationDebug,
@@ -495,6 +516,7 @@ struct ParseState {
     fix_allow_review_fixes: bool,
     workspace_diagnostics: bool,
     output_format: OutputFormat,
+    init_template: Option<String>,
 }
 
 impl ParsedCommand {
@@ -510,6 +532,7 @@ impl ParsedCommand {
             ParsedCommand::Preview(_) => "preview",
             ParsedCommand::Frame(_) => "frame",
             ParsedCommand::FrameLive(_) => "frame-live",
+            ParsedCommand::Live(_) => "live",
             ParsedCommand::FrameContracts(_) => "frame-contracts",
             ParsedCommand::PresentationPlan(_) => "presentation-plan",
             ParsedCommand::PresentationDebug(_) => "presentation-debug",
@@ -555,6 +578,7 @@ impl CommandName {
             Self::Preview => "preview",
             Self::Frame => "frame",
             Self::FrameLive => "frame-live",
+            Self::Live => "live",
             Self::FrameContracts => "frame-contracts",
             Self::PresentationPlan => "presentation-plan",
             Self::PresentationDebug => "presentation-debug",
@@ -592,6 +616,7 @@ impl CommandName {
             "preview" => Some(Self::Preview),
             "frame" => Some(Self::Frame),
             "frame-live" => Some(Self::FrameLive),
+            "live" => Some(Self::Live),
             "frame-contracts" => Some(Self::FrameContracts),
             "presentation-plan" => Some(Self::PresentationPlan),
             "presentation-debug" => Some(Self::PresentationDebug),
@@ -639,6 +664,7 @@ fn build_parsed_command(command: CommandName, state: ParseState) -> Result<Parse
         CommandName::Preview
             | CommandName::Frame
             | CommandName::FrameLive
+            | CommandName::Live
             | CommandName::FrameContracts
             | CommandName::PresentationPlan
             | CommandName::PresentationDebug
@@ -648,6 +674,10 @@ fn build_parsed_command(command: CommandName, state: ParseState) -> Result<Parse
     ) && !state.program_args.is_empty()
     {
         return Err("error: unexpected extra arguments".to_string());
+    }
+
+    if state.init_template.is_some() && !matches!(command, CommandName::Init) {
+        return Err("error: --template is only supported by init".to_string());
     }
 
     if matches!(
@@ -921,6 +951,7 @@ fn build_parsed_command(command: CommandName, state: ParseState) -> Result<Parse
     Ok(match command {
         CommandName::Init => ParsedCommand::Init(InitCommandArgs {
             target: state.path_arg,
+            template: state.init_template,
         }),
         CommandName::Update => ParsedCommand::Update(UpdateCommandArgs {
             prefix_path: state.prefix_path,
@@ -965,6 +996,18 @@ fn build_parsed_command(command: CommandName, state: ParseState) -> Result<Parse
             query_backend,
             options: parse_frame_live_command_options(&state.program_args)?,
         }),
+        CommandName::Live => {
+            let options = parse_live_command_options(&state.program_args)?;
+            if options.frames == 0 {
+                return Err("error: --frames must be greater than zero".to_string());
+            }
+            ParsedCommand::Live(LiveCommandArgs {
+                output_format: state.output_format,
+                path_arg: state.path_arg,
+                query_backend,
+                options,
+            })
+        }
         CommandName::FrameContracts => ParsedCommand::FrameContracts(FrameContractsCommandArgs {
             output_format: state.output_format,
             path_arg: state.path_arg,
@@ -1638,6 +1681,46 @@ fn parse_frame_live_command_options(args: &[String]) -> Result<FrameLiveCommandO
     Ok(options)
 }
 
+fn parse_live_command_options(args: &[String]) -> Result<LiveCommandOptions, String> {
+    let mut options = LiveCommandOptions {
+        headless: false,
+        frames: 1,
+        enforce_latency_budget: false,
+    };
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = &args[index];
+        let (flag, inline_value) = match arg.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--") => (flag, Some(value.to_string())),
+            _ => (arg.as_str(), None),
+        };
+        let take_value = |inline_value: &Option<String>,
+                          args: &[String],
+                          index: &mut usize|
+         -> Result<String, String> {
+            if let Some(value) = inline_value {
+                return Ok(value.clone());
+            }
+            *index += 1;
+            args.get(*index)
+                .cloned()
+                .ok_or_else(|| format!("missing value for {flag}"))
+        };
+        match flag {
+            "--headless" => options.headless = true,
+            "--frames" => {
+                options.frames = take_value(&inline_value, args, &mut index)?
+                    .parse()
+                    .map_err(|_| "invalid --frames value".to_string())?;
+            }
+            "--enforce-latency-budget" => options.enforce_latency_budget = true,
+            _ => return Err(format!("unexpected argument `{arg}`")),
+        }
+        index += 1;
+    }
+    Ok(options)
+}
+
 fn validate_preview_command_args(
     output_format: OutputFormat,
     options: &PreviewCommandOptions,
@@ -1767,6 +1850,7 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
     let mut fix_allow_review_fixes = false;
     let mut workspace_diagnostics = false;
     let mut output_format = OutputFormat::Pretty;
+    let mut init_template: Option<String> = None;
     let mut seen_double_dash = false;
 
     let mut iter = raw_args.into_iter();
@@ -2197,6 +2281,23 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
             perfcmp_candidate_ref = Some(value.to_string());
             continue;
         }
+        if let Some(value) = arg.strip_prefix("--template=") {
+            init_template = Some(value.to_string());
+            continue;
+        }
+        if arg == "--template" {
+            if let Some(value) = iter.next() {
+                init_template = Some(value);
+            } else {
+                return CommandSpec {
+                    trace_enabled,
+                    parsed: ParsedCommandSpec::Error(
+                        "error: missing value for --template".to_string(),
+                    ),
+                };
+            }
+            continue;
+        }
         if let Some(value) = arg.strip_prefix("--warmup-pairs=") {
             match value.parse::<usize>() {
                 Ok(parsed) => perfcmp_warmup_pairs = Some(parsed),
@@ -2355,6 +2456,7 @@ pub fn parse(raw_args: Vec<String>) -> CommandSpec {
         fix_allow_review_fixes,
         workspace_diagnostics,
         output_format,
+        init_template,
     };
 
     match build_parsed_command(command, state) {
@@ -2397,6 +2499,17 @@ mod tests {
             ParsedCommand::Test(args) => {
                 assert_eq!(args.path_arg.as_deref(), Some("apps/ledger-lite"));
                 assert!(args.test_selection.list);
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_init_template_is_typed() {
+        match parse_ready(&["init", "hello", "--template=hello_window"]) {
+            ParsedCommand::Init(args) => {
+                assert_eq!(args.target.as_deref(), Some("hello"));
+                assert_eq!(args.template.as_deref(), Some("hello_window"));
             }
             other => panic!("unexpected parse result: {other:?}"),
         }
@@ -2743,6 +2856,38 @@ mod tests {
                 assert_eq!(args.options.view.as_deref(), Some("main"));
                 assert_eq!(args.options.width, Some(640));
                 assert_eq!(args.options.height, Some(360));
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_live_headless_is_typed_after_parsing() {
+        match parse_ready(&[
+            "--json",
+            "live",
+            "language/preview",
+            "--headless",
+            "--frames=3",
+        ]) {
+            ParsedCommand::Live(args) => {
+                assert_eq!(args.output_format, OutputFormat::Json);
+                assert_eq!(args.path_arg.as_deref(), Some("language/preview"));
+                assert!(args.options.headless);
+                assert_eq!(args.options.frames, 3);
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_live_interactive_is_typed_after_parsing() {
+        match parse_ready(&["live", "language/preview", "--frames=3"]) {
+            ParsedCommand::Live(args) => {
+                assert_eq!(args.output_format, OutputFormat::Pretty);
+                assert_eq!(args.path_arg.as_deref(), Some("language/preview"));
+                assert!(!args.options.headless);
+                assert_eq!(args.options.frames, 3);
             }
             other => panic!("unexpected parse result: {other:?}"),
         }

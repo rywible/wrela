@@ -932,6 +932,7 @@ pub(super) fn execute_plan(
             .schedule_attachment_readback(attachment_name.as_str())
             .map_err(presentation_framegraph_error)?;
     }
+    let final_submission_queue_submits_before = framegraph.queue_submit_count();
     let final_submission = framegraph
         .submit_segment(input.collect_gpu_timing_readback)
         .map_err(presentation_framegraph_error)?;
@@ -941,7 +942,13 @@ pub(super) fn execute_plan(
             .iter()
             .map(|exception| exception.to_string()),
     );
-    note_framegraph_submission_metrics(&final_submission, &mut gpu_runtime);
+    note_framegraph_submission_metrics(
+        &final_submission,
+        &mut gpu_runtime,
+        final_submission
+            .queue_submit_count
+            .saturating_sub(final_submission_queue_submits_before),
+    );
     for (pass_index, range) in pending_gpu_pass_ranges {
         let gpu_elapsed_micros = sum_gpu_elapsed_micros(&final_submission, range);
         if gpu_elapsed_micros > 0 {
@@ -1103,9 +1110,17 @@ pub(super) fn execute_plan(
             .schedule_attachment_readback(attachment_name.as_str())
             .map_err(presentation_framegraph_error)?;
     }
+    let untimed_submission_queue_submits_before = framegraph.queue_submit_count();
     let untimed_submission = framegraph
         .submit_segment(input.collect_gpu_timing_readback)
         .map_err(presentation_framegraph_error)?;
+    note_framegraph_submission_metrics(
+        &untimed_submission,
+        &mut gpu_runtime,
+        untimed_submission
+            .queue_submit_count
+            .saturating_sub(untimed_submission_queue_submits_before),
+    );
     apply_attachment_readbacks(&mut attachments, &untimed_submission)?;
     if let Some((_, label)) = motion_counts_readback.as_ref() {
         let counts_bytes = submission_readback_bytes(&untimed_submission, label)?;

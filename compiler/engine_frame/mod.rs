@@ -1,8 +1,36 @@
 use crate::gpu_runtime::GpuRuntimeMetrics;
 use serde::{Deserialize, Serialize};
 
+mod audio_adapter;
+mod closure_rules;
+mod input_adapter;
+mod input_ring_bridge;
+mod latency;
+mod live;
+mod physics_adapter;
+mod residency_adapter;
 mod runtime;
+mod save_adapter;
 mod scheduler;
+mod system_adapter;
+
+pub use audio_adapter::{AudioAdapterFrameState, AudioSnapshotPublisher};
+pub use closure_rules::{
+    ClosureRuleTable, EngineFrameClosureRule, collect_engine_frame_budget_findings,
+};
+pub use input_adapter::InputSubsystemAdapter;
+pub use input_ring_bridge::RawInputRingLateSampler;
+pub use latency::{
+    InputRingState, LateInputSampler, MeasurementQuality, MotionToPhotonContract,
+    PresentModePolicy, PresentModeSelection, ResolvedPresentMode, TickInputSource,
+};
+pub use live::{
+    EagerTickInputSource, HeadlessTickSource, LiveEngineHost, LiveEngineTick, LiveProjectConfig,
+    build_engine_frame_input, live_temporal_clocks_for_frame,
+};
+pub use physics_adapter::PhysicsSubsystemAdapter;
+pub use residency_adapter::{ResidencySubsystemAdapter, ResidencyWorldBinding};
+pub use save_adapter::{SaveAdapterFrameState, SavePublisher};
 
 pub const ENGINE_FRAME_TIMELINE_VERSION: u32 = 2;
 
@@ -14,13 +42,15 @@ pub use runtime::{
     EngineReadbackReadiness, EngineReadbackRequest, EngineReadbackTicketReport,
     EngineResourceAccess, EngineResourceAccessMode, EngineResourceEpochState, EngineResourceId,
     EngineResourceLedger, EngineResourceResidency, EngineResourceState, EngineStateAdvanceExecutor,
-    EngineStateAdvanceInput, EngineStateAdvanceReport,
+    EngineStateAdvanceInput, EngineStateAdvanceReport, MaterializedTickInputSlot,
+    apply_latency_budget_to_report,
 };
 pub use scheduler::{
     EngineBudgetDecision, EngineBudgetGovernor, EngineFrameContext, EngineFrameError,
     EngineFrameGraph, EngineFrameScheduler, EngineGraphBuilder, EngineSubsystemAdapter,
     EngineSubsystemDescriptor, EngineSubsystemPlan,
 };
+pub use system_adapter::SystemSubsystemAdapter;
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
@@ -96,6 +126,12 @@ pub struct EngineMeasurementPolicy {
 #[serde(rename_all = "snake_case")]
 pub enum EngineSubsystemKind {
     StateAdvance,
+    Input,
+    System,
+    Residency,
+    Physics,
+    Audio,
+    Save,
     Presentation,
     Collision,
     Query,
@@ -222,12 +258,21 @@ pub struct EngineFrameReport {
     pub queue_submission_spans: Vec<EngineSpanId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subsystem_span_ranges: Vec<EngineSubsystemSpanRange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub timeline_spans: Vec<EngineSpanRecord>,
     pub subsystems: Vec<EngineSubsystemReport>,
     pub future_subsystem_reserve: EngineFutureReserveReport,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_degradations: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub violations: Vec<String>,
+    #[serde(default)]
+    pub latency: latency::MotionToPhotonContract,
+    /// Closure findings produced during the live frame. RFC 0011 M4: when
+    /// `EngineFrameRuntimePolicy::live().motion_to_photon_target_ms` is
+    /// exceeded the canonical `MotionToPhotonBudgetRule` lands here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub closure_findings: Vec<crate::perf_target::PerfClosureFinding>,
 }
 
 impl EngineFrameReport {

@@ -152,12 +152,17 @@ fn parse_attribute_args(p: &mut Parser) {
                 }
             }
         }
-        p.expect_with_message(SyntaxKind::Ident, "expected attribute argument name");
-        p.expect_with_message(
-            SyntaxKind::Equals,
-            "expected '=' after attribute argument name",
-        );
-        parse_attribute_arg_value(p);
+        if is_attribute_arg_value_start(p.peek()) && p.peek_nth_non_trivia(1) != SyntaxKind::Equals
+        {
+            p.bump();
+        } else {
+            p.expect_with_message(SyntaxKind::Ident, "expected attribute argument name");
+            p.expect_with_message(
+                SyntaxKind::Equals,
+                "expected '=' after attribute argument name",
+            );
+            parse_attribute_arg_value(p);
+        }
         first = false;
     }
     p.expect_with_message(SyntaxKind::RParen, "expected ')' after attribute arguments");

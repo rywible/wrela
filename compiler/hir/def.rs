@@ -75,6 +75,13 @@ pub enum FunctionRole {
     Pure,
     Kernel,
     System,
+    InputMap,
+    Body,
+    Move,
+    Moveset,
+    AudioField,
+    Voice,
+    MediaField,
     Field,
     Region,
     Domain,
@@ -555,11 +562,65 @@ pub enum FunctionLane {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemMetadata {
+    pub phase: Option<SmolStr>,
     pub stage: Option<SmolStr>,
     pub reads: Vec<SmolStr>,
     pub writes: Vec<SmolStr>,
     pub before: Vec<SmolStr>,
     pub after: Vec<SmolStr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeFunctionMetadata {
+    InputMap(InputMapMetadata),
+    Clauses(RuntimeClausesMetadata),
+    AudioField(RuntimeFieldMetadata),
+    MediaField(RuntimeFieldMetadata),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputMapMetadata {
+    pub actions: Vec<InputMapActionMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputMapActionMetadata {
+    pub name: SmolStr,
+    pub name_span: Option<TextRange>,
+    pub bindings: Vec<InputBindingMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputBindingMetadata {
+    pub path: SmolStr,
+    pub path_span: Option<TextRange>,
+    pub comparison: Option<InputBindingComparisonMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputBindingComparisonMetadata {
+    pub op: SmolStr,
+    pub value: SmolStr,
+    pub value_span: Option<TextRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeClausesMetadata {
+    pub clauses: Vec<RuntimeClauseMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeClauseMetadata {
+    pub name: SmolStr,
+    pub name_span: Option<TextRange>,
+    pub value: Option<SmolStr>,
+    pub nested: bool,
+    pub clauses: Vec<RuntimeClauseMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeFieldMetadata {
+    pub audio_rt: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -593,6 +654,7 @@ pub struct Function {
     pub presentation: Option<PresentationMetadata>,
     pub field_graph: Option<FieldGraph>,
     pub system_metadata: Option<SystemMetadata>,
+    pub runtime_metadata: Option<RuntimeFunctionMetadata>,
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub ret_type: Option<TypeRef>,
@@ -604,12 +666,19 @@ impl Function {
         match self.role {
             FunctionRole::Function
             | FunctionRole::System
+            | FunctionRole::InputMap
+            | FunctionRole::Body
+            | FunctionRole::Move
+            | FunctionRole::Moveset
+            | FunctionRole::Voice
             | FunctionRole::Region
             | FunctionRole::Domain
             | FunctionRole::Render
             | FunctionRole::View => FunctionLane::Host,
             FunctionRole::Pure
             | FunctionRole::Kernel
+            | FunctionRole::AudioField
+            | FunctionRole::MediaField
             | FunctionRole::Field
             | FunctionRole::Radiance
             | FunctionRole::Volume
@@ -849,6 +918,7 @@ pub struct Param {
     pub name: SmolStr,
     pub name_span: Option<TextRange>,
     pub ty: Option<TypeRef>,
+    pub mutable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
