@@ -422,7 +422,7 @@ pub fn compile_to_executable(mir: &MirModule, output: &Path) -> Result<(), Codeg
     let support_lib = ensure_native_support_built()?;
     cmd.arg(support_lib);
     if cfg!(all(unix, not(target_os = "macos"))) {
-        cmd.arg("-lm");
+        append_unix_native_support_link_args(cmd);
     }
     if cfg!(target_os = "macos") {
         if let Some(sdk_path) = macos_sdk_path()? {
@@ -482,7 +482,7 @@ pub fn compile_to_shared_library(mir: &MirModule, output: &Path) -> Result<(), C
     let support_lib = ensure_native_support_built()?;
     cmd.arg(support_lib);
     if cfg!(all(unix, not(target_os = "macos"))) {
-        cmd.arg("-lm");
+        append_unix_native_support_link_args(cmd);
     }
     if cfg!(target_os = "macos") {
         if let Some(sdk_path) = macos_sdk_path()? {
@@ -683,6 +683,19 @@ fn append_macos_native_support_link_args(cmd: &mut Command) {
 
 #[cfg(not(target_os = "macos"))]
 fn append_macos_native_support_link_args(_cmd: &mut Command) {}
+
+#[cfg(target_os = "linux")]
+fn append_unix_native_support_link_args(cmd: &mut Command) {
+    // Keep this in sync with `cargo rustc -p wrela --lib -- --print native-static-libs`.
+    for lib in ["dl", "asound", "util", "rt", "pthread", "m"] {
+        cmd.arg(format!("-l{lib}"));
+    }
+}
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+fn append_unix_native_support_link_args(cmd: &mut Command) {
+    cmd.arg("-lm");
+}
 
 fn macos_clang_path() -> Result<Option<String>, CodegenError> {
     let output = Command::new("xcrun")
