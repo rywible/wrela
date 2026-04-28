@@ -389,6 +389,142 @@ fn engine_frame_runtime_rejects_subsystem_reported_hot_path_readbacks() {
 }
 
 #[test]
+fn engine_frame_runtime_allows_subsystem_budgeted_hot_path_readbacks_in_live_policy() {
+    struct BudgetedHotReadbackAdapter;
+
+    impl EngineSubsystemAdapter for BudgetedHotReadbackAdapter {
+        fn build(
+            &mut self,
+            builder: &mut EngineGraphBuilder,
+        ) -> Result<EngineSubsystemPlan, EngineFrameError> {
+            let descriptor = EngineSubsystemDescriptor {
+                kind: EngineSubsystemKind::Physics,
+                label: "physics".to_string(),
+                runs_after: vec![EngineSubsystemKind::StateAdvance],
+                requires_gpu: true,
+                allows_hot_path_readback: true,
+            };
+            let job = builder.add_synthetic_job(
+                descriptor.kind.clone(),
+                "physics.execute".to_string(),
+                EngineJobAffinity::Gpu,
+                EngineSpanDomain::Gpu,
+                Vec::new(),
+                true,
+                1,
+            );
+            Ok(EngineSubsystemPlan::new(
+                descriptor.clone(),
+                vec![job],
+                vec![job],
+                move |_timeline: &EngineFrameTimeline, _ctx: &mut EngineFrameContext| {
+                    Ok(EngineSubsystemReport {
+                        kind: descriptor.kind.clone(),
+                        label: descriptor.label.clone(),
+                        work_items: 1,
+                        cpu_critical_path_micros: 1,
+                        gpu_critical_path_micros: Some(1),
+                        executed_wall_time_micros: 1,
+                        self_reported_runtime_micros: Some(1),
+                        orchestration_gap_micros: 0,
+                        measurement_policy: EngineMeasurementPolicy {
+                            hot_path_readback_allowed: descriptor.allows_hot_path_readback,
+                            ..timeline_measurement_policy()
+                        },
+                        queue_submit_count: 1,
+                        hot_path_readback_bytes: 4,
+                        scene_reupload_bytes: 0,
+                        timestamped_pass_count: 0,
+                        timing_readback_bytes: 0,
+                        wait_time_micros: 0,
+                        notes: Vec::new(),
+                    })
+                },
+            ))
+        }
+    }
+
+    let mut input = runtime_input();
+    input.policy = EngineFrameRuntimePolicy::live();
+    let mut runtime = EngineFrameRuntime::new(Box::new(NoopStateAdvanceExecutor));
+    let output = runtime
+        .run_frame_with_subsystems(input, vec![Box::new(BudgetedHotReadbackAdapter)])
+        .expect("live policy should allow descriptor-budgeted subsystem readbacks");
+
+    assert_eq!(output.report.readback_ledger.accepted.len(), 1);
+    assert_eq!(
+        output.report.readback_ledger.accepted[0].category,
+        EngineReadbackCategory::SubsystemBudgeted
+    );
+}
+
+#[test]
+fn engine_frame_runtime_rejects_disallowed_subsystem_hot_path_readbacks_in_live_policy() {
+    struct DisallowedHotReadbackAdapter;
+
+    impl EngineSubsystemAdapter for DisallowedHotReadbackAdapter {
+        fn build(
+            &mut self,
+            builder: &mut EngineGraphBuilder,
+        ) -> Result<EngineSubsystemPlan, EngineFrameError> {
+            let descriptor = EngineSubsystemDescriptor {
+                kind: EngineSubsystemKind::Collision,
+                label: "collision".to_string(),
+                runs_after: vec![EngineSubsystemKind::StateAdvance],
+                requires_gpu: true,
+                allows_hot_path_readback: false,
+            };
+            let job = builder.add_synthetic_job(
+                descriptor.kind.clone(),
+                "collision.execute".to_string(),
+                EngineJobAffinity::Gpu,
+                EngineSpanDomain::Gpu,
+                Vec::new(),
+                true,
+                1,
+            );
+            Ok(EngineSubsystemPlan::new(
+                descriptor.clone(),
+                vec![job],
+                vec![job],
+                move |_timeline: &EngineFrameTimeline, _ctx: &mut EngineFrameContext| {
+                    Ok(EngineSubsystemReport {
+                        kind: descriptor.kind.clone(),
+                        label: descriptor.label.clone(),
+                        work_items: 1,
+                        cpu_critical_path_micros: 1,
+                        gpu_critical_path_micros: Some(1),
+                        executed_wall_time_micros: 1,
+                        self_reported_runtime_micros: Some(1),
+                        orchestration_gap_micros: 0,
+                        measurement_policy: EngineMeasurementPolicy {
+                            hot_path_readback_allowed: descriptor.allows_hot_path_readback,
+                            ..timeline_measurement_policy()
+                        },
+                        queue_submit_count: 1,
+                        hot_path_readback_bytes: 4,
+                        scene_reupload_bytes: 0,
+                        timestamped_pass_count: 0,
+                        timing_readback_bytes: 0,
+                        wait_time_micros: 0,
+                        notes: Vec::new(),
+                    })
+                },
+            ))
+        }
+    }
+
+    let mut input = runtime_input();
+    input.policy = EngineFrameRuntimePolicy::live();
+    let mut runtime = EngineFrameRuntime::new(Box::new(NoopStateAdvanceExecutor));
+    let error = runtime
+        .run_frame_with_subsystems(input, vec![Box::new(DisallowedHotReadbackAdapter)])
+        .expect_err("live policy should reject unadvertised subsystem readbacks");
+
+    assert!(format!("{error}").contains("hot-path readback rejected"));
+}
+
+#[test]
 fn engine_frame_runtime_runs_kernel_subsystems_after_authoritative_state_advance() {
     struct QueryKernelAdapter {
         log: Arc<Mutex<Vec<String>>>,

@@ -23,6 +23,7 @@ pub use input_ring_bridge::RawInputRingLateSampler;
 pub use latency::{
     InputRingState, LateInputSampler, MeasurementQuality, MotionToPhotonContract,
     PresentModePolicy, PresentModeSelection, ResolvedPresentMode, TickInputSource,
+    estimated_present_to_photons_nanos,
 };
 pub use live::{
     EagerTickInputSource, HeadlessTickSource, LiveEngineHost, LiveEngineTick, LiveProjectConfig,
@@ -30,7 +31,7 @@ pub use live::{
 };
 pub use physics_adapter::PhysicsSubsystemAdapter;
 pub use residency_adapter::{ResidencySubsystemAdapter, ResidencyWorldBinding};
-pub use save_adapter::{SaveAdapterFrameState, SavePublisher};
+pub use save_adapter::{SaveAdapterFrameState, SaveLedgerSource, SavePublisher};
 
 pub const ENGINE_FRAME_TIMELINE_VERSION: u32 = 2;
 

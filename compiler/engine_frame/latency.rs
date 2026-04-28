@@ -90,6 +90,26 @@ impl MotionToPhotonContract {
     }
 }
 
+/// Estimate panel/scan-out latency after the present callback returns.
+///
+/// FIFO-style vsync presentation can wait up to the next refresh before the
+/// newly-presented frame becomes visible, so use one refresh interval as the
+/// honest default. Explicit low-latency paths (mailbox or VRR-style relaxed
+/// FIFO) keep this stage at zero because the host has selected a present mode
+/// intended to avoid that fixed vsync interval.
+pub fn estimated_present_to_photons_nanos(mode: ResolvedPresentMode, refresh_hz: f64) -> u64 {
+    match mode {
+        ResolvedPresentMode::Mailbox | ResolvedPresentMode::FifoRelaxed => 0,
+        ResolvedPresentMode::Fifo => {
+            if refresh_hz.is_finite() && refresh_hz > 0.0 {
+                (1_000_000_000.0 / refresh_hz).round() as u64
+            } else {
+                0
+            }
+        }
+    }
+}
+
 /// Present-mode preference for interactive hosts (RFC 0011).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -216,12 +236,6 @@ impl TickInputSource {
         match self {
             TickInputSource::Eager(batch) => batch.clone(),
             TickInputSource::Late(sampler) => {
-                let sample_deadline = sampler.now();
-                let deadline = if sample_deadline.get() == 0 {
-                    deadline
-                } else {
-                    sample_deadline
-                };
                 let mut batch = sampler.drain_up_to(deadline);
                 batch.tick = tick;
                 for event in &mut batch.inputs {

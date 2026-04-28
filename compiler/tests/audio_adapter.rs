@@ -161,6 +161,7 @@ fn audio_snapshot_publisher_reports_voice_ledger_resource() {
             vec![
                 Box::new(input_adapter),
                 Box::new(empty_systems),
+                Box::new(StubPhysicsAdapter),
                 Box::new(audio),
             ],
         )
@@ -191,7 +192,7 @@ fn audio_snapshot_publisher_reports_voice_ledger_resource() {
 }
 
 #[test]
-fn audio_snapshot_publisher_runs_after_system_and_physics_when_configured() {
+fn audio_snapshot_publisher_runs_after_system_and_physics_by_default() {
     let mut runtime = EngineFrameRuntime::new(Box::new(NoopStateAdvanceExecutor));
     let input_adapter = InputSubsystemAdapter::new(
         InputMapPlan::empty("empty"),
@@ -209,8 +210,7 @@ fn audio_snapshot_publisher_runs_after_system_and_physics_when_configured() {
             voices: vec![sine_voice(1, 5, 1.0)],
         },
         1,
-    )
-    .with_physics_dependency();
+    );
     let previous_snapshot = stable_region_snapshot_handle(&SmolStr::new("audio_order"));
     let tick = SimulationTick::new(1);
 

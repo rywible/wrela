@@ -14,7 +14,7 @@ use super::{
 };
 use crate::input_contract::InputFrame;
 use crate::system_contract::SystemPhase;
-use crate::system_exec::{SystemExecutor, SystemMirInvoker};
+use crate::system_exec::{SystemExecutor, SystemInvocationContext, SystemMirInvoker};
 use crate::system_plan::{SystemProgram, declared_runs_before};
 use std::sync::{Arc, Mutex};
 
@@ -22,6 +22,8 @@ pub struct SystemSubsystemAdapter {
     program: SystemProgram,
     executor: Arc<Mutex<SystemExecutor>>,
     input_frame: Arc<Mutex<Option<InputFrame>>>,
+    dt_seconds: Arc<Mutex<f64>>,
+    report_notes: Vec<String>,
 }
 
 impl SystemSubsystemAdapter {
@@ -30,6 +32,8 @@ impl SystemSubsystemAdapter {
             program,
             executor: Arc::new(Mutex::new(SystemExecutor::with_default_invoker())),
             input_frame,
+            dt_seconds: Arc::new(Mutex::new(0.0)),
+            report_notes: Vec::new(),
         }
     }
 
@@ -42,15 +46,28 @@ impl SystemSubsystemAdapter {
             program,
             executor: Arc::new(Mutex::new(SystemExecutor::new(invoker))),
             input_frame,
+            dt_seconds: Arc::new(Mutex::new(0.0)),
+            report_notes: Vec::new(),
         }
     }
 
     pub fn executor(&self) -> Arc<Mutex<SystemExecutor>> {
         Arc::clone(&self.executor)
     }
+
+    pub fn with_report_notes(mut self, notes: Vec<String>) -> Self {
+        self.report_notes = notes;
+        self
+    }
 }
 
 impl EngineSubsystemAdapter for SystemSubsystemAdapter {
+    fn prepare_frame(&mut self, input: &super::EngineFrameInput) {
+        if let Ok(mut dt_seconds) = self.dt_seconds.lock() {
+            *dt_seconds = input.frame_dt_seconds();
+        }
+    }
+
     fn build(
         &mut self,
         builder: &mut EngineGraphBuilder,
@@ -84,11 +101,6 @@ impl EngineSubsystemAdapter for SystemSubsystemAdapter {
         let root_jobs = vec![begin_job];
         let mut terminal_jobs = Vec::new();
         let mut previous_phase_terminals: Vec<EngineJobHandle> = vec![begin_job];
-        let invoker = self
-            .executor
-            .lock()
-            .map_err(|_| EngineFrameError::Message("system executor lock poisoned".into()))?
-            .invoker();
         for phase in SystemPhase::ALL {
             let plans = self.program.phase(phase);
             if plans.is_empty() {
@@ -117,8 +129,9 @@ impl EngineSubsystemAdapter for SystemSubsystemAdapter {
                         deps.push(phase_jobs[*j]);
                     }
                 }
-                let invoker = Arc::clone(&invoker);
+                let executor = Arc::clone(&self.executor);
                 let input_frame = Arc::clone(&self.input_frame);
+                let dt_seconds = Arc::clone(&self.dt_seconds);
                 let label = format!("system.{}.{}", phase.label(), plan.id.0);
                 let job = builder.add_job(
                     EngineSubsystemKind::System,
@@ -139,9 +152,33 @@ impl EngineSubsystemAdapter for SystemSubsystemAdapter {
                                     "system subsystem ran before input frame was published".into(),
                                 )
                             })?;
+                        let (invoker, resources) = {
+                            let executor = executor.lock().map_err(|_| {
+                                EngineFrameError::Message("system executor lock poisoned".into())
+                            })?;
+                            (executor.invoker(), executor.resources())
+                        };
+                        let mut emitted_events = Vec::new();
+                        let dt_seconds = *dt_seconds.lock().map_err(|_| {
+                            EngineFrameError::Message("system dt lock poisoned".into())
+                        })?;
+                        let mut ctx = SystemInvocationContext {
+                            dt_seconds,
+                            snapshot_epoch: input.epoch,
+                            snapshot: None,
+                            input: &input,
+                            resources,
+                            emitted_events: &mut emitted_events,
+                        };
                         invoker
-                            .invoke(plan.mir_function_id, &input)
-                            .map_err(EngineFrameError::Message)?;
+                            .invoke(plan.mir_function_id, &mut ctx)
+                            .map_err(|err| EngineFrameError::Message(err))?;
+                        executor
+                            .lock()
+                            .map_err(|_| {
+                                EngineFrameError::Message("system executor lock poisoned".into())
+                            })?
+                            .enqueue_system_emitted_events(plan.id.clone(), emitted_events);
                         Ok(())
                     },
                 );
@@ -183,7 +220,7 @@ impl EngineSubsystemAdapter for SystemSubsystemAdapter {
             let program = self.program.clone();
             let job = builder.add_job(
                 EngineSubsystemKind::System,
-                "system.commit_records".to_string(),
+                "system.join".to_string(),
                 EngineJobAffinity::Cpu,
                 EngineSpanDomain::Cpu,
                 terminal_jobs.clone(),
@@ -195,7 +232,7 @@ impl EngineSubsystemAdapter for SystemSubsystemAdapter {
                         .clone()
                         .ok_or_else(|| {
                             EngineFrameError::Message(
-                                "system subsystem ran before input frame was published".into(),
+                                "system subsystem joined before input frame was published".into(),
                             )
                         })?;
                     executor
@@ -210,6 +247,7 @@ impl EngineSubsystemAdapter for SystemSubsystemAdapter {
             terminal_jobs = vec![job];
         }
         let executor_for_report = Arc::clone(&self.executor);
+        let report_notes = self.report_notes.clone();
         Ok(EngineSubsystemPlan::new(
             descriptor.clone(),
             root_jobs,
@@ -248,7 +286,7 @@ impl EngineSubsystemAdapter for SystemSubsystemAdapter {
                     timestamped_pass_count: 0,
                     timing_readback_bytes: 0,
                     wait_time_micros: 0,
-                    notes: Vec::new(),
+                    notes: report_notes.clone(),
                 })
             },
         ))

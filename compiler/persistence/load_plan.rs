@@ -67,9 +67,8 @@ impl LoadPlan {
 /// Decompress, verify and bind a save record to a runnable [`LoadPlan`].
 ///
 /// RFC 0011 H6: this is the world-state-restore entry point. The returned
-/// handle is bound to the saved snapshot epoch (or the sim_tick if the saved
-/// epoch was somehow lost), so the caller can hand it straight to the
-/// runtime as `previous_snapshot` for a frame.
+/// handle is bound to the saved snapshot epoch, so the caller can hand it
+/// straight to the runtime as `previous_snapshot` for a frame.
 pub fn load_snapshot_record(
     record: SnapshotSaveRecord,
     project: &PersistenceProject,
@@ -82,13 +81,7 @@ pub fn load_snapshot_record(
         HeaderCompatibility::Exact => Vec::new(),
     };
     let payload = decompress_payload(&record)?;
-    let epoch = SnapshotEpoch(
-        record
-            .header
-            .snapshot_epoch
-            .max(record.header.sim_tick)
-            .max(1),
-    );
+    let epoch = SnapshotEpoch(record.header.snapshot_epoch.max(1));
     let snapshot =
         stable_region_snapshot_handle_at_epoch(&SmolStr::new(&record.header.project_id), epoch);
     Ok((

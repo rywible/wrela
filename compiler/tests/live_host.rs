@@ -1,7 +1,7 @@
 //! RFC 0011 Phase 63 — `LiveEngineHost` and late sampling.
 
 use smol_str::SmolStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use wrela::engine_frame::{
     EngineFrameContext, EngineFrameError, EngineFrameReport, EngineFrameRuntime,
@@ -207,6 +207,54 @@ impl LateInputSampler for HostClockLateSampler {
             TickInputKind::Event,
             "test",
             "host_clock",
+            WallClockStamp::new(self.event_arrival),
+            self.event_arrival,
+        );
+        TickInputBatch::new(tick, vec![ev])
+    }
+}
+
+struct SingleDeadlineLateSampler {
+    first_deadline: u64,
+    second_deadline: u64,
+    event_arrival: u64,
+    now_calls: AtomicU64,
+    observed_deadlines: Mutex<Vec<u64>>,
+}
+
+impl SingleDeadlineLateSampler {
+    fn new(first_deadline: u64, second_deadline: u64, event_arrival: u64) -> Self {
+        Self {
+            first_deadline,
+            second_deadline,
+            event_arrival,
+            now_calls: AtomicU64::new(0),
+            observed_deadlines: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl LateInputSampler for SingleDeadlineLateSampler {
+    fn now(&self) -> WallClockStamp {
+        let call = self.now_calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            WallClockStamp::new(self.first_deadline)
+        } else {
+            WallClockStamp::new(self.second_deadline)
+        }
+    }
+
+    fn drain_up_to(&self, deadline: WallClockStamp) -> TickInputBatch {
+        self.observed_deadlines
+            .lock()
+            .expect("deadlines")
+            .push(deadline.get());
+        let tick = SimulationTick::new(1);
+        let ev = TickInputEvent::with_timestamps(
+            tick,
+            TickInputKind::Event,
+            "test",
+            "single_deadline",
             WallClockStamp::new(self.event_arrival),
             self.event_arrival,
         );
@@ -445,6 +493,61 @@ fn live_engine_host_late_sampler_uses_sampler_clock_for_input_age() {
             .latency
             .event_arrival_to_state_advance_nanos,
         EXPECTED_AGE_NANOS
+    );
+}
+
+#[test]
+fn live_engine_host_uses_one_late_sample_deadline_for_drain_and_latency() {
+    const FIRST_SAMPLE_NANOS: u64 = 1_000_000_000;
+    const SECOND_SAMPLE_NANOS: u64 = 1_100_000_000;
+    const EVENT_ARRIVAL_NANOS: u64 = 999_500_000;
+
+    let snapshot = stable_region_snapshot_handle(&SmolStr::new("live_single_deadline"));
+    let runtime = EngineFrameRuntime::new(Box::new(NoopStateAdvanceExecutor));
+    let policy = EngineFrameRuntimePolicy::closure();
+    let config = LiveProjectConfig {
+        scenario_id: "single_deadline".to_string(),
+        default_query_requests: Vec::new(),
+        simulation_hz_override: None,
+    };
+    let sampler = Arc::new(SingleDeadlineLateSampler::new(
+        FIRST_SAMPLE_NANOS,
+        SECOND_SAMPLE_NANOS,
+        EVENT_ARRIVAL_NANOS,
+    ));
+    let mut host =
+        LiveEngineHost::with_late_sampler(runtime, config, policy, snapshot, 60.0, sampler.clone());
+
+    let tick = host.advance(1.0 / 60.0).expect("one tick");
+
+    assert_eq!(tick.outputs.len(), 1);
+    assert_eq!(
+        sampler.now_calls.load(Ordering::SeqCst),
+        1,
+        "late sampling must read the sampler clock once per state-advance job"
+    );
+    assert_eq!(
+        sampler
+            .observed_deadlines
+            .lock()
+            .expect("deadlines")
+            .as_slice(),
+        &[FIRST_SAMPLE_NANOS],
+        "drain deadline must be the same timestamp used for latency telemetry"
+    );
+    assert_eq!(
+        tick.outputs[0]
+            .report
+            .latency
+            .event_arrival_to_state_advance_nanos,
+        FIRST_SAMPLE_NANOS - EVENT_ARRIVAL_NANOS
+    );
+    assert!(
+        !tick.outputs[0]
+            .report
+            .violations
+            .contains(&"latency.input_timestamp_after_sample".to_string()),
+        "later sampler clock values must not make a valid input look like a future timestamp"
     );
 }
 
@@ -888,6 +991,7 @@ fn live_budget_application_promotes_all_known_runtime_violations() {
         future_subsystem_reserve: Default::default(),
         active_degradations: Vec::new(),
         violations: vec![
+            "presentation.fallback_to_vsync_fifo".into(),
             "audio.underrun".into(),
             "physics.contact_readback_over_budget".into(),
         ],
@@ -900,6 +1004,10 @@ fn live_budget_application_promotes_all_known_runtime_violations() {
         .iter()
         .map(|finding| finding.focus.as_str())
         .collect::<Vec<_>>();
+    assert!(
+        focuses.contains(&"presentation.fallback_to_vsync_fifo"),
+        "{focuses:?}"
+    );
     assert!(focuses.contains(&"audio.underrun"), "{focuses:?}");
     assert!(
         focuses.contains(&"physics.contact_readback_over_budget"),

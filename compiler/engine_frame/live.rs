@@ -234,6 +234,14 @@ impl LiveEngineHost {
         &mut self.subsystems
     }
 
+    pub fn simulation_hz(&self) -> f64 {
+        self.simulation_hz
+    }
+
+    pub fn simulation_step_secs(&self) -> f64 {
+        1.0 / self.simulation_hz
+    }
+
     /// Fixed-step simulation: feed wall time; each full `1/simulation_hz` slice runs one frame.
     pub fn advance(&mut self, wall_elapsed_secs: f64) -> Result<LiveEngineTick, EngineFrameError> {
         self.accumulator_secs += wall_elapsed_secs;

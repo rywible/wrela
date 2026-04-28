@@ -17,6 +17,7 @@ preview <path>        emit a named view attachment (default: color) as PPM
 frame <path>          evaluate a named view and emit typed frame attachments or PPM
 frame-live <path>     open a live frame window with click-to-log selection output
 live <path>           launch the reference host; add --headless --json for JSON reports
+perf-latency <path>   run the RFC 0011 live p99 motion-to-photon gate
 frame-contracts <path>  inspect compiled frame contracts for named views
 presentation-plan <path>  inspect compiled presentation contracts and pass plan
 presentation-debug <path> run presentation passes and export color/depth/normal debug attachments

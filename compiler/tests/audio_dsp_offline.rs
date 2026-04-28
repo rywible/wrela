@@ -15,13 +15,21 @@ fn stereo_spatialization_attenuates_far_ear_and_carries_media_fields() {
     publisher.publish(
         1,
         &AudioDspPlan {
-            voices: vec![right],
+            voices: vec![right.clone()],
         },
     );
     let snapshot = ledger.load();
 
     assert_eq!(snapshot.voices[0].reverb_send, 0.35);
     assert_eq!(snapshot.voices[0].lowpass_hz, 4_000.0);
+    assert_eq!(
+        snapshot.voices[0].source_signature,
+        right.source_audio_signature
+    );
+    assert_eq!(
+        snapshot.voices[0].source_frequency_hz,
+        right.source_frequency_hz
+    );
 
     let mut renderer = VoiceRenderer::new(AudioConfig::default().sample_rate);
     let ring = SampleRing::with_capacity(4);

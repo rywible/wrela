@@ -19,12 +19,68 @@ pub enum TickInputKind {
     System,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TickInputValue {
+    None,
+    Button { pressed: bool },
+    Axis1 { value_micros: i32 },
+    Axis2 { x_micros: i32, y_micros: i32 },
+}
+
+impl TickInputValue {
+    pub fn pressed_button() -> Self {
+        Self::Button { pressed: true }
+    }
+
+    pub fn button(pressed: bool) -> Self {
+        Self::Button { pressed }
+    }
+
+    pub fn axis1(value: f32) -> Self {
+        Self::Axis1 {
+            value_micros: scaled_f32_to_i32_micros(value),
+        }
+    }
+
+    pub fn axis2(x: f32, y: f32) -> Self {
+        Self::Axis2 {
+            x_micros: scaled_f32_to_i32_micros(x),
+            y_micros: scaled_f32_to_i32_micros(y),
+        }
+    }
+
+    pub fn axis1_value(self) -> Option<f32> {
+        match self {
+            TickInputValue::Axis1 { value_micros } => Some(value_micros as f32 / 1_000_000.0),
+            _ => None,
+        }
+    }
+
+    pub fn axis2_value(self) -> Option<(f32, f32)> {
+        match self {
+            TickInputValue::Axis2 { x_micros, y_micros } => {
+                Some((x_micros as f32 / 1_000_000.0, y_micros as f32 / 1_000_000.0))
+            }
+            _ => None,
+        }
+    }
+}
+
+fn scaled_f32_to_i32_micros(value: f32) -> i32 {
+    if !value.is_finite() {
+        return 0;
+    }
+    let scaled = (value as f64 * 1_000_000.0).round();
+    scaled.clamp(i32::MIN as f64, i32::MAX as f64) as i32
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TickInputEvent {
     pub tick: SimulationTick,
     pub kind: TickInputKind,
     pub source: SmolStr,
     pub detail: SmolStr,
+    pub value: TickInputValue,
     /// Wall-clock time when the platform observed this input (RFC 0011).
     pub wall_clock: WallClockStamp,
     /// Monotonic nanoseconds for latency staging (RFC 0011).
@@ -43,6 +99,7 @@ impl TickInputEvent {
             kind,
             source: source.into(),
             detail: detail.into(),
+            value: TickInputValue::pressed_button(),
             wall_clock: WallClockStamp::new(0),
             monotonic_nanos: 0,
         }
@@ -61,6 +118,27 @@ impl TickInputEvent {
             kind,
             source: source.into(),
             detail: detail.into(),
+            value: TickInputValue::pressed_button(),
+            wall_clock,
+            monotonic_nanos,
+        }
+    }
+
+    pub fn with_timestamps_and_value(
+        tick: SimulationTick,
+        kind: TickInputKind,
+        source: impl Into<SmolStr>,
+        detail: impl Into<SmolStr>,
+        value: TickInputValue,
+        wall_clock: WallClockStamp,
+        monotonic_nanos: u64,
+    ) -> Self {
+        Self {
+            tick,
+            kind,
+            source: source.into(),
+            detail: detail.into(),
+            value,
             wall_clock,
             monotonic_nanos,
         }

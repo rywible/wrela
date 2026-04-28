@@ -40,7 +40,7 @@ impl AudioSnapshotPublisher {
             publisher: Arc::new(publisher),
             frame_state,
             report: Arc::new(Mutex::new(None)),
-            require_physics_ordering: false,
+            require_physics_ordering: true,
         }
     }
 

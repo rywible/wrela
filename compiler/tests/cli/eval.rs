@@ -351,3 +351,41 @@ fn cli_eval_one_shot_pretty_and_sarif_outputs_include_v2_contract() {
     assert!(message.contains("report_hash="));
     assert!(message.contains("suite=eval_cli_fixture_v2"));
 }
+
+#[test]
+fn cli_save_refuses_static_epoch_zero_metadata_save() {
+    let temp = workspace_tempdir();
+    let project = temp.path().join("main.wr");
+    write_fixture_file(
+        &project,
+        r#"
+fn run() -> Integer {
+    return 0
+}
+"#,
+    )
+    .expect("write project");
+    let out = temp.path().join("save.cbor");
+
+    let output = run_command_with_timeout(
+        Command::new(env!("CARGO_BIN_EXE_wrela"))
+            .arg("save")
+            .arg(&project)
+            .arg("--out")
+            .arg(&out),
+        std::time::Duration::from_secs(10),
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("epoch 1") || stdout.contains("\"snapshot_epoch\":1"),
+        "save should report a live non-zero epoch, stdout: {stdout}"
+    );
+    assert!(out.exists(), "live save should write {out:?}");
+}

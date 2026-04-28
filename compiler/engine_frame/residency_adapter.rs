@@ -67,6 +67,10 @@ impl ResidencySubsystemAdapter {
     pub fn gpu_cache(&self) -> Arc<Mutex<ResidencyGpuCache>> {
         Arc::clone(&self.gpu_cache)
     }
+
+    pub fn report(&self) -> Arc<Mutex<Option<ResidencyReport>>> {
+        Arc::clone(&self.report)
+    }
 }
 
 impl EngineSubsystemAdapter for ResidencySubsystemAdapter {

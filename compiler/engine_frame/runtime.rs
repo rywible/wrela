@@ -31,6 +31,19 @@ impl EngineFrameInput {
     pub fn expected_simulation_tick(&self) -> crate::state_advance::SimulationTick {
         self.current_clock.simulation_tick
     }
+
+    pub fn frame_dt_seconds(&self) -> f64 {
+        let nanos = self
+            .current_clock
+            .wall_clock
+            .get()
+            .saturating_sub(self.previous_clock.wall_clock.get());
+        if nanos == 0 {
+            0.0
+        } else {
+            nanos as f64 / 1_000_000_000.0
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +272,7 @@ impl EngineResourceLedger {
 #[serde(rename_all = "snake_case")]
 pub enum EngineReadbackCategory {
     Gameplay,
+    SubsystemBudgeted,
     Timing,
     DebugExport,
     AttachmentCpuBounce,
@@ -716,6 +730,13 @@ impl EngineSubsystemAdapter for StateAdvanceRuntimeAdapter {
                 let state_advance_input_sample_nanos =
                     state_advance_input_sample_nanos_for_report.load(Ordering::Acquire);
                 ctx.state_advance_input_sample_nanos = Some(state_advance_input_sample_nanos);
+                let synthetic_refresh_interval = current_clock
+                    .wall_clock
+                    .get()
+                    .saturating_sub(previous_clock.wall_clock.get())
+                    .max(1);
+                ctx.estimated_present_to_photons_nanos
+                    .get_or_insert(synthetic_refresh_interval);
                 if let TickInputSource::Late(sampler) = &tick_source_for_report {
                     let ring_state = sampler.ring_state();
                     if ring_state.overflow {
@@ -820,7 +841,9 @@ fn validate_readback_policy(
             }
             EngineReadbackCategory::DebugExport => !policy.allow_debug_export_readbacks,
             EngineReadbackCategory::AttachmentCpuBounce => request.bytes > 0,
-            EngineReadbackCategory::Timing | EngineReadbackCategory::Oracle => false,
+            EngineReadbackCategory::SubsystemBudgeted
+            | EngineReadbackCategory::Timing
+            | EngineReadbackCategory::Oracle => false,
         };
         if rejected {
             let message = if request.category == EngineReadbackCategory::AttachmentCpuBounce {
@@ -883,7 +906,11 @@ fn subsystem_reported_readback_requests(report: &EngineFrameReport) -> Vec<Engin
             requests.push(EngineReadbackRequest {
                 owner: subsystem.kind.clone(),
                 reason: format!("subsystem_reported_hot_path:{}", subsystem.label),
-                category: EngineReadbackCategory::Gameplay,
+                category: if subsystem.measurement_policy.hot_path_readback_allowed {
+                    EngineReadbackCategory::SubsystemBudgeted
+                } else {
+                    EngineReadbackCategory::Gameplay
+                },
                 bytes: subsystem.hot_path_readback_bytes,
                 required_for_frame_completion: true,
             });

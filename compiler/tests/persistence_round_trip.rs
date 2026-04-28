@@ -38,8 +38,9 @@ fn persistence_round_trips_snapshot_record_and_load_plan() {
         }],
     )
     .expect("save");
+    let saved_epoch = record.header.snapshot_epoch;
     let (_loaded_snapshot, plan) = load_snapshot_record(record, &project()).expect("load");
-    assert_eq!(plan.snapshot_epoch.0, 42);
+    assert_eq!(plan.snapshot_epoch.0, saved_epoch);
     assert_eq!(
         plan.ledger[0].handle,
         PersistentHandle::from_stable_semantic_parts(&[b"PlayerProgress", b"hero"])
@@ -63,6 +64,23 @@ fn persistence_round_trips_snapshot_record_and_load_plan() {
             && access.mode == EngineResourceAccessMode::Write
             && matches!(access.resource, EngineResourceId::WorldSnapshot { .. })
     }));
+}
+
+#[test]
+fn load_preserves_snapshot_epoch_when_sim_tick_is_larger() {
+    let snapshot = stable_region_snapshot_handle(&SmolStr::new("save_demo"));
+    let sim_tick = 5000;
+    let record =
+        save_snapshot_record(&snapshot, &project(), sim_tick, 7000, Vec::new()).expect("save");
+    let saved_epoch = record.header.snapshot_epoch;
+
+    assert_ne!(saved_epoch, sim_tick);
+
+    let (loaded_snapshot, plan) = load_snapshot_record(record, &project()).expect("load");
+
+    assert_eq!(loaded_snapshot.epoch().0, saved_epoch);
+    assert_eq!(plan.snapshot_epoch.0, saved_epoch);
+    assert_eq!(plan.sim_tick, sim_tick);
 }
 
 #[test]

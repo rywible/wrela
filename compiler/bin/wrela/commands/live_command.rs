@@ -13,14 +13,17 @@ use wrela::state_advance::{
 };
 use wrela::world_identity::WorldSnapshotHandle;
 
-struct CliProjectStateAdvanceExecutor {
+pub(crate) struct CliProjectStateAdvanceExecutor {
     project_label: SmolStr,
     function_count: usize,
     system_count: usize,
 }
 
 impl CliProjectStateAdvanceExecutor {
-    fn from_project(project_label: SmolStr, project: &hir::project::LoadedProject) -> Self {
+    pub(crate) fn from_project(
+        project_label: SmolStr,
+        project: &hir::project::LoadedProject,
+    ) -> Self {
         let mut function_count = 0usize;
         let mut system_count = 0usize;
         for (_, function) in project.module.functions.iter() {
@@ -73,7 +76,7 @@ impl wrela::engine_frame::EngineStateAdvanceExecutor for CliProjectStateAdvanceE
 }
 
 pub(crate) fn execute_live_command(args: LiveCommandArgs) {
-    if args.options.frames == 0 {
+    if args.options.frames == Some(0) {
         eprintln!("error: --frames must be greater than zero");
         std::process::exit(EXIT_USAGE);
     }
@@ -126,22 +129,26 @@ pub(crate) fn execute_live_command(args: LiveCommandArgs) {
         simulation_hz_override: None,
     };
     let policy = EngineFrameRuntimePolicy::live();
-    let sim_hz = 60.0;
+    // The headless live lane is a deterministic 120 Hz structural gate: there
+    // is no real swapchain capability probe here, so use the RFC 0011 stretch
+    // cadence instead of a 60 Hz FIFO fallback estimate.
+    let sim_hz = 120.0;
     let mut host = LiveEngineHost::new_headless(runtime, config, policy, snapshot, sim_hz);
     let step = 1.0 / sim_hz;
 
     match args.output_format {
         OutputFormat::Json => {
             // RFC 0011 M8: track previous wall stamp so we can refuse to emit
-            // a degenerate (zero / non-advancing) clock — even from the
-            // synthetic headless host.
+            // a degenerate (zero / non-advancing) clock, even from the
+            // deterministic headless host.
             let mut last_wall_nanos: Option<u64> = None;
             // RFC 0011 M3: when --enforce-latency-budget is on, accumulate
             // Closure findings are the canonical RFC 0011 gate. The flag name
             // remains latency-flavored for CLI compatibility, but any
             // structured live finding should fail the lane.
             let mut closure_findings: u32 = 0;
-            for _ in 0..args.options.frames {
+            let mut latency_samples_nanos: Vec<u64> = Vec::new();
+            for _ in 0..args.options.frames.unwrap_or(1) {
                 let tick = match host.advance(step) {
                     Ok(t) => t,
                     Err(err) => {
@@ -168,6 +175,7 @@ pub(crate) fn execute_live_command(args: LiveCommandArgs) {
                     }
                     last_wall_nanos = Some(wall);
                     if args.options.enforce_latency_budget {
+                        latency_samples_nanos.push(output.report.latency.total_estimate_nanos);
                         for finding in &output.report.closure_findings {
                             eprintln!(
                                 "error: closure finding at frame {} [{}:{}]: {}",
@@ -188,6 +196,19 @@ pub(crate) fn execute_live_command(args: LiveCommandArgs) {
                     }
                 }
             }
+            if args.options.enforce_latency_budget {
+                latency_samples_nanos.sort_unstable();
+                let p50 = percentile_nanos(&latency_samples_nanos, 0.50);
+                let p95 = percentile_nanos(&latency_samples_nanos, 0.95);
+                let p99 = percentile_nanos(&latency_samples_nanos, 0.99);
+                eprintln!(
+                    "live latency: samples={} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3}",
+                    latency_samples_nanos.len(),
+                    nanos_to_millis(p50),
+                    nanos_to_millis(p95),
+                    nanos_to_millis(p99)
+                );
+            }
             if args.options.enforce_latency_budget && closure_findings > 0 {
                 eprintln!(
                     "error: --enforce-latency-budget failed: {closure_findings} closure findings"
@@ -204,11 +225,41 @@ pub(crate) fn execute_live_command(args: LiveCommandArgs) {
     std::process::exit(EXIT_OK);
 }
 
-fn launch_reference_host(entry_path: &std::path::Path, frames: u32) -> ! {
+pub(crate) fn execute_perf_latency_command(mut args: PerfLatencyCommandArgs) {
+    args.options.enforce_latency_budget = true;
+    if args.options.frames.is_none() {
+        args.options.frames = Some(600);
+    }
+    let entry_path = match resolve_entry_path(args.path_arg.as_deref()) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(EXIT_USAGE);
+        }
+    };
+    launch_reference_host_perf_latency(&entry_path, args.options.frames);
+}
+
+fn percentile_nanos(sorted_samples: &[u64], percentile: f64) -> u64 {
+    if sorted_samples.is_empty() {
+        return 0;
+    }
+    let clamped = percentile.clamp(0.0, 1.0);
+    let idx = ((sorted_samples.len() - 1) as f64 * clamped).round() as usize;
+    sorted_samples[idx]
+}
+
+fn nanos_to_millis(nanos: u64) -> f64 {
+    nanos as f64 / 1_000_000.0
+}
+
+fn launch_reference_host(entry_path: &std::path::Path, frames: Option<u32>) -> ! {
     let mut command = std::process::Command::new("cargo");
     command.args(["run", "-p", "wrela_reference_host", "--"]);
     command.env("WRELA_REFERENCE_HOST_PROJECT", entry_path.as_os_str());
-    command.env("WRELA_REFERENCE_HOST_FRAMES", frames.to_string());
+    if let Some(frames) = frames {
+        command.env("WRELA_REFERENCE_HOST_FRAMES", frames.to_string());
+    }
     if std::env::var_os("WRELA_TEST_OFFSCREEN").is_some() {
         command.env("WRELA_TEST_OFFSCREEN", "1");
         command.env("WRELA_REFERENCE_HOST_HEADLESS", "1");
@@ -221,4 +272,26 @@ fn launch_reference_host(entry_path: &std::path::Path, frames: u32) -> ! {
         }
     };
     std::process::exit(status.code().unwrap_or(EXIT_USAGE));
+}
+
+fn launch_reference_host_perf_latency(entry_path: &std::path::Path, frames: Option<u32>) -> ! {
+    let mut command = std::process::Command::new("cargo");
+    command.args(["run", "-p", "wrela_reference_host", "--"]);
+    command.env("WRELA_REFERENCE_HOST_PROJECT", entry_path.as_os_str());
+    command.env("WRELA_REFERENCE_HOST_RENDERED_LATENCY", "1");
+    command.env("WRELA_REFERENCE_HOST_ENFORCE_LATENCY", "1");
+    if let Some(frames) = frames {
+        command.env("WRELA_REFERENCE_HOST_FRAMES", frames.to_string());
+    }
+    let status = match command.status() {
+        Ok(status) => status,
+        Err(err) => {
+            eprintln!("error: failed to launch reference host: {err}");
+            std::process::exit(EXIT_USAGE);
+        }
+    };
+    match status.code() {
+        Some(code) => std::process::exit(code),
+        None => std::process::exit(EXIT_USAGE),
+    }
 }

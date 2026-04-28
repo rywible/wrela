@@ -204,6 +204,7 @@ commands:\n\
   frame <path>          evaluate a named view and emit typed frame attachments or PPM\n\
   frame-live <path>     open a live frame window with click-to-log selection output\n\
   live <path>           launch the reference host; add --headless --json for JSON reports\n\
+  perf-latency <path>   run the RFC 0011 live p99 motion-to-photon gate\n\
   frame-contracts <path>  inspect compiled frame contracts for named views\n\
   presentation-plan <path>  inspect compiled presentation contracts and pass plan\n\
   presentation-debug <path> run presentation passes and export color/depth/normal debug attachments\n\

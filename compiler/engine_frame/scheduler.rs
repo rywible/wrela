@@ -44,6 +44,12 @@ pub struct EngineFrameContext {
     /// StateAdvance input sample point. These indicate mixed clock domains or
     /// otherwise invalid sampler timestamps.
     pub future_input_timestamp_count: usize,
+    /// Host-provided estimate from present callback return to visible photons.
+    ///
+    /// Presentation adapters should set this from the resolved present mode and
+    /// display refresh interval when known. The scheduler preserves the value
+    /// rather than treating this display-side stage as zero by default.
+    pub estimated_present_to_photons_nanos: Option<u64>,
     pub resource_accesses: Vec<EngineResourceAccess>,
     pub resource_states: Vec<EngineResourceState>,
 }
@@ -409,6 +415,7 @@ impl EngineFrameScheduler {
             timeline_spans.frame_wall_time_micros,
             ctx.earliest_input_arrival_nanos,
             state_advance_input_sample_nanos,
+            ctx.estimated_present_to_photons_nanos.unwrap_or(0),
         );
         let mut report = EngineFrameReport {
             scenario_id,
@@ -792,13 +799,14 @@ fn subsystem_span_ranges(
 ///    spans plus any `GpuWait` time stacked on the critical path.
 /// 4. `gpu_complete_to_present_callback_nanos`: total `PresentWait` domain
 ///    duration.
-/// 5. `estimated_present_to_photons_nanos`: panel/scan-out latency estimate.
-///    Defaults to 0; hosts are expected to plumb a real value when known.
+/// 5. `estimated_present_to_photons_nanos`: panel/scan-out latency estimate
+///    provided by the host/presentation adapter.
 fn motion_to_photon_contract_from_timeline(
     timeline: &EngineFrameTimeline,
     frame_wall_time_micros: u128,
     earliest_input_arrival_nanos: Option<u64>,
     state_advance_input_sample_nanos: Option<u64>,
+    estimated_present_to_photons_nanos: u64,
 ) -> MotionToPhotonContract {
     if frame_wall_time_micros == 0 && timeline.spans.is_empty() {
         return MotionToPhotonContract::synthetic_idle();
@@ -895,10 +903,13 @@ fn motion_to_photon_contract_from_timeline(
         state_advance_to_render_submit_nanos: stage2,
         render_submit_to_gpu_complete_nanos: stage3,
         gpu_complete_to_present_callback_nanos: stage4,
-        estimated_present_to_photons_nanos: 0,
+        estimated_present_to_photons_nanos,
         total_estimate_nanos: 0,
-        measurement_quality: if earliest_input_arrival_nanos.is_some() {
-            MeasurementQuality::EstimatedFromCpuClock
+        measurement_quality: if earliest_input_arrival_nanos.is_none()
+            && present_end_nanos.is_none()
+            && gpu_end_nanos.is_none()
+        {
+            MeasurementQuality::Synthetic
         } else {
             MeasurementQuality::EstimatedFromCpuClock
         },
@@ -1111,4 +1122,65 @@ fn observed_engine_frame_queue_submit_count(subsystem_reports: &[EngineSubsystem
     subsystem_reports.iter().fold(0_u32, |total, report| {
         total.saturating_add(report.queue_submit_count)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn motion_to_photon_contract_includes_display_latency_estimate() {
+        let timeline = EngineFrameTimeline {
+            version: ENGINE_FRAME_TIMELINE_VERSION,
+            critical_path_span_ids: Vec::new(),
+            queue_submission_spans: Vec::new(),
+            subsystem_span_ranges: Vec::new(),
+            spans: vec![
+                EngineSpanRecord {
+                    id: EngineSpanId(0),
+                    subsystem: EngineSubsystemKind::StateAdvance,
+                    label: "state_advance.advance".to_string(),
+                    domain: EngineSpanDomain::Cpu,
+                    started_micros: 0,
+                    ended_micros: 100,
+                    thread_name: "test".to_string(),
+                    queue_submission: false,
+                },
+                EngineSpanRecord {
+                    id: EngineSpanId(1),
+                    subsystem: EngineSubsystemKind::Presentation,
+                    label: "presentation.submit".to_string(),
+                    domain: EngineSpanDomain::Gpu,
+                    started_micros: 150,
+                    ended_micros: 250,
+                    thread_name: "test".to_string(),
+                    queue_submission: true,
+                },
+                EngineSpanRecord {
+                    id: EngineSpanId(2),
+                    subsystem: EngineSubsystemKind::Presentation,
+                    label: "presentation.present".to_string(),
+                    domain: EngineSpanDomain::PresentWait,
+                    started_micros: 250,
+                    ended_micros: 300,
+                    thread_name: "test".to_string(),
+                    queue_submission: false,
+                },
+            ],
+        };
+
+        let contract =
+            motion_to_photon_contract_from_timeline(&timeline, 300, None, None, 16_666_667);
+
+        assert_eq!(contract.estimated_present_to_photons_nanos, 16_666_667);
+        assert_eq!(
+            contract.total_estimate_nanos,
+            contract
+                .event_arrival_to_state_advance_nanos
+                .saturating_add(contract.state_advance_to_render_submit_nanos)
+                .saturating_add(contract.render_submit_to_gpu_complete_nanos)
+                .saturating_add(contract.gpu_complete_to_present_callback_nanos)
+                .saturating_add(16_666_667)
+        );
+    }
 }

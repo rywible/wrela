@@ -1,6 +1,8 @@
 //! Audio DSP / voice plan (RFC 0011 Phase 68).
 
 use crate::audio_contract::{MediaSample, VoiceId};
+use smol_str::SmolStr;
+pub use wrela_runtime::audio::voice::{DspOp, DspProgram, DspProgramError, DspValue};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioConfig {
@@ -24,6 +26,10 @@ impl Default for AudioConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioVoicePlan {
     pub id: VoiceId,
+    pub source_audio_field: Option<SmolStr>,
+    pub source_audio_signature: u64,
+    pub source_program: DspProgram,
+    pub source_frequency_hz: f32,
     pub position: [f32; 3],
     pub velocity: [f32; 3],
     pub gain: f32,

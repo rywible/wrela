@@ -99,12 +99,14 @@ perf-closure:
 live-smoke:
     cargo test -p wrela --test live_host
 
-# RFC 0011 M3 perf-latency lane: drives the reference host through the
-# interactive `wrela live` entry, while keeping `live-smoke` as the cheap
-# structural co-gate.
+# RFC 0011 M3 perf-latency lane: gates the reference-host rendered
+# input-to-pixel path through the full live stack.
 perf-latency:
     just live-smoke
-    WRELA_TEST_OFFSCREEN=1 WRELA_REFERENCE_HOST_FRAMES=120 cargo run -p wrela --release -- live examples/surface_and_input/src/main.wr --frames=120
+    cargo run -p wrela -- perf-latency examples/surface_and_input/src/main.wr --frames 120 2>&1 | tee /tmp/wrela-perf-latency.log
+    grep -q "reference-host rendered input-to-pixel" /tmp/wrela-perf-latency.log
+    grep -Eq "changed_pixel=[0-9]+" /tmp/wrela-perf-latency.log
+    WRELA_REFERENCE_HOST_RENDERED_LATENCY=1 WRELA_REFERENCE_HOST_ENFORCE_LATENCY=1 WRELA_REFERENCE_HOST_FRAMES=120 WRELA_REFERENCE_HOST_PROJECT=examples/surface_and_input/src/main.wr cargo run -p wrela_reference_host --release
 
 # Reference authored project smoke for the Phase 64 scaffold.
 dev-smoke:

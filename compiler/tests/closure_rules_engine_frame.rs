@@ -109,6 +109,10 @@ fn canonical_rules_promote_rfc0011_runtime_violations() {
         active_degradations: Vec::new(),
         violations: vec![
             "physics.contact_readback_over_budget".to_string(),
+            "physics.time_compression: substeps clamped; consider lowering simulation load or increasing max_substeps_per_tick".to_string(),
+            "physics.collision_world_unbound".to_string(),
+            "physics.collision_batch_not_submitted".to_string(),
+            "physics.cpu_oracle_collision_fallback".to_string(),
             "audio.underrun".to_string(),
             "presentation.input_ring_overflow".to_string(),
             "presentation.fallback_to_vsync_fifo".to_string(),
@@ -125,6 +129,10 @@ fn canonical_rules_promote_rfc0011_runtime_violations() {
         .collect::<Vec<_>>();
     for expected in [
         "physics.contact_readback_over_budget",
+        "physics.time_compression: substeps clamped; consider lowering simulation load or increasing max_substeps_per_tick",
+        "physics.collision_world_unbound",
+        "physics.collision_batch_not_submitted",
+        "physics.cpu_oracle_collision_fallback",
         "audio.underrun",
         "presentation.input_ring_overflow",
         "presentation.fallback_to_vsync_fifo",

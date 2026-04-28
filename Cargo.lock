@@ -5918,6 +5918,7 @@ dependencies = [
 name = "wrela_reference_host"
 version = "0.1.0"
 dependencies = [
+ "ciborium",
  "pollster",
  "smol_str 0.3.6",
  "wgpu 29.0.1",

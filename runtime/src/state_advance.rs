@@ -82,6 +82,45 @@ pub enum TickInputKind {
     System,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TickInputValue {
+    None,
+    Button { pressed: bool },
+    Axis1 { value_micros: i32 },
+    Axis2 { x_micros: i32, y_micros: i32 },
+}
+
+impl TickInputValue {
+    pub fn pressed_button() -> Self {
+        Self::Button { pressed: true }
+    }
+
+    pub fn button(pressed: bool) -> Self {
+        Self::Button { pressed }
+    }
+
+    pub fn axis1(value: f32) -> Self {
+        Self::Axis1 {
+            value_micros: scaled_f32_to_i32_micros(value),
+        }
+    }
+
+    pub fn axis2(x: f32, y: f32) -> Self {
+        Self::Axis2 {
+            x_micros: scaled_f32_to_i32_micros(x),
+            y_micros: scaled_f32_to_i32_micros(y),
+        }
+    }
+}
+
+fn scaled_f32_to_i32_micros(value: f32) -> i32 {
+    if !value.is_finite() {
+        return 0;
+    }
+    let scaled = (value as f64 * 1_000_000.0).round();
+    scaled.clamp(i32::MIN as f64, i32::MAX as f64) as i32
+}
+
 /// Mirrors `wrela::state_advance::TickInputEvent`. Carries the wall-clock and
 /// monotonic timestamps that downstream latency tooling stages off of (RFC 0011
 /// Phase 62.95).
@@ -91,6 +130,7 @@ pub struct TickInputEvent {
     pub kind: TickInputKind,
     pub source: smol_str::SmolStr,
     pub detail: smol_str::SmolStr,
+    pub value: TickInputValue,
     /// Wall-clock time when the platform observed this input.
     pub wall_clock: WallClockStamp,
     /// Monotonic nanoseconds for latency staging.
@@ -109,6 +149,7 @@ impl TickInputEvent {
             kind,
             source: source.into(),
             detail: detail.into(),
+            value: TickInputValue::pressed_button(),
             wall_clock: WallClockStamp::new(0),
             monotonic_nanos: 0,
         }
@@ -127,6 +168,27 @@ impl TickInputEvent {
             kind,
             source: source.into(),
             detail: detail.into(),
+            value: TickInputValue::pressed_button(),
+            wall_clock,
+            monotonic_nanos,
+        }
+    }
+
+    pub fn with_timestamps_and_value(
+        tick: SimulationTick,
+        kind: TickInputKind,
+        source: impl Into<smol_str::SmolStr>,
+        detail: impl Into<smol_str::SmolStr>,
+        value: TickInputValue,
+        wall_clock: WallClockStamp,
+        monotonic_nanos: u64,
+    ) -> Self {
+        Self {
+            tick,
+            kind,
+            source: source.into(),
+            detail: detail.into(),
+            value,
             wall_clock,
             monotonic_nanos,
         }

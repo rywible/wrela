@@ -10,6 +10,7 @@ default = []
 inspector = []
 
 [dependencies]
+ciborium = "0.2"
 smol_str = "0.3.5"
 wrela = { path = "../../compiler" }
 wrela_runtime = { path = "../../runtime" }

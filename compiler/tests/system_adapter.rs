@@ -8,7 +8,7 @@ use wrela::engine_frame::{
     EngineFrameRuntime, EngineFrameRuntimePolicy, EngineStateAdvanceExecutor,
     InputSubsystemAdapter, SystemSubsystemAdapter,
 };
-use wrela::input_contract::{InputFrame, InputMapBinding};
+use wrela::input_contract::InputMapBinding;
 use wrela::input_map_plan::InputMapPlan;
 use wrela::query_exec::stable_region_snapshot_handle;
 use wrela::state_advance::{
@@ -16,9 +16,9 @@ use wrela::state_advance::{
     WorldTransitionRecord,
 };
 use wrela::system_contract::{
-    SystemAccessSummary, SystemContractId, SystemId, SystemPhase, SystemResourceId,
+    EventTypeId, SystemAccessSummary, SystemContractId, SystemId, SystemPhase, SystemResourceId,
 };
-use wrela::system_exec::SystemMirInvoker;
+use wrela::system_exec::{SystemInvocationContext, SystemMirInvoker};
 use wrela::system_plan::{SystemPlan, SystemProgram};
 use wrela::time_semantics::{PresentationFrame, SimulationTick, TemporalClock, WallClockStamp};
 use wrela_runtime::engine_executor::EngineExecutorConfig;
@@ -51,7 +51,11 @@ impl EngineStateAdvanceExecutor for NoopStateAdvanceExecutor {
 struct NoopMirInvoker;
 
 impl SystemMirInvoker for NoopMirInvoker {
-    fn invoke(&self, _mir_function_id: u32, _input: &InputFrame) -> Result<(), String> {
+    fn invoke(
+        &self,
+        _mir_function_id: u32,
+        _ctx: &mut SystemInvocationContext<'_>,
+    ) -> Result<(), String> {
         Ok(())
     }
 }
@@ -61,11 +65,33 @@ struct RecordingMirInvoker {
 }
 
 impl SystemMirInvoker for RecordingMirInvoker {
-    fn invoke(&self, mir_function_id: u32, _input: &InputFrame) -> Result<(), String> {
+    fn invoke(
+        &self,
+        mir_function_id: u32,
+        _ctx: &mut SystemInvocationContext<'_>,
+    ) -> Result<(), String> {
         self.calls
             .lock()
             .map_err(|_| "recording MIR invoker lock poisoned".to_string())?
             .push(mir_function_id);
+        Ok(())
+    }
+}
+
+struct DtRecordingMirInvoker {
+    recorded: Arc<Mutex<Vec<f64>>>,
+}
+
+impl SystemMirInvoker for DtRecordingMirInvoker {
+    fn invoke(
+        &self,
+        _mir_function_id: u32,
+        ctx: &mut SystemInvocationContext<'_>,
+    ) -> Result<(), String> {
+        self.recorded
+            .lock()
+            .map_err(|_| "dt recording MIR invoker lock poisoned".to_string())?
+            .push(ctx.dt_seconds);
         Ok(())
     }
 }
@@ -75,7 +101,11 @@ struct DelayedFirstMirInvoker {
 }
 
 impl SystemMirInvoker for DelayedFirstMirInvoker {
-    fn invoke(&self, mir_function_id: u32, _input: &InputFrame) -> Result<(), String> {
+    fn invoke(
+        &self,
+        mir_function_id: u32,
+        _ctx: &mut SystemInvocationContext<'_>,
+    ) -> Result<(), String> {
         match mir_function_id {
             1 => {
                 let deadline = Instant::now() + Duration::from_millis(250);
@@ -89,6 +119,39 @@ impl SystemMirInvoker for DelayedFirstMirInvoker {
                 }
             }
             2 => {
+                self.second_invoked.store(true, Ordering::Release);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+struct ReversedCompletionEmitterInvoker {
+    second_invoked: Arc<AtomicBool>,
+}
+
+impl SystemMirInvoker for ReversedCompletionEmitterInvoker {
+    fn invoke(
+        &self,
+        mir_function_id: u32,
+        ctx: &mut SystemInvocationContext<'_>,
+    ) -> Result<(), String> {
+        match mir_function_id {
+            1 => {
+                let deadline = Instant::now() + Duration::from_millis(250);
+                while !self.second_invoked.load(Ordering::Acquire) {
+                    if Instant::now() >= deadline {
+                        return Err(
+                            "second system did not emit while first invocation was pending".into(),
+                        );
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
+                ctx.emitted_events.push(EventTypeId::new("FirstEvent"));
+            }
+            2 => {
+                ctx.emitted_events.push(EventTypeId::new("SecondEvent"));
                 self.second_invoked.store(true, Ordering::Release);
             }
             _ => {}
@@ -124,6 +187,28 @@ fn frame_input(
         query_requests: Vec::new(),
         readback_requests: Vec::new(),
     }
+}
+
+fn independent_emitter_program() -> SystemProgram {
+    let first = SystemPlan::new(
+        SystemId::new("First"),
+        SystemContractId::new("first"),
+        SystemPhase::Sim,
+        SystemAccessSummary::default()
+            .reads(SystemResourceId::Resource("first".into()))
+            .emits_event(EventTypeId::new("FirstEvent")),
+        1,
+    );
+    let second = SystemPlan::new(
+        SystemId::new("Second"),
+        SystemContractId::new("second"),
+        SystemPhase::Sim,
+        SystemAccessSummary::default()
+            .reads(SystemResourceId::Resource("second".into()))
+            .emits_event(EventTypeId::new("SecondEvent")),
+        2,
+    );
+    SystemProgram::new([first, second]).expect("program")
 }
 
 #[test]
@@ -210,6 +295,134 @@ fn system_subsystem_runs_after_input_and_reports_work() {
         .expect("system report");
     assert_eq!(system_report.work_items, 1);
     assert_eq!(executor.lock().expect("executor").report().records.len(), 1);
+}
+
+#[test]
+fn system_adapter_passes_dt_from_engine_frame_clocks() {
+    let mut runtime = EngineFrameRuntime::new(Box::new(NoopStateAdvanceExecutor));
+    let input_adapter = InputSubsystemAdapter::new(
+        InputMapPlan::empty("empty"),
+        runtime.materialized_tick_input_slot(),
+    );
+    let system_program = SystemProgram::new([SystemPlan::new(
+        SystemId::new("RecordDt"),
+        SystemContractId::new("record_dt"),
+        SystemPhase::Sim,
+        SystemAccessSummary::default().reads(SystemResourceId::InputFrame),
+        1,
+    )])
+    .expect("program");
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let system_adapter = SystemSubsystemAdapter::with_invoker(
+        system_program,
+        input_adapter.shared_frame(),
+        Arc::new(DtRecordingMirInvoker {
+            recorded: Arc::clone(&recorded),
+        }),
+    );
+    let tick = SimulationTick::new(1);
+    let previous_snapshot = stable_region_snapshot_handle(&SmolStr::new("system_adapter_dt"));
+    let input = wrela::engine_frame::EngineFrameInput {
+        scenario_id: "system_adapter_dt".into(),
+        frame_index: 0,
+        previous_snapshot: previous_snapshot.clone(),
+        previous_clock: TemporalClock::new(
+            wrela::time_semantics::SnapshotEpoch::new(previous_snapshot.epoch().0),
+            SimulationTick::new(0),
+            PresentationFrame::new(0),
+            WallClockStamp::new(1_000_000_000),
+        ),
+        current_clock: TemporalClock::new(
+            wrela::time_semantics::SnapshotEpoch::new(previous_snapshot.epoch().0 + 1),
+            tick,
+            PresentationFrame::new(1),
+            WallClockStamp::new(1_008_333_333),
+        ),
+        tick_inputs: wrela::engine_frame::TickInputSource::eager(TickInputBatch::new(
+            tick,
+            Vec::new(),
+        )),
+        policy: EngineFrameRuntimePolicy::live(),
+        query_requests: Vec::new(),
+        readback_requests: Vec::new(),
+    };
+
+    runtime
+        .run_frame_with_subsystems(
+            input,
+            vec![Box::new(input_adapter), Box::new(system_adapter)],
+        )
+        .expect("frame");
+
+    let recorded = recorded.lock().expect("recorded dt");
+    assert_eq!(recorded.len(), 1);
+    assert!((recorded[0] - (1.0 / 120.0)).abs() < 0.000001);
+}
+
+#[test]
+fn system_adapter_publishes_parallel_emissions_in_program_order_next_tick() {
+    let mut runtime = EngineFrameRuntime::with_executor_config(
+        Box::new(NoopStateAdvanceExecutor),
+        EngineExecutorConfig {
+            cpu_worker_threads: 2,
+            external_worker_threads: 1,
+        },
+    );
+    let input_adapter = InputSubsystemAdapter::new(
+        InputMapPlan::empty("empty"),
+        runtime.materialized_tick_input_slot(),
+    );
+    let second_invoked = Arc::new(AtomicBool::new(false));
+    let system_adapter = SystemSubsystemAdapter::with_invoker(
+        independent_emitter_program(),
+        input_adapter.shared_frame(),
+        Arc::new(ReversedCompletionEmitterInvoker {
+            second_invoked: Arc::clone(&second_invoked),
+        }),
+    );
+    let executor = system_adapter.executor();
+    let previous_snapshot =
+        stable_region_snapshot_handle(&SmolStr::new("system_adapter_parallel_emit_order"));
+    let mut subsystem_adapters: Vec<Box<dyn wrela::engine_frame::EngineSubsystemAdapter>> =
+        vec![Box::new(input_adapter), Box::new(system_adapter)];
+
+    let first_output = runtime
+        .run_frame_with_persistent_subsystems(
+            frame_input(
+                "system_adapter_parallel_emit_order",
+                previous_snapshot,
+                SimulationTick::new(1),
+                Vec::new(),
+            ),
+            &mut subsystem_adapters,
+        )
+        .expect("first frame");
+
+    let next_snapshot = first_output.snapshot.clone();
+    runtime
+        .run_frame_with_persistent_subsystems(
+            frame_input(
+                "system_adapter_parallel_emit_order",
+                next_snapshot,
+                SimulationTick::new(2),
+                Vec::new(),
+            ),
+            &mut subsystem_adapters,
+        )
+        .expect("second frame");
+
+    let visible_events = executor
+        .lock()
+        .expect("executor")
+        .report()
+        .records
+        .first()
+        .expect("first system record")
+        .visible_events
+        .iter()
+        .map(|event| event.0.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(visible_events, vec!["FirstEvent", "SecondEvent"]);
 }
 
 #[test]

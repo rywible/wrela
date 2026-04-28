@@ -21,13 +21,18 @@
 
 use super::collision_command::*;
 use super::contracts_command::*;
-use super::live_command::execute_live_command;
+use super::live_command::{execute_live_command, execute_perf_latency_command};
 use super::presentation_command::*;
 use super::preview_eval::{
     authored_presentation_lighting_inputs, bind_presentation_function_params,
     prepare_presentation_execution,
 };
 use super::*;
+use ciborium::value::Value;
+use wrela::persistence::{
+    PersistenceProject, PersistentHandle, SnapshotLedgerRecord, load_snapshot_record, read_record,
+};
+use wrela::query_exec::ids::stable_semantic_id;
 
 fn into_test_lane(lane: ParsedTestLane) -> TestLane {
     match lane {
@@ -69,6 +74,160 @@ fn into_perf_profile(profile: ParsedPerfProfile) -> PerfProfile {
         ParsedPerfProfile::Deep => PerfProfile::Deep,
         ParsedPerfProfile::Closure1080p120 => PerfProfile::Closure1080p120,
     }
+}
+
+fn execute_save_command(args: SaveCommandArgs) -> Result<(), String> {
+    let project_path = args
+        .project_path
+        .as_deref()
+        .ok_or_else(|| "missing project path for `wrela save`".to_string())?;
+    let out_path = args.out_path.clone().unwrap_or_else(|| {
+        let mut path = Path::new(project_path).to_path_buf();
+        path.set_extension("wrela-save");
+        path.display().to_string()
+    });
+    let mut command = std::process::Command::new("cargo");
+    command
+        .arg("run")
+        .arg("-p")
+        .arg("wrela_reference_host")
+        .arg("--quiet")
+        .env("WRELA_REFERENCE_HOST_HEADLESS", "1")
+        .env("WRELA_REFERENCE_HOST_PROJECT", project_path)
+        .env("WRELA_REFERENCE_HOST_SAVE_PATH", &out_path)
+        .env("WRELA_REFERENCE_HOST_FRAMES", "8");
+    let output = command
+        .output()
+        .map_err(|err| format!("launch reference-host save runtime: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "reference-host save runtime failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let summary = stdout.trim();
+    if !Path::new(&out_path).exists() {
+        return Err(format!(
+            "reference-host save runtime did not write `{out_path}`"
+        ));
+    }
+    if matches!(args.output_format, OutputFormat::Json) {
+        println!("{summary}");
+    } else {
+        println!("saved live runtime snapshot via reference host: {summary}");
+    }
+    Ok(())
+}
+
+fn execute_load_command(args: LoadCommandArgs) -> Result<(), String> {
+    let save_path = args
+        .save_path
+        .as_deref()
+        .ok_or_else(|| "missing save path for `wrela load`".to_string())?;
+    let record = read_record(Path::new(save_path)).map_err(|err| err.to_string())?;
+    let project = match args.project_path.as_deref() {
+        Some(project_path) => persistence_project_for_path(project_path)?.0,
+        None => PersistenceProject {
+            project_id: record.header.project_id.clone(),
+            wrela_version: record.header.wrela_version.clone(),
+            engine_compatibility_hash: record.header.engine_compatibility_hash,
+            generator_compatibility_hashes: record.header.generator_compatibility_hashes.clone(),
+            archetype_schema_hashes: record.header.archetype_schema_hashes.clone(),
+        },
+    };
+    let (_snapshot, plan) =
+        load_snapshot_record(record, &project).map_err(|err| err.to_string())?;
+    match args.output_format {
+        OutputFormat::Json => println!(
+            "{{\"command\":\"load\",\"path\":\"{}\",\"project_id\":\"{}\",\"snapshot_epoch\":{},\"ledger_records\":{}}}",
+            json_escape(save_path),
+            json_escape(&project.project_id),
+            plan.snapshot_epoch.0,
+            plan.ledger.len()
+        ),
+        _ => println!(
+            "loaded `{}` for project `{}` at epoch {} ({} ledger records)",
+            save_path,
+            project.project_id,
+            plan.snapshot_epoch.0,
+            plan.ledger.len()
+        ),
+    }
+    Ok(())
+}
+
+fn persistence_project_for_path(
+    path: &str,
+) -> Result<(PersistenceProject, Vec<SnapshotLedgerRecord>), String> {
+    let loaded = wrela::hir::project::load_project_with_entrypoint(Path::new(path), false)
+        .map_err(|errors| format!("load project `{path}`: {errors:?}"))?;
+    let project_id = Path::new(path)
+        .file_stem()
+        .and_then(|os| os.to_str())
+        .unwrap_or("wrela_project")
+        .to_string();
+    let mut generator_compatibility_hashes = BTreeMap::new();
+    let mut archetype_schema_hashes = BTreeMap::new();
+    for (_, function) in loaded.module.functions.iter() {
+        let role = format!("{:?}", function.role);
+        let hash = stable_semantic_id(&[
+            project_id.as_bytes(),
+            b"persistence",
+            function.name.as_str().as_bytes(),
+            role.as_bytes(),
+        ]);
+        match function.role {
+            wrela::hir::FunctionRole::Region
+            | wrela::hir::FunctionRole::Field
+            | wrela::hir::FunctionRole::Body => {
+                generator_compatibility_hashes.insert(function.name.to_string(), hash);
+            }
+            wrela::hir::FunctionRole::System
+            | wrela::hir::FunctionRole::Voice
+            | wrela::hir::FunctionRole::InputMap => {
+                archetype_schema_hashes.insert(function.name.to_string(), hash);
+            }
+            _ => {}
+        }
+    }
+    let ledger = loaded
+        .module
+        .functions
+        .iter()
+        .filter(|(_, function)| {
+            matches!(
+                function.role,
+                wrela::hir::FunctionRole::System
+                    | wrela::hir::FunctionRole::InputMap
+                    | wrela::hir::FunctionRole::Body
+                    | wrela::hir::FunctionRole::Voice
+                    | wrela::hir::FunctionRole::Region
+            )
+        })
+        .map(|(_, function)| SnapshotLedgerRecord {
+            handle: PersistentHandle::from_stable_semantic_parts(&[
+                project_id.as_bytes(),
+                function.name.as_str().as_bytes(),
+            ]),
+            type_id: format!("{:?}", function.role),
+            payload: Value::Text(function.name.to_string()),
+        })
+        .collect();
+    Ok((
+        PersistenceProject {
+            engine_compatibility_hash: stable_semantic_id(&[project_id.as_bytes(), b"engine"]),
+            project_id,
+            wrela_version: env!("CARGO_PKG_VERSION").to_string(),
+            generator_compatibility_hashes,
+            archetype_schema_hashes,
+        },
+        ledger,
+    ))
+}
+
+fn json_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn build_kpi_thresholds(
@@ -188,6 +347,30 @@ pub fn execute(spec: CommandSpec) {
                 eprintln!("build: command live");
             }
             execute_live_command(args);
+        }
+        ParsedCommand::PerfLatency(args) => {
+            if trace {
+                eprintln!("build: command perf-latency");
+            }
+            execute_perf_latency_command(args);
+        }
+        ParsedCommand::Save(args) => {
+            if trace {
+                eprintln!("build: command save");
+            }
+            if let Err(err) = execute_save_command(args) {
+                eprintln!("save error: {err}");
+                std::process::exit(EXIT_RUNTIME_SIGNAL);
+            }
+        }
+        ParsedCommand::Load(args) => {
+            if trace {
+                eprintln!("build: command load");
+            }
+            if let Err(err) = execute_load_command(args) {
+                eprintln!("load error: {err}");
+                std::process::exit(EXIT_RUNTIME_SIGNAL);
+            }
         }
         ParsedCommand::FrameContracts(args) => {
             if trace {

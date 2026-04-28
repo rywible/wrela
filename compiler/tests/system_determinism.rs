@@ -4,16 +4,55 @@ use wrela::state_advance::SimulationTick;
 use wrela::system_contract::{
     EventTypeId, SystemAccessSummary, SystemContractId, SystemId, SystemPhase, SystemResourceId,
 };
-use wrela::system_exec::{SystemExecutor, SystemMirInvoker};
+use wrela::system_exec::{SystemExecutor, SystemInvocationContext, SystemMirInvoker};
 use wrela::system_plan::{SystemPlan, SystemProgram};
 use wrela::world_identity::SnapshotEpoch;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 struct NoopMirInvoker;
 
 impl SystemMirInvoker for NoopMirInvoker {
-    fn invoke(&self, _mir_function_id: u32, _input: &InputFrame) -> Result<(), String> {
+    fn invoke(
+        &self,
+        _mir_function_id: u32,
+        _ctx: &mut SystemInvocationContext<'_>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+struct ConditionalEmitterInvoker {
+    emit: bool,
+}
+
+impl SystemMirInvoker for ConditionalEmitterInvoker {
+    fn invoke(
+        &self,
+        mir_function_id: u32,
+        ctx: &mut SystemInvocationContext<'_>,
+    ) -> Result<(), String> {
+        if self.emit && mir_function_id == 2 {
+            ctx.emitted_events.push(EventTypeId::new("FrameSummary"));
+        }
+        Ok(())
+    }
+}
+
+struct DtRecordingMirInvoker {
+    recorded: Arc<Mutex<Vec<f64>>>,
+}
+
+impl SystemMirInvoker for DtRecordingMirInvoker {
+    fn invoke(
+        &self,
+        _mir_function_id: u32,
+        ctx: &mut SystemInvocationContext<'_>,
+    ) -> Result<(), String> {
+        self.recorded
+            .lock()
+            .map_err(|_| "recorded dt lock poisoned".to_string())?
+            .push(ctx.dt_seconds);
         Ok(())
     }
 }
@@ -95,24 +134,124 @@ fn default_system_executor_runs_empty_program_without_invoking() {
 }
 
 #[test]
+fn direct_system_executor_uses_configured_default_simulation_dt() {
+    let program = sample_program();
+    let input = sample_input();
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mut executor = SystemExecutor::new(Arc::new(DtRecordingMirInvoker {
+        recorded: Arc::clone(&recorded),
+    }))
+    .with_default_simulation_dt_seconds(1.0 / 144.0);
+
+    executor
+        .run_program(&program, &input)
+        .expect("program should use configured default dt");
+
+    let recorded = recorded.lock().expect("recorded dt");
+    assert_eq!(recorded.as_slice(), &[1.0 / 144.0, 1.0 / 144.0]);
+}
+
+#[test]
+fn direct_system_executor_default_simulation_dt_is_not_implicit_60_hz() {
+    let program = sample_program();
+    let input = sample_input();
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mut executor = SystemExecutor::new(Arc::new(DtRecordingMirInvoker {
+        recorded: Arc::clone(&recorded),
+    }));
+
+    assert_eq!(executor.default_simulation_dt_seconds(), 0.0);
+    executor
+        .run_system(&program.phase(SystemPhase::PreSim)[0], &input)
+        .expect("system should use executor default dt");
+
+    let recorded = recorded.lock().expect("recorded dt");
+    assert_eq!(recorded.as_slice(), &[0.0]);
+}
+
+#[test]
 fn system_events_are_one_tick_deferred() {
     let program = sample_program();
     let input = sample_input();
-    let mut executor = SystemExecutor::new(Arc::new(NoopMirInvoker));
-    let first = executor.run_program(&program, &input).expect("first");
+    let mut executor = SystemExecutor::new(Arc::new(ConditionalEmitterInvoker { emit: true }));
+    let first = executor
+        .run_program_with_dt(&program, &input, 1.0 / 120.0)
+        .expect("first");
     assert!(
         first
             .records
             .iter()
             .all(|record| record.visible_events.is_empty())
     );
-    let second = executor.run_program(&program, &input).expect("second");
+    let second = executor
+        .run_program_with_dt(&program, &input, 1.0 / 120.0)
+        .expect("second");
     assert!(second.records.iter().any(|record| {
         record
             .visible_events
             .iter()
             .any(|event| event.0 == "FrameSummary")
     }));
+}
+
+#[test]
+fn declared_event_emitter_does_not_publish_without_send() {
+    let program = sample_program();
+    let input = sample_input();
+    let mut executor = SystemExecutor::new(Arc::new(ConditionalEmitterInvoker { emit: false }));
+
+    let first = executor
+        .run_program_with_dt(&program, &input, 1.0 / 120.0)
+        .expect("first");
+    assert!(
+        first
+            .records
+            .iter()
+            .all(|record| record.emitted_events.is_empty())
+    );
+
+    let second = executor
+        .run_program_with_dt(&program, &input, 1.0 / 120.0)
+        .expect("second");
+    assert!(
+        second
+            .records
+            .iter()
+            .all(|record| record.visible_events.is_empty())
+    );
+}
+
+#[test]
+fn actual_event_emission_is_visible_once_next_tick() {
+    let program = sample_program();
+    let input = sample_input();
+    let mut executor = SystemExecutor::new(Arc::new(ConditionalEmitterInvoker { emit: true }));
+
+    let first = executor
+        .run_program_with_dt(&program, &input, 1.0 / 120.0)
+        .expect("first");
+    let first_emitted_count = first
+        .records
+        .iter()
+        .flat_map(|record| &record.emitted_events)
+        .filter(|event| event.0 == "FrameSummary")
+        .count();
+    assert_eq!(first_emitted_count, 1);
+
+    let second = executor
+        .run_program_with_dt(&program, &input, 1.0 / 120.0)
+        .expect("second");
+    let emitter_record = second
+        .records
+        .iter()
+        .find(|record| record.system == SystemId::new("EmitFrameEvents"))
+        .expect("emitter record");
+    let second_visible_count = emitter_record
+        .visible_events
+        .iter()
+        .filter(|event| event.0 == "FrameSummary")
+        .count();
+    assert_eq!(second_visible_count, 1);
 }
 
 #[test]

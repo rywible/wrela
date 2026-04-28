@@ -28,8 +28,8 @@ fn input_ring_drains_events_up_to_deadline_and_reports_overflow() {
 
     let mut drained = Vec::new();
     let count = consumer.drain_up_to_nanos(2, &mut drained);
-    assert_eq!(count, 3);
-    assert_eq!(drained.len(), 3);
+    assert_eq!(count, 2);
+    assert_eq!(drained.len(), 2);
     assert!(drained.iter().all(|event| event.monotonic_nanos <= 2));
 
     consumer.clear_overflow();
@@ -39,6 +39,32 @@ fn input_ring_drains_events_up_to_deadline_and_reports_overflow() {
         1,
         "drop counter is monotonic across overflow clears"
     );
+}
+
+#[test]
+fn full_input_ring_drops_oldest_and_keeps_newest_event() {
+    let (mut producer, mut consumer) = RawInputRing::split_with_capacity(3);
+    for i in 0..3 {
+        producer.push_event(event(i));
+    }
+
+    producer.push_event(event(99));
+
+    assert_eq!(consumer.ring_state().depth, 3);
+    assert_eq!(consumer.ring_state().dropped_events, 1);
+    assert!(consumer.ring_state().overflow);
+
+    let mut drained = Vec::new();
+    let count = consumer.drain_up_to_nanos(u64::MAX, &mut drained);
+    assert_eq!(count, 3);
+    assert_eq!(
+        drained
+            .iter()
+            .map(|event| event.monotonic_nanos)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 99]
+    );
+    assert_eq!(consumer.ring_state().depth, 0);
 }
 
 #[test]

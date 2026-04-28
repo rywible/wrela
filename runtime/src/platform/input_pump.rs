@@ -9,6 +9,7 @@
 //! heap allocations even at full ring depth.
 
 use super::input::TimestampedRawEvent;
+use crossbeam_queue::ArrayQueue;
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -33,16 +34,20 @@ struct RawInputTelemetry {
     last_monotonic: AtomicU64,
     overflow_latch: AtomicBool,
     approx_depth: AtomicU32,
+    oldest_events_to_drop: AtomicU32,
+    overflow_events: ArrayQueue<TimestampedRawEvent>,
 }
 
 impl RawInputTelemetry {
-    fn new() -> Self {
+    fn new(capacity: usize) -> Self {
         Self {
             dropped_events: AtomicU32::new(0),
             out_of_order_events: AtomicU32::new(0),
             last_monotonic: AtomicU64::new(0),
             overflow_latch: AtomicBool::new(false),
             approx_depth: AtomicU32::new(0),
+            oldest_events_to_drop: AtomicU32::new(0),
+            overflow_events: ArrayQueue::new(capacity),
         }
     }
 
@@ -74,6 +79,11 @@ pub struct RawInputConsumer {
     capacity: u32,
 }
 
+#[derive(Clone)]
+pub struct RawInputRingObserver {
+    telemetry: Arc<RawInputTelemetry>,
+}
+
 /// Convenience wrapper for tests and simple single-threaded callers. Runtime
 /// hosts should split the ring and move each half to its owning thread.
 pub struct RawInputRing {
@@ -85,7 +95,7 @@ impl RawInputRing {
     pub fn split_with_capacity(capacity: usize) -> (RawInputProducer, RawInputConsumer) {
         let capacity = capacity.max(1);
         let (producer, consumer) = RingBuffer::new(capacity);
-        let telemetry = Arc::new(RawInputTelemetry::new());
+        let telemetry = Arc::new(RawInputTelemetry::new(capacity));
         (
             RawInputProducer {
                 producer,
@@ -157,10 +167,17 @@ impl RawInputProducer {
             Ok(()) => {
                 self.telemetry.approx_depth.fetch_add(1, Ordering::Release);
             }
-            Err(PushError::Full(_)) => {
+            Err(PushError::Full(event)) => {
                 self.telemetry
                     .dropped_events
                     .fetch_add(1, Ordering::Relaxed);
+                let pending = self.telemetry.oldest_events_to_drop.load(Ordering::Acquire);
+                if pending < self.capacity {
+                    self.telemetry
+                        .oldest_events_to_drop
+                        .fetch_add(1, Ordering::Release);
+                }
+                let _ = self.telemetry.overflow_events.force_push(event);
                 self.telemetry.overflow_latch.store(true, Ordering::Release);
             }
         }
@@ -184,6 +201,7 @@ impl RawInputConsumer {
         out: &mut Vec<TimestampedRawEvent>,
     ) -> usize {
         let start_len = out.len();
+        self.drop_overflowed_oldest_events();
         loop {
             let should_pop = match self.consumer.peek() {
                 Ok(event) => event.monotonic_nanos <= deadline_nanos,
@@ -200,11 +218,51 @@ impl RawInputConsumer {
                 Err(_) => break,
             }
         }
+        self.drain_overflow_events_up_to_nanos(deadline_nanos, out);
         out.len() - start_len
+    }
+
+    fn drop_overflowed_oldest_events(&mut self) {
+        loop {
+            let pending = self.telemetry.oldest_events_to_drop.load(Ordering::Acquire);
+            if pending == 0 {
+                break;
+            }
+            match self.consumer.pop() {
+                Ok(_) => {
+                    self.telemetry
+                        .oldest_events_to_drop
+                        .fetch_sub(1, Ordering::AcqRel);
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    fn drain_overflow_events_up_to_nanos(
+        &mut self,
+        deadline_nanos: u64,
+        out: &mut Vec<TimestampedRawEvent>,
+    ) {
+        while let Some(event) = self.telemetry.overflow_events.pop() {
+            if event.monotonic_nanos <= deadline_nanos {
+                out.push(event);
+                self.telemetry.approx_depth.fetch_sub(1, Ordering::AcqRel);
+            } else {
+                let _ = self.telemetry.overflow_events.force_push(event);
+                break;
+            }
+        }
     }
 
     pub fn ring_state(&self) -> RawInputRingState {
         self.telemetry.ring_state()
+    }
+
+    pub fn observer(&self) -> RawInputRingObserver {
+        RawInputRingObserver {
+            telemetry: Arc::clone(&self.telemetry),
+        }
     }
 
     /// Clear the latched overflow flag after the frame has recorded the drop.
@@ -214,6 +272,16 @@ impl RawInputConsumer {
 
     pub fn capacity(&self) -> u32 {
         self.capacity
+    }
+}
+
+impl RawInputRingObserver {
+    pub fn ring_state(&self) -> RawInputRingState {
+        self.telemetry.ring_state()
+    }
+
+    pub fn clear_overflow(&self) {
+        self.telemetry.clear_overflow();
     }
 }
 

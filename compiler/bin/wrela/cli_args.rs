@@ -203,7 +203,7 @@ pub struct FrameLiveCommandArgs {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveCommandOptions {
     pub headless: bool,
-    pub frames: u32,
+    pub frames: Option<u32>,
     /// RFC 0011 M3: when set, exit with `EXIT_USAGE` if any frame produces a
     /// motion-to-photon closure finding. The `just perf-latency` lane sets
     /// this so a regression on the live latency budget fails CI loudly.
@@ -216,6 +216,28 @@ pub struct LiveCommandArgs {
     pub path_arg: Option<String>,
     pub query_backend: DispatchBackend,
     pub options: LiveCommandOptions,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PerfLatencyCommandArgs {
+    pub output_format: OutputFormat,
+    pub path_arg: Option<String>,
+    pub query_backend: DispatchBackend,
+    pub options: LiveCommandOptions,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SaveCommandArgs {
+    pub output_format: OutputFormat,
+    pub project_path: Option<String>,
+    pub out_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadCommandArgs {
+    pub output_format: OutputFormat,
+    pub save_path: Option<String>,
+    pub project_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -415,6 +437,9 @@ pub enum ParsedCommand {
     Frame(FrameCommandArgs),
     FrameLive(FrameLiveCommandArgs),
     Live(LiveCommandArgs),
+    PerfLatency(PerfLatencyCommandArgs),
+    Save(SaveCommandArgs),
+    Load(LoadCommandArgs),
     FrameContracts(FrameContractsCommandArgs),
     PresentationPlan(PresentationPlanCommandArgs),
     PresentationDebug(PresentationDebugCommandArgs),
@@ -446,6 +471,9 @@ enum CommandName {
     Frame,
     FrameLive,
     Live,
+    PerfLatency,
+    Save,
+    Load,
     FrameContracts,
     PresentationPlan,
     PresentationDebug,
@@ -533,6 +561,9 @@ impl ParsedCommand {
             ParsedCommand::Frame(_) => "frame",
             ParsedCommand::FrameLive(_) => "frame-live",
             ParsedCommand::Live(_) => "live",
+            ParsedCommand::PerfLatency(_) => "perf-latency",
+            ParsedCommand::Save(_) => "save",
+            ParsedCommand::Load(_) => "load",
             ParsedCommand::FrameContracts(_) => "frame-contracts",
             ParsedCommand::PresentationPlan(_) => "presentation-plan",
             ParsedCommand::PresentationDebug(_) => "presentation-debug",
@@ -579,6 +610,9 @@ impl CommandName {
             Self::Frame => "frame",
             Self::FrameLive => "frame-live",
             Self::Live => "live",
+            Self::PerfLatency => "perf-latency",
+            Self::Save => "save",
+            Self::Load => "load",
             Self::FrameContracts => "frame-contracts",
             Self::PresentationPlan => "presentation-plan",
             Self::PresentationDebug => "presentation-debug",
@@ -617,6 +651,9 @@ impl CommandName {
             "frame" => Some(Self::Frame),
             "frame-live" => Some(Self::FrameLive),
             "live" => Some(Self::Live),
+            "perf-latency" => Some(Self::PerfLatency),
+            "save" => Some(Self::Save),
+            "load" => Some(Self::Load),
             "frame-contracts" => Some(Self::FrameContracts),
             "presentation-plan" => Some(Self::PresentationPlan),
             "presentation-debug" => Some(Self::PresentationDebug),
@@ -665,6 +702,8 @@ fn build_parsed_command(command: CommandName, state: ParseState) -> Result<Parse
             | CommandName::Frame
             | CommandName::FrameLive
             | CommandName::Live
+            | CommandName::PerfLatency
+            | CommandName::Load
             | CommandName::FrameContracts
             | CommandName::PresentationPlan
             | CommandName::PresentationDebug
@@ -732,15 +771,17 @@ fn build_parsed_command(command: CommandName, state: ParseState) -> Result<Parse
             | CommandName::Compile
             | CommandName::Run
             | CommandName::Test
+            | CommandName::Save
             | CommandName::Perfcmp
     ) && state.out_path.is_some()
     {
         return Err(format!(
-            "error: -o/--out is only valid with `wrela {}`, `wrela {}`, `wrela {}`, `wrela {}`, or `wrela {}`",
+            "error: -o/--out is only valid with `wrela {}`, `wrela {}`, `wrela {}`, `wrela {}`, `wrela {}`, or `wrela {}`",
             CommandName::Build.as_str(),
             CommandName::Compile.as_str(),
             CommandName::Run.as_str(),
             CommandName::Test.as_str(),
+            CommandName::Save.as_str(),
             CommandName::Perfcmp.as_str(),
         ));
     }
@@ -998,7 +1039,7 @@ fn build_parsed_command(command: CommandName, state: ParseState) -> Result<Parse
         }),
         CommandName::Live => {
             let options = parse_live_command_options(&state.program_args)?;
-            if options.frames == 0 {
+            if options.frames == Some(0) {
                 return Err("error: --frames must be greater than zero".to_string());
             }
             ParsedCommand::Live(LiveCommandArgs {
@@ -1006,6 +1047,45 @@ fn build_parsed_command(command: CommandName, state: ParseState) -> Result<Parse
                 path_arg: state.path_arg,
                 query_backend,
                 options,
+            })
+        }
+        CommandName::PerfLatency => {
+            let mut options = parse_live_command_options(&state.program_args)?;
+            options.headless = true;
+            options.enforce_latency_budget = true;
+            if options.frames.is_none() {
+                options.frames = Some(600);
+            }
+            if options.frames == Some(0) {
+                return Err("error: --frames must be greater than zero".to_string());
+            }
+            ParsedCommand::PerfLatency(PerfLatencyCommandArgs {
+                output_format: state.output_format,
+                path_arg: state.path_arg,
+                query_backend,
+                options,
+            })
+        }
+        CommandName::Save => {
+            if !state.program_args.is_empty() {
+                return Err("error: unexpected extra arguments".to_string());
+            }
+            ParsedCommand::Save(SaveCommandArgs {
+                output_format: state.output_format,
+                project_path: state.path_arg,
+                out_path: state.out_path,
+            })
+        }
+        CommandName::Load => {
+            if state.program_args.len() > 1 {
+                return Err(
+                    "error: wrela load accepts at most one project path after --".to_string(),
+                );
+            }
+            ParsedCommand::Load(LoadCommandArgs {
+                output_format: state.output_format,
+                save_path: state.path_arg,
+                project_path: state.program_args.first().cloned(),
             })
         }
         CommandName::FrameContracts => ParsedCommand::FrameContracts(FrameContractsCommandArgs {
@@ -1684,7 +1764,7 @@ fn parse_frame_live_command_options(args: &[String]) -> Result<FrameLiveCommandO
 fn parse_live_command_options(args: &[String]) -> Result<LiveCommandOptions, String> {
     let mut options = LiveCommandOptions {
         headless: false,
-        frames: 1,
+        frames: None,
         enforce_latency_budget: false,
     };
     let mut index = 0usize;
@@ -1709,14 +1789,19 @@ fn parse_live_command_options(args: &[String]) -> Result<LiveCommandOptions, Str
         match flag {
             "--headless" => options.headless = true,
             "--frames" => {
-                options.frames = take_value(&inline_value, args, &mut index)?
-                    .parse()
-                    .map_err(|_| "invalid --frames value".to_string())?;
+                options.frames = Some(
+                    take_value(&inline_value, args, &mut index)?
+                        .parse()
+                        .map_err(|_| "invalid --frames value".to_string())?,
+                );
             }
             "--enforce-latency-budget" => options.enforce_latency_budget = true,
             _ => return Err(format!("unexpected argument `{arg}`")),
         }
         index += 1;
+    }
+    if options.headless && options.frames.is_none() {
+        options.frames = Some(1);
     }
     Ok(options)
 }
@@ -2708,6 +2793,8 @@ mod tests {
             &["preview"],
             &["frame"],
             &["frame-live"],
+            &["live"],
+            &["perf-latency"],
             &["frame-contracts"],
             &["presentation-plan"],
             &["presentation-debug"],
@@ -2874,7 +2961,18 @@ mod tests {
                 assert_eq!(args.output_format, OutputFormat::Json);
                 assert_eq!(args.path_arg.as_deref(), Some("language/preview"));
                 assert!(args.options.headless);
-                assert_eq!(args.options.frames, 3);
+                assert_eq!(args.options.frames, Some(3));
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_live_headless_default_stays_finite() {
+        match parse_ready(&["--json", "live", "language/preview", "--headless"]) {
+            ParsedCommand::Live(args) => {
+                assert!(args.options.headless);
+                assert_eq!(args.options.frames, Some(1));
             }
             other => panic!("unexpected parse result: {other:?}"),
         }
@@ -2887,7 +2985,43 @@ mod tests {
                 assert_eq!(args.output_format, OutputFormat::Pretty);
                 assert_eq!(args.path_arg.as_deref(), Some("language/preview"));
                 assert!(!args.options.headless);
-                assert_eq!(args.options.frames, 3);
+                assert_eq!(args.options.frames, Some(3));
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_live_interactive_default_has_no_frame_limit() {
+        match parse_ready(&["live", "language/preview"]) {
+            ParsedCommand::Live(args) => {
+                assert!(!args.options.headless);
+                assert_eq!(args.options.frames, None);
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_perf_latency_uses_live_options_with_ci_defaults() {
+        match parse_ready(&["perf-latency", "language/preview", "--frames=120"]) {
+            ParsedCommand::PerfLatency(args) => {
+                assert_eq!(args.path_arg.as_deref(), Some("language/preview"));
+                assert!(args.options.headless);
+                assert!(args.options.enforce_latency_budget);
+                assert_eq!(args.options.frames, Some(120));
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_perf_latency_default_runs_600_frames() {
+        match parse_ready(&["perf-latency", "language/preview"]) {
+            ParsedCommand::PerfLatency(args) => {
+                assert!(args.options.headless);
+                assert!(args.options.enforce_latency_budget);
+                assert_eq!(args.options.frames, Some(600));
             }
             other => panic!("unexpected parse result: {other:?}"),
         }
