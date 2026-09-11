@@ -19,6 +19,9 @@ struct Uniforms {
     var rigPosition:SIMD4<Float> = .zero
     var rigColor:SIMD4<Float> = .zero
     var rigParams:SIMD4<Float> = .zero
+    var lookSurface:SIMD4<Float> = SceneLook().surface
+    var lookLight:SIMD4<Float> = SceneLook().light
+    var lookGrade:SIMD4<Float> = SceneLook().grade
 }
 
 struct GPUBatch {
@@ -72,7 +75,11 @@ final class GardenRenderer: NSObject, MTKViewDelegate {
     var yaw:Float = 0
     var pitch:Float = -0.04
     var studioObject="seed"
+    var studioViewName="Custom"
     var studioSource=AssetSource.defaults("seed")
+    var importedSourceURL:URL?
+    var sceneLook=(try? SceneLook.load()) ?? SceneLook()
+    lazy var workshopSession=WorkshopSession(self)
     var studioBatches:[GPUBatch]=[]
     var studioCache:[String:[GPUBatch]]=[:]
     var studioBounds=Bounds(V3(-0.01,0,-0.01),V3(0.01,0.035,0.01))
@@ -82,7 +89,7 @@ final class GardenRenderer: NSObject, MTKViewDelegate {
     var studioUnit:Float {studioObject=="sky" ? 1:max(0.001,studioExtent/4)}
     var scene="garden"
     func setStudyView(_ name:String) {
-        scene="studio";orbitDistance=6.8;studioLayout.focus=0.5
+        studioViewName=name;scene="studio";orbitDistance=6.8;studioLayout.focus=0.5
         if !["sunward","away","zenith"].contains(name) {studioObject=studioSource.id}
         switch name {
         case "sunward","away","zenith":
@@ -223,7 +230,7 @@ final class GardenRenderer: NSObject, MTKViewDelegate {
     }
 
     func resetCamera() {
-        camera=V3(0,world.terrain.height(0,24)+1.72,24);yaw=0;pitch = -0.04
+        studioViewName="Custom";camera=V3(0,world.terrain.height(0,24)+1.72,24);yaw=0;pitch = -0.04
         orbit=0.48;orbitDistance=studioLayout.arrangement=="grove" ? 13:6.8;orbitElevation=0.18;keys.removeAll()
         if scene=="studio" {fitStudioCamera()}
     }
@@ -231,7 +238,7 @@ final class GardenRenderer: NSObject, MTKViewDelegate {
     var podPosition:V3 { V3(5,world.terrain.height(5,12)-world.studioShape.bounds.min.y*podScale*GardenWorld.podUnitScale,12) }
 
     func look(dx:Float,dy:Float) {
-        if scene=="studio" { orbit+=dx*0.006;orbitElevation=clamp(orbitElevation+dy*0.004,-0.1,1.5) }
+        if scene=="studio" {studioViewName="Custom"; orbit+=dx*0.006;orbitElevation=clamp(orbitElevation+dy*0.004,-0.1,1.5) }
         else { yaw+=dx*0.003;pitch=clamp(pitch-dy*0.003,-1.35,1.35) }
     }
 
@@ -318,6 +325,7 @@ final class GardenRenderer: NSObject, MTKViewDelegate {
         let warmth=studioRig.warmth
         uniforms.rigColor=SIMD4(V3(1,1-warmth*0.25,1-warmth*0.55),studioRig.intensity*studioExtent*studioExtent)
         uniforms.rigParams=SIMD4(studioRig.size,studioRig.fill,studioExtent,0)
+        uniforms.lookSurface=sceneLook.surface;uniforms.lookLight=sceneLook.light;uniforms.lookGrade=sceneLook.grade
         let profile=profiling && frame%5==0 ? GPUProfile(device):nil
         atmosphere.encode(cb,&uniforms,paused:paused,profile:profile)
         let lightState=post.encodeLighting(cb,uniforms:&uniforms,atmosphere:atmosphere,index:frame%3,profile:profile)
@@ -359,7 +367,7 @@ final class GardenRenderer: NSObject, MTKViewDelegate {
             enc.setRenderPipelineState(skyPipeline);enc.setDepthStencilState(skyDepthState);enc.setCullMode(.none)
             enc.drawPrimitives(type:.triangle,vertexStart:0,vertexCount:3);enc.endEncoding()
         }
-        post.encode(cb,to:drawable.texture,lightState:lightState,profile:profile)
+        post.encode(cb,to:drawable.texture,lightState:lightState,look:sceneLook.grade,profile:profile)
         var pending:(URL,[String:Any],(Result<URL,Error>)->Void,MTLBuffer,Int)?
         if let request=captureRequest {
             captureRequest=nil
@@ -518,7 +526,7 @@ final class GardenRenderer: NSObject, MTKViewDelegate {
     func clearMetrics() {metricsGeneration+=1;gpuPassTimes=[:];gpuPhaseTimes=[:];gpuTimes=[];cpuTimes=[];frameTimes=[];drawableWaitTimes=[]}
     func snapshot() -> [String:Any] {
         let triangles=scene=="garden" ? batches.reduce(0){$0+$1.indexCount/3*$1.instanceCount}+pod.indexCount/3 : visibleTriangles
-        return ["gameTreeParameters":world.treeSource.parameters,"workshop":workshopSnapshot(),"mode":isSoundstage ? "soundstage":"game","sky":skySettings.snapshot,"scene":scene,"studioObject":studioObject,"antialiasing":"4x MSAA","seed":world.seed,"frame":frame,"time":simulationTime,"paused":paused,
+        return ["sceneLook":sceneLook.values,"gameTreeParameters":world.treeSource.parameters,"workshop":workshopSnapshot(),"mode":isSoundstage ? "soundstage":"game","sky":skySettings.snapshot,"scene":scene,"studioObject":studioObject,"antialiasing":"4x MSAA","seed":world.seed,"frame":frame,"time":simulationTime,"paused":paused,
                 "camera":["position":[camera.x,camera.y,camera.z],"yaw":yaw,"pitch":pitch,"orbit":orbit,"elevation":orbitElevation,"distance":orbitDistance],
                 "lighting":lighting,"parameters":["exposure":exposure,"wind":wind,"scale":podScale],
                 "renderSize":[1920,1080],"device":device.name,"fullDetailTriangles":triangles,

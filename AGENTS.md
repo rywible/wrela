@@ -10,6 +10,11 @@ is 35 mm tall. Target native 1920×1080 at 60 Hz on the M4 MacBook Air.
 Read `docs/SOUNDSTAGE.md` and `docs/ATMOSPHERE.md` before changing appearance.
 Use `.build/Soundstage.app` for sky, lighting, material and individual field work.
 Start authoring with `stagectl catalog`, `subject`, `rig`, and `saveStudy`.
+Read `Authoring/ArtDirection.json` before authoring objects, lights or skies.
+Use the shared scene look rather than compensating individual objects with exposure.
+Run `stagectl styleBoard` to compare the candidate with working references and
+lighting/sky views; the initial references are provisional, not an approval stamp.
+Use `captureReview`, frozen review baselines and named checkpoints for fast iteration.
 Subjects and lighting are independent. The tree source is shared with the garden;
 save it with `assetSave`, then use `gardenctl reloadAssets` to verify integration.
 Use `workshop-study --baseline <study.json>` for matched visual comparisons and
@@ -36,6 +41,7 @@ integration after the isolated object looks right.
 6. Run `swift test` for field/compiler changes, `--check-renderer` for shader/ABI
    changes, and the appropriate local validation script for protocol changes.
    `validate-workshop` checks editing, atomic rejection and exact study/motion replay.
+   `validate-authoring` checks undo/redo, checkpoints, file watching and global style.
    Test rejection paths and deterministic paused captures.
 7. Check the garden after shared renderer changes. Measure live clouds and wind,
    not only the paused sky. Report update hitches separately from steady frames.

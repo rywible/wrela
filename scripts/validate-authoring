@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Exercise editor history, source watching, checkpoints and the shared scene look."""
+import hashlib,json,os,runpy,time,uuid
+from pathlib import Path
+os.environ['SANCTUARY_CONTROL_ROOT']='.soundstage'
+client=runpy.run_path(str(Path(__file__).with_name('gardenctl')));c,root=client['command'],client['ROOT']
+saved=c('saveStudy',path='authoring-validation-restore.json')['path'];checks=[]
+original=c('status')['state'];fixture=root/'watch-fixture.json';checkpoint='Validation '+uuid.uuid4().hex[:8]
+def state():return c('status')['state']
+def check(name,result):
+    checks.append(dict(name=name,passed=bool(result)))
+    if not result:raise AssertionError(name)
+def reject(action,**values):
+    try:c(action,**values)
+    except RuntimeError:return True
+    return False
+def image(label):
+    r=c('capture',label=label);return hashlib.sha256(Path(r['path']).read_bytes()).hexdigest()
+def wait(predicate):
+    end=time.monotonic()+8
+    while time.monotonic()<end:
+        s=state()
+        if predicate(s):return s
+        time.sleep(.2)
+    raise AssertionError('Timed out waiting for watched source')
+def write(value):
+    temp=fixture.with_suffix('.tmp');temp.write_text(value if isinstance(value,str) else json.dumps(value));os.replace(temp,fixture)
+try:
+    c('pause',value=True);c('subject',value='tree');c('view',value='quarter');c('rig',value='outdoor');c('lighting',value='noon')
+    before=image('authoring-undo-before');source=state()['workshop']['document']['source']
+    c('shape',height=7.1);changed=image('authoring-undo-after');check('Field edit changes pixels',before!=changed)
+    c('undo');check('Undo restores exact pixels',image('authoring-undo-restored')==before)
+    c('redo');check('Redo restores exact pixels',image('authoring-redo-restored')==changed)
+    c('undo');c('rig',value='lamp');check('New edit clears redo history',not state()['workshop']['authoring']['canRedo'])
+    c('checkpoint',name=checkpoint);baseline=image('authoring-checkpoint')
+    c('rig',value='room');c('shape',height=8);c('restoreCheckpoint',name=checkpoint)
+    check('Named checkpoint restores exact rendering',image('authoring-checkpoint-restored')==baseline)
+    check('Checkpoint names cannot overwrite saved checkpoints',reject('checkpoint',name=checkpoint))
+    c('rig',value='outdoor');c('lighting',value='noon')
+    look=state()['sceneLook'];look_before=image('authoring-look-original')
+    c('look',saturation=0);look_after=image('authoring-look-monochrome');check('Global grade visibly affects scene',look_before!=look_after)
+    c('undo');check('Scene look participates in undo',image('authoring-look-undo')==look_before)
+    check('Invalid global style edit is rejected',reject('look',warmth=.1,skySaturation=8))
+    check('Rejected global edit is atomic',state()['sceneLook']==look)
+    c('view',value='sunward');sky_before=image('authoring-sky-style-before');c('look',skySaturation=0)
+    check('Shared profile visibly affects sky',sky_before!=image('authoring-sky-style-after'))
+    c('undo');c('subject',value='stone-vessel');c('rig',value='softbox');surface_before=image('authoring-surface-style-before');c('look',detail=0,roughnessBias=-.2)
+    check('Shared profile affects materials before display grading',surface_before!=image('authoring-surface-style-after'))
+    c('undo')
+    asset=dict(version=1,id='watch-fixture',name='Watcher fixture',generator='fields',parts=[dict(name='Sphere',field=dict(op='sphere',values=[.45]),color=[.4,.5,.6],material=7)])
+    write(asset);c('assetLoad',path=str(fixture));c('watchSource',value=True);s=state();distance=s['workshop']['cameraDistanceMetres'];stable=image('watch-good')
+    write('{ invalid')
+    wait(lambda s:'Source error' in s['workshop']['authoring']['watchStatus'])
+    check('Invalid watched source keeps the last valid pixels',image('watch-invalid-retained')==stable)
+    asset['parts'][0]['field']['values']=[.7];write(asset)
+    s=wait(lambda s:s['workshop']['document']['source'].get('parts',[{}])[0].get('field',{}).get('values')==[.7] or abs(s['workshop']['heightMetres']-1.4)<.06)
+    check('Valid source replacement reloads automatically',s['workshop']['heightMetres']>1.3)
+    check('Source reload preserves physical camera distance',abs(s['workshop']['cameraDistanceMetres']-distance)<.001)
+    c('undo');s=state();check('Automatic source reload is undoable',s['workshop']['heightMetres']<1)
+    time.sleep(.8);check('Watcher does not immediately overwrite undo',state()['workshop']['heightMetres']<1)
+    c('redo');check('Reload redo restores the new field',state()['workshop']['heightMetres']>1.3)
+    check('No GPU command errors',not state()['gpuErrors'])
+finally:
+    c('loadStudy',path=saved);c('watchSource',value=original['workshop']['authoring']['watching'])
+    fixture.unlink(missing_ok=True)
+    (root/'checkpoints'/(checkpoint+'.json')).unlink(missing_ok=True)
+    report=dict(passed=all(x['passed'] for x in checks),checks=checks);(root/'authoring-validation.json').write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2))

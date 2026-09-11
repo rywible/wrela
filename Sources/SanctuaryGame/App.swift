@@ -1,29 +1,37 @@
 import AppKit
 import MetalKit
+import WebKit
 import FieldCore
 
 final class GameView:MTKView {
     weak var controller:AppController?
     private var lastDragPoint:NSPoint?
+    private var zoomEnd:Timer?
     override var acceptsFirstResponder:Bool {true}
-    override func mouseDown(with event:NSEvent) {window?.makeFirstResponder(self);lastDragPoint=event.locationInWindow}
+    override func mouseDown(with event:NSEvent) {window?.makeFirstResponder(self);guard controller?.renderer?.workshopSession.automating != true else{return};controller?.renderer?.workshopSession.begin("Orbit camera");lastDragPoint=event.locationInWindow}
     override func rightMouseDown(with event:NSEvent) {mouseDown(with:event)}
     override func mouseDragged(with event:NSEvent) {
         let p=event.locationInWindow
         if let previous=lastDragPoint {controller?.renderer?.look(dx:Float(p.x-previous.x),dy:Float(previous.y-p.y))}
         lastDragPoint=p
     }
-    override func mouseUp(with event:NSEvent) {lastDragPoint=nil}
-    override func rightMouseUp(with event:NSEvent) {lastDragPoint=nil}
+    override func mouseUp(with event:NSEvent) {lastDragPoint=nil;controller?.renderer?.workshopSession.commit()}
+    override func rightMouseUp(with event:NSEvent) {mouseUp(with:event)}
     override func rightMouseDragged(with event:NSEvent) {mouseDragged(with:event)}
     override func scrollWheel(with event:NSEvent) {
-        if let r=controller?.renderer,r.scene=="studio" {r.orbitDistance=r.boundedStudioDistance(r.orbitDistance*exp(Float(event.scrollingDeltaY)*0.025))}
+        if let r=controller?.renderer,r.scene=="studio",!r.workshopSession.automating {
+            r.workshopSession.begin("Zoom camera");r.orbitDistance=r.boundedStudioDistance(r.orbitDistance*exp(Float(event.scrollingDeltaY)*0.025))
+            zoomEnd?.invalidate();zoomEnd=Timer.scheduledTimer(withTimeInterval:0.3,repeats:false){[weak self] _ in self?.controller?.renderer?.workshopSession.commit()}
+        }
     }
     override func keyDown(with event:NSEvent) {
         guard let c=controller,let r=c.renderer else {return}
+        if c.soundstageMode && r.workshopSession.automating {return}
+        if c.soundstageMode && [48,15,35,18,19,20,123,124,125,126].contains(event.keyCode) {r.workshopSession.commit();r.workshopSession.begin("Keyboard edit")}
+        defer {r.workshopSession.commit()}
         switch event.keyCode {
         case 48: c.toggleScene()
-        case 3: c.bridge?.capture()
+        case 3: if c.soundstageMode {do {try r.workshopSession.captureReview()} catch {c.messageLabel.stringValue=error.localizedDescription}} else {c.bridge?.capture()}
         case 15: r.resetCamera()
         case 35: r.paused.toggle();r.keys.removeAll()
         case 18: r.lighting="morning"
@@ -81,17 +89,30 @@ final class AppController:NSObject,NSApplicationDelegate,NSWindowDelegate {
     var rootURL:URL!
     var crosshair:NSTextField!
     var workshopPanel:WorkshopPanel?
+    var inspectorWidth:NSLayoutConstraint?
+    var reviewWindow:NSWindow?
+    var pendingReviewURLs:[URL]=[]
+    var lookTimer:Timer?
+    var lookFileData:Data?
 
     func applicationDidFinishLaunching(_ notification:Notification) {
         NSApp.setActivationPolicy(.regular)
         let menu=NSMenu();let appItem=NSMenuItem();menu.addItem(appItem)
         let appMenu=NSMenu();appMenu.addItem(withTitle:"Quit Sanctuary",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q");appItem.submenu=appMenu;NSApp.mainMenu=menu
-        window=NSWindow(contentRect:NSRect(x:0,y:0,width:1200,height:675),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
-        window.title=soundstageMode ? "Sanctuary · Soundstage":"Sanctuary · Field Garden";window.contentAspectRatio=NSSize(width:16,height:9);window.minSize=NSSize(width:960,height:560)
+        window=NSWindow(contentRect:NSRect(x:0,y:0,width:1200,height:soundstageMode ? 760:675),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
+        window.title=soundstageMode ? "Sanctuary · Soundstage":"Sanctuary · Field Garden"
+        if !soundstageMode {window.contentAspectRatio=NSSize(width:16,height:9)}
+        window.minSize=NSSize(width:soundstageMode ? 1080:960,height:soundstageMode ? 680:560)
         window.center();window.delegate=self
         gameView=GameView(frame:window.contentView!.bounds);gameView.controller=self;gameView.autoresizingMask=[.width,.height]
         gameView.setAccessibilityLabel("Field garden. W A S D to walk. Drag to look. Tab switches object studio.")
-        window.contentView=gameView
+        if soundstageMode {
+            let root=NSView(frame:gameView.frame);root.wantsLayer=true;root.layer?.backgroundColor=NSColor(calibratedWhite:0.075,alpha:1).cgColor;window.contentView=root
+            let editItem=NSMenuItem();menu.addItem(editItem);let edit=NSMenu(title:"Edit");editItem.submenu=edit
+            for (title,selector,key) in [("Undo",#selector(undoWorkshop),"z"),("Redo",#selector(redoWorkshop),"Z")] {let item=edit.addItem(withTitle:title,action:selector,keyEquivalent:key);item.target=self}
+            edit.addItem(.separator())
+            for (title,selector,key) in [("Cut",#selector(NSText.cut(_:)),"x"),("Copy",#selector(NSText.copy(_:)),"c"),("Paste",#selector(NSText.paste(_:)),"v"),("Select All",#selector(NSText.selectAll(_:)),"a")] {edit.addItem(withTitle:title,action:selector,keyEquivalent:key)}
+        } else {window.contentView=gameView}
         buildHUD()
         window.makeKeyAndOrderFront(nil);window.makeFirstResponder(gameView)
         NSApp.activate(ignoringOtherApps:true)
@@ -108,7 +129,11 @@ final class AppController:NSObject,NSApplicationDelegate,NSWindowDelegate {
                     catch {messageLabel.stringValue="Last study could not be restored: \(error.localizedDescription)"}
                 }
             }
+            if soundstageMode {r.workshopSession.onMessage=bridge?.onMessage;r.workshopSession.start()}
+            lookFileData=try? Data(contentsOf:SceneLook.url)
+            lookTimer=Timer.scheduledTimer(withTimeInterval:0.5,repeats:true){[weak self] _ in self?.reloadProjectLook()}
             updateHUD()
+            for url in pendingReviewURLs {openReview(url)};pendingReviewURLs.removeAll()
         } catch {
             messageLabel.stringValue="Unable to start: \(error.localizedDescription)"
             fputs("Sanctuary startup failed: \(error)\n",stderr)
@@ -171,7 +196,7 @@ final class AppController:NSObject,NSApplicationDelegate,NSWindowDelegate {
     }
     @objc func scaleChanged() {renderer?.podScale=scaleSlider.floatValue;updateHUD();window.makeFirstResponder(gameView)}
     func toggleScene() {guard let r=renderer else {return};if soundstageMode {r.scene="studio";try? r.selectSubject(r.studioObject=="sky" ? r.studioSource.id:"sky");updateHUD();return};r.scene=r.scene=="garden" ? "studio":"garden";r.keys.removeAll();updateHUD();window.makeFirstResponder(gameView)}
-    func toggleNotes() {notes.isHidden.toggle()}
+    func toggleNotes() {notes.isHidden.toggle();inspectorWidth?.constant=notes.isHidden ? 0:310}
     func setCamera(_ name:String) {
         guard let r=renderer else {return}
         if soundstageMode {r.setStudyView(["arrival":"front","meadow":"quarter","gate":"above"][name] ?? "front");updateHUD();return}
@@ -197,13 +222,47 @@ final class AppController:NSObject,NSApplicationDelegate,NSWindowDelegate {
         let gpu=r.stats(r.gpuTimes)["median"] ?? 0
         statsLabel.stringValue=String(format:"1920 × 1080 · native Metal\nGPU %.1f ms · %@ · %@",gpu,r.lighting,r.paused ? "paused":"live")
     }
+    func reloadProjectLook() {
+        guard let r=renderer,!r.workshopSession.automating,r.workshopSession.reviewProcess==nil,r.workshopSession.pending==nil else{return}
+        let data=try? Data(contentsOf:SceneLook.url);guard data != lookFileData else{return};lookFileData=data
+        do {
+            let look=try SceneLook.load();guard look != r.sceneLook else{return}
+            if soundstageMode {try r.workshopSession.edit("Project look reload"){r.sceneLook=look}} else {r.sceneLook=look}
+            messageLabel.stringValue="Shared art direction reloaded";updateHUD()
+        } catch {messageLabel.stringValue="Art direction error · keeping last valid look: \(error.localizedDescription)"}
+    }
+    @objc func undoWorkshop() {
+        if let editor=window.firstResponder as? NSTextView,editor.isFieldEditor {editor.undoManager?.undo();return}
+        workshopPanel?.sessionAction{try $0.undo()}
+    }
+    @objc func redoWorkshop() {
+        if let editor=window.firstResponder as? NSTextView,editor.isFieldEditor {editor.undoManager?.redo();return}
+        workshopPanel?.sessionAction{try $0.redo()}
+    }
+    func application(_ application:NSApplication,open urls:[URL]) {
+        guard renderer != nil else {pendingReviewURLs += urls;return}
+        for url in urls {openReview(url)}
+    }
+    func openReview(_ url:URL) {
+        guard url.pathExtension=="html" else{return}
+        if reviewWindow==nil {
+            reviewWindow=NSWindow(contentRect:NSRect(x:0,y:0,width:1100,height:720),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
+            reviewWindow?.isReleasedWhenClosed=false;reviewWindow?.center()
+        }
+        let web=WKWebView(frame:reviewWindow!.contentView!.bounds);web.autoresizingMask=[.width,.height]
+        reviewWindow!.title="Soundstage · Capture review";reviewWindow!.contentView=web
+        web.loadFileURL(url,allowingReadAccessTo:rootURL)
+        reviewWindow!.makeKeyAndOrderFront(nil)
+        renderer?.workshopSession.lastReview=url;renderer?.workshopSession.saveReviewState()
+    }
     func windowDidResignKey(_ notification:Notification) {renderer?.keys.removeAll()}
     func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool {true}
     func applicationWillTerminate(_ notification:Notification) {
+        renderer?.workshopSession.reviewProcess?.terminate()
         renderer?.view.isPaused=true
         if soundstageMode,let renderer,let rootURL {
             let encoder=JSONEncoder();encoder.outputFormatting = [.prettyPrinted,.sortedKeys]
-            try? encoder.encode(renderer.workshopDocument()).write(to:rootURL.appendingPathComponent("last-study.json"),options:.atomic)
+            try? encoder.encode(renderer.workshopSession.reviewOriginal ?? renderer.workshopDocument()).write(to:rootURL.appendingPathComponent("last-study.json"),options:.atomic)
         }
         if let bridge {bridge.write(["stopped":true,"sessionPID":ProcessInfo.processInfo.processIdentifier],to:bridge.root.appendingPathComponent("status.json"))}
     }

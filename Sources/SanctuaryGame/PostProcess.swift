@@ -35,7 +35,7 @@ final class PostProcess {
         e.dispatchThreads(MTLSize(width:1,height:1,depth:1),threadsPerThreadgroup:MTLSize(width:1,height:1,depth:1));e.endEncoding()
         return state
     }
-    func encode(_ cb:MTLCommandBuffer,to output:MTLTexture,lightState:MTLBuffer,profile:GPUProfile?=nil) {
+    func encode(_ cb:MTLCommandBuffer,to output:MTLTexture,lightState:MTLBuffer,look:SIMD4<Float>,profile:GPUProfile?=nil) {
         func compute(_ pipeline:MTLComputePipelineState,_ source:MTLTexture,_ target:MTLTexture,_ direction:SIMD2<Int32> = .zero) {
             let e=profile?.compute(cb,pipeline === extract ? "post.extract" : "post.blur") ?? cb.makeComputeCommandEncoder()!;e.setComputePipelineState(pipeline);e.setTexture(source,index:0);e.setTexture(target,index:1)
             var d=direction;e.setBytes(&d,length:MemoryLayout<SIMD2<Int32>>.stride,index:0)
@@ -46,6 +46,7 @@ final class PostProcess {
         profile?.render(pass,"display")
         let e=cb.makeRenderCommandEncoder(descriptor:pass)!;e.label="HDR glare and display mapping"
         e.setRenderPipelineState(composite);e.setFragmentTexture(hdr,index:0);e.setFragmentTexture(bloomA,index:1);e.setFragmentBuffer(lightState,offset:0,index:0)
+        var grade=look;e.setFragmentBytes(&grade,length:MemoryLayout<SIMD4<Float>>.stride,index:1)
         e.drawPrimitives(type:.triangle,vertexStart:0,vertexCount:3);e.endEncoding()
     }
 }

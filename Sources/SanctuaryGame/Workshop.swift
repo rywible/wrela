@@ -61,6 +61,9 @@ struct WorkshopDocument:Codable {
     var time:Float
     var paused:Bool
     var windState:WindSimulation?
+    var sourcePath:String?
+    var sceneLook:SceneLook?
+    var viewName:String?
 }
 
 extension GardenRenderer {
@@ -70,7 +73,7 @@ extension GardenRenderer {
     var studioCenter:V3 {V3(0,studioHeight*studioLayout.focus,0)}
     var rigPosition:V3 {studioAssetCenter+V3(studioRig.x,studioRig.y,studioRig.z)*studioExtent}
     var indoorStudio:Bool {scene=="studio" && studioRig.name != "outdoor"}
-    var studioSourceURL:URL {AssetSource.url(studioSource.id)}
+    var studioSourceURL:URL {importedSourceURL ?? AssetSource.url(studioSource.id)}
     func boundedStudioDistance(_ value:Float)->Float {clamp(value,0.2,min(10000,400/studioUnit))}
     func fitStudioCamera() {
         guard studioObject != "sky" else {return}
@@ -91,7 +94,7 @@ extension GardenRenderer {
         scene="studio"
         if name=="sky" {studioObject="sky";setStudyView("sunward");return}
         let source=try AssetSource.load(name)
-        try applySource(source);studioLayout=StudioLayout();resetCamera()
+        try applySource(source);importedSourceURL=nil;studioLayout=StudioLayout();resetCamera()
     }
     func applySource(_ source:AssetSource) throws {
         let start=CACurrentMediaTime(),oldDistance=orbitDistance*studioUnit;try source.validate()
@@ -134,35 +137,36 @@ extension GardenRenderer {
         if studioLayout.metallic>=0 {candidate.appearance["metallic"]=studioLayout.metallic}
         candidate.appearance["tint"]=(candidate.appearance["tint"] ?? 1)*studioLayout.tint
         try candidate.validate()
-        let url=studioSourceURL;try FileManager.default.createDirectory(at:url.deletingLastPathComponent(),withIntermediateDirectories:true)
+        let url=AssetSource.url(candidate.id);try FileManager.default.createDirectory(at:url.deletingLastPathComponent(),withIntermediateDirectories:true)
         let encoder=JSONEncoder();encoder.outputFormatting = [.prettyPrinted,.sortedKeys]
         try encoder.encode(candidate).write(to:url,options:.atomic)
-        try applySource(candidate);studioLayout.roughness = -1;studioLayout.metallic = -1;studioLayout.tint=1
+        try applySource(candidate);importedSourceURL=nil;workshopSession.resetWatch();studioLayout.roughness = -1;studioLayout.metallic = -1;studioLayout.tint=1
         return url
     }
     func workshopDocument(includeWind:Bool=true)->WorkshopDocument {
-        WorkshopDocument(source:studioSource,skyOnly:studioObject=="sky",rig:studioRig,layout:studioLayout,lighting:lighting,sky:["altitude":skySettings.altitude,"azimuth":skySettings.azimuth,"coverage":skySettings.coverage,"density":skySettings.density,"haze":skySettings.haze,"cloudSeed":skySettings.cloudSeed],orbit:orbit,elevation:orbitElevation,distance:orbitDistance,exposure:exposure,wind:wind,wetness:wetness,time:simulationTime,paused:paused,windState:includeWind ? atmosphereWind:nil)
+        WorkshopDocument(source:studioSource,skyOnly:studioObject=="sky",rig:studioRig,layout:studioLayout,lighting:lighting,sky:["altitude":skySettings.altitude,"azimuth":skySettings.azimuth,"coverage":skySettings.coverage,"density":skySettings.density,"haze":skySettings.haze,"cloudSeed":skySettings.cloudSeed],orbit:orbit,elevation:orbitElevation,distance:orbitDistance,exposure:exposure,wind:wind,wetness:wetness,time:simulationTime,paused:paused,windState:includeWind ? atmosphereWind:nil,sourcePath:importedSourceURL?.path,sceneLook:sceneLook,viewName:studioViewName)
     }
     func restoreWorkshop(_ d:WorkshopDocument) throws {
-        try d.source.validate();try d.rig.validate();try d.layout.validate()
+        try d.source.validate();try d.rig.validate();try d.layout.validate();try d.sceneLook?.validate()
         if let state=d.windState, !state.validSnapshot {throw RuntimeError.message("Invalid wind snapshot")}
         guard d.version==1,["morning","noon","golden","sunset","afterglow","overcast","rain","indoor"].contains(d.lighting),[d.orbit,d.elevation,d.distance,d.exposure,d.wind,d.wetness,d.time].allSatisfy(\.isFinite),(0...3600).contains(d.time),(-0.1...1.55).contains(d.elevation),(0.2...10000).contains(d.distance),(0.5...1.5).contains(d.exposure),(0...2).contains(d.wind),(0...1).contains(d.wetness) else {throw RuntimeError.message("Invalid study settings")}
         var sky=SkySettings.preset(d.lighting)
         guard let altitude=d.sky["altitude"],let azimuth=d.sky["azimuth"],let coverage=d.sky["coverage"],let density=d.sky["density"],let haze=d.sky["haze"],let seed=d.sky["cloudSeed"],d.sky.values.allSatisfy(\.isFinite),(-12...85).contains(altitude),(-360...360).contains(azimuth),(0...1).contains(coverage),(0...3).contains(density),(0.1...3).contains(haze),(0...10000).contains(seed) else {throw RuntimeError.message("Invalid saved sky")}
         sky.altitude=altitude;sky.azimuth=azimuth;sky.coverage=coverage;sky.density=density;sky.haze=haze;sky.cloudSeed=seed
-        try applySource(d.source)
+        try applySource(d.source);importedSourceURL=d.sourcePath.map{URL(fileURLWithPath:$0)}
+        if let look=d.sceneLook {sceneLook=look}
         lighting=d.lighting;skySettings=sky;studioRig=d.rig;studioLayout=d.layout
         if d.skyOnly {studioObject="sky"}
-        orbit=d.orbit;orbitElevation=d.elevation;orbitDistance=d.distance;exposure=d.exposure;wind=d.wind;wetness=d.wetness;paused=d.paused
+        studioViewName=d.viewName ?? "Custom";orbit=d.orbit;orbitElevation=d.elevation;orbitDistance=d.distance;exposure=d.exposure;wind=d.wind;wetness=d.wetness;paused=d.paused
         // Restore deterministic fixed-step vegetation state as well as cloud time.
         if let state=d.windState {atmosphereWind=state} else {atmosphereWind=WindSimulation();for _ in 0..<Int((d.time*60).rounded()) {atmosphereWind.step(1/60)}}
         simulationTime=d.time;atmosphere.key="";lastTime=CACurrentMediaTime()
     }
     func workshopSnapshot()->[String:Any] {
         let encoder=JSONEncoder(),document=(try? JSONSerialization.jsonObject(with:encoder.encode(workshopDocument(includeWind:false)))) ?? [:]
-        return ["document":document,"sourcePath":studioSourceURL.path,"extentMetres":studioExtent,"heightMetres":studioHeight,"cameraDistanceMetres":orbitDistance*studioUnit,"lightPositionMetres":[rigPosition.x,rigPosition.y,rigPosition.z],"buildMilliseconds":studioBuildMilliseconds,"parts":studioBatches.map(\.name)]
+        return ["authoring":workshopSession.snapshot,"document":document,"sourcePath":studioSourceURL.path,"extentMetres":studioExtent,"heightMetres":studioHeight,"cameraDistanceMetres":orbitDistance*studioUnit,"lightPositionMetres":[rigPosition.x,rigPosition.y,rigPosition.z],"buildMilliseconds":studioBuildMilliseconds,"parts":studioBatches.map(\.name)]
     }
     static var workshopCatalog:[String:Any] {
-        ["subjects":AssetSource.availableIDs+["sky"],"rigs":StudioRig.names,"views":["front","quarter","back","left","right","above","detail","base","crown","sunward","away","zenith"],"shapeRanges":AssetSource.treeRanges.mapValues{[$0.lowerBound,$0.upperBound]},"rigRanges":["x":[-4,4],"y":[0.1,4],"z":[-4,4],"intensity":[0,40],"size":[0.005,1],"warmth":[0,1],"fill":[0,0.5]],"rigUnits":"positions and radius are subject extents; intensity is relative, not lux calibrated","layoutRanges":["scale":[0.25,4],"roughness":[-1,1],"metallic":[-1,1],"tint":[0.3,1.5],"focus":[0,1]],"commands":["subject","rig","shape","layout","assetLoad","assetSave","assetReload","saveStudy","loadStudy","reloadAssets","catalog"],"fieldOperations":["sphere","box","capsule","torus","move","stretch","scale","union","subtract","blend"],"schema":"docs/SOUNDSTAGE.md"]
+        ["subjects":AssetSource.availableIDs+["sky"],"rigs":StudioRig.names,"views":["front","quarter","back","left","right","above","detail","base","crown","sunward","away","zenith"],"shapeRanges":AssetSource.treeRanges.mapValues{[$0.lowerBound,$0.upperBound]},"rigRanges":["x":[-4,4],"y":[0.1,4],"z":[-4,4],"intensity":[0,40],"size":[0.005,1],"warmth":[0,1],"fill":[0,0.5]],"rigUnits":"positions and radius are subject extents; intensity is relative, not lux calibrated","layoutRanges":["scale":[0.25,4],"roughness":[-1,1],"metallic":[-1,1],"tint":[0.3,1.5],"focus":[0,1]],"commands":["subject","rig","shape","layout","assetLoad","assetSave","assetReload","saveStudy","loadStudy","reloadAssets","catalog","undo","redo","checkpoint","restoreCheckpoint","watchSource","captureReview","pinBaseline","selectBaseline","styleBoard","look","publishLook"],"sceneLookRanges":SceneLook.ranges.mapValues{[$0.lowerBound,$0.upperBound]},"artDirection":"Authoring/ArtDirection.json","fieldOperations":["sphere","box","capsule","torus","move","stretch","scale","union","subtract","blend"],"schema":"docs/SOUNDSTAGE.md"]
     }
 }

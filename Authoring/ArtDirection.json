@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "name": "Painterly sanctuary",
+  "status": "Working direction \u2014 references are provisional, not approved final art",
+  "intent": "A welcoming, wondrous wildlife sanctuary with the clarity of anime backgrounds and the richness of a painted landscape.",
+  "shapeLanguage": "Readable silhouettes, organic asymmetry and deliberate large/medium/small groupings. Trees, rocks and creatures should feel shaped by the same world. Avoid identical blobs and noisy outlines.",
+  "detailBudget": "Express identity in silhouette and broad color masses first. Surface detail supports form at normal play distance; avoid photographic microdetail on one asset beside simplified neighbors.",
+  "materials": "Physically based lighting with authored simplification. Broad roughness variation, restrained highlights on bark and stone, soft leaf translucency. Preserve distinct materials without making everything glossy or clay-like.",
+  "color": "Natural muted bases, warm/cool separation and selective saturated accents for discoveries. Local colors must remain legible under noon, warm sunset and neutral studio light.",
+  "palette": [
+    {
+      "name": "Deep foliage",
+      "hex": "#354D35"
+    },
+    {
+      "name": "Sunlit leaf",
+      "hex": "#83985A"
+    },
+    {
+      "name": "Warm bark",
+      "hex": "#71543D"
+    },
+    {
+      "name": "Cool stone",
+      "hex": "#7B8588"
+    },
+    {
+      "name": "Dry grass",
+      "hex": "#B4A577"
+    },
+    {
+      "name": "Discovery accent",
+      "hex": "#D8A46C"
+    }
+  ],
+  "reviewQuestions": [
+    "Do these objects share a level of simplification and a readable shape language?",
+    "Does detail density remain consistent at comparable viewing distances?",
+    "Do roughness, saturation and contrast belong to the same painted world?",
+    "Does each material remain recognizable under both lights without exposure compensation?",
+    "What is the deliberate focal point, and what detail can be removed?"
+  ],
+  "references": [
+    {
+      "label": "Working tree",
+      "subject": "tree"
+    },
+    {
+      "label": "Working stone",
+      "subject": "stone"
+    },
+    {
+      "label": "Working seed",
+      "subject": "seed"
+    }
+  ],
+  "lighting": "One atmosphere and lighting model across the world. Preserve warm/cool separation and readable shadow values; avoid unrelated exposure fixes per object. Clouds need broad, readable masses with controlled small detail and coherent light direction.",
+  "renderLook": {
+    "detail": 0.8,
+    "roughnessBias": 0.025,
+    "surfaceSaturation": 0.96,
+    "sunStrength": 1,
+    "ambientStrength": 1.08,
+    "skySaturation": 0.98,
+    "saturation": 1,
+    "contrast": 0.98,
+    "warmth": 0.015,
+    "bloom": 0.25
+  }
+}

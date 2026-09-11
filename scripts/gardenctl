@@ -37,11 +37,11 @@ def command(action, **kwargs):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
-    for name in ('status', 'reset', 'clearMetrics', 'reloadShaders', 'verifyFields', 'verifySky', 'catalog', 'assetSave', 'assetReload', 'reloadAssets'):
+    for name in ('status', 'reset', 'clearMetrics', 'reloadShaders', 'verifyFields', 'verifySky', 'catalog', 'assetSave', 'assetReload', 'reloadAssets', 'undo', 'redo', 'captureReview', 'styleBoard', 'publishLook'):
         sub.add_parser(name)
     for name, choices in [('scene', ['garden', 'studio']), ('studioObject', ['seed', 'stone', 'branch', 'tree', 'calibration', 'sky']), ('view', ['front', 'quarter', 'back', 'left', 'right', 'above', 'detail', 'base', 'crown', 'sunward', 'away', 'zenith']), ('lighting', ['morning', 'noon', 'golden', 'sunset', 'afterglow', 'overcast', 'rain', 'indoor'])]:
         sub.add_parser(name).add_argument('value', choices=choices)
-    for name in ('pause', 'profiling', 'meshlets'):
+    for name in ('pause', 'profiling', 'meshlets', 'watchSource', 'automation'):
         sub.add_parser(name).add_argument('value', choices=['true', 'false'])
     sub.add_parser('capture').add_argument('--label', default='capture')
     sub.add_parser('step').add_argument('--frames', type=int, default=1)
@@ -51,11 +51,15 @@ def main():
                          ('query', ['x', 'y', 'z'])]:
         p = sub.add_parser(name)
         for field in fields: p.add_argument('--' + field, type=float)
+    for name in ['checkpoint','restoreCheckpoint','pinBaseline','selectBaseline']:
+        sub.add_parser(name).add_argument('name')
     sub.add_parser('subject').add_argument('value')
     for name in ['assetLoad', 'saveStudy', 'loadStudy']:
         sub.add_parser(name).add_argument('path')
     rig=sub.add_parser('rig');rig.add_argument('value',nargs='?')
     for key in ['x','y','z','intensity','size','warmth','fill']:rig.add_argument('--'+key,type=float)
+    look=sub.add_parser('look')
+    for key in ['detail','roughnessBias','surfaceSaturation','sunStrength','ambientStrength','skySaturation','saturation','contrast','warmth','bloom']:look.add_argument('--'+key,type=float)
     shape=sub.add_parser('shape')
     for key in ['height','width','trunk','spread','leaves']:shape.add_argument('--'+key,type=float)
     layout=sub.add_parser('layout');layout.add_argument('--arrangement',choices=['single','grove'])
@@ -68,7 +72,7 @@ def main():
     args = vars(parser.parse_args())
     action = args.pop('action')
     args = {k:v for k,v in args.items() if v is not None}
-    if action in ('pause', 'profiling', 'meshlets'): args['value'] = args['value'] == 'true'
+    if action in ('pause', 'profiling', 'meshlets', 'watchSource', 'automation'): args['value'] = args['value'] == 'true'
     if action == 'layout':
         for key in ['reference','ground','turntable']:
             if key in args: args[key]=args[key]=='true'

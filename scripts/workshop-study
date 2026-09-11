@@ -1,81 +1,113 @@
 #!/usr/bin/env python3
-"""Reproducible subject/lighting studies with a wipe viewer and motion scrubber."""
-import argparse
-import html
-import json
-import os
+"""Capture, archive and open a review, or compare against immutable rendered pixels."""
+import argparse,hashlib,json,os,runpy,shutil,subprocess,time,uuid
 from pathlib import Path
-import runpy
-import time
-
+from workshop_viewer import write_viewer
 p=argparse.ArgumentParser(description=__doc__)
-p.add_argument('--baseline',type=Path,help='Compare a saved study against the current workshop')
+mode=p.add_mutually_exclusive_group()
+mode.add_argument('--baseline',type=Path,help='Compare a saved source study with the current subject')
+mode.add_argument('--reference',type=Path,help='Compare stored pixels; with --current compare current edits, otherwise replay archived settings with current shaders')
+mode.add_argument('--style-board',action='store_true',help='Compare the current subject with project working references under matching lights')
+p.add_argument('--current',action='store_true',help='Capture the current view and lighting; a reference must contain one frame')
+p.add_argument('--no-open',action='store_true',help='Do not open the native review window')
 p.add_argument('--views',default='front,quarter,back,above')
 p.add_argument('--lights',default='noon,sunset,overcast')
 p.add_argument('--rigs',default='softbox,lamp,room')
-p.add_argument('--motion',type=int,default=1,help='Frames per view, 1...24')
-p.add_argument('--step',type=int,default=15,help='Fixed simulation ticks between motion frames')
-p.add_argument('--sweep',action='store_true',help='Orbit a full turn across the motion frames')
+p.add_argument('--motion',type=int,default=1)
+p.add_argument('--step',type=int,default=15)
+p.add_argument('--sweep',action='store_true')
 p.add_argument('--label',default='workshop')
 a=p.parse_args()
-if not 1<=a.motion<=24 or not 1<=a.step<=600:p.error('Motion must be 1...24 frames; step must be 1...600 ticks')
+if a.reference:a.reference=a.reference.resolve()
+if a.baseline:a.baseline=a.baseline.resolve()
+if not 1<=a.motion<=24 or not 1<=a.step<=600:p.error('Motion must be 1…24 frames; step must be 1…600 ticks')
+if a.current and (a.baseline or a.style_board):p.error('--current is a single-view capture; use it alone or with --reference')
 os.environ['SANCTUARY_CONTROL_ROOT']='.soundstage'
 client=runpy.run_path(str(Path(__file__).with_name('gardenctl')));c,root=client['command'],client['ROOT']
 label=''.join(x for x in a.label if x.isalnum() or x in '-_') or 'workshop'
-folder=root/'studies'/(label+'-'+time.strftime('%Y%m%d-%H%M%S'));folder.mkdir(parents=True)
-original=Path(c('saveStudy',path=str(folder/'current.json'))['path'])
-variants=[('Current',original)]
-if a.baseline:
-    baseline=json.loads(a.baseline.read_text());current=json.loads(original.read_text())
-    current['time']=baseline['time'];current['windState']=baseline.get('windState');current['paused']=True
-    synchronized=folder/'synchronized-current.json';synchronized.write_text(json.dumps(current,indent=2))
-    variants=[('Baseline',a.baseline.resolve()),('Current',synchronized)]
-views=[x.strip() for x in a.views.split(',') if x.strip()]
-lights=[('outdoor',x.strip()) for x in a.lights.split(',') if x.strip()]+[(x.strip(),None) for x in a.rigs.split(',') if x.strip()]
-if not views or not lights:p.error('Choose at least one view and lighting condition')
-records=[];anchors={}
+folder=root/'studies'/(label+'-'+time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:6]);folder.mkdir(parents=True)
+records=[];art=None;original=folder/'current.json'
+def resolve(record,relative,absolute,base):
+    path=base/record[relative] if record.get(relative) else Path(record[absolute])
+    if not path.exists():raise RuntimeError('Archived capture is missing: '+str(path))
+    return path
+reference=[]
+if a.reference:
+    source=json.loads(a.reference.read_text());all_records=source['records']
+    # A comparison report can itself become a baseline: take its newest rendering.
+    latest=all_records[-1]['variant']
+    if source.get('artDirection'):
+        art=json.loads((root.parent/'Authoring/ArtDirection.json').read_text());reference=[r for r in all_records if r.get('generation')!='Baseline']
+    else:reference=[r for r in all_records if r['variant']==latest]
+    if a.current and len(reference)!=1:p.error('Current-view comparison needs a single-frame reference. Omit --current to replay a complete report.')
+    for r in reference:
+        resolve(r,'image','path',a.reference.parent);resolve(r,'meta','metadata',a.reference.parent)
+        if not a.current and not r.get('study'):p.error('This older report has no exact replay state. Use --current with a single-frame reference, or capture a new baseline.')
+if c('status')['state']['workshop']['authoring']['automating']:raise RuntimeError('Another review is active')
+c('automation',value=True)
+def capture(variant,condition,view,frame=0):
+    n=len(records);stem=f'frame-{n:03d}'
+    c('saveStudy',path=str(folder/(stem+'-study.json')))
+    result=c('capture',label=label+'-'+stem)
+    image=folder/(stem+'.png');meta=folder/(stem+'.json')
+    shutil.copyfile(result['path'],image);shutil.copyfile(result['metadata'],meta)
+    records.append(dict(result,path=str(image),metadata=str(meta),image=image.name,meta=meta.name,study=stem+'-study.json',generation='Current',variant=variant,condition=condition,view=view,frame=frame,rendererFrame=result['frame']))
+    print(f'{variant}: {condition} / {view} / {frame+1}',flush=True)
+def archive(r):
+    n=len(records);stem=f'frame-{n:03d}';base=a.reference.parent
+    image=folder/(stem+'.png');meta=folder/(stem+'.json')
+    shutil.copyfile(resolve(r,'image','path',base),image);shutil.copyfile(resolve(r,'meta','metadata',base),meta)
+    record=dict(r,path=str(image),metadata=str(meta),image=image.name,meta=meta.name,generation='Baseline',variant=('Stored · '+r['variant']) if art else 'Stored baseline')
+    if r.get('study'):
+        target=folder/(stem+'-study.json');shutil.copyfile(base/r['study'],target);record['study']=target.name
+    records.append(record)
 try:
-    for variant,source in variants:
-        for rig,light in lights:
-            for view in views:
-                c('loadStudy',path=str(source));c('pause',value=True);c('layout',turntable=False)
-                if light:c('lighting',value=light)
-                c('rig',value=rig);state=c('view',value=view)['state'];orbit=state['camera']['orbit']
-                key=(rig,light,view);w=state['workshop']
-                if key not in anchors:anchors[key]=(w['cameraDistanceMetres'],w['heightMetres']*w['document']['layout']['focus'])
-                elif state['studioObject']!='sky':
-                    distance,target=anchors[key]
-                    c('layout',focus=min(1,max(0,target/w['heightMetres'])))
-                    c('camera',distance=distance/(w['extentMetres']/4))
-                for frame in range(a.motion):
-                    if frame:c('step',frames=a.step)
-                    if a.sweep:c('camera',orbit=orbit+frame*6.28318530718/a.motion)
-                    capture=c('capture',label=f'{label}-{variant}-{light or rig}-{view}-{frame}')
-                    records.append(dict(capture,variant=variant,condition=light or rig,view=view,frame=frame,rendererFrame=capture["frame"]))
-                    print(f'{variant}: {light or rig} / {view} / {frame+1}',flush=True)
+    c('saveStudy',path=str(original));c('pause',value=True)
+    if a.current:
+        if reference:archive(reference[0])
+        capture('Current',reference[0]['condition'] if reference else 'Current lighting',reference[0]['view'] if reference else 'Current view')
+    elif a.reference:
+        current_look=json.loads(original.read_text()).get('sceneLook')
+        for r in reference:
+            archive(r);c('loadStudy',path=str(a.reference.parent/r['study']));c('pause',value=True)
+            if current_look:c('look',**current_look)
+            capture(('Current · '+r['variant']) if art else 'Current renderer',r['condition'],r['view'],r['frame'])
+    else:
+        variants=[('Current',original)]
+        if a.baseline:
+            baseline=json.loads(a.baseline.read_text());current=json.loads(original.read_text())
+            current['time']=baseline['time'];current['windState']=baseline.get('windState');current['paused']=True
+            synchronized=folder/'synchronized-current.json';synchronized.write_text(json.dumps(current,indent=2))
+            variants=[('Baseline source',a.baseline.resolve()),('Current',synchronized)]
+        if a.style_board:
+            art=json.loads((root.parent/'Authoring/ArtDirection.json').read_text())
+            variants=[('Candidate',original)]+[(entry['label'],entry['subject']) for entry in art['references']]+[('Lighting and sky','__environment__')]
+        views=['quarter'] if a.style_board else [x.strip() for x in a.views.split(',') if x.strip()]
+        lights=[('outdoor','noon'),('outdoor','sunset'),('softbox',None)] if a.style_board else [('outdoor',x.strip()) for x in a.lights.split(',') if x.strip()]+[(x.strip(),None) for x in a.rigs.split(',') if x.strip()]
+        if not views or not lights:raise RuntimeError('Choose at least one view and lighting condition')
+        anchors={}
+        for variant,source in variants:
+            for rig,light in lights:
+                for view in views:
+                    c('loadStudy',path=str(source if isinstance(source,Path) else original));c('pause',value=True)
+                    if not isinstance(source,Path):c('subject',value=('sky' if rig=='outdoor' else 'calibration') if source=='__environment__' else source)
+                    c('layout',turntable=False)
+                    if light:c('lighting',value=light)
+                    c('rig',value=rig);state=c('view',value='sunward' if source=='__environment__' and rig=='outdoor' else view)['state'];orbit=state['camera']['orbit'];w=state['workshop'];key=(rig,light,view)
+                    if key not in anchors:anchors[key]=(w['cameraDistanceMetres'],w['heightMetres']*w['document']['layout']['focus'])
+                    elif not a.style_board and state['studioObject']!='sky':
+                        distance,target=anchors[key];c('layout',focus=min(1,max(0,target/w['heightMetres'])));c('camera',metres=distance)
+                    for frame in range(a.motion):
+                        if frame:c('step',frames=a.step)
+                        if a.sweep:c('camera',orbit=orbit+frame*6.28318530718/a.motion)
+                        capture(variant,light or rig,view,frame)
 finally:
-    c('loadStudy',path=str(original))
-report=dict(records=records,original=str(original),tickSeconds=a.step/60,baseline=str(a.baseline) if a.baseline else None)
+    try:
+        if original.exists():c('loadStudy',path=str(original))
+    finally:c('automation',value=False)
+report=dict(version=2,records=records,original=str(original),tickSeconds=a.step/60,baseline=str(a.baseline) if a.baseline else None,reference=str(a.reference) if a.reference else None,artDirection=art)
 (folder/'report.json').write_text(json.dumps(report,indent=2))
-items=[]
-for record in records:
-    metadata=json.loads(Path(record['metadata']).read_text())
-    items.append(dict(variant=record['variant'],condition=record['condition'],view=record['view'],frame=record['frame'],
-                      src=os.path.relpath(record['path'],folder),time=metadata['time'],shader=metadata['shaderDigest'],
-                      subject=metadata['studioObject'],gpu=metadata['gpuMilliseconds'].get('median'),
-                      document=metadata['workshop']['document']))
-viewer='''<!doctype html><html><meta charset="utf-8"><title>Workshop comparison</title>
-<style>*{box-sizing:border-box}[hidden]{display:none!important}body{margin:24px;background:#151b23;color:#e4e8eb;font:14px system-ui}h1{font-size:24px}header{display:flex;gap:18px;align-items:center;flex-wrap:wrap}select,button{padding:7px;background:#293443;color:inherit;border:1px solid #526174;border-radius:5px}label{display:flex;gap:8px;align-items:center}.viewport{overflow:auto;max-height:76vh;border:1px solid #526174;margin-top:18px}.frame{position:relative;width:100%;aspect-ratio:16/9}.frame img{position:absolute;width:100%;height:100%}.tag{position:absolute;top:12px;padding:6px 10px;background:#111b;pointer-events:none}#rightTag{right:12px}pre{white-space:pre-wrap;font:12px ui-monospace}summary{cursor:pointer;margin-top:18px}#status{margin:12px 0;color:#b6c3d0}</style>
-<h1>Workshop · compare and inspect</h1><header>
-<label>Study <select id="case"></select></label><label>Frame <input id="frame" type="range" min="0" max="0" value="0"></label>
-<button id="play">Play sequence</button><label>Compare <input id="wipe" type="range" min="0" max="100" value="50"></label>
-<label>Zoom <select id="zoom"><option value="1">Fit</option><option value="1.5">150%</option><option value="2">200%</option><option value="3">300%</option></select></label></header>
-<div id="status"></div><div class="viewport"><div class="frame" id="canvas"><img id="right"><img id="left"><span class="tag" id="leftTag"></span><span class="tag" id="rightTag"></span></div></div>
-<details><summary>Exact study settings and source fingerprints</summary><pre id="metadata"></pre></details>
-<script>const items=__ITEMS__;const byId=id=>document.getElementById(id);const keys=[...new Set(items.map(x=>x.condition+' / '+x.view))];let timer;
-keys.forEach(k=>byId('case').add(new Option(k,k)));
-function render(){const key=byId('case').value;const subset=items.filter(x=>x.condition+' / '+x.view===key);byId('frame').max=Math.max(...subset.map(x=>x.frame));const n=+byId('frame').value;const match=subset.filter(x=>x.frame===n);const a=match[0],b=match[match.length-1];if(!a)return;const compare=match.length>1,motion=+byId('frame').max>0;byId('wipe').parentElement.hidden=!compare;byId('frame').parentElement.hidden=!motion;byId('play').hidden=!motion;byId('leftTag').hidden=!compare;byId('left').src=a.src;byId('right').src=b.src;byId('leftTag').textContent=a.variant;byId('rightTag').textContent=b.variant;byId('left').style.clipPath='inset(0 '+(100-byId('wipe').value)+'% 0 0)';byId('canvas').style.width=(+byId('zoom').value*100)+'%';byId('status').textContent=a.subject+' · '+key+' · frame '+(n+1)+' · time '+a.time.toFixed(3)+(compare?' / '+b.time.toFixed(3):'')+' s';byId('metadata').textContent=JSON.stringify({left:a,right:b},null,2);}
-['case','frame','wipe','zoom'].forEach(id=>byId(id).addEventListener('input',()=>{if(id==='case')byId('frame').value=0;render()}));
-byId('play').onclick=()=>{if(timer){clearInterval(timer);timer=null;byId('play').textContent='Play sequence'}else{timer=setInterval(()=>{byId('frame').value=(+byId('frame').value+1)%(+byId('frame').max+1);render()},250);byId('play').textContent='Pause sequence'}};render();</script></html>'''
-(folder/'index.html').write_text(viewer.replace('__ITEMS__',json.dumps(items).replace('<','\\u003c')))
+write_viewer(folder,records,art)
+if not a.no_open:
+    subprocess.run(['/usr/bin/open','-a',str(root.parent/'.build/Soundstage.app'),str(folder/'index.html')],check=True)
 print(json.dumps(dict(viewer=str(folder/'index.html'),report=str(folder/'report.json'),captures=len(records))))

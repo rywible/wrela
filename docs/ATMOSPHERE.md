@@ -174,3 +174,15 @@ use a sub-texel error budget in the shadow projection and do not change the eye'
 LOD hysteresis. The bloom blur pairs its Gaussian weights into 13 filtered
 lookups per axis. Four-sample HDR color uses tile memory on this Apple GPU.
 Mesh shaders remain the default: indexed drawing was slower in the tested garden.
+
+
+## Project art-direction layer
+
+`Authoring/ArtDirection.json` supplies a shared `SceneLook` to the game and workshop.
+It leaves physical atmospheric integration intact. Outdoor light-energy scaling and
+sky saturation are applied consistently to visible sky, sky irradiance/reflections,
+solar disk and the authoring plane's horizon term. Surface detail/roughness are
+controlled before lighting; the final HDR/display grade covers the whole image.
+These are deliberate art controls, not new physical atmospheric parameters.
+The Look inspector previews them, and Publish project look updates the shared file.
+See `SOUNDSTAGE.md` for publication, saved-study and frozen-baseline semantics.

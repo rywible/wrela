@@ -39,7 +39,8 @@ final class AgentBridge {
         catch {onMessage?("Agent report failed: \(error.localizedDescription)")}
     }
     func respond(_ id:String,_ value:[String:Any]) {
-        var result=value;result["id"]=id;result["frame"]=renderer.frame
+        if value["ok"] as? Bool == true {renderer.workshopSession.commit()} else {renderer.workshopSession.pending=nil}
+        var result=value;if result["state"] != nil {result["state"]=renderer.snapshot()};result["id"]=id;result["frame"]=renderer.frame
         write(result,to:outbox.appendingPathComponent(id+".json"));activeIDs.remove(id)
     }
     func poll() {
@@ -64,7 +65,37 @@ final class AgentBridge {
     }
     func execute(_ c:[String:Any],id:String) throws {
         guard let action=c["action"] as? String else {throw RuntimeError.message("Missing action")}
+        let edits:Set<String>=["studioObject","subject","rig","shape","layout","assetLoad","assetSave","assetReload","loadStudy","lighting","view","sky","reset","camera","pause","step","parameters","look"]
+        if edits.contains(action) {renderer.workshopSession.commit();renderer.workshopSession.begin(action)}
         switch action {
+        case "undo":try renderer.workshopSession.undo()
+        case "redo":try renderer.workshopSession.redo()
+        case "watchSource":
+            guard let value=c["value"] as? Bool else {throw RuntimeError.message("watchSource requires a boolean")}
+            renderer.workshopSession.watching=value;renderer.workshopSession.resetWatch()
+        case "automation":
+            guard let value=c["value"] as? Bool else {throw RuntimeError.message("automation requires a boolean")}
+            renderer.workshopSession.commit();renderer.workshopSession.automating=value
+            if !value {renderer.workshopSession.resetWatch()}
+        case "checkpoint":
+            guard let name=c["name"] as? String else {throw RuntimeError.message("Provide a checkpoint name")}
+            respond(id,["ok":true,"path":try renderer.workshopSession.checkpoint(name).path]);return
+        case "restoreCheckpoint":
+            guard let name=c["name"] as? String else {throw RuntimeError.message("Provide a checkpoint name")}
+            try renderer.workshopSession.restoreCheckpoint(name)
+        case "pinBaseline":
+            guard let name=c["name"] as? String else {throw RuntimeError.message("Provide a baseline name")}
+            respond(id,["ok":true,"path":try renderer.workshopSession.pinBaseline(name).path]);return
+        case "selectBaseline":
+            guard let name=c["name"] as? String else {throw RuntimeError.message("Provide a baseline name")}
+            try renderer.workshopSession.selectBaseline(name)
+        case "captureReview":try renderer.workshopSession.captureReview()
+        case "styleBoard":try renderer.workshopSession.captureReview(styleBoard:true)
+        case "publishLook":try renderer.sceneLook.publish()
+        case "look":
+            var values:[String:Float]=[:]
+            for key in c.keys where key != "action" && key != "id" {values[key]=try number(c,key,0)}
+            try renderer.sceneLook.set(values)
         case "status": break
         case "scene":
             guard let s=c["value"] as? String,["garden","studio"].contains(s) else {throw RuntimeError.message("Scene must be garden or studio")}
@@ -96,7 +127,7 @@ final class AgentBridge {
         case "assetLoad":
             guard let path=c["path"] as? String else {throw RuntimeError.message("Provide an asset source path")}
             let url=path.hasPrefix("/") ? URL(fileURLWithPath:path):AssetSource.workspace.appendingPathComponent(path)
-            try renderer.applySource(AssetSource.read(url));renderer.resetCamera()
+            try renderer.applySource(AssetSource.read(url));renderer.importedSourceURL=url;renderer.workshopSession.resetWatch();renderer.resetCamera()
         case "assetSave":
             respond(id,["ok":true,"path":try renderer.saveAsset().path,"state":renderer.snapshot()]);return
         case "assetReload":try renderer.applySource(AssetSource.read(renderer.studioSourceURL))
@@ -144,6 +175,7 @@ final class AgentBridge {
             let orbit=try number(c,"orbit",renderer.orbit),elevation=try number(c,"elevation",renderer.orbitElevation),distance=try number(c,"metres",try number(c,"distance",renderer.orbitDistance)*renderer.studioUnit)/renderer.studioUnit
             renderer.yaw=yaw;renderer.pitch=clamp(pitch,-1.35,1.35)
             renderer.camera=V3(x,renderer.world.terrain.height(x,z)+1.72,z)
+            if c["orbit"] != nil || c["elevation"] != nil {renderer.studioViewName="Custom"}
             renderer.orbit=orbit;renderer.orbitElevation=clamp(elevation,-0.1,1.55);renderer.orbitDistance=renderer.boundedStudioDistance(distance)
         case "move":
             let x=try number(c,"x",0),z=try number(c,"z",0)

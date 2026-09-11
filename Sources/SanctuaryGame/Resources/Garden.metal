@@ -4,7 +4,9 @@ constant int materialKind [[function_constant(0)]];
 constant float PI=3.14159265359;
 struct Vertex {float4 position;float4 normal;float4 color;};
 struct Instance {float4x4 model;float4 tint;};
-struct Uniforms {float4x4 viewProjection;float4x4 lightVP;float4x4 inverseVP;float4 cameraTime;float4 sunExposure;float4 options;float4 sky;float4 environment;float4 weatherBounds;float4 skyTimes;float4 rigPosition;float4 rigColor;float4 rigParams;};
+struct Uniforms {float4x4 viewProjection;float4x4 lightVP;float4x4 inverseVP;float4 cameraTime;float4 sunExposure;float4 options;float4 sky;float4 environment;float4 weatherBounds;float4 skyTimes;float4 rigPosition;float4 rigColor;float4 rigParams;float4 lookSurface;float4 lookLight;float4 lookGrade;};
+float3 artSaturation(float3 c,float amount){float y=dot(c,float3(.2126,.7152,.0722));return max(mix(float3(y),c,amount),0.);}
+float3 artSky(float3 c,constant Uniforms &u){return artSaturation(c,u.lookLight.z)*u.lookLight.x;}
 // ATMOSPHERE
 struct Varying {float4 position [[position]];float3 world;float3 local;float3 normal;float3 color;float4 shadow;float kind;float ao;};
 float hash(float2 p){return fract(sin(dot(p,float2(127.1,311.7)))*43758.5453);}
@@ -65,13 +67,13 @@ kernel void sceneLightState(texture2d<float> trans [[texture(0)]],texture2d<floa
     constexpr sampler s(filter::linear,address::clamp_to_edge);
     float3 sun=u.sunExposure.xyz;
     float cloud=mix(previousSky.sample(s,reprojectSkyUV(previousSky,sun,(u.cameraTime.w-u.skyTimes.x)*u.options.y)).a,sky.sample(s,reprojectSkyUV(sky,sun,(u.cameraTime.w-u.skyTimes.y)*u.options.y)).a,u.environment.z);
-    float3 direct=3.5*sampleTrans(trans,float3(0,Rg+.002,0),sun)*cloud;
+    float3 direct=u.lookLight.x*3.5*sampleTrans(trans,float3(0,Rg+.002,0),sun)*cloud;
     if(u.environment.x==4)direct=u.rigColor.rgb*u.rigColor.w;
     float meter=dot(clearIrradiance.sample(s,skyUV(float3(0,1,0))).rgb,float3(.2126,.7152,.0722));
     output[0]=float4(direct,u.environment.x==4 ? 1.:clamp(.055/max(meter,.001),1.,24.));
     // Solar atmospheric attenuation is global, including when the disk is hidden.
     // Integrate once, keeping the display shader's tiny solar branch inexpensive.
-    output[1]=float4(transmittance(float3(0,Rg+.002,0),sun,u.sky.z)*(3.5/(PI*.00465*.00465)),0);
+    output[1]=float4(transmittance(float3(0,Rg+.002,0),sun,u.sky.z)*(u.lookLight.x*3.5/(PI*.00465*.00465)),0);
 }
 float4 shadeSurface(Varying in,bool front,constant Uniforms &u,constant float4 &lighting,constant float4 &material,depth2d<float> shadowMap,texture2d<float> sky,texture2d<float> irradiance,texture2d<float> trans,texture2d<float> previousSky,texture2d<float> previousIrradiance) {
     constexpr sampler shadowSampler(coord::normalized,address::clamp_to_edge,filter::linear,compare_func::less_equal);
@@ -116,7 +118,10 @@ float4 shadeSurface(Varying in,bool front,constant Uniforms &u,constant float4 &
     }
     if(material.x>=0)rough=material.x;
     float metal=material.y;
-    n=bumpNormal(in.world,n,bump,strength);
+    rough=clamp(rough+u.lookSurface.y,.045,1.);
+    if(kind!=1)color=mix(in.color,color,u.lookSurface.x);
+    color=artSaturation(color,u.lookSurface.z);
+    n=bumpNormal(in.world,n,bump,strength*u.lookSurface.x);
     float wet=u.environment.y;rough=mix(rough,max(.22,rough*.5),wet);color*=mix(1.,.78,wet);
     float3 base=pow(max(color,0.),float3(2.2)),v=normalize(u.cameraTime.xyz-in.world),l=u.sunExposure.xyz;
     float3 sunlight=lighting.xyz;
@@ -146,13 +151,15 @@ float4 shadeSurface(Varying in,bool front,constant Uniforms &u,constant float4 &
         }
     }
     float3 ambient=mix(previousIrradiance.sample(env,skyUV(n)).rgb,irradiance.sample(env,skyUV(n)).rgb,u.environment.z);
-    if(u.environment.x==4)ambient=float3(u.rigParams.y);
+    ambient=u.environment.x==4 ? float3(u.rigParams.y):artSky(ambient,u);
+    ambient*=u.lookLight.y;
     float ao=clamp(in.ao,0.,1.);float3 lit=base*(1-metal)*ambient*ao+brdf(n,v,l,base,rough,metal)*sunlight*visibility;
 
     if(kind==2 || kind==3 || kind==8)lit+=base*sunlight*max(dot(-n,l),0.)*.15*visibility;
     float3 F0=mix(float3(.04),base,metal),F=F0+(1-F0)*pow(1-max(dot(n,v),0.),5.);
     float3 reflected=normalize(mix(reflect(-v,n),n,rough*rough));
     float3 reflection=u.environment.x==4 ? float3(u.rigParams.y):mix(skyLight(previousSky,reflected),skyLight(sky,reflected),u.environment.z);
+    if(u.environment.x!=4)reflection=artSky(reflection,u);
     lit+=reflection*F*(1-rough)*ao;
     if(u.environment.x!=4 && (u.options.z<.5 || material.w>1.5)) {
         float distance=length(in.world-u.cameraTime.xyz);
@@ -167,7 +174,7 @@ float4 shadeSurface(Varying in,bool front,constant Uniforms &u,constant float4 &
             float2 b=reprojectSkyUV(sky,direction,(u.cameraTime.w-u.skyTimes.y)*u.options.y);
             air=mix(previousSky.sample(env,a).rgb,sky.sample(env,b).rgb,u.environment.z);
         }
-        lit=lit*T+air*(1-T);
+        lit=lit*T+artSky(air,u)*(1-T);
     }
     return float4(lit*u.sunExposure.w,1);
 }
@@ -200,7 +207,7 @@ fragment float4 skyFragment(SkyOut in [[stage_in]],constant Uniforms &u [[buffer
         float3 ground=float3(.14,.16,.12)*(skyLight(sky,float3(0,1,0))+.02*max(u.sunExposure.y,0.));
         float3 horizon=skyLight(clearSky,normalize(float3(ray.x,.003,ray.z)));
         float mist=exp(ray.y*70.);
-        return float4(mix(ground,horizon,mist)*u.sunExposure.w,1);
+        return float4(artSky(mix(ground,horizon,mist),u)*u.sunExposure.w,1);
     }
     // Ground-intersecting atmosphere paths belong to the terrain, not a black sky seam.
     float3 lookup=normalize(float3(ray.x,max(ray.y,.003),ray.z));
@@ -212,6 +219,7 @@ fragment float4 skyFragment(SkyOut in [[stage_in]],constant Uniforms &u [[buffer
     float cloudT=mix(previousSky.sample(smp,previousUV).a,sky.sample(smp,currentUV).a,u.environment.z);
     // Irradiance / solar solid angle. Keep the disk small but truly emissive;
     // glare is integrated in the HDR post pass instead of painting a larger disk.
+    L=artSky(L,u);
     L+=disk*lighting[1].rgb*cloudT;
     return float4(min(L*u.sunExposure.w,60000.),1);
 }
@@ -248,8 +256,11 @@ kernel void bloomBlur(texture2d<half> source [[texture(0)]],texture2d<half,acces
     }
     target.write(half4(sum,1),id);
 }
-fragment float4 displayComposite(SkyOut in [[stage_in]],texture2d<float> hdr [[texture(0)]],texture2d<float> bloom [[texture(1)]],constant float4 &lighting [[buffer(0)]]) {
+fragment float4 displayComposite(SkyOut in [[stage_in]],texture2d<float> hdr [[texture(0)]],texture2d<float> bloom [[texture(1)]],constant float4 &lighting [[buffer(0)]],constant float4 &look [[buffer(1)]]) {
     constexpr sampler s(filter::linear,address::clamp_to_edge);
     float2 uv=in.position.xy/float2(hdr.get_width(),hdr.get_height());
-    return float4(display((hdr.sample(s,uv).rgb+bloom.sample(s,uv).rgb*.25)*lighting.w),1);
+    float3 radiance=(hdr.sample(s,uv).rgb+bloom.sample(s,uv).rgb*look.w)*lighting.w;
+    radiance*=exp(look.z*float3(.8,0,-.8));
+    radiance=.18*pow(max(radiance/.18,0.),float3(look.y));
+    return float4(artSaturation(display(radiance),look.x),1);
 }
