@@ -147,12 +147,15 @@ float cachedCloud(texture3d<float> density,texture3d<float> noise,float3 p,const
     }
     return max(0.,potential)*finiteCoverage;
 }
-float cloudShadow(texture3d<float> lighting,float3 p,constant Uniforms &u) {
-    if(p.y<1.5 || p.y>4.8)return 1;
+float cloudOpticalDepth(texture3d<float> lighting,float3 p,constant Uniforms &u) {
+    if(p.y<1.5 || p.y>4.8)return 0;
     if(max(abs(p.x),abs(p.z))>=cloudExtent)
-        return exp(-max(0.,2.6-p.y)*12.*u.sky.y*smoothstep(.73,.94,u.sky.x)/max(.05,u.sunExposure.y));
+        return max(0.,2.6-p.y)*12.*u.sky.y*smoothstep(.73,.94,u.sky.x)/max(.05,u.sunExposure.y);
     constexpr sampler s(filter::linear,address::clamp_to_edge);
-    return exp(-lighting.sample(s,cloudVolumeUV(p)).r);
+    return lighting.sample(s,cloudVolumeUV(p)).r;
+}
+float cloudShadow(texture3d<float> lighting,float3 p,constant Uniforms &u) {
+    return exp(-cloudOpticalDepth(lighting,p,u));
 }
 kernel void atmosphereCloudDensity(texture3d<float> noise [[texture(0)]],texture3d<float,access::write> density [[texture(1)]],constant Uniforms &u [[buffer(0)]],uint3 id [[thread_position_in_grid]]) {
     id.y+=uint(u.environment.w);
@@ -338,12 +341,14 @@ kernel void atmosphereSky(texture2d<float> trans [[texture(0)]],texture2d<float>
                 if(density>.001) {
                     float localOptical=0;
                     localOptical=(density+cachedCloud(cloudDensity,noise,local+sun*.09,u,weather))*(.06*8.);
-                    float shadow=cloudShadow(cloudLighting,local+sun*.12,u)*exp(-localOptical),stepT=exp(-density*dt*8.);
+                    float tau=cloudOpticalDepth(cloudLighting,local+sun*.12,u)+localOptical;
+                    float quarterT=exp(-.25*tau),softT=exp(-.03*tau),halfT=quarterT*quarterT;
+                    float shadow=halfT*halfT,stepT=exp(-density*dt*8.);
                     float radius=Rg+local.y,mu=dot(q,sun)/radius;
                     float3 sunColor=mu < -sqrt(max(0.,(radius-Rg)*(radius+Rg)))/radius ? float3(0):trans.sample(smp,transUV(radius,mu)).rgb*3.5;
                     // Approximate cloud multiple scattering fills the body while
                     // directional single scattering supplies rims and silver lining.
-                    float3 source=ambient*(.65+.35*pow(shadow,.03))*(.75+.25*exp(-density))+sunColor*(phase*shadow+.075*pow(shadow,.25)+.02*pow(shadow,.06));
+                    float3 source=ambient*(.65+.35*softT)*(.75+.25*exp(-density))+sunColor*(phase*shadow+.075*quarterT+.02*(softT*softT));
                     lastSource=source;
                     cloudL+=cloudT*source*(1-stepT);cloudT*=stepT;
                 }

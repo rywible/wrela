@@ -186,3 +186,15 @@ controlled before lighting; the final HDR/display grade covers the whole image.
 These are deliberate art controls, not new physical atmospheric parameters.
 The Look inspector previews them, and Publish project look updates the shared file.
 See `SOUNDSTAGE.md` for publication, saved-study and frozen-baseline semantics.
+
+
+## September 11 performance follow-up
+
+Cloud attenuation now carries optical depth through its scattering-weight family,
+using two exponentials instead of transmission followed by fractional powers.
+The density representation, traversal bounds, panorama resolution, snapshot
+publication and spherical pullback remain unchanged. Weather uses a fused analytic
+saturation derivative, persistent transport buffers and a bounded replay checkpoint
+cache keyed by seed, forcing and tick. The first uncached replay is still synchronous.
+See `PERFORMANCE_IMPLEMENTATION.md` for visual comparisons, measured CPU gains,
+mixed GPU results and the architectural work still outstanding.

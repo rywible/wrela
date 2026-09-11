@@ -1,6 +1,6 @@
 # Sanctuary: first playable build plan
 
-Status: the field garden and inspection loop are implemented; later milestones remain planned. See README.md for the runnable scope and current limits. Working game label only; the repository remains `wrela`.
+Status: the field garden, inspection loop, bounded architecture cleanup and first persistent rescue/return/habitat prototype are implemented. Player validation of enjoyment/pacing, terrain editing and later milestones remain planned. See ARCHITECTURE.md and EXPEDITION.md. See README.md for the runnable scope and current limits. Working game label only; the repository remains `wrela`.
 
 ## Product contract
 

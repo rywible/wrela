@@ -1,6 +1,6 @@
 # Sanctuary
 
-A native Swift + Metal field garden: the first playable foundation for a procedural wildlife sanctuary game. Walk through a generated landscape, inspect a composed field object, and change its scale and lighting while the app runs.
+A native Swift + Metal field garden: the first playable foundation for a procedural wildlife sanctuary game. Explore the valley, follow frost traces, rescue its first creature, and bring it home to awaken a frost garden. The separate soundstage authors fields under varied lighting.
 
 All visual content is generated from code. There are no imported models or texture assets. This is an early engine prototype, not the finished sanctuary game.
 
@@ -23,6 +23,7 @@ For appearance work, use `./scripts/soundstage` and `./scripts/stagectl`. See [t
 | Action | Control |
 | --- | --- |
 | Walk | W A S D |
+| Examine / rescue / release / visit | E or contextual action |
 | Run | Hold Shift while walking |
 | Look | Drag in the scene, or use arrow keys |
 | Garden / object studio | Tab or the top-right button |
@@ -35,6 +36,8 @@ For appearance work, use `./scripts/soundstage` and `./scripts/stagectl`. See [t
 | Hide / show field notes | H |
 
 Arrival, Meadow, and Gate buttons provide repeatable garden viewpoints. Captures omit the native interface and save a PNG plus JSON metadata in `.sanctuary/captures/`.
+
+Progress saves automatically. See [the expedition guide](docs/EXPEDITION.md) for the playable loop, save slots and its current limits.
 
 ## Agent tools
 
@@ -82,9 +85,10 @@ The benchmark measures the animated garden at a fixed arrival camera for the req
 
 ## Implementation
 
-- **FieldCore:** typed shape graph, validated parameters, bounds, CPU field evaluation, analytical terrain definition, deterministic random generation.
+- **FieldCore:** typed shape graph, validated parameters, bounds, CPU field evaluation, height-field interface, deterministic random generation.
 - **FieldCompiler:** sparse dual contouring with constrained QEF fitting, a tetrahedral ambiguity fallback, attribute-aware mesh simplification, meshlet generation, terrain extraction, and generated Metal field functions.
-- **SanctuaryGame:** composed world, Metal renderer, camera/collision, native app controls, object studio, and agent bridge.
+- **SanctuaryContent:** game terrain, expedition rules and versioned persistence, independent of rendering.
+- **SanctuaryGame:** separate Runtime, Game and Authoring folders. Scene preparation supplies ordered frame data to GPU rendering. See [architecture and remaining boundaries](docs/ARCHITECTURE.md).
 
 The renderer uses generated meshes, instance culling, three distance-based detail levels for trees and stones, a directional shadow map, procedural sky/materials, and wind-deformed meadow geometry. Shape composition includes spheres, boxes, capsules, tori, translation, uniform and nonuniform scale, union, subtraction, and smooth union.
 
@@ -92,6 +96,6 @@ Terrain is a general implicit field; it is never assumed to be a safe marching d
 
 ## Current limits
 
-This build delivers the field garden and inspection loop. Creature rescue, persistent terrain edits, ecology, water simulation, world streaming, and legendary encounters are subsequent milestones in [the build plan](docs/BUILD_PLAN.md).
+This build delivers the field garden, inspection tools and one persistent rescue/return/habitat loop. The creature animation and frost response are simple prototypes. Persistent terrain edits, deeper ecology, water simulation, world streaming, and legendary encounters are subsequent milestones in [the build plan](docs/BUILD_PLAN.md).
 
 Rendering currently uses rasterized field-derived meshes. Generated Metal field evaluation is implemented and checked numerically; the field-only ray renderer has been removed. Mesh detail selection uses projected error with hysteresis. Mesh shaders draw meshlets and 4× MSAA stabilizes coverage. Fine cut edges and distant silhouettes still need visual refinement. The player uses grounded movement and approximate static-object collision; it has no jumping or rigid-body physics yet.

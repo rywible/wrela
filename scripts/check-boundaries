@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Fail when game/workshop ownership leaks back into field math or GPU rendering."""
+from pathlib import Path
+import re
+root=Path(__file__).resolve().parent.parent
+rules=[('Sources/FieldCore',r'\b(?:SanctuaryContent|GardenWorld|AssetSource|Expedition|Terrain)\s*(?:\(|\{|:)'),
+       ('Sources/FieldCompiler',r'\b(?:SanctuaryContent|GardenWorld|AssetSource|Expedition)\b'),
+       ('Sources/SanctuaryGame/Runtime',r'\b(?:SanctuarySession|GardenWorld|AssetSource|WorkshopSession|Expedition|SanctuaryContent)\b')]
+failures=[]
+for folder,pattern in rules:
+    for path in (root/folder).rglob('*.swift'):
+        for n,line in enumerate(path.read_text().splitlines(),1):
+            if re.search(pattern,line):failures.append(f'{path.relative_to(root)}:{n}: {line.strip()}')
+if failures: raise SystemExit('\n'.join(failures))
+print('Field, compiler and GPU ownership boundaries passed.')

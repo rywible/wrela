@@ -33,7 +33,12 @@ public enum Mesher {
         if report.manifold {var mesh=candidate;mesh.report=report;return MeshProcessing.optimize(MeshProcessing.finish(mesh,shape:shape))}
         // Ambiguous cells can contain multiple surface components. Preserve the
         // reference extractor until multi-component dual cells are implemented.
-        return MeshProcessing.optimize(MeshProcessing.finish(try reference(shape,resolution:n,color:color),shape:shape))
+        let fallbackStart=Date()
+        var result=MeshProcessing.optimize(MeshProcessing.finish(try reference(shape,resolution:n,color:color),shape:shape))
+        var fallbackReport=report;fallbackReport.usedReferenceFallback=true
+        fallbackReport.fallbackMilliseconds=Date().timeIntervalSince(fallbackStart)*1000
+        result.report=fallbackReport
+        return result
     }
     /// Marching tetrahedra: a deliberately small reference compiler. The same
     /// tetrahedral split is used in every cell, keeping shared-face edges coherent.
@@ -90,12 +95,13 @@ public enum Mesher {
         return mesh
     }
 
-    public static func terrain(_ field: Terrain, extent: Float = 155, resolution: Int = 260) -> Mesh {
+    public static func terrain(_ field: some HeightField, extent: Float = 155, resolution: Int = 260) -> Mesh {
         var mesh=Mesh()
         for z in 0...resolution { for x in 0...resolution {
             let px = (Float(x)/Float(resolution)*2-1)*extent
             let pz = (Float(z)/Float(resolution)*2-1)*extent
-            mesh.vertices.append(Vertex(V3(px,field.height(px,pz),pz), field.normal(px,pz), V3(0.37,0.54,0.24)))
+            let sample=field.sample(px,pz)
+            mesh.vertices.append(Vertex(V3(px,sample.height,pz),sample.normal,V3(0.37,0.54,0.24)))
         }}
         for z in 0..<resolution { for x in 0..<resolution {
             let a=UInt32(z*(resolution+1)+x), b=a+1, c=a+UInt32(resolution+1), d=c+1

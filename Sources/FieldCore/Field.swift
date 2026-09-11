@@ -94,13 +94,39 @@ public indirect enum Shape: Sendable {
         }
     }
 
-    public func normal(at p: V3) -> V3 {
-        let e: Float = 0.002
-        let n = V3(value(at:p+V3(e,0,0))-value(at:p-V3(e,0,0)),
-                   value(at:p+V3(0,e,0))-value(at:p-V3(0,e,0)),
-                   value(at:p+V3(0,0,e))-value(at:p-V3(0,0,e)))
-        return length_squared(n) > 1e-10 ? normalize(n) : V3(0,1,0)
+    /// Fused field value and analytic derivative. At a hard seam, select the
+    /// active branch deterministically; do not blend across a geometric crease.
+    public func sample(at p: V3) -> FieldSample {
+        func radial(_ v:V3)->V3 {let r=length(v);return r>0 ? v/r:.zero}
+        switch self {
+        case let .sphere(r):return FieldSample(length(p)-r,radial(p))
+        case let .box(b):
+            let q=abs(p)-b,outside=simd_max(q,.zero),sign=V3(p.x<0 ? -1:1,p.y<0 ? -1:1,p.z<0 ? -1:1)
+            if length_squared(outside)>0 {return FieldSample(length(outside),radial(outside)*sign)}
+            let axis=q.x>=q.y && q.x>=q.z ? 0:(q.y>=q.z ? 1:2)
+            var g=V3.zero;g[axis]=sign[axis];return FieldSample(q[axis],g)
+        case let .capsule(a,b,r):
+            let ba=b-a,pa=p-a,h=length_squared(ba)>0 ? clamp(dot(pa,ba)/dot(ba,ba),0,1):0
+            let q=pa-ba*h;return FieldSample(length(q)-r,radial(q))
+        case let .torus(r,t):
+            let xz=length(SIMD2(p.x,p.z)),q=SIMD2(xz-r,p.y),l=length(q)
+            let g=l>0 ? V3(xz>0 ? q.x*p.x/xz:0,p.y,xz>0 ? q.x*p.z/xz:0)/l:.zero
+            return FieldSample(l-t,g)
+        case let .translated(a,t):return a.sample(at:p-t)
+        case let .scaled(a,s):let q=a.sample(at:p/s);return FieldSample(q.value*s,q.gradient)
+        case let .stretched(a,s):
+            let q=a.sample(at:p/s),k=Swift.min(s.x,Swift.min(s.y,s.z))
+            return FieldSample(q.value*k,q.gradient*(k/s))
+        case let .union(a,b):let x=a.sample(at:p),y=b.sample(at:p);return x.value<=y.value ? x:y
+        case let .subtract(a,b):
+            let x=a.sample(at:p),y=b.sample(at:p);return x.value >= -y.value ? x:FieldSample(-y.value,-y.gradient)
+        case let .smoothUnion(a,b,k):
+            let x=a.sample(at:p),y=b.sample(at:p),h=clamp(0.5+0.5*(y.value-x.value)/k,0,1)
+            return FieldSample(y.value+(x.value-y.value)*h-k*h*(1-h),y.gradient+(x.gradient-y.gradient)*h)
+        }
     }
+
+    public func normal(at p: V3) -> V3 {sample(at:p).normal}
 
     public var bounds: Bounds {
         switch self {
@@ -118,28 +144,17 @@ public indirect enum Shape: Sendable {
     }
 }
 
+public struct FieldSample: Sendable {
+    public var value:Float
+    public var gradient:V3
+    public init(_ value:Float,_ gradient:V3){self.value=value;self.gradient=gradient}
+    public var normal:V3 {length_squared(gradient)>1e-20 ? normalize(gradient):V3(0,1,0)}
+}
+
 public enum FieldError: Error { case invalidParameter }
 
 public func clamp(_ x: Float, _ a: Float, _ b: Float) -> Float { Swift.min(b, Swift.max(a,x)) }
 public func mix(_ a: Float, _ b: Float, _ t: Float) -> Float { a+(b-a)*t }
-
-public struct Terrain: Sendable {
-    public init() {}
-    public var semantics: FieldSemantics { .implicit }
-    public func pathX(_ z: Float) -> Float { sin(z*0.048)*9 + sin(z*0.105)*2 }
-    public func height(_ x: Float, _ z: Float) -> Float {
-        let base = 0.8*sin(x*0.055+z*0.019) + 1.25*sin(z*0.045) + 0.42*cos(x*0.13-z*0.08)
-        let flank = pow(abs(x)/75, 2)*15
-        let hill = 8*exp(-((x+34)*(x+34)/700 + (z+45)*(z+45)/1400))
-        let ridge = 17*exp(-((z+122)*(z+122)/450))*pow(0.55+0.45*sin(x*0.066+0.7),2)
-        return base + flank + hill + ridge
-    }
-    public func value(at p: V3) -> Float { p.y-height(p.x,p.z) }
-    public func normal(_ x: Float, _ z: Float) -> V3 {
-        let e: Float = 0.08
-        return normalize(V3(height(x-e,z)-height(x+e,z), 2*e, height(x,z-e)-height(x,z+e)))
-    }
-}
 
 public struct SeededRandom: Sendable, Codable {
     private var state: UInt64

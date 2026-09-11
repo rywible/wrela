@@ -11,6 +11,7 @@ public struct MoistWeather {
     public private(set) var cells:[SIMD4<Float>]
     public private(set) var evaporated:Double=0
     public private(set) var precipitated:Double=0
+    private var nextCells=Array(repeating:SIMD4<Float>.zero,count:4096)
     private var heating:[Float]
     private var fluxVelocity:[SIMD2<Float>]
     public init(seed:UInt64) {
@@ -32,9 +33,14 @@ public struct MoistWeather {
                                       4-(stream[((y+1)%64)*64+(x+1)%64]-stream[((y+1)%64)*64+x])/1000))
         }}
     }
-    public static func saturation(_ temperature:Float)->Float {
-        let t=min(30,max(-25,temperature)),e=6.112*exp(17.67*t/(t+243.5))
-        return 622*e/(800-e) // 800 hPa representative condensation-layer pressure.
+    public static func saturation(_ temperature:Float)->Float {saturationSample(temperature).value}
+    /// The clamped function has zero derivative outside the open temperature
+    /// interval, including its nondifferentiable endpoints (explicit convention).
+    public static func saturationSample(_ temperature:Float)->(value:Float,slope:Float) {
+        let t=min(30,max(-25,temperature)),den=t+243.5,e=6.112*exp(17.67*t/den),pressure=800-e
+        let q=622*e/pressure
+        let slope=temperature > -25 && temperature < 30 ? 622*800*e/(pressure*pressure)*(17.67*243.5/(den*den)):0
+        return (q,slope)
     }
     private func index(_ x:Int,_ y:Int)->Int {((y+64)%64)*64+(x+64)%64}
     public mutating func advance(to seconds:Float,sun:Float) {
@@ -42,23 +48,24 @@ public struct MoistWeather {
         while ticks<target {step(sun:sun)}
     }
     public mutating func step(sun:Float) {
-        let dt:Float=2,old=cells
+        let dt:Float=2
         for y in 0..<64 {for x in 0..<64 {
             let i=index(x,y),left=index(x-1,y),right=index(x+1,y),down=index(x,y-1),up=index(x,y+1)
             let vx=fluxVelocity[i].x,vl=fluxVelocity[left].x,vy=fluxVelocity[i].y,vd=fluxVelocity[down].y
-            let outgoingX=(vx>=0 ? old[i]:old[right])*vx,incomingX=(vl>=0 ? old[left]:old[i])*vl
-            let outgoingY=(vy>=0 ? old[i]:old[up])*vy,incomingY=(vd>=0 ? old[down]:old[i])*vd
-            var c=old[i]-(outgoingX-incomingX+outgoingY-incomingY)*(dt/1000)
+            let outgoingX=(vx>=0 ? cells[i]:cells[right])*vx,incomingX=(vl>=0 ? cells[left]:cells[i])*vl
+            let outgoingY=(vy>=0 ? cells[i]:cells[up])*vy,incomingY=(vd>=0 ? cells[down]:cells[i])*vd
+            var c=cells[i]-(outgoingX-incomingX+outgoingY-incomingY)*(dt/1000)
             c.w=clamp(c.w+((c.z-12)*0.08-c.w*0.04)*dt,-6,8)
             c.z+=((12+heating[i]*max(sun,0)*1.8-c.z)/240-c.w*0.0098)*dt
-            let q=Self.saturation(c.z),slope=(Self.saturation(c.z+0.05)-q)/0.05
+            let (q,slope)=Self.saturationSample(c.z)
             var transfer=(c.x-q)/(1+2.49*slope)*(1-exp(-dt/12))
             transfer=clamp(transfer,-c.y,c.x)
             c.x-=transfer;c.y+=transfer;c.z+=2.49*transfer
             let source:Float=0.0005*max(sun,0)*dt,rain=max(0,c.y-1.2)*0.001*dt
             c.x+=source;c.y-=rain;evaporated+=Double(source);precipitated+=Double(rain)
-            cells[i]=c
+            nextCells[i]=c
         }}
+        swap(&cells,&nextCells)
         ticks+=1
     }
     public var totalWater:Double {cells.reduce(0){$0+Double($1.x)+Double($1.y)}}

@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Exercise a fresh expedition through the same actions as the native game; preserve the player's slot."""
+import json
+import math
+from pathlib import Path
+import runpy
+import uuid
+
+client = runpy.run_path(str(Path(__file__).with_name('gardenctl')))
+c, root = client['command'], client['ROOT']
+original = c('status')['state']
+assert original['mode'] == 'game', 'Run Sanctuary, not Soundstage'
+slot = 'validation-' + uuid.uuid4().hex[:12]
+checks, captures = [], []
+
+def check(name, value):
+    checks.append(dict(name=name, passed=bool(value)))
+    if not value: raise AssertionError(name)
+
+def state(): return c('status')['state']['expedition']
+
+try:
+    c('pause', value=True)
+    c('expeditionSlot', name=slot)
+    c('scene', value='garden')
+    c('interact')
+    check('Distant interaction cannot rescue', state()['phase'] == 'searching')
+    for x,z in state()['signs']:
+        c('camera', x=x, z=z+1, yaw=0, pitch=-0.5)
+        c('interact')
+    check('All evidence is discoverable', state()['discoveredSigns'] == [0,1,2])
+    c('camera', x=-3, z=-80, yaw=0, pitch=-0.2)
+    c('interact')
+    check('Immediate rescue requires trust', state()['phase'] == 'searching')
+    c('step', frames=300)
+    check('Calm visible approach builds trust', state()['trust'] > 0.99)
+    captures.append(c('capture', label='expedition-wild'))
+    c('interact')
+    check('Rescue transitions to carrying', state()['phase'] == 'carrying')
+    identity=state()['creatureID']
+    c('interact')
+    check('Cannot release outside sanctuary', state()['phase'] == 'carrying')
+    c('saveExpedition')
+    c('expeditionSlot', name=slot+'-other')
+    c('expeditionSlot', name=slot)
+    check('Carrying state survives reload', state()['phase']=='carrying' and state()['creatureID']==identity)
+    c('camera', x=0, z=21, yaw=0, pitch=-0.3)
+    c('interact')
+    check('Release creates one resident', state()['phase']=='settled' and state()['habitat']==0)
+    captures.append(c('capture', label='expedition-habitat-before'))
+    c('step', frames=600); c('step', frames=600)
+    check('Habitat develops over fixed simulation steps', state()['habitat']==1)
+    captures.append(c('capture', label='expedition-habitat-after'))
+    check('Habitat response changes the rendered image', Path(captures[-1]['path']).read_bytes()!=Path(captures[-2]['path']).read_bytes())
+    c('interact')
+    check('Resident reveals the northern mystery', state()['legendaryHint'])
+    for _ in range(3): c('interact')
+    check('Repeat interaction preserves resident identity', state()['phase']=='settled' and state()['creatureID']==identity)
+    c('saveExpedition'); c('expeditionSlot', name=slot+'-other'); c('expeditionSlot', name=slot)
+    check('Habitat and discovery survive save reload', state()['habitat']==1 and state()['legendaryHint'])
+    try:
+        c('expeditionSlot', name='../expedition')
+        rejected=False
+    except RuntimeError: rejected=True
+    check('Invalid slot cannot switch or overwrite saves', rejected and state()['saveSlot']==slot)
+    check('No GPU command errors', not c('status')['state']['gpuErrors'])
+finally:
+    c('expeditionSlot', name=original['expedition']['saveSlot'])
+    camera=original['camera']
+    c('camera', x=camera['position'][0], z=camera['position'][2], yaw=camera['yaw'], pitch=camera['pitch'])
+    c('scene', value=original['scene']); c('pause', value=original['paused'])
+    result=dict(checks=checks, captures=captures, slot=slot)
+    path=root/'expedition-validation.json';path.write_text(json.dumps(result,indent=2))
+print(json.dumps(dict(passed=len(checks), report=str(path)),indent=2))

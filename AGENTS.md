@@ -56,7 +56,13 @@ integration after the isolated object looks right.
 - FieldCore owns mathematical definitions, units, conservative bounds and wind.
 - FieldCompiler owns sparse dual extraction, tetrahedral ambiguity fallback,
   normal/material boundaries, mesh simplification and meshlet generation.
-- SanctuaryGame owns scene assembly, shared Metal rendering and local tooling.
+- Read `docs/ARCHITECTURE.md` before changing ownership or adding gameplay.
+- SanctuaryContent owns this game's terrain, expedition rules and versioned saves.
+- SanctuaryGame/Game prepares scenes; Runtime draws supplied frames; Authoring owns
+  workshop tools. Do not put game/editor state back into MetalRenderer.
+- Run `scripts/check-boundaries` after architecture changes. For gameplay, run
+  `swift test` and `scripts/validate-expedition`, then play the native loop.
+  Use a named expedition test slot; preserve the player's default save.
 - Meshes remain the primary surface renderer. Keep generated Metal field
   evaluation for numerical verification. Do not revive the deleted all-field
   ray marcher as a second rendering stack without a concrete use case.

@@ -11,7 +11,7 @@ float3 artSky(float3 c,constant Uniforms &u){return artSaturation(c,u.lookLight.
 struct Varying {float4 position [[position]];float3 world;float3 local;float3 normal;float3 color;float4 shadow;float kind;float ao;};
 float hash(float2 p){return fract(sin(dot(p,float2(127.1,311.7)))*43758.5453);}
 float noise(float2 p){float2 i=floor(p),f=fract(p);f=f*f*(3-2*f);return mix(mix(hash(i),hash(i+float2(1,0)),f.x),mix(hash(i+float2(0,1)),hash(i+1),f.x),f.y);}
-float filteredNoise(float2 p){float footprint=max(length(dfdx(p)),length(dfdy(p)));return mix(noise(p),.5,smoothstep(.3,1.5,footprint));}
+float filteredNoise(float2 p){float footprint=max(length(dfdx(p)),length(dfdy(p)));if(footprint>=1.5)return .5;return mix(noise(p),.5,smoothstep(.3,1.5,footprint));}
 float4 windAt(float2 p,const device float4 *flow) {
     p=(p+160)/10;int2 i=int2(floor(p));float2 f=fract(p);
     uint a=(i.y&31)*32+(i.x&31),b=(i.y&31)*32+((i.x+1)&31),c=((i.y+1)&31)*32+(i.x&31),d=((i.y+1)&31)*32+((i.x+1)&31);
@@ -31,22 +31,57 @@ Varying evaluateVertex(Vertex v,Instance inst,constant Uniforms &u,const device 
     Varying o;o.position=u.viewProjection*float4(p,1);o.world=p;o.local=v.position.xyz;
     o.normal=normalize(m*v.normal.xyz);o.color=v.color.xyz*inst.tint.xyz;o.shadow=u.lightVP*float4(p,1);o.kind=inst.tint.w;o.ao=v.color.w;return o;
 }
-vertex Varying gardenVertex(uint id [[vertex_id]],uint instanceID [[instance_id]],const device Vertex *verts [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]]) {return evaluateVertex(verts[id],instances[instanceID],u,flow);}
+vertex Varying gardenVertex(uint id [[vertex_id]],uint instanceID [[instance_id]],const device Vertex *verts [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device uint *instanceIDs [[buffer(7)]]) {return evaluateVertex(verts[id],instances[instanceIDs[instanceID]],u,flow);}
 struct Meshlet {uint4 ranges;float4 sphere;};
 using GardenMesh=metal::mesh<Varying,void,64,124,metal::topology::triangle>;
-[[mesh]] void gardenMesh(GardenMesh output,uint tid [[thread_index_in_threadgroup]],uint3 group [[threadgroup_position_in_grid]],const device Vertex *verts [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device Meshlet *meshlets [[buffer(4)]],const device uint *indices [[buffer(5)]],const device uchar *triangles [[buffer(6)]]) {
-    Meshlet m=meshlets[group.x];Instance inst=instances[group.y];
-    float3 center=(inst.model*float4(m.sphere.xyz,1)).xyz;float scale=length(inst.model[0].xyz);
-    float radius=m.sphere.w*scale+((inst.tint.w==2 || inst.tint.w==4 || inst.tint.w==8) ? 1.0:0.35);
-    float4x4 rows=transpose(u.viewProjection);float4 planes[6]={rows[3]+rows[0],rows[3]-rows[0],rows[3]+rows[1],rows[3]-rows[1],rows[2],rows[3]-rows[2]};
-    bool visible=true;for(uint i=0;i<6;i++)visible=visible && dot(planes[i],float4(center,1))>=-radius*length(planes[i].xyz);
-    if(!visible){if(tid==0)output.set_primitive_count(0);return;}
+struct MeshPayload {uint meshlets[32];uint instance;};
+[[object]] void gardenObject(object_data MeshPayload &payload [[payload]],mesh_grid_properties grid,
+    uint tid [[thread_index_in_threadgroup]],uint3 group [[threadgroup_position_in_grid]],
+    constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],
+    const device Meshlet *meshlets [[buffer(4)]],const device uint *instanceIDs [[buffer(7)]],
+    constant float4 *planes [[buffer(8)]],constant uint &meshletCount [[buffer(9)]]) {
+    uint id=group.x*32+tid,instance=instanceIDs[group.y];Instance inst=instances[instance];
+    bool visible=id<meshletCount;
+    if(visible) {
+        Meshlet m=meshlets[id];float3 center=(inst.model*float4(m.sphere.xyz,1)).xyz;
+        float scale=max(length(inst.model[0].xyz),max(length(inst.model[1].xyz),length(inst.model[2].xyz)));
+        float top=max(0.,m.sphere.y+m.sphere.w);
+        float deformation=(inst.tint.w==2 || inst.tint.w==4 || inst.tint.w==8) ? .35*sqrt(2.)*abs(u.options.y)*pow(top/5.,2.)*.75:(inst.tint.w==3 ? .35*sqrt(2.)*abs(u.options.y)*.65:0.);
+        float radius=m.sphere.w*scale+deformation;
+        for(uint i=0;i<6;i++)visible=visible && dot(planes[i],float4(center,1))>=-radius;
+    }
+    uint rank=simd_prefix_exclusive_sum(uint(visible)),count=simd_sum(uint(visible));
+    if(visible)payload.meshlets[rank]=id;
+    if(tid==0){payload.instance=instance;grid.set_threadgroups_per_grid(uint3(count,1,1));}
+}
+[[mesh]] void gardenMesh(GardenMesh output,const object_data MeshPayload &payload [[payload]],uint tid [[thread_index_in_threadgroup]],uint3 group [[threadgroup_position_in_grid]],const device Vertex *verts [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device Meshlet *meshlets [[buffer(4)]],const device uint *indices [[buffer(5)]],const device uchar *triangles [[buffer(6)]]) {
+    Meshlet m=meshlets[payload.meshlets[group.x]];Instance inst=instances[payload.instance];
     if(tid<m.ranges.z)output.set_vertex(tid,evaluateVertex(verts[indices[m.ranges.x+tid]],inst,u,flow));
     for(uint i=tid;i<m.ranges.w*3;i+=64)output.set_index(i,triangles[m.ranges.y+i]);
     if(tid==0)output.set_primitive_count(m.ranges.w);
 }
-vertex float4 shadowVertex(uint id [[vertex_id]],uint instanceID [[instance_id]],const device Vertex *verts [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]]) {
-    Vertex v=verts[id];Instance inst=instances[instanceID];float3 p=(inst.model*v.position).xyz;
+struct GrassBlade {float4 anchorAngle;float2 size;uint color;uint reserved;};
+Vertex grassVertexSource(GrassBlade blade,uint id) {
+    float3 p=blade.anchorAngle.xyz;float angle=blade.anchorAngle.w,h=blade.size.x,w=blade.size.y;
+    float3 d=float3(cos(angle)*w,0,sin(angle)*w),n=normalize(float3(sin(angle)*.3,.9,-cos(angle)*.3));
+    float3 bend=float3(cos(angle+.8),0,sin(angle+.8))*h*.32;
+    float3 middle=p+float3(0,h*.55,0)+bend*.3,tip=p+float3(0,h,0)+bend;
+    float3 c=float3(blade.color&1023,(blade.color>>10)&1023,(blade.color>>20)&1023)/1023.;
+    Vertex v;v.position=float4(id==0 ? p-d:(id==1 ? p+d:(id==2 ? middle+d*.55:(id==3 ? middle-d*.55:tip))),1);
+    v.normal=float4(n,id<2 ? 0.:(id<4 ? .4:1.));v.color=float4(c*(id<2 ? 1.:(id<4 ? 1.08:1.18)),1);return v;
+}
+constant uint grassIndices[9]={0,1,2,0,2,3,3,2,4};
+vertex Varying grassVertex(uint id [[vertex_id]],uint instanceID [[instance_id]],const device GrassBlade *blades [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device uint *instanceIDs [[buffer(7)]]) {
+    return evaluateVertex(grassVertexSource(blades[id/9],grassIndices[id%9]),instances[instanceIDs[instanceID]],u,flow);
+}
+[[mesh]] void grassMesh(GardenMesh output,const object_data MeshPayload &payload [[payload]],uint tid [[thread_index_in_threadgroup]],uint3 group [[threadgroup_position_in_grid]],const device GrassBlade *blades [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device Meshlet *patches [[buffer(4)]],const device uint *instanceIDs [[buffer(7)]],constant float4 *planes [[buffer(8)]]) {
+    Meshlet m=patches[payload.meshlets[group.x]];Instance inst=instances[payload.instance];
+    if(tid<m.ranges.z*5)output.set_vertex(tid,evaluateVertex(grassVertexSource(blades[m.ranges.x+tid/5],tid%5),inst,u,flow));
+    for(uint i=tid;i<m.ranges.z*9;i+=64)output.set_index(i,(i/9)*5+grassIndices[i%9]);
+    if(tid==0)output.set_primitive_count(m.ranges.z*3);
+}
+vertex float4 shadowVertex(uint id [[vertex_id]],uint instanceID [[instance_id]],const device Vertex *verts [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device uint *instanceIDs [[buffer(7)]]) {
+    Vertex v=verts[id];Instance inst=instances[instanceIDs[instanceID]];float3 p=(inst.model*v.position).xyz;
     return u.lightVP*float4(deform(p,v.position.xyz,v.normal.w,inst.tint.w,u,flow),1);
 }
 float3 display(float3 c){c=max(c,0.);return clamp((c*(2.51*c+.03))/(c*(2.43*c+.59)+.14),0.,1.);}

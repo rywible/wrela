@@ -37,7 +37,7 @@ def command(action, **kwargs):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
-    for name in ('status', 'reset', 'clearMetrics', 'reloadShaders', 'verifyFields', 'verifySky', 'catalog', 'assetSave', 'assetReload', 'reloadAssets', 'undo', 'redo', 'captureReview', 'styleBoard', 'publishLook'):
+    for name in ('status', 'reset', 'clearMetrics', 'reloadShaders', 'verifyFields', 'verifySky', 'catalog', 'assetSave', 'assetReload', 'reloadAssets', 'undo', 'redo', 'captureReview', 'styleBoard', 'publishLook', 'interact', 'saveExpedition'):
         sub.add_parser(name)
     for name, choices in [('scene', ['garden', 'studio']), ('studioObject', ['seed', 'stone', 'branch', 'tree', 'calibration', 'sky']), ('view', ['front', 'quarter', 'back', 'left', 'right', 'above', 'detail', 'base', 'crown', 'sunward', 'away', 'zenith']), ('lighting', ['morning', 'noon', 'golden', 'sunset', 'afterglow', 'overcast', 'rain', 'indoor'])]:
         sub.add_parser(name).add_argument('value', choices=choices)
@@ -51,7 +51,7 @@ def main():
                          ('query', ['x', 'y', 'z'])]:
         p = sub.add_parser(name)
         for field in fields: p.add_argument('--' + field, type=float)
-    for name in ['checkpoint','restoreCheckpoint','pinBaseline','selectBaseline']:
+    for name in ['checkpoint','restoreCheckpoint','pinBaseline','selectBaseline','expeditionSlot']:
         sub.add_parser(name).add_argument('name')
     sub.add_parser('subject').add_argument('value')
     for name in ['assetLoad', 'saveStudy', 'loadStudy']:

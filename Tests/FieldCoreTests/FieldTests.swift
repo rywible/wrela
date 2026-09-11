@@ -1,6 +1,7 @@
 import XCTest
 import simd
 @testable import FieldCore
+import SanctuaryContent
 @testable import FieldCompiler
 
 final class FieldTests:XCTestCase {
