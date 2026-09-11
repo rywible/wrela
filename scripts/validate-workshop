@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Exercise authoring transactions, shared source, rigs and exact study replay."""
+import hashlib,json,os,runpy
+from pathlib import Path
+os.environ['SANCTUARY_CONTROL_ROOT']='.soundstage'
+client=runpy.run_path(str(Path(__file__).with_name('gardenctl')));c,root=client['command'],client['ROOT']
+saved=c('saveStudy',path='workshop-validation-restore.json')['path'];checks=[]
+def check(name,value):
+    checks.append(dict(name=name,passed=bool(value)))
+    if not value:raise AssertionError(name)
+def reject(action,**values):
+    try:c(action,**values)
+    except RuntimeError:return True
+    return False
+def capture(label):
+    r=c('capture',label=label);return hashlib.sha256(Path(r['path']).read_bytes()).hexdigest()
+try:
+    cat=c('catalog')['catalog'];check('Catalog discovers custom field assets','stone-vessel' in cat['subjects'])
+    c('pause',value=True);c('subject',value='tree');c('rig',value='softbox');c('view',value='quarter')
+    before=capture('workshop-tree-before');initial=c('status')['state']['workshop']
+    c('shape',height=7.2,width=5.1,spread=1.3)
+    check('Shape edits rebuild the visible field',before!=capture('workshop-tree-edit'))
+    state=c('status')['state']['workshop'];check('Shape edit preserves camera distance',abs(initial['cameraDistanceMetres']-state['cameraDistanceMetres'])<0.001)
+    shape=state['document']['source'];check('Invalid shape transaction rejected',reject('shape',height=6,width=-2))
+    check('Rejected shape preserves source',shape==c('status')['state']['workshop']['document']['source'])
+    rig=c('status')['state']['workshop']['document']['rig'];check('Invalid rig transaction rejected',reject('rig',x=2,intensity=-1))
+    check('Rejected rig preserves lighting',rig==c('status')['state']['workshop']['document']['rig'])
+    check('Invalid layout rejected',reject('layout',reference='yes'))
+    c('step',frames=121);c('layout',turntable=True,roughness=0.35,reference=True)
+    c('saveStudy',path='workshop-roundtrip.json');a=capture('workshop-roundtrip-a');c('step',frames=120);future=capture('workshop-future-a')
+    c('rig',value='lamp');c('subject',value='stone-vessel');c('loadStudy',path='workshop-roundtrip.json')
+    check('Saved study reproduces exact pixels',a==capture('workshop-roundtrip-b'))
+    c('step',frames=120);check('Restored wind and turntable reproduce future pixels',future==capture('workshop-future-b'))
+    c('subject',value='stone-vessel');c('view',value='quarter');c('rig',value='overhead');a=capture('vessel-overhead')
+    c('rig',value='lamp');check('Lamp and overhead produce distinct lighting',a!=capture('vessel-lamp'))
+    c('layout',roughness=0.08,metallic=1);check('Material override changes the subject',a!=capture('vessel-metal'))
+    c('subject',value='calibration');check('Calibration uses five material samples',len(c('status')['state']['workshop']['parts'])==5)
+    c('view',value='sunward');c('view',value='front');check('Object views return from sky inspection',c('status')['state']['studioObject']=='calibration')
+    c('rig',value='lamp');position=c('status')['state']['workshop']['lightPositionMetres']
+    c('view',value='crown');check('Inspection focus does not move the lights',position==c('status')['state']['workshop']['lightPositionMetres'])
+    c('view',value='front');check('Wide calibration subject fits the viewport',c('status')['state']['camera']['distance']<5)
+    check('No GPU command errors' ,not c('status')['state']['gpuErrors'])
+finally:
+    c('loadStudy',path=saved)
+    report=dict(passed=all(x['passed'] for x in checks),checks=checks);(root/'workshop-validation.json').write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2))

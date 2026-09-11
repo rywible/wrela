@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Check the soundstage protocol, paused rendering, live sky changes and metadata."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import runpy
+import struct
+
+os.environ['SANCTUARY_CONTROL_ROOT'] = '.soundstage'
+client = runpy.run_path(str(Path(__file__).with_name('gardenctl')))
+c, root = client['command'], client['ROOT']
+original = c('status')['state']
+checks = []
+saved=c('saveStudy',path='validation-restore.json')['path']
+
+def check(name, result):
+    checks.append(dict(name=name, passed=bool(result)))
+    if not result: raise AssertionError(name)
+
+def rejected(action, **values):
+    try: c(action, **values)
+    except RuntimeError: return True
+    return False
+
+try:
+    check('Dedicated environment', original['mode'] == 'soundstage')
+    c('pause', value=True)
+    c('studioObject', value='seed'); c('view', value='quarter'); c('lighting', value='noon')
+    a = c('capture', label='check-repeat-a'); b = c('capture', label='check-repeat-b')
+    image = Path(a['path']).read_bytes()
+    check('Native 1080p capture', struct.unpack('>II', image[16:24]) == (1920,1080))
+    check('Paused frames reproduce exactly', hashlib.sha256(image).digest() == hashlib.sha256(Path(b['path']).read_bytes()).digest())
+    check('No garden population in soundstage', rejected('scene', value='garden'))
+    before = c('status')['state']['sky']
+    check('Invalid sky edits rejected', rejected('sky', altitude=10, coverage=9))
+    check('Invalid sky edit is atomic', before == c('status')['state']['sky'])
+    c('parameters', wetness=1)
+    wet = c('capture', label='check-wet')
+    check('Wet material visibly changes', image != Path(wet['path']).read_bytes())
+    c('view', value='sunward'); c('lighting', value='sunset'); c('sky', coverage=0)
+    low = c('capture', label='check-sun-low')
+    c('sky', altitude=20)
+    high = c('capture', label='check-sun-high')
+    low_meta = json.loads(Path(low['metadata']).read_text())
+    high_meta = json.loads(Path(high['metadata']).read_text())
+    check('Solar projection rises with elevation', high_meta['projectedSunPixels'][1] < low_meta['projectedSunPixels'][1])
+    check('Sky edit changes rendered image', Path(low['path']).read_bytes() != Path(high['path']).read_bytes())
+    check('Capture records exact sky state', low_meta['sky']['altitude'] == 2.5 and high_meta['sky']['altitude'] == 20)
+    check('Invalid profiling value rejected', rejected('profiling', value='yes'))
+    c('profiling', value=True)
+    check('GPU profiling can be enabled', c('status')['state']['profiling'])
+    c('profiling', value=False)
+    c('lighting', value='sunset'); c('capture', label='check-cloud-bounds')
+    traversal=c('verifySky')['verification']
+    check('GPU empty-space traversal preserves density', traversal['passed'] and traversal['certifiedSegments']>1000)
+    c('pause', value=False)
+    check('Live traversal verification rejected', rejected('verifySky'))
+    c('pause', value=True)
+    check('No GPU errors', not c('status')['state']['gpuErrors'])
+finally:
+    c('loadStudy',path=saved)
+    c('profiling',value=original['profiling'])
+    report = dict(passed=all(check['passed'] for check in checks), checks=checks)
+    (root/'validation.json').write_text(json.dumps(report, indent=2))
+    print(json.dumps(report, indent=2))

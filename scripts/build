@@ -1,0 +1,38 @@
+#!/bin/zsh
+set -eu
+cd "${0:A:h:h}"
+swift build -c release
+app_path="$PWD/.build/Sanctuary.app"
+mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources"
+cp .build/release/Sanctuary "$app_path/Contents/MacOS/Sanctuary"
+cp Sources/SanctuaryGame/Resources/*.metal "$app_path/Contents/Resources/"
+/usr/bin/python3 - "$app_path" "$PWD" <<'PY'
+import plistlib, pathlib, sys, subprocess, shutil, hashlib
+app, workspace = map(pathlib.Path, sys.argv[1:])
+obsolete_shader = app / 'Contents/Resources/Trace.metal'
+if obsolete_shader.exists(): obsolete_shader.unlink()
+obsolete_bundle = app / 'Sanctuary_SanctuaryGame.bundle'
+if obsolete_bundle.exists(): shutil.rmtree(obsolete_bundle)
+revision = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'], text=True).strip()
+if subprocess.check_output(['git', 'status', '--porcelain'], text=True).strip():
+    revision += '-working-tree'
+digest = hashlib.sha256()
+for source in sorted((workspace/'Sources').rglob('*')) + [workspace/'Package.swift']:
+    if source.is_file():
+        digest.update(str(source.relative_to(workspace)).encode())
+        digest.update(source.read_bytes())
+info = dict(CFBundleExecutable='Sanctuary', CFBundleIdentifier='dev.sanctuary.fieldgarden',
+            CFBundleName='Sanctuary', CFBundleDisplayName='Sanctuary', CFBundlePackageType='APPL',
+            CFBundleVersion='1', CFBundleShortVersionString='0.1.0', NSHighResolutionCapable=True,
+            LSMinimumSystemVersion='14.0', SanctuaryWorkspace=str(workspace), SanctuaryRevision=revision,
+            SanctuarySourceDigest=digest.hexdigest())
+with (app / 'Contents/Info.plist').open('wb') as f: plistlib.dump(info, f)
+stage = app.parent / 'Soundstage.app'
+shutil.copytree(app, stage, dirs_exist_ok=True)
+info.update(CFBundleIdentifier='dev.sanctuary.soundstage', CFBundleName='Soundstage',
+            CFBundleDisplayName='Soundstage', SanctuaryMode='soundstage')
+with (stage / 'Contents/Info.plist').open('wb') as f: plistlib.dump(info, f)
+PY
+codesign --force --sign - "$app_path"
+codesign --force --sign - "$PWD/.build/Soundstage.app"
+print "Built $app_path"

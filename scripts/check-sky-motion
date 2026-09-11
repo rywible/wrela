@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Compare an aged live sky with a fresh reference at nearly the same time."""
+import argparse
+import html
+import json
+import os
+from pathlib import Path
+import runpy
+import time
+
+p=argparse.ArgumentParser(description=__doc__)
+p.add_argument('--garden', action='store_true')
+p.add_argument('--age', type=float, default=None, help='Minimum snapshot age in simulation seconds')
+p.add_argument('--label', default='sky-motion')
+a=p.parse_args()
+if a.age is not None and not 0<a.age<=30: p.error('Age must be between zero and 30 seconds')
+if not a.garden: os.environ['SANCTUARY_CONTROL_ROOT']='.soundstage'
+client=runpy.run_path(str(Path(__file__).with_name('gardenctl')))
+c,root=client['command'],client['ROOT']
+original=c('status')['state']
+if original['parameters']['wind']==0: p.error('Enable wind before checking sky motion')
+label=''.join(x for x in a.label if x.isalnum() or x in '-_') or 'sky-motion'
+minimum=a.age if a.age is not None else (18 if original['sky']['altitude']<15 else 9)
+try:
+    c('profiling',value=False)
+    c('pause',value=False)
+    deadline=time.monotonic()+60
+    while True:
+        state=c('status')['state']
+        age=state['time']-state['skySnapshotTimes'][1]
+        if age>=minimum and state['skySnapshotTimes'][1]>original['time']: break
+        if time.monotonic()>deadline: raise RuntimeError('Requested snapshot age not reached within 60 seconds')
+        time.sleep(.25)
+    live=c('capture',label=label+'-live')
+    c('pause',value=True)
+    reference=c('capture',label=label+'-reference')
+finally:
+    c('profiling',value=original['profiling'])
+    c('pause',value=original['paused'])
+liveMeta=json.loads(Path(live['metadata']).read_text())
+referenceMeta=json.loads(Path(reference['metadata']).read_text())
+report=dict(live=live,reference=reference,snapshotAge=liveMeta['time']-liveMeta['skySnapshotTimes'][1],
+            referenceDelay=referenceMeta['time']-liveMeta['time'],
+            note='Reference is slightly later; time is not rewound. Inspect silhouettes, displacement and blending; pixel differences alone are not a pass/fail criterion.')
+path=root/(label+'.json');path.write_text(json.dumps(report,indent=2))
+cards=''.join('<figure><img src="'+html.escape(x['path'])+'"><figcaption>'+name+'</figcaption></figure>' for name,x in [('Aged live sky',live),('Fresh reference',reference)])
+(root/(label+'.html')).write_text('<!doctype html><meta charset="utf-8"><title>Sky motion check</title><style>body{background:#131a23;color:#eee;font:15px system-ui;margin:20px}main{display:flex;gap:12px}figure{margin:0;flex:1}img{width:100%}</style><p>Snapshot age '+str(round(report['snapshotAge'],2))+' seconds; reference delay '+str(round(report['referenceDelay'],3))+' seconds.</p><main>'+cards+'</main>')
+print(json.dumps(dict(report=str(path),**report),indent=2))

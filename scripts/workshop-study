@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Reproducible subject/lighting studies with a wipe viewer and motion scrubber."""
+import argparse
+import html
+import json
+import os
+from pathlib import Path
+import runpy
+import time
+
+p=argparse.ArgumentParser(description=__doc__)
+p.add_argument('--baseline',type=Path,help='Compare a saved study against the current workshop')
+p.add_argument('--views',default='front,quarter,back,above')
+p.add_argument('--lights',default='noon,sunset,overcast')
+p.add_argument('--rigs',default='softbox,lamp,room')
+p.add_argument('--motion',type=int,default=1,help='Frames per view, 1...24')
+p.add_argument('--step',type=int,default=15,help='Fixed simulation ticks between motion frames')
+p.add_argument('--sweep',action='store_true',help='Orbit a full turn across the motion frames')
+p.add_argument('--label',default='workshop')
+a=p.parse_args()
+if not 1<=a.motion<=24 or not 1<=a.step<=600:p.error('Motion must be 1...24 frames; step must be 1...600 ticks')
+os.environ['SANCTUARY_CONTROL_ROOT']='.soundstage'
+client=runpy.run_path(str(Path(__file__).with_name('gardenctl')));c,root=client['command'],client['ROOT']
+label=''.join(x for x in a.label if x.isalnum() or x in '-_') or 'workshop'
+folder=root/'studies'/(label+'-'+time.strftime('%Y%m%d-%H%M%S'));folder.mkdir(parents=True)
+original=Path(c('saveStudy',path=str(folder/'current.json'))['path'])
+variants=[('Current',original)]
+if a.baseline:
+    baseline=json.loads(a.baseline.read_text());current=json.loads(original.read_text())
+    current['time']=baseline['time'];current['windState']=baseline.get('windState');current['paused']=True
+    synchronized=folder/'synchronized-current.json';synchronized.write_text(json.dumps(current,indent=2))
+    variants=[('Baseline',a.baseline.resolve()),('Current',synchronized)]
+views=[x.strip() for x in a.views.split(',') if x.strip()]
+lights=[('outdoor',x.strip()) for x in a.lights.split(',') if x.strip()]+[(x.strip(),None) for x in a.rigs.split(',') if x.strip()]
+if not views or not lights:p.error('Choose at least one view and lighting condition')
+records=[];anchors={}
+try:
+    for variant,source in variants:
+        for rig,light in lights:
+            for view in views:
+                c('loadStudy',path=str(source));c('pause',value=True);c('layout',turntable=False)
+                if light:c('lighting',value=light)
+                c('rig',value=rig);state=c('view',value=view)['state'];orbit=state['camera']['orbit']
+                key=(rig,light,view);w=state['workshop']
+                if key not in anchors:anchors[key]=(w['cameraDistanceMetres'],w['heightMetres']*w['document']['layout']['focus'])
+                elif state['studioObject']!='sky':
+                    distance,target=anchors[key]
+                    c('layout',focus=min(1,max(0,target/w['heightMetres'])))
+                    c('camera',distance=distance/(w['extentMetres']/4))
+                for frame in range(a.motion):
+                    if frame:c('step',frames=a.step)
+                    if a.sweep:c('camera',orbit=orbit+frame*6.28318530718/a.motion)
+                    capture=c('capture',label=f'{label}-{variant}-{light or rig}-{view}-{frame}')
+                    records.append(dict(capture,variant=variant,condition=light or rig,view=view,frame=frame,rendererFrame=capture["frame"]))
+                    print(f'{variant}: {light or rig} / {view} / {frame+1}',flush=True)
+finally:
+    c('loadStudy',path=str(original))
+report=dict(records=records,original=str(original),tickSeconds=a.step/60,baseline=str(a.baseline) if a.baseline else None)
+(folder/'report.json').write_text(json.dumps(report,indent=2))
+items=[]
+for record in records:
+    metadata=json.loads(Path(record['metadata']).read_text())
+    items.append(dict(variant=record['variant'],condition=record['condition'],view=record['view'],frame=record['frame'],
+                      src=os.path.relpath(record['path'],folder),time=metadata['time'],shader=metadata['shaderDigest'],
+                      subject=metadata['studioObject'],gpu=metadata['gpuMilliseconds'].get('median'),
+                      document=metadata['workshop']['document']))
+viewer='''<!doctype html><html><meta charset="utf-8"><title>Workshop comparison</title>
+<style>*{box-sizing:border-box}[hidden]{display:none!important}body{margin:24px;background:#151b23;color:#e4e8eb;font:14px system-ui}h1{font-size:24px}header{display:flex;gap:18px;align-items:center;flex-wrap:wrap}select,button{padding:7px;background:#293443;color:inherit;border:1px solid #526174;border-radius:5px}label{display:flex;gap:8px;align-items:center}.viewport{overflow:auto;max-height:76vh;border:1px solid #526174;margin-top:18px}.frame{position:relative;width:100%;aspect-ratio:16/9}.frame img{position:absolute;width:100%;height:100%}.tag{position:absolute;top:12px;padding:6px 10px;background:#111b;pointer-events:none}#rightTag{right:12px}pre{white-space:pre-wrap;font:12px ui-monospace}summary{cursor:pointer;margin-top:18px}#status{margin:12px 0;color:#b6c3d0}</style>
+<h1>Workshop · compare and inspect</h1><header>
+<label>Study <select id="case"></select></label><label>Frame <input id="frame" type="range" min="0" max="0" value="0"></label>
+<button id="play">Play sequence</button><label>Compare <input id="wipe" type="range" min="0" max="100" value="50"></label>
+<label>Zoom <select id="zoom"><option value="1">Fit</option><option value="1.5">150%</option><option value="2">200%</option><option value="3">300%</option></select></label></header>
+<div id="status"></div><div class="viewport"><div class="frame" id="canvas"><img id="right"><img id="left"><span class="tag" id="leftTag"></span><span class="tag" id="rightTag"></span></div></div>
+<details><summary>Exact study settings and source fingerprints</summary><pre id="metadata"></pre></details>
+<script>const items=__ITEMS__;const byId=id=>document.getElementById(id);const keys=[...new Set(items.map(x=>x.condition+' / '+x.view))];let timer;
+keys.forEach(k=>byId('case').add(new Option(k,k)));
+function render(){const key=byId('case').value;const subset=items.filter(x=>x.condition+' / '+x.view===key);byId('frame').max=Math.max(...subset.map(x=>x.frame));const n=+byId('frame').value;const match=subset.filter(x=>x.frame===n);const a=match[0],b=match[match.length-1];if(!a)return;const compare=match.length>1,motion=+byId('frame').max>0;byId('wipe').parentElement.hidden=!compare;byId('frame').parentElement.hidden=!motion;byId('play').hidden=!motion;byId('leftTag').hidden=!compare;byId('left').src=a.src;byId('right').src=b.src;byId('leftTag').textContent=a.variant;byId('rightTag').textContent=b.variant;byId('left').style.clipPath='inset(0 '+(100-byId('wipe').value)+'% 0 0)';byId('canvas').style.width=(+byId('zoom').value*100)+'%';byId('status').textContent=a.subject+' · '+key+' · frame '+(n+1)+' · time '+a.time.toFixed(3)+(compare?' / '+b.time.toFixed(3):'')+' s';byId('metadata').textContent=JSON.stringify({left:a,right:b},null,2);}
+['case','frame','wipe','zoom'].forEach(id=>byId(id).addEventListener('input',()=>{if(id==='case')byId('frame').value=0;render()}));
+byId('play').onclick=()=>{if(timer){clearInterval(timer);timer=null;byId('play').textContent='Play sequence'}else{timer=setInterval(()=>{byId('frame').value=(+byId('frame').value+1)%(+byId('frame').max+1);render()},250);byId('play').textContent='Pause sequence'}};render();</script></html>'''
+(folder/'index.html').write_text(viewer.replace('__ITEMS__',json.dumps(items).replace('<','\\u003c')))
+print(json.dumps(dict(viewer=str(folder/'index.html'),report=str(folder/'report.json'),captures=len(records))))

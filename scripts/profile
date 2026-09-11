@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Short live renderer measurement, with optional Metal stage-boundary counters."""
+import argparse
+import json
+import os
+from pathlib import Path
+import runpy
+import time
+
+p=argparse.ArgumentParser(description=__doc__)
+p.add_argument('--stage', action='store_true')
+p.add_argument('--seconds', type=float, default=20)
+p.add_argument('--counters', action='store_true')
+p.add_argument('--label', default='live')
+a=p.parse_args()
+if not 5<=a.seconds<=60: p.error('Use a short measurement between 5 and 60 seconds')
+if a.stage: os.environ['SANCTUARY_CONTROL_ROOT']='.soundstage'
+client=runpy.run_path(str(Path(__file__).with_name('gardenctl')))
+command,root=client['command'],client['ROOT']
+original=command('status')['state']
+samples=[]
+try:
+    command('profiling', value=a.counters)
+    command('pause', value=False)
+    time.sleep(3)
+    command('clearMetrics')
+    first=command('status')['state'];start=time.monotonic()
+    while time.monotonic()-start<a.seconds:
+        time.sleep(0.5)
+        samples.append(command('status')['state'])
+    elapsed=time.monotonic()-start
+    last=samples[-1]
+finally:
+    command('profiling', value=original['profiling'])
+    command('pause', value=original['paused'])
+report=dict(elapsedSeconds=elapsed,submittedFPS=(last['frame']-first['frame'])/elapsed,
+            counters=a.counters,first=first,last=last,samples=samples)
+label=''.join(c for c in a.label if c.isalnum() or c in '-_') or 'live'
+folder=root/'profiles';folder.mkdir(exist_ok=True)
+path=folder/(label+'-'+time.strftime('%Y%m%d-%H%M%S')+'.json')
+path.write_text(json.dumps(report,indent=2))
+print(json.dumps(dict(report=str(path),elapsedSeconds=elapsed,submittedFPS=report['submittedFPS'],
+                     gpuMilliseconds=last['gpuMilliseconds'],gpuPassMilliseconds=last['gpuPassMilliseconds'],
+                     frameIntervalMilliseconds=last['frameIntervalMilliseconds']),indent=2))

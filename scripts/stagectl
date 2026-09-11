@@ -1,0 +1,4 @@
+#!/bin/zsh
+set -eu
+export SANCTUARY_CONTROL_ROOT=.soundstage
+exec "${0:A:h}/gardenctl" "$@"

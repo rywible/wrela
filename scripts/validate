@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Exercise the running engine, numerical GPU backend, and agent workflow."""
+import hashlib
+import json
+from pathlib import Path
+import runpy
+import struct
+import time
+
+client = runpy.run_path(str(Path(__file__).with_name('gardenctl')))
+command = client['command']
+root = client['ROOT']
+original = command('status')['state']
+checks = []
+completed = False
+
+def check(name, passed, **evidence):
+    checks.append(dict(name=name, passed=bool(passed), **evidence))
+    if not passed: raise AssertionError(name)
+
+try:
+    report = command('verifyFields')['verification']
+    check('Swift and generated Metal agree', report['passed'], report=report)
+    command('scene', value='garden')
+    command('pause', value=True)
+    command('reset')
+    for _ in range(12):
+        state = command('move', z=2)['state']
+        clearance = state['camera']['position'][1] - state['groundHeight']
+        assert 1.70 <= clearance <= 1.95, clearance
+    check('Grounded route stays above the field', True, finalPosition=state['camera']['position'])
+    command('parameters', scale=1)
+    command('scene', value='studio')
+    command('studioObject', value='seed'); command('view', value='quarter')
+    command('lighting', value='morning')
+    first = command('capture', label='validation-reference')
+    second = command('capture', label='validation-repeat')
+    image = Path(first['path']).read_bytes()
+    check('Captures are native 1080p', struct.unpack('>II', image[16:24]) == (1920,1080))
+    check('Paused captures reproduce exactly', hashlib.sha256(image).digest() == hashlib.sha256(Path(second['path']).read_bytes()).digest())
+    t = command('status')['state']['time']
+    state = command('step', frames=60)['state']
+    check('Fixed stepping advances one second', abs(state['time']-t-1) < 0.01, elapsed=state['time']-t)
+    center = command('query', x=5, y=0, z=12)['podPosition']
+    probe = dict(x=center[0]+0.015, y=center[1], z=center[2])
+    baseline = command('query', **probe)['podDistanceBound']
+    command('parameters', scale=1.4)
+    changed = command('capture', label='validation-scaled')
+    new = command('query', **probe)['podDistanceBound']
+    check('Live scale changes rendering and query', image != Path(changed['path']).read_bytes() and abs(baseline-new)>0.0001,
+          beforeDistance=baseline, afterDistance=new)
+    try:
+        command('parameters', scale=9)
+        rejected = False
+    except RuntimeError:
+        rejected = True
+    check('Invalid edits leave the valid state intact', rejected and abs(command('status')['state']['parameters']['scale']-1.4)<0.0001)
+    for action, values in [('step', dict(frames=1e30)), ('step', dict(frames=1.5)), ('query', dict(x=1e30))]:
+        try:
+            command(action, **values)
+            raise AssertionError(f'Accepted invalid {action}: {values}')
+        except RuntimeError:
+            pass
+    check('Extreme command values fail without crashing', True)
+    check('No GPU command errors', not command('status')['state']['gpuErrors'])
+    completed = True
+finally:
+    c = original['camera']
+    command('studioObject', value=original['studioObject'])
+    command('scene', value=original['scene'])
+    command('lighting', value=original['lighting'])
+    command('sky', **original['sky'])
+    command('parameters', **original['parameters'], wetness=original['wetness'])
+    command('camera', x=c['position'][0], z=c['position'][2], yaw=c['yaw'], pitch=c['pitch'],
+            orbit=c['orbit'], elevation=c['elevation'], distance=c['distance'])
+    command('pause', value=original['paused'])
+    result = dict(timestamp=time.time(), sourceDigest=original['sourceDigest'], passed=completed and all(c['passed'] for c in checks), checks=checks)
+    (root/'validation.json').write_text(json.dumps(result, indent=2))
+    print(json.dumps(result, indent=2))

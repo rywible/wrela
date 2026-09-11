@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": "stone-vessel",
+  "name": "Field-carved stone vessel",
+  "generator": "fields",
+  "parts": [
+    {
+      "name": "Hollow vessel",
+      "color": [0.58, 0.51, 0.39],
+      "material": 5,
+      "roughness": 0.48,
+      "field": {
+        "op": "subtract",
+        "children": [
+          {
+            "op": "blend",
+            "values": [0.08],
+            "children": [
+              {"op": "stretch", "values": [1, 1.3, 1], "children": [{"op": "sphere", "values": [0.48]}]},
+              {"op": "move", "values": [0, 0.55, 0], "children": [{"op": "torus", "values": [0.27, 0.08]}]}
+            ]
+          },
+          {"op": "move", "values": [0, 0.28, 0], "children": [{"op": "stretch", "values": [1, 1.8, 1], "children": [{"op": "sphere", "values": [0.3]}]}]}
+        ]
+      }
+    }
+  ]
+}

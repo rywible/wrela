@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Small synchronous client for Sanctuary's local JSON command protocol."""
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
+import time
+import uuid
+
+ROOT = Path(__file__).resolve().parent.parent / os.environ.get('SANCTUARY_CONTROL_ROOT', '.sanctuary')
+
+def command(action, **kwargs):
+    status_path = ROOT / 'status.json'
+    if not status_path.exists():
+        raise RuntimeError('Start Sanctuary first with ./scripts/run')
+    status = json.loads(status_path.read_text())
+    if status.get('stopped') or time.time() - status.get('heartbeat', 0) > 10:
+        raise RuntimeError('Sanctuary is not responding; launch or restore its window first')
+    request = dict(id=str(uuid.uuid4()), action=action, **kwargs)
+    inbox = ROOT / 'inbox'
+    temp = inbox / (request['id'] + '.tmp')
+    target = inbox / (request['id'] + '.json')
+    temp.write_text(json.dumps(request))
+    os.replace(temp, target)
+    response = ROOT / 'outbox' / (request['id'] + '.json')
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if response.exists():
+            result = json.loads(response.read_text())
+            if not result.get('ok'):
+                raise RuntimeError(result.get('error', 'Command failed'))
+            return result
+        time.sleep(0.04)
+    raise RuntimeError(f'Command {request["id"]} timed out; its acknowledgement may arrive later')
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='action', required=True)
+    for name in ('status', 'reset', 'clearMetrics', 'reloadShaders', 'verifyFields', 'verifySky', 'catalog', 'assetSave', 'assetReload', 'reloadAssets'):
+        sub.add_parser(name)
+    for name, choices in [('scene', ['garden', 'studio']), ('studioObject', ['seed', 'stone', 'branch', 'tree', 'calibration', 'sky']), ('view', ['front', 'quarter', 'back', 'left', 'right', 'above', 'detail', 'base', 'crown', 'sunward', 'away', 'zenith']), ('lighting', ['morning', 'noon', 'golden', 'sunset', 'afterglow', 'overcast', 'rain', 'indoor'])]:
+        sub.add_parser(name).add_argument('value', choices=choices)
+    for name in ('pause', 'profiling', 'meshlets'):
+        sub.add_parser(name).add_argument('value', choices=['true', 'false'])
+    sub.add_parser('capture').add_argument('--label', default='capture')
+    sub.add_parser('step').add_argument('--frames', type=int, default=1)
+    for name, fields in [('camera', ['x', 'z', 'yaw', 'pitch', 'orbit', 'elevation', 'distance', 'metres']),
+                         ('move', ['x', 'z']), ('parameters', ['scale', 'exposure', 'wind', 'wetness']),
+                         ('sky', ['altitude', 'azimuth', 'coverage', 'density', 'haze', 'cloudSeed']),
+                         ('query', ['x', 'y', 'z'])]:
+        p = sub.add_parser(name)
+        for field in fields: p.add_argument('--' + field, type=float)
+    sub.add_parser('subject').add_argument('value')
+    for name in ['assetLoad', 'saveStudy', 'loadStudy']:
+        sub.add_parser(name).add_argument('path')
+    rig=sub.add_parser('rig');rig.add_argument('value',nargs='?')
+    for key in ['x','y','z','intensity','size','warmth','fill']:rig.add_argument('--'+key,type=float)
+    shape=sub.add_parser('shape')
+    for key in ['height','width','trunk','spread','leaves']:shape.add_argument('--'+key,type=float)
+    layout=sub.add_parser('layout');layout.add_argument('--arrangement',choices=['single','grove'])
+    for key in ['scale','focus','roughness','metallic','tint']:layout.add_argument('--'+key,type=float)
+    for key in ['reference','ground','turntable']:layout.add_argument('--'+key,choices=['true','false'])
+    study = sub.add_parser('study', help='Capture a reproducible contact sheet and restore study settings')
+    study.add_argument('--sky-only', action='store_true')
+    replay = sub.add_parser('replay', help='Run an ordered JSON array of commands; write a report')
+    replay.add_argument('file', type=Path)
+    args = vars(parser.parse_args())
+    action = args.pop('action')
+    args = {k:v for k,v in args.items() if v is not None}
+    if action in ('pause', 'profiling', 'meshlets'): args['value'] = args['value'] == 'true'
+    if action == 'layout':
+        for key in ['reference','ground','turntable']:
+            if key in args: args[key]=args[key]=='true'
+    if action == 'study':
+        state = command('status')['state']
+        results = []
+        saved=command('saveStudy',path='study-restore.json')['path']
+        try:
+            command('pause', value=True)
+            command('scene', value='studio')
+            for light in ['noon', 'golden', 'sunset', 'afterglow', 'overcast', 'rain'] + ([] if args['sky_only'] else ['indoor']):
+                command('lighting', value=light)
+                views = ['sunward', 'away', 'zenith'] if args['sky_only'] else ['front', 'quarter', 'back', 'above']
+                for name in views:
+                    command('view', value=name)
+                    results.append(command('capture', label=f'study-{light}-{name}'))
+        finally:
+            command('loadStudy',path=saved)
+        import html
+        report_path = ROOT / 'study.html'
+        cards = []
+        for result in results:
+            path = Path(result['path'])
+            metadata = json.loads(Path(result['metadata']).read_text())
+            label = html.escape(path.stem)
+            cards.append(f'<figure><a href="{path.as_uri()}"><img src="{path.as_uri()}"></a><figcaption>{label}<br>{metadata["shaderDigest"][:12]} · time {metadata["time"]:.2f}s</figcaption></figure>')
+        report_path.write_text('<!doctype html><meta charset="utf-8"><title>Soundstage study</title><style>body{background:#171c23;color:#e8e4d8;font:14px system-ui;margin:28px}main{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}figure{margin:0}img{width:100%}figcaption{padding:8px 0}</style><h1>Soundstage study</h1><p>Actual renderer captures. Click any image for full resolution.</p><main>' + ''.join(cards) + '</main>')
+        report = dict(captures=results, contactSheet=str(report_path))
+        (ROOT / 'study.json').write_text(json.dumps(report, indent=2))
+    elif action == 'replay':
+        sequence = json.loads(args['file'].read_text())
+        if not isinstance(sequence, list): raise RuntimeError('Replay must be an array of command objects')
+        results = []
+        for item in sequence:
+            item = dict(item)
+            results.append(command(item.pop('action'), **item))
+        report = dict(results=results)
+    else:
+        report = command(action, **args)
+    print(json.dumps(report, indent=2))
+
+if __name__ == '__main__':
+    try: main()
+    except (RuntimeError, ValueError, OSError) as error:
+        print(f'gardenctl: {error}', file=sys.stderr)
+        sys.exit(1)
