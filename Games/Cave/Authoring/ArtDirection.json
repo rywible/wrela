@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "name": "The Last Survey",
+  "status": "Working direction \u2014 references are provisional, not approved final art",
+  "intent": "Claustrophobic subterranean horror. Darkness carries the composition; a warm handheld beam reveals damp cool limestone and an almost human silhouette.",
+  "shapeLanguage": "Layered limestone walls, rounded eroded passages and sharp mineral fractures. The Watcher has long asymmetric limbs and a narrow bone mask.",
+  "detailBudget": "Express identity in silhouette and broad color masses first. Surface detail supports form at normal play distance; avoid photographic microdetail on one asset beside simplified neighbors.",
+  "materials": "Rough limestone, damp seams, a worn metal beacon, matte charcoal skin and a chalky mask. Avoid bright ambient fill.",
+  "color": "Desaturated gray-green rock, ivory mask, a warm beam, one cyan beacon accent.",
+  "palette": [
+    {
+      "name": "Deep foliage",
+      "hex": "#354D35"
+    },
+    {
+      "name": "Sunlit leaf",
+      "hex": "#83985A"
+    },
+    {
+      "name": "Warm bark",
+      "hex": "#71543D"
+    },
+    {
+      "name": "Cool stone",
+      "hex": "#7B8588"
+    },
+    {
+      "name": "Dry grass",
+      "hex": "#B4A577"
+    },
+    {
+      "name": "Discovery accent",
+      "hex": "#D8A46C"
+    }
+  ],
+  "reviewQuestions": [
+    "Do these objects share a level of simplification and a readable shape language?",
+    "Does detail density remain consistent at comparable viewing distances?",
+    "Do roughness, saturation and contrast belong to the same painted world?",
+    "Does each material remain recognizable under both lights without exposure compensation?",
+    "What is the deliberate focal point, and what detail can be removed?"
+  ],
+  "references": [
+    {
+      "label": "Limestone",
+      "subject": "limestone"
+    },
+    {
+      "label": "Watcher",
+      "subject": "watcher"
+    }
+  ],
+  "lighting": "One atmosphere and lighting model across the world. Preserve warm/cool separation and readable shadow values; avoid unrelated exposure fixes per object. Clouds need broad, readable masses with controlled small detail and coherent light direction.",
+  "renderLook": {
+    "detail": 1,
+    "roughnessBias": 0,
+    "surfaceSaturation": 0.96,
+    "sunStrength": 1,
+    "ambientStrength": 1.08,
+    "skySaturation": 0.98,
+    "saturation": 0.82,
+    "contrast": 0.98,
+    "warmth": -0.02,
+    "bloom": 0.18
+  }
+}

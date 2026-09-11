@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Explicit local/CI tiers. Native tiers need an exclusive logged-in Mac."""
+import argparse
+from pathlib import Path
+import subprocess
+p=argparse.ArgumentParser();p.add_argument('tier',choices=['quick','simulation','native','performance']);args=p.parse_args()
+root=Path(__file__).resolve().parents[1]
+commands={
+ 'quick':[['quick']],
+ 'simulation':[['run','--game','all']]+[['dst','--game',g,'--seeds','64','--ticks','1200'] for g in ['cave','sanctuary']],
+ 'native':[['render','--game','all'],['gpu-check','--game','sanctuary']]+[['host','--game',g] for g in ['cave','sanctuary']]+[['authoring','--suite',s] for s in ['workshop','authoring','creatures','projects','review']],
+ 'performance':[['perf','--game',g,'--kind',k] for g in ['engine','cave','sanctuary'] for k in ['cpu','gpu']]
+}
+for command in commands[args.tier]:
+ subprocess.run([str(root/'scripts/test'),*command],cwd=root,check=True)

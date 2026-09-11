@@ -178,7 +178,7 @@ Mesh shaders remain the default: indexed drawing was slower in the tested garden
 
 ## Project art-direction layer
 
-`Authoring/ArtDirection.json` supplies a shared `SceneLook` to the game and workshop.
+`Games/Sanctuary/Authoring/ArtDirection.json` supplies a shared `SceneLook` to the game and workshop.
 It leaves physical atmospheric integration intact. Outdoor light-energy scaling and
 sky saturation are applied consistently to visible sky, sky irradiance/reflections,
 solar disk and the authoring plane's horizon term. Surface detail/roughness are
@@ -198,3 +198,18 @@ saturation derivative, persistent transport buffers and a bounded replay checkpo
 cache keyed by seed, forcing and tick. The first uncached replay is still synchronous.
 See `PERFORMANCE_IMPLEMENTATION.md` for visual comparisons, measured CPU gains,
 mixed GPU results and the architectural work still outstanding.
+
+## Diffuse-light stability on smooth creatures
+
+The former 64-sample cosine hemisphere rotated its sample set with each output
+normal. High-contrast clouds then imprinted quadrature error onto smooth surfaces,
+including a tangent-frame discontinuity near the poles. Fixed world directions
+remove that normal-dependent sample movement. The 64×32 diffuse lookup now sums
+128 upper-hemisphere Fibonacci directions and their antipodes weighted by `max(dot(n,d),0)`, normalized by
+`4/N` to store irradiance divided by π. Ground radiance retains its existing
+approximation. This changes diffuse integration, not the sky/cloud model.
+
+`--check-renderer` runs that exact Metal kernel against two constant hemispheres
+and the analytical Lambertian view factor at all 2048 output normals. Its maximum
+absolute radiance error must be below 0.009. Compare smooth surfaces outdoors as
+well as textured terrain: surface noise can hide a lighting defect.

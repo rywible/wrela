@@ -1,0 +1,44 @@
+[
+  {
+    "name": "arrival-live",
+    "setup": [
+      {
+        "action": "camera",
+        "x": 0,
+        "z": 21,
+        "yaw": 0,
+        "pitch": 0.08
+      },
+      {
+        "action": "lighting",
+        "value": "morning"
+      }
+    ],
+    "moving": false,
+    "budgets": {
+      "gpuMilliseconds": 16.67,
+      "cpuSimulationMilliseconds": 2
+    }
+  },
+  {
+    "name": "landscape-sweep",
+    "setup": [
+      {
+        "action": "camera",
+        "x": 0,
+        "z": 21,
+        "yaw": -0.5,
+        "pitch": 0.08
+      },
+      {
+        "action": "lighting",
+        "value": "sunset"
+      }
+    ],
+    "moving": true,
+    "budgets": {
+      "gpuMilliseconds": 16.67,
+      "cpuSimulationMilliseconds": 2
+    }
+  }
+]

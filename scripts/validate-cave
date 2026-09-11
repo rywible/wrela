@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""Run the enclosed-world encounter and save loop through the live game API."""
+import os,sys
+if not os.environ.get('WRELA_CONTROL_ROOT'):
+    os.execv(sys.executable,[sys.executable,str(__import__('pathlib').Path(__file__).with_name('test')),'host','--game','cave'])
+import os,runpy,json,math,uuid
+from pathlib import Path
+os.environ['SANCTUARY_CONTROL_ROOT']='.cave'
+client=runpy.run_path(str(Path(__file__).with_name('gardenctl')));c,root=client['command'],client['ROOT']
+original=c('status')['state'];checks=[];captures=[]
+def check(name,value):
+ checks.append(dict(name=name,passed=bool(value)))
+ if not value:raise AssertionError(name)
+def state():return c('status')['state']['cave']
+try:
+ c('pause',value=True);c('expeditionSlot',name='validation-'+uuid.uuid4().hex[:10])
+ check('Closed game disables atmosphere and large caches',not c('status')['state']['atmosphereEnabled'] and c('status')['state']['skyCacheSize']==[1,1])
+ check('Walls block visibility',not c('query',x=8,y=1.72,z=0)['visible'])
+ c('camera',x=0,z=0,yaw=0,pitch=0);c('move',x=20)
+ check('Capsule cannot cross the passage wall',c('status')['state']['camera']['position'][0]<3)
+ c('camera',x=0,z=-13,yaw=math.atan2(-2.1,5),pitch=0.02)
+ c('flashlight',value=False);c('step',frames=60)
+ check('Darkness does not acquire the creature',state()['scares']==0)
+ captures.append(c('capture',label='cave-dark'))
+ c('flashlight',value=True);c('step',frames=5)
+ check('The beam sees an actual unoccluded figure',state()['illuminated'])
+ captures.append(c('capture',label='cave-watcher'))
+ check('Flashlight visibly changes the image',Path(captures[-1]['path']).read_bytes()!=Path(captures[-2]['path']).read_bytes())
+ c('step',frames=30);check('Looking at the figure triggers withdrawal once',state()['scares']==1)
+ c('step',frames=180);check('Repeated visibility does not repeat the scare',state()['scares']==1)
+ c('interact');check('Beacon cannot be recovered at a distance',state()['phase']=='searching')
+ c('camera',x=3,z=-40,yaw=0,pitch=-0.2);c('interact')
+ check('Recovering the beacon changes the objective',state()['phase']=='returning')
+ c('camera',x=-2.6,z=-26,yaw=-2.467,pitch=0);c('step',frames=1)
+ check('The return encounter reacts to the flashlight',state()['encounter']=='rush' and state()['scares']==2)
+ captures.append(c('capture',label='cave-return-scare'))
+ c('step',frames=90);c('camera',x=0,z=4,yaw=math.pi,pitch=0);c('step',frames=1)
+ check('The complete loop reaches escape',state()['phase']=='escaped')
+ before=state();slot=before['saveSlot'];c('saveExpedition');c('expeditionSlot',name=slot+'-other');c('expeditionSlot',name=slot)
+ check('Save reload preserves progress and encounters',state()==before)
+ try:c('expeditionSlot',name='../expedition');rejected=False
+ except RuntimeError:rejected=True
+ check('Save paths reject traversal',rejected and state()['saveSlot']==slot)
+ check('No GPU command errors',not c('status')['state']['gpuErrors'])
+finally:
+ c('expeditionSlot',name=original['cave']['saveSlot'])
+ p=original['camera'];c('camera',x=p['position'][0],y=p['position'][1],z=p['position'][2],yaw=p['yaw'],pitch=p['pitch'])
+ c('pause',value=original['paused'])
+ report=dict(passed=bool(checks) and all(x['passed'] for x in checks),checks=checks,captures=captures)
+ (root/'validation.json').write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2))

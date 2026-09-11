@@ -14,6 +14,7 @@ p.add_argument('--views',default='front,quarter,back,above')
 p.add_argument('--lights',default='noon,sunset,overcast')
 p.add_argument('--rigs',default='softbox,lamp,room')
 p.add_argument('--motion',type=int,default=1)
+p.add_argument('--creature-sequence',action='store_true',help='Sample a full registered clip or five seconds of idle, independent of playback speed; preserve the current rig')
 p.add_argument('--step',type=int,default=15)
 p.add_argument('--sweep',action='store_true')
 p.add_argument('--label',default='workshop')
@@ -22,6 +23,7 @@ if a.reference:a.reference=a.reference.resolve()
 if a.baseline:a.baseline=a.baseline.resolve()
 if not 1<=a.motion<=24 or not 1<=a.step<=600:p.error('Motion must be 1…24 frames; step must be 1…600 ticks')
 if a.current and (a.baseline or a.style_board):p.error('--current is a single-view capture; use it alone or with --reference')
+if a.creature_sequence and (a.current or a.baseline or a.reference or a.style_board or a.motion<2):p.error('Creature sequences need at least two motion frames and no comparison mode')
 os.environ['SANCTUARY_CONTROL_ROOT']='.soundstage'
 client=runpy.run_path(str(Path(__file__).with_name('gardenctl')));c,root=client['command'],client['ROOT']
 label=''.join(x for x in a.label if x.isalnum() or x in '-_') or 'workshop'
@@ -37,7 +39,7 @@ if a.reference:
     # A comparison report can itself become a baseline: take its newest rendering.
     latest=all_records[-1]['variant']
     if source.get('artDirection'):
-        art=json.loads((root.parent/'Authoring/ArtDirection.json').read_text());reference=[r for r in all_records if r.get('generation')!='Baseline']
+        art=json.loads((Path(c('status')['state']['artDirectionPath'])).read_text());reference=[r for r in all_records if r.get('generation')!='Baseline']
     else:reference=[r for r in all_records if r['variant']==latest]
     if a.current and len(reference)!=1:p.error('Current-view comparison needs a single-frame reference. Omit --current to replay a complete report.')
     for r in reference:
@@ -80,7 +82,7 @@ try:
             synchronized=folder/'synchronized-current.json';synchronized.write_text(json.dumps(current,indent=2))
             variants=[('Baseline source',a.baseline.resolve()),('Current',synchronized)]
         if a.style_board:
-            art=json.loads((root.parent/'Authoring/ArtDirection.json').read_text())
+            art=json.loads((Path(c('status')['state']['artDirectionPath'])).read_text())
             variants=[('Candidate',original)]+[(entry['label'],entry['subject']) for entry in art['references']]+[('Lighting and sky','__environment__')]
         views=['quarter'] if a.style_board else [x.strip() for x in a.views.split(',') if x.strip()]
         lights=[('outdoor','noon'),('outdoor','sunset'),('softbox',None)] if a.style_board else [('outdoor',x.strip()) for x in a.lights.split(',') if x.strip()]+[(x.strip(),None) for x in a.rigs.split(',') if x.strip()]
@@ -91,14 +93,24 @@ try:
                 for view in views:
                     c('loadStudy',path=str(source if isinstance(source,Path) else original));c('pause',value=True)
                     if not isinstance(source,Path):c('subject',value=('sky' if rig=='outdoor' else 'calibration') if source=='__environment__' else source)
+                    sequence=None
+                    if a.creature_sequence:
+                        document=c('status')['state']['workshop']['document']
+                        creature=document.get('creature',{});recipe=document['source'].get('motion')
+                        if not recipe or creature.get('mode','bind')=='bind':raise RuntimeError('Choose a creature motion clip or behavior scenario before recording')
+                        start=0 if creature['mode'] not in ['idle','behavior','bind'] else creature['seconds']
+                        span=c('status')['state']['workshop']['animationDuration'] if creature['mode'] not in ['idle','behavior','bind'] else (5 if creature['mode']=='idle' else (a.motion-1)*a.step/60)
+                        sequence=(start,span,document['rig'])
                     c('layout',turntable=False)
                     if light:c('lighting',value=light)
-                    c('rig',value=rig);state=c('view',value='sunward' if source=='__environment__' and rig=='outdoor' else view)['state'];orbit=state['camera']['orbit'];w=state['workshop'];key=(rig,light,view)
+                    rig_values={k:v for k,v in sequence[2].items() if k!='name'} if sequence and sequence[2]['name']==rig else {}
+                    c('rig',value=rig,**rig_values);state=c('view',value='sunward' if source=='__environment__' and rig=='outdoor' else view)['state'];orbit=state['camera']['orbit'];w=state['workshop'];key=(rig,light,view)
                     if key not in anchors:anchors[key]=(w['cameraDistanceMetres'],w['heightMetres']*w['document']['layout']['focus'])
                     elif not a.style_board and state['studioObject']!='sky':
                         distance,target=anchors[key];c('layout',focus=min(1,max(0,target/w['heightMetres'])));c('camera',metres=distance)
                     for frame in range(a.motion):
                         if frame:c('step',frames=a.step)
+                        if sequence:c('creature',seconds=min(60,sequence[0]+sequence[1]*frame/(a.motion-1)))
                         if a.sweep:c('camera',orbit=orbit+frame*6.28318530718/a.motion)
                         capture(variant,light or rig,view,frame)
 finally:
@@ -109,5 +121,5 @@ report=dict(version=2,records=records,original=str(original),tickSeconds=a.step/
 (folder/'report.json').write_text(json.dumps(report,indent=2))
 write_viewer(folder,records,art)
 if not a.no_open:
-    subprocess.run(['/usr/bin/open','-a',str(root.parent/'.build/Soundstage.app'),str(folder/'index.html')],check=True)
+    subprocess.run(['/usr/bin/open','-a',os.environ.get('WRELA_APP_BUNDLE',str(root.parent/'.build/Soundstage.app')),str(folder/'index.html')],check=True)
 print(json.dumps(dict(viewer=str(folder/'index.html'),report=str(folder/'report.json'),captures=len(records))))

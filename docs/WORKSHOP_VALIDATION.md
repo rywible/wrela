@@ -10,7 +10,7 @@ arrangements, exact studies and a comparison/motion viewer. See
 
 - Edited the tree in the native panel and through the protocol; typical uncached
   field rebuilds took 260–314 ms. Reusing cached recipes took under 1 ms.
-- Saved `Authoring/Assets/tree.json` and verified the garden loaded its parameters.
+- Saved `Games/Sanctuary/Authoring/Assets/tree.json` and verified the garden loaded its parameters.
   Growth recipe: 5.8 m height, 6.8 m crown width, 0.27 m trunk radius, 1.2 branch
   spread, 2,200 leaves. Actual bounds include the root/canopy surfaces.
 - Inspected seed, custom stone vessel, tree and calibration spheres. Used native

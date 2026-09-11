@@ -12,7 +12,7 @@ actual older pixels against current edits or replayed scenes. Style boards group
 candidate and working reference objects, sky views and calibration under matching
 lighting and scene looks. See `SOUNDSTAGE.md` for commands and publication semantics.
 
-The project-wide `Authoring/ArtDirection.json` contains the working brief, palette,
+The project-wide `Games/Sanctuary/Authoring/ArtDirection.json` contains the working brief, palette,
 reference subjects and render look. Global controls affect shared material shading,
 sun/ambient light, sky and atmosphere contributions, and final image grading.
 Preview edits are undoable; Publish project look updates the shared source watched

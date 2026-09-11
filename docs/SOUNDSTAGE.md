@@ -6,6 +6,30 @@ Build with `./scripts/build`, then open `.build/Soundstage.app`. `scripts/sounds
 combines build/open. Its command directory is `.soundstage`; the game's is
 `.sanctuary`. Run one renderer at a time when measuring performance.
 
+## Projects and shared authoring
+
+Select **Sanctuary** or **The Last Survey** in Object → Project, or use
+`stagectl project sanctuary` / `stagectl project cave`. The catalog, anatomy
+controls and ranges, motion clips, behavior scenarios, material recipes and art
+direction all follow the selected project. Changes to a working study are retained
+when switching projects; undo/checkpoints stay within their own project.
+`catalog` is the authority for available parameters and named views.
+
+Use `shape --set KEY VALUE` and `motion --set KEY VALUE` for project-defined
+controls (repeat `--set` for several values). Existing tree/Frostling convenience
+flags remain supported. Canonical assets live at `Games/<Project>/Authoring/Assets`.
+Studies record the project; loading a study for another project requires switching
+first. Older Sanctuary studies remain supported.
+
+The game apps now contain gameplay only. Use this standalone Soundstage for all
+object, animation and lighting inspection. Game commands use `gardenctl` or
+`gamectl --project cave`; authoring uses `stagectl`.
+
+For enclosed environments, generators can supply interior views. Cave provides
+`passage`, `junction` and `chamber`. Pair them with `rig flashlight`: the camera
+and light sit inside the authored field. Standard views restore object orbit.
+See [Cave workflow](CAVE.md) for anatomy, encounters and environment editing.
+
 ## Start here
 
 ```sh
@@ -27,7 +51,7 @@ positions, mesh-build time and source path. Captures include that same exact-fra
 state and source/shader fingerprints. A capture acknowledgement means the PNG and
 metadata were written, not merely requested.
 
-The native inspector has **Object**, **Lighting**, **Look** and **Files** sections.
+The native inspector has **Object**, **Parts**, **Motion**, **Behavior**, **Lighting**, **Look** and **Files** sections.
 The 16:9 viewport occupies its own space. Camera, fit, history, playback and review
 controls remain visible in a fixed dock. Every slider has an editable numeric value
 and a reset button; press Return or leave the field to apply a value. Invalid
@@ -39,7 +63,7 @@ This preserves an unsaved working study; it does not implicitly publish an asset
 ## Subjects and shape authoring
 
 Built-ins: **tree, seed, stone, branch, calibration, sky**. Saved field assets in
-`Authoring/Assets/*.json` join the subject catalog automatically. `stone-vessel`
+`Games/Sanctuary/Authoring/Assets/*.json` join the subject catalog automatically. `stone-vessel`
 is a complete editable example. `studioObject` remains an alias of `subject`.
 
 A tree includes the actual trunk, canopy and generated leaf surfaces. Tree and
@@ -51,13 +75,13 @@ preserve the previous subject. The last six compiled recipes are cached. Shape
 edits preserve physical camera distance; **Fit subject** deliberately reframes.
 
 ```sh
-./scripts/stagectl assetLoad Authoring/Assets/stone-vessel.json
+./scripts/stagectl assetLoad Games/Sanctuary/Authoring/Assets/stone-vessel.json
 ./scripts/stagectl assetReload
 ./scripts/stagectl assetSave
 ```
 
 `assetLoad` accepts an absolute path or a workspace-relative path. `assetSave`
-writes `Authoring/Assets/<id>.json`, including current roughness, metallic and tint
+writes `Games/Sanctuary/Authoring/Assets/<id>.json`, including current roughness, metallic and tint
 overrides. `assetReload` reloads that canonical saved path. Imported paths stay attached to the working subject and are recorded in studies.
 Automatic reload watches that exact path. **Save asset** publishes to the canonical
 asset catalog and switches the watcher to the published path.
@@ -105,8 +129,8 @@ Fields are in **metres**. Operations and ordered values:
 material 7, roughness .7 and metallic 0. Material kinds: 4 bark, 5 stone, 6 seed,
 2 canopy, 8 leaves, 7 plain PBR. Generic parts use the same compiler as Swift
 fields; new operations or specialized Swift generators still require rebuilding.
-Supported bounds span 1 mm...100 m, at most 12 parts, source size under 256 KiB,
-at most 128 field nodes in total, and expression depth under 24. Empty surfaces fail before replacing the subject.
+Supported bounds span 1 mm...100 m, at most 32 parts, source size under 256 KiB,
+at most 256 field nodes in total, and expression depth under 24. Empty surfaces fail before replacing the subject.
 
 ## Independent lighting and environment
 
@@ -298,7 +322,7 @@ stable revision is attempted once. Undoing a reload stays undone until another
 file revision arrives. Specialized Swift generators still require a rebuild.
 
 ```sh
-./scripts/stagectl assetLoad Authoring/Assets/stone-vessel.json
+./scripts/stagectl assetLoad Games/Sanctuary/Authoring/Assets/stone-vessel.json
 ./scripts/stagectl watchSource false
 ./scripts/stagectl watchSource true
 ```
@@ -344,7 +368,7 @@ launched script was forcibly killed before its cleanup could execute.
 
 ## Shared art direction: objects, lighting and sky
 
-`Authoring/ArtDirection.json` is the project-wide source of the art brief, working
+`Games/Sanctuary/Authoring/ArtDirection.json` is the project-wide source of the art brief, working
 palette, reference subject list and `renderLook`. The **Look** inspector previews
 that shared rendering layer across every object, light and sky in the scene:
 
@@ -387,3 +411,99 @@ The first references are explicitly provisional. Global shading and grading can
 unify a scene, but cannot repair incompatible silhouettes, animation, cloud massing
 or detail hierarchy. Those remain source-authoring decisions. Use the style board
 to critique them and replace the working references as the game's direction matures.
+
+## Creature anatomy, animation and behavior
+
+Use the **Authoring section** menu to choose Object, Parts, Motion, Behavior,
+Lighting, Look or Files. These all inspect the same subject and lighting.
+
+Start with `stagectl subject frostling`. Its canonical document is now a short
+**anatomy preset**, not an expanded field tree. Object exposes head size, cheeks,
+body proportions, ear length/width/splay, eye size/spacing, paws and tail. Eyes are
+seated against the head surface when proportions change; facial features and ears
+follow the head frame. `Game/FrostlingRecipe.swift` is the readable Swift recipe
+that expands these controls into named fields. New species can supply different
+recipes; this is one creature family, not a universal anatomy generator.
+
+```sh
+./scripts/stagectl subject frostling
+./scripts/stagectl shape --headSize 1.1 --cheeks 1.02 --earLength 0.92
+./scripts/stagectl creature --mode idle --seconds 0
+./scripts/stagectl view front
+./scripts/stagectl rig softbox
+./scripts/stagectl assetSave
+```
+
+**Parts** selects stable IDs, isolates a part together with its attachments, and
+frames that selection. Offset, rotation, scale, pivot and parent are editable.
+Eyes, ear linings and nose inherit their parent's complete transform. Attachment
+cycles, missing parents, duplicate identities and invalid bounds are rejected
+before replacing the current object. The generated creature stores exceptional
+edits as compact `partOverrides`; ordinary anatomy authoring needs no pivots.
+Raw field assets can still provide optional `joint` records with `id`, `parent`,
+`pivot`, `offset`, `rotation` (XYZ degrees) and uniform `scale`. All fields share
+bind coordinates in metres; joints transform around bind pivots, not mesh centers.
+
+```sh
+./scripts/stagectl part head --isolated true
+./scripts/stagectl framePart
+./scripts/stagectl partEdit --yaw 12
+./scripts/stagectl part all --isolated false
+```
+
+**Motion** offers bind pose, idle, hop and behavior-driven animation. Play/pause,
+slow playback, timeline scrubbing, previous/next frame and restart all work on the
+same recipe used in Sanctuary. In hop mode the slider spans one cycle. Tune hop
+duration, stride, height, crouch, ear follow-through, breath, blink frequency and
+idle attention, then Save motion recipe. Head attention settles between gaze
+changes; blinks have variable spacing and occasional double blinks. The eyes
+close geometrically, with correct normals under nonuniform transforms. Paw
+support phases hold still; movement and turning occur in the flight phase.
+
+```sh
+./scripts/stagectl creature --mode hop --seconds 0.4 --rate 0.25
+./scripts/stagectl motion --height 0.16 --crouch 0.06 --attention 0.65
+./scripts/stagectl motionReview
+```
+
+Capture motion strip / Review behavior sequence creates a scrub-friendly native
+HTML review with exact per-frame studies and metadata. It samples both front and
+side views under the current rig, retaining custom light positions and strength.
+A hop strip covers a full cycle regardless of playback speed; idle covers five
+seconds, and behavior eleven seconds from the current time. The command-line
+equivalent adds `--creature-sequence --motion 12`.
+Existing `workshop-study --motion ... --step ...`
+works for arbitrary combinations of views, wetness and lighting. A motion or
+attachment-only edit reuses the compiled geometry. Anatomy changes compile a
+candidate; every successful edit supports undo/redo and exact study replay.
+
+**Behavior** runs the actual shared brain with deterministic scenarios: calm
+visitor, startle, recovery, occluded visitor, food and an obstacle. Restart, seek,
+step or Run 10 seconds; choose a seed to vary excursions. Frame encounter shows
+the whole test area; Follow creature tracks the actor with the camera. Blue/red
+marks a calm/running visitor, green food, gray an obstacle, orange the landing
+target. The inspector exposes fear, current decision and recent reasons; status
+and captured metadata retain the bounded decision trace. Manual visitor position,
+running and visibility override the scripted stimulus; seeking replays that
+constant override from the beginning. Restart scenario restores scripted inputs.
+
+```sh
+./scripts/stagectl creature --scenario recovery --seconds 4 --follow false
+./scripts/stagectl stimulus --x 0 --z 3 --running true --visible true
+./scripts/stagectl step --frames 120
+./scripts/validate-creatures
+```
+
+Studies include the complete creature clock, seed, brain, hop state, selection and
+stimulus. Loading a study restores both the picture and future decisions. Game
+saves preserve the same simulation; older expedition saves initialize the actor
+at the correct den/home. `gardenctl reloadAssets` reloads its published anatomy
+and motion. The game supplies terrain and solid traversal checks and line of
+sight independently of the player's camera direction.
+
+Current limits: rigid articulated parts, not skinning, muscle simulation or
+terrain foot IK; one bounded creature behavior with simple steering, not a full
+navigation/ecology system. Material 9 is a filtered short-coat surface plus an
+approximate grazing sheen, not individual hairs. The visual target remains cute,
+soft and painterly. Avoid protruding eyeballs, segmented ears and busy mouth
+anatomy when refining this character.

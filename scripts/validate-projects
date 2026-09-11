@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Exercise project isolation and game-defined authoring in the running Soundstage."""
+import os,sys
+if not os.environ.get('WRELA_CONTROL_ROOT'):
+    os.execv(sys.executable,[sys.executable,str(__import__('pathlib').Path(__file__).with_name('test')),'authoring','--suite','projects','--game','sanctuary'])
+import os,runpy,json,hashlib
+from pathlib import Path
+os.environ['SANCTUARY_CONTROL_ROOT']='.soundstage'
+c=runpy.run_path(str(Path(__file__).with_name('gardenctl')))['command']
+s=c('status')['state'];saved=c('saveStudy',path='project-validation-restore.json')['path'];checks=[]
+def doc():return c('status')['state']['workshop']['document']
+def check(name,value):
+ checks.append(dict(name=name,passed=bool(value)))
+ if not value:raise AssertionError(name)
+def image(label):return Path(c('capture',label=label)['path']).read_bytes()
+def reject(action,**v):
+ try:c(action,**v);return False
+ except RuntimeError:return True
+try:
+ c('project',value='cave');c('pause',value=True)
+ cat=c('catalog')['catalog'];check('Cave catalog excludes Sanctuary assets','watcher' in cat['subjects'] and 'frostling' not in cat['subjects'])
+ c('subject',value='watcher');c('rig',value='softbox');c('view',value='quarter');c('shape',height=1.08,mask=.95)
+ check('Game-defined anatomy compiles',abs(doc()['source']['parameters']['height']-1.08)<.0001)
+ check('Shared control keys use game-specific ranges',reject('shape',height=5))
+ c('motion',sway=.8);c('creature',mode='lunge',seconds=.3)
+ a=image('project-lunge');c('creature',seconds=.7);check('Game-defined animation changes pixels',a!=image('project-lunge-later'))
+ c('creature',mode='behavior',scenario='beam',seconds=1.3);c('saveStudy',path='cave-brain-replay.json')
+ c('step',frames=60);future=doc()['creature'];c('loadStudy',path='cave-brain-replay.json');c('step',frames=60)
+ check('Opaque Cave brain restores its exact future',future==doc()['creature'])
+ c('creature',scenario='dark',seconds=2);check('Dark scenario leaves encounter waiting',doc()['creature']['actor']['state']=='watching')
+ c('subject',value='cave');c('rig',value='flashlight');c('view',value='junction');c('saveStudy',path='cave-interior-replay.json')
+ before=image('project-interior');c('view',value='quarter');c('loadStudy',path='cave-interior-replay.json')
+ check('Interior camera/light reproduces exact pixels',before==image('project-interior-replay'))
+ c('shape',width=1.1);check('Cave environment edits change the interior',before!=image('project-interior-wide'))
+ working=doc();c('project',value='sanctuary')
+ check('Sanctuary catalog excludes Cave assets','watcher' not in c('catalog')['catalog']['subjects'])
+ check('Wrong-project study fails atomically',reject('loadStudy',path='cave-interior-replay.json') and c('status')['state']['project']=='sanctuary')
+ c('project',value='cave');check('Switching projects preserves the working study',doc()==working)
+ check('No GPU command errors',not c('status')['state']['gpuErrors'])
+finally:
+ c('project',value=s['project']);c('loadStudy',path=saved)
+ report=dict(passed=bool(checks) and all(x['passed'] for x in checks),checks=checks)
+ Path('.soundstage/project-validation.json').write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2))

@@ -1,15 +1,35 @@
 #!/usr/bin/env python3
-"""Fail when game/workshop ownership leaks back into field math or GPU rendering."""
+"""Verify engine/tool ownership and declared module dependency direction."""
 from pathlib import Path
-import re
+import re,json,subprocess
 root=Path(__file__).resolve().parent.parent
-rules=[('Sources/FieldCore',r'\b(?:SanctuaryContent|GardenWorld|AssetSource|Expedition|Terrain)\s*(?:\(|\{|:)'),
-       ('Sources/FieldCompiler',r'\b(?:SanctuaryContent|GardenWorld|AssetSource|Expedition)\b'),
-       ('Sources/SanctuaryGame/Runtime',r'\b(?:SanctuarySession|GardenWorld|AssetSource|WorkshopSession|Expedition|SanctuaryContent)\b')]
-failures=[]
+rules=[('Engine',r'\b(?:import (?:SanctuaryContent|SanctuaryProject|CaveContent|CaveProject|SoundstageKit)|GardenWorld|ExpeditionPresentation|FrostlingRecipe|WatcherRecipe)\b'),
+ ('Tools/SoundstageKit',r'\b(?:import (?:SanctuaryContent|SanctuaryProject|CaveContent|CaveProject)|CreatureMotion|CreatureSimulation|CreatureScenario|FrostlingRecipe|WatcherRecipe|GardenWorld)\b')]
+fail=[]
 for folder,pattern in rules:
-    for path in (root/folder).rglob('*.swift'):
-        for n,line in enumerate(path.read_text().splitlines(),1):
-            if re.search(pattern,line):failures.append(f'{path.relative_to(root)}:{n}: {line.strip()}')
-if failures: raise SystemExit('\n'.join(failures))
-print('Field, compiler and GPU ownership boundaries passed.')
+ files=list((root/folder).rglob('*.swift'))
+ if not files:fail.append('Missing boundary folder: '+folder)
+ for path in files:
+  for n,line in enumerate(path.read_text().splitlines(),1):
+   if re.search(pattern,line):fail.append(f'{path.relative_to(root)}:{n}: {line.strip()}')
+package=json.loads(subprocess.check_output(['swift','package','dump-package'],cwd=root))
+targets={t['name']:t for t in package['targets']}
+def deps(name):return [next(iter(d.values()))[0] for d in targets[name]['dependencies']]
+for name in ['FieldCore','FieldCompiler','SimulationCore','TestKit','EngineTesting','FieldEngine','GameHost','SoundstageKit']:
+ for d in deps(name):
+  if d.startswith(('Sanctuary','Cave')):fail.append(f'{name} imports game target {d}')
+def closure(name):
+ result={name}
+ for d in deps(name):
+  if d in targets:result|=closure(d)
+ return result
+for name,other in [('CaveApp','Sanctuary'),('SanctuaryApp','Cave')]:
+ if any(d.startswith(other) for d in closure(name)):fail.append(f'{name} transitively imports {other}')
+ if 'SoundstageKit' in closure(name):fail.append(f'{name} depends on the editor')
+for name in ['WrelaTest','TestKit','SanctuaryContent','CaveContent']:
+ if closure(name) & {'FieldEngine','GameHost','SoundstageKit'}:fail.append(f'{name} depends on a renderer/window/editor')
+for folder in ['Engine/SimulationCore','Engine/TestKit','Games/Sanctuary/Content','Games/Cave/Content']:
+ for path in (root/folder).rglob('*.swift'):
+  if re.search(r'^import (?:Metal|MetalKit|AppKit)\b',path.read_text(),re.M):fail.append(f'{path} imports a graphics/window API')
+if fail:raise SystemExit('\n'.join(fail))
+print('Engine, game and workshop module boundaries passed; games do not depend on each other or the editor.')

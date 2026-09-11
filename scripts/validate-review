@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""Verify the native Capture & review subprocess inherits its isolated workspace."""
+import json
+import os
+from pathlib import Path
+import runpy
+import sys
+import time
+if not os.environ.get('WRELA_CONTROL_ROOT'):
+    os.execv(sys.executable,[sys.executable,str(Path(__file__).with_name('test')),'authoring','--suite','review'])
+client=runpy.run_path(str(Path(__file__).with_name('gardenctl')))
+c,root=client['command'],client['ROOT']
+c('pause',value=True)
+c('subject',value='frostling')
+c('rig',value='softbox')
+c('view',value='quarter')
+c('captureReview')
+deadline=time.monotonic()+40
+while time.monotonic()<deadline:
+    authoring=c('status')['state']['workshop']['authoring']
+    if not authoring['reviewRunning']:
+        break
+    time.sleep(.1)
+assert authoring['reviewStatus']=='Review ready',authoring
+viewer=Path(authoring['lastReview'])
+assert viewer.is_relative_to(root),viewer
+assert viewer.is_file(),viewer
+result=dict(passed=True,checks=[dict(name='Native review subprocess uses isolated command root and produces a viewer',passed=True)],viewer=str(viewer))
+(root/'review-validation.json').write_text(json.dumps(result,indent=2))
+print(json.dumps(result,indent=2))

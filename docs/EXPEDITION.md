@@ -17,8 +17,7 @@ garden and releases the resident. Ice flowers develop over about 18 simulated
 seconds. Visit the settled creature for a hint about something farther north.
 There is no second creature or playable legendary encounter in this build.
 
-**WASD** walks, **Shift** runs, dragging/arrows look, and **P** pauses. **H** reveals
-existing authoring/debug controls, hidden by default. The first habitat has a
+**WASD** walks, **Shift** runs, dragging/arrows look, and **P** pauses. Use the separate Soundstage for authoring. The first habitat has a
 fixed location: free building placement and terraforming are future work.
 
 Progress autosaves every five simulated seconds, on successful interactions, and
@@ -30,9 +29,9 @@ preserved. An unreadable save is not silently reset.
 
 ## Author and test
 
-`Authoring/Assets/frostling.json` is an ordinary composed field asset, available as
-`stagectl subject frostling`. Its current pose is a collection of procedural body
-parts with simple breathing/foot motion and bounded wandering. It is an initial
+`Games/Sanctuary/Authoring/Assets/frostling.json` is a compact semantic anatomy and motion recipe, available as
+`stagectl subject frostling`. Its field recipe generates attached body parts with blinking, breathing, coordinated
+hops and seeded behavior. It is an initial
 silhouette and gameplay stand-in, not a finished animal locomotion system.
 
 ```

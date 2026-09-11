@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Exercise the real workshop's motion/behavior authoring, rejection and replay."""
+import os,sys
+if not os.environ.get('WRELA_CONTROL_ROOT'):
+    os.execv(sys.executable,[sys.executable,str(__import__('pathlib').Path(__file__).with_name('test')),'authoring','--suite','creatures','--game','sanctuary'])
+import hashlib,json,os,runpy
+from pathlib import Path
+os.environ['SANCTUARY_CONTROL_ROOT']='.soundstage'
+client=runpy.run_path(str(Path(__file__).with_name('gardenctl')));c,root=client['command'],client['ROOT']
+saved=c('saveStudy',path='creature-validation-restore.json')['path'];checks=[]
+def state():return c('status')['state']
+def doc():return state()['workshop']['document']
+def check(name,result):
+    checks.append(dict(name=name,passed=bool(result)))
+    if not result:raise AssertionError(name)
+def reject(action,**values):
+    try:c(action,**values)
+    except RuntimeError:return True
+    return False
+def image(label):
+    r=c('capture',label=label);return hashlib.sha256(Path(r['path']).read_bytes()).hexdigest()
+try:
+    c('pause',value=True);c('subject',value='frostling');c('rig',value='softbox');c('view',value='quarter')
+    original_source=doc()['source']
+    check('Creature source stores anatomy instead of expanded field trees',original_source['generator']=='frostling' and not original_source.get('parts'))
+    c('shape',headSize=1.18,eyeSpacing=.9)
+    check('Semantic anatomy edit reaches source',doc()['source']['parameters']['headSize']==1.18)
+    c('undo');check('Anatomy undo restores the source',doc()['source']==original_source)
+    check('Invalid anatomy edits rejected',reject('shape',headSize=8))
+    check('Malformed playback flag rejected',reject('creature',follow='perhaps'))
+    check('Unknown authoring parameter rejected',reject('creature',speed=3))
+    c('creature',mode='idle',seconds=3.85)
+    check('Expression telemetry exposes the closed blink',state()['workshop']['blink']>.98)
+    c('creature',mode='hop',seconds=.4)
+    before=image('motion-original');original=doc()
+    c('motion',height=.25);after=image('motion-edited')
+    check('Motion edits visibly change the shared pose',before!=after)
+    check('Motion edits reuse compiled fields',state()['workshop']['buildMilliseconds']<50)
+    c('undo');check('Motion undo restores exact pixels',image('motion-undo')==before)
+    check('Invalid motion edit rejected',reject('motion',height=.2,duration=0))
+    check('Rejected motion edit is atomic',doc()==original)
+    c('part',value='head');c('partEdit',yaw=25)
+    check('Named joint edit changes pose',image('head-turn')!=before)
+    check('Attachment edits reuse compiled fields',state()['workshop']['buildMilliseconds']<50)
+    stable=doc();check('Attachment cycle rejected',reject('partEdit',parent='eyes'))
+    check('Rejected attachment keeps source and view',doc()==stable)
+    c('undo');check('Attachment undo restores pose',image('head-undo')==before)
+    c('part',value='head',isolated=True);check('Isolating an attachment group changes image',image('head-isolated')!=before)
+    c('framePart');check('Part framing is active',doc()['creature']['focusPart'])
+    c('part',value='all',isolated=False);c('view',value='quarter')
+    for scenario,expected in [('calm','watching'),('forage','feeding'),('obstacle','feeding')]:
+        c('creature',scenario=scenario,seconds=20)
+        check(scenario+' reaches expected state',state()['workshop']['creature']['state']==expected)
+    c('creature',scenario='startle',seconds=4)
+    check('Fast visible visitor provokes fear',state()['workshop']['creature']['fear']>.9)
+    check('Behavior trace records cause',any(e['reason']=='Visible fast approach' for e in state()['workshop']['creature']['events']))
+    c('creature',scenario='recovery',seconds=15)
+    check('Creature recovers after threat ends',state()['workshop']['creature']['fear']==0)
+    c('creature',scenario='occluded',seconds=10)
+    check('Occluded visitor does not startle creature',state()['workshop']['creature']['fear']==0)
+    c('creature',scenario='forage',seconds=1.8)
+    snapshot=c('saveStudy',path='creature-replay.json')['path'];a=image('brain-checkpoint')
+    c('step',frames=120);future=doc()['creature'];b=image('brain-future')
+    c('loadStudy',path=snapshot);check('Study restores exact animation pixels',image('brain-restored')==a)
+    c('step',frames=120);check('Restored brain has identical future state',doc()['creature']==future)
+    check('Restored brain has identical future pixels',image('brain-future-restored')==b)
+    c('creature',scenario='calm',seconds=0);c('stimulus',running=True);c('step',frames=120)
+    check('Manual stimulus drives the actual brain',state()['workshop']['creature']['fear']>.9)
+    check('Invalid timeline rejected',reject('creature',seconds=-1))
+    check('Unknown scenario rejected',reject('creature',scenario='made-up'))
+    check('No GPU command errors',not state()['gpuErrors'])
+finally:
+    c('loadStudy',path=saved)
+    report=dict(passed=bool(checks) and all(x['passed'] for x in checks),checks=checks)
+    (root/'creature-validation.json').write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2))

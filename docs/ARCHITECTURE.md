@@ -1,89 +1,118 @@
-# Architecture: build the game, extract what it teaches us
+# Wrela architecture
 
-The current milestone is one complete sanctuary expedition. This is a bounded
-separation of existing responsibilities, not a general-purpose engine API freeze.
+Wrela is one Swift package with three applications: Sanctuary, The Last Survey
+(Cave), and Soundstage. Games are top-level projects depending on a common engine.
+Soundstage loads their registrations; game executables do not link the editor or
+each other. `scripts/check-boundaries` checks imports and the product dependency graph.
 
-## Ownership and dependency direction
+## Ownership
 
-- **FieldCore** defines shapes, gradients, conservative bounds, the `HeightField`
-  sampling contract, wind/weather math and deterministic random generation. It
-  does not contain this game's terrain recipe.
-- **FieldCompiler** consumes those definitions and produces mesh/LOD/meshlet data
-  and numerical Metal evaluation. A height-field implementation is supplied by
-  the caller; the compiler does not import Sanctuary content.
-- **SanctuaryContent** defines the garden's terrain and its patch certificates,
-  expedition state machine, fixed-step trust/habitat rules and versioned saves.
-  It has no AppKit, Metal or renderer dependency. Gameplay is unit-testable.
-- **SanctuaryGame/Runtime** owns GPU resources, frame encoding, culling, atmosphere,
-  post-processing and capture readback. `MetalRenderer` accepts a `RenderFrame`
-  containing uniforms, wind state and ordered `RenderItem`s. The scene supplies
-  transforms, material overrides, sidedness and shadow participation. GPU drawing
-  does not instantiate a garden, inspect a workshop or execute rescue rules.
-- **SanctuaryGame/Game** assembles content and prepares those frames.
-  `SanctuarySession` is the application composition root and fixed-step coordinator.
-  `ExpeditionController` owns game progress and persistence;
-  `ExpeditionPresentation` translates that state into cached geometry and transforms.
-- **SanctuaryGame/Authoring** owns workshop editing, undo, source reloads, reviews,
-  studies and project-look publication. It uses the same GPU renderer as the game.
-  AppKit input/HUD and the local agent bridge call the same session actions.
+| Location | Owns |
+| --- | --- |
+| `Engine/FieldCore` | Shapes, field bounds, metre units, wind, attachment transforms, 3D visibility and capsule queries |
+| `Engine/FieldCompiler` | Surface extraction, simplification, meshlets and numerical Metal field verification |
+| `Engine/FieldEngine` | Metal renderer, atmosphere, PBR, frame composition, procedural spatial audio, project/asset contracts |
+| `Engine/GameHost` | Native game window, input, fixed ticks, HUD presentation and command transport |
+| `Games/Sanctuary/Content` | Terrain, ecology/expedition rules, Frostling motion and versioned persistence |
+| `Games/Sanctuary/Project` | Field recipes, registrations and Sanctuary scene assembly |
+| `Games/Cave/Content` | Volumetric cave field and deterministic encounter/objective rules |
+| `Games/Cave/Project` | Watcher recipe/motion, registrations and Cave scene assembly |
+| `Games/*/Authoring` | Each game's published asset recipes, art direction and procedural surface materials |
+| `Tools/SoundstageKit` | Project-independent editing, undo, capture review, animation and behavior inspection |
+| `Tools/Soundstage` | Application composition: registers the two projects |
+| `Tools/AgentTools` | Shared command client used by stagectl, gamectl and gardenctl |
 
-These folders remain in one application target deliberately. The first boundary
-is ownership and a concrete frame interface, not a network of tiny frameworks.
-`SessionDiagnostics` forwards existing tool properties to their GPU owner to
-preserve the established protocol. It is an explicit compatibility layer.
+The dependency direction is games/tools → engine. Shared contracts use Swift
+`package` access: this is a source monorepo, not a promised stable binary SDK.
 
-Run `scripts/check-boundaries` to catch accidental game/editor dependencies in
-math, compilation or GPU code. Module-level tests enforce the content/library
-separation; image replay checks the renderer split.
+## Authoring contract
 
-## Behavior and rendering
+A `GameProject` supplies its identity, asset directory, generators, atmosphere
+capability and `GameExperience` constructor. `AssetGenerator` supplies semantic
+controls with units/ranges, generated parts or a custom compiler, optional
+animation, and optional interior inspection cameras. IDs are scoped to a project.
+The same source compiles in the game and Soundstage; neither has a parallel
+creature model or hand-maintained list of species-specific inspector controls.
 
-The frame loop advances game rules at 60 fixed ticks per simulated second, prepares
-render items, then submits GPU work. Pausing freezes the rules; exact stepping uses
-the same function. The first creature's body parts and habitat primitives compile
-once. Breathing, foot motion, bounded wandering and flower growth change transforms
-or visibility. The frost patch is a static terrain-conforming overlay, not live
-snow transport or soil simulation.
+`AssetSource` stores a compact generator recipe plus optional stable part
+overrides. Explicit `fields` assets still support direct composition. Semantic
+Swift recipes expand to `FieldExpression`/`Shape`, then to meshes. Geometry caches
+exclude pose settings. Animation changes transforms of compiled parts.
 
-The first expedition state retains a stable creature identity, signs discovered,
-trust, rescue/release phase, habitat growth, narrative discovery and player pose.
-Atomic saves contain those facts, never generated meshes. See `EXPEDITION.md`.
+`AnimationDefinition` provides clips, durations, pose/root functions and a
+fixed-step behavior adapter. The game owns its brain and versioned state.
+Soundstage stores an opaque deterministic snapshot plus display telemetry, and
+calls the same brain through seeded scenarios. It owns time, stimuli, playback,
+selection and replay, not rescue or scare policy. Scenario bounds and interior
+views are supplied by the project instead of assuming an outdoor origin.
 
-## What is intentionally not generalized yet
+Materials are project-owned Metal snippets inserted into the common surface
+pipeline. `projectSurface` adjusts albedo, roughness and bump inputs before shared
+PBR and scene grading. This is a deliberately small shader contract, with existing
+integer material categories; it is not a finished arbitrary material-graph DSL.
+Art direction remains global within a project and affects objects, lights and sky.
 
-The material shader still contains Sanctuary-specific surface recipes, including
-the path appearance. Its material categories and the field asset JSON format are
-existing implementation contracts, not a finished extensible material language.
-The workshop has specialized tree controls. `SanctuarySession` still coordinates
-the game and workshop, and its established diagnostic facade remains in place.
-Future work should extract typed material/generator interfaces from actual plant,
-geology and gameplay implementations rather than inventing a universal plugin API.
+## Runtime contract
 
-Next: playtest discovery pacing with the intended player; improve the first
-creature's animation and appeal; implement meaningful habitat choices and a second
-species interaction. General engine reuse gets its separate example only after
-those gameplay requirements are understood. Terrain editing, water, streaming and
-full ecological simulation are separate milestones, not implied by this cleanup.
+A `GameExperience` owns player pose, lighting choices, render items, HUD facts,
+interaction, rules and saves. The host advances it at 60 fixed ticks per simulated
+second. `FrameComposer` supplies common camera/light uniforms; `MetalRenderer`
+receives prepared frames and knows no expedition, creature or editor state.
+Cave uses a perspective shadowed spotlight and fixed exposure. Closed-world
+projects skip the large atmospheric caches and their update work. Soundstage can
+still inspect Cave objects under the outdoor atmosphere.
 
-## Verification of this pass
+Sanctuary retains its height-field terrain and grounded movement. Cave has a true
+3D solid field with ceilings, walls, branch passages and floor; capsule movement
+and beam visibility query that field. Large cave surfaces and small outcrops
+compile in separate bounds to preserve local detail. Collision combines their
+source fields. Rasterized surfaces remain approximations of those definitions.
 
-The initial renderer split produced a byte-identical 1920×1080 paused tree capture
-against the pre-refactor running build. The terrain optimization and existing
-performance work were preserved. Art/content added afterward is intentionally new.
-Reports live under `.soundstage/architecture-comparison.json` and
-`.sanctuary/expedition-validation.json`. Use the native computer-use loop as well as
-tests: no state-machine assertion establishes that the experience is fun.
+Audio uses procedural mono buffers positioned through an AVAudioEnvironmentNode.
+Cave emits drips, distant scrapes and encounter impacts. This is spatial playback,
+not simulated acoustic wave propagation or field-derived reverberation.
 
-Final validation: 37 unit tests and 75 running-app checks passed (15 expedition,
-9 game, 15 stage, 17 workshop, 19 authoring). All Metal pipelines compiled on M4.
-The native loop covered three clues, rescue, return, release and the resident's
-hint; closing/reopening retained the named playtest's resident and habitat.
-The final authoring loop exercised precise wetness editing, undo and native HTML
-review. A 32-frame creature study covers four views across six skies and two
-indoor rigs; the shared style board compares working references.
+## Persistence and workflow
 
-A 10.19-second live home/habitat check submitted 60.07 fps, GPU median 9.45 ms,
-p95 10.75 ms, maximum 15.61 ms. Frame interval median was 16.67 ms, maximum
-17.61 ms. This is a short fixed-view workload check, not a full-route or thermal
-guarantee. Evidence: `.sanctuary/architecture-validation.json` and
-`.sanctuary/profiles/first-expedition-20260911-094308.json`.
+Player progress remains at `.sanctuary/saves/`; Cave uses `.cave/saves/`.
+Validation uses named slots and restores the player's slot. Meshes are rebuilt
+from code/recipes and are never save-game truth.
+
+Soundstage uses `.soundstage` for its command protocol and shared capture reports.
+Checkpoints/review state are scoped under `.soundstage/projects/<id>/`.
+Switching projects remembers each working study, changes materials and catalog,
+and clears cross-project edit history. Existing Sanctuary checkpoints are copied
+forward without overwriting newer work. Last-session studies carry project IDs;
+legacy Sanctuary studies remain readable.
+
+Build individual products with `swift build --product Cave` (or Sanctuary or
+Soundstage). `scripts/build` produces all three locally signed app bundles.
+Swift changes need an app restart; recipe edits and shader reloads do not.
+See `SOUNDSTAGE.md` and `CAVE.md` for concrete workflows.
+
+## Limits
+
+The cave is a bounded architecture stress test: one creature, two controlled
+encounters, one objective and a return route. It is not a second flagship game.
+Its rock/creature art and sound are prototypes. No streaming, general navigation,
+rigid-body physics, terrain persistence, water or complete ecological simulation
+is implied. Atmosphere/weather approximations remain documented in ATMOSPHERE.md.
+This separation enables further games without claiming the engine is finished.
+
+See `MONOREPO_VALIDATION.md` for evidence and measured limits of this migration.
+
+## Production simulation and testing
+
+`SimulationCore` contains the renderer-free `GameSimulation` contract and player/input types.
+`CaveWorld` and `SanctuaryWorld` in their games' Content targets now own production movement,
+collision, visibility and simulation coordination. The native experiences delegate to them.
+Sanctuary's shared procedural layout supplies both renderer placements and CPU collision solids,
+including the same placement RNG continuation used for grass. GPU meshes are presentation data.
+
+`Engine/TestKit` supplies typed scenarios, deterministic campaigns, recordings, replay and CPU
+measurement. Game-owned Testing targets supply fixtures, assertions and workloads. The WrelaTest
+executable imports these registration targets without importing FieldEngine, GameHost, Metal or
+Soundstage. Tools/Testing owns the launcher and reporting; its native driver runs recorded inputs
+against the real GameHost simulation and compares state. `GameProject.inspectSimulation` adapts
+opaque game checkpoints into a generic Soundstage creature inspection without game imports in
+the editor. See [TESTING.md](TESTING.md) for contracts, commands and explicit limits.
