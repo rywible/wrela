@@ -18,6 +18,9 @@ save slot, move command files, or restore your workshop after a test.
 | Field/Metal numerical agreement | `./scripts/test gpu-check --game sanctuary` | CPU/GPU field comparison and sky traversal verification |
 | Workshop transactions | `./scripts/test authoring --suite workshop` | Isolated Soundstage; shape, rig, animation and exact study replay |
 | Other editor contracts | `./scripts/test authoring --suite authoring` | Undo/redo, file watching, checkpoints and style; also `creatures`, `projects` and native `review` suites |
+| Creature craft | `./scripts/test authoring --suite craft` | All five craft source families, strict rejection, bounded pose fitting, guide/cloth compilation, undo and exact future pixels |
+| Creature source and replay | `./scripts/test authoring --suite dynamics` | Guide sculpting, local finish, atomic rejection, geometry reuse and exact future pixels; also `creature-tools` and `performance` suites |
+| Agent sculpting | `./scripts/test authoring --suite sculpt` | Actual-render pixel/source selection, bounded intent fitting, influence preview, conflict rejection, layers, matched alternatives and exact study/pixel replay |
 | Seed campaign | `./scripts/test dst --game sanctuary --seeds 24 --ticks 900 --seed 17` | Deterministic production simulation, invariants, restore perturbations and coverage |
 | Engine CPU performance | `./scripts/test perf --game engine --kind cpu` | Field evaluation, meshing and wind workloads |
 | Game simulation performance | `./scripts/test perf --game sanctuary --kind cpu` | Game-owned one/16-actor workloads, 60 ticks each |
@@ -28,6 +31,12 @@ save slot, move command files, or restore your workshop after a test.
 `--output` chooses a **new** report directory. No external Python packages are required.
 A warm full quick suite is roughly 10–15 seconds on the current machine; focused release
 simulation scenarios themselves take milliseconds. First builds are longer.
+
+`swift test --filter WorkshopDocumentTests` checks the editor's study codec without
+creating a renderer or window: rich source/pose replay, old formatted studies,
+neutral-review metadata and preservation of the previous save when writing fails.
+These tests also run in the shared `quick` loop. Actual clay pixels, hidden-part
+shadows, native controls and study replay still require the authoring suite.
 
 The old `validate`, `validate-expedition`, `validate-cave`, `validate-workshop`,
 `validate-authoring`, `validate-creatures` and `validate-projects` entry points now dispatch

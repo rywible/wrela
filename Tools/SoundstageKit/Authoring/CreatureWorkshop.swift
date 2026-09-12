@@ -5,11 +5,16 @@ import simd
 
 /// Entire authoring clock and brain snapshot travel with a study and undo entry.
 struct CreatureWorkshop: Codable {
+  var rehearsal = RehearsalSurface()
+  var contactView = false
+  var contactSolving = true
+  var rigView = false
   var recording: String?
   var mode = "bind"
   var scenario = ""
   var generator = ""
-  var definition: AnimationDefinition? { ProjectContext.generator(generator)?.animation }
+  var authoredAnimation:AuthoredAnimation?
+  var definition: AnimationDefinition? { authoredAnimation?.resolve(ProjectContext.generator(generator)?.animation) ?? ProjectContext.generator(generator)?.animation }
   var seconds: Float = 0
   var rate: Float = 1
   var remainder: Float = 0
@@ -54,10 +59,11 @@ struct CreatureWorkshop: Codable {
     }
   }
   func validate(source: AssetSource) throws {
+    try rehearsal.validate()
     guard modes.contains(mode), seconds.isFinite, (0...60.1).contains(seconds),
       rate.isFinite, (0.1...2).contains(rate), remainder.isFinite, (0...0.017).contains(remainder),
       selected == nil || source.resolvedParts.contains(where: { $0.key == selected }),
-      mode == "bind" || source.motion != nil
+      mode == "bind" || source.animation != nil
     else {
       throw RuntimeError.message("Invalid creature study; select an asset with a motion recipe")
     }
@@ -81,10 +87,13 @@ struct CreatureWorkshop: Codable {
     return seconds.truncatingRemainder(dividingBy: duration) / duration
   }
   func matrices(source: AssetSource) -> [String: simd_float4x4] {
-    let poses =
-      mode == "bind"
-      ? [:] : definition?.poses(mode, seconds, actor, source.motion ?? MotionParameters()) ?? [:]
-    return PartRig.matrices(source.joints, poses: poses)
+    evaluatedPose(source:source).matrices
+  }
+  func evaluatedPose(source: AssetSource) -> ContactResult {
+    let frame=root(source.motion ?? MotionParameters())
+    func height(_ x:Float,_ z:Float)->Float {ContactRig.localHeight(frame:frame,x:x,z:z,height:rehearsal.height)}
+    return source.evaluatedPose(clip:mode,time:seconds,state:actor,contacts:contactSolving,
+      height:height,normal:{x,z in ContactRig.surfaceNormal(x:x,z:z,height:height)})
   }
   func root(_ motion: MotionParameters) -> simd_float4x4 {
     mode == "bind"
@@ -122,7 +131,7 @@ extension WorkshopRenderer {
       let part = studioSource.resolvedParts.first(where: { $0.key == selected }),
       let field = try? part.field.shape()
     else { return nil }
-    let b = field.bounds
+    let b = (try? studioSource.craft.anatomy.first(where:{$0.part==selected})?.shape().bounds) ?? field.bounds
     let m = creatureWorkshop.matrices(source: studioSource)[selected] ?? matrix_identity_float4x4
     let root = creatureWorkshop.root(studioSource.motion ?? MotionParameters())
     let p: SIMD4<Float> = simd_mul(simd_mul(root, m), SIMD4<Float>((b.min + b.max) / 2, 1))
@@ -135,7 +144,7 @@ extension WorkshopRenderer {
     else {
       throw RuntimeError.message("Select a part first")
     }
-    let b = try part.field.shape().bounds
+    let b = try studioSource.craft.anatomy.first(where:{$0.part==id})?.shape().bounds ?? part.field.shape().bounds
     creatureWorkshop.focusPart = true
     let size = length(b.max - b.min) * studioLayout.scale * (part.joint?.scale ?? 1)
     orbitDistance = boundedStudioDistance(max(0.05, size * 1.4) / studioUnit)
@@ -154,6 +163,27 @@ extension WorkshopRenderer {
     try studioSource.animation?.validate(motion)
     var candidate = studioSource
     candidate.motion = motion
+    if var score=candidate.performance, let animation=candidate.animation {
+      let oldDuration=animation.duration(studioSource.motion ?? MotionParameters())
+      let ratio=animation.duration(motion)/oldDuration
+      score.duration *= ratio
+      for i in score.beats.indices {score.beats[i].time *= ratio}
+      for i in score.tracks.indices {for k in score.tracks[i].curve.keys.indices {
+        score.tracks[i].curve.keys[k].time *= ratio
+        if let v=score.tracks[i].curve.keys[k].inTangent {score.tracks[i].curve.keys[k].inTangent=v/ratio}
+        if let v=score.tracks[i].curve.keys[k].outTangent {score.tracks[i].curve.keys[k].outTangent=v/ratio}
+      }}
+      candidate.performance=score
+    }
+    if var arrangement=candidate.craft.arrangement,let animation=candidate.animation {
+      let ratio=animation.duration(motion)/animation.duration(studioSource.motion ?? MotionParameters())
+      arrangement.duration *= ratio
+      for i in arrangement.layers.indices {
+        arrangement.layers[i].start *= ratio;arrangement.layers[i].end *= ratio
+        arrangement.layers[i].fadeIn *= ratio;arrangement.layers[i].fadeOut *= ratio
+      }
+      candidate.craft.arrangement=arrangement
+    }
     try applySource(candidate)
     // A changed cadence must replay the brain against the new motion contract.
     try creatureWorkshop.seek(creatureWorkshop.seconds, motion: motion)
@@ -206,7 +236,8 @@ extension WorkshopRenderer {
     else { throw RuntimeError.message("Select a field part first") }
     var source = studioSource
     var part = source.resolvedParts[i]
-    var joint = part.joint ?? PartJoint(id: selected)
+    let craftJoint=source.craft.joints.firstIndex{$0.id==selected}
+    var joint = craftJoint.map{source.craft.joints[$0]} ?? part.joint ?? PartJoint(id: selected)
     if let parent { joint.parent = parent == "none" ? nil : parent }
     for (key, v) in values {
       guard v.isFinite else { throw RigError.invalid }
@@ -226,29 +257,46 @@ extension WorkshopRenderer {
       default: throw RuntimeError.message("Unknown part parameter \(key)")
       }
     }
-    if source.generator != "fields" {
-      source.partOverrides[selected] = PartOverride(
-        joint: joint, roughness: part.roughness, metallic: part.metallic)
-    } else {
-      source.parts[i] = part
-      source.parts[i].joint = joint
+    let ownsBase=source.generator=="fields" && i<source.parts.count
+    var override=source.partOverrides[selected] ?? PartOverride(),changedOverride=false
+    if parent != nil || values.keys.contains(where:{!["roughness","metallic"].contains($0)}) {
+      if let craftJoint {source.craft.joints[craftJoint]=joint}
+      else if ownsBase {source.parts[i].joint=joint}
+      else {override.joint=joint;changedOverride=true}
     }
+    let anatomy=source.craft.anatomy.firstIndex{$0.part==selected}
+    if values["roughness"] != nil {
+      if let anatomy {source.craft.anatomy[anatomy].roughness=part.roughness}
+      else if ownsBase {source.parts[i].roughness=part.roughness}
+      else {override.roughness=part.roughness;changedOverride=true}
+    }
+    if values["metallic"] != nil {
+      if let anatomy {source.craft.anatomy[anatomy].metallic=part.metallic}
+      else if ownsBase {source.parts[i].metallic=part.metallic}
+      else {override.metallic=part.metallic;changedOverride=true}
+    }
+    if changedOverride {source.partOverrides[selected]=override}
     try applySource(source)
   }
 }
 
 extension CreatureWorkshop {
   enum CodingKeys: String, CodingKey {
-    case recording, mode, scenario, generator, seconds, rate, remainder, seed, actor, follow,
+    case rehearsal, contactView, contactSolving, rigView, recording, mode, scenario, generator, authoredAnimation, seconds, rate, remainder, seed, actor, follow,
       stimulusOverride,
       selected, isolated, focusPart
   }
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
+    rehearsal = try c.decodeIfPresent(RehearsalSurface.self,forKey:.rehearsal) ?? RehearsalSurface()
+    contactView = try c.decodeIfPresent(Bool.self,forKey:.contactView) ?? false
+    contactSolving = try c.decodeIfPresent(Bool.self,forKey:.contactSolving) ?? true
+    rigView = try c.decodeIfPresent(Bool.self, forKey:.rigView) ?? false
     recording = try c.decodeIfPresent(String.self, forKey: .recording)
     mode = try c.decodeIfPresent(String.self, forKey: .mode) ?? "bind"
     scenario = try c.decodeIfPresent(String.self, forKey: .scenario) ?? ""
     generator = try c.decodeIfPresent(String.self, forKey: .generator) ?? ""
+    authoredAnimation = try c.decodeIfPresent(AuthoredAnimation.self,forKey:.authoredAnimation)
     seconds = try c.decodeIfPresent(Float.self, forKey: .seconds) ?? 0
     rate = try c.decodeIfPresent(Float.self, forKey: .rate) ?? 1
     remainder = try c.decodeIfPresent(Float.self, forKey: .remainder) ?? 0

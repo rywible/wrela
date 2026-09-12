@@ -25,9 +25,9 @@ public struct SurfaceReport: Sendable {
 /// Different detail levels are compiled separately and never joined spatially.
 public enum SurfaceCompiler {
     private struct Edge:Hashable {var a:Int;var b:Int;init(_ a:Int,_ b:Int){self.a=min(a,b);self.b=max(a,b)}}
-    public static func compile(_ shape:Shape,resolution:Int,color:V3)->(Mesh,SurfaceReport) {
+    public static func compile(_ shape:Shape,resolution:Int,color:V3,bounds suppliedBounds:Bounds? = nil)->(Mesh,SurfaceReport) {
         let start=Date(),n=resolution,stride=n+1
-        let raw=shape.bounds,extent=raw.max-raw.min
+        let raw=suppliedBounds ?? shape.bounds,extent=raw.max-raw.min
         let padding=max(extent.x,max(extent.y,extent.z))*0.0137
         let bounds=raw.expanded(padding),step=(bounds.max-bounds.min)/Float(n)
         var samples:[Int:Float]=[:],cells:[Int:UInt32]=[:],edges:[Edge:(point:V3,normal:V3)]=[:],mesh=Mesh(),report=SurfaceReport()

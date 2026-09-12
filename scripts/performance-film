@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Capture a reproducible 1080p performance movie from the actual renderer."""
+import argparse,html,json,os,runpy,shutil,subprocess,time,uuid
+from pathlib import Path
+p=argparse.ArgumentParser(description=__doc__)
+p.add_argument('--fps',type=int,default=30);p.add_argument('--label',default='performance')
+a=p.parse_args()
+if a.fps not in [6,10,12,15,20,30,60]:p.error('Choose a rate that divides the 60 Hz simulation: 6,10,12,15,20,30,60')
+os.environ['SANCTUARY_CONTROL_ROOT']='.soundstage'
+client=runpy.run_path(str(Path(__file__).with_name('gardenctl')));c,root=client['command'],client['ROOT']
+label=''.join(x for x in a.label if x.isalnum() or x in '-_') or 'performance'
+folder=root/'studies'/(label+'-'+time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:6]);folder.mkdir(parents=True)
+frames=folder/'frames';frames.mkdir()
+if c('status')['state']['workshop']['authoring']['automating']:raise RuntimeError('Another review is active')
+original=c('saveStudy',path=str(folder/'study.json'))['path']
+state=c('status')['state'];clip=state['workshop']['creature']['mode']
+if clip in ['bind','behavior']:raise RuntimeError('Choose an authored motion clip')
+duration=state['workshop']['animationDuration'];records=[]
+c('automation',value=True)
+try:
+    c('pause',value=True)
+    for i in range(round(duration*a.fps)):
+        c('creature',seconds=i/a.fps)
+        result=c('capture',label=label)
+        stem=f'{i:05d}'
+        shutil.copyfile(result['path'],frames/(stem+'.png'))
+        shutil.copyfile(result['metadata'],frames/(stem+'.json'))
+        records.append(dict(frame=i,seconds=i/a.fps,image='frames/'+stem+'.png',metadata='frames/'+stem+'.json'))
+        if i%a.fps==0:print(f'{i/a.fps:.0f} / {duration:.1f} seconds captured',flush=True)
+finally:
+    try:
+        c('loadStudy',path=original)
+    finally:
+        # A restore failure must not leave the user's workshop locked in an
+        # automated review. Retain source and completed frames for recovery.
+        c('automation',value=False)
+movie=folder/'performance.mp4'
+subprocess.run(['swift',str(Path(__file__).resolve().parents[1]/'Tools/AgentTools/EncodePerformance.swift'),str(frames),str(a.fps),str(movie)],check=True)
+report=dict(movie=str(movie),study=original,fps=a.fps,duration=duration,clip=clip,records=records,
+            sourceDigest=state.get('sourceDigest'),shaderDigest=state.get('shaderDigest'),
+            sourceRevision=state.get('sourceRevision'),renderSize=state.get('renderSize'),device=state.get('device'),
+            evidence='Offline exact-time renderer captures. Not a live performance measurement.')
+(folder/'report.json').write_text(json.dumps(report,indent=2))
+(folder/'index.html').write_text('''<!doctype html><meta charset="utf-8"><title>Performance screening</title>
+<style>body{margin:4vw;background:#171b1b;color:#e6dfcc;font:16px system-ui}video{width:100%;max-height:80vh}p{color:#aaa}</style>
+<h1>'''+html.escape(state['workshop']['document']['source']['name'])+'''</h1><video controls loop autoplay muted src="performance.mp4"></video>
+<p>Exact-time renderer captures · '''+str(a.fps)+''' fps playback · <a href="report.json">Source metadata</a></p>''')
+print(json.dumps(dict(movie=str(movie),viewer=str(folder/'index.html'),report=str(folder/'report.json'))))

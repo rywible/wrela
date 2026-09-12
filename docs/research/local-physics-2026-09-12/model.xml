@@ -1,0 +1,59 @@
+<mujoco model="synthetic-local-feasibility">
+      <compiler angle="radian"/>
+      <option timestep="0.004166666666666667" integrator="implicitfast" solver="Newton" iterations="20" gravity="0 0 -9.81"/>
+      <default><joint damping="0.1" armature="0.003"/><geom friction="0.8 0.005 0.0001" condim="3"/></default>
+      <worldbody><geom name="ground" type="plane" size="3 3 0.1"/>
+        <body name="torso" pos="0 0 0.41"><freejoint/>
+          <geom type="box" size="0.22 0.12 0.07" mass="2"/>
+          <body name="hip0" pos="0.19 0.14 0">
+          <joint name="abduct0" axis="1 0 0" range="-0.6 0.6"/>
+          <geom type="sphere" size="0.035" mass="0.08"/>
+          <body name="upper0">
+            <joint name="hipflex0" axis="0 1 0" range="-1.3 1.3"/>
+            <geom type="capsule" fromto="0 0 0 0 0 -0.18" size="0.025" mass="0.12"/>
+            <body name="lower0" pos="0 0 -0.18">
+              <joint name="knee0" axis="0 1 0" range="-1.8 1.8"/>
+              <geom type="capsule" fromto="0 0 0 0 0 -0.18" size="0.02" mass="0.08"/>
+              <geom name="foot0" type="sphere" pos="0 0 -0.18" size="0.035" mass="0.04"/>
+            </body>
+          </body>
+        </body><body name="hip1" pos="0.19 -0.14 0">
+          <joint name="abduct1" axis="1 0 0" range="-0.6 0.6"/>
+          <geom type="sphere" size="0.035" mass="0.08"/>
+          <body name="upper1">
+            <joint name="hipflex1" axis="0 1 0" range="-1.3 1.3"/>
+            <geom type="capsule" fromto="0 0 0 0 0 -0.18" size="0.025" mass="0.12"/>
+            <body name="lower1" pos="0 0 -0.18">
+              <joint name="knee1" axis="0 1 0" range="-1.8 1.8"/>
+              <geom type="capsule" fromto="0 0 0 0 0 -0.18" size="0.02" mass="0.08"/>
+              <geom name="foot1" type="sphere" pos="0 0 -0.18" size="0.035" mass="0.04"/>
+            </body>
+          </body>
+        </body><body name="hip2" pos="-0.19 0.14 0">
+          <joint name="abduct2" axis="1 0 0" range="-0.6 0.6"/>
+          <geom type="sphere" size="0.035" mass="0.08"/>
+          <body name="upper2">
+            <joint name="hipflex2" axis="0 1 0" range="-1.3 1.3"/>
+            <geom type="capsule" fromto="0 0 0 0 0 -0.18" size="0.025" mass="0.12"/>
+            <body name="lower2" pos="0 0 -0.18">
+              <joint name="knee2" axis="0 1 0" range="-1.8 1.8"/>
+              <geom type="capsule" fromto="0 0 0 0 0 -0.18" size="0.02" mass="0.08"/>
+              <geom name="foot2" type="sphere" pos="0 0 -0.18" size="0.035" mass="0.04"/>
+            </body>
+          </body>
+        </body><body name="hip3" pos="-0.19 -0.14 0">
+          <joint name="abduct3" axis="1 0 0" range="-0.6 0.6"/>
+          <geom type="sphere" size="0.035" mass="0.08"/>
+          <body name="upper3">
+            <joint name="hipflex3" axis="0 1 0" range="-1.3 1.3"/>
+            <geom type="capsule" fromto="0 0 0 0 0 -0.18" size="0.025" mass="0.12"/>
+            <body name="lower3" pos="0 0 -0.18">
+              <joint name="knee3" axis="0 1 0" range="-1.8 1.8"/>
+              <geom type="capsule" fromto="0 0 0 0 0 -0.18" size="0.02" mass="0.08"/>
+              <geom name="foot3" type="sphere" pos="0 0 -0.18" size="0.035" mass="0.04"/>
+            </body>
+          </body>
+        </body>
+        </body>
+      </worldbody><actuator><position joint="abduct0" kp="30" kv="1.5" ctrlrange="-0.5 0.5" forcerange="-4 4"/><position joint="hipflex0" kp="30" kv="1.5" ctrlrange="-0.5 0.5" forcerange="-4 4"/><position joint="knee0" kp="30" kv="1.5" ctrlrange="-0.5 0.5" forcerange="-4 4"/><position joint="abduct1" kp="30" kv="1.5" ctrlrange="-0.5 0.5" forcerange="-4 4"/><position joint="hipflex1" kp="30" kv="1.5" ctrlrange="-0.5 0.5" forcerange="-4 4"/><position joint="knee1" kp="30" kv="1.5" ctrlrange="-0.5 0.5" forcerange="-4 4"/><position joint="abduct2" kp="30" kv="1.5" ctrlrange="-0.5 0.5" forcerange="-4 4"/><position joint="hipflex2" kp="30" kv="1.5" ctrlrange="-0.5 0.5" forcerange="-4 4"/><position joint="knee2" kp="30" kv="1.5" ctrlrange="-0.5 0.5" forcerange="-4 4"/><position joint="abduct3" kp="30" kv="1.5" ctrlrange="-0.5 0.5" forcerange="-4 4"/><position joint="hipflex3" kp="30" kv="1.5" ctrlrange="-0.5 0.5" forcerange="-4 4"/><position joint="knee3" kp="30" kv="1.5" ctrlrange="-0.5 0.5" forcerange="-4 4"/></actuator>
+    </mujoco>

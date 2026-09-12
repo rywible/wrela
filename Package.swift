@@ -82,4 +82,9 @@ let package = Package(
     ),
     .testTarget(
       name: "FieldCoreTests", dependencies: ["FieldCore", "FieldCompiler"], path: "Engine/Tests"),
+    .testTarget(
+      name: "FieldEngineTests", dependencies: ["FieldEngine", "FieldCore"], path: "Engine/RuntimeTests"),
+    .testTarget(
+      name: "SoundstageKitTests", dependencies: ["SoundstageKit", "FieldEngine", "FieldCore"],
+      path: "Tools/SoundstageTests"),
   ], swiftLanguageModes: [.v5])

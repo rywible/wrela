@@ -38,6 +38,10 @@ final class SanctuaryExperience: GameExperience {
   }
   var forward: V3 { camera.forward }
   var keys = Set<UInt16>()
+  var specimen: AnimatedAsset?
+  var specimenTime: Float = 0
+  var specimenPlacement = matrix_identity_float4x4
+
   init(graphics: MetalRenderer) throws {
     self.graphics = graphics
     world = try GardenWorld()
@@ -59,6 +63,7 @@ final class SanctuaryExperience: GameExperience {
     sim.motion = SanctuaryProject.motion(
       expeditionPresentation?.source.motion ?? MotionParameters())
     sim.advance(seconds, running: running)
+    if specimen != nil { specimenTime += seconds }
   }
   func syncExpeditionPlayer() { sim.syncExpeditionPlayer() }
   func interact() throws -> String { try sim.interact() }
@@ -78,6 +83,9 @@ final class SanctuaryExperience: GameExperience {
           tint: V3(0.48, 0.27, 0.13), kind: 6)))
     if let expedition, let expeditionPresentation {
       result += expeditionPresentation.items(expedition.state)
+    }
+    if let specimen {
+      result += specimen.items(clip:"procession",time:specimenTime,placement:specimenPlacement,terrain:world.terrain.height)
     }
     return result
   }
@@ -104,6 +112,7 @@ final class SanctuaryExperience: GameExperience {
   }
   var snapshot: [String: Any] {
     [
+      "specimen":specimen?.source.id ?? "", "specimenTime":specimenTime,
       "expedition": expedition?.snapshot ?? [:], "gameTreeParameters": world.treeSource.parameters,
       "groundHeight": world.terrain.height(position.x, position.z), "seed": world.seed,
       "scale": podScale, "seedPodHeightMetres": GardenWorld.podMetres * podScale, "scene": "garden",
@@ -127,6 +136,14 @@ final class SanctuaryExperience: GameExperience {
   }
   func command(_ action: String, _ c: [String: Any]) throws {
     switch action {
+    case "specimen":
+      guard let id=c["value"] as? String else {throw RuntimeError.message("Specimen id required")}
+      if id == "none" {specimen=nil;return}
+      let candidate=try AnimatedAsset(source:AssetSource.load(id),graphics:graphics)
+      guard candidate.source.animation?.clips.contains("procession") == true else {throw RuntimeError.message("This specimen has no procession clip")}
+      let x=position.x+forward.x*9, z=position.z+forward.z*9
+      specimenPlacement=transform(V3(x,world.terrain.height(x,z),z),V3(repeating:0.7),atan2(forward.x,forward.z))
+      specimen=candidate; specimenTime=0
     case "scene":
       guard c["value"] as? String == "garden" else {
         throw RuntimeError.message("Use Soundstage for authoring")

@@ -193,8 +193,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
       let saved = rootURL.appendingPathComponent("last-study.json")
       if FileManager.default.fileExists(atPath: saved.path) {
         do {
-          try r.restoreWorkshop(
-            JSONDecoder().decode(WorkshopDocument.self, from: Data(contentsOf: saved)))
+          try r.restoreWorkshop(WorkshopDocument.read(saved))
           messageLabel.stringValue = "Restored your last workshop session."
         } catch {
           messageLabel.stringValue =
@@ -332,12 +331,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     renderer?.workshopSession.reviewProcess?.terminate()
     renderer?.view.isPaused = true
     if let renderer, let rootURL {
-      let encoder = JSONEncoder()
-      encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-      try? encoder.encode(renderer.workshopSession.reviewOriginal ?? renderer.workshopDocument())
-        .write(to: rootURL.appendingPathComponent("last-study.json"), options: .atomic)
+      try? renderer.workshopSession.write(
+        renderer.workshopSession.reviewOriginal ?? renderer.workshopDocument(),
+        to: rootURL.appendingPathComponent("last-study.json"))
     }
     if let bridge {
+      bridge.stopPublishing()
       bridge.write(
         ["stopped": true, "sessionPID": ProcessInfo.processInfo.processIdentifier],
         to: bridge.root.appendingPathComponent("status.json"))
@@ -352,8 +351,8 @@ package enum SoundstageApplication {
       $0 + 1 < args.count ? args[$0 + 1] : nil
     }
     if selected == nil,
-      let data = try? Data(
-        contentsOf: ProjectContext.workspace.appendingPathComponent(".soundstage/last-study.json")),
+      let data = try? WorkshopDocument.readData(
+        ProjectContext.workspace.appendingPathComponent(".soundstage/last-study.json")),
       let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     {
       selected = object["project"] as? String
@@ -363,7 +362,7 @@ package enum SoundstageApplication {
       do {
         let r = try WorkshopRenderer(view: MTKView())
         print(
-          "Renderer compiled on \(r.device.name); diffuse irradiance max error \(try r.verifyDiffuseLighting())"
+          "Renderer compiled on \(r.device.name); diffuse irradiance max error \(try r.verifyDiffuseLighting()); creature deformation max error \(try r.verifyCraftDeformation()); groom coverage max error \(try r.verifyGroomCoverage())"
         )
       } catch {
         fputs("\(error)\n", stderr)

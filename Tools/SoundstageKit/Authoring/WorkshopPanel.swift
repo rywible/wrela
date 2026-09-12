@@ -69,6 +69,20 @@ final class WorkshopPanel: NSView {
   }
   var generatedControls: [String: NSView] = [:]
   var animationControls: [String: NSView] = [:]
+  var contactViewButton: ActionButton!
+  var contactSolvingButton: ActionButton!
+  var contactStatus: NSTextField!
+  var secondaryStatus: NSTextField!
+  var secondaryButton: NSButton!
+  var secondaryEdgeButton: NSButton!
+  var rigViewButton: ActionButton!
+  var beatPopup: WorkshopPopup!
+  var scoreJoint: WorkshopPopup!
+  var scoreChannel = "yaw"
+  var scoreValue: Float = 0
+  var craftStatus: NSTextField!
+  var craftResult = ""
+  var performanceStatus: NSTextField!
   var activeTab = "Object"
   var sectionItems: [String: [NSView]] = [:]
   var values: [String: NSTextField] = [:]
@@ -78,6 +92,9 @@ final class WorkshopPanel: NSView {
   var motionPopup: WorkshopPopup!
   var scenarioPopup: WorkshopPopup!
   var isolateButton: ActionButton!
+  var surfaceReviewPopup: WorkshopPopup!
+  var hidePartButton: ActionButton!
+  var hiddenPartsStatus: NSTextField!
   var followButton: ActionButton!
   var motionStatus: NSTextField!
   var behaviorStatus: NSTextField!
@@ -145,7 +162,7 @@ final class WorkshopPanel: NSView {
     ])
     navigation.addArrangedSubview(
       WorkshopPopup(
-        "Authoring section", ["Object", "Parts", "Motion", "Behavior", "Lighting", "Look", "Files"]
+        "Authoring section", ["Object", "Parts", "Motion", "Performance", "Rehearsal", "Dynamics", "Craft", "Behavior", "Lighting", "Look", "Files"]
       ) { [weak self] name in
         guard let self else { return }
         self.activeTab = name
@@ -293,6 +310,21 @@ final class WorkshopPanel: NSView {
       try r.selectPart(r.creatureWorkshop.selected, isolated: !r.creatureWorkshop.isolated)
     }
     add(row([isolateButton, button("Frame selected part") { try $0.framePart() }]))
+    add(button("Frame visible surfaces") { _ = try $0.frameVisibleSurface() })
+    surfaceReviewPopup = WorkshopPopup("Surface review", ["material", "clay"]) { [weak self] mode in
+      self?.perform("Surface review") { try $0.editSurfaceReview(mode: mode) }
+    }
+    add(surfaceReviewPopup)
+    hidePartButton = button("Hide selected part") { r in
+      guard let selected = r.creatureWorkshop.selected else { return }
+      var hidden = r.surfaceReview.hiddenParts
+      if hidden.contains(selected) { hidden.removeAll { $0 == selected } } else { hidden.append(selected) }
+      try r.editSurfaceReview(hiddenParts: hidden)
+    }
+    add(row([hidePartButton, button("Show all parts") { try $0.editSurfaceReview(hiddenParts: []) }]))
+    hiddenPartsStatus = owner.label("", size: 11)
+    hiddenPartsStatus.maximumNumberOfLines = 3
+    add(hiddenPartsStatus)
     add(label("ATTACHED TO"))
     parentPopup = WorkshopPopup("Parent attachment", ["none"]) { [weak self] id in
       self?.perform("Attach part") { try $0.editPart([:], parent: id) }
@@ -352,6 +384,123 @@ final class WorkshopPanel: NSView {
       ActionButton("Capture motion strip") { [weak self] in
         self?.sessionAction { try $0.captureReview(motion: true) }
       })
+    section = "Performance"
+    add(label("CHOREOGRAPHY · EDITABLE HOLDS"))
+    beatPopup = WorkshopPopup("Performance beat", ["No score"]) { [weak self] name in
+      self?.perform("Jump to beat") { try $0.jumpToBeat(name) }
+    }
+    add(beatPopup)
+    performanceStatus = owner.label("", size:11)
+    performanceStatus.maximumNumberOfLines = 8
+    performanceStatus.lineBreakMode = .byWordWrapping
+    performanceStatus.cell?.wraps = true
+    performanceStatus.widthAnchor.constraint(equalToConstant:246).isActive = true
+    performanceStatus.preferredMaxLayoutWidth = 250
+    add(performanceStatus)
+    add(slider("Performance time · s", "performance.time", 0, 0...60) {
+      try $0.editCreatureWorkshop(seconds:$1)
+    })
+    add(row([button("Play phrase") { r in
+      let clip=r.studioSource.performance?.clip ?? r.studioSource.animation?.clips.last ?? "bind"
+      try r.editCreatureWorkshop(mode:clip,seconds:0); r.paused=false
+    }, button("Freeze pose") { $0.paused=true }]))
+    rigViewButton = button("Rig view: off") { $0.creatureWorkshop.rigView.toggle() }
+    add(rigViewButton)
+    add(label("ADDITIVE POSE CORRECTION"))
+    scoreJoint = WorkshopPopup("Performance joint", ["mask"]) { [weak self] id in
+      self?.perform("Select performance joint") { try $0.selectPart(id) }
+    }
+    add(scoreJoint)
+    add(WorkshopPopup("Pose channel", ["yaw","pitch","roll","x","y","z"]) { [weak self] value in self?.scoreChannel=value })
+    let keyValue = WorkshopNumber("Correction · degrees or metres") { [weak self] value in
+      if let number=Float(value), number.isFinite { self?.scoreValue=number }
+    }
+    keyValue.stringValue="0"
+    add(row([label("VALUE · DEGREES / METRES"),keyValue]))
+    add(button("Set key at current time") { [weak self] r in
+      guard let self else { return }
+      try r.editPerformanceKey(joint:r.creatureWorkshop.selected ?? self.scoreJoint.titleOfSelectedItem ?? "",
+        channel:self.scoreChannel,time:r.performanceTime,value:self.scoreValue)
+    })
+    add(button("Remove key at current time") { [weak self] r in
+      guard let self else { return }
+      try r.editPerformanceKey(joint:r.creatureWorkshop.selected ?? self.scoreJoint.titleOfSelectedItem ?? "",
+        channel:self.scoreChannel,time:r.performanceTime,value:0,remove:true)
+    })
+    add(button("Save performance") { _ = try $0.saveAsset() })
+    add(ActionButton("Review performance") { [weak self] in self?.sessionAction { try $0.captureReview(motion:true) } })
+    section = "Craft"
+    add(label("CREATURE CRAFT"))
+    craftStatus=owner.label("",size:11)
+    craftStatus.maximumNumberOfLines=16;craftStatus.lineBreakMode = .byWordWrapping
+    craftStatus.cell?.wraps=true;craftStatus.widthAnchor.constraint(equalToConstant:246).isActive=true
+    add(craftStatus)
+    add(button("Capture reusable phrase") {r in
+      let key="pose-study-"+String(Int(Date().timeIntervalSince1970))
+      try r.editCraft(["expectedRevision":r.sourceRevision,"operations":[["op":"capturePhrase","key":key,"duration":r.performanceDuration,"samples":25]]])
+    })
+    add(button("Inspect movement and support") { [weak self] r in
+      let report=try r.craftReport(samples:25)
+      self?.craftResult=String(format:"Peak joint speed %.2f m/s · acceleration %.2f m/s²\nOutside support %.3f m",report["maximumJointSpeed"] as? Float ?? 0,report["maximumJointAcceleration"] as? Float ?? 0,report["maximumOutsideSupportMetres"] as? Float ?? 0)
+    })
+    add(button("Inspect selected deformation") { [weak self] r in
+      guard let part=r.creatureWorkshop.selected else {throw RuntimeError.message("Select a surface in Parts first")}
+      let report=try r.craftReport(samples:13,part:part)
+      let directory=ProjectContext.workspace.appendingPathComponent(".soundstage/studies")
+      try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+      let file=directory.appendingPathComponent("deformation-"+UUID().uuidString+".json")
+      try JSONSerialization.data(withJSONObject:report,options:[.prettyPrinted,.sortedKeys]).write(to:file,options:.atomic)
+      self?.craftResult="Deformation report saved for \(part).";NSWorkspace.shared.open(file)
+    })
+    add(button("Save creature craft") {_ = try $0.saveAsset()})
+    add(ActionButton("Review creature performance") { [weak self] in self?.sessionAction {try $0.captureReview(motion:true)} })
+    section = "Rehearsal"
+    add(label("CONTACT REHEARSAL · METRES"))
+    add(row([button("Flat floor") {$0.creatureWorkshop.rehearsal=RehearsalSurface()},
+      button("Raised step") {r in var s=RehearsalSurface();s.stepHeight=0.3;r.creatureWorkshop.rehearsal=s}]))
+    for (key,title,range) in [("slopeX","Cross slope",Float(-0.3)...Float(0.3)),
+      ("slopeZ","Lengthwise slope",Float(-0.3)...Float(0.3)),("stepHeight","Step height",Float(0)...Float(0.6)),
+      ("stepZ","Step position",Float(-4)...Float(4))] {
+      add(slider(title,"rehearsal."+key,0,range) {try $0.editRehearsal([key:$1])})
+    }
+    contactViewButton=button("Contact markers: off") {$0.creatureWorkshop.contactView.toggle()}
+    contactSolvingButton=button("Solve contacts: on") {$0.creatureWorkshop.contactSolving.toggle()}
+    add(contactViewButton);add(contactSolvingButton)
+    contactStatus=owner.label("",size:11)
+    contactStatus.maximumNumberOfLines=12;contactStatus.lineBreakMode = .byWordWrapping
+    contactStatus.cell?.wraps=true;contactStatus.widthAnchor.constraint(equalToConstant:246).isActive=true
+    add(contactStatus)
+    add(ActionButton("Review four views") { [weak self] in self?.sessionAction {try $0.captureReview(rehearsal:true)} })
+    add(button("Next frame") {try $0.editCreatureWorkshop(seconds:min(60,$0.creatureWorkshop.seconds+1/60))})
+    add(button("Play / pause") {$0.paused.toggle()})
+    section = "Dynamics"
+    add(label("SECONDARY MOTION"))
+    secondaryButton=button("Simulation: on") {r in try r.editSecondary(["enabled":!r.studioSource.secondary.enabled])}
+    add(secondaryButton)
+    secondaryEdgeButton=button("Span contacts: off") {r in try r.editSecondary(["edgeContacts":!r.studioSource.secondary.edgeContacts])}
+    add(secondaryEdgeButton)
+    add(button("Inspect guides") {r in r.creatureWorkshop.rigView.toggle();r.creatureWorkshop.contactView=r.creatureWorkshop.rigView})
+    for (key,title,initial,range) in [("gravity","Gravity · m/s²",Float(9.81),Float(0)...Float(20)),
+      ("damping","Air damping · /s",Float(5),Float(0)...Float(30)),
+      ("followCompliance","Shape compliance · m/N",Float(0.6),Float(0.001)...Float(5)),
+      ("friction","Contact friction",Float(0),Float(0)...Float(2)),
+      ("wind","Wind acceleration · m/s²",Float(0.5),Float(0)...Float(10))] {
+      add(slider(title,"secondary."+key,initial,range) {try $0.editSecondary([key:$1])})
+    }
+    secondaryStatus=owner.label("",size:11)
+    secondaryStatus.maximumNumberOfLines=10;secondaryStatus.lineBreakMode = .byWordWrapping
+    secondaryStatus.widthAnchor.constraint(equalToConstant:246).isActive=true
+    add(secondaryStatus)
+    add(ActionButton("Audit rendered surface") { [weak self] in
+      self?.sessionAction { session in
+        let report=try session.renderer.surfaceContactReport(samples:1)
+        let depth=(report["maximumPenetration"] as? Float ?? 0)*1000
+        session.onMessage?(String(format:"Surface audit · %@ · %.1f mm at %.2f s (body proxies)",report["worstPart"] as? String ?? "",depth,report["worstTime"] as? Float ?? 0))
+      }
+    })
+    add(button("Restart motion") {try $0.editCreatureWorkshop(seconds:0)})
+    add(button("Play / pause") {$0.paused.toggle()})
+    add(button("Save dynamics") {_ = try $0.saveAsset()})
     section = "Behavior"
     add(label("BEHAVIOR SCENARIOS"))
     scenarioPopup = WorkshopPopup(
@@ -615,9 +764,7 @@ final class WorkshopPanel: NSView {
       panel.beginSheetModal(for: owner.window) { response in
         if response == .OK, let url = panel.url {
           self.perform { r in
-            let e = JSONEncoder()
-            e.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try e.encode(r.workshopDocument()).write(to: url, options: .atomic)
+            try r.workshopSession.write(r.workshopDocument(), to: url)
             owner.messageLabel.stringValue = "Saved study · \(url.lastPathComponent)"
           }
         }
@@ -629,8 +776,7 @@ final class WorkshopPanel: NSView {
       panel.beginSheetModal(for: owner.window) { response in
         if response == .OK, let url = panel.url {
           self.perform { r in
-            try r.restoreWorkshop(
-              JSONDecoder().decode(WorkshopDocument.self, from: Data(contentsOf: url)))
+            try r.restoreWorkshop(WorkshopDocument.read(url))
           }
         }
       }
@@ -677,7 +823,7 @@ final class WorkshopPanel: NSView {
       r.studioObject == "sky"
       ? "Atmosphere · no subject"
       : String(
-        format: "%@\n%.3g m tall · %.3g m wide", r.studioSource.name, r.studioHeight,
+        format: "%@\nFull bounds: %.3g m tall · %.3g m wide", r.studioSource.name, r.studioHeight,
         (r.studioBounds.max.x - r.studioBounds.min.x) * r.studioLayout.scale)
     var map = [
       "scale": r.studioLayout.scale, "roughness": r.studioLayout.roughness,
@@ -696,26 +842,67 @@ final class WorkshopPanel: NSView {
       partPopup, ["All parts"] + r.studioSource.resolvedParts.map(\.key),
       lab.selected ?? "All parts")
     let selectedPart = r.studioSource.resolvedParts.first { $0.key == lab.selected }
-    let joint = selectedPart?.joint ?? PartJoint(id: selectedPart?.key ?? "")
+    let joint = r.studioSource.craft.joints.first{$0.id==lab.selected} ?? selectedPart?.joint ?? PartJoint(id: selectedPart?.key ?? "")
+    let selectedAnatomy=r.studioSource.craft.anatomy.first{$0.part==lab.selected}
     choices(
-      parentPopup, ["none"] + r.studioSource.resolvedParts.map(\.key).filter { $0 != lab.selected },
+      parentPopup, ["none"] + r.studioSource.joints.map(\.id).filter { $0 != lab.selected },
       joint.parent ?? "none")
     parentPopup.isEnabled = selectedPart != nil
     isolateButton.title = lab.isolated ? "Isolate: on" : "Isolate: off"
     isolateButton.setAccessibilityLabel(isolateButton.title)
+    surfaceReviewPopup.selectItem(withTitle: r.surfaceReview.mode)
+    hidePartButton.isEnabled = lab.selected != nil
+    hidePartButton.title = lab.selected.map { r.surfaceReview.hiddenParts.contains($0) } == true
+      ? "Show selected part" : "Hide selected part"
+    hidePartButton.setAccessibilityLabel(hidePartButton.title)
+    hiddenPartsStatus.stringValue = r.surfaceReview.hiddenParts.isEmpty ? "All parts visible"
+      : "Hidden: " + r.surfaceReview.hiddenParts.joined(separator: ", ")
     followButton.title = lab.follow ? "Follow creature: on" : "Follow creature: off"
     followButton.setAccessibilityLabel(followButton.title)
     choices(motionPopup, lab.modes, lab.mode)
-    motionPopup.isEnabled = r.studioSource.motion != nil
+    motionPopup.isEnabled = r.studioSource.animation != nil
     choices(scenarioPopup, r.studioSource.animation?.scenarios ?? [], lab.scenario)
-    scenarioPopup.isEnabled = r.studioSource.motion != nil
-    let clipLength =
-      r.studioSource.animation?.duration(r.studioSource.motion ?? MotionParameters()) ?? 1
+    scenarioPopup.isEnabled = !(r.studioSource.animation?.scenarios.isEmpty ?? true)
+    contactViewButton.title=lab.contactView ? "Contact markers: on":"Contact markers: off"
+    contactSolvingButton.title=lab.contactSolving ? "Solve contacts: on":"Solve contacts: off"
+    contactViewButton.setAccessibilityLabel(contactViewButton.title)
+    contactSolvingButton.setAccessibilityLabel(contactSolvingButton.title)
+    let contacts=lab.evaluatedPose(source:r.studioSource).contacts
+    contactStatus.stringValue=contacts.map {String(format:"%@ · %@ · error %.1f mm",$0.id,$0.planted ? "planted":"swing",$0.residual*1000)}.joined(separator:"\n")
+      + "\nKinematic constraints. No mass or force solve.\n" + String(r.studioSource.surfaceEdits.count) + " local surface edits"
+    secondaryButton.title=r.studioSource.secondary.enabled ? "Simulation: on":"Simulation: off"
+    secondaryButton.setAccessibilityLabel(secondaryButton.title)
+    secondaryEdgeButton.title=r.studioSource.secondary.edgeContacts ? "Span contacts: on":"Span contacts: off"
+    secondaryEdgeButton.setAccessibilityLabel(secondaryEdgeButton.title)
+    let dynamic=r.secondaryPlayer.metrics
+    secondaryStatus.stringValue=String(format:"%d guide particles · fixed 60 Hz\nStretch %.1f%% · particles %.1f mm\nSpans %.1f mm · pinned %.1f mm\nCapsule/ground response; no self-collision.",r.studioSource.resolvedSecondaryRig.nodes.count,dynamic.maximumStretch*100,dynamic.maximumPenetration*1000,dynamic.maximumEdgePenetration*1000,dynamic.pinnedPenetration*1000)
+    map["secondary.gravity"]=r.studioSource.secondary.gravity
+    map["secondary.damping"]=r.studioSource.secondary.damping
+    map["secondary.followCompliance"]=r.studioSource.secondary.followCompliance
+    map["secondary.wind"]=r.studioSource.secondary.wind
+    map["secondary.friction"]=r.studioSource.secondary.friction
+    map["rehearsal.slopeX"] = lab.rehearsal.slopeX
+    map["rehearsal.slopeZ"] = lab.rehearsal.slopeZ
+    map["rehearsal.stepHeight"] = lab.rehearsal.stepHeight
+    map["rehearsal.stepZ"] = lab.rehearsal.stepZ
+    rigViewButton.title = lab.rigView ? "Rig view: on" : "Rig view: off"
+    rigViewButton.setAccessibilityLabel(rigViewButton.title)
+    choices(beatPopup, r.performanceBeats.map(\.name), r.performanceBeat?.name ?? "")
+    choices(scoreJoint, r.studioSource.joints.map(\.id), lab.selected ?? r.studioSource.joints.first?.id ?? "")
+    let diagnostics = r.studioSource.animation?.inspect?(lab.mode,lab.seconds,lab.actor,r.studioSource.motion ?? MotionParameters()) ?? [:]
+    let craft=r.studioSource.craft
+    craftStatus.stringValue="\(craft.strokes.count) sculpt strokes · \(craft.skinFields.count) skin fields\n\(craft.joints.count) authored joints · \(craft.correctives.count) pose corrections\n\(craft.phrases.count) reusable phrases · \(craft.grooms.count) groom designs · \(craft.seams.count) seams\n"+(craft.masses.isEmpty ? "No mass model authored.":"\(craft.masses.count) mass regions; static support diagnostics.")+"\n"+craftResult
+    performanceStatus.stringValue = (r.performanceBeat?.intent ?? "Choose a clip and author local pose corrections.")
+      + "\n\(r.studioSource.performance?.tracks.count ?? 0) correction tracks · \(r.studioBatches.filter { !$0.skinJoints.isEmpty }.count) deforming surfaces"
+      + (diagnostics["maximumReachErrorMetres"].map { String(format:"\nReach residual: %.3f m",$0) } ?? "")
+    map["performance.time"] = r.performanceTime
+    sliders["performance.time"]?.maxValue = Double(r.performanceDuration)
+    let clipLength = r.performanceDuration
     sliders["motion.time"]?.maxValue = Double(
       !["bind", "idle", "behavior"].contains(lab.mode) ? clipLength : 60)
     map["motion.time"] =
       !["bind", "idle", "behavior"].contains(lab.mode)
-      ? lab.seconds.truncatingRemainder(dividingBy: clipLength) : lab.seconds
+      ? r.performanceTime : lab.seconds
     map["motion.rate"] = lab.rate
     map["behavior.seed"] = Float(lab.seed)
     map["stimulus.x"] = lab.input.player.x
@@ -728,7 +915,7 @@ final class WorkshopPanel: NSView {
       "pivotX": joint.pivot.x, "pivotY": joint.pivot.y, "pivotZ": joint.pivot.z,
       "pitch": joint.rotation.x, "yaw": joint.rotation.y, "roll": joint.rotation.z,
       "scale": joint.scale,
-      "roughness": selectedPart?.roughness ?? 0.7, "metallic": selectedPart?.metallic ?? 0,
+      "roughness": selectedAnatomy?.roughness ?? selectedPart?.roughness ?? 0.7, "metallic": selectedAnatomy?.metallic ?? selectedPart?.metallic ?? 0,
     ]
     for (key, value) in partValues { map["part." + key] = value }
     for (key, control) in sliders where key.hasPrefix("part.") {
@@ -736,7 +923,7 @@ final class WorkshopPanel: NSView {
       values[key]?.isEnabled = selectedPart != nil
     }
     motionStatus.stringValue =
-      r.studioSource.motion == nil
+      r.studioSource.animation == nil
       ? "Select an animated subject."
       : String(
         format: "%.3f s · %@\nShared with %@", lab.seconds, lab.mode, ProjectContext.current.name)
@@ -750,7 +937,7 @@ final class WorkshopPanel: NSView {
           + "\($0.state): \($0.reason)"
       }.joined(separator: "\n")
     for (key, value) in r.sceneLook.values { map["look." + key] = value }
-    for (key, value) in r.studioSource.parameters { map["shape." + key] = value }
+    for control in r.studioSource.controls {map["shape."+control.key]=r.studioSource.parameters[control.key] ?? control.initial}
     for (key, value) in [
       "x": r.studioRig.x, "y": r.studioRig.y, "z": r.studioRig.z,
       "intensity": r.studioRig.intensity, "size": r.studioRig.size, "warmth": r.studioRig.warmth,

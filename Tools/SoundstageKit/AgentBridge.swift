@@ -13,6 +13,9 @@ final class AgentBridge {
   var timer: Timer?
   var onMessage: ((String) -> Void)?
   var activeIDs = Set<String>()
+  private let statusWriter=DispatchQueue(label:"dev.wrela.soundstage.status",qos:.utility)
+  private var publishing=false
+  private var lastPublishedTime = -Double.infinity
 
   init(renderer: WorkshopRenderer, root: URL) throws {
     self.renderer = renderer
@@ -43,11 +46,37 @@ final class AgentBridge {
   }
 
   func publish() {
+    // Keep the full existing status contract, but never queue an unbounded trail
+    // of obsolete heartbeats or serialize a large motion library on the UI thread.
+    let now=ProcessInfo.processInfo.systemUptime
+    // Commands still poll at 10 Hz and return a fresh snapshot. The complete
+    // heartbeat document only needs 2 Hz; it is not a frame-stream transport.
+    guard !publishing,now-lastPublishedTime>=0.5 else {return}
+    lastPublishedTime=now
+    publishing=true
     var s = renderer.snapshot()
     s["heartbeat"] = Date().timeIntervalSince1970
     s["protocolVersion"] = 1
     s["captureDirectory"] = captures.path
-    write(s, to: root.appendingPathComponent("status.json"))
+    enqueue(s,to:root.appendingPathComponent("status.json")) { [weak self] in self?.publishing=false }
+  }
+  private func enqueue(_ snapshot:[String:Any],to url:URL,completed:@escaping()->Void) {
+    let reportError=onMessage
+    statusWriter.async { [weak self] in
+      guard self != nil else {return}
+      var failure:String?
+      do {try JSONSerialization.data(withJSONObject:snapshot,options:[.prettyPrinted,.sortedKeys]).write(to:url,options:.atomic)}
+      catch {failure=error.localizedDescription}
+      DispatchQueue.main.async {
+        if let failure {reportError?("Agent report failed: \(failure)")}
+        completed()
+      }
+    }
+  }
+  func stopPublishing() {
+    timer?.invalidate();timer=nil
+    // Drain before the final stopped marker so a late heartbeat cannot revive it.
+    statusWriter.sync {}
   }
   func write(_ value: [String: Any], to url: URL) {
     do {
@@ -65,8 +94,11 @@ final class AgentBridge {
     if result["state"] != nil { result["state"] = renderer.snapshot() }
     result["id"] = id
     result["frame"] = renderer.frame
-    write(result, to: outbox.appendingPathComponent(id + ".json"))
-    activeIDs.remove(id)
+    // Snapshot/commit is synchronous; the acknowledgement becomes visible only
+    // after its atomic write. Rendering need not wait for JSON serialization.
+    enqueue(result,to:outbox.appendingPathComponent(id + ".json")) { [weak self] in
+      self?.activeIDs.remove(id)
+    }
   }
   func poll() {
     let files =
@@ -105,6 +137,9 @@ final class AgentBridge {
     guard let action = c["action"] as? String else { throw RuntimeError.message("Missing action") }
     let authoringKeys: [String: Set<String>] = [
       "creature": ["mode", "scenario", "seconds", "rate", "seed", "follow"],
+      "performanceKey": ["joint","channel","seconds","value","remove"],
+      "performanceBeat": ["name"],
+      "surfaceReview": ["mode", "hiddenParts"],
       "part": ["value", "isolated"], "stimulus": ["x", "z", "running", "visible"],
       "motion": Set((renderer.studioSource.animation?.controls ?? []).map(\.key)),
       "partEdit": [
@@ -116,17 +151,17 @@ final class AgentBridge {
       guard c.keys.allSatisfy({ allowed.contains($0) || ["id", "action"].contains($0) }) else {
         throw RuntimeError.message("Unknown authoring parameter")
       }
-      for key in ["mode", "scenario", "parent", "value"] where c[key] != nil {
+      for key in ["mode", "scenario", "parent", "value"] where c[key] != nil && action != "performanceKey" {
         guard c[key] is String else { throw RuntimeError.message("\(key) requires text") }
       }
-      for key in ["follow", "isolated", "running", "visible"] where c[key] != nil {
+      for key in ["follow", "isolated", "running", "visible", "remove"] where c[key] != nil {
         guard c[key] is Bool else { throw RuntimeError.message("\(key) requires a boolean") }
       }
     }
     let edits: Set<String> = [
       "studioObject", "subject", "rig", "shape", "layout", "assetLoad", "assetSave", "assetReload",
       "loadStudy", "lighting", "view", "sky", "reset", "camera", "pause", "step", "parameters",
-      "look", "motion", "creature", "part", "partEdit", "stimulus", "framePart",
+      "author", "craft", "secondary", "rehearsal", "look", "motion", "creature", "part", "partEdit", "stimulus", "framePart", "performanceKey", "performanceBeat", "rigView", "surfaceReview", "sculptFrameLock", "sculptOverlay", "frameVisible",
     ]
     if edits.contains(action) {
       renderer.workshopSession.commit()
@@ -158,7 +193,64 @@ final class AgentBridge {
         try? renderer.restoreWorkshop(original)
         throw error
       }
+    case "craftInspect": respond(id,["ok":true,"craft":try renderer.craftSnapshot()]);return
+    case "craft":
+      let result=try renderer.editCraft(c);respond(id,["ok":true,"craft":try renderer.craftSnapshot(),"correspondence":result["correspondence"] ?? [],"posedFits":result["posedFits"] ?? [],"sculptFits":result["sculptFits"] ?? []]);return
+    case "craftReport":
+      let n=try number(c,"samples",25)
+      guard n.rounded()==n && (2...121).contains(n) else {throw RigError.invalid}
+      if c["part"] != nil && !(c["part"] is String) {throw RigError.invalid}
+      let start=try number(c,"start",0)
+      let end:Float? = c["end"] == nil ? nil:try number(c,"end",0)
+      respond(id,["ok":true,"report":try renderer.craftReport(samples:Int(n),part:c["part"] as? String,start:start,end:end)]);return
+    case "authoring": respond(id,["ok":true,"authoring":try renderer.authoringSnapshot()]);return
+    case "author":
+      try renderer.author(c)
+      respond(id,["ok":true,"authoring":try renderer.authoringSnapshot()]);return
+    case "secondary": try renderer.editSecondary(c)
+    case "secondaryReport":
+      let n=try number(c,"samples",25)
+      guard n.rounded()==n else {throw RigError.invalid}
+      respond(id,["ok":true,"report":try renderer.secondaryReport(samples:Int(n))]);return
+    case "surfaceContacts":
+      let n=try number(c,"samples",1)
+      guard n.rounded()==n else {throw RigError.invalid}
+      if c["part"] != nil && !(c["part"] is String) {throw RigError.invalid}
+      respond(id,["ok":true,"report":try renderer.surfaceContactReport(samples:Int(n),part:c["part"] as? String)]);return
+    case "rehearsal": try renderer.editRehearsal(c)
+    case "sculptProbe":
+      respond(id,["ok":true,"selection":try renderer.sculptProbe(c)]);return
+    case "sculptFrameLock":
+      try renderer.lockSculptFrame(c)
+    case "sculptOverlay":
+      try renderer.editSculptOverlay(c)
+    case "frameVisible":
+      try CraftError.require(Set(c.keys).isSubset(of:["id","action","expectedRevision","part"])
+        && c["expectedRevision"] as? String==renderer.sourceRevision && (c["part"]==nil || c["part"] is String),"frameVisible.revision","Supply current revision and optional part")
+      let bounds=try renderer.frameVisibleSurface(part:c["part"] as? String)
+      respond(id,["ok":true,"bounds":bounds,"state":renderer.snapshot()]);return
+    case "surfaceProbe":
+      let p=SIMD3<Float>(try number(c,"x",0),try number(c,"y",0),try number(c,"z",0))
+      respond(id,["ok":true,"probe":try renderer.surfaceProbe(part:c["part"] as? String ?? "",point:p,radius:try number(c,"radius",0.25))]);return
+    case "poseReport":
+      let n=try number(c,"samples",61)
+      guard n.rounded()==n,(2...241).contains(n) else {throw RigError.invalid}
+      respond(id,["ok":true,"report":try renderer.poseReport(start:try number(c,"start",0),end:try number(c,"end",renderer.performanceDuration),samples:Int(n))]);return
     case "framePart": try renderer.framePart()
+    case "surfaceReview":
+      if c["hiddenParts"] != nil && !(c["hiddenParts"] is [String]) {
+        throw RuntimeError.message("hiddenParts requires an array of exact part names")
+      }
+      try renderer.editSurfaceReview(mode: c["mode"] as? String, hiddenParts: c["hiddenParts"] as? [String])
+    case "rigView":
+      guard let value=c["value"] as? Bool else {throw RuntimeError.message("Rig view requires a boolean")}
+      renderer.creatureWorkshop.rigView=value
+    case "performance": respond(id,["ok":true,"performance":renderer.performanceSnapshot]); return
+    case "performanceBeat": try renderer.jumpToBeat(c["name"] as? String ?? "")
+    case "performanceKey":
+      try renderer.editPerformanceKey(joint:c["joint"] as? String ?? "",channel:c["channel"] as? String ?? "",
+        time:try number(c,"seconds",renderer.performanceTime),value:try number(c,"value",0),remove:c["remove"] as? Bool ?? false)
+    case "rehearsalReview": try renderer.workshopSession.captureReview(rehearsal:true)
     case "motionReview": try renderer.workshopSession.captureReview(motion: true)
     case "motion", "partEdit":
       var values: [String: Float] = [:]
@@ -327,15 +419,9 @@ final class AgentBridge {
         ? URL(fileURLWithPath: path)
         : root.appendingPathComponent("studies").appendingPathComponent(path)
       if action == "saveStudy" {
-        try FileManager.default.createDirectory(
-          at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(renderer.workshopDocument()).write(to: url, options: .atomic)
+        try renderer.workshopSession.write(renderer.workshopDocument(), to: url)
       } else {
-        let data = try Data(contentsOf: url)
-        guard data.count < 1_048_576 else { throw RuntimeError.message("Study is too large") }
-        try renderer.restoreWorkshop(JSONDecoder().decode(WorkshopDocument.self, from: data))
+        try renderer.restoreWorkshop(WorkshopDocument.read(url))
       }
       respond(id, ["ok": true, "path": url.path, "state": renderer.snapshot()])
       return

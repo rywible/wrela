@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""Actual-render creature review with synchronized joint trails, support and contact timing."""
+import argparse, json, os, runpy, shutil, time, uuid
+from pathlib import Path
+p=argparse.ArgumentParser(description=__doc__)
+p.add_argument('--samples',type=int,default=25);p.add_argument('--views',default='quarter,right')
+p.add_argument('--part');p.add_argument('--label',default='craft-review')
+a=p.parse_args()
+if not 2<=a.samples<=121:p.error('Samples must be 2…121')
+views=a.views.split(',')
+if not 1<=len(views)<=4 or any(v not in ('front','quarter','right','left','back','above') for v in views):p.error('Choose up to four object views')
+os.environ['SANCTUARY_CONTROL_ROOT']='.soundstage'
+api=runpy.run_path(str(Path(__file__).with_name('gardenctl')));c,root=api['command'],api['ROOT']
+if c('status')['state']['workshop']['authoring']['automating']:raise RuntimeError('A review is already active')
+label=''.join(x for x in a.label if x.isalnum() or x in '-_') or 'craft'
+folder=root/'studies'/(label+'-'+time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:6]);folder.mkdir(parents=True)
+original=c('saveStudy',path=str(folder/'study.json'))['path'];records=[]
+distance=json.loads(Path(original).read_text())['distance']
+c('automation',value=True)
+try:
+    c('pause',value=True)
+    craft=c('craftInspect')['craft'];(folder/'craft.json').write_text(json.dumps(craft,indent=2))
+    report=c('craftReport',samples=a.samples,**({'part':a.part} if a.part else {}))['report']
+    for view in views:
+        c('view',value=view)
+        c('camera',distance=distance)
+        for i,row in enumerate(report['samples']):
+            c('creature',seconds=row['time']);frame=c('capture',label=label)
+            stem=view+'-'+str(i).zfill(3)
+            shutil.copyfile(frame['path'],folder/(stem+'.png'));shutil.copyfile(frame['metadata'],folder/(stem+'.json'))
+            records.append(dict(view=view,index=i,image=stem+'.png',metadata=stem+'.json'))
+        print(view+' captures ready',flush=True)
+finally:
+    try:c('loadStudy',path=original)
+    finally:c('automation',value=False)
+report.update(records=records,views=views,rig=craft['joints'],craft=craft['source'])
+# Resolve reference markers into the arrangement's time domain. Video is never
+# downloaded or re-encoded; local authored media is shown directly by the viewer.
+reference_tracks={}
+arrangement=craft['source'].get('arrangement')
+if arrangement and arrangement['clip']==report['clip']:
+    phrases={p['id']:p for p in craft['source']['phrases']}
+    for layer in arrangement['layers']:
+        ratio=(layer['end']-layer['start'])/(layer['sourceEnd']-layer['sourceStart'])
+        for ref in phrases[layer['phrase']]['references']:
+            if not ref['locator'] or not layer['sourceStart']<=ref['phraseTime']<=layer['sourceEnd']:continue
+            marker=dict(ref,timelineTime=layer['start']+(ref['phraseTime']-layer['sourceStart'])*ratio,sourceRate=1/ratio)
+            reference_tracks.setdefault(ref['locator'],[]).append(marker)
+report['referenceTracks']=[dict(locator=k,markers=sorted(v,key=lambda x:x['timelineTime'])) for k,v in reference_tracks.items()]
+
+(folder/'report.json').write_text(json.dumps(report,indent=2))
+page=Path(__file__).with_name('craft-review.html').read_text().replace('CRAFT_PAYLOAD',json.dumps(report).replace('<','\\u003c'))
+(folder/'index.html').write_text(page)
+print(json.dumps(dict(viewer=str(folder/'index.html'),report=str(folder/'report.json'),captures=len(records))))

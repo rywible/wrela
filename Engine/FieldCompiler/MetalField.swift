@@ -1,5 +1,6 @@
 import Foundation
 import FieldCore
+import simd
 
 /// Emits the same typed graph used by meshing and collision as Metal functions.
 /// The graph is shared by compute verification and procedural intersections.
@@ -24,8 +25,12 @@ public enum MetalField {
             case let .translated(a,p):body="return \(emit(a))(p-\(vector(p)));"
             case let .scaled(a,s):body="return \(emit(a))(p/\(f(s)))*\(f(s));"
             case let .stretched(a,s):body="return \(emit(a))(p/\(vector(s)))*\(f(min(s.x,min(s.y,s.z))));"
+            case let .rotated(a,q):
+                let m=simd_float3x3(q.inverse)
+                body="return \(emit(a))(float3x3(\(vector(m[0])),\(vector(m[1])),\(vector(m[2])))*p);"
             case let .union(a,b):body="return min(\(emit(a))(p),\(emit(b))(p));"
             case let .subtract(a,b):body="return max(\(emit(a))(p),-\(emit(b))(p));"
+            case let .smoothSubtract(a,b,k):body="float x=\(emit(a))(p), y=-\(emit(b))(p); float h=clamp(0.5+0.5*(x-y)/\(f(k)),0.0,1.0); return y+(x-y)*h+\(f(k))*h*(1-h);"
             case let .smoothUnion(a,b,k):body="float x=\(emit(a))(p), y=\(emit(b))(p); float h=clamp(0.5+0.5*(y-x)/\(f(k)),0.0,1.0); return y+(x-y)*h-\(f(k))*h*(1-h);"
             }
             functions.append("float \(name)(float3 p) { \(body) }")

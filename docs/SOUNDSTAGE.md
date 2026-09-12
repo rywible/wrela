@@ -129,7 +129,7 @@ Fields are in **metres**. Operations and ordered values:
 material 7, roughness .7 and metallic 0. Material kinds: 4 bark, 5 stone, 6 seed,
 2 canopy, 8 leaves, 7 plain PBR. Generic parts use the same compiler as Swift
 fields; new operations or specialized Swift generators still require rebuilding.
-Supported bounds span 1 mm...100 m, at most 32 parts, source size under 256 KiB,
+Supported bounds span 1 mm...100 m, at most 32 parts, source size under 4 MiB,
 at most 256 field nodes in total, and expression depth under 24. Empty surfaces fail before replacing the subject.
 
 ## Independent lighting and environment
@@ -197,6 +197,28 @@ Roughness/metallic use **−1 to inherit the asset** in the protocol. The native
 The calibration subject supplies four dielectric roughness samples and a polished
 metal sample. Wetness and exposure remain independent environment controls.
 
+The **Parts → Surface review** popup switches between authored materials and
+neutral clay. **Hide selected part** and **Show all parts** strip away selected
+surface batches without altering the asset. The same study controls are available
+to agents using exact names from `status.workshop.parts`. For example, Vesper's
+part names are lowercase:
+
+```sh
+./scripts/stagectl subject vesper
+./scripts/stagectl surfaceReview --mode clay --hide 'mane,beard,mantle,trim,horns'
+./scripts/stagectl surfaceReview --mode material --hide ''
+```
+
+Omitting `--hide` preserves the hidden list; supplying it replaces the entire list.
+Unknown or duplicate names reject the complete edit. Clay keeps the original mesh,
+skin palette, correctives, wind and shadow path, and replaces only the surface
+finish with neutral nonmetallic PBR. The scene lighting, wetness and shared look
+remain active. Hidden parts leave both color and shadow passes; visible anatomy
+continues to cast shadows. These settings belong to the study, participate in
+undo/checkpoints and exact capture replay, and are never published by `assetSave`.
+Selecting another subject resets the review; compatible source edits retain it,
+while removed part names are pruned when a new source successfully compiles.
+
 ## Save, compare and replay
 
 ```sh
@@ -216,6 +238,11 @@ Studies contain the complete field source, rig, sky, materials, layout, camera,
 clock and vegetation wind state. They restore exact paused rendering and future
 fixed-step wind/turntable motion. Cloud weather is deterministically reconstructed
 from clock and sky settings. Studies support simulation times through 3600 seconds.
+Study files must be smaller than 8 MiB, including the supported source of up to
+4 MiB and simulation/review state. Agent commands, native dialogs, checkpoints and
+session restoration share this limit. Saves use compact JSON; existing formatted
+studies remain supported. An oversized or invalid load preserves the active study,
+and a failed save preserves the previous file.
 
 `workshop-study` compares the baseline with the current workshop across matching
 views and light conditions. Baseline and current share the baseline clock and
@@ -237,7 +264,7 @@ profiling does not rewind time.
 
 ```sh
 swift test
-.build/Soundstage.app/Contents/MacOS/Sanctuary --check-renderer
+.build/Soundstage.app/Contents/MacOS/Soundstage --check-renderer
 ./scripts/validate-stage
 ./scripts/validate-workshop
 ./scripts/validate-authoring
@@ -501,9 +528,218 @@ at the correct den/home. `gardenctl reloadAssets` reloads its published anatomy
 and motion. The game supplies terrain and solid traversal checks and line of
 sight independently of the player's camera direction.
 
-Current limits: rigid articulated parts, not skinning, muscle simulation or
-terrain foot IK; one bounded creature behavior with simple steering, not a full
+Frostling uses rigid articulated parts; Vesper additionally exercises the skinned
+performance pipeline described below. Neither provides muscle simulation. Vesper now has terrain-aware contact constraints;
+Frostling retains its own movement contract. Frostling has one bounded behavior with simple steering, not a full
 navigation/ecology system. Material 9 is a filtered short-coat surface plus an
 approximate grazing sheen, not individual hairs. The visual target remains cute,
 soft and painterly. Avoid protruding eyeballs, segmented ears and busy mouth
 anatomy when refining this character.
+
+## Performance workshop and Vesper
+
+`vesper` is an original processional beast registered by Sanctuary. Its Swift
+recipe builds the mask, curved horns, layered mane, continuous body, embroidered
+mantle, beard, tail and articulated legs. It is a procedural authoring specimen;
+publication does not introduce an enemy encounter into the player's save.
+
+The **Performance** section provides named beat selection, an exact timeline,
+Play phrase / Freeze pose, a **Rig view** and additive joint keys. Select a joint,
+choose x/y/z (metres) or pitch/yaw/roll (degrees), enter a value and Set key.
+Keys use smooth minimum-jerk interpolation with authored holds. A single key is
+constant over the clip; use zero keys at the start and end for a local correction.
+Remove key, Undo/Redo and Save performance use the same atomic document history
+as anatomy edits. Source watching picks up valid JSON score edits. Tempo edits
+rescale the score's keys and beat times along with the registered duration.
+
+```sh
+./scripts/stagectl project sanctuary
+./scripts/stagectl subject vesper
+./scripts/stagectl rig softbox
+./scripts/stagectl creature --mode procession --seconds 0
+./scripts/stagectl performance
+./scripts/stagectl performanceBeat Coil
+./scripts/stagectl rigView true
+./scripts/stagectl rigView false
+./scripts/stagectl performanceKey --joint mask --channel yaw --seconds 0 --value 0
+./scripts/stagectl performanceKey --joint mask --channel yaw --seconds 5.2 --value -8
+./scripts/stagectl performanceKey --joint mask --channel yaw --seconds 12 --value 0
+./scripts/stagectl assetSave
+./scripts/validate-performance
+./scripts/workshop-study --creature-sequence --motion 24 --views front,right --lights '' --rigs softbox --label vesper-motion
+./scripts/performance-film --fps 30 --label vesper-film
+```
+
+`performance` returns beat intent, skinning registrations, transformed joint
+positions and project-supplied diagnostics. Vesper reports foot support states and
+reach residuals. The legacy diagnostics describe the generator; the `contacts` array measures the
+final pose after additive corrections and the contact solver. These diagnostics do not certify collision-free anatomy or good
+acting. Rig view exposes authored pivot positions and registered connections.
+
+Skinning uses four normalized influences and bind-space delta matrices in both
+mesh-shader and indexed drawing, including shadows. The body, mantle and trim
+share longitudinal weights. Mane, beard and tail blend their attachment and
+follow-through transforms. These are authored deformations, not cloth dynamics,
+hair simulation or muscle mechanics. Skinned surfaces currently use full detail
+and bypass bind-pose culling to avoid disappearing during deformation.
+
+`performance-film` creates an H.264 MP4 and local screening page from exact-time
+1920×1080 renderer PNGs. Each frame retains its capture metadata. Supported frame
+rates divide the 60 Hz simulation. It restores the original study after capture.
+The movie is an offline review artifact; use `scripts/profile` for live cost.
+
+Games can instantiate `AnimatedAsset` from this same `AssetSource`. Sanctuary's
+optional `gardenctl specimen vesper` puts a transient 0.7-scale rendering specimen
+in front of the player; `specimen none` removes it. It is not saved, has no combat
+or combat collision. Its contact solver queries the actual terrain under each foot;
+root travel, obstacles and locomotion planning remain outside this preview. Use a named test save when moving around
+for inspection. This path shares the workshop's pose evaluator and skin bindings.
+
+
+## Agent-native local authorship and physical rehearsal
+
+`stagectl authoring` returns the complete editable source, its revision token,
+registered contact chains and collision proxies, geometry reuse and edit time.
+`stagectl author patch.json` validates and installs one atomic transaction. Supply
+`expectedRevision` from `authoring`, plus any of `surfaceEdits`, `performance`,
+`contactOffsets`, `collisionBodies`, `secondary`, `guideOffsets` or `surfaceLayers`. Supplied arrays/maps replace their entire
+field; omitted fields stay intact. `performance: null` removes a score and
+`collisionBodies: null` restores the generator's collision defaults. This edits
+the working study; `assetSave` explicitly publishes it. One Undo reverses the
+whole transaction. Stale revisions and invalid or empty brush regions are rejected.
+
+A surface layer has `id`, primary `part`, optional additional `targets`, `center`,
+`radius`, `offset` and `dilation`. Vector values contain x/y/z. Coordinates and
+radii are bind-space metres; dilation is a dimensionless per-axis scale delta.
+The compact field is `w=max(0,1-dot(q/r,q/r))^3`, followed by
+`p'=p+w*(offset+q*dilation)`, with q=p-center. Layer order matters. Additional
+targets let the same field move sockets and eyes together; distant vertices are
+unchanged. A layer must touch its primary part. Normals use the analytical
+Jacobian; collapsed or reversed mappings at sampled vertices are rejected.
+This does not prove continuous injectivity or prevent all mesh self-intersections.
+These are source deformation fields, not edits to a baked mesh file.
+
+```sh
+./scripts/stagectl surfaceProbe --part mask --x -0.4 --y 3.2 --z -2.1 --radius 0.25
+./scripts/stagectl authoring
+./scripts/stagectl author /absolute/path/patch.json
+./scripts/stagectl poseReport --start 0 --end 12 --samples 121
+./scripts/stagectl rehearsal --stepHeight 0.3 --slopeX 0.1 --view true
+./scripts/stagectl rigView true
+./scripts/creature-review --times 0,3.5,5.2,7.3,9.2 --label contact-study
+```
+
+`surfaceProbe` returns the nearest compiled bind-space point, its normal, actual
+part bounds and the count of vertices in the requested radius. Vertex indices
+are not persistent identities. The compiler caches the base recipe separately
+from deformation fields. Local edits reuse it; GPU batches still rebuild for the
+changed geometry. Motion, contact offsets and collider edits reuse geometry.
+Specialized new recipe code still requires a rebuild and app restart.
+
+Performance keys optionally accept `inTangent` and `outTangent`, measured in
+channel units per second. An interval with either tangent uses cubic Hermite
+interpolation; a missing endpoint tangent is zero. Intervals without tangents
+retain the previous minimum-jerk holds. Explicit tangents can overshoot, so review
+the resulting movement. Use `author` to install a complete score atomically.
+
+The **Rehearsal** tab has flat/raised-step presets, two slopes, step height and
+position, contact markers, a solver toggle and **Review four views**. These fixture
+settings belong to the study, independently of the published creature. Turning
+solving off retains diagnostic measurements of the unconstrained pose. Markers
+show planted/swing/missed contacts, target positions and ground normals. Combining
+Rig view and contact markers shows the collider cylinders as wire guides; their
+rounded end-cap extent is represented in the query rather than the wire rings.
+
+Contact constraints run after authored pose corrections. They solve registered
+two-segment chains, preserve segment lengths, orient paws to the sampled normal,
+and expose unreachable targets instead of claiming a valid contact. Supported
+chains use independent upper/lower/foot transforms, as registered by Vesper.
+The chain solver owns these transforms while enabled; authored body movement and
+`contactOffsets` direct the result. This is kinematic contact adaptation, without
+mass, force, friction, balance, joint-limit or rigid-body dynamics solving.
+
+`poseReport` evaluates the final pose at 2...241 times without changing the scene.
+It reports reach residual, sole clearance, planted speed, contact trajectories and
+sampled collision-proxy penetrations. Collision capsules have stable id, joint,
+bind-space a/b endpoints, radius and ignored partner IDs. Capsule-pair queries use
+segment distance; ground uses 17 axial samples. Ground checks are approximations,
+not a continuous collision certificate. Cloth, hair and full mesh collision remain
+outside these proxies. Discrete sampling can miss between-frame collisions.
+
+`creature-review` archives synchronized front/quarter/side/back captures with a
+single time slider and final-pose diagnostics. `--baseline study.json` adds a
+second source version. Both variants retain their own recorded fixture and rig;
+use matched studies for a controlled comparison. `--no-open` suppresses the native
+review window. Captures are exact-time evidence, not live performance measurements.
+`stagectl rehearsalReview` starts the same review from the native session.
+Run `scripts/validate-creature-tools` for transaction, contact and replay checks.
+
+
+### Guide dynamics and finish fields
+
+Select **Dynamics** to toggle simulation, inspect guide strain, adjust gravity,
+damping, shape compliance or wind, and save those source settings. `secondary`
+merges the same values atomically. `secondaryReport --samples 61` evaluates the
+whole registered performance using a separate replay player without changing the
+working study. The review viewer includes maximum strain, particle, span and pinned
+penetration, even when span response is disabled.
+`rigView true` plus `rehearsal --view true` draws the guide network, highlighting
+stretched links in orange and the worst penetrating span in magenta. Settings
+include enabled, edgeContacts (default false), friction (0...2, default zero),
+gravity (m/s²), damping (1/s),
+followCompliance (m/N), wind (m/s²), substeps (1...8), iterations (1...12).
+
+`authoring` exposes the registered `secondaryRig`. `author` accepts `guideOffsets`
+as a complete map from guide ID to bind-space metre displacement. IDs remain stable
+as dense fibres are regenerated. `guideRadii` is a complete map of per-guide
+contact envelopes in metres (0.001...1); it changes simulation without rebuilding
+geometry. Physical spans interpolate endpoint radii, supporting tapered clumps.
+`guideFrames` selects `rotation` (default) or `surface` for each guide. Surface
+frames fit a local affine differential from neighbouring controls, allowing tangent
+stretch/shear while preserving normal thickness. They fall back to rotation at
+degenerate patches; they do not certify a fold-free cage. These edits also reuse
+geometry and are shared with game playback. Unknown guides, invalid graphs and nonfinite
+values are rejected. Dense geometry follows its existing skin field and normals
+are recomputed. This does not certify the resulting geometry against folds.
+
+`surfaceLayers` is a complete ordered array, max 64 fields and 16 per part. Each
+record has id, part, center[3], radius[3], tint[3] (authored RGB), amount (0...1),
+frequency (0.1...1000 per metre), roughness/metallic (-1 preserves the recipe),
+relief (-0.03...0.03 metres), pattern (0 uniform, 1 mottled, 2 noise contours,
+3 directional grain), and seed (-1000...1000). The compact envelope is
+`max(0,1-dot((p-center)/radius,(p-center)/radius))²`. Material fields operate on
+the compiled bind position and travel with skinning. Amount also weights relief.
+Relief changes shading, not silhouette, depth or collision. An empty array removes
+all finish fields. The returned schema and geometry reuse counts let agents apply
+and assess changes without guessing renderer state.
+
+Dynamics uses fixed-step replay with two seconds of static settling. Studies save
+source and time, then reconstruct simulation; replay is deterministic within this
+build. Hair and cloth use particle and optional registered-span contact against
+capsules, sampled height-field contact, and one-coefficient positional friction
+relative to moving proxies. Pins are diagnosed but never displaced. Adjacent physical
+links opt into span contact; bend constraints and cloth diagonals need not. Ground
+clearance is vertical with a local tangent-plane response, an approximation on steps.
+There is no swept collision, self-collision, triangle contact or body reaction.
+Review the moving surface as well as
+the report. Run `scripts/validate-dynamics` for isolated rendered guide edits,
+finish edits, rejection, strain, undo and exact-time replay checks.
+
+`surfaceContacts --samples 1` checks every compiled vertex of batches influenced
+by secondary guides after the renderer's four-weight skin transform. Use `--part`
+to inspect a named part, or 2...121 samples for a whole-performance scan. The report
+returns per-part counts, the worst vertex, rehearsal-space position, time, depth
+and body proxy ID, plus the skin guides influencing that vertex. The native **Audit rendered surface** button reports the current
+frame's worst overlap. It includes intentional attachments and does not test triangle
+interiors, self-contact, shader wind or between-frame collisions. It is a separate
+audit, not part of the live render loop and not a surface collision solver.
+
+
+## Creature craft source
+
+See [CREATURE_CRAFT.md](CREATURE_CRAFT.md) for spatial sculpting, rig extensions, skin fields,
+GPU pose correctives, pose/contact phrases, bounded landmark fitting, grooming and
+surface-attached costume seams. `stagectl craftInspect` returns the strict schema
+and `stagectl craft` applies one revision-checked transaction. `craftReport` and
+`scripts/craft-review` inspect actual movement and rendering. Native Craft exposes
+phrase capture, support/deformation inspection, publication and review.

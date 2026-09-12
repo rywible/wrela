@@ -6,11 +6,15 @@ import MetalKit
 
 /// Application composition root. The game and workshop prepare frames for one renderer.
 final class WorkshopRenderer: NSObject, MTKViewDelegate {
+  let secondaryPlayer = SecondaryPosePlayer()
+
   let graphics: MetalRenderer
   let isSoundstage: Bool
   let view: MTKView
   var batches: [GPUBatch] = []
   var floor: GPUBatch!
+  var rehearsalMesh: GPUBatch?
+  var rehearsalMeshSurface = RehearsalSurface()
   var wetness: Float = 0
   var atmosphereWind = WindSimulation()
   var onUpdate: (() -> Void)?
@@ -23,15 +27,35 @@ final class WorkshopRenderer: NSObject, MTKViewDelegate {
   var studioObject = ProjectContext.current.defaultSubject
   var inspectionCamera: InspectionCamera?
   var studioViewName = "Custom"
-  var studioSource = AssetSource.defaults(ProjectContext.current.defaultSubject)
+  var studioRevisionCache:String?
+  var studioSourceObjectCache:Any?
+  var studioSource = AssetSource.defaults(ProjectContext.current.defaultSubject) {
+    didSet {studioRevisionCache=nil;studioSourceObjectCache=nil}
+  }
   var importedSourceURL: URL?
   var sceneLook = (try? SceneLook.load()) ?? SceneLook()
   lazy var workshopSession = WorkshopSession(self)
   var studioBatches: [GPUBatch] = []
+  var sculptFrame:SculptFrame?
+  var studioPartCache: [String:GPUBatch] = [:]
+  var studioReusedBatches = 0
+  var studioRebuiltBatches = 0
+  var studioBaseCache: [String:[SceneBatch]] = [:]
+  var sculptAnatomyCache:[String:AnatomyCompilation] = [:]
+  var sculptAnatomyCacheOrder:[String] = []
+  var studioBaseCacheHit = false
   var studioCache: [String: [GPUBatch]] = [:]
-  var studioBounds = Bounds(V3(-0.01, 0, -0.01), V3(0.01, 0.035, 0.01))
+  var measuredStudioBounds = Bounds(V3(-0.01, 0, -0.01), V3(0.01, 0.035, 0.01))
+  var sculptReviewFrame:SculptReviewFrame?
+  var sculptOverlay:SculptOverlay? {didSet {sculptOverlayCache=nil}}
+  var sculptOverlayCache:(String,GPUBatch)?
+  var studioBounds:Bounds {
+    get {sculptReviewFrame.map{Bounds($0.minimum,$0.maximum)} ?? measuredStudioBounds}
+    set {measuredStudioBounds=newValue}
+  }
   var studioRig = StudioRig()
   var studioLayout = StudioLayout()
+  var surfaceReview = SurfaceReview()
   var studioBuildMilliseconds: Double = 0
   var studioUnit: Float { studioObject == "sky" ? 1 : max(0.001, studioExtent / 4) }
   var scene = "studio"
@@ -76,7 +100,7 @@ final class WorkshopRenderer: NSObject, MTKViewDelegate {
       orbit = 0
       orbitElevation = 0.2
     }
-    if studioSource.motion != nil && studioObject != "sky" { orbit += .pi }
+    if studioSource.animation != nil && studioObject != "sky" { orbit += .pi }
     creatureWorkshop.focusPart = false
     if !["detail", "base", "crown", "sunward", "away", "zenith"].contains(name) {
       fitStudioCamera()
@@ -280,7 +304,8 @@ final class WorkshopRenderer: NSObject, MTKViewDelegate {
       look: sceneLook, items: renderItems(),
       infiniteGround: inspectionCamera == nil && scene == "studio" && studioObject != "sky"
         && studioRig.name != "room"
-        && studioLayout.ground)
+        && studioLayout.ground && !rehearsalActive)
+    rememberSculptFrame(input)
     graphics.draw(
       input, elapsed: elapsed,
       simulationMilliseconds: (CACurrentMediaTime() - simulationStart) * 1000)
@@ -291,17 +316,26 @@ final class WorkshopRenderer: NSObject, MTKViewDelegate {
     var items: [RenderItem] = []
     func draw(
       _ batch: GPUBatch, instance: Instance? = nil, subject: Bool = false, emitter: Bool = false,
-      castsShadow: Bool = true
+      castsShadow: Bool = true, skinPalette: [simd_float4x4] = []
     ) {
       var material = batch.material
       if subject {
         if studioLayout.roughness >= 0 { material.x = studioLayout.roughness }
         if studioLayout.metallic >= 0 { material.y = studioLayout.metallic }
+        // The fragment-only review flag preserves the exact deformation and shadow paths.
+        if surfaceReview.mode == "clay" { material = SIMD4(0.72, 0, 0, -1) }
       }
       if emitter { material.z = 1 }
       if batch.name == "Studio floor" && !emitter { material.w = 1 }
-      items.append(
-        RenderItem(batch: batch, instance: instance, castsShadow: castsShadow, material: material))
+      let overlay=subject && sculptOverlay?.part==batch.name
+      if overlay {material=SIMD4(0.72,0,0,-2)}
+      var instance=instance
+      if overlay {var value=instance ?? batch.sourceInstances[0];value.tint=SIMD4(1,1,1,value.tint.w);instance=value}
+      var item = RenderItem(batch: overlay ? overlayBatch(batch):batch, instance: instance, castsShadow: castsShadow, material: material)
+      item.correctives=subject ? studioSource.correctiveUniforms(part:batch.name,clip:creatureWorkshop.mode,time:creatureWorkshop.seconds,state:creatureWorkshop.actor):[]
+      item.surfaceLayers=subject && surfaceReview.mode != "clay" && !overlay ? studioSource.resolvedSurfaceLayers.filter{$0.part==batch.name}:[]
+      item.skinPalette = skinPalette
+      items.append(item)
     }
     do {
       let e = studioExtent
@@ -346,10 +380,11 @@ final class WorkshopRenderer: NSObject, MTKViewDelegate {
       let offsets: [V3] =
         studioLayout.arrangement == "grove"
         ? [.zero, V3(-1.25 * e, 0, -e), V3(1.25 * e, 0, -e)] : [.zero]
-      let pose = creatureWorkshop.matrices(source: studioSource)
+      items += rehearsalItems(center:center)
+      let pose = secondaryPose()
       let root = creatureWorkshop.root(studioSource.motion ?? MotionParameters())
       for (i, offset) in offsets.enumerated() {
-        for batch in studioBatches where creatureWorkshop.visible(batch.name, source: studioSource)
+        for batch in studioBatches where !creatureWorkshop.rigView && !surfaceReview.hiddenParts.contains(batch.name) && creatureWorkshop.visible(batch.name, source: studioSource)
         {
           let tint = batch.sourceInstances[0].tint
           var instance = Instance(
@@ -357,9 +392,30 @@ final class WorkshopRenderer: NSObject, MTKViewDelegate {
             scale: V3(repeating: studioLayout.scale), yaw: Float(i) * 0.7,
             tint: V3(tint.x, tint.y, tint.z) * studioLayout.tint, kind: tint.w)
           instance.model =
-            instance.model * root * (pose[batch.name] ?? matrix_identity_float4x4)
+            instance.model * root * (batch.skinJoints.isEmpty ? (pose[batch.name] ?? matrix_identity_float4x4) : matrix_identity_float4x4)
             * batch.sourceInstances[0].model
-          draw(batch, instance: instance, subject: true)
+          draw(batch, instance: instance, subject: true, skinPalette: batch.skinJoints.map { pose[$0] ?? matrix_identity_float4x4 })
+        }
+      }
+      if creatureWorkshop.rigView {
+        var points: [String:V3]=[:]
+        for joint in studioSource.joints {
+          let p=root*(pose[joint.id] ?? matrix_identity_float4x4)*SIMD4(joint.pivot,1)
+          let point=(V3(p.x,p.y,p.z)-V3(center.x,studioBounds.min.y,center.z))*studioLayout.scale
+          points[joint.id]=point
+          let size=e*0.018
+          draw(floor,instance:Instance(position:point,scale:V3(size/4,size/0.02,size/4),
+            tint:joint.id == creatureWorkshop.selected ? V3(0.8,0.2,0.1):V3(0.8,0.63,0.25),kind:7),castsShadow:false)
+        }
+        let links=studioSource.joints.compactMap { j in j.parent.map { ($0,j.id) } } + (studioSource.animation?.rigLinks ?? [])
+        for (a,b) in links {
+          guard let start=points[a],let end=points[b],length(end-start)>0.001 else {continue}
+          let thickness=e*0.004
+          var line=Instance(tint:V3(0.4,0.65,0.65),kind:7)
+          line.model=transform((start+end)/2,V3(repeating:1),0)
+            * simd_float4x4(simd_quatf(from:V3(0,1,0),to:normalize(end-start)))
+            * simd_float4x4(diagonal:SIMD4(thickness/4,length(end-start)/0.02,thickness/4,1))
+          draw(floor,instance:line,castsShadow:false)
         }
       }
       if creatureWorkshop.mode == "behavior" {
@@ -404,6 +460,7 @@ final class WorkshopRenderer: NSObject, MTKViewDelegate {
       "artDirectionPath": SceneLook.url.path,
       "sceneLook": sceneLook.values,
       "workshop": workshopSnapshot(),
+      "sculptFrame": sculptFrameMetadata,
       "mode": isSoundstage ? "soundstage" : "game", "sky": skySettings.snapshot, "scene": scene,
       "studioObject": studioObject, "antialiasing": "4x MSAA", "seed": 82317, "frame": frame,
       "time": simulationTime, "paused": paused,

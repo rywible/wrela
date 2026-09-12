@@ -25,6 +25,8 @@ package func transform(_ p: V3, _ s: V3, _ yaw: Float) -> simd_float4x4 {
 }
 
 package struct SceneBatch {
+  package var skinJoints: [String] = []
+  package var skinWeights: [SkinWeight] = []
   package var name: String
   package var mesh: Mesh
   package var instances: [Instance]
@@ -33,6 +35,9 @@ package struct SceneBatch {
   package var roughness: Float = -1
   package var doubleSided = false
   package var metallic: Float = 0
+  /// Recipe-owned rigid surface reduction, applied after source sculpting.
+  /// Skinned surfaces need a binding-aware reduction policy instead.
+  package var surfaceReduction: (ratio:Float,error:Float)?
 
   package init(name:String,mesh:Mesh,instances:[Instance],grass:[GrassBlade]=[],lodMeshes:[Mesh]=[],roughness:Float = -1,doubleSided:Bool=false,metallic:Float=0) {
     self.name=name;self.mesh=mesh;self.instances=instances;self.grass=grass;self.lodMeshes=lodMeshes;self.roughness=roughness;self.doubleSided=doubleSided;self.metallic=metallic

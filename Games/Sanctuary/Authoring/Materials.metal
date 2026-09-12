@@ -1,7 +1,26 @@
 // Sanctuary surface recipes. The garden path belongs to this project.
 void projectSurface(int kind,float3 local,float3 world,float3 n,thread float3 &color,thread float &rough,thread float &bump,thread float &strength) {
     float broad=filteredNoise(world.xz*.18),grain=filteredNoise(local.xz*18+local.y*3);
-    if(kind==1) {
+    if(kind==10) {
+        // Geometry owns the sewn pattern; this source supplies quiet woven texture.
+        float weave=filteredNoise(local.xz*180+local.y*27);
+        float nap=filteredNoise(local.xy*11+local.z*3);
+        color*=.94+.07*nap+.025*weave;
+        bump=weave*.00045;strength=1;rough=.92;
+    } else if(kind==13) {
+        // Explicit fibres supply their own normals. Avoid amplifying subpixel
+        // polygon edges with the mask's carved-grain normal perturbation.
+        rough=.86;bump=0;strength=0;
+    } else if(kind==11) {
+        float grain=filteredNoise(local.xy*55+local.z*11);
+        float age=filteredNoise(local.xz*5+local.y*3);
+        color*=.80+.20*age+.035*grain;
+        bump=grain*.00016+age*.0003;strength=1;rough=.78;
+    } else if(kind==12) {
+        float tarnish=filteredNoise(local.xy*8+local.z*4);
+        color*=.70+.30*tarnish;
+        bump=filteredNoise(local.xz*75+local.y)*.0007;strength=1;rough=.57;
+    } else if(kind==1) {
         float pathX=sin(world.z*.048)*9+sin(world.z*.105)*2;
         float path=1-smoothstep(1.5,2.7,abs(world.x-pathX)+(broad-.5)*.65);
         color=mix(float3(.29,.42,.16),float3(.42,.51,.23),broad);

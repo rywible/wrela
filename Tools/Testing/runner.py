@@ -114,7 +114,7 @@ def unit(directory, owners):
     if 'engine' in owners:
         with (directory/'harness-python.log').open('w') as log:
             subprocess.run([sys.executable,'-m','unittest','discover','-s',str(ROOT/'Tools/Testing'),'-p','test_*.py'],cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,check=True)
-    filters = {'engine':'FieldCoreTests|HarnessTests|GameContractTests', 'cave':'CaveContentTests', 'sanctuary':'SanctuaryContentTests'}
+    filters = {'engine':'FieldCoreTests|FieldEngineTests|SoundstageKitTests|HarnessTests|GameContractTests', 'cave':'CaveContentTests', 'sanctuary':'SanctuaryContentTests'}
     with (directory / 'unit.log').open('w') as log:
         result = subprocess.run(['swift','test','--filter','|'.join(filters[o] for o in owners)], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
     if result.returncode:
@@ -144,7 +144,7 @@ def main():
         if name == 'render':
             p.add_argument('--baseline', type=Path)
         if name == 'authoring':
-            p.add_argument('--suite', choices=['workshop','authoring','creatures','projects','review'], default='workshop')
+            p.add_argument('--suite', choices=['workshop','authoring','creatures','projects','review','dynamics','creature-tools','performance','craft','sculpt'], default='workshop')
         if name == 'changed':
             p.add_argument('--since', default='HEAD')
     for name in ['replay','inspect','minimize']:
@@ -386,4 +386,3 @@ def main():
         print(('PASS' if run['passed'] else 'FAIL') + ' ' + run.get('test',{}).get('name',run.get('name','')) + (' · '+run['failure'] if run.get('failure') else ''),flush=True)
     print(('PASS' if result['passed'] else 'FAIL')+' · '+str(directory/'index.html'),flush=True)
     return 0 if result['passed'] else 1
-

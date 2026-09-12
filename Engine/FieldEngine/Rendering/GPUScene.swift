@@ -56,4 +56,7 @@ package struct GPUBatch {
   package var meshletCount: Int
   package var doubleSided = false
   package var proceduralGrass = false
+  package var hasGroomCoverage = false
+  package var skinWeights: MTLBuffer? = nil
+  package var skinJoints: [String] = []
 }

@@ -85,7 +85,9 @@ try:
             art=json.loads((Path(c('status')['state']['artDirectionPath'])).read_text())
             variants=[('Candidate',original)]+[(entry['label'],entry['subject']) for entry in art['references']]+[('Lighting and sky','__environment__')]
         views=['quarter'] if a.style_board else [x.strip() for x in a.views.split(',') if x.strip()]
-        lights=[('outdoor','noon'),('outdoor','sunset'),('softbox',None)] if a.style_board else [('outdoor',x.strip()) for x in a.lights.split(',') if x.strip()]+[(x.strip(),None) for x in a.rigs.split(',') if x.strip()]
+        # Match WorkshopRenderer.lighting: indoor selects a room fixture. Replacing
+        # it with outdoor leaves indoor shading paired with a distant sun lamp.
+        lights=[('outdoor','noon'),('outdoor','sunset'),('softbox',None)] if a.style_board else [('room' if x.strip()=='indoor' else 'outdoor',x.strip()) for x in a.lights.split(',') if x.strip()]+[(x.strip(),None) for x in a.rigs.split(',') if x.strip()]
         if not views or not lights:raise RuntimeError('Choose at least one view and lighting condition')
         anchors={}
         for variant,source in variants:

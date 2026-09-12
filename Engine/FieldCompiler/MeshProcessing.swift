@@ -21,12 +21,12 @@ public enum MeshProcessing {
     public static func optimize(_ input:Mesh)->Mesh {
         guard !input.indices.isEmpty else{return input}
         var mesh=input;let count=mesh.vertices.count,indexCount=mesh.indices.count
-        let used=mesh.vertices.withUnsafeMutableBytes {v in mesh.indices.withUnsafeMutableBufferPointer {i in sgOptimize(v.baseAddress!,count,i.baseAddress!,indexCount)}}
+        let used=mesh.vertices.withUnsafeMutableBytes {v in mesh.indices.withUnsafeMutableBufferPointer {i in sgOptimize(v.baseAddress!,count,i.baseAddress!,indexCount,MemoryLayout<Vertex>.stride)}}
         mesh.vertices.removeLast(mesh.vertices.count-used);return mesh
     }
     public static func simplify(_ input:Mesh,ratio:Float,error:Float)->Mesh {
         var mesh=input,indices=Array(repeating:UInt32(0),count:input.indices.count),measured:Float=0
-        let count=input.vertices.withUnsafeBytes {v in input.indices.withUnsafeBufferPointer {i in sgSimplify(&indices,i.baseAddress!,i.count,v.baseAddress!,input.vertices.count,ratio,error,&measured)}}
+        let count=input.vertices.withUnsafeBytes {v in input.indices.withUnsafeBufferPointer {i in sgSimplify(&indices,i.baseAddress!,i.count,v.baseAddress!,input.vertices.count,ratio,error,&measured,MemoryLayout<Vertex>.stride)}}
         mesh.indices=Array(indices.prefix(count));mesh.geometricError=measured
         return optimize(mesh)
     }
@@ -41,7 +41,7 @@ public struct MeshletData {
         let bound=sgMeshletBound(mesh.indices.count)
         var out=Array(repeating:SGMeshlet(),count:bound)
         vertices=Array(repeating:0,count:bound*64);triangles=Array(repeating:0,count:bound*124*3)
-        let count=mesh.vertices.withUnsafeBytes {p in mesh.indices.withUnsafeBufferPointer {i in sgMeshlets(&out,&vertices,&triangles,i.baseAddress!,i.count,p.baseAddress!,mesh.vertices.count)}}
+        let count=mesh.vertices.withUnsafeBytes {p in mesh.indices.withUnsafeBufferPointer {i in sgMeshlets(&out,&vertices,&triangles,i.baseAddress!,i.count,p.baseAddress!,mesh.vertices.count,MemoryLayout<Vertex>.stride)}}
         for m in out.prefix(count) {descriptors.append(SIMD4(m.vertexOffset,m.triangleOffset,m.vertexCount,m.triangleCount));spheres.append(SIMD4(m.x,m.y,m.z,m.radius))}
         if let m=out.prefix(count).last {vertices=Array(vertices.prefix(Int(m.vertexOffset+m.vertexCount)));triangles=Array(triangles.prefix(Int(m.triangleOffset+m.triangleCount*3)))}
     }

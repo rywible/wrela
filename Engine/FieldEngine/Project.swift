@@ -163,6 +163,16 @@ package struct BehaviorSnapshot: Codable {
   package init() {}
 }
 package struct AnimationDefinition {
+  package var secondaryRig: (([String:Float])->SecondaryRig)?
+
+  package var collisionBodies: [RigCapsule] = []
+  package var contactChains: [ContactChain] = []
+  package var contactTargets: ((String,Float,BehaviorSnapshot,MotionParameters)->[String:ContactTarget])?
+  package var beats: [PerformanceBeat] = []
+  package var motionEnvelope: Bounds? = nil
+  package var beatDuration: Float = 1
+  package var rigLinks: [(String,String)] = []
+  package var inspect: ((String, Float, BehaviorSnapshot, MotionParameters) -> [String: Float])? = nil
   package var signalName: String
   package var controls: [ScalarControl]
   package var clips: [String]

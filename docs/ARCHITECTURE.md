@@ -37,7 +37,8 @@ creature model or hand-maintained list of species-specific inspector controls.
 `AssetSource` stores a compact generator recipe plus optional stable part
 overrides. Explicit `fields` assets still support direct composition. Semantic
 Swift recipes expand to `FieldExpression`/`Shape`, then to meshes. Geometry caches
-exclude pose settings. Animation changes transforms of compiled parts.
+exclude pose settings. Animation changes transforms of compiled parts; optional four-influence skin
+bindings deform continuous surfaces using the same pose matrices.
 
 `AnimationDefinition` provides clips, durations, pose/root functions and a
 fixed-step behavior adapter. The game owns its brain and versioned state.
@@ -116,3 +117,63 @@ Soundstage. Tools/Testing owns the launcher and reporting; its native driver run
 against the real GameHost simulation and compares state. `GameProject.inspectSimulation` adapts
 opaque game checkpoints into a generic Soundstage creature inspection without game imports in
 the editor. See [TESTING.md](TESTING.md) for contracts, commands and explicit limits.
+
+## Procedural creature performance
+
+FieldCore owns deterministic motion curves, additive performance scores, skin
+influence math and a two-link analytic IK solver. FieldCompiler owns sampled
+parametric surfaces and transported-frame tube construction. FieldEngine owns
+GPU bindings and the reusable AnimatedAsset scene adapter. Neither imports game
+anatomy or choreography. SanctuaryContent owns Vesper's anatomy pivots and motion;
+SanctuaryProject owns geometry, materials and the editor/behavior registration.
+
+Soundstage's Performance section edits the score stored in AssetSource. Score
+changes reuse geometry, participate in study replay and undo, and affect the same
+pose evaluator used by games. GPU skinning applies in surface and shadow paths;
+current skinned assets have no LODs or bind-pose culling. This is an intentional
+correctness-first limit, measured with the actual live specimen.
+
+
+Local surface fields, contact-chain math, rehearsal height fields and collision
+capsule queries belong to FieldCore. FieldCompiler applies ordered deformation
+fields and transforms normals through their analytical Jacobians. AssetSource
+stores local edits, optional collision overrides and contact offsets; its shared
+pose evaluator orders authored poses → score corrections → contact constraints.
+Sanctuary registers anatomy, targets and collision proxies. The game supplies
+terrain sampling; Soundstage supplies a repeatable study-owned fixture. Shared
+editor code contains no species switch. Base recipe meshes are cached separately
+from local deformation edits. The renderer still receives ordinary meshes and
+skin palettes, with no editor or creature physics state inside MetalRenderer.
+
+
+Secondary motion retains the same ownership boundary. FieldCore defines guide
+graphs, XPBD constraints and finish-field uniforms; FieldCompiler owns dense guide
+grooms and guide rest-shape deformation. FieldEngine owns an instance-local fixed
+step replay player and applies the resulting palette in the ordinary renderer.
+Game recipes register graphs and semantic grooming controls. Soundstage edits and
+inspects those sources without a species switch. Published AnimatedAsset and the
+workshop use the same secondary player. Materials bind at fragment buffers 5/6;
+SurfaceLayerUniform is four aligned float4 values (64 bytes) on both Swift/Metal.
+Finish-field evaluation uses a function constant: ordinary scene pipelines compile
+it out, while layered vertex, mesh and grass pipelines opt in. Reload builds all
+variants before replacing the active pipeline set.
+The skin palette supports 64 matrices, the 4096-byte inline Metal buffer limit.
+
+
+## Source-authored creature craft
+
+FieldCore owns the strict versioned craft schema, spatial sculpt fields, authored
+rigs, pose/contact phrases, bounded landmark fitting, lumped mass/support math,
+and source-authored guide/cloth graphs. FieldCompiler owns refinement, weight
+fields, grooms, panels, triangle-attached seams and CPU deformation diagnostics.
+AssetSource compiles these sources and evaluates phrases → bounded static balance
+assistance → contact IK, identically in Soundstage and AnimatedAsset. Correctives
+run before skinning in surface/mesh/shadow paths at vertex buffers 13/14; their
+64-byte layout and production GPU function are checked against CPU evaluation.
+
+Soundstage owns revision-checked transactions and study history, not creature
+anatomy. The Python agent client is a transport over that same native protocol.
+The review viewer consumes actual captures and inert reference annotations.
+Richer source is bounded at 4 MiB and 16,384 joint-pose samples; file loading and
+watching use the same structural and semantic validation. See CREATURE_CRAFT.md
+for the complete contract and limits.

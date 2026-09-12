@@ -28,6 +28,7 @@ package enum SanctuaryProject {
         controls: FrostlingRecipe.controls.map {
           ScalarControl($0.key, $0.title, $0.initial, $0.range)
         }, animation: animation, parts: FrostlingRecipe.parts))
+    generators.append(ProcessionalRecipe.generator)
     return GameProject(
       id: "sanctuary", name: "Sanctuary", defaultSubject: "tree",
       directory: ProjectContext.workspace.appendingPathComponent("Games/Sanctuary"),

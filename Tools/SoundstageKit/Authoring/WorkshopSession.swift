@@ -2,6 +2,75 @@ import AppKit
 import CryptoKit
 import FieldEngine
 
+extension WorkshopDocument {
+  // A full supported 4 MiB source plus the fixed-step simulation, camera and
+  // review state must round-trip through every study entry point.
+  static let maximumBytes = AssetSource.maximumSourceBytes * 2
+
+  static func readData(_ url: URL) throws -> Data {
+    let file = try FileHandle(forReadingFrom: url)
+    defer { try? file.close() }
+    var data = Data()
+    while data.count < maximumBytes {
+      let block = try file.read(upToCount: min(1_048_576, maximumBytes - data.count)) ?? Data()
+      if block.isEmpty { return data }
+      data.append(block)
+    }
+    throw RuntimeError.message("Study must be smaller than 8 MiB, including its source and replay state")
+  }
+  static func read(_ url: URL) throws -> WorkshopDocument {
+    try JSONDecoder().decode(WorkshopDocument.self, from: readData(url))
+  }
+  func encoded() throws -> Data {
+    let encoder = JSONEncoder()
+    // Avoid multiplying rich motion/anatomy sources with indentation. Old
+    // pretty-printed studies are still accepted by the same bounded reader.
+    encoder.outputFormatting = [.sortedKeys]
+    let data = try encoder.encode(self)
+    guard data.count < Self.maximumBytes else {
+      throw RuntimeError.message("Study must be smaller than 8 MiB, including its source and replay state")
+    }
+    return data
+  }
+  func write(to url: URL) throws {
+    let data = try encoded()
+    try FileManager.default.createDirectory(
+      at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try data.write(to: url, options: .atomic)
+  }
+}
+
+/// A study-owned rendering lens. It never changes the authored source or bindings.
+struct SurfaceReview: Codable {
+  var mode = "material"
+  var hiddenParts: [String] = []
+
+  func validate(parts: [String]? = nil) throws {
+    guard ["material", "clay"].contains(mode) else {
+      throw RuntimeError.message("Surface review mode must be material or clay")
+    }
+    guard Set(hiddenParts).count == hiddenParts.count else {
+      throw RuntimeError.message("Each hidden part must be named once")
+    }
+    guard let parts else { return }
+    let unknown = hiddenParts.filter { !parts.contains($0) }
+    guard unknown.isEmpty else {
+      throw RuntimeError.message("Unknown hidden parts: \(unknown.joined(separator: ", ")). Use status.workshop.parts or the Parts inspector for exact names.")
+    }
+  }
+}
+
+extension WorkshopRenderer {
+  func editSurfaceReview(mode: String? = nil, hiddenParts: [String]? = nil) throws {
+    var candidate = surfaceReview
+    if let mode { candidate.mode = mode }
+    if let hiddenParts { candidate.hiddenParts = hiddenParts }
+    try candidate.validate(parts: studioBatches.map(\.name))
+    candidate.hiddenParts.sort()
+    surfaceReview = candidate
+  }
+}
+
 /// Authoring state is separate from renderer caches and from published asset files.
 final class WorkshopSession {
   unowned let renderer: WorkshopRenderer
@@ -138,10 +207,10 @@ final class WorkshopSession {
     guard data != applied, Date().timeIntervalSince(changedAt) > 0.45 else { return }
     applied = data  // Attempt once per stable file revision, including malformed revisions.
     do {
-      guard let data, data.count <= 262144 else {
-        throw RuntimeError.message("Source is missing or exceeds 256 KiB")
+      guard let data, data.count < AssetSource.maximumSourceBytes else {
+        throw RuntimeError.message("Source is missing or exceeds 4 MiB")
       }
-      let source = try JSONDecoder().decode(AssetSource.self, from: data)
+      let source = try AssetSource.decode(data)
       let skyOnly = renderer.studioObject == "sky"
       try edit("Source reload") {
         try renderer.applySource(source)
@@ -157,9 +226,7 @@ final class WorkshopSession {
     renderer.onUpdate?()
   }
   func write(_ doc: WorkshopDocument, to url: URL) throws {
-    try FileManager.default.createDirectory(
-      at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try bytes(doc).write(to: url, options: .atomic)
+    try doc.write(to: url)
   }
   func namedFiles(_ folder: String) -> [(String, URL)] {
     let dir = root.appendingPathComponent(folder)
@@ -190,7 +257,7 @@ final class WorkshopSession {
     guard let url = namedFiles("checkpoints").first(where: { $0.0 == name })?.1 else {
       throw RuntimeError.message("Unknown checkpoint")
     }
-    let doc = try JSONDecoder().decode(WorkshopDocument.self, from: Data(contentsOf: url))
+    let doc = try WorkshopDocument.read(url)
     try edit("Restore \(name)") { try renderer.restoreWorkshop(doc) }
     resetWatch()
   }
@@ -232,7 +299,7 @@ final class WorkshopSession {
     selectedBaseline = URL(fileURLWithPath: path)
     saveReviewState()
   }
-  func captureReview(styleBoard: Bool = false, motion: Bool = false) throws {
+  func captureReview(styleBoard: Bool = false, motion: Bool = false, rehearsal: Bool = false) throws {
     guard reviewProcess == nil, !automating else {
       throw RuntimeError.message("A review is already running")
     }
@@ -253,7 +320,7 @@ final class WorkshopSession {
     ]
     if motion {
       arguments.removeAll { $0 == "--current" }
-      guard renderer.studioSource.motion != nil, renderer.creatureWorkshop.mode != "bind" else {
+      guard renderer.studioSource.animation != nil, renderer.creatureWorkshop.mode != "bind" else {
         throw RuntimeError.message("Choose a motion clip or behavior scenario before recording")
       }
       arguments += [
@@ -272,6 +339,12 @@ final class WorkshopSession {
         arguments.removeAll { $0 == "--current" }
       }
       arguments += ["--reference", selectedBaseline.path]
+    }
+    if rehearsal {
+      guard renderer.studioSource.animation != nil,renderer.creatureWorkshop.mode != "bind" else {throw RuntimeError.message("Choose a motion clip before review")}
+      let duration=renderer.performanceDuration
+      let times=(0..<9).map {String(Float($0)*duration/8)}.joined(separator:",")
+      arguments=[AssetSource.workspace.appendingPathComponent("scripts/creature-review").path,"--label","rehearsal","--times",times]
     }
     process.arguments = arguments
     process.standardOutput = handle

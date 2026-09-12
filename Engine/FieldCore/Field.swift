@@ -24,21 +24,25 @@ public indirect enum Shape: Sendable {
     case translated(Shape, V3)
     case scaled(Shape, Float)
     case stretched(Shape, V3)
+    case rotated(Shape, simd_quatf)
     case union(Shape, Shape)
     case subtract(Shape, Shape)
     case smoothUnion(Shape, Shape, Float)
+    case smoothSubtract(Shape, Shape, Float)
 
     public func moved(_ p: V3) -> Shape { .translated(self, p) }
     public func sized(_ s: Float) -> Shape { .scaled(self, s) }
     public func stretched(_ s: V3) -> Shape { .stretched(self, s) }
+    public func rotated(_ q: simd_quatf) -> Shape { .rotated(self, q) }
     public func joined(_ s: Shape) -> Shape { .union(self, s) }
     public func blended(_ s: Shape, radius: Float) -> Shape { .smoothUnion(self, s, radius) }
     public func cut(_ s: Shape) -> Shape { .subtract(self, s) }
+    public func cut(_ s: Shape, radius:Float) -> Shape { radius==0 ? .subtract(self,s):.smoothSubtract(self,s,radius) }
 
     public var semantics: FieldSemantics {
         switch self {
         case .sphere, .box, .capsule, .torus: return .exactDistance
-        case let .translated(a, _), let .scaled(a, _): return a.semantics
+        case let .translated(a, _), let .scaled(a, _), let .rotated(a, _): return a.semantics
         default: return .distanceBound
         }
     }
@@ -48,7 +52,7 @@ public indirect enum Shape: Sendable {
     /// space radius must be expanded by this ratio when computing spatial bounds.
     public var exteriorDistanceScale:Float {
         switch self {
-        case let .translated(a,_),let .scaled(a,_),let .subtract(a,_):return a.exteriorDistanceScale
+        case let .translated(a,_),let .scaled(a,_),let .rotated(a,_),let .subtract(a,_),let .smoothSubtract(a,_,_):return a.exteriorDistanceScale
         case let .stretched(a,s):return a.exteriorDistanceScale*Swift.min(s.x,Swift.min(s.y,s.z))/Swift.max(s.x,Swift.max(s.y,s.z))
         case let .union(a,b),let .smoothUnion(a,b,_):return Swift.min(a.exteriorDistanceScale,b.exteriorDistanceScale)
         default:return 1
@@ -66,8 +70,11 @@ public indirect enum Shape: Sendable {
         case let .translated(a,p): try a.validate(); try finite(p)
         case let .scaled(a,s): try a.validate(); try positive(s)
         case let .stretched(a,s): try a.validate(); try positive(s.x); try positive(s.y); try positive(s.z)
+        case let .rotated(a,q):
+            try a.validate()
+            if !(0..<4).allSatisfy({q.vector[$0].isFinite}) || abs(length_squared(q.vector)-1)>0.0001 {throw FieldError.invalidParameter}
         case let .union(a,b), let .subtract(a,b): try a.validate(); try b.validate()
-        case let .smoothUnion(a,b,k): try a.validate(); try b.validate(); try positive(k)
+        case let .smoothUnion(a,b,k),let .smoothSubtract(a,b,k): try a.validate(); try b.validate(); try positive(k)
         }
     }
 
@@ -85,8 +92,12 @@ public indirect enum Shape: Sendable {
         case let .translated(a,t): return a.value(at: p-t)
         case let .scaled(a,s): return a.value(at: p/s)*s
         case let .stretched(a,s): return a.value(at:p/s)*Swift.min(s.x,Swift.min(s.y,s.z))
+        case let .rotated(a,q): return a.value(at:q.inverse.act(p))
         case let .union(a,b): return Swift.min(a.value(at:p), b.value(at:p))
         case let .subtract(a,b): return Swift.max(a.value(at:p), -b.value(at:p))
+        case let .smoothSubtract(a,b,k):
+            let x=a.value(at:p),y = -b.value(at:p),h=clamp(0.5+0.5*(x-y)/k,0,1)
+            return y+(x-y)*h+k*h*(1-h)
         case let .smoothUnion(a,b,k):
             let x = a.value(at:p), y = b.value(at:p)
             let h = clamp(0.5 + 0.5*(y-x)/k, 0, 1)
@@ -117,9 +128,14 @@ public indirect enum Shape: Sendable {
         case let .stretched(a,s):
             let q=a.sample(at:p/s),k=Swift.min(s.x,Swift.min(s.y,s.z))
             return FieldSample(q.value*k,q.gradient*(k/s))
+        case let .rotated(a,q):
+            let s=a.sample(at:q.inverse.act(p));return FieldSample(s.value,q.act(s.gradient))
         case let .union(a,b):let x=a.sample(at:p),y=b.sample(at:p);return x.value<=y.value ? x:y
         case let .subtract(a,b):
             let x=a.sample(at:p),y=b.sample(at:p);return x.value >= -y.value ? x:FieldSample(-y.value,-y.gradient)
+        case let .smoothSubtract(a,b,k):
+            let x=a.sample(at:p),y=b.sample(at:p),h=clamp(0.5+0.5*(x.value+y.value)/k,0,1)
+            return FieldSample(-y.value+(x.value+y.value)*h+k*h*(1-h),-y.gradient+(x.gradient+y.gradient)*h)
         case let .smoothUnion(a,b,k):
             let x=a.sample(at:p),y=b.sample(at:p),h=clamp(0.5+0.5*(y.value-x.value)/k,0,1)
             return FieldSample(y.value+(x.value-y.value)*h-k*h*(1-h),y.gradient+(x.gradient-y.gradient)*h)
@@ -137,8 +153,12 @@ public indirect enum Shape: Sendable {
         case let .translated(a,t): return Bounds(a.bounds.min+t,a.bounds.max+t)
         case let .scaled(a,s): return Bounds(a.bounds.min*s,a.bounds.max*s)
         case let .stretched(a,s): return Bounds(a.bounds.min*s,a.bounds.max*s)
+        case let .rotated(a,q):
+            let b=a.bounds,center=q.act((b.min+b.max)/2),half=(b.max-b.min)/2,m=simd_float3x3(q)
+            let extent=abs(m[0])*half.x+abs(m[1])*half.y+abs(m[2])*half.z
+            return Bounds(center-extent,center+extent)
         case let .union(a,b): return a.bounds.union(b.bounds)
-        case let .subtract(a,_): return a.bounds
+        case let .subtract(a,_),let .smoothSubtract(a,_,_): return a.bounds
         case let .smoothUnion(a,b,k): return a.bounds.union(b.bounds).expanded(k/(4*Swift.min(a.exteriorDistanceScale,b.exteriorDistanceScale)))
         }
     }

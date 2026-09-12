@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Synchronized multi-view creature review with final-pose contact diagnostics."""
+import argparse,html,json,os,runpy,shutil,subprocess,time,uuid
+from pathlib import Path
+p=argparse.ArgumentParser(description=__doc__)
+p.add_argument('--times',default='0,1.8,3.5,5.2,6.5,7.3,7.8,9.2,11.5')
+p.add_argument('--views',default='front,quarter,right,back')
+p.add_argument('--baseline',type=Path)
+p.add_argument('--distance',type=float,help='Override the studio orbit distance after each view change')
+p.add_argument('--label',default='creature-review');p.add_argument('--no-open',action='store_true')
+a=p.parse_args()
+if a.distance is not None and not 0.1<=a.distance<=100:p.error('Distance must be 0.1...100')
+times=[float(x) for x in a.times.split(',')];views=a.views.split(',')
+if not 1<=len(times)<=48 or any(not 0<=t<=60 for t in times):p.error('Provide 1...48 times in 0...60 seconds')
+if not 1<=len(views)<=4 or any(v not in ['front','quarter','right','left','back','above'] for v in views):p.error('Choose up to four object views')
+os.environ['SANCTUARY_CONTROL_ROOT']='.soundstage'
+client=runpy.run_path(str(Path(__file__).with_name('gardenctl')));c,root=client['command'],client['ROOT']
+if c('status')['state']['workshop']['authoring']['automating']:raise RuntimeError('A review is already active')
+label=''.join(x for x in a.label if x.isalnum() or x in '-_') or 'creature-review'
+folder=root/'studies'/(label+'-'+time.strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:6]);folder.mkdir(parents=True)
+original=c('saveStudy',path=str(folder/'original.json'))['path'];records=[];diagnostics={}
+c('automation',value=True)
+try:
+    variants=([('Before',str(a.baseline.resolve()))] if a.baseline else [])+[('Current',original)]
+    for variant,path in variants:
+        c('loadStudy',path=path);c('pause',value=True)
+        state=c('status')['state']
+        if state['workshop']['creature']['mode']=='bind':raise RuntimeError('Choose a motion clip before review')
+        diagnostics[variant]=c('poseReport',start=min(times),end=max(times),samples=121)['report']
+        diagnostics[variant]['secondary']=c('secondaryReport',samples=61)['report']
+        if diagnostics[variant]['secondary'].get('nodes'):diagnostics[variant]['surface']=c('surfaceContacts',samples=61)['report']
+        for view in views:
+            c('view',value=view)
+            if a.distance is not None:c('camera',distance=a.distance)
+            for i,t in enumerate(times):
+                c('creature',seconds=t)
+                stem=f'{len(records):03d}'
+                c('saveStudy',path=str(folder/(stem+'-study.json')))
+                result=c('capture',label=label)
+                shutil.copyfile(result['path'],folder/(stem+'.png'))
+                shutil.copyfile(result['metadata'],folder/(stem+'.json'))
+                records.append(dict(variant=variant,view=view,time=t,index=i,image=stem+'.png',metadata=stem+'.json',study=stem+'-study.json'))
+            print(variant+' / '+view+' ready',flush=True)
+finally:
+    try:c('loadStudy',path=original)
+    finally:c('automation',value=False)
+report=dict(records=records,times=times,views=views,diagnostics=diagnostics,distance=a.distance)
+(folder/'report.json').write_text(json.dumps(report,indent=2))
+payload=json.dumps(report).replace('<','\\u003c')
+page='''<!doctype html><meta charset="utf-8"><title>Creature rehearsal review</title>
+<style>body{margin:18px;background:#171b20;color:#e7dfd3;font:14px system-ui}button,select,input{margin:6px;padding:8px}main{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:repeat(2,minmax(0,1fr));height:calc(100vh - 300px);min-height:320px;gap:10px}figure{margin:0;min-height:0;display:flex;flex-direction:column;background:#101418}img{width:100%;height:calc(100% - 25px);object-fit:contain}figcaption{padding:5px}pre{white-space:pre-wrap;color:#c2c6c9}a{color:#d4b989}</style>
+<h1>Creature rehearsal</h1><p>All views show the same authored time. Actual renderer captures.</p>
+<select id="variant"></select><button id="previous">Previous</button><button id="next">Next</button><button id="play">Play</button>
+<input id="time" type="range" min="0" step="1"><strong id="label"></strong><main id="grid"></main><pre id="facts"></pre><a href="report.json">Complete report and metadata</a>
+<script>const report=PAYLOAD;const get=id=>document.getElementById(id),variants=[...new Set(report.records.map(r=>r.variant))];
+for(const v of variants){const o=document.createElement('option');o.textContent=v;get('variant').append(o)}get('variant').value='Current';get('time').max=report.times.length-1;get('time').value=0;
+function render(){const i=+get('time').value,v=get('variant').value;get('label').textContent=report.times[i].toFixed(3)+' s';get('grid').replaceChildren();
+for(const r of report.records.filter(r=>r.variant===v&&r.index===i)){const f=document.createElement('figure'),im=document.createElement('img'),caption=document.createElement('figcaption');im.src=r.image;caption.textContent=r.view;f.append(im,caption);get('grid').append(f)}
+const d=report.diagnostics[v];get('facts').textContent='Maximum reach error: '+(d.maximumReachErrorMetres*1000).toFixed(2)+' mm · minimum sole clearance: '+(d.minimumSoleClearanceMetres*1000).toFixed(2)+' mm\\nPlanted speed: '+d.maximumPlantedSpeedMetresPerSecond.toFixed(4)+' m/s · sampled proxy penetrations: '+d.collisions.length+'\\n'+d.scope;const s=d.secondary;if(s.nodes){get('facts').textContent+='\\nDynamics: '+s.nodes+' guides · maximum structural strain '+(Math.max(...s.samples.map(x=>x.metrics.maximumStretch))*100).toFixed(2)+'% · particle penetration '+(Math.max(...s.samples.map(x=>x.metrics.maximumPenetration))*1000).toFixed(3)+' mm\\nSpan penetration '+(Math.max(...s.samples.map(x=>x.metrics.maximumEdgePenetration||0))*1000).toFixed(3)+' mm · pinned penetration '+(Math.max(...s.samples.map(x=>x.metrics.pinnedPenetration||0))*1000).toFixed(3)+' mm\\n'+s.scope}if(d.surface){const a=d.surface;get('facts').textContent+='\\nDense surface / body proxies: '+(a.maximumPenetration*1000).toFixed(2)+' mm · '+a.worstPart+' at '+a.worstTime.toFixed(2)+' s\\n'+a.scope}}
+get('time').oninput=render;get('variant').onchange=render;get('previous').onclick=()=>{get('time').value=Math.max(0,+get('time').value-1);render()};get('next').onclick=()=>{get('time').value=(+get('time').value+1)%report.times.length;render()};let timer;get('play').onclick=()=>{if(timer){clearInterval(timer);timer=null;get('play').textContent='Play'}else{timer=setInterval(()=>get('next').click(),400);get('play').textContent='Pause'}};render();</script>'''.replace('PAYLOAD',payload)
+(folder/'index.html').write_text(page)
+if not a.no_open:subprocess.run(['/usr/bin/open','-a',os.environ.get('WRELA_APP_BUNDLE',str(root.parent/'.build/Soundstage.app')),str(folder/'index.html')],check=True)
+print(json.dumps(dict(viewer=str(folder/'index.html'),report=str(folder/'report.json'),captures=len(records))))

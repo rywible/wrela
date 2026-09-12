@@ -7,6 +7,10 @@ public struct Vertex: Sendable {
     public var position: SIMD4<Float>
     public var normal: SIMD4<Float>
     public var color: SIMD4<Float>
+    /// Procedural strand phase, guide distance fraction, root coverage and
+    /// strand length variation. A zero root coverage disables this channel.
+    /// Separate from color.w, which remains authored ambient occlusion.
+    public var groom: SIMD4<Float> = .zero
     public init(_ p: V3, _ n: V3, _ c: V3, wind: Float = 0) {
         position = SIMD4(p,1); normal = SIMD4(n,wind); color = SIMD4(c,1)
     }
@@ -25,16 +29,16 @@ public struct Mesh: Sendable {
 }
 
 public enum Mesher {
-    public static func compile(_ shape: Shape, resolution: Int = 24, color: V3 = V3(repeating:1)) throws -> Mesh {
+    public static func compile(_ shape: Shape, resolution: Int = 24, color: V3 = V3(repeating:1), bounds:Bounds? = nil) throws -> Mesh {
         try shape.validate()
         guard (4...128).contains(resolution) else {throw FieldError.invalidParameter}
         var n=8;while n<resolution {n*=2}
-        let (candidate,report)=SurfaceCompiler.compile(shape,resolution:n,color:color)
+        let (candidate,report)=SurfaceCompiler.compile(shape,resolution:n,color:color,bounds:bounds)
         if report.manifold {var mesh=candidate;mesh.report=report;return MeshProcessing.optimize(MeshProcessing.finish(mesh,shape:shape))}
         // Ambiguous cells can contain multiple surface components. Preserve the
         // reference extractor until multi-component dual cells are implemented.
         let fallbackStart=Date()
-        var result=MeshProcessing.optimize(MeshProcessing.finish(try reference(shape,resolution:n,color:color),shape:shape))
+        var result=MeshProcessing.optimize(MeshProcessing.finish(try reference(shape,resolution:n,color:color,bounds:bounds),shape:shape))
         var fallbackReport=report;fallbackReport.usedReferenceFallback=true
         fallbackReport.fallbackMilliseconds=Date().timeIntervalSince(fallbackStart)*1000
         result.report=fallbackReport
@@ -42,10 +46,10 @@ public enum Mesher {
     }
     /// Marching tetrahedra: a deliberately small reference compiler. The same
     /// tetrahedral split is used in every cell, keeping shared-face edges coherent.
-    public static func reference(_ shape: Shape, resolution: Int = 24, color: V3 = V3(repeating:1)) throws -> Mesh {
+    public static func reference(_ shape: Shape, resolution: Int = 24, color: V3 = V3(repeating:1), bounds suppliedBounds:Bounds? = nil) throws -> Mesh {
         try shape.validate()
         guard (4...128).contains(resolution) else { throw FieldError.invalidParameter }
-        let bounds = shape.bounds.expanded(0.03), n = resolution
+        let bounds = (suppliedBounds ?? shape.bounds).expanded(0.03), n = resolution
         let step = (bounds.max-bounds.min)/Float(n)
         let corners = [SIMD3<Int>(0,0,0),SIMD3(1,0,0),SIMD3(1,1,0),SIMD3(0,1,0),SIMD3(0,0,1),SIMD3(1,0,1),SIMD3(1,1,1),SIMD3(0,1,1)]
         let tetrahedra = [[0,5,1,6],[0,1,2,6],[0,2,3,6],[0,3,7,6],[0,7,4,6],[0,4,5,6]]

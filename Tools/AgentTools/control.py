@@ -24,7 +24,8 @@ def command(action, **kwargs):
     temp.write_text(json.dumps(request))
     os.replace(temp, target)
     response = ROOT / 'outbox' / (request['id'] + '.json')
-    deadline = time.monotonic() + 20
+    timeout = 180 if action in ("craft", "craftReport", "surfaceContacts") else 20
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if response.exists():
             result = json.loads(response.read_text())
@@ -37,11 +38,11 @@ def command(action, **kwargs):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
-    for name in ('status', 'reset', 'clearMetrics', 'reloadShaders', 'verifyFields', 'verifySky', 'catalog', 'assetSave', 'assetReload', 'reloadAssets', 'undo', 'redo', 'captureReview', 'styleBoard', 'publishLook', 'interact', 'saveExpedition', 'motionReview', 'framePart'):
+    for name in ('status', 'reset', 'clearMetrics', 'reloadShaders', 'verifyFields', 'verifySky', 'catalog', 'assetSave', 'assetReload', 'reloadAssets', 'undo', 'redo', 'captureReview', 'styleBoard', 'publishLook', 'interact', 'saveExpedition', 'motionReview', 'framePart', 'performance'):
         sub.add_parser(name)
     for name, choices in [('scene', ['garden', 'studio']), ('studioObject', ['seed', 'stone', 'branch', 'tree', 'calibration', 'sky']), ('view', ['front', 'quarter', 'back', 'left', 'right', 'above', 'detail', 'base', 'crown', 'sunward', 'away', 'zenith']), ('lighting', ['morning', 'noon', 'golden', 'sunset', 'afterglow', 'overcast', 'rain', 'indoor'])]:
         sub.add_parser(name).add_argument('value', choices=None if name in ('view','studioObject') else choices)
-    for name in ('pause', 'profiling', 'meshlets', 'watchSource', 'automation'):
+    for name in ('pause', 'profiling', 'meshlets', 'watchSource', 'automation', 'rigView'):
         sub.add_parser(name).add_argument('value', choices=['true', 'false'])
     sub.add_parser('capture').add_argument('--label', default='capture')
     sub.add_parser('step').add_argument('--frames', type=int, default=1)
@@ -54,6 +55,7 @@ def main():
     for name in ['checkpoint','restoreCheckpoint','pinBaseline','selectBaseline','expeditionSlot']:
         sub.add_parser(name).add_argument('name')
     sub.add_parser('subject').add_argument('value')
+    sub.add_parser('specimen').add_argument('value')
     sub.add_parser('project').add_argument('value')
     sub.add_parser('flashlight').add_argument('value',choices=['true','false'])
     for name in ['assetLoad', 'saveStudy', 'loadStudy']:
@@ -67,14 +69,29 @@ def main():
     layout=sub.add_parser('layout');layout.add_argument('--arrangement',choices=['single','grove'])
     for key in ['scale','focus','roughness','metallic','tint']:layout.add_argument('--'+key,type=float)
     for key in ['reference','ground','turntable']:layout.add_argument('--'+key,choices=['true','false'])
+    secondary=sub.add_parser('secondary')
+    secondary.add_argument('--enabled',choices=['true','false'])
+    secondary.add_argument('--edgeContacts',choices=['true','false'])
+    for key in ['gravity','damping','followCompliance','wind','friction']:secondary.add_argument('--'+key,type=float)
+    for key in ['substeps','iterations']:secondary.add_argument('--'+key,type=int)
+    sub.add_parser('secondaryReport').add_argument('--samples',type=int,default=25)
+    audit=sub.add_parser('surfaceContacts')
+    audit.add_argument('--samples',type=int,default=1)
+    audit.add_argument('--part')
     creature=sub.add_parser('creature')
     creature.add_argument('--mode')
     creature.add_argument('--scenario')
     for key in ['seconds','rate','seed']:creature.add_argument('--'+key,type=float)
     creature.add_argument('--follow',choices=['true','false'])
+    sub.add_parser('performanceBeat').add_argument('name')
+    key=sub.add_parser('performanceKey');key.add_argument('--joint',required=True);key.add_argument('--channel',required=True)
+    key.add_argument('--seconds',type=float);key.add_argument('--value',type=float);key.add_argument('--remove',action='store_true')
     motion=sub.add_parser('motion');motion.add_argument('--set',dest='edits',nargs=2,action='append',default=[])
     for key in ['duration','stride','height','crouch','earFollow','breath','blinkRate','attention']:motion.add_argument('--'+key,type=float)
     part=sub.add_parser('part');part.add_argument('value',nargs='?');part.add_argument('--isolated',choices=['true','false'])
+    surface_review=sub.add_parser('surfaceReview',help='Study-only material or clay review; hide exact named parts')
+    surface_review.add_argument('--mode',choices=['material','clay'])
+    surface_review.add_argument('--hide',help='Comma-separated exact part names; empty string shows all parts')
     edit=sub.add_parser('partEdit');edit.add_argument('--parent')
     for key in ['x','y','z','pivotX','pivotY','pivotZ','pitch','yaw','roll','scale','roughness','metallic']:edit.add_argument('--'+key,type=float)
     stimulus=sub.add_parser('stimulus')
@@ -84,18 +101,46 @@ def main():
     study.add_argument('--sky-only', action='store_true')
     replay = sub.add_parser('replay', help='Run an ordered JSON array of commands; write a report')
     replay.add_argument('file', type=Path)
+    sub.add_parser('rehearsalReview')
+    sub.add_parser('craftInspect')
+    sub.add_parser('craft').add_argument('file',type=Path)
+    for name in ('sculptProbe','sculptFrameLock','sculptOverlay','frameVisible'):
+        sub.add_parser(name).add_argument('file',type=Path)
+    craft_report=sub.add_parser('craftReport');craft_report.add_argument('--samples',type=int,default=25);craft_report.add_argument('--part')
+    craft_report.add_argument('--start',type=float);craft_report.add_argument('--end',type=float)
+    sub.add_parser('authoring')
+    sub.add_parser('author').add_argument('file',type=Path)
+    probe=sub.add_parser('surfaceProbe');probe.add_argument('--part',required=True)
+    for key in ['x','y','z','radius']:probe.add_argument('--'+key,type=float)
+    rehearsal=sub.add_parser('rehearsal')
+    for key in ['slopeX','slopeZ','stepHeight','stepZ']:rehearsal.add_argument('--'+key,type=float)
+    for key in ['view','solving']:rehearsal.add_argument('--'+key,choices=['true','false'])
+    report=sub.add_parser('poseReport')
+    for key in ['start','end']:report.add_argument('--'+key,type=float)
+    report.add_argument('--samples',type=int)
     args = vars(parser.parse_args())
     action = args.pop('action')
     for key,value in args.pop('edits',[]):
         if key in ('id','action'):parser.error('Reserved parameter name')
         args[key]=float(value)
     args = {k:v for k,v in args.items() if v is not None}
-    if action in ('flashlight', 'pause', 'profiling', 'meshlets', 'watchSource', 'automation'): args['value'] = args['value'] == 'true'
+    if action=='secondary':
+        for key in ['enabled','edgeContacts']:
+            if args.get(key) is not None:args[key]=args[key]=='true'
+    if action in ('flashlight', 'pause', 'profiling', 'meshlets', 'watchSource', 'automation', 'rigView'): args['value'] = args['value'] == 'true'
     for key in ['follow','isolated','running','visible']:
         if key in args:args[key]=args[key]=='true'
     if action == 'layout':
         for key in ['reference','ground','turntable']:
             if key in args: args[key]=args[key]=='true'
+    if action == 'rehearsal':
+        for key in ['view','solving']:
+            if key in args:args[key]=args[key]=='true'
+    if action == 'surfaceReview' and 'hide' in args:
+        args['hiddenParts']=[name.strip() for name in args.pop('hide').split(',') if name.strip()]
+    if action in ('author','craft','sculptProbe','sculptFrameLock','sculptOverlay','frameVisible'):
+        args=json.loads(args['file'].read_text())
+        if not isinstance(args,dict) or any(k in args for k in ['id','action']):raise RuntimeError('Author file must be an object without transport fields')
     if action == 'study':
         state = command('status')['state']
         results = []

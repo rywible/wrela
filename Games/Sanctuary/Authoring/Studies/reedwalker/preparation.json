@@ -1,0 +1,112 @@
+{
+  "status": "prepared-only",
+  "nativeCompilationRun": false,
+  "nativeContactSolverRun": false,
+  "visualReviewRun": false,
+  "anatomySources": 15,
+  "joints": 25,
+  "operations": 57,
+  "durationSeconds": 8.0,
+  "sourceBodyHeightMetres": 0.615,
+  "tailCenterlineMetres": 1.8976804872990736,
+  "plannedSupportIntervals": [
+    {
+      "start": 0,
+      "end": 1.45,
+      "supporting": [
+        "front-left",
+        "front-right",
+        "middle-left",
+        "middle-right",
+        "rear-left",
+        "rear-right"
+      ]
+    },
+    {
+      "start": 1.45,
+      "end": 2.25,
+      "supporting": [
+        "front-right",
+        "middle-left",
+        "rear-right"
+      ]
+    },
+    {
+      "start": 2.25,
+      "end": 2.6,
+      "supporting": [
+        "front-left",
+        "front-right",
+        "middle-left",
+        "middle-right",
+        "rear-left",
+        "rear-right"
+      ]
+    },
+    {
+      "start": 2.6,
+      "end": 3.4,
+      "supporting": [
+        "front-left",
+        "middle-right",
+        "rear-left"
+      ]
+    },
+    {
+      "start": 3.4,
+      "end": 3.7,
+      "supporting": [
+        "front-left",
+        "front-right",
+        "middle-left",
+        "middle-right",
+        "rear-left",
+        "rear-right"
+      ]
+    },
+    {
+      "start": 3.7,
+      "end": 4.5,
+      "supporting": [
+        "front-right",
+        "middle-left",
+        "rear-right"
+      ]
+    },
+    {
+      "start": 4.5,
+      "end": 4.85,
+      "supporting": [
+        "front-left",
+        "front-right",
+        "middle-left",
+        "middle-right",
+        "rear-left",
+        "rear-right"
+      ]
+    },
+    {
+      "start": 4.85,
+      "end": 5.65,
+      "supporting": [
+        "front-left",
+        "middle-right",
+        "rear-left"
+      ]
+    },
+    {
+      "start": 5.65,
+      "end": 8.0,
+      "supporting": [
+        "front-left",
+        "front-right",
+        "middle-left",
+        "middle-right",
+        "rear-left",
+        "rear-right"
+      ]
+    }
+  ],
+  "limitation": "These are authored-input checks, not a substitute for native contact, deformation, collision, motion or runtime review.",
+  "operationsSHA256": "19f1531acfb36d6ddf81721d9b6588b2858a2dae514ac5dc28f203feca061caf"
+}

@@ -1,11 +1,15 @@
 import FieldCore
 import MetalKit
+import simd
 
 package struct RenderItem {
   package init(batch:GPUBatch,instance:Instance?=nil,castsShadow:Bool=true,material:SIMD4<Float>?=nil) {self.batch=batch;self.instance=instance;self.castsShadow=castsShadow;self.material=material}
 
   package var batch: GPUBatch
   package var instance: Instance? = nil
+  package var correctives:[CorrectiveUniform] = []
+  package var surfaceLayers:[SurfaceLayer] = []
+  package var skinPalette: [simd_float4x4] = []
   package var castsShadow = true
   package var material: SIMD4<Float>? = nil
 }

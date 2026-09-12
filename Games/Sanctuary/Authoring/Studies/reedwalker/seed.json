@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "id": "reedwalker",
+  "name": "Reedwalker \u00b7 Marsh Study",
+  "generator": "fields",
+  "parts": [
+    {
+      "name": "body",
+      "joint": {
+        "id": "body",
+        "pivot": [
+          0,
+          0.42,
+          0
+        ]
+      },
+      "field": {
+        "op": "move",
+        "values": [
+          0,
+          0.42,
+          0
+        ],
+        "children": [
+          {
+            "op": "sphere",
+            "values": [
+              0.1
+            ]
+          }
+        ]
+      },
+      "color": [
+        0.225,
+        0.315,
+        0.198
+      ],
+      "material": 7,
+      "roughness": 0.82,
+      "metallic": 0
+    }
+  ]
+}

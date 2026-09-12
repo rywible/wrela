@@ -40,6 +40,32 @@ try:
     check('Named checkpoint restores exact rendering',image('authoring-checkpoint-restored')==baseline)
     check('Checkpoint names cannot overwrite saved checkpoints',reject('checkpoint',name=checkpoint))
     c('rig',value='outdoor');c('lighting',value='noon')
+    authored=state()['workshop']['document']['source'];surface_before=image('authoring-surface-material')
+    c('surfaceReview',mode='clay',hiddenParts=[]);clay=image('authoring-surface-clay')
+    check('Neutral clay changes surface appearance',clay!=surface_before)
+    check('Surface review preserves authored source',state()['workshop']['document']['source']==authored)
+    c('undo');check('Clay review participates in undo',image('authoring-surface-undo')==surface_before)
+    c('redo');check('Clay review redo restores exact pixels',image('authoring-surface-redo')==clay)
+    part=state()['workshop']['parts'][0]
+    c('surfaceReview',hiddenParts=[part]);hidden=image('authoring-surface-hidden')
+    check('Named hidden part changes visible geometry',hidden!=clay)
+    review_state=state()['workshop']['document']['surfaceReview'];history=state()['workshop']['authoring']['undoDepth']
+    check('Unknown hidden parts are rejected',reject('surfaceReview',mode='material',hiddenParts=['missing-part']))
+    check('Duplicate hidden parts are rejected',reject('surfaceReview',hiddenParts=[part,part]))
+    check('Malformed hidden parts are rejected',reject('surfaceReview',hiddenParts=part))
+    check('Unknown surface modes are rejected',reject('surfaceReview',mode='glossy'))
+    check('Invalid surface review preserves state and history',state()['workshop']['document']['surfaceReview']==review_state and state()['workshop']['authoring']['undoDepth']==history)
+    review_study=c('saveStudy',path='surface-review-validation.json')['path']
+    c('surfaceReview',mode='material',hiddenParts=[]);c('loadStudy',path=review_study)
+    check('Study restores exact clay and hidden-part rendering',image('authoring-surface-replay')==hidden)
+    c('step',frames=60);future=image('authoring-surface-future')
+    c('loadStudy',path=review_study);c('step',frames=60)
+    check('Clay and hidden-part future replay is deterministic',image('authoring-surface-future-replay')==future)
+    invalid_review=json.loads(Path(review_study).read_text());invalid_review['surfaceReview']['hiddenParts']=['missing-part']
+    invalid_path=root/'invalid-surface-review.json';invalid_path.write_text(json.dumps(invalid_review))
+    check('Study rejects unknown hidden parts',reject('loadStudy',path=str(invalid_path)))
+    check('Rejected review study preserves exact pixels',image('authoring-surface-invalid-study')==future)
+    c('surfaceReview',mode='material',hiddenParts=[])
     look=state()['sceneLook'];look_before=image('authoring-look-original')
     c('look',saturation=0);look_after=image('authoring-look-monochrome');check('Global grade visibly affects scene',look_before!=look_after)
     c('undo');check('Scene look participates in undo',image('authoring-look-undo')==look_before)
@@ -62,9 +88,45 @@ try:
     c('undo');s=state();check('Automatic source reload is undoable',s['workshop']['heightMetres']<1)
     time.sleep(.8);check('Watcher does not immediately overwrite undo',state()['workshop']['heightMetres']<1)
     c('redo');check('Reload redo restores the new field',state()['workshop']['heightMetres']>1.3)
+    # Exercise the actual source/pose budget, not whitespace padding: a valid
+    # 64-joint, 193-sample authoring clip is larger than the former 1 MiB reader.
+    c('watchSource',value=False)
+    joints=['study-body']+[f'study-articulation-node-{i:02d}' for i in range(63)]
+    samples=[dict(time=i/16,poses={joint:dict(offset=[0,round(i/960,6),0],rotation=[0,0,0],scale=[1,1,1]) for joint in joints}) for i in range(193)]
+    rich_source=dict(version=1,id='rich-study-fixture',name='Rich motion replay fixture',generator='fields',motion={},
+        parts=[dict(name='study-body',field=dict(op='sphere',values=[.45]),color=[.4,.5,.6],material=7)],
+        craft=dict(joints=[dict(id=joint,parent='study-body') for joint in joints[1:]],
+            phrases=[dict(id='rich-replay',duration=12,samples=samples,contacts=[],references=[])]))
+    rich_source_path=root/'rich-study-source.json';rich_source_path.write_text(json.dumps(rich_source,separators=(',',':')))
+    check('Rich fixture uses a supported source larger than 1 MiB',1_048_576<rich_source_path.stat().st_size<4_194_304)
+    c('assetLoad',path=str(rich_source_path));c('rig',value='softbox');c('view',value='quarter');c('creature',mode='rich-replay',seconds=3)
+    rich_before=state()['workshop']['document'];rich_pixels=image('rich-study-original')
+    rich_study=c('saveStudy',path='rich-study-replay.json')['path']
+    check('Rich study saves within the shared 8 MiB limit',1_048_576<Path(rich_study).stat().st_size<8_388_608)
+    c('checkpoint',name=checkpoint+' rich replay')
+    c('step',frames=60);rich_future=state()['workshop']['document'];rich_future_pixels=image('rich-study-future')
+    check('Rich authored clip produces visible motion',rich_future_pixels!=rich_pixels)
+    c('loadStudy',path=rich_study);check('Rich study restores complete source and state',state()['workshop']['document']==rich_before)
+    c('step',frames=60)
+    check('Rich study preserves exact future state and pixels',state()['workshop']['document']==rich_future and image('rich-study-replayed')==rich_future_pixels)
+    c('restoreCheckpoint',name=checkpoint+' rich replay')
+    check('Rich checkpoint uses the same replay contract',state()['workshop']['document']==rich_before and image('rich-checkpoint-replayed')==rich_pixels)
+    legacy_path=root/'rich-study-legacy.json';legacy_path.write_text(json.dumps(json.loads(Path(rich_study).read_text()),indent=2))
+    check('Legacy formatted rich fixture remains within supported size',legacy_path.stat().st_size<8_388_608)
+    c('loadStudy',path=str(legacy_path));check('Legacy formatted rich study remains supported',image('rich-study-legacy')==rich_pixels)
+    oversized_path=root/'oversized-study.json'
+    with oversized_path.open('wb') as f:
+        f.write(b'{}');f.seek(8_388_608-1);f.write(b' ')
+    stable=state()['workshop']['document'];history=state()['workshop']['authoring']['undoDepth']
+    check('Oversized study is rejected before decoding',reject('loadStudy',path=str(oversized_path)))
+    check('Oversized study rejection preserves state and history',state()['workshop']['document']==stable and state()['workshop']['authoring']['undoDepth']==history)
+    check('Oversized study rejection preserves pixels',image('rich-study-oversize-retained')==rich_pixels)
     check('No GPU command errors',not state()['gpuErrors'])
 finally:
     c('loadStudy',path=saved);c('watchSource',value=original['workshop']['authoring']['watching'])
     fixture.unlink(missing_ok=True)
+    (root/'invalid-surface-review.json').unlink(missing_ok=True)
+    for name in ['rich-study-source.json','rich-study-legacy.json','oversized-study.json']:(root/name).unlink(missing_ok=True)
     (root/'projects'/original.get('project','sanctuary')/'checkpoints'/(checkpoint+'.json')).unlink(missing_ok=True)
+    (root/'projects'/original.get('project','sanctuary')/'checkpoints'/(checkpoint+' rich replay.json')).unlink(missing_ok=True)
     report=dict(passed=all(x['passed'] for x in checks),checks=checks);(root/'authoring-validation.json').write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2))

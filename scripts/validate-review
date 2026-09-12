@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import subprocess
 import sys
 import time
 if not os.environ.get('WRELA_CONTROL_ROOT'):
@@ -26,5 +27,15 @@ viewer=Path(authoring['lastReview'])
 assert viewer.is_relative_to(root),viewer
 assert viewer.is_file(),viewer
 result=dict(passed=True,checks=[dict(name='Native review subprocess uses isolated command root and produces a viewer',passed=True)],viewer=str(viewer))
+before=c('status')['state']['workshop']['document']
+sweep=subprocess.run([sys.executable,str(Path(__file__).with_name('workshop-study')),
+    '--lights','indoor','--rigs','','--views','quarter','--label','indoor-fixture-check','--no-open'],
+    capture_output=True,text=True,check=True)
+report=json.loads(sweep.stdout.splitlines()[-1])
+archive=json.loads(Path(report['report']).read_text())
+study=json.loads((Path(report['report']).parent/archive['records'][0]['study']).read_text())
+assert study['lighting']=='indoor' and study['rig']['name']=='room',study
+assert c('status')['state']['workshop']['document']==before
+result['checks'].append(dict(name='Indoor sweep captures a room fixture and restores the working document',passed=True))
 (root/'review-validation.json').write_text(json.dumps(result,indent=2))
 print(json.dumps(result,indent=2))

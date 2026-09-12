@@ -1,14 +1,73 @@
 #include <metal_stdlib>
 using namespace metal;
 constant int materialKind [[function_constant(0)]];
+constant bool hasSurfaceLayers [[function_constant(1)]];
+constant bool hasGroomCoverage [[function_constant(2)]];
 constant float PI=3.14159265359;
-struct Vertex {float4 position;float4 normal;float4 color;};
+struct Vertex {float4 position;float4 normal;float4 color;float4 groom;};
+struct SkinWeight {uint4 joints;float4 weights;};
+struct CorrectiveUniform {float4 center;float4 radius;float4 offset;float4 dilation;};
+Vertex skinVertex(Vertex v,uint id,const device SkinWeight *weights,constant float4x4 *bones,uint count,constant CorrectiveUniform *correctives,uint correctiveCount) {
+    for(uint k=0;k<correctiveCount;++k) {
+        CorrectiveUniform c=correctives[k];float3 q=v.position.xyz-c.center.xyz,d=q/c.radius.xyz;
+        float a=max(0.,1.-dot(d,d));if(a<=0.)continue;
+        float w=a*a*a;float3 g=-6.*a*a*q/(c.radius.xyz*c.radius.xyz),move=c.offset.xyz+q*c.dilation.xyz;
+        float3x3 j=float3x3(1.);for(uint i=0;i<3;++i){j[i]+=move*g[i];j[i][i]+=w*c.dilation[i];}
+        v.position.xyz+=w*move;
+        v.normal.xyz=normalize(cross(j[1],j[2])*v.normal.x+cross(j[2],j[0])*v.normal.y+cross(j[0],j[1])*v.normal.z);
+    }
+    if(count==0)return v;
+    SkinWeight w=weights[id];
+    if(count & 0x80000000u) {
+        // Normalized dual-quaternion blend. Choose the strongest influence's
+        // hemisphere so zero-weight slots cannot determine the rotation branch.
+        uint reference=0;for(uint i=1;i<4;++i)if(w.weights[i]>w.weights[reference])reference=i;
+        float4 anchor=bones[w.joints[reference]][0],real=0.,dual=0.;
+        for(uint i=0;i<4;++i) {
+            float4 r=bones[w.joints[i]][0],d=bones[w.joints[i]][1];
+            float a=w.weights[i]*(dot(r,anchor)<0. ? -1.:1.);real+=r*a;dual+=d*a;
+        }
+        float inverseLength=1./max(length(real),1e-8);real*=inverseLength;dual*=inverseLength;
+        float3 translation=2.*(real.w*dual.xyz-dual.w*real.xyz+cross(real.xyz,dual.xyz));
+        v.position.xyz+=2.*cross(real.xyz,cross(real.xyz,v.position.xyz)+real.w*v.position.xyz)+translation;
+        v.normal.xyz+=2.*cross(real.xyz,cross(real.xyz,v.normal.xyz)+real.w*v.normal.xyz);
+        v.normal.xyz=normalize(v.normal.xyz);return v;
+    }
+    float4x4 m=bones[w.joints.x]*w.weights.x+bones[w.joints.y]*w.weights.y+bones[w.joints.z]*w.weights.z+bones[w.joints.w]*w.weights.w;
+    v.position=m*v.position;
+    float3x3 n=float3x3(m[0].xyz,m[1].xyz,m[2].xyz);
+    float3 normal=cross(n[1],n[2])*v.normal.x+cross(n[2],n[0])*v.normal.y+cross(n[0],n[1])*v.normal.z;
+    v.normal.xyz=dot(normal,normal)>1e-16 ? normalize(normal):v.normal.xyz;
+    return v;
+}
 struct Instance {float4x4 model;float4 tint;};
 struct Uniforms {float4x4 viewProjection;float4x4 lightVP;float4x4 inverseVP;float4 cameraTime;float4 sunExposure;float4 options;float4 sky;float4 environment;float4 weatherBounds;float4 skyTimes;float4 rigPosition;float4 rigColor;float4 rigParams;float4 lookSurface;float4 lookLight;float4 lookGrade;};
 float3 artSaturation(float3 c,float amount){float y=dot(c,float3(.2126,.7152,.0722));return max(mix(float3(y),c,amount),0.);}
 float3 artSky(float3 c,constant Uniforms &u){return artSaturation(c,u.lookLight.z)*u.lookLight.x;}
 // ATMOSPHERE
-struct Varying {float4 position [[position]];float3 world;float3 local;float3 normal;float3 color;float4 shadow;float kind;float ao;};
+struct Varying {float4 position [[position]];float3 world;float3 local;float3 normal;float3 color;float4 shadow;float kind;float ao;float4 groom;};
+// GROOM_COVERAGE_BEGIN
+float groomRandom(uint seed) {
+    uint x=seed+0x9e3779b9u;x=(x^(x>>16))*2246822519u;x=(x^(x>>13))*3266489917u;
+    return float((x^(x>>16))&0xffffffu)/16777216.;
+}
+float groomPulseIntegral(float x,float duty) {return floor(x)*duty+clamp(fract(x)-.5+duty*.5,0.,duty);}
+float groomCoverageAt(float4 q,float2 footprint) {
+    if(q.z<=0.)return 1.;
+    float t=clamp(q.y,0.,1.),phase=q.x+.12*sin(t*11.)*sin(t*3.14159265359);
+    float span=max(.002,abs(footprint.x)),duty=q.z*(1.-.55*smoothstep(.55,1.,t));
+    float localPhase=fract(phase);
+    float pulse=clamp((groomPulseIntegral(localPhase+span*.5,duty)-groomPulseIntegral(localPhase-span*.5,duty))/span,0.,1.);
+    float variation=max(.001,q.w),end=1.-variation*groomRandom(uint(max(0.,floor(phase))));
+    float feather=max(.008,abs(footprint.y));
+    float individual=1.-smoothstep(end-feather,end,t),mean=clamp((1.-t)/variation,0.,1.);
+    return clamp(pulse*mix(individual,mean,smoothstep(.6,1.6,span)),0.,1.);
+}
+// GROOM_COVERAGE_END
+float groomCoverage(float4 q) {
+    float phase=q.x+.12*sin(q.y*11.)*sin(q.y*PI);
+    return groomCoverageAt(q,float2(fwidth(phase),fwidth(q.y)));
+}
 float hash(float2 p){return fract(sin(dot(p,float2(127.1,311.7)))*43758.5453);}
 float noise(float2 p){float2 i=floor(p),f=fract(p);f=f*f*(3-2*f);return mix(mix(hash(i),hash(i+float2(1,0)),f.x),mix(hash(i+float2(0,1)),hash(i+1),f.x),f.y);}
 float filteredNoise(float2 p){float footprint=max(length(dfdx(p)),length(dfdy(p)));if(footprint>=1.5)return .5;return mix(noise(p),.5,smoothstep(.3,1.5,footprint));}
@@ -30,9 +89,9 @@ Varying evaluateVertex(Vertex v,Instance inst,constant Uniforms &u,const device 
     float3x3 m=float3x3(inst.model[0].xyz,inst.model[1].xyz,inst.model[2].xyz);
     Varying o;o.position=u.viewProjection*float4(p,1);o.world=p;o.local=v.position.xyz;
     float3x3 normalMatrix=float3x3(cross(m[1],m[2]),cross(m[2],m[0]),cross(m[0],m[1]));
-    o.normal=normalize(normalMatrix*v.normal.xyz);o.color=v.color.xyz*inst.tint.xyz;o.shadow=u.lightVP*float4(p,1);o.kind=inst.tint.w;o.ao=v.color.w;return o;
+    o.normal=normalize(normalMatrix*v.normal.xyz);o.color=v.color.xyz*inst.tint.xyz;o.shadow=u.lightVP*float4(p,1);o.kind=inst.tint.w;o.ao=v.color.w;o.groom=v.groom;return o;
 }
-vertex Varying surfaceVertex(uint id [[vertex_id]],uint instanceID [[instance_id]],const device Vertex *verts [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device uint *instanceIDs [[buffer(7)]]) {return evaluateVertex(verts[id],instances[instanceIDs[instanceID]],u,flow);}
+vertex Varying surfaceVertex(uint id [[vertex_id]],uint instanceID [[instance_id]],const device Vertex *verts [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device uint *instanceIDs [[buffer(7)]],const device SkinWeight *weights [[buffer(10)]],constant float4x4 *bones [[buffer(11)]],constant uint &skinCount [[buffer(12)]],constant CorrectiveUniform *correctives [[buffer(13)]],constant uint &correctiveCount [[buffer(14)]]) {Varying o=evaluateVertex(skinVertex(verts[id],id,weights,bones,skinCount,correctives,correctiveCount),instances[instanceIDs[instanceID]],u,flow);o.local=verts[id].position.xyz;return o;}
 struct Meshlet {uint4 ranges;float4 sphere;};
 using SurfaceMesh=metal::mesh<Varying,void,64,124,metal::topology::triangle>;
 struct MeshPayload {uint meshlets[32];uint instance;};
@@ -40,10 +99,10 @@ struct MeshPayload {uint meshlets[32];uint instance;};
     uint tid [[thread_index_in_threadgroup]],uint3 group [[threadgroup_position_in_grid]],
     constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],
     const device Meshlet *meshlets [[buffer(4)]],const device uint *instanceIDs [[buffer(7)]],
-    constant float4 *planes [[buffer(8)]],constant uint &meshletCount [[buffer(9)]]) {
+    constant float4 *planes [[buffer(8)]],constant uint &meshletCount [[buffer(9)]],constant uint &skinCount [[buffer(12)]]) {
     uint id=group.x*32+tid,instance=instanceIDs[group.y];Instance inst=instances[instance];
     bool visible=id<meshletCount;
-    if(visible) {
+    if(visible && skinCount==0) {
         Meshlet m=meshlets[id];float3 center=(inst.model*float4(m.sphere.xyz,1)).xyz;
         float scale=max(length(inst.model[0].xyz),max(length(inst.model[1].xyz),length(inst.model[2].xyz)));
         float top=max(0.,m.sphere.y+m.sphere.w);
@@ -55,9 +114,9 @@ struct MeshPayload {uint meshlets[32];uint instance;};
     if(visible)payload.meshlets[rank]=id;
     if(tid==0){payload.instance=instance;grid.set_threadgroups_per_grid(uint3(count,1,1));}
 }
-[[mesh]] void surfaceMesh(SurfaceMesh output,const object_data MeshPayload &payload [[payload]],uint tid [[thread_index_in_threadgroup]],uint3 group [[threadgroup_position_in_grid]],const device Vertex *verts [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device Meshlet *meshlets [[buffer(4)]],const device uint *indices [[buffer(5)]],const device uchar *triangles [[buffer(6)]]) {
+[[mesh]] void surfaceMesh(SurfaceMesh output,const object_data MeshPayload &payload [[payload]],uint tid [[thread_index_in_threadgroup]],uint3 group [[threadgroup_position_in_grid]],const device Vertex *verts [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device Meshlet *meshlets [[buffer(4)]],const device uint *indices [[buffer(5)]],const device uchar *triangles [[buffer(6)]],const device SkinWeight *weights [[buffer(10)]],constant float4x4 *bones [[buffer(11)]],constant uint &skinCount [[buffer(12)]],constant CorrectiveUniform *correctives [[buffer(13)]],constant uint &correctiveCount [[buffer(14)]]) {
     Meshlet m=meshlets[payload.meshlets[group.x]];Instance inst=instances[payload.instance];
-    if(tid<m.ranges.z)output.set_vertex(tid,evaluateVertex(verts[indices[m.ranges.x+tid]],inst,u,flow));
+    if(tid<m.ranges.z){uint id=indices[m.ranges.x+tid];Varying o=evaluateVertex(skinVertex(verts[id],id,weights,bones,skinCount,correctives,correctiveCount),inst,u,flow);o.local=verts[id].position.xyz;output.set_vertex(tid,o);}
     for(uint i=tid;i<m.ranges.w*3;i+=64)output.set_index(i,triangles[m.ranges.y+i]);
     if(tid==0)output.set_primitive_count(m.ranges.w);
 }
@@ -69,7 +128,7 @@ Vertex grassVertexSource(GrassBlade blade,uint id) {
     float3 middle=p+float3(0,h*.55,0)+bend*.3,tip=p+float3(0,h,0)+bend;
     float3 c=float3(blade.color&1023,(blade.color>>10)&1023,(blade.color>>20)&1023)/1023.;
     Vertex v;v.position=float4(id==0 ? p-d:(id==1 ? p+d:(id==2 ? middle+d*.55:(id==3 ? middle-d*.55:tip))),1);
-    v.normal=float4(n,id<2 ? 0.:(id<4 ? .4:1.));v.color=float4(c*(id<2 ? 1.:(id<4 ? 1.08:1.18)),1);return v;
+    v.normal=float4(n,id<2 ? 0.:(id<4 ? .4:1.));v.color=float4(c*(id<2 ? 1.:(id<4 ? 1.08:1.18)),1);v.groom=0;return v;
 }
 constant uint grassIndices[9]={0,1,2,0,2,3,3,2,4};
 vertex Varying grassVertex(uint id [[vertex_id]],uint instanceID [[instance_id]],const device GrassBlade *blades [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device uint *instanceIDs [[buffer(7)]]) {
@@ -81,9 +140,25 @@ vertex Varying grassVertex(uint id [[vertex_id]],uint instanceID [[instance_id]]
     for(uint i=tid;i<m.ranges.z*9;i+=64)output.set_index(i,(i/9)*5+grassIndices[i%9]);
     if(tid==0)output.set_primitive_count(m.ranges.z*3);
 }
-vertex float4 shadowVertex(uint id [[vertex_id]],uint instanceID [[instance_id]],const device Vertex *verts [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device uint *instanceIDs [[buffer(7)]]) {
-    Vertex v=verts[id];Instance inst=instances[instanceIDs[instanceID]];float3 p=(inst.model*v.position).xyz;
+vertex float4 shadowVertex(uint id [[vertex_id]],uint instanceID [[instance_id]],const device Vertex *verts [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device uint *instanceIDs [[buffer(7)]],const device SkinWeight *weights [[buffer(10)]],constant float4x4 *bones [[buffer(11)]],constant uint &skinCount [[buffer(12)]],constant CorrectiveUniform *correctives [[buffer(13)]],constant uint &correctiveCount [[buffer(14)]]) {
+    Vertex v=skinVertex(verts[id],id,weights,bones,skinCount,correctives,correctiveCount);Instance inst=instances[instanceIDs[instanceID]];float3 p=(inst.model*v.position).xyz;
     return u.lightVP*float4(deform(p,v.position.xyz,v.normal.w,inst.tint.w,u,flow),1);
+}
+struct GroomShadowVarying {float4 position [[position]];float4 groom;};
+vertex GroomShadowVarying groomShadowVertex(uint id [[vertex_id]],uint instanceID [[instance_id]],const device Vertex *verts [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device uint *instanceIDs [[buffer(7)]],const device SkinWeight *weights [[buffer(10)]],constant float4x4 *bones [[buffer(11)]],constant uint &skinCount [[buffer(12)]],constant CorrectiveUniform *correctives [[buffer(13)]],constant uint &correctiveCount [[buffer(14)]]) {
+    Vertex v=skinVertex(verts[id],id,weights,bones,skinCount,correctives,correctiveCount);Instance inst=instances[instanceIDs[instanceID]];
+    float3 p=(inst.model*v.position).xyz;
+    return {u.lightVP*float4(deform(p,v.position.xyz,v.normal.w,inst.tint.w,u,flow),1),v.groom};
+}
+fragment void groomShadowFragment(GroomShadowVarying in [[stage_in]]) {
+    if(in.groom.z<=0.)return;
+    float coverage=groomCoverage(in.groom);
+    // The existing single-sample shadow map stores stable ordered fractional
+    // coverage; its ordinary PCF reconstructs mean occlusion. No temporal noise.
+    constexpr uint thresholds[16]={0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5};
+    uint2 pixel=uint2(in.position.xy);
+    float threshold=(float(thresholds[(pixel.y&3)*4+(pixel.x&3)])+.5)/16.;
+    if(coverage<threshold)discard_fragment();
 }
 float3 display(float3 c){c=max(c,0.);return clamp((c*(2.51*c+.03))/(c*(2.43*c+.59)+.14),0.,1.);}
 float3 brdf(float3 n,float3 v,float3 l,float3 base,float rough,float metal) {
@@ -92,6 +167,22 @@ float3 brdf(float3 n,float3 v,float3 l,float3 base,float rough,float metal) {
     float vis=.5/max(NoL*sqrt(NoV*NoV*(1-a2)+a2)+NoV*sqrt(NoL*NoL*(1-a2)+a2),.001);
     float3 F0=mix(float3(.04),base,metal),F=F0+(1-F0)*pow(1-VoH,5.);
     return ((1-F)*base*(1-metal)/PI+D*vis*F)*NoL;
+}
+// Anisotropic GGX surface approximation for guide-aligned fibre detail. This
+// replaces the ordinary GGX specular term; it does not add energy or claim the
+// transmission/internal scattering of a Marschner hair model.
+float3 groomBRDF(float3 n,float3 tangent,float3 v,float3 l,float3 base,float rough,float metal) {
+    float3 bitangent=normalize(cross(n,tangent)),h=normalize(v+l);
+    float NoL=max(dot(n,l),0.),NoV=max(dot(n,v),.001),NoH=max(dot(n,h),0.);
+    float ax=max(.045,rough*.22),ay=max(.12,rough*.82);
+    float TxH=dot(tangent,h),BxH=dot(bitangent,h);
+    float q=pow(TxH/ax,2.)+pow(BxH/ay,2.)+NoH*NoH;
+    float D=1./max(PI*ax*ay*q*q,1e-7);
+    float lambdaV=sqrt(pow(ax*dot(tangent,v),2.)+pow(ay*dot(bitangent,v),2.)+NoV*NoV);
+    float lambdaL=sqrt(pow(ax*dot(tangent,l),2.)+pow(ay*dot(bitangent,l),2.)+NoL*NoL);
+    float visibility=.5/max(NoL*lambdaV+NoV*lambdaL,.001);
+    float3 F0=mix(float3(.04),base,metal),F=F0+(1-F0)*pow(1-max(dot(v,h),0.),5.);
+    return ((1-F)*base*(1-metal)/PI+D*visibility*F)*NoL;
 }
 float3 bumpNormal(float3 p,float3 n,float height,float strength) {
     float3 dx=dfdx(p),dy=dfdy(p),r1=cross(dy,n),r2=cross(n,dx);float det=dot(dx,r1);
@@ -112,15 +203,39 @@ kernel void sceneLightState(texture2d<float> trans [[texture(0)]],texture2d<floa
     // Integrate once, keeping the display shader's tiny solar branch inexpensive.
     output[1]=float4(transmittance(float3(0,Rg+.002,0),sun,u.sky.z)*(u.lookLight.x*3.5/(PI*.00465*.00465)),0);
 }
+struct SurfaceLayerUniform {float4 center;float4 shape;float4 color;float4 finish;};
+void surfaceLayers(float3 p,constant SurfaceLayerUniform *layers,uint count,thread float3 &color,thread float &rough,thread float &metal,thread float &bump,thread float &strength) {
+    for(uint i=0;i<count;i++) {
+        SurfaceLayerUniform l=layers[i];float3 q=(p-l.center.xyz)*l.shape.xyz;
+        float envelope=pow(max(0.,1-dot(q,q)),2.);
+        if(envelope<=0)continue;
+        float2 uv=p.xy*l.shape.w+p.z*.47+l.center.w;
+        float noise=filteredNoise(uv),pattern=1.;
+        if(l.finish.w==1)pattern=smoothstep(.2,.8,noise);
+        else if(l.finish.w==2) {float edge=abs(noise-.5);pattern=1-smoothstep(.018,.05+fwidth(noise),edge);}
+        else if(l.finish.w==3) {float phase=p.y*l.shape.w+filteredNoise(p.xz*5+l.center.w)*4;pattern=.5+.5*sin(phase);pattern=mix(pattern,.5,smoothstep(.4,2.,fwidth(phase)));}
+        float coverage=envelope*l.color.w*pattern;
+        color=mix(color,l.color.xyz,coverage);
+        if(l.finish.x>=0)rough=mix(rough,l.finish.x,coverage);
+        if(l.finish.y>=0)metal=mix(metal,l.finish.y,coverage);
+        // Preserve the existing recipe's height contribution when adding fields.
+        bump=bump*strength+coverage*l.finish.z;strength=1;
+    }
+}
 // PROJECT_SURFACES
-float4 shadeSurface(Varying in,bool front,constant Uniforms &u,constant float4 &lighting,constant float4 &material,depth2d<float> shadowMap,texture2d<float> sky,texture2d<float> irradiance,texture2d<float> trans,texture2d<float> previousSky,texture2d<float> previousIrradiance) {
+float4 shadeSurface(Varying in,bool front,constant Uniforms &u,constant float4 &lighting,constant float4 &material,constant SurfaceLayerUniform *layers,uint layerCount,depth2d<float> shadowMap,texture2d<float> sky,texture2d<float> irradiance,texture2d<float> trans,texture2d<float> previousSky,texture2d<float> previousIrradiance) {
     constexpr sampler shadowSampler(coord::normalized,address::clamp_to_edge,filter::linear,compare_func::less_equal);
     constexpr sampler env(filter::linear,address::clamp_to_edge);
-    int kind=materialKind<0 ? int(in.kind):materialKind;
+    // Negative material.w is a study-only neutral surface override. The vertex
+    // and shadow stages still use the original kind, geometry and pose data.
+    bool clay=material.w<-.5;
+    int kind=clay ? 7:(materialKind<0 ? int(in.kind):materialKind);
     float3 n=normalize(in.normal),color=in.color;float rough=.8,bump=0,strength=.04;
-    if((kind==3 || kind==8) && !front)n=-n;
+    if(!front)n=-n;
     float broad=filteredNoise(in.world.xz*.18),grain=filteredNoise(in.local.xz*18+in.local.y*3);
-    projectSurface(kind,in.local,in.world,n,color,rough,bump,strength);
+    // -2 retains diagnostic vertex colours for native sculpt influence review.
+    if(clay)color=material.w < -1.5 ? in.color:float3(.57);
+    else projectSurface(kind,in.local,in.world,n,color,rough,bump,strength);
     if(material.z>.5)return float4(color*8*u.sunExposure.w,1);
     if(material.w>.5 && abs(n.y)>.9) {
         float spacing=pow(10.,floor(log10(max(u.rigParams.z,0.001))));
@@ -130,8 +245,9 @@ float4 shadeSurface(Varying in,bool front,constant Uniforms &u,constant float4 &
     }
     if(material.x>=0)rough=material.x;
     float metal=material.y;
+    if(hasSurfaceLayers && !clay)surfaceLayers(in.local,layers,layerCount,color,rough,metal,bump,strength);
     rough=clamp(rough+u.lookSurface.y,.045,1.);
-    if(kind!=1)color=mix(in.color,color,u.lookSurface.x);
+    if(kind!=1 && !clay)color=mix(in.color,color,u.lookSurface.x);
     color=artSaturation(color,u.lookSurface.z);
     n=bumpNormal(in.world,n,bump,strength*u.lookSurface.x);
     float wet=u.environment.y;rough=mix(rough,max(.22,rough*.5),wet);color*=mix(1.,.78,wet);
@@ -155,21 +271,37 @@ float4 shadeSurface(Varying in,bool front,constant Uniforms &u,constant float4 &
         float determinant=a.x*b.y-a.y*b.x;
         float2 gradient=abs(determinant)>1e-12 ? float2(dx.z*b.y-dy.z*a.y,a.x*dy.z-b.x*dx.z)/determinant:float2(0);
         float bias=.00005+dot(abs(gradient),float2(1./2048.));
-        // Pair the six texel weights of the bilinearly filtered 5×5 box.
-        // Nine hardware comparisons preserve the original footprint and weights.
-        float2 pixel=suv*2048.-.5,cell=floor(pixel),f=fract(pixel);
-        float3 wx=float3(2-f.x,2,1+f.x),wy=float3(2-f.y,2,1+f.y);
-        float3 ox=float3(-2+1/wx.x,.5,2+f.x/wx.z),oy=float3(-2+1/wy.x,.5,2+f.y/wy.z);
-        for(uint y=0;y<3;y++)for(uint x=0;x<3;x++) {
-            float2 centerUV=(cell+.5+float2(ox[x],oy[y]))/2048.;
-            float2 uv=suv+(centerUV-suv)*(u.rigPosition.w>.5 ? 1+u.rigParams.x*20:1),offset=uv-suv;
-            visibility+=shadowMap.sample_compare(shadowSampler,uv,sc.z+dot(gradient,offset)-bias)*(wx[x]*wy[y]/25.);
+        float spread=u.rigPosition.w>.5 ? 1+u.rigParams.x*20:1;
+        if(spread>1.0001) {
+            // Pairing adjacent hardware texels cannot be stretched: doing so
+            // breaks the filter weights at every texel boundary. A wide finite
+            // source uses fixed, continuous receiver-relative sample locations.
+            for(int y=-2;y<=2;y++)for(int x=-2;x<=2;x++) {
+                float2 offset=float2(x,y)*spread/2048.;
+                visibility+=shadowMap.sample_compare(shadowSampler,suv+offset,sc.z+dot(gradient,offset)-bias)/25.;
+            }
+        } else {
+            // Exact adjacent-texel pairing for the compact bilinear 5×5 box.
+            float2 pixel=suv*2048.-.5,cell=floor(pixel),f=fract(pixel);
+            float3 wx=float3(2-f.x,2,1+f.x),wy=float3(2-f.y,2,1+f.y);
+            float3 ox=float3(-2+1/wx.x,.5,2+f.x/wx.z),oy=float3(-2+1/wy.x,.5,2+f.y/wy.z);
+            for(uint y=0;y<3;y++)for(uint x=0;x<3;x++) {
+                float2 uv=(cell+.5+float2(ox[x],oy[y]))/2048.,offset=uv-suv;
+                visibility+=shadowMap.sample_compare(shadowSampler,uv,sc.z+dot(gradient,offset)-bias)*(wx[x]*wy[y]/25.);
+            }
         }
     }
     float3 ambient=mix(previousIrradiance.sample(env,skyUV(n)).rgb,irradiance.sample(env,skyUV(n)).rgb,u.environment.z);
     ambient=u.environment.x==4 ? float3(u.rigParams.y):artSky(ambient,u);
     ambient*=u.lookLight.y;
-    float ao=clamp(in.ao,0.,1.);float3 lit=base*(1-metal)*ambient*ao+brdf(n,v,l,base,rough,metal)*sunlight*visibility;
+    float3 directBRDF=brdf(n,v,l,base,rough,metal);
+    if(kind==13) {
+        float2 across=float2(dfdx(in.groom.x),dfdy(in.groom.x));
+        float3 tangent=dfdy(in.world)*across.x-dfdx(in.world)*across.y;
+        tangent-=n*dot(tangent,n);
+        if(dot(tangent,tangent)>1e-14)directBRDF=groomBRDF(n,normalize(tangent),v,l,base,rough,metal);
+    }
+    float ao=clamp(in.ao,0.,1.);float3 lit=base*(1-metal)*ambient*ao+directBRDF*sunlight*visibility;
 
     if(kind==9)lit+=base*ambient*.12*pow(1-max(dot(n,v),0.),3.)*ao*(1-wet);
     if(kind==2 || kind==3 || kind==8)lit+=base*sunlight*max(dot(-n,l),0.)*.15*visibility;
@@ -195,8 +327,11 @@ float4 shadeSurface(Varying in,bool front,constant Uniforms &u,constant float4 &
     }
     return float4(lit*u.sunExposure.w,1);
 }
-fragment float4 surfaceFragment(Varying in [[stage_in]],bool front [[front_facing]],constant Uniforms &u [[buffer(1)]],constant float4 &lighting [[buffer(2)]],constant float4 &material [[buffer(4)]],depth2d<float> shadowMap [[texture(0)]],texture2d<float> sky [[texture(1)]],texture2d<float> irradiance [[texture(2)]],texture2d<float> trans [[texture(3)]],texture2d<float> previousSky [[texture(4)]],texture2d<float> previousIrradiance [[texture(5)]]) {
-    return shadeSurface(in,front,u,lighting,material,shadowMap,sky,irradiance,trans,previousSky,previousIrradiance);
+fragment float4 surfaceFragment(Varying in [[stage_in]],bool front [[front_facing]],constant SurfaceLayerUniform *layers [[buffer(5)]],constant uint &layerCount [[buffer(6)]],constant Uniforms &u [[buffer(1)]],constant float4 &lighting [[buffer(2)]],constant float4 &material [[buffer(4)]],depth2d<float> shadowMap [[texture(0)]],texture2d<float> sky [[texture(1)]],texture2d<float> irradiance [[texture(2)]],texture2d<float> trans [[texture(3)]],texture2d<float> previousSky [[texture(4)]],texture2d<float> previousIrradiance [[texture(5)]]) {
+    float coverage=hasGroomCoverage ? groomCoverage(in.groom):1.;
+    if(hasGroomCoverage && coverage<=.001)discard_fragment();
+    float4 color=shadeSurface(in,front,u,lighting,material,layers,layerCount,shadowMap,sky,irradiance,trans,previousSky,previousIrradiance);
+    color.a=coverage;return color;
 }
 struct SkyOut {float4 position [[position]];float2 uv;};
 vertex SkyOut skyVertex(uint id [[vertex_id]]){float2 p=float2((id<<1)&2,id&2);return {float4(p*2-1,1,1),p};}
@@ -210,8 +345,8 @@ fragment GroundOut groundFragment(SkyOut screen [[stage_in]],constant Uniforms &
     float3 p=u.cameraTime.xyz+ray*distance;p.y=0;
     Varying surface;surface.position=u.viewProjection*float4(p,1);
     surface.world=p;surface.local=p;surface.normal=float3(0,1,0);
-    surface.color=float3(.43);surface.shadow=u.lightVP*float4(p,1);surface.kind=7;surface.ao=1;
-    float4 color=shadeSurface(surface,true,u,lighting,material,shadowMap,sky,irradiance,trans,previousSky,previousIrradiance);
+    surface.color=float3(.43);surface.shadow=u.lightVP*float4(p,1);surface.kind=7;surface.ao=1;surface.groom=0;
+    float4 color=shadeSurface(surface,true,u,lighting,material,nullptr,0,shadowMap,sky,irradiance,trans,previousSky,previousIrradiance);
     // Far ground remains behind scene geometry but in front of the sky at depth 1.
     return {color,clamp(surface.position.z/surface.position.w,0.,0.99999994)};
 }

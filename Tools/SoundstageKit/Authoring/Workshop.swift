@@ -105,6 +105,9 @@ struct WorkshopDocument: Codable {
   var sourcePath: String?
   var sceneLook: SceneLook?
   var viewName: String?
+  var surfaceReview: SurfaceReview?
+  var sculptReviewFrame:SculptReviewFrame?
+  var sculptOverlay:SculptOverlay?
 }
 
 extension WorkshopRenderer {
@@ -128,7 +131,7 @@ extension WorkshopRenderer {
   }
   var studioAssetCenter: V3 { V3(0, studioHeight * 0.5, 0) + creatureCameraOffset }
   var studioCenter: V3 {
-    selectedPartCenter ?? (V3(0, studioHeight * studioLayout.focus, 0) + creatureCameraOffset)
+    sculptReviewFrame?.center ?? selectedPartCenter ?? (V3(0, studioHeight * studioLayout.focus, 0) + creatureCameraOffset)
   }
   var rigPosition: V3 {
     studioAssetCenter + V3(studioRig.x, studioRig.y, studioRig.z) * studioExtent
@@ -148,6 +151,12 @@ extension WorkshopRenderer {
     let extents = (studioBounds.max - studioBounds.min) * studioLayout.scale
     var lo = V3(-extents.x / 2, 0, -extents.z / 2)
     var hi = V3(extents.x / 2, extents.y, extents.z / 2)
+    if creatureWorkshop.mode != "bind", let bounds=studioSource.animation?.motionEnvelope {
+      let center=(studioBounds.min+studioBounds.max)/2
+      let origin=V3(center.x,studioBounds.min.y,center.z)
+      lo=simd_min(lo,(bounds.min-origin)*studioLayout.scale)
+      hi=simd_max(hi,(bounds.max-origin)*studioLayout.scale)
+    }
     if studioLayout.arrangement == "grove" {
       lo.x -= studioExtent * 1.3
       hi.x += studioExtent * 1.3
@@ -193,9 +202,10 @@ extension WorkshopRenderer {
     try applySource(source)
     importedSourceURL = nil
     studioLayout = StudioLayout()
+    surfaceReview = SurfaceReview()
     resetCamera()
   }
-  func applySource(_ source: AssetSource) throws {
+  func applySource(_ source: AssetSource, review: SurfaceReview? = nil) throws {
     let start = CACurrentMediaTime()
     let oldDistance = orbitDistance * studioUnit
     try source.validate()
@@ -212,16 +222,63 @@ extension WorkshopRenderer {
     for i in geometry.parts.indices {
       geometry.parts[i].joint = PartJoint(id: geometry.parts[i].key)
     }
+    geometry.craft=source.craft.geometry
+    geometry.craft.correctives=source.craft.correctives
+    geometry.surfaceLayers=[]
+    geometry.secondary = SecondarySettings()
+    geometry.guideRadii = [:]
+    geometry.guideFrames = [:]
+    geometry.performance = nil
+    geometry.contactOffsets = [:]
+    geometry.collisionBodies = nil
     let key = String(data: try encoder.encode(geometry), encoding: .utf8)!
+    var baseGeometry=geometry
+    baseGeometry.craft=CreatureCraft()
+    baseGeometry.surfaceEdits=[]
+    baseGeometry.guideOffsets=[:]
+    baseGeometry.appearance=[:]
+    let baseKey=String(data:try encoder.encode(baseGeometry),encoding:.utf8)!
+    studioBaseCacheHit=studioBaseCache[baseKey] != nil
+    studioReusedBatches=0;studioRebuiltBatches=0
     let prepared: [GPUBatch]
     if let cached = studioCache[key] {
       prepared = cached
+      studioReusedBatches=cached.count
     } else {
-      let compiled = try source.compile()
-      guard compiled.allSatisfy({ !$0.mesh.indices.isEmpty }) else {
-        throw RuntimeError.message("Field produced an empty surface")
+      let base: [SceneBatch]
+      if let cached=studioBaseCache[baseKey] {base=cached} else {
+        base=try source.compileBase()
+        if studioBaseCache.count >= 3 {studioBaseCache.removeAll()}
+        studioBaseCache[baseKey]=base
       }
-      prepared = compiled.map(upload)
+      if studioPartCache.count>=128 {studioPartCache.removeAll()}
+      prepared = try base.filter{!source.replacedAnatomyParts.contains($0.name)}.map {batch in
+        var local=source
+        local.surfaceEdits=source.surfaceEdits.filter {$0.part==batch.name || ($0.targets ?? []).contains(batch.name)}
+        let editKey=String(data:try encoder.encode(local.surfaceEdits),encoding:.utf8)!
+        let appearanceKey=String(data:try encoder.encode(source.appearance),encoding:.utf8)!
+        let guideKey=String(data:try encoder.encode(source.resolvedGuideOffsets.filter{batch.skinJoints.contains($0.key)}),encoding:.utf8)!
+        var localCraft=source.craft.geometry(for:batch.name)
+        localCraft.correctives=source.craft.correctives.filter{$0.field.part==batch.name}
+        let craftKey=String(data:try encoder.encode(localCraft),encoding:.utf8)!
+        let groomGuideKey=(source.craft.grooms.contains(where:{$0.part==batch.name}) || source.craft.clothPanels.contains(where:{$0.part==batch.name})) ? String(data:try encoder.encode(source.guideOffsets),encoding:.utf8)!:""
+        let partKey=baseKey+"/"+batch.name+"/"+editKey+appearanceKey+guideKey+craftKey+groomGuideKey
+        if let cached=studioPartCache[partKey] {studioReusedBatches+=1;return cached}
+        let compiled=try local.finish([batch],anatomyCompiler:{anatomy in
+          let anatomyKey=String(data:try encoder.encode(anatomy),encoding:.utf8)!
+          if let cached=self.sculptAnatomyCache[anatomyKey] {
+            self.sculptAnatomyCacheOrder.removeAll{$0==anatomyKey};self.sculptAnatomyCacheOrder.append(anatomyKey)
+            return cached
+          }
+          let compiled=try AnatomyCompiler.compile(anatomy,captureAnchors:false)
+          while self.sculptAnatomyCacheOrder.count>=12 {self.sculptAnatomyCache.removeValue(forKey:self.sculptAnatomyCacheOrder.removeFirst())}
+          self.sculptAnatomyCache[anatomyKey]=compiled;self.sculptAnatomyCacheOrder.append(anatomyKey)
+          return compiled
+        })[0]
+        guard !compiled.mesh.indices.isEmpty else {throw RuntimeError.message("Field produced an empty surface")}
+        let gpu=upload(compiled);studioPartCache[partKey]=gpu;studioRebuiltBatches+=1
+        return gpu
+      }
       if studioCache.count >= 6 { studioCache.removeAll() }
       studioCache[key] = prepared
     }
@@ -246,19 +303,24 @@ extension WorkshopRenderer {
     else {
       throw RuntimeError.message("Transformed subject bounds must span 1 mm...100 m")
     }
+    try review?.validate(parts: prepared.map(\.name))
     if source.id != studioSource.id {
       creatureWorkshop = CreatureWorkshop()
       inspectionCamera = nil
     }
     creatureWorkshop.generator = source.generator
+    creatureWorkshop.authoredAnimation = source.authoredAnimation
+    surfaceReview.hiddenParts = surfaceReview.hiddenParts.filter { name in prepared.contains { $0.name == name } }
     if creatureWorkshop.scenario.isEmpty {
       creatureWorkshop.scenario = source.animation?.scenarios.first ?? ""
       creatureWorkshop.reset()
     }
-    if source.motion == nil { creatureWorkshop.mode = "bind" }
+    if source.animation == nil || !creatureWorkshop.modes.contains(creatureWorkshop.mode) { creatureWorkshop.mode = "bind" }
     if !source.resolvedParts.contains(where: { $0.key == creatureWorkshop.selected }) {
       creatureWorkshop.selected = nil
     }
+    if sculptReviewFrame?.source != source.id {sculptReviewFrame=nil}
+    if source.id != studioSource.id {sculptOverlay=nil}
     studioSource = source
     studioBatches = prepared
     studioObject = source.id
@@ -302,9 +364,13 @@ extension WorkshopRenderer {
     return url
   }
   func workshopDocument(includeWind: Bool = true) -> WorkshopDocument {
-    WorkshopDocument(
+    var creature = creatureWorkshop
+    // This adapter is derived from the source, and restored from that source.
+    // Keep the authoritative animation only once in disk/status/history studies.
+    creature.authoredAnimation = nil
+    return WorkshopDocument(
       inspectionCamera: inspectionCamera, project: ProjectContext.current.id,
-      creature: creatureWorkshop, source: studioSource, skyOnly: studioObject == "sky",
+      creature: creature, source: studioSource, skyOnly: studioObject == "sky",
       rig: studioRig, layout: studioLayout,
       lighting: lighting,
       sky: [
@@ -314,7 +380,7 @@ extension WorkshopRenderer {
       ], orbit: orbit, elevation: orbitElevation, distance: orbitDistance, exposure: exposure,
       wind: wind, wetness: wetness, time: simulationTime, paused: paused,
       windState: includeWind ? atmosphereWind : nil, sourcePath: importedSourceURL?.path,
-      sceneLook: sceneLook, viewName: studioViewName)
+      sceneLook: sceneLook, viewName: studioViewName, surfaceReview: surfaceReview,sculptReviewFrame:sculptReviewFrame,sculptOverlay:sculptOverlay)
   }
   func restoreWorkshop(_ document: WorkshopDocument) throws {
     var d = document
@@ -322,6 +388,7 @@ extension WorkshopRenderer {
       throw RuntimeError.message("This study belongs to another project; switch projects first")
     }
     d.creature?.generator = d.source.generator
+    d.creature?.authoredAnimation = d.source.authoredAnimation
     if let c = d.inspectionCamera {
       guard
         [c.eye.x, c.eye.y, c.eye.z, c.target.x, c.target.y, c.target.z].allSatisfy({
@@ -330,6 +397,9 @@ extension WorkshopRenderer {
       else { throw RuntimeError.message("Invalid inspection camera") }
     }
     try d.source.validate()
+    try d.sculptReviewFrame?.validate(source:d.source.id)
+    try d.sculptOverlay?.validate(parts:Set(d.source.resolvedParts.map(\.key)).union(d.source.craft.anatomy.map(\.part)))
+    try d.surfaceReview?.validate()
     try d.creature?.validate(source: d.source)
     try d.rig.validate()
     try d.layout.validate()
@@ -358,7 +428,7 @@ extension WorkshopRenderer {
     sky.density = density
     sky.haze = haze
     sky.cloudSeed = seed
-    try applySource(d.source)
+    try applySource(d.source, review: d.surfaceReview)
     creatureWorkshop = d.creature ?? CreatureWorkshop()
     importedSourceURL = d.sourcePath.flatMap {
       FileManager.default.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil
@@ -368,6 +438,9 @@ extension WorkshopRenderer {
     skySettings = sky
     studioRig = d.rig
     studioLayout = d.layout
+    surfaceReview = d.surfaceReview ?? SurfaceReview()
+    sculptReviewFrame=d.sculptReviewFrame
+    sculptOverlay=d.sculptOverlay
     if d.skyOnly { studioObject = "sky" }
     inspectionCamera = d.inspectionCamera
     studioViewName = d.viewName ?? "Custom"
@@ -391,13 +464,17 @@ extension WorkshopRenderer {
   }
   func workshopSnapshot() -> [String: Any] {
     let encoder = JSONEncoder()
-    let document =
-      (try? JSONSerialization.jsonObject(with: encoder.encode(workshopDocument(includeWind: false))))
-      ?? [:]
+    // Transient camera/clock/behavior fields change every frame; the potentially
+    // multi-megabyte source changes only after an accepted edit. Encode the small
+    // document shell and replace its placeholder with the immutable cached source.
+    var shell=workshopDocument(includeWind:false)
+    shell.source=AssetSource.defaults("")
+    var document=(try? JSONSerialization.jsonObject(with:encoder.encode(shell))) as? [String:Any] ?? [:]
+    document["source"]=sourceJSONObject
     return [
       "creature": creatureWorkshop.telemetry,
-      "animationDuration": studioSource.animation?.duration(
-        studioSource.motion ?? MotionParameters()) ?? 1,
+      "performance": performanceSnapshot,
+      "animationDuration": performanceDuration,
       "blink": studioSource.animation?.blink(
         creatureWorkshop.seconds, studioSource.motion ?? MotionParameters()) ?? 0,
       "authoring": workshopSession.snapshot,
@@ -449,7 +526,7 @@ extension WorkshopRenderer {
         "subject", "rig", "shape", "layout", "assetLoad", "assetSave", "assetReload", "saveStudy",
         "loadStudy", "reloadAssets", "catalog", "undo", "redo", "checkpoint", "restoreCheckpoint",
         "watchSource", "captureReview", "pinBaseline", "selectBaseline", "styleBoard", "look",
-        "publishLook", "motion", "creature", "part", "partEdit", "stimulus", "motionReview",
+        "publishLook", "motion", "creature", "part", "partEdit", "stimulus", "motionReview", "surfaceReview",
       ], "sceneLookRanges": SceneLook.ranges.mapValues { [$0.lowerBound, $0.upperBound] },
       "artDirection": SceneLook.url.path,
       "fieldOperations": [
@@ -470,20 +547,21 @@ extension WorkshopRenderer {
     let original = workshopDocument()
     let folder = AssetSource.workspace.appendingPathComponent(".soundstage/projects")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-    try JSONEncoder().encode(original).write(
-      to: folder.appendingPathComponent(previous.id + ".json"), options: .atomic)
+    try workshopSession.write(original, to: folder.appendingPathComponent(previous.id + ".json"))
     do {
       try ProjectContext.select(id)
       graphics.materialSourceURL = ProjectContext.current.authoring.appendingPathComponent(
         "Materials.metal")
       try graphics.buildPipelines()
       studioCache.removeAll()
+      studioBaseCache.removeAll()
+      studioPartCache.removeAll()
       creatureWorkshop = CreatureWorkshop()
       try selectSubject(ProjectContext.current.defaultSubject)
       sceneLook = try SceneLook.load()
       let saved = folder.appendingPathComponent(id + ".json")
-      if let data = try? Data(contentsOf: saved) {
-        try restoreWorkshop(JSONDecoder().decode(WorkshopDocument.self, from: data))
+      if FileManager.default.fileExists(atPath: saved.path) {
+        try restoreWorkshop(WorkshopDocument.read(saved))
       }
       workshopSession.pending = nil
       workshopSession.undoStack = []

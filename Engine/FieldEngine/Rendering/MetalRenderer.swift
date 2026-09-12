@@ -15,6 +15,10 @@ package final class MetalRenderer {
   package var meshPipeline: MTLRenderPipelineState!
   package var materialPipelines: [Int: MTLRenderPipelineState] = [:]
   package var materialMeshPipelines: [Int: MTLRenderPipelineState] = [:]
+  private var layeredPipeline: MTLRenderPipelineState!
+  private var layeredMeshPipeline: MTLRenderPipelineState!
+  private var layeredGrassPipeline: MTLRenderPipelineState!
+  private var layeredGrassMeshPipeline: MTLRenderPipelineState!
   package var useMeshlets = true
   package var windBuffers: [MTLBuffer] = []
   package let view: MTKView
@@ -22,6 +26,11 @@ package final class MetalRenderer {
   package var skyPipeline: MTLRenderPipelineState!
   package var groundPipeline: MTLRenderPipelineState!
   package var shadowPipeline: MTLRenderPipelineState!
+  package var groomShadowPipeline: MTLRenderPipelineState!
+  package var groomPipeline: MTLRenderPipelineState!
+  package var groomMeshPipeline: MTLRenderPipelineState!
+  package var layeredGroomPipeline: MTLRenderPipelineState!
+  package var layeredGroomMeshPipeline: MTLRenderPipelineState!
   package var depthState: MTLDepthStencilState!
   package var skyDepthState: MTLDepthStencilState!
   package var shadowTexture: MTLTexture!
@@ -85,6 +94,9 @@ package final class MetalRenderer {
     precondition(
       batch.instances.allSatisfy { $0.tint.w == batch.instances.first?.tint.w },
       "Each draw batch must have one material")
+    precondition(batch.skinJoints.isEmpty || (batch.skinJoints.count <= 64 && batch.lodMeshes.isEmpty
+      && batch.skinWeights.count == batch.mesh.vertices.count
+      && batch.skinWeights.allSatisfy { $0.validate(count: batch.skinJoints.count) }), "Invalid skin binding")
     let vertices = device.makeBuffer(
       bytes: batch.mesh.vertices, length: MemoryLayout<Vertex>.stride * batch.mesh.vertices.count)!
     let indices = device.makeBuffer(
@@ -131,7 +143,9 @@ package final class MetalRenderer {
       meshletTriangles: device.makeBuffer(
         bytes: clusters.triangles, length: clusters.triangles.count)!,
       material: SIMD4(batch.roughness, batch.metallic, 0, 0), meshletCount: descriptors.count,
-      doubleSided: batch.doubleSided)
+      doubleSided: batch.doubleSided,hasGroomCoverage:batch.mesh.vertices.contains{$0.groom.z>0},
+      skinWeights: batch.skinWeights.isEmpty ? nil : device.makeBuffer(bytes: batch.skinWeights,
+        length: batch.skinWeights.count * MemoryLayout<SkinWeight>.stride), skinJoints: batch.skinJoints)
   }
 
   package func uploadGrass(_ batch: SceneBatch) -> GPUBatch {
@@ -205,10 +219,14 @@ package final class MetalRenderer {
     let surfaces = try materialSourceURL.map {try String(contentsOf:$0,encoding:.utf8)} ?? "void projectSurface(int kind,float3 local,float3 world,float3 n,thread float3 &color,thread float &rough,thread float &bump,thread float &strength) {}"
     source = source.replacingOccurrences(of:"// PROJECT_SURFACES",with:surfaces)
     let library = try device.makeLibrary(source: source, options: nil)
-    func fragment(_ kind: Int, _ name: String = "surfaceFragment") throws -> MTLFunction {
+    func fragment(_ kind: Int, _ name: String = "surfaceFragment", layers: Bool = false, groom:Bool = false) throws -> MTLFunction {
       let constants = MTLFunctionConstantValues()
       var k = Int32(kind)
       constants.setConstantValue(&k, type: .int, index: 0)
+      var enabled = layers
+      constants.setConstantValue(&enabled, type: .bool, index: 1)
+      var covered=groom
+      constants.setConstantValue(&covered,type:.bool,index:2)
       return try library.makeFunction(name: name, constantValues: constants)
     }
     let genericFragment = try fragment(-1)
@@ -228,6 +246,9 @@ package final class MetalRenderer {
     sd.vertexFunction = library.makeFunction(name: "shadowVertex")
     sd.depthAttachmentPixelFormat = .depth32Float
     let newShadowPipeline = try device.makeRenderPipelineState(descriptor: sd)
+    sd.vertexFunction=library.makeFunction(name:"groomShadowVertex")
+    sd.fragmentFunction=library.makeFunction(name:"groomShadowFragment")
+    let newGroomShadowPipeline=try device.makeRenderPipelineState(descriptor:sd)
     let md = MTLMeshRenderPipelineDescriptor()
     md.objectFunction = library.makeFunction(name: "surfaceObject")
     md.maxTotalThreadsPerObjectThreadgroup = 32
@@ -239,6 +260,21 @@ package final class MetalRenderer {
     md.colorAttachments[0].pixelFormat = .rgba16Float
     md.depthAttachmentPixelFormat = .depth32Float
     let (newMeshPipeline, _) = try device.makeRenderPipelineState(descriptor: md, options: [])
+    // Compile finish fields out of ordinary scene draws. A uniform zero-length
+    // loop still imposes the complex material function's register pressure.
+    d.vertexFunction = library.makeFunction(name: "surfaceVertex")
+    d.fragmentFunction = try fragment(-1, layers: true)
+    md.fragmentFunction = d.fragmentFunction
+    let newLayeredPipeline = try device.makeRenderPipelineState(descriptor: d)
+    let newLayeredMeshPipeline = try device.makeRenderPipelineState(descriptor: md, options: []).0
+    d.isAlphaToCoverageEnabled=true;md.isAlphaToCoverageEnabled=true
+    d.fragmentFunction=try fragment(-1,groom:true);md.fragmentFunction=d.fragmentFunction
+    let newGroomPipeline=try device.makeRenderPipelineState(descriptor:d)
+    let newGroomMeshPipeline=try device.makeRenderPipelineState(descriptor:md,options:[]).0
+    d.fragmentFunction=try fragment(-1,layers:true,groom:true);md.fragmentFunction=d.fragmentFunction
+    let newLayeredGroomPipeline=try device.makeRenderPipelineState(descriptor:d)
+    let newLayeredGroomMeshPipeline=try device.makeRenderPipelineState(descriptor:md,options:[]).0
+    d.isAlphaToCoverageEnabled=false;md.isAlphaToCoverageEnabled=false
     var specialized: [Int: MTLRenderPipelineState] = [:]
     var specializedMesh: [Int: MTLRenderPipelineState] = [:]
     d.vertexFunction = library.makeFunction(name: "surfaceVertex")
@@ -255,12 +291,20 @@ package final class MetalRenderer {
     d.vertexFunction = library.makeFunction(name: "grassVertex")
     d.fragmentFunction = try fragment(3)
     let newGrassVertex = try device.makeRenderPipelineState(descriptor: d)
+    d.fragmentFunction = try fragment(3, layers: true)
+    md.fragmentFunction = d.fragmentFunction
+    let newLayeredGrassPipeline = try device.makeRenderPipelineState(descriptor: d)
+    let newLayeredGrassMeshPipeline = try device.makeRenderPipelineState(descriptor: md, options: []).0
     let newAtmosphere = try Atmosphere(device: device, library: library, enabled:atmosphericRendering)
     let newPost = try PostProcess(device: device, library: library)
     grassMeshPipeline = newGrassMesh
     grassVertexPipeline = newGrassVertex
     materialPipelines = specialized
     materialMeshPipelines = specializedMesh
+    layeredPipeline = newLayeredPipeline
+    layeredMeshPipeline = newLayeredMeshPipeline
+    layeredGrassPipeline = newLayeredGrassPipeline
+    layeredGrassMeshPipeline = newLayeredGrassMeshPipeline
     post = newPost
     atmosphere = newAtmosphere
     meshPipeline = newMeshPipeline
@@ -268,6 +312,9 @@ package final class MetalRenderer {
     skyPipeline = newSkyPipeline
     groundPipeline = newGroundPipeline
     shadowPipeline = newShadowPipeline
+    groomShadowPipeline=newGroomShadowPipeline
+    groomPipeline=newGroomPipeline;groomMeshPipeline=newGroomMeshPipeline
+    layeredGroomPipeline=newLayeredGroomPipeline;layeredGroomMeshPipeline=newLayeredGroomMeshPipeline
     shaderDigest = SHA256.hash(data: Data(source.utf8)).map { String(format: "%02x", $0) }.joined()
     let depth = MTLDepthStencilDescriptor()
     depth.depthCompareFunction = .less
@@ -488,7 +535,7 @@ package final class MetalRenderer {
     enc.setFrontFacing(.counterClockwise)
     func draw(
       _ b: GPUBatch, instance: Instance? = nil, selectedCount: Int? = nil,
-      override: SIMD4<Float>? = nil
+      override: SIMD4<Float>? = nil, skinPalette: [simd_float4x4] = [], layers:[SurfaceLayer] = [], correctives:[CorrectiveUniform] = []
     ) {
       if instance == nil && selectedCount == nil {
         let levels = [b] + b.lods
@@ -505,7 +552,7 @@ package final class MetalRenderer {
             ? 0.35 * sqrt(2) * abs(wind) * pow(top / 5, 2) * 0.75
             : (kind == 3 ? 0.35 * sqrt(2) * abs(wind) * 0.65 : 0)
           let radius = b.radius * scale + deformation
-          guard planes.allSatisfy({ dot($0, center) >= -radius }) else { continue }
+          guard !skinPalette.isEmpty || !correctives.isEmpty || planes.allSatisfy({ dot($0, center) >= -radius }) else { continue }
           let distance = max(
             1, length(V3(center.x, center.y, center.z) - camera) - b.radius * scale)
           let current = state.lod[index]
@@ -538,21 +585,61 @@ package final class MetalRenderer {
         }
         // Keep the previous draw order for stable depth ties.
         for k in levels.indices.dropFirst() {
-          draw(levels[k], selectedCount: state.counts[k], override: override)
+          draw(levels[k], selectedCount: state.counts[k], override: override, skinPalette: skinPalette,layers:layers,correctives:correctives)
         }
-        draw(b, selectedCount: state.counts[0], override: override)
+        draw(b, selectedCount: state.counts[0], override: override, skinPalette: skinPalette,layers:layers,correctives:correctives)
         return
       }
       if let selectedCount, selectedCount == 0 { return }
+      if shadow {enc.setRenderPipelineState(b.hasGroomCoverage ? groomShadowPipeline:shadowPipeline)}
       if !shadow {
         var material = override ?? b.material
         enc.setFragmentBytes(&material, length: MemoryLayout<SIMD4<Float>>.stride, index: 4)
         let kind = Int(instance?.tint.w ?? b.sourceInstances.first?.tint.w ?? 0)
-        enc.setRenderPipelineState(
-          b.proceduralGrass
-            ? (useMeshlets ? grassMeshPipeline : grassVertexPipeline)
-            : (useMeshlets
-              ? materialMeshPipelines[kind] ?? meshPipeline : materialPipelines[kind] ?? pipeline))
+        let selected:MTLRenderPipelineState
+        if b.hasGroomCoverage {
+          if layers.isEmpty {selected=useMeshlets ? groomMeshPipeline:groomPipeline}
+          else {selected=useMeshlets ? layeredGroomMeshPipeline:layeredGroomPipeline}
+        } else if b.proceduralGrass {
+          if layers.isEmpty {selected=useMeshlets ? grassMeshPipeline:grassVertexPipeline}
+          else {selected=useMeshlets ? layeredGrassMeshPipeline:layeredGrassPipeline}
+        } else if !layers.isEmpty {
+          selected=useMeshlets ? layeredMeshPipeline:layeredPipeline
+        } else {
+          selected=useMeshlets ? (materialMeshPipelines[kind] ?? meshPipeline):(materialPipelines[kind] ?? pipeline)
+        }
+        enc.setRenderPipelineState(selected)
+      }
+      if !shadow {
+        precondition(layers.count<=16 && MemoryLayout<SurfaceLayerUniform>.stride==64)
+        var layerCount=UInt32(layers.count)
+        var uniforms=layers.map(\.uniform)
+        if uniforms.isEmpty {uniforms=[SurfaceLayer(id:"empty",part:"empty",center:.zero,radius:V3(repeating:1),tint:.zero).uniform]}
+        enc.setFragmentBytes(&uniforms,length:uniforms.count*64,index:5)
+        enc.setFragmentBytes(&layerCount,length:4,index:6)
+      }
+      precondition(correctives.count<=16 && MemoryLayout<CorrectiveUniform>.stride==64)
+      var correctiveCount=UInt32(correctives.count)
+      var correctiveData=correctives.isEmpty ? [CorrectiveUniform(SurfaceEdit(id:"empty",part:"empty",center:.zero,radius:V3(repeating:1)),weight:0)]:correctives
+      enc.setVertexBytes(&correctiveData,length:correctiveData.count*64,index:13)
+      enc.setVertexBytes(&correctiveCount,length:4,index:14)
+      if !shadow && useMeshlets {
+        enc.setMeshBytes(&correctiveData,length:correctiveData.count*64,index:13)
+        enc.setMeshBytes(&correctiveCount,length:4,index:14)
+      }
+      let skinning = SkinningPalette(skinPalette)
+      var skinCount = skinning.encodedCount
+      precondition(skinPalette.isEmpty || skinPalette.count == b.skinJoints.count)
+      var palette = skinPalette.isEmpty ? [matrix_identity_float4x4] : skinning.encodedMatrices
+      enc.setVertexBuffer(b.skinWeights ?? b.vertices, offset: 0, index: 10)
+      enc.setVertexBytes(&palette, length: palette.count * 64, index: 11)
+      enc.setVertexBytes(&skinCount, length: 4, index: 12)
+      if !shadow && useMeshlets {
+        var cullingDeformed = max(skinCount,correctiveCount)
+        enc.setObjectBytes(&cullingDeformed, length: 4, index: 12)
+        enc.setMeshBuffer(b.skinWeights ?? b.vertices, offset: 0, index: 10)
+        enc.setMeshBytes(&palette, length: palette.count * 64, index: 11)
+        enc.setMeshBytes(&skinCount, length: 4, index: 12)
       }
       var count = 1
       enc.setVertexBuffer(b.vertices, offset: 0, index: 0)
@@ -605,7 +692,7 @@ package final class MetalRenderer {
       }
     }
     for item in items where !shadow || item.castsShadow {
-      draw(item.batch, instance: item.instance, override: item.material)
+      draw(item.batch, instance: item.instance, override: item.material, skinPalette: item.skinPalette,layers:item.surfaceLayers,correctives:item.correctives)
     }
   }
 

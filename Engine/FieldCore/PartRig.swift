@@ -16,7 +16,7 @@ public struct PartJoint: Codable, Equatable, Sendable {
     self.pivot = pivot
   }
 }
-public struct JointPose: Sendable {
+public struct JointPose: Codable, Equatable, Sendable {
   public var scale = SIMD3<Float>(repeating: 1)
   public var offset: SIMD3<Float> = .zero
   public var rotation: SIMD3<Float> = .zero
@@ -32,7 +32,7 @@ public struct JointPose: Sendable {
 public enum PartRig {
   public static func validate(_ joints: [PartJoint]) throws {
     let ids = Set(joints.map(\.id))
-    guard ids.count == joints.count, joints.count <= 32 else { throw RigError.invalid }
+    guard ids.count == joints.count, joints.count <= 64 else { throw RigError.invalid }
     for j in joints {
       guard !j.id.isEmpty, j.id.count <= 80, j.parent == nil || ids.contains(j.parent!),
         [j.pivot, j.offset, j.rotation].allSatisfy({ p in
