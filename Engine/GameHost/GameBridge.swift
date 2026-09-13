@@ -136,6 +136,16 @@ final class GameBridge {
       session.onUpdate?()
       return
     case "status": break
+    case "verifySkyCache":
+      // Freeze and compare in this command turn, before a paused draw could replace
+      // the last live publication with an exact rebuild. This is explicit diagnostic work.
+      let wasPaused = session.paused
+      session.paused = true
+      defer { session.paused = wasPaused }
+      respond(id, ["ok": true,
+        "comparedLivePublication": !wasPaused,
+        "verification": try r.atmosphere.verifyPublishedCache(r.queue)])
+      return
     case "pause", "profiling", "meshlets":
       guard let value = c["value"] as? Bool else { throw RuntimeError.message("Boolean required") }
       if action == "pause" {
@@ -160,8 +170,8 @@ final class GameBridge {
         number("z", camera.position.z))
       camera.yaw = number("yaw", camera.yaw)
       camera.pitch = number("pitch", camera.pitch)
-      guard abs(camera.position.x) <= 1000, abs(camera.position.y) <= 1000,
-        abs(camera.position.z) <= 1000, abs(camera.pitch) <= 1.35
+      guard abs(camera.position.x) <= 100_000, abs(camera.position.y) <= 1000,
+        abs(camera.position.z) <= 100_000, abs(camera.pitch) <= 1.35
       else { throw RuntimeError.message("Camera outside bounds") }
       let old = g.camera
       g.camera = camera
@@ -171,7 +181,7 @@ final class GameBridge {
       }
     case "query":
       let p = V3(number("x", 0), number("y", 0), number("z", 0))
-      guard abs(p.x) <= 10000, abs(p.y) <= 10000, abs(p.z) <= 10000 else {
+      guard abs(p.x) <= 100_000, abs(p.y) <= 10000, abs(p.z) <= 100_000 else {
         throw RuntimeError.message("Query outside bounds")
       }
       var result = try g.query(p)

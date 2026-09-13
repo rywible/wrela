@@ -54,6 +54,11 @@ Third-party geometry code is documented in `Engine/CGeometry/PROVENANCE.md`.
 [Cave](docs/CAVE.md) · [Sanctuary expedition](docs/EXPEDITION.md) ·
 [Atmosphere](docs/ATMOSPHERE.md) · [Agent instructions](AGENTS.md)
 
+The current flagship direction is recorded in [Sanctuary game design](docs/SANCTUARY_GAME.md),
+with an [autonomous build prompt](docs/SANCTUARY_BUILD_PROMPT.md) and
+[implementation checkpoint](docs/SANCTUARY_PROGRESS.md). These describe the intended full game;
+the existing rescue expedition remains a legacy playable prototype.
+
 Run `swift test` and `scripts/check-boundaries`. With Sanctuary running, use
 `validate` and `validate-expedition`; with Cave, `validate-cave`. With Soundstage
 on the Sanctuary project, use `validate-workshop`, `validate-authoring` and

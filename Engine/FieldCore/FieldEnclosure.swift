@@ -19,6 +19,7 @@ extension Shape {
       let h=clamp(0.5+0.5*(y-x)/k,0,1);return y+(x-y)*h-k*h*(1-h)
     }
     switch self {
+    case let .loft(l):return l.valueInterval(in:region)
     case let .sphere(radius):return radial(region,radius)
     case let .translated(a,offset):return a.valueInterval(in:Bounds(region.min-offset,region.max-offset))
     case let .scaled(a,scale):
@@ -32,7 +33,12 @@ extension Shape {
     case let .capsule(a,b,radius):
       let gap=simd_max(simd_max(simd_min(a,b)-region.max,region.min-simd_max(a,b)),.zero)
       let far=simd_max(abs(region.min-a),abs(region.max-a))
-      return FieldValueInterval(length(gap)-radius,length(far)-radius)
+      // Endpoint/AABB bounds alone do not converge to the capsule value as
+      // a region shrinks. Intersect with its exact 1-Lipschitz center enclosure;
+      // otherwise adaptive extraction refines whole segment boxes indefinitely.
+      let center=(region.min+region.max)/2,extent=length(region.max-region.min)/2,middle=value(at:center)
+      let allowance:Float=1e-6*(1+abs(middle)+extent)
+      return FieldValueInterval(max(length(gap)-radius,middle-extent-allowance),min(length(far)-radius,middle+extent+allowance))
     case let .union(a,b):
       let x=a.valueInterval(in:region),y=b.valueInterval(in:region);return FieldValueInterval(min(x.lower,y.lower),min(x.upper,y.upper))
     case let .subtract(a,b):

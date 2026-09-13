@@ -42,7 +42,7 @@ package final class PostProcess {
     composite = try device.makeRenderPipelineState(descriptor: d)
   }
   package func encodeLighting(
-    _ cb: MTLCommandBuffer, uniforms: inout Uniforms, atmosphere: Atmosphere, index: Int,
+    _ cb: MTLCommandBuffer, uniforms: inout Uniforms, atmosphere: AtmosphereFrameCache, index: Int,
     profile: GPUProfile?
   ) -> MTLBuffer {
     let state = lightStates[index]

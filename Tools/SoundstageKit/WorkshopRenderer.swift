@@ -37,6 +37,7 @@ final class WorkshopRenderer: NSObject, MTKViewDelegate {
   lazy var workshopSession = WorkshopSession(self)
   var studioBatches: [GPUBatch] = []
   var sculptFrame:SculptFrame?
+  let sculptSession=UUID().uuidString
   var studioPartCache: [String:GPUBatch] = [:]
   var studioReusedBatches = 0
   var studioRebuiltBatches = 0
@@ -115,8 +116,13 @@ final class WorkshopRenderer: NSObject, MTKViewDelegate {
   }
   var exposure: Float = 1
   var wind: Float = 1
+  /// Study-owned counterpart to `GameLighting.outdoorAmbientFloor`.
+  var outdoorAmbientFloor: V3 = .zero
   var orbit: Float = 0.48
   var orbitElevation: Float = 0.18
+  static let defaultVerticalFOVDegrees:Float = 1.05 * 180 / .pi
+  var verticalFOVDegrees:Float = WorkshopRenderer.defaultVerticalFOVDegrees
+  var projectionFOV:Float {scene == "studio" ? verticalFOVDegrees * .pi / 180 : 1.05}
   var orbitDistance: Float = 6.8
   var paused = false
   var simulationTime: Float = 0
@@ -242,12 +248,49 @@ final class WorkshopRenderer: NSObject, MTKViewDelegate {
       if studioRig.name == "flashlight" { sun = normalize(eye - target) }
     }
     let interiorLamp = inspectionCamera != nil && studioRig.name == "flashlight"
+    let projectionExtent = (studioBounds.max - studioBounds.min) * studioLayout.scale
+    var projectionMinimum = V3(-projectionExtent.x / 2, 0, -projectionExtent.z / 2)
+    var projectionMaximum = V3(
+      projectionExtent.x / 2, projectionExtent.y, projectionExtent.z / 2)
+    if studioLayout.arrangement == "grove" {
+      projectionMinimum += V3(-1.3 * studioExtent, 0, -studioExtent)
+      projectionMaximum.x += 1.3 * studioExtent
+    }
+    if creatureWorkshop.mode != "bind", let bounds = studioSource.animation?.motionEnvelope {
+      let center = (studioBounds.min + studioBounds.max) / 2
+      let origin = V3(center.x, studioBounds.min.y, center.z)
+      projectionMinimum = simd_min(
+        projectionMinimum, (bounds.min - origin) * studioLayout.scale)
+      projectionMaximum = simd_max(
+        projectionMaximum, (bounds.max - origin) * studioLayout.scale)
+    }
+    if creatureWorkshop.mode == "behavior", !creatureWorkshop.follow {
+      let bounds =
+        studioSource.animation?.bounds(creatureWorkshop.scenario)
+        ?? Bounds(V3(-3, 0, -3), V3(3, 2, 3))
+      projectionMinimum = bounds.min * studioLayout.scale - creatureCameraOffset
+      projectionMaximum = bounds.max * studioLayout.scale - creatureCameraOffset
+    }
+    if studioLayout.reference {
+      projectionMaximum.y = max(projectionMaximum.y, 1.74)
+      projectionMaximum.x = max(projectionMaximum.x, studioExtent * 0.7 + 0.25)
+    }
+    let projectionFocus = studioCenter - creatureCameraOffset
+    let projectionRadius = StudioProjection.conservativeRadius(
+      minimum: projectionMinimum, maximum: projectionMaximum, around: projectionFocus)
+    let legacyStudioNear = max(StudioProjection.minimumNear, studioExtent * 0.001)
+    let studioNear = studioObject == "sky" || inspectionCamera != nil || rehearsalActive
+      || sculptReviewFrame != nil
+      ? legacyStudioNear
+      : StudioProjection.nearPlane(
+        cameraDistance: length(eye - target), subjectRadius: projectionRadius,
+        subjectExtent: studioExtent)
     let vp =
-      perspective(1.05, 16 / 9, scene == "studio" ? max(0.00001, studioExtent * 0.001) : 0.08, 450)
+      perspective(projectionFOV, 16 / 9, scene == "studio" ? studioNear : 0.08, 450)
       * lookAt(eye, target)
     // A millimetre-scale object camera must not determine the precision of
     // rays aimed at the sun. Reconstruct sky directions without translation.
-    let skyInverse = (perspective(1.05, 16 / 9, 0.1, 450) * lookAt(.zero, target - eye)).inverse
+    let skyInverse = (perspective(projectionFOV, 16 / 9, 0.1, 450) * lookAt(.zero, target - eye)).inverse
     let lightCenter =
       interiorLamp ? target : scene == "studio" ? studioAssetCenter : V3(camera.x, 0, camera.z - 20)
     let lightSize: Float =
@@ -270,6 +313,12 @@ final class WorkshopRenderer: NSObject, MTKViewDelegate {
     let origin = lvp * SIMD4<Float>(0, 0, 0, 1)
     lvp[3].x += (round(origin.x * 1024) - origin.x * 1024) / 1024
     lvp[3].y += (round(origin.y * 1024) - origin.y * 1024) / 1024
+    let outdoorShadow = indoorStudio || interiorLamp ? nil : OutdoorShadow(
+      center: lightCenter, size: lightSize,
+      near: scene == "studio" ? max(0.00001, studioExtent * 0.01) : 1,
+      far: scene == "studio" ? studioExtent * 12 : 250,
+      distance: scene == "studio" ? studioExtent * 5 : 110)
+    if let outdoorShadow { lvp = FrameComposer.outdoorShadowMatrix(outdoorShadow, sun: sun) }
     var uniforms = Uniforms(
       viewProjection: vp, lightVP: lvp, inverseVP: skyInverse,
       cameraTime: SIMD4(eye, simulationTime), sunExposure: SIMD4(sun, exposure),
@@ -285,9 +334,11 @@ final class WorkshopRenderer: NSObject, MTKViewDelegate {
     uniforms.rigPosition = SIMD4(
       rigPosition, studioRig.name == "flashlight" ? 2 : indoorStudio ? 1 : 0)
     let warmth = studioRig.warmth
-    uniforms.rigColor = SIMD4(
-      V3(1, 1 - warmth * 0.25, 1 - warmth * 0.55), studioRig.intensity * studioExtent * studioExtent
-    )
+    uniforms.rigColor = indoorStudio
+      ? SIMD4(
+        V3(1, 1 - warmth * 0.25, 1 - warmth * 0.55),
+        studioRig.intensity * studioExtent * studioExtent)
+      : SIMD4(outdoorAmbientFloor, 0)
     uniforms.rigParams = SIMD4(
       studioRig.size, studioRig.fill, studioExtent, studioRig.name == "flashlight" ? 0.8 : 0)
     if interiorLamp {
@@ -304,12 +355,30 @@ final class WorkshopRenderer: NSObject, MTKViewDelegate {
       look: sceneLook, items: renderItems(),
       infiniteGround: inspectionCamera == nil && scene == "studio" && studioObject != "sky"
         && studioRig.name != "room"
-        && studioLayout.ground && !rehearsalActive)
+        && studioLayout.ground && !rehearsalActive, outdoorShadow: outdoorShadow,
+      surfaceInfluences: studioSurfaceInfluences())
     rememberSculptFrame(input)
     graphics.draw(
       input, elapsed: elapsed,
       simulationMilliseconds: (CACurrentMediaTime() - simulationStart) * 1000)
     if graphics.frame % 20 == 0 { onUpdate?() }
+  }
+  private func studioSubjectTransforms() -> [simd_float4x4] {
+    let center = (studioBounds.min + studioBounds.max) / 2
+    let offsets: [V3] = studioLayout.arrangement == "grove"
+      ? [.zero, V3(-1.25 * studioExtent, 0, -studioExtent), V3(1.25 * studioExtent, 0, -studioExtent)]
+      : [.zero]
+    let root = creatureWorkshop.root(studioSource.motion ?? MotionParameters())
+    return offsets.enumerated().map { i, offset in
+      transform(offset + V3(-center.x, -studioBounds.min.y, -center.z) * studioLayout.scale,
+        V3(repeating: studioLayout.scale), Float(i) * 0.7) * root
+    }
+  }
+  private func studioSurfaceInfluences() -> SurfaceInfluenceSnapshot {
+    guard scene == "studio", studioObject != "sky", creatureWorkshop.mode != "bind",
+      let evaluate = studioSource.animation?.surfaceInfluences else { return .empty }
+    return evaluate(creatureWorkshop.mode, creatureWorkshop.seconds, creatureWorkshop.actor,
+      studioSource.motion ?? MotionParameters(), studioSubjectTransforms())
   }
   func renderItems() -> [RenderItem] {
     guard !(scene == "studio" && studioObject == "sky") else { return [] }
@@ -377,22 +446,17 @@ final class WorkshopRenderer: NSObject, MTKViewDelegate {
           emitter: true, castsShadow: false)
       }
       let center = (studioBounds.min + studioBounds.max) / 2
-      let offsets: [V3] =
-        studioLayout.arrangement == "grove"
-        ? [.zero, V3(-1.25 * e, 0, -e), V3(1.25 * e, 0, -e)] : [.zero]
       items += rehearsalItems(center:center)
       let pose = secondaryPose()
       let root = creatureWorkshop.root(studioSource.motion ?? MotionParameters())
-      for (i, offset) in offsets.enumerated() {
+      for subjectTransform in studioSubjectTransforms() {
         for batch in studioBatches where !creatureWorkshop.rigView && !surfaceReview.hiddenParts.contains(batch.name) && creatureWorkshop.visible(batch.name, source: studioSource)
         {
           let tint = batch.sourceInstances[0].tint
           var instance = Instance(
-            position: offset + V3(-center.x, -studioBounds.min.y, -center.z) * studioLayout.scale,
-            scale: V3(repeating: studioLayout.scale), yaw: Float(i) * 0.7,
             tint: V3(tint.x, tint.y, tint.z) * studioLayout.tint, kind: tint.w)
           instance.model =
-            instance.model * root * (batch.skinJoints.isEmpty ? (pose[batch.name] ?? matrix_identity_float4x4) : matrix_identity_float4x4)
+            subjectTransform * (batch.skinJoints.isEmpty ? (pose[batch.name] ?? matrix_identity_float4x4) : matrix_identity_float4x4)
             * batch.sourceInstances[0].model
           draw(batch, instance: instance, subject: true, skinPalette: batch.skinJoints.map { pose[$0] ?? matrix_identity_float4x4 })
         }
@@ -466,9 +530,12 @@ final class WorkshopRenderer: NSObject, MTKViewDelegate {
       "time": simulationTime, "paused": paused,
       "camera": [
         "position": [camera.x, camera.y, camera.z], "yaw": yaw, "pitch": pitch, "orbit": orbit,
-        "elevation": orbitElevation, "distance": orbitDistance,
+        "elevation": orbitElevation, "distance": orbitDistance, "verticalFOVDegrees":projectionFOV * 180 / .pi,
       ],
-      "lighting": lighting, "parameters": ["exposure": exposure, "wind": wind, "scale": studioLayout.scale],
+      "lighting": lighting, "parameters": [
+        "exposure": exposure, "wind": wind, "scale": studioLayout.scale,
+        "outdoorAmbientFloor": [outdoorAmbientFloor.x, outdoorAmbientFloor.y, outdoorAmbientFloor.z],
+      ],
       "renderSize": [1920, 1080], "device": device.name, "fullDetailTriangles": triangles,
       "thermalState": ProcessInfo.processInfo.thermalState.rawValue,
       "lowPowerMode": ProcessInfo.processInfo.isLowPowerModeEnabled,
@@ -479,6 +546,8 @@ final class WorkshopRenderer: NSObject, MTKViewDelegate {
       "gpuMilliseconds": stats(gpuTimes),
       "frameGPUBySkyPhase": gpuPhaseTimes.mapValues { stats($0) },
       "skyUpdatePhase": atmosphere.updatePhase,
+      "skyCache": atmosphere.cacheStatus(),
+      "surfaceInfluences": graphics.surfaceInfluenceStatus(),
       "weather": [
         "model": "moist columns", "seconds": atmosphere.weatherTime,
         "totalWater": atmosphere.weather.totalWater, "evaporated": atmosphere.weather.evaporated,

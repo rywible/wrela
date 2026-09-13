@@ -35,10 +35,11 @@ def report(directory, result):
     (directory / 'index.html').write_text(content)
 
 
-def images_compare(actual, expected, output):
+def images_compare(actual, expected, output, workspace=None):
     import subprocess
     from runtime import ROOT
-    result = subprocess.run([str(ROOT / '.build/release/ImageCompare'), str(actual), str(expected), str(output)], text=True, capture_output=True)
+    workspace=workspace or ROOT
+    result = subprocess.run([str(workspace / '.build/release/ImageCompare'), str(actual), str(expected), str(output)], text=True, capture_output=True)
     if result.returncode:
         raise RuntimeError(result.stderr.strip())
     return json.loads(result.stdout)

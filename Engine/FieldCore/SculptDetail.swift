@@ -1,5 +1,20 @@
 import simd
 
+public struct SculptProjection:Codable,Equatable,Sendable {
+  public var maximumDistance:Float
+  public var tolerance:Float
+  public var retriangulate:Bool?
+  public init(maximumDistance:Float=0.01,tolerance:Float=0.00001,retriangulate:Bool?=nil) {
+    self.maximumDistance=maximumDistance;self.tolerance=tolerance
+    self.retriangulate=retriangulate
+  }
+  public func validate() throws {
+    try CraftError.require(maximumDistance.isFinite && (0.0001...0.1).contains(maximumDistance)
+      && tolerance.isFinite && (0.000001...0.001).contains(tolerance) && tolerance<maximumDistance,
+      "detail.projection","Use a projection bound of 0.1…100 mm and a smaller field tolerance of 0.001…1 mm")
+  }
+}
+
 /// A source-authored local tessellation budget. This adds deformation capacity;
 /// it does not invent shape detail or change the authoritative field anatomy.
 public struct SculptDetail:Codable,Equatable,Sendable {
@@ -9,13 +24,16 @@ public struct SculptDetail:Codable,Equatable,Sendable {
   public var radius:V3
   public var edgeLength:Float
   public var maximumNewVertices:Int
-  public init(id:String,part:String,center:V3,radius:V3,edgeLength:Float,maximumNewVertices:Int=50_000) {
+  public var projection:SculptProjection?
+  public init(id:String,part:String,center:V3,radius:V3,edgeLength:Float,maximumNewVertices:Int=50_000,projection:SculptProjection?=nil) {
     self.id=id;self.part=part;self.center=center;self.radius=radius;self.edgeLength=edgeLength;self.maximumNewVertices=maximumNewVertices
+    self.projection=projection
   }
   public func validate() throws {
     try CraftError.require(!id.isEmpty && id.count<=80 && !part.isEmpty && CraftMath.finite(center,limit:100)
       && CraftMath.finite(radius,limit:10) && radius.min()>=0.005 && edgeLength.isFinite && (0.001...1).contains(edgeLength)
       && (1...250_000).contains(maximumNewVertices),"detail.\(id)","Use bind metres, radii 0.005…10 m, edge length 0.001…1 m and a budget of 1…250,000 added vertices")
+    try projection?.validate()
   }
   public func intersects(_ a:V3,_ b:V3)->Bool {
     let p=(a-center)/radius,d=(b-a)/radius,t=clamp(-dot(p,d)/max(dot(d,d),1e-20),0,1)

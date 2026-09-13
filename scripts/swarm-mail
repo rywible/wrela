@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Durable peer messages when collaboration's live-agent routing is unavailable."""
+import argparse
+import json
+import os
+from pathlib import Path
+import time
+import uuid
+
+ROOT = Path(__file__).resolve().parents[1]
+MAIL = Path(os.environ.get(
+    'WRELA_SWARM_MAIL_ROOT', ROOT / '.build' / 'sanctuary-swarm' / 'mail'))
+NAMES = ('root', 'astra_biome_flora', 'astra_creature_art', 'astra_placement_art',
+         'living_presentation', 'nature_building', 'sky_cache', 'wildlife', 'world_content')
+
+
+def name(value):
+    if value == '/root':
+        value = 'root'
+    elif value.startswith('/root/'):
+        value = value[len('/root/'):]
+    elif value.startswith('/'):
+        # Preserve the original short absolute spelling, such as /wildlife.
+        value = value[1:]
+    if value not in NAMES:
+        roster = ', '.join('/root/' + item for item in NAMES if item != 'root')
+        raise argparse.ArgumentTypeError(
+            'Unknown worker ' + repr(value) + '; choose /root or one of: ' + roster)
+    return value
+
+
+def canonical(value):
+    return '/root' if value == 'root' else '/root/' + value
+
+
+def read_messages(agent, include_all=False):
+    folder = MAIL / agent
+    delivered = folder / 'delivered'
+    delivered.mkdir(parents=True, exist_ok=True)
+    messages = []
+    for path in sorted(folder.glob('*.json')):
+        marker = delivered / path.name
+        if include_all or not marker.exists():
+            messages.append(json.loads(path.read_text()))
+            if not marker.exists():
+                marker.touch()
+    return messages
+
+
+def sent_status(agent):
+    results = []
+    if not MAIL.exists():
+        return results
+    for recipient_folder in sorted(MAIL.iterdir()):
+        if not recipient_folder.is_dir() or recipient_folder.name not in NAMES:
+            continue
+        for path in sorted(recipient_folder.glob('*.json')):
+            message = json.loads(path.read_text())
+            if message.get('sender') != agent:
+                continue
+            marker = recipient_folder / 'delivered' / path.name
+            results.append(dict(
+                id=message['id'], recipient=message['recipient'],
+                recipientTask=canonical(message['recipient']), subject=message['subject'],
+                sentAt=message['sentAt'], acknowledged=marker.exists(),
+                acknowledgedAt=marker.stat().st_mtime if marker.exists() else None,
+            ))
+    return sorted(results, key=lambda item: (item['sentAt'], item['id']))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='action', required=True)
+    send = sub.add_parser('send')
+    send.add_argument('--from', dest='sender', type=name, required=True)
+    send.add_argument('--to', dest='recipient', type=name, required=True)
+    send.add_argument('--subject', required=True)
+    send.add_argument('--body', required=True)
+    read = sub.add_parser('read')
+    read.add_argument('--agent', type=name, required=True)
+    read.add_argument('--all', action='store_true', help='Include previously acknowledged messages')
+    status = sub.add_parser('status', help='Show whether this worker\'s sent messages were read')
+    status.add_argument('--agent', type=name, required=True)
+    sub.add_parser('roster', help='List canonical worker addresses')
+    args = parser.parse_args()
+    if args.action == 'send':
+        if len(args.body) > 8000:
+            parser.error('Keep messages below 8000 characters; link larger reports.')
+        folder = MAIL / args.recipient
+        folder.mkdir(parents=True, exist_ok=True)
+        identifier = str(time.time_ns()) + '-' + uuid.uuid4().hex[:8]
+        message = dict(id=identifier, sender=args.sender, recipient=args.recipient,
+                       subject=args.subject, body=args.body, sentAt=time.time())
+        temporary = folder / (identifier + '.tmp')
+        temporary.write_text(json.dumps(message, indent=2) + '\n')
+        temporary.replace(folder / (identifier + '.json'))
+        print(identifier)
+    elif args.action == 'read':
+        print(json.dumps(read_messages(args.agent, args.all), indent=2))
+    elif args.action == 'status':
+        print(json.dumps(sent_status(args.agent), indent=2))
+    else:
+        print(json.dumps([canonical(worker) for worker in NAMES], indent=2))
+
+
+if __name__ == '__main__':
+    main()

@@ -21,6 +21,8 @@ extension MetalRenderer {
       "gpuMilliseconds": stats(gpuTimes),
       "frameGPUBySkyPhase": gpuPhaseTimes.mapValues { stats($0) },
       "skyUpdatePhase": atmosphere.updatePhase,
+      "skyCache": atmosphere.cacheStatus(),
+      "surfaceInfluences": surfaceInfluenceStatus(),
       "weather": [
         "model": "moist columns", "seconds": atmosphere.weatherTime,
         "totalWater": atmosphere.weather.totalWater, "evaporated": atmosphere.weather.evaporated,

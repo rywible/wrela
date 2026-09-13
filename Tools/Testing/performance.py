@@ -8,8 +8,8 @@ import time
 from runtime import ROOT, PRODUCTS
 from report import images_compare
 
-def gpu_perf(app,args,directory):
-    manifest=ROOT/('Engine/Testing/RenderWorkloads.json' if args.game=='engine' else 'Games/'+PRODUCTS[args.game]+'/Testing/RenderWorkloads.json')
+def gpu_perf(app,args,directory,workspace=ROOT):
+    manifest=workspace/('Engine/Testing/RenderWorkloads.json' if args.game=='engine' else 'Games/'+PRODUCTS[args.game]+'/Testing/RenderWorkloads.json')
     workloads=json.loads(manifest.read_text())
     selected=[w for w in workloads if args.test=='all' or w['name']==args.test]
     if not selected:
@@ -50,7 +50,7 @@ def baseline_file(path):
     return path/'result.json' if path.is_dir() else path
 
 
-def compare_visual(directory,result,path):
+def compare_visual(directory,result,path,workspace=ROOT):
     baseline=json.loads(baseline_file(path).read_text());base_dir=baseline_file(path).parent
     if baseline['machine']!=result['machine']:
         raise RuntimeError('Visual baseline belongs to a different machine/OS')
@@ -61,7 +61,7 @@ def compare_visual(directory,result,path):
         for i,(actual,expected) in enumerate(zip(run['captures'],previous['captures'])):
             expected_copy=directory/(run['test']['name']+f'-{i}-expected.png')
             shutil.copy2(base_dir/expected['path'],expected_copy)
-            metrics=images_compare(actual['path'],expected_copy,directory/(run['test']['name']+f'-{i}-diff.png'))
+            metrics=images_compare(actual['path'],expected_copy,directory/(run['test']['name']+f'-{i}-diff.png'),workspace)
             metrics['expected']=str(expected_copy)
             if metrics.get('meanAbsoluteError',1)>baseline.get('visualTolerance',0):
                 run['passed']=False;run['failure']='Visual baseline differs: '+json.dumps(metrics)

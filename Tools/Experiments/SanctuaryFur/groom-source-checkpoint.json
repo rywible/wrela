@@ -1,0 +1,140 @@
+{
+  "kind": "transverse-envelope-compiled-native-rejected",
+  "testsRun": true,
+  "nativeReviewed": true,
+  "defaultPromotion": false,
+  "files": {
+    "Games/Sanctuary/Project/SanctuarySunhareCoatDesign.swift": "b66516f83cb73393eda7948f89e922da3ed3763711c426b43f2ca4f384a2a1e7",
+    "Games/Sanctuary/Project/SanctuarySunhareDesign.swift": "2db8cd743e2b807c02de7190eb55076beec4ce83db60c0ed3bd7e854a5c9f338",
+    "Games/Sanctuary/ProjectTests/SunhareCoatGeometryTests.swift": "7e5c30a7975b4db6453c4457fd196d4aba18474ac388766590b5bfa5bb3c9d6e"
+  },
+  "expectedTopology": {
+    "patches": 352,
+    "regionPatches": [
+      220,
+      112,
+      10,
+      10
+    ],
+    "batches": 4,
+    "vertices": "adaptive; minimum5280",
+    "triangles": "adaptive; minimum5632, hard cap16896",
+    "rawMeshBytes": "requires compiler receipt; hard cap1048576",
+    "byteCountStatus": "0208 fixed topology receipt invalid for new adaptive retention"
+  },
+  "caps": {
+    "recipes": 4,
+    "perRecipeBytes": 1048576,
+    "cachedCoatBytes": 4194304
+  },
+  "previousActualEvidence": ".build/sanctuary-native-20260912/undercoat-0212-review/review.json",
+  "requiredMeasuredSourceGates": {
+    "maximumReductionDeviationMetres": 0.001,
+    "minimumRetainedVertexExposureFraction": 0.55
+  },
+  "previousCompileFailure": "0126 three default/animation/parity tests passed; semantic-corner test rejected ear lining intrusion",
+  "reduction": "Deterministic retained source rows/columns start5x3; add worst-error coordinates until actual triangular interpolation matches25x9 source grid within1mm; no guard relaxation",
+  "measured0126Default": {
+    "rawMeshBytes": 991232,
+    "exposedVertexFraction": 0.71428573,
+    "maximumReductionDeviationMetres": 0.0006238807,
+    "note": "Before tighter ear-seat source; new source requires rerun"
+  },
+  "earCorrection": "Actual outer back-triangle roots, z>26mm/normal.z>.8; full patch projected and excluded against unchanged6mm lining plane",
+  "testsExecutedBy": "root",
+  "previous0130Qualification": {
+    "candidate": ".build/validation-candidates/sanctuary-ear-groom-20260913-0130",
+    "log": ".build/validation-candidates/sanctuary-ear-groom-20260913-0130/.build/candidate-stage-logs/20260913-012825-c8fddc/focused-swift-tests.log",
+    "logSHA256": "b77ce528035f2487b513fc18be4ab1860f168f3007b366ee9698bbf98166fe57",
+    "tests": 4,
+    "failures": 0,
+    "seconds": 19.535,
+    "measuredDefault": {
+      "exposedVertexFraction": 0.71428573,
+      "maximumReductionDeviationMetres": 0.0006238807,
+      "rawMeshBytes": 991232
+    },
+    "unchangedEvidence": "Root separately retains124 earlier passing tests with manifest delta; not rerun as part of this four-test gate"
+  },
+  "previous0130NativeReview": {
+    "archive": ".build/sanctuary-native-20260912/groom-0130-review/review.json",
+    "actualPNGsInspected": 30,
+    "furIdentity": "FAIL",
+    "defaultPromotion": false,
+    "liveCost": "Not measured; appearance failed"
+  },
+  "coverage": "Existing GroomCoverage/hasGroomCoverage vertex interface, no shader or ABI changes; 0.8mm unresolved strand period,0.94 root duty,0.18 tip length variation",
+  "compilerAttempt0205": {
+    "result": "Compilation failed before tests; Swift expression type-check timeout at line195",
+    "log": ".build/validation-candidates/sanctuary-undercoat-water-20260913-0205/.build/candidate-stage-logs/20260913-020055-06f557/focused-swift-tests.log",
+    "correction": "Typed V3 branch intermediates, identical triangular interpolation arithmetic/order and geometry/contracts; awaiting root recompile"
+  },
+  "compilerAttempt0208": {
+    "result": "Compiled; all4 coat tests threw body patch0 deviation1.4372791mm. Root reports39 non-fur focused tests pass.",
+    "log": ".build/validation-candidates/sanctuary-undercoat-bridge-20260913-0208/.build/candidate-stage-logs/20260913-020418-c43eb5/focused-swift-tests.log",
+    "correction": "Adaptive retained rows/columns; same352 source surfaces and existing1MiB/16896tri/4MiB hardcaps; actual budget/exposure next compiler gate pending"
+  },
+  "qualification0212": {
+    "candidate": ".build/validation-candidates/sanctuary-undercoat-recovery-20260913-0212",
+    "log": ".build/validation-candidates/sanctuary-undercoat-recovery-20260913-0212/.build/candidate-stage-logs/20260913-021008-209430/focused-swift-tests.log",
+    "logSHA256": "664041a324701a2d54ac01e1a25a27df47373e96327dbfad1ade85e8df9c2496",
+    "files": {
+      "Games/Sanctuary/Project/SanctuarySunhareCoatDesign.swift": {
+        "mainSHA256": "761893e90f9bc09647c9eb446962dfd20e54429cae191e72898194bc1fe9bfb1",
+        "candidateSHA256": "761893e90f9bc09647c9eb446962dfd20e54429cae191e72898194bc1fe9bfb1",
+        "matches": true,
+        "matchesCheckpoint": true
+      },
+      "Games/Sanctuary/Project/SanctuarySunhareDesign.swift": {
+        "mainSHA256": "2db8cd743e2b807c02de7190eb55076beec4ce83db60c0ed3bd7e854a5c9f338",
+        "candidateSHA256": "2db8cd743e2b807c02de7190eb55076beec4ce83db60c0ed3bd7e854a5c9f338",
+        "matches": true,
+        "matchesCheckpoint": true
+      },
+      "Games/Sanctuary/ProjectTests/SunhareCoatGeometryTests.swift": {
+        "mainSHA256": "254d6718b9ae11d43e3ea6c1c0e140b3c759314805db56c3e0fea4fe3f17ed94",
+        "candidateSHA256": "254d6718b9ae11d43e3ea6c1c0e140b3c759314805db56c3e0fea4fe3f17ed94",
+        "matches": true,
+        "matchesCheckpoint": true
+      }
+    },
+    "coatTests": 4,
+    "coatFailures": 0,
+    "coatSeconds": 32.455,
+    "focusedTests": 21,
+    "focusedFailures": 0,
+    "focusedSeconds": 36.048,
+    "measuredDefault": {
+      "exposedVertexFraction": 0.79492533,
+      "maximumReductionDeviationMetres": 0.0009913478,
+      "rawMeshBytes": 484448
+    },
+    "topology": "Counts variable from deterministic adaptive source retention; exact vertex/triangle counts not printed in this log.",
+    "nativeReviewed": false,
+    "defaultPromotion": false,
+    "limitations": [
+      "The sampled1mm error gate is not a continuous global certificate.",
+      "Raw compiled bytes exclude GPU allocation/cache staging and metadata.",
+      "Tests qualify actual roots/exclusions/rig/cache/default parity; no fur identity/live motion/performance claim."
+    ]
+  },
+  "nativeReview0212": {
+    "archive": ".build/sanctuary-native-20260912/undercoat-0212-review/review.json",
+    "actualPNGs": 30,
+    "furIdentity": "FAIL",
+    "defaultPromotion": false
+  },
+  "coverageCalibrationEvidence": ".build/sanctuary-native-20260912/coverage-0237-review/review.json",
+  "change": "Only groom.z transverse envelope; exact prior positions/indices/normals/placements unchanged. Existing four tests extended with actual compiled edge coverage probes.",
+  "latestCompiledQualification": {
+    "candidate": "sanctuary-bridge-fur-night-20260913-0300",
+    "tests": 4,
+    "failures": 0,
+    "seconds": 32.167,
+    "rawMeshBytes": 484448,
+    "maximumSampledDeviationMetres": 0.0009913478,
+    "exposureFraction": 0.79492533
+  },
+  "latestNativeEvidence": ".build/sanctuary-native-20260912/groom-0306-review/review.json",
+  "latestNativeVerdict": "FAIL fur identity dry/wet; all30 inspected; defaultoff"
+}

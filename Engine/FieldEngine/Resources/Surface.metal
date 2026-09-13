@@ -42,9 +42,51 @@ Vertex skinVertex(Vertex v,uint id,const device SkinWeight *weights,constant flo
 }
 struct Instance {float4x4 model;float4 tint;};
 struct Uniforms {float4x4 viewProjection;float4x4 lightVP;float4x4 inverseVP;float4 cameraTime;float4 sunExposure;float4 options;float4 sky;float4 environment;float4 weatherBounds;float4 skyTimes;float4 rigPosition;float4 rigColor;float4 rigParams;float4 lookSurface;float4 lookLight;float4 lookGrade;};
+struct GroundInfluenceCell {float4 bend;float4 support;};
+struct GroundInfluenceUniform {float4 originCell;float4 options;};
 float3 artSaturation(float3 c,float amount){float y=dot(c,float3(.2126,.7152,.0722));return max(mix(float3(y),c,amount),0.);}
 float3 artSky(float3 c,constant Uniforms &u){return artSaturation(c,u.lookLight.z)*u.lookLight.x;}
 // ATMOSPHERE
+// Authored night environment v2. The existing outdoor floor specifies clear-sky
+// up-facing irradiance / pi, not a moon or an additional directional light.
+// q(y)=.1+1.05y integrates to .8 on an upward Lambertian surface. Redistributing
+// toward zenith darkens the forward horizon without changing that clear fill.
+// Cloud alpha screens this environment with a bounded approximate response.
+float nightEnvironmentUnit(float3 direction,float transmission) {
+    float t=isfinite(transmission) ? clamp(transmission,0.,1.):0.;
+    float shape=direction.y>=0 ? .1+1.05*clamp(direction.y,0.,1.):.18;
+    return shape*(.25+.75*t);
+}
+float3 nightEnvironmentCoefficient(float3 floor,bool outdoor) {
+    if(!outdoor)return 0;
+    float3 finiteFloor=select(float3(0),floor,isfinite(floor));
+    return clamp(finiteFloor,0.,.25)*1.25;
+}
+float3 nightEnvironmentCoefficient(constant Uniforms &u) {
+    return nightEnvironmentCoefficient(u.rigColor.rgb,u.environment.x!=4 && u.rigPosition.w<=.5);
+}
+float3 sceneSkyRadiance(texture2d<float> sky,float3 direction,constant Uniforms &u) {
+    // Same solar sampling and ground approximation as skyLight. Reading alpha
+    // with RGB adds no texture fetch for the authored environment.
+    constexpr sampler s(filter::linear,s_address::repeat,t_address::clamp_to_edge);
+    bool ground=direction.y<0 && sky.get_width()>128;
+    float3 lookup=ground ? float3(0,1,0):direction;
+    float4 sample=sky.sample(s,skyCacheUV(sky,lookup));
+    float3 solar=ground ? sample.rgb*float3(.18,.20,.12):sample.rgb;
+    float3 coefficient=nightEnvironmentCoefficient(u);
+    if(any(coefficient>0))solar+=coefficient*nightEnvironmentUnit(direction,sample.a);
+    return solar;
+}
+// Explicit numerical diagnostic only; never dispatched by the live frame path.
+// Each case uses two float4 inputs: (unit direction,T), (floor RGB,outdoor 0/1).
+// Output is (night RGB radiance,unit radiance). count is the number of cases.
+kernel void nightEnvironmentCheck(const device float4 *input [[buffer(0)]],
+    device float4 *output [[buffer(1)]],constant uint &count [[buffer(2)]],uint id [[thread_position_in_grid]]) {
+    if(id>=count)return;
+    float4 direction=input[id*2],floor=input[id*2+1];
+    float unit=nightEnvironmentUnit(direction.xyz,direction.w);
+    output[id]=float4(nightEnvironmentCoefficient(floor.rgb,floor.w>.5)*unit,unit);
+}
 struct Varying {float4 position [[position]];float3 world;float3 local;float3 normal;float3 color;float4 shadow;float kind;float ao;float4 groom;};
 // GROOM_COVERAGE_BEGIN
 float groomRandom(uint seed) {
@@ -99,14 +141,14 @@ struct MeshPayload {uint meshlets[32];uint instance;};
     uint tid [[thread_index_in_threadgroup]],uint3 group [[threadgroup_position_in_grid]],
     constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],
     const device Meshlet *meshlets [[buffer(4)]],const device uint *instanceIDs [[buffer(7)]],
-    constant float4 *planes [[buffer(8)]],constant uint &meshletCount [[buffer(9)]],constant uint &skinCount [[buffer(12)]]) {
+    constant float4 *planes [[buffer(8)]],constant uint &meshletCount [[buffer(9)]],constant uint &skinCount [[buffer(12)]],constant GroundInfluenceUniform &ground [[buffer(16)]]) {
     uint id=group.x*32+tid,instance=instanceIDs[group.y];Instance inst=instances[instance];
     bool visible=id<meshletCount;
     if(visible && skinCount==0) {
         Meshlet m=meshlets[id];float3 center=(inst.model*float4(m.sphere.xyz,1)).xyz;
         float scale=max(length(inst.model[0].xyz),max(length(inst.model[1].xyz),length(inst.model[2].xyz)));
         float top=max(0.,m.sphere.y+m.sphere.w);
-        float deformation=(inst.tint.w==2 || inst.tint.w==4 || inst.tint.w==8) ? .35*sqrt(2.)*abs(u.options.y)*pow(top/5.,2.)*.75:(inst.tint.w==3 ? .35*sqrt(2.)*abs(u.options.y)*.65:0.);
+        float deformation=(inst.tint.w==2 || inst.tint.w==4 || inst.tint.w==8) ? .35*sqrt(2.)*abs(u.options.y)*pow(top/5.,2.)*.75:(inst.tint.w==3 ? .35*sqrt(2.)*abs(u.options.y)*.65+ground.options.x*ground.options.y:0.);
         float radius=m.sphere.w*scale+deformation;
         for(uint i=0;i<6;i++)visible=visible && dot(planes[i],float4(center,1))>=-radius;
     }
@@ -131,12 +173,70 @@ Vertex grassVertexSource(GrassBlade blade,uint id) {
     v.normal=float4(n,id<2 ? 0.:(id<4 ? .4:1.));v.color=float4(c*(id<2 ? 1.:(id<4 ? 1.08:1.18)),1);v.groom=0;return v;
 }
 constant uint grassIndices[9]={0,1,2,0,2,3,3,2,4};
-vertex Varying grassVertex(uint id [[vertex_id]],uint instanceID [[instance_id]],const device GrassBlade *blades [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device uint *instanceIDs [[buffer(7)]]) {
-    return evaluateVertex(grassVertexSource(blades[id/9],grassIndices[id%9]),instances[instanceIDs[instanceID]],u,flow);
+// One bounded four-tap root lookup, shared by all procedural grass passes.
+float3 grassContact(float3 root,constant GroundInfluenceUniform &ground,
+    const device GroundInfluenceCell *cells) {
+    if(ground.options.x<.5)return 0;
+    float2 p=(root.xz-ground.originCell.xy)*ground.originCell.z-.5;
+    int2 base=int2(floor(p));float2 f=fract(p);int size=int(ground.originCell.w);
+    float3 response=0;
+    for(int z=0;z<2;z++)for(int x=0;x<2;x++) {
+        int2 c=base+int2(x,z);if(any(c<0) || any(c>=size))continue;
+        GroundInfluenceCell value=cells[c.y*size+c.x];
+        if(value.bend.w<=0)continue;
+        float height=abs(root.y-value.support.x),tolerance=value.support.y;
+        float gate=1-smoothstep(tolerance*.5,tolerance,height);
+        response+=value.bend.xyz*((x ? f.x:1-f.x)*(z ? f.y:1-f.y)*gate);
+    }
+    return response;
 }
-[[mesh]] void grassMesh(SurfaceMesh output,const object_data MeshPayload &payload [[payload]],uint tid [[thread_index_in_threadgroup]],uint3 group [[threadgroup_position_in_grid]],const device GrassBlade *blades [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device Meshlet *patches [[buffer(4)]],const device uint *instanceIDs [[buffer(7)]],constant float4 *planes [[buffer(8)]]) {
+float3 grassContactRotate(float3 value,float3 axis,float angle) {
+    float c=cos(angle),s=sin(angle);
+    return value*c+cross(axis,value)*s+axis*dot(axis,value)*(1-c);
+}
+Varying evaluateGrassVertex(GrassBlade blade,uint id,Instance inst,constant Uniforms &u,
+    const device float4 *flow,constant GroundInfluenceUniform &ground,
+    const device GroundInfluenceCell *cells) {
+    Vertex sourceVertex=grassVertexSource(blade,id);
+    Varying output=evaluateVertex(sourceVertex,inst,u,flow);
+    if(sourceVertex.normal.w<=0)return output;
+    float3 root=(inst.model*float4(blade.anchorAngle.xyz,1)).xyz;
+    float3 response=grassContact(root,ground,cells);float magnitude=length(response.xy);
+    if(magnitude<=.00001)return output;
+    float scale=max(length(inst.model[0].xyz),max(length(inst.model[1].xyz),length(inst.model[2].xyz)));
+    // This encloses source curvature/width and the existing wind displacement.
+    float radius=(blade.size.x*1.35+blade.size.y)*scale+.35*sqrt(2.)*.65*abs(u.options.y);
+    float desired=min(1.3,atan2(magnitude,max(radius,.05))+response.z*1.2);
+    float angle=min(desired,2*asin(min(1.,ground.options.y/(2*max(radius,.0001)))));
+    angle*=smoothstep(0.,1.,sourceVertex.normal.w);
+    float3 axis=float3(response.y,0,-response.x)/magnitude;
+    float3 p=root+grassContactRotate(output.world-root,axis,angle);
+    // Keep the source roots pinned and avoid pushing tips under their support plane.
+    if(output.world.y>=root.y)p.y=max(root.y,p.y);
+    output.world=p;output.position=u.viewProjection*float4(p,1);
+    output.shadow=u.lightVP*float4(p,1);output.normal=grassContactRotate(output.normal,axis,angle);
+    return output;
+}
+vertex Varying grassVertex(uint id [[vertex_id]],uint instanceID [[instance_id]],
+    const device GrassBlade *blades [[buffer(0)]],constant Uniforms &u [[buffer(1)]],
+    const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],
+    const device uint *instanceIDs [[buffer(7)]],const device GroundInfluenceCell *cells [[buffer(15)]],
+    constant GroundInfluenceUniform &ground [[buffer(16)]]) {
+    return evaluateGrassVertex(blades[id/9],grassIndices[id%9],instances[instanceIDs[instanceID]],u,flow,ground,cells);
+}
+// Packed grass has its own source representation in every rendering pass.
+// The ordinary shadow vertex expects 64-byte Vertex records, while this buffer
+// contains 32-byte GrassBlade descriptors expanded to nine triangle vertices.
+vertex float4 grassShadowVertex(uint id [[vertex_id]],uint instanceID [[instance_id]],
+    const device GrassBlade *blades [[buffer(0)]],constant Uniforms &u [[buffer(1)]],
+    const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],
+    const device uint *instanceIDs [[buffer(7)]],const device GroundInfluenceCell *cells [[buffer(15)]],
+    constant GroundInfluenceUniform &ground [[buffer(16)]]) {
+    return evaluateGrassVertex(blades[id/9],grassIndices[id%9],instances[instanceIDs[instanceID]],u,flow,ground,cells).shadow;
+}
+[[mesh]] void grassMesh(SurfaceMesh output,const object_data MeshPayload &payload [[payload]],uint tid [[thread_index_in_threadgroup]],uint3 group [[threadgroup_position_in_grid]],const device GrassBlade *blades [[buffer(0)]],constant Uniforms &u [[buffer(1)]],const device Instance *instances [[buffer(2)]],const device float4 *flow [[buffer(3)]],const device Meshlet *patches [[buffer(4)]],const device uint *instanceIDs [[buffer(7)]],constant float4 *planes [[buffer(8)]],const device GroundInfluenceCell *cells [[buffer(15)]],constant GroundInfluenceUniform &ground [[buffer(16)]]) {
     Meshlet m=patches[payload.meshlets[group.x]];Instance inst=instances[payload.instance];
-    if(tid<m.ranges.z*5)output.set_vertex(tid,evaluateVertex(grassVertexSource(blades[m.ranges.x+tid/5],tid%5),inst,u,flow));
+    if(tid<m.ranges.z*5)output.set_vertex(tid,evaluateGrassVertex(blades[m.ranges.x+tid/5],tid%5,inst,u,flow,ground,cells));
     for(uint i=tid;i<m.ranges.z*9;i+=64)output.set_index(i,(i/9)*5+grassIndices[i%9]);
     if(tid==0)output.set_primitive_count(m.ranges.z*3);
 }
@@ -197,7 +297,11 @@ kernel void sceneLightState(texture2d<float> trans [[texture(0)]],texture2d<floa
     float cloud=mix(previousSky.sample(s,reprojectSkyUV(previousSky,sun,(u.cameraTime.w-u.skyTimes.x)*u.options.y)).a,sky.sample(s,reprojectSkyUV(sky,sun,(u.cameraTime.w-u.skyTimes.y)*u.options.y)).a,u.environment.z);
     float3 direct=u.lookLight.x*3.5*sampleTrans(trans,float3(0,Rg+.002,0),sun)*cloud;
     if(u.environment.x==4)direct=u.rigColor.rgb*u.rigColor.w;
-    float meter=dot(clearIrradiance.sample(s,skyUV(float3(0,1,0))).rgb,float3(.2126,.7152,.0722));
+    // Meter solar radiance only: including the authored night environment here
+    // cancels its brightness control and crushed the returned night scene.
+    // The existing bounded dark gain applies to the entire shared HDR image.
+    float3 metered=clearIrradiance.sample(s,skyUV(float3(0,1,0))).rgb;
+    float meter=dot(metered,float3(.2126,.7152,.0722));
     output[0]=float4(direct,u.environment.x==4 ? 1.:clamp(.055/max(meter,.001),1.,24.));
     // Solar atmospheric attenuation is global, including when the disk is hidden.
     // Integrate once, keeping the display shader's tiny solar branch inexpensive.
@@ -249,8 +353,14 @@ float4 shadeSurface(Varying in,bool front,constant Uniforms &u,constant float4 &
     rough=clamp(rough+u.lookSurface.y,.045,1.);
     if(kind!=1 && !clay)color=mix(in.color,color,u.lookSurface.x);
     color=artSaturation(color,u.lookSurface.z);
+    float wet=u.environment.y;
+    bool projectWetHandled=false;
+#ifdef PROJECT_COAT_RESPONSE
+    if(!clay)projectWetHandled=projectWetFinish(kind,wet,rough,bump);
+#endif
     n=bumpNormal(in.world,n,bump,strength*u.lookSurface.x);
-    float wet=u.environment.y;rough=mix(rough,max(.22,rough*.5),wet);color*=mix(1.,.78,wet);
+    if(!projectWetHandled)rough=mix(rough,max(.22,rough*.5),wet);
+    color*=mix(1.,.78,wet);
     float3 base=pow(max(color,0.),float3(2.2)),v=normalize(u.cameraTime.xyz-in.world),l=u.sunExposure.xyz;
     float3 sunlight=lighting.xyz;
     if(u.rigPosition.w>.5) {
@@ -291,7 +401,12 @@ float4 shadeSurface(Varying in,bool front,constant Uniforms &u,constant float4 &
             }
         }
     }
-    float3 ambient=mix(previousIrradiance.sample(env,skyUV(n)).rgb,irradiance.sample(env,skyUV(n)).rgb,u.environment.z);
+    float4 fill=mix(previousIrradiance.sample(env,skyUV(n)),irradiance.sample(env,skyUV(n)),u.environment.z);
+    float3 ambient=fill.rgb,night=nightEnvironmentCoefficient(u);
+    // Alpha is the normalized night convolution published with this solar RGB.
+    // Its coefficient remains a live scene parameter, so fading the night floor
+    // does not restart cache construction or consume partially published data.
+    if(any(night>0))ambient+=night*max(fill.a,0.);
     ambient=u.environment.x==4 ? float3(u.rigParams.y):artSky(ambient,u);
     ambient*=u.lookLight.y;
     float3 directBRDF=brdf(n,v,l,base,rough,metal);
@@ -301,27 +416,35 @@ float4 shadeSurface(Varying in,bool front,constant Uniforms &u,constant float4 &
         tangent-=n*dot(tangent,n);
         if(dot(tangent,tangent)>1e-14)directBRDF=groomBRDF(n,normalize(tangent),v,l,base,rough,metal);
     }
-    float ao=clamp(in.ao,0.,1.);float3 lit=base*(1-metal)*ambient*ao+directBRDF*sunlight*visibility;
+    float3 ambientResponse=base*(1-metal)*ambient;
+    float environmentScale=1;
+#ifdef PROJECT_COAT_RESPONSE
+    if(!clay)projectLightFinish(kind,in.local,n,v,l,base,ambient,wet,
+        directBRDF,ambientResponse,environmentScale);
+#endif
+    float ao=clamp(in.ao,0.,1.);float3 lit=ambientResponse*ao+directBRDF*sunlight*visibility;
 
     if(kind==9)lit+=base*ambient*.12*pow(1-max(dot(n,v),0.),3.)*ao*(1-wet);
     if(kind==2 || kind==3 || kind==8)lit+=base*sunlight*max(dot(-n,l),0.)*.15*visibility;
     float3 F0=mix(float3(.04),base,metal),F=F0+(1-F0)*pow(1-max(dot(n,v),0.),5.);
     float3 reflected=normalize(mix(reflect(-v,n),n,rough*rough));
-    float3 reflection=u.environment.x==4 ? float3(u.rigParams.y):mix(skyLight(previousSky,reflected),skyLight(sky,reflected),u.environment.z);
+    float3 reflection=u.environment.x==4 ? float3(u.rigParams.y):mix(sceneSkyRadiance(previousSky,reflected,u),sceneSkyRadiance(sky,reflected,u),u.environment.z);
     if(u.environment.x!=4)reflection=artSky(reflection,u);
-    lit+=reflection*F*(1-rough)*ao;
+    lit+=reflection*F*(1-rough)*ao*environmentScale;
     if(u.environment.x!=4 && (u.options.z<.5 || material.w>1.5)) {
         float distance=length(in.world-u.cameraTime.xyz);
         float3 extinction=float3(.005802,.013558,.033100)+.004440+(u.environment.x==3 ? .04:0.);
         float3 T=exp(-extinction*distance*.001);
         float3 direction=normalize(in.world-u.cameraTime.xyz);
-        float3 air=mix(skyLight(previousSky,direction),skyLight(sky,direction),u.environment.z);
+        float3 air=mix(sceneSkyRadiance(previousSky,direction,u),sceneSkyRadiance(sky,direction,u),u.environment.z);
         if(material.w>1.5) {
             // Match the sky's horizon lookup and live-cloud reprojection exactly.
             direction=normalize(float3(direction.x,.003,direction.z));
             float2 a=reprojectSkyUV(previousSky,direction,(u.cameraTime.w-u.skyTimes.x)*u.options.y);
             float2 b=reprojectSkyUV(sky,direction,(u.cameraTime.w-u.skyTimes.y)*u.options.y);
-            air=mix(previousSky.sample(env,a).rgb,sky.sample(env,b).rgb,u.environment.z);
+            float4 airSample=mix(previousSky.sample(env,a),sky.sample(env,b),u.environment.z);
+            air=airSample.rgb;
+            if(any(night>0))air+=night*nightEnvironmentUnit(direction,airSample.a);
         }
         lit=lit*T+artSky(air,u)*(1-T);
     }
@@ -329,6 +452,15 @@ float4 shadeSurface(Varying in,bool front,constant Uniforms &u,constant float4 &
 }
 fragment float4 surfaceFragment(Varying in [[stage_in]],bool front [[front_facing]],constant SurfaceLayerUniform *layers [[buffer(5)]],constant uint &layerCount [[buffer(6)]],constant Uniforms &u [[buffer(1)]],constant float4 &lighting [[buffer(2)]],constant float4 &material [[buffer(4)]],depth2d<float> shadowMap [[texture(0)]],texture2d<float> sky [[texture(1)]],texture2d<float> irradiance [[texture(2)]],texture2d<float> trans [[texture(3)]],texture2d<float> previousSky [[texture(4)]],texture2d<float> previousIrradiance [[texture(5)]]) {
     float coverage=hasGroomCoverage ? groomCoverage(in.groom):1.;
+    // Isolated coverage calibration kinds. Preserve the selected A2C pipeline
+    // and identical vertex data;31 exposes polygon bounds,30 exposes coverage.
+    // Unlit linear reference colors intentionally bypass material/light response.
+    int diagnosticKind=materialKind<0 ? int(in.kind+.5):materialKind;
+    if(diagnosticKind==31)return float4(in.color,1.);
+    if(diagnosticKind==30) {
+        if(coverage<=.001)discard_fragment();
+        return float4(in.color,coverage);
+    }
     if(hasGroomCoverage && coverage<=.001)discard_fragment();
     float4 color=shadeSurface(in,front,u,lighting,material,layers,layerCount,shadowMap,sky,irradiance,trans,previousSky,previousIrradiance);
     color.a=coverage;return color;
@@ -357,7 +489,13 @@ fragment float4 skyFragment(SkyOut in [[stage_in]],constant Uniforms &u [[buffer
         // The empty soundstage still has an Earth horizon. Repeating the horizon
         // texel down the screen produces a false glowing curtain below the sun.
         float3 ground=float3(.14,.16,.12)*(skyLight(sky,float3(0,1,0))+.02*max(u.sunExposure.y,0.));
-        float3 horizon=skyLight(clearSky,normalize(float3(ray.x,.003,ray.z)));
+        float3 night=nightEnvironmentCoefficient(u);
+        if(any(night>0)) {
+            constexpr sampler s(filter::linear,s_address::repeat,t_address::clamp_to_edge);
+            float transmission=sky.sample(s,skyCacheUV(sky,float3(0,1,0))).a;
+            ground+=night*nightEnvironmentUnit(float3(0,-1,0),transmission);
+        }
+        float3 horizon=sceneSkyRadiance(clearSky,normalize(float3(ray.x,.003,ray.z)),u);
         float mist=exp(ray.y*70.);
         return float4(artSky(mix(ground,horizon,mist),u)*u.sunExposure.w,1);
     }
@@ -366,9 +504,12 @@ fragment float4 skyFragment(SkyOut in [[stage_in]],constant Uniforms &u [[buffer
     float2 previousUV=reprojectSkyUV(previousSky,lookup,(u.cameraTime.w-u.skyTimes.x)*u.options.y);
     float2 currentUV=reprojectSkyUV(sky,lookup,(u.cameraTime.w-u.skyTimes.y)*u.options.y);
     constexpr sampler smp(filter::linear,s_address::repeat,t_address::clamp_to_edge);
-    float3 L=mix(previousSky.sample(smp,previousUV).rgb,sky.sample(smp,currentUV).rgb,u.environment.z);
+    float4 skySample=mix(previousSky.sample(smp,previousUV),sky.sample(smp,currentUV),u.environment.z);
+    float3 L=skySample.rgb;
+    float3 night=nightEnvironmentCoefficient(u);
+    if(any(night>0))L+=night*nightEnvironmentUnit(ray,skySample.a);
     float disk=smoothstep(cos(.0048),cos(.0043),dot(ray,u.sunExposure.xyz));
-    float cloudT=mix(previousSky.sample(smp,previousUV).a,sky.sample(smp,currentUV).a,u.environment.z);
+    float cloudT=skySample.a;
     // Irradiance / solar solid angle. Keep the disk small but truly emissive;
     // glare is integrated in the HDR post pass instead of painting a larger disk.
     L=artSky(L,u);
@@ -380,17 +521,27 @@ kernel void atmosphereIrradiance(texture2d<float> sky [[texture(0)]],texture2d<f
     // Fixed world-space quadrature: adjacent normals see the same sky samples.
     // Rotating a sparse hemisphere with each normal imprinted sampling noise
     // and a tangent-frame pole discontinuity onto otherwise smooth surfaces.
-    float3 L=0;
-    float3 ground=skyLight(sky,float3(0,1,0))*float3(.18,.20,.12)+max(u.sunExposure.y,0.)*float3(.04,.045,.025);
+    float3 L=0;float night=0;
+    constexpr sampler s(filter::linear,s_address::repeat,t_address::clamp_to_edge);
+    float4 zenith=sky.sample(s,skyCacheUV(sky,float3(0,1,0)));
+    float groundNight=nightEnvironmentUnit(float3(0,-1,0),zenith.a);
+    float3 ground=zenith.rgb*float3(.18,.20,.12)+max(u.sunExposure.y,0.)*float3(.04,.045,.025);
     for(uint i=0;i<128;i++) {
         float y=(i+.5)/128.,r=sqrt(max(0.,1-y*y)),phi=i*2.39996323;
         float3 d=float3(r*cos(phi),y,r*sin(phi));
         float cosine=dot(n,d);
-        if(cosine>0)L+=skyLight(sky,d)*cosine;
+        if(cosine>0) {
+            float4 sample=sky.sample(s,skyCacheUV(sky,d));
+            L+=sample.rgb*cosine;
+            night+=nightEnvironmentUnit(d,sample.a)*cosine;
+        }
+        night+=groundNight*max(-cosine,0.);
         L+=ground*max(-cosine,0.);
     }
     // Full-sphere solid angle 4π / N; diffuse output stores irradiance / π.
-    output.write(float4(L*(4./256.),1),id);
+    // Alpha was previously unused (1). It now stores E_unit/pi for the same
+    // angular sky/transmission snapshot, independent of live night amplitude.
+    output.write(float4(L*(4./256.),night*(4./256.)),id);
 }
 kernel void bloomExtract(texture2d<float,access::read> hdr [[texture(0)]],texture2d<float,access::write> bloom [[texture(1)]],uint2 id [[thread_position_in_grid]]) {
     if(id.x>=bloom.get_width() || id.y>=bloom.get_height())return;

@@ -48,8 +48,9 @@ final class WorkshopDocumentTests: XCTestCase {
     return WorkshopDocument(project: "study-tests", creature: creature, source: source,
       skyOnly: false, rig: StudioRig(), layout: StudioLayout(), lighting: "noon",
       sky: ["altitude": 35, "azimuth": 0, "coverage": 0.3, "density": 1, "haze": 1, "cloudSeed": 17],
-      orbit: 0, elevation: 0.2, distance: 6.8, exposure: 1, wind: 1, wetness: 0, time: 3,
-      paused: true, windState: WindSimulation(), surfaceReview: review)
+      orbit: 0, elevation: 0.2, distance: 6.8, exposure: 1, wind: 1, wetness: 0,
+      outdoorAmbientFloor: V3(0.018, 0.028, 0.040), time: 3, paused: true,
+      windState: WindSimulation(), surfaceReview: review)
   }
   func testRichSourceAndAuthoredPosesRoundTripThroughCompactAndLegacyFiles() throws {
     let original = document(rich: true)
@@ -104,11 +105,13 @@ final class WorkshopDocumentTests: XCTestCase {
     var object = try XCTUnwrap(JSONSerialization.jsonObject(with: original.encoded()) as? [String: Any])
     object.removeValue(forKey: "surfaceReview")
     object.removeValue(forKey: "project")
+    object.removeValue(forKey: "outdoorAmbientFloor")
     let url = directory.appendingPathComponent("legacy.json")
     try JSONSerialization.data(withJSONObject: object).write(to: url)
     let restored = try WorkshopDocument.read(url)
     XCTAssertNil(restored.surfaceReview)
     XCTAssertNil(restored.project)
+    XCTAssertNil(restored.outdoorAmbientFloor)
     XCTAssertEqual(restored.source.id, original.source.id)
     var review = SurfaceReview()
     review.mode = "clay"

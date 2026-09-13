@@ -15,6 +15,7 @@ import runpy
 import copy
 import time
 import shutil
+import math
 from pathlib import Path
 
 class CreatureWorkspace:
@@ -57,6 +58,13 @@ class CreatureWorkspace:
         """
         return self.command('sculptOverlay',expectedRevision=self.inspect()['revision'],
             value=None if part is None else dict(part=part,controls=list(controls),protect=list(protect)))
+
+    def lens(self, vertical_degrees):
+        """Change perspective, preserving apparent scale at the current target.
+        Use frame_visible(part) afterward for exact visible-geometry framing.
+        15–25 degrees helps assess proportions with reduced perspective distortion.
+        """
+        return self.command('camera',verticalFOVDegrees=vertical_degrees)
 
     def frame_visible(self, part=None):
         return self.command('frameVisible',expectedRevision=self.inspect()['revision'],
@@ -128,7 +136,7 @@ class CreatureWorkspace:
             candidates.append(dict(key=intent['key'],operations=transaction.operations))
         return self.explore_edits(candidates,folder,expected_revision=snapshot['revision'])
 
-    def explore_edits(self, candidates, folder, *, expected_revision=None):
+    def explore_edits(self, candidates, folder, *, expected_revision=None, views=None):
         """Compare 1…8 atomic craft operation lists from one unchanged baseline.
 
         Works for field anatomy, sculpting, rigs and other craft source. Archives
@@ -141,6 +149,15 @@ class CreatureWorkspace:
                or not isinstance(x['operations'],list) or not 1<=len(x['operations'])<=64 for x in candidates):
             raise ValueError('Candidates require a name and 1…64 ordinary craft operations')
         if len({x['key'] for x in candidates})!=len(candidates):raise ValueError('Candidate names must be unique')
+        if views is not None:
+            if not isinstance(views,list) or not 1<=len(views)<=8:
+                raise ValueError('Choose 1…8 named review views')
+            for view in views:
+                if set(view)!={'key','orbit','elevation'} or not isinstance(view['key'],str) or not view['key']:
+                    raise ValueError('Review views require key, orbit and elevation')
+                if any(isinstance(view[k],bool) or not isinstance(view[k],(int,float)) or not math.isfinite(view[k]) for k in ('orbit','elevation')) or not -.1<=view['elevation']<=1.55:
+                    raise ValueError('Review camera angles must be finite; elevation is −.1…1.55 radians')
+            if len({v['key'] for v in views})!=len(views):raise ValueError('Review view names must be unique')
         snapshot=self.inspect()
         if expected_revision is not None and expected_revision!=snapshot['revision']:
             raise RuntimeError('Exploration baseline is stale; inspect the source again')
@@ -150,25 +167,36 @@ class CreatureWorkspace:
         folder=Path(folder).resolve();folder.mkdir(parents=True,exist_ok=False)
         self.command('saveStudy',path=str(folder/'original.json'))
         records=[];results=[];locked=bool(document.get('sculptReviewFrame'));revision=snapshot['revision'];active=None
-        report=dict(candidates=candidates,results=results,records=records,restored=False)
-        settings=None
-        def capture(variant):
-            nonlocal settings
+        report=dict(candidates=candidates,results=results,records=records,restored=False,views=views)
+        settings={};last_settings=None
+        camera={k:document[k] for k in ('orbit','elevation','distance','verticalFOVDegrees','viewName')}
+        def capture(variant,view_key):
+            nonlocal last_settings
             observation=self.observe('sculpt-explore-'+str(len(records)))
             if observation['frame']['revision']!=revision:raise RuntimeError('Source changed during exploration; original.json is preserved')
             metadata=json.loads(Path(observation['metadata']).read_text())
             current=copy.deepcopy(metadata['workshop']['document']);current.pop('source')
-            if settings is None:settings=current
-            if settings!=current:raise RuntimeError('Study settings changed during exploration; captures cannot be compared')
+            if view_key not in settings:settings[view_key]=current
+            if settings[view_key]!=current:raise RuntimeError('Study settings changed during exploration; captures cannot be compared')
+            last_settings=current
             stem=f'candidate-{len(records):02d}'
             self.command('saveStudy',path=str(folder/(stem+'-study.json')))
             shutil.copyfile(observation['path'],folder/(stem+'.png'))
             shutil.copyfile(observation['metadata'],folder/(stem+'.json'))
-            records.append(dict(variant=variant,condition='Matched lighting',view=document.get('viewName','Current'),frame=0,
+            records.append(dict(variant=variant,condition='Matched lighting',view=view_key,frame=0,
                 path=str(folder/(stem+'.png')),metadata=str(folder/(stem+'.json')),image=stem+'.png',meta=stem+'.json',study=stem+'-study.json'))
+        def capture_views(variant):
+            nonlocal last_settings
+            for view in views or [dict(key=document.get('viewName','Current'))]:
+                if views:
+                    current=copy.deepcopy(self.command('status')['state']['workshop']['document']);current.pop('source')
+                    if last_settings is not None and current!=last_settings:
+                        raise RuntimeError('Study settings changed between views; original.json is preserved')
+                    self.command('camera',orbit=view['orbit'],elevation=view['elevation'])
+                capture(variant,view['key'])
         try:
             self.command('sculptFrameLock',enabled=True,expectedRevision=revision)
-            capture('Baseline')
+            capture_views('Baseline')
             for candidate in candidates:
                 start=time.monotonic()
                 try:
@@ -178,8 +206,9 @@ class CreatureWorkspace:
                     results.append(dict(key=candidate['key'],accepted=False,error=str(error),seconds=time.monotonic()-start))
                     continue
                 revision=response['craft']['revision'];active=candidate['key']
-                results.append(dict(key=active,accepted=True,fit=response.get('sculptFits',[]),seconds=time.monotonic()-start))
-                capture(active)
+                results.append(dict(key=active,accepted=True,fit=response.get('sculptFits',[]),anatomyFit=response.get('anatomyFits',[]),seconds=time.monotonic()-start,
+                    compilation={key:response['craft'].get(key,[]) for key in ('anatomy','parts')}))
+                capture_views(active)
                 self.command('author',expectedRevision=revision,craft=snapshot['source'])
                 revision=self.inspect()['revision'];active=None
                 if revision!=snapshot['revision']:raise RuntimeError('Restoring a candidate did not reproduce its source baseline')
@@ -189,6 +218,10 @@ class CreatureWorkspace:
                     self.command('author',expectedRevision=revision,craft=snapshot['source'])
                     revision=self.inspect()['revision']
                 report['restored']=self.inspect()['revision']==snapshot['revision']
+                if views and last_settings is not None:
+                    current=copy.deepcopy(self.command('status')['state']['workshop']['document']);current.pop('source')
+                    if current==last_settings:self.command('camera',**camera)
+                    else:report['restored']=False
                 if report['restored'] and not locked:self.command('sculptFrameLock',enabled=False,expectedRevision=snapshot['revision'])
             finally:
                 (folder/'report.json').write_text(json.dumps(report,indent=2))
@@ -267,6 +300,30 @@ class CraftTransaction:
                                  planeOffset=plane_offset,protect=list(protect)))
         return self.sculpt_layer(key,[stroke])
 
+    def sample_anatomy(self, source, base_edge_length=.04, regions=(), maximum_tetrahedra=500000):
+        """Resample the source volume locally before surface extraction.
+        Regions have id, center, radius and edgeLength, all in bind metres.
+        Existing field, weights and semantic coordinates remain authoritative.
+        """
+        value=next((x for x in self.snapshot['source']['anatomy'] if x['id']==source),None)
+        for operation in self.operations:
+            if operation['op']=='fitAnatomy' and operation.get('source')==source:
+                raise ValueError('Set sampling before a deferred anatomy fit in the same transaction')
+            if operation.get('collection')=='anatomy':
+                if operation['op']=='upsert' and operation['value']['id']==source:value=operation['value']
+                if operation['op']=='remove' and operation['key']==source:value=None
+        if value is None:raise ValueError('Unknown pending anatomy source: '+source)
+        value=copy.deepcopy(value)
+        value['sampling']=dict(baseEdgeLength=base_edge_length,regions=list(regions),maximumTetrahedra=maximum_tetrahedra)
+        return self.upsert('anatomy',value)
+
+    def fit_anatomy(self, source, controls, targets, iterations=24):
+        """Fit bounded linked source parameters to base-field surface targets.
+        minimum/maximum are delta bounds; linked terms each provide scale.
+        Targets constrain surface membership, not tracked material points.
+        """
+        return self.operation('fitAnatomy',source=source,controls=controls,targets=targets,iterations=iterations)
+
     def fit_sculpt(self, key, part, controls, targets, maximum_displacement=.15, iterations=24, protect=(), maximum_normal_change_degrees=180):
         return self.operation('fitSculpt', key=key, part=part, controls=controls, targets=targets,
                               maximumDisplacement=maximum_displacement, iterations=iterations,protect=list(protect),maximumNormalChangeDegrees=maximum_normal_change_degrees)
@@ -287,9 +344,10 @@ class CraftTransaction:
         values[part] = levels
         return self.set('refinement', values)
 
-    def refine_local(self, key, part, center, radius, edge_length, maximum_new_vertices=50000):
+    def refine_local(self, key, part, center, radius, edge_length, maximum_new_vertices=50000, *, projection=None):
         return self.upsert('detailPatches',dict(id=key,part=part,center=list(center),radius=list(radius),
-                          edgeLength=edge_length,maximumNewVertices=maximum_new_vertices))
+                          edgeLength=edge_length,maximumNewVertices=maximum_new_vertices,
+                          **({} if projection is None else dict(projection=projection))))
 
     def skin(self, key, part, center, radius, weights, strength=1):
         return self.upsert('skinFields', dict(id=key, part=part, center=center,
@@ -361,11 +419,12 @@ class CraftTransaction:
     @staticmethod
     def anatomical_element(key, region, center, radius, *, primitive='ellipsoid', operation='add',
                            role='surface', end=(0,0,0), rotation=(0,0,0), blend=.02,
-                           color=(.6,.6,.6), weights=None, cut_blend=None):
+                           color=(.6,.6,.6), weights=None, cut_blend=None, sections=None):
         return dict(id=key, region=region, primitive=primitive, operation=operation, role=role,
                     center=list(center), end=list(end), radius=list(radius), rotation=list(rotation),
                     blend=blend, color=list(color), jointWeights={} if weights is None else weights,
-                    **({} if cut_blend is None else dict(cutBlend=cut_blend)))
+                    **({} if cut_blend is None else dict(cutBlend=cut_blend)),
+                    **({} if sections is None else dict(sections=list(sections))))
 
     def contact_chain(self, key, parent, upper, lower, foot, pole, *, sole=0, contact_offset=None):
         return self.upsert('contactChains', dict(id=key, parent=parent, upper=upper, lower=lower,

@@ -43,4 +43,52 @@ final class TerrainTests:XCTestCase {
         let tiny=Shape.sphere(1).sized(0.00001)
         XCTAssertLessThan(length(tiny.normal(at:V3(0.000006,0.000008,0))-V3(0.6,0.8,0)),0.00001)
     }
+    func testNamedWaterHasVisibleBedDepthAndDeclaredTraversal() throws {
+        let terrain=Terrain(),geography=SanctuaryGeography()
+        for biome in [SanctuaryBiome.lake,.ocean] {
+            let point=geography.landmark(for:biome).coordinate
+            let water=try XCTUnwrap(terrain.water(at:point))
+            XCTAssertGreaterThan(water.surfaceHeight,terrain.height(point.x,point.y),biome.rawValue)
+            XCTAssertGreaterThan(water.depth,0,biome.rawValue)
+            XCTAssertFalse(try terrain.surface(at:point).isWalkableSurface,biome.rawValue)
+        }
+    }
+    func testEveryNamedBiomeHasFiniteDistinctProceduralGround() throws {
+        let terrain=Terrain(),geography=SanctuaryGeography()
+        var roundedHeights=Set<Int>()
+        for landmark in SanctuaryGeography.landmarks {
+            let surface=try terrain.surface(at:landmark.coordinate)
+            XCTAssertEqual(surface.biome,landmark.biome,landmark.id)
+            XCTAssertTrue(surface.height.isFinite,landmark.id)
+            XCTAssertTrue(surface.normal.x.isFinite && surface.normal.y.isFinite && surface.normal.z.isFinite)
+            roundedHeights.insert(Int(surface.height.rounded()))
+        }
+        XCTAssertGreaterThanOrEqual(roundedHeights.count,7)
+        XCTAssertGreaterThan(terrain.height(-420,10_675),terrain.height(0,0)+60)
+    }
+    func testAlpineSourceIsContinuousAtCloudstepPass() {
+        let terrain=Terrain(),p=SanctuaryGeography().landmark(for:.alpine).coordinate,e:Float=0.01
+        let h=terrain.height(p.x,p.y)
+        XCTAssertLessThan(abs(terrain.height(p.x+e,p.y)-h),0.1)
+        XCTAssertLessThan(abs(terrain.height(p.x-e,p.y)-h),0.1)
+        XCTAssertLessThan(abs(terrain.height(p.x,p.y+e)-h),0.1)
+        XCTAssertLessThan(abs(terrain.height(p.x,p.y-e)-h),0.1)
+        let summit=terrain.height(p.x+720,p.y+430)
+        XCTAssertGreaterThan(summit,h+250)
+        XCTAssertLessThan(summit,950)
+    }
+    func testCabinDensityPreservesSculptedTriangleCenters() throws {
+        let terrain=Terrain();var garden=HabitatGarden()
+        _=try garden.apply(.sculpt(.raise,at:.init(x:4.7,z:3.8),radius:6,amount:4,targetHeight:nil),expectedRevision:0)
+        let extent=SanctuaryTerrainTessellation.cabinExtent
+        let spacing=extent*2/Float(SanctuaryTerrainTessellation.cabinResolution)
+        let ix=Int(floor((4.7+extent)/spacing)),iz=Int(floor((3.8+extent)/spacing))
+        let a=SIMD2(-extent+Float(ix)*spacing,-extent+Float(iz)*spacing)
+        let b=a+SIMD2(0,spacing),c=a+SIMD2(spacing,0)
+        func composed(_ p:SIMD2<Float>)->Float {
+            garden.surfaceHeight(baseHeight:terrain.height(p.x,p.y),at:.init(x:p.x,z:p.y))
+        }
+        let center=(a+b+c)/3,planar=(composed(a)+composed(b)+composed(c))/3
+        XCTAssertEqual(planar,composed(center),accuracy:0.12)
+    }
 }

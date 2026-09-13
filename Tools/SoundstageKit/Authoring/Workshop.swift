@@ -99,6 +99,8 @@ struct WorkshopDocument: Codable {
   var exposure: Float
   var wind: Float
   var wetness: Float
+  /// Optional so studies written before outdoor ambient floors replay at zero.
+  var outdoorAmbientFloor: V3?
   var time: Float
   var paused: Bool
   var windState: WindSimulation?
@@ -108,6 +110,7 @@ struct WorkshopDocument: Codable {
   var surfaceReview: SurfaceReview?
   var sculptReviewFrame:SculptReviewFrame?
   var sculptOverlay:SculptOverlay?
+  var verticalFOVDegrees:Float?
 }
 
 extension WorkshopRenderer {
@@ -138,6 +141,16 @@ extension WorkshopRenderer {
   }
   var indoorStudio: Bool { scene == "studio" && studioRig.name != "outdoor" }
   var studioSourceURL: URL { importedSourceURL ?? AssetSource.url(studioSource.id) }
+  func validateStudioLens(_ degrees:Float) throws {
+    guard degrees.isFinite && (8...100).contains(degrees) else {
+      throw RuntimeError.message("Vertical field of view must be 8…100 degrees")
+    }
+  }
+  func setStudioLens(_ degrees:Float) throws {
+    try validateStudioLens(degrees)
+    orbitDistance=boundedStudioDistance(orbitDistance * tan(verticalFOVDegrees * .pi / 360) / tan(degrees * .pi / 360))
+    verticalFOVDegrees=degrees
+  }
   func boundedStudioDistance(_ value: Float) -> Float {
     clamp(value, 0.2, min(10000, 400 / studioUnit))
   }
@@ -184,8 +197,8 @@ extension WorkshopRenderer {
             distance,
             dot(p, direction)
               + max(
-                abs(dot(p, right)) / (tan(1.05 / 2) * Float(16) / 9 * 0.78),
-                abs(dot(p, up)) / (tan(1.05 / 2) * 0.78)))
+                abs(dot(p, right)) / (tan(projectionFOV / 2) * Float(16) / 9 * 0.78),
+                abs(dot(p, up)) / (tan(projectionFOV / 2) * 0.78)))
         }
       }
     }
@@ -275,7 +288,7 @@ extension WorkshopRenderer {
           self.sculptAnatomyCache[anatomyKey]=compiled;self.sculptAnatomyCacheOrder.append(anatomyKey)
           return compiled
         })[0]
-        guard !compiled.mesh.indices.isEmpty else {throw RuntimeError.message("Field produced an empty surface")}
+        guard !compiled.mesh.indices.isEmpty || !compiled.grass.isEmpty else {throw RuntimeError.message("Field produced an empty surface")}
         let gpu=upload(compiled);studioPartCache[partKey]=gpu;studioRebuiltBatches+=1
         return gpu
       }
@@ -287,6 +300,19 @@ extension WorkshopRenderer {
     var hi = -lo
     let rest = PartRig.matrices(source.joints)
     for batch in prepared {
+      if batch.proceduralGrass {
+        let blades = batch.vertices.contents().bindMemory(to: GrassBlade.self,
+          capacity: batch.vertices.length / MemoryLayout<GrassBlade>.stride)
+        for index in 0..<batch.vertices.length / MemoryLayout<GrassBlade>.stride {
+          for vertex in blades[index].vertices {
+            let point = (rest[batch.name] ?? matrix_identity_float4x4)
+              * batch.sourceInstances[0].model * vertex.position
+            let p = V3(point.x, point.y, point.z)
+            lo = simd_min(lo, p); hi = simd_max(hi, p)
+          }
+        }
+        continue
+      }
       let vertices = batch.vertices.contents().bindMemory(
         to: Vertex.self, capacity: batch.vertices.length / MemoryLayout<Vertex>.stride)
       for i in 0..<batch.vertices.length / MemoryLayout<Vertex>.stride {
@@ -378,9 +404,10 @@ extension WorkshopRenderer {
         "coverage": skySettings.coverage, "density": skySettings.density, "haze": skySettings.haze,
         "cloudSeed": skySettings.cloudSeed,
       ], orbit: orbit, elevation: orbitElevation, distance: orbitDistance, exposure: exposure,
-      wind: wind, wetness: wetness, time: simulationTime, paused: paused,
+      wind: wind, wetness: wetness, outdoorAmbientFloor: outdoorAmbientFloor,
+      time: simulationTime, paused: paused,
       windState: includeWind ? atmosphereWind : nil, sourcePath: importedSourceURL?.path,
-      sceneLook: sceneLook, viewName: studioViewName, surfaceReview: surfaceReview,sculptReviewFrame:sculptReviewFrame,sculptOverlay:sculptOverlay)
+      sceneLook: sceneLook, viewName: studioViewName, surfaceReview: surfaceReview,sculptReviewFrame:sculptReviewFrame,sculptOverlay:sculptOverlay,verticalFOVDegrees:verticalFOVDegrees)
   }
   func restoreWorkshop(_ document: WorkshopDocument) throws {
     var d = document
@@ -396,6 +423,7 @@ extension WorkshopRenderer {
         }), length(c.eye - c.target) > 0.001
       else { throw RuntimeError.message("Invalid inspection camera") }
     }
+    try validateStudioLens(d.verticalFOVDegrees ?? Self.defaultVerticalFOVDegrees)
     try d.source.validate()
     try d.sculptReviewFrame?.validate(source:d.source.id)
     try d.sculptOverlay?.validate(parts:Set(d.source.resolvedParts.map(\.key)).union(d.source.craft.anatomy.map(\.part)))
@@ -404,6 +432,11 @@ extension WorkshopRenderer {
     try d.rig.validate()
     try d.layout.validate()
     try d.sceneLook?.validate()
+    if let floor = d.outdoorAmbientFloor {
+      guard [floor.x, floor.y, floor.z].allSatisfy(\.isFinite),
+        (0...0.25).contains(floor.x), (0...0.25).contains(floor.y), (0...0.25).contains(floor.z)
+      else { throw RuntimeError.message("Invalid outdoor ambient floor") }
+    }
     if let state = d.windState, !state.validSnapshot {
       throw RuntimeError.message("Invalid wind snapshot")
     }
@@ -447,9 +480,11 @@ extension WorkshopRenderer {
     orbit = d.orbit
     orbitElevation = d.elevation
     orbitDistance = d.distance
+    verticalFOVDegrees = d.verticalFOVDegrees ?? Self.defaultVerticalFOVDegrees
     exposure = d.exposure
     wind = d.wind
     wetness = d.wetness
+    outdoorAmbientFloor = d.outdoorAmbientFloor ?? .zero
     paused = d.paused
     // Restore deterministic fixed-step vegetation state as well as cloud time.
     if let state = d.windState {

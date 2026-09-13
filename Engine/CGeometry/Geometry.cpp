@@ -15,6 +15,10 @@ size_t sgSimplify(uint32_t *out,const uint32_t *indices,size_t indexCount,const 
     const float weights[3]={0.2f,0.2f,0.2f};
     return meshopt_simplifyWithAttributes(out,indices,indexCount,(const float*)vertices,vertexCount,vertexStride,(const float*)((const char*)vertices+16),vertexStride,weights,3,nullptr,size_t(indexCount*ratio)/3*3,error,meshopt_SimplifyLockBorder|meshopt_SimplifyErrorAbsolute,resultError);
 }
+size_t sgSimplifyLocal(uint32_t *out,const uint32_t *indices,size_t indexCount,const void *vertices,size_t vertexCount,const unsigned char *locks,float error,float *resultError,size_t vertexStride) {
+    return meshopt_simplifyWithAttributes(out,indices,indexCount,(const float*)vertices,vertexCount,vertexStride,nullptr,0,nullptr,0,locks,
+        indexCount/5/3*3,error,meshopt_SimplifyLockBorder|meshopt_SimplifyErrorAbsolute|meshopt_SimplifyRegularizeLight,resultError);
+}
 
 size_t sgMeshletBound(size_t indexCount) {return meshopt_buildMeshletsBound(indexCount,64,124);}
 size_t sgMeshlets(SGMeshlet *out,uint32_t *vertices,uint8_t *triangles,const uint32_t *indices,size_t indexCount,const void *positions,size_t vertexCount,size_t vertexStride) {

@@ -82,7 +82,18 @@ extension AnatomySource {
         if element.primitive == .ellipsoid {
           difference("radius."+suffix,axis,step:min(0.0001,element.radius[axis]*0.01),{$0.radius[$1]+=$2})
           difference("rotation."+suffix,axis,step:0.02,{$0.rotation[$1]+=$2},unit:"degree")
-        } else {difference("end."+suffix,axis,step:0.0001,{$0.end[$1]+=$2})}
+        } else if element.primitive == .capsule {difference("end."+suffix,axis,step:0.0001,{$0.end[$1]+=$2})}
+        else {difference("rotation."+suffix,axis,step:0.02,{$0.rotation[$1]+=$2},unit:"degree")}
+      }
+      if element.primitive == .loft {
+        for (j,section) in (element.sections ?? []).enumerated() {
+          for axis in 0..<2 {
+            let suffix=["x","y"][axis]
+            difference("section."+section.id+".center."+suffix,axis,step:0.0001,{$0.sections![j].center[$1]+=$2})
+            difference("section."+section.id+".radius."+suffix,axis,step:min(0.0001,section.radius[axis]*0.01),{$0.sections![j].radius[$1]+=$2})
+          }
+          difference("section."+section.id+".z",0,step:0.0001,{$0.sections![j].z+=$2})
+        }
       }
       if element.primitive == .capsule {
         response("radius",-coefficient)

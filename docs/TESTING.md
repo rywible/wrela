@@ -32,6 +32,12 @@ save slot, move command files, or restore your workshop after a test.
 A warm full quick suite is roughly 10–15 seconds on the current machine; focused release
 simulation scenarios themselves take milliseconds. First builds are longer.
 
+Sanctuary's long biome walks carry `exploration`; the debug cross-instance contract
+test excludes that tag so the quick loop stays bounded. Run all eleven with
+`./scripts/test run --game sanctuary --tag exploration`, then use `render` with the
+same filter for actual native snapshot, disk-save and image checks. They are required
+for exploration changes and are not implied by a passing quick suite.
+
 `swift test --filter WorkshopDocumentTests` checks the editor's study codec without
 creating a renderer or window: rich source/pose replay, old formatted studies,
 neutral-review metadata and preservation of the previous save when writing fails.

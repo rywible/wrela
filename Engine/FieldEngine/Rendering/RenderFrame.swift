@@ -14,12 +14,25 @@ package struct RenderItem {
   package var material: SIMD4<Float>? = nil
 }
 
+/// Camera-dependent shadow placement supplied by the scene composer. Keeping
+/// this CPU description lets a completed sky choose its own sun direction while
+/// the shadow region continues to follow the current scene camera.
+package struct OutdoorShadow {
+  package let center: V3
+  package let size, near, far, distance: Float
+  package init(center: V3, size: Float, near: Float, far: Float, distance: Float) {
+    self.center = center; self.size = size; self.near = near; self.far = far; self.distance = distance
+  }
+}
+
 package struct RenderFrame {
-  package init(id:String,uniforms:Uniforms,camera:V3,lightSize:Float,paused:Bool,wind:Float,windState:WindSimulation,look:SceneLook,items:[RenderItem],infiniteGround:Bool) {self.id=id;self.uniforms=uniforms;self.camera=camera;self.lightSize=lightSize;self.paused=paused;self.wind=wind;self.windState=windState;self.look=look;self.items=items;self.infiniteGround=infiniteGround}
+  package init(id:String,uniforms:Uniforms,camera:V3,lightSize:Float,paused:Bool,wind:Float,windState:WindSimulation,look:SceneLook,items:[RenderItem],infiniteGround:Bool,outdoorShadow:OutdoorShadow?=nil,surfaceInfluences:SurfaceInfluenceSnapshot = .empty) {self.id=id;self.uniforms=uniforms;self.camera=camera;self.lightSize=lightSize;self.paused=paused;self.wind=wind;self.windState=windState;self.look=look;self.items=items;self.infiniteGround=infiniteGround;self.outdoorShadow=outdoorShadow;self.surfaceInfluences=surfaceInfluences}
 
   package var id: String
   package var uniforms: Uniforms
   package var camera: V3
+  package var surfaceInfluences: SurfaceInfluenceSnapshot
+  package var outdoorShadow: OutdoorShadow?
   package var lightSize: Float
   package var paused: Bool
   package var wind: Float

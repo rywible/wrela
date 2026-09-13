@@ -1002,7 +1002,8 @@
         "primitive": {
           "enum": [
             "ellipsoid",
-            "capsule"
+            "capsule",
+            "loft"
           ]
         },
         "operation": {
@@ -1070,6 +1071,14 @@
           "type": "number",
           "minimum": 0,
           "maximum": 2
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/loftSection"
+          },
+          "minItems": 2,
+          "maxItems": 16
         }
       },
       "required": [
@@ -1125,6 +1134,9 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1
+        },
+        "sampling": {
+          "$ref": "#/$defs/surfaceSampling"
         }
       },
       "required": [
@@ -1311,7 +1323,8 @@
         "primitive": {
           "enum": [
             "ellipsoid",
-            "capsule"
+            "capsule",
+            "loft"
           ]
         },
         "operation": {
@@ -1550,6 +1563,29 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 250000
+        },
+        "projection": {
+          "type": "object",
+          "properties": {
+            "maximumDistance": {
+              "type": "number",
+              "minimum": 0.0001,
+              "maximum": 0.1
+            },
+            "tolerance": {
+              "type": "number",
+              "minimum": 1e-06,
+              "maximum": 0.001
+            },
+            "retriangulate": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "maximumDistance",
+            "tolerance"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -1559,6 +1595,104 @@
         "radius",
         "edgeLength",
         "maximumNewVertices"
+      ],
+      "additionalProperties": false
+    },
+    "loftSection": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "z": {
+          "type": "number"
+        },
+        "center": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "radius": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      },
+      "required": [
+        "id",
+        "z",
+        "center",
+        "radius"
+      ],
+      "additionalProperties": false
+    },
+    "surfaceSamplingRegion": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "center": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "radius": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "edgeLength": {
+          "type": "number",
+          "minimum": 0.001,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "id",
+        "center",
+        "radius",
+        "edgeLength"
+      ],
+      "additionalProperties": false
+    },
+    "surfaceSampling": {
+      "type": "object",
+      "properties": {
+        "baseEdgeLength": {
+          "type": "number",
+          "minimum": 0.005,
+          "maximum": 1
+        },
+        "regions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/surfaceSamplingRegion"
+          },
+          "maxItems": 16
+        },
+        "maximumTetrahedra": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 2000000
+        }
+      },
+      "required": [
+        "baseEdgeLength",
+        "regions",
+        "maximumTetrahedra"
       ],
       "additionalProperties": false
     }

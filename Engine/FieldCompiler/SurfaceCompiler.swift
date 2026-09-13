@@ -11,22 +11,28 @@ public struct SurfaceReport: Sendable {
     public var gradientEvaluations=0
     public var usedReferenceFallback=false
     public var fallbackMilliseconds:Double=0
+    public var referenceRefinedVertices=0
+    public var referenceHeldVertices=0
     public var excludedCells=0
     public var surfaceCells=0
     public var vertices=0
     public var triangles=0
     public var maximumSampleResidual:Float=0
+    /// Sampled face orientation against the authoritative field gradient.
+    /// Separate from oriented edge incidence; neither certifies intersections.
+    public var invertedTriangles=0
     public var manifold=false
     public var milliseconds:Double=0
 }
 
 /// Sparse dual contouring. Empty octants are excluded using the graph's global
-/// 1-Lipschitz bound; all surviving leaves share a lattice, avoiding T junctions.
+/// 1-Lipschitz bound or explicit implicit-field intervals; all surviving leaves share a lattice, avoiding T junctions.
 /// Different detail levels are compiled separately and never joined spatially.
 public enum SurfaceCompiler {
     private struct Edge:Hashable {var a:Int;var b:Int;init(_ a:Int,_ b:Int){self.a=min(a,b);self.b=max(a,b)}}
     public static func compile(_ shape:Shape,resolution:Int,color:V3,bounds suppliedBounds:Bounds? = nil)->(Mesh,SurfaceReport) {
         let start=Date(),n=resolution,stride=n+1
+        let implicit=shape.semantics == .implicit
         let raw=suppliedBounds ?? shape.bounds,extent=raw.max-raw.min
         let padding=max(extent.x,max(extent.y,extent.z))*0.0137
         let bounds=raw.expanded(padding),step=(bounds.max-bounds.min)/Float(n)
@@ -81,7 +87,11 @@ public enum SurfaceCompiler {
         func visit(_ p:SIMD3<Int>,_ width:Int,_ field:Shape) {
             let center=point(p)+step*Float(width)*0.5,radius=length(step*Float(width))*0.5
             report.fieldEvaluations+=1
-            if abs(field.value(at:center))>radius*1.00001+1e-6 {report.excludedCells+=1;return}
+            if implicit {
+                let interval=field.valueInterval(in:Bounds(point(p),point(p)+step*Float(width)))
+                let tolerance:Float=1e-6*(1+abs(interval.lower)+abs(interval.upper))
+                if interval.lower>tolerance || interval.upper < -tolerance {report.excludedCells+=1;return}
+            } else if abs(field.value(at:center))>radius*1.00001+1e-6 {report.excludedCells+=1;return}
             if width==1 {leaf(p,field);return}
             let regional:Shape
             if width==8 {
@@ -101,13 +111,40 @@ public enum SurfaceCompiler {
             var ids=ring.compactMap{cells[key($0)]};guard ids.count==4 else{continue}
             if value(p,shape)>=0 {ids.reverse()}
             let v=ids.map{mesh.vertices[Int($0)].position}
-            if simd_length_squared(v[0]-v[2])<=simd_length_squared(v[1]-v[3]) {mesh.indices += [ids[0],ids[1],ids[2],ids[0],ids[2],ids[3]]}
-            else {mesh.indices += [ids[0],ids[1],ids[3],ids[1],ids[2],ids[3]]}
+            let first=[ids[0],ids[1],ids[2],ids[0],ids[2],ids[3]],second=[ids[0],ids[1],ids[3],ids[1],ids[2],ids[3]]
+            func alignment(_ indices:[UInt32])->Float {
+                var worst:Float=1
+                for i in Swift.stride(from:0,to:6,by:3) {
+                    let p=(0..<3).map{j->V3 in let v=mesh.vertices[Int(indices[i+j])].position;return V3(v.x,v.y,v.z)}
+                    let area=cross(p[1]-p[0],p[2]-p[0])
+                    if length_squared(area)<=1e-20 {return -1}
+                    worst=min(worst,dot(normalize(area),shape.normal(at:(p[0]+p[1]+p[2])/3)))
+                    report.gradientEvaluations+=1
+                }
+                return worst
+            }
+            let a=alignment(first),b=alignment(second)
+            // Prefer a consistently outward diagonal over a shorter folded one.
+            if a >= -0.01 && b < -0.01 {mesh.indices += first}
+            else if b >= -0.01 && a < -0.01 {mesh.indices += second}
+            else if simd_length_squared(v[0]-v[2])<=simd_length_squared(v[1]-v[3]) {mesh.indices += first}
+            else {mesh.indices += second}
         }
         report.manifold=isClosed(mesh)
+        report.invertedTriangles=sampledInvertedTriangles(mesh,field:shape)
+        report.gradientEvaluations+=mesh.indices.count/3
         for v in mesh.vertices {report.maximumSampleResidual=max(report.maximumSampleResidual,abs(shape.value(at:V3(v.position.x,v.position.y,v.position.z))))}
         report.vertices=mesh.vertices.count;report.triangles=mesh.indices.count/3;report.milliseconds=Date().timeIntervalSince(start)*1000
         return (mesh,report)
+    }
+    public static func sampledInvertedTriangles(_ mesh:Mesh,field:Shape)->Int {
+        var count=0
+        for i in stride(from:0,to:mesh.indices.count,by:3) {
+            let p=(0..<3).map{j->V3 in let v=mesh.vertices[Int(mesh.indices[i+j])].position;return V3(v.x,v.y,v.z)}
+            let area=cross(p[1]-p[0],p[2]-p[0])
+            if length_squared(area)>1e-20 && dot(normalize(area),field.normal(at:(p[0]+p[1]+p[2])/3)) < -0.01 {count+=1}
+        }
+        return count
     }
     public static func isClosed(_ mesh:Mesh)->Bool {
         var edges:[Edge:(Int,Int)]=[:]

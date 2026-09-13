@@ -160,7 +160,7 @@ final class AgentBridge {
     }
     let edits: Set<String> = [
       "studioObject", "subject", "rig", "shape", "layout", "assetLoad", "assetSave", "assetReload",
-      "loadStudy", "lighting", "view", "sky", "reset", "camera", "pause", "step", "parameters",
+      "loadStudy", "lighting", "view", "sky", "reset", "camera", "pause", "step", "parameters", "outdoorAmbientFloor",
       "author", "craft", "secondary", "rehearsal", "look", "motion", "creature", "part", "partEdit", "stimulus", "framePart", "performanceKey", "performanceBeat", "rigView", "surfaceReview", "sculptFrameLock", "sculptOverlay", "frameVisible",
     ]
     if edits.contains(action) {
@@ -195,7 +195,7 @@ final class AgentBridge {
       }
     case "craftInspect": respond(id,["ok":true,"craft":try renderer.craftSnapshot()]);return
     case "craft":
-      let result=try renderer.editCraft(c);respond(id,["ok":true,"craft":try renderer.craftSnapshot(),"correspondence":result["correspondence"] ?? [],"posedFits":result["posedFits"] ?? [],"sculptFits":result["sculptFits"] ?? []]);return
+      let result=try renderer.editCraft(c);respond(id,["ok":true,"craft":try renderer.craftSnapshot(),"correspondence":result["correspondence"] ?? [],"posedFits":result["posedFits"] ?? [],"sculptFits":result["sculptFits"] ?? [],"anatomyFits":result["anatomyFits"] ?? []]);return
     case "craftReport":
       let n=try number(c,"samples",25)
       guard n.rounded()==n && (2...121).contains(n) else {throw RigError.invalid}
@@ -477,6 +477,17 @@ final class AgentBridge {
       renderer.skySettings = s
     case "reset": renderer.resetCamera()
     case "camera":
+      if let name=c["viewName"] {
+        guard let value=name as? String,!value.isEmpty,value.count<=80 else {
+          throw RuntimeError.message("Camera viewName must be a nonempty label of at most 80 characters")
+        }
+      }
+      if let n=c["verticalFOVDegrees"] as? NSNumber,CFGetTypeID(n)==CFBooleanGetTypeID() {
+        throw RuntimeError.message("verticalFOVDegrees must be a number, not a boolean")
+      }
+      let lens=try number(c,"verticalFOVDegrees",renderer.verticalFOVDegrees)
+      try renderer.validateStudioLens(lens)
+      let lensDistance=renderer.orbitDistance * tan(renderer.verticalFOVDegrees * .pi / 360) / tan(lens * .pi / 360)
       let yaw = try number(c, "yaw", renderer.yaw)
       let pitch = try number(c, "pitch", renderer.pitch)
       let x = try number(c, "x", renderer.camera.x)
@@ -488,7 +499,7 @@ final class AgentBridge {
       let elevation = try number(c, "elevation", renderer.orbitElevation)
       let distance =
         try number(
-          c, "metres", try number(c, "distance", renderer.orbitDistance) * renderer.studioUnit)
+          c, "metres", try number(c, "distance", lensDistance) * renderer.studioUnit)
         / renderer.studioUnit
       renderer.yaw = yaw
       renderer.pitch = clamp(pitch, -1.35, 1.35)
@@ -497,6 +508,8 @@ final class AgentBridge {
       renderer.orbit = orbit
       renderer.orbitElevation = clamp(elevation, -0.1, 1.55)
       renderer.orbitDistance = renderer.boundedStudioDistance(distance)
+      renderer.verticalFOVDegrees=lens
+      if let name=c["viewName"] as? String {renderer.studioViewName=name}
     case "move":
       let x = try number(c, "x", 0)
       let z = try number(c, "z", 0)
@@ -541,6 +554,15 @@ final class AgentBridge {
       if c["scale"] != nil {
         renderer.setStudioScale(scale)
       }
+    case "outdoorAmbientFloor":
+      let red = try number(c, "red", renderer.outdoorAmbientFloor.x)
+      let green = try number(c, "green", renderer.outdoorAmbientFloor.y)
+      let blue = try number(c, "blue", renderer.outdoorAmbientFloor.z)
+      guard (0...0.25).contains(red), (0...0.25).contains(green), (0...0.25).contains(blue)
+      else {
+        throw RuntimeError.message("Outdoor ambient floor RGB channels must be between 0 and 0.25")
+      }
+      renderer.outdoorAmbientFloor = V3(red, green, blue)
     case "clearMetrics": renderer.clearMetrics()
     case "reloadShaders":
       try renderer.buildPipelines(
@@ -554,6 +576,14 @@ final class AgentBridge {
       }
       respond(
         id, ["ok": true, "verification": try renderer.atmosphere.verifyEmptySpace(renderer.queue)])
+      return
+    case "verifySkyCache":
+      let wasPaused = renderer.paused
+      renderer.paused = true
+      defer { renderer.paused = wasPaused }
+      respond(id, ["ok": true,
+        "comparedLivePublication": !wasPaused,
+        "verification": try renderer.atmosphere.verifyPublishedCache(renderer.queue)])
       return
     case "verifyFields":
       let report = try renderer.verifyFields()

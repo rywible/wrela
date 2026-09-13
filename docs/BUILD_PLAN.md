@@ -1,5 +1,11 @@
 # Sanctuary: first playable build plan
 
+> Historical prototype plan. The current game direction and autonomous build
+> contract are in [SANCTUARY_GAME.md](SANCTUARY_GAME.md) and
+> [SANCTUARY_BUILD_PROMPT.md](SANCTUARY_BUILD_PROMPT.md). The capture/rescue loop
+> and single-valley scope below are superseded; retain this file as implementation
+> history, not the flagship acceptance specification.
+
 Status: the field garden, inspection loop, bounded architecture cleanup and first persistent rescue/return/habitat prototype are implemented. Player validation of enjoyment/pacing, terrain editing and later milestones remain planned. See ARCHITECTURE.md and EXPEDITION.md. See README.md for the runnable scope and current limits. Working game label only; the repository remains `wrela`.
 
 ## Product contract

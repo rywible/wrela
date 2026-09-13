@@ -40,6 +40,18 @@ extension Terrain {
   public func patchCertificate(x: ClosedRange<Float>, z: ClosedRange<Float>) -> (
     height: ClosedRange<Float>, dx: Float, dz: Float
   ) {
+    // The cabin rectangle retains the original analytical source below. Continental blending,
+    // biome weights, and route grading stay inside these deliberately loose global bounds.
+    // They are conservative for culling/collision even when a patch straddles the join.
+    guard x.lowerBound >= -112, x.upperBound <= 112,
+      z.lowerBound >= -142, z.upperBound <= 78
+    else {
+      // Direct interval addition is intentionally looser than the actual overlapping envelopes:
+      // 135 m biome base + 47 m noise + 190 m ridge mass + 1,260 m summed summit amplitudes
+      // + 6 m dunes, rounded outward. A 32 slope bound includes every source derivative plus
+      // the worst-case smoothstep route/cabin blend applied to that complete height interval.
+      return (-120...1_700, 32, 32)
+    }
     let X = Interval(x.lowerBound, x.upperBound)
     let Z = Interval(z.lowerBound, z.upperBound)
     let phase = X * 0.055 + Z * 0.019

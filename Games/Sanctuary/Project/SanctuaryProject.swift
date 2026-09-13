@@ -29,6 +29,16 @@ package enum SanctuaryProject {
           ScalarControl($0.key, $0.title, $0.initial, $0.range)
         }, animation: animation, parts: FrostlingRecipe.parts))
     generators.append(ProcessionalRecipe.generator)
+    generators += LivingWorldPresentation.generators
+    generators += BiomeVegetationDesign.generators
+    generators += NatureMagicPresentation.generators
+    generators += GroundTracePresentation.generators
+    generators.append(GrassContactStudy.generator)
+    generators.append(SanctuaryCoatCoverageStudy.generator)
+    generators.append(GardenReedStudy.generator)
+    generators.append(GardenReedStudy.baselineGenerator)
+    generators.append(BiomeConiferDesign.generator)
+    generators += BiomeGroundAppearance.generators
     return GameProject(
       id: "sanctuary", name: "Sanctuary", defaultSubject: "tree",
       directory: ProjectContext.workspace.appendingPathComponent("Games/Sanctuary"),

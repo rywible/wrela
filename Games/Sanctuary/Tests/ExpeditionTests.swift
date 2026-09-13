@@ -5,10 +5,24 @@ import simd
 @testable import SanctuaryContent
 
 final class ExpeditionTests: XCTestCase {
+  /// Legacy rescue coverage still earns trust through the shared relationship rules.
+  /// Each request is separated by active simulation, and the player stays beside the animal.
+  func earnFriendship(_ state: inout Expedition) {
+    for _ in 0..<48 where state.trust < 0.99 {
+      for _ in 0..<5 {
+        state.player = state.creaturePosition
+        state.advance(seconds: 1, movingQuickly: false)
+      }
+      state.player = state.creaturePosition
+      let request: AnimalRequest = state.relationship.isWilling(to: .play) ? .play : .greeting
+      _ = try! state.addressCreature(request, visible: true)
+    }
+    XCTAssertGreaterThanOrEqual(state.trust, 0.99)
+  }
   func rescued() -> Expedition {
     var state = Expedition()
     state.player = Expedition.den
-    for _ in 0..<300 { state.advance(seconds: 1 / 60, movingQuickly: false) }
+    earnFriendship(&state)
     state.interact()
     return state
   }
@@ -23,7 +37,7 @@ final class ExpeditionTests: XCTestCase {
     XCTAssertEqual(state.phase, .searching)
     state.interact()
     XCTAssertEqual(state.phase, .searching, "Rescue requires earned trust")
-    for _ in 0..<300 { state.advance(seconds: 1 / 60, movingQuickly: false) }
+    earnFriendship(&state)
     state.interact()
     XCTAssertEqual(state.phase, .carrying)
     state.interact()

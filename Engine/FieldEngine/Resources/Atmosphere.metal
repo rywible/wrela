@@ -199,12 +199,14 @@ kernel void atmosphereCloudLighting(texture3d<float> density [[texture(0)]],text
     lighting.write(float4(min(optical,80.),0,0,0),id);
 }
 // Max reduction is conservative: no averaged mip can certify empty space.
-kernel void atmosphereMaxDensity(texture3d<half,access::read> source [[texture(0)]],texture3d<half,access::write> target [[texture(1)]],uint3 id [[thread_position_in_grid]]) {
+kernel void atmosphereMaxDensity(texture3d<half,access::read> source [[texture(0)]],texture3d<half,access::write> target [[texture(1)]],constant Uniforms &u [[buffer(0)]],uint3 id [[thread_position_in_grid]]) {
+    id.y+=uint(u.environment.w);
     half value=-INFINITY;
     for(uint z=0;z<2;z++)for(uint y=0;y<2;y++)for(uint x=0;x<2;x++)value=max(value,source.read(id*2+uint3(x,y,z)).r);
     target.write(half4(value),id);
 }
-kernel void atmosphereEmptyCells(texture3d<half,access::read> source [[texture(0)]],texture3d<half,access::write> target [[texture(1)]],uint3 id [[thread_position_in_grid]]) {
+kernel void atmosphereEmptyCells(texture3d<half,access::read> source [[texture(0)]],texture3d<half,access::write> target [[texture(1)]],constant Uniforms &u [[buffer(0)]],uint3 id [[thread_position_in_grid]]) {
+    id.y+=uint(u.environment.w);
     half value=-INFINITY;
     // A neighboring-cell halo encloses the trilinear reconstruction footprint.
     for(int z=-1;z<=1;z++)for(int x=-1;x<=1;x++)for(int y=-1;y<=1;y++) {
@@ -362,3 +364,19 @@ kernel void atmosphereSky(texture2d<float> trans [[texture(0)]],texture2d<float>
     sky.write(float4(L,cloudT),id);
 }
 float3 skyLight(texture2d<float> sky,float3 d) {constexpr sampler s(filter::linear,s_address::repeat,t_address::clamp_to_edge);if(d.y<0 && sky.get_width()>128)return sky.sample(s,skyCacheUV(sky,float3(0,1,0))).rgb*float3(.18,.20,.12);return sky.sample(s,skyCacheUV(sky,d)).rgb;}
+
+// Diagnostic only: one row per thread avoids atomic floating-point reduction
+// and reads back a few KiB of errors instead of two 64 MiB panoramas.
+kernel void atmosphereCompareCache(texture2d<float,access::read> published [[texture(0)]],
+    texture2d<float,access::read> exact [[texture(1)]],device float4 *rows [[buffer(0)]],
+    constant uint &offset [[buffer(1)]],uint row [[thread_position_in_grid]]) {
+    float maximum=0,total=0,invalid=0;
+    for(uint x=0;x<published.get_width();x++) {
+        float4 a=published.read(uint2(x,row)),b=exact.read(uint2(x,row));
+        if(!all(isfinite(a)) || !all(isfinite(b))) {invalid+=1;continue;}
+        float4 difference=abs(a-b);
+        maximum=max(maximum,max(max(difference.x,difference.y),max(difference.z,difference.w)));
+        total+=dot(difference,float4(1));
+    }
+    rows[offset+row]=float4(maximum,total,invalid,float(published.get_width())*4);
+}

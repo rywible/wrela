@@ -13,6 +13,7 @@ public struct AnatomyCompileReport: Codable, Equatable, Sendable {
   public var triangles:Int
   public var regions:[String:Int]
   public var maximumDiscardedSkinWeight:Float
+  public var sampling:SamplingReport?
 }
 public struct AnatomyCompilation: Sendable {
   public var mesh:Mesh
@@ -57,8 +58,9 @@ public struct AnatomyRebindResult: Codable, Equatable, Sendable {
 public enum AnatomyCompiler {
   public static func compile(_ source:AnatomySource,captureAnchors:Bool=true) throws -> AnatomyCompilation {
     try source.validate()
-    let shape=try source.shape(),bounds=shape.occupiedBounds()
-    var mesh=try Mesher.compile(shape,resolution:source.resolution,bounds:bounds)
+    let shape=try source.shape(),bounds=shape.occupiedBounds(),sampler=source.preparedSampler()
+    let sampled=try source.sampling.map{try Mesher.sampledResult(shape,policy:$0,bounds:bounds)}
+    var mesh=try sampled?.mesh ?? Mesher.compile(shape,resolution:source.resolution,bounds:bounds)
     try CraftError.require(!mesh.vertices.isEmpty,"anatomy.\(source.id)","No exterior surface survived compilation; inspect the ordered cuts")
     let jointIDs=Set(source.elements.flatMap{$0.jointWeights.keys}).union(source.elements.contains{$0.role == .surface && $0.jointWeights.isEmpty && $0.operation == .add} ? [source.part]:[]).sorted()
     try CraftError.require(jointIDs.count<=64,"anatomy.\(source.id).joints","At most 64 joints may influence one compiled anatomy")
@@ -66,7 +68,7 @@ public enum AnatomyCompiler {
     var weights:[SkinWeight]=[],anchors:[AnatomyAnchor]=[],regions:[String:Int]=[:],maximumDiscarded:Float=0
     weights.reserveCapacity(mesh.vertices.count);if captureAnchors {anchors.reserveCapacity(mesh.vertices.count)}
     for i in mesh.vertices.indices {
-      let v=mesh.vertices[i].position,p=V3(v.x,v.y,v.z),sample=source.sample(at:p),element=elementByID[sample.element]!
+      let v=mesh.vertices[i].position,p=V3(v.x,v.y,v.z),sample=sampler.sample(at:p),element=elementByID[sample.element]!
       mesh.vertices[i].color=SIMD4(sample.color,1)
       let sorted=sample.jointWeights.sorted{$0.value==$1.value ? $0.key<$1.key:$0.value>$1.value},kept=Array(sorted.prefix(4)),total=kept.reduce(Float(0)){$0+$1.value}
       maximumDiscarded=max(maximumDiscarded,sorted.dropFirst(4).reduce(0){$0+$1.value})
@@ -78,7 +80,7 @@ public enum AnatomyCompiler {
     }
     let structures=source.internalElements.map{AnatomyStructure(id:$0.id,region:$0.region,shape:$0.shape,jointWeights:$0.jointWeights)}
     return AnatomyCompilation(mesh:mesh,joints:jointIDs,weights:weights,anchors:anchors,structures:structures,
-      report:AnatomyCompileReport(vertices:mesh.vertices.count,triangles:mesh.indices.count/3,regions:regions,maximumDiscardedSkinWeight:maximumDiscarded))
+      report:AnatomyCompileReport(vertices:mesh.vertices.count,triangles:mesh.indices.count/3,regions:regions,maximumDiscardedSkinWeight:maximumDiscarded,sampling:sampled?.report))
   }
 
   /// Failure is atomic: the original anchors/positions are returned with all
@@ -114,7 +116,7 @@ public enum AnatomyCompiler {
           issue(anchor,"Primitive coordinates changed for \(anchor.element)","Explicitly map this element to authorize new primitive coordinates");continue
         }
         let initial:V3
-        if element.primitive==anchor.primitive {initial=element.point(at:anchor.coordinate)}
+        if element.primitive==anchor.primitive && element.sections?.map(\.id)==old.sections?.map(\.id) {initial=element.point(at:anchor.coordinate)}
         else {initial=anchor.sourcePosition}
         var point=initial
         for _ in 0..<32 {

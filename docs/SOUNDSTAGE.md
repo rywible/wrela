@@ -145,6 +145,7 @@ preserves the lighting. Indoor presets are **softbox, overhead, lamp, room**;
 ./scripts/stagectl rig room
 ./scripts/stagectl rig outdoor
 ./scripts/stagectl sky --altitude 4 --coverage 0.55 --haze 0.9
+./scripts/stagectl outdoorAmbientFloor --red 0.018 --green 0.028 --blue 0.040
 ```
 
 Light position and source radius are **multiples of the subject's largest extent**,
@@ -411,6 +412,12 @@ that shared rendering layer across every object, light and sky in the scene:
 These controls do not rebuild the physical atmosphere lookup or remesh objects.
 The Hillaire atmosphere remains the underlying simulation; the profile is a
 purposeful art-direction layer above it.
+
+`outdoorAmbientFloor` is a bounded (0...0.25 per RGB channel) diffuse readability
+floor for the outdoor path. It is recorded in the study and defaults to zero. It
+does not add a moon disk, cast moon shadows, or model lunar transport; use it to
+evaluate a deliberately authored night presentation without changing a subject's
+material or exposure.
 
 Preview edits are undoable and saved in studies. **Publish project look** writes
 `renderLook` into the shared art-direction file while preserving the brief and

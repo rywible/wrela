@@ -21,11 +21,24 @@ package final class MetalRenderer {
   private var layeredGrassMeshPipeline: MTLRenderPipelineState!
   package var useMeshlets = true
   package var windBuffers: [MTLBuffer] = []
+  private var influenceBuffers: [MTLBuffer] = []
+  private var influenceBufferVersions = [UInt64](repeating: .max, count: 3)
+  private var influenceVersion: UInt64 = 0
+  private var influenceField = GroundInfluenceField()
+  private var influenceSnapshot: SurfaceInfluenceSnapshot?
+  private var influenceTimes: [Double] = []
+  private var influenceFailure: String?
+  private struct InfluenceUniform {
+    var originCell = SIMD4<Float>.zero
+    var options = SIMD4<Float>.zero
+  }
+
   package let view: MTKView
   package var pipeline: MTLRenderPipelineState!
   package var skyPipeline: MTLRenderPipelineState!
   package var groundPipeline: MTLRenderPipelineState!
   package var shadowPipeline: MTLRenderPipelineState!
+  private var grassShadowPipeline: MTLRenderPipelineState!
   package var groomShadowPipeline: MTLRenderPipelineState!
   package var groomPipeline: MTLRenderPipelineState!
   package var groomMeshPipeline: MTLRenderPipelineState!
@@ -88,7 +101,47 @@ package final class MetalRenderer {
     windBuffers = (0..<3).map { _ in
       device.makeBuffer(length: 1024 * 16, options: .storageModeShared)!
     }
+    precondition(MemoryLayout<GroundInfluenceCell>.stride == 32
+      && MemoryLayout<InfluenceUniform>.stride == 32)
+    influenceBuffers = (0..<3).map { _ in
+      device.makeBuffer(length: GroundInfluenceField.size * GroundInfluenceField.size * 32,
+        options: .storageModeShared)!
+    }
   }
+  package func surfaceInfluenceStatus() -> [String: Any] {
+    ["eventCount": influenceSnapshot?.events.count ?? 0,
+     "sampleTime": influenceSnapshot?.time ?? 0,
+     "activeCells": influenceField.activeCellCount, "visitedCells": influenceField.visitedCells,
+     "origin": [influenceField.origin.x, influenceField.origin.y],
+     "size": GroundInfluenceField.size, "cellMetres": GroundInfluenceField.cellMetres,
+     "allocatedBufferBytes": influenceBuffers.reduce(0) { $0 + $1.length },
+     "cpuMilliseconds": stats(influenceTimes), "lastFailure": influenceFailure as Any? ?? NSNull()]
+  }
+  private func prepareInfluences(_ snapshot: SurfaceInfluenceSnapshot, camera: V3) -> InfluenceUniform {
+    let start = CACurrentMediaTime()
+    let center = SIMD2(camera.x, camera.z)
+    let origin = GroundInfluenceField.origin(around: center)
+    if influenceSnapshot != snapshot || influenceField.origin != origin {
+      do {
+        try influenceField.update(snapshot, center: center)
+        influenceSnapshot = snapshot; influenceVersion &+= 1; influenceFailure = nil
+      } catch { influenceFailure = String(describing: error) }
+    }
+    let slot = frame % 3
+    if influenceBufferVersions[slot] != influenceVersion {
+      influenceField.cells.withUnsafeBytes { bytes in
+        memcpy(influenceBuffers[slot].contents(), bytes.baseAddress!, bytes.count)
+      }
+      influenceBufferVersions[slot] = influenceVersion
+    }
+    influenceTimes.append((CACurrentMediaTime() - start) * 1000)
+    if influenceTimes.count > 3600 { influenceTimes.removeFirst() }
+    return InfluenceUniform(originCell: SIMD4(influenceField.origin.x, influenceField.origin.y,
+      1 / GroundInfluenceField.cellMetres, Float(GroundInfluenceField.size)),
+      options: SIMD4(influenceField.activeCellCount > 0 ? 1 : 0,
+        GroundInfluenceField.maximumVertexDisplacement, 0, 0))
+  }
+
   package func upload(_ batch: SceneBatch) -> GPUBatch {
     if !batch.grass.isEmpty { return uploadGrass(batch) }
     precondition(
@@ -97,55 +150,57 @@ package final class MetalRenderer {
     precondition(batch.skinJoints.isEmpty || (batch.skinJoints.count <= 64 && batch.lodMeshes.isEmpty
       && batch.skinWeights.count == batch.mesh.vertices.count
       && batch.skinWeights.allSatisfy { $0.validate(count: batch.skinJoints.count) }), "Invalid skin binding")
-    let vertices = device.makeBuffer(
-      bytes: batch.mesh.vertices, length: MemoryLayout<Vertex>.stride * batch.mesh.vertices.count)!
-    let indices = device.makeBuffer(
-      bytes: batch.mesh.indices, length: MemoryLayout<UInt32>.stride * batch.mesh.indices.count)!
-    let instances = device.makeBuffer(
-      bytes: batch.instances, length: MemoryLayout<Instance>.stride * batch.instances.count)!
-    vertices.label = batch.name + " vertices"
-    indices.label = batch.name + " indices"
-    let points = batch.mesh.vertices.map { V3($0.position.x, $0.position.y, $0.position.z) }
-    let lower = points.reduce(V3(repeating: Float.greatestFiniteMagnitude), simd_min)
-    let upper = points.reduce(V3(repeating: -Float.greatestFiniteMagnitude), simd_max)
-    let center = (lower + upper) / 2
-    let radius = length(upper - lower) / 2 + 1.0
-    let buffers = (0..<6).map { _ in
-      device.makeBuffer(
-        length: MemoryLayout<UInt32>.stride * max(1, batch.instances.count),
-        options: .storageModeShared)!
+    // Mesh and LOD mutations clear the batch-owned payload, including nested array writeback.
+    // Existing callers remain correct through synchronous preparation while streaming workers
+    // can carry prepared metadata to this render-thread buffer allocation.
+    let prepared: PreparedSceneUpload
+    if let value = batch.preparedUpload { prepared = value }
+    else {
+      var fallback = batch
+      prepared = fallback.prepareUpload()!
     }
-    let lods = batch.lodMeshes.map { mesh -> GPUBatch in
-      var lod = SceneBatch(name: batch.name, mesh: mesh, instances: batch.instances)
-      lod.doubleSided = batch.doubleSided
-      lod.roughness = batch.roughness
-      lod.metallic = batch.metallic
-      return upload(lod)
+    func makeBatch(
+      mesh: Mesh, level: PreparedSceneUpload.Level, lods: [GPUBatch],
+      skinWeights: [SkinWeight] = []
+    ) -> GPUBatch {
+      let vertices = device.makeBuffer(
+        bytes: mesh.vertices, length: MemoryLayout<Vertex>.stride * mesh.vertices.count)!
+      let indices = device.makeBuffer(
+        bytes: mesh.indices, length: MemoryLayout<UInt32>.stride * mesh.indices.count)!
+      let instances = device.makeBuffer(
+        bytes: batch.instances, length: MemoryLayout<Instance>.stride * batch.instances.count)!
+      vertices.label = batch.name + " vertices"
+      indices.label = batch.name + " indices"
+      let buffers = (0..<6).map { _ in
+        device.makeBuffer(
+          length: MemoryLayout<UInt32>.stride * max(1, batch.instances.count),
+          options: .storageModeShared)!
+      }
+      return GPUBatch(
+        name: batch.name, vertices: vertices, indices: indices, instances: instances,
+        indexCount: mesh.indices.count, instanceCount: batch.instances.count,
+        sourceInstances: batch.instances, visibleBuffers: buffers,
+        selection: BatchSelection(instances: batch.instances.count, levels: lods.count + 1),
+        center: level.center, radius: level.radius, lods: lods, error: mesh.geometricError,
+        meshlets: device.makeBuffer(
+          bytes: level.descriptors,
+          length: level.descriptors.count * MemoryLayout<PreparedSceneUpload.MeshletDescriptor>.stride)!,
+        meshletVertices: device.makeBuffer(
+          bytes: level.meshletVertices, length: level.meshletVertices.count * 4)!,
+        meshletTriangles: device.makeBuffer(
+          bytes: level.meshletTriangles, length: level.meshletTriangles.count)!,
+        material: SIMD4(batch.roughness, batch.metallic, 0, 0),
+        meshletCount: level.descriptors.count, doubleSided: batch.doubleSided,
+        hasGroomCoverage: level.hasGroomCoverage,
+        skinWeights: skinWeights.isEmpty ? nil : device.makeBuffer(
+          bytes: skinWeights, length: skinWeights.count * MemoryLayout<SkinWeight>.stride),
+        skinJoints: batch.skinJoints)
     }
-    let clusters = MeshletData(batch.mesh)
-    struct Cluster {
-      var ranges: SIMD4<UInt32>
-      var sphere: SIMD4<Float>
+    let lods = zip(batch.lodMeshes, prepared.lods).map { mesh, level in
+      makeBatch(mesh: mesh, level: level, lods: [])
     }
-    let descriptors = zip(clusters.descriptors, clusters.spheres).map {
-      Cluster(ranges: $0.0, sphere: $0.1)
-    }
-    return GPUBatch(
-      name: batch.name, vertices: vertices, indices: indices, instances: instances,
-      indexCount: batch.mesh.indices.count, instanceCount: batch.instances.count,
-      sourceInstances: batch.instances, visibleBuffers: buffers,
-      selection: BatchSelection(
-        instances: batch.instances.count, levels: batch.lodMeshes.count + 1), center: center,
-      radius: radius, lods: lods, error: batch.mesh.geometricError,
-      meshlets: device.makeBuffer(bytes: descriptors, length: descriptors.count * 32)!,
-      meshletVertices: device.makeBuffer(
-        bytes: clusters.vertices, length: clusters.vertices.count * 4)!,
-      meshletTriangles: device.makeBuffer(
-        bytes: clusters.triangles, length: clusters.triangles.count)!,
-      material: SIMD4(batch.roughness, batch.metallic, 0, 0), meshletCount: descriptors.count,
-      doubleSided: batch.doubleSided,hasGroomCoverage:batch.mesh.vertices.contains{$0.groom.z>0},
-      skinWeights: batch.skinWeights.isEmpty ? nil : device.makeBuffer(bytes: batch.skinWeights,
-        length: batch.skinWeights.count * MemoryLayout<SkinWeight>.stride), skinJoints: batch.skinJoints)
+    return makeBatch(mesh: batch.mesh, level: prepared.base, lods: lods,
+      skinWeights: batch.skinWeights)
   }
 
   package func uploadGrass(_ batch: SceneBatch) -> GPUBatch {
@@ -246,6 +301,8 @@ package final class MetalRenderer {
     sd.vertexFunction = library.makeFunction(name: "shadowVertex")
     sd.depthAttachmentPixelFormat = .depth32Float
     let newShadowPipeline = try device.makeRenderPipelineState(descriptor: sd)
+    sd.vertexFunction = library.makeFunction(name: "grassShadowVertex")
+    let newGrassShadowPipeline = try device.makeRenderPipelineState(descriptor: sd)
     sd.vertexFunction=library.makeFunction(name:"groomShadowVertex")
     sd.fragmentFunction=library.makeFunction(name:"groomShadowFragment")
     let newGroomShadowPipeline=try device.makeRenderPipelineState(descriptor:sd)
@@ -312,6 +369,7 @@ package final class MetalRenderer {
     skyPipeline = newSkyPipeline
     groundPipeline = newGroundPipeline
     shadowPipeline = newShadowPipeline
+    grassShadowPipeline = newGrassShadowPipeline
     groomShadowPipeline=newGroomShadowPipeline
     groomPipeline=newGroomPipeline;groomMeshPipeline=newGroomMeshPipeline
     layeredGroomPipeline=newLayeredGroomPipeline;layeredGroomMeshPipeline=newLayeredGroomMeshPipeline
@@ -331,6 +389,7 @@ package final class MetalRenderer {
   }
 
   package func draw(_ input: RenderFrame, elapsed: Double, simulationMilliseconds: Double) {
+    atmosphere.observeRequest(input.uniforms, paused: input.paused)
     scene = input.id
     camera = input.camera
     wind = input.wind
@@ -358,25 +417,32 @@ package final class MetalRenderer {
     drawableFrames += 1
     var uniforms = input.uniforms
     let vp = uniforms.viewProjection
-    let lvp = uniforms.lightVP
     let eye = V3(uniforms.cameraTime.x, uniforms.cameraTime.y, uniforms.cameraTime.z)
-    let sun = V3(uniforms.sunExposure.x, uniforms.sunExposure.y, uniforms.sunExposure.z)
     let lightSize = input.lightSize
     let paused = input.paused
     let sceneLook = input.look
     let atmosphereWind = input.windState
     let profile = profiling && frame % 5 == 0 ? GPUProfile(device) : nil
     let atmosphereStart = CACurrentMediaTime()
-    atmosphere.encode(cb, &uniforms, paused: paused, profile: profile)
+    atmosphere.encode(cb, &uniforms, paused: paused, capture: captureRequest != nil, profile: profile)
     atmosphereCPUTimes.append((CACurrentMediaTime() - atmosphereStart) * 1000)
     if atmosphereCPUTimes.count > 3600 { atmosphereCPUTimes.removeFirst() }
+    atmosphere.applyPublishedLighting(to: &uniforms, shadowContract: input.outdoorShadow != nil)
+    let sun = V3(uniforms.sunExposure.x, uniforms.sunExposure.y, uniforms.sunExposure.z)
+    if let shadow = input.outdoorShadow {
+      uniforms.lightVP = FrameComposer.outdoorShadowMatrix(shadow, sun: sun)
+    }
+    let lvp = uniforms.lightVP
+    let activeAtmosphere = atmosphere.frameCache()
     let lightState = post.encodeLighting(
-      cb, uniforms: &uniforms, atmosphere: atmosphere, index: frame % 3, profile: profile)
+      cb, uniforms: &uniforms, atmosphere: activeAtmosphere, index: frame % 3, profile: profile)
     shadowTexelsPerMetre = 1024 / lightSize
     let windBuffer = windBuffers[frame % 3]
     atmosphereWind.writeGPUCells(
       to: UnsafeMutableBufferPointer(
         start: windBuffer.contents().assumingMemoryBound(to: SIMD4<Float>.self), count: 1024))
+    var influenceUniform = prepareInfluences(input.surfaceInfluences, camera: eye)
+    let influenceBuffer = influenceBuffers[frame % 3]
     let shadow = MTLRenderPassDescriptor()
     shadow.depthAttachment.texture = shadowTexture
     shadow.depthAttachment.loadAction = .clear
@@ -392,6 +458,8 @@ package final class MetalRenderer {
         enc.setDepthBias(1, slopeScale: 1, clamp: 0.001)
         enc.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
         enc.setVertexBuffer(windBuffer, offset: 0, index: 3)
+        enc.setVertexBuffer(influenceBuffer, offset: 0, index: 15)
+        enc.setVertexBytes(&influenceUniform, length: MemoryLayout<InfluenceUniform>.stride, index: 16)
         cullMatrix = lvp
         shadowTriangles = 0
         renderObjects(input.items, enc, shadow: true)
@@ -408,13 +476,18 @@ package final class MetalRenderer {
       enc.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
       enc.setFragmentBuffer(lightState, offset: 0, index: 2)
       enc.setFragmentTexture(shadowTexture, index: 0)
-      enc.setFragmentTexture(atmosphere.sky, index: 1)
-      enc.setFragmentTexture(atmosphere.irradiance, index: 2)
-      enc.setFragmentTexture(atmosphere.trans, index: 3)
-      enc.setFragmentTexture(atmosphere.previousSky, index: 4)
-      enc.setFragmentTexture(atmosphere.previousIrradiance, index: 5)
-      enc.setFragmentTexture(atmosphere.clearSky, index: 6)
+      enc.setFragmentTexture(activeAtmosphere.sky, index: 1)
+      enc.setFragmentTexture(activeAtmosphere.irradiance, index: 2)
+      enc.setFragmentTexture(activeAtmosphere.trans, index: 3)
+      enc.setFragmentTexture(activeAtmosphere.previousSky, index: 4)
+      enc.setFragmentTexture(activeAtmosphere.previousIrradiance, index: 5)
+      enc.setFragmentTexture(activeAtmosphere.clearSky, index: 6)
       enc.setVertexBuffer(windBuffer, offset: 0, index: 3)
+      enc.setVertexBuffer(influenceBuffer, offset: 0, index: 15)
+      enc.setVertexBytes(&influenceUniform, length: MemoryLayout<InfluenceUniform>.stride, index: 16)
+      enc.setObjectBytes(&influenceUniform, length: MemoryLayout<InfluenceUniform>.stride, index: 16)
+      enc.setMeshBuffer(influenceBuffer, offset: 0, index: 15)
+      enc.setMeshBytes(&influenceUniform, length: MemoryLayout<InfluenceUniform>.stride, index: 16)
       enc.setObjectBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
       enc.setMeshBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
       enc.setMeshBuffer(windBuffer, offset: 0, index: 3)
@@ -454,6 +527,7 @@ package final class MetalRenderer {
         var metadata = metadataProvider?() ?? [:]
         metadata["frame"] = frame + 1
         metadata["captureIncludesHUD"] = false
+        metadata["skyCache"] = atmosphere.cacheStatus()
         let sunClip = vp * SIMD4(eye + sun * 100, 1)
         if sunClip.w > 0 {
           metadata["projectedSunPixels"] = [
@@ -488,7 +562,9 @@ package final class MetalRenderer {
     let submittedPhase = atmosphere.updatePhase
     let submittedGeneration = metricsGeneration
     let submissionTime = CACurrentMediaTime()
-    cb.addCompletedHandler { [weak self] command in
+    cb.addCompletedHandler { [weak self, activeAtmosphere] command in
+      // Explicitly retain the frame publication through GPU completion.
+      withExtendedLifetime(activeAtmosphere) {}
       semaphore.signal()
       let completion = (CACurrentMediaTime() - submissionTime) * 1000
       let ms = (command.gpuEndTime - command.gpuStartTime) * 1000
@@ -551,32 +627,17 @@ package final class MetalRenderer {
             (kind == 2 || kind == 4 || kind == 8)
             ? 0.35 * sqrt(2) * abs(wind) * pow(top / 5, 2) * 0.75
             : (kind == 3 ? 0.35 * sqrt(2) * abs(wind) * 0.65 : 0)
-          let radius = b.radius * scale + deformation
+          let contact = b.proceduralGrass && influenceField.activeCellCount > 0
+            ? GroundInfluenceField.maximumVertexDisplacement : 0
+          let radius = b.radius * scale + deformation + contact
           guard !skinPalette.isEmpty || !correctives.isEmpty || planes.allSatisfy({ dot($0, center) >= -radius }) else { continue }
           let distance = max(
             1, length(V3(center.x, center.y, center.z) - camera) - b.radius * scale)
           let current = state.lod[index]
-          var selected = 0
-          for k in 1..<levels.count {
-            let delta = levels[k].error
-            var error = delta * scale
-            if kind == 8 {
-              // response components are bounded by ±0.35; bilinear
-              // 10 m cells have Jacobian norm at most 0.14/m.
-              // Bound both changing response and y² bend weight.
-              let amplitude = 0.35 * sqrt(2) * abs(wind)
-              let slope = 0.14 * abs(wind)
-              error +=
-                amplitude * 0.03 * delta * (2 * top + delta) + 0.03 * pow(top + delta, 2) * slope
-                * scale * delta
-            }
-            if shadow
-              ? error * shadowTexelsPerMetre < 0.8
-              : error * 935 / distance < (k == current ? 0.65 : 0.4)
-            {
-              selected = k
-            }
-          }
+          let selected = SceneLODSelection.selectedLevel(
+            currentLOD: current, errors: levels.dropFirst().lazy.map(\.error), scale: scale,
+            distance: distance, kind: kind, top: top, wind: wind, shadow: shadow,
+            shadowTexelsPerMetre: shadowTexelsPerMetre)
           if !shadow { state.lod[index] = selected }
           let ids = levels[selected].visibleBuffers[slot].contents().assumingMemoryBound(
             to: UInt32.self)
@@ -591,7 +652,10 @@ package final class MetalRenderer {
         return
       }
       if let selectedCount, selectedCount == 0 { return }
-      if shadow {enc.setRenderPipelineState(b.hasGroomCoverage ? groomShadowPipeline:shadowPipeline)}
+      if shadow {
+        enc.setRenderPipelineState(b.proceduralGrass ? grassShadowPipeline
+          : (b.hasGroomCoverage ? groomShadowPipeline : shadowPipeline))
+      }
       if !shadow {
         var material = override ?? b.material
         enc.setFragmentBytes(&material, length: MemoryLayout<SIMD4<Float>>.stride, index: 4)
@@ -744,6 +808,7 @@ package final class MetalRenderer {
     cpuTimes = []
     simulationTimes = []
     atmosphereCPUTimes = []
+    influenceTimes = []
     completionTimes = []
     presentedIntervals = []
     lastPresentedTime = 0

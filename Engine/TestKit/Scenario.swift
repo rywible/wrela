@@ -12,6 +12,9 @@ public enum TestStep: Codable, Equatable {
   case range(String, Double, Double)
   case save(String)
   case load(String)
+  /// Recreate the simulation through its project factory, then restore a named checkpoint.
+  /// Native replay treats this marker as a process boundary and verifies persisted state first.
+  case reopen(String)
   case capture(String)
 }
 @resultBuilder public enum ScenarioBuilder {
@@ -75,6 +78,8 @@ public struct TraceFrame: Codable {
   public var digest: String { TestDigest.data(state) }
   public var capture: String?
   public var actionError: String?
+  /// Optional so artifacts recorded before process-reopen coverage remain decodable.
+  public var processReopen: Bool? = nil
 }
 public struct RunArtifact: Codable {
   public var version = 1
@@ -133,7 +138,7 @@ public enum ScenarioRunner {
       test.name.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
       ), test.steps.count <= 10000
     else { throw SimulationFailure.invalid("Invalid scenario name or more than 10000 steps") }
-    let world = try project.create(test.fixture, seed)
+    var world = try project.create(test.fixture, seed)
     let initial = try world.checkpoint()
     var result = RunArtifact(
       owner: project.id, product: project.product, test: test, seed: seed, initial: initial)
@@ -144,6 +149,7 @@ public enum ScenarioRunner {
       var restored: Data?
       var capture: String?
       var actionError: String?
+      var processReopen: Bool?
       func perform(_ action: SimulationAction) throws {
         actions.append(action)
         do { try world.apply(action) } catch {
@@ -169,6 +175,10 @@ public enum ScenarioRunner {
             throw SimulationFailure.invalid("Invalid walk target")
           }
           var arrived = false
+          // Games own movement scale (walking, riding, flight, and any collision response).
+          // Learn only from recorded production displacement, so the final input cannot jump
+          // past a nearby destination when that game applies a larger horizontal gain.
+          var observedGain: Float = 1
           for _ in 0..<maxTicks {
             let d = SIMD2(x - world.camera.position.x, z - world.camera.position.z)
             if length(d) < 0.25 {
@@ -176,8 +186,21 @@ public enum ScenarioRunner {
               break
             }
             try perform(.look(yaw: atan2(d.x, -d.y), pitch: world.camera.pitch))
-            try perform(.move(V3(0, 0, min(5.5 / 60, length(d)))))
+            let inputMagnitude = min(5.5 / 60, length(d) / max(1, observedGain))
+            let before = world.camera.position
+            try perform(.move(V3(0, 0, inputMagnitude)))
             try perform(.tick(running: false))
+            let horizontalDistance = length(
+              SIMD2(world.camera.position.x - before.x, world.camera.position.z - before.z))
+            // A blocked or collision-shortened input neither inflates nor lowers the learned
+            // gain. The maximum only records demonstrated production movement.
+            if horizontalDistance >= inputMagnitude * observedGain, inputMagnitude > 0 {
+              observedGain = max(observedGain, horizontalDistance / inputMagnitude)
+            }
+            if length(SIMD2(x - world.camera.position.x, z - world.camera.position.z)) < 0.25 {
+              arrived = true
+              break
+            }
           }
           guard arrived else {
             throw SimulationFailure.invalid(
@@ -202,6 +225,16 @@ public enum ScenarioRunner {
           }
           try world.restore(data)
           restored = data
+        case .reopen(let key):
+          guard let data = bookmarks[key] else {
+            throw SimulationFailure.invalid("Unknown bookmark \(key)")
+          }
+          // Re-run only declared fixture setup. The checkpoint remains the sole source of
+          // post-fixture position, relationships, edits, and simulation progress.
+          world = try project.create(test.fixture, seed)
+          try world.restore(data)
+          restored = data
+          processReopen = true
         case .capture(let label): capture = label
         }
       } catch {
@@ -214,7 +247,7 @@ public enum ScenarioRunner {
           TraceFrame(
             index: index, label: String(describing: step), actions: actions, restore: restored,
             state: try world.checkpoint(), observations: world.observations, capture: capture,
-            actionError: actionError))
+            actionError: actionError, processReopen: processReopen))
       }
       if !result.passed { break }
     }
@@ -223,9 +256,12 @@ public enum ScenarioRunner {
   }
   /// Replays recorded production actions, comparing state after each action group.
   public static func replay(_ artifact: RunArtifact, project: TestProject) throws -> String? {
-    let world = try project.create(artifact.test.fixture, artifact.seed)
+    var world = try project.create(artifact.test.fixture, artifact.seed)
     try world.restore(artifact.initial)
     for frame in artifact.frames {
+      if frame.processReopen == true {
+        world = try project.create(artifact.test.fixture, artifact.seed)
+      }
       if let state = frame.restore { try world.restore(state) }
       var caught: String?
       do { for action in frame.actions { try world.apply(action) } } catch {

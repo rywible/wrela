@@ -55,7 +55,7 @@ extension WorkshopRenderer {
     var distance:Float=0
     for (_,_,mesh,_) in surfaces {for v in mesh.vertices {
       let p=V3(v.position.x,v.position.y,v.position.z)-center
-      distance=max(distance,dot(p,direction)+max(abs(dot(p,right))/(tan(1.05/2)*Float(16)/9*0.85),abs(dot(p,up))/(tan(1.05/2)*0.85)))
+      distance=max(distance,dot(p,direction)+max(abs(dot(p,right))/(tan(projectionFOV/2)*Float(16)/9*0.85),abs(dot(p,up))/(tan(projectionFOV/2)*0.85)))
     }}
     // Keep the scene placement and light rig unchanged. Only the camera target
     // and distance use visible geometry, with no hidden recipe/motion envelope.
@@ -65,7 +65,7 @@ extension WorkshopRenderer {
     inspectionCamera=nil
     orbitDistance=boundedStudioDistance((distance+length(hi-lo)*0.01)/studioUnit)
     return ["parts":surfaces.map{$0.0},"minimum":[lo.x,lo.y,lo.z],"maximum":[hi.x,hi.y,hi.z],"heightMetres":hi.y-lo.y,
-      "cameraDistanceMetres":orbitDistance*studioUnit,"limits":"Current deformed mesh bounds; material alpha and procedural wind are not included. Framing is held until the comparison frame is unlocked."]
+      "cameraDistanceMetres":orbitDistance*studioUnit,"verticalFOVDegrees":verticalFOVDegrees,"limits":"Current deformed mesh bounds; material alpha and procedural wind are not included. Framing is held until the comparison frame is unlocked."]
   }
   func editSculptOverlay(_ request:[String:Any]) throws {
     try CraftError.require(Set(request.keys).isSubset(of:["id","action","expectedRevision","value"])
@@ -116,7 +116,9 @@ extension WorkshopRenderer {
     guard graphics.captureRequest != nil else {return}
     let names=Set(studioBatches.map(\.name))
     let selected=input.items.filter{names.contains($0.batch.name)}
-    var bytes=Data(sourceRevision.utf8)
+    // A rebuilt app may compile different geometry from identical authored
+    // source. Captures from another compiler session must never select this mesh.
+    var bytes=Data((sculptSession+"/"+sourceRevision).utf8)
     func append<T>(_ value:T) {var v=value;withUnsafeBytes(of:&v){bytes.append(contentsOf:$0)}}
     append(input.uniforms.viewProjection)
     for item in selected {

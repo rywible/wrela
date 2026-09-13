@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "baseCandidate": "sanctuary-local-nap-20260912-2337",
+  "baseFiles": {
+    "Engine/FieldEngine/Resources/Surface.metal": "f86a24ffadf5309636653828fe01bcfa57ee7932748d922b5d0bc78aff2f9cc4",
+    "Engine/FieldEngine/Rendering/MetalRenderer.swift": "e8216f1147f79d84659ed98a3d525831fe2ebd21c27a466b61401996e91428ff"
+  },
+  "variants": {
+    "A": {
+      "path": "Engine/FieldEngine/Resources/Surface.metal",
+      "beforeSHA256": "f86a24ffadf5309636653828fe01bcfa57ee7932748d922b5d0bc78aff2f9cc4",
+      "afterSHA256": "32a86c28ac7b1a690f015d5d2ae57200ea1bd9f2046c9d71a67d29498f4ccc7b",
+      "patchSHA256": "b4252ad677d2fbba1115c65b58849945f32039e62a67d3b344c6b18fd69b4421",
+      "beforeChunk": "        } else {\n            // Exact adjacent-texel pairing for the compact bilinear 5\u00d75 box.\n",
+      "afterChunk": "        } else if(u.rigPosition.w<=.5) {\n            // Diagnostic A: compact outdoor contact filter; receiver bias unchanged.\n            for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++) {\n                float2 offset=float2(x,y)/2048.;\n                visibility+=shadowMap.sample_compare(shadowSampler,suv+offset,sc.z+dot(gradient,offset)-bias)/9.;\n            }\n        } else {\n            // Exact adjacent-texel pairing for the compact bilinear 5\u00d75 box.\n",
+      "rebuildRequired": false
+    },
+    "B": {
+      "path": "Engine/FieldEngine/Rendering/MetalRenderer.swift",
+      "beforeSHA256": "e8216f1147f79d84659ed98a3d525831fe2ebd21c27a466b61401996e91428ff",
+      "afterSHA256": "40b7e440ce1c9292bec652cb18e0bd77477733f68e7d4362d042a4f04ad6fa07",
+      "patchSHA256": "0938ac91dd0910d4a35ada23c0a11e34b55eb47d410684bbe4421603cc05a27a",
+      "beforeChunk": "        enc.setDepthBias(1, slopeScale: 1, clamp: 0.001)\n",
+      "afterChunk": "        enc.setDepthBias(1, slopeScale: input.outdoorShadow != nil ? 0 : 1, clamp: 0.001)\n",
+      "rebuildRequired": true
+    }
+  }
+}

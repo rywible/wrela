@@ -100,6 +100,18 @@ final class ExpeditionPresentation {
       // A small ice flower remains a readable sign from standing height.
       place(flower, p, scale: state.discoveredSigns.contains(index) ? 0.7 : 1.15)
     }
+    // Reuse the published flower representation for the first visible spell.
+    // Other authored habitat targets await their actual production representation.
+    for patch in state.garden?.patches ?? [] where patch.planting == .flowers {
+      var rng = SeededRandom(seed: UInt64(truncatingIfNeeded: patch.id) &+ 9_713)
+      let count = min(40, max(6, Int(patch.radius * patch.radius * 5)))
+      for _ in 0..<count {
+        let angle = rng.range(0, 2 * .pi)
+        let radius = sqrt(rng.next()) * patch.radius
+        let point = SIMD2(patch.center.x, patch.center.z) + SIMD2(cos(angle), sin(angle)) * radius
+        place(flower, point, scale: rng.range(0.65, 1.25), tint: V3(1.5, 1.05, 0.65))
+      }
+    }
     if state.phase == .settled {
       if state.habitat > 0.1 { result.append(RenderItem(batch: ground, castsShadow: false)) }
       var rng = SeededRandom(seed: 813)

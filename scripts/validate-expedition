@@ -1,77 +1,201 @@
 #!/usr/bin/env python3
-"""Exercise a fresh expedition through the same actions as the native game; preserve the player's slot."""
-import os,sys
-if not os.environ.get('WRELA_CONTROL_ROOT'):
-    os.execv(sys.executable,[sys.executable,str(__import__('pathlib').Path(__file__).with_name('test')),'host','--game','sanctuary'])
+"""Exercise Sanctuary's living-world native controls in an isolated save slot."""
 import json
-import math
+import os
 from pathlib import Path
 import runpy
+import sys
 import uuid
 
-client = runpy.run_path(str(Path(__file__).with_name('gardenctl')))
-c, root = client['command'], client['ROOT']
-original = c('status')['state']
-assert original['mode'] == 'game', 'Run Sanctuary, not Soundstage'
-slot = 'validation-' + uuid.uuid4().hex[:12]
-checks, captures = [], []
+if not os.environ.get("WRELA_CONTROL_ROOT"):
+    os.execv(
+        sys.executable,
+        [sys.executable, str(Path(__file__).with_name("test")), "host", "--game", "sanctuary"],
+    )
+
+client = runpy.run_path(str(Path(__file__).with_name("gardenctl")))
+c, root = client["command"], client["ROOT"]
+original = c("status")["state"]
+assert original["mode"] == "game", "Run Sanctuary, not Soundstage"
+slot = "living-validation-" + uuid.uuid4().hex[:12]
+checks, captures, complete = [], [], False
+
 
 def check(name, value):
     checks.append(dict(name=name, passed=bool(value)))
-    if not value: raise AssertionError(name)
+    if not value:
+        raise AssertionError(name)
 
-def state(): return c('status')['state']['expedition']
+
+def status():
+    return c("status")["state"]
+
+
+def living():
+    return status()["livingWorld"]
+
+
+def expedition():
+    return status()["expedition"]
+
+
+def persistent_state():
+    return dict(living=living(), expedition=expedition())
+
+
+def simulation_snapshot():
+    """Canonical game-owned state, including construction transforms and selection."""
+    return c("simulationState")["snapshot"]
+
+
+def reject(action, **values):
+    try:
+        c(action, **values)
+        return False
+    except RuntimeError:
+        return True
+
+
+def run_actions(actions):
+    """Use the generic production SimulationAction transport, not a test-only game path."""
+    return c("simulationRun", actions=actions)
+
 
 try:
-    c('pause', value=True)
-    c('expeditionSlot', name=slot)
-    c('scene', value='garden')
-    c('interact')
-    check('Distant interaction cannot rescue', state()['phase'] == 'searching')
-    for x,z in state()['signs']:
-        c('camera', x=x, z=z+1, yaw=0, pitch=-0.5)
-        c('interact')
-    check('All evidence is discoverable', state()['discoveredSigns'] == [0,1,2])
-    c('camera', x=-3, z=-80, yaw=0, pitch=-0.2)
-    c('interact')
-    check('Immediate rescue requires trust', state()['phase'] == 'searching')
-    c('step', frames=300)
-    check('Calm visible approach builds trust', state()['trust'] > 0.99)
-    captures.append(c('capture', label='expedition-wild'))
-    c('interact')
-    check('Rescue transitions to carrying', state()['phase'] == 'carrying')
-    identity=state()['creatureID']
-    c('interact')
-    check('Cannot release outside sanctuary', state()['phase'] == 'carrying')
-    c('saveExpedition')
-    c('expeditionSlot', name=slot+'-other')
-    c('expeditionSlot', name=slot)
-    check('Carrying state survives reload', state()['phase']=='carrying' and state()['creatureID']==identity)
-    c('camera', x=0, z=21, yaw=0, pitch=-0.3)
-    c('interact')
-    check('Release creates one resident', state()['phase']=='settled' and state()['habitat']==0)
-    captures.append(c('capture', label='expedition-habitat-before'))
-    c('step', frames=600); c('step', frames=600)
-    check('Habitat develops over fixed simulation steps', state()['habitat']==1)
-    captures.append(c('capture', label='expedition-habitat-after'))
-    check('Habitat response changes the rendered image', Path(captures[-1]['path']).read_bytes()!=Path(captures[-2]['path']).read_bytes())
-    c('interact')
-    check('Resident reveals the northern mystery', state()['legendaryHint'])
-    for _ in range(3): c('interact')
-    check('Repeat interaction preserves resident identity', state()['phase']=='settled' and state()['creatureID']==identity)
-    c('saveExpedition'); c('expeditionSlot', name=slot+'-other'); c('expeditionSlot', name=slot)
-    check('Habitat and discovery survive save reload', state()['habitat']==1 and state()['legendaryHint'])
-    try:
-        c('expeditionSlot', name='../expedition')
-        rejected=False
-    except RuntimeError: rejected=True
-    check('Invalid slot cannot switch or overwrite saves', rejected and state()['saveSlot']==slot)
-    check('No GPU command errors', not c('status')['state']['gpuErrors'])
+    c("pause", value=True)
+    c("expeditionSlot", name=slot)
+    c("scene", value="garden")
+
+    # Commands share the native text submission method; OS typing is checked separately. Rejection must not
+    # add memory, discovery, planting, construction, or a partial save.
+    before = persistent_state()
+    check(
+        "Unknown creature phrase rejects without mutation",
+        reject("addressCreature", text="describe a new animal for me") and persistent_state() == before,
+    )
+    before = persistent_state()
+    check(
+        "Oversized creature phrase rejects without mutation",
+        reject("addressCreature", text="x" * 161) and persistent_state() == before,
+    )
+
+    # Face the Sunhare five metres away. The camera command reuses the game
+    # grounding path; the two greetings cover typed input and E interaction.
+    c("camera", x=2, z=23, yaw=0, pitch=-0.08)
+    check("Visible nearest wildlife is the Sunhare", living()["nearbyAnimalID"] == "sunhare-001")
+    generic = run_actions([{"request": {"_0": "hello"}}])
+    check(
+        "Generic request action reaches production wildlife",
+        generic["observations"]["nearbyAnimalID"] == "sunhare-001"
+        and generic["observations"]["observedAnimals"] == "1",
+    )
+    c("addressCreature", text="hello")
+    c("interact")
+    check(
+        "Typed hello and E record real wildlife evidence",
+        living()["observedAnimals"] == "1" and living()["lastAnimalRequest"] == "greeting",
+    )
+
+    reference = c("capture", label="living-paused-reference")
+    repeat_capture = c("capture", label="living-paused-repeat")
+    check(
+        "Paused living capture is exact",
+        Path(reference["path"]).read_bytes() == Path(repeat_capture["path"]).read_bytes(),
+    )
+    captures.extend([reference, repeat_capture])
+
+    # Native bounded controls refresh the presentation after the source-owned
+    # terrain/construction change. simulationRun also exercises .control.
+    c("natureControl", controlID="flowers")
+    c("natureControl", controlID="raise")
+    changed = c("capture", label="living-flower-raised")
+    captures.append(changed)
+    check(
+        "Flowers and raised terrain persist through native controls",
+        living()["gardenPatchCount"] == "1" and living()["terrainPatchCount"] == "1",
+    )
+    generic = run_actions([{"control": {"_0": "journal"}}])
+    current_living = living()
+    check("Generic control action preserves the living world",
+          all(generic["observations"].get(key) == value for key, value in current_living.items()))
+    c("natureControl", controlID="undoPlanting")
+    check(
+        "Undo removes only the raised terrain contribution",
+        living()["gardenPatchCount"] == "1" and living()["terrainPatchCount"] == "0",
+    )
+    # Construction editing stays in the ordinary host control path. The camera
+    # relocation is fixture setup; every edit below is a production control.
+    c("camera", x=100, z=100, yaw=0, pitch=-0.08)
+    c("natureControl", controlID="build-bench")
+    built = simulation_snapshot()
+    check("Bench is constructed through native control", living()["buildingCount"] == "1")
+
+    check(
+        "Unselected construction removal rejects atomically",
+        reject("natureControl", controlID="building-remove") and simulation_snapshot() == built,
+    )
+    c("natureControl", controlID="building-select")
+    selected = simulation_snapshot()
+    check("Construction selection enters a persisted edit session", selected != built)
+
+    c("natureControl", controlID="building-turn")
+    turned = simulation_snapshot()
+    check("Selected construction turns through native control", turned != selected)
+    c("natureControl", controlID="building-larger")
+    before_resize = simulation_snapshot()
+    c("natureControl", controlID="building-resize")
+    resized = simulation_snapshot()
+    check("Selected construction resizes through native control", resized != before_resize)
+
+    c("camera", x=112, z=100, yaw=0, pitch=-0.08)
+    before_move = simulation_snapshot()
+    c("natureControl", controlID="building-move")
+    moved = simulation_snapshot()
+    check("Selected construction moves through native control", moved != before_move)
+    c("natureControl", controlID="building-finish")
+    finished = simulation_snapshot()
+    check("Finish editing clears the persisted construction selection", finished != moved)
+
+    c("natureControl", controlID="building-select")
+    c("natureControl", controlID="building-remove")
+    removed = simulation_snapshot()
+    check("Selected construction removes through native control", living()["buildingCount"] == "0")
+    c("natureControl", controlID="undoBuilding")
+    restored = simulation_snapshot()
+    check(
+        "Construction undo restores the removed edited placement",
+        living()["buildingCount"] == "1" and restored != removed,
+    )
+
+    # Save the state after all mutations. Loading a second isolated slot and
+    # returning must restore the exact living snapshot, not only HUD counters.
+    c("saveExpedition")
+    saved = persistent_state()
+    saved_snapshot = simulation_snapshot()
+    c("expeditionSlot", name=slot + "-other")
+    c("expeditionSlot", name=slot)
+    check(
+        "Living state and edited construction survive named-slot reopen",
+        persistent_state() == saved and simulation_snapshot() == saved_snapshot,
+    )
+    before = persistent_state()
+    check(
+        "Invalid slot cannot switch or overwrite living state",
+        reject("expeditionSlot", name="../expedition") and persistent_state() == before,
+    )
+    check("No GPU command errors", not status()["gpuErrors"])
+    complete = True
 finally:
-    c('expeditionSlot', name=original['expedition']['saveSlot'])
-    camera=original['camera']
-    c('camera', x=camera['position'][0], z=camera['position'][2], yaw=camera['yaw'], pitch=camera['pitch'])
-    c('scene', value=original['scene']); c('pause', value=original['paused'])
-    result=dict(checks=checks, captures=captures, slot=slot)
-    path=root/'expedition-validation.json';path.write_text(json.dumps(result,indent=2))
-print(json.dumps(dict(passed=len(checks), report=str(path)),indent=2))
+    c("expeditionSlot", name=original["expedition"]["saveSlot"])
+    camera = original["camera"]
+    c(
+        "camera", x=camera["position"][0], z=camera["position"][2],
+        yaw=camera["yaw"], pitch=camera["pitch"],
+    )
+    c("scene", value=original["scene"])
+    c("pause", value=original["paused"])
+    report = dict(checks=checks, captures=captures, slot=slot, passed=complete)
+    path = root / "expedition-validation.json"
+    path.write_text(json.dumps(report, indent=2))
+
+print(json.dumps(dict(passed=len(checks), report=str(path)), indent=2))

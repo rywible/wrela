@@ -311,6 +311,7 @@ final class WorkshopPanel: NSView {
     }
     add(row([isolateButton, button("Frame selected part") { try $0.framePart() }]))
     add(button("Frame visible surfaces") { _ = try $0.frameVisibleSurface() })
+    add(slider("Vertical field of view · degrees", "camera.verticalFOVDegrees", WorkshopRenderer.defaultVerticalFOVDegrees, 8...100) { try $0.setStudioLens($1) })
     surfaceReviewPopup = WorkshopPopup("Surface review", ["material", "clay"]) { [weak self] mode in
       self?.perform("Surface review") { try $0.editSurfaceReview(mode: mode) }
     }
@@ -917,6 +918,7 @@ final class WorkshopPanel: NSView {
       "scale": joint.scale,
       "roughness": selectedAnatomy?.roughness ?? selectedPart?.roughness ?? 0.7, "metallic": selectedAnatomy?.metallic ?? selectedPart?.metallic ?? 0,
     ]
+    map["camera.verticalFOVDegrees"]=r.verticalFOVDegrees
     for (key, value) in partValues { map["part." + key] = value }
     for (key, control) in sliders where key.hasPrefix("part.") {
       control.isEnabled = selectedPart != nil

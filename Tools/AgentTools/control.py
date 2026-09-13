@@ -46,12 +46,14 @@ def main():
         sub.add_parser(name).add_argument('value', choices=['true', 'false'])
     sub.add_parser('capture').add_argument('--label', default='capture')
     sub.add_parser('step').add_argument('--frames', type=int, default=1)
-    for name, fields in [('camera', ['x', 'z', 'yaw', 'pitch', 'orbit', 'elevation', 'distance', 'metres']),
+    for name, fields in [('camera', ['x', 'z', 'yaw', 'pitch', 'orbit', 'elevation', 'distance', 'metres', 'verticalFOVDegrees']),
                          ('move', ['x', 'z']), ('parameters', ['scale', 'exposure', 'wind', 'wetness']),
                          ('sky', ['altitude', 'azimuth', 'coverage', 'density', 'haze', 'cloudSeed']),
                          ('query', ['x', 'y', 'z'])]:
         p = sub.add_parser(name)
         for field in fields: p.add_argument('--' + field, type=float)
+    ambient_floor = sub.add_parser('outdoorAmbientFloor')
+    for channel in ['red', 'green', 'blue']: ambient_floor.add_argument('--' + channel, type=float)
     for name in ['checkpoint','restoreCheckpoint','pinBaseline','selectBaseline','expeditionSlot']:
         sub.add_parser(name).add_argument('name')
     sub.add_parser('subject').add_argument('value')

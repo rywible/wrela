@@ -20,6 +20,7 @@ public indirect enum Shape: Sendable {
     case sphere(Float)
     case box(V3)
     case capsule(V3, V3, Float)
+    case loft(SectionLoft)
     case torus(Float, Float)
     case translated(Shape, V3)
     case scaled(Shape, Float)
@@ -42,8 +43,10 @@ public indirect enum Shape: Sendable {
     public var semantics: FieldSemantics {
         switch self {
         case .sphere, .box, .capsule, .torus: return .exactDistance
+        case .loft:return .implicit
+        case let .stretched(a,_):return a.semantics == .implicit ? .implicit:.distanceBound
+        case let .union(a,b),let .subtract(a,b),let .smoothUnion(a,b,_),let .smoothSubtract(a,b,_):return a.semantics == .implicit || b.semantics == .implicit ? .implicit:.distanceBound
         case let .translated(a, _), let .scaled(a, _), let .rotated(a, _): return a.semantics
-        default: return .distanceBound
         }
     }
 
@@ -53,6 +56,7 @@ public indirect enum Shape: Sendable {
     public var exteriorDistanceScale:Float {
         switch self {
         case let .translated(a,_),let .scaled(a,_),let .rotated(a,_),let .subtract(a,_),let .smoothSubtract(a,_,_):return a.exteriorDistanceScale
+        case let .loft(l):return min(1,l.scale / max(l.bounds.max.x-l.bounds.min.x,l.bounds.max.y-l.bounds.min.y)) / sqrt(2)
         case let .stretched(a,s):return a.exteriorDistanceScale*Swift.min(s.x,Swift.min(s.y,s.z))/Swift.max(s.x,Swift.max(s.y,s.z))
         case let .union(a,b),let .smoothUnion(a,b,_):return Swift.min(a.exteriorDistanceScale,b.exteriorDistanceScale)
         default:return 1
@@ -63,6 +67,7 @@ public indirect enum Shape: Sendable {
         func positive(_ x: Float) throws { if !x.isFinite || x <= 0 { throw FieldError.invalidParameter } }
         func finite(_ p: V3) throws { if !p.x.isFinite || !p.y.isFinite || !p.z.isFinite { throw FieldError.invalidParameter } }
         switch self {
+        case let .loft(l):try l.validate()
         case let .sphere(r): try positive(r)
         case let .box(b): try positive(b.x); try positive(b.y); try positive(b.z)
         case let .capsule(a,b,r): try finite(a); try finite(b); try positive(r)
@@ -80,6 +85,7 @@ public indirect enum Shape: Sendable {
 
     public func value(at p: V3) -> Float {
         switch self {
+        case let .loft(l):return l.sample(at:p).value
         case let .sphere(r): return length(p) - r
         case let .box(b):
             let q = abs(p) - b
@@ -110,6 +116,7 @@ public indirect enum Shape: Sendable {
     public func sample(at p: V3) -> FieldSample {
         func radial(_ v:V3)->V3 {let r=length(v);return r>0 ? v/r:.zero}
         switch self {
+        case let .loft(l):return l.sample(at:p)
         case let .sphere(r):return FieldSample(length(p)-r,radial(p))
         case let .box(b):
             let q=abs(p)-b,outside=simd_max(q,.zero),sign=V3(p.x<0 ? -1:1,p.y<0 ? -1:1,p.z<0 ? -1:1)
@@ -146,6 +153,7 @@ public indirect enum Shape: Sendable {
 
     public var bounds: Bounds {
         switch self {
+        case let .loft(l):return l.bounds
         case let .sphere(r): return Bounds(V3(repeating:-r), V3(repeating:r))
         case let .box(b): return Bounds(-b,b)
         case let .capsule(a,b,r): return Bounds(simd_min(a,b),simd_max(a,b)).expanded(r)

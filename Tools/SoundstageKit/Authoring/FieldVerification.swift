@@ -5,6 +5,56 @@ import Foundation
 import Metal
 import simd
 
+enum NightEnvironmentVerification {
+  struct Sample {
+    var direction: SIMD3<Float>
+    var transmission: Float
+    var floor: SIMD3<Float>
+    var outdoor: Bool
+  }
+
+  static func unit(direction: SIMD3<Float>, transmission: Float) -> Float {
+    let t = transmission.isFinite ? clamp(transmission, 0, 1) : 0
+    let shape = direction.y >= 0 ? 0.1 + 1.05 * clamp(direction.y, 0, 1) : 0.18
+    return shape * (0.25 + 0.75 * t)
+  }
+
+  static func coefficient(floor: SIMD3<Float>, outdoor: Bool) -> SIMD3<Float> {
+    guard outdoor else { return .zero }
+    return SIMD3<Float>(
+      floor.x.isFinite ? clamp(floor.x, 0, 0.25) : 0,
+      floor.y.isFinite ? clamp(floor.y, 0, 0.25) : 0,
+      floor.z.isFinite ? clamp(floor.z, 0, 0.25) : 0) * 1.25
+  }
+
+  static func evaluate(_ sample: Sample) -> SIMD4<Float> {
+    let value = unit(direction: sample.direction, transmission: sample.transmission)
+    return SIMD4<Float>(coefficient(floor: sample.floor, outdoor: sample.outdoor) * value, value)
+  }
+
+  /// Independent equal-solid-angle integration of the authored clear night environment.
+  /// This deliberately does not reuse the production 128-direction golden-angle quadrature.
+  static func clearSkyIrradianceOverPi(
+    normal: SIMD3<Float>, rings: Int = 256, azimuths: Int = 512
+  ) -> Float {
+    guard rings > 0, azimuths > 0, normal.x.isFinite, normal.y.isFinite,
+      normal.z.isFinite, length_squared(normal) > 0 else { return 0 }
+    let n = normalize(SIMD3<Double>(Double(normal.x), Double(normal.y), Double(normal.z)))
+    var sum = 0.0
+    for ring in 0..<rings {
+      let y = -1.0 + (Double(ring) + 0.5) * 2.0 / Double(rings)
+      let radial = sqrt(max(0, 1 - y * y))
+      let radiance = y >= 0 ? 0.1 + 1.05 * y : 0.18
+      for azimuth in 0..<azimuths {
+        let phi = (Double(azimuth) + 0.5) * 2.0 * Double.pi / Double(azimuths)
+        let direction = SIMD3<Double>(radial * cos(phi), y, radial * sin(phi))
+        sum += radiance * max(dot(n, direction), 0)
+      }
+    }
+    return Float(sum * 4 / Double(rings * azimuths))
+  }
+}
+
 extension WorkshopRenderer {
   /// Run the production deformation function on the GPU and compare it with
   /// compiler-side auditing: correctives, rigid bends, antipodal rotations,
@@ -73,6 +123,10 @@ extension WorkshopRenderer {
   func verifyFields() throws -> [String: Any] {
     let fields: [(String, Shape)] = [
       ("sphere", Shape.sphere(1)),
+      ("section-loft", .loft(SectionLoft([
+        LoftSection(id:"base",z:-0.8,radius:SIMD2(0.3,0.4)),
+        LoftSection(id:"wide",z:0,center:SIMD2(0.1,0.2),radius:SIMD2(0.6,0.35)),
+        LoftSection(id:"tip",z:0.8,center:SIMD2(-0.05,0),radius:SIMD2(0.08,0.12))]))),
       (
         "transformed-union",
         Shape.sphere(1).sized(2.3).moved(V3(-1, 0.5, 0.4)).joined(.box(V3(1, 0.4, 0.7)))
@@ -132,6 +186,93 @@ extension WorkshopRenderer {
 }
 
 extension WorkshopRenderer {
+  /// Runs the production night-environment function on Metal and compares every
+  /// channel with the independent CPU definition. This kernel is diagnostic only.
+  func verifyNightEnvironment() throws -> Float {
+    let surfaceURL = Bundle.main.url(forResource: "Surface", withExtension: "metal")
+      ?? ProjectContext.workspace.appendingPathComponent("Engine/FieldEngine/Resources/Surface.metal")
+    let atmosphereURL = Bundle.main.url(forResource: "Atmosphere", withExtension: "metal")
+      ?? ProjectContext.workspace.appendingPathComponent("Engine/FieldEngine/Resources/Atmosphere.metal")
+    var source = try String(contentsOf: surfaceURL, encoding: .utf8)
+    source = source.replacingOccurrences(
+      of: "// ATMOSPHERE", with: try String(contentsOf: atmosphereURL, encoding: .utf8))
+    source = source.replacingOccurrences(of: "// PROJECT_SURFACES", with:
+      "void projectSurface(int kind,float3 local,float3 world,float3 n,thread float3 &color,thread float &rough,thread float &bump,thread float &strength) {}")
+    guard source.contains("kernel void nightEnvironmentCheck") else {
+      throw RuntimeError.message("Missing production night environment check")
+    }
+    let library = try device.makeLibrary(source: source, options: nil)
+    guard let function = library.makeFunction(name: "nightEnvironmentCheck") else {
+      throw RuntimeError.message("Missing compiled night environment check")
+    }
+    let pipeline = try device.makeComputePipelineState(function: function)
+    let nan = Float.nan
+    typealias Sample = NightEnvironmentVerification.Sample
+    var samples: [Sample] = []
+    samples.reserveCapacity(8)
+    samples.append(Sample(
+      direction: SIMD3<Float>(0, 1, 0), transmission: 1,
+      floor: SIMD3<Float>(0.16, 0.08, 0.24), outdoor: true))
+    samples.append(Sample(
+      direction: SIMD3<Float>(0, -1, 0), transmission: 0,
+      floor: SIMD3<Float>(0.16, 0.08, 0.24), outdoor: true))
+    samples.append(Sample(
+      direction: SIMD3<Float>(1, 0, 0), transmission: 0.4,
+      floor: SIMD3<Float>(0.16, 0.08, 0.24), outdoor: true))
+    let oblique = normalize(SIMD3<Float>(1, 0.6, -0.2))
+    samples.append(Sample(
+      direction: oblique, transmission: 2,
+      floor: SIMD3<Float>(-1, 0.1, 0.9), outdoor: true))
+    samples.append(Sample(
+      direction: SIMD3<Float>(0, 2, 0), transmission: -2,
+      floor: SIMD3<Float>(nan, 0.1, 0.2), outdoor: true))
+    samples.append(Sample(
+      direction: SIMD3<Float>(0, 1, 0), transmission: nan,
+      floor: SIMD3<Float>(0.2, 0.1, 0.05), outdoor: true))
+    samples.append(Sample(
+      direction: SIMD3<Float>(0, 1, 0), transmission: 1,
+      floor: SIMD3<Float>(0.2, 0.1, 0.05), outdoor: false))
+    samples.append(Sample(
+      direction: SIMD3<Float>(0, 1, 0), transmission: 1,
+      floor: SIMD3<Float>.zero, outdoor: true))
+    var inputValues: [SIMD4<Float>] = []
+    inputValues.reserveCapacity(samples.count * 2)
+    for sample in samples {
+      inputValues.append(SIMD4<Float>(sample.direction, sample.transmission))
+      inputValues.append(SIMD4<Float>(sample.floor, sample.outdoor ? 1 : 0))
+    }
+    let input = device.makeBuffer(bytes: inputValues, length: inputValues.count * 16)!
+    let output = device.makeBuffer(length: samples.count * 16, options: .storageModeShared)!
+    var count = UInt32(samples.count)
+    let command = queue.makeCommandBuffer()!
+    let encoder = command.makeComputeCommandEncoder()!
+    encoder.setComputePipelineState(pipeline)
+    encoder.setBuffer(input, offset: 0, index: 0)
+    encoder.setBuffer(output, offset: 0, index: 1)
+    encoder.setBytes(&count, length: 4, index: 2)
+    encoder.dispatchThreads(
+      MTLSize(width: samples.count, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: pipeline.threadExecutionWidth, height: 1, depth: 1))
+    encoder.endEncoding()
+    command.commit()
+    command.waitUntilCompleted()
+    if let error = command.error { throw error }
+    let gpu = output.contents().assumingMemoryBound(to: SIMD4<Float>.self)
+    var maximum: Float = 0
+    for index in samples.indices {
+      let expected = NightEnvironmentVerification.evaluate(samples[index])
+      for channel in 0..<4 {
+        let error = abs(gpu[index][channel] - expected[channel])
+        guard gpu[index][channel].isFinite, error < 0.000002 else {
+          throw RuntimeError.message(
+            "CPU/GPU night environment mismatch at sample \(index), channel \(channel): \(expected[channel]) / \(gpu[index][channel])")
+        }
+        maximum = max(maximum, error)
+      }
+    }
+    return maximum
+  }
+
   /// Actual GPU quadrature against the closed-form diffuse view factor of two
   /// constant hemispheres. Catches normal-dependent sampling bands and energy errors.
   func verifyDiffuseLighting() throws -> Float {
@@ -173,25 +314,33 @@ extension WorkshopRenderer {
         $0.baseAddress!, bytesPerRow: width * 16, from: MTLRegionMake2D(0, 0, width, height),
         mipmapLevel: 0)
     }
-    var maximum: Float = 0
+    var solarMaximum: Float = 0
+    var nightMaximum: Float = 0
     for y in 0..<height {
       let v = (Float(y) + 0.5) / Float(height) * 2 - 1
       let ny = sin((v < 0 ? -1 : 1) * v * v * Float.pi * 0.5)
       let expected =
         SIMD3<Float>(repeating: (1 + ny) / 2) + SIMD3<Float>(0.18, 0.20, 0.12) * ((1 - ny) / 2)
+      let expectedNight = NightEnvironmentVerification.clearSkyIrradianceOverPi(
+        normal: SIMD3(sqrt(max(0, 1 - ny * ny)), ny, 0), rings: 128, azimuths: 256)
       for x in 0..<width {
         let actual = pixels[y * width + x]
         for channel in 0..<3 {
           guard actual[channel].isFinite else {
             throw RuntimeError.message("Nonfinite sky irradiance")
           }
-          maximum = max(maximum, abs(actual[channel] - expected[channel]))
+          solarMaximum = max(solarMaximum, abs(actual[channel] - expected[channel]))
         }
+        guard actual.w.isFinite else { throw RuntimeError.message("Nonfinite night irradiance") }
+        nightMaximum = max(nightMaximum, abs(actual.w - expectedNight))
       }
     }
-    guard maximum < 0.009 else {
-      throw RuntimeError.message("Diffuse sky quadrature error \(maximum) exceeds 0.009")
+    guard solarMaximum < 0.009 else {
+      throw RuntimeError.message("Diffuse sky quadrature error \(solarMaximum) exceeds 0.009")
     }
-    return maximum
+    guard nightMaximum < 0.0035 else {
+      throw RuntimeError.message("Night environment quadrature error \(nightMaximum) exceeds 0.0035")
+    }
+    return max(solarMaximum, nightMaximum)
   }
 }

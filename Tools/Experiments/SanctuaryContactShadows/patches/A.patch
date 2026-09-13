@@ -1,0 +1,15 @@
+--- a/Engine/FieldEngine/Resources/Surface.metal
++++ b/Engine/FieldEngine/Resources/Surface.metal
+@@ -345,6 +345,12 @@
+             for(int y=-2;y<=2;y++)for(int x=-2;x<=2;x++) {
+                 float2 offset=float2(x,y)*spread/2048.;
+                 visibility+=shadowMap.sample_compare(shadowSampler,suv+offset,sc.z+dot(gradient,offset)-bias)/25.;
++            }
++        } else if(u.rigPosition.w<=.5) {
++            // Diagnostic A: compact outdoor contact filter; receiver bias unchanged.
++            for(int y=-1;y<=1;y++)for(int x=-1;x<=1;x++) {
++                float2 offset=float2(x,y)/2048.;
++                visibility+=shadowMap.sample_compare(shadowSampler,suv+offset,sc.z+dot(gradient,offset)-bias)/9.;
+             }
+         } else {
+             // Exact adjacent-texel pairing for the compact bilinear 5×5 box.

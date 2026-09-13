@@ -1,6 +1,18 @@
 #!/bin/zsh
 set -eu
 cd "${0:A:h:h}"
+if [[ "${1:-}" == "--reuse-stage" ]]; then
+ if [[ "$#" -ne 2 && "$#" -ne 4 ]] || [[ "$2" != /* ]] \
+   || [[ "$#" -eq 4 && "$3" != "--test-filter" ]]; then
+  print -u2 "usage: ./scripts/build --reuse-stage /absolute/stable-stage [--test-filter FILTER]"
+  exit 2
+ fi
+ if [[ "$#" -eq 4 ]]; then
+  exec /usr/bin/python3 -B "$PWD/Tools/Testing/candidate_stage.py" \
+    "$PWD" "$2" --test-filter "$4"
+ fi
+ exec /usr/bin/python3 -B "$PWD/Tools/Testing/candidate_stage.py" "$PWD" "$2"
+fi
 export WRELA_BUILD_PRODUCT="${1:-}"
 if [[ -n "$WRELA_BUILD_PRODUCT" ]]; then
  swift build -c release --product "$WRELA_BUILD_PRODUCT"
@@ -8,12 +20,15 @@ else
  swift build -c release
 fi
 /usr/bin/python3 - "$PWD" <<'PY'
-import plistlib,pathlib,sys,subprocess,shutil,hashlib,os
-workspace=pathlib.Path(sys.argv[1]);revision=subprocess.check_output(['git','rev-parse','--short','HEAD'],text=True).strip()
-if subprocess.check_output(['git','status','--porcelain'],text=True).strip():revision+='-working-tree'
-digest=hashlib.sha256()
-for source in sorted(p for folder in ['Engine','Games','Tools'] for p in (workspace/folder).rglob('*'))+[workspace/'Package.swift']:
- if source.is_file():digest.update(str(source.relative_to(workspace)).encode());digest.update(source.read_bytes())
+import plistlib,pathlib,sys,subprocess,shutil,os
+workspace=pathlib.Path(sys.argv[1]);revision=os.environ.get('WRELA_BUILD_REVISION')
+if not revision:
+ revision=subprocess.check_output(['git','rev-parse','--short','HEAD'],text=True).strip()
+ if subprocess.check_output(['git','status','--porcelain'],text=True).strip():revision+='-working-tree'
+bundle_workspace=pathlib.Path(os.environ.get('WRELA_BUNDLE_WORKSPACE',str(workspace))).resolve()
+sys.path.insert(0,str(workspace/'Tools/Testing'))
+from provenance import build_source_digest
+digest=build_source_digest(workspace)
 for product,identifier in [('Sanctuary','dev.sanctuary.fieldgarden'),('Cave','dev.wrela.cave'),('Soundstage','dev.sanctuary.soundstage')]:
  if os.environ.get('WRELA_BUILD_PRODUCT') and product!=os.environ['WRELA_BUILD_PRODUCT']:continue
  app=workspace/'.build'/f'{product}.app';(app/'Contents/MacOS').mkdir(parents=True,exist_ok=True);(app/'Contents/Resources').mkdir(exist_ok=True)
@@ -23,7 +38,7 @@ for product,identifier in [('Sanctuary','dev.sanctuary.fieldgarden'),('Cave','de
   (app/'Contents/Resources'/obsolete).unlink(missing_ok=True)
  old=app/'Contents/MacOS/Sanctuary'
  if product=='Soundstage' and old.exists():old.unlink()
- info=dict(CFBundleExecutable=product,CFBundleIdentifier=identifier,CFBundleName=product,CFBundleDisplayName=product,CFBundlePackageType='APPL',CFBundleVersion='1',CFBundleShortVersionString='0.2.0',NSHighResolutionCapable=True,LSMinimumSystemVersion='14.0',SanctuaryWorkspace=str(workspace),SanctuaryRevision=revision,SanctuarySourceDigest=digest.hexdigest())
+ info=dict(CFBundleExecutable=product,CFBundleIdentifier=identifier,CFBundleName=product,CFBundleDisplayName=product,CFBundlePackageType='APPL',CFBundleVersion='1',CFBundleShortVersionString='0.2.0',NSHighResolutionCapable=True,LSMinimumSystemVersion='14.0',SanctuaryWorkspace=str(bundle_workspace),SanctuaryRevision=revision,SanctuarySourceDigest=digest)
  with (app/'Contents/Info.plist').open('wb') as f:plistlib.dump(info,f)
  subprocess.run(['codesign','--force','--sign','-',str(app)],check=True)
  print('Built',app)

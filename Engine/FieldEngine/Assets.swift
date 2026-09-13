@@ -345,7 +345,13 @@ package struct AssetSource: Codable {
         (b.mesh,b.skinWeights)=try SculptCompiler.refine(b.mesh,weights:b.skinWeights,levels:levels);b.lodMeshes=[]
       }
       for detail in craft.detailPatches where detail.part==b.name {
-        (b.mesh,b.skinWeights)=try SculptCompiler.refineLocal(b.mesh,weights:b.skinWeights,detail:detail);b.lodMeshes=[]
+        var field:Shape?
+        if detail.projection != nil {
+          try CraftError.require(!craft.clothPanels.contains{$0.part==b.name} && !craft.grooms.contains{$0.part==b.name}
+            && !b.skinJoints.contains{resolvedGuideOffsets[$0] != nil},"detail.\(detail.id).projection","Field projection requires anatomy before guide/garment deformation")
+          field=try craft.anatomy.first{$0.part==b.name}?.shape()
+        }
+        (b.mesh,b.skinWeights)=try SculptCompiler.refineLocal(b.mesh,weights:b.skinWeights,detail:detail,field:field);b.lodMeshes=[]
       }
       let edits=surfaceEdits.filter {$0.part==b.name || ($0.targets ?? []).contains(b.name)}
       for edit in edits {b.mesh=try SurfaceEditing.apply([edit],to:b.mesh,requireCoverage:edit.part==b.name)}

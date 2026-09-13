@@ -4,6 +4,73 @@ import FieldCompiler
 import simd
 
 final class LocalRefinementTests:XCTestCase {
+  func testLocalRemeshingKeepsClosedTopologyAndFixedExterior() throws {
+    let field=Shape.sphere(1),mesh=try Mesher.compile(field,resolution:32),skin=mesh.vertices.map{_ in SkinWeight(0)}
+    let detail=SculptDetail(id:"local-remesh",part:"skin",center:V3(0,0,1),radius:V3(repeating:0.7),edgeLength:0.5,maximumNewVertices:1000,
+      projection:SculptProjection(maximumDistance:0.05,tolerance:0.000001,retriangulate:true))
+    let (output,weights)=try SculptCompiler.refineLocal(mesh,weights:skin,detail:detail,field:field)
+    XCTAssertLessThan(output.indices.count,mesh.indices.count)
+    XCTAssertTrue(SurfaceCompiler.isClosed(output))
+    XCTAssertEqual(weights.count,output.vertices.count);XCTAssertTrue(weights.allSatisfy{$0.joints.x==0 && $0.weights.x==1})
+    func exterior(_ m:Mesh)->Set<V3> {Set(m.vertices.compactMap{v in let p=V3(v.position.x,v.position.y,v.position.z);return length(p-detail.center)>detail.radius.x ? p:nil})}
+    XCTAssertEqual(exterior(output),exterior(mesh))
+  }
+  func testOptionalRetriangulationRepairsSliversWithoutMovingVerticesOrSkin() throws {
+    var mesh=Mesh();mesh.vertices=[V3(0,0,0),V3(0.1,0,0),V3(0.05,0.0001,0),V3(0.05,-0.1,0)].map{Vertex($0,V3(0,0,1),V3(repeating:0.5))}
+    mesh.indices=[0,1,2,1,0,3]
+    let skin=mesh.vertices.map{_ in SkinWeight(0)},field=Shape.box(V3(1,1,1)).moved(V3(0,0,-1))
+    let detail=SculptDetail(id:"sliver",part:"skin",center:.zero,radius:V3(repeating:1),edgeLength:0.5,maximumNewVertices:100,
+      projection:SculptProjection(maximumDistance:0.01,tolerance:0.000001,retriangulate:true))
+    let (out,weights)=try SculptCompiler.refineLocal(mesh,weights:skin,detail:detail,field:field)
+    XCTAssertEqual(out.vertices.map(\.position),mesh.vertices.map(\.position))
+    XCTAssertEqual(weights.map(\.joints),skin.map(\.joints));XCTAssertEqual(weights.map(\.weights),skin.map(\.weights))
+    XCTAssertNotEqual(out.indices,mesh.indices)
+    for i in stride(from:0,to:out.indices.count,by:3) {
+      let p=(0..<3).map{out.vertices[Int(out.indices[i+$0])].position}
+      XCTAssertGreaterThan(length(cross(V3(p[1].x-p[0].x,p[1].y-p[0].y,0),V3(p[2].x-p[0].x,p[2].y-p[0].y,0))),0.004)
+    }
+    XCTAssertEqual(try SculptCompiler.refineLocal(mesh,weights:skin,detail:detail,field:field).0.indices,out.indices)
+  }
+  func testRefinementCoordinatesDuplicatedSeamEdgesWithoutBlendingAttributes() throws {
+    var mesh=Mesh()
+    let red=V3(1,0,0),blue=V3(0,0,1),normal=V3(0,0,1)
+    mesh.triangle(Vertex(V3(0,0,0),normal,red),Vertex(V3(1,0,0),normal,red),Vertex(V3(0,1,0),normal,red))
+    mesh.triangle(Vertex(V3(1,0,0),normal,blue),Vertex(V3(1,1,0),normal,blue),Vertex(V3(0,1,0),normal,blue))
+    let detail=SculptDetail(id:"seam",part:"skin",center:V3(0.12,0.12,0),radius:V3(repeating:0.03),edgeLength:0.08,maximumNewVertices:3000)
+    let (output,_)=try SculptCompiler.refineLocal(mesh,weights:[],detail:detail)
+    var redSeam:Set<V3>=[],blueSeam:Set<V3>=[]
+    for v in output.vertices {
+      XCTAssertTrue(v.color.x==1 || v.color.z==1,"Attribute seam was blended")
+      let p=V3(v.position.x,v.position.y,v.position.z)
+      if abs(p.x+p.y-1)<0.000001 {
+        if v.color.x==1 {redSeam.insert(p)} else {blueSeam.insert(p)}
+      }
+    }
+    XCTAssertGreaterThan(redSeam.count,2)
+    XCTAssertEqual(redSeam,blueSeam,"Only one side of a duplicated geometric edge was refined")
+  }
+  func testLocalFieldProjectionRecoversCurvatureAndRejectsWrongCorrespondence() throws {
+    let field=Shape.sphere(1),input=try Mesher.compile(field,resolution:12)
+    let skin=input.vertices.map{_ in SkinWeight(0)}
+    let detail=SculptDetail(id:"curvature",part:"skin",center:V3(0,0,1),radius:V3(repeating:0.5),edgeLength:0.06,
+      maximumNewVertices:4000,projection:SculptProjection(maximumDistance:0.06,tolerance:0.00001))
+    let (mesh,weights)=try SculptCompiler.refineLocal(input,weights:skin,detail:detail,field:field)
+    XCTAssertEqual(mesh.vertices.count,weights.count)
+    var interior=0,exterior=0
+    for i in mesh.vertices.indices {
+      let v=mesh.vertices[i],p=V3(v.position.x,v.position.y,v.position.z)
+      if length(p-detail.center)<0.3 {
+        XCTAssertLessThanOrEqual(abs(field.value(at:p)),0.000011)
+        XCTAssertGreaterThan(dot(V3(v.normal.x,v.normal.y,v.normal.z),normalize(p)),0.9999)
+        interior+=1
+      }
+      if i<input.vertices.count && length(p-detail.center)>0.51 {XCTAssertEqual(v.position,input.vertices[i].position);exterior+=1}
+    }
+    XCTAssertGreaterThan(interior,20);XCTAssertGreaterThan(exterior,20)
+    XCTAssertThrowsError(try SculptCompiler.refineLocal(input,weights:skin,detail:detail))
+    XCTAssertThrowsError(try SculptCompiler.refineLocal(input,weights:skin,detail:detail,field:.sphere(0.5)))
+    XCTAssertEqual(input.vertices.count,skin.count)
+  }
   func testLocalPatchInsideACoarseFacePreservesSurfaceAndSkinWithoutCracks() throws {
     let input=ParametricMesh.surface(u:2,v:2,position:{u,v in V3(u*2-1,0,v*2-1)},tint:{u,v in V3(u,v,0.5)})
     let skin=input.vertices.map{v->SkinWeight in var s=SkinWeight(0);let x=(v.position.x+1)/2;s.joints=SIMD4(0,1,0,0);s.weights=SIMD4(1-x,x,0,0);return s}

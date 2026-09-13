@@ -163,6 +163,11 @@ package struct BehaviorSnapshot: Codable {
   package init() {}
 }
 package struct AnimationDefinition {
+  /// Optional source-owned surface contacts evaluated at the saved study clock.
+  /// Transforms map the subject's local source into each displayed world placement.
+  /// The provider returns one validated, bounded snapshot across all placements.
+  package var surfaceInfluences: ((String, Float, BehaviorSnapshot, MotionParameters,
+    [simd_float4x4]) -> SurfaceInfluenceSnapshot)? = nil
   package var secondaryRig: (([String:Float])->SecondaryRig)?
 
   package var collisionBodies: [RigCapsule] = []

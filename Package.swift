@@ -78,6 +78,10 @@ let package = Package(
       dependencies: ["SanctuaryContent", "FieldCore", "FieldCompiler"],
       path: "Games/Sanctuary/Tests"),
     .testTarget(
+      name: "SanctuaryProjectTests",
+      dependencies: ["SanctuaryProject", "SanctuaryContent", "FieldEngine", "FieldCore", "FieldCompiler"],
+      path: "Games/Sanctuary/ProjectTests"),
+    .testTarget(
       name: "CaveContentTests", dependencies: ["CaveContent", "FieldCore"], path: "Games/Cave/Tests"
     ),
     .testTarget(

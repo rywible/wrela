@@ -1,8 +1,8 @@
 import simd
 
 extension Shape {
-    /// All supported fields are at most 1-Lipschitz, including conservative
-    /// nonuniform stretches. Only remove a CSG branch when its entire regional
+    /// Distance fields are at most 1-Lipschitz; implicit lofts supply explicit
+    /// interval enclosures. Only remove a CSG branch when its entire regional
     /// value interval loses, with an outward floating-point allowance.
     public func specialized(in region:Bounds)->Shape {
         func separated(_ a:Shape,_ b:Shape,band:Float)->Int {

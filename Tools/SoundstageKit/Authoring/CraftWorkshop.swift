@@ -5,17 +5,33 @@ import Foundation
 import simd
 
 extension WorkshopRenderer {
+  func anatomyExtractionDiagnostics(_ source:AnatomySource)->[String:Any] {
+    let encoder=JSONEncoder();encoder.outputFormatting=[.sortedKeys]
+    guard let data=try? encoder.encode(source),let key=String(data:data,encoding:.utf8),
+      let compiled=sculptAnatomyCache[key] else {return ["available":false]}
+    if let sampling=compiled.report.sampling {
+      return ["available":true,"algorithm":"conforming-octree-fans","sampling":(try? craftJSON(sampling)) ?? [:],
+        "limits":"Cached source extraction before sculpting. Density bounds apply to volume edges; sampled normals do not certify vertex links, intersections or geometric error. Tetrahedra are extraction cells, not simulated material."]
+    }
+    guard let report=compiled.mesh.report else {return ["available":false]}
+    return ["available":true,"vertices":compiled.mesh.vertices.count,"triangles":compiled.mesh.indices.count/3,
+      "tetrahedralFallback":report.usedReferenceFallback,
+      "referenceRefinedVertices":report.referenceRefinedVertices,"referenceHeldVertices":report.referenceHeldVertices,"dualInvertedTriangles":report.invertedTriangles,
+      "dualOrientedEdgeIncidence":report.manifold,"dualMaximumFieldResidual":report.maximumSampleResidual,
+      "limits":"Cached source extraction before sculpt/refinement. Oriented edge incidence and sampled normals do not certify vertex links or self-intersections."]
+  }
   func craftSnapshot() throws -> [String:Any] {
     ["revision":sourceRevision,"source":try craftJSON(studioSource.craft),"schema":CraftSchema.json,
       "parts":studioBatches.map{["id":$0.name,"vertices":$0.vertices.length/MemoryLayout<Vertex>.stride,"skinJoints":$0.skinJoints] as [String:Any]},
       "joints":try craftJSON(studioSource.joints),"guideNodes":try craftJSON(studioSource.resolvedSecondaryRig.nodes),
       "resolvedLandmarks":try craftJSON(studioSource.craft.boundLandmarks),
       "resolvedSurfaceLayers":try craftJSON(studioSource.resolvedSurfaceLayers),
-      "anatomy":studioSource.craft.anatomy.map{source in ["id":source.id,"part":source.part,"replaces":source.replaces,"regions":Array(Set(source.elements.map(\.region))).sorted(),"anchors":studioSource.craft.anatomyAnchors.filter{$0.source==source.id}.count,"internalStructures":source.internalElements.map(\.id)] as [String:Any]},
+      "anatomy":studioSource.craft.anatomy.map{source in ["id":source.id,"part":source.part,"replaces":source.replaces,"regions":Array(Set(source.elements.map(\.region))).sorted(),"anchors":studioSource.craft.anatomyAnchors.filter{$0.source==source.id}.count,"internalStructures":source.internalElements.map(\.id),"extraction":anatomyExtractionDiagnostics(source)] as [String:Any]},
       "clips":studioSource.animation?.clips ?? [],"contactChains":studioSource.animation?.contactChains.map(\.id) ?? [],
       "operations":[
         "craft {expectedRevision,operations:[{op:upsert,collection:anatomy|anatomyAnchors|anatomyBindings|contactChains|strokes|sculptLayers|detailPatches|landmarks|joints|skinFields|correctives|phrases|masses|guideChains|clothPanels|grooms|seams,value:record}]}",
         "capture returns metadata.sculptFrame; sculptProbe: frame token, expectedRevision, pixels[[x,y]], optional part/explain; actual rendered triangle to bind/source selection and local parameter response",
+        "fitAnatomy: source, controls[{id,terms[{element,parameter,scale}],minimum,maximum}], targets[{id,position,tolerance}], iterations; fit bounded linked source controls to base-field surface membership",
         "fitSculpt: key=new layer, part, controls[{center,radius}], targets[{id,point,target,tolerance}], protect optional, maximumDisplacement, maximumNormalChangeDegrees, iterations; bounded source-field fit with atomic rejection",
         "sculptOverlay: expectedRevision, value=null or {part,controls,protect}; orange influence and blue protection on native geometry; study-only",
         "frameVisible: expectedRevision, optional part; frame currently visible deformed surfaces, excluding hidden parts and motion envelopes",
@@ -46,6 +62,7 @@ extension WorkshopRenderer {
     var rebindPolicies:[String:AnatomyRebindPolicy]=[:]
     var posedFits:[[String:Any]]=[]
     var sculptFits:[[String:Any]]=[]
+    var anatomyFits:[[String:Any]]=[]
     let arrays=Set(["anatomy","anatomyAnchors","anatomyBindings","contactChains","landmarks","strokes","joints","skinFields","correctives","phrases","masses","guideChains","clothPanels","grooms","seams","sculptLayers","detailPatches"])
     func decodeDocument() throws -> CreatureCraft {
       try CraftSchema.validate(document)
@@ -160,6 +177,30 @@ extension WorkshopRenderer {
           }
         }
         var phrases=document["phrases"] as? [[String:Any]] ?? [];phrases.removeAll{$0["id"] as? String==phrase.id};phrases.append(try craftJSON(phrase) as! [String:Any]);document["phrases"]=phrases
+      case "fitAnatomy":
+        try keys(op,["op","source","controls","targets","iterations"])
+        var craft=try decodeDocument()
+        guard let id=op["source"] as? String,let sourceIndex=craft.anatomy.firstIndex(where:{$0.id==id}),
+          let rawControls=op["controls"] as? [[String:Any]],let rawTargets=op["targets"] as? [[String:Any]] else {
+          throw CraftError(path:"fitAnatomy",reason:"Supply an existing anatomy source, bounded linked controls and surface targets")
+        }
+        let part=craft.anatomy[sourceIndex].part
+        try CraftError.require(!candidate.surfaceEdits.contains{$0.part==part || ($0.targets ?? []).contains(part)} && !craft.strokes.contains{$0.part==part && $0.strength != 0}
+          && !craft.sculptLayers.flatMap(\.activeStrokes).contains{$0.part==part && $0.strength != 0},"fitAnatomy.layers","Disable sculpt layers on this part before fitting base anatomy; targets refer to the authoritative base field")
+        for control in rawControls {
+          try keys(control,["id","terms","minimum","maximum"])
+          guard let terms=control["terms"] as? [[String:Any]] else {throw CraftError(path:"fitAnatomy.controls",reason:"Each control needs linked parameter terms")}
+          for term in terms {try keys(term,["element","parameter","scale"])}
+        }
+        for target in rawTargets {try keys(target,["id","position","tolerance"])}
+        let controls=try JSONDecoder().decode([AnatomyFitControl].self,from:JSONSerialization.data(withJSONObject:rawControls))
+        let targets=try JSONDecoder().decode([AnatomySurfaceTarget].self,from:JSONSerialization.data(withJSONObject:rawTargets))
+        let count=try number(op,"iterations",24)
+        try CraftError.require(count.rounded()==count && (1...64).contains(count),"fitAnatomy.iterations","Use integer iterations 1…64")
+        let fit=try AnatomyIntentFit.fit(craft.anatomy[sourceIndex],controls:controls,targets:targets,iterations:Int(count))
+        craft.anatomy[sourceIndex]=fit.source;document["anatomy"]=try craftJSON(craft.anatomy)
+        anatomyFits.append(["source":id,"iterations":fit.iterations,"changes":try craftJSON(fit.changes),"residuals":try craftJSON(fit.residuals),
+          "limits":"Base-field surface membership in bind metres; residuals are abs(F)/length(gradient). This does not constrain tangential material-point motion, topology, untouched regions or collision. Existing correspondence recovery and compilation still apply."])
       case "fitSculpt":
         try keys(op,["op","key","part","controls","targets","maximumDisplacement","iterations","protect","maximumNormalChangeDegrees"])
         var craft=try decodeDocument()
@@ -288,7 +329,7 @@ extension WorkshopRenderer {
       correspondence.append(row)
     }
     try candidate.validate();try applySource(candidate)
-    return ["correspondence":correspondence,"posedFits":posedFits,"sculptFits":sculptFits]
+    return ["correspondence":correspondence,"posedFits":posedFits,"sculptFits":sculptFits,"anatomyFits":anatomyFits]
   }
 
   /// Read the actual immutable compiled buffers used by this preview. Source

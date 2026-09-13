@@ -18,6 +18,15 @@ public enum MetalField {
             let name="\(prefix)_\(nextID)";nextID+=1
             let body:String
             switch node {
+            case let .loft(l):
+                func v4(_ v:SIMD4<Float>)->String {"float4(\(f(v.x)),\(f(v.y)),\(f(v.z)),\(f(v.w)))"}
+                var code="float4 v; "
+                for (i,s) in l.segments.enumerated() {
+                    let condition=i==l.segments.count-1 ? "":"if (p.z <= \(f(s.z+s.span)))"
+                    code += (i==0 ? "":"else ")+condition+" { float t=clamp((p.z-(\(f(s.z))))/\(f(s.span)),0.0,1.0); v=((\(v4(s.a))*t+\(v4(s.b)))*t+\(v4(s.c)))*t+\(v4(s.d)); } "
+                }
+                code += "float radial=(length((p.xy-v.xy)/v.zw)-1.0)*min(v.z,v.w); return max(radial,max((\(f(l.sections[0].z)))-p.z,p.z-(\(f(l.sections.last!.z)))));"
+                body=code
             case let .sphere(r):body="return length(p)-\(f(r));"
             case let .box(b):body="float3 q=abs(p)-\(vector(b)); return length(max(q,0.0))+min(max(q.x,max(q.y,q.z)),0.0);"
             case let .capsule(a,b,r):body="float3 pa=p-\(vector(a)), ba=\(vector(b-a)); float len=dot(ba,ba); float h=len>0 ? clamp(dot(pa,ba)/len,0.0,1.0):0.0; return length(pa-ba*h)-\(f(r));"

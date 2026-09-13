@@ -2,55 +2,80 @@ import argparse
 from contextlib import ExitStack
 import base64
 from datetime import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
 import time
 import uuid
 
-from runtime import ROOT, PRODUCTS, App, gpu_lease, performance_lease, machine, source_digest, write_json
+from runtime import ROOT, PRODUCTS, App, Candidate, gpu_lease, performance_lease, machine, source_digest, write_json
 from report import report
 from performance import gpu_perf, compare_visual, compare_perf
 
 BUILT = set()
 
 
-def build(product, directory):
-    if product in BUILT:
+def build(product, directory, workspace=ROOT):
+    workspace=Path(workspace).resolve()
+    key=(product,workspace)
+    if key in BUILT:
         return
-    command = ['swift', 'build', '-c', 'release', '--product', product] if product in ['WrelaTest','ImageCompare'] else [str(ROOT / 'scripts/build'), product]
+    command = ['swift', 'build', '-c', 'release', '--product', product] if product in ['WrelaTest','ImageCompare'] else [str(workspace / 'scripts/build'), product]
     with (directory / ('build-' + product + '.log')).open('w') as output:
         print('Building ' + product + ' incrementally…', flush=True)
-        subprocess.run(command, cwd=ROOT, stdout=output, stderr=subprocess.STDOUT, check=True)
-    BUILT.add(product)
+        subprocess.run(command, cwd=workspace, stdout=output, stderr=subprocess.STDOUT, check=True)
+    BUILT.add(key)
 
 
-def cpu(command, owner, directory, *options, workspace=ROOT):
-    build('WrelaTest', directory)
+def cpu(command, owner, directory, *options, workspace=ROOT, digest=None):
+    workspace=Path(workspace).resolve()
+    candidate_manifest = workspace / 'candidate.json'
+    if candidate_manifest.is_file():
+        # Sealed candidates carry the runner that was compiled from their recorded source.
+        # Building here mutates derived files under an immutable candidate and can silently
+        # replace the executable that its manifest authenticated.
+        candidate = Candidate(workspace)
+        candidate.verify()
+        recorded = candidate.manifest.get('executables', {}).get('WrelaTest')
+        if not recorded or not recorded.get('path'):
+            raise RuntimeError('Sealed candidate does not contain a pinned WrelaTest executable')
+        executable = (workspace / recorded['path']).resolve()
+        try:
+            executable.relative_to(workspace)
+        except ValueError:
+            raise RuntimeError('Candidate WrelaTest executable escapes its frozen workspace')
+    else:
+        build('WrelaTest', directory, workspace)
+        executable = workspace / '.build/release/WrelaTest'
     output = directory / (command + '-' + owner + '.json')
-    invocation = [str(ROOT / '.build/release/WrelaTest'), command, '--game', owner, '--workspace', str(workspace), '--output', str(output), '--digest', source_digest(), *map(str, options)]
+    invocation = [str(executable), command, '--game', owner, '--workspace', str(workspace), '--output', str(output), '--digest', digest or source_digest(), *map(str, options)]
     with (directory / (command + '-' + owner + '.log')).open('w') as log:
-        process = subprocess.run(invocation, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+        process = subprocess.run(invocation, cwd=workspace, env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'), stdout=log, stderr=subprocess.STDOUT)
     if process.returncode not in (0, 1) or not output.exists():
         raise RuntimeError('Runner failed; inspect ' + str(log.name))
     return json.loads(output.read_text())
 
 
-def pin_content(directory):
+def pin_content(directory, workspace=ROOT):
     content = directory / 'content'
-    for folder in (ROOT / 'Games').glob('*/Authoring'):
-        shutil.copytree(folder, content / folder.relative_to(ROOT))
+    workspace=Path(workspace).resolve()
+    for folder in (workspace / 'Games').glob('*/Authoring'):
+        shutil.copytree(folder, content / folder.relative_to(workspace))
     return content
 
 
-def attach_runs(directory, runs):
+def attach_runs(directory, runs, digest=None, candidate=None):
     for run in runs:
         name = run['owner'] + '-' + run['test']['name'] + '.json'
         run['artifact'] = name
-        run['sourceDigest'] = source_digest()
+        run['sourceDigest'] = digest or source_digest()
+        if candidate:
+            run['candidate'] = candidate.metadata()
         run['replayCommand'] = './scripts/test replay ' + str(directory / name)
         write_json(directory / name, run)
     return runs
@@ -79,18 +104,203 @@ def difference(expected, actual, path='state'):
     return f'{path}: expected {str(expected)[:150]}, got {str(actual)[:150]}'
 
 
+def canonical_persistent_snapshot(encoded):
+    """Project a native checkpoint to state that Sanctuary persists across processes."""
+    outer = json.loads(base64.b64decode(encoded))
+    memory = outer.get('expedition') if isinstance(outer, dict) else None
+    if isinstance(memory, str):
+        decoded = json.loads(base64.b64decode(memory))
+        if isinstance(decoded, dict) and 'state' in decoded:
+            # Controller message and autosave accumulator are session state. The expedition,
+            # camera, motion source, and presentation-independent game state are canonical.
+            outer['expedition'] = decoded['state']
+    return outer
+
+
+def canonical_snapshot_digest(snapshot):
+    encoded = json.dumps(snapshot, sort_keys=True, separators=(',', ':')).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def persist_native_run(app, run):
+    """Keep native evidence current even when replay exits through an exception."""
+    artifact = run.get('artifact')
+    if artifact:
+        artifact = Path(artifact)
+        if not artifact.is_absolute():
+            in_report = app.directory.parent / artifact.name
+            in_app_directory = app.directory / artifact.name
+            artifact = in_app_directory if in_app_directory.exists() else in_report
+        write_json(artifact, run)
+
+
+def wait_for_native_readiness(app, timeout=30):
+    """Wait on the native host's explicit asynchronous publication receipt."""
+    deadline = time.monotonic() + timeout
+    last = None
+    while True:
+        state = app.command('status')['state']
+        streaming = state.get('worldStreaming')
+        if not isinstance(streaming, dict):
+            return state
+        last = streaming
+        if streaming.get('settled') is True \
+          and streaming.get('queuedOrRunningJobs', 0) == 0 \
+          and streaming.get('pendingPublication') is False \
+          and streaming.get('pendingUploadBatches', 0) == 0:
+            return state
+        if time.monotonic() >= deadline:
+            summary = {
+                key: streaming.get(key) for key in [
+                    'generation', 'settled', 'queuedOrRunningJobs', 'pendingPublication',
+                    'pendingUploadBatches', 'staleJobs', 'vegetationComplete',
+                ]
+            }
+            raise RuntimeError('Native world publication did not settle: ' + json.dumps(summary, sort_keys=True))
+
+
 def render_trace(app, run, stop=None):
+    has_process_reopen = any(frame.get('processReopen') for frame in run['frames'])
+    slot = 'replay-' + ''.join(
+        character if character.isalnum() or character == '-' else '-'
+        for character in run['test']['name'])[:40]
+    if has_process_reopen:
+        # The root is already unique to this harness run. A named slot makes the persisted
+        # journey explicit and avoids reading or writing the player's default save.
+        app.command('expeditionSlot', name=slot)
+        run['nativeSlot'] = slot
     app.command('simulationRestore', snapshot=run['initial'])
+    wait_for_native_readiness(app)
     captures = []
     run['captures'] = captures
+    run['processReopens'] = []
     for frame in run['frames']:
         if stop is not None and frame['index'] > stop:
             break
-        if frame.get('restore'):
+        if frame.get('processReopen'):
+            active_process = getattr(app, 'process', None)
+            active_log = getattr(app, 'log_path', None)
+            preparation = dict(
+                step=frame['index'], slot=slot, dataRoot=str(app.root),
+                previousPID=getattr(active_process, 'pid', None), currentPID=None,
+                previousProcessLog=str(active_log) if active_log else None,
+                canonicalStateMatched=False,
+                checkedBeforeReplayAlignment=False, diskSaveWrittenBeforeRestart=False,
+            )
+            try:
+                if not frame.get('restore'):
+                    raise RuntimeError('Process reopen frame is missing its bookmarked checkpoint')
+                # Materialize the declared bookmark through the real host save path. Every
+                # earlier frame was already compared exactly, so this changes no unchecked
+                # gameplay; it gives the fresh process an explicit disk checkpoint to decode.
+                app.command('simulationRestore', snapshot=frame['restore'])
+                wait_for_native_readiness(app)
+                prepared = app.command('simulationState')
+                mismatch = difference(frame['state'], prepared['snapshot'])
+                if mismatch:
+                    raise RuntimeError('Bookmarked state diverged before process save: ' + mismatch)
+                app.command('saveExpedition')
+                preparation['diskSaveWrittenBeforeRestart'] = True
+            except BaseException as error:
+                preparation['failure'] = 'Failed to prepare disk save for process reopen: ' + str(error)
+                run['processReopens'].append(preparation)
+                run['passed'] = False
+                run['failure'] = preparation['failure']
+                persist_native_run(app, run)
+                raise
+            previous_pid = getattr(getattr(app, 'process', None), 'pid', None)
+            previous_log_value = getattr(app, 'log_path', None)
+            previous_log = str(previous_log_value) if previous_log_value else None
+            try:
+                launch = app.restart()
+            except BaseException as error:
+                receipt = dict(preparation,
+                    previousPID=previous_pid,
+                    currentPID=getattr(getattr(app, 'process', None), 'pid', None),
+                    previousProcessLog=previous_log,
+                    currentProcessLog=(
+                        str(getattr(app, 'log_path')) if getattr(app, 'log_path', None) else None),
+                    canonicalStateMatched=False, checkedBeforeReplayAlignment=False,
+                    failure='Native process restart failed: ' + str(error),
+                )
+                run['processReopens'].append(receipt)
+                run['passed'] = False
+                run['failure'] = receipt['failure']
+                persist_native_run(app, run)
+                raise
+            receipt = dict(
+                preparation, **launch,
+                canonicalStateMatched=False, checkedBeforeReplayAlignment=False,
+            )
+            run['processReopens'].append(receipt)
+            persist_native_run(app, run)
+            if launch['previousPID'] == launch['currentPID']:
+                receipt['failure'] = 'Native process PID did not change across reopen'
+                run['passed'] = False
+                run['failure'] = receipt['failure']
+                persist_native_run(app, run)
+                raise RuntimeError(run['failure'])
+            try:
+                app.command('expeditionSlot', name=slot)
+                wait_for_native_readiness(app)
+                receipt['streamingReadyBeforeDiskCanonical'] = True
+                persisted = app.command('simulationState')
+                expected = canonical_persistent_snapshot(frame['state'])
+                actual = canonical_persistent_snapshot(persisted['snapshot'])
+                receipt['expectedCanonicalSHA256'] = canonical_snapshot_digest(expected)
+                receipt['diskCanonicalSHA256'] = canonical_snapshot_digest(actual)
+                receipt['checkedBeforeReplayAlignment'] = True
+                mismatch = difference(expected, actual)
+            except BaseException as error:
+                receipt['failure'] = 'Failed to load persisted state after process reopen: ' + str(error)
+                run['passed'] = False
+                run['failure'] = receipt['failure']
+                persist_native_run(app, run)
+                raise
+            if mismatch:
+                receipt['difference'] = mismatch
+                try:
+                    capture = app.command('capture', label='process-reopen-divergence')
+                    captures.append(dict(capture, label='Persisted divergence after process reopen'))
+                finally:
+                    run['passed'] = False
+                    run['failure'] = (
+                        f'Native persisted-state mismatch after process reopen at step '
+                        f'{frame["index"]}: {mismatch}')
+                    receipt['failure'] = run['failure']
+                    persist_native_run(app, run)
+                raise RuntimeError(run['failure'])
+            receipt['canonicalStateMatched'] = True
+            persist_native_run(app, run)
+            # Continue exact action replay from the recorded checkpoint after the independent
+            # disk comparison; this aligns nonpersistent controller diagnostics for later frames.
+            try:
+                app.command('simulationRestore', snapshot=frame['restore'])
+                wait_for_native_readiness(app)
+                receipt['replayAlignmentRestored'] = True
+                persist_native_run(app, run)
+            except BaseException as error:
+                receipt['replayAlignmentRestored'] = False
+                receipt['failure'] = 'Failed replay alignment after process reopen: ' + str(error)
+                run['passed'] = False
+                run['failure'] = receipt['failure']
+                persist_native_run(app, run)
+                raise
+        elif frame.get('restore'):
             app.command('simulationRestore', snapshot=frame['restore'])
+            wait_for_native_readiness(app)
         actions = frame['actions']
         for i in range(0, len(actions), 500):
             app.command('simulationRun', actions=actions[i:i+500])
+            try:
+                wait_for_native_readiness(app)
+            except BaseException as error:
+                run['passed'] = False
+                run['failure'] = (
+                    f'Native asynchronous publication failed after action batch at step '
+                    f'{frame["index"]}: {error}')
+                persist_native_run(app, run)
+                raise
         state = app.command('simulationState')
         mismatch = difference(frame['state'], state['snapshot'])
         if mismatch:
@@ -98,10 +308,12 @@ def render_trace(app, run, stop=None):
             captures.append(dict(capture, label='First divergence at step ' + str(frame['index'])))
             run['passed']=False
             run['failure']=f'Native/headless mismatch at step {frame["index"]}: {mismatch}'
+            persist_native_run(app, run)
             raise RuntimeError(f'Native/headless mismatch at step {frame["index"]}: {mismatch}')
         if frame.get('capture') or frame['index'] == run.get('failureStep'):
             capture = app.command('capture', label=frame.get('capture', 'failure'))
             captures.append(dict(capture, label=frame.get('capture', 'failure')))
+            persist_native_run(app, run)
     if not captures:
         captures.append(dict(app.command('capture', label='final'), label='Final state'))
     state = app.command('status')['state']
@@ -110,13 +322,14 @@ def render_trace(app, run, stop=None):
     return captures, state
 
 
-def unit(directory, owners):
+def unit(directory, owners, workspace=ROOT):
+    workspace=Path(workspace).resolve()
     if 'engine' in owners:
         with (directory/'harness-python.log').open('w') as log:
-            subprocess.run([sys.executable,'-m','unittest','discover','-s',str(ROOT/'Tools/Testing'),'-p','test_*.py'],cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,check=True)
-    filters = {'engine':'FieldCoreTests|FieldEngineTests|SoundstageKitTests|HarnessTests|GameContractTests', 'cave':'CaveContentTests', 'sanctuary':'SanctuaryContentTests'}
+            subprocess.run([sys.executable,'-B','-m','unittest','discover','-s',str(workspace/'Tools/Testing'),'-p','test_*.py'],cwd=workspace,stdout=log,stderr=subprocess.STDOUT,check=True)
+    filters = {'engine':'FieldCoreTests|FieldEngineTests|SoundstageKitTests|HarnessTests|GameContractTests', 'cave':'CaveContentTests', 'sanctuary':'SanctuaryContentTests|SanctuaryProjectTests'}
     with (directory / 'unit.log').open('w') as log:
-        result = subprocess.run(['swift','test','--filter','|'.join(filters[o] for o in owners)], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+        result = subprocess.run(['swift','test','--filter','|'.join(filters[o] for o in owners)], cwd=workspace, stdout=log, stderr=subprocess.STDOUT)
     if result.returncode:
         raise RuntimeError('Unit tests failed; inspect ' + str(directory / 'unit.log'))
 
@@ -131,6 +344,7 @@ def main():
         p.add_argument('--tag', default='')
         p.add_argument('--seed', type=int, default=17)
         p.add_argument('--output', type=Path)
+        p.add_argument('--candidate', type=Path, help='Frozen candidate directory captured by scripts/test candidate')
         if name == 'dst':
             p.add_argument('--seeds', type=int, default=8)
             p.add_argument('--ticks', type=int, default=600)
@@ -147,6 +361,12 @@ def main():
             p.add_argument('--suite', choices=['workshop','authoring','creatures','projects','review','dynamics','creature-tools','performance','craft','sculpt'], default='workshop')
         if name == 'changed':
             p.add_argument('--since', default='HEAD')
+    candidate_parser = sub.add_parser('candidate', help='Prepare source, build inside it, then seal a candidate')
+    candidate_parser.add_argument('--game', choices=['all','engine','cave','sanctuary'], default='sanctuary')
+    candidate_parser.add_argument('--output', type=Path)
+    candidate_parser.add_argument(
+        '--phase', choices=['prepare','seal','capture'], default='prepare',
+        help='prepare copies source; seal verifies in-snapshot builds; capture preserves the legacy one-step workflow')
     for name in ['replay','inspect','minimize']:
         p = sub.add_parser(name)
         p.add_argument('artifact', type=Path)
@@ -160,6 +380,26 @@ def main():
     accept.add_argument('--name', required=True)
     accept.add_argument('--visual-tolerance', type=float, default=0, help='Mean absolute RGB error, normalized 0..1; exact by default')
     args = parser.parse_args()
+    if args.command == 'candidate':
+        if args.phase == 'seal' and args.output is None:
+            parser.error('candidate --phase seal requires --output with the prepared snapshot path')
+        destination = (args.output or ROOT / '.build/validation-candidates' / (
+            datetime.now().strftime('%Y%m%d-%H%M%S') + '-candidate-' + uuid.uuid4().hex[:5])).resolve()
+        owners = ['engine','cave','sanctuary'] if args.game == 'all' else [args.game]
+        products = [PRODUCTS[owner] for owner in owners]
+        if args.phase == 'prepare':
+            prepared = Candidate.prepare(destination, products)
+            print('Prepared immutable candidate source: ' + str(prepared))
+            print('Build only inside the prepared workspace:')
+            for product in products:
+                print('  (cd ' + shlex.quote(str(prepared)) + ' && ./scripts/build ' + product + ')')
+            print('Seal after every requested product succeeds:')
+            print('  ./scripts/test candidate --phase seal --output ' + shlex.quote(str(prepared)))
+        else:
+            captured = Candidate.seal(destination) if args.phase == 'seal' else Candidate.capture(destination, products)
+            print('Sealed immutable candidate: ' + str(captured.root))
+            print(json.dumps(captured.metadata(), indent=2, sort_keys=True))
+        return 0
     if args.command == 'accept':
         if not args.name.replace('-','').replace('_','').isalnum():
             parser.error('Baseline name must use letters, digits, hyphens or underscores')
@@ -190,7 +430,27 @@ def main():
         return 0
     directory = (getattr(args,'output',None) or ROOT / '.build/test-runs' / (datetime.now().strftime('%Y%m%d-%H%M%S') + '-' + args.command + '-' + uuid.uuid4().hex[:5])).resolve()
     directory.mkdir(parents=True, exist_ok=False)
-    result = dict(kind=args.command, passed=False, machine=machine(), sourceDigest=source_digest(), runs=[])
+    candidate = Candidate(args.candidate) if getattr(args, 'candidate', None) else None
+    workspace = candidate.workspace if candidate else ROOT
+    digest = candidate.source_digest if candidate else source_digest()
+    def candidate_input(path):
+        if not candidate or path is None:
+            return path.resolve() if path else None
+        path=Path(path)
+        if path.is_absolute():
+            try:
+                path=path.resolve().relative_to(ROOT)
+            except ValueError:
+                raise RuntimeError('Candidate inputs must be inside its frozen workspace')
+        resolved=(workspace/path).resolve()
+        try:
+            resolved.relative_to(workspace)
+        except ValueError:
+            raise RuntimeError('Candidate input escapes its frozen workspace')
+        return resolved
+    result = dict(kind=args.command, passed=False, machine=machine(), sourceDigest=digest, runs=[])
+    if candidate:
+        result['candidate'] = candidate.metadata()
     print('Report: ' + str(directory / 'index.html'), flush=True)
     leases=ExitStack()
     try:
@@ -249,38 +509,44 @@ def main():
                 owners = ['engine','cave','sanctuary'] if shared else [o for o in ['cave','sanctuary'] if any(p.startswith('Games/'+PRODUCTS[o]+'/') for p in paths)]
                 result['selection'] = dict(owners=owners, changedFiles=paths)
             if args.command == 'list':
-                result['catalog'] = cpu('list','cave',directory)
+                result['catalog'] = cpu('list','cave',directory,workspace=workspace,digest=digest)
                 
                 for project in result['catalog']:
                     print(project['game'] + ': ' + ', '.join(t['name'] for t in project['tests']))
             elif args.command in ['quick','changed']:
+                if candidate and args.command == 'changed':
+                    raise RuntimeError('Changed-file selection is defined only for the live checkout; use quick or run with a candidate')
                 if owners:
-                    unit(directory, owners)
-                    subprocess.run([str(ROOT/'scripts/check-boundaries')],cwd=ROOT,check=True)
+                    unit(directory, owners, workspace)
+                    subprocess.run([str(workspace/'scripts/check-boundaries')],cwd=workspace,env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'),check=True)
                 for owner in owners:
                     if owner != 'engine':
-                        result['runs'] += cpu('run',owner,directory,'--tag','smoke','--seed',args.seed)
-                pin_content(directory)
-                attach_runs(directory,result['runs'])
+                        result['runs'] += cpu('run',owner,directory,'--tag','smoke','--seed',args.seed,workspace=workspace,digest=digest)
+                pin_content(directory,workspace)
+                attach_runs(directory,result['runs'],digest,candidate)
             elif args.command in ['run','render']:
+                scenario = candidate_input(args.scenario) if args.scenario else None
                 for owner in owners:
                     if owner == 'engine':
                         raise RuntimeError('Use quick --game engine, authoring or perf --game engine for engine workloads')
-                    result['runs'] += cpu('run',owner,directory,'--test',args.test,'--tag',args.tag,'--seed',args.seed,*(['--scenario',str(args.scenario.resolve())] if args.scenario else []))
-                pin_content(directory)
-                attach_runs(directory,result['runs'])
+                    result['runs'] += cpu('run',owner,directory,'--test',args.test,'--tag',args.tag,'--seed',args.seed,*(['--scenario',str(scenario)] if scenario else []),workspace=workspace,digest=digest)
+                pin_content(directory,workspace)
+                attach_runs(directory,result['runs'],digest,candidate)
                 if args.command == 'render':
                     for owner in owners:
-                        build(PRODUCTS[owner],directory)
+                        if candidate:
+                            candidate.app(owner)
+                        else:
+                            build(PRODUCTS[owner],directory)
                     with gpu_lease():
                         for i, run in enumerate(result['runs']):
-                            with App(run['owner'],directory/('native-'+str(i)),pinned=directory/'content') as app:
+                            with App(run['owner'],directory/('native-'+str(i)),pinned=None if candidate else directory/'content',candidate=candidate) as app:
                                 run['captures'], run['native'] = render_trace(app,run)
                                 # Exercise ordinary host save/load and rejection, not just injected state.
                                 saved_observations=app.command('simulationState')['observations']
                                 app.command('saveExpedition')
                                 app.command('expeditionSlot',name='harness-other')
-                                app.command('expeditionSlot',name='expedition')
+                                app.command('expeditionSlot',name=run.get('nativeSlot','expedition'))
                                 persisted=app.command('simulationState')['observations']
                                 if persisted!=saved_observations:
                                     raise RuntimeError('Native persistence: '+run['test']['name']+' · '+difference(saved_observations,persisted))
@@ -292,54 +558,56 @@ def main():
                                     raise RuntimeError('Host accepted an invalid save path')
                                 write_json(directory/run['artifact'],run)
                     if args.baseline:
-                        build('ImageCompare',directory)
-                        compare_visual(directory,result,args.baseline.resolve())
+                        build('ImageCompare',directory,workspace)
+                        compare_visual(directory,result,candidate_input(args.baseline),workspace)
             elif args.command == 'dst':
-                pin_content(directory)
+                pin_content(directory,workspace)
                 result['campaigns'] = []
                 for owner in owners:
                     if owner == 'engine':
                         raise RuntimeError('Engine wind/weather deterministic tests are in quick --game engine; game campaigns require a game owner')
-                    campaign = cpu('dst',owner,directory,'--seed',args.seed,'--seeds',args.seeds,'--ticks',args.ticks)
+                    campaign = cpu('dst',owner,directory,'--seed',args.seed,'--seeds',args.seeds,'--ticks',args.ticks,workspace=workspace,digest=digest)
                     result['campaigns'].append(campaign)
                     for key in ['failure','minimized']:
                         if campaign.get(key):
                             run=campaign[key]
                             if key=='minimized':
                                 run['test']['name'] += '-minimal'
-                            result['runs'] += attach_runs(directory,[run])
+                            result['runs'] += attach_runs(directory,[run],digest,candidate)
             elif args.command == 'perf':
                 if args.game == 'all':
                     raise RuntimeError('Measure one owner at a time')
                 if args.kind == 'cpu':
-                    result['measurements'] = cpu('bench',args.game,directory,'--test',args.test,'--samples',args.samples)
+                    result['measurements'] = cpu('bench',args.game,directory,'--test',args.test,'--samples',args.samples,workspace=workspace,digest=digest)
                     if not result['measurements']:
                         raise RuntimeError('No workloads matched')
                 else:
                     if not 3 <= args.seconds <= 60:
                         raise RuntimeError('GPU measurements must be 3–60 seconds')
-                    build(PRODUCTS[args.game],directory)
-                    with gpu_lease(), App(args.game,directory/'native') as app:
-                        result['measurements'] = gpu_perf(app,args,directory)
+                    if candidate: candidate.app(args.game)
+                    else: build(PRODUCTS[args.game],directory)
+                    with gpu_lease(), App(args.game,directory/'native',candidate=candidate) as app:
+                        result['measurements'] = gpu_perf(app,args,directory,workspace)
                 result['owner'] = args.game
                 result['performanceKind'] = args.kind
                 result['workload'] = args.test
                 if any(m.get('budgetBreaches') for m in result['measurements']):
                     raise RuntimeError('An explicit workload p95 budget was exceeded; inspect measurements')
                 if args.baseline:
-                    compare_perf(result,args.baseline.resolve())
+                    compare_perf(result,candidate_input(args.baseline))
             elif args.command == 'host':
                 if args.game not in ['cave','sanctuary']:
                     raise RuntimeError('Native host checks need one game')
-                build(PRODUCTS[args.game],directory)
-                manifest=json.loads((ROOT/'Games'/PRODUCTS[args.game]/'Testing/NativeChecks.json').read_text())
-                with gpu_lease(), App(args.game,directory/'native') as app:
+                if candidate: candidate.app(args.game)
+                else: build(PRODUCTS[args.game],directory)
+                manifest=json.loads((workspace/'Games'/PRODUCTS[args.game]/'Testing/NativeChecks.json').read_text())
+                with gpu_lease(), App(args.game,directory/'native',candidate=candidate) as app:
                     env=dict(os.environ,WRELA_CONTROL_ROOT=str(app.root),WRELA_WORKSPACE=str(app.workspace))
                     for script in manifest['scripts']:
                         if Path(script).name!=script:
                             raise RuntimeError('Native check script must be a filename in scripts/')
                         with (directory/(script+'.log')).open('w') as log:
-                            process=subprocess.run([str(ROOT/'scripts'/script)],cwd=app.workspace,env=env,stdout=log,stderr=subprocess.STDOUT)
+                            process=subprocess.run([str(workspace/'scripts'/script)],cwd=app.workspace,env=dict(env, PYTHONDONTWRITEBYTECODE='1'),stdout=log,stderr=subprocess.STDOUT)
                         if process.returncode:
                             raise RuntimeError('Native host check failed: '+script+'; inspect its log')
                     result['computerUseChecklist']=manifest['computerUse']
@@ -348,8 +616,9 @@ def main():
             elif args.command == 'gpu-check':
                 if args.game not in ['cave','sanctuary']:
                     raise RuntimeError('Choose the project whose GPU fields should be verified')
-                build('Soundstage',directory)
-                with gpu_lease(), App('engine',directory/'native') as app:
+                if candidate: candidate.app('engine')
+                else: build('Soundstage',directory)
+                with gpu_lease(), App('engine',directory/'native',candidate=candidate) as app:
                     app.command('project',value=args.game)
                     checks={'fields':app.command('verifyFields')['verification']}
                     if args.game=='sanctuary':
@@ -359,13 +628,14 @@ def main():
                         raise RuntimeError('GPU numerical verification failed')
                     result['native']=app.command('status')['state']
             elif args.command == 'authoring':
-                build('Soundstage',directory)
-                with gpu_lease(), App('engine',directory/'native') as app:
+                if candidate: candidate.app('engine')
+                else: build('Soundstage',directory)
+                with gpu_lease(), App('engine',directory/'native',candidate=candidate) as app:
                     if args.game in ['cave','sanctuary']:
                         app.command('project',value=args.game)
                     env=dict(os.environ,WRELA_CONTROL_ROOT=str(app.root),WRELA_WORKSPACE=str(app.workspace),SANCTUARY_WORKSPACE=str(app.workspace))
                     with (directory/'authoring.log').open('w') as log:
-                        process=subprocess.run([str(ROOT/'scripts'/('validate-'+args.suite))],cwd=app.workspace,env=env,stdout=log,stderr=subprocess.STDOUT)
+                        process=subprocess.run([str(workspace/'scripts'/('validate-'+args.suite))],cwd=app.workspace,env=dict(env, PYTHONDONTWRITEBYTECODE='1'),stdout=log,stderr=subprocess.STDOUT)
                     if process.returncode:
                         raise RuntimeError('Authoring checks failed; inspect '+str(directory/'authoring.log'))
                     result['runs']=[dict(name='authoring-'+args.suite,passed=True,captures=[app.command('capture',label='authoring-result')])]
@@ -377,10 +647,19 @@ def main():
         result['error']=str(error)
         print(str(error),file=sys.stderr)
     leases.close()
-    result['endingSourceDigest']=source_digest()
-    if result['endingSourceDigest']!=result['sourceDigest']:
-        result['passed']=False
-        result['error']='Source changed during the run; rerun against a stable checkout'
+    if candidate:
+        try:
+            candidate.verify()
+            result['endingSourceDigest']=candidate.source_digest
+        except Exception as error:
+            result['passed']=False
+            result['error']=str(error)
+            result['endingSourceDigest']='candidate-invalid'
+    else:
+        result['endingSourceDigest']=source_digest()
+        if result['endingSourceDigest']!=result['sourceDigest']:
+            result['passed']=False
+            result['error']='Source changed during the run; rerun against a stable checkout'
     report(directory,result)
     for run in result['runs']:
         print(('PASS' if run['passed'] else 'FAIL') + ' ' + run.get('test',{}).get('name',run.get('name','')) + (' · '+run['failure'] if run.get('failure') else ''),flush=True)

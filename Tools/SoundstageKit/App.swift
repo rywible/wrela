@@ -5,6 +5,21 @@ import MetalKit
 import WebKit
 import simd
 
+private func soundstageSessionRoot() -> URL {
+  let environment = ProcessInfo.processInfo.environment
+  if let path = environment["WRELA_CONTROL_ROOT"], !path.isEmpty {
+    return URL(fileURLWithPath: path)
+  }
+  if let path = environment["WRELA_DATA_ROOT"], !path.isEmpty {
+    return URL(fileURLWithPath: path)
+  }
+  return URL(
+    fileURLWithPath: environment["SANCTUARY_WORKSPACE"] ?? Bundle.main
+      .object(forInfoDictionaryKey: "SanctuaryWorkspace") as? String
+      ?? FileManager.default.currentDirectoryPath
+  ).appendingPathComponent(".soundstage")
+}
+
 final class GameView: MTKView {
   weak var controller: AppController?
   private var lastDragPoint: NSPoint?
@@ -177,11 +192,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     window.makeKeyAndOrderFront(nil)
     window.makeFirstResponder(gameView)
     NSApp.activate(ignoringOtherApps: true)
-    rootURL = URL(
-      fileURLWithPath: ProcessInfo.processInfo.environment["SANCTUARY_WORKSPACE"] ?? Bundle.main
-        .object(forInfoDictionaryKey: "SanctuaryWorkspace") as? String
-        ?? FileManager.default.currentDirectoryPath
-    ).appendingPathComponent(".soundstage")
+    rootURL = soundstageSessionRoot()
     do {
       let r = try WorkshopRenderer(
         view: gameView)
@@ -352,7 +363,7 @@ package enum SoundstageApplication {
     }
     if selected == nil,
       let data = try? WorkshopDocument.readData(
-        ProjectContext.workspace.appendingPathComponent(".soundstage/last-study.json")),
+        soundstageSessionRoot().appendingPathComponent("last-study.json")),
       let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     {
       selected = object["project"] as? String
@@ -362,7 +373,7 @@ package enum SoundstageApplication {
       do {
         let r = try WorkshopRenderer(view: MTKView())
         print(
-          "Renderer compiled on \(r.device.name); diffuse irradiance max error \(try r.verifyDiffuseLighting()); creature deformation max error \(try r.verifyCraftDeformation()); groom coverage max error \(try r.verifyGroomCoverage())"
+          "Renderer compiled on \(r.device.name); diffuse irradiance max error \(try r.verifyDiffuseLighting()); night environment max error \(try r.verifyNightEnvironment()); creature deformation max error \(try r.verifyCraftDeformation()); groom coverage max error \(try r.verifyGroomCoverage())"
         )
       } catch {
         fputs("\(error)\n", stderr)

@@ -15,6 +15,53 @@ struct CLIError: LocalizedError {
   init(_ text: String) { errorDescription = text }
 }
 let args = Array(CommandLine.arguments.dropFirst())
+let commands = ["list", "run", "dst", "replay", "minimize", "bench"]
+func usage(for command: String? = nil) -> String {
+  switch command {
+  case "list":
+    return "Usage: WrelaTest list [--game cave|sanctuary] [--workspace PATH] [--output PATH]"
+  case "run":
+    return "Usage: WrelaTest run [--game cave|sanctuary] [--test NAME|all] [--tag TAG] [--scenario PATH] [--seed UINT32] [--digest SHA256] [--workspace PATH] [--output PATH]"
+  case "dst":
+    return "Usage: WrelaTest dst [--game cave|sanctuary] [--seeds COUNT] [--ticks COUNT] [--seed UINT32] [--workspace PATH] [--output PATH]"
+  case "replay":
+    return "Usage: WrelaTest replay --game cave|sanctuary --artifact PATH [--workspace PATH] [--output PATH]"
+  case "minimize":
+    return "Usage: WrelaTest minimize --game cave|sanctuary --artifact PATH [--attempts COUNT] [--workspace PATH] [--output PATH]"
+  case "bench":
+    return "Usage: WrelaTest bench [--game engine|cave|sanctuary] [--test NAME|all] [--samples COUNT] [--workspace PATH] [--output PATH]"
+  default:
+    return """
+      Usage: WrelaTest <command> [options]
+      Commands: \(commands.joined(separator: ", "))
+      Run `WrelaTest help <command>` or `WrelaTest <command> --help` for command usage.
+      """
+  }
+}
+let helpFlags = Set(["--help", "-h"])
+if let first = args.first, helpFlags.contains(first) {
+  print(usage())
+  exit(0)
+}
+if args.first == "help" {
+  if args.count == 1 {
+    print(usage())
+    exit(0)
+  }
+  guard args.count == 2, commands.contains(args[1]) else {
+    fputs("WrelaTest: Use \(commands.joined(separator: ", "))\n", stderr)
+    exit(2)
+  }
+  print(usage(for: args[1]))
+  exit(0)
+}
+if let command = args.first, commands.contains(command),
+  (args.dropFirst().contains(where: { helpFlags.contains($0) })
+    || (args.count == 2 && args[1] == "help"))
+{
+  print(usage(for: command))
+  exit(0)
+}
 func option(_ key: String, _ fallback: String) -> String {
   guard let i = args.firstIndex(of: "--" + key), i + 1 < args.count else { return fallback }
   return args[i + 1]
@@ -53,7 +100,7 @@ do {
       workloads = EngineWorkloads.all()
     } else {
       guard let project else { throw CLIError("Unknown game \(owner)") }
-      workloads = try project.workloads.map { config in
+      var gameWorkloads = try project.workloads.map { config in
         guard (1...256).contains(config.actors), (1...3600).contains(config.ticks) else {
           throw CLIError("Invalid game workload")
         }
@@ -73,6 +120,10 @@ do {
           return sum
         }
       }
+      if owner == "sanctuary" {
+        gameWorkloads += SanctuaryVegetationResidencyWorkloads.performanceWorkloads
+      }
+      workloads = gameWorkloads
     }
     try emit(
       workloads.filter { option("test", "all") == "all" || $0.name == option("test", "") }.map {
@@ -134,7 +185,7 @@ do {
           exit(1)
         }
       }
-    default: throw CLIError("Use list, run, dst, replay, minimize or bench")
+    default: throw CLIError("Use \(commands.joined(separator: ", "))")
     }
   }
 } catch {

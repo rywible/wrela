@@ -12,7 +12,10 @@ final class GameContractTests: XCTestCase {
     for project in [
       CaveTesting.project(workspace: workspace), SanctuaryTesting.project(workspace: workspace),
     ] {
-      for scenario in project.tests {
+      // Long biome walks belong to the optimized scenario/native replay tier.
+      // They still run with `scripts/test run/render --tag exploration`; repeating
+      // all per-tick snapshots in debug would make every quick edit loop minutes long.
+      for scenario in project.tests where !scenario.tags.contains("exploration") {
         let result = try ScenarioRunner.run(scenario, project: project)
         XCTAssertTrue(result.passed, "\(project.id)/\(scenario.name): \(result.failure ?? "")")
         XCTAssertNil(try ScenarioRunner.replay(result, project: project))

@@ -1,0 +1,11 @@
+--- a/Engine/FieldEngine/Rendering/MetalRenderer.swift
++++ b/Engine/FieldEngine/Rendering/MetalRenderer.swift
+@@ -453,7 +453,7 @@
+         enc.label = "Sun shadows"
+         enc.setRenderPipelineState(shadowPipeline)
+         enc.setDepthStencilState(depthState)
+-        enc.setDepthBias(1, slopeScale: 1, clamp: 0.001)
++        enc.setDepthBias(1, slopeScale: input.outdoorShadow != nil ? 0 : 1, clamp: 0.001)
+         enc.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+         enc.setVertexBuffer(windBuffer, offset: 0, index: 3)
+         enc.setVertexBuffer(influenceBuffer, offset: 0, index: 15)
