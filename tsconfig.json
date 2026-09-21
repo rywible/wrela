@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "types": ["bun", "@webgpu/types"],
+    "paths": {
+      "@wrela/model": ["./packages/model/src/index.ts"],
+      "@wrela/compiler": ["./packages/compiler/src/index.ts"],
+      "@wrela/world": ["./packages/world/src/index.ts"],
+      "@wrela/runtime": ["./packages/runtime/src/index.ts"],
+      "@wrela/render-webgpu": ["./packages/render-webgpu/src/index.ts"],
+      "@wrela/authoring": ["./packages/authoring/src/index.ts"]
+    }
+  },
+  "include": ["packages", "apps", "tools", "verification"]
+}

@@ -1,0 +1,48 @@
+name: Verify
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      hardware:
+        description: Run the named Wrela hardware verification machine
+        type: boolean
+        default: false
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun test
+      - run: bun run perf:author
+      - run: bun run build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-evidence
+          path: |
+            dist/source-manifest.json
+            dist/build-manifest.json
+  hardware:
+    if: github.event_name == 'workflow_dispatch' && inputs.hardware
+    runs-on: [self-hosted, wrela-gpu]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - run: bun run verify
+      - run: bun run perf
+      - run: bun run perf:low
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hardware-evidence-${{ runner.name }}
+          path: output/browser-*/

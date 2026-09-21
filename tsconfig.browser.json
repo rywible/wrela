@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "types": ["@webgpu/types"] },
+  "include": ["packages", "apps"],
+  "exclude": ["**/*.test.ts"]
+}

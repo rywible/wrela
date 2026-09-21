@@ -1,0 +1,731 @@
+{
+  "cpu": {
+    "created": "2026-09-21T18:05:50.842Z",
+    "runtime": "1.4.2",
+    "platform": "darwin",
+    "architecture": "arm64",
+    "methodology": "9 alternating repetitions after 3 warmups; original production evaluator, flattened control, and reduced atlas include query traversal; atlas construction reported separately. Quality uses actual production marching-tetrahedra meshes at resolution 24, with all fallbacks included.",
+    "checksum": -13412.983536501792,
+    "results": [
+      {
+        "name": "reference-bunny",
+        "primitives": 16,
+        "query": {
+          "buildMs": 29.461708,
+          "samplesPerRepeat": 41000,
+          "originalMs": {
+            "count": 9,
+            "mean": 56.36751377777775,
+            "median": 46.33241700000002,
+            "p95": 99.73191599999996,
+            "max": 99.73191599999996
+          },
+          "loweredOnlyMs": {
+            "count": 9,
+            "mean": 48.02733333333334,
+            "median": 41.65908299999995,
+            "p95": 70.279,
+            "max": 70.279
+          },
+          "regionalMs": {
+            "count": 9,
+            "mean": 9.002212999999996,
+            "median": 9.022208999999975,
+            "p95": 10.82504199999994,
+            "max": 10.82504199999994
+          },
+          "speedupAgainstOriginal": 5.135373942235227,
+          "speedupAgainstLowered": 4.617392813666815,
+          "maxValueError": 0,
+          "meanActivePrimitivesAtMeshVertices": 2.4378048780487807,
+          "canonicalVertexFraction": 0.16731707317073172,
+          "cells": 6993,
+          "leaves": 6119,
+          "boundaryLeaves": 2785,
+          "canonicalBoundaryLeaves": 395,
+          "boundaryPrimitives": 6954
+        },
+        "quality": {
+          "triangles": 8196,
+          "candidates": 8196,
+          "eligible": 2287,
+          "exact": 1858,
+          "rejected": 11,
+          "eligibleFraction": 0.2790385553928746,
+          "metric": "absolute authored field residual at triangle-interior samples, not pixel error or silhouette quality",
+          "allSamplesBefore": {
+            "count": 8196,
+            "mean": 0.0036935794067617287,
+            "median": 0.002635210275527836,
+            "p95": 0.010733927223397484,
+            "max": 0.039002614411087135
+          },
+          "allSamplesHybrid": {
+            "count": 8196,
+            "mean": 0.0029120280510632943,
+            "median": 0.001821849816493207,
+            "p95": 0.009997696234029388,
+            "max": 0.039002614411087135
+          },
+          "allSamplesMeanResidualReduction": 1.2683873032792592,
+          "eligibleBefore": {
+            "count": 2287,
+            "mean": 0.0028008869402769638,
+            "median": 0.0017761376528144769,
+            "p95": 0.009354870188557553,
+            "max": 0.02922284226958083
+          },
+          "eligibleQuadratic": {
+            "count": 2287,
+            "mean": 0.00000630758100840976,
+            "median": 1.059331408248453e-7,
+            "p95": 0.000019659681678908602,
+            "max": 0.000726901204770405
+          },
+          "eligibleGauge": {
+            "count": 2287,
+            "mean": 1.4657240573572356e-8,
+            "median": 2.3241234008921386e-17,
+            "p95": 2.4013460810101694e-8,
+            "max": 0.000004300514452489773
+          },
+          "eligibleQuadraticMeanResidualReduction": 444.050886788866,
+          "eligibleGaugeMeanResidualReduction": 191092.3769189601,
+          "blendOnly": {
+            "before": {
+              "count": 429,
+              "mean": 0.0011800331519501292,
+              "median": 0.0004964881092110393,
+              "p95": 0.004741340439687956,
+              "max": 0.013270130813114851
+            },
+            "polynomial": {
+              "count": 429,
+              "mean": 7.75460909458421e-7,
+              "median": 8.074403382019035e-9,
+              "p95": 0.000003751379197929755,
+              "max": 0.00003754855003391955
+            },
+            "gauge": {
+              "count": 429,
+              "mean": 7.813778335372807e-8,
+              "median": 1.3488849377740753e-9,
+              "p95": 2.9567230894547714e-7,
+              "max": 0.000004300514452489773
+            },
+            "gaugeVsPolynomial": 9.924275762314963
+          }
+        }
+      },
+      {
+        "name": "reference-stone",
+        "primitives": 1,
+        "query": {
+          "buildMs": 0.05558300000006966,
+          "samplesPerRepeat": 41536,
+          "originalMs": {
+            "count": 9,
+            "mean": 2.546740666666614,
+            "median": 2.5305419999999685,
+            "p95": 2.6964590000000044,
+            "max": 2.6964590000000044
+          },
+          "loweredOnlyMs": {
+            "count": 9,
+            "mean": 2.4744167777778077,
+            "median": 2.45900000000006,
+            "p95": 2.6006250000000364,
+            "max": 2.6006250000000364
+          },
+          "regionalMs": {
+            "count": 9,
+            "mean": 3.387245333333365,
+            "median": 3.371458000000075,
+            "p95": 3.4771249999998872,
+            "max": 3.4771249999998872
+          },
+          "speedupAgainstOriginal": 0.7505779398704988,
+          "speedupAgainstLowered": 0.7293580403493104,
+          "maxValueError": 4.911977942445578e-16,
+          "meanActivePrimitivesAtMeshVertices": 1,
+          "canonicalVertexFraction": 1,
+          "cells": 1,
+          "leaves": 1,
+          "boundaryLeaves": 1,
+          "canonicalBoundaryLeaves": 1,
+          "boundaryPrimitives": 1
+        },
+        "quality": {
+          "triangles": 7548,
+          "candidates": 7548,
+          "eligible": 7548,
+          "exact": 7548,
+          "rejected": 0,
+          "eligibleFraction": 1,
+          "metric": "absolute authored field residual at triangle-interior samples, not pixel error or silhouette quality",
+          "allSamplesBefore": {
+            "count": 7548,
+            "mean": 0.0019895393732354484,
+            "median": 0.001847063143958805,
+            "p95": 0.004102436913616416,
+            "max": 0.006744566047040431
+          },
+          "allSamplesHybrid": {
+            "count": 7548,
+            "mean": 7.258330911001477e-17,
+            "median": 0,
+            "p95": 2.3656780755395894e-16,
+            "max": 5.214266915797628e-16
+          },
+          "allSamplesMeanResidualReduction": 27410425311691.105,
+          "eligibleBefore": {
+            "count": 7548,
+            "mean": 0.0019895393732354484,
+            "median": 0.001847063143958805,
+            "p95": 0.004102436913616416,
+            "max": 0.006744566047040431
+          },
+          "eligibleQuadratic": {
+            "count": 7548,
+            "mean": 6.126510981759926e-7,
+            "median": 4.0784971926164484e-8,
+            "p95": 0.00000291860975681772,
+            "max": 0.000026070795108277988
+          },
+          "eligibleGauge": {
+            "count": 7548,
+            "mean": 7.655959885470372e-17,
+            "median": 0,
+            "p95": 2.3921627448930807e-16,
+            "max": 5.303189605830227e-16
+          },
+          "eligibleQuadraticMeanResidualReduction": 3247.4264375902994,
+          "eligibleGaugeMeanResidualReduction": 25986805090387.613,
+          "blendOnly": null
+        }
+      },
+      {
+        "name": "synthetic-blended-neck",
+        "primitives": 2,
+        "query": {
+          "buildMs": 10.961583999999903,
+          "samplesPerRepeat": 42352,
+          "originalMs": {
+            "count": 9,
+            "mean": 7.183046555555545,
+            "median": 7.167709000000059,
+            "p95": 7.44179199999985,
+            "max": 7.44179199999985
+          },
+          "loweredOnlyMs": {
+            "count": 9,
+            "mean": 5.450111000000005,
+            "median": 5.44404099999997,
+            "p95": 5.742624999999862,
+            "max": 5.742624999999862
+          },
+          "regionalMs": {
+            "count": 9,
+            "mean": 6.971907222222247,
+            "median": 6.864708000000064,
+            "p95": 7.316125000000056,
+            "max": 7.316125000000056
+          },
+          "speedupAgainstOriginal": 1.0441389495372553,
+          "speedupAgainstLowered": 0.79304771594071,
+          "maxValueError": 4.639301096065473e-16,
+          "meanActivePrimitivesAtMeshVertices": 1.4478655081224028,
+          "canonicalVertexFraction": 0.5521344918775973,
+          "cells": 7737,
+          "leaves": 6770,
+          "boundaryLeaves": 3005,
+          "canonicalBoundaryLeaves": 1079,
+          "boundaryPrimitives": 4931
+        },
+        "quality": {
+          "triangles": 10584,
+          "candidates": 7938,
+          "eligible": 5622,
+          "exact": 4449,
+          "rejected": 0,
+          "eligibleFraction": 0.7082388510959939,
+          "metric": "absolute authored field residual at triangle-interior samples, not pixel error or silhouette quality",
+          "allSamplesBefore": {
+            "count": 7938,
+            "mean": 0.001255371617378121,
+            "median": 0.0011163820987327281,
+            "p95": 0.0029017637785741703,
+            "max": 0.004287977005380093
+          },
+          "allSamplesHybrid": {
+            "count": 7938,
+            "mean": 0.00040085557250277244,
+            "median": 1.439924728645822e-16,
+            "p95": 0.0022369418129052332,
+            "max": 0.004079358220828562
+          },
+          "allSamplesMeanResidualReduction": 3.131730487217908,
+          "eligibleBefore": {
+            "count": 5622,
+            "mean": 0.0012065472383187615,
+            "median": 0.0010473098620680961,
+            "p95": 0.0029017637785741703,
+            "max": 0.004287977005380093
+          },
+          "eligibleQuadratic": {
+            "count": 5622,
+            "mean": 3.9293696880027327e-7,
+            "median": 1.6650841008405045e-8,
+            "p95": 0.0000019127048127148827,
+            "max": 0.000021289437771665962
+          },
+          "eligibleGauge": {
+            "count": 5622,
+            "mean": 1.0709642048694417e-8,
+            "median": 6.764527924798723e-17,
+            "p95": 3.939558958221401e-8,
+            "max": 0.0000022219392233208124
+          },
+          "eligibleQuadraticMeanResidualReduction": 3070.58722930201,
+          "eligibleGaugeMeanResidualReduction": 112659.90336865165,
+          "blendOnly": {
+            "before": {
+              "count": 1173,
+              "mean": 0.0003931515706780854,
+              "median": 0.000329917854204706,
+              "p95": 0.0010329926896706226,
+              "max": 0.001460131090763525
+            },
+            "polynomial": {
+              "count": 1173,
+              "mean": 5.272639243096921e-7,
+              "median": 1.2897971496395044e-8,
+              "p95": 0.000003102210621455659,
+              "max": 0.000017900208728272027
+            },
+            "gauge": {
+              "count": 1173,
+              "mean": 5.132958855201281e-8,
+              "median": 8.118400715573237e-9,
+              "p95": 2.4444512247701056e-7,
+              "max": 0.0000022219392233208124
+            },
+            "gaugeVsPolynomial": 10.272124503304951
+          }
+        }
+      },
+      {
+        "name": "synthetic-64-separated-ellipsoids",
+        "primitives": 64,
+        "query": {
+          "buildMs": 183.4468750000001,
+          "samplesPerRepeat": 44160,
+          "originalMs": {
+            "count": 9,
+            "mean": 221.03839811111115,
+            "median": 219.78220899999997,
+            "p95": 230.5083340000001,
+            "max": 230.5083340000001
+          },
+          "loweredOnlyMs": {
+            "count": 9,
+            "mean": 195.2605509999998,
+            "median": 192.55633399999988,
+            "p95": 205.60912499999995,
+            "max": 205.60912499999995
+          },
+          "regionalMs": {
+            "count": 9,
+            "mean": 7.213977111110984,
+            "median": 7.2702500000004875,
+            "p95": 7.8935419999997976,
+            "max": 7.8935419999997976
+          },
+          "speedupAgainstOriginal": 30.230350950790584,
+          "speedupAgainstLowered": 26.485517554415182,
+          "maxValueError": 0,
+          "meanActivePrimitivesAtMeshVertices": 1.192391304347826,
+          "canonicalVertexFraction": 0.9331521739130435,
+          "cells": 19465,
+          "leaves": 17032,
+          "boundaryLeaves": 7048,
+          "canonicalBoundaryLeaves": 5416,
+          "boundaryPrimitives": 10531
+        },
+        "quality": {
+          "triangles": 29184,
+          "candidates": 7962,
+          "eligible": 7140,
+          "exact": 7140,
+          "rejected": 0,
+          "eligibleFraction": 0.8967596081386586,
+          "metric": "absolute authored field residual at triangle-interior samples, not pixel error or silhouette quality",
+          "allSamplesBefore": {
+            "count": 7962,
+            "mean": 0.011260950865797648,
+            "median": 0.010517485084364198,
+            "p95": 0.022779274914326776,
+            "max": 0.027130262856832923
+          },
+          "allSamplesHybrid": {
+            "count": 7962,
+            "mean": 0.0018547311302228597,
+            "median": 3.89621220702808e-17,
+            "p95": 0.01894315150674059,
+            "max": 0.027130262856832923
+          },
+          "allSamplesMeanResidualReduction": 6.071473477907583,
+          "eligibleBefore": {
+            "count": 7140,
+            "mean": 0.010489120663115747,
+            "median": 0.010010640951177223,
+            "p95": 0.021329619449010042,
+            "max": 0.027120431954015402
+          },
+          "eligibleQuadratic": {
+            "count": 7140,
+            "mean": 0.000027399636728228614,
+            "median": 0.000003826918318262749,
+            "p95": 0.0001490333776053882,
+            "max": 0.0006780828385760545
+          },
+          "eligibleGauge": {
+            "count": 7140,
+            "mean": 5.0712318414648324e-17,
+            "median": 3.99546425185509e-17,
+            "p95": 1.5255454524748805e-16,
+            "max": 2.4991835361736835e-16
+          },
+          "eligibleQuadraticMeanResidualReduction": 382.8196982009356,
+          "eligibleGaugeMeanResidualReduction": 206835754921548.8,
+          "blendOnly": null
+        }
+      }
+    ]
+  },
+  "gpu": {
+    "created": "2026-09-21T18:03:35.909Z",
+    "adapter": {
+      "vendor": "apple",
+      "architecture": "metal-3",
+      "description": ""
+    },
+    "resolution": [1920, 1080],
+    "methodology": "Production marching-tetrahedra stone meshes at resolutions 24 and 12, plus a strong conventional 120-triangle parametric ellipsoid LOD, vs exact ellipsoid over a 12-triangle conservative box. Identical one-draw instancing, lighting, camera, viewport, backface culling and depth. 9 alternating GPU timestamp samples of 4 passes each, after 3 warmups per path. Geometry bytes exclude shared uniforms (176 bytes) and instances (32 bytes each) used by all paths; analytic proxy vertices come from vertex IDs. No terrain, shadows, skinning, procedural material, streaming or CPU submission cost; not full-world frame time. Accuracy independently compared against double-precision ray/ellipsoid ground truth at every pixel of the single-stone view.",
+    "runs": [
+      {
+        "instances": 1,
+        "results": {
+          "meshLod": {
+            "gpuMs": {
+              "count": 9,
+              "median": 0.049152,
+              "p95": 0.049152,
+              "min": 0.049152,
+              "max": 0.049152,
+              "samples": [
+                0.049152, 0.049152, 0.049152, 0.049152, 0.049152, 0.049152, 0.049152, 0.049152, 0.049152
+              ]
+            },
+            "submittedTriangles": 120,
+            "geometryBytes": 3624
+          },
+          "mesh12": {
+            "gpuMs": {
+              "count": 9,
+              "median": 0.049152,
+              "p95": 0.098304,
+              "min": 0.049152,
+              "max": 0.098304,
+              "samples": [
+                0.065536, 0.049152, 0.049152, 0.049152, 0.049152, 0.049152, 0.049152, 0.049152, 0.098304
+              ]
+            },
+            "submittedTriangles": 1868,
+            "geometryBytes": 44880
+          },
+          "mesh24": {
+            "gpuMs": {
+              "count": 9,
+              "median": 0.049152,
+              "p95": 0.049152,
+              "min": 0.049152,
+              "max": 0.049152,
+              "samples": [
+                0.049152, 0.049152, 0.049152, 0.049152, 0.049152, 0.049152, 0.049152, 0.049152, 0.049152
+              ]
+            },
+            "submittedTriangles": 7548,
+            "geometryBytes": 181200
+          },
+          "analytic": {
+            "gpuMs": {
+              "count": 9,
+              "median": 0.065536,
+              "p95": 0.065536,
+              "min": 0.049152,
+              "max": 0.065536,
+              "samples": [
+                0.065536, 0.065536, 0.065536, 0.065536, 0.065536, 0.049152, 0.065536, 0.065536, 0.065536
+              ]
+            },
+            "submittedTriangles": 12,
+            "geometryBytes": 0
+          }
+        },
+        "speedupVsProductionMesh24": 0.75,
+        "speedupVsCoarseMesh12": 0.75,
+        "speedupVsParametricLod": 0.75
+      },
+      {
+        "instances": 64,
+        "results": {
+          "meshLod": {
+            "gpuMs": {
+              "count": 9,
+              "median": 0.049152,
+              "p95": 0.065536,
+              "min": 0.049152,
+              "max": 0.065536,
+              "samples": [
+                0.049152, 0.049152, 0.049152, 0.049152, 0.049152, 0.065536, 0.065536, 0.049152, 0.049152
+              ]
+            },
+            "submittedTriangles": 7680,
+            "geometryBytes": 3624
+          },
+          "mesh12": {
+            "gpuMs": {
+              "count": 9,
+              "median": 0.098304,
+              "p95": 0.114688,
+              "min": 0.098304,
+              "max": 0.114688,
+              "samples": [
+                0.098304, 0.114688, 0.098304, 0.098304, 0.098304, 0.098304, 0.098304, 0.114688, 0.114688
+              ]
+            },
+            "submittedTriangles": 119552,
+            "geometryBytes": 44880
+          },
+          "mesh24": {
+            "gpuMs": {
+              "count": 9,
+              "median": 0.24576,
+              "p95": 0.24576,
+              "min": 0.229376,
+              "max": 0.24576,
+              "samples": [0.24576, 0.24576, 0.24576, 0.229376, 0.24576, 0.24576, 0.24576, 0.24576, 0.24576]
+            },
+            "submittedTriangles": 483072,
+            "geometryBytes": 181200
+          },
+          "analytic": {
+            "gpuMs": {
+              "count": 9,
+              "median": 0.098304,
+              "p95": 0.196608,
+              "min": 0.098304,
+              "max": 0.196608,
+              "samples": [
+                0.098304, 0.196608, 0.098304, 0.098304, 0.098304, 0.098304, 0.098304, 0.098304, 0.098304
+              ]
+            },
+            "submittedTriangles": 768,
+            "geometryBytes": 0
+          }
+        },
+        "speedupVsProductionMesh24": 2.5,
+        "speedupVsCoarseMesh12": 1,
+        "speedupVsParametricLod": 0.5
+      },
+      {
+        "instances": 1024,
+        "results": {
+          "meshLod": {
+            "gpuMs": {
+              "count": 9,
+              "median": 0.114688,
+              "p95": 0.131072,
+              "min": 0.098304,
+              "max": 0.131072,
+              "samples": [
+                0.114688, 0.114688, 0.114688, 0.114688, 0.098304, 0.114688, 0.098304, 0.131072, 0.114688
+              ]
+            },
+            "submittedTriangles": 122880,
+            "geometryBytes": 3624
+          },
+          "mesh12": {
+            "gpuMs": {
+              "count": 9,
+              "median": 0.868352,
+              "p95": 0.917504,
+              "min": 0.8192,
+              "max": 0.917504,
+              "samples": [
+                0.884736, 0.8192, 0.868352, 0.835584, 0.917504, 0.90112, 0.835584, 0.868352, 0.835584
+              ]
+            },
+            "submittedTriangles": 1912832,
+            "geometryBytes": 44880
+          },
+          "mesh24": {
+            "gpuMs": {
+              "count": 9,
+              "median": 3.227648,
+              "p95": 3.293184,
+              "min": 3.162112,
+              "max": 3.293184,
+              "samples": [
+                3.227648, 3.211264, 3.227648, 3.293184, 3.19488, 3.162112, 3.227648, 3.227648, 3.260416
+              ]
+            },
+            "submittedTriangles": 7729152,
+            "geometryBytes": 181200
+          },
+          "analytic": {
+            "gpuMs": {
+              "count": 9,
+              "median": 0.16384,
+              "p95": 0.212992,
+              "min": 0.147456,
+              "max": 0.212992,
+              "samples": [
+                0.147456, 0.16384, 0.16384, 0.147456, 0.147456, 0.212992, 0.16384, 0.16384, 0.147456
+              ]
+            },
+            "submittedTriangles": 12288,
+            "geometryBytes": 0
+          }
+        },
+        "speedupVsProductionMesh24": 19.699999999999996,
+        "speedupVsCoarseMesh12": 5.3,
+        "speedupVsParametricLod": 0.7
+      },
+      {
+        "instances": 4096,
+        "results": {
+          "meshLod": {
+            "gpuMs": {
+              "count": 9,
+              "median": 0.262144,
+              "p95": 0.311296,
+              "min": 0.262144,
+              "max": 0.311296,
+              "samples": [
+                0.278528, 0.262144, 0.311296, 0.262144, 0.278528, 0.262144, 0.262144, 0.278528, 0.262144
+              ]
+            },
+            "submittedTriangles": 491520,
+            "geometryBytes": 3624
+          },
+          "mesh12": {
+            "gpuMs": {
+              "count": 9,
+              "median": 3.211264,
+              "p95": 3.260416,
+              "min": 3.11296,
+              "max": 3.260416,
+              "samples": [
+                3.227648, 3.19488, 3.19488, 3.211264, 3.244032, 3.129344, 3.11296, 3.211264, 3.260416
+              ]
+            },
+            "submittedTriangles": 7651328,
+            "geometryBytes": 44880
+          },
+          "mesh24": {
+            "gpuMs": {
+              "count": 9,
+              "median": 12.517376,
+              "p95": 12.795904,
+              "min": 12.419072,
+              "max": 12.795904,
+              "samples": [
+                12.517376, 12.53376, 12.484608, 12.500992, 12.795904, 12.550144, 12.419072, 12.484608,
+                12.517376
+              ]
+            },
+            "submittedTriangles": 30916608,
+            "geometryBytes": 181200
+          },
+          "analytic": {
+            "gpuMs": {
+              "count": 9,
+              "median": 0.212992,
+              "p95": 0.24576,
+              "min": 0.212992,
+              "max": 0.24576,
+              "samples": [
+                0.212992, 0.229376, 0.24576, 0.212992, 0.212992, 0.212992, 0.212992, 0.212992, 0.212992
+              ]
+            },
+            "submittedTriangles": 49152,
+            "geometryBytes": 0
+          }
+        },
+        "speedupVsProductionMesh24": 58.769230769230774,
+        "speedupVsCoarseMesh12": 15.076923076923077,
+        "speedupVsParametricLod": 1.2307692307692308
+      }
+    ],
+    "accuracy": {
+      "meshLod": {
+        "matchedPixels": 64063,
+        "falsePositivePixels": 0,
+        "falseNegativePixels": 3770,
+        "rmsRayDepthErrorMetres": 0.07331827708181538,
+        "maxRayDepthErrorMetres": 0.4421931139921451,
+        "rmsNormalErrorDegrees": 4.287985224187501,
+        "maxNormalErrorDegrees": 26.925634331560286
+      },
+      "mesh12": {
+        "matchedPixels": 66425,
+        "falsePositivePixels": 0,
+        "falseNegativePixels": 1408,
+        "rmsRayDepthErrorMetres": 0.0255065521548778,
+        "maxRayDepthErrorMetres": 0.2922643277135144,
+        "rmsNormalErrorDegrees": 1.6001809677881647,
+        "maxNormalErrorDegrees": 18.98473851841322
+      },
+      "mesh24": {
+        "matchedPixels": 67497,
+        "falsePositivePixels": 0,
+        "falseNegativePixels": 336,
+        "rmsRayDepthErrorMetres": 0.007393221919845034,
+        "maxRayDepthErrorMetres": 0.12652837357035995,
+        "rmsNormalErrorDegrees": 0.4693408209445171,
+        "maxNormalErrorDegrees": 9.14365879747068
+      },
+      "analytic": {
+        "matchedPixels": 67832,
+        "falsePositivePixels": 0,
+        "falseNegativePixels": 1,
+        "rmsRayDepthErrorMetres": 0.000018417627189135686,
+        "maxRayDepthErrorMetres": 0.0014684442796779607,
+        "rmsNormalErrorDegrees": 0.001349569663905999,
+        "maxNormalErrorDegrees": 0.10898801046632245
+      }
+    },
+    "errors": []
+  },
+  "waves": {
+    "created": "2026-09-21T18:08:40.040Z",
+    "waves": 8,
+    "quadratureSamplesPerFootprint": 131072,
+    "analyticMsPerFootprint": 0.001983708,
+    "quadratureMsPerFootprint": 13.520415999999997,
+    "speedupVsNumericalIntegration": 6815.728927846235,
+    "maxMomentDifference": 0.000006666401465904581,
+    "analyticTimes": [
+      0.0020341875, 0.001975499999999997, 0.003926103999999999, 0.001988208, 0.0019302709999999977,
+      0.001990853999999999, 0.001983708, 0.001957687500000006, 0.0019378334999999964
+    ],
+    "quadratureTimes": [
+      8.895792000000004, 10.408417, 10.045374999999993, 13.520415999999997, 13.509249999999994,
+      13.701707999999996, 13.781707999999995, 14.073666000000003, 13.798333999999983
+    ],
+    "checksum": 2.350018125263053,
+    "scope": "CPU cost of first and second slope moments only, compared with 131072-sample midpoint quadrature. This is an integration reference, NOT a production rendering baseline or measured image-quality improvement."
+  }
+}
