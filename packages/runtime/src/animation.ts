@@ -1,4 +1,5 @@
 import type { Joint, Motion, Quat, Vec3 } from "@wrela/model";
+
 export type JointPose = { translation: Vec3; rotation: Quat };
 export type Pose = Map<string, JointPose>;
 export const quatIdentity = (): Quat => [0, 0, 0, 1];
@@ -41,8 +42,19 @@ export function quatSlerp(a: Quat, b: Quat, alpha: number): Quat {
   ) as Quat;
 }
 export function rotateVector(q: Quat, v: Vec3): Vec3 {
-  const r = quatMultiply(quatMultiply(q, [...v, 0]), [-q[0], -q[1], -q[2], q[3]]);
-  return [r[0], r[1], r[2]];
+  // Expanded q * (v,0) * conjugate(q), preserving non-unit quaternion
+  // behavior without allocating two intermediate quaternions per vector.
+  const [x, y, z, w] = q,
+    [vx, vy, vz] = v;
+  const tx = 2 * (y * vz - z * vy),
+    ty = 2 * (z * vx - x * vz),
+    tz = 2 * (x * vy - y * vx);
+  const norm = x * x + y * y + z * z + w * w;
+  return [
+    norm * vx + w * tx + y * tz - z * ty,
+    norm * vy + w * ty + z * tx - x * tz,
+    norm * vz + w * tz + x * ty - y * tx,
+  ];
 }
 const restPose = (): JointPose => ({ translation: [0, 0, 0], rotation: quatIdentity() });
 export type CompiledMotionTracks = ReadonlyMap<string, readonly Motion["keys"][number][]>;
@@ -86,7 +98,7 @@ export function sampleMotion(
       ta = a.time;
       tb = b.time;
     } else if (next === 0) {
-      if (motion.loop && keys.length > 1) {
+      if (motion.loop && keys.length > 1 && t < keys[0].time) {
         a = keys[keys.length - 1];
         b = keys[0];
         ta = a.time - motion.duration;

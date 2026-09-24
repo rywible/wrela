@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { type FieldDefinition, shape } from "@wrela/model";
+import { shape } from "@wrela/examples";
+import type { FieldDefinition } from "@wrela/model";
 import { lower, value } from "../field-research/local-program";
 import { boundedOpticalDepth, quadratureOpticalDepth, segmentBound, topDistance } from "./atmosphere";
 import { certifiedInnerSphere } from "./field-occluders";

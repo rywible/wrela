@@ -1,0 +1,3447 @@
+{
+  "runs": [
+    {
+      "label": "trial-1",
+      "source": {
+        "source": "/Users/ryanwible/projects/wrela/output/default-lighting/1790207173550-77526/source",
+        "fingerprint": "52e2462c8d08e6849c0e888d50ed25a47a23f0dad2fd96965a58cb19ea4470e0"
+      },
+      "output": "/Users/ryanwible/projects/wrela/output/default-lighting/1790207173550-77526/source/output/browser-1790207173670-77538",
+      "median": {
+        "before": 5.832704,
+        "shadow": 4.784128,
+        "default": 4.816896
+      },
+      "saving": 17.41573033707865
+    },
+    {
+      "label": "trial-2",
+      "source": {
+        "source": "/Users/ryanwible/projects/wrela/output/default-lighting/1790207255484-77799/source",
+        "fingerprint": "ffc765e46f5d1a67fb4fb15d2ce36444c3b860123a48ec0546f32d1a61ddd351"
+      },
+      "output": "/Users/ryanwible/projects/wrela/output/default-lighting/1790207255484-77799/source/output/browser-1790207255611-77803",
+      "median": {
+        "before": 5.668864,
+        "shadow": 4.980736,
+        "default": 4.849664
+      },
+      "saving": 14.450867052023131
+    },
+    {
+      "label": "trial-3",
+      "source": {
+        "source": "/Users/ryanwible/projects/wrela/output/default-lighting/1790207337020-77899/source",
+        "fingerprint": "ca60d8c15b3602bfa46c36345e5070907b2ebcf2448cae20e9cf0ef489173175"
+      },
+      "output": "/Users/ryanwible/projects/wrela/output/default-lighting/1790207337020-77899/source/output/browser-1790207337143-77916",
+      "median": {
+        "before": 5.40672,
+        "shadow": 4.75136,
+        "default": 4.849664
+      },
+      "saving": 10.303030303030303
+    },
+    {
+      "label": "acceptance",
+      "source": {
+        "source": "/Users/ryanwible/projects/wrela/output/default-lighting/1790207448971-78420/source",
+        "fingerprint": "bd2f50e17f8b4aa4954f15eb0a764fad6b3845c895978ba0aede318f75910b1f"
+      },
+      "output": "/Users/ryanwible/projects/wrela/output/default-lighting/1790207448971-78420/source/output/browser-1790207449218-78433",
+      "median": {
+        "before": 5.373952,
+        "shadow": 4.784128,
+        "default": 4.784128
+      },
+      "saving": 10.97560975609756
+    }
+  ],
+  "acceptance": [
+    {
+      "kind": "alpine",
+      "adapter": "apple \u00b7 metal-3",
+      "viewport": [
+        960,
+        720
+      ],
+      "sky": {
+        "vertices": 2022,
+        "reusedVertices": 0,
+        "rays": 97056,
+        "bytes": 32352,
+        "buildMs": 97,
+        "excluded": [],
+        "activeMs": 37.90000009536743,
+        "maxSliceMs": 2.5
+      },
+      "shadow": {
+        "maximum": 3.0517578125e-05,
+        "mean": 5.151018684293017e-11,
+        "beforeMean": 0.09894845812592977,
+        "afterMean": 0.09894845810385398
+      },
+      "upgrade": {
+        "maximum": 0.0185546875,
+        "mean": 0.0009120687557223402,
+        "beforeMean": 0.09894845812592977,
+        "afterMean": 0.09803638937020744
+      },
+      "reuse": true,
+      "errors": []
+    },
+    {
+      "kind": "room",
+      "adapter": "apple \u00b7 metal-3",
+      "viewport": [
+        960,
+        720
+      ],
+      "sky": {
+        "vertices": 24,
+        "reusedVertices": 0,
+        "rays": 1152,
+        "bytes": 384,
+        "buildMs": 0.7000000476837158,
+        "excluded": [],
+        "activeMs": 0.7000000476837158,
+        "maxSliceMs": 0.7000000476837158
+      },
+      "shadow": {
+        "maximum": 0.0001220703125,
+        "mean": 3.8264710226176695e-10,
+        "beforeMean": 0.11239691647114577,
+        "afterMean": 0.11239691682435848
+      },
+      "upgrade": {
+        "maximum": 0.03564453125,
+        "mean": 0.008133456881307526,
+        "beforeMean": 0.11239691647114577,
+        "afterMean": 0.10426345958983825
+      },
+      "reuse": true,
+      "errors": []
+    },
+    {
+      "kind": "closed",
+      "adapter": "apple \u00b7 metal-3",
+      "viewport": [
+        960,
+        720
+      ],
+      "sky": {
+        "vertices": 36,
+        "reusedVertices": 0,
+        "rays": 1728,
+        "bytes": 576,
+        "buildMs": 0.5,
+        "excluded": [],
+        "activeMs": 0.5,
+        "maxSliceMs": 0.5
+      },
+      "shadow": {
+        "maximum": 3.0517578125e-05,
+        "mean": 7.073452443252375e-10,
+        "beforeMean": 0.0288604034566217,
+        "afterMean": 0.028860403455701875
+      },
+      "upgrade": {
+        "maximum": 0.04571533203125,
+        "mean": 0.02704881178031181,
+        "beforeMean": 0.0288604034566217,
+        "afterMean": 0.0018115916763098887
+      },
+      "reuse": true,
+      "errors": []
+    },
+    {
+      "kind": "winter",
+      "adapter": "apple \u00b7 metal-3",
+      "viewport": [
+        960,
+        720
+      ],
+      "sky": {
+        "vertices": 28870,
+        "reusedVertices": 0,
+        "rays": 1385760,
+        "bytes": 461920,
+        "buildMs": 5526.399999976158,
+        "excluded": [
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/6/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/6/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/10/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/10/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/5/-5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/5/-5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-5/5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-5/5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/8/-4/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/8/-4/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/-14/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/-14/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/0/3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/0/3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/-1/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/-1/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/0/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/0/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/16/13/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/16/13/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/4/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/4/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-5/6/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-5/6/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/1/-4/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/1/-4/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/6/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/6/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-4/-8/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-4/-8/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/-6/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/-6/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/-13/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/-13/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/3/-5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/3/-5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-3/5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-3/5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/5/-9/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/5/-9/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-5/9/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-5/9/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/6/-11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/6/-11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/3/-8/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/3/-8/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/10/-12/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/10/-12/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/12/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/12/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/12/11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/12/11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/10/5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/10/5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/4/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/4/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/8/-10/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/8/-10/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/8/3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/8/3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/14/4/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/14/4/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/9/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/9/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/10/-5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/10/-5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/-13/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/-13/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/15/16/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/15/16/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/-7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/-7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-4/-11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-4/-11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/16/7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/16/7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/-12/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/-12/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/-7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/-7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-14/12/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-14/12/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/17/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/17/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/12/-8/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/12/-8/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-9/4/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-9/4/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/-12/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/-12/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/-7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/-7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/-7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/-7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/3/-3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/3/-3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-3/3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-3/3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-14/-11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-14/-11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/13/-3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/13/-3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-13/3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-13/3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/13/16/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/13/16/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/-12/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/-12/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/12/7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/12/7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/17/13/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/17/13/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/2/-7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/2/-7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/2/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/2/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/12/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/12/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/15/-3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/15/-3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-15/3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-15/3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/10/-6/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/10/-6/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/6/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/6/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/12/9/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/12/9/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/-9/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/-9/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/10/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/10/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/17/4/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/17/4/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/10/4/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/10/4/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/15/11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/15/11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/-10/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/-10/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/8/12/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/8/12/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-13/17/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-13/17/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-4/-6/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-4/-6/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/-2/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/-2/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/6/-10/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/6/-10/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/10/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/10/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/-9/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/-9/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-9/-3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-9/-3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/9/3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/9/3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/9/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/9/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/8/-9/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/8/-9/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-13/-14/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-13/-14/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/2/-4/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/2/-4/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/2/-2/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/2/-2/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-5/3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-5/3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/6/-14/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/6/-14/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/14/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/14/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/17/11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/17/11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/14/-3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/14/-3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/17/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/17/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/-11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/-11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/-8/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/-8/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/14/0/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/14/0/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/5/10/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/5/10/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/-11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/-11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/1/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/1/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/-11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/-11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/6/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/6/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-4/2/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-4/2/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-9/-1/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-9/-1/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/0/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/0/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/2/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/2/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/13/12/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/13/12/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/-9/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/-9/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/3/12/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/3/12/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/-5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/-5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-2/-10/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-2/-10/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-9/0/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-9/0/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-4/11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-4/11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-2/3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-2/3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/14/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/14/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-14/-13/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-14/-13/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/5/-10/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/5/-10/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/-9/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/-9/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/9/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/9/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/-13/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/-13/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/16/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/16/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/17/8/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/17/8/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/10/3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/10/3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/8/7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/8/7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/16/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/16/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/15/5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/15/5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/-7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/-7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-14/15/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-14/15/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/-9/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/-9/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/-13/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/-13/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/13/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/13/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-9/-6/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-9/-6/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/14/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/14/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-13/-3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-13/-3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-3/-2/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-3/-2/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/-4/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/-4/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/-12/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/-12/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-3/-5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-3/-5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/3/5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/3/5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-13/-11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-13/-11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/13/11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/13/11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/3/11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/3/11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/9/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/9/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/12/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/12/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-3/2/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-3/2/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/14/17/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/14/17/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/8/-12/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/8/-12/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/-2/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/-2/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/6/2/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/6/2/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-13/0/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-13/0/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/6/7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/6/7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/4/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/4/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/-5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/-5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-13/2/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-13/2/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/16/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/16/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-3/-8/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-3/-8/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/10/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/10/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/3/-11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/3/-11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/15/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/15/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-4/3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-4/3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/2/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/2/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/13/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/13/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/14/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/14/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/9/-7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/9/-7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-9/7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-9/7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/9/-5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/9/-5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-9/5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-9/5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/-7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/-7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/16/-2/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/16/-2/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/16/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-8/16/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/5/2/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/5/2/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/0/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/0/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/12/-12/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/12/-12/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/12/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/12/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/-10/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/7/-10/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/8/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/8/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/1/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/1/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/1/-9/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/1/-9/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/-7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/4/-7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-6/5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/-5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/11/-5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/5/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-11/5/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-3/-4/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-3/-4/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/12/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/12/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/3/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-7/3/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-15/11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-15/11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-9/-7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-9/-7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/9/7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/9/7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/-11/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-10/-11/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/3/2/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/3/2/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/-7/alpine-pine-trunk",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "winter-valley/wrela-world-1/conifer-line/-12/-7/alpine-pine-foliage",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "bunny-instance/material/snow-fur",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "bunny-instance/material/rose-ears",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "bunny-instance/material/onyx-eyes",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "bunny-instance/material/rose-nose",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "coastal-waves",
+            "reason": "water transport excluded"
+          }
+        ],
+        "activeMs": 1698.6999998092651,
+        "maxSliceMs": 3.5
+      },
+      "streaming": {
+        "rebuilt": true,
+        "sky": {
+          "vertices": 29448,
+          "reusedVertices": 25980,
+          "rays": 166464,
+          "bytes": 471168,
+          "buildMs": 470.10000002384186,
+          "excluded": [
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/6/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/6/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/10/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/10/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/5/-5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/5/-5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-5/5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-5/5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/8/-4/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/8/-4/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/-14/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/-14/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/0/3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/0/3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/-1/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/-1/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/0/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/0/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/16/13/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/16/13/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/4/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/4/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-5/6/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-5/6/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/1/-4/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/1/-4/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/6/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/6/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-4/-8/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-4/-8/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/-13/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/-13/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/3/-5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/3/-5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-3/5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-3/5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/5/-9/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/5/-9/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-5/9/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-5/9/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/6/-11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/6/-11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/3/-8/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/3/-8/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/10/-12/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/10/-12/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/12/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/12/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/12/11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/12/11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/10/5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/10/5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/4/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/4/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/8/-10/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/8/-10/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/8/3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/8/3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/14/4/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/14/4/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/9/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/9/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/10/-5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/10/-5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/-13/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/-13/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/15/16/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/15/16/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/20/13/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/20/13/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/20/15/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/20/15/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/-7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/-7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-4/-11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-4/-11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/16/7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/16/7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/-12/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/-12/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/-7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/-7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-12/7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-12/7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/17/15/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/17/15/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/17/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/17/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/12/-8/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/12/-8/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-9/4/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-9/4/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/-12/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/-12/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/-7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/-7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/-7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/-7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/3/-3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/3/-3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-3/3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-3/3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/13/-3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/13/-3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/13/16/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/13/16/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/-12/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/-12/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/12/7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/12/7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/17/13/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/17/13/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/2/-7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/2/-7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/2/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/2/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/12/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/12/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/15/-3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/15/-3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/10/-6/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/10/-6/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/6/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/6/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/12/9/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/12/9/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/-9/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/-9/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/18/10/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/18/10/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/10/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/10/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/17/4/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/17/4/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/10/4/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/10/4/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/15/11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/15/11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/-10/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/-10/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/8/12/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/8/12/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-4/-6/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-4/-6/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/-2/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/-2/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/6/-10/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/6/-10/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/10/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/10/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-12/-9/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-12/-9/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-9/-3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-9/-3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/9/3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/9/3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/9/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/9/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/19/17/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/19/17/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/20/0/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/20/0/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/8/-9/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/8/-9/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/2/-4/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/2/-4/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/2/-2/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/2/-2/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-5/3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-5/3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/6/-14/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/6/-14/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/14/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/14/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/17/11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/17/11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/14/-3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/14/-3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/17/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/17/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/18/3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/18/3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/-11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/-11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/-8/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/-8/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/14/0/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/14/0/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/5/10/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/5/10/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/-11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/-11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/1/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/1/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/-11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/-11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/6/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/6/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/20/-5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/20/-5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-4/2/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-4/2/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-9/-1/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-9/-1/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/0/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/0/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/17/2/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/17/2/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/2/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/2/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/13/12/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/13/12/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/-9/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/-9/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/3/12/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/3/12/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/-5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/-5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-2/-10/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-2/-10/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-9/0/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-9/0/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-4/11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-4/11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-2/3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-2/3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/19/9/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/19/9/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-12/14/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-12/14/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/5/-10/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/5/-10/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/-9/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/-9/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/9/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/9/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/-13/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/-13/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/16/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/16/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-12/5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-12/5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/17/8/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/17/8/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/10/3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/10/3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/8/7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/8/7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/16/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/16/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/15/5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/15/5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/-7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/-7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/18/2/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/18/2/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/-9/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/-9/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/20/-3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/20/-3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/-13/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/-13/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/13/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/13/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-9/-6/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-9/-6/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/14/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/14/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-3/-2/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-3/-2/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/-4/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/-4/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/-12/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/-12/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-3/-5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-3/-5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/3/5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/3/5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/13/11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/13/11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/3/11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/3/11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/9/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/9/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/12/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/12/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-3/2/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-3/2/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/20/3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/20/3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/14/17/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/14/17/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/8/-12/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/8/-12/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/-2/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/-2/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/6/2/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/6/2/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/6/7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/6/7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/17/10/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/17/10/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/4/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/4/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/19/14/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/19/14/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/-5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/-5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-12/16/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-12/16/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-3/-8/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-3/-8/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/10/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/10/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/3/-11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/3/-11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-12/15/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-12/15/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-4/3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-4/3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/2/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/2/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/13/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/13/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/14/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/14/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/9/-7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/9/-7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-9/7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-9/7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/9/-5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/9/-5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-9/5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-9/5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/20/11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/20/11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/-7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/-7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/16/-2/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/16/-2/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/16/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-8/16/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/5/2/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/5/2/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-12/0/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-12/0/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/12/-12/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/12/-12/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-12/12/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-12/12/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/-10/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/7/-10/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/8/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/8/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/1/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/1/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/1/-9/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/1/-9/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/-7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/4/-7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-6/5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/-5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/11/-5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/5/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-11/5/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-3/-4/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-3/-4/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/12/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/12/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/3/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-7/3/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-9/-7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-9/-7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/9/7/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/9/7/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/-11/alpine-pine-trunk",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "winter-valley/wrela-world-1/conifer-line/-10/-11/alpine-pine-foliage",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "bunny-instance/material/snow-fur",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "bunny-instance/material/rose-ears",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "bunny-instance/material/onyx-eyes",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "bunny-instance/material/rose-nose",
+              "reason": "dynamic geometry excluded"
+            },
+            {
+              "id": "coastal-waves",
+              "reason": "water transport excluded"
+            }
+          ],
+          "activeMs": 149.89999997615814,
+          "maxSliceMs": 2.700000047683716
+        },
+        "ready": true,
+        "indirect": false
+      },
+      "shadow": {
+        "maximum": 0,
+        "mean": 0,
+        "beforeMean": 0.08648722286025683,
+        "afterMean": 0.08648722286025683
+      },
+      "upgrade": {
+        "maximum": 0.07695770263671875,
+        "mean": 0.004932716495276969,
+        "beforeMean": 0.08648722286025683,
+        "afterMean": 0.08155451229600995
+      },
+      "reuse": true,
+      "errors": []
+    }
+  ]
+}

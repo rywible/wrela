@@ -1,0 +1,84 @@
+{
+  "date": "2026-09-23",
+  "productionChanges": false,
+  "adapter": "apple \u00b7 metal-3",
+  "outputResolution": [
+    1440,
+    900
+  ],
+  "performanceComparable": false,
+  "primaryCapture": "output/browser-1790180478083-32083",
+  "bundleSha256": "7950a11b6a1460361753ed5d4f1ce6134ee52bb7b19d75da32e08f313c2ded0d",
+  "sourceFingerprint": "a319ccd5c08c3c59ddedf2d612b7d0041f3f2dbd968af43883df09e719144e93",
+  "wholeWorkspaceStable": false,
+  "auditedFiles": [
+    {
+      "path": "packages/model/src/environment-authoring.ts",
+      "captureStartSha256": "b42279f7512f43f00aec0915500d94256aa9b39d625746eb3d2d2a7216bbcc46",
+      "auditSha256": "b42279f7512f43f00aec0915500d94256aa9b39d625746eb3d2d2a7216bbcc46",
+      "matches": true
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-clouds.wgsl",
+      "captureStartSha256": "49a56ae26bc82224db6c21d82a0943f12b556c5fb061540f0ba9a3c34e3cb525",
+      "auditSha256": "49a56ae26bc82224db6c21d82a0943f12b556c5fb061540f0ba9a3c34e3cb525",
+      "matches": true
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-gpu.ts",
+      "captureStartSha256": "c0b691ef234a9a17d483992a9ba2cc00f1ae021320a6db1305f974269e55d657",
+      "auditSha256": "c0b691ef234a9a17d483992a9ba2cc00f1ae021320a6db1305f974269e55d657",
+      "matches": true
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-sky.wgsl",
+      "captureStartSha256": "df06c339ea2df5cbc6230d82e3ad7c9fdcb2f29f1af7f905761bc68ba97723be",
+      "auditSha256": "df06c339ea2df5cbc6230d82e3ad7c9fdcb2f29f1af7f905761bc68ba97723be",
+      "matches": true
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere.ts",
+      "captureStartSha256": "d38f14ed8a349361bcbaf9f94021c4a8ee7fa0950fcb79eca796bbba32b3a8fc",
+      "auditSha256": "d38f14ed8a349361bcbaf9f94021c4a8ee7fa0950fcb79eca796bbba32b3a8fc",
+      "matches": true
+    },
+    {
+      "path": "packages/render-webgpu/src/display.wgsl",
+      "captureStartSha256": "66ce0f5f753804fe40dde0329beecb457d9f1c18910a02f9f28b887bc06974b8",
+      "auditSha256": "66ce0f5f753804fe40dde0329beecb457d9f1c18910a02f9f28b887bc06974b8",
+      "matches": true
+    },
+    {
+      "path": "tools/sky-art-review.ts",
+      "captureStartSha256": "2c58453afef3fd1b6d3997188c437611f1fba04a0d5f653ab5f5e4128a920771",
+      "auditSha256": "2c58453afef3fd1b6d3997188c437611f1fba04a0d5f653ab5f5e4128a920771",
+      "matches": true
+    }
+  ],
+  "rawEvidence": {
+    "high": "output/browser-1790180478083-32083",
+    "zenithFull": "output/browser-1790180673612-32666",
+    "balanced": "output/browser-1790180862618-33190",
+    "staticExposure": "output/browser-1790180861480-33170"
+  },
+  "zenithHistoryControl": {
+    "byteIdentical": true,
+    "sha256": "e1045dffc492cc6c6d3fdbb603c9cae404b1901ef32911506e503bff8e9b346e"
+  },
+  "exposureControl": {
+    "stops": [
+      0.8,
+      1.3,
+      2.0,
+      4.5
+    ],
+    "wind": [
+      0,
+      0,
+      0
+    ],
+    "sunElevation": -0.05,
+    "cloudReconstruction": "full"
+  },
+  "errors": []
+}

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { referenceProject } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
 import { runAuthoring } from "./author";
 import { WorkspaceBridge } from "./bridge";
 
@@ -29,7 +29,7 @@ test("headless proposal preview does not publish, apply uses the same source-key
     expect(
       (await bridge.read())?.project.documents.find((document) => document.id === "polar-bunny")?.name,
     ).toBe("Snow scout");
-    await expect(runAuthoring([directory, "apply", file])).rejects.toThrow("Workspace changed");
+    await expect(runAuthoring([directory, "apply", file])).rejects.toThrow("Workspace documents changed");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

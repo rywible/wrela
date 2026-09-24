@@ -1,10 +1,6 @@
 import { expect, test } from "bun:test";
-import {
-  type CharacterDefinition,
-  type FieldDefinition,
-  type FieldNode,
-  referenceProject,
-} from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
+import type { CharacterDefinition, FieldDefinition, FieldNode } from "@wrela/model";
 import {
   artifactTransfers,
   clearCompilerCaches,

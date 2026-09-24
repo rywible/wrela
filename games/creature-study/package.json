@@ -1,0 +1,22 @@
+{
+  "name": "@wrela/game-creature",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/module.ts",
+    "./rules": "./src/rules.ts",
+    "./player": "./src/player.ts",
+    "./style": "./src/style.ts"
+  },
+  "devDependencies": {
+    "@wrela/compiler": "workspace:*",
+    "@wrela/examples": "workspace:*",
+    "@wrela/model": "workspace:*",
+    "@wrela/runtime": "workspace:*"
+  },
+  "dependencies": {
+    "@wrela/model": "workspace:*",
+    "@wrela/examples": "workspace:*",
+    "@wrela/runtime": "workspace:*"
+  }
+}

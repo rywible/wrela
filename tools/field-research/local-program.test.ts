@@ -1,13 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { compileField } from "@wrela/compiler";
-import {
-  type Bounds,
-  type FieldDefinition,
-  type FieldNode,
-  referenceProject,
-  shape,
-  type Vec3,
-} from "@wrela/model";
+import { referenceProject, shape } from "@wrela/examples";
+import type { Bounds, FieldDefinition, FieldNode, Vec3 } from "@wrela/model";
 import { compileGauge, gaugeValue } from "./gauge";
 import { buildAtlas, jet, lower, quadricHit, sample, smoothMin, specialize, value } from "./local-program";
 

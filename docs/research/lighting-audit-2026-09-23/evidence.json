@@ -1,0 +1,617 @@
+{
+  "date": "2026-09-23",
+  "productionChanges": false,
+  "newResearchHarness": [
+    "tools/lighting-audit.ts",
+    "tools/fixtures/lighting-audit.ts"
+  ],
+  "snapshots": [
+    {
+      "source": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790189163908-55917/source",
+      "fingerprint": "0a5e427353f401d8bfe33b238f91b58431a00c34a5cd2a1510354e49c54e253d",
+      "captures": [
+        "lighting",
+        "material-families",
+        "alpine"
+      ]
+    },
+    {
+      "source": "/Users/ryanwible/projects/wrela/output/lighting-audit/1790189450382-56561/source",
+      "fingerprint": "9f7877dcfc72be9d3e9edfc435d902689f25a6feac8c652a09a623b147c988ec",
+      "captures": [
+        "sealed-room",
+        "open-box"
+      ]
+    }
+  ],
+  "adapter": "apple \u00b7 metal-3",
+  "lighting": {
+    "numerical": {
+      "maximumError": 0.009471198867843533,
+      "constantError": 0.00048828125,
+      "probes": [
+        {
+          "nv": 0.1328125,
+          "rough": 0.3828125,
+          "actual": [
+            0.671875,
+            0.205810546875
+          ],
+          "reference": [
+            0.6697197444125501,
+            0.2061502299933305
+          ],
+          "error": 0.002155255587449889
+        },
+        {
+          "nv": 0.1328125,
+          "rough": 0.6328125,
+          "actual": [
+            0.79052734375,
+            0.07269287109375
+          ],
+          "reference": [
+            0.7810561448821565,
+            0.07204560556119843
+          ],
+          "error": 0.009471198867843533
+        },
+        {
+          "nv": 0.1328125,
+          "rough": 0.9453125,
+          "actual": [
+            0.70751953125,
+            0.023529052734375
+          ],
+          "reference": [
+            0.7166701799245646,
+            0.023567413559542446
+          ],
+          "error": 0.00915064867456461
+        },
+        {
+          "nv": 0.4453125,
+          "rough": 0.3828125,
+          "actual": [
+            0.88818359375,
+            0.044464111328125
+          ],
+          "reference": [
+            0.8832254128824852,
+            0.04440776379254422
+          ],
+          "error": 0.004958180867514761
+        },
+        {
+          "nv": 0.4453125,
+          "rough": 0.6328125,
+          "actual": [
+            0.73876953125,
+            0.0185546875
+          ],
+          "reference": [
+            0.7411120331609544,
+            0.018511176651728755
+          ],
+          "error": 0.00234250191095442
+        },
+        {
+          "nv": 0.4453125,
+          "rough": 0.9453125,
+          "actual": [
+            0.51513671875,
+            0.005016326904296875
+          ],
+          "reference": [
+            0.5145676995488131,
+            0.004997313218941769
+          ],
+          "error": 0.0005690192011869044
+        },
+        {
+          "nv": 0.8828125,
+          "rough": 0.3828125,
+          "actual": [
+            0.96923828125,
+            0.0002925395965576172
+          ],
+          "reference": [
+            0.968834521169297,
+            0.00028757262782647976
+          ],
+          "error": 0.0004037600807029751
+        },
+        {
+          "nv": 0.8828125,
+          "rough": 0.6328125,
+          "actual": [
+            0.775390625,
+            0.0005135536193847656
+          ],
+          "reference": [
+            0.7750879194675456,
+            0.0005169723877448786
+          ],
+          "error": 0.0003027055324543726
+        },
+        {
+          "nv": 0.8828125,
+          "rough": 0.9453125,
+          "actual": [
+            0.38818359375,
+            0.0002446174621582031
+          ],
+          "reference": [
+            0.38730332815434626,
+            0.00024356239890100466
+          ],
+          "error": 0.0008802655956537397
+        }
+      ]
+    },
+    "winter": {
+      "performance": {
+        "order": "ABBA",
+        "enabled": {
+          "samples": 32,
+          "medianMs": 15.335424,
+          "p95Ms": 18.284544
+        },
+        "control": {
+          "samples": 32,
+          "medianMs": 2.62144,
+          "p95Ms": 3.538944
+        },
+        "scope": "Short whole-frame GPU observations, fixed scene at 640\u00d7480; build and upload settling excluded."
+      },
+      "volume": {
+        "origin": [
+          -24,
+          -6,
+          -24
+        ],
+        "spacing": [
+          4.363636363636363,
+          2.4,
+          4.363636363636363
+        ],
+        "dimensions": [
+          12,
+          6,
+          12
+        ]
+      }
+    },
+    "winterBuildMs": 3775.4000000953674,
+    "winterExcludedSurfaces": 405,
+    "localShadow": {
+      "firstPasses": 6,
+      "movedPasses": 6,
+      "performance": {
+        "order": "ABBA",
+        "enabled": {
+          "samples": 32,
+          "medianMs": 0.720896,
+          "p95Ms": 1.245184
+        },
+        "control": {
+          "samples": 32,
+          "medianMs": 0.720896,
+          "p95Ms": 0.98304
+        },
+        "scope": "Short whole-frame GPU observations, fixed scene at 640\u00d7480; build and upload settling excluded."
+      }
+    },
+    "errors": []
+  },
+  "sealedRoom": {
+    "captures": [
+      {
+        "name": "sealed-default",
+        "maximumRGB": 0.386474609375,
+        "meanLuminance": 0.05398678170883567,
+        "centralPatchMeanLuminance": 0.06063191362533526,
+        "adapter": "apple \u00b7 metal-3",
+        "completeness": true,
+        "outputResolution": [
+          640,
+          480
+        ]
+      },
+      {
+        "name": "sealed-gi",
+        "maximumRGB": 0.3173828125,
+        "meanLuminance": 0.01918323532101004,
+        "centralPatchMeanLuminance": 0.06063191362533526,
+        "adapter": "apple \u00b7 metal-3",
+        "completeness": true,
+        "outputResolution": [
+          640,
+          480
+        ]
+      },
+      {
+        "name": "sealed-diffuse-only",
+        "maximumRGB": 0.0352783203125,
+        "meanLuminance": 9.745009988546372e-08,
+        "centralPatchMeanLuminance": 0,
+        "adapter": "apple \u00b7 metal-3",
+        "completeness": true,
+        "outputResolution": [
+          640,
+          480
+        ]
+      },
+      {
+        "name": "sealed-gi-no-sky-reflection",
+        "maximumRGB": 0.316162109375,
+        "meanLuminance": 0.00210597039979825,
+        "centralPatchMeanLuminance": 0.00026723143715858287,
+        "adapter": "apple \u00b7 metal-3",
+        "completeness": true,
+        "outputResolution": [
+          640,
+          480
+        ]
+      },
+      {
+        "name": "sealed-gi-no-direct",
+        "maximumRGB": 0.1392822265625,
+        "meanLuminance": 0.017504230726647824,
+        "centralPatchMeanLuminance": 0.06063191362533526,
+        "adapter": "apple \u00b7 metal-3",
+        "completeness": true,
+        "outputResolution": [
+          640,
+          480
+        ]
+      },
+      {
+        "name": "open-default",
+        "maximumRGB": 0.383544921875,
+        "meanLuminance": 0.14225704706097195,
+        "centralPatchMeanLuminance": 0.2521472204082726,
+        "adapter": "apple \u00b7 metal-3",
+        "completeness": true,
+        "outputResolution": [
+          640,
+          480
+        ]
+      },
+      {
+        "name": "open-gi",
+        "maximumRGB": 0.43310546875,
+        "meanLuminance": 0.14097792258597217,
+        "centralPatchMeanLuminance": 0.2668817640506796,
+        "adapter": "apple \u00b7 metal-3",
+        "completeness": true,
+        "outputResolution": [
+          640,
+          480
+        ]
+      }
+    ],
+    "report": {
+      "status": "ready",
+      "triangles": 24,
+      "rays": 49152,
+      "source": "physical-sky-and-directional-sun",
+      "bounces": 1,
+      "excluded": [],
+      "buildMs": 553.1000000238419,
+      "maxSliceMs": 2
+    },
+    "errors": [],
+    "interpretation": "Diagnostic ablations, not fixes. Images use identical exposure. Linear RGB statistics include the full frame. Aerial perspective remains active in beauty views.",
+    "browserErrors": [],
+    "performanceComparable": false
+  },
+  "alpine": {
+    "captureComplete": true,
+    "budgetMet": false,
+    "frames": [
+      {
+        "id": "near",
+        "budget": {
+          "target": {
+            "output": [
+              1920,
+              1080
+            ],
+            "quality": "balanced",
+            "gpuP95Ms": 12,
+            "cpuP95Ms": 4,
+            "gpuBytes": 268435456,
+            "installedBytes": 201326592
+          },
+          "frames": 48,
+          "gpuSamples": 48,
+          "uniqueFrames": true,
+          "validMeasurements": true,
+          "outputMatches": true,
+          "gpuP95": 21.2992,
+          "cpuP95": 9,
+          "maximumBytes": 258093515,
+          "installedBytes": 89627712,
+          "actualRenderResolutions": [
+            "1920\u00d71080"
+          ],
+          "failures": [
+            "GPU p95 21.299 ms exceeds 12 ms",
+            "CPU p95 9.000 ms exceeds 4 ms"
+          ],
+          "met": false,
+          "scope": "Static-view extraction plus render submission CPU, frame-tagged GPU timestamps, and engine-counted resource payloads on the measured adapter. Simulation, process heap and other hardware are unmeasured. Internal resolution is disclosed; output size does not establish native-resolution fidelity. Artistic acceptance remains unverified."
+        }
+      },
+      {
+        "id": "gameplay",
+        "budget": {
+          "target": {
+            "output": [
+              1920,
+              1080
+            ],
+            "quality": "balanced",
+            "gpuP95Ms": 12,
+            "cpuP95Ms": 4,
+            "gpuBytes": 268435456,
+            "installedBytes": 201326592
+          },
+          "frames": 48,
+          "gpuSamples": 48,
+          "uniqueFrames": true,
+          "validMeasurements": true,
+          "outputMatches": true,
+          "gpuP95": 21.168128,
+          "cpuP95": 8.200000047683716,
+          "maximumBytes": 261946587,
+          "installedBytes": 89627712,
+          "actualRenderResolutions": [
+            "1920\u00d71080"
+          ],
+          "failures": [
+            "GPU p95 21.168 ms exceeds 12 ms",
+            "CPU p95 8.200 ms exceeds 4 ms"
+          ],
+          "met": false,
+          "scope": "Static-view extraction plus render submission CPU, frame-tagged GPU timestamps, and engine-counted resource payloads on the measured adapter. Simulation, process heap and other hardware are unmeasured. Internal resolution is disclosed; output size does not establish native-resolution fidelity. Artistic acceptance remains unverified."
+        }
+      },
+      {
+        "id": "landscape",
+        "budget": {
+          "target": {
+            "output": [
+              1920,
+              1080
+            ],
+            "quality": "balanced",
+            "gpuP95Ms": 12,
+            "cpuP95Ms": 4,
+            "gpuBytes": 268435456,
+            "installedBytes": 201326592
+          },
+          "frames": 48,
+          "gpuSamples": 48,
+          "uniqueFrames": true,
+          "validMeasurements": true,
+          "outputMatches": true,
+          "gpuP95": 21.561344,
+          "cpuP95": 7.899999976158142,
+          "maximumBytes": 265659671,
+          "installedBytes": 89627712,
+          "actualRenderResolutions": [
+            "1920\u00d71080"
+          ],
+          "failures": [
+            "GPU p95 21.561 ms exceeds 12 ms",
+            "CPU p95 7.900 ms exceeds 4 ms"
+          ],
+          "met": false,
+          "scope": "Static-view extraction plus render submission CPU, frame-tagged GPU timestamps, and engine-counted resource payloads on the measured adapter. Simulation, process heap and other hardware are unmeasured. Internal resolution is disclosed; output size does not establish native-resolution fidelity. Artistic acceptance remains unverified."
+        }
+      }
+    ],
+    "errors": []
+  },
+  "references": [
+    {
+      "id": "h-storm",
+      "file": "../sky-reference-audit-2026-09-23/horizon-ground-sunset.jpg",
+      "title": "Horizon / Storm and landscape",
+      "category": "AAA",
+      "note": "A dominant storm mass shapes the scene. Illumination reaches through the air and agrees with the ground.",
+      "credit": "Guerrilla / Sony Interactive Entertainment \u00b7 official PS5 capture",
+      "source": "https://blog.playstation.com/2023/03/29/pushing-the-envelope-achieving-next-level-clouds-in-horizon-forbidden-west-burning-shores/",
+      "sha256": "f45c14287657218c6039225da1fb9ce9818ffbf9939b88dc1d11a5f05990532f",
+      "bytes": 1771152,
+      "imageUrl": "https://live.staticflickr.com/65535/52768780765_fbf15e6122_4k.jpg"
+    },
+    {
+      "id": "r-sunset",
+      "file": "../sky-reference-audit-2026-09-23/rdr2-official-4.jpg",
+      "title": "Red Dead Redemption 2 / Golden landscape",
+      "category": "AAA",
+      "note": "Sparse low clouds, fine upper patterning, and warm haze connect the sky to the landscape. Study integration, not cloud sharpness.",
+      "credit": "Rockstar Games \u00b7 publisher Steam screenshot gallery",
+      "source": "https://store.steampowered.com/app/1174180/Red_Dead_Redemption_2/",
+      "sha256": "470c7e8172983e4343b71ac1f41b10dfd6f9542347e718faeae756385cfa23bc",
+      "bytes": 593011,
+      "imageUrl": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1174180/ss_d1a8f5a69155c3186c65d1da90491fcfd43663d9.1920x1080.jpg?t=1759502961"
+    },
+    {
+      "id": "n-rockies",
+      "file": "../sky-reference-audit-2026-09-23/nasa-cumulus-rockies.jpg",
+      "title": "Real sky / Cumulus over the Rockies",
+      "category": "Nature",
+      "note": "Strong vertical growth and varied outlines sit coherently over mountain terrain. A scanned photograph, not a calibrated color reference.",
+      "credit": "Jeff Caplan / NASA \u00b7 August 2001",
+      "source": "https://scool.larc.nasa.gov/GLOBE/cumulus.html",
+      "sha256": "51fa090ec23f0793e5510ef70e550494e7678f0e3c660d1dc15b138006cb8f6e",
+      "bytes": 516819,
+      "imageUrl": "https://scool.larc.nasa.gov/images/Cu14.jpg"
+    },
+    {
+      "title": "Photographed snowy hillside",
+      "credit": "Andreas Mischok / Poly Haven, CC0",
+      "source": "https://polyhaven.com/a/snowy_hillside",
+      "imageUrl": "https://cdn.polyhaven.com/asset_img/primary/snowy_hillside.png?height=760&quality=95&v=95431cb5",
+      "note": "Tone-mapped photographic HDRI preview. Remote image; not exposure matched to Wrela."
+    }
+  ],
+  "validation": {
+    "newHarnessFormatting": "pass",
+    "browserTypecheck": "pass",
+    "workspaceTypecheck": "fails in pre-existing tools/fixtures/shoot-qualification.ts:54,55,63; no errors reported in new audit files",
+    "comparisonBoard": {
+      "all19ImagesLoaded": true,
+      "desktopOverflow": false,
+      "cameraSelection": true,
+      "imageComparisonDivider": true,
+      "allFivePanels": true,
+      "localLinksChecked": 41,
+      "verification": "Codex browser UI inspection; DOM-backed image and control checks; file link and evidence checksum validation."
+    }
+  },
+  "limits": [
+    "Short local timings, not sustained performance or other hardware.",
+    "AAA and photographic images are qualitative references, not registered comparisons.",
+    "No image proves all motion, weather, or camera cases.",
+    "Ablations diagnose failures; they are not implemented lighting fixes."
+  ],
+  "files": [
+    {
+      "path": "physical-gi.png",
+      "sha256": "4ed5bf6ed8b35d0e6bc2a3853a5122cc72b681b20fccfe53c022474e63e6636c",
+      "bytes": 159618
+    },
+    {
+      "path": "primary-gameplay.png",
+      "sha256": "3f5c892a944c105c24af3b2ff8580550f10708421b06039e27ed5e09e7231b81",
+      "bytes": 1632801
+    },
+    {
+      "path": "open-default.png",
+      "sha256": "74762e4e6aa7f288d3e3b595dd3092954d4afd36fef642eba0f4b2986f399094",
+      "bytes": 119997
+    },
+    {
+      "path": "winter-unshadowed.png",
+      "sha256": "b3e04ffee78b0cf4ea359625b5604d9925f5790b098b2e714d6415d708a5a967",
+      "bytes": 385782
+    },
+    {
+      "path": "primary-near.png",
+      "sha256": "e39e10300cd6e518f8d8e2baba03914050b81e7909830a6f0b9e6052e8c88e7b",
+      "bytes": 1839748
+    },
+    {
+      "path": "lantern-unshadowed.png",
+      "sha256": "32cf0ecef02f8436d34126c96fb221303c5b34baaca52d0ed45f0dd043ec8a2b",
+      "bytes": 129884
+    },
+    {
+      "path": "winter.png",
+      "sha256": "c26699a01b89a5ccd9522ca9bd4ba141db4702d65613b9ae7e3025b7aef3bb27",
+      "bytes": 378892
+    },
+    {
+      "path": "lantern.png",
+      "sha256": "04c36361675fb821e99cdf88a979f760ac57c2614ee8dc2efe05672bc047c71c",
+      "bytes": 124916
+    },
+    {
+      "path": "primary-landscape.png",
+      "sha256": "9a6c18bb2ee5f77a9a8f5a5f3a410f11c539a7d2eee22149c9f6d97792f9df2a",
+      "bytes": 2201333
+    },
+    {
+      "path": "sealed-default.png",
+      "sha256": "6467be7db7470f7544ec60e5905f818634b7bbbf490d7d1b6e814776d6bedfbd",
+      "bytes": 51993
+    },
+    {
+      "path": "sealed-gi-no-direct.png",
+      "sha256": "b92dd088e02d62cb764f716505268001614683d8d9513246d7bcb2e054933f5b",
+      "bytes": 40245
+    },
+    {
+      "path": "sealed-diffuse-only.png",
+      "sha256": "3cf76653c415ee9df08610b40723e847dc986f22aa2b1334f72ca3cbbf766628",
+      "bytes": 8004
+    },
+    {
+      "path": "material-lookdev.json",
+      "sha256": "2eabb6c23120b9b7cd5fdcce48e156179d237b5126f8426caf6e11f9887fb423",
+      "bytes": 25837
+    },
+    {
+      "path": "lighting-upgrade.json",
+      "sha256": "3c2b5531dec1cddade373c0587ea4a205dc84566d80adea205d20c8da02179b5",
+      "bytes": 72316
+    },
+    {
+      "path": "alpine-slice-review.json",
+      "sha256": "c396db6807e9b42adf4c117a96e5c473f347dee37cca1e163fdcdf03c12e2a21",
+      "bytes": 703239
+    },
+    {
+      "path": "open-gi.png",
+      "sha256": "4ed5bf6ed8b35d0e6bc2a3853a5122cc72b681b20fccfe53c022474e63e6636c",
+      "bytes": 159618
+    },
+    {
+      "path": "materials-neutral.png",
+      "sha256": "4490a41cf59bc45af596284b023dec6b2322b28b90b8ad9acb01045789db3162",
+      "bytes": 200431
+    },
+    {
+      "path": "lighting-audit.json",
+      "sha256": "01e9ff97598d6af413a24d54138036276330f3f6d5a66b0dd85e43dd06af728e",
+      "bytes": 2645
+    },
+    {
+      "path": "sealed-gi-no-sky-reflection.png",
+      "sha256": "d02a713080ba0d52075676d603913004e81217290983f49ca6b08cacf86a28a7",
+      "bytes": 26433
+    },
+    {
+      "path": "sealed-gi.png",
+      "sha256": "a80d769692e96a2c1e2353f6b7f124d92bc0ecaec618b51087b5b13b6f3ec190",
+      "bytes": 53676
+    },
+    {
+      "path": "materials-grazing.png",
+      "sha256": "dbd16eb43a77807ad8155aa7fb678f5f9eac6eeaf0201d07121ad33136f4e847",
+      "bytes": 219056
+    },
+    {
+      "path": "materials-backlit.png",
+      "sha256": "eef806ddffce91c6467639fe88bbe98cc0594a0e4dd813dc388e3aef2b351d7f",
+      "bytes": 384870
+    }
+  ],
+  "deliverables": [
+    {
+      "path": "docs/research/lighting-audit-2026-09-23.md",
+      "sha256": "3fdd8e4864d05cacca6dd22ead6e7beb17e0a69bbb41a4511c6133984f11df32",
+      "bytes": 23468
+    },
+    {
+      "path": "docs/research/lighting-audit-2026-09-23/index.html",
+      "sha256": "306b92f15297f2da72272e30d2b910658d17d33d4927720e308881b19ae0b8f7",
+      "bytes": 23035
+    },
+    {
+      "path": "tools/lighting-audit.ts",
+      "sha256": "2fb65f1c6aabb735543b1d0a6c2e6d6f97789fe67c0eeeb368d615a832325628",
+      "bytes": 2325
+    },
+    {
+      "path": "tools/fixtures/lighting-audit.ts",
+      "sha256": "eb86fd951e35cb7f899d81386d139ebc1cb9e9a4fa2813cf14884240d0752c13",
+      "bytes": 5096
+    }
+  ]
+}

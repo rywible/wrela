@@ -1,0 +1,38 @@
+bun test v1.4.2 (744846f84)
+
+packages/render-webgpu/src/cloud-formations.test.ts:
+(pass) formation bounds, identities and work are validated at authoring [0.90ms]
+(pass) one upload preserves world coordinates, support and independent envelope orientation [0.31ms]
+(pass) shape edits invalidate history even when wind, camera and weather are unchanged [0.22ms]
+(pass) growth is repeatable, changes silhouette across seeds, and stays inside support under shear [3.14ms]
+(pass) middle and high decks validate separation and upload independently of low weather [0.36ms]
+
+packages/render-webgpu/src/cloud-history.test.ts:
+(pass) small camera, wind, shape and light changes reuse; large changes reset [0.26ms]
+(pass) source switch, camera cuts, and invalid data reset history [0.06ms]
+(pass) large wind steps redraw mixed upper and lower cloud depths [0.06ms]
+(pass) sunset light expires before motion-only cloud history [0.07ms]
+(pass) opening weather groups expires stale contours without resetting stable camera motion [0.06ms]
+(pass) middle-layer wind and edits invalidate mixed-depth history [0.03ms]
+
+packages/runtime/src/environment-authoring.test.ts:
+(pass) weather sampling coordinates channels, wraps time, and follows the short azimuth arc [0.21ms]
+(pass) solar clock wraps continuously while authored weather stays on its own period [60.56ms]
+(pass) weather fronts and cloud types interpolate without changing the solar clock [0.26ms]
+(pass) lighting zones blend continuously and resolve overlaps deterministically [0.89ms]
+(pass) environment output consumes sequence, zone, exposure, and color controls [0.34ms]
+(pass) invalid sequence timings fail at authoring boundaries [0.63ms]
+(pass) alpine lookdev source validates and supplies coherent clear/clouded/wet states [3.87ms]
+(pass) room lighting volumes rotate in metres and retain a continuous interior blend [0.60ms]
+(pass) weather-driven water preserves carrier timing, support geometry, source ownership, and authored bounds [1.83ms]
+(pass) semantic cloud formations preserve identity and fade across weather keys [0.23ms]
+(pass) cloud lifecycle and independent deck controls interpolate continuously [0.10ms]
+
+packages/authoring/src/cloud-authoring.test.ts:
+(pass) cloud controls extend old documents, round-trip undo, and isolate weather keys [20.01ms]
+(pass) optional cloud controls reject unknown paths and invalid envelopes atomically [1.93ms]
+
+ 24 pass
+ 0 fail
+ 7635 expect() calls
+Ran 24 tests across 4 files. [153.00ms]

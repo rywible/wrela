@@ -10,10 +10,19 @@ import {
   random01,
   scale,
   sub,
+  thinCoverageBytes,
   type Vec3,
   type VegetationDefinition,
+  vegetationMotionEnvelope,
+  vegetationWindResponse,
 } from "@wrela/model";
+
+import { botanicalMeshes } from "./botanical-mesh";
 import { ProductCache } from "./cache";
+import { compileShootInstances } from "./shoot-instances";
+
+export { type BotanicalBranch, type BotanicalStructure, botanicalStructure } from "./botanical-structure";
+
 import { geometryKey, materialBindingKey } from "./products";
 import { COMPILER_VERSION } from "./surface";
 
@@ -170,7 +179,7 @@ export function vegetationGeometrySource(doc: VegetationDefinition, quality: Qua
     material: materialBindingKey(doc),
   };
 }
-const vegetationProducts = new ProductCache<CompiledVegetation>(8 * 1024 * 1024);
+const vegetationProducts = new ProductCache<CompiledVegetation>(64 * 1024 * 1024);
 export function compileVegetation(
   doc: VegetationDefinition,
   quality: Quality = "review",
@@ -180,8 +189,10 @@ export function compileVegetation(
   if (!product) {
     product = buildVegetation(doc, quality);
     const distant = buildVegetation(doc, quality, true);
-    product.surfaces = product.surfaces.map((surface, index) => {
-      const coarse = distant.surfaces[index].mesh;
+    product.maxDisplacement = Math.max(product.maxDisplacement, distant.maxDisplacement);
+    product.surfaces = product.surfaces.map((surface) => {
+      const coarse = distant.surfaces.find((candidate) => candidate.id === surface.id)?.mesh;
+      if (!coarse) return surface;
       if (coarse.indices.length >= surface.mesh.indices.length) return surface;
       const bounds: Bounds = {
         min: surface.mesh.bounds.min.map((value, axis) => Math.min(value, coarse.bounds.min[axis])) as Vec3,
@@ -197,6 +208,10 @@ export function compileVegetation(
       min: product.bounds.min.map((value, axis) => Math.min(value, distant.bounds.min[axis])) as Vec3,
       max: product.bounds.max.map((value, axis) => Math.max(value, distant.bounds.max[axis])) as Vec3,
     };
+    const shared = doc.botanical?.conifer?.architecture?.sharedShoots
+      ? compileShootInstances(doc)
+      : undefined;
+    if (shared) product.surfaces = [...product.surfaces.filter((s) => !s.id.endsWith("-foliage")), ...shared];
     vegetationProducts.set(
       geometry,
       product,
@@ -210,6 +225,16 @@ export function compileVegetation(
               mesh.normals.byteLength +
               mesh.indices.byteLength +
               (mesh.colors?.byteLength ?? 0) +
+              (mesh.wind?.byteLength ?? 0) +
+              (mesh.shoots
+                ? (mesh.shoots.skyVisibility?.byteLength ?? 0) +
+                  mesh.shoots.transforms.byteLength +
+                  mesh.shoots.anchors.byteLength +
+                  mesh.shoots.motion.byteLength +
+                  mesh.shoots.sourceIds.reduce((n, id) => n + id.length * 2 + 8, 0)
+                : 0) +
+              (mesh.materialCoordinates?.byteLength ?? 0) +
+              thinCoverageBytes(mesh.thinCoverage) +
               (mesh.sourceIds?.reduce((metadata, id) => metadata + id.length * 2 + 8, 0) ?? 0),
             0,
           )
@@ -222,24 +247,49 @@ export function compileVegetation(
     ...product,
     id: doc.id,
     key,
-    windResponse: doc.windResponse,
-    surfaces: product.surfaces.map((surface, index) => ({
-      ...surface,
-      id: `${doc.id}-${index ? "foliage" : "trunk"}`,
-      key: `${key}-${index ? "foliage" : "trunk"}`,
-      material: index ? doc.material : doc.trunkMaterial,
-      mesh:
-        product.id === doc.id
-          ? surface.mesh
-          : { ...surface.mesh, sourceIds: surface.mesh.sourceIds?.map(() => doc.id) },
-      details:
-        product.id === doc.id
-          ? surface.details
-          : surface.details?.map((detail) => ({
-              ...detail,
-              mesh: { ...detail.mesh, sourceIds: detail.mesh.sourceIds?.map(() => doc.id) },
-            })),
-    })),
+    windResponse: vegetationWindResponse(doc),
+    surfaces: product.surfaces.map((surface) => {
+      const foliage = surface.id.endsWith("-foliage");
+      return {
+        ...surface,
+        id: doc.id + surface.id.slice(product.id.length),
+        key: key + surface.id.slice(product.id.length),
+        material: foliage ? doc.material : doc.trunkMaterial,
+        mesh:
+          product.id === doc.id
+            ? surface.mesh
+            : {
+                ...surface.mesh,
+                sourceIds: surface.mesh.sourceIds?.map((id) => doc.id + id.slice(product.id.length)),
+                shoots: surface.mesh.shoots
+                  ? {
+                      ...surface.mesh.shoots,
+                      sourceIds: surface.mesh.shoots.sourceIds.map(
+                        (id) => doc.id + id.slice(product.id.length),
+                      ),
+                    }
+                  : undefined,
+              },
+        details:
+          product.id === doc.id
+            ? surface.details
+            : surface.details?.map((detail) => ({
+                ...detail,
+                mesh: {
+                  ...detail.mesh,
+                  sourceIds: detail.mesh.sourceIds?.map((id) => doc.id + id.slice(product.id.length)),
+                  shoots: detail.mesh.shoots
+                    ? {
+                        ...detail.mesh.shoots,
+                        sourceIds: detail.mesh.shoots.sourceIds.map(
+                          (id) => doc.id + id.slice(product.id.length),
+                        ),
+                      }
+                    : undefined,
+                },
+              })),
+      };
+    }),
   };
 }
 function buildVegetation(
@@ -247,6 +297,7 @@ function buildVegetation(
   quality: Quality = "review",
   distant = false,
 ): CompiledVegetation {
+  if (doc.botanical) return buildBotanicalVegetation(doc, quality, distant);
   const trunk = builder(),
     leaves = builder(),
     sides = distant ? 6 : quality === "interactive" ? 6 : quality === "review" ? 10 : 14,
@@ -312,7 +363,7 @@ function buildVegetation(
     key,
     surfaces: [
       {
-        kind: "surface",
+        kind: "surface" as const,
         id: `${doc.id}-trunk`,
         key: `${key}-trunk`,
         mesh: trunkMesh,
@@ -320,7 +371,7 @@ function buildVegetation(
         diagnostics: [],
       },
       {
-        kind: "surface",
+        kind: "surface" as const,
         id: `${doc.id}-foliage`,
         key: `${key}-foliage`,
         mesh: leafMesh,
@@ -328,9 +379,65 @@ function buildVegetation(
         diagnostics: [],
       },
     ],
-    windResponse: doc.windResponse,
+    windResponse: vegetationWindResponse(doc),
     maxDisplacement,
     bounds,
     diagnostics: [],
+  };
+}
+
+function buildBotanicalVegetation(
+  doc: VegetationDefinition,
+  quality: Quality,
+  distant: boolean,
+): CompiledVegetation {
+  const mesh = botanicalMeshes(doc, quality, distant);
+  const key = contentKey(vegetationGeometrySource(doc, quality));
+  const bounds: Bounds = {
+    min: mesh.trunk.bounds.min.map((v, axis) => Math.min(v, mesh.foliage.bounds.min[axis])) as Vec3,
+    max: mesh.trunk.bounds.max.map((v, axis) => Math.max(v, mesh.foliage.bounds.max[axis])) as Vec3,
+  };
+  const maxDisplacement =
+    Math.min(Math.max(bounds.max[1], 0) ** 2 * 0.012, 0.6) * 2 +
+    Math.max(vegetationMotionEnvelope(mesh.trunk.wind), vegetationMotionEnvelope(mesh.foliage.wind));
+  for (let axis = 0; axis < 3; axis++) {
+    bounds.min[axis] -= maxDisplacement;
+    bounds.max[axis] += maxDisplacement;
+  }
+  return {
+    kind: "vegetation",
+    id: doc.id,
+    key,
+    windResponse: vegetationWindResponse(doc),
+    maxDisplacement,
+    bounds,
+    surfaces: [
+      {
+        kind: "surface" as const,
+        id: `${doc.id}-trunk`,
+        key: `${key}-trunk`,
+        mesh: mesh.trunk,
+        material: doc.trunkMaterial,
+        diagnostics: [],
+      },
+      {
+        kind: "surface" as const,
+        id: `${doc.id}-foliage`,
+        key: `${key}-foliage`,
+        mesh: mesh.foliage,
+        material: doc.material,
+        diagnostics: [],
+      },
+    ],
+    diagnostics: mesh.truncated
+      ? [
+          {
+            severity: "warning",
+            code: "BOTANICAL_BUDGET",
+            message: "Plant exceeds its bounded branch or leaf budget; reduce hierarchy or cluster density.",
+            document: doc.id,
+          },
+        ]
+      : [],
   };
 }

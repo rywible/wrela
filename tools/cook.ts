@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
-import { cookProject } from "../packages/compiler/src/index";
-import { parseProject, type Quality } from "../packages/model/src/index";
+import { cookProject } from "@wrela/compiler";
+import { parseProject, type Quality } from "@wrela/model";
 
 export async function compilerSourceFingerprint(): Promise<string> {
   const hasher = new Bun.CryptoHasher("sha256");

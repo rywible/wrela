@@ -1,0 +1,290 @@
+{
+  "date": "2026-09-23",
+  "productionChanges": true,
+  "adapter": "apple \u00b7 metal-3",
+  "sourceSnapshot": "output/sky-implementation-2026-09-23/verified-source",
+  "snapshotFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+  "runs": {
+    "field": "/Users/ryanwible/projects/wrela/output/browser-1790184423062-43127",
+    "temporal": "/Users/ryanwible/projects/wrela/output/sky-implementation-2026-09-23/verified-source/output/browser-1790184551592-43578",
+    "benchmark": "/Users/ryanwible/projects/wrela/output/sky-implementation-2026-09-23/verified-source/output/browser-1790184585958-43667",
+    "weather-benchmark": "/Users/ryanwible/projects/wrela/output/sky-implementation-2026-09-23/verified-source/output/browser-1790184594646-43712",
+    "authoring": "/Users/ryanwible/projects/wrela/output/sky-implementation-2026-09-23/verified-source/output/browser-1790184603450-43744",
+    "high": "/Users/ryanwible/projects/wrela/output/sky-implementation-2026-09-23/verified-source/output/browser-1790184604854-43767",
+    "balanced": "/Users/ryanwible/projects/wrela/output/sky-implementation-2026-09-23/verified-source/output/browser-1790184609426-43833",
+    "legacy": "/Users/ryanwible/projects/wrela/output/sky-implementation-2026-09-23/verified-source/output/browser-1790184612631-43868",
+    "alpine": "/Users/ryanwible/projects/wrela/output/sky-implementation-2026-09-23/verified-source/output/browser-1790184619761-43900",
+    "editor": "/Users/ryanwible/projects/wrela/output/browser-1790185185180-45165"
+  },
+  "bundles": {
+    "field": {
+      "sha256": "f01316f5529b4e024e5b6abee8bfbd8b14ca0b8548564926c079bba313b204da",
+      "run": {
+        "startedAt": "2026-09-23T17:27:03.084Z",
+        "finishedAt": "2026-09-23T17:27:32.839Z",
+        "sourceFingerprint": "4d6f15f4bcfc0a03532fb671a104f63deb701db2c1b31299c9aec3e5d0718f9e",
+        "finalSourceFingerprint": "4d6f15f4bcfc0a03532fb671a104f63deb701db2c1b31299c9aec3e5d0718f9e",
+        "sourceStable": true
+      }
+    },
+    "temporal": {
+      "sha256": "f5ef3d8c6275d84988389f6262912619db54bbe341610af26dc996c353f503d8",
+      "run": {
+        "startedAt": "2026-09-23T17:29:11.623Z",
+        "finishedAt": "2026-09-23T17:29:45.866Z",
+        "sourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+        "finalSourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+        "sourceStable": true
+      }
+    },
+    "benchmark": {
+      "sha256": "edd59319a4b9375d5427ea13e7fa6472310f8bf7d147ee27e2a2a27ee7abc008",
+      "run": {
+        "startedAt": "2026-09-23T17:29:45.981Z",
+        "finishedAt": "2026-09-23T17:29:54.545Z",
+        "sourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+        "finalSourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+        "sourceStable": true
+      }
+    },
+    "weather-benchmark": {
+      "sha256": "cd9472676f0c05c7b60b55bf27107e329a2e727d97d82134c97fe106125e6267",
+      "run": {
+        "startedAt": "2026-09-23T17:29:54.673Z",
+        "finishedAt": "2026-09-23T17:30:03.398Z",
+        "sourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+        "finalSourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+        "sourceStable": true
+      }
+    },
+    "authoring": {
+      "sha256": "752984d806aecf526b9e5d7cfb489ebd17e1cccbf3abe83913eef1e680ae4c93",
+      "run": {
+        "startedAt": "2026-09-23T17:30:03.477Z",
+        "finishedAt": "2026-09-23T17:30:04.786Z",
+        "sourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+        "finalSourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+        "sourceStable": true
+      }
+    },
+    "high": {
+      "sha256": "034f89505c8c7dc5b30ac12ece53bb78ff374bd9fa65d430a6a962f370148337",
+      "run": {
+        "startedAt": "2026-09-23T17:30:04.883Z",
+        "finishedAt": "2026-09-23T17:30:09.331Z",
+        "sourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+        "finalSourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+        "sourceStable": true
+      }
+    },
+    "balanced": {
+      "sha256": "6da271981a11f17a374b866133b5ba1667b97489902ee7635b678758def9306b",
+      "run": {
+        "startedAt": "2026-09-23T17:30:09.458Z",
+        "finishedAt": "2026-09-23T17:30:12.543Z",
+        "sourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+        "finalSourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+        "sourceStable": true
+      }
+    },
+    "legacy": {
+      "sha256": "510337efae1c62e09e40a08d425406c3b328824d7c46c749211d572f6fd59cbf",
+      "run": {
+        "startedAt": "2026-09-23T17:30:12.661Z",
+        "finishedAt": "2026-09-23T17:30:16.077Z",
+        "sourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+        "finalSourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+        "sourceStable": true
+      }
+    },
+    "alpine": {
+      "sha256": "8be54a47d44d5cb634706aa7721ad63503afdcf8a842a291974f23afcd2581c2",
+      "run": {
+        "startedAt": "2026-09-23T17:30:19.792Z",
+        "finishedAt": "2026-09-23T17:30:52.902Z",
+        "sourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+        "finalSourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+        "sourceStable": true
+      }
+    }
+  },
+  "validation": {
+    "unitTests": 58,
+    "unitFailures": 0,
+    "typescript": "Both project and browser configurations passed",
+    "denseCases": 9,
+    "denseWorstRms": 0.0030196782888145743,
+    "denseReferenceWorstRms": 0.0008774546034734276,
+    "cacheWorstRms": 0.0013370585848091101,
+    "motionCases": 16,
+    "motionWorstRms": 0.0038731201630067165,
+    "rebaseRms": 3.729301518329006e-07,
+    "wholeSceneBudgetPassed": false,
+    "editorChecks": 6,
+    "editorErrors": []
+  },
+  "performance": {
+    "benchmark": {
+      "samples": 60,
+      "gpuP50Ms": 14.614528,
+      "gpuP95Ms": 29.884416,
+      "gpuMaxMs": 31.45728,
+      "atmosphereUpdatedFrames": 8,
+      "output": [
+        1024,
+        768
+      ],
+      "peakGpuBytes": 119682361
+    },
+    "weather-benchmark": {
+      "samples": 60,
+      "gpuP50Ms": 17.760256,
+      "gpuP95Ms": 26.607616,
+      "gpuMaxMs": 29.097984,
+      "atmosphereUpdatedFrames": 47,
+      "output": [
+        1024,
+        768
+      ],
+      "peakGpuBytes": 160713401
+    },
+    "alpine": [
+      {
+        "view": "near",
+        "gpuP95Ms": 20.185088,
+        "cpuP95Ms": 8.400000095367432,
+        "atmosphereUpdatedFrames": 0,
+        "failures": [
+          "GPU p95 20.185 ms exceeds 12 ms",
+          "CPU p95 8.400 ms exceeds 4 ms"
+        ]
+      },
+      {
+        "view": "gameplay",
+        "gpuP95Ms": 20.905984,
+        "cpuP95Ms": 7.800000071525574,
+        "atmosphereUpdatedFrames": 0,
+        "failures": [
+          "GPU p95 20.906 ms exceeds 12 ms",
+          "CPU p95 7.800 ms exceeds 4 ms"
+        ]
+      },
+      {
+        "view": "landscape",
+        "gpuP95Ms": 22.216704,
+        "cpuP95Ms": 7.899999976158142,
+        "atmosphereUpdatedFrames": 0,
+        "failures": [
+          "GPU p95 22.217 ms exceeds 12 ms",
+          "CPU p95 7.900 ms exceeds 4 ms"
+        ]
+      }
+    ]
+  },
+  "limits": [
+    "Current Apple / Metal adapter only.",
+    "The alpine scene completed but missed its existing GPU and CPU budgets.",
+    "Original audit images and evidence are retained separately."
+  ],
+  "authoringFollowup": {
+    "reason": "Mounted editor verification exposed missing optional-property transaction paths on older documents. These were fixed after the rendering snapshot. Renderer and sky sources are unchanged.",
+    "files": [
+      {
+        "path": "packages/authoring/src/session.ts",
+        "sha256": "7ef3b45232d830164703b8775ab242ea40e73cbf28ca3dca1ee55afc988c6a42"
+      },
+      {
+        "path": "packages/authoring/src/cloud-authoring.test.ts",
+        "sha256": "e3e387a624ae03c7e8f391f8a2122d3752f4b857bce1aa5436d4a2925887f97d"
+      },
+      {
+        "path": "apps/studio/src/environment-authoring-panel.tsx",
+        "sha256": "d7a0af4341a78a0dab56f559fac9d453ec4a46fc092607fc5874d1d8e533bdbe"
+      }
+    ],
+    "tests": [
+      "cloud-authoring.test.ts: 2 passed",
+      "transactions.test.ts: 16 passed"
+    ],
+    "editorRun": {
+      "startedAt": "2026-09-23T17:39:45.206Z",
+      "finishedAt": "2026-09-23T17:39:48.025Z",
+      "sourceFingerprint": "30177b9460ebf32a53ec10d18ddf1087dbda4eca9e177cced761d95c2b98ed89",
+      "finalSourceFingerprint": "30177b9460ebf32a53ec10d18ddf1087dbda4eca9e177cced761d95c2b98ed89",
+      "sourceStable": true
+    }
+  },
+  "finalRendererMatchesSnapshot": true,
+  "finalRendererFiles": [
+    {
+      "path": "packages/model/src/environment-authoring.ts",
+      "sha256": "e00836e99944cb2a3519301ff8669d7383baa9e14f2697462427b797581d31b7",
+      "matchesSnapshot": true
+    },
+    {
+      "path": "packages/model/src/environment-lookdev.ts",
+      "sha256": "73b45aae08a6fe6d51b83984fb67392f6cfc0c9a9010205431537edbcec469fa",
+      "matchesSnapshot": true
+    },
+    {
+      "path": "packages/runtime/src/environment-state.ts",
+      "sha256": "127f3cb5651681c648b558e13f5a6ae69bf923fb3f45e741999618fc3116c21d",
+      "matchesSnapshot": true
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere.ts",
+      "sha256": "b7b38bac5b53512d36234b52f32348d81786ca9727fb01aab3cf9cb2b9d3b25d",
+      "matchesSnapshot": true
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-gpu.ts",
+      "sha256": "c4129678735b8c89fce25eb1a3033d275fcd8f3a8a8f341444c4fc85061c3e81",
+      "matchesSnapshot": true
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-sky.wgsl",
+      "sha256": "3f02a5babe11ad7b49141e99026ffa66b1acefc7aafd0404195362eb5739b13d",
+      "matchesSnapshot": true
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-clouds.wgsl",
+      "sha256": "8f758fabece04ced9bba7e44898966a8f5ecae7b181621fba4cde563bf61209c",
+      "matchesSnapshot": true
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-multiple.wgsl",
+      "sha256": "0647f3bc4b47ee76d47c1ef3d1bd2596e2585891a20d9d495d589d672f19b86d",
+      "matchesSnapshot": true
+    },
+    {
+      "path": "packages/render-webgpu/src/cloud-formations.ts",
+      "sha256": "58b9fa3db3221cc21948766ca9b280b65dac04347735a2bf02cc676b51a9e931",
+      "matchesSnapshot": true
+    },
+    {
+      "path": "packages/render-webgpu/src/cloud-history.ts",
+      "sha256": "0b1d235e0d692849b7f7048db2fcc032a671ca4d876397a00082df3fa58ae47f",
+      "matchesSnapshot": true
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-cloud-reprojection.wgsl",
+      "sha256": "1429658ad1a08f35fdfabad69f74977fa90831fad8e0096a66b43a5de33c121e",
+      "matchesSnapshot": true
+    },
+    {
+      "path": "packages/render-webgpu/src/index.ts",
+      "sha256": "c08afc36ad0f7c6120e811aa41ed50e071886dda3c3c987941ebef97773deb13",
+      "matchesSnapshot": true
+    },
+    {
+      "path": "packages/render-webgpu/src/packing.ts",
+      "sha256": "b303e2d3034cd8e08a0b51b9ae4223d707db8d91ff07dfd3a14689cdf5713822",
+      "matchesSnapshot": true
+    },
+    {
+      "path": "packages/render-webgpu/src/scene.wgsl",
+      "sha256": "478c6c1434088d975182a8508dbe86b610dad671aae62c4c1d6433e22cc01724",
+      "matchesSnapshot": true
+    }
+  ]
+}

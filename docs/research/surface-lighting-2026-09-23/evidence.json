@@ -1,0 +1,988 @@
+{
+  "date": "2026-09-23",
+  "sourceFingerprint": "91134a292deadecb24b0d07ffd5248514742994f7933d2502560fcb99c2f3c3f",
+  "baselineFingerprint": "94a5a3c4ae30f41b9270b71206349ef21b97895d293aabf8ffb3f01174d37d59",
+  "sourceSnapshot": "output/surface-lighting-prototype/specialized/source",
+  "adapter": "apple \u00b7 metal-3",
+  "scope": "Static rectangular front-facing receivers; Apple/Metal, short paired ABBA trials, 24 GPU frames per condition. Median uses the conventional average of the two central samples. No world or cross-hardware rollout claim.",
+  "gate": {
+    "meanAbsolute": 0.002,
+    "p99": 0.01,
+    "maximum": 0.05,
+    "closedBoxMaximum": 0.0001
+  },
+  "decision": "Accept as opt-in bounded prototype. Retain original GI fallback and keep world GI off by default.",
+  "measurements": [
+    {
+      "size": "1280x960",
+      "scene": "matte",
+      "cost": {
+        "performance": {
+          "baseline": {
+            "gpuMs": {
+              "median": 9.109504,
+              "p95": 11.665408,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 8.454144,
+              "p95": 11.272192,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.0,
+              "p95": 0,
+              "samples": 24
+            }
+          },
+          "cached": {
+            "gpuMs": {
+              "median": 6.22592,
+              "p95": 7.340032,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 5.931008,
+              "p95": 7.20896,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.0,
+              "p95": 0,
+              "samples": 24
+            }
+          }
+        },
+        "relighting": {
+          "baseline": {
+            "gpuMs": {
+              "median": 9.928704,
+              "p95": 10.289152,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 9.306112,
+              "p95": 9.895936,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.0,
+              "p95": 0.065536,
+              "samples": 24
+            }
+          },
+          "cached": {
+            "gpuMs": {
+              "median": 7.503871999999999,
+              "p95": 8.192,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 7.04512,
+              "p95": 7.929856,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.065536,
+              "p95": 0.065536,
+              "samples": 24
+            }
+          }
+        }
+      },
+      "savedPercent": 31.654676258992797,
+      "beauty": {
+        "meanAbsolute": 7.535364582306809e-06,
+        "rms": 3.368591883455889e-05,
+        "maximum": 0.001708984375,
+        "p99": 0.0001220703125,
+        "relativeMean": 7.942156621367311e-05
+      },
+      "variants": {
+        "indirect-lighting": {
+          "meanAbsolute": 7.433098119994005e-06,
+          "rms": 2.8730602069822702e-05,
+          "maximum": 0.0015869140625,
+          "p99": 0.0001220703125,
+          "relativeMean": 0.0003970998067711172
+        },
+        "beauty": {
+          "meanAbsolute": 7.535364582306809e-06,
+          "rms": 3.368591883455889e-05,
+          "maximum": 0.001708984375,
+          "p99": 0.0001220703125,
+          "relativeMean": 7.942156621367311e-05
+        },
+        "movedCamera": {
+          "meanAbsolute": 9.218021295964718e-06,
+          "rms": 3.7779632649186306e-05,
+          "maximum": 0.001708984375,
+          "p99": 0.000244140625,
+          "relativeMean": 9.189206690999219e-05
+        },
+        "relit": {
+          "meanAbsolute": 2.249439130537212e-06,
+          "rms": 9.28402491790952e-06,
+          "maximum": 0.00042724609375,
+          "p99": 6.103515625e-05,
+          "relativeMean": 9.348693467794032e-05
+        },
+        "constantSource": {
+          "meanAbsolute": 1.0670683631259535e-05,
+          "rms": 3.696119919126558e-05,
+          "maximum": 0.0018310546875,
+          "p99": 0.000152587890625,
+          "relativeMean": 0.0004855940312010708
+        },
+        "restoredAfterDisable": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "rebased": {
+          "meanAbsolute": 2.491048588934872e-08,
+          "rms": 2.1451534482892222e-05,
+          "maximum": 0.02716064453125,
+          "p99": 0,
+          "relativeMean": 5.4281169393945245e-06
+        },
+        "rebasedAgainstBaseline": {
+          "meanAbsolute": 2.228462383047574e-06,
+          "rms": 7.903875686957351e-06,
+          "maximum": 0.000396728515625,
+          "p99": 3.0517578125e-05,
+          "relativeMean": 0.0004856070402423308
+        }
+      },
+      "coverage": {
+        "cachedPixels": 402456,
+        "fallbackPixels": 300122,
+        "fraction": 0.5728275010034473
+      },
+      "bytes": {
+        "baseline": 1262656,
+        "cached": 3466976,
+        "added": 2204320
+      },
+      "buildMs": 3507.100000023842,
+      "surfaceBuildMs": 2155.2000000476837,
+      "maxSliceMs": 2.100000023841858,
+      "admittedTiles": 5808,
+      "tiles": 10000,
+      "errors": []
+    },
+    {
+      "size": "1280x960",
+      "scene": "metal",
+      "cost": {
+        "performance": {
+          "baseline": {
+            "gpuMs": {
+              "median": 9.50272,
+              "p95": 12.189696,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 8.912896,
+              "p95": 11.403264,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.0,
+              "p95": 0,
+              "samples": 24
+            }
+          },
+          "cached": {
+            "gpuMs": {
+              "median": 6.127616,
+              "p95": 7.20896,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 5.832704,
+              "p95": 6.946816,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.0,
+              "p95": 0,
+              "samples": 24
+            }
+          }
+        },
+        "relighting": {
+          "baseline": {
+            "gpuMs": {
+              "median": 9.994240000000001,
+              "p95": 10.551296,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 9.17504,
+              "p95": 10.289152,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.0,
+              "p95": 0.065536,
+              "samples": 24
+            }
+          },
+          "cached": {
+            "gpuMs": {
+              "median": 7.340032000000001,
+              "p95": 8.257536,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 7.04512,
+              "p95": 7.929856,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.065536,
+              "p95": 0.065536,
+              "samples": 24
+            }
+          }
+        }
+      },
+      "savedPercent": 35.51724137931035,
+      "beauty": {
+        "meanAbsolute": 3.166880355113082e-05,
+        "rms": 0.00015819018729201577,
+        "maximum": 0.005584716796875,
+        "p99": 0.000701904296875,
+        "relativeMean": 0.0006586915410037898
+      },
+      "variants": {
+        "indirect-lighting": {
+          "meanAbsolute": 2.3373011370292967e-07,
+          "rms": 7.481120978716187e-07,
+          "maximum": 1.811981201171875e-05,
+          "p99": 3.814697265625e-06,
+          "relativeMean": 0.0003428708541253489
+        },
+        "beauty": {
+          "meanAbsolute": 3.166880355113082e-05,
+          "rms": 0.00015819018729201577,
+          "maximum": 0.005584716796875,
+          "p99": 0.000701904296875,
+          "relativeMean": 0.0006586915410037898
+        },
+        "movedCamera": {
+          "meanAbsolute": 3.6131502129137515e-05,
+          "rms": 0.0001617931891328496,
+          "maximum": 0.004486083984375,
+          "p99": 0.000732421875,
+          "relativeMean": 0.000913654563618109
+        },
+        "relit": {
+          "meanAbsolute": 9.362722339574248e-06,
+          "rms": 4.097703380859493e-05,
+          "maximum": 0.001129150390625,
+          "p99": 0.00018310546875,
+          "relativeMean": 0.0009523665240918742
+        },
+        "constantSource": {
+          "meanAbsolute": 1.8765501509834494e-07,
+          "rms": 5.86922047251873e-07,
+          "maximum": 1.621246337890625e-05,
+          "p99": 2.86102294921875e-06,
+          "relativeMean": 0.00031972487852879124
+        },
+        "restoredAfterDisable": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "rebased": {
+          "meanAbsolute": 3.861431549820635e-10,
+          "rms": 3.3408501107331356e-07,
+          "maximum": 0.00041174888610839844,
+          "p99": 0,
+          "relativeMean": 3.2601584093852627e-06
+        },
+        "rebasedAgainstBaseline": {
+          "meanAbsolute": 3.803316051036947e-08,
+          "rms": 1.1494260903601131e-07,
+          "maximum": 3.5762786865234375e-06,
+          "p99": 4.76837158203125e-07,
+          "relativeMean": 0.0003211115639792634
+        }
+      },
+      "coverage": {
+        "cachedPixels": 402456,
+        "fallbackPixels": 300122,
+        "fraction": 0.5728275010034473
+      },
+      "bytes": {
+        "baseline": 1262656,
+        "cached": 3466976,
+        "added": 2204320
+      },
+      "buildMs": 3798,
+      "surfaceBuildMs": 1888.8000000715256,
+      "maxSliceMs": 2.100000023841858,
+      "admittedTiles": 5808,
+      "tiles": 10000,
+      "errors": []
+    },
+    {
+      "size": "1280x960",
+      "scene": "sealed",
+      "cost": {
+        "performance": {
+          "baseline": {
+            "gpuMs": {
+              "median": 14.25408,
+              "p95": 16.252928,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 14.024704,
+              "p95": 16.05632,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.0,
+              "p95": 0,
+              "samples": 24
+            }
+          },
+          "cached": {
+            "gpuMs": {
+              "median": 10.027008,
+              "p95": 10.420224,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 9.33888,
+              "p95": 10.15808,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.0,
+              "p95": 0,
+              "samples": 24
+            }
+          }
+        },
+        "relighting": {
+          "baseline": {
+            "gpuMs": {
+              "median": 15.466496,
+              "p95": 15.597568,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 14.680064000000002,
+              "p95": 15.269888,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.0,
+              "p95": 0.065536,
+              "samples": 24
+            }
+          },
+          "cached": {
+            "gpuMs": {
+              "median": 11.4688,
+              "p95": 11.665408,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 10.616832,
+              "p95": 11.4688,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.065536,
+              "p95": 0.131072,
+              "samples": 24
+            }
+          }
+        }
+      },
+      "savedPercent": 29.655172413793103,
+      "beauty": {
+        "meanAbsolute": 0,
+        "rms": 0,
+        "maximum": 0,
+        "p99": 0,
+        "relativeMean": 0
+      },
+      "variants": {
+        "indirect-lighting": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "beauty": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "movedCamera": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "relit": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "constantSource": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "restoredAfterDisable": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "rebased": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "rebasedAgainstBaseline": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        }
+      },
+      "coverage": {
+        "cachedPixels": 598546,
+        "fallbackPixels": 630254,
+        "fraction": 0.48709798177083335
+      },
+      "bytes": {
+        "baseline": 1261520,
+        "cached": 4567984,
+        "added": 3306464
+      },
+      "buildMs": 5836,
+      "surfaceBuildMs": 3083.4000000953674,
+      "maxSliceMs": 2.200000047683716,
+      "admittedTiles": 6323,
+      "tiles": 15000,
+      "errors": []
+    },
+    {
+      "size": "640x480",
+      "scene": "matte",
+      "cost": {
+        "performance": {
+          "baseline": {
+            "gpuMs": {
+              "median": 3.538944,
+              "p95": 5.111808,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 3.44064,
+              "p95": 4.653056,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.0,
+              "p95": 0,
+              "samples": 24
+            }
+          },
+          "cached": {
+            "gpuMs": {
+              "median": 3.375104,
+              "p95": 5.57056,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 3.178496,
+              "p95": 5.373952,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.0,
+              "p95": 0,
+              "samples": 24
+            }
+          }
+        },
+        "relighting": {
+          "baseline": {
+            "gpuMs": {
+              "median": 7.569408,
+              "p95": 8.912896,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 7.1434239999999996,
+              "p95": 8.388608,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.065536,
+              "p95": 0.065536,
+              "samples": 24
+            }
+          },
+          "cached": {
+            "gpuMs": {
+              "median": 6.750208000000001,
+              "p95": 8.323072,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 6.553599999999999,
+              "p95": 7.995392,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.131072,
+              "p95": 0.196608,
+              "samples": 24
+            }
+          }
+        }
+      },
+      "savedPercent": 4.62962962962963,
+      "beauty": {
+        "meanAbsolute": 7.572714239358902e-06,
+        "rms": 3.3820269841017706e-05,
+        "maximum": 0.00146484375,
+        "p99": 0.0001220703125,
+        "relativeMean": 7.970478877140653e-05
+      },
+      "variants": {
+        "indirect-lighting": {
+          "meanAbsolute": 7.451980167792903e-06,
+          "rms": 2.879347054693123e-05,
+          "maximum": 0.0015869140625,
+          "p99": 0.0001220703125,
+          "relativeMean": 0.00039756776246162117
+        },
+        "beauty": {
+          "meanAbsolute": 7.572714239358902e-06,
+          "rms": 3.3820269841017706e-05,
+          "maximum": 0.00146484375,
+          "p99": 0.0001220703125,
+          "relativeMean": 7.970478877140653e-05
+        },
+        "movedCamera": {
+          "meanAbsolute": 9.192766414748298e-06,
+          "rms": 3.778383330637895e-05,
+          "maximum": 0.00146484375,
+          "p99": 0.000244140625,
+          "relativeMean": 9.163807800327633e-05
+        },
+        "relit": {
+          "meanAbsolute": 2.2588261506623693e-06,
+          "rms": 9.305443127933256e-06,
+          "maximum": 0.00042724609375,
+          "p99": 6.103515625e-05,
+          "relativeMean": 9.387457545339054e-05
+        },
+        "constantSource": {
+          "meanAbsolute": 1.0705885166923205e-05,
+          "rms": 3.6937335848093736e-05,
+          "maximum": 0.001708984375,
+          "p99": 0.000152587890625,
+          "relativeMean": 0.00048726335392273377
+        },
+        "restoredAfterDisable": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "rebased": {
+          "meanAbsolute": 5.851745501988464e-09,
+          "rms": 2.570824382448977e-07,
+          "maximum": 3.0517578125e-05,
+          "p99": 0,
+          "relativeMean": 1.2752955266779387e-06
+        },
+        "rebasedAgainstBaseline": {
+          "meanAbsolute": 2.2357757229150997e-06,
+          "rms": 7.908513883134772e-06,
+          "maximum": 0.000396728515625,
+          "p99": 3.0517578125e-05,
+          "relativeMean": 0.0004872634761433108
+        }
+      },
+      "coverage": {
+        "cachedPixels": 101170,
+        "fallbackPixels": 74694,
+        "fraction": 0.5752740754219169
+      },
+      "bytes": {
+        "baseline": 1262656,
+        "cached": 3466976,
+        "added": 2204320
+      },
+      "buildMs": 3462.600000023842,
+      "surfaceBuildMs": 2159,
+      "maxSliceMs": 2.100000023841858,
+      "admittedTiles": 5808,
+      "tiles": 10000,
+      "errors": []
+    },
+    {
+      "size": "640x480",
+      "scene": "metal",
+      "cost": {
+        "performance": {
+          "baseline": {
+            "gpuMs": {
+              "median": 4.521984,
+              "p95": 6.22592,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 4.25984,
+              "p95": 5.832704,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.0,
+              "p95": 0,
+              "samples": 24
+            }
+          },
+          "cached": {
+            "gpuMs": {
+              "median": 3.7027840000000003,
+              "p95": 4.784128,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 3.5717119999999998,
+              "p95": 4.325376,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.0,
+              "p95": 0,
+              "samples": 24
+            }
+          }
+        },
+        "relighting": {
+          "baseline": {
+            "gpuMs": {
+              "median": 6.946816,
+              "p95": 8.585216,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 6.651904,
+              "p95": 7.929856,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.065536,
+              "p95": 0.065536,
+              "samples": 24
+            }
+          },
+          "cached": {
+            "gpuMs": {
+              "median": 6.127616,
+              "p95": 7.53664,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 5.799936,
+              "p95": 7.405568,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.131072,
+              "p95": 0.131072,
+              "samples": 24
+            }
+          }
+        }
+      },
+      "savedPercent": 18.115942028985497,
+      "beauty": {
+        "meanAbsolute": 3.1854418209857414e-05,
+        "rms": 0.0001580679841810519,
+        "maximum": 0.0053863525390625,
+        "p99": 0.000701904296875,
+        "relativeMean": 0.0006629973481916964
+      },
+      "variants": {
+        "indirect-lighting": {
+          "meanAbsolute": 2.339268879344066e-07,
+          "rms": 7.49153054018992e-07,
+          "maximum": 1.71661376953125e-05,
+          "p99": 3.814697265625e-06,
+          "relativeMean": 0.0003424300162127706
+        },
+        "beauty": {
+          "meanAbsolute": 3.1854418209857414e-05,
+          "rms": 0.0001580679841810519,
+          "maximum": 0.0053863525390625,
+          "p99": 0.000701904296875,
+          "relativeMean": 0.0006629973481916964
+        },
+        "movedCamera": {
+          "meanAbsolute": 3.62514652725723e-05,
+          "rms": 0.00016230132538698873,
+          "maximum": 0.0044708251953125,
+          "p99": 0.000732421875,
+          "relativeMean": 0.0009167576011644137
+        },
+        "relit": {
+          "meanAbsolute": 9.395612998762064e-06,
+          "rms": 4.110625368205375e-05,
+          "maximum": 0.001129150390625,
+          "p99": 0.00018310546875,
+          "relativeMean": 0.0009557849767881182
+        },
+        "constantSource": {
+          "meanAbsolute": 1.8876563343736862e-07,
+          "rms": 5.884417006372091e-07,
+          "maximum": 1.621246337890625e-05,
+          "p99": 2.86102294921875e-06,
+          "relativeMean": 0.0003216433988225743
+        },
+        "restoredAfterDisable": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "rebased": {
+          "meanAbsolute": 8.472448421849144e-11,
+          "rms": 3.8172866277246175e-09,
+          "maximum": 2.384185791015625e-07,
+          "p99": 0,
+          "relativeMean": 7.153886555788044e-07
+        },
+        "rebasedAgainstBaseline": {
+          "meanAbsolute": 3.817620583706432e-08,
+          "rms": 1.1520238980422624e-07,
+          "maximum": 3.5762786865234375e-06,
+          "p99": 4.76837158203125e-07,
+          "relativeMean": 0.0003223497480742757
+        }
+      },
+      "coverage": {
+        "cachedPixels": 101170,
+        "fallbackPixels": 74694,
+        "fraction": 0.5752740754219169
+      },
+      "bytes": {
+        "baseline": 1262656,
+        "cached": 3466976,
+        "added": 2204320
+      },
+      "buildMs": 5578.200000047684,
+      "surfaceBuildMs": 3441.8000000715256,
+      "maxSliceMs": 2.200000047683716,
+      "admittedTiles": 5808,
+      "tiles": 10000,
+      "errors": []
+    },
+    {
+      "size": "640x480",
+      "scene": "sealed",
+      "cost": {
+        "performance": {
+          "baseline": {
+            "gpuMs": {
+              "median": 5.963776,
+              "p95": 7.20896,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 5.767168,
+              "p95": 7.012352,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.0,
+              "p95": 0,
+              "samples": 24
+            }
+          },
+          "cached": {
+            "gpuMs": {
+              "median": 4.784128,
+              "p95": 5.505024,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 4.554752,
+              "p95": 4.980736,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.0,
+              "p95": 0,
+              "samples": 24
+            }
+          }
+        },
+        "relighting": {
+          "baseline": {
+            "gpuMs": {
+              "median": 7.04512,
+              "p95": 8.126464,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 6.8157440000000005,
+              "p95": 7.602176,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.0,
+              "p95": 0.065536,
+              "samples": 24
+            }
+          },
+          "cached": {
+            "gpuMs": {
+              "median": 5.799936000000001,
+              "p95": 7.012352,
+              "samples": 24
+            },
+            "sceneMs": {
+              "median": 5.537792,
+              "p95": 6.815744,
+              "samples": 24
+            },
+            "indirectMs": {
+              "median": 0.131072,
+              "p95": 0.131072,
+              "samples": 24
+            }
+          }
+        }
+      },
+      "savedPercent": 19.780219780219785,
+      "beauty": {
+        "meanAbsolute": 0,
+        "rms": 0,
+        "maximum": 0,
+        "p99": 0,
+        "relativeMean": 0
+      },
+      "variants": {
+        "indirect-lighting": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "beauty": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "movedCamera": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "relit": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "constantSource": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "restoredAfterDisable": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "rebased": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        },
+        "rebasedAgainstBaseline": {
+          "meanAbsolute": 0,
+          "rms": 0,
+          "maximum": 0,
+          "p99": 0,
+          "relativeMean": 0
+        }
+      },
+      "coverage": {
+        "cachedPixels": 149215,
+        "fallbackPixels": 157985,
+        "fraction": 0.4857259114583333
+      },
+      "bytes": {
+        "baseline": 1261520,
+        "cached": 4567984,
+        "added": 3306464
+      },
+      "buildMs": 6497.5,
+      "surfaceBuildMs": 4033.3000000715256,
+      "maxSliceMs": 2.200000047683716,
+      "admittedTiles": 6323,
+      "tiles": 15000,
+      "errors": []
+    }
+  ],
+  "kernelControl": "kernel-control.json",
+  "rejectedSharedKernel": "rejected-shared-kernel.json",
+  "verification": {
+    "unitTests": 46,
+    "workspaceTypecheck": "pass",
+    "browserTypecheck": "pass",
+    "dependencyBoundaries": "pass",
+    "targetedStyleChecks": "pass",
+    "hardwareAcceptances": "all final gates pass",
+    "artifactUI": "scene switching, comparison slider and populated result table reviewed"
+  }
+}

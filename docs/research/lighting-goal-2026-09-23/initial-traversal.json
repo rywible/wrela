@@ -1,0 +1,49 @@
+{
+  "reports": [
+    {
+      "phase": "traversal",
+      "kind": "winter",
+      "traversal": {
+        "residentGeometryOnly": true,
+        "distance": 22,
+        "durationMs": 5523.899999976158,
+        "frames": 276,
+        "intervalMs": {
+          "median": 18.800000071525574,
+          "p95": 35.299999952316284,
+          "max": 49.89999997615814
+        },
+        "applyMs": {
+          "median": 0.6000000238418579,
+          "p95": 1,
+          "max": 1.100000023841858
+        },
+        "foregroundBuilds": 0,
+        "prefetchBuilds": 1,
+        "prefetchHits": 1,
+        "prefetchWaitMs": 352.2000000476837,
+        "changes": [
+          {
+            "distance": 21.528400000095377,
+            "elapsedMs": 5382.899999976158
+          }
+        ],
+        "incompleteFrames": 0,
+        "pendingReceiverAdmissions": 308
+      },
+      "readyMs": 2572.1999999284744,
+      "builds": 1,
+      "storageHits": 0,
+      "storageWrites": 2,
+      "storageLoadMs": 0.6000000238418579,
+      "storageWriteMs": 70.89999997615814,
+      "transferHash": "1359b44ca59af4598dd6f8526a28fcd06d93b5a033106e07a6705956958536ce",
+      "imageHash": "27d52ce23e3d7cc07d09a2f040fa5d125f4bc2e70d3425db65da30dd482096c5",
+      "buildMs": 2347.2000000476837,
+      "activeMs": 696.0000007152557,
+      "maxSliceMs": 4.200000047683716,
+      "errors": []
+    }
+  ],
+  "errors": []
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@wrela/review",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./browser": "./src/browser.ts"
+  },
+  "dependencies": {
+    "@wrela/model": "workspace:*",
+    "@wrela/render-webgpu": "workspace:*",
+    "@wrela/runtime": "workspace:*",
+    "@wrela/authoring": "workspace:*",
+    "@wrela/compiler": "workspace:*",
+    "@wrela/world": "workspace:*"
+  }
+}

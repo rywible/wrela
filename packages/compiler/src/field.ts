@@ -1,4 +1,5 @@
 import { clamp, type FieldDefinition, type FieldNode, normalize, type Vec3 } from "@wrela/model";
+
 import { type FieldIR, lowerField, outsideDistanceBound } from "./ir";
 
 export type FieldSample = { distance: number; source: string; material?: string };
@@ -127,6 +128,21 @@ function primitive(n: FieldNode, p: Vec3, s: number[]): number {
       const k1 = Math.hypot(x / (s[0] * s[0]), y / (s[1] * s[1]), z / (s[2] * s[2]));
       return k1 > 1e-12 ? (k0 * (k0 - 1)) / k1 : -Math.min(...s);
     }
+    case "rock": {
+      // Intersected mineral cleavage planes form a bounded polyhedron. A small
+      // continuous fracture term breaks straight silhouettes at close range;
+      // the six axis planes keep it inside the authored half extents.
+      const qx = x / s[0],
+        qy = y / s[1],
+        qz = z / s[2];
+      let face = -Infinity;
+      for (const [nx, ny, nz, limit] of ROCK_PLANES)
+        face = Math.max(face, nx * qx + ny * qy + nz * qz - limit);
+      const fracture =
+        0.027 * Math.sin(qx * 9.7 + qz * 4.3) * Math.sin(qy * 11.2 - qz * 6.1) +
+        0.012 * Math.sin(qx * 19.1 - qy * 7.3) * Math.sin(qz * 16.7 + qy * 8.1);
+      return (face + fracture) * Math.min(...s);
+    }
     case "box": {
       const q = [Math.abs(x) - s[0], Math.abs(y) - s[1], Math.abs(z) - s[2]];
       return Math.hypot(...q.map((v) => Math.max(v, 0))) + Math.min(Math.max(...q), 0);
@@ -139,6 +155,27 @@ function primitive(n: FieldNode, p: Vec3, s: number[]): number {
       throw new Error(`Unknown primitive ${n.kind}`);
   }
 }
+
+const ROCK_PLANES: readonly (readonly [number, number, number, number])[] = [
+  [1, 0, 0, 0.84],
+  [-1, 0, 0, 0.94],
+  [0, 1, 0, 0.82],
+  [0, -1, 0, 0.9],
+  [0, 0, 1, 0.85],
+  [0, 0, -1, 0.92],
+  [0.78, 0.63, 0, 0.91],
+  [-0.77, 0.64, 0, 0.96],
+  [0.69, -0.72, 0, 0.95],
+  [-0.64, -0.77, 0, 0.94],
+  [0.71, 0, 0.71, 0.91],
+  [-0.72, 0, 0.69, 0.92],
+  [0.62, 0, -0.78, 0.96],
+  [-0.74, 0, -0.67, 0.91],
+  [0, 0.68, 0.73, 0.97],
+  [0, 0.75, -0.66, 0.91],
+  [0, -0.71, 0.71, 0.94],
+  [0, -0.66, -0.75, 0.94],
+];
 export function evaluateField(field: FieldDefinition, point: Vec3): number {
   return compileField(field).distance(point);
 }

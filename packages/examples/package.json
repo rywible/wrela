@@ -1,0 +1,33 @@
+{
+  "name": "@wrela/examples",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./alpine-composition": "./src/alpine-composition.ts",
+    "./alpine-lookdev": "./src/alpine-lookdev.ts",
+    "./architecture-lookdev": "./src/architecture-lookdev.ts",
+    "./character-lookdev": "./src/character-lookdev.ts",
+    "./character-motion-lookdev": "./src/character-motion-lookdev.ts",
+    "./creature-biped-construction": "./src/creature-biped-construction.ts",
+    "./creature-biped-motion": "./src/creature-biped-motion.ts",
+    "./creature-fixtures": "./src/creature-fixtures.ts",
+    "./environment-lookdev": "./src/environment-lookdev.ts",
+    "./fixtures": "./src/fixtures.ts",
+    "./forest-edge": "./src/forest-edge.ts",
+    "./lookdev-scene": "./src/lookdev-scene.ts",
+    "./material-lookdev": "./src/material-lookdev.ts",
+    "./render-frontier": "./src/render-frontier.ts",
+    "./surface-relief-lookdev": "./src/surface-relief-lookdev.ts",
+    "./terrain-lookdev": "./src/terrain-lookdev.ts",
+    "./water-lookdev": "./src/water-lookdev.ts",
+    "./water-valley": "./src/water-valley.ts",
+    "./wayside-lookdev": "./src/wayside-lookdev.ts",
+    "./winter-brook": "./src/winter-brook.ts",
+    "./world-path-lookdev": "./src/world-path-lookdev.ts"
+  },
+  "dependencies": {
+    "@wrela/model": "workspace:*",
+    "zod": "4.1.12"
+  }
+}

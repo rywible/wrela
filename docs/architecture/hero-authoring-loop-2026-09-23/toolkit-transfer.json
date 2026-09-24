@@ -1,0 +1,212 @@
+{
+  "sourceFingerprint": "a346cb9bc8816d16b007af6b3ee6d7671cbae1e118fdec97796edf175ea74c37",
+  "validationSourceFingerprint": "27c4a369395e1e8355120fe2b7a2d5400eeccb55ac4d44ac13292d9e6b56659c",
+  "gap": {
+    "evidence": "/Users/ryanwible/projects/wrela/output/hero-authoring-release/toolkit-transfer-verified/.wrela/work/evidence/259862ba-9846-4115-badb-715d709045e7/capability-gap.json",
+    "key": "d009e6d78abd2196"
+  },
+  "results": [
+    {
+      "entry": {
+        "version": 1,
+        "id": "hollow-revolved-shell",
+        "revision": "1",
+        "title": "Hollow revolved shell",
+        "description": "Revolve a closed, non-self-intersecting [radius,height] meridian around +Y. The contour includes outer wall, rim and inner wall. Use hero component kind shell with shell.profile and shell.segments; supports bell bodies, reservoirs and curved housings.",
+        "tags": [
+          "shell",
+          "hollow",
+          "bell",
+          "reservoir",
+          "lathe"
+        ],
+        "level": "compiler",
+        "status": "validated",
+        "implementation": {
+          "kind": "builtin",
+          "capability": "assembly.revolved-shell",
+          "sourceKey": "a346cb9bc8816d16b007af6b3ee6d7671cbae1e118fdec97796edf175ea74c37",
+          "version": "1"
+        },
+        "controls": [
+          {
+            "name": "segments",
+            "units": "radial segments",
+            "min": 12,
+            "max": 96,
+            "description": "Angular smoothness and triangle budget"
+          }
+        ],
+        "preserves": [
+          "Real internal cavity",
+          "Part identity, sockets and articulation"
+        ],
+        "limitations": [
+          "Meridian radii must stay positive; no axis caps or arbitrary holes",
+          "No intersecting profile edges"
+        ],
+        "previews": [
+          "/Users/ryanwible/projects/wrela/output/hero-authoring-release/toolkit-transfer-verified/.wrela/work/evidence/3dda14a6-d921-45c1-bdfc-6643a5e30442/toolkit-preview.png",
+          "/Users/ryanwible/projects/wrela/output/hero-authoring-release/toolkit-transfer-verified/.wrela/work/evidence/e90aede9-d740-4e38-9a53-7ec61ed8107e/toolkit-preview.png"
+        ],
+        "engineeringMs": null,
+        "trials": [
+          {
+            "work": "lantern",
+            "proposal": "northwind-connected",
+            "family": "lantern",
+            "sourceKey": "06d3269bd45ea194",
+            "reviewKey": "6c14e7fb2d470700",
+            "elapsedMs": 257596,
+            "accepted": false,
+            "reviewer": null
+          },
+          {
+            "work": "bell",
+            "proposal": "tidemark-patina",
+            "family": "bell",
+            "sourceKey": "bede36605420d4f4",
+            "reviewKey": "ae3483f534faee9f",
+            "elapsedMs": 273916,
+            "accepted": false,
+            "reviewer": null
+          }
+        ]
+      },
+      "key": "0e8154dc25be0ffe",
+      "approvedRejected": true
+    },
+    {
+      "entry": {
+        "version": 1,
+        "id": "thin-glass",
+        "revision": "1",
+        "title": "Thin glass enclosure",
+        "description": "Hero material glass uses thin premultiplied transmission and IOR-based Fresnel; material.response adjusts transmission and roughness. Rear construction remains visible through the enclosure.",
+        "tags": [
+          "glass",
+          "transparency",
+          "enclosure"
+        ],
+        "level": "compiler",
+        "status": "experimental",
+        "implementation": {
+          "kind": "builtin",
+          "capability": "material.thin-glass",
+          "sourceKey": "a346cb9bc8816d16b007af6b3ee6d7671cbae1e118fdec97796edf175ea74c37",
+          "version": "1"
+        },
+        "controls": [
+          {
+            "name": "transmission",
+            "units": "fraction",
+            "min": 0,
+            "max": 1,
+            "description": "Light transmitted through a thin surface"
+          }
+        ],
+        "preserves": [
+          "Opaque geometry depth",
+          "Editable optical response"
+        ],
+        "limitations": [
+          "No thick refraction, caustics or volumetric absorption",
+          "Distance sorting can fail for intersecting transparent surfaces or overlapping water"
+        ],
+        "previews": [
+          "/Users/ryanwible/projects/wrela/output/hero-authoring-release/toolkit-transfer-verified/.wrela/work/evidence/9b3c4c3e-528d-4190-bfb0-101fc456a074/toolkit-preview.png"
+        ],
+        "engineeringMs": null,
+        "trials": [
+          {
+            "work": "lantern",
+            "proposal": "northwind-connected",
+            "family": "lantern",
+            "sourceKey": "06d3269bd45ea194",
+            "reviewKey": "6c14e7fb2d470700",
+            "elapsedMs": 257596,
+            "accepted": false,
+            "reviewer": null
+          }
+        ]
+      },
+      "key": "89c582180dba8ada",
+      "workKey": "0bdcbf0f29ef8b1e",
+      "approvedRejected": true
+    }
+  ],
+  "search": {
+    "entries": [
+      {
+        "version": 1,
+        "id": "hollow-revolved-shell",
+        "revision": "1",
+        "title": "Hollow revolved shell",
+        "description": "Revolve a closed, non-self-intersecting [radius,height] meridian around +Y. The contour includes outer wall, rim and inner wall. Use hero component kind shell with shell.profile and shell.segments; supports bell bodies, reservoirs and curved housings.",
+        "tags": [
+          "shell",
+          "hollow",
+          "bell",
+          "reservoir",
+          "lathe"
+        ],
+        "level": "compiler",
+        "status": "validated",
+        "implementation": {
+          "kind": "builtin",
+          "capability": "assembly.revolved-shell",
+          "sourceKey": "a346cb9bc8816d16b007af6b3ee6d7671cbae1e118fdec97796edf175ea74c37",
+          "version": "1"
+        },
+        "controls": [
+          {
+            "name": "segments",
+            "units": "radial segments",
+            "min": 12,
+            "max": 96,
+            "description": "Angular smoothness and triangle budget"
+          }
+        ],
+        "preserves": [
+          "Real internal cavity",
+          "Part identity, sockets and articulation"
+        ],
+        "limitations": [
+          "Meridian radii must stay positive; no axis caps or arbitrary holes",
+          "No intersecting profile edges"
+        ],
+        "previews": [
+          "/Users/ryanwible/projects/wrela/output/hero-authoring-release/toolkit-transfer-verified/.wrela/work/evidence/3dda14a6-d921-45c1-bdfc-6643a5e30442/toolkit-preview.png",
+          "/Users/ryanwible/projects/wrela/output/hero-authoring-release/toolkit-transfer-verified/.wrela/work/evidence/e90aede9-d740-4e38-9a53-7ec61ed8107e/toolkit-preview.png"
+        ],
+        "engineeringMs": null,
+        "trials": [
+          {
+            "work": "lantern",
+            "proposal": "northwind-connected",
+            "family": "lantern",
+            "sourceKey": "06d3269bd45ea194",
+            "reviewKey": "6c14e7fb2d470700",
+            "elapsedMs": 257596,
+            "accepted": false,
+            "reviewer": null
+          },
+          {
+            "work": "bell",
+            "proposal": "tidemark-patina",
+            "family": "bell",
+            "sourceKey": "bede36605420d4f4",
+            "reviewKey": "ae3483f534faee9f",
+            "elapsedMs": 273916,
+            "accepted": false,
+            "reviewer": null
+          }
+        ],
+        "matchScore": 2,
+        "key": "0e8154dc25be0ffe"
+      }
+    ],
+    "scope": "Local versioned capabilities; status records evidence, not universal artistic quality"
+  },
+  "scope": "Actual independent agent outputs, restored into one portable registry. Shell technically transferred across lantern and bell. Glass has one family only. No artistic approval inferred. Engineering cost unknown; elapsedMs is each complete authoring attempt, not isolated primitive cost."
+}

@@ -1,0 +1,211 @@
+{
+  "version": 1,
+  "target": "ash-warden",
+  "observations": [
+    {
+      "id": "tail-taper",
+      "target": "ash-warden",
+      "sourceKey": "486a0f78cf590f2f",
+      "region": "shoulder",
+      "summary": "Rounded disconnected tail masses interrupt the rear silhouette.",
+      "category": "silhouette",
+      "priority": "important",
+      "evidence": {
+        "capture": "creature-clay-before-side.png",
+        "motion": "idle",
+        "tick": 0,
+        "camera": {
+          "position": [6, 1.8, 0.2],
+          "target": [0, 1.4, 0.2],
+          "fov": 38
+        },
+        "channel": "clay"
+      },
+      "intent": "Use a connected curved taper that follows the tail joints.",
+      "protect": ["head-region"]
+    },
+    {
+      "id": "landing-root-double-count",
+      "target": "ash-warden",
+      "sourceKey": "8a5c257efa0566f5",
+      "region": "shoulder",
+      "summary": "During lunge recovery the landing feet were pulled forward by a second copy of physical root travel.",
+      "category": "contact",
+      "priority": "blocking",
+      "evidence": {
+        "capture": "creature-clay-before-landing.png",
+        "motion": "lunge",
+        "tick": 87,
+        "camera": {
+          "position": [4, 2.4, 5],
+          "target": [0, 1.4, 0.2],
+          "fov": 38
+        },
+        "channel": "clay"
+      },
+      "intent": "Plant authored targets in the clip reference frame while preserving actor root motion.",
+      "protect": []
+    },
+    {
+      "id": "face-planar-structure",
+      "target": "ash-warden",
+      "sourceKey": "8a5c257efa0566f5",
+      "region": "head-region",
+      "summary": "Cheek masses still read as swollen forms; the eyelid edge is irregular and the open mouth lacks convincing lip and oral structure.",
+      "category": "anatomy",
+      "priority": "blocking",
+      "evidence": {
+        "capture": "creature-clay-face.png",
+        "motion": "idle",
+        "tick": 0,
+        "camera": {
+          "position": [2.2, 2.35, 3.8],
+          "target": [0, 2.08, 1.35],
+          "fov": 30
+        },
+        "channel": "clay"
+      },
+      "intent": "Develop coherent muzzle/cheek planes, clean eyelid rims, lip thickness and an articulated oral cavity in matched clay views.",
+      "protect": ["tail-region"]
+    },
+    {
+      "id": "takeoff-contact-release",
+      "target": "ash-warden",
+      "sourceKey": "8a5c257efa0566f5",
+      "region": "shoulder",
+      "summary": "The real runtime reports a 0.279657 m raw contact residual at clip tick 43 during contact release. This is not a whole-motion pass.",
+      "category": "contact",
+      "priority": "important",
+      "evidence": {
+        "capture": "creature-clay-takeoff.png",
+        "motion": "lunge",
+        "tick": 43,
+        "camera": {
+          "position": [4, 2.4, 5],
+          "target": [0, 1.4, 0.2],
+          "fov": 38
+        },
+        "channel": "clay"
+      },
+      "intent": "Review target, blend envelope and foot trajectory around takeoff; distinguish release intent from visible foot discontinuity before changing tolerance.",
+      "protect": []
+    },
+    {
+      "id": "shoulder-primary-forms",
+      "target": "ash-warden",
+      "sourceKey": "8a5c257efa0566f5",
+      "region": "shoulder",
+      "summary": "Torso and shoulder still read as joined rounded masses; exposed clay does not yet communicate a convincing load-bearing shoulder.",
+      "category": "anatomy",
+      "priority": "blocking",
+      "evidence": {
+        "capture": "creature-clay-shoulder.png",
+        "motion": "idle",
+        "tick": 0,
+        "camera": {
+          "position": [3, 2.1, 2.8],
+          "target": [0, 1.6, 0.65],
+          "fov": 28
+        },
+        "channel": "clay"
+      },
+      "intent": "Resolve scapula, upper-limb transition, chest and neck planes, then compare crouch and extension.",
+      "protect": []
+    },
+    {
+      "id": "small-feature-realization",
+      "target": "ash-warden",
+      "sourceKey": "8a5c257efa0566f5",
+      "region": "head-region",
+      "summary": "Compiler warnings still identify undersampled brows, jaw and toes. Local sculpt subdivision adds displacement samples but cannot reconstruct implicit curvature absent from the base mesh.",
+      "category": "surface",
+      "priority": "important",
+      "evidence": {
+        "capture": "creature-clay-face.png",
+        "motion": "idle",
+        "tick": 0,
+        "camera": {
+          "position": [2.2, 2.35, 3.8],
+          "target": [0, 2.08, 1.35],
+          "fov": 30
+        },
+        "channel": "clay"
+      },
+      "intent": "Use explicit controllable surfaces or develop field-aware resampling for defining features, then verify their silhouette at the declared distance.",
+      "protect": []
+    },
+    {
+      "id": "deformation-stream-budget",
+      "target": "ash-warden",
+      "sourceKey": "8a5c257efa0566f5",
+      "region": "shoulder",
+      "summary": "The full attack capture exhausted a 64 MiB tracked GPU budget because draw ranges each retained full current/previous deformation streams.",
+      "category": "performance",
+      "priority": "important",
+      "evidence": {
+        "capture": "creature-clay-iteration.json",
+        "motion": "lunge",
+        "tick": 87,
+        "camera": {
+          "position": [4, 2.4, 5],
+          "target": [0, 1.4, 0.2],
+          "fov": 38
+        },
+        "channel": "clay"
+      },
+      "intent": "Share streams within an actor and mesh while retaining actor isolation and correct temporal history.",
+      "protect": []
+    }
+  ],
+  "assessments": [
+    {
+      "observation": "tail-taper",
+      "sourceKey": "8a5c257efa0566f5",
+      "status": "resolved",
+      "reason": "The revised explicit sweep forms a continuous taper in the matched side view. This resolves the lumped rest silhouette only; tail motion remains part of the open articulation gate.",
+      "evidence": ["creature-clay-side.png"]
+    },
+    {
+      "observation": "landing-root-double-count",
+      "sourceKey": "8a5c257efa0566f5",
+      "status": "resolved",
+      "reason": "The real runtime now finishes at root Z=1.5 m with foot offsets matching rest stance. Active late-landing contact residual is about 0.0000032 m. This is a code-dependent resolution: recheck its runtime manifest after implementation changes; source identity alone cannot invalidate it.",
+      "evidence": ["creature-clay-landing.png", "creature-clay-iteration.json"]
+    },
+    {
+      "observation": "face-planar-structure",
+      "sourceKey": "8a5c257efa0566f5",
+      "status": "open",
+      "reason": "Visual or motion quality gate remains open after this tool implementation.",
+      "evidence": ["creature-clay-face.png"]
+    },
+    {
+      "observation": "takeoff-contact-release",
+      "sourceKey": "8a5c257efa0566f5",
+      "status": "open",
+      "reason": "Visual or motion quality gate remains open after this tool implementation.",
+      "evidence": ["creature-clay-takeoff.png"]
+    },
+    {
+      "observation": "shoulder-primary-forms",
+      "sourceKey": "8a5c257efa0566f5",
+      "status": "open",
+      "reason": "Visual or motion quality gate remains open after this tool implementation.",
+      "evidence": ["creature-clay-shoulder.png"]
+    },
+    {
+      "observation": "small-feature-realization",
+      "sourceKey": "8a5c257efa0566f5",
+      "status": "open",
+      "reason": "Visual or motion quality gate remains open after this tool implementation.",
+      "evidence": ["creature-clay-face.png"]
+    },
+    {
+      "observation": "deformation-stream-budget",
+      "sourceKey": "8a5c257efa0566f5",
+      "status": "resolved",
+      "reason": "Reference-counted shared streams complete all 36 paired captures with peak tracked GPU memory of 22.373 MiB. Focused ownership tests and hardware device-loss regression pass. This certifies this bounded scene only, not a full-game or timing budget.",
+      "evidence": ["creature-clay-iteration.json"]
+    }
+  ]
+}

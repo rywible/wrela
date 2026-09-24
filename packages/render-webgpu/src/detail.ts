@@ -7,7 +7,10 @@ import {
   sub,
   type Vec3,
 } from "@wrela/model";
+
 import { cameraBasis } from "./math";
+import { ShootSelector } from "./shoot-selection";
+import { crownAdmissible, crownViewRanges } from "./vegetation-selection";
 import { surfaceBounds } from "./visibility";
 
 export function projectedDiameter(
@@ -24,18 +27,40 @@ export function projectedDiameter(
 }
 /** Representation identity changes only outside a 15% projected-size hysteresis band. */
 export class DetailSelector {
+  private shoots = new ShootSelector();
   private choices = new Map<string, { base: MeshData; label: string | undefined; seen: number }>();
   private frame = 0;
   select(
     scene: EvaluatedScene,
     viewportHeight: number,
     pixelScale = 1,
+    vegetation: { shadowTexelSize: number; aspect?: number; allowCandidates?: boolean } = {
+      shadowTexelSize: 0,
+    },
   ): { scene: EvaluatedScene; details: NonNullable<RenderCompleteness["details"]> } {
     this.frame++;
+    this.shoots.begin();
     const details: NonNullable<RenderCompleteness["details"]> = [];
-    const surfaces = scene.surfaces.map((surface) => {
+    const surfaces = scene.surfaces.flatMap((surface) => {
+      if (surface.mesh.shoots) {
+        const selected = this.shoots.select(
+          scene,
+          surface,
+          viewportHeight / pixelScale,
+          vegetation.shadowTexelSize,
+          vegetation.aspect,
+        );
+        if (selected.some((s) => s.id.endsWith("/projected")))
+          details.push({
+            id: surface.id,
+            label: "projected-shoot",
+            selection: "projected-size",
+            maxError: null,
+          });
+        return selected;
+      }
       // Characters retain their authored realization until skin transfer and its error contract are available.
-      if (surface.skin || !surface.details?.length) return surface;
+      if (surface.skin || surface.deformation || !surface.details?.length) return surface;
       const diameter = projectedDiameter(scene, surface, viewportHeight) / pixelScale;
       const previous = this.choices.get(surface.id);
       const current =
@@ -43,16 +68,48 @@ export class DetailSelector {
           ? surface.details.find((detail) => detail.label === previous.label)
           : undefined;
       const candidates = surface.details
-        .filter((detail) => Number.isFinite(detail.maxProjectedDiameter) && detail.maxProjectedDiameter > 0)
+        .filter(
+          (detail) =>
+            Number.isFinite(detail.maxProjectedDiameter) &&
+            detail.maxProjectedDiameter > 0 &&
+            crownAdmissible(
+              scene,
+              surface,
+              detail,
+              vegetation.shadowTexelSize,
+              vegetation.allowCandidates ?? false,
+            ),
+        )
         .sort((a, b) => a.maxProjectedDiameter - b.maxProjectedDiameter);
       const selected = candidates.find(
-        (detail) => diameter <= detail.maxProjectedDiameter * (detail === current ? 1.15 : 0.85),
+        (detail) =>
+          diameter <=
+          Math.min(detail.maxProjectedDiameter, detail.vegetation?.qualification.maximumPixels ?? Infinity) *
+            (detail === current && !detail.vegetation ? 1.15 : 0.85),
       );
       this.choices.set(surface.id, { base: surface.mesh, label: selected?.label, seen: this.frame });
       if (!selected) return surface;
       details.push({ id: surface.id, label: selected.label, selection: "projected-size", maxError: null });
-      return { ...surface, mesh: selected.mesh, drawRange: selected.drawRange, details: undefined };
+      return {
+        ...surface,
+        mesh: selected.mesh,
+        drawRange: selected.drawRange,
+        ...(selected.vegetation ? crownViewRanges(scene, surface, selected) : {}),
+        details: undefined,
+        // Generated wind details and the original coarse source contain none of
+        // the near mesh's geometric frequency allocation.
+        ...(surface.reliefAppearance && !selected.mesh.reliefCoordinates
+          ? {
+              reliefAppearance: {
+                ...surface.reliefAppearance,
+                geometryWeights: [0, 0, 0] as Vec3,
+                residualWeights: [1, 1, 1] as Vec3,
+              },
+            }
+          : {}),
+      };
     });
+    this.shoots.end();
     for (const [id, choice] of this.choices) if (this.frame - choice.seen > 120) this.choices.delete(id);
     while (this.choices.size > 4096) {
       const oldest = this.choices.keys().next().value;
@@ -62,6 +119,7 @@ export class DetailSelector {
     return { scene: { ...scene, surfaces }, details };
   }
   clear() {
+    this.shoots.clear();
     this.choices.clear();
   }
 }

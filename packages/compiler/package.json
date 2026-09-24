@@ -2,5 +2,29 @@
   "name": "@wrela/compiler",
   "version": "0.1.0",
   "type": "module",
-  "exports": "./src/index.ts"
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts",
+    "./creature": "./src/creature.ts",
+    "./cloud-transport": "./src/cloud-transport.ts",
+    "./creature-attachments": "./src/creature-attachments.ts",
+    "./surface": "./src/surface.ts",
+    "./botanical-analysis": "./src/botanical-analysis.ts",
+    "./botanical-growth": "./src/botanical-growth.ts",
+    "./pine-architecture": "./src/pine-architecture.ts",
+    "./conifer-mesh": "./src/conifer-mesh.ts",
+    "./shoot-instances": "./src/shoot-instances.ts",
+    "./indirect-query": "./src/indirect-query.ts",
+    "./botanical-growth-structure": "./src/botanical-growth-structure.ts",
+    "./botanical-structure": "./src/botanical-structure.ts",
+    "./thin-coverage": "./src/thin-coverage.ts"
+  },
+  "dependencies": {
+    "@wrela/model": "workspace:*",
+    "zod": "4.1.12"
+  },
+  "devDependencies": {
+    "@wrela/model": "workspace:*",
+    "@wrela/examples": "workspace:*"
+  }
 }

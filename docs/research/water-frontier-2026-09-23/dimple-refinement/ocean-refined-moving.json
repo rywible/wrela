@@ -1,0 +1,4135 @@
+{
+  "id": "ocean-refined-moving",
+  "camera": {
+    "position": [
+      0,
+      3.2,
+      0
+    ],
+    "target": [
+      -18,
+      1,
+      -45
+    ],
+    "fov": 56
+  },
+  "time": 5.35,
+  "mode": "beauty",
+  "surfaces": 1,
+  "triangles": 43392,
+  "complete": true,
+  "timing": {
+    "frameToCompleteMs": 454.6999999284744,
+    "completeAt": 11755.799999952316,
+    "uploadAttempts": 1
+  },
+  "resources": {
+    "cacheBytes": 0,
+    "installedBytes": 1728,
+    "liveBytes": 1728,
+    "reliefBytes": 0,
+    "indirectLightingBytes": 0,
+    "assemblyBytes": 0,
+    "waterBytes": 1728,
+    "cacheEntries": 0
+  },
+  "indirectLighting": null,
+  "measurements": {
+    "cpuMs": 0.20000004768371582,
+    "gpuMs": 2.097152,
+    "triangles": 43392,
+    "drawCalls": 3,
+    "gpuBytes": 78747061,
+    "frame": 244,
+    "adapter": "apple · metal-3",
+    "waterResources": {
+      "transport": 12,
+      "history": 0,
+      "spectrum": 5244864,
+      "body": 1984,
+      "geometry": 2534400,
+      "objects": 9856,
+      "total": 7791116
+    },
+    "waterReconstruction": "spatial",
+    "reconstruction": "none",
+    "gpuTimingDroppedFrames": 0,
+    "localShadowPasses": 0,
+    "localShadowDrawCalls": 0,
+    "materialCacheBytes": 0,
+    "qualityProfile": "balanced",
+    "uploadedBytes": 4160,
+    "visibleSurfaces": 1,
+    "culledSurfaces": 0,
+    "detailSurfaces": 0,
+    "ownedTextureBytes": 74527157,
+    "bufferBytes": 4219904,
+    "outputResolution": [
+      1280,
+      720
+    ],
+    "renderResolution": [
+      1280,
+      720
+    ]
+  },
+  "gpuTimings": [
+    {
+      "frame": 123,
+      "atmosphereMs": 12.845056,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 27.787264,
+      "waterMs": 14.7456,
+      "temporalMs": 0,
+      "displayMs": 14.614528,
+      "gpuMs": 14.876672,
+      "intervals": [
+        {
+          "pass": "atmosphere",
+          "startMs": 0.065536,
+          "endMs": 12.910592
+        },
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 13.041664
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 12.910592,
+          "endMs": 13.172736
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 14.7456
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 14.876672
+        }
+      ]
+    },
+    {
+      "frame": 124,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.162688,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.769472,
+      "gpuMs": 2.031616,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 1.900544
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.031616
+        }
+      ]
+    },
+    {
+      "frame": 125,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 126,
+      "atmosphereMs": 9.109504,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 20.185088,
+      "waterMs": 10.944512,
+      "temporalMs": 0,
+      "displayMs": 10.223616,
+      "gpuMs": 11.075584,
+      "intervals": [
+        {
+          "pass": "atmosphere",
+          "startMs": 0,
+          "endMs": 9.109504
+        },
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 9.240576
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 9.109504,
+          "endMs": 9.306112
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 10.944512
+        },
+        {
+          "pass": "display",
+          "startMs": 0.851968,
+          "endMs": 11.075584
+        }
+      ]
+    },
+    {
+      "frame": 127,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.162688,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 128,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.097152,
+      "waterMs": 1.769472,
+      "temporalMs": 0,
+      "displayMs": 1.6384,
+      "gpuMs": 2.031616,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.065536
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 1.900544
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.031616
+        }
+      ]
+    },
+    {
+      "frame": 129,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 130,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 131,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 132,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 133,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.097152,
+      "waterMs": 1.835008,
+      "temporalMs": 0,
+      "displayMs": 1.703936,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 134,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 135,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 136,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 137,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 138,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 3.080192,
+      "waterMs": 2.228224,
+      "temporalMs": 0,
+      "displayMs": 2.162688,
+      "gpuMs": 2.490368,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.851968
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.131072,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 2.359296
+        },
+        {
+          "pass": "display",
+          "startMs": 0.32768,
+          "endMs": 2.490368
+        }
+      ]
+    },
+    {
+      "frame": 139,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.031616,
+      "waterMs": 1.703936,
+      "temporalMs": 0,
+      "displayMs": 1.6384,
+      "gpuMs": 2.031616,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0.131072,
+          "endMs": 0.458752
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.131072
+        },
+        {
+          "pass": "water",
+          "startMs": 0.196608,
+          "endMs": 1.900544
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.031616
+        }
+      ]
+    },
+    {
+      "frame": 140,
+      "atmosphereMs": 12.648448,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 27.131904,
+      "waterMs": 14.352384,
+      "temporalMs": 0,
+      "displayMs": 14.286848,
+      "gpuMs": 14.680064,
+      "intervals": [
+        {
+          "pass": "atmosphere",
+          "startMs": 0,
+          "endMs": 12.648448
+        },
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 12.77952
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 12.648448,
+          "endMs": 12.910592
+        },
+        {
+          "pass": "water",
+          "startMs": 0.196608,
+          "endMs": 14.548992
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 14.680064
+        }
+      ]
+    },
+    {
+      "frame": 141,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.097152,
+      "waterMs": 1.769472,
+      "temporalMs": 0,
+      "displayMs": 1.6384,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0.131072,
+          "endMs": 0.458752
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.131072
+        },
+        {
+          "pass": "water",
+          "startMs": 0.196608,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.458752,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 142,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.031616,
+      "waterMs": 1.769472,
+      "temporalMs": 0,
+      "displayMs": 1.6384,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.196608,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.458752,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 143,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 144,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 145,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.031616,
+      "waterMs": 1.769472,
+      "temporalMs": 0,
+      "displayMs": 1.6384,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.196608,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.458752,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 146,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 147,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 148,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.097152,
+      "waterMs": 1.769472,
+      "temporalMs": 0,
+      "displayMs": 1.6384,
+      "gpuMs": 2.031616,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0.131072,
+          "endMs": 0.458752
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.131072
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 1.900544
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.031616
+        }
+      ]
+    },
+    {
+      "frame": 149,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 150,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.097152,
+      "waterMs": 1.769472,
+      "temporalMs": 0,
+      "displayMs": 1.6384,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.196608,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.458752,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 151,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 152,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 153,
+      "atmosphereMs": 11.337728,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 24.379392000000003,
+      "waterMs": 13.041664,
+      "temporalMs": 0,
+      "displayMs": 12.517376,
+      "gpuMs": 13.369344,
+      "intervals": [
+        {
+          "pass": "atmosphere",
+          "startMs": 0,
+          "endMs": 11.337728
+        },
+        {
+          "pass": "opaque",
+          "startMs": 0.131072,
+          "endMs": 11.4688
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 11.337728,
+          "endMs": 11.599872
+        },
+        {
+          "pass": "water",
+          "startMs": 0.196608,
+          "endMs": 13.238272
+        },
+        {
+          "pass": "display",
+          "startMs": 0.851968,
+          "endMs": 13.369344
+        }
+      ]
+    },
+    {
+      "frame": 154,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 155,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.162688,
+      "waterMs": 1.835008,
+      "temporalMs": 0,
+      "displayMs": 1.6384,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0.131072,
+          "endMs": 0.458752
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.131072
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.458752,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 156,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 3.60448,
+      "waterMs": 3.145728,
+      "temporalMs": 0,
+      "displayMs": 2.62144,
+      "gpuMs": 3.342336,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.458752
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 1.572864
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 3.211264
+        },
+        {
+          "pass": "display",
+          "startMs": 0.720896,
+          "endMs": 3.342336
+        }
+      ]
+    },
+    {
+      "frame": 157,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 158,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 159,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 160,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 161,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 162,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 163,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 164,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 165,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.097152,
+      "waterMs": 1.835008,
+      "temporalMs": 0,
+      "displayMs": 1.769472,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.196608,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 166,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 167,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 168,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.818048,
+      "waterMs": 2.097152,
+      "temporalMs": 0,
+      "displayMs": 2.031616,
+      "gpuMs": 2.359296,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.720896
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.131072,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 2.228224
+        },
+        {
+          "pass": "display",
+          "startMs": 0.32768,
+          "endMs": 2.359296
+        }
+      ]
+    },
+    {
+      "frame": 169,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 170,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.031616,
+      "waterMs": 1.769472,
+      "temporalMs": 0,
+      "displayMs": 1.703936,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0.131072,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.065536
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 1.900544
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 171,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 172,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 173,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.424832,
+      "waterMs": 2.097152,
+      "temporalMs": 0,
+      "displayMs": 2.94912,
+      "gpuMs": 3.211264,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 3.211264
+        }
+      ]
+    },
+    {
+      "frame": 174,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 175,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.769472,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 176,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 177,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 178,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.769472,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 179,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.162688,
+      "waterMs": 1.835008,
+      "temporalMs": 0,
+      "displayMs": 1.703936,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0.131072,
+          "endMs": 0.458752
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.131072
+        },
+        {
+          "pass": "water",
+          "startMs": 0.196608,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.458752,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 180,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.162688,
+      "waterMs": 1.835008,
+      "temporalMs": 0,
+      "displayMs": 1.6384,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0.131072,
+          "endMs": 0.458752
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.131072
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.458752,
+          "endMs": 2.097152
+        }
+      ]
+    },
+    {
+      "frame": 181,
+      "atmosphereMs": 9.764864,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 21.233663999999997,
+      "waterMs": 11.4688,
+      "temporalMs": 0,
+      "displayMs": 10.878976,
+      "gpuMs": 11.79648,
+      "intervals": [
+        {
+          "pass": "atmosphere",
+          "startMs": 0,
+          "endMs": 9.764864
+        },
+        {
+          "pass": "opaque",
+          "startMs": 0.131072,
+          "endMs": 9.895936
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 9.764864,
+          "endMs": 9.961472
+        },
+        {
+          "pass": "water",
+          "startMs": 0.196608,
+          "endMs": 11.665408
+        },
+        {
+          "pass": "display",
+          "startMs": 0.917504,
+          "endMs": 11.79648
+        }
+      ]
+    },
+    {
+      "frame": 182,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 183,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.62144,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.490368,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.589824
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.32768,
+          "endMs": 0.65536
+        },
+        {
+          "pass": "water",
+          "startMs": 0.32768,
+          "endMs": 2.359296
+        },
+        {
+          "pass": "display",
+          "startMs": 0.589824,
+          "endMs": 2.490368
+        }
+      ]
+    },
+    {
+      "frame": 184,
+      "atmosphereMs": 10.81344,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 23.724032,
+      "waterMs": 12.713984,
+      "temporalMs": 0,
+      "displayMs": 12.058624,
+      "gpuMs": 12.910592,
+      "intervals": [
+        {
+          "pass": "atmosphere",
+          "startMs": 0.065536,
+          "endMs": 10.878976
+        },
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 11.010048
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 10.878976,
+          "endMs": 11.075584
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 12.77952
+        },
+        {
+          "pass": "display",
+          "startMs": 0.851968,
+          "endMs": 12.910592
+        }
+      ]
+    },
+    {
+      "frame": 185,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 186,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 187,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.097152,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.769472,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.196608
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 188,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 189,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 190,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 191,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 192,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 193,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.162688,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.769472,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 194,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.031616,
+      "waterMs": 1.835008,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.196608
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.196608,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 195,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.196608,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 196,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.769472,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.196608,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.458752,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 197,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 198,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 3.014656,
+      "waterMs": 2.228224,
+      "temporalMs": 0,
+      "displayMs": 2.162688,
+      "gpuMs": 2.490368,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.786432
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.131072,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 2.359296
+        },
+        {
+          "pass": "display",
+          "startMs": 0.32768,
+          "endMs": 2.490368
+        }
+      ]
+    },
+    {
+      "frame": 199,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.162688,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.769472,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 200,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 201,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.752512,
+      "waterMs": 2.424832,
+      "temporalMs": 0,
+      "displayMs": 2.883584,
+      "gpuMs": 3.145728,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.424832
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 3.145728
+        }
+      ]
+    },
+    {
+      "frame": 202,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.769472,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0.131072,
+          "endMs": 0.458752
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.131072
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 203,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.835008,
+      "temporalMs": 0,
+      "displayMs": 1.703936,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.196608,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.458752,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 204,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 205,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.424832,
+      "waterMs": 2.097152,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 206,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 207,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.162688,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.769472,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0.131072,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.131072
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 208,
+      "atmosphereMs": 9.8304,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 21.757952000000003,
+      "waterMs": 11.79648,
+      "temporalMs": 0,
+      "displayMs": 11.14112,
+      "gpuMs": 11.927552,
+      "intervals": [
+        {
+          "pass": "atmosphere",
+          "startMs": 0,
+          "endMs": 9.8304
+        },
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 9.961472
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 9.8304,
+          "endMs": 10.092544
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 11.79648
+        },
+        {
+          "pass": "display",
+          "startMs": 0.786432,
+          "endMs": 11.927552
+        }
+      ]
+    },
+    {
+      "frame": 209,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.900544,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 210,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.097152,
+      "temporalMs": 0,
+      "displayMs": 2.031616,
+      "gpuMs": 2.29376,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.162688
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.29376
+        }
+      ]
+    },
+    {
+      "frame": 211,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 212,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.196608,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 213,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.818048,
+      "waterMs": 2.162688,
+      "temporalMs": 0,
+      "displayMs": 2.031616,
+      "gpuMs": 2.490368,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0.131072,
+          "endMs": 0.786432
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water",
+          "startMs": 0.196608,
+          "endMs": 2.359296
+        },
+        {
+          "pass": "display",
+          "startMs": 0.458752,
+          "endMs": 2.490368
+        }
+      ]
+    },
+    {
+      "frame": 214,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 215,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.818048,
+      "waterMs": 2.490368,
+      "temporalMs": 0,
+      "displayMs": 3.014656,
+      "gpuMs": 3.2768,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.555904
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 3.2768
+        }
+      ]
+    },
+    {
+      "frame": 216,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.769472,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0.131072,
+          "endMs": 0.458752
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.131072
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 217,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 218,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.097152,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 219,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.4248320000000003,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 220,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 221,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 222,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.424832,
+      "waterMs": 2.097152,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 223,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 224,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.424832,
+      "waterMs": 2.097152,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 225,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 226,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.424832,
+      "waterMs": 2.097152,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 227,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0.131072,
+          "endMs": 0.458752
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.131072
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 228,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.162688,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.769472,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0.131072,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.131072
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 229,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.424832,
+      "waterMs": 2.097152,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 230,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.835008,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.196608,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 231,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.424832,
+      "waterMs": 2.097152,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 232,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.424832,
+      "waterMs": 2.097152,
+      "temporalMs": 0,
+      "displayMs": 2.031616,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.196608,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 233,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.94912,
+      "waterMs": 2.62144,
+      "temporalMs": 0,
+      "displayMs": 3.014656,
+      "gpuMs": 3.2768,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.62144
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 3.2768
+        }
+      ]
+    },
+    {
+      "frame": 234,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.162688,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.769472,
+      "gpuMs": 2.162688,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0.131072,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.065536
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 2.031616
+        },
+        {
+          "pass": "display",
+          "startMs": 0.393216,
+          "endMs": 2.162688
+        }
+      ]
+    },
+    {
+      "frame": 235,
+      "atmosphereMs": 9.764864,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 21.692416,
+      "waterMs": 11.730944,
+      "temporalMs": 0,
+      "displayMs": 11.075584,
+      "gpuMs": 11.927552,
+      "intervals": [
+        {
+          "pass": "atmosphere",
+          "startMs": 0.065536,
+          "endMs": 9.8304
+        },
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 9.961472
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 9.8304,
+          "endMs": 10.027008
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 11.79648
+        },
+        {
+          "pass": "display",
+          "startMs": 0.851968,
+          "endMs": 11.927552
+        }
+      ]
+    },
+    {
+      "frame": 236,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.29376,
+      "waterMs": 2.097152,
+      "temporalMs": 0,
+      "displayMs": 2.031616,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.196608
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.196608,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 237,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.2937600000000002,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 238,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.097152,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 239,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.228224,
+      "waterMs": 1.96608,
+      "temporalMs": 0,
+      "displayMs": 1.769472,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.458752,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 240,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.097152,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 241,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.097152,
+      "temporalMs": 0,
+      "displayMs": 1.96608,
+      "gpuMs": 2.228224,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.228224
+        }
+      ]
+    },
+    {
+      "frame": 242,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.359296,
+      "waterMs": 2.031616,
+      "temporalMs": 0,
+      "displayMs": 2.031616,
+      "gpuMs": 2.29376,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.32768
+        },
+        {
+          "pass": "water-spectrum",
+          "startMs": 0.065536,
+          "endMs": 0.393216
+        },
+        {
+          "pass": "water",
+          "startMs": 0.065536,
+          "endMs": 2.097152
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.29376
+        }
+      ]
+    },
+    {
+      "frame": 243,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.162688,
+      "waterMs": 1.900544,
+      "temporalMs": 0,
+      "displayMs": 1.769472,
+      "gpuMs": 2.031616,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.262144
+        },
+        {
+          "pass": "water",
+          "startMs": 0,
+          "endMs": 1.900544
+        },
+        {
+          "pass": "display",
+          "startMs": 0.262144,
+          "endMs": 2.031616
+        }
+      ]
+    },
+    {
+      "frame": 244,
+      "atmosphereMs": 0,
+      "thinDepthMs": 0,
+      "shadowMs": 0,
+      "sceneMs": 2.031616,
+      "waterMs": 1.835008,
+      "temporalMs": 0,
+      "displayMs": 1.769472,
+      "gpuMs": 2.097152,
+      "intervals": [
+        {
+          "pass": "opaque",
+          "startMs": 0,
+          "endMs": 0.196608
+        },
+        {
+          "pass": "water",
+          "startMs": 0.131072,
+          "endMs": 1.96608
+        },
+        {
+          "pass": "display",
+          "startMs": 0.32768,
+          "endMs": 2.097152
+        }
+      ]
+    }
+  ],
+  "diagnostics": []
+}

@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wrela — Current sky versus the references</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#e8e9ea;background:#191b1d;line-height:1.5}
+*{box-sizing:border-box}body{margin:0}main{max-width:1680px;margin:auto;padding:30px 28px 60px}h1{font-size:clamp(26px,3vw,40px);font-weight:550;letter-spacing:-.03em;line-height:1.2;margin:8px 0 14px}h2{font-size:22px;font-weight:550;margin:34px 0 14px}h3{font-size:16px;font-weight:550;margin:0 0 6px}p{margin:8px 0 14px}.eyebrow{color:#b4bbc0;font-size:12px;letter-spacing:.1em;text-transform:uppercase}.intro{max-width:980px;color:#c9cdd0}.links,.presets,.image-links{display:flex;gap:12px 20px;flex-wrap:wrap}.links{font-size:14px}a{color:#b4d9f1;text-underline-offset:3px}button,select{font:inherit;color:inherit;background:#292d30;border:1px solid #5a6268;border-radius:4px;padding:9px 12px}button{cursor:pointer}button:hover{background:#373e43}button[aria-pressed="true"]{color:#1b2226;background:#d1e2ec;border-color:#d1e2ec}button:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid #a6dafa;outline-offset:3px}.presets{gap:8px;margin:26px 0 14px}.question{max-width:1120px;min-height:48px}.compare{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}.panel{min-width:0}label{display:block;margin-bottom:7px;font-size:13px;color:#c5cbd0}select{width:100%;min-width:0;text-overflow:ellipsis}figure{margin:14px 0 0}.photo{display:block;width:100%;height:auto;aspect-ratio:16/10;object-fit:contain;background:#101214}.caption{padding-top:14px}.caption p{font-size:14px;max-width:680px}.credit{font-size:12px!important;color:#aeb8c0}.image-links{font-size:13px}.scope{font-size:13px;max-width:1100px;color:#b1bbc2;margin-top:25px}.findings{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px;margin:30px 0}.findings p{font-size:14px;color:#c1c9ce}.findings strong{color:#f0f0ef;font-weight:550}.gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:28px 20px}.reference{min-width:0}.reference img{width:100%;height:auto;aspect-ratio:16/10;object-fit:contain;background:#101214;display:block}.reference h3{margin-top:12px}.reference p{font-size:13px;color:#c1c9ce}.reference button{font-size:13px}.reference a{font-size:13px;margin-left:12px}footer{margin-top:35px;padding-top:20px;border-top:1px solid #454d53;color:#aeb8c0;font-size:12px}.error{color:#ffb5ad}
+@media(max-width:900px){main{padding:24px 18px 45px}.gallery{grid-template-columns:repeat(2,minmax(0,1fr))}.findings{gap:16px}.question{min-height:0}}
+@media(max-width:700px){.compare{grid-template-columns:1fr;gap:26px}.findings{grid-template-columns:1fr;gap:2px}.photo{aspect-ratio:auto}.presets button{min-height:44px}}
+@media(max-width:420px){.gallery{grid-template-columns:1fr}.links{gap:10px 14px}}
+</style>
+</head>
+<body>
+<main>
+<div class="eyebrow">Wrela / current sky audit / 23 September 2026</div>
+<h1>Good atmosphere. Clouds that still look constructed.</h1>
+<p class="intro">Fresh current renders against selected AAA skies and real photographs. The largest remaining gaps are repeated cloud shapes, smooth or patterned edges, limited layering, and the separation of light through the cloudscape.</p>
+<nav class="links" aria-label="Research documents"><a href="../sky-current-audit-2026-09-23.md">Full findings and next experiments</a><a href="sources.json">Image credits</a><a href="evidence.json">Capture evidence</a><a href="#references">12 reference images</a></nav>
+<div class="presets" aria-label="Comparison presets">
+<button type="button" data-pair="shape" aria-pressed="true">Growing cloud</button>
+<button type="button" data-pair="banks" aria-pressed="false">Bank variety</button>
+<button type="button" data-pair="layers" aria-pressed="false">Cloud layers</button>
+<button type="button" data-pair="wisps" aria-pressed="false">Upper wisps</button>
+<button type="button" data-pair="sunset" aria-pressed="false">Sunset</button>
+<button type="button" data-pair="light" aria-pressed="false">Light and depth</button>
+<button type="button" data-pair="storm" aria-pressed="false">Storm structure</button>
+<button type="button" data-pair="air" aria-pressed="false">Light in the air</button>
+<button type="button" data-pair="world" aria-pressed="false">Alpine world</button>
+<button type="button" data-pair="quality" aria-pressed="false">High / Balanced</button>
+</div>
+<p class="question" id="question" aria-live="polite"></p>
+<div class="compare">
+<section class="panel" aria-label="Left image"><label for="left-select">Current Wrela view</label><select id="left-select"></select><figure><img class="photo" id="left-img" alt=""><figcaption class="caption"><h3 id="left-title"></h3><p id="left-note"></p><p class="credit" id="left-credit"></p><div class="image-links"><a id="left-full" target="_blank" rel="noopener">Open original image</a><a id="left-source" target="_blank" rel="noopener">Source</a></div></figcaption></figure></section>
+<section class="panel" aria-label="Right image"><label for="right-select">Reference or comparison view</label><select id="right-select"></select><figure><img class="photo" id="right-img" alt=""><figcaption class="caption"><h3 id="right-title"></h3><p id="right-note"></p><p class="credit" id="right-credit"></p><div class="image-links"><a id="right-full" target="_blank" rel="noopener">Open original image</a><a id="right-source" target="_blank" rel="noopener">Source</a></div></figcaption></figure></section>
+</div>
+<p class="scope">21 fresh renders · 12 credited references. Images keep their original colors and proportions. Reference weather, sun angle, lens, altitude, exposure, and grading differ. Wrela output is 1440 × 900; High clouds use that resolution, Balanced clouds use 768 × 512. All current stills use full cloud redraw, so they do not establish motion quality. The reference photographs are not calibrated color targets.</p>
+<div class="findings">
+<p><strong>1 · Give clouds different structures.</strong><br>The tower is readable. Other directions repeat flattened banks. The broad tower and bank arrangements are fixed in the shader; seeds change their noise.</p>
+<p><strong>2 · Make boundaries and layers richer.</strong><br>Growing tips, evaporating fragments, transparent veils, and overlapping high wisps need different character. Smoothness itself is not a defect.</p>
+<p><strong>3 · Calibrate light and preserve cost.</strong><br>Twilight is improved. Cloud interiors, distant haze, and the ground still need stronger coherence. High sampling already costs more and does not remove the shape limitations.</p>
+</div>
+<h2 id="references">The reference collection</h2>
+<div class="gallery" id="gallery"></div>
+<footer>Research only. Production code and authored environments were not changed. Current captures use a frozen working-source snapshot. Reference images come from the existing attributed collection, with source pages rechecked and local hashes verified. They are research references, not Wrela game assets. No new performance claim is made from these captures.</footer>
+<noscript><p>Enable JavaScript to choose comparison views. The <a href="../sky-current-audit-2026-09-23.md">research report</a> and <a href="sources.json">image list</a> are available without it.</p></noscript>
+</main>
+<script src="sources.js"></script>
+<script>
+const images=skyAudit.images;
+const byId=new Map(images.map(image=>[image.id,image]));
+const pairs={
+shape:['high-cumulus-side','n-congestus','Compare uneven growth, gaps, and dissolving regions. Our tower carries volume, but its interior is compact and its surrounding banks share a narrow shape vocabulary.'],
+banks:['high-opposite','ms-shape','Turn away from the main tower: our sky repeats flattened banks. The MSFS reference combines a distinct hooked shape with broken, partly transparent fragments.'],
+layers:['high-east','n-layers','Both skies contain low and high clouds. Compare the diversity and overlap of the upper layer, rather than the total amount of cloud cover.'],
+wisps:['high-zenith','n-cirrus','The Wrela feather exposes repeated ribbons. Natural cirrus has broken fans, irregular fibers, and veils; the reference also contains straight aircraft contrails. Different time of day.'],
+sunset:['high-sunset','h-towers','Both images have warm light. Compare variation within cloud bodies, luminous openings, and atmospheric separation. The landscape and exposure are very different.'],
+light:['high-golden','ms-layers','Our bright rims work, but cloud bodies tend toward one brown-grey range. The reference separates warm faces, cool undersides, and several apparent cloud depths.'],
+storm:['high-storm','h-storm','Compare large-scale storm organization and variation between edges and interiors. The reference includes sunset and lightning; it is not a matched lighting test.'],
+air:['high-golden','n-rays','Cloud shadows in the air are already present in Wrela. Study their extent and continuity toward low sun, rather than treating them as a missing feature.'],
+world:['world-landscape','n-rockies','The actual alpine scene supplies scale and context. Judge how cloud masses meet the distant world; unfinished terrain and vegetation also influence the result.'],
+quality:['high-cumulus-side','balanced-cumulus-side','Same scene, camera, and light. High: 1440 × 900 clouds, up to 1,024 samples. Balanced: 768 × 512 clouds, up to 512 samples with these formations. The shape limitations remain at both levels.']
+};
+function show(side,id){
+  const im=byId.get(id);if(!im)throw Error('Missing image '+id);
+  document.getElementById(side+'-select').value=id;
+  const photo=document.getElementById(side+'-img');photo.src=im.file;photo.alt=im.title;
+  document.getElementById(side+'-title').textContent=im.title;
+  document.getElementById(side+'-note').textContent=im.note;
+  document.getElementById(side+'-credit').textContent=im.credit;
+  document.getElementById(side+'-full').href=im.file;
+  document.getElementById(side+'-source').href=im.source;
+}
+function clearPreset(){document.querySelectorAll('[data-pair]').forEach(b=>b.setAttribute('aria-pressed','false'));}
+for(const side of ['left','right']){
+  const select=document.getElementById(side+'-select');
+  for(const category of ['Current High','Current Balanced','Current world','AAA','Nature']){
+    if(side==='left'&&(category==='AAA'||category==='Nature'))continue;
+    const group=document.createElement('optgroup');group.label=category;
+    for(const im of images.filter(x=>x.category===category)){const option=document.createElement('option');option.value=im.id;option.textContent=im.title;group.append(option);}
+    select.append(group);
+  }
+  select.addEventListener('change',()=>{show(side,select.value);clearPreset();document.getElementById('question').textContent='Custom comparison. Account for differences in cloud type, camera, lighting, exposure, and image resolution.';});
+}
+function setPair(key){const [left,right,note]=pairs[key];show('left',left);show('right',right);document.getElementById('question').textContent=note;document.querySelectorAll('[data-pair]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.pair===key)));}
+document.querySelectorAll('[data-pair]').forEach(b=>b.addEventListener('click',()=>setPair(b.dataset.pair)));
+for(const im of images.filter(x=>x.category==='AAA'||x.category==='Nature')){
+  const article=document.createElement('article');article.className='reference';
+  const photo=document.createElement('img');photo.src=im.file;photo.alt=im.title;photo.loading='lazy';
+  const title=document.createElement('h3');title.textContent=im.title;
+  const note=document.createElement('p');note.textContent=im.note;
+  const credit=document.createElement('p');credit.className='credit';credit.textContent=im.credit;
+  const button=document.createElement('button');button.type='button';button.textContent='Compare this reference';button.setAttribute('aria-label','Compare '+im.title);
+  button.addEventListener('click',()=>{show('right',im.id);clearPreset();document.getElementById('question').textContent='Reference selected. Choose a current Wrela view on the left to compare.';document.querySelector('.presets').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});});
+  const source=document.createElement('a');source.href=im.source;source.textContent='Source';source.target='_blank';source.rel='noopener';
+  article.append(photo,title,note,credit,button,source);document.getElementById('gallery').append(article);
+}
+setPair('shape');
+</script>
+</body>
+</html>

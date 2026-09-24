@@ -1,4 +1,4 @@
-import { queryWater } from "@wrela/compiler";
+import { queryWater, sampleWaterGrid, sampleWaterSpectrum } from "@wrela/compiler";
 import {
   add,
   type Bounds,
@@ -6,15 +6,21 @@ import {
   cross,
   dot,
   type EvaluatedScene,
+  intersectQuadric,
+  inverseMatrix,
   type MeshData,
+  multiplyMatrices,
   normalize,
   normalizeWind,
+  quadricUnitToLocal,
   type RenderSurface,
   scale,
   sub,
   type Vec3,
+  vegetationMotionOffset,
   waterGeometryAttenuation,
 } from "@wrela/model";
+
 export type Ray = { origin: Vec3; direction: Vec3 };
 export type MeshHit = {
   distance: number;
@@ -68,6 +74,7 @@ export function raycastMesh(
   maximum = Infinity,
   vertex?: (index: number) => Vec3,
   drawRange?: { start: number; count: number },
+  accept?: (position: Vec3) => boolean,
 ): MeshHit | null {
   const direction = normalize(ray.direction);
   if (dot(direction, direction) < 0.5) return null;
@@ -107,6 +114,8 @@ export function raycastMesh(
     if (v < -1e-8 || u + v > 1 + 1e-8) continue;
     const distance = dot(edge2, q) * inverse;
     if (distance < 0 || distance >= closest) continue;
+    const position = add(ray.origin, scale(direction, distance));
+    if (accept && !accept(position)) continue;
     closest = distance;
     const barycentric: Vec3 = [1 - u - v, u, v],
       votes = new Map<string, number>();
@@ -117,7 +126,7 @@ export function raycastMesh(
     const nodeId = [...votes].sort((a, b) => b[1] - a[1])[0]?.[0];
     hit = {
       distance,
-      position: add(ray.origin, scale(direction, distance)),
+      position,
       triangle: index / 3,
       barycentric,
       nodeId,
@@ -148,19 +157,126 @@ function worldBounds(surface: RenderSurface): Bounds {
   }
   return result;
 }
+/** Expand only ray-relevant shared shoots on a click. Rendering retains compact
+ * instances; picking returns the stable authored branch/needle identity. */
+function* pickableSurfaces(scene: EvaluatedScene, ray: Ray): Generator<RenderSurface> {
+  for (const surface of scene.surfaces) {
+    const shoots = surface.mesh.shoots;
+    if (!shoots) {
+      yield surface;
+      continue;
+    }
+    for (
+      let selected = 0;
+      selected < (surface.shootSelection?.indices.length ?? shoots.sourceIds.length);
+      selected++
+    ) {
+      if (surface.shootSelection && !(surface.shootSelection.masks[selected] & 1)) continue;
+      const index = surface.shootSelection?.indices[selected] ?? selected,
+        at = index * 16;
+      const matrix = shoots.transforms.subarray(at, at + 16);
+      const bound = worldBounds({
+        ...surface,
+        matrix: multiplyMatrices(surface.matrix, matrix),
+        mesh: { ...surface.mesh, bounds: shoots.templateBounds },
+      });
+      const envelope =
+        ((0.885 *
+          Math.min(2, Math.max(0, surface.wind ?? 0)) *
+          Math.min(10, Math.hypot(...scene.environment.wind))) /
+          10) *
+        Math.hypot(surface.matrix[0], surface.matrix[1], surface.matrix[2]);
+      for (let axis = 0; axis < 3; axis++) {
+        bound.min[axis] -= envelope;
+        bound.max[axis] += envelope;
+      }
+      if (!intersectsBounds(ray, bound, Infinity)) continue;
+      const positions = new Float32Array(surface.mesh.positions.length),
+        wind = new Float32Array((positions.length / 3) * 4);
+      for (let vertex = 0; vertex < positions.length / 3; vertex++) {
+        const p: Vec3 = [
+          surface.mesh.positions[vertex * 3],
+          surface.mesh.positions[vertex * 3 + 1],
+          surface.mesh.positions[vertex * 3 + 2],
+        ];
+        const local = transform(matrix, p),
+          anchor = Math.min(1, Math.max(0, local[1]) / 0.08);
+        positions.set(local, vertex * 3);
+        const distance = Math.hypot(...local.map((v, a) => v - shoots.anchors[index * 4 + a]));
+        wind.set(
+          [
+            shoots.anchors[index * 4 + 3],
+            Math.min(0.25, Math.max(0, distance - shoots.motion[index * 4 + 3]) ** 1.4 * 0.055) *
+              shoots.motion[index * 4] *
+              anchor,
+            shoots.motion[index * 4 + 2],
+            Math.min(0.035, Math.hypot(...p) * 0.12) * shoots.motion[index * 4 + 1] * anchor,
+          ],
+          vertex * 4,
+        );
+      }
+      yield {
+        ...surface,
+        mesh: {
+          ...surface.mesh,
+          shoots: undefined,
+          positions,
+          wind,
+          sourceIds: surface.mesh.sourceIds?.map((id) => `${shoots.sourceIds[index]}/${id}`),
+        },
+        shootSelection: undefined,
+      };
+    }
+  }
+}
 /** Matches the renderer's skin, bounded wind and analytic wave positions.
  * Operates on a click, never as a per-frame scene traversal. */
 export function pickScene(scene: EvaluatedScene, ray: Ray): SceneHit | null {
   let result: SceneHit | null = null;
   const normalized = { origin: ray.origin, direction: normalize(ray.direction) };
-  for (const surface of scene.surfaces) {
+  for (const surface of pickableSurfaces(scene, normalized)) {
+    const product = surface.selectedRenderProduct;
+    if (
+      product?.kind === "analytic-quadric" &&
+      !surface.skin &&
+      !surface.deformation &&
+      !surface.wind &&
+      !surface.water
+    ) {
+      const inverse = inverseMatrix(multiplyMatrices(surface.matrix, quadricUnitToLocal(product.primitive)));
+      if (inverse) {
+        const hit = intersectQuadric(
+          inverse,
+          normalized.origin,
+          normalized.direction,
+          0,
+          result?.distance ?? Infinity,
+        );
+        if (hit)
+          result = {
+            distance: hit.distance,
+            position: hit.position,
+            triangle: -1,
+            barycentric: [0, 0, 0],
+            nodeId: product.primitive.nodeId,
+            surfaceId: surface.id,
+            documentId: surface.source,
+            instanceId: surface.instanceId,
+          };
+        continue;
+      }
+    }
     if (
       !surface.skin &&
+      !surface.deformation &&
       !surface.wind &&
       !surface.water &&
       !intersectsBounds(normalized, worldBounds(surface), result?.distance ?? Infinity)
     )
       continue;
+    const offsets = surface.deformation?.vertexIndices
+      ? new Map(Array.from(surface.deformation.vertexIndices, (vertex, offset) => [vertex, offset]))
+      : undefined;
     const cached = new Map<number, Vec3>();
     const vertex = (index: number): Vec3 => {
       const existing = cached.get(index);
@@ -170,6 +286,11 @@ export function pickScene(scene: EvaluatedScene, ray: Ray): SceneHit | null {
         surface.mesh.positions[index * 3 + 1],
         surface.mesh.positions[index * 3 + 2],
       ];
+      if (surface.deformation) {
+        const at = offsets ? offsets.get(index) : index;
+        if (at !== undefined)
+          for (let axis = 0; axis < 3; axis++) p[axis] += surface.deformation.positionDeltas[at * 3 + axis];
+      }
       if (surface.skin) {
         const posed: Vec3 = [0, 0, 0];
         for (let influence = 0; influence < 4; influence++) {
@@ -198,8 +319,39 @@ export function pickScene(scene: EvaluatedScene, ray: Ray): SceneHit | null {
           world[0] += (wind[0] / speed) * amplitude * Math.sin(phase);
           world[2] += (wind[2] / speed) * amplitude * Math.sin(phase);
         }
+        if (surface.mesh.wind) {
+          const at = index * 4;
+          const weights = surface.mesh.wind;
+          const offset = vegetationMotionOffset(
+            [weights[at], weights[at + 1], weights[at + 2], weights[at + 3]],
+            world,
+            scene.time,
+            wind,
+            surface.wind,
+            scene.environment.windPhase ?? 0,
+            instanceScale,
+          );
+          for (let axis = 0; axis < 3; axis++) world[axis] += offset[axis];
+        }
       }
-      if (surface.water)
+      if (surface.water && surface.waterState) {
+        const state = surface.waterState,
+          domain = state.domain,
+          origin = scene.origin ?? [0, 0, 0];
+        const x = world[0] + origin[0],
+          z = world[2] + origin[2];
+        const staticCell = domain ? sampleWaterGrid(domain, domain.cells, x, z) : undefined;
+        const cell = domain && state.cells ? sampleWaterGrid(domain, state.cells, x, z) : undefined;
+        const level = cell?.[0] ?? staticCell?.[1] ?? surface.water.level;
+        const damp = domain ? Math.min(1, Math.max(0, level - (staticCell?.[0] ?? level)) / 0.5) : 1;
+        const spacing = domain ? Math.max(...domain.spacing) : (surface.mesh.colors?.[index * 3] ?? 0);
+        const wave = sampleWaterSpectrum(state.spectrum, x, z, scene.time, spacing);
+        world[1] = level - origin[1] + wave.height * damp;
+        if (!domain) {
+          world[0] += wave.lateralX;
+          world[2] += wave.lateralZ;
+        }
+      } else if (surface.water)
         world[1] = queryWater(
           {
             ...surface.water,
@@ -223,6 +375,18 @@ export function pickScene(scene: EvaluatedScene, ray: Ray): SceneHit | null {
       result?.distance ?? Infinity,
       vertex,
       surface.drawRange,
+      surface.water && surface.waterState?.domain
+        ? (position) => {
+            const origin = scene.origin ?? [0, 0, 0];
+            return queryWater(
+              surface.water!,
+              position[0] + origin[0],
+              position[2] + origin[2],
+              scene.time,
+              surface.waterState,
+            ).wet;
+          }
+        : undefined,
     );
     if (hit)
       result = { ...hit, surfaceId: surface.id, documentId: surface.source, instanceId: surface.instanceId };

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { referenceProject } from "@wrela/examples/fixtures";
 import type {
   CharacterDefinition,
   ObjectDefinition,
@@ -6,7 +7,6 @@ import type {
   TerrainDefinition,
   WorldDefinition,
 } from "./documents";
-import { referenceProject } from "./fixtures";
 import { parseProject, validateProject } from "./validation";
 
 const bunny = (p: Project) => p.documents.find((d) => d.kind === "character") as CharacterDefinition;

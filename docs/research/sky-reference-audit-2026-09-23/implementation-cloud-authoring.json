@@ -1,0 +1,217 @@
+{
+  "source": {
+    "id": "winter-sky",
+    "name": "Winter afternoon",
+    "schemaVersion": 1,
+    "dependencies": [],
+    "kind": "environment",
+    "sequence": {
+      "duration": 300,
+      "loop": true,
+      "interpolation": "smooth",
+      "keyframes": [
+        {
+          "time": 0,
+          "state": {
+            "sunElevation": 0.2,
+            "sunAzimuth": -0.65,
+            "turbidity": 2,
+            "fogDensity": 0.00045,
+            "cloudCover": 0.48,
+            "cloudscape": {
+              "development": 0.6,
+              "storminess": 0,
+              "highCloudCover": 0.2,
+              "highCloudYaw": 0.8,
+              "formations": [
+                {
+                  "id": "wisp-1",
+                  "kind": "wisp",
+                  "center": [
+                    0,
+                    8000
+                  ],
+                  "base": 3000,
+                  "size": [
+                    2600,
+                    900,
+                    1000
+                  ],
+                  "yaw": 0,
+                  "density": 0.6,
+                  "erosion": 0.8,
+                  "seed": 17
+                }
+              ]
+            },
+            "wind": [
+              0.5,
+              0,
+              0.2
+            ],
+            "ambient": 0.45,
+            "sunIntensity": 2.5,
+            "wetness": 0,
+            "grade": {
+              "exposureCompensation": 0,
+              "tint": [
+                1,
+                1,
+                1
+              ]
+            }
+          }
+        },
+        {
+          "time": 150,
+          "state": {
+            "sunElevation": 0.08,
+            "sunAzimuth": 0.35,
+            "turbidity": 2,
+            "fogDensity": 0.0009,
+            "cloudCover": 0.8,
+            "cloudscape": {
+              "development": 0.6,
+              "storminess": 0,
+              "highCloudCover": 0.2,
+              "highCloudYaw": 0.8,
+              "formations": [
+                {
+                  "id": "tower-1",
+                  "kind": "tower",
+                  "center": [
+                    0,
+                    8000
+                  ],
+                  "base": 1200,
+                  "size": [
+                    2200,
+                    3800,
+                    1900
+                  ],
+                  "yaw": 0,
+                  "density": 1,
+                  "erosion": 0.3,
+                  "seed": 17
+                },
+                {
+                  "id": "wisp-1",
+                  "kind": "wisp",
+                  "center": [
+                    0,
+                    8000
+                  ],
+                  "base": 3000,
+                  "size": [
+                    2600,
+                    900,
+                    1000
+                  ],
+                  "yaw": 0,
+                  "density": 0.6,
+                  "erosion": 0.8,
+                  "seed": 17
+                }
+              ]
+            },
+            "wind": [
+              2,
+              0,
+              0.7
+            ],
+            "ambient": 0.45,
+            "sunIntensity": 2.5,
+            "wetness": 0.6,
+            "grade": {
+              "exposureCompensation": 0.5,
+              "tint": [
+                1,
+                0.85,
+                0.7
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "cloudscape": {
+      "development": 0.6,
+      "storminess": 0,
+      "highCloudCover": 0.2,
+      "highCloudYaw": 0.8,
+      "formations": [
+        {
+          "id": "tower-1",
+          "kind": "tower",
+          "center": [
+            0,
+            8000
+          ],
+          "base": 1200,
+          "size": [
+            2200,
+            3800,
+            1900
+          ],
+          "yaw": 0,
+          "density": 1,
+          "erosion": 0.3,
+          "seed": 17
+        },
+        {
+          "id": "wisp-1",
+          "kind": "wisp",
+          "center": [
+            0,
+            8000
+          ],
+          "base": 3000,
+          "size": [
+            2600,
+            900,
+            1000
+          ],
+          "yaw": 0,
+          "density": 0.6,
+          "erosion": 0.8,
+          "seed": 17
+        }
+      ]
+    },
+    "model": "analytic-sky",
+    "sunElevation": 0.2,
+    "sunAzimuth": -0.65,
+    "turbidity": 2,
+    "fogDensity": 0.00045,
+    "cloudCover": 0.48,
+    "skyColor": [
+      0.2,
+      0.36,
+      0.52
+    ],
+    "horizonColor": [
+      0.82,
+      0.65,
+      0.44
+    ],
+    "groundColor": [
+      0.58,
+      0.67,
+      0.7
+    ],
+    "wind": [
+      0.5,
+      0,
+      0.2
+    ]
+  },
+  "errors": [],
+  "checks": [
+    "add three kinds",
+    "upper direction",
+    "remove",
+    "undo",
+    "redo",
+    "keyframe isolation"
+  ]
+}

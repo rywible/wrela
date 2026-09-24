@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { compileCharacter } from "@wrela/compiler";
-import { type CharacterDefinition, referenceProject, type Vec3 } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
+import type { CharacterDefinition, Vec3 } from "@wrela/model";
 import { quatFromEuler, rotateVector } from "./animation";
 import { colliderDiagnosticSegments, runtimeDiagnostics } from "./diagnostics";
 import { type DiagnosticCollider, PhysicsAdapter } from "./physics";

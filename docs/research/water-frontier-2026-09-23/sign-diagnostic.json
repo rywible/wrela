@@ -1,0 +1,21 @@
+{
+  "note": "GPU-only sign diagnostic. CPU evaluator remains baseline; not a production implementation or CPU/GPU conformance result.",
+  "edits": [
+    "lateral-=shape.zw*shape.x*cos(angle)*keep*waterBody[2].y;",
+    "jacobian+=shape.x*sin(angle)*keep*waterBody[2].y*",
+    "jac+=h*body[2].y*",
+    "lateral-=shape.zw*shape.x*cos(angle)*keep*waterBody[2].y;",
+    "jacobian+=shape.x*sin(angle)*keep*waterBody[2].y*",
+    "lateral-=shape.zw*shape.x*cos(angle)*keep*waterBody[2].y;",
+    "jacobian+=shape.x*sin(angle)*keep*waterBody[2].y*",
+    "lateral-=shape.zw*shape.x*cos(angle)*keep*waterBody[2].y;",
+    "jacobian+=shape.x*sin(angle)*keep*waterBody[2].y*",
+    "lateral-=shape.zw*shape.x*cos(angle)*keep*waterBody[2].y;",
+    "jacobian+=shape.x*sin(angle)*keep*waterBody[2].y*",
+    "lateral-=shape.zw*shape.x*cos(angle)*keep*waterBody[2].y;",
+    "jacobian+=shape.x*sin(angle)*keep*waterBody[2].y*",
+    "lateral-=shape.zw*shape.x*cos(angle)*keep*waterBody[2].y;",
+    "jacobian+=shape.x*sin(angle)*keep*waterBody[2].y*"
+  ],
+  "errors": []
+}

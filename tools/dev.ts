@@ -1,9 +1,16 @@
 import { cookProject } from "@wrela/compiler";
-import { referenceProject } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
 import player from "../apps/player/index.html";
 import studio from "../apps/studio/index.html";
 import { WorkspaceBridge } from "./bridge";
 import { compilerSourceFingerprint } from "./cook";
+
+const optionalGameEntry = "../games/caretaker/index.html";
+const optionalGameRoutes: Record<string, Bun.HTMLBundle> = (await Bun.file(
+  new URL(optionalGameEntry, import.meta.url),
+).exists())
+  ? { "/caretaker": (await import(optionalGameEntry)).default }
+  : {};
 
 const port = Number(process.env.PORT ?? 4173),
   token = crypto.randomUUID();
@@ -32,7 +39,7 @@ const server = Bun.serve({
   port,
   maxRequestBodySize: 8 * 1024 * 1024,
   development: { hmr: true, console: true },
-  routes: { "/": studio, "/player": player },
+  routes: { "/": studio, "/player": player, ...optionalGameRoutes },
   async fetch(req) {
     const url = new URL(req.url);
     if (url.pathname.startsWith("/bridge/")) {

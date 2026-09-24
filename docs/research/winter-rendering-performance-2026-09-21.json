@@ -1,0 +1,277 @@
+{
+  "measuredSource": {
+    "startedAt": "2026-09-21T23:06:50.055Z",
+    "finishedAt": "2026-09-21T23:07:17.202Z",
+    "sourceFingerprint": "aec58212ce9eb6e6d3ffb0aea469e34da4602997cb59972db2a994c10821e92d",
+    "finalSourceFingerprint": "aec58212ce9eb6e6d3ffb0aea469e34da4602997cb59972db2a994c10821e92d",
+    "sourceStable": true
+  },
+  "viewport": [1920, 1080],
+  "adapter": "Apple M4 / apple \u00b7 metal-3",
+  "runs": [
+    {
+      "source": "earlier-audit",
+      "variant": "baseline",
+      "gpuMs": {
+        "samples": 229,
+        "p50": 40.370176,
+        "p95": 45.940736,
+        "p99": 48.49664,
+        "maximum": 49.610752
+      },
+      "cpuMs": {
+        "samples": 363,
+        "p50": 4.5,
+        "p95": 7.799999952316284,
+        "p99": 8.700000047683716,
+        "maximum": 10.199999928474426
+      },
+      "trials": [
+        {
+          "gpuMs": {
+            "samples": 76,
+            "p50": 39.97696,
+            "p95": 46.071808,
+            "p99": 49.414144,
+            "maximum": 49.414144
+          }
+        },
+        {
+          "gpuMs": {
+            "samples": 77,
+            "p50": 40.501248,
+            "p95": 45.940736,
+            "p99": 49.610752,
+            "maximum": 49.610752
+          }
+        },
+        {
+          "gpuMs": {
+            "samples": 76,
+            "p50": 40.501248,
+            "p95": 46.137344,
+            "p99": 47.054848,
+            "maximum": 47.054848
+          }
+        }
+      ],
+      "lastFrame": {
+        "cpuMs": 4.099999904632568,
+        "gpuMs": 36.175872,
+        "triangles": 198068,
+        "drawCalls": 115,
+        "gpuBytes": 211027844,
+        "frame": 244,
+        "adapter": "apple \u00b7 metal-3",
+        "qualityProfile": "balanced",
+        "uploadedBytes": 121756,
+        "visibleSurfaces": 486,
+        "culledSurfaces": 22,
+        "detailSurfaces": 5,
+        "ownedTextureBytes": 191225856,
+        "bufferBytes": 19801988,
+        "outputResolution": [1920, 1080],
+        "renderResolution": [1920, 1080]
+      }
+    },
+    {
+      "source": "earlier-audit",
+      "variant": "1x",
+      "gpuMs": {
+        "samples": 363,
+        "p50": 10.15808,
+        "p95": 14.09024,
+        "p99": 14.811136,
+        "maximum": 17.629184
+      },
+      "cpuMs": {
+        "samples": 363,
+        "p50": 3.899999976158142,
+        "p95": 5.200000047683716,
+        "p99": 5.399999976158142,
+        "maximum": 5.600000023841858
+      },
+      "trials": [
+        {
+          "gpuMs": {
+            "samples": 121,
+            "p50": 10.289152,
+            "p95": 14.024704,
+            "p99": 15.007744,
+            "maximum": 17.629184
+          }
+        },
+        {
+          "gpuMs": {
+            "samples": 121,
+            "p50": 10.092544,
+            "p95": 13.565952,
+            "p99": 14.221312,
+            "maximum": 14.41792
+          }
+        },
+        {
+          "gpuMs": {
+            "samples": 121,
+            "p50": 10.027008,
+            "p95": 14.352384,
+            "p99": 14.7456,
+            "maximum": 14.811136
+          }
+        }
+      ],
+      "lastFrame": {
+        "cpuMs": 4.100000023841858,
+        "gpuMs": 8.716288,
+        "triangles": 198068,
+        "drawCalls": 115,
+        "gpuBytes": 94906244,
+        "frame": 244,
+        "adapter": "apple \u00b7 metal-3",
+        "qualityProfile": "balanced",
+        "uploadedBytes": 121756,
+        "visibleSurfaces": 486,
+        "culledSurfaces": 22,
+        "detailSurfaces": 5,
+        "ownedTextureBytes": 75104256,
+        "bufferBytes": 19801988,
+        "outputResolution": [1920, 1080],
+        "renderResolution": [1920, 1080]
+      }
+    },
+    {
+      "source": "implemented",
+      "variant": "temporal",
+      "gpuMs": {
+        "samples": 363,
+        "p50": 12.320768,
+        "p95": 14.7456,
+        "p99": 15.40096,
+        "maximum": 16.252928
+      },
+      "cpuMs": {
+        "samples": 363,
+        "p50": 4.200000047683716,
+        "p95": 5.299999952316284,
+        "p99": 5.799999952316284,
+        "maximum": 6.299999952316284
+      },
+      "trials": [
+        {
+          "gpuMs": {
+            "samples": 121,
+            "p50": 13.565952,
+            "p95": 14.680064,
+            "p99": 15.925248,
+            "maximum": 16.252928
+          }
+        },
+        {
+          "gpuMs": {
+            "samples": 121,
+            "p50": 11.79648,
+            "p95": 14.811136,
+            "p99": 15.269888,
+            "maximum": 15.597568
+          }
+        },
+        {
+          "gpuMs": {
+            "samples": 121,
+            "p50": 11.4688,
+            "p95": 14.614528,
+            "p99": 15.204352,
+            "maximum": 15.335424
+          }
+        }
+      ],
+      "lastFrame": {
+        "cpuMs": 4.299999952316284,
+        "gpuMs": 14.614528,
+        "triangles": 198068,
+        "drawCalls": 115,
+        "gpuBytes": 175424124,
+        "frame": 244,
+        "adapter": "apple \u00b7 metal-3",
+        "qualityProfile": "balanced",
+        "uploadedBytes": 18240,
+        "visibleSurfaces": 486,
+        "culledSurfaces": 22,
+        "detailSurfaces": 5,
+        "ownedTextureBytes": 166342656,
+        "bufferBytes": 9081468,
+        "outputResolution": [1920, 1080],
+        "renderResolution": [1920, 1080]
+      }
+    },
+    {
+      "source": "implemented",
+      "variant": "spatial",
+      "gpuMs": {
+        "samples": 363,
+        "p50": 11.403264,
+        "p95": 14.614528,
+        "p99": 14.876672,
+        "maximum": 15.269888
+      },
+      "cpuMs": {
+        "samples": 363,
+        "p50": 4,
+        "p95": 5.399999976158142,
+        "p99": 5.700000047683716,
+        "maximum": 5.800000071525574
+      },
+      "trials": [
+        {
+          "gpuMs": {
+            "samples": 121,
+            "p50": 13.238272,
+            "p95": 14.483456,
+            "p99": 14.811136,
+            "maximum": 14.876672
+          }
+        },
+        {
+          "gpuMs": {
+            "samples": 121,
+            "p50": 11.075584,
+            "p95": 14.286848,
+            "p99": 14.811136,
+            "maximum": 15.204352
+          }
+        },
+        {
+          "gpuMs": {
+            "samples": 121,
+            "p50": 10.551296,
+            "p95": 14.680064,
+            "p99": 14.942208,
+            "maximum": 15.269888
+          }
+        }
+      ],
+      "lastFrame": {
+        "cpuMs": 3.799999952316284,
+        "gpuMs": 11.79648,
+        "triangles": 198068,
+        "drawCalls": 115,
+        "gpuBytes": 109068908,
+        "frame": 244,
+        "adapter": "apple \u00b7 metal-3",
+        "qualityProfile": "balanced",
+        "uploadedBytes": 18224,
+        "visibleSurfaces": 486,
+        "culledSurfaces": 22,
+        "detailSurfaces": 5,
+        "ownedTextureBytes": 99987456,
+        "bufferBytes": 9081452,
+        "outputResolution": [1920, 1080],
+        "renderResolution": [1920, 1080]
+      }
+    }
+  ],
+  "rawEvidence": {
+    "before": "output/winter-perf-audit/snapshot/output/browser-1790029427999-90597/audit.json",
+    "after": "output/rendering-performance-final/source/output/browser-1790032010036-393/performance.json"
+  }
+}

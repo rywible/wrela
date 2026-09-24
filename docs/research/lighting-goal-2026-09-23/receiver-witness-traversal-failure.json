@@ -1,0 +1,304 @@
+{
+  "reports": [
+    {
+      "phase": "travel-cold",
+      "kind": "route",
+      "traversal": {
+        "residentGeometryOnly": true,
+        "path": "exterior-room-cave",
+        "peakRetainedBytes": 28543451,
+        "retainedRegions": 1,
+        "distance": 25.150000000000002,
+        "durationMs": 6292.399999976158,
+        "frames": 376,
+        "intervalMs": {
+          "median": 16.600000023841858,
+          "p95": 18.200000047683716,
+          "max": 45.39999997615814
+        },
+        "applyMs": {
+          "median": 0.20000004768371582,
+          "p95": 0.3999999761581421,
+          "max": 1.8000000715255737
+        },
+        "foregroundBuilds": 2,
+        "prefetchBuilds": 0,
+        "prefetchHits": 0,
+        "prefetchWaitMs": 0,
+        "changes": [
+          {
+            "distance": 19.03839999961853,
+            "elapsedMs": 4761.399999976158
+          }
+        ],
+        "incompleteFrames": 0,
+        "staleRegionFrames": 212,
+        "staleRegionMs": 3534.0000001192093,
+        "regionStillPreparing": true,
+        "pendingReceiverAdmissions": 0
+      },
+      "readyMs": 10636.799999952316,
+      "builds": 3,
+      "storageHits": 0,
+      "storageWrites": 2,
+      "storageLoadMs": 0.7000000476837158,
+      "storageWriteMs": 98.70000004768372,
+      "retainedBytes": 28543451,
+      "radiance": {
+        "samples": 192,
+        "reusedSamples": 32,
+        "reusedGeometry": true,
+        "reusedEmissionReceivers": 90096,
+        "triangles": 81968,
+        "rays": 892122,
+        "vertices": 61134,
+        "unmappedVertices": 12376,
+        "bytes": 28543451,
+        "buildMs": 3242.2999999523163,
+        "excluded": [
+          {
+            "id": "cave-door",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-trunk-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-shoot-0-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-shoot-1-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-shoot-2-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-shoot-3-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-shoot-4-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-shoot-5-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-shoot-6-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-shoot-7-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-trunk-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-shoot-0-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-shoot-1-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-shoot-2-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-shoot-3-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-shoot-4-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-shoot-5-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-shoot-6-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-shoot-7-foliage-0",
+            "reason": "dynamic geometry excluded"
+          }
+        ],
+        "surfaceSamples": 2041,
+        "surfaceReceivers": 5108,
+        "surfaceRays": 767249,
+        "reusedSurfaceSamples": 749,
+        "activeMs": 2877.0000001192093,
+        "maxSliceMs": 4.700000047683716,
+        "restoredFromStorage": false,
+        "deferredReceivers": 0
+      },
+      "transferHash": "ce27f415271af23c7c19a4a023c8f3c8ad0a09ac380381276aafcb11c92c2502",
+      "imageHash": "e9f56d953e56f92938cf00f3d2452d398f48216dc5956f7c4d6f9f3f69882157",
+      "buildMs": 10403,
+      "activeMs": 8236.400000572205,
+      "maxSliceMs": 4.799999952316284,
+      "errors": []
+    },
+    {
+      "phase": "travel-restored",
+      "kind": "route",
+      "traversal": {
+        "residentGeometryOnly": true,
+        "path": "exterior-room-cave",
+        "peakRetainedBytes": 28543451,
+        "retainedRegions": 1,
+        "distance": 25.150000000000002,
+        "durationMs": 6300,
+        "frames": 377,
+        "intervalMs": {
+          "median": 16.699999928474426,
+          "p95": 18.600000023841858,
+          "max": 32.10000002384186
+        },
+        "applyMs": {
+          "median": 0.2999999523162842,
+          "p95": 0.5,
+          "max": 1.600000023841858
+        },
+        "foregroundBuilds": 1,
+        "prefetchBuilds": 0,
+        "prefetchHits": 0,
+        "prefetchWaitMs": 0,
+        "changes": [
+          {
+            "distance": 7.1312000002861,
+            "elapsedMs": 1784.5
+          }
+        ],
+        "incompleteFrames": 0,
+        "staleRegionFrames": 34,
+        "staleRegionMs": 567.3999999761581,
+        "regionStillPreparing": true,
+        "pendingReceiverAdmissions": 0
+      },
+      "readyMs": 310,
+      "builds": 1,
+      "storageHits": 2,
+      "storageWrites": 0,
+      "storageLoadMs": 0.6000000238418579,
+      "storageWriteMs": 0,
+      "retainedBytes": 28543451,
+      "radiance": {
+        "samples": 192,
+        "reusedSamples": 32,
+        "reusedGeometry": true,
+        "reusedEmissionReceivers": 90096,
+        "triangles": 81968,
+        "rays": 892122,
+        "vertices": 61134,
+        "unmappedVertices": 12376,
+        "bytes": 28543451,
+        "buildMs": 3242.2999999523163,
+        "excluded": [
+          {
+            "id": "cave-door",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-trunk-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-shoot-0-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-shoot-1-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-shoot-2-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-shoot-3-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-shoot-4-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-shoot-5-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-shoot-6-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-0-shaped-pine-shoot-7-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-trunk-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-shoot-0-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-shoot-1-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-shoot-2-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-shoot-3-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-shoot-4-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-shoot-5-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-shoot-6-foliage-0",
+            "reason": "dynamic geometry excluded"
+          },
+          {
+            "id": "pine-1-shaped-pine-shoot-7-foliage-0",
+            "reason": "dynamic geometry excluded"
+          }
+        ],
+        "surfaceSamples": 2041,
+        "surfaceReceivers": 5108,
+        "surfaceRays": 767249,
+        "reusedSurfaceSamples": 749,
+        "activeMs": 184.49999976158142,
+        "maxSliceMs": 2.399999976158142,
+        "restoredFromStorage": true,
+        "restoreMs": 261.7000000476837,
+        "deferredReceivers": 0
+      },
+      "transferHash": "ce27f415271af23c7c19a4a023c8f3c8ad0a09ac380381276aafcb11c92c2502",
+      "imageHash": "e9f56d953e56f92938cf00f3d2452d398f48216dc5956f7c4d6f9f3f69882157",
+      "buildMs": 10403,
+      "activeMs": 172.90000021457672,
+      "maxSliceMs": 3.600000023841858,
+      "errors": []
+    }
+  ],
+  "errors": []
+}

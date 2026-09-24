@@ -1,4 +1,16 @@
-import type { Document, MeshData, Quality, SurfaceArtifact, TerrainDefinition } from "@wrela/model";
+import type {
+  BotanicalGrowthState,
+  CompiledVegetation,
+  Document,
+  GrowthEvent,
+  MeshData,
+  PersistentVegetationGrowth,
+  Quality,
+  SurfaceArtifact,
+  TerrainDefinition,
+  VegetationDefinition,
+} from "@wrela/model";
+
 import { compilerKey } from "./index";
 import type { TerrainStitch } from "./terrain";
 
@@ -71,7 +83,7 @@ export class BrowserCompiler {
       slot.task = null;
       clearTimeout(task.timer);
       if (data.error) task.reject(new Error(String(data.error)));
-      else task.resolve(data.mesh ?? data.artifact);
+      else task.resolve(data.result ?? data.mesh ?? data.artifact);
       this.pump();
     };
     worker.onerror = (event) => {
@@ -159,6 +171,27 @@ export class BrowserCompiler {
       })
       .catch(() => {});
     return result;
+  };
+  growVegetation = (
+    document: VegetationDefinition,
+    instanceId: string,
+    steps: number,
+    previous: PersistentVegetationGrowth | undefined,
+    events: GrowthEvent[],
+    quality: Quality,
+  ): Promise<{
+    growth: PersistentVegetationGrowth;
+    document: VegetationDefinition;
+    artifact: CompiledVegetation;
+  }> => this.request({ growth: { document, instanceId, steps, previous, events }, quality });
+  inspectVegetation = (document: VegetationDefinition): Promise<BotanicalGrowthState> => {
+    this.queue = this.queue.filter((task) => {
+      if ((task.payload.inspectGrowth as VegetationDefinition | undefined)?.id !== document.id) return true;
+      clearTimeout(task.timer);
+      task.reject(new Error("Growth inspection superseded"));
+      return false;
+    });
+    return this.request({ inspectGrowth: document });
   };
   generateTerrain = (
     terrain: TerrainDefinition,

@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "id": "lantern-wrela-0",
+  "suiteKey": "a28c80684cccc0bc",
+  "task": "lantern",
+  "engine": "wrela",
+  "repetition": 0,
+  "agent": "fresh-hero-loop-lantern",
+  "model": "inherited-codex-model-version-unavailable",
+  "execution": "agent",
+  "dispatch": "agent-started",
+  "status": "completed",
+  "reason": "Automatic reviewed handoff; no artistic acceptance inferred. Token/intervention counts remain unknown unless supplied by an instrumented host.",
+  "startedAt": "2026-09-24T03:43:25.773Z",
+  "endedAt": "2026-09-24T03:47:43.369Z",
+  "elapsedMs": 257596,
+  "tokens": null,
+  "humanInterventions": null,
+  "engineEdits": [],
+  "constraintsPassed": true,
+  "deadlines": [
+    {
+      "seconds": 15,
+      "candidateImageAvailable": false,
+      "reviewedOutputAvailable": false,
+      "deliveryFinished": false,
+      "artisticAcceptance": null
+    },
+    {
+      "seconds": 30,
+      "candidateImageAvailable": false,
+      "reviewedOutputAvailable": false,
+      "deliveryFinished": false,
+      "artisticAcceptance": null
+    },
+    {
+      "seconds": 60,
+      "candidateImageAvailable": false,
+      "reviewedOutputAvailable": false,
+      "deliveryFinished": false,
+      "artisticAcceptance": null
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "final.json",
+      "sha256": "bc3b8805bf5ed432887ad5cc0369bafad54cd40be759463b0bcf18f89a8ad2f7",
+      "kind": "source"
+    },
+    {
+      "path": "handoff.json",
+      "sha256": "759a91167781bc535038368529407d12b815ef5a6301c0a0070067f1ba2223e6",
+      "kind": "handoff"
+    },
+    {
+      "path": "handoff-bundle.json",
+      "sha256": "aa268bcb499044ea1081c827ca00eede187e8f3025aab2d7e3729c0c4b49f6db",
+      "kind": "handoff"
+    },
+    {
+      "path": "authoring-trace.json",
+      "sha256": "17d9d9fd40715550a17185de244ea541eaff41254249143a7d4cad577cdbeeb7",
+      "kind": "transcript"
+    },
+    {
+      "path": "angle-final.png",
+      "sha256": "56fc2c8e0af3d2ab1b82ac0a9d6cae8775db8c9aa53e250e78f0c8f6dbcec4db",
+      "kind": "image"
+    },
+    {
+      "path": "clay-final.png",
+      "sha256": "9d0f0c236e2195f0fdda5c2fbbbccbd0add8f08ae6074a2d7130c6b1d8d1b3ab",
+      "kind": "image"
+    },
+    {
+      "path": "grazing-final.png",
+      "sha256": "456c0f2a7b184e7ad46004c3143f28a8c304ecbfe29fed6c9dd0686ca13b8a2d",
+      "kind": "image"
+    },
+    {
+      "path": "detail-final.png",
+      "sha256": "48a68bfe15cda77f36d630e9852d136a15d39c962970ea43faa803b5545cea25",
+      "kind": "image"
+    },
+    {
+      "path": "motion-final.png",
+      "sha256": "5a6764466090777347e3e4f84d2f5e3d7173a9d1c925a6bb46ffb0f2dd49be1a",
+      "kind": "image"
+    },
+    {
+      "path": "gameplay-final.png",
+      "sha256": "2daba1c508540e84299cec089d9d76b00183a8613713b50a6d63e6f7b2179475",
+      "kind": "image"
+    },
+    {
+      "path": "contact-sheet.png",
+      "sha256": "a5641ba4e5864cc100a810a7a7ac995b9979c374657b2c61f95ee1bebd5b1180",
+      "kind": "review"
+    },
+    {
+      "path": "independent-review.json",
+      "sha256": "3fdbeb4e2ee4cee9ca09ead4f6cdb211b673ccb409d2b66afe6204e7c44bda4d",
+      "kind": "review"
+    }
+  ],
+  "telemetry": {
+    "toolCalls": 3,
+    "failedCalls": 0,
+    "discoveryCalls": 0,
+    "discoveryMs": 0,
+    "firstCandidateImageMs": 137976,
+    "firstReviewDeliveredMs": 138800,
+    "toolMs": 2859.200166000024,
+    "observedToolWallMs": 2859,
+    "unattributedMs": 254737,
+    "modelMs": null,
+    "scope": "CLI spans only. Unattributed time includes model latency, image inspection, manual shell work, orchestration and idle time; it is not measured reasoning time."
+  },
+  "stages": [
+    {
+      "name": "warm-session-startup",
+      "durationMs": 857,
+      "origin": "runner"
+    },
+    {
+      "name": "review-packet-tool-runtime",
+      "durationMs": 860.5,
+      "origin": "agent-reported"
+    }
+  ]
+}

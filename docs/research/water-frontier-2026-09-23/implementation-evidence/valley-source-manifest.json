@@ -1,0 +1,3682 @@
+{
+  "schemaVersion": 1,
+  "scenario": "/Users/ryanwible/projects/wrela/output/water-frontier-v2/source/tools/water-lookdev.ts",
+  "startedAt": "2026-09-23T19:13:43.031Z",
+  "sourceFingerprint": "3872e18ed62e3fed86dc44596c310199b1836de3f4e14190c385b2feb4fbadcd",
+  "files": [
+    {
+      "path": ".bun-version",
+      "bytes": 6,
+      "sha256": "b99b4c7cdf236f59bc9f65d963deaecae3b16a7dad87939cacb9057f7664daee"
+    },
+    {
+      "path": ".github/workflows/verify.yml",
+      "bytes": 1303,
+      "sha256": "5e1191998cf1c30000fe62945585a92d8df089e9f8d3bbf9b18269f0d3849c32"
+    },
+    {
+      "path": "AGENTS.md",
+      "bytes": 4144,
+      "sha256": "aef3ef65f65c6a0b0c40bba35439cf5a17a14a66a321498e562778f5286de49f"
+    },
+    {
+      "path": "LICENSE",
+      "bytes": 1067,
+      "sha256": "c5c7a9dd2fd268eb26172bab89435caa7cf333d6d9eb22ed0a5ce6d700c77bff"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.txt",
+      "bytes": 13910,
+      "sha256": "f57b709bbe6b888c45fe3873e0bab72587b005978b31e5d191a42dcef26c5d93"
+    },
+    {
+      "path": "apps/player/index.html",
+      "bytes": 233,
+      "sha256": "0e38fe30e42639623f958bb8f875e8044fa735d54afc05cc32fd40a2f7a73b77"
+    },
+    {
+      "path": "apps/player/package.json",
+      "bytes": 91,
+      "sha256": "06be00e373121182a5e66a8ef83dbc34aa31c06cb8833308dbdf35c6be3f9fcd"
+    },
+    {
+      "path": "apps/player/src/creature-game.test.ts",
+      "bytes": 4232,
+      "sha256": "f5f08755cc8afd59afc86f2f3466769a406eba3443c904acb3dc8832b1df1809"
+    },
+    {
+      "path": "apps/player/src/creature-game.ts",
+      "bytes": 13871,
+      "sha256": "e612d1a5108d3e024a3305a2495b52f38ed7e9098a7d0222d61255e7b8025519"
+    },
+    {
+      "path": "apps/player/src/creature-marker.ts",
+      "bytes": 1632,
+      "sha256": "3647b3d2d3f2c43069cdb9e264797ae5c96b28267fe7281620cdae2d61af2bd4"
+    },
+    {
+      "path": "apps/player/src/creature-style.ts",
+      "bytes": 1286,
+      "sha256": "f7326095e8bd664940c875d4325c710068d35969e1faa44c330180706ae51038"
+    },
+    {
+      "path": "apps/player/src/main.ts",
+      "bytes": 30210,
+      "sha256": "c9de099bf873f181e2d86a6124d7b6849d353c398d49e120c83198cb54c64aba"
+    },
+    {
+      "path": "apps/player/src/winter-game.ts",
+      "bytes": 31084,
+      "sha256": "b8d26ac7ea2a566ac3a1d0d11f2523f5063b50ec8a004890650395fba83493af"
+    },
+    {
+      "path": "apps/player/src/winter-style.ts",
+      "bytes": 5383,
+      "sha256": "6a94cd0a3ce7ff2dd94b8a6c196f994e47b2838676e8096f37996cbd5397ca5b"
+    },
+    {
+      "path": "apps/studio/index.html",
+      "bytes": 344,
+      "sha256": "8d6b7122067fd2aa333d8b00436afa36d19e787a9a723e897e6966b1ab0cfb5a"
+    },
+    {
+      "path": "apps/studio/package.json",
+      "bytes": 91,
+      "sha256": "bacb2e752100775d984e64cfa542dbd98b1c544fb54fa53fb3da4da7ac3dd1ee"
+    },
+    {
+      "path": "apps/studio/src/assembly-authoring-panel.tsx",
+      "bytes": 23598,
+      "sha256": "acbab90a49f2ec632c7da7ebde4831328ebd5973fd5bb5fb932ea46117230f2f"
+    },
+    {
+      "path": "apps/studio/src/assembly-controls.tsx",
+      "bytes": 1217,
+      "sha256": "645b6fe17c24bbca8c04eb9f433a6212d56e15d4446d71e050bf8f3b99ac7f8d"
+    },
+    {
+      "path": "apps/studio/src/assembly-joint-panel.tsx",
+      "bytes": 5578,
+      "sha256": "dc8be28e6f2b972400b20ab6b9f256b7bcff72207130b2e20b735e7fe4c48233"
+    },
+    {
+      "path": "apps/studio/src/capture-consistency.test.ts",
+      "bytes": 1819,
+      "sha256": "81d72694a4eab6937dcfe1945d95f6b87db1c0d920a4f9c847d15930dde36714"
+    },
+    {
+      "path": "apps/studio/src/capture.test.ts",
+      "bytes": 751,
+      "sha256": "d6e855ad1e9c1e4575b031c2c77f5439e8582a419fc3de647f2af452c2b30c12"
+    },
+    {
+      "path": "apps/studio/src/capture.ts",
+      "bytes": 2750,
+      "sha256": "ec9de1f91ebbc19fbe73bf5a97dad2c9b41e374e390d8b47485a659e5c7a4499"
+    },
+    {
+      "path": "apps/studio/src/compiler-client.ts",
+      "bytes": 184,
+      "sha256": "2e8b1dc4821e04b9b18d43c30a987fa61d3a44f229e84bf9cdf3817d358484d8"
+    },
+    {
+      "path": "apps/studio/src/controller-persistence.test.ts",
+      "bytes": 8353,
+      "sha256": "32b10b4e3ebd5f8886d5be3e44418b873eb248289d9fb744d11c1861c85d65c0"
+    },
+    {
+      "path": "apps/studio/src/controller.ts",
+      "bytes": 71766,
+      "sha256": "1c0d992a3e6c5037777976804493a4a49a5ae957a3a358f49bd0dbc6ba731bd0"
+    },
+    {
+      "path": "apps/studio/src/creature-candidate-preview.test.ts",
+      "bytes": 7527,
+      "sha256": "422d7159868d9719c2331696e01028f0e5a481d4979cb7380a9f89c199efbe0b"
+    },
+    {
+      "path": "apps/studio/src/creature-candidate-preview.ts",
+      "bytes": 7483,
+      "sha256": "30712901b7db726e8800cd9beba08199dc0bdc2b6dd1bf2ce7b68052b0f2f3c7"
+    },
+    {
+      "path": "apps/studio/src/creature-coherence-panel.tsx",
+      "bytes": 20199,
+      "sha256": "203d26b5485f5630ce16e974b1a7f23b3c143a1e57e12f6f368ffd333c630ffd"
+    },
+    {
+      "path": "apps/studio/src/creature-encounter-marker.ts",
+      "bytes": 1632,
+      "sha256": "3647b3d2d3f2c43069cdb9e264797ae5c96b28267fe7281620cdae2d61af2bd4"
+    },
+    {
+      "path": "apps/studio/src/creature-encounter-panel.tsx",
+      "bytes": 4950,
+      "sha256": "8d5575041a029f77bd173b1682211ee3cb7d3cb7b78947b6438150faf4220fed"
+    },
+    {
+      "path": "apps/studio/src/creature-inspection.test.ts",
+      "bytes": 1859,
+      "sha256": "2550fc30f935606d7c897428c160b6e05afdd3fbf82bf90ceeb3d7b02b053b21"
+    },
+    {
+      "path": "apps/studio/src/creature-panel.tsx",
+      "bytes": 48009,
+      "sha256": "7bfc6da77b4e1d736ee8d184e776406b1aae0bec183e40173e821af3cda6c26c"
+    },
+    {
+      "path": "apps/studio/src/creature-review.test.ts",
+      "bytes": 1405,
+      "sha256": "fb78449a4e5004ff61a802a526bb177265d822d41b9f633bf0470bdb6608882b"
+    },
+    {
+      "path": "apps/studio/src/creature-review.ts",
+      "bytes": 1112,
+      "sha256": "7399b200e59eec9f163cd3d405f79b5583aaea4f91b7af9f633d4ce5e32aa21d"
+    },
+    {
+      "path": "apps/studio/src/creature-tools.test.ts",
+      "bytes": 3120,
+      "sha256": "abdaff892a7e8bbc12017e421951e89fb9b880258b963b519e13df2691824fa9"
+    },
+    {
+      "path": "apps/studio/src/creature-tools.ts",
+      "bytes": 3006,
+      "sha256": "03de2cafea5ecc415cd10152c86182fd37cb17eace3367422e1acb0519b463da"
+    },
+    {
+      "path": "apps/studio/src/domain-authoring-panels.tsx",
+      "bytes": 1634,
+      "sha256": "54f36a1f356da1efdbf2385dbc7bbf7044b311d654b8c835c4e76f316fcab0a7"
+    },
+    {
+      "path": "apps/studio/src/domain-authoring.ts",
+      "bytes": 932,
+      "sha256": "fddd45c8ce6c1d3638d5b0dabcb119657b880fc2b3cdec176fb32fe8fbf086c2"
+    },
+    {
+      "path": "apps/studio/src/domain-motion-preview.test.ts",
+      "bytes": 2326,
+      "sha256": "87b25ace269bcf22adfe807931a0cd59a82391308b3dc5f4547110bfe9da72d8"
+    },
+    {
+      "path": "apps/studio/src/domain-motion-preview.ts",
+      "bytes": 2635,
+      "sha256": "84cfdc9652730bf04c0d4ebddd0ea1cb6453aeb7dcdb70fcc4bd753389c1a8be"
+    },
+    {
+      "path": "apps/studio/src/environment-authoring-panel.tsx",
+      "bytes": 39508,
+      "sha256": "d24d077de60a75a29d72ec74d5ba6d2aa5768404fe0a7026c1ee6c6e06ef7315"
+    },
+    {
+      "path": "apps/studio/src/geology-authoring-panel.tsx",
+      "bytes": 10808,
+      "sha256": "8f6881c7d2fed23ebb5e68e370998c3320ebe70684a3411caa40bd5989b84e44"
+    },
+    {
+      "path": "apps/studio/src/geology-controls.tsx",
+      "bytes": 1236,
+      "sha256": "1e33e91c0ade1bf43d604a231a6a3cc90025fa9816e5af51bc4571eba67bd924"
+    },
+    {
+      "path": "apps/studio/src/geology-corridor-panel.tsx",
+      "bytes": 3420,
+      "sha256": "0aa14fedd05faf0fd2cca2299098bcd7ca1f8cb0d654f0bef1d849fb7d157f82"
+    },
+    {
+      "path": "apps/studio/src/geology-formations-panel.tsx",
+      "bytes": 7655,
+      "sha256": "d9391ecd8c8b726311f6e57f4dd27fd45ca2b26ac5f9894c33644c69b8c35c9a"
+    },
+    {
+      "path": "apps/studio/src/geology-profile-panel.tsx",
+      "bytes": 3830,
+      "sha256": "55cfbb97d720cd896cdb0fd1e1c95205f18dafa9a94659a02e213ca7e0f0162b"
+    },
+    {
+      "path": "apps/studio/src/geology-tools.test.ts",
+      "bytes": 6240,
+      "sha256": "4b967cd174f370d530b01c77f224dfcb6f9de93887095c25e03c8212c9a39307"
+    },
+    {
+      "path": "apps/studio/src/geology-tools.ts",
+      "bytes": 2916,
+      "sha256": "375729eff2ddaa81025db6101a3065c191b455667299838bc224dfe3dcb375a6"
+    },
+    {
+      "path": "apps/studio/src/indirect-lighting-preview.test.ts",
+      "bytes": 5214,
+      "sha256": "7c8805711da6099f894c367e2a4b09394109679759cf6f0f127e93cb33e8dd8d"
+    },
+    {
+      "path": "apps/studio/src/main.tsx",
+      "bytes": 99710,
+      "sha256": "eacee67e11e07f5770177c58828e46ff7734f6ef785e615e4f7b7416f4d6c113"
+    },
+    {
+      "path": "apps/studio/src/material-authoring-panel.tsx",
+      "bytes": 9423,
+      "sha256": "d8640dc0af3b9b9b979ba02c9375c9508864002c60fe79fc6960b76be7424728"
+    },
+    {
+      "path": "apps/studio/src/material-controls.test.ts",
+      "bytes": 559,
+      "sha256": "eb1653e931db4b1ea44dc17eded6d8a4ec83177e6aa5bd3fea56816ce05e110c"
+    },
+    {
+      "path": "apps/studio/src/material-controls.tsx",
+      "bytes": 1373,
+      "sha256": "8e972755fc27bf01eb9116cb4e322bb6c5e7b2e36bbf9fcf863112e7fc4f7cf7"
+    },
+    {
+      "path": "apps/studio/src/material-mask-panel.tsx",
+      "bytes": 3409,
+      "sha256": "a3c9ae46f809e27fe364c9db5aa208d9f1c840618976887b31cfe573fe13d6ca"
+    },
+    {
+      "path": "apps/studio/src/material-relief-panel.tsx",
+      "bytes": 4735,
+      "sha256": "54d9e94da76b7e74491d64278d211c9d727ad1f7ecd3238e6b330004a7cf57df"
+    },
+    {
+      "path": "apps/studio/src/material-response-panel.tsx",
+      "bytes": 3018,
+      "sha256": "a5bd19701a2851c6bba27ef78c965e37f09f124e2bb1a9544f7125805016b347"
+    },
+    {
+      "path": "apps/studio/src/performance-authoring-panel.tsx",
+      "bytes": 16614,
+      "sha256": "ca922c284c491d01399fbba2a49e32407a468455a256042cf0b7ecfd98166e45"
+    },
+    {
+      "path": "apps/studio/src/performance-clip-panel.tsx",
+      "bytes": 4001,
+      "sha256": "4ff9da9e8f65260dd396234f3ee44fd05698b1d75863003b8a5a3a208501e3da"
+    },
+    {
+      "path": "apps/studio/src/performance-contact-panel.tsx",
+      "bytes": 7360,
+      "sha256": "ecee79d9cf510ea8890991ea420ffb825fc8f821b22636d933334c833c098921"
+    },
+    {
+      "path": "apps/studio/src/performance-event-panel.tsx",
+      "bytes": 5906,
+      "sha256": "23b6842009e657ae972a4bb286de6211307bfdef6899973643a2bb04f6eac3b2"
+    },
+    {
+      "path": "apps/studio/src/performance-physical-review.tsx",
+      "bytes": 2561,
+      "sha256": "17e7aba855209b0466cf68c122b639d88959f194c1b3b147ddc6dfe2baf86eba"
+    },
+    {
+      "path": "apps/studio/src/performance-track-panels.tsx",
+      "bytes": 6388,
+      "sha256": "d6412a29005db315735f95c28a0342a0cc7e2531210e8f53b1e90f1bc4f45cd5"
+    },
+    {
+      "path": "apps/studio/src/player-export.test.ts",
+      "bytes": 1379,
+      "sha256": "7464117ef58f5c627644aa6a8927095be1129d095c8ac1b07a85d80eab308a2e"
+    },
+    {
+      "path": "apps/studio/src/player-export.ts",
+      "bytes": 1025,
+      "sha256": "963266034fbea38bbcafd0ffb1e2accb510c3bceac0b0b630fc3ad6aab81be00"
+    },
+    {
+      "path": "apps/studio/src/preview-readiness.ts",
+      "bytes": 415,
+      "sha256": "83fdeca03a3477bd6fc2bb72ef02bbb7b2554218651a49beff0dc74f68a8d7a7"
+    },
+    {
+      "path": "apps/studio/src/recovery-drafts.tsx",
+      "bytes": 982,
+      "sha256": "8eeedc3bf4a48acfcf06c981a50c6ba82090cb19eec908e917266493d8d6b7cd"
+    },
+    {
+      "path": "apps/studio/src/style.css",
+      "bytes": 29403,
+      "sha256": "91bcf6ca267d012d17b7096392d1dd1b99d7dc0ae9250b95dbeada48d768d632"
+    },
+    {
+      "path": "apps/studio/src/vegetation-authoring-panel.tsx",
+      "bytes": 18423,
+      "sha256": "7bce05fe5343ab99c9f36b999d0c05fff7dafe33cd5af1954553dfff54b83fd1"
+    },
+    {
+      "path": "apps/studio/src/vegetation-growth-panel.tsx",
+      "bytes": 7404,
+      "sha256": "f97b77648b43426b9d2aa4547e5485e997442d397b70c86ae73267ed895d7d71"
+    },
+    {
+      "path": "apps/studio/src/vegetation-review-paint.ts",
+      "bytes": 2300,
+      "sha256": "cd20a96e4bb3b84579bfda8b41278cd2358ee06ac99674ed08e4421f0777c574"
+    },
+    {
+      "path": "apps/studio/src/vegetation-review.test.ts",
+      "bytes": 2944,
+      "sha256": "990be8141c8d87a9fd205fa0497c4b228d977881f3db4aa6bca6b454e46973fc"
+    },
+    {
+      "path": "apps/studio/src/vegetation-review.ts",
+      "bytes": 5153,
+      "sha256": "1ecec88bbe26e20f779ee12abd6ce4cffd22f69e3d5612e597868d8f8b400ca2"
+    },
+    {
+      "path": "apps/studio/src/world-authoring-panel.tsx",
+      "bytes": 12045,
+      "sha256": "0df8d438b9e33572d59fcf076e6f6a1c12730aacbfe69a1e52046a006cad2dde"
+    },
+    {
+      "path": "apps/studio/src/world-spatial-panel.tsx",
+      "bytes": 15327,
+      "sha256": "789a3709d34c9b7430fbb55f2ee83b7a4ce40145fd1325c7c4c8292e9678d103"
+    },
+    {
+      "path": "biome.json",
+      "bytes": 927,
+      "sha256": "59e433f8b8ebc492aef5cfe127941db01bb365d92ad2f121d848915c8d6b1be5"
+    },
+    {
+      "path": "bun.lock",
+      "bytes": 6476,
+      "sha256": "fc25ea8fea6ae11fe2ed1e3bc75cd9b5b58490ace42df48bc86e11c2be4b0836"
+    },
+    {
+      "path": "package.json",
+      "bytes": 2120,
+      "sha256": "ddd778b7b4a0894ded7e0feb81c6061815182e6ddbf80753f322e3e2af1f2ffb"
+    },
+    {
+      "path": "packages/authoring/package.json",
+      "bytes": 106,
+      "sha256": "c7df003311a5c3d12d9b07170f0c61b07522ae195c5f977fc985200b75a187b4"
+    },
+    {
+      "path": "packages/authoring/src/assembly.test.ts",
+      "bytes": 4762,
+      "sha256": "d739a23137e5a5faf17fa6c285d56ce63310d4433a85e656a9822536e3a8d9ef"
+    },
+    {
+      "path": "packages/authoring/src/assembly.ts",
+      "bytes": 5768,
+      "sha256": "bb6903886be03e90ec7fb1643bba9b5f08560416a425ffce50421a5280d98508"
+    },
+    {
+      "path": "packages/authoring/src/cloud-authoring.test.ts",
+      "bytes": 3231,
+      "sha256": "31fe0d716b73ef90a7c60485c930b011200724346c4b64dd1434bb256af518ef"
+    },
+    {
+      "path": "packages/authoring/src/commands.ts",
+      "bytes": 4780,
+      "sha256": "436892dc7ab762dad6747f0d6923fa33519c1bf466d4453483f3b693ae254438"
+    },
+    {
+      "path": "packages/authoring/src/creation.test.ts",
+      "bytes": 4523,
+      "sha256": "86c5df776878969f003ed4827de2625e2a0acc0b456e3f60e0e288ee30b9c1a1"
+    },
+    {
+      "path": "packages/authoring/src/creation.ts",
+      "bytes": 4340,
+      "sha256": "828951a367b923d025ba2edf28f9610c67f4f746e3f382eaaecbd5a867925816"
+    },
+    {
+      "path": "packages/authoring/src/creature-candidates.ts",
+      "bytes": 1350,
+      "sha256": "7c919b4ff9fe48612a10b9a6548dafaa06df9bee7d0acacb27313d6239c4fcb9"
+    },
+    {
+      "path": "packages/authoring/src/creature-coherence.test.ts",
+      "bytes": 15209,
+      "sha256": "292e9bc7fbfa3d4a217f1f52711055d26e5acfdbea7eeb4fc0d90b9aa3079f3f"
+    },
+    {
+      "path": "packages/authoring/src/creature-coherence.ts",
+      "bytes": 11862,
+      "sha256": "9a04da644e2089ba3408a636c97d4d8a4f51aabbd75e64113b8f25dc73e056bd"
+    },
+    {
+      "path": "packages/authoring/src/creature-commands.ts",
+      "bytes": 6654,
+      "sha256": "2e3b3d1ad579c4a3a6f5d6018190d832c94a679ea4cb309539fb552244afe6cc"
+    },
+    {
+      "path": "packages/authoring/src/creature-jobs.test.ts",
+      "bytes": 8690,
+      "sha256": "b8e5e22b81a9c083217dc30cdec1ca5570b2a818352830174f9e46a33f07dc58"
+    },
+    {
+      "path": "packages/authoring/src/creature-jobs.ts",
+      "bytes": 11179,
+      "sha256": "c77656c63c34f03848b5e385c3f58992a0beb2761af441467ffb077570115829"
+    },
+    {
+      "path": "packages/authoring/src/creature-landmark-bindings.ts",
+      "bytes": 1866,
+      "sha256": "4db9bd40e0ee6295e7f2851b7ad9c09801c247c81ac4e69b300f3357c4439e3a"
+    },
+    {
+      "path": "packages/authoring/src/creature-mantle.ts",
+      "bytes": 7064,
+      "sha256": "0c0c7f5655b18f238ef3b4cbdb77b21bd19bdd2816c57bd415f5d2036659953a"
+    },
+    {
+      "path": "packages/authoring/src/creature-notebook.test.ts",
+      "bytes": 2070,
+      "sha256": "d8e19b0c2e4bde27b1451f656e5ca56d99f6abcfe746918d9db8d32356c65ec2"
+    },
+    {
+      "path": "packages/authoring/src/creature-notebook.ts",
+      "bytes": 3522,
+      "sha256": "283848cec3acaf0075053f42f12a8320f1c2ebed95ae0c178d279e9cd5dc046d"
+    },
+    {
+      "path": "packages/authoring/src/creature-physical-coherence.ts",
+      "bytes": 2688,
+      "sha256": "135115a791ff8181b7a0d989904d2ce27dd74e509f27b58cef8469614704fe4e"
+    },
+    {
+      "path": "packages/authoring/src/creature-proportion.test.ts",
+      "bytes": 5444,
+      "sha256": "c0fc54e9784b13e6b72b24ae01ab01d2429b847a9605696bd4a35cb8aac5b850"
+    },
+    {
+      "path": "packages/authoring/src/creature-provenance.test.ts",
+      "bytes": 8420,
+      "sha256": "83d0f0c86d1ec75220a91f77dae6467db840200845b6b3fafc35d740ae52f376"
+    },
+    {
+      "path": "packages/authoring/src/creature-provenance.ts",
+      "bytes": 23878,
+      "sha256": "813d906f6a8c3c2329ddd0bf2d53a6671ac9546f8b24b1a0599f871f346c39f6"
+    },
+    {
+      "path": "packages/authoring/src/creature-repair.test.ts",
+      "bytes": 2540,
+      "sha256": "33e26899a45b6a42396f66e9bbee9b39c6a8dfc119f454616b1e6088bfc04563"
+    },
+    {
+      "path": "packages/authoring/src/creature-repair.ts",
+      "bytes": 8272,
+      "sha256": "5c728ed9979fef8ee7e2db6582171b533bb42b9119298058fb1e5bc36ded1776"
+    },
+    {
+      "path": "packages/authoring/src/creature-retarget.test.ts",
+      "bytes": 7408,
+      "sha256": "06a876de831efc70ee7fadccf7c969edee30b123e0ee67be73cb6953b05b65e2"
+    },
+    {
+      "path": "packages/authoring/src/creature-retarget.ts",
+      "bytes": 10413,
+      "sha256": "b6ea36ff0e79ac5b2c6680396e56a6f4aebed7fa5603ce0ebc59a7be763769d7"
+    },
+    {
+      "path": "packages/authoring/src/creature-solver.ts",
+      "bytes": 11603,
+      "sha256": "1108f262fbfbf6bc4ab9084a41bfcdbf98b800a9738e7479e4b5603f508249b9"
+    },
+    {
+      "path": "packages/authoring/src/creature.test.ts",
+      "bytes": 19907,
+      "sha256": "255b3e28f359102b5603e4d68e76a607b6c56d7774f64f58b494affd839c804e"
+    },
+    {
+      "path": "packages/authoring/src/creature.ts",
+      "bytes": 28987,
+      "sha256": "1bb39c3add336ac52a64c69a6f32d9aa88b6f1d3251c3e7bd47eab37785d411c"
+    },
+    {
+      "path": "packages/authoring/src/domain-constraints.ts",
+      "bytes": 2917,
+      "sha256": "0bbfb8c4831436a2bc4b27d2602d9e95cd05fca6d713547353422e9ae9e8ed29"
+    },
+    {
+      "path": "packages/authoring/src/domain-recipes.ts",
+      "bytes": 14196,
+      "sha256": "678b12441d36deb1d80efc9b781d766ef9d72dccb3865034b0d7d13d08f4fae6"
+    },
+    {
+      "path": "packages/authoring/src/domain-variants.test.ts",
+      "bytes": 12019,
+      "sha256": "8770b3abb7c9ecc9ac5d263e21db5c4db6383987e1f96b80e44e6aceebf6bcad"
+    },
+    {
+      "path": "packages/authoring/src/domain-variants.ts",
+      "bytes": 2189,
+      "sha256": "745c0162551a0cb3cb6b8ad91fd3cdcf87f18f87a5220811b03509bf19ab5518"
+    },
+    {
+      "path": "packages/authoring/src/index.ts",
+      "bytes": 736,
+      "sha256": "e93dc5907f1e5b4a49ff842e7b89eb4e27f8308e20fc11ceaa258bf8021ac215"
+    },
+    {
+      "path": "packages/authoring/src/performance-clips.ts",
+      "bytes": 6805,
+      "sha256": "6328edfa99739edd973a7d0d8bd0129d32f86ec4051125adca55e89e0619506b"
+    },
+    {
+      "path": "packages/authoring/src/performance.test.ts",
+      "bytes": 7595,
+      "sha256": "ae685f233c4d37469ad8c0ba0f29e6b4b16318da05325eed3a8183d6c9e89317"
+    },
+    {
+      "path": "packages/authoring/src/performance.ts",
+      "bytes": 5730,
+      "sha256": "92b92ffe8f9698cdd09f470317f19998f2bed45a1126588e4c65a6a0dd925c4e"
+    },
+    {
+      "path": "packages/authoring/src/rig-template.test.ts",
+      "bytes": 4366,
+      "sha256": "2c9800b5f765b083a58b20e90c338b68afeefbe7d6538534bcb748017c668196"
+    },
+    {
+      "path": "packages/authoring/src/rig-template.ts",
+      "bytes": 6797,
+      "sha256": "5d1a364b658deb1618651381efaa260cd466b86986c7b982d11048ecf76e5374"
+    },
+    {
+      "path": "packages/authoring/src/session.test.ts",
+      "bytes": 9855,
+      "sha256": "020a719589b4cbc58800528564a1774b268a28f99734aca90ebb8f2ed083fd27"
+    },
+    {
+      "path": "packages/authoring/src/session.ts",
+      "bytes": 54728,
+      "sha256": "0a2c2013043879a00eebbe1441c884ca497b06a27a19909c7874dd5e2ee07c63"
+    },
+    {
+      "path": "packages/authoring/src/source-keys.test.ts",
+      "bytes": 1306,
+      "sha256": "0044681c3afb588dc025fe5f07461c669530ad08c5e68b4a9506f3328dba141a"
+    },
+    {
+      "path": "packages/authoring/src/source-keys.ts",
+      "bytes": 671,
+      "sha256": "0c717409fe58fa7c667b9224d00d1844bec0a11ada6a6e93a443503b95d28558"
+    },
+    {
+      "path": "packages/authoring/src/storage.browser.ts",
+      "bytes": 11927,
+      "sha256": "9d9dd7474ab640b277e089504f38fedf7e4d856ed3f81147aab6149d709e0be1"
+    },
+    {
+      "path": "packages/authoring/src/storage.ts",
+      "bytes": 12419,
+      "sha256": "d34a4fc0ca39cdf44afce0b8f106aa2a99793f62a6c205cc1ab7115163874753"
+    },
+    {
+      "path": "packages/authoring/src/transactions.test.ts",
+      "bytes": 17698,
+      "sha256": "70cc3df0da7c46c3351d776337a3bbc82689aa53761e818cd7e44def746887bd"
+    },
+    {
+      "path": "packages/authoring/src/world-authoring.test.ts",
+      "bytes": 2578,
+      "sha256": "f5295d7c8a558637cc44c3513c139d6742e8c925ccb8b6abcb9edb3a31e4d332"
+    },
+    {
+      "path": "packages/authoring/src/world-authoring.ts",
+      "bytes": 4375,
+      "sha256": "1cc4ccc1b36d49f8f8ffebd6d4a8034065c396b13d1a9f966aea47ce769a094b"
+    },
+    {
+      "path": "packages/compiler/package.json",
+      "bytes": 105,
+      "sha256": "4ff8b047bc311bcfd2b6c7156fe2ddc0d59595887bf5aee50516f7787aef1d53"
+    },
+    {
+      "path": "packages/compiler/src/architecture.test.ts",
+      "bytes": 7203,
+      "sha256": "0e9184059b59bb11e469761323902705de1ef648ee23f2fae71924de1660f3cb"
+    },
+    {
+      "path": "packages/compiler/src/assembly-clearance.ts",
+      "bytes": 2301,
+      "sha256": "ec54803f725519c4d2b1ef6c846c341aac3f3ffbd21b90708e81b6db0458ec3f"
+    },
+    {
+      "path": "packages/compiler/src/assembly.test.ts",
+      "bytes": 8768,
+      "sha256": "5b9686e21d4d495e18fad36763b246a16689fe447675ac9ae4733c3298e6933f"
+    },
+    {
+      "path": "packages/compiler/src/assembly.ts",
+      "bytes": 9388,
+      "sha256": "d5009f87b5b6e570bb713a78812ad9fd8435d58d0905472903d2e68ed7e7564a"
+    },
+    {
+      "path": "packages/compiler/src/atmosphere-authoring.test.ts",
+      "bytes": 1921,
+      "sha256": "92fa599cb0a0124c735b0511312ad0aae82ed136f55f98aec0e6d14f28a9237f"
+    },
+    {
+      "path": "packages/compiler/src/atmosphere-authoring.ts",
+      "bytes": 1517,
+      "sha256": "108d8317e33d8e452bf2609e389972e0067e3409ac82646e87ff6fc2386980a6"
+    },
+    {
+      "path": "packages/compiler/src/atmosphere-ozone.test.ts",
+      "bytes": 3292,
+      "sha256": "dd9906a0bcdb937ecbb194987d697ab020244947221870e3a8594a2540d309d7"
+    },
+    {
+      "path": "packages/compiler/src/atmosphere-ozone.ts",
+      "bytes": 3421,
+      "sha256": "60f627639cbd86eb516c5707c9c51a8ac8c6c7a2e8e90bc23def400ee29e03d0"
+    },
+    {
+      "path": "packages/compiler/src/atmosphere.test.ts",
+      "bytes": 8080,
+      "sha256": "608fdff39e120e60ef998036f409ae3423b68c2994990baa16a8bf79675a77bc"
+    },
+    {
+      "path": "packages/compiler/src/atmosphere.ts",
+      "bytes": 17301,
+      "sha256": "1966ea18c3d66a311a31491d90c312a1e8163e6edf4f78329288e9d4e9395571"
+    },
+    {
+      "path": "packages/compiler/src/botanical-analysis.ts",
+      "bytes": 2188,
+      "sha256": "e45c9361f2ca29348d8494eb303acde132b86f53572203a9675db459fe28bf74"
+    },
+    {
+      "path": "packages/compiler/src/botanical-branch.ts",
+      "bytes": 1523,
+      "sha256": "db8ba5f2887368a76620aeb5a261434244368a5869670ccf7bc96952824363b4"
+    },
+    {
+      "path": "packages/compiler/src/botanical-development-mesh.test.ts",
+      "bytes": 2407,
+      "sha256": "a940a9a0d6a15eb1f9a8b07d492f21d4835a2414d3edd2691af2f2e06f56c88d"
+    },
+    {
+      "path": "packages/compiler/src/botanical-environment.ts",
+      "bytes": 3531,
+      "sha256": "be4b658eaf818ac388624d93cbcb4eadca1e10c04c142d111f83b369684f1d51"
+    },
+    {
+      "path": "packages/compiler/src/botanical-growth-request.ts",
+      "bytes": 4017,
+      "sha256": "c7cd3e87f4f032ddf297ab18a0e0dc876822544c107c14b50d6f488e6fe06670"
+    },
+    {
+      "path": "packages/compiler/src/botanical-growth-structure.ts",
+      "bytes": 4241,
+      "sha256": "39e198036829ae79cbf3dd1f00c76ce8aed57a23aca20acdad6dfe40ae5b07aa"
+    },
+    {
+      "path": "packages/compiler/src/botanical-growth.test.ts",
+      "bytes": 6367,
+      "sha256": "f386c2f056b600f9ffcb4b566623f1844c20e857a953b3fc63b6be9354a2f4eb"
+    },
+    {
+      "path": "packages/compiler/src/botanical-growth.ts",
+      "bytes": 13974,
+      "sha256": "5bd6ca463bdb39c05df3e4dceea041c4776e88f72bcc7a7b485f63e4bd706d08"
+    },
+    {
+      "path": "packages/compiler/src/botanical-mesh.ts",
+      "bytes": 6380,
+      "sha256": "0a96680eb93a12a3f8d36924d44a06317e0c937d805c9005004f004c68025917"
+    },
+    {
+      "path": "packages/compiler/src/botanical-motion.ts",
+      "bytes": 2658,
+      "sha256": "2116e86c2dd9ae831df5047d5ccbff0e42d9cdacd739f9012809e98b8bf9015b"
+    },
+    {
+      "path": "packages/compiler/src/botanical-primitives.ts",
+      "bytes": 5057,
+      "sha256": "34c8a66ddc8961abd52f5594844bf2daf0d90ce562a4eb751b505a276cc4c02f"
+    },
+    {
+      "path": "packages/compiler/src/botanical-structure.ts",
+      "bytes": 6030,
+      "sha256": "5d25b021cb92a0a2eee939bfa623ca6d1d3548f03cbe08eba1d6ab6d5d038908"
+    },
+    {
+      "path": "packages/compiler/src/botanical-surfaces.ts",
+      "bytes": 3991,
+      "sha256": "ea7c71bf1c5a71eccf1cc7178ac3113bb8715281a4823cc2dac9de9ba2f8fa02"
+    },
+    {
+      "path": "packages/compiler/src/botanical.test.ts",
+      "bytes": 7468,
+      "sha256": "1138813343a2d921718587dd78e05a503083fc3ccb5ce9d2c3ebfdd25ce2d0dc"
+    },
+    {
+      "path": "packages/compiler/src/branch-visibility.test.ts",
+      "bytes": 1265,
+      "sha256": "44b0bb628b680574712c5a9b72b92f145d76ebcfeeafefaf1d8e9f8d431e85e1"
+    },
+    {
+      "path": "packages/compiler/src/branch-visibility.ts",
+      "bytes": 2583,
+      "sha256": "ecc651e502315bf98c94ada1abca5d029789bda199d6a0f936a87376196c168e"
+    },
+    {
+      "path": "packages/compiler/src/cache.ts",
+      "bytes": 1413,
+      "sha256": "6b2484c155572591aaa28fb4857cc45031a0b55d6bbfcdcedb826a1186a1eebd"
+    },
+    {
+      "path": "packages/compiler/src/client.test.ts",
+      "bytes": 6672,
+      "sha256": "9cf5d85c41225cd3038d3dca9c1c16ee61dea24663dadef20303c94d163c3ab6"
+    },
+    {
+      "path": "packages/compiler/src/client.ts",
+      "bytes": 8492,
+      "sha256": "b0b6dd7a859330407e0169f4f6d287180f32318fc29c76a477d96cd896a8847b"
+    },
+    {
+      "path": "packages/compiler/src/cloud-transport.test.ts",
+      "bytes": 2331,
+      "sha256": "7eacae4b6c770f54713d774af13efb0bafb6784dd54b433ee25864d693aa35a0"
+    },
+    {
+      "path": "packages/compiler/src/cloud-transport.ts",
+      "bytes": 3960,
+      "sha256": "9da3d9d403c8d368eebbf9a850f003160771d9f236eaaf14a369a17c261783e9"
+    },
+    {
+      "path": "packages/compiler/src/compiler.test.ts",
+      "bytes": 19542,
+      "sha256": "1679202c2645c7885a6d9904c6f6ae2b9d9ddecd02a6f4415019f65d17e9b45d"
+    },
+    {
+      "path": "packages/compiler/src/conifer-growth.ts",
+      "bytes": 6767,
+      "sha256": "35d67b54a09b4cbe5710f83e393b26ee761c7a0380289e5cfc500b522c672ab0"
+    },
+    {
+      "path": "packages/compiler/src/conifer-mesh.ts",
+      "bytes": 14900,
+      "sha256": "c31459ddadbd030b265b1beb869d79933f83f6a850c82349e2e49423ff10406a"
+    },
+    {
+      "path": "packages/compiler/src/cooked.test.ts",
+      "bytes": 3101,
+      "sha256": "bd5eb4d55f95796f58bb8ebb0b2b1bb2fa77eb2077b441880174bac86301600d"
+    },
+    {
+      "path": "packages/compiler/src/cooked.ts",
+      "bytes": 25320,
+      "sha256": "0a120d4be7b93bbd365be35af7f783e16ffc2df24a5db2dd44dc80bc690f2222"
+    },
+    {
+      "path": "packages/compiler/src/creature-attachments.test.ts",
+      "bytes": 5745,
+      "sha256": "11e23d80c8b0e42bd4ca986db979a4632fb148ca6632a6703dccb67547592807"
+    },
+    {
+      "path": "packages/compiler/src/creature-attachments.ts",
+      "bytes": 8364,
+      "sha256": "6849440f67347f7c28f0f62cb429c174b6d08b7a1909a223247fdad17322b6e0"
+    },
+    {
+      "path": "packages/compiler/src/creature-cache.test.ts",
+      "bytes": 7948,
+      "sha256": "6983d30b1f9a4d2bb2e54866dc956d6470d00c71e28cd4b36608bce6ce46e8b3"
+    },
+    {
+      "path": "packages/compiler/src/creature-cache.ts",
+      "bytes": 2860,
+      "sha256": "5e60121145fb863d72aba0c8956967141765046f6104da201863f726ca694745"
+    },
+    {
+      "path": "packages/compiler/src/creature-cooked.ts",
+      "bytes": 9691,
+      "sha256": "bdbc569b57d19986b4fd011250e6cf84193b23f8fd01d1eb5852991ecddaf194"
+    },
+    {
+      "path": "packages/compiler/src/creature-delivery.test.ts",
+      "bytes": 4050,
+      "sha256": "bb2185cd766f00668563aaf66b965d0eec5cad74a7ef370e062544ff412ae852"
+    },
+    {
+      "path": "packages/compiler/src/creature-features.test.ts",
+      "bytes": 5829,
+      "sha256": "aacc6fcf9c77382b8445a1bba167d25a5a0ddc8d5555c123a3326b33fce2dfc9"
+    },
+    {
+      "path": "packages/compiler/src/creature-features.ts",
+      "bytes": 11059,
+      "sha256": "091659483b3c6600a175a196b87651d3483a467118609623d4cb05a532dbf86b"
+    },
+    {
+      "path": "packages/compiler/src/creature-projection.test.ts",
+      "bytes": 7370,
+      "sha256": "05a4e56e3c94a287a98e57fcb0cb8a27c5d3fbff6621a38995c4380c91753d38"
+    },
+    {
+      "path": "packages/compiler/src/creature-projection.ts",
+      "bytes": 15850,
+      "sha256": "03dc737fb18cf0360da15dc347e0f2eb40d42af0b23229d2da2aa2213a2f136e"
+    },
+    {
+      "path": "packages/compiler/src/creature-refinement.test.ts",
+      "bytes": 4878,
+      "sha256": "61157a3fde87c2b2243dac7eb95a7a3cbda71cfe65c6b7940a0d713ba5fd6580"
+    },
+    {
+      "path": "packages/compiler/src/creature-refinement.ts",
+      "bytes": 7240,
+      "sha256": "711610526388330e973c5779482e372aa0caf24747b2851a642b5af94c1fda2f"
+    },
+    {
+      "path": "packages/compiler/src/creature.test.ts",
+      "bytes": 15177,
+      "sha256": "0ffef33d1f39fc93b3a217468de00d401c9b86fdc28f09c513c79ab99fc931e0"
+    },
+    {
+      "path": "packages/compiler/src/creature.ts",
+      "bytes": 49901,
+      "sha256": "74c8ee7175b2a15efaac624f48d4602fd1c0c3d293d99cc3342526ba856185bc"
+    },
+    {
+      "path": "packages/compiler/src/field.ts",
+      "bytes": 7495,
+      "sha256": "dcb8c2f42f96b6035b019d47a2a05887f384eb546380c3d75d6c7b81e8d73f62"
+    },
+    {
+      "path": "packages/compiler/src/finite-sun.test.ts",
+      "bytes": 4332,
+      "sha256": "c103a4dee64793e111254085f3649e7a3a737a970e13968d5298fce52f72fe0f"
+    },
+    {
+      "path": "packages/compiler/src/finite-sun.ts",
+      "bytes": 6729,
+      "sha256": "ab13a2e8a1faf1a9051064f3d80f037386d8042db8b9baefb426b5c2a73f8a60"
+    },
+    {
+      "path": "packages/compiler/src/geology-corridors.ts",
+      "bytes": 4286,
+      "sha256": "efb63930654e3e09fccb107a64e93ebe2ff8277cf9a54791f317ba8b517359ea"
+    },
+    {
+      "path": "packages/compiler/src/geology-formations.ts",
+      "bytes": 4628,
+      "sha256": "9d100e9fa6b8e2bad378900cd200d788eec34b3b561f102c2688bed4e6a56d34"
+    },
+    {
+      "path": "packages/compiler/src/geology-height.ts",
+      "bytes": 9693,
+      "sha256": "287cf15a11fb7b8b586ceac1708d38a397375bcab3d3487085c41870409578ef"
+    },
+    {
+      "path": "packages/compiler/src/geology-profiles.test.ts",
+      "bytes": 4391,
+      "sha256": "bd90d0e39d44951d581f538072770e5c5e2036b306af28e1a8dbd7c235cc55cf"
+    },
+    {
+      "path": "packages/compiler/src/geology-rock.test.ts",
+      "bytes": 4538,
+      "sha256": "056dcc5e715b26deea6466ee67890b9868eefdbeea163c62ddc15600abf583e4"
+    },
+    {
+      "path": "packages/compiler/src/geology.test.ts",
+      "bytes": 14404,
+      "sha256": "2136ec46c30d3278692563a897bac7861d9bb777e39aa6511221a48c0ddaa160"
+    },
+    {
+      "path": "packages/compiler/src/geology.ts",
+      "bytes": 4579,
+      "sha256": "3ae85c43639940c129211d607acca8b3881e2c05f38e77933fd66de650d1f264"
+    },
+    {
+      "path": "packages/compiler/src/groom-appearance-binding.ts",
+      "bytes": 11705,
+      "sha256": "36fe2460bc8e4c08e460bd861a0a25b81b073cb76907839a32fd74bd09075612"
+    },
+    {
+      "path": "packages/compiler/src/groom-appearance.test.ts",
+      "bytes": 8662,
+      "sha256": "fa9aa9f95cd80f6995c7a6d0cb89bfe946df5ca296263c8af2be55cb8e0585a0"
+    },
+    {
+      "path": "packages/compiler/src/groom-appearance.ts",
+      "bytes": 5095,
+      "sha256": "9c0643a08d2fb456f39ece620b2a69801404d8fce592ec68461ee7c88e7a409d"
+    },
+    {
+      "path": "packages/compiler/src/groom-cooked.test.ts",
+      "bytes": 1766,
+      "sha256": "e973c99dc057b4a1782b11eee6d53af7161aae8dff263a6309c6fffe6fa118e9"
+    },
+    {
+      "path": "packages/compiler/src/groom-creature.ts",
+      "bytes": 11707,
+      "sha256": "41108c7a3a317f5ee42a5342e90ede3af106405947c8f15734e1c27486860c65"
+    },
+    {
+      "path": "packages/compiler/src/groom.test.ts",
+      "bytes": 16379,
+      "sha256": "d22cbaabbc64a86dca8c4285823c0c055ca28e8c2dcdf14710dd4e074ef2e4a9"
+    },
+    {
+      "path": "packages/compiler/src/groom.ts",
+      "bytes": 21391,
+      "sha256": "2564bc9ac15710ecf10f152086be966c20863de9e16b41effaf6d799351a6e3c"
+    },
+    {
+      "path": "packages/compiler/src/index.ts",
+      "bytes": 7159,
+      "sha256": "c90588a8865cb7979040300ce7494049ef371b2153f35d8452989c148b054dfe"
+    },
+    {
+      "path": "packages/compiler/src/indirect-probes.test.ts",
+      "bytes": 2952,
+      "sha256": "6e568c86ba8d0829cefed3c536ea6859cae695996e75a4de825e1e45ef84339e"
+    },
+    {
+      "path": "packages/compiler/src/indirect-probes.ts",
+      "bytes": 8457,
+      "sha256": "ac14d5f9db7b669240eebd312bfe2a469a5c7601154d92a2749eac1a3916299a"
+    },
+    {
+      "path": "packages/compiler/src/indirect-query.ts",
+      "bytes": 11713,
+      "sha256": "d250e9a00be228fe2e9fb04e23fe6d6b1ce5fa5b64608d92b61c76b7ec12a4b3"
+    },
+    {
+      "path": "packages/compiler/src/indirect-reference.test.ts",
+      "bytes": 5826,
+      "sha256": "ed55634a45169401a8262f50de7f08bfbab7b5225d7154ec3f7aaba323a0e162"
+    },
+    {
+      "path": "packages/compiler/src/indirect-reference.ts",
+      "bytes": 8698,
+      "sha256": "9b2b8cd38dfb15f44d3df20da52c24fe6dde3690fd48da25f355bd50ce0e3e1a"
+    },
+    {
+      "path": "packages/compiler/src/indirect-visibility.ts",
+      "bytes": 7932,
+      "sha256": "28add562dfdf76b64700b869b2f88c80b2a3d78a63695be099b7467480ea6ca1"
+    },
+    {
+      "path": "packages/compiler/src/ir.ts",
+      "bytes": 6362,
+      "sha256": "bcab71a218348e38a1b02665c3d3a988e9552f5665a74144f62b6d8dc4341624"
+    },
+    {
+      "path": "packages/compiler/src/leaf-ribbons.ts",
+      "bytes": 3261,
+      "sha256": "da58838cad6ab7b505766244da94e9082dab49cddf108a50f1e3109f48dc0784"
+    },
+    {
+      "path": "packages/compiler/src/lighting-transfer.test.ts",
+      "bytes": 3063,
+      "sha256": "08cc63c4cc81947ed6106d90f6b786baf4835d1413bb1b6a7fd38422d1f86853"
+    },
+    {
+      "path": "packages/compiler/src/material-lattice.test.ts",
+      "bytes": 1478,
+      "sha256": "bc59253fbbf2e3c44fde13b60b3989577405f2d28d35765ddd3654568bb4e79f"
+    },
+    {
+      "path": "packages/compiler/src/material-lattice.ts",
+      "bytes": 2057,
+      "sha256": "ab47616bd4af2b651f0517c668d4cc0e363e4c529cd31bed5e05fbe053570b51"
+    },
+    {
+      "path": "packages/compiler/src/needle-ribbons.ts",
+      "bytes": 1532,
+      "sha256": "d0cee245adb6fafa4bcc940bc7759303364c94f3e29f7354f6bd5360b6ef8a33"
+    },
+    {
+      "path": "packages/compiler/src/needle-shoot.test.ts",
+      "bytes": 3529,
+      "sha256": "b798179e93913335e37f6808026680439c80a701b725700bff976361d85fd493"
+    },
+    {
+      "path": "packages/compiler/src/needle-shoot.ts",
+      "bytes": 7699,
+      "sha256": "b2667e0277f40aec83bf29564b50b1f860c967201bdf8fc02fc8cdb95e303359"
+    },
+    {
+      "path": "packages/compiler/src/occluder-facts.test.ts",
+      "bytes": 2839,
+      "sha256": "99bf5a8862ae0488b0904baee7fa1f0301a30a6f1edd72874dd54a31be96c0e0"
+    },
+    {
+      "path": "packages/compiler/src/occluder-facts.ts",
+      "bytes": 4669,
+      "sha256": "8799840d2a9f3da4da77d74ac8a7abaae016504c636cf7efe45927f2cada529d"
+    },
+    {
+      "path": "packages/compiler/src/periodic-material.test.ts",
+      "bytes": 1784,
+      "sha256": "5c36b399af8b2c955085227de4b6a7fa6c17d644732c1a0c7544c8dcff3cfdaf"
+    },
+    {
+      "path": "packages/compiler/src/periodic-material.ts",
+      "bytes": 7018,
+      "sha256": "125f395762a80791f0535f820e24c9c715fd190813f2d315a565dc5d8a50bebd"
+    },
+    {
+      "path": "packages/compiler/src/phase.test.ts",
+      "bytes": 15760,
+      "sha256": "7a050b6a9ce8efad2de092d236527e863c59bb8cbf1464ff8b04795073c75a26"
+    },
+    {
+      "path": "packages/compiler/src/phase.ts",
+      "bytes": 27788,
+      "sha256": "7dd68dba6d4919814f689136b4d87440cc5126da0e8bfa8bfddc598f8d4aecaa"
+    },
+    {
+      "path": "packages/compiler/src/pine-architecture.test.ts",
+      "bytes": 5325,
+      "sha256": "e7407d27c031944251756b22ac98110cee19745177181bac07149a776f76142a"
+    },
+    {
+      "path": "packages/compiler/src/pine-architecture.ts",
+      "bytes": 9800,
+      "sha256": "8a33489bf9046d256d9777d20727d6ff27449c82eac021a1431a2b4c889215c9"
+    },
+    {
+      "path": "packages/compiler/src/primitive.test.ts",
+      "bytes": 6054,
+      "sha256": "d63623a684bd7480d2a6b4aa7396b3fa10f3c09570bc9f7e19f40bf86c10e7a4"
+    },
+    {
+      "path": "packages/compiler/src/primitive.ts",
+      "bytes": 10381,
+      "sha256": "48e0e6213a7fd21dae02f6cbd3ed2fb67a9062cbd799c87c3d51aa6ea9f5a0fc"
+    },
+    {
+      "path": "packages/compiler/src/products.ts",
+      "bytes": 5239,
+      "sha256": "bd1fe2ec56055b33f80de2dd8bf62a07da88e76cab249c779418ab5e5eee7840"
+    },
+    {
+      "path": "packages/compiler/src/render-products.test.ts",
+      "bytes": 10819,
+      "sha256": "eebf72699f4c2bd5f19403e9cf5dd97e5af351fe2a10b560dbb0fa122f930889"
+    },
+    {
+      "path": "packages/compiler/src/render-products.ts",
+      "bytes": 12031,
+      "sha256": "92ab9d1eb6eb7b37da995996372201e402554aa06253c8ec4e3eede487975fae"
+    },
+    {
+      "path": "packages/compiler/src/river-channel.ts",
+      "bytes": 2484,
+      "sha256": "30f0ec94889969612409aa252ac732d8032a997195be7d4e49fa7f2aaa27b1ab"
+    },
+    {
+      "path": "packages/compiler/src/river-review.ts",
+      "bytes": 3634,
+      "sha256": "f9b2d311a011415e097ce758bc72958384895d65f24f095817e4bcd807c2f678"
+    },
+    {
+      "path": "packages/compiler/src/shoot-coverage.ts",
+      "bytes": 7837,
+      "sha256": "6f922d0e17e74059e067614074bbf02de03f2276437ae50bd124a140edb65177"
+    },
+    {
+      "path": "packages/compiler/src/shoot-instances.test.ts",
+      "bytes": 2978,
+      "sha256": "e7f24f986e4af250b3c745f30ad97b2440e7b7ca8102e0a7645e29a590f63486"
+    },
+    {
+      "path": "packages/compiler/src/shoot-instances.ts",
+      "bytes": 7012,
+      "sha256": "87d1f78ff0d0554bd76b1f910530ab05a8efe653301168f260a99994d5c8cbd0"
+    },
+    {
+      "path": "packages/compiler/src/shoot-visibility.test.ts",
+      "bytes": 887,
+      "sha256": "48fa534720ffb9ab25b180e7e6fd147a7c84a14e3f2b5051eef4f72727ba4413"
+    },
+    {
+      "path": "packages/compiler/src/shoot-visibility.ts",
+      "bytes": 1669,
+      "sha256": "c745f22325e9fb0262b8f3d128daa8810d664aafabec8024ee7b1a76b561220d"
+    },
+    {
+      "path": "packages/compiler/src/surface-relief-pattern.test.ts",
+      "bytes": 4116,
+      "sha256": "7afabd88b2b3d6e0f30529b716802f794ae72bb16d3c2328a02e23a009582586"
+    },
+    {
+      "path": "packages/compiler/src/surface-relief-pattern.ts",
+      "bytes": 5933,
+      "sha256": "5315e30752ed4db508e8cec19ae38381d26b867285a4eee9fd9742c04fa3ab31"
+    },
+    {
+      "path": "packages/compiler/src/surface-relief-sampling.ts",
+      "bytes": 1450,
+      "sha256": "a76deb6b9aaace144437c443132a7faa0ef32a311b897c4476134150e4bd67f0"
+    },
+    {
+      "path": "packages/compiler/src/surface-relief-thickness.ts",
+      "bytes": 3285,
+      "sha256": "54ee61f1139f24ee79c1f181b46915aafa622510c5c21b338958b2229e4d2efe"
+    },
+    {
+      "path": "packages/compiler/src/surface-relief.test.ts",
+      "bytes": 12320,
+      "sha256": "e39dfec570d0354bb3d5cbb64b93b618f07ca1e3779564ff28690450b6538ecc"
+    },
+    {
+      "path": "packages/compiler/src/surface-relief.ts",
+      "bytes": 21720,
+      "sha256": "0476e17887f3bbf7a36d8c323080e38590928b755b4bd015139725024e402b61"
+    },
+    {
+      "path": "packages/compiler/src/surface.ts",
+      "bytes": 17701,
+      "sha256": "c4aa5294acc76827b1fdb9d5b5b6db95f6c11c5c01df8a00d134201a5736cf27"
+    },
+    {
+      "path": "packages/compiler/src/terrain.ts",
+      "bytes": 8449,
+      "sha256": "dc311fd7ed5e870cd105910a627ff619044a1af7306735b443b00a0b9f80e53e"
+    },
+    {
+      "path": "packages/compiler/src/thin-coverage.test.ts",
+      "bytes": 5219,
+      "sha256": "716ddaba2c4c850b3690b75c6ccb69820982749a53e0e3edd4b3c9620dc174f5"
+    },
+    {
+      "path": "packages/compiler/src/thin-coverage.ts",
+      "bytes": 5896,
+      "sha256": "0073a1500a1f1bb5002f2a8eb0d159fe3628fce6ae7e656d60dbd886126e4513"
+    },
+    {
+      "path": "packages/compiler/src/vegetation-clusters.ts",
+      "bytes": 2948,
+      "sha256": "4ab96d9d0599bc6d3a14f872a2952705c4f3e912cf10878edece28d8a19b971a"
+    },
+    {
+      "path": "packages/compiler/src/vegetation-crown.test.ts",
+      "bytes": 4575,
+      "sha256": "71a9e69f2d34999f38a9140d636bad4216738c479e87a527fb068eb751906934"
+    },
+    {
+      "path": "packages/compiler/src/vegetation-crown.ts",
+      "bytes": 14158,
+      "sha256": "4d54d1121eeaac1d162db9e4119a0fbc4daab4af9bc8684f20bba2de60f223ce"
+    },
+    {
+      "path": "packages/compiler/src/vegetation-motion.test.ts",
+      "bytes": 8401,
+      "sha256": "eb869f165454c230d9ce6ff49eccdf8160741bca27def964b3145a144802c1fb"
+    },
+    {
+      "path": "packages/compiler/src/vegetation.ts",
+      "bytes": 14931,
+      "sha256": "e1d9dbdcb0a8c7dc446de70bceaa97092985a9e778363ee5cd981e7e8ecc0eae"
+    },
+    {
+      "path": "packages/compiler/src/versions.ts",
+      "bytes": 723,
+      "sha256": "361387e9477171bc81739cc5efa2ad73340a7c227f2a2012ff894d14fcf2e049"
+    },
+    {
+      "path": "packages/compiler/src/water-authoring.test.ts",
+      "bytes": 5372,
+      "sha256": "9fce521073c694b98e2ac38a18c62a2cc91c0ff8834635fedfae83129f253783"
+    },
+    {
+      "path": "packages/compiler/src/water-body.test.ts",
+      "bytes": 7505,
+      "sha256": "fb9f8c799c10aef814892e95998a15447383a8804b24faa86722fe06961968e8"
+    },
+    {
+      "path": "packages/compiler/src/water-domain.ts",
+      "bytes": 12379,
+      "sha256": "ffeb81aee0ab7d3df0c38d739f102d8324a4e4c9a413350067dcb051e249a083"
+    },
+    {
+      "path": "packages/compiler/src/water-effects.test.ts",
+      "bytes": 1156,
+      "sha256": "660a48de4aa202aff5ea686789e55da06808a7fd42c1ac5ca0d06de4dc3066ed"
+    },
+    {
+      "path": "packages/compiler/src/water-effects.ts",
+      "bytes": 2603,
+      "sha256": "7cef88e1fc61c045ffb9d0a1981159c4f912c30b5b23799ae9d7afd82bbbc76c"
+    },
+    {
+      "path": "packages/compiler/src/water-glints.test.ts",
+      "bytes": 2462,
+      "sha256": "2a3fcac4de70cc303e6d024f20a0d94464580de498eaca2c2da47bff9ead766f"
+    },
+    {
+      "path": "packages/compiler/src/water-glints.ts",
+      "bytes": 2749,
+      "sha256": "680e683eea0297bf9f3cef31cc081e4a54bb65774ef824bf645a5d015ecc6317"
+    },
+    {
+      "path": "packages/compiler/src/water-reflections.ts",
+      "bytes": 2291,
+      "sha256": "a67385edd8b50bfcc9b6d5480e7c3a52fe9baf794d746977ce8febb8442ef02f"
+    },
+    {
+      "path": "packages/compiler/src/water-spectrum.ts",
+      "bytes": 8123,
+      "sha256": "e073434d3177a3513a8bf52975415c0b7488e841ddfbcc18427658b56736d764"
+    },
+    {
+      "path": "packages/compiler/src/water.ts",
+      "bytes": 9917,
+      "sha256": "0d4eb5d6037f6e1c9081aac7a8b9451044afb0e64b2d8dc0282cb636b461f4ab"
+    },
+    {
+      "path": "packages/compiler/src/worker.test.ts",
+      "bytes": 5179,
+      "sha256": "5e295a22daebdc2348c996985cf5d0179afce8ce692c5f49d21751d69ede869c"
+    },
+    {
+      "path": "packages/compiler/src/worker.ts",
+      "bytes": 4396,
+      "sha256": "256345de3a9fd488ca014540cdb849634443dc8e3afef8ab546f6c03c060b542"
+    },
+    {
+      "path": "packages/model/package.json",
+      "bytes": 102,
+      "sha256": "9fac93a4090cb9eefe0420d65cd4316a0db84bfbd326a47adabcc6e7178965c0"
+    },
+    {
+      "path": "packages/model/src/alpine-composition.ts",
+      "bytes": 5706,
+      "sha256": "c14edd54019d07330b9facc62723a1c62114254231c962e271ea2cd2bf84a619"
+    },
+    {
+      "path": "packages/model/src/alpine-habitat.ts",
+      "bytes": 4254,
+      "sha256": "ce5b86fe46e081c992cfe34341e9fae60ce8a99b0fa5efced1095edc0e85390e"
+    },
+    {
+      "path": "packages/model/src/alpine-lookdev.ts",
+      "bytes": 2180,
+      "sha256": "c3acdb33248fb6f9ba8cbe7c29b9853ffdb7c7e8a9655ad00ad93435e9fb2d04"
+    },
+    {
+      "path": "packages/model/src/architecture-lookdev.ts",
+      "bytes": 12202,
+      "sha256": "592236d4587f4111c9a78ac709c96a9ea047b20dd836ad8410f784e065cb53b0"
+    },
+    {
+      "path": "packages/model/src/assembly.ts",
+      "bytes": 16582,
+      "sha256": "b994b22ddf07e388734f4fbbcc0f6aafd229efe711eb7f1bc07f3a312abed205"
+    },
+    {
+      "path": "packages/model/src/botanical-growth.ts",
+      "bytes": 7108,
+      "sha256": "2faf93c668392447425b1d204dd6a8e59e935aabde91a55a0333b08e41debb69"
+    },
+    {
+      "path": "packages/model/src/botanical-species.ts",
+      "bytes": 1698,
+      "sha256": "ec3aa21c918ddc47ee93cff51cbad9625d952a46b324069ece02f38d290a9978"
+    },
+    {
+      "path": "packages/model/src/branch-visibility.ts",
+      "bytes": 491,
+      "sha256": "8be7436d9a88e78788f7fa11330b019d91d13b07cfce7559a11029950dbaad73"
+    },
+    {
+      "path": "packages/model/src/character-lookdev.test.ts",
+      "bytes": 2712,
+      "sha256": "4cd1f58d4db474e31c54c360449322872e314a9c3b2829e65517ff52db93e2f4"
+    },
+    {
+      "path": "packages/model/src/character-lookdev.ts",
+      "bytes": 12315,
+      "sha256": "5d50fd93defe9305ed6391313b92103a1853e84188451bdb1517983995b2d540"
+    },
+    {
+      "path": "packages/model/src/character-motion-bake.ts",
+      "bytes": 5145,
+      "sha256": "f3279e0a4b7dad815642fcde3e79ad433bab4b8be2f0c44005091150d1ec0261"
+    },
+    {
+      "path": "packages/model/src/character-motion-lookdev.ts",
+      "bytes": 13985,
+      "sha256": "379ae8b513d68d8e77aaae3f92f36899c0d77e7bcf16969de8f688ab548a4132"
+    },
+    {
+      "path": "packages/model/src/construction-recipe.ts",
+      "bytes": 9248,
+      "sha256": "d4e67783527c2357755c877a38d3fe132f66e8e3caddd6538736fc141aefb720"
+    },
+    {
+      "path": "packages/model/src/contracts.ts",
+      "bytes": 12112,
+      "sha256": "98827f9dfa095fc0eb4dba1dee1acd9d01ce4f6076605e8cc1023a64e4067ded"
+    },
+    {
+      "path": "packages/model/src/creature-biped-construction.ts",
+      "bytes": 12598,
+      "sha256": "34ed9e6e02cdfb0c45eecc2e9ba5abcbe45691d67b6c94c8c75715af4d0aa95d"
+    },
+    {
+      "path": "packages/model/src/creature-biped-motion.ts",
+      "bytes": 6279,
+      "sha256": "64e08a66677a3931e2d1dbdfb9911fc52f63128795db2530043d99db45394e83"
+    },
+    {
+      "path": "packages/model/src/creature-clay-study.ts",
+      "bytes": 5158,
+      "sha256": "43aedbb3e7f8f19ce289094589ddce74ec401b7605ff46a871019b5535e76020"
+    },
+    {
+      "path": "packages/model/src/creature-fitting.ts",
+      "bytes": 873,
+      "sha256": "8eb41655e89570b296535c81f447f129d61c779f3c3325460c36d412cc46f3b2"
+    },
+    {
+      "path": "packages/model/src/creature-fixtures.test.ts",
+      "bytes": 2669,
+      "sha256": "af2d26b006967ae184976cb044a4d3d3af5c57bd0d100b1dfa2800db20b74bba"
+    },
+    {
+      "path": "packages/model/src/creature-fixtures.ts",
+      "bytes": 39914,
+      "sha256": "3756d5f3ca5499011b6adedc2dbae14bb1ed5448df6611ef224b8936bd723b44"
+    },
+    {
+      "path": "packages/model/src/creature-patch.test.ts",
+      "bytes": 2123,
+      "sha256": "763ec6091d9fdc24aec06628b87c7244197c6478c8fbe100a12e8972072c22db"
+    },
+    {
+      "path": "packages/model/src/creature-patch.ts",
+      "bytes": 1872,
+      "sha256": "88ba2288d117bf36f209b247df8b80185ad6a30f93ec73e637a2f59da7cfad77"
+    },
+    {
+      "path": "packages/model/src/creature-products.ts",
+      "bytes": 2505,
+      "sha256": "8f29067cdd19933d19ca8a7a2678e6f390a869093843c215916ba9abec127c71"
+    },
+    {
+      "path": "packages/model/src/creature-sculpt.ts",
+      "bytes": 3386,
+      "sha256": "9a4d5c685263a80d5f180a00b632297f520907c237e1f89d0988084d737194be"
+    },
+    {
+      "path": "packages/model/src/creature-validation.ts",
+      "bytes": 16856,
+      "sha256": "97db433c4b3192aeb0e1af66b24f5e963f9935c385ccedeb4a7970e9903fa321"
+    },
+    {
+      "path": "packages/model/src/creature.test.ts",
+      "bytes": 11674,
+      "sha256": "70b6ae2858ae89fcefc35dec6ef5a5d14fe0af3367fc29bb05610bfe6364968c"
+    },
+    {
+      "path": "packages/model/src/creature.ts",
+      "bytes": 13566,
+      "sha256": "d6fc23a425d193bc3ee03533590dce98ef1b91052a71ec60dc1514cde019df96"
+    },
+    {
+      "path": "packages/model/src/documents.ts",
+      "bytes": 13216,
+      "sha256": "e560c2d36398f28251f517853e1bad13da8e6e26e2180d5b349d7a578edc10c0"
+    },
+    {
+      "path": "packages/model/src/environment-authoring.ts",
+      "bytes": 7221,
+      "sha256": "b3e49e30c435fcf6f764f7051dd561f9ebd209dcd8e137147fb0e34d08a33047"
+    },
+    {
+      "path": "packages/model/src/environment-lookdev.ts",
+      "bytes": 6936,
+      "sha256": "6b7bdf095733a14f25c7ef033aaf5a3bdc2c9c8b051d0698be47ace16485985d"
+    },
+    {
+      "path": "packages/model/src/fixtures.ts",
+      "bytes": 12093,
+      "sha256": "6af59c84a21fd9e86d3c56434c674151f9c724b78621ce965b533d56ccb0bec2"
+    },
+    {
+      "path": "packages/model/src/forest-edge.test.ts",
+      "bytes": 795,
+      "sha256": "a88881a0d212535fcdabc4ebf3b1fd7c661e3525c67f44bfb2f074134e79bbaa"
+    },
+    {
+      "path": "packages/model/src/forest-edge.ts",
+      "bytes": 7797,
+      "sha256": "a01ad6c8593ca5c089a344a21a148496db00aff8911b5f2908a4eb12be5c7ff8"
+    },
+    {
+      "path": "packages/model/src/geology-profiles.ts",
+      "bytes": 1241,
+      "sha256": "4e0dcb80d1daa183ebac7b15bd68bf6b04110b7c8724e4d93a27c8aa530e3618"
+    },
+    {
+      "path": "packages/model/src/geology-rock.ts",
+      "bytes": 5865,
+      "sha256": "0bfc59d7edc058aaa047cd9429d9f2301ed9b9f63bcf95b91d9019f7b3ed5627"
+    },
+    {
+      "path": "packages/model/src/geology.ts",
+      "bytes": 5205,
+      "sha256": "b59f2cb65e0b943a4daa8bd45bb18b77a2402fc18dec54d0a05df200bb5c66d2"
+    },
+    {
+      "path": "packages/model/src/index.ts",
+      "bytes": 1780,
+      "sha256": "c776191943293ee3f612d794e0a3b6926dc5d142b85dea9cbb3b058300d010c8"
+    },
+    {
+      "path": "packages/model/src/indirect-lighting.ts",
+      "bytes": 1568,
+      "sha256": "4999551e8d1286d4768205d273edd01790f281b9a37f40e1983a37a0b45b5de0"
+    },
+    {
+      "path": "packages/model/src/lookdev-scene.ts",
+      "bytes": 8824,
+      "sha256": "7198395812d3030e7e54ea214ff04f9595d3c92a0b991753c710e1564cf3a7e1"
+    },
+    {
+      "path": "packages/model/src/material-lattice.ts",
+      "bytes": 420,
+      "sha256": "3216937308716cfb2665481a7c5c196cfcdaf704ea3aa8a5ea441e89d7ea318d"
+    },
+    {
+      "path": "packages/model/src/material-lookdev.test.ts",
+      "bytes": 949,
+      "sha256": "1a87efae18cb6f250cbdfa10e4fc818738029d7d02e8492a9b233b332dec5cc0"
+    },
+    {
+      "path": "packages/model/src/material-lookdev.ts",
+      "bytes": 10124,
+      "sha256": "483768be0ea7a031a930c7f3b0609b42e288a2d21e2c0b52bbe7b9081bec8e14"
+    },
+    {
+      "path": "packages/model/src/math.test.ts",
+      "bytes": 1053,
+      "sha256": "3600fca587c31e493237b9a9efc0650f743422d90e1b27fc75622e73702cdf8e"
+    },
+    {
+      "path": "packages/model/src/math.ts",
+      "bytes": 4203,
+      "sha256": "e2b350843cc79b73f0b08e0462b40e192f5fdb722bd43031ca7973330feb4aaf"
+    },
+    {
+      "path": "packages/model/src/migrations.ts",
+      "bytes": 2057,
+      "sha256": "21953a234f36c9d749d8831fdb9cfce94f0e8b3467d0d34a7b35d0b9a7c21329"
+    },
+    {
+      "path": "packages/model/src/performance.ts",
+      "bytes": 5221,
+      "sha256": "9e499ef5c29b26175fc9ec692c61ddc0f1f8223de8b1dc7c6d4f8e04d97f65ab"
+    },
+    {
+      "path": "packages/model/src/quadric.ts",
+      "bytes": 4145,
+      "sha256": "83260b3db460c62e3fc3a7e20912ab0453b6b78334e563c6dbc6f3a8b34cd5ee"
+    },
+    {
+      "path": "packages/model/src/recipes.test.ts",
+      "bytes": 3297,
+      "sha256": "76e00bdf0bcc6445786598563ad42fa56477e52271a115f353268ae3ba8f3156"
+    },
+    {
+      "path": "packages/model/src/recipes.ts",
+      "bytes": 6628,
+      "sha256": "659f1bce2db787f6623d6a48dd1df30658803c5b4786e5c3fd925a1b41afd7f3"
+    },
+    {
+      "path": "packages/model/src/render-frontier.test.ts",
+      "bytes": 8468,
+      "sha256": "6bac358aeeb392133fcc28c8ec26768d9338b182b30cff21be1303e935a22d16"
+    },
+    {
+      "path": "packages/model/src/render-frontier.ts",
+      "bytes": 14811,
+      "sha256": "a5841a63c94ce1dc629368646094bd86afeddbc8ef2c238b3f8a2dd8180d1632"
+    },
+    {
+      "path": "packages/model/src/render-products.ts",
+      "bytes": 2814,
+      "sha256": "cac1672924580f6040cc979ca98f6ed9beb31ba41639e7f429fb6aae00125bf6"
+    },
+    {
+      "path": "packages/model/src/surface-appearance.ts",
+      "bytes": 4376,
+      "sha256": "c585c41e6ca09a73ece9dba02aa103acd121d3ebf8fa545a70f0c635185b2cfc"
+    },
+    {
+      "path": "packages/model/src/surface-history-material.ts",
+      "bytes": 4640,
+      "sha256": "ca6df250cf589748a990f3bf35dd0472a128578c76ba60d962f345d6275e031b"
+    },
+    {
+      "path": "packages/model/src/surface-history.test.ts",
+      "bytes": 3333,
+      "sha256": "95e0697f66653c950e3a770daea95357873c05915bda6719dc7fd7021a3dcd89"
+    },
+    {
+      "path": "packages/model/src/surface-history.ts",
+      "bytes": 4538,
+      "sha256": "2e3ce949754fbf59258fc9b63913cd73b27b883734248fd3bd0df9d9de4f3e59"
+    },
+    {
+      "path": "packages/model/src/surface-relief-lookdev.ts",
+      "bytes": 5731,
+      "sha256": "75114dc4d2c82eee407455bd81928445b47ac59ee84c37984efbca6834ec170f"
+    },
+    {
+      "path": "packages/model/src/surface-relief.ts",
+      "bytes": 1385,
+      "sha256": "a8976ae20a8fc934eb3e644132754389fb50fdca118a964cb8af440f7eb025db"
+    },
+    {
+      "path": "packages/model/src/terrain-lookdev.ts",
+      "bytes": 9771,
+      "sha256": "9386b8aed52852a18ec36187fddabdcf9570a3a0c5f316d8f0d8f73dc50bf66d"
+    },
+    {
+      "path": "packages/model/src/thin-coverage.ts",
+      "bytes": 2212,
+      "sha256": "8db52b7129ec48215dd9ae16ff7f69f05d69a424c3cec894769daddd1dfdc540"
+    },
+    {
+      "path": "packages/model/src/validation.test.ts",
+      "bytes": 6347,
+      "sha256": "1f06731f3778a4e9da7c77827caae796c3aa5ccce3d1cda4b865db39fa305c73"
+    },
+    {
+      "path": "packages/model/src/validation.ts",
+      "bytes": 12102,
+      "sha256": "db1498d496e1880fab8965b90d6f82efa6d615a3c4b297f4a123ad81b0ceff05"
+    },
+    {
+      "path": "packages/model/src/vegetation-authoring.ts",
+      "bytes": 6374,
+      "sha256": "0ee2d26456c6aa7f37d146a3afe8ba520534078a77d2a01f66db07d94f6cab61"
+    },
+    {
+      "path": "packages/model/src/vegetation-materials.ts",
+      "bytes": 2416,
+      "sha256": "08074c0e647e77268186ff1519d7744ee6a3e1e7b1b2f5242a251ecda6553595"
+    },
+    {
+      "path": "packages/model/src/vegetation-motion.ts",
+      "bytes": 1449,
+      "sha256": "ad111f597eedb1a192e2ca13fe1af49f5d581d4193a474e5fc464bb9b1adfff4"
+    },
+    {
+      "path": "packages/model/src/vegetation-products.ts",
+      "bytes": 803,
+      "sha256": "6ea23c0472f5b02678ab48f0d5e5ae7adb52bdedfe78ed1c32a34702f6158076"
+    },
+    {
+      "path": "packages/model/src/vegetation-stand.ts",
+      "bytes": 2346,
+      "sha256": "4cef0a53f63f58086b0175e0a417cb1def57c99ecdc83e579b3ecd24a3b12b06"
+    },
+    {
+      "path": "packages/model/src/visibility-products.ts",
+      "bytes": 487,
+      "sha256": "98c392794f65dc6686c386f93857a9b80939995df44a0a9db153888b3ebab719"
+    },
+    {
+      "path": "packages/model/src/water-body.ts",
+      "bytes": 6163,
+      "sha256": "f32e11f97d50574fa78848769532ac9918b61e501095ec7bd01290f7b9c61ed5"
+    },
+    {
+      "path": "packages/model/src/water-lookdev.ts",
+      "bytes": 5390,
+      "sha256": "9e85d8b334a8fa7b769284a38a70dfe0e6510e44e741d29dbd32ccca8563660c"
+    },
+    {
+      "path": "packages/model/src/water-phase.ts",
+      "bytes": 549,
+      "sha256": "f46ddd79e0840144f0621146f33f37323d7b0c4b25470e4da473e1c7468e3203"
+    },
+    {
+      "path": "packages/model/src/water-valley.ts",
+      "bytes": 3436,
+      "sha256": "a320d2226fd6015de4f4b96ca997120f363cf62ea67435a2996393d2110787ae"
+    },
+    {
+      "path": "packages/model/src/wayside-lookdev.ts",
+      "bytes": 3010,
+      "sha256": "37afd98d6bde854fb70b4d2306f45bbf8692d0a2a17a2c07e9619ec0421bb79b"
+    },
+    {
+      "path": "packages/model/src/winter-brook.ts",
+      "bytes": 4587,
+      "sha256": "b592bbe6c1c9b1fe8831399549fe00dd49f6bcedf265b2407c363010d32655da"
+    },
+    {
+      "path": "packages/model/src/world-authoring.test.ts",
+      "bytes": 2027,
+      "sha256": "d3d85b9d73c289dc1bfe9061bd699e6f79ca9bc8644793ef7aae4db5437d8636"
+    },
+    {
+      "path": "packages/model/src/world-authoring.ts",
+      "bytes": 9302,
+      "sha256": "325ca606f30d6da03f2bdc979403c06aa7ed4d26b1344e9876e3ddf3093f9c5c"
+    },
+    {
+      "path": "packages/model/src/world-construction.ts",
+      "bytes": 7027,
+      "sha256": "317c12541b66e264a0d147ac479d966967fcfa563d71acabc2989893ded179e7"
+    },
+    {
+      "path": "packages/model/src/world-path-lookdev.ts",
+      "bytes": 3471,
+      "sha256": "470b3dc9036aa33b0b95558474f0f6fbc4dd547bcce88222af56533b0b7b0bb9"
+    },
+    {
+      "path": "packages/model/src/world-path.test.ts",
+      "bytes": 2068,
+      "sha256": "cc4d6780267f63e88b348564e7fb096faa74cbf3a14161e92e1f51da9f014f25"
+    },
+    {
+      "path": "packages/model/src/world-path.ts",
+      "bytes": 4215,
+      "sha256": "c1bd5bc80d4946128482938e82170cb9097f98d7996ffdb7d7c64e3b6cebdb83"
+    },
+    {
+      "path": "packages/model/src/world-room.ts",
+      "bytes": 2004,
+      "sha256": "c0ff7d994dac59df59550814855e3976e9aefb4b85480e7e516484863f946977"
+    },
+    {
+      "path": "packages/render-webgpu/package.json",
+      "bytes": 110,
+      "sha256": "8509b613efd1995c8798242869becb42011ab9503cfe31919568cbffd0532e56"
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-cloud-noise.wgsl",
+      "bytes": 1843,
+      "sha256": "459dadb90f0409f05caed7bf25615831a69bf810a316cf8e1ad9f6e209338237"
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-cloud-reprojection.wgsl",
+      "bytes": 6095,
+      "sha256": "1429658ad1a08f35fdfabad69f74977fa90831fad8e0096a66b43a5de33c121e"
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-cloud-transport.wgsl",
+      "bytes": 1602,
+      "sha256": "6fd72f496afb11fda91b71b8347853276c9e8776e3dd7d55a36de4da4ea28f9d"
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-clouds.wgsl",
+      "bytes": 35826,
+      "sha256": "ce6410c5b5844ced02bf55091e024b0ed62fa70b2c8672aadde8d2966c91fc5b"
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-gpu.ts",
+      "bytes": 37185,
+      "sha256": "c41a6cbda13a87788968e97dcd9261949177b10ad19ef7cc7d1427832d5af9dc"
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-multiple.test.ts",
+      "bytes": 9860,
+      "sha256": "17571307bb6eef00bd64f5ae02f9c7601fadfc6f09afe2d651cc62d74e851f57"
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-multiple.wgsl",
+      "bytes": 4937,
+      "sha256": "4728312397ccdd76f3b4287ec04365e3e6dc88ea781744ec02c980703e36c8ac"
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-sky.wgsl",
+      "bytes": 8896,
+      "sha256": "8ba9baad5fcf119334a8971171ae4a1ce1832d26b65851c310a33e726d72ed84"
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere.ts",
+      "bytes": 25024,
+      "sha256": "d84f245c82044e4dd791fbe4aaf87cc08f6ba8daa77f69024e2c06cf8e148715"
+    },
+    {
+      "path": "packages/render-webgpu/src/batching.ts",
+      "bytes": 7523,
+      "sha256": "3dd850ef2e0dbe9fcaff594c12ba4f709744ad204460462b1394d45f006cc447"
+    },
+    {
+      "path": "packages/render-webgpu/src/brdf.wgsl",
+      "bytes": 6217,
+      "sha256": "74e3c5ce53e002f600c439b7263757a7b483b7db9f071e6639c2257cc84a6afb"
+    },
+    {
+      "path": "packages/render-webgpu/src/cloud-formations.test.ts",
+      "bytes": 4033,
+      "sha256": "c6ed8297b30d5cabba261db4cf3d0a1469c1c8cdbdbc3e81d24c2986fb5c67bf"
+    },
+    {
+      "path": "packages/render-webgpu/src/cloud-formations.ts",
+      "bytes": 5616,
+      "sha256": "b04fd2cc38e5b2197cfd6a1ddd54d0ab4485c60ac80ce15145a53982ff7e6df9"
+    },
+    {
+      "path": "packages/render-webgpu/src/cloud-history.test.ts",
+      "bytes": 3327,
+      "sha256": "587e5f75933bfd3d03ecc9caeeeb02fc18fe46f9c1f82694713d4f8a305803b1"
+    },
+    {
+      "path": "packages/render-webgpu/src/cloud-history.ts",
+      "bytes": 3297,
+      "sha256": "85576c008d56671d929a1d6504f1ee8af8d0cb15aaf8a60e04d9a8d4d0722413"
+    },
+    {
+      "path": "packages/render-webgpu/src/compiled-lighting.test.ts",
+      "bytes": 3684,
+      "sha256": "5239973c73435d350d8fba7ee2e1513c793d2499bb84fc38c374a56ef5d2ab0e"
+    },
+    {
+      "path": "packages/render-webgpu/src/creature-deformation.test.ts",
+      "bytes": 8531,
+      "sha256": "7803387d1e05392a10bad0cf714e34e61b9a28787e8ebb613794e18296dd473c"
+    },
+    {
+      "path": "packages/render-webgpu/src/creature-deformation.ts",
+      "bytes": 3523,
+      "sha256": "5fc3d288b545e823850cef2c0c804e0e4762050bcdb81cb1dc7dfb385e78a80b"
+    },
+    {
+      "path": "packages/render-webgpu/src/creature-material.test.ts",
+      "bytes": 5143,
+      "sha256": "d8ab5c9eb4d9db6bf8c5264a4bf3aea057459361e5534b5051156b3c5fb51f7d"
+    },
+    {
+      "path": "packages/render-webgpu/src/creature-material.ts",
+      "bytes": 3694,
+      "sha256": "eba1f8425970a147899aea57b06b2e498bd3cbc365ae88efcf01c0aca0a93475"
+    },
+    {
+      "path": "packages/render-webgpu/src/creature-material.wgsl",
+      "bytes": 3833,
+      "sha256": "4ff7ee9ec68d14483e83a6e0789e13fefd6c483e8f41e008597b28bc9bf714d1"
+    },
+    {
+      "path": "packages/render-webgpu/src/default-atmosphere.json",
+      "bytes": 217503,
+      "sha256": "c087bcf0b6c7eab9903980607f574a80502380962d04143c49c560acf46cb459"
+    },
+    {
+      "path": "packages/render-webgpu/src/detail.test.ts",
+      "bytes": 5010,
+      "sha256": "42838526d865869770726f3adad4cddaf03025ede51e75e493a03db0c3160f5b"
+    },
+    {
+      "path": "packages/render-webgpu/src/detail.ts",
+      "bytes": 4727,
+      "sha256": "8db3932bda1d8a9015fc2488eedac795953363aef487b0d55cc3d8b8a462dfe3"
+    },
+    {
+      "path": "packages/render-webgpu/src/display.wgsl",
+      "bytes": 2297,
+      "sha256": "66ce0f5f753804fe40dde0329beecb457d9f1c18910a02f9f28b887bc06974b8"
+    },
+    {
+      "path": "packages/render-webgpu/src/environment-reflection.ts",
+      "bytes": 6925,
+      "sha256": "940583eca3beecd6e80efaec9635bd113e0465950133f8265f94dcdf3eaeb38e"
+    },
+    {
+      "path": "packages/render-webgpu/src/finite-sun.ts",
+      "bytes": 7336,
+      "sha256": "b04cf7a7b8bcb38353fe721072b90dc97da7ad2f52ac4ac8194d55df80e2a0d7"
+    },
+    {
+      "path": "packages/render-webgpu/src/foliage.test.ts",
+      "bytes": 2096,
+      "sha256": "6c76f26a10334b0e1f10cbd30f3276a6429a2ad0c387260072a7895e24074e45"
+    },
+    {
+      "path": "packages/render-webgpu/src/foliage.ts",
+      "bytes": 1695,
+      "sha256": "8ddd2a1af23b45b99cab9f780fdc2bbce9b5014e8ff51be4ac7361a6572df9cd"
+    },
+    {
+      "path": "packages/render-webgpu/src/foliage.wgsl",
+      "bytes": 899,
+      "sha256": "d08cea666977119dadc1bc278927499a5bd3c2130cfb85900c7f45eebed922f0"
+    },
+    {
+      "path": "packages/render-webgpu/src/gpu-timing.test.ts",
+      "bytes": 3320,
+      "sha256": "78a1dd545892aefa678d9e5251493c9aef56999bcd5fc41b6d4df21695d7aad1"
+    },
+    {
+      "path": "packages/render-webgpu/src/gpu-timing.ts",
+      "bytes": 2254,
+      "sha256": "86fed8a3194250e5230ca55bad83c77dfcacfe873df5d9f35e4f60385ed0831a"
+    },
+    {
+      "path": "packages/render-webgpu/src/gpu-visibility.test.ts",
+      "bytes": 2373,
+      "sha256": "63366506d5a5c8bf0d1ea312ba1f61679f5a73f490b9f29adeb597996d1ebd91"
+    },
+    {
+      "path": "packages/render-webgpu/src/gpu-visibility.ts",
+      "bytes": 19588,
+      "sha256": "09ef630f2049b034f68bd88bf6190750eadd5907bb2e4369ae31326cd00a6c39"
+    },
+    {
+      "path": "packages/render-webgpu/src/hi-z.ts",
+      "bytes": 2891,
+      "sha256": "4777f06f6ad9736de68ff39b582029da7ee5aa57a6a08f56112019ddd2a8fb48"
+    },
+    {
+      "path": "packages/render-webgpu/src/index.ts",
+      "bytes": 118621,
+      "sha256": "98929d0971f08f1f6004dcc1100d4cc3f565d630a1fe18926ac015651790db0e"
+    },
+    {
+      "path": "packages/render-webgpu/src/indirect.test.ts",
+      "bytes": 988,
+      "sha256": "a710846672dba44f52859d761b22014a1c4747ea01bc9dc25ba4b97415680597"
+    },
+    {
+      "path": "packages/render-webgpu/src/indirect.ts",
+      "bytes": 8282,
+      "sha256": "cf5a0dee670d6e368d672ee0a8d6393fc2fda7a3cf731fcfca49752990a41ede"
+    },
+    {
+      "path": "packages/render-webgpu/src/indirect.wgsl",
+      "bytes": 4916,
+      "sha256": "87655982e4766a83311f5b1a7f82c5bd6f7aec68cb6da4d679c112fb9eb5c2e4"
+    },
+    {
+      "path": "packages/render-webgpu/src/irradiance.ts",
+      "bytes": 2080,
+      "sha256": "aadbef50e2cb354c5f684b65e2f7c9394b318de48cbf19f11aaf88b46aa0ff57"
+    },
+    {
+      "path": "packages/render-webgpu/src/local-lighting.test.ts",
+      "bytes": 3992,
+      "sha256": "7d192ad5cd94a5b1af6d1afc48e8788295826a003b2f91fc0647bcbdd8d8821b"
+    },
+    {
+      "path": "packages/render-webgpu/src/local-lighting.ts",
+      "bytes": 9264,
+      "sha256": "596b029b1252cd432e75e81f4cad5fde189d8a66d0ed11395968746b98886cc0"
+    },
+    {
+      "path": "packages/render-webgpu/src/material-lattice.ts",
+      "bytes": 2305,
+      "sha256": "af06d540c6175d97017f04d35eebda92cd1820ca9f40a5f71f7347a3ce9f4395"
+    },
+    {
+      "path": "packages/render-webgpu/src/material-lattice.wgsl",
+      "bytes": 808,
+      "sha256": "ca56efd7aa9923d0f8733d4528a6da1128fc12eecc9f70a73caa34b98de6290e"
+    },
+    {
+      "path": "packages/render-webgpu/src/material-specialization.test.ts",
+      "bytes": 2139,
+      "sha256": "671c524c591d383ec0b076815d9090e62d3615bac75c450cd0f4f75ed7135647"
+    },
+    {
+      "path": "packages/render-webgpu/src/material-specialization.ts",
+      "bytes": 3216,
+      "sha256": "6a9cab95271ac5e2d6ecb887f1d4e257530eee83de34d18e853e8acdc84bd36e"
+    },
+    {
+      "path": "packages/render-webgpu/src/math.ts",
+      "bytes": 2186,
+      "sha256": "5e6945b90cb89169ef3396e0276bf04d3c7acaff0fff49037253b01d1732ee94"
+    },
+    {
+      "path": "packages/render-webgpu/src/opaque-visibility.test.ts",
+      "bytes": 5878,
+      "sha256": "0798d1ab6a8ce806e01ff60da3bfe00b9ae888aea6a8586450740865cbf7321f"
+    },
+    {
+      "path": "packages/render-webgpu/src/opaque-visibility.ts",
+      "bytes": 11386,
+      "sha256": "4836e5665c79f20020f60e19674dd7bc0143ac6df31dd0ab960a996275eb6e47"
+    },
+    {
+      "path": "packages/render-webgpu/src/packing.ts",
+      "bytes": 8508,
+      "sha256": "0a022daab8665dd0d1d4c2986277ac2d7cc6603bb4efba84fa11979bf31cc241"
+    },
+    {
+      "path": "packages/render-webgpu/src/periodic-material.test.ts",
+      "bytes": 1091,
+      "sha256": "dc39b5fec35ac2b796e012d4d50541d735bed40f33e6e9679c0b0c1b68772006"
+    },
+    {
+      "path": "packages/render-webgpu/src/primitive.test.ts",
+      "bytes": 6948,
+      "sha256": "7898fbfbba52cc4b17a7dc43b0c2ef6b321541a3bdb04425b8aaf80cb5aaf47f"
+    },
+    {
+      "path": "packages/render-webgpu/src/primitive.ts",
+      "bytes": 6548,
+      "sha256": "d7ea26b692cb61f25829f5e9686fcb6053db6534454285bf19bd9c8cecfa75d2"
+    },
+    {
+      "path": "packages/render-webgpu/src/primitive.wgsl",
+      "bytes": 5451,
+      "sha256": "02f7ec03e5252253ac85487ca5bf532a699d71fa69b4221399fd2907fcfb56ed"
+    },
+    {
+      "path": "packages/render-webgpu/src/quality.ts",
+      "bytes": 1095,
+      "sha256": "c80eb1bb072bd5f6405ebf7248c9b7b199155448095bda561d32269bef1a5292"
+    },
+    {
+      "path": "packages/render-webgpu/src/realization.test.ts",
+      "bytes": 7883,
+      "sha256": "f261e5030e63e4de2a9347e63be850dc40b7dbaf95ac8b71555a9d6bb2fd4a74"
+    },
+    {
+      "path": "packages/render-webgpu/src/realization.ts",
+      "bytes": 14409,
+      "sha256": "68c712d98e8fb4cda3251d8eccfbb8561d149c05a4202faca6f9dca0a1cdcef0"
+    },
+    {
+      "path": "packages/render-webgpu/src/renderer.test.ts",
+      "bytes": 10540,
+      "sha256": "1d0a86fadde3dd49c4b4419ed9409ddff0566e3c6a463b11860c2d89f1ceb742"
+    },
+    {
+      "path": "packages/render-webgpu/src/residency.test.ts",
+      "bytes": 23196,
+      "sha256": "9886d2355d1f586c5994ef83f5e7ccbfe399163ae7fbe678a943ff6ab5de023a"
+    },
+    {
+      "path": "packages/render-webgpu/src/scene.wgsl",
+      "bytes": 29434,
+      "sha256": "6dae24a1ea15512a0d11f6b20f12d283e3f52bb11224bbcf4aa108b33967212d"
+    },
+    {
+      "path": "packages/render-webgpu/src/shader.ts",
+      "bytes": 1698,
+      "sha256": "91d93ca3dbb10fc7bdf415d818862822d3e19c7d6f4d3f47e8366c1fd0f33d03"
+    },
+    {
+      "path": "packages/render-webgpu/src/shadows.ts",
+      "bytes": 1850,
+      "sha256": "25e4c36502b379a11624767dea8eaf81b43a927182b8e4252fb36c5bd24cdd73"
+    },
+    {
+      "path": "packages/render-webgpu/src/shoot-geometry-pool.test.ts",
+      "bytes": 1126,
+      "sha256": "efb300b2daabdfd235e213ba76afece648e7c482ebc6a3244fd521248ab26fd8"
+    },
+    {
+      "path": "packages/render-webgpu/src/shoot-geometry-pool.ts",
+      "bytes": 2016,
+      "sha256": "52badc3f75d1dd5ab4f0485e5d622bd213a3bcf901834fae4c346a24e4ed5e62"
+    },
+    {
+      "path": "packages/render-webgpu/src/shoot-selection.test.ts",
+      "bytes": 6388,
+      "sha256": "b31ff329e6729f081d545f7306d8e9cb2c51b557922274d73691aca08d36117f"
+    },
+    {
+      "path": "packages/render-webgpu/src/shoot-selection.ts",
+      "bytes": 9104,
+      "sha256": "d1a7fcb06b928c4149bc5fbec59b4a18f48fcf0a2e3da62cf274b0e33dd5fa46"
+    },
+    {
+      "path": "packages/render-webgpu/src/surface-appearance.test.ts",
+      "bytes": 4978,
+      "sha256": "285bf120eefb5bdba957b64b4246ae8f63495132bb1eae588a079e712a4fcac6"
+    },
+    {
+      "path": "packages/render-webgpu/src/surface-appearance.ts",
+      "bytes": 3293,
+      "sha256": "ab86ee69b06362fbda04a3453c1ec0bb15a2b10d27bc1986879bd849a28d122b"
+    },
+    {
+      "path": "packages/render-webgpu/src/surface-appearance.wgsl",
+      "bytes": 9529,
+      "sha256": "7d9534a12547e1005c299fe9f9be0280a181c514b1e422e97129dd021d17ff6f"
+    },
+    {
+      "path": "packages/render-webgpu/src/surface-relief.wgsl",
+      "bytes": 3091,
+      "sha256": "9ac2169a3ed05b82f348145fac43b565ad28c4801cbf1c00e59079daff429069"
+    },
+    {
+      "path": "packages/render-webgpu/src/temporal-display.wgsl",
+      "bytes": 794,
+      "sha256": "d1973ebb3bd368211990aee32384a500e0e694058ba49cb18cf1f69819f75031"
+    },
+    {
+      "path": "packages/render-webgpu/src/temporal-resolve.wgsl",
+      "bytes": 2593,
+      "sha256": "c9674d827428f761c4aaef346786351e4980cf6c5106cac7af25deba025cb808"
+    },
+    {
+      "path": "packages/render-webgpu/src/temporal.test.ts",
+      "bytes": 1117,
+      "sha256": "e171f2af6a2cf3abf302a822708f1b2f21f25983125b45357809980426e920da"
+    },
+    {
+      "path": "packages/render-webgpu/src/temporal.ts",
+      "bytes": 7784,
+      "sha256": "e11535cf816ef2ef4807cc9ece02dddc6a413bdf1542921d81774916467d7776"
+    },
+    {
+      "path": "packages/render-webgpu/src/temporal.wgsl",
+      "bytes": 1234,
+      "sha256": "fffc214cf8ea6cd27bfee262970582c5d6145c9b2a0cddbf7315ba4e958db1c9"
+    },
+    {
+      "path": "packages/render-webgpu/src/thin-coverage-pool.test.ts",
+      "bytes": 1341,
+      "sha256": "55d481e2d0cf74ee9f83d79174b7017f26cd1777e3e288bd91c816390024b821"
+    },
+    {
+      "path": "packages/render-webgpu/src/thin-coverage-pool.ts",
+      "bytes": 1691,
+      "sha256": "cc44496c44a61817b79b17b511f15848b6d7cac135a530d845ab5f091c0fb6bd"
+    },
+    {
+      "path": "packages/render-webgpu/src/thin-coverage-sampling.test.ts",
+      "bytes": 1907,
+      "sha256": "bb2b6932fb95c68cca11c54691f6a34b902f9d49d13266a59b0ad547fc6da729"
+    },
+    {
+      "path": "packages/render-webgpu/src/thin-coverage-sampling.ts",
+      "bytes": 1255,
+      "sha256": "80b8c556fea61bbf1bf27d7246193b14d0ff2c11461e1eac4d5c334207e01e59"
+    },
+    {
+      "path": "packages/render-webgpu/src/thin-coverage.test.ts",
+      "bytes": 4600,
+      "sha256": "9df491197864dbfcf66c29b7916cd27779856f1a0c9ebe447cd4fe93ab3c8d93"
+    },
+    {
+      "path": "packages/render-webgpu/src/thin-coverage.ts",
+      "bytes": 3358,
+      "sha256": "8167379dded89d7a55d9d700107aac68cca6268d8c30d3208a7bc555020321e6"
+    },
+    {
+      "path": "packages/render-webgpu/src/thin-coverage.wgsl",
+      "bytes": 3798,
+      "sha256": "aeb5380c0edaaa5010a21e49a1cb865bdee6691f9a94bb89e812980774da4139"
+    },
+    {
+      "path": "packages/render-webgpu/src/transport.ts",
+      "bytes": 5162,
+      "sha256": "e92d739ffc9d3c262ea6f1991019a6c199d2bc7998cfd6a62129de09afd782ed"
+    },
+    {
+      "path": "packages/render-webgpu/src/vegetation-selection.test.ts",
+      "bytes": 1941,
+      "sha256": "73a64cc919eb28c5cf4c275a51c4dff06ee99a4f8a0794120cb0ec0088a28ced"
+    },
+    {
+      "path": "packages/render-webgpu/src/vegetation-selection.ts",
+      "bytes": 3004,
+      "sha256": "e362e66b574c002888365917b04b0aadd6f624adf7e73b65575bcc59057f5cdd"
+    },
+    {
+      "path": "packages/render-webgpu/src/vegetation-wind-review.test.ts",
+      "bytes": 2123,
+      "sha256": "b761fa6829c206f90499dcbfa12345775d3f68119039350100032bfdea4f6e46"
+    },
+    {
+      "path": "packages/render-webgpu/src/vertex-layout.test.ts",
+      "bytes": 5399,
+      "sha256": "89a47cdbeb9ffcab8cfdf200dc53c0e4c65d9daf35bc6dbed4da5e05f06b2af8"
+    },
+    {
+      "path": "packages/render-webgpu/src/vertex-layout.ts",
+      "bytes": 1303,
+      "sha256": "56807df5046cf09c75c9d046211ac04b26080bec1718830d3bdc12038e319661"
+    },
+    {
+      "path": "packages/render-webgpu/src/visibility.test.ts",
+      "bytes": 8983,
+      "sha256": "f1112b7e939d8112c6056ab4cb22ce61d60f1ac012c12f2a7d6fff84a2174bd6"
+    },
+    {
+      "path": "packages/render-webgpu/src/visibility.ts",
+      "bytes": 11087,
+      "sha256": "b123453b2a31769ca6b0b738dbcf1704718faeee1169d34a48604811aa06f2fb"
+    },
+    {
+      "path": "packages/render-webgpu/src/water-body.ts",
+      "bytes": 7434,
+      "sha256": "75540fd4682e3415b4d5f64c95d70997d6d9a87d58ec8aad26ea01741c5232da"
+    },
+    {
+      "path": "packages/render-webgpu/src/water-body.wgsl",
+      "bytes": 15724,
+      "sha256": "9afa041a049b9960eae168fe5e3dfe6e790715b439a8f6a84eba4d59361e1f23"
+    },
+    {
+      "path": "packages/render-webgpu/src/water-budget.ts",
+      "bytes": 2179,
+      "sha256": "5a1a18ef7af876e2d1078831a81612e026569d93b9695286b9007f70d2584834"
+    },
+    {
+      "path": "packages/render-webgpu/src/water-glints.wgsl",
+      "bytes": 5348,
+      "sha256": "93568981acf8741591fb2b7162f9be9d7bb754913e50a163bc0d8dc41c8adeb4"
+    },
+    {
+      "path": "packages/render-webgpu/src/water-packing.test.ts",
+      "bytes": 1812,
+      "sha256": "f0f3bc3bf988e15bc8e10eba2012d0476c6c27f8f39f630addfef91050a97140"
+    },
+    {
+      "path": "packages/render-webgpu/src/water-spectrum-gpu.ts",
+      "bytes": 15444,
+      "sha256": "562f445fb31606247505b41be249a5b347da9e6b7d1c505a3eb2246a1fc97d47"
+    },
+    {
+      "path": "packages/render-webgpu/src/water-transport.test.ts",
+      "bytes": 3896,
+      "sha256": "046eebfe5ab0bbd251ea0f7b51b7f294431d297636fcb96ec8c52afa7e605c9e"
+    },
+    {
+      "path": "packages/render-webgpu/src/water-transport.ts",
+      "bytes": 9138,
+      "sha256": "721cd23e76b9cab9a248b7dc4460b264a26b0c857a83fd597796da7ba5975a33"
+    },
+    {
+      "path": "packages/render-webgpu/src/water-transport.wgsl",
+      "bytes": 11092,
+      "sha256": "e1d5879fcb475d460fcf13a1657a0839e6dec67338c572b23e1fdd7d07490a93"
+    },
+    {
+      "path": "packages/render-webgpu/src/water.wgsl",
+      "bytes": 33560,
+      "sha256": "48cebc005fd9c172d11e244d5a5b8ba0e669c952fe18a97439734522c41c3669"
+    },
+    {
+      "path": "packages/render-webgpu/src/wgsl.d.ts",
+      "bytes": 77,
+      "sha256": "645402c256873ccec5802a04b86583f5997adc3cd8eee4f481caee8834ba0fff"
+    },
+    {
+      "path": "packages/render-webgpu/src/woven-material.wgsl",
+      "bytes": 1107,
+      "sha256": "d0d4cdd3f468925e1d394afa56050e6207b8430321ff34e154ed10f49c65d9cc"
+    },
+    {
+      "path": "packages/runtime/package.json",
+      "bytes": 104,
+      "sha256": "e5ab82b32bda5ce37b240568cadecd79b58386cadb9c975c35d035622cfcb105"
+    },
+    {
+      "path": "packages/runtime/src/animation.ts",
+      "bytes": 7841,
+      "sha256": "dd00e1ecbb0184023e0695218d75c98a5a06ebd698f657f7aa81c9150c13ba5c"
+    },
+    {
+      "path": "packages/runtime/src/architecture.test.ts",
+      "bytes": 15113,
+      "sha256": "4f7e5fe68be00081abab437eda9523603eeee84df639a57b0475fbaf5c12f2ae"
+    },
+    {
+      "path": "packages/runtime/src/artifact-memory.ts",
+      "bytes": 5014,
+      "sha256": "927ac7d7095c23a5ad3c3ad87fa1507ab6d61c66570a8d9c770befacfe9a6cc8"
+    },
+    {
+      "path": "packages/runtime/src/assembly-motion.test.ts",
+      "bytes": 11536,
+      "sha256": "3d65c91cef637544bc763da880833a0e163e001aa938836d1ac7af371e9cb7ea"
+    },
+    {
+      "path": "packages/runtime/src/assembly-motion.ts",
+      "bytes": 12768,
+      "sha256": "391182089b613216d99a62247fe81253a84836ac20451768ab18e8e3268ba0cc"
+    },
+    {
+      "path": "packages/runtime/src/assembly-overrides.test.ts",
+      "bytes": 3429,
+      "sha256": "a8b3a342a5ab4aff13c3ee4b37a456d11b005d5510998d49a76bff7a0d723bdd"
+    },
+    {
+      "path": "packages/runtime/src/assembly-reprepare.test.ts",
+      "bytes": 3368,
+      "sha256": "6261d97633363d32e3cdf92b22b81804a7c5e1843f1b835f88d6063bcc9eaff8"
+    },
+    {
+      "path": "packages/runtime/src/assembly-state.ts",
+      "bytes": 1814,
+      "sha256": "f9812043304ac6a3de6f09d8b70d84448d1830c1bcdc369f929e1c1b8c62b3ec"
+    },
+    {
+      "path": "packages/runtime/src/character-motion-lookdev.test.ts",
+      "bytes": 2587,
+      "sha256": "de4b56cba33edca5b0ea11abfe3a099ee9d3244889b4b7ad40ba0e035f6d2254"
+    },
+    {
+      "path": "packages/runtime/src/clock.ts",
+      "bytes": 1195,
+      "sha256": "c13f3bef9467ad933c353c68115ed208c52f5c387e06f95792d10ebdf1452e21"
+    },
+    {
+      "path": "packages/runtime/src/collision-realization.ts",
+      "bytes": 829,
+      "sha256": "be199a5c64ecb3900fc4019cc95f8897b73f46731a6efe5c397dd78124d3758b"
+    },
+    {
+      "path": "packages/runtime/src/creature-articulation.test.ts",
+      "bytes": 8490,
+      "sha256": "bbaf768cada878e741e88a25c8867da561552f98558c7cd3611d7e7db4d865f4"
+    },
+    {
+      "path": "packages/runtime/src/creature-articulation.ts",
+      "bytes": 19640,
+      "sha256": "a0440d9ebb48ceab5cafb0554985b9edeee3b6d8f7555fbb81ba549a7126fff1"
+    },
+    {
+      "path": "packages/runtime/src/creature-cloth.test.ts",
+      "bytes": 11713,
+      "sha256": "9f1d475ddc1ce65459384b2d8c5239433bb8a31c238bf990d4a642ba0a83de26"
+    },
+    {
+      "path": "packages/runtime/src/creature-cloth.ts",
+      "bytes": 23225,
+      "sha256": "9d38e2f7fc69652c8e7463c0501263776e5f98d221422862e63cf92e1fc99402"
+    },
+    {
+      "path": "packages/runtime/src/creature-deformation.test.ts",
+      "bytes": 5944,
+      "sha256": "db8af7ff4a2c5f5ca7d8bcfd6a1a217b1c5265ecaa04a03a7183d37c2cf34fd5"
+    },
+    {
+      "path": "packages/runtime/src/creature-deformation.ts",
+      "bytes": 7327,
+      "sha256": "131944e77761c5cdc0206b3e9dc4eb39f97398a19789bdcf03f3b5824cbfe13d"
+    },
+    {
+      "path": "packages/runtime/src/creature-detail.test.ts",
+      "bytes": 11370,
+      "sha256": "beaf7240bcfb2eacdcd3e6721ac30e4a657b77624a93afef1b40a3c9b65268ac"
+    },
+    {
+      "path": "packages/runtime/src/creature-detail.ts",
+      "bytes": 10285,
+      "sha256": "d5b38b40f622f70c3a1401db38408caf92582dd17256e538ad5583942a1d4d34"
+    },
+    {
+      "path": "packages/runtime/src/creature-groom.ts",
+      "bytes": 14324,
+      "sha256": "f3de74855c05f2d3ecd9c969a7e75cbe9b855d78fac05eca94cd824022d35b2e"
+    },
+    {
+      "path": "packages/runtime/src/creature-grounding-host.test.ts",
+      "bytes": 2824,
+      "sha256": "f015ba49ffc69f2bdfa2d11e43487c487d32ffc0219e1f105ca0069a97187453"
+    },
+    {
+      "path": "packages/runtime/src/creature-inspection.test.ts",
+      "bytes": 6343,
+      "sha256": "f882731eeb75841cc1a7c2b12576429a1320b010c094661c91894a04d4ba6440"
+    },
+    {
+      "path": "packages/runtime/src/creature-inspection.ts",
+      "bytes": 7905,
+      "sha256": "685ce765020de5d6f3df79ea8763592e15c291b3701fd4592489dd9ee9a414fd"
+    },
+    {
+      "path": "packages/runtime/src/creature-motion-audit.test.ts",
+      "bytes": 1117,
+      "sha256": "40367d557841415e95b8227e227f492e7e8f6992c84802d5375040485a680e42"
+    },
+    {
+      "path": "packages/runtime/src/creature-motion-audit.ts",
+      "bytes": 4640,
+      "sha256": "24902e9c781e8755bf282a6c18ffaf9d6fc71b7aa704b8c366d52a139d42da9b"
+    },
+    {
+      "path": "packages/runtime/src/creature-review.test.ts",
+      "bytes": 2858,
+      "sha256": "0d52507c7da38c1c62705843aefb1d2166ab5d39bfcd1c564ab21669eb1ff325"
+    },
+    {
+      "path": "packages/runtime/src/creature-review.ts",
+      "bytes": 11315,
+      "sha256": "159d9bfd4d0b67a664592eb046266876101e7ebcc16eaee17836d8f69719f3ab"
+    },
+    {
+      "path": "packages/runtime/src/creature-runtime.test.ts",
+      "bytes": 17616,
+      "sha256": "fb79cc5a90f06db072ed10255d391a4fbceec3452a437e8ed0f74f8a04c40f6e"
+    },
+    {
+      "path": "packages/runtime/src/creature-runtime.ts",
+      "bytes": 30605,
+      "sha256": "8da1dc9a1f60fb5d80a9ad8b28d44568b11e21f0fa9d4de0cf1c0c045b41318c"
+    },
+    {
+      "path": "packages/runtime/src/creature-session.test.ts",
+      "bytes": 8209,
+      "sha256": "d3c23bef0ba807b9dcc111ae566d609c1bd42d97ae89cecdb5e474416290a3a9"
+    },
+    {
+      "path": "packages/runtime/src/diagnostics.test.ts",
+      "bytes": 5803,
+      "sha256": "fa4675b7a49439cde73a25981e88bc99788f169843d5f252f9dcb44d9e7916e9"
+    },
+    {
+      "path": "packages/runtime/src/diagnostics.ts",
+      "bytes": 6086,
+      "sha256": "be0ff2c5569dcbcc0bc4e35a292c6c0a70056b99fd538d0fcc44fe599e8969ba"
+    },
+    {
+      "path": "packages/runtime/src/environment-authoring.test.ts",
+      "bytes": 12836,
+      "sha256": "1d93388c3bb582f1e61e5c6e4e44b1c440c5724e56e18a33047974ce0101cb9e"
+    },
+    {
+      "path": "packages/runtime/src/environment-state.ts",
+      "bytes": 9087,
+      "sha256": "432f19e0f1c1ad3a9283c03a1f9e1e252bafe3bc4bd0d14091ec3ab005d487b3"
+    },
+    {
+      "path": "packages/runtime/src/environment-water-host.test.ts",
+      "bytes": 4937,
+      "sha256": "165c90a2a827b3c6439df42e6458d4c6fd469a681eed7ade88895f15960411b8"
+    },
+    {
+      "path": "packages/runtime/src/environment.test.ts",
+      "bytes": 1228,
+      "sha256": "f724c5c59b6ec48e7fd11b63adc64b9d590ac37811ba6e678d199fbd4758e64d"
+    },
+    {
+      "path": "packages/runtime/src/environment.ts",
+      "bytes": 7756,
+      "sha256": "f0640c9f68cb36d495eb50993f1a599c7d77c26a2c8b018f96e1d88b97c5c460"
+    },
+    {
+      "path": "packages/runtime/src/game/creature-encounter.test.ts",
+      "bytes": 6210,
+      "sha256": "d8d40919cc529955e3727ce852e2c554add3e63d111b1684cb9310cd7da15345"
+    },
+    {
+      "path": "packages/runtime/src/game/creature-encounter.ts",
+      "bytes": 15939,
+      "sha256": "967dc2cf403278819328fa300b34fe9bd3fa0c74b8718072f41f9be00bd5571b"
+    },
+    {
+      "path": "packages/runtime/src/game/winter-valley.integration.test.ts",
+      "bytes": 3048,
+      "sha256": "5167499a1c10eb33997431d2dc25ed40dd61f565960cc70be1189d2dd89f0c76"
+    },
+    {
+      "path": "packages/runtime/src/game/winter-valley.test.ts",
+      "bytes": 2037,
+      "sha256": "d904abb361b7351039de4bed41a50667da71fcb1674e168720f72f525489d7fe"
+    },
+    {
+      "path": "packages/runtime/src/game/winter-valley.ts",
+      "bytes": 5430,
+      "sha256": "110436550d9b0c49a2cde90492c18e1691af736adb8b7e12933951f28d984656"
+    },
+    {
+      "path": "packages/runtime/src/geology-physics.test.ts",
+      "bytes": 3937,
+      "sha256": "62fe7a9f45cde9490ddeb3f02cb90e9249e80d81234bc16c6731379d9818f4ee"
+    },
+    {
+      "path": "packages/runtime/src/geology-preview.test.ts",
+      "bytes": 4919,
+      "sha256": "0a862d4055df0a7b5e7b3f65ebad845ff687fb81eb3602ba190b08d52d380c7f"
+    },
+    {
+      "path": "packages/runtime/src/geology-preview.ts",
+      "bytes": 2056,
+      "sha256": "54417d7b804dad319dbbd87889e21749ae83fd32da0af090dcb94cd4bbf4456d"
+    },
+    {
+      "path": "packages/runtime/src/groom-material.test.ts",
+      "bytes": 2096,
+      "sha256": "e8e66ec9c711852a529c4a08bcc57015381c03bda17888202ec8daa0e3de53c0"
+    },
+    {
+      "path": "packages/runtime/src/groom-material.ts",
+      "bytes": 858,
+      "sha256": "5fa596df57643a20c49cb30134edaa043a1822801ff42af186f64c47e71bfc00"
+    },
+    {
+      "path": "packages/runtime/src/index.ts",
+      "bytes": 1100,
+      "sha256": "5cffb61a4a6206ef749acc652e4edd5c77168a3207613728d43548785d5dd28d"
+    },
+    {
+      "path": "packages/runtime/src/indirect-lighting.test.ts",
+      "bytes": 8144,
+      "sha256": "8ddb5a8354c4cd92752a18cfd918245e3869be0d9ae5bd6fcf51b94f148250b6"
+    },
+    {
+      "path": "packages/runtime/src/indirect-lighting.ts",
+      "bytes": 11589,
+      "sha256": "075937f29a8ce348d51b4d79764b1c0926107c78968d509c61e2881dd3ad5bb7"
+    },
+    {
+      "path": "packages/runtime/src/lifecycle.ts",
+      "bytes": 1420,
+      "sha256": "a7580b031c9b24ed4c1bb5e677b9af66cb340f882cba73ebc92e544f07293ef2"
+    },
+    {
+      "path": "packages/runtime/src/motion-events.ts",
+      "bytes": 3007,
+      "sha256": "43955608f6362b79b5135c83b2e33ad69acd73583a0d7684f3b5c7afe89dca28"
+    },
+    {
+      "path": "packages/runtime/src/performance-integration.test.ts",
+      "bytes": 8478,
+      "sha256": "8c35530db0f67d38bd9bf4973be416a30d4316185221b346aa7f8b3da577fab7"
+    },
+    {
+      "path": "packages/runtime/src/performance.test.ts",
+      "bytes": 7706,
+      "sha256": "404b89637214f62e73723c4a5696b57d2399ec1501ea1aa6d1b4081edc0cfabc"
+    },
+    {
+      "path": "packages/runtime/src/performance.ts",
+      "bytes": 10887,
+      "sha256": "4ab9ddab666b4aad4f212e29b6b9f134e36f211787548f90fdc1182d867664a2"
+    },
+    {
+      "path": "packages/runtime/src/periodic-material.test.ts",
+      "bytes": 738,
+      "sha256": "356dbadeb9c3b65aba792b494d2707ac28dadd20cc4f3bda6ab6e153b1215282"
+    },
+    {
+      "path": "packages/runtime/src/physics.ts",
+      "bytes": 31857,
+      "sha256": "0ef37e0f435fe7ec08ad6be314c57a5556bab085eb656c2939580c5c14201747"
+    },
+    {
+      "path": "packages/runtime/src/picking.test.ts",
+      "bytes": 6974,
+      "sha256": "e37f0056548d7ede2e6acd753e84f4a274f8804902ef73bd7569052790d1d35d"
+    },
+    {
+      "path": "packages/runtime/src/picking.ts",
+      "bytes": 13822,
+      "sha256": "aa200ebeb9363e99a653059cdbf6c60e7120c69806f556b7088f1262ace7ecf5"
+    },
+    {
+      "path": "packages/runtime/src/runtime.test.ts",
+      "bytes": 23781,
+      "sha256": "4c364195daef6928f028a7d81aa612be59bc6534ee9df7863edcc511380c55dd"
+    },
+    {
+      "path": "packages/runtime/src/save-migration.ts",
+      "bytes": 2113,
+      "sha256": "a8cd7f523960db84e5846954196257067c921d64c60a9a91e32442aa70ea3abd"
+    },
+    {
+      "path": "packages/runtime/src/scene-host-indirect.test.ts",
+      "bytes": 1479,
+      "sha256": "5b2ecc1b0d762171ed4321397003101eaa697bb3aa35106ff93ca9f0fd45fdea"
+    },
+    {
+      "path": "packages/runtime/src/scene-host.ts",
+      "bytes": 62541,
+      "sha256": "9d3e444a1dad6eee56fde00d8a3e79461608321c7cd0d993266142d2592d492d"
+    },
+    {
+      "path": "packages/runtime/src/session.ts",
+      "bytes": 85521,
+      "sha256": "d8b2bfc8fdee221d40b4e94aff624445aca61c4228ae7a184e5db1d1f2a46899"
+    },
+    {
+      "path": "packages/runtime/src/surface-appearance.test.ts",
+      "bytes": 5563,
+      "sha256": "cde9a6abf75281c4794fd78ffbb743c77acc1a43a8ea8cd330b3b00bc8f015c1"
+    },
+    {
+      "path": "packages/runtime/src/surface-appearance.ts",
+      "bytes": 5294,
+      "sha256": "7b4fa767ed11029830221550afa735476d6f4b21ab0aa04e48b5b6a7e35add94"
+    },
+    {
+      "path": "packages/runtime/src/surface-relief.test.ts",
+      "bytes": 8379,
+      "sha256": "4c45d57dad2ee1a9d5d504b5993e252e5ea9e11ccfb60789a6325236c5e59580"
+    },
+    {
+      "path": "packages/runtime/src/surface-relief.ts",
+      "bytes": 14430,
+      "sha256": "2c16c445048fe2c4924914b133a66071375c0eaa7c8b52b4dfde7704fec81e46"
+    },
+    {
+      "path": "packages/runtime/src/vegetation-growth.test.ts",
+      "bytes": 4796,
+      "sha256": "8a3980482db8bcecaab585b5f8fc083f21d3b0cff47b522d29f964aa7d7fbe48"
+    },
+    {
+      "path": "packages/runtime/src/vegetation-growth.ts",
+      "bytes": 151,
+      "sha256": "3729847fac088c74fca1734284d6ad5cfacf1daaec1896bdb0a40c252086fe0d"
+    },
+    {
+      "path": "packages/runtime/src/water-body.test.ts",
+      "bytes": 6443,
+      "sha256": "1f9646dc223b18d048d2f35121846375d580de64eb3eda838234e143fcaf4ac2"
+    },
+    {
+      "path": "packages/runtime/src/water-body.ts",
+      "bytes": 2092,
+      "sha256": "90d5354acbac5a958897e0fa7beff7d946a154172b2864f7b0b7e8b8d3c290e0"
+    },
+    {
+      "path": "packages/runtime/src/water-simulation.test.ts",
+      "bytes": 4595,
+      "sha256": "336b2aa939d73ac7f4d91cd1a2796eed626101924864ac148cc8882079a0235e"
+    },
+    {
+      "path": "packages/runtime/src/water-simulation.ts",
+      "bytes": 17375,
+      "sha256": "fced1d7b6523ae41c31cb8ffdf5354ef0fb2f6507b76f54462093e72e4daa1f9"
+    },
+    {
+      "path": "packages/runtime/src/world-composition.test.ts",
+      "bytes": 4657,
+      "sha256": "2852b7d35ad6f3537a706a2fd76527788cd07b37371d4c0b6de3d3567313b1fa"
+    },
+    {
+      "path": "packages/world/package.json",
+      "bytes": 102,
+      "sha256": "a971a44f18e02ec39138deb1ed6abaa694e33ed17054e26e1b6f2469696115a1"
+    },
+    {
+      "path": "packages/world/src/composition.test.ts",
+      "bytes": 12049,
+      "sha256": "cb06acbd2322792ed7e9918ce2837dad6c5cf1886e344c14f9d49e890c79fbde"
+    },
+    {
+      "path": "packages/world/src/composition.ts",
+      "bytes": 9452,
+      "sha256": "22aa7867b4ae14abfc56a3db84104f11acdd6587dc92823a2068c0f37fa2ba84"
+    },
+    {
+      "path": "packages/world/src/coordinates.ts",
+      "bytes": 990,
+      "sha256": "8495affae43dc50abe0b025600242438d19905c984446110ab5e49d4c81c3112"
+    },
+    {
+      "path": "packages/world/src/index.ts",
+      "bytes": 210,
+      "sha256": "cbf13336ec48e5b77a09ff51038567b0d372a48211af85e61967ba6110ce4683"
+    },
+    {
+      "path": "packages/world/src/planner.ts",
+      "bytes": 6526,
+      "sha256": "fb3d82ed3eb4f884d1d367b18002b68246d11031388f0239a5f6ceb8ad9c66f5"
+    },
+    {
+      "path": "packages/world/src/population.ts",
+      "bytes": 13575,
+      "sha256": "e96806d976adea50294230e4a261a8a6330cc7f357b2cdc6d4ef0113c0d73ad9"
+    },
+    {
+      "path": "packages/world/src/route-network.ts",
+      "bytes": 7101,
+      "sha256": "779439d6eb065e47eb77b470143bad10161f904f7ff34e5a51ea077e73146bc1"
+    },
+    {
+      "path": "packages/world/src/scheduler.ts",
+      "bytes": 5834,
+      "sha256": "fa2d4a7b004efa95e09dae90acd13a7aed90062cb447e0f0577c1acbbbc9a830"
+    },
+    {
+      "path": "packages/world/src/session.ts",
+      "bytes": 20281,
+      "sha256": "18f76d2e26e95d0459260297001e90769c87d8c17249b14df0d0b9f8eaaf27f1"
+    },
+    {
+      "path": "packages/world/src/spatial-review.test.ts",
+      "bytes": 8009,
+      "sha256": "d7cdd5435356b27160430f92265c3b089f28939457bfbb335b217ff9966fe04d"
+    },
+    {
+      "path": "packages/world/src/spatial-review.ts",
+      "bytes": 10378,
+      "sha256": "e2910eea04edf5201f270e5a3d5b7970a46dd3518193633d30c5341db4f114cf"
+    },
+    {
+      "path": "packages/world/src/streaming.test.ts",
+      "bytes": 13762,
+      "sha256": "1aa99941aee24ec71bc9dab1dc8208dd9d3e004063268ff84b64f51281ec4ae6"
+    },
+    {
+      "path": "packages/world/src/world.test.ts",
+      "bytes": 10907,
+      "sha256": "9bc1b9b9b7a35ece1c47f496dda05bf740d2970fb1633bc128508ea9c46e3b3c"
+    },
+    {
+      "path": "tools/alpine-construction-review.ts",
+      "bytes": 5182,
+      "sha256": "c5361c743e82b505e0d40d09b4c8342efbdfef57025e58291f792dcf153b5c79"
+    },
+    {
+      "path": "tools/alpine-construction.test.ts",
+      "bytes": 5478,
+      "sha256": "c608aa8fa49e6c1843d029b6ef3af3507d3de5f2e03ac04bbb15bffd5eb0350a"
+    },
+    {
+      "path": "tools/alpine-slice-capture.test.ts",
+      "bytes": 2909,
+      "sha256": "f2ef0aa3c45f17c8e4749ee1e1419bfbe5b2ff0e22c984f38dac3b5d07fa7591"
+    },
+    {
+      "path": "tools/alpine-slice-capture.ts",
+      "bytes": 2472,
+      "sha256": "f8d3077cc238a98512767ba36522ab61f0eee8e286a01555e277bf5626db8439"
+    },
+    {
+      "path": "tools/alpine-slice-lookdev.ts",
+      "bytes": 4947,
+      "sha256": "f0bef4a495d11c37d6da6a5667b97dba8af6120ae93684c29f8df7140d7a2925"
+    },
+    {
+      "path": "tools/alpine-slice-physics.test.ts",
+      "bytes": 4315,
+      "sha256": "eae8db48ab340ecca2ef7c02630c6a9a5473c0bb7a0298f38f28564274b27797"
+    },
+    {
+      "path": "tools/alpine-slice-study.test.ts",
+      "bytes": 5116,
+      "sha256": "2f7b38acd30665d7a4a1c23eae9daa123249df2d229f18982ec25a3498e8d816"
+    },
+    {
+      "path": "tools/alpine-slice-study.ts",
+      "bytes": 7706,
+      "sha256": "f08b45383dad35d6d6c4adf1b1ed707f7d3c388bb8098c5c750697da52c77a56"
+    },
+    {
+      "path": "tools/author-variants.test.ts",
+      "bytes": 3262,
+      "sha256": "5fc6555690f4c90a603509fe4b9170eed80785aab66dc6ec10bccdeb09661d66"
+    },
+    {
+      "path": "tools/author.test.ts",
+      "bytes": 1425,
+      "sha256": "faddca9c281ed41273c498c79b03c7076b30116891b5638e4ec9297d870893ac"
+    },
+    {
+      "path": "tools/author.ts",
+      "bytes": 11232,
+      "sha256": "6f5d64e71644161953f364358eb79430783554fea49f1498708f330ab936eb9a"
+    },
+    {
+      "path": "tools/authoring-benchmark.ts",
+      "bytes": 3440,
+      "sha256": "18894bffc5678650eac4cff69231afe24a2c4eed5cb164bd1d7dc9881a7ef819"
+    },
+    {
+      "path": "tools/authoring-lookdev-report.test.ts",
+      "bytes": 1773,
+      "sha256": "74e43d3252b1734750751acde3fa7c6cd3711c1f6479ad14a47489a65a3768dc"
+    },
+    {
+      "path": "tools/authoring-lookdev-report.ts",
+      "bytes": 7629,
+      "sha256": "b9ee196ed775be5cd35b07fc38aeea40003249b4f80ca354cd57fbdab2674bc4"
+    },
+    {
+      "path": "tools/authoring-lookdev.ts",
+      "bytes": 3018,
+      "sha256": "93d35f9e6e073200b9509c77994dd48754c659acece973ea2caa9f6c5fc38d90"
+    },
+    {
+      "path": "tools/botanical-growth-study.ts",
+      "bytes": 4201,
+      "sha256": "ab326957aa21f6bcc9cf853a324b9444dd1dab324f3ed1efc571de874d5d052d"
+    },
+    {
+      "path": "tools/boundaries.ts",
+      "bytes": 1516,
+      "sha256": "30d77aab9a5624bd33190ff1988de7f3a950cc790635782a2963abf783672dea"
+    },
+    {
+      "path": "tools/bridge-lock-worker.ts",
+      "bytes": 2393,
+      "sha256": "730718b42e91efbee142020937c21551e8598bea2a49078b96529a4db038661d"
+    },
+    {
+      "path": "tools/bridge-lock.test.ts",
+      "bytes": 4751,
+      "sha256": "3484f8ac7b185155e60bec23891e4825c9cca398d7d4659e6b03668a6af2f37e"
+    },
+    {
+      "path": "tools/bridge-lock.ts",
+      "bytes": 2732,
+      "sha256": "aa3f5c0412e6ef78cd131fceede7bb621420ad4d3f8b0d057b38760afd27adde"
+    },
+    {
+      "path": "tools/bridge.test.ts",
+      "bytes": 7460,
+      "sha256": "859fedae2d9e37fe36ab83beefa17c92892100f7191b68b56b5d8fe55ac9fb78"
+    },
+    {
+      "path": "tools/bridge.ts",
+      "bytes": 6594,
+      "sha256": "76741a11bbe30e198f07552c1a79915e57a80c526a9071b9880628c8ff96f941"
+    },
+    {
+      "path": "tools/browser-lifecycle.test.ts",
+      "bytes": 2102,
+      "sha256": "e4f70a4b36305ab933d72c05d68dd9caf4b651c91787de71540e83f7649f2216"
+    },
+    {
+      "path": "tools/browser-lifecycle.ts",
+      "bytes": 1423,
+      "sha256": "dca88665355672a36e4faf7938e06162ae0fdbda0e57e7e1280011f110682fd3"
+    },
+    {
+      "path": "tools/browser.ts",
+      "bytes": 12148,
+      "sha256": "1a5addac6428cc4d76d32414024a74bba9ccbced2777e5e1de20488c0fcea683"
+    },
+    {
+      "path": "tools/build.test.ts",
+      "bytes": 1049,
+      "sha256": "1c42d8b6c8c311b90af121877101906ce1140c2353cc6043f3ab896829fece91"
+    },
+    {
+      "path": "tools/build.ts",
+      "bytes": 5904,
+      "sha256": "4186a878969095bf66646eda22097885589b72369c42fc5eb1bb6b63e49404d3"
+    },
+    {
+      "path": "tools/character-lookdev.ts",
+      "bytes": 7288,
+      "sha256": "9edc8bc7279b470f785517eed020b0f694f94fa7c504a938055079ddd8829694"
+    },
+    {
+      "path": "tools/cloud-noise-check.ts",
+      "bytes": 1322,
+      "sha256": "bd769e7e5cbb7422268429b297cdc5a9370328f00a3600910ed623538990a532"
+    },
+    {
+      "path": "tools/compile-cloud-transport.ts",
+      "bytes": 517,
+      "sha256": "3e0617cee0c7ca38e22629149b4b2166216bcb5f65a1bbaa71a744372df62c70"
+    },
+    {
+      "path": "tools/compiler-frontiers/branch-check.ts",
+      "bytes": 1223,
+      "sha256": "40d2b41b09f4f8d5a5b9dd5de623e3f30143afc99c64a0431e759aafef014bd3"
+    },
+    {
+      "path": "tools/compiler-frontiers/branch-compile.ts",
+      "bytes": 660,
+      "sha256": "76daa209cb2849c12cf5248a6d89e4f652b776dca713d4fb989dc415a6029ffb"
+    },
+    {
+      "path": "tools/compiler-frontiers/branch-gpu.ts",
+      "bytes": 1186,
+      "sha256": "2a9c5d5229e398afcbdf00a91096cb8b3786bcf9caea27a04ad8cf41469dbf51"
+    },
+    {
+      "path": "tools/compiler-frontiers/build-material.ts",
+      "bytes": 333,
+      "sha256": "ec17a2e9e77301e79e4fe250ceaec350a50669cad13ea63da1c813bfb282840e"
+    },
+    {
+      "path": "tools/compiler-frontiers/fourier.ts",
+      "bytes": 109,
+      "sha256": "f5803b26cf2e8f3ad641ea95b4d35be3839f6105bb8c374659dcdbf017a2fa62"
+    },
+    {
+      "path": "tools/compiler-frontiers/gpu-check.ts",
+      "bytes": 1141,
+      "sha256": "030e1727e4157c0e1d56122e0a04e587a18d3a85d5653edf0f7819bcb57a96f7"
+    },
+    {
+      "path": "tools/compiler-frontiers/gpu-fixture.ts",
+      "bytes": 13237,
+      "sha256": "e9fdaecff51433b5d372b12abd109d2699dbddd1c2fc22ef7a4cc51f14fe8a25"
+    },
+    {
+      "path": "tools/compiler-frontiers/material-check.ts",
+      "bytes": 3717,
+      "sha256": "bdd3837f7b621867b10be231d7634a94b46cf8cae27287182bd130aa7e57a7de"
+    },
+    {
+      "path": "tools/compiler-frontiers/material-fixture.ts",
+      "bytes": 7749,
+      "sha256": "8961ce2464ad4c4c86dc9dcec607a268244e8ee4a91e6db824f8dd0998d64ac2"
+    },
+    {
+      "path": "tools/compiler-frontiers/probes.test.ts",
+      "bytes": 3385,
+      "sha256": "bf4bad168b84e58aedc98b3ac6a87c5e28ebcfde246e15c6ec37e209ab4f0c8a"
+    },
+    {
+      "path": "tools/compiler-frontiers/probes.ts",
+      "bytes": 11638,
+      "sha256": "799487e229801ec6996f625849c42229648ee0bfd3afcbfdc6bf2bf9935d39bc"
+    },
+    {
+      "path": "tools/compiler-frontiers/run.ts",
+      "bytes": 1123,
+      "sha256": "91dcf25d3333e5cda866b3a657622681009fbfe4a97ba228b82ef5c2b28efb2a"
+    },
+    {
+      "path": "tools/cook.ts",
+      "bytes": 1699,
+      "sha256": "888949b245c41fccb4813cf85fc3506c3db8ee91a0004a88af4aa1cef3ae421d"
+    },
+    {
+      "path": "tools/creature-atlas.test.ts",
+      "bytes": 884,
+      "sha256": "066d10b771263eb2cb3a10e7c3e18765410ac35d43ead18b02ef7d6529d1ea1a"
+    },
+    {
+      "path": "tools/creature-atlas.ts",
+      "bytes": 8564,
+      "sha256": "67810138a29b03a1c36d33249eb57668b11f17bb8e5b912c5d282cde6ec8e220"
+    },
+    {
+      "path": "tools/creature-author.test.ts",
+      "bytes": 6946,
+      "sha256": "3c932f369af12b6f66512423e4319ed0aedc74f63b5cd4187eef1fff7112c1aa"
+    },
+    {
+      "path": "tools/creature-benchmark.ts",
+      "bytes": 4835,
+      "sha256": "1d225ff1d86591c8063e071c807883ec6c417c599937510e8e9313592d5b7ee3"
+    },
+    {
+      "path": "tools/creature-capture-recipes.test.ts",
+      "bytes": 1340,
+      "sha256": "aacf561ee5313f5700bb4ebf1481ab1020949094c83a234b675b4a7113175702"
+    },
+    {
+      "path": "tools/creature-capture-recipes.ts",
+      "bytes": 1942,
+      "sha256": "a047445835454050504b8d28c07e54d6dbabc4358b4f43c1990873e72d02f0eb"
+    },
+    {
+      "path": "tools/creature-coherence.test.ts",
+      "bytes": 5241,
+      "sha256": "12ef9f9aedda6d05af11750477714bdba1a2e4ca5bc1510b2a7b1e7d12185ac4"
+    },
+    {
+      "path": "tools/creature-construction.test.ts",
+      "bytes": 8538,
+      "sha256": "c5acb67a2c1ce772adc5213ee2269c422a45164a2e564804b8513211bd4d2f84"
+    },
+    {
+      "path": "tools/creature-experiments.ts",
+      "bytes": 16716,
+      "sha256": "3c9d286b0506bc8a2de16da77954c64f824fc83083e81f8949c5ddfc55861dcc"
+    },
+    {
+      "path": "tools/creature-notebook.test.ts",
+      "bytes": 1616,
+      "sha256": "2ed3e995436f5a74af6cce7f134908225b12290a1bda93afc977f3cb6863f265"
+    },
+    {
+      "path": "tools/creature-notebook.ts",
+      "bytes": 2383,
+      "sha256": "ed018f324e9a0c72a32aa0fa703f69bffea85436993ad561d9f11aaa5654f45b"
+    },
+    {
+      "path": "tools/creature-review.test.ts",
+      "bytes": 2714,
+      "sha256": "81134d291a56d255380f8e9f41f89cc320c44b5052300b7482dabb4143ae7331"
+    },
+    {
+      "path": "tools/creature-review.ts",
+      "bytes": 10747,
+      "sha256": "76ce6e4c59a087661074d79e63c08df0a60f4549087e479543da13e27726dc41"
+    },
+    {
+      "path": "tools/creature-smoke.ts",
+      "bytes": 3162,
+      "sha256": "0a15e7b46d6283bcdac88fd3ee5e35aa3a9698352572153b9fb63e49abad284f"
+    },
+    {
+      "path": "tools/creature-studio-verification.ts",
+      "bytes": 19171,
+      "sha256": "66528611427dc067cca18fd03a56ae6a8d0fc8870468fc4de44de7148ff6c641"
+    },
+    {
+      "path": "tools/dev.test.ts",
+      "bytes": 3485,
+      "sha256": "6cbffd9dda864f5c00566fea74278731baa1012b279d417ddb8cb57973c1e4d5"
+    },
+    {
+      "path": "tools/dev.ts",
+      "bytes": 5092,
+      "sha256": "19c0493ebc9cb074f6920b520016194f183bf3b62bbe0aaeb9bd5e2c94daa973"
+    },
+    {
+      "path": "tools/domain-studio-verification.ts",
+      "bytes": 15673,
+      "sha256": "395c08ff9741decb3c4b23274ede09cbb1da3f9290a70171a7c9b3fd0324d8db"
+    },
+    {
+      "path": "tools/domain-variant-lookdev.ts",
+      "bytes": 6440,
+      "sha256": "42a0af0520ad2299b5ecdd940d1097ffcb7a2ae46951f0a64aa2a7b593fb0acf"
+    },
+    {
+      "path": "tools/domain-variant-studies.test.ts",
+      "bytes": 3115,
+      "sha256": "9100ebed7b50d0b19b7a1af98f4f0bc1cd2a147ee7d9d458012caa1a8401408a"
+    },
+    {
+      "path": "tools/domain-variant-studies.ts",
+      "bytes": 11473,
+      "sha256": "e44cf8ac71ff1291d1e0f43ebe02c4a645b2ba2ec051312b8a526342763d70f2"
+    },
+    {
+      "path": "tools/environment-authoring-check.ts",
+      "bytes": 2011,
+      "sha256": "17add8dc042dc02f51e6a9b694267c117b2c7383706f98c8ade315175487dd47"
+    },
+    {
+      "path": "tools/environment-lookdev.ts",
+      "bytes": 10638,
+      "sha256": "dfdf8f8a9cd9b0434181d818b39d6324b09d789b98d1b1286826bb3cf3d755ea"
+    },
+    {
+      "path": "tools/evidence.ts",
+      "bytes": 2753,
+      "sha256": "f5c9076a111614c63c506374f7761914cfec765d88579293cd6ffe767030862c"
+    },
+    {
+      "path": "tools/fixtures/alpine-slice-lookdev.ts",
+      "bytes": 6105,
+      "sha256": "43d2bad430acea911c6070e9cf35083632ce76e5f592e100d72c1500de28d911"
+    },
+    {
+      "path": "tools/fixtures/cloud-kernel.ts",
+      "bytes": 8986,
+      "sha256": "05fd5dfb45cb73a6661566a530847e71972e3e3df5027c7917887d9e4239bc94"
+    },
+    {
+      "path": "tools/fixtures/cloud-noise-gpu.ts",
+      "bytes": 4652,
+      "sha256": "0b0b34c9f203263133bd90bdb0318644af2b0612a650e8a3d93cc7e167b2d9b9"
+    },
+    {
+      "path": "tools/fixtures/cloud-noise.ts",
+      "bytes": 9965,
+      "sha256": "818d75e5a8bfbbe3cd1d794a6495e2f3c565718f7fcca51c13a4078d0d8c4802"
+    },
+    {
+      "path": "tools/fixtures/creature-fitting.ts",
+      "bytes": 8316,
+      "sha256": "71ee635cb5eba615c75e884693925b4b668b8424ba7b95475d5075180c5d8d67"
+    },
+    {
+      "path": "tools/fixtures/creature-render.ts",
+      "bytes": 5299,
+      "sha256": "2105388f7f8a00bfe5fd7ecfb1a72dc670ee2e89f9b62c01bdd3299d8c29874d"
+    },
+    {
+      "path": "tools/fixtures/domain-variant-lookdev.ts",
+      "bytes": 3004,
+      "sha256": "ffbefdbc75058511476f4de2aaeedf34bdf97e62ef48b87bc0f00bb5f1fc69dd"
+    },
+    {
+      "path": "tools/fixtures/environment-authoring.ts",
+      "bytes": 5222,
+      "sha256": "a81304bdc5d88a34b8a8bc385165b2a7c35d38bf1bfd9ef02cd5ba6eadccff85"
+    },
+    {
+      "path": "tools/fixtures/foliage-lookdev.ts",
+      "bytes": 7885,
+      "sha256": "5d125e50c642a0d2f09a7e5bdd09d0491f37f7e57a09b7003db8a029df4e98e7"
+    },
+    {
+      "path": "tools/fixtures/foliage-probe.ts",
+      "bytes": 5050,
+      "sha256": "1dd5eca9ba03808180a5ddd19ed5105e81dd37f483b3db9a6bdd1e7d8a35a591"
+    },
+    {
+      "path": "tools/fixtures/foliage-specimens.ts",
+      "bytes": 4333,
+      "sha256": "7fa73a9b33272fde2144c0f23220e14e75d169b97489d8ea629804f564d9bcfb"
+    },
+    {
+      "path": "tools/fixtures/frontier-relief.ts",
+      "bytes": 17342,
+      "sha256": "6b677cff0032e5132aec17cdc18e84eae382cc7c3148df2c19539e5d473c11b6"
+    },
+    {
+      "path": "tools/fixtures/gi-lookdev.ts",
+      "bytes": 13173,
+      "sha256": "e777b8aea157e0729ffac83c1d81b4319f1e71c21a722d69564ceb0fd32052de"
+    },
+    {
+      "path": "tools/fixtures/indirect-scenes.ts",
+      "bytes": 6930,
+      "sha256": "94c3810a492e28c4d2f8c8bd110b78b036ea3afa18af50c62d13b914bf5aee19"
+    },
+    {
+      "path": "tools/fixtures/lighting-audit.ts",
+      "bytes": 5096,
+      "sha256": "eb86fd951e35cb7f899d81386d139ebc1cb9e9a4fa2813cf14884240d0752c13"
+    },
+    {
+      "path": "tools/fixtures/lighting-upgrade.ts",
+      "bytes": 14433,
+      "sha256": "7a1539ba5e39c539a888af7838e16b0b7a955b67b0185b9bef0c71687d6a52dc"
+    },
+    {
+      "path": "tools/fixtures/lookdev-subtree.ts",
+      "bytes": 1589,
+      "sha256": "168fad0b23ceca90b013ce18148987f2520b4941d52ea79a590fc4a9756d8896"
+    },
+    {
+      "path": "tools/fixtures/lookdev.ts",
+      "bytes": 13542,
+      "sha256": "1c28241ea3d1cc9123e83870a2f359d95d5d033f5493678ac5b37cd7fe2c1579"
+    },
+    {
+      "path": "tools/fixtures/material-lookdev.ts",
+      "bytes": 4991,
+      "sha256": "84e1b01f83778fc113ce610d1650fcc9545d0a10c53a26c4692b3e183aa990e9"
+    },
+    {
+      "path": "tools/fixtures/performance.ts",
+      "bytes": 5120,
+      "sha256": "232c1cd067c179af5750bb85910ee0054f48c87e360bbaa04f9220d875226167"
+    },
+    {
+      "path": "tools/fixtures/render-verification.ts",
+      "bytes": 15394,
+      "sha256": "211bed98e0df4557293e3503ca6055ada1318ff830c0f45979224f907b6c01e8"
+    },
+    {
+      "path": "tools/fixtures/shoot-qualification.ts",
+      "bytes": 5985,
+      "sha256": "1e2ba28c0b1c2956f384964e99da0c3406471c1d9d277b98309f3d3905d32b27"
+    },
+    {
+      "path": "tools/fixtures/sky-field.ts",
+      "bytes": 26493,
+      "sha256": "7e6a8c994148e8141236ffcd2b7eade164e38368cf76b2fbcdaef564440219ab"
+    },
+    {
+      "path": "tools/fixtures/surface-appearance.ts",
+      "bytes": 4747,
+      "sha256": "0e6b0cc4df856519dc332401f947818c256cbb1dc4d933e10092d8e2986a30bd"
+    },
+    {
+      "path": "tools/fixtures/surface-relief-cpu.ts",
+      "bytes": 8416,
+      "sha256": "b355fff9df0a3ceb0668c67d188accd939d4ed7943ea92ae55f89d534fed8d94"
+    },
+    {
+      "path": "tools/fixtures/surface-relief-lookdev.ts",
+      "bytes": 9020,
+      "sha256": "470824293576ef575855bb5b1cfddc0235f2ae8a036b8a0caa09c2bc925b8e09"
+    },
+    {
+      "path": "tools/fixtures/surface-relief-probe.ts",
+      "bytes": 10285,
+      "sha256": "1477a93884600d785c119c6ecd97dfdbb01f03c2080c8d787d8ed8cbd57898a8"
+    },
+    {
+      "path": "tools/fixtures/terrain-lookdev-render.ts",
+      "bytes": 1908,
+      "sha256": "68406aae41cc347666f1929318a8b486607c0812f418847e80ff0f2b8fa00d36"
+    },
+    {
+      "path": "tools/fixtures/thin-coverage-coarse.ts",
+      "bytes": 4524,
+      "sha256": "01df64da46ba8270d4dd6661febfdf6e68901ec7c1cc568257b6ad4d3d9097b1"
+    },
+    {
+      "path": "tools/fixtures/thin-coverage.ts",
+      "bytes": 11321,
+      "sha256": "1da2b0d7267646b025b9dfb561cdcf945451e3c9bdfec360fe10cff277ab17fd"
+    },
+    {
+      "path": "tools/fixtures/vegetation-benchmark.ts",
+      "bytes": 4925,
+      "sha256": "38f12551592a74e1f42e3db7287545649a335a7d46b3deca22e6f0d9960c14d1"
+    },
+    {
+      "path": "tools/fixtures/vegetation-frontier.ts",
+      "bytes": 6097,
+      "sha256": "c447d40beb1065ec7fafe5574a5ec3bed4bab41b04d137c47d784921ace21bcd"
+    },
+    {
+      "path": "tools/fixtures/vegetation-study.ts",
+      "bytes": 8799,
+      "sha256": "e4f43258869f761671571ed28cdd346d0c07ecd3c1c427b0a0e2f95a2f707c8d"
+    },
+    {
+      "path": "tools/fixtures/water-conformance.ts",
+      "bytes": 6767,
+      "sha256": "95f7f5d8a373ece51876d73697aac668d8e2208022cb47080b6707f0b3af4dfa"
+    },
+    {
+      "path": "tools/fixtures/water-depth-conformance.ts",
+      "bytes": 3072,
+      "sha256": "9c13b3743e4f2d6075b9c526289c7063990faac87eff2cf15bb224599198401c"
+    },
+    {
+      "path": "tools/fixtures/water-motion.ts",
+      "bytes": 4775,
+      "sha256": "c89cb8ec812824cc1bd8668608c3ba2bbbc308cb70a21cab05384d787369c727"
+    },
+    {
+      "path": "tools/fixtures/water-orbit.ts",
+      "bytes": 4318,
+      "sha256": "5b8472713db931cd3eb3cc89a6e66f6a73c0bcc24c6d14a20eded3ae5a427196"
+    },
+    {
+      "path": "tools/fixtures/water-spectrum-conformance.ts",
+      "bytes": 6657,
+      "sha256": "f97ede41be89ad7e450f38491e49c8be08a6c0bf6399db7b890536249cff2ed9"
+    },
+    {
+      "path": "tools/fixtures/water-synthesis-benchmark.ts",
+      "bytes": 5025,
+      "sha256": "f7fa3d28f88cec083c0ce52f92709741f28564bf9e5d8ebe32fd9dd15d995763"
+    },
+    {
+      "path": "tools/fixtures/world-traversal-lookdev.ts",
+      "bytes": 8294,
+      "sha256": "888f1bee49a3f9a71158f09d2dfc5a3063696bc004baa29b86c9d9fb4bb203ab"
+    },
+    {
+      "path": "tools/foliage-benchmark.ts",
+      "bytes": 4624,
+      "sha256": "bae30287e6852e1f112ec5a28675ae44866baac904c4f0363df5d0d83bbf7d90"
+    },
+    {
+      "path": "tools/foliage-lookdev.ts",
+      "bytes": 2445,
+      "sha256": "6bcb2d6f52a93db210404ebba2436407154bcd40ecfaca35fbd74ea480848e16"
+    },
+    {
+      "path": "tools/forest-player-check.ts",
+      "bytes": 1514,
+      "sha256": "7a462824f66c07a02eb2af6349061bfa9c31ade6b5a0a4e4cb179c5773ff65a0"
+    },
+    {
+      "path": "tools/forest-walk.ts",
+      "bytes": 3219,
+      "sha256": "f4ca7680a35a8514744f57eae7bf2d00d3993bdd8031599f59f07818f1802689"
+    },
+    {
+      "path": "tools/frontier-image-metrics.test.ts",
+      "bytes": 2485,
+      "sha256": "97cce9d0d5de38a62e81415fba675eb351850aee7284166f77e3531a185a3eac"
+    },
+    {
+      "path": "tools/frontier-image-metrics.ts",
+      "bytes": 4903,
+      "sha256": "f9e2969c4128fbf5a763288f25fdead2b2f6682e8d75f7d1b8d2e540e0af7a75"
+    },
+    {
+      "path": "tools/frontier-lookdev-input.ts",
+      "bytes": 11969,
+      "sha256": "06dc4005c88f0156106164f32a9b98a5113e0bca8f0e670823267fe43e3c769e"
+    },
+    {
+      "path": "tools/frontier-lookdev-report.test.ts",
+      "bytes": 5071,
+      "sha256": "d1e76b5e2852f8943f727d3a1e24d7efa1f70ef1b320fd6bce1527a64e9ea449"
+    },
+    {
+      "path": "tools/frontier-lookdev-report.ts",
+      "bytes": 7113,
+      "sha256": "b24c466b2d4ca0d9badc92d15a9e2ed40d8e5ab5ecc771f160cf18edb7ea708a"
+    },
+    {
+      "path": "tools/frontier-relief-lookdev.ts",
+      "bytes": 4010,
+      "sha256": "a439b970b5d1459204edc92a423019d3baabe147b158aaa8686fc2c0f83e0f1d"
+    },
+    {
+      "path": "tools/game-verification.ts",
+      "bytes": 9015,
+      "sha256": "4729ba2f2d1b35a98e732413ff8e3b63f717652a6bd591f99a1e09f55284d419"
+    },
+    {
+      "path": "tools/geology-benchmark.ts",
+      "bytes": 2305,
+      "sha256": "84dac4c5516b49029c365d025727aa8f5bd297c92c6e075ee2a9a2e008bb22b2"
+    },
+    {
+      "path": "tools/gi-lookdev.ts",
+      "bytes": 2568,
+      "sha256": "5fccee9bbbfbabc2c1a8a0946b234e8cf9a88c474058b161dadbc9cc76fc76ac"
+    },
+    {
+      "path": "tools/indirect-runtime.test.ts",
+      "bytes": 3206,
+      "sha256": "8342181e9b4f267633de2f837b95d1edd9f588ce731dea2c4b42b5d516623218"
+    },
+    {
+      "path": "tools/lighting-audit.ts",
+      "bytes": 2325,
+      "sha256": "2fb65f1c6aabb735543b1d0a6c2e6d6f97789fe67c0eeeb368d615a832325628"
+    },
+    {
+      "path": "tools/lighting-upgrade-check.ts",
+      "bytes": 1965,
+      "sha256": "4354e5bf66aee79d88e16edf84368bbb9998bb04e4aa76ff71307c0dbb4fb970"
+    },
+    {
+      "path": "tools/lookdev-lighting.test.ts",
+      "bytes": 961,
+      "sha256": "7b02f40a0a302104258f955c3893be9bfca6690be1af09a0af4b5a8f4b12eb29"
+    },
+    {
+      "path": "tools/lookdev-snapshot.ts",
+      "bytes": 1897,
+      "sha256": "92d53c3c03e0a330c6b3933b51b6df83a43963489cb071111526b3dfbc0e53ce"
+    },
+    {
+      "path": "tools/lookdev.ts",
+      "bytes": 7484,
+      "sha256": "289b03453652bc6c69b80d93e375759df54830696795ff897363de91700e5174"
+    },
+    {
+      "path": "tools/material-lookdev.ts",
+      "bytes": 3124,
+      "sha256": "19d3ccb5b43034662be096764591d70decaca6c2acabbd85eb4cb978cf63a97a"
+    },
+    {
+      "path": "tools/perf.ts",
+      "bytes": 5822,
+      "sha256": "cba1f3716158e44b73486eb94991b760bc7657344c71942d7a85b79271e3e389"
+    },
+    {
+      "path": "tools/performance-lookdev-snapshot.ts",
+      "bytes": 589,
+      "sha256": "82206b89225d5a08130a9271ff6d8f6375e3b3ba60305c815d02395744a80ec1"
+    },
+    {
+      "path": "tools/performance-lookdev.ts",
+      "bytes": 7411,
+      "sha256": "3e8c826dc55598b5f8a832136ea38c242591422c171a14f1a459e2e728d06e7a"
+    },
+    {
+      "path": "tools/rendering-compiler/atmosphere-cases.test.ts",
+      "bytes": 2346,
+      "sha256": "8385be9e5637e8ca11acd02e541854ed6a012768a8dc155179649ce94395b9f9"
+    },
+    {
+      "path": "tools/rendering-compiler/atmosphere-cases.ts",
+      "bytes": 4036,
+      "sha256": "413c24f9b2c2047bb86b0529f355b5bf2a85c1671533d7963050ba88d1f7fbac"
+    },
+    {
+      "path": "tools/rendering-compiler/atmosphere-check.ts",
+      "bytes": 1036,
+      "sha256": "e1c92ccc32ab7727f69e041352476d6e8069d6763cc978bb1c24777d68ed1ba1"
+    },
+    {
+      "path": "tools/rendering-compiler/atmosphere-fixture.ts",
+      "bytes": 5231,
+      "sha256": "24f7c6e2dfe98cb395c5dd49bd6b790bd0ddbe143e16c8462535ff0063029dfd"
+    },
+    {
+      "path": "tools/rendering-compiler/fixture.ts",
+      "bytes": 19183,
+      "sha256": "2ba466e9d8bc21b1be411f896c1f50ea16585f5786ee9480beabee7022cf3add"
+    },
+    {
+      "path": "tools/rendering-compiler/gpu-visibility-check.ts",
+      "bytes": 895,
+      "sha256": "fe606b3f94ac7777b991795d31152a3b4073785766f1732ed2a7287bbcbefd7e"
+    },
+    {
+      "path": "tools/rendering-compiler/gpu-visibility-fixture.ts",
+      "bytes": 4469,
+      "sha256": "e356c58fe04bc884a1684dc8240eb2ffb0955e1d881e97069b8c6dc87f7029f2"
+    },
+    {
+      "path": "tools/rendering-compiler/irradiance-fixture.ts",
+      "bytes": 3600,
+      "sha256": "e83ede6afb040a07fd687c52ed3f3d9aefc184c757eed593262ef98b5e832343"
+    },
+    {
+      "path": "tools/rendering-compiler/manifest.test.ts",
+      "bytes": 2852,
+      "sha256": "0ec0353fa77bd6c4acc55ee8d5df5c1d35215e3cfcde1fac53c2ecea9ac2c5d1"
+    },
+    {
+      "path": "tools/rendering-compiler/manifest.ts",
+      "bytes": 4512,
+      "sha256": "0abced12711ad6c912f8f27d0d64472bf743dffdee0c332434e4fb34dfbc8494"
+    },
+    {
+      "path": "tools/rendering-compiler/material-lattice-check.ts",
+      "bytes": 2086,
+      "sha256": "fea1e6d1898baecb851f743ecc93e4874d4c7901795be8337fe09300ba8d2daa"
+    },
+    {
+      "path": "tools/rendering-compiler/material-lattice-fixture.ts",
+      "bytes": 4163,
+      "sha256": "75b3d228ae649cedeacf3a1f36c89bb75e9e6e57563564bc35408146cba055ec"
+    },
+    {
+      "path": "tools/rendering-compiler/pass-cost-check.ts",
+      "bytes": 4712,
+      "sha256": "d44823094698fd4d7fd3acc803eb9effe3564009479520821aa7bccbee8fc9ad"
+    },
+    {
+      "path": "tools/rendering-compiler/performance-check.ts",
+      "bytes": 5406,
+      "sha256": "71ff2dc8abfbe4e2a49a0b0239df6b4ea6d7f3ded7c27ea8944b8fc3ac6e5dca"
+    },
+    {
+      "path": "tools/rendering-compiler/profile.ts",
+      "bytes": 3603,
+      "sha256": "6d6bee4d6f0bb66d7e6cd10ca099d96adf9bace0a244c439fec67ebb4bd50087"
+    },
+    {
+      "path": "tools/rendering-compiler/scalability-check.ts",
+      "bytes": 5516,
+      "sha256": "8d6f67cd1e0dd826cd76ec81d2b25929d9b45f89051185dcfa040674d7007dc7"
+    },
+    {
+      "path": "tools/rendering-compiler/scalability.test.ts",
+      "bytes": 2260,
+      "sha256": "76875be3e7cc3b772c94116e73e98884aaff2bd2ede1e7fe6e046b808675c19f"
+    },
+    {
+      "path": "tools/rendering-compiler/scalability.ts",
+      "bytes": 5015,
+      "sha256": "3810bb697eb327bd056195da2e16fd66aa26f8863f7b771439ffcbd1535cfc7f"
+    },
+    {
+      "path": "tools/rendering-compiler/shadow-domain-fixture.ts",
+      "bytes": 4551,
+      "sha256": "75da8a7e28a34efb15a8f05b4926bdbd5f4c50df93b80c648460092195dcf5e1"
+    },
+    {
+      "path": "tools/rendering-compiler/static-timing-check.ts",
+      "bytes": 2241,
+      "sha256": "5ccec0b9f12c070f04c35deaa12f729d08e7ca6dfc5064caf7926d985ea7baec"
+    },
+    {
+      "path": "tools/rendering-compiler/stone-field-fixture.ts",
+      "bytes": 7798,
+      "sha256": "f9edaca1abd4d75a3e1a2634c935d2c35c5bb68d70b3d1d4f7cb48eaae920158"
+    },
+    {
+      "path": "tools/rendering-compiler/stone-field-layout.test.ts",
+      "bytes": 3191,
+      "sha256": "070290aa59e1e45f451e0b3e7ef5d0deb0d82bc12434472a6ac8a4c42aebfe2b"
+    },
+    {
+      "path": "tools/rendering-compiler/stone-field-layout.ts",
+      "bytes": 973,
+      "sha256": "27da7cbc55da1d3645c5a32495c7fd86a4129aa74d6fb5203cefcca98aa87405"
+    },
+    {
+      "path": "tools/rendering-compiler/stone-field.ts",
+      "bytes": 4011,
+      "sha256": "25acbc6e905ad9d7c5fb53e89adf15ec25554370255c8dc74ab36f2dd068d833"
+    },
+    {
+      "path": "tools/rendering-compiler/temporal-benchmark-fixture.ts",
+      "bytes": 7355,
+      "sha256": "7e59733620e0151dd0b92931597cad9f787027c95f4a4843060e293365426ce8"
+    },
+    {
+      "path": "tools/rendering-compiler/temporal-benchmark.ts",
+      "bytes": 1020,
+      "sha256": "cc6f9bf0ac60c1cdfc9c43c0f8ff2aa0467adc4caef498b6a9dfc24ef2c4e12c"
+    },
+    {
+      "path": "tools/rendering-compiler/temporal-check.ts",
+      "bytes": 1331,
+      "sha256": "6228585380d849f3af2517b819c97e55c0a2a54333f3386d9d3b785bec3a1d14"
+    },
+    {
+      "path": "tools/rendering-compiler/temporal-fixture.ts",
+      "bytes": 5862,
+      "sha256": "91b12b79f1aca4443843906139855c00fd02c9df60b32ba45ebd1677f7a32ef5"
+    },
+    {
+      "path": "tools/rendering-compiler/timing.ts",
+      "bytes": 4673,
+      "sha256": "689cbb23091c8a4fec578da6993c12f2ad3bbe0440d839236fd96a0977d11b54"
+    },
+    {
+      "path": "tools/rendering-compiler/transport.test.ts",
+      "bytes": 5016,
+      "sha256": "0819d87446c61ef875ba1308cfc151eba02d6e2814d3efbd24c8d9114620cd18"
+    },
+    {
+      "path": "tools/rendering-compiler/verify.ts",
+      "bytes": 15715,
+      "sha256": "428bbfa17eff73b54a998059c139cc390fbb322f3af8ff0aa795b46d9fdad6a1"
+    },
+    {
+      "path": "tools/rendering-compiler/water-budget.test.ts",
+      "bytes": 3367,
+      "sha256": "6ed02f58b51d69d751986c6b95fd9aa547aaa62f8c385b155410d19fa48481a4"
+    },
+    {
+      "path": "tools/rendering-compiler/water-check.ts",
+      "bytes": 2400,
+      "sha256": "4b32437b1af20f2de7a79eddee7ae76ab5fc5044226f814b8d16b8ba0ffa1ca6"
+    },
+    {
+      "path": "tools/rendering-compiler/water-reference.ts",
+      "bytes": 15698,
+      "sha256": "c5fda40a25af11fa03096bc43731a988b1d0cf08c7a298c678c0715d885a40f7"
+    },
+    {
+      "path": "tools/rendering-compiler/winter-scene.ts",
+      "bytes": 692,
+      "sha256": "1a66d46b71eeeed731a47a7e7f4ecbc0c435e8fe85900dec5c7a2c3efd31bec1"
+    },
+    {
+      "path": "tools/shoot-lookdev.ts",
+      "bytes": 4068,
+      "sha256": "90fa30018fae2177e8ea7f49095e515cf51dbfa4f7c8e46d71cf65b5373c0d28"
+    },
+    {
+      "path": "tools/shoot-qualification.ts",
+      "bytes": 2791,
+      "sha256": "cc1f4260a1c0de25fdadb455efd164750d37d148b12d990eac8b12ef0c1ea0aa"
+    },
+    {
+      "path": "tools/sky-art-replay.ts",
+      "bytes": 4628,
+      "sha256": "4720848306617fab886aef5378a63d5bd7710535bd454e17953c8f3f76dafa69"
+    },
+    {
+      "path": "tools/sky-art-review.ts",
+      "bytes": 7808,
+      "sha256": "0e16b4f6d482390059dc75426cbd230fbf0e195efdf6d5ace1fcadbe2bc2ad1a"
+    },
+    {
+      "path": "tools/sky-field-check.ts",
+      "bytes": 2566,
+      "sha256": "c6aecf1e1ca130d657a1296e174b499e15d620eed27ed2fdc8afa99a810a2138"
+    },
+    {
+      "path": "tools/sky-replay.ts",
+      "bytes": 3713,
+      "sha256": "e67681a0c3e69da107bc06c8ddbaa83a77b632632ca3178da363fcf9974fc002"
+    },
+    {
+      "path": "tools/sky-temporal-check.ts",
+      "bytes": 2240,
+      "sha256": "8bba085ce4b62bc419477a22521f936290a83f72170998c0d307a7d7067f3cb3"
+    },
+    {
+      "path": "tools/source-snapshot.ts",
+      "bytes": 1124,
+      "sha256": "ad38f7cd51a8dd23efae5ed92be35a03e14a1fa8b78eb2ff9abf99c3ad5a171b"
+    },
+    {
+      "path": "tools/surface-appearance-check.ts",
+      "bytes": 1823,
+      "sha256": "a2aa543314677ad2454026ec7769751b93f7e6c6be30a3f5837e35ceab6cbbe8"
+    },
+    {
+      "path": "tools/surface-relief-cpu.test.ts",
+      "bytes": 3457,
+      "sha256": "8a01f7e6c34b0e657839da4c06c17dd4af729864f5bfce562859923cb82ffbd4"
+    },
+    {
+      "path": "tools/surface-relief-cpu.ts",
+      "bytes": 5122,
+      "sha256": "c8dd951fb42002011771419a6435aa880ebb10693008c385fa5c19e5d728da68"
+    },
+    {
+      "path": "tools/surface-relief-lookdev.test.ts",
+      "bytes": 4610,
+      "sha256": "dc15c69a085e7fa7e9cc48d98cf1724c4b7ec6696fca532d3dbe23468f47bb98"
+    },
+    {
+      "path": "tools/surface-relief-lookdev.ts",
+      "bytes": 6890,
+      "sha256": "3af1942e3ebfa09e2a13cef6acd61991b61f03967c92ec9feab14403f3e7dbd7"
+    },
+    {
+      "path": "tools/surface-relief-probe.test.ts",
+      "bytes": 2597,
+      "sha256": "ce9d99911cd807305d5c99dd1c042959c2da092047f83afaebf48e48a8a94a6a"
+    },
+    {
+      "path": "tools/surface-relief-probe.ts",
+      "bytes": 1308,
+      "sha256": "5cf6014f2fa831c4bc525bd2df3655759c7fb8de373c9a55da8f1388302e35f4"
+    },
+    {
+      "path": "tools/surface-relief-runtime.test.ts",
+      "bytes": 3705,
+      "sha256": "5adee1c61675fafbbde2ecb5aaf79b65a094129c47c26f3831445f568d0361f2"
+    },
+    {
+      "path": "tools/terrain-lookdev.ts",
+      "bytes": 6935,
+      "sha256": "a5a9b26dbb7f32f56d1d1fe753ffc1b14142a598a4ff57e06ac27fe268709f01"
+    },
+    {
+      "path": "tools/thin-coverage-lookdev.ts",
+      "bytes": 3297,
+      "sha256": "6bb5d569a559a546d79c261562d0a848bac7daeea52d79e62a7ce6549aaa6d80"
+    },
+    {
+      "path": "tools/ui-verification.ts",
+      "bytes": 30672,
+      "sha256": "2b1bae8804827ae6a1fc050ca2c21b9f065c5550c0176b3176c6852863845241"
+    },
+    {
+      "path": "tools/vegetation-benchmark.ts",
+      "bytes": 10807,
+      "sha256": "3aef38172d1948648d782cd65030cfde60cc834fcf9f6677bbcb0ec3396c7849"
+    },
+    {
+      "path": "tools/vegetation-frontier-lookdev.ts",
+      "bytes": 3164,
+      "sha256": "3980746297f0bc6a7a95c29d6261c46b6941434ccf603ae54d9ca7cf13bee0f3"
+    },
+    {
+      "path": "tools/vegetation-lookdev.ts",
+      "bytes": 4911,
+      "sha256": "548494429dc26479869a00d2b96618b621f68ad9d182a0fae5d4c5af56091a15"
+    },
+    {
+      "path": "tools/vegetation-marginal.ts",
+      "bytes": 5662,
+      "sha256": "c916537daf5a1846c42078aab54903d39c9944b718baedb0d7cce1b0d309e5c4"
+    },
+    {
+      "path": "tools/vegetation-material-review.ts",
+      "bytes": 3275,
+      "sha256": "05fe2120df4d4a09033c84a4b77e054145f7d564faf75144495b32b440459be7"
+    },
+    {
+      "path": "tools/verify.ts",
+      "bytes": 5392,
+      "sha256": "ef8039ec364ba3f623cf12ac8ceb09f338f595d0fc905d5d536a144a9eea1362"
+    },
+    {
+      "path": "tools/water-approximation.test.ts",
+      "bytes": 1849,
+      "sha256": "ccfe3ed1decc1eac9376d8fe683da37b369a7c7a6341ef55408a301d74782418"
+    },
+    {
+      "path": "tools/water-lookdev.ts",
+      "bytes": 6058,
+      "sha256": "77096a21b6c6a91c97a961da3cb403790573db4a3e6ce4cb31fd233615d7c401"
+    },
+    {
+      "path": "tools/water-motion-check.ts",
+      "bytes": 2081,
+      "sha256": "df8404f3bd625132569714906363341554c015fa12fbcb5d4b88381e918afcf4"
+    },
+    {
+      "path": "tools/water-orbit-check.ts",
+      "bytes": 1439,
+      "sha256": "95c426a24a6a7cda4b17adb7ebb7e0164d9f64788a844af564cbb391cd0c0120"
+    },
+    {
+      "path": "tools/water-resources.test.ts",
+      "bytes": 4675,
+      "sha256": "74dc314cb56af9ed82f774d886c67cc1e3210bc34427fb82bd8e6f252324cd8d"
+    },
+    {
+      "path": "tools/water-synthesis-check.ts",
+      "bytes": 868,
+      "sha256": "a95bb1dfa46e4acf3fb64199c9b5a7c4c57e14d6f061708638fb339d0b7e90ad"
+    },
+    {
+      "path": "tools/world-traversal-lookdev.ts",
+      "bytes": 4976,
+      "sha256": "e7532f906aa6c94de7b010ae92ed39dcd683891096d86b9ac0909572b5fe3b63"
+    },
+    {
+      "path": "tools/world-traversal-study.test.ts",
+      "bytes": 1600,
+      "sha256": "ec464a8c4a98574ed85a6a74e179a5381e41ecd906cf758eec2c35e79119e984"
+    },
+    {
+      "path": "tools/world-traversal-study.ts",
+      "bytes": 4344,
+      "sha256": "62c9e084f82739a0bfff117afcb3382f0dac7213ba1e7e371e55a61b74313a11"
+    },
+    {
+      "path": "tsconfig.browser.json",
+      "bytes": 154,
+      "sha256": "0926562109d7403eb723f31007a3e6fd061ab765eb90a3ea4ada9d6feb71d0cb"
+    },
+    {
+      "path": "tsconfig.json",
+      "bytes": 825,
+      "sha256": "8b6a36ad2e7dbba55372224c4f7910c2b83c5f7fb849977e614869fbd5fc74cf"
+    }
+  ],
+  "git": {
+    "head": "13e39e2ca8915f6287a062fb9e6a81e0cc007b2b",
+    "status": "M ../../../README.md\n M ../../../apps/player/src/main.ts\n M ../../../apps/player/src/winter-game.ts\n M ../../../apps/studio/src/controller.ts\n M ../../../apps/studio/src/main.tsx\n M ../../../apps/studio/src/style.css\n M ../../../package.json\n M ../../../packages/authoring/src/commands.ts\n M ../../../packages/authoring/src/creation.ts\n M ../../../packages/authoring/src/index.ts\n M ../../../packages/authoring/src/session.test.ts\n M ../../../packages/authoring/src/session.ts\n M ../../../packages/compiler/src/client.ts\n M ../../../packages/compiler/src/compiler.test.ts\n M ../../../packages/compiler/src/cooked.ts\n M ../../../packages/compiler/src/field.ts\n M ../../../packages/compiler/src/index.ts\n M ../../../packages/compiler/src/ir.ts\n M ../../../packages/compiler/src/products.ts\n M ../../../packages/compiler/src/surface.ts\n M ../../../packages/compiler/src/terrain.ts\n M ../../../packages/compiler/src/vegetation.ts\n M ../../../packages/compiler/src/versions.ts\n M ../../../packages/compiler/src/worker.test.ts\n M ../../../packages/compiler/src/worker.ts\n M ../../../packages/model/src/contracts.ts\n M ../../../packages/model/src/documents.ts\n M ../../../packages/model/src/fixtures.ts\n M ../../../packages/model/src/index.ts\n M ../../../packages/model/src/validation.ts\n M ../../../packages/render-webgpu/src/batching.ts\n M ../../../packages/render-webgpu/src/detail.test.ts\n M ../../../packages/render-webgpu/src/detail.ts\n M ../../../packages/render-webgpu/src/display.wgsl\n M ../../../packages/render-webgpu/src/index.ts\n M ../../../packages/render-webgpu/src/packing.ts\n M ../../../packages/render-webgpu/src/quality.ts\n M ../../../packages/render-webgpu/src/renderer.test.ts\n M ../../../packages/render-webgpu/src/residency.test.ts\n M ../../../packages/render-webgpu/src/scene.wgsl\n M ../../../packages/render-webgpu/src/shader.ts\n M ../../../packages/render-webgpu/src/visibility.test.ts\n M ../../../packages/render-webgpu/src/visibility.ts\n M ../../../packages/runtime/src/animation.ts\n M ../../../packages/runtime/src/environment.ts\n M ../../../packages/runtime/src/index.ts\n M ../../../packages/runtime/src/physics.ts\n M ../../../packages/runtime/src/picking.test.ts\n M ../../../packages/runtime/src/picking.ts\n M ../../../packages/runtime/src/runtime.test.ts\n M ../../../packages/runtime/src/scene-host.ts\n M ../../../packages/runtime/src/session.ts\n M ../../../packages/world/src/index.ts\n M ../../../packages/world/src/population.ts\n M ../../../packages/world/src/session.ts\n M ../../../tools/author.ts\n M ../../../tools/browser.ts\n M ../../../tools/build.ts\n M ../../../tools/dev.ts\n M ../../../tools/evidence.ts\n M ../../../tools/fixtures/render-verification.ts\n M ../../../tools/ui-verification.ts\n M ../../../tsconfig.json\n?? ../../../apps/player/src/creature-game.test.ts\n?? ../../../apps/player/src/creature-game.ts\n?? ../../../apps/player/src/creature-marker.ts\n?? ../../../apps/player/src/creature-style.ts\n?? ../../../apps/studio/src/assembly-authoring-panel.tsx\n?? ../../../apps/studio/src/assembly-controls.tsx\n?? ../../../apps/studio/src/assembly-joint-panel.tsx\n?? ../../../apps/studio/src/creature-candidate-preview.test.ts\n?? ../../../apps/studio/src/creature-candidate-preview.ts\n?? ../../../apps/studio/src/creature-coherence-panel.tsx\n?? ../../../apps/studio/src/creature-encounter-marker.ts\n?? ../../../apps/studio/src/creature-encounter-panel.tsx\n?? ../../../apps/studio/src/creature-inspection.test.ts\n?? ../../../apps/studio/src/creature-panel.tsx\n?? ../../../apps/studio/src/creature-review.test.ts\n?? ../../../apps/studio/src/creature-review.ts\n?? ../../../apps/studio/src/creature-tools.test.ts\n?? ../../../apps/studio/src/creature-tools.ts\n?? ../../../apps/studio/src/domain-authoring-panels.tsx\n?? ../../../apps/studio/src/domain-authoring.ts\n?? ../../../apps/studio/src/domain-motion-preview.test.ts\n?? ../../../apps/studio/src/domain-motion-preview.ts\n?? ../../../apps/studio/src/environment-authoring-panel.tsx\n?? ../../../apps/studio/src/geology-authoring-panel.tsx\n?? ../../../apps/studio/src/geology-controls.tsx\n?? ../../../apps/studio/src/geology-corridor-panel.tsx\n?? ../../../apps/studio/src/geology-formations-panel.tsx\n?? ../../../apps/studio/src/geology-profile-panel.tsx\n?? ../../../apps/studio/src/geology-tools.test.ts\n?? ../../../apps/studio/src/geology-tools.ts\n?? ../../../apps/studio/src/indirect-lighting-preview.test.ts\n?? ../../../apps/studio/src/material-authoring-panel.tsx\n?? ../../../apps/studio/src/material-controls.test.ts\n?? ../../../apps/studio/src/material-controls.tsx\n?? ../../../apps/studio/src/material-mask-panel.tsx\n?? ../../../apps/studio/src/material-relief-panel.tsx\n?? ../../../apps/studio/src/material-response-panel.tsx\n?? ../../../apps/studio/src/performance-authoring-panel.tsx\n?? ../../../apps/studio/src/performance-clip-panel.tsx\n?? ../../../apps/studio/src/performance-contact-panel.tsx\n?? ../../../apps/studio/src/performance-event-panel.tsx\n?? ../../../apps/studio/src/performance-physical-review.tsx\n?? ../../../apps/studio/src/performance-track-panels.tsx\n?? ../../../apps/studio/src/vegetation-authoring-panel.tsx\n?? ../../../apps/studio/src/vegetation-growth-panel.tsx\n?? ../../../apps/studio/src/vegetation-review-paint.ts\n?? ../../../apps/studio/src/vegetation-review.test.ts\n?? ../../../apps/studio/src/vegetation-review.ts\n?? ../../../apps/studio/src/world-authoring-panel.tsx\n?? ../../../apps/studio/src/world-spatial-panel.tsx\n?? ../../../docs/architecture/aaa-authoring-loop.md\n?? ../../../docs/architecture/assembly-authoring.md\n?? ../../../docs/architecture/authoring-system.md\n?? ../../../docs/architecture/botanical-growth-rendering-plan.md\n?? ../../../docs/architecture/botanical-implementation-log.md\n?? ../../../docs/architecture/botanical-species-dossier.md\n?? ../../../docs/architecture/construction-history.md\n?? ../../../docs/architecture/creature-authoring-implementation.md\n?? ../../../docs/architecture/creature-authoring-plan.md\n?? ../../../docs/architecture/creature-coherence.md\n?? ../../../docs/architecture/creature-construction.md\n?? ../../../docs/architecture/domain-variants.md\n?? ../../../docs/architecture/environment-authoring.md\n?? ../../../docs/architecture/foliage-frontier-implementation.md\n?? ../../../docs/architecture/geology-authoring.md\n?? ../../../docs/architecture/indirect-lighting.md\n?? ../../../docs/architecture/material-authoring.md\n?? ../../../docs/architecture/performance-authoring.md\n?? ../../../docs/architecture/render-frontier.md\n?? ../../../docs/architecture/surface-relief-lookdev.md\n?? ../../../docs/architecture/surface-relief.md\n?? ../../../docs/architecture/vegetation-authoring.md\n?? ../../../docs/architecture/world-authoring.md\n?? ../../../docs/creature-development-runbook.md\n?? ../../../docs/research/aaa-priorities-2026-09-22.md\n?? ../../../docs/research/alpine-material-lookdev-2026-09-22.md\n?? ../../../docs/research/atmosphere-clouds-2026-09-22.md\n?? ../../../docs/research/authoring-acceptance-2026-09-22.md\n?? ../../../docs/research/cloud-noise-failed-2026-09-22.json\n?? ../../../docs/research/cloud-noise-measured-2026-09-22.json\n?? ../../../docs/research/compiler-frontiers-2026-09-21.gif\n?? ../../../docs/research/compiler-frontiers-2026-09-21.json\n?? ../../../docs/research/compiler-frontiers-2026-09-21.md\n?? ../../../docs/research/compiler-frontiers-2026-09-21.png\n?? ../../../docs/research/compiler-frontiers-2026-09-21.weather.png\n?? ../../../docs/research/compiler-frontiers-rendered-2026-09-21.branch.gif\n?? ../../../docs/research/compiler-frontiers-rendered-2026-09-21.branch.png\n?? ../../../docs/research/compiler-frontiers-rendered-2026-09-21.json\n?? ../../../docs/research/compiler-frontiers-rendered-2026-09-21.md\n?? ../../../docs/research/compiler-frontiers-rendered-2026-09-21.weave.gif\n?? ../../../docs/research/compiler-frontiers-rendered-2026-09-21.weave.png\n?? ../../../docs/research/creature-ash-warden-beauty.png\n?? ../../../docs/research/creature-ash-warden-clay.png\n?? ../../../docs/research/creature-authoring-experiments.md\n?? ../../../docs/research/creature-authoring-verification.json\n?? ../../../docs/research/creature-authoring-verification.md\n?? ../../../docs/research/creature-clay-before-landing.png\n?? ../../../docs/research/creature-clay-before-side.png\n?? ../../../docs/research/creature-clay-face.png\n?? ../../../docs/research/creature-clay-iteration.json\n?? ../../../docs/research/creature-clay-iteration.md\n?? ../../../docs/research/creature-clay-landing.png\n?? ../../../docs/research/creature-clay-notebook.json\n?? ../../../docs/research/creature-clay-shoulder.png\n?? ../../../docs/research/creature-clay-side.png\n?? ../../../docs/research/creature-clay-takeoff.png\n?? ../../../docs/research/foliage-frontier-2026-09-23/\n?? ../../../docs/research/foliage-implementation-2026-09-23/\n?? ../../../docs/research/lighting-audit-2026-09-23.md\n?? ../../../docs/research/lighting-audit-2026-09-23/\n?? ../../../docs/research/lighting-pruned-cell-bvh-rejected.patch\n?? ../../../docs/research/lighting-upgrade-2026-09-23.json\n?? ../../../docs/research/lighting-upgrade-2026-09-23.md\n?? ../../../docs/research/lighting-upgrade-gi-box.png\n?? ../../../docs/research/lighting-upgrade-lantern-unshadowed.png\n?? ../../../docs/research/lighting-upgrade-lantern.png\n?? ../../../docs/research/lighting-upgrade-materials.png\n?? ../../../docs/research/lighting-upgrade-winter-default.png\n?? ../../../docs/research/lighting-upgrade-winter-preview.png\n?? ../../../docs/research/performance-authoring-2026-09-22.md\n?? ../../../docs/research/pine-architecture-2026-09-23/\n?? ../../../docs/research/rendering-compiler-analytic-closeup.png\n?? ../../../docs/research/rendering-compiler-analytic-shadow-failure.png\n?? ../../../docs/research/rendering-compiler-final-evidence.png\n?? ../../../docs/research/rendering-compiler-final-evidence.svg\n?? ../../../docs/research/rendering-compiler-final-highlights.png\n?? ../../../docs/research/rendering-compiler-final-results.json\n?? ../../../docs/research/rendering-compiler-final.md\n?? ../../../docs/research/rendering-compiler-implementation.md\n?? ../../../docs/research/rendering-compiler-results.json\n?? ../../../docs/research/sky-art-iteration-2026-09-23.md\n?? ../../../docs/research/sky-art-revision-2026-09-22.md\n?? ../../../docs/research/sky-art-revision-results-2026-09-22.json\n?? ../../../docs/research/sky-basis-cache-experiment.patch\n?? ../../../docs/research/sky-basis-cache-results.json\n?? ../../../docs/research/sky-cloud-shapes-2026-09-23-daylight.png\n?? ../../../docs/research/sky-cloud-shapes-2026-09-23-other-view.png\n?? ../../../docs/research/sky-cloud-shapes-2026-09-23-results.json\n?? ../../../docs/research/sky-cloud-shapes-2026-09-23-sunset.png\n?? ../../../docs/research/sky-cloud-shapes-2026-09-23.md\n?? ../../../docs/research/sky-clouds-2026-09-23-after-balanced.png\n?? ../../../docs/research/sky-clouds-2026-09-23-before-balanced.png\n?? ../../../docs/research/sky-clouds-2026-09-23-cumulus-back.png\n?? ../../../docs/research/sky-clouds-2026-09-23-cumulus-side.png\n?? ../../../docs/research/sky-clouds-2026-09-23-golden.png\n?? ../../../docs/research/sky-clouds-2026-09-23-results.json\n?? ../../../docs/research/sky-clouds-2026-09-23.md\n?? ../../../docs/research/sky-current-audit-2026-09-23.md\n?? ../../../docs/research/sky-current-audit-2026-09-23/\n?? ../../../docs/research/sky-field-implementation-2026-09-22.md\n?? ../../../docs/research/sky-field-results-2026-09-22.json\n?? ../../../docs/research/sky-implementation-2026-09-23.md\n?? ../../../docs/research/sky-lighting-research-2026-09-22.md\n?? ../../../docs/research/sky-reference-audit-2026-09-23.md\n?? ../../../docs/research/sky-reference-audit-2026-09-23/\n?? ../../../docs/research/sky-sunset-2026-09-23-after.png\n?? ../../../docs/research/sky-sunset-2026-09-23-before.png\n?? ../../../docs/research/sky-sunset-lighting-2026-09-23-results.json\n?? ../../../docs/research/sky-sunset-lighting-2026-09-23.md\n?? ../../../docs/research/thin-field-foliage-2026-09-22.md\n?? ../../../docs/research/vegetation-authoring-2026-09-22.md\n?? ../../../docs/research/water-current-shore-2026-09-23.png\n?? ../../../docs/research/water-frontier-2026-09-23/\n?? ../../../docs/research/water-implementation-2026-09-23.json\n?? ../../../docs/research/water-implementation-2026-09-23.md\n?? ../../../docs/research/water-implemented-creek-2026-09-23.png\n?? ../../../docs/research/water-implemented-ocean-2026-09-23.png\n?? ../../../docs/research/water-refinement-2026-09-23.json\n?? ../../../docs/research/water-refinement-2026-09-23.md\n?? ../../../docs/research/water-refinement-creek-2026-09-23.png\n?? ../../../docs/research/water-refinement-lake-2026-09-23.png\n?? ../../../docs/research/water-refinement-ocean-2026-09-23.png\n?? ../../../docs/research/water-refinement-sunset-2026-09-23.png\n?? ../../../docs/research/water-rendering-2026-09-23.json\n?? ../../../docs/research/water-rendering-2026-09-23.md\n?? ../../../docs/research/winter-rendering-performance-2026-09-21.json\n?? ../../../docs/research/winter-rendering-performance-2026-09-21.md\n?? ../../../docs/research/winter-rendering-scalability-2026-09-21.json\n?? ../../../docs/research/winter-rendering-scalability-2026-09-21.md\n?? ../../../docs/research/world-class-sky-research-2026-09-22.md\n?? ../../../packages/authoring/CREATURES.md\n?? ../../../packages/authoring/src/assembly.test.ts\n?? ../../../packages/authoring/src/assembly.ts\n?? ../../../packages/authoring/src/cloud-authoring.test.ts\n?? ../../../packages/authoring/src/creature-candidates.ts\n?? ../../../packages/authoring/src/creature-coherence.test.ts\n?? ../../../packages/authoring/src/creature-coherence.ts\n?? ../../../packages/authoring/src/creature-commands.ts\n?? ../../../packages/authoring/src/creature-jobs.test.ts\n?? ../../../packages/authoring/src/creature-jobs.ts\n?? ../../../packages/authoring/src/creature-landmark-bindings.ts\n?? ../../../packages/authoring/src/creature-mantle.ts\n?? ../../../packages/authoring/src/creature-notebook.test.ts\n?? ../../../packages/authoring/src/creature-notebook.ts\n?? ../../../packages/authoring/src/creature-physical-coherence.ts\n?? ../../../packages/authoring/src/creature-proportion.test.ts\n?? ../../../packages/authoring/src/creature-provenance.test.ts\n?? ../../../packages/authoring/src/creature-provenance.ts\n?? ../../../packages/authoring/src/creature-repair.test.ts\n?? ../../../packages/authoring/src/creature-repair.ts\n?? ../../../packages/authoring/src/creature-retarget.test.ts\n?? ../../../packages/authoring/src/creature-retarget.ts\n?? ../../../packages/authoring/src/creature-solver.ts\n?? ../../../packages/authoring/src/creature.test.ts\n?? ../../../packages/authoring/src/creature.ts\n?? ../../../packages/authoring/src/domain-constraints.ts\n?? ../../../packages/authoring/src/domain-recipes.ts\n?? ../../../packages/authoring/src/domain-variants.test.ts\n?? ../../../packages/authoring/src/domain-variants.ts\n?? ../../../packages/authoring/src/performance-clips.ts\n?? ../../../packages/authoring/src/performance.test.ts\n?? ../../../packages/authoring/src/performance.ts\n?? ../../../packages/authoring/src/source-keys.test.ts\n?? ../../../packages/authoring/src/source-keys.ts\n?? ../../../packages/authoring/src/world-authoring.test.ts\n?? ../../../packages/authoring/src/world-authoring.ts\n?? ../../../packages/compiler/src/assembly-clearance.ts\n?? ../../../packages/compiler/src/assembly.test.ts\n?? ../../../packages/compiler/src/assembly.ts\n?? ../../../packages/compiler/src/atmosphere-authoring.test.ts\n?? ../../../packages/compiler/src/atmosphere-authoring.ts\n?? ../../../packages/compiler/src/atmosphere-ozone.test.ts\n?? ../../../packages/compiler/src/atmosphere-ozone.ts\n?? ../../../packages/compiler/src/atmosphere.test.ts\n?? ../../../packages/compiler/src/atmosphere.ts\n?? ../../../packages/compiler/src/botanical-analysis.ts\n?? ../../../packages/compiler/src/botanical-branch.ts\n?? ../../../packages/compiler/src/botanical-development-mesh.test.ts\n?? ../../../packages/compiler/src/botanical-environment.ts\n?? ../../../packages/compiler/src/botanical-growth-request.ts\n?? ../../../packages/compiler/src/botanical-growth-structure.ts\n?? ../../../packages/compiler/src/botanical-growth.test.ts\n?? ../../../packages/compiler/src/botanical-growth.ts\n?? ../../../packages/compiler/src/botanical-mesh.ts\n?? ../../../packages/compiler/src/botanical-motion.ts\n?? ../../../packages/compiler/src/botanical-primitives.ts\n?? ../../../packages/compiler/src/botanical-structure.ts\n?? ../../../packages/compiler/src/botanical-surfaces.ts\n?? ../../../packages/compiler/src/botanical.test.ts\n?? ../../../packages/compiler/src/branch-visibility.test.ts\n?? ../../../packages/compiler/src/branch-visibility.ts\n?? ../../../packages/compiler/src/cloud-transport.test.ts\n?? ../../../packages/compiler/src/cloud-transport.ts\n?? ../../../packages/compiler/src/conifer-growth.ts\n?? ../../../packages/compiler/src/conifer-mesh.ts\n?? ../../../packages/compiler/src/creature-attachments.test.ts\n?? ../../../packages/compiler/src/creature-attachments.ts\n?? ../../../packages/compiler/src/creature-cache.test.ts\n?? ../../../packages/compiler/src/creature-cache.ts\n?? ../../../packages/compiler/src/creature-cooked.ts\n?? ../../../packages/compiler/src/creature-delivery.test.ts\n?? ../../../packages/compiler/src/creature-features.test.ts\n?? ../../../packages/compiler/src/creature-features.ts\n?? ../../../packages/compiler/src/creature-projection.test.ts\n?? ../../../packages/compiler/src/creature-projection.ts\n?? ../../../packages/compiler/src/creature-refinement.test.ts\n?? ../../../packages/compiler/src/creature-refinement.ts\n?? ../../../packages/compiler/src/creature.test.ts\n?? ../../../packages/compiler/src/creature.ts\n?? ../../../packages/compiler/src/finite-sun.test.ts\n?? ../../../packages/compiler/src/finite-sun.ts\n?? ../../../packages/compiler/src/geology-corridors.ts\n?? ../../../packages/compiler/src/geology-formations.ts\n?? ../../../packages/compiler/src/geology-height.ts\n?? ../../../packages/compiler/src/geology-profiles.test.ts\n?? ../../../packages/compiler/src/geology-rock.test.ts\n?? ../../../packages/compiler/src/geology.test.ts\n?? ../../../packages/compiler/src/geology.ts\n?? ../../../packages/compiler/src/groom-appearance-binding.ts\n?? ../../../packages/compiler/src/groom-appearance.test.ts\n?? ../../../packages/compiler/src/groom-appearance.ts\n?? ../../../packages/compiler/src/groom-cooked.test.ts\n?? ../../../packages/compiler/src/groom-creature.ts\n?? ../../../packages/compiler/src/groom.test.ts\n?? ../../../packages/compiler/src/groom.ts\n?? ../../../packages/compiler/src/indirect-probes.test.ts\n?? ../../../packages/compiler/src/indirect-probes.ts\n?? ../../../packages/compiler/src/indirect-query.ts\n?? ../../../packages/compiler/src/indirect-reference.test.ts\n?? ../../../packages/compiler/src/indirect-reference.ts\n?? ../../../packages/compiler/src/indirect-regions.ts\n?? ../../../packages/compiler/src/indirect-visibility.ts\n?? ../../../packages/compiler/src/leaf-ribbons.ts\n?? ../../../packages/compiler/src/lighting-transfer.test.ts\n?? ../../../packages/compiler/src/material-lattice.test.ts\n?? ../../../packages/compiler/src/material-lattice.ts\n?? ../../../packages/compiler/src/needle-ribbons.ts\n?? ../../../packages/compiler/src/needle-shoot.test.ts\n?? ../../../packages/compiler/src/needle-shoot.ts\n?? ../../../packages/compiler/src/occluder-facts.test.ts\n?? ../../../packages/compiler/src/occluder-facts.ts\n?? ../../../packages/compiler/src/periodic-material.test.ts\n?? ../../../packages/compiler/src/periodic-material.ts\n?? ../../../packages/compiler/src/phase.test.ts\n?? ../../../packages/compiler/src/phase.ts\n?? ../../../packages/compiler/src/pine-architecture.test.ts\n?? ../../../packages/compiler/src/pine-architecture.ts\n?? ../../../packages/compiler/src/primitive.test.ts\n?? ../../../packages/compiler/src/primitive.ts\n?? ../../../packages/compiler/src/render-products.test.ts\n?? ../../../packages/compiler/src/render-products.ts\n?? ../../../packages/compiler/src/river-channel.ts\n?? ../../../packages/compiler/src/river-review.ts\n?? ../../../packages/compiler/src/shoot-coverage.ts\n?? ../../../packages/compiler/src/shoot-instances.test.ts\n?? ../../../packages/compiler/src/shoot-instances.ts\n?? ../../../packages/compiler/src/shoot-visibility.test.ts\n?? ../../../packages/compiler/src/shoot-visibility.ts\n?? ../../../packages/compiler/src/surface-relief-pattern.test.ts\n?? ../../../packages/compiler/src/surface-relief-pattern.ts\n?? ../../../packages/compiler/src/surface-relief-sampling.ts\n?? ../../../packages/compiler/src/surface-relief-thickness.ts\n?? ../../../packages/compiler/src/surface-relief.test.ts\n?? ../../../packages/compiler/src/surface-relief.ts\n?? ../../../packages/compiler/src/thin-coverage.test.ts\n?? ../../../packages/compiler/src/thin-coverage.ts\n?? ../../../packages/compiler/src/vegetation-clusters.ts\n?? ../../../packages/compiler/src/vegetation-crown.test.ts\n?? ../../../packages/compiler/src/vegetation-crown.ts\n?? ../../../packages/compiler/src/vegetation-motion.test.ts\n?? ../../../packages/compiler/src/water-authoring.test.ts\n?? ../../../packages/compiler/src/water-body.test.ts\n?? ../../../packages/compiler/src/water-domain.ts\n?? ../../../packages/compiler/src/water-effects.test.ts\n?? ../../../packages/compiler/src/water-effects.ts\n?? ../../../packages/compiler/src/water-glints.test.ts\n?? ../../../packages/compiler/src/water-glints.ts\n?? ../../../packages/compiler/src/water-reflections.ts\n?? ../../../packages/compiler/src/water-spectrum.ts\n?? ../../../packages/compiler/src/water.ts\n?? ../../../packages/model/src/alpine-composition.ts\n?? ../../../packages/model/src/alpine-habitat.ts\n?? ../../../packages/model/src/alpine-lookdev.ts\n?? ../../../packages/model/src/architecture-lookdev.ts\n?? ../../../packages/model/src/assembly.ts\n?? ../../../packages/model/src/botanical-growth.ts\n?? ../../../packages/model/src/botanical-species.ts\n?? ../../../packages/model/src/branch-visibility.ts\n?? ../../../packages/model/src/character-lookdev.test.ts\n?? ../../../packages/model/src/character-lookdev.ts\n?? ../../../packages/model/src/character-motion-bake.ts\n?? ../../../packages/model/src/character-motion-lookdev.ts\n?? ../../../packages/model/src/construction-recipe.ts\n?? ../../../packages/model/src/creature-biped-construction.ts\n?? ../../../packages/model/src/creature-biped-motion.ts\n?? ../../../packages/model/src/creature-clay-study.ts\n?? ../../../packages/model/src/creature-fitting.ts\n?? ../../../packages/model/src/creature-fixtures.test.ts\n?? ../../../packages/model/src/creature-fixtures.ts\n?? ../../../packages/model/src/creature-patch.test.ts\n?? ../../../packages/model/src/creature-patch.ts\n?? ../../../packages/model/src/creature-products.ts\n?? ../../../packages/model/src/creature-sculpt.ts\n?? ../../../packages/model/src/creature-validation.ts\n?? ../../../packages/model/src/creature.test.ts\n?? ../../../packages/model/src/creature.ts\n?? ../../../packages/model/src/environment-authoring.ts\n?? ../../../packages/model/src/environment-lookdev.ts\n?? ../../../packages/model/src/forest-edge.test.ts\n?? ../../../packages/model/src/forest-edge.ts\n?? ../../../packages/model/src/geology-profiles.ts\n?? ../../../packages/model/src/geology-rock.ts\n?? ../../../packages/model/src/geology.ts\n?? ../../../packages/model/src/indirect-lighting.ts\n?? ../../../packages/model/src/lookdev-scene.ts\n?? ../../../packages/model/src/material-lattice.ts\n?? ../../../packages/model/src/material-lookdev.test.ts\n?? ../../../packages/model/src/material-lookdev.ts\n?? ../../../packages/model/src/performance.ts\n?? ../../../packages/model/src/quadric.ts\n?? ../../../packages/model/src/render-frontier.test.ts\n?? ../../../packages/model/src/render-frontier.ts\n?? ../../../packages/model/src/render-products.ts\n?? ../../../packages/model/src/surface-appearance.ts\n?? ../../../packages/model/src/surface-history-material.ts\n?? ../../../packages/model/src/surface-history.test.ts\n?? ../../../packages/model/src/surface-history.ts\n?? ../../../packages/model/src/surface-relief-lookdev.ts\n?? ../../../packages/model/src/surface-relief.ts\n?? ../../../packages/model/src/terrain-lookdev.ts\n?? ../../../packages/model/src/thin-coverage.ts\n?? ../../../packages/model/src/vegetation-authoring.ts\n?? ../../../packages/model/src/vegetation-materials.ts\n?? ../../../packages/model/src/vegetation-motion.ts\n?? ../../../packages/model/src/vegetation-products.ts\n?? ../../../packages/model/src/vegetation-stand.ts\n?? ../../../packages/model/src/visibility-products.ts\n?? ../../../packages/model/src/water-body.ts\n?? ../../../packages/model/src/water-lookdev.ts\n?? ../../../packages/model/src/water-phase.ts\n?? ../../../packages/model/src/water-valley.ts\n?? ../../../packages/model/src/wayside-lookdev.ts\n?? ../../../packages/model/src/winter-brook.ts\n?? ../../../packages/model/src/world-authoring.test.ts\n?? ../../../packages/model/src/world-authoring.ts\n?? ../../../packages/model/src/world-construction.ts\n?? ../../../packages/model/src/world-path-lookdev.ts\n?? ../../../packages/model/src/world-path.test.ts\n?? ../../../packages/model/src/world-path.ts\n?? ../../../packages/model/src/world-room.ts\n?? ../../../packages/render-webgpu/src/atmosphere-cloud-noise.wgsl\n?? ../../../packages/render-webgpu/src/atmosphere-cloud-reprojection.wgsl\n?? ../../../packages/render-webgpu/src/atmosphere-cloud-transport.wgsl\n?? ../../../packages/render-webgpu/src/atmosphere-clouds.wgsl\n?? ../../../packages/render-webgpu/src/atmosphere-gpu.ts\n?? ../../../packages/render-webgpu/src/atmosphere-multiple.test.ts\n?? ../../../packages/render-webgpu/src/atmosphere-multiple.wgsl\n?? ../../../packages/render-webgpu/src/atmosphere-sky.wgsl\n?? ../../../packages/render-webgpu/src/atmosphere.ts\n?? ../../../packages/render-webgpu/src/brdf.wgsl\n?? ../../../packages/render-webgpu/src/cloud-formations.test.ts\n?? ../../../packages/render-webgpu/src/cloud-formations.ts\n?? ../../../packages/render-webgpu/src/cloud-history.test.ts\n?? ../../../packages/render-webgpu/src/cloud-history.ts\n?? ../../../packages/render-webgpu/src/compiled-lighting.test.ts\n?? ../../../packages/render-webgpu/src/creature-deformation.test.ts\n?? ../../../packages/render-webgpu/src/creature-deformation.ts\n?? ../../../packages/render-webgpu/src/creature-material.test.ts\n?? ../../../packages/render-webgpu/src/creature-material.ts\n?? ../../../packages/render-webgpu/src/creature-material.wgsl\n?? ../../../packages/render-webgpu/src/default-atmosphere.json\n?? ../../../packages/render-webgpu/src/environment-reflection.ts\n?? ../../../packages/render-webgpu/src/finite-sun.ts\n?? ../../../packages/render-webgpu/src/foliage.test.ts\n?? ../../../packages/render-webgpu/src/foliage.ts\n?? ../../../packages/render-webgpu/src/foliage.wgsl\n?? ../../../packages/render-webgpu/src/gpu-timing.test.ts\n?? ../../../packages/render-webgpu/src/gpu-timing.ts\n?? ../../../packages/render-webgpu/src/gpu-visibility.test.ts\n?? ../../../packages/render-webgpu/src/gpu-visibility.ts\n?? ../../../packages/render-webgpu/src/hi-z.ts\n?? ../../../packages/render-webgpu/src/indirect.test.ts\n?? ../../../packages/render-webgpu/src/indirect.ts\n?? ../../../packages/render-webgpu/src/indirect.wgsl\n?? ../../../packages/render-webgpu/src/irradiance.ts\n?? ../../../packages/render-webgpu/src/local-lighting.test.ts\n?? ../../../packages/render-webgpu/src/local-lighting.ts\n?? ../../../packages/render-webgpu/src/material-lattice.ts\n?? ../../../packages/render-webgpu/src/material-lattice.wgsl\n?? ../../../packages/render-webgpu/src/material-specialization.test.ts\n?? ../../../packages/render-webgpu/src/material-specialization.ts\n?? ../../../packages/render-webgpu/src/opaque-visibility.test.ts\n?? ../../../packages/render-webgpu/src/opaque-visibility.ts\n?? ../../../packages/render-webgpu/src/periodic-material.test.ts\n?? ../../../packages/render-webgpu/src/primitive.test.ts\n?? ../../../packages/render-webgpu/src/primitive.ts\n?? ../../../packages/render-webgpu/src/primitive.wgsl\n?? ../../../packages/render-webgpu/src/realization.test.ts\n?? ../../../packages/render-webgpu/src/realization.ts\n?? ../../../packages/render-webgpu/src/shoot-geometry-pool.test.ts\n?? ../../../packages/render-webgpu/src/shoot-geometry-pool.ts\n?? ../../../packages/render-webgpu/src/shoot-selection.test.ts\n?? ../../../packages/render-webgpu/src/shoot-selection.ts\n?? ../../../packages/render-webgpu/src/surface-appearance.test.ts\n?? ../../../packages/render-webgpu/src/surface-appearance.ts\n?? ../../../packages/render-webgpu/src/surface-appearance.wgsl\n?? ../../../packages/render-webgpu/src/surface-relief.wgsl\n?? ../../../packages/render-webgpu/src/temporal-display.wgsl\n?? ../../../packages/render-webgpu/src/temporal-resolve.wgsl\n?? ../../../packages/render-webgpu/src/temporal.test.ts\n?? ../../../packages/render-webgpu/src/temporal.ts\n?? ../../../packages/render-webgpu/src/temporal.wgsl\n?? ../../../packages/render-webgpu/src/thin-coverage-pool.test.ts\n?? ../../../packages/render-webgpu/src/thin-coverage-pool.ts\n?? ../../../packages/render-webgpu/src/thin-coverage-sampling.test.ts\n?? ../../../packages/render-webgpu/src/thin-coverage-sampling.ts\n?? ../../../packages/render-webgpu/src/thin-coverage.test.ts\n?? ../../../packages/render-webgpu/src/thin-coverage.ts\n?? ../../../packages/render-webgpu/src/thin-coverage.wgsl\n?? ../../../packages/render-webgpu/src/transport.ts\n?? ../../../packages/render-webgpu/src/vegetation-selection.test.ts\n?? ../../../packages/render-webgpu/src/vegetation-selection.ts\n?? ../../../packages/render-webgpu/src/vegetation-wind-review.test.ts\n?? ../../../packages/render-webgpu/src/vertex-layout.test.ts\n?? ../../../packages/render-webgpu/src/vertex-layout.ts\n?? ../../../packages/render-webgpu/src/water-body.ts\n?? ../../../packages/render-webgpu/src/water-body.wgsl\n?? ../../../packages/render-webgpu/src/water-budget.ts\n?? ../../../packages/render-webgpu/src/water-glints.wgsl\n?? ../../../packages/render-webgpu/src/water-packing.test.ts\n?? ../../../packages/render-webgpu/src/water-spectrum-gpu.ts\n?? ../../../packages/render-webgpu/src/water-transport.test.ts\n?? ../../../packages/render-webgpu/src/water-transport.ts\n?? ../../../packages/render-webgpu/src/water-transport.wgsl\n?? ../../../packages/render-webgpu/src/water.wgsl\n?? ../../../packages/render-webgpu/src/woven-material.wgsl\n?? ../../../packages/runtime/src/artifact-memory.ts\n?? ../../../packages/runtime/src/assembly-motion.test.ts\n?? ../../../packages/runtime/src/assembly-motion.ts\n?? ../../../packages/runtime/src/assembly-overrides.test.ts\n?? ../../../packages/runtime/src/assembly-reprepare.test.ts\n?? ../../../packages/runtime/src/assembly-state.ts\n?? ../../../packages/runtime/src/character-motion-lookdev.test.ts\n?? ../../../packages/runtime/src/creature-articulation.test.ts\n?? ../../../packages/runtime/src/creature-articulation.ts\n?? ../../../packages/runtime/src/creature-cloth.test.ts\n?? ../../../packages/runtime/src/creature-cloth.ts\n?? ../../../packages/runtime/src/creature-deformation.test.ts\n?? ../../../packages/runtime/src/creature-deformation.ts\n?? ../../../packages/runtime/src/creature-detail.test.ts\n?? ../../../packages/runtime/src/creature-detail.ts\n?? ../../../packages/runtime/src/creature-groom.ts\n?? ../../../packages/runtime/src/creature-grounding-host.test.ts\n?? ../../../packages/runtime/src/creature-inspection.test.ts\n?? ../../../packages/runtime/src/creature-inspection.ts\n?? ../../../packages/runtime/src/creature-motion-audit.test.ts\n?? ../../../packages/runtime/src/creature-motion-audit.ts\n?? ../../../packages/runtime/src/creature-review.test.ts\n?? ../../../packages/runtime/src/creature-review.ts\n?? ../../../packages/runtime/src/creature-runtime.test.ts\n?? ../../../packages/runtime/src/creature-runtime.ts\n?? ../../../packages/runtime/src/creature-session.test.ts\n?? ../../../packages/runtime/src/environment-authoring.test.ts\n?? ../../../packages/runtime/src/environment-state.ts\n?? ../../../packages/runtime/src/environment-water-host.test.ts\n?? ../../../packages/runtime/src/environment.test.ts\n?? ../../../packages/runtime/src/game/creature-encounter.test.ts\n?? ../../../packages/runtime/src/game/creature-encounter.ts\n?? ../../../packages/runtime/src/geology-physics.test.ts\n?? ../../../packages/runtime/src/geology-preview.test.ts\n?? ../../../packages/runtime/src/geology-preview.ts\n?? ../../../packages/runtime/src/groom-material.test.ts\n?? ../../../packages/runtime/src/groom-material.ts\n?? ../../../packages/runtime/src/indirect-lighting.test.ts\n?? ../../../packages/runtime/src/indirect-lighting.ts\n?? ../../../packages/runtime/src/performance-integration.test.ts\n?? ../../../packages/runtime/src/performance.test.ts\n?? ../../../packages/runtime/src/performance.ts\n?? ../../../packages/runtime/src/periodic-material.test.ts\n?? ../../../packages/runtime/src/scene-host-indirect.test.ts\n?? ../../../packages/runtime/src/surface-appearance.test.ts\n?? ../../../packages/runtime/src/surface-appearance.ts\n?? ../../../packages/runtime/src/surface-relief.test.ts\n?? ../../../packages/runtime/src/surface-relief.ts\n?? ../../../packages/runtime/src/vegetation-growth.test.ts\n?? ../../../packages/runtime/src/vegetation-growth.ts\n?? ../../../packages/runtime/src/water-body.test.ts\n?? ../../../packages/runtime/src/water-body.ts\n?? ../../../packages/runtime/src/water-simulation.test.ts\n?? ../../../packages/runtime/src/water-simulation.ts\n?? ../../../packages/runtime/src/world-composition.test.ts\n?? ../../../packages/world/src/composition.test.ts\n?? ../../../packages/world/src/composition.ts\n?? ../../../packages/world/src/route-network.ts\n?? ../../../packages/world/src/spatial-review.test.ts\n?? ../../../packages/world/src/spatial-review.ts\n?? ../../../tools/alpine-construction-review.ts\n?? ../../../tools/alpine-construction.test.ts\n?? ../../../tools/alpine-slice-capture.test.ts\n?? ../../../tools/alpine-slice-capture.ts\n?? ../../../tools/alpine-slice-lookdev.ts\n?? ../../../tools/alpine-slice-physics.test.ts\n?? ../../../tools/alpine-slice-study.test.ts\n?? ../../../tools/alpine-slice-study.ts\n?? ../../../tools/author-variants.test.ts\n?? ../../../tools/authoring-lookdev-report.test.ts\n?? ../../../tools/authoring-lookdev-report.ts\n?? ../../../tools/authoring-lookdev.ts\n?? ../../../tools/botanical-growth-study.ts\n?? ../../../tools/browser-lifecycle.test.ts\n?? ../../../tools/browser-lifecycle.ts\n?? ../../../tools/character-lookdev.ts\n?? ../../../tools/cloud-noise-check.ts\n?? ../../../tools/compile-cloud-transport.ts\n?? ../../../tools/compiler-frontiers/\n?? ../../../tools/creature-atlas.test.ts\n?? ../../../tools/creature-atlas.ts\n?? ../../../tools/creature-author.test.ts\n?? ../../../tools/creature-benchmark.ts\n?? ../../../tools/creature-capture-recipes.test.ts\n?? ../../../tools/creature-capture-recipes.ts\n?? ../../../tools/creature-coherence.test.ts\n?? ../../../tools/creature-construction.test.ts\n?? ../../../tools/creature-experiments.ts\n?? ../../../tools/creature-notebook.test.ts\n?? ../../../tools/creature-notebook.ts\n?? ../../../tools/creature-review.test.ts\n?? ../../../tools/creature-review.ts\n?? ../../../tools/creature-smoke.ts\n?? ../../../tools/creature-studio-verification.ts\n?? ../../../tools/domain-studio-verification.ts\n?? ../../../tools/domain-variant-lookdev.ts\n?? ../../../tools/domain-variant-studies.test.ts\n?? ../../../tools/domain-variant-studies.ts\n?? ../../../tools/environment-authoring-check.ts\n?? ../../../tools/environment-lookdev.ts\n?? ../../../tools/fixtures/alpine-slice-lookdev.ts\n?? ../../../tools/fixtures/cloud-kernel.ts\n?? ../../../tools/fixtures/cloud-noise-gpu.ts\n?? ../../../tools/fixtures/cloud-noise.ts\n?? ../../../tools/fixtures/creature-fitting.ts\n?? ../../../tools/fixtures/creature-render.ts\n?? ../../../tools/fixtures/domain-variant-lookdev.ts\n?? ../../../tools/fixtures/environment-authoring.ts\n?? ../../../tools/fixtures/foliage-lookdev.ts\n?? ../../../tools/fixtures/foliage-probe.ts\n?? ../../../tools/fixtures/foliage-specimens.ts\n?? ../../../tools/fixtures/frontier-relief.ts\n?? ../../../tools/fixtures/gi-lookdev.ts\n?? ../../../tools/fixtures/indirect-scenes.ts\n?? ../../../tools/fixtures/lighting-audit.ts\n?? ../../../tools/fixtures/lighting-upgrade.ts\n?? ../../../tools/fixtures/lookdev-subtree.ts\n?? ../../../tools/fixtures/lookdev.ts\n?? ../../../tools/fixtures/material-lookdev.ts\n?? ../../../tools/fixtures/shoot-qualification.ts\n?? ../../../tools/fixtures/sky-field.ts\n?? ../../../tools/fixtures/surface-appearance.ts\n?? ../../../tools/fixtures/surface-relief-cpu.ts\n?? ../../../tools/fixtures/surface-relief-lookdev.ts\n?? ../../../tools/fixtures/surface-relief-probe.ts\n?? ../../../tools/fixtures/terrain-lookdev-render.ts\n?? ../../../tools/fixtures/thin-coverage-coarse.ts\n?? ../../../tools/fixtures/thin-coverage.ts\n?? ../../../tools/fixtures/vegetation-benchmark.ts\n?? ../../../tools/fixtures/vegetation-frontier.ts\n?? ../../../tools/fixtures/vegetation-study.ts\n?? ../../../tools/fixtures/water-conformance.ts\n?? ../../../tools/fixtures/water-depth-conformance.ts\n?? ../../../tools/fixtures/water-motion.ts\n?? ../../../tools/fixtures/water-orbit.ts\n?? ../../../tools/fixtures/water-spectrum-conformance.ts\n?? ../../../tools/fixtures/water-synthesis-benchmark.ts\n?? ../../../tools/fixtures/world-traversal-lookdev.ts\n?? ../../../tools/foliage-benchmark.ts\n?? ../../../tools/foliage-lookdev.ts\n?? ../../../tools/forest-player-check.ts\n?? ../../../tools/forest-walk.ts\n?? ../../../tools/frontier-image-metrics.test.ts\n?? ../../../tools/frontier-image-metrics.ts\n?? ../../../tools/frontier-lookdev-input.ts\n?? ../../../tools/frontier-lookdev-report.test.ts\n?? ../../../tools/frontier-lookdev-report.ts\n?? ../../../tools/frontier-relief-lookdev.ts\n?? ../../../tools/geology-benchmark.ts\n?? ../../../tools/gi-lookdev.ts\n?? ../../../tools/indirect-runtime.test.ts\n?? ../../../tools/lighting-audit.ts\n?? ../../../tools/lighting-upgrade-check.ts\n?? ../../../tools/lookdev-lighting.test.ts\n?? ../../../tools/lookdev-snapshot.ts\n?? ../../../tools/lookdev.ts\n?? ../../../tools/material-lookdev.ts\n?? ../../../tools/performance-lookdev-snapshot.ts\n?? ../../../tools/performance-lookdev.ts\n?? ../../../tools/rendering-compiler/\n?? ../../../tools/shoot-lookdev.ts\n?? ../../../tools/shoot-qualification.ts\n?? ../../../tools/sky-art-replay.ts\n?? ../../../tools/sky-art-review.ts\n?? ../../../tools/sky-field-check.ts\n?? ../../../tools/sky-replay.ts\n?? ../../../tools/sky-temporal-check.ts\n?? ../../../tools/source-snapshot.ts\n?? ../../../tools/surface-appearance-check.ts\n?? ../../../tools/surface-relief-cpu.test.ts\n?? ../../../tools/surface-relief-cpu.ts\n?? ../../../tools/surface-relief-lookdev.test.ts\n?? ../../../tools/surface-relief-lookdev.ts\n?? ../../../tools/surface-relief-probe.test.ts\n?? ../../../tools/surface-relief-probe.ts\n?? ../../../tools/surface-relief-runtime.test.ts\n?? ../../../tools/terrain-lookdev.ts\n?? ../../../tools/thin-coverage-lookdev.ts\n?? ../../../tools/transport-research/coherent-bench.ts\n?? ../../../tools/transport-research/coherent-ggx.test.ts\n?? ../../../tools/transport-research/coherent-ggx.ts\n?? ../../../tools/transport-research/final-accuracy.ts\n?? ../../../tools/transport-research/final-plot.py\n?? ../../../tools/transport-research/final-snapshot.ts\n?? ../../../tools/transport-research/gpu-coherent.ts\n?? ../../../tools/transport-research/gpu-final-fixture.ts\n?? ../../../tools/transport-research/gpu-final.ts\n?? ../../../tools/transport-research/gpu-sun.ts\n?? ../../../tools/transport-research/orbit-stress.ts\n?? ../../../tools/transport-research/sun-caps.test.ts\n?? ../../../tools/transport-research/sun-caps.ts\n?? ../../../tools/vegetation-benchmark.ts\n?? ../../../tools/vegetation-frontier-lookdev.ts\n?? ../../../tools/vegetation-lookdev.ts\n?? ../../../tools/vegetation-marginal.ts\n?? ../../../tools/vegetation-material-review.ts\n?? ../../../tools/water-lookdev.ts\n?? ../../../tools/water-motion-check.ts\n?? ../../../tools/water-orbit-check.ts\n?? ../../../tools/water-resources.test.ts\n?? ../../../tools/water-synthesis-check.ts\n?? ../../../tools/world-traversal-lookdev.ts\n?? ../../../tools/world-traversal-study.test.ts\n?? ../../../tools/world-traversal-study.ts"
+  },
+  "tool": {
+    "bun": "1.4.2"
+  },
+  "host": {
+    "platform": "darwin",
+    "release": "25.6.0",
+    "cpu": "Apple M4",
+    "memoryBytes": 17179869184
+  },
+  "excluded": [
+    "tools/field-research/** (independent research task)",
+    "tools/transport-research/** (independent research task)",
+    "output/**",
+    "dist/**"
+  ]
+}

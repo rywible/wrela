@@ -13,8 +13,19 @@ import {
   sub,
   type Vec3,
 } from "@wrela/model";
+
+import { compileAssembly } from "./assembly";
 import { ProductCache } from "./cache";
+import {
+  clearCreatureCompilerCache,
+  creaturePreparationCacheMetrics,
+  finalizeCreatureCharacter,
+} from "./creature";
+import { prepareCreatureAttachments } from "./creature-attachments";
+import { emptyCreatureMesh, mergeCreatureFeatureMeshes, prepareCreatureFeatures } from "./creature-features";
 import { compileField } from "./field";
+import { opaqueFieldFacts } from "./occluder-facts";
+import { clearPrimitiveCache, compilePrimitiveCompilation, primitiveCacheMetrics } from "./primitive";
 import { bindingKey, geometryKey, materialBindingKey, productKeys } from "./products";
 import { COMPILER_VERSION } from "./versions";
 
@@ -33,14 +44,18 @@ const bindingProducts = new ProductCache<{
 export function compilerCacheMetrics() {
   return {
     geometry: geometryProducts.metrics,
+    primitive: primitiveCacheMetrics(),
     material: materialProducts.metrics,
     binding: bindingProducts.metrics,
+    creature: creaturePreparationCacheMetrics(),
   };
 }
 export function clearCompilerCaches() {
   geometryProducts.clear();
+  clearPrimitiveCache();
   materialProducts.clear();
   bindingProducts.clear();
+  clearCreatureCompilerCache();
 }
 export function surfaceResolution(field: FieldDefinition, quality: Quality): number {
   return Math.max(
@@ -319,9 +334,15 @@ function surfaceProduct(doc: ObjectDefinition | CharacterDefinition, quality: Qu
   return { mesh: { ...geometry.mesh, ...assignment }, diagnostics };
 }
 export function compileSurface(doc: ObjectDefinition, quality: Quality = "review"): CompiledSurface {
-  const { mesh, diagnostics } = surfaceProduct(doc, quality);
+  if (doc.assembly) return compileAssembly(doc, quality);
+  const primitive = compilePrimitiveCompilation(doc, quality);
+  const { mesh, diagnostics } = primitive.mesh
+    ? { mesh: primitive.mesh, diagnostics: primitive.diagnostics ?? [] }
+    : surfaceProduct(doc, quality);
   return {
     kind: "surface",
+    renderProducts: primitive.products,
+    opaqueVisibility: opaqueFieldFacts(doc.field, geometryKey(doc, quality)),
     id: doc.id,
     key: contentKey(surfaceGeometrySource(doc, quality)),
     mesh,
@@ -334,34 +355,53 @@ export function compileSurface(doc: ObjectDefinition, quality: Quality = "review
  * smooth compact influences are normalized. Outside envelopes bind to nearest
  * bone with a diagnostic, preserving finite, usable deformation. */
 export function compileCharacter(doc: CharacterDefinition, quality: Quality = "review"): CompiledCharacter {
-  const { mesh, diagnostics } = surfaceProduct(doc, quality),
-    count = mesh.positions.length / 3;
-  const key = bindingKey(doc, quality);
-  let binding = bindingProducts.get(key);
+  const prepared = prepareCreatureAttachments(doc);
+  const features = prepareCreatureFeatures(prepared.document, quality);
+  const extracted = features.empty
+    ? { mesh: emptyCreatureMesh(), diagnostics: [] }
+    : surfaceProduct(features.document, quality);
+  const mesh = mergeCreatureFeatureMeshes(extracted.mesh, features.meshes, doc.material);
+  const count = mesh.positions.length / 3;
+  const diagnostics: Diagnostic[] = [
+    ...extracted.diagnostics,
+    ...prepared.diagnostics,
+    ...features.diagnostics,
+  ].map((diagnostic) => ({ ...diagnostic, document: doc.id }));
+  const key = bindingKey(prepared.document, quality);
+  // Semantic creatures bind every final body/feature/groom variant together below.
+  // Avoid computing and caching an unused legacy binding for their temporary mesh.
+  let binding = doc.creature
+    ? { weights: new Float32Array(), jointIndices: new Uint16Array(), unbound: 0 }
+    : bindingProducts.get(key);
   if (!binding) {
     binding = bindCharacter(doc, mesh);
     bindingProducts.set(key, binding, binding.weights.byteLength + binding.jointIndices.byteLength);
   }
   const { weights, jointIndices, unbound } = binding;
-  if (unbound)
+  if (unbound && !doc.creature)
     diagnostics.push({
       severity: "warning",
       code: "binding.outside-envelope",
       message: `${unbound} of ${count} vertices lie outside all influence envelopes and use the nearest bone. Enlarge the envelopes or refine the rig.`,
       document: doc.id,
     });
-  return {
-    kind: "character",
-    id: doc.id,
-    key: contentKey(surfaceGeometrySource(doc, quality)),
-    mesh,
-    material: doc.material,
-    joints: structuredClone(doc.joints),
-    motions: structuredClone(doc.motions),
-    jointIndices,
-    weights,
-    diagnostics,
-  };
+  return finalizeCreatureCharacter(
+    doc,
+    {
+      kind: "character",
+      id: doc.id,
+      key: contentKey(surfaceGeometrySource(doc, quality)),
+      mesh,
+      material: doc.material,
+      joints: structuredClone(doc.joints),
+      motions: structuredClone(doc.motions),
+      performance: doc.performance ? structuredClone(doc.performance) : undefined,
+      jointIndices,
+      weights,
+      diagnostics,
+    },
+    quality,
+  );
 }
 function bindCharacter(doc: CharacterDefinition, mesh: MeshData) {
   const count = mesh.positions.length / 3,

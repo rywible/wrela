@@ -1,0 +1,15 @@
+{
+  "name": "@wrela/showcase",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/player.ts"
+  },
+  "dependencies": {
+    "@wrela/examples": "workspace:*",
+    "@wrela/compiler": "workspace:*",
+    "@wrela/model": "workspace:*",
+    "@wrela/render-webgpu": "workspace:*",
+    "@wrela/runtime": "workspace:*"
+  }
+}

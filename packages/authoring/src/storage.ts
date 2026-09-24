@@ -1,4 +1,5 @@
 import { contentKey, type Project, parseProject } from "@wrela/model";
+
 export type SavedProject = {
   id: string;
   project: Project;

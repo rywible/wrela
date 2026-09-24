@@ -1,0 +1,956 @@
+{
+  "date": "2026-09-23",
+  "methodology": "1920x1080 native, balanced, spatial; water on/off/off/on, 45 warmup + 120 measured dynamic frames each; nearest-rank p50/p95; off retains bed, sky and fluid simulation. Whole-frame GPU timestamps, never sum overlapping pass spans.",
+  "budgetVerdict": "2 ms p95 GPU and 0.5 ms p95 simulation are not demonstrated. No weaker-GPU evidence. Timings are development-machine observations, not exclusive-machine guarantees.",
+  "notes": [
+    "Final ocean source remained stable, but another visual review overlapped its wall-clock window.",
+    "Final creek source remained stable. Earlier creek was faster: CPU and GPU clocks/background load vary substantially.",
+    "An intermediate creek capture browser-1790182162397-36270 failed source-stability validation and is excluded.",
+    "Initial versus optimized ocean compares the new implementation before/after shader specialization, not the old eight-wave renderer."
+  ],
+  "records": {
+    "initial_ocean": {
+      "folder": "/Users/ryanwible/projects/wrela/output/browser-1790180612291-32421",
+      "manifest": {
+        "startedAt": "2026-09-23T16:23:32.315Z",
+        "finishedAt": "2026-09-23T16:23:39.601Z",
+        "sourceFingerprint": "c5f7db8fb986e48eaa6fe9c6861c0dde8799468693f5572913c5dec3b856a085",
+        "finalSourceFingerprint": "c5f7db8fb986e48eaa6fe9c6861c0dde8799468693f5572913c5dec3b856a085",
+        "sourceStable": true
+      },
+      "conformance": null,
+      "runs": [
+        {
+          "omitWater": false,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 12.058624,
+              "p95": 13.76256
+            },
+            "fluidMs": {
+              "p50": 0,
+              "p95": 0
+            },
+            "cpuMs": {
+              "p50": 0.3999999761581421,
+              "p95": 1
+            },
+            "uploadedBytes": {
+              "p50": 2080,
+              "p95": 2080
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 768,
+            "liveBytes": 768,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 768,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 130608417,
+          "diagnostics": []
+        },
+        {
+          "omitWater": true,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 0.589824,
+              "p95": 1.6384
+            },
+            "fluidMs": {
+              "p50": 0,
+              "p95": 0
+            },
+            "cpuMs": {
+              "p50": 0.20000004768371582,
+              "p95": 0.30000007152557373
+            },
+            "uploadedBytes": {
+              "p50": 2080,
+              "p95": 2080
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 768,
+            "liveBytes": 768,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 768,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 128063377,
+          "diagnostics": []
+        },
+        {
+          "omitWater": true,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 0.589824,
+              "p95": 0.851968
+            },
+            "fluidMs": {
+              "p50": 0,
+              "p95": 0
+            },
+            "cpuMs": {
+              "p50": 0.10000002384185791,
+              "p95": 0.20000004768371582
+            },
+            "uploadedBytes": {
+              "p50": 2080,
+              "p95": 2080
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 768,
+            "liveBytes": 768,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 768,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 128063377,
+          "diagnostics": []
+        },
+        {
+          "omitWater": false,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 11.993088,
+              "p95": 13.631488
+            },
+            "fluidMs": {
+              "p50": 0,
+              "p95": 0
+            },
+            "cpuMs": {
+              "p50": 0.2999999523162842,
+              "p95": 0.3999999761581421
+            },
+            "uploadedBytes": {
+              "p50": 2080,
+              "p95": 2080
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 768,
+            "liveBytes": 768,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 768,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 130608417,
+          "diagnostics": []
+        }
+      ],
+      "incrementalGpuMedianEstimateMs": 11.436032
+    },
+    "optimized_ocean": {
+      "folder": "/Users/ryanwible/projects/wrela/output/browser-1790180867812-33243",
+      "manifest": {
+        "startedAt": "2026-09-23T16:27:47.841Z",
+        "finishedAt": "2026-09-23T16:27:52.411Z",
+        "sourceFingerprint": "3212a27725dbead62625ad035924a70211396e5bd305db7e12c4b73f6b27b784",
+        "finalSourceFingerprint": "3212a27725dbead62625ad035924a70211396e5bd305db7e12c4b73f6b27b784",
+        "sourceStable": true
+      },
+      "conformance": null,
+      "runs": [
+        {
+          "omitWater": false,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 3.538944,
+              "p95": 5.24288
+            },
+            "fluidMs": {
+              "p50": 0,
+              "p95": 0
+            },
+            "cpuMs": {
+              "p50": 0.2999999523162842,
+              "p95": 0.40000009536743164
+            },
+            "uploadedBytes": {
+              "p50": 2080,
+              "p95": 2080
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 768,
+            "liveBytes": 768,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 768,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 130608417,
+          "diagnostics": []
+        },
+        {
+          "omitWater": true,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 0.589824,
+              "p95": 1.048576
+            },
+            "fluidMs": {
+              "p50": 0,
+              "p95": 0
+            },
+            "cpuMs": {
+              "p50": 0.10000002384185791,
+              "p95": 0.20000004768371582
+            },
+            "uploadedBytes": {
+              "p50": 2080,
+              "p95": 2080
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 768,
+            "liveBytes": 768,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 768,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 128063377,
+          "diagnostics": []
+        },
+        {
+          "omitWater": true,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 0.65536,
+              "p95": 1.703936
+            },
+            "fluidMs": {
+              "p50": 0,
+              "p95": 0
+            },
+            "cpuMs": {
+              "p50": 0.19999992847442627,
+              "p95": 0.20000004768371582
+            },
+            "uploadedBytes": {
+              "p50": 2080,
+              "p95": 2080
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 768,
+            "liveBytes": 768,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 768,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 128063377,
+          "diagnostics": []
+        },
+        {
+          "omitWater": false,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 4.063232,
+              "p95": 6.5536
+            },
+            "fluidMs": {
+              "p50": 0,
+              "p95": 0
+            },
+            "cpuMs": {
+              "p50": 0.20000004768371582,
+              "p95": 0.6000000238418579
+            },
+            "uploadedBytes": {
+              "p50": 2080,
+              "p95": 2080
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 768,
+            "liveBytes": 768,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 768,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 130608417,
+          "diagnostics": []
+        }
+      ],
+      "incrementalGpuMedianEstimateMs": 3.178496
+    },
+    "earlier_creek": {
+      "folder": "/Users/ryanwible/projects/wrela/output/browser-1790180990087-33566",
+      "manifest": {
+        "startedAt": "2026-09-23T16:29:50.109Z",
+        "finishedAt": "2026-09-23T16:29:57.730Z",
+        "sourceFingerprint": "64f1c58a72c413c6b8272fbb18acbb0c5159a0cd87295da20a874434be85f35a",
+        "finalSourceFingerprint": "64f1c58a72c413c6b8272fbb18acbb0c5159a0cd87295da20a874434be85f35a",
+        "sourceStable": true
+      },
+      "conformance": [
+        {
+          "ocean": false,
+          "samples": 64,
+          "maximumError": 2.695247530937195e-06,
+          "origin": [
+            128,
+            19,
+            -128
+          ]
+        },
+        {
+          "ocean": true,
+          "samples": 64,
+          "maximumError": 5.836386702054441e-07,
+          "origin": [
+            100000,
+            19,
+            -200000
+          ]
+        }
+      ],
+      "runs": [
+        {
+          "omitWater": false,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 8.912896,
+              "p95": 13.369344
+            },
+            "fluidMs": {
+              "p50": 0.2999999523162842,
+              "p95": 0.5
+            },
+            "cpuMs": {
+              "p50": 1.100000023841858,
+              "p95": 1.8000000715255737
+            },
+            "uploadedBytes": {
+              "p50": 199584,
+              "p95": 199584
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 1390360,
+            "liveBytes": 1390360,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 1390360,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 129224561,
+          "diagnostics": []
+        },
+        {
+          "omitWater": true,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 3.60448,
+              "p95": 4.980736
+            },
+            "fluidMs": {
+              "p50": 0.20000004768371582,
+              "p95": 0.30000007152557373
+            },
+            "cpuMs": {
+              "p50": 0.5,
+              "p95": 0.6000000238418579
+            },
+            "uploadedBytes": {
+              "p50": 2080,
+              "p95": 2080
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 1521432,
+            "liveBytes": 1521432,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 1521432,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 128545225,
+          "diagnostics": []
+        },
+        {
+          "omitWater": true,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 5.177344,
+              "p95": 6.815744
+            },
+            "fluidMs": {
+              "p50": 0.20000004768371582,
+              "p95": 0.30000007152557373
+            },
+            "cpuMs": {
+              "p50": 0.5999999046325684,
+              "p95": 0.7999999523162842
+            },
+            "uploadedBytes": {
+              "p50": 2080,
+              "p95": 2080
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 1652504,
+            "liveBytes": 1652504,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 1652504,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 128545225,
+          "diagnostics": []
+        },
+        {
+          "omitWater": false,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 6.619136,
+              "p95": 7.929856
+            },
+            "fluidMs": {
+              "p50": 0.20000004768371582,
+              "p95": 0.3999999761581421
+            },
+            "cpuMs": {
+              "p50": 1.0999999046325684,
+              "p95": 1.5
+            },
+            "uploadedBytes": {
+              "p50": 199584,
+              "p95": 199584
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 1783576,
+            "liveBytes": 1783576,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 1783576,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 129224561,
+          "diagnostics": []
+        }
+      ],
+      "incrementalGpuMedianEstimateMs": 3.3751040000000003
+    },
+    "final_ocean": {
+      "folder": "/Users/ryanwible/projects/wrela/output/browser-1790182129706-36103",
+      "manifest": {
+        "startedAt": "2026-09-23T16:48:49.749Z",
+        "finishedAt": "2026-09-23T16:49:05.167Z",
+        "sourceFingerprint": "d90dd69ee9234da40d3c75e6ec76f72aca698c56dd92f31d01533fb8620b95a8",
+        "finalSourceFingerprint": "d90dd69ee9234da40d3c75e6ec76f72aca698c56dd92f31d01533fb8620b95a8",
+        "sourceStable": true
+      },
+      "conformance": [
+        {
+          "ocean": false,
+          "samples": 64,
+          "maximumError": 2.695247530937195e-06,
+          "origin": [
+            128,
+            19,
+            -128
+          ]
+        },
+        {
+          "ocean": true,
+          "samples": 64,
+          "maximumError": 5.836386702054441e-07,
+          "origin": [
+            100000,
+            19,
+            -200000
+          ]
+        }
+      ],
+      "runs": [
+        {
+          "omitWater": false,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 3.866624,
+              "p95": 5.177344
+            },
+            "fluidMs": {
+              "p50": 0,
+              "p95": 0
+            },
+            "cpuMs": {
+              "p50": 0.3999999761581421,
+              "p95": 0.5
+            },
+            "uploadedBytes": {
+              "p50": 2480,
+              "p95": 2480
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 768,
+            "liveBytes": 768,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 768,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 130614417,
+          "diagnostics": []
+        },
+        {
+          "omitWater": true,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 0.589824,
+              "p95": 1.048576
+            },
+            "fluidMs": {
+              "p50": 0,
+              "p95": 0
+            },
+            "cpuMs": {
+              "p50": 0.20000004768371582,
+              "p95": 0.30000007152557373
+            },
+            "uploadedBytes": {
+              "p50": 2480,
+              "p95": 2480
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 768,
+            "liveBytes": 768,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 768,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 128069377,
+          "diagnostics": []
+        },
+        {
+          "omitWater": true,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 0.589824,
+              "p95": 0.65536
+            },
+            "fluidMs": {
+              "p50": 0,
+              "p95": 0
+            },
+            "cpuMs": {
+              "p50": 0.19999992847442627,
+              "p95": 0.2999999523162842
+            },
+            "uploadedBytes": {
+              "p50": 2480,
+              "p95": 2480
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 768,
+            "liveBytes": 768,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 768,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 128069377,
+          "diagnostics": []
+        },
+        {
+          "omitWater": false,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 3.866624,
+              "p95": 4.9152
+            },
+            "fluidMs": {
+              "p50": 0,
+              "p95": 0
+            },
+            "cpuMs": {
+              "p50": 0.20000004768371582,
+              "p95": 0.30000007152557373
+            },
+            "uploadedBytes": {
+              "p50": 2480,
+              "p95": 2480
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 768,
+            "liveBytes": 768,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 768,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 130614417,
+          "diagnostics": []
+        }
+      ],
+      "incrementalGpuMedianEstimateMs": 3.2767999999999997
+    },
+    "final_creek": {
+      "folder": "/Users/ryanwible/projects/wrela/output/browser-1790182243614-36521",
+      "manifest": {
+        "startedAt": "2026-09-23T16:50:43.644Z",
+        "finishedAt": "2026-09-23T16:51:02.290Z",
+        "sourceFingerprint": "cdb5950194374d0c8ba6fb8cb70fe55d4b38d58b93d322c437076f3acb87ff9d",
+        "finalSourceFingerprint": "cdb5950194374d0c8ba6fb8cb70fe55d4b38d58b93d322c437076f3acb87ff9d",
+        "sourceStable": true
+      },
+      "conformance": [
+        {
+          "ocean": false,
+          "samples": 64,
+          "maximumError": 2.695247530937195e-06,
+          "origin": [
+            128,
+            19,
+            -128
+          ]
+        },
+        {
+          "ocean": true,
+          "samples": 64,
+          "maximumError": 5.836386702054441e-07,
+          "origin": [
+            100000,
+            19,
+            -200000
+          ]
+        }
+      ],
+      "runs": [
+        {
+          "omitWater": false,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 10.747904,
+              "p95": 13.697024
+            },
+            "fluidMs": {
+              "p50": 0.6999999284744263,
+              "p95": 1
+            },
+            "cpuMs": {
+              "p50": 2,
+              "p95": 2.799999952316284
+            },
+            "uploadedBytes": {
+              "p50": 199984,
+              "p95": 199984
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 1390360,
+            "liveBytes": 1390360,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 1390360,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 129230561,
+          "diagnostics": []
+        },
+        {
+          "omitWater": true,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 7.471104,
+              "p95": 10.223616
+            },
+            "fluidMs": {
+              "p50": 0.6000000238418579,
+              "p95": 1
+            },
+            "cpuMs": {
+              "p50": 1.100000023841858,
+              "p95": 1.7999999523162842
+            },
+            "uploadedBytes": {
+              "p50": 2480,
+              "p95": 2480
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 1521432,
+            "liveBytes": 1521432,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 1521432,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 128551225,
+          "diagnostics": []
+        },
+        {
+          "omitWater": true,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 6.291456,
+              "p95": 9.043968
+            },
+            "fluidMs": {
+              "p50": 0.5,
+              "p95": 0.9000000953674316
+            },
+            "cpuMs": {
+              "p50": 0.8999999761581421,
+              "p95": 1.899999976158142
+            },
+            "uploadedBytes": {
+              "p50": 2480,
+              "p95": 2480
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 1652504,
+            "liveBytes": 1652504,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 1652504,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 128551225,
+          "diagnostics": []
+        },
+        {
+          "omitWater": false,
+          "sampleCount": 120,
+          "stats": {
+            "gpuMs": {
+              "p50": 10.878976,
+              "p95": 14.024704
+            },
+            "fluidMs": {
+              "p50": 0.5,
+              "p95": 0.8999999761581421
+            },
+            "cpuMs": {
+              "p50": 1.600000023841858,
+              "p95": 2.5999999046325684
+            },
+            "uploadedBytes": {
+              "p50": 199984,
+              "p95": 199984
+            }
+          },
+          "resources": {
+            "cacheBytes": 0,
+            "installedBytes": 1783576,
+            "liveBytes": 1783576,
+            "reliefBytes": 0,
+            "indirectLightingBytes": 0,
+            "assemblyBytes": 0,
+            "waterBytes": 1783576,
+            "cacheEntries": 0
+          },
+          "gpuBytes": 129230561,
+          "diagnostics": []
+        }
+      ],
+      "incrementalGpuMedianEstimateMs": 3.9321599999999997
+    }
+  },
+  "verification": {
+    "focusedTests": 72,
+    "focusedAssertions": 49861,
+    "worldRuntimeTests": 36,
+    "worldRuntimeAssertions": 781,
+    "typecheck": true,
+    "browserTypecheck": true,
+    "boundaries": true,
+    "build": true,
+    "nativeUI": "Creek, ripples, lake view and switching to ocean verified in built player."
+  },
+  "builtReview": {
+    "sourceFingerprint": "a3e65746c100cb3a5872119737104545c6f42ad7326f76b00365318ef2cb0ff6",
+    "buildFingerprint": "4fa51ecd049b803c258e79c4bac62aca7646e5b422178eb3ed8848fc9b94fa59",
+    "url": "http://127.0.0.1:4175/player/?water=creek",
+    "path": "/Users/ryanwible/projects/wrela/output/water-review-build"
+  },
+  "motionRegression": {
+    "cause": "Temporal projection jitter remained visible in compiled-water scenes; still captures disabled this path.",
+    "fix": "Use spatial rendering for compiled-water scenes until temporal reconstruction is validated.",
+    "command": "bun tools/water-motion-check.ts",
+    "records": {
+      "before": {
+        "folder": "/Users/ryanwible/projects/wrela/output/browser-1790182764331-37745",
+        "manifest": {
+          "startedAt": "2026-09-23T16:59:24.363Z",
+          "finishedAt": "2026-09-23T16:59:29.507Z",
+          "sourceFingerprint": "25458961cc59a287ebdfd9a25a33b8e3b951d5cd4e10051ed6011b2fd7b06ef1",
+          "finalSourceFingerprint": "25458961cc59a287ebdfd9a25a33b8e3b951d5cd4e10051ed6011b2fd7b06ef1",
+          "sourceStable": true
+        },
+        "cases": [
+          {
+            "subject": "ocean",
+            "antialiasing": "temporal",
+            "reconstruction": "storage",
+            "maximumFrozenMeanDifference": 3.729226345487101,
+            "maximumMovingMeanDifference": 0,
+            "errors": []
+          },
+          {
+            "subject": "ocean",
+            "antialiasing": "spatial",
+            "reconstruction": "none",
+            "maximumFrozenMeanDifference": 0,
+            "maximumMovingMeanDifference": 0,
+            "errors": []
+          },
+          {
+            "subject": "creek",
+            "antialiasing": "temporal",
+            "reconstruction": "storage",
+            "maximumFrozenMeanDifference": 1.6428927951385477,
+            "maximumMovingMeanDifference": 0,
+            "errors": []
+          },
+          {
+            "subject": "creek",
+            "antialiasing": "spatial",
+            "reconstruction": "none",
+            "maximumFrozenMeanDifference": 0,
+            "maximumMovingMeanDifference": 0,
+            "errors": []
+          }
+        ]
+      },
+      "after": {
+        "folder": "/Users/ryanwible/projects/wrela/output/browser-1790182896058-38148",
+        "manifest": {
+          "startedAt": "2026-09-23T17:01:36.081Z",
+          "finishedAt": "2026-09-23T17:01:43.005Z",
+          "sourceFingerprint": "a3e65746c100cb3a5872119737104545c6f42ad7326f76b00365318ef2cb0ff6",
+          "finalSourceFingerprint": "a3e65746c100cb3a5872119737104545c6f42ad7326f76b00365318ef2cb0ff6",
+          "sourceStable": true
+        },
+        "cases": [
+          {
+            "subject": "ocean",
+            "antialiasing": "default",
+            "reconstruction": "none",
+            "maximumFrozenMeanDifference": 0,
+            "maximumMovingMeanDifference": 1.8811604817707768,
+            "errors": []
+          },
+          {
+            "subject": "ocean",
+            "antialiasing": "temporal",
+            "reconstruction": "none",
+            "maximumFrozenMeanDifference": 0,
+            "maximumMovingMeanDifference": 1.8811604817707768,
+            "errors": []
+          },
+          {
+            "subject": "ocean",
+            "antialiasing": "spatial",
+            "reconstruction": "none",
+            "maximumFrozenMeanDifference": 0,
+            "maximumMovingMeanDifference": 1.8811604817707768,
+            "errors": []
+          },
+          {
+            "subject": "creek",
+            "antialiasing": "default",
+            "reconstruction": "none",
+            "maximumFrozenMeanDifference": 0,
+            "maximumMovingMeanDifference": 0.6449829101562827,
+            "errors": []
+          },
+          {
+            "subject": "creek",
+            "antialiasing": "temporal",
+            "reconstruction": "none",
+            "maximumFrozenMeanDifference": 0,
+            "maximumMovingMeanDifference": 0.6449829101562827,
+            "errors": []
+          },
+          {
+            "subject": "creek",
+            "antialiasing": "spatial",
+            "reconstruction": "none",
+            "maximumFrozenMeanDifference": 0,
+            "maximumMovingMeanDifference": 0.6449829101562827,
+            "errors": []
+          }
+        ]
+      }
+    },
+    "focusedTests": 25,
+    "assertions": 407
+  }
+}

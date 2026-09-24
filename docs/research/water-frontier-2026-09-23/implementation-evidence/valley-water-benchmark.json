@@ -1,0 +1,4058 @@
+{
+  "ablation": null,
+  "methodology": "ABBA whole-frame GPU timing with 45 warmup and 120 measured dynamic frames per run; opaque bed and sky retained in control",
+  "runs": [
+    {
+      "omitWater": false,
+      "samples": [
+        {
+          "cpuMs": 3.6999999284744263,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 13.631488,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.299999952316284,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.238272,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.700000047683716,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.663104,
+          "uploadedBytes": 72224,
+          "waterMs": 12.517376,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.1999999284744263,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 12.910592,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.100000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.9000000953674316,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.303808,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.1999999284744263,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.466496,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0.06553599999999998
+        },
+        {
+          "cpuMs": 3.100000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.794176,
+          "uploadedBytes": 72224,
+          "waterMs": 13.959168,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.299999952316284,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.200000047683716,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.40096,
+          "uploadedBytes": 72224,
+          "waterMs": 13.631488,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.200000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 14.680064,
+          "uploadedBytes": 72224,
+          "waterMs": 12.386304,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 13.1072,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.5,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.303808,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.200000047683716,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 12,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.303808,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.700000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.466496,
+          "uploadedBytes": 72224,
+          "waterMs": 13.697024,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.700000047683716,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 14.352384,
+          "uploadedBytes": 72224,
+          "waterMs": 12.517376,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.799999952316284,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.40096,
+          "uploadedBytes": 72224,
+          "waterMs": 12.713984,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.5,
+          "fluidMs": 0.3999999761581421,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 13.500416,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.200000047683716,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.303808,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.700000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.794176,
+          "uploadedBytes": 72224,
+          "waterMs": 13.959168,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.799999952316284,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 14.7456,
+          "uploadedBytes": 72224,
+          "waterMs": 12.517376,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.100000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 27.131904,
+          "uploadedBytes": 76880,
+          "waterMs": 19.00544,
+          "spectrumMs": 3.7355519999999984
+        },
+        {
+          "cpuMs": 3.1999999284744263,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.466496,
+          "uploadedBytes": 72224,
+          "waterMs": 13.041664,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.200000047683716,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.597568,
+          "uploadedBytes": 72224,
+          "waterMs": 13.697024,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.100000023841858,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.5,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 14.680064,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 15.007744,
+          "uploadedBytes": 72224,
+          "waterMs": 12.582912,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.500416,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.6999999284744263,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 13.697024,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.40096,
+          "uploadedBytes": 72224,
+          "waterMs": 12.517376,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 12.648448,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.8000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 12.77952,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.5,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.5,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 13.500416,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.5,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 14.155776,
+          "uploadedBytes": 72224,
+          "waterMs": 12.386304,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.8000000715255737,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 12.77952,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.600000023841858,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 13.303808,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.3000000715255737,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.466496,
+          "uploadedBytes": 72224,
+          "waterMs": 13.76256,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.299999952316284,
+          "fluidMs": 0.3999999761581421,
+          "gpuMs": 14.155776,
+          "uploadedBytes": 72224,
+          "waterMs": 12.320768,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.200000047683716,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 12.582912,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.399999976158142,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 12.77952,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.899999976158142,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 14.942208,
+          "uploadedBytes": 72224,
+          "waterMs": 13.238272,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.899999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.925248,
+          "uploadedBytes": 72224,
+          "waterMs": 13.631488,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.799999952316284,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.466496,
+          "uploadedBytes": 72224,
+          "waterMs": 13.041664,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.5,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 13.303808,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.5,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.799999952316284,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 14.155776,
+          "uploadedBytes": 72224,
+          "waterMs": 12.320768,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.399999976158142,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 27.131904,
+          "uploadedBytes": 76880,
+          "waterMs": 15.532032,
+          "spectrumMs": 4.784128000000001
+        },
+        {
+          "cpuMs": 3.6999999284744263,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 12.582912,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.899999976158142,
+          "fluidMs": 0.3999999761581421,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 12.77952,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.4000000953674316,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.007744,
+          "uploadedBytes": 72224,
+          "waterMs": 13.238272,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.4000000953674316,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 13.500416,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.799999952316284,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 12.386304,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.1999999284744263,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.72864,
+          "uploadedBytes": 72224,
+          "waterMs": 13.76256,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.799999952316284,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.303808,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 4.099999904632568,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.597568,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.700000047683716,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 12.976128,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.600000023841858,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 4.100000023841858,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 13.500416,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.200000047683716,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 14.876672,
+          "uploadedBytes": 72224,
+          "waterMs": 12.517376,
+          "spectrumMs": 0.131072
+        },
+        {
+          "cpuMs": 3.299999952316284,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.466496,
+          "uploadedBytes": 72224,
+          "waterMs": 13.041664,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.200000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 12.910592,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.600000023841858,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.5999999046325684,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.859712,
+          "uploadedBytes": 72224,
+          "waterMs": 12.582912,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.700000047683716,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 27.656192,
+          "uploadedBytes": 76880,
+          "waterMs": 15.007744,
+          "spectrumMs": 4.784127999999999
+        },
+        {
+          "cpuMs": 3.899999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 12.845056,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.4000000953674316,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 13.500416,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.5,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.40096,
+          "uploadedBytes": 72224,
+          "waterMs": 13.565952,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.600000023841858,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 12.582912,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 12.845056,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.799999952316284,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.799999952316284,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.100000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.466496,
+          "uploadedBytes": 72224,
+          "waterMs": 12.386304,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 12.517376,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.200000047683716,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 28.18048,
+          "uploadedBytes": 76880,
+          "waterMs": 15.335424,
+          "spectrumMs": 2.4903679999999984
+        },
+        {
+          "cpuMs": 3.5,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 12.845056,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.5,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.399999976158142,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.40096,
+          "uploadedBytes": 72224,
+          "waterMs": 13.631488,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.299999952316284,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.600000023841858,
+          "fluidMs": 0.3999999761581421,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.299999952316284,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.238272,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.5,
+          "fluidMs": 0.3999999761581421,
+          "gpuMs": 15.466496,
+          "uploadedBytes": 72224,
+          "waterMs": 13.697024,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.8000000715255737,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.40096,
+          "uploadedBytes": 72224,
+          "waterMs": 12.713984,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 4.799999952316284,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 14.942208,
+          "uploadedBytes": 72224,
+          "waterMs": 13.172736,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.5,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 13.303808,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 4.199999928474426,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 14.614528,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.299999952316284,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.007744,
+          "uploadedBytes": 72224,
+          "waterMs": 12.517376,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.5999999046325684,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.200000047683716,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.399999976158142,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.532032,
+          "uploadedBytes": 72224,
+          "waterMs": 13.76256,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.600000023841858,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 12.582912,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.600000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 12.713984,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 13.500416,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 13.565952,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.8000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 14.221312,
+          "uploadedBytes": 72224,
+          "waterMs": 12.386304,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.0999999046325684,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 12.845056,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.0999999046325684,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.40096,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.6999999284744263,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 12.517376,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.399999976158142,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 28.377088,
+          "uploadedBytes": 76880,
+          "waterMs": 15.269888,
+          "spectrumMs": 2.686975999999998
+        },
+        {
+          "cpuMs": 3.4000000953674316,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 12.77952,
+          "spectrumMs": 0.131072
+        },
+        {
+          "cpuMs": 3.299999952316284,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.9000000953674316,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.597568,
+          "uploadedBytes": 72224,
+          "waterMs": 13.76256,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 14.286848,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.100000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 12.582912,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.40096,
+          "uploadedBytes": 72224,
+          "waterMs": 12.910592,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.700000047683716,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.299999952316284,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 14.286848,
+          "uploadedBytes": 72224,
+          "waterMs": 12.582912,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.100000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 12.517376,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.8000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 12.976128,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.8000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.100000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.500416,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.3000000715255737,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 14.09024,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.299999952316284,
+          "fluidMs": 0.3999999761581421,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 12.386304,
+          "spectrumMs": 0.065536
+        }
+      ],
+      "measurements": {
+        "cpuMs": 2.399999976158142,
+        "gpuMs": 15.07328,
+        "triangles": 363532,
+        "drawCalls": 169,
+        "gpuBytes": 149009940,
+        "frame": 287,
+        "adapter": "apple · metal-3",
+        "waterResources": {
+          "transport": 19353020,
+          "spectrum": 526280,
+          "body": 1116640,
+          "geometry": 8062000,
+          "objects": 19712,
+          "total": 29077652
+        },
+        "reconstruction": "none",
+        "gpuTimingDroppedFrames": 0,
+        "localShadowPasses": 0,
+        "localShadowDrawCalls": 0,
+        "materialCacheBytes": 0,
+        "qualityProfile": "balanced",
+        "uploadedBytes": 72224,
+        "visibleSurfaces": 130,
+        "culledSurfaces": 51,
+        "detailSurfaces": 0,
+        "ownedTextureBytes": 121461272,
+        "bufferBytes": 27548668,
+        "outputResolution": [
+          1920,
+          1080
+        ],
+        "renderResolution": [
+          1920,
+          1080
+        ]
+      },
+      "resources": {
+        "cacheBytes": 2335994,
+        "installedBytes": 8500330,
+        "liveBytes": 8500330,
+        "reliefBytes": 0,
+        "indirectLightingBytes": 0,
+        "assemblyBytes": 0,
+        "waterBytes": 6164336,
+        "cacheEntries": 1
+      },
+      "diagnostics": []
+    },
+    {
+      "omitWater": true,
+      "samples": [
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.602176,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.650752,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.978432,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 8.126464,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 9.568256,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.4000000953674316,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 9.437184,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.192,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.192,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.3000000715255737,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 9.961472,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.2000000476837158,
+          "fluidMs": 0,
+          "gpuMs": 8.323072,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.1999999284744263,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 8.388608,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 10.616832,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.3000000715255737,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 10.092544,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.100000023841858,
+          "fluidMs": 0,
+          "gpuMs": 8.84736,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 5.600000023841858,
+          "fluidMs": 0,
+          "gpuMs": 9.764864,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.716288,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 10.682368,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 11.14112,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 9.240576,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 9.240576,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.7000000476837158,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 10.616832,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 11.14112,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 10.944512,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.899999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 29.622272,
+          "uploadedBytes": 76864,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.0999999046325684,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.978432,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.650752,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.899999976158142,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 9.961472,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.0999999046325684,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 10.15808,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 8.323072,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.454144,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 9.764864,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 10.027008,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 9.8304,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.1999999284744263,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 8.650752,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.454144,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.3000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 10.223616,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.3000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 10.354688,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.299999952316284,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 9.895936,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.700000047683716,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 8.650752,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5999999046325684,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 8.585216,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.8000000715255737,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 10.092544,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.799999952316284,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 10.15808,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 10.420224,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.9000000953674316,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 10.15808,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 10.027008,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 8.716288,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 9.043968,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.6999999284744263,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 9.043968,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 10.354688,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 10.747904,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5999999046325684,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 28.966912,
+          "uploadedBytes": 76864,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.100000023841858,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 10.354688,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.8000000715255737,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 10.092544,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.700000047683716,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 10.092544,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.8000000715255737,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 8.388608,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 8.51968,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 8.51968,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.799999952316284,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 10.420224,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 10.289152,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.6999999284744263,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 10.092544,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 9.699328,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 8.51968,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 8.650752,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 10.944512,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 10.289152,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 10.354688,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 10.289152,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 27.459584,
+          "uploadedBytes": 76864,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.899999976158142,
+          "fluidMs": 0.3999999761581421,
+          "gpuMs": 8.257536,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.299999952316284,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 8.454144,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.399999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 8.126464,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 10.027008,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 9.306112,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.84736,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.8000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.060928,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.716288,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 9.240576,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 23.527424,
+          "uploadedBytes": 76864,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.8000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.274496,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.9000000953674316,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.257536,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 7.143424,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.454144,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 7.077888,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.012352,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.7000000476837158,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 7.995392,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 6.88128,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.3000000715255737,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 7.012352,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0,
+          "gpuMs": 7.798784,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0,
+          "gpuMs": 6.88128,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.4000000953674316,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.126464,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 6.5536,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.100000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 7.340032,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.2000000476837158,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 6.815744,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.2000000476837158,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 6.750208,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.2000000476837158,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.126464,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.100000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 6.488064,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.3000000715255737,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 7.733248,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 6.750208,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.2999999523162842,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 6.488064,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 7.667712,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.2999999523162842,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 7.143424,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.3000000715255737,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 7.733248,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.3000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 6.619136,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 6.356992,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 18.67776,
+          "uploadedBytes": 76864,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 7.798784,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5999999046325684,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 6.422528,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5999999046325684,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 6.5536,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0,
+          "gpuMs": 7.53664,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 6.488064,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5999999046325684,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 7.471104,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 6.488064,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.6999999284744263,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 6.815744,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 6.488064,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.8000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 6.488064,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.899999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 7.471104,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.8000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 6.619136,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.7999999523162842,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 7.798784,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.6999999284744263,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 6.422528,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 6.750208,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        }
+      ],
+      "measurements": {
+        "cpuMs": 1.4000000953674316,
+        "gpuMs": 6.750208,
+        "triangles": 355594,
+        "drawCalls": 168,
+        "gpuBytes": 128648708,
+        "frame": 452,
+        "adapter": "apple · metal-3",
+        "waterResources": {
+          "transport": 12,
+          "spectrum": 0,
+          "body": 1116640,
+          "geometry": 7589912,
+          "objects": 9856,
+          "total": 8716420
+        },
+        "reconstruction": "none",
+        "gpuTimingDroppedFrames": 0,
+        "localShadowPasses": 0,
+        "localShadowDrawCalls": 0,
+        "materialCacheBytes": 0,
+        "qualityProfile": "balanced",
+        "uploadedBytes": 72208,
+        "visibleSurfaces": 129,
+        "culledSurfaces": 51,
+        "detailSurfaces": 0,
+        "ownedTextureBytes": 101583984,
+        "bufferBytes": 27064724,
+        "outputResolution": [
+          1920,
+          1080
+        ],
+        "renderResolution": [
+          1920,
+          1080
+        ]
+      },
+      "resources": {
+        "cacheBytes": 2335994,
+        "installedBytes": 8631402,
+        "liveBytes": 8631402,
+        "reliefBytes": 0,
+        "indirectLightingBytes": 0,
+        "assemblyBytes": 0,
+        "waterBytes": 6295408,
+        "cacheEntries": 1
+      },
+      "diagnostics": []
+    },
+    {
+      "omitWater": true,
+      "samples": [
+        {
+          "cpuMs": 2.399999976158142,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 6.684672,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 7.077888,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.86432,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.299999952316284,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 6.684672,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.4000000953674316,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 7.143424,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.126464,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 6.684672,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 7.274496,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.399999976158142,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 8.126464,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 6.5536,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.0999999046325684,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 6.815744,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.3000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.995392,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.399999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 6.946816,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 6.946816,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 11,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.077888,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.323072,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.143424,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.7000000476837158,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.20896,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.51968,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.7999999523162842,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 7.340032,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.899999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.667712,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.7000000476837158,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.84736,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.7000000476837158,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 8.84736,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0,
+          "gpuMs": 22.60992,
+          "uploadedBytes": 76864,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 9.568256,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.84736,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 7.53664,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 9.764864,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 9.17504,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.100000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.126464,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.781824,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.100000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 9.699328,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.2999999523162842,
+          "fluidMs": 0,
+          "gpuMs": 8.126464,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 8.060928,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 10.027008,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.2000000476837158,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.323072,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0,
+          "gpuMs": 8.454144,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 10.092544,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 8.323072,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 8.912896,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.7000000476837158,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 10.682368,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 10.289152,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.7000000476837158,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 10.48576,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.6999999284744263,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 9.699328,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.978432,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.899999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 11.4688,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 11.79648,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 11.534336,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 11.272192,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 11.14112,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.899999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 32.636928,
+          "uploadedBytes": 76864,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 10.48576,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 9.50272,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.299999952316284,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 9.240576,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.1999999284744263,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 10.81344,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 10.551296,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 11.14112,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.40000009536743164,
+          "gpuMs": 10.878976,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.6999999284744263,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 10.81344,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.1999999284744263,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 11.010048,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.799999952316284,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 9.633792,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 9.568256,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 8.978432,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 11.730944,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.299999952316284,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 11.4688,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 11.927552,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.299999952316284,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 11.403264,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.799999952316284,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 29.949952,
+          "uploadedBytes": 76864,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.100000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 10.223616,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.8000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 9.8304,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.454144,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.978432,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.1999999284744263,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 9.371648,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 10.223616,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.799999952316284,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 10.551296,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 10.092544,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 9.633792,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 25.755648,
+          "uploadedBytes": 76864,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.3000000715255737,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 7.798784,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.3000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 9.240576,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 8.978432,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 7.798784,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.257536,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.781824,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.799999952316284,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.53664,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 7.274496,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.4000000953674316,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.585216,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.299999952316284,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 7.929856,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5999999046325684,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 7.667712,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.192,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5999999046325684,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 8.585216,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.4000000953674316,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.323072,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.274496,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 7.733248,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 8.454144,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.143424,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 7.340032,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.299999952316284,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 8.585216,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.51968,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.143424,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.3000000715255737,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 8.716288,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 8.51968,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.3000000715255737,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 7.20896,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.0999999046325684,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.143424,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 22.413312,
+          "uploadedBytes": 76864,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.077888,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.077888,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.1999999284744263,
+          "fluidMs": 0.3999999761581421,
+          "gpuMs": 8.126464,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 7.077888,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 7.077888,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.192,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 7.077888,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 7.143424,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.3000000715255737,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 8.192,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 7.012352,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 7.143424,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.126464,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.399999976158142,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 6.88128,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 7.077888,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 8.126464,
+          "uploadedBytes": 72208,
+          "waterMs": 0,
+          "spectrumMs": 0
+        }
+      ],
+      "measurements": {
+        "cpuMs": 1.600000023841858,
+        "gpuMs": 8.126464,
+        "triangles": 355594,
+        "drawCalls": 168,
+        "gpuBytes": 128648708,
+        "frame": 617,
+        "adapter": "apple · metal-3",
+        "waterResources": {
+          "transport": 12,
+          "spectrum": 0,
+          "body": 1116640,
+          "geometry": 7589912,
+          "objects": 9856,
+          "total": 8716420
+        },
+        "reconstruction": "none",
+        "gpuTimingDroppedFrames": 0,
+        "localShadowPasses": 0,
+        "localShadowDrawCalls": 0,
+        "materialCacheBytes": 0,
+        "qualityProfile": "balanced",
+        "uploadedBytes": 72208,
+        "visibleSurfaces": 129,
+        "culledSurfaces": 51,
+        "detailSurfaces": 0,
+        "ownedTextureBytes": 101583984,
+        "bufferBytes": 27064724,
+        "outputResolution": [
+          1920,
+          1080
+        ],
+        "renderResolution": [
+          1920,
+          1080
+        ]
+      },
+      "resources": {
+        "cacheBytes": 2335994,
+        "installedBytes": 8762474,
+        "liveBytes": 8762474,
+        "reliefBytes": 0,
+        "indirectLightingBytes": 0,
+        "assemblyBytes": 0,
+        "waterBytes": 6426480,
+        "cacheEntries": 1
+      },
+      "diagnostics": []
+    },
+    {
+      "omitWater": false,
+      "samples": [
+        {
+          "cpuMs": 2.700000047683716,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.466496,
+          "uploadedBytes": 72224,
+          "waterMs": 13.76256,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.9000000953674316,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.466496,
+          "uploadedBytes": 72224,
+          "waterMs": 13.631488,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.700000047683716,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 14.286848,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.700000047683716,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 12.910592,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 13.565952,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 12.255232,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.7000000476837158,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 14.09024,
+          "uploadedBytes": 72224,
+          "waterMs": 12.386304,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 14.221312,
+          "uploadedBytes": 72224,
+          "waterMs": 12.386304,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.7999999523162842,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 14.155776,
+          "uploadedBytes": 72224,
+          "waterMs": 12.320768,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 14.286848,
+          "uploadedBytes": 72224,
+          "waterMs": 12.517376,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.7000000476837158,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 5.399999976158142,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.899999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.7000000476837158,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.500416,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.6999999284744263,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.500416,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 13.565952,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 14.286848,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5999999046325684,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 14.286848,
+          "uploadedBytes": 72224,
+          "waterMs": 12.517376,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 14.221312,
+          "uploadedBytes": 72224,
+          "waterMs": 12.517376,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 14.41792,
+          "uploadedBytes": 72224,
+          "waterMs": 12.582912,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.7000000476837158,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 26.804224,
+          "uploadedBytes": 76880,
+          "waterMs": 16.71168,
+          "spectrumMs": 4.2598400000000005
+        },
+        {
+          "cpuMs": 1.5999999046325684,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.40096,
+          "uploadedBytes": 72224,
+          "waterMs": 13.697024,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.7000000476837158,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 14.483456,
+          "uploadedBytes": 72224,
+          "waterMs": 12.582912,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.7000000476837158,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 14.286848,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 14.352384,
+          "uploadedBytes": 72224,
+          "waterMs": 12.582912,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.7000000476837158,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 14.286848,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.7000000476837158,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 14.286848,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.8000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 14.41792,
+          "uploadedBytes": 72224,
+          "waterMs": 12.582912,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.6999999284744263,
+          "fluidMs": 0,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 12.713984,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.8000000715255737,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 15.40096,
+          "uploadedBytes": 72224,
+          "waterMs": 13.172736,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.899999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 13.565952,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.899999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 15.532032,
+          "uploadedBytes": 72224,
+          "waterMs": 13.76256,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.899999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 14.614528,
+          "uploadedBytes": 72224,
+          "waterMs": 12.386304,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 14.41792,
+          "uploadedBytes": 72224,
+          "waterMs": 12.648448,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.72864,
+          "uploadedBytes": 72224,
+          "waterMs": 12.976128,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 12.910592,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.007744,
+          "uploadedBytes": 72224,
+          "waterMs": 12.77952,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.3000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.565952,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.100000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 14.942208,
+          "uploadedBytes": 72224,
+          "waterMs": 13.238272,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.299999952316284,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.007744,
+          "uploadedBytes": 72224,
+          "waterMs": 13.238272,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.3000000715255737,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 14.548992,
+          "uploadedBytes": 72224,
+          "waterMs": 12.255232,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.700000047683716,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 14.024704,
+          "uploadedBytes": 72224,
+          "waterMs": 12.320768,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 12.910592,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 14.942208,
+          "uploadedBytes": 72224,
+          "waterMs": 12.713984,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.399999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 28.442624,
+          "uploadedBytes": 76880,
+          "waterMs": 15.40096,
+          "spectrumMs": 4.784128000000001
+        },
+        {
+          "cpuMs": 2.8000000715255737,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.9000000953674316,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 16.05632,
+          "uploadedBytes": 72224,
+          "waterMs": 14.09024,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.399999976158142,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 15.663104,
+          "uploadedBytes": 72224,
+          "waterMs": 13.238272,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.3000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.238272,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 13.500416,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.597568,
+          "uploadedBytes": 72224,
+          "waterMs": 13.76256,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.399999976158142,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 14.352384,
+          "uploadedBytes": 72224,
+          "waterMs": 12.582912,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.3000000715255737,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 15.466496,
+          "uploadedBytes": 72224,
+          "waterMs": 13.041664,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.299999952316284,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 12.910592,
+          "spectrumMs": 0.131072
+        },
+        {
+          "cpuMs": 2.5999999046325684,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.303808,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.8000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 14.680064,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.299999952316284,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 12.517376,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.799999952316284,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 12.910592,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 28.311552,
+          "uploadedBytes": 76880,
+          "waterMs": 15.466496,
+          "spectrumMs": 4.849663999999999
+        },
+        {
+          "cpuMs": 3.100000023841858,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.40096,
+          "uploadedBytes": 72224,
+          "waterMs": 13.631488,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 14.155776,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.7999999523162842,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 14.155776,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 12.582912,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.3000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.269888,
+          "uploadedBytes": 72224,
+          "waterMs": 12.910592,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.4000000953674316,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 12.845056,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 12.976128,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 13.631488,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0,
+          "gpuMs": 27.52512,
+          "uploadedBytes": 76880,
+          "waterMs": 15.335424,
+          "spectrumMs": 4.784128000000001
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 12.77952,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 15.007744,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.5,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0,
+          "gpuMs": 15.40096,
+          "uploadedBytes": 72224,
+          "waterMs": 13.697024,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 12.320768,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.2999999523162842,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 14.680064,
+          "uploadedBytes": 72224,
+          "waterMs": 12.386304,
+          "spectrumMs": 0.589824
+        },
+        {
+          "cpuMs": 1.399999976158142,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 14.286848,
+          "uploadedBytes": 72224,
+          "waterMs": 12.517376,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.09999990463256836,
+          "gpuMs": 14.41792,
+          "uploadedBytes": 72224,
+          "waterMs": 12.582912,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 14.221312,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.600000023841858,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 14.286848,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.899999976158142,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 14.155776,
+          "uploadedBytes": 72224,
+          "waterMs": 12.320768,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 14.876672,
+          "uploadedBytes": 72224,
+          "waterMs": 12.517376,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 1.9000000953674316,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 15.532032,
+          "uploadedBytes": 72224,
+          "waterMs": 13.828096,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.200000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.007744,
+          "uploadedBytes": 72224,
+          "waterMs": 12.845056,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.303808,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.299999952316284,
+          "fluidMs": 0.19999992847442627,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 13.500416,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.600000023841858,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 12.320768,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.700000047683716,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 14.286848,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.100000023841858,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.40096,
+          "uploadedBytes": 72224,
+          "waterMs": 12.976128,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.5,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.299999952316284,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 15.597568,
+          "uploadedBytes": 72224,
+          "waterMs": 13.893632,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.5,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 14.286848,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.3000000715255737,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 12.648448,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.1999999284744263,
+          "fluidMs": 0.10000002384185791,
+          "gpuMs": 15.40096,
+          "uploadedBytes": 72224,
+          "waterMs": 12.976128,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.5999999046325684,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 27.787264,
+          "uploadedBytes": 76880,
+          "waterMs": 15.925248,
+          "spectrumMs": 4.849663999999999
+        },
+        {
+          "cpuMs": 3.100000023841858,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.597568,
+          "uploadedBytes": 72224,
+          "waterMs": 13.697024,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.299999952316284,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 14.811136,
+          "uploadedBytes": 72224,
+          "waterMs": 12.45184,
+          "spectrumMs": 0.131072
+        },
+        {
+          "cpuMs": 3,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.40096,
+          "uploadedBytes": 72224,
+          "waterMs": 12.845056,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.700000047683716,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 12.910592,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.200000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.466496,
+          "uploadedBytes": 72224,
+          "waterMs": 13.565952,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.799999952316284,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.990784,
+          "uploadedBytes": 72224,
+          "waterMs": 14.155776,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 12.517376,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 3.399999976158142,
+          "fluidMs": 0.3999999761581421,
+          "gpuMs": 15.335424,
+          "uploadedBytes": 72224,
+          "waterMs": 12.910592,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3,
+          "fluidMs": 0.40000009536743164,
+          "gpuMs": 15.204352,
+          "uploadedBytes": 72224,
+          "waterMs": 13.43488,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.5999999046325684,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.466496,
+          "uploadedBytes": 72224,
+          "waterMs": 13.631488,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.200000047683716,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 14.221312,
+          "uploadedBytes": 72224,
+          "waterMs": 12.386304,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 3.4000000953674316,
+          "fluidMs": 0.30000007152557373,
+          "gpuMs": 15.07328,
+          "uploadedBytes": 72224,
+          "waterMs": 12.845056,
+          "spectrumMs": 0
+        },
+        {
+          "cpuMs": 2.899999976158142,
+          "fluidMs": 0.2999999523162842,
+          "gpuMs": 15.138816,
+          "uploadedBytes": 72224,
+          "waterMs": 13.369344,
+          "spectrumMs": 0.065536
+        },
+        {
+          "cpuMs": 2.700000047683716,
+          "fluidMs": 0.20000004768371582,
+          "gpuMs": 15.007744,
+          "uploadedBytes": 72224,
+          "waterMs": 13.303808,
+          "spectrumMs": 0.065536
+        }
+      ],
+      "measurements": {
+        "cpuMs": 1.899999976158142,
+        "gpuMs": 15.007744,
+        "triangles": 363532,
+        "drawCalls": 169,
+        "gpuBytes": 149009940,
+        "frame": 782,
+        "adapter": "apple · metal-3",
+        "waterResources": {
+          "transport": 19353020,
+          "spectrum": 526280,
+          "body": 1116640,
+          "geometry": 8062000,
+          "objects": 19712,
+          "total": 29077652
+        },
+        "reconstruction": "none",
+        "gpuTimingDroppedFrames": 0,
+        "localShadowPasses": 0,
+        "localShadowDrawCalls": 0,
+        "materialCacheBytes": 0,
+        "qualityProfile": "balanced",
+        "uploadedBytes": 72224,
+        "visibleSurfaces": 130,
+        "culledSurfaces": 51,
+        "detailSurfaces": 0,
+        "ownedTextureBytes": 121461272,
+        "bufferBytes": 27548668,
+        "outputResolution": [
+          1920,
+          1080
+        ],
+        "renderResolution": [
+          1920,
+          1080
+        ]
+      },
+      "resources": {
+        "cacheBytes": 2335994,
+        "installedBytes": 8893546,
+        "liveBytes": 8893546,
+        "reliefBytes": 0,
+        "indirectLightingBytes": 0,
+        "assemblyBytes": 0,
+        "waterBytes": 6557552,
+        "cacheEntries": 1
+      },
+      "diagnostics": []
+    }
+  ]
+}

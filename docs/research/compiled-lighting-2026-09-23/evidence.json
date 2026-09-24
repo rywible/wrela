@@ -1,0 +1,221 @@
+{
+  "date": "2026-09-23",
+  "baseline": {
+    "sourceSnapshot": "/Users/ryanwible/projects/wrela/output/lighting-implementation-1790190703919/baseline",
+    "sourceFingerprint": "769558b4e96af4d08e155eea9db984bf0fc3967c3372340ac45c4faed89c94ab",
+    "visuals": "../lighting-audit-2026-09-23/evidence.json"
+  },
+  "runs": {
+    "enclosure": {
+      "sourceSnapshot": "/Users/ryanwible/projects/wrela/output/lighting-audit/1790193736544-1795/source",
+      "sourceFingerprint": "5566f7ccb3eb5ad27c47c8a835930d8656c93ecf2cff988df5358e18cb315182",
+      "output": "/Users/ryanwible/projects/wrela/output/lighting-audit/1790193736544-1795/source/output/browser-1790193736647-1813",
+      "report": "lighting-audit.json"
+    },
+    "world": {
+      "sourceSnapshot": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790193402337-1250/source",
+      "sourceFingerprint": "703fd4a012b2378db249f9946afdeb28834f58490a3d66ff791ab11c4aec3bf5",
+      "output": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790193402337-1250/source/output/browser-1790193421346-1253",
+      "report": "lighting-upgrade.json"
+    },
+    "diffuse": {
+      "sourceSnapshot": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790193403521-1265/source",
+      "sourceFingerprint": "703fd4a012b2378db249f9946afdeb28834f58490a3d66ff791ab11c4aec3bf5",
+      "output": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790193403521-1265/source/output/browser-1790193605176-1582",
+      "report": "gi-lookdev.json"
+    },
+    "materials": {
+      "sourceSnapshot": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790193401362-1240/source",
+      "sourceFingerprint": "703fd4a012b2378db249f9946afdeb28834f58490a3d66ff791ab11c4aec3bf5",
+      "output": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790193401362-1240/source/output/browser-1790193536029-1502",
+      "report": "surface-appearance.json"
+    },
+    "water": {
+      "sourceSnapshot": "/Users/ryanwible/projects/wrela/output/lighting-water/1790193892983-2057/source",
+      "sourceFingerprint": "7ad8897d4d8f8b80d465732502faea662b4d94c6fbf69ecc42f8d4d97c27e562",
+      "output": "/Users/ryanwible/projects/wrela/output/lighting-water/1790193892983-2057/source/output/browser-1790193893106-2064",
+      "report": "lighting-water.json"
+    }
+  },
+  "experiments": [
+    {
+      "sourceSnapshot": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790191666175-61700/source",
+      "sourceFingerprint": "e27d6222f8f5149dfa227c38d17526c04656c7ae77b3d6615497b264c1de2be2",
+      "output": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790191666175-61700/source/output/browser-1790191666325-61707",
+      "report": "wrela-compiled-lighting-refined.json",
+      "decision": "Rejected: deeper regions hit memory cap early without a measured saving.",
+      "performance": {
+        "order": "ABBA",
+        "enabled": {
+          "samples": 32,
+          "medianMs": 17.825792,
+          "p95Ms": 19.464192
+        },
+        "control": {
+          "samples": 32,
+          "medianMs": 17.825792,
+          "p95Ms": 20.64384
+        },
+        "scope": "Short whole-frame GPU observations, fixed scene at 640\u00d7480; build and upload settling excluded."
+      },
+      "buildMs": 9132.399999976158
+    },
+    {
+      "sourceSnapshot": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790192072051-62810/source",
+      "sourceFingerprint": "98e78ff76892d7329eaed9a22c507dbb4eea7e2febd5d7808de75eefcbeb9d26",
+      "output": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790192072051-62810/source/output/browser-1790192072213-62819",
+      "report": "wrela-compiled-lighting-candidates.json",
+      "decision": "Rejected: larger leaves/candidate lists increased frame cost and memory.",
+      "performance": {
+        "order": "ABBA",
+        "enabled": {
+          "samples": 32,
+          "medianMs": 17.498112,
+          "p95Ms": 19.33312
+        },
+        "control": {
+          "samples": 32,
+          "medianMs": 16.71168,
+          "p95Ms": 18.284544
+        },
+        "scope": "Short whole-frame GPU observations, fixed scene at 640\u00d7480; build and upload settling excluded."
+      },
+      "buildMs": 8581.199999928474
+    },
+    {
+      "sourceSnapshot": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790192236642-63090/source",
+      "sourceFingerprint": "9357606259d07d3f3a9fae47aae7b2ed4bfb875426f021e893d89dbddfea9e4b",
+      "output": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790192236642-63090/source/output/browser-1790192236746-63094",
+      "report": "wrela-compiled-lighting-vector.json",
+      "decision": "Rejected: vectorized slab traversal did not establish a useful overall improvement.",
+      "performance": {
+        "order": "ABBA",
+        "enabled": {
+          "samples": 32,
+          "medianMs": 19.070976,
+          "p95Ms": 23.134208
+        },
+        "control": {
+          "samples": 32,
+          "medianMs": 21.037056,
+          "p95Ms": 23.003136
+        },
+        "scope": "Short whole-frame GPU observations, fixed scene at 640\u00d7480; build and upload settling excluded."
+      },
+      "buildMs": 6144.600000023842
+    },
+    {
+      "sourceSnapshot": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790192753696-36378/source",
+      "sourceFingerprint": "e32b514498efcd016eb0817f625f65db054d6a93fa412a67215ad683320dd83d",
+      "output": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790192753696-36378/source/output/browser-1790192753857-36390",
+      "report": "wrela-compiled-lighting-surface.json",
+      "decision": "Experimental surface regions: 6.0% median saving in this run, 16.0 s build; not repeatable.",
+      "performance": {
+        "order": "ABBA",
+        "enabled": {
+          "samples": 32,
+          "medianMs": 19.464192,
+          "p95Ms": 22.216704
+        },
+        "control": {
+          "samples": 32,
+          "medianMs": 20.709376,
+          "p95Ms": 23.658496
+        },
+        "scope": "Short whole-frame GPU observations, fixed scene at 640\u00d7480; build and upload settling excluded."
+      },
+      "buildMs": 16047.899999976158
+    },
+    {
+      "sourceSnapshot": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790193188829-871/source",
+      "sourceFingerprint": "af9be6193be286d5947eead14cb0a8869af07a77feff71e172fa7fb1bc4ed716",
+      "output": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790193188829-871/source/output/browser-1790193188992-889",
+      "report": "wrela-lighting-build-optimized.json",
+      "decision": "Experimental surface regions repeat: 0.65% median saving; 11.3 s build after compiler early exits. Disabled by default.",
+      "performance": {
+        "order": "ABBA",
+        "enabled": {
+          "samples": 32,
+          "medianMs": 19.922944,
+          "p95Ms": 22.740992
+        },
+        "control": {
+          "samples": 32,
+          "medianMs": 20.054016,
+          "p95Ms": 22.085632
+        },
+        "scope": "Short whole-frame GPU observations, fixed scene at 640\u00d7480; build and upload settling excluded."
+      },
+      "buildMs": 11277
+    },
+    {
+      "sourceSnapshot": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790192010852-62598/source",
+      "sourceFingerprint": "5f3a8ab363aebdfaf3c0f1ca4e5914250525152048f063c222d3e1795b5dedad",
+      "output": "/Users/ryanwible/projects/wrela/output/lookdev-snapshots/1790192010852-62598/source/output/browser-1790192010961-62606",
+      "report": "wrela-compiled-lighting-threaded.json",
+      "decision": "Threaded BVH candidate retained; cross-run timing differences are not a matched speedup claim.",
+      "performance": {
+        "order": "ABBA",
+        "enabled": {
+          "samples": 32,
+          "medianMs": 16.318464,
+          "p95Ms": 18.219008
+        },
+        "control": {
+          "samples": 32,
+          "medianMs": 16.842752,
+          "p95Ms": 19.202048
+        },
+        "scope": "Short whole-frame GPU observations, fixed scene at 640\u00d7480; build and upload settling excluded."
+      },
+      "buildMs": 4823.900000095367
+    }
+  ],
+  "limits": [
+    "Apple/Metal only; short local timestamp samples.",
+    "The default world still uses environment lighting; GI is opt-in.",
+    "Small-fixture compiler comparisons include cell lists already present before this implementation.",
+    "New world GI and old audit GI are different feature sets and separate runs, not a paired speedup benchmark.",
+    "Captured sources are frozen because the shared workspace has concurrent changes."
+  ],
+  "verification": {
+    "unitTests": {
+      "passed": 46,
+      "failed": 0,
+      "assertions": 27914,
+      "suites": [
+        "Lighting/transport/cache/host: 27 tests, 27780 assertions",
+        "Renderer layout/instancing/water packing: 19 tests, 134 assertions"
+      ]
+    },
+    "typescript": "Full workspace passes",
+    "boundaries": "Passes",
+    "water": {
+      "rangeMaximumError": 0,
+      "litDifference": 2938.4165363311768,
+      "shadowDifference": 2881.2472640872,
+      "waterPixels": 47921,
+      "adapter": "apple \u00b7 metal-3",
+      "errors": []
+    },
+    "comparisonBoard": "Three tabs and slider checked in browser; all eight images loaded."
+  },
+  "implementationFiles": {
+    "packages/compiler/src/indirect-regions.ts": "3995db3363e5ca08c8990f8dd3375b437ebd1ed0fd703d9cc02c678483055725",
+    "packages/compiler/src/indirect-visibility.ts": "b98a47337d1594c7b9bc5741b51ba1810cac81c736a9868de64287b6564aba71",
+    "packages/compiler/src/indirect-probes.ts": "e328eb6085a85d7a767e97810c94c936a53e8f652f8d15018c94c87c9bac27c6",
+    "packages/compiler/src/indirect-query.ts": "3fdc4e45215faa023dce0c688fd4dca43e15ea51d0569c8f14611ae4eeafdeec",
+    "packages/model/src/indirect-lighting.ts": "327f110c93e8fb143aa9e3ddeb0167bdc54f164ac0bf594324d2b53f52f873d4",
+    "packages/runtime/src/indirect-lighting.ts": "2763923b16fa688afb4d65a9f7efb7f27de33a810a25e4e39dcfeeb8f1959066",
+    "packages/render-webgpu/src/indirect.ts": "a6c0e56cb8d68386d600bf8980887cbe1c97eebb6592b43fdf2f17f3d5d0ddef",
+    "packages/render-webgpu/src/indirect.wgsl": "102a838780c5a1598287a287429d733a459d0b93805c56a30586f99b2721c2e5",
+    "packages/render-webgpu/src/scene.wgsl": "ccebdd919e296379e5c6aaab2215422851a14fc9a12bde63779e1ff87bb79072",
+    "packages/render-webgpu/src/surface-appearance.wgsl": "f9b497ebd35cc872025d67de7e478692d11d50cf5c5f8134e12210a701cbf6ea",
+    "packages/render-webgpu/src/water-body.wgsl": "0e779d3359c1592c1db232830c259bcdeae3946d0586934e486b9cf09e2d2975",
+    "packages/render-webgpu/src/environment-reflection.ts": "034c3b7ff332accf1d8750cda3ad035037b868a64ed61df9c7504f02e82a035f",
+    "packages/render-webgpu/src/index.ts": "dd68621ee3412f1a20e60b2cf6501a9fb55f3962e3bbf36007584db5023972d1",
+    "packages/render-webgpu/src/batching.ts": "5c37ac673677f66811dd038c77053ba92fa2ce1822d8f5c3bdf69a0e9c2355c3",
+    "packages/render-webgpu/src/packing.ts": "1e3ae4641bc7cc8fe935837ae0f8501777944d032611e2246dc90ad88f90a7c9",
+    "packages/model/src/contracts.ts": "f6e85cf3d51e55808ec0fa79adfc87a4c79fe4670f3e4831a2e2697818c09b40"
+  }
+}

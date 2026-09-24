@@ -1,0 +1,107 @@
+bun test v1.4.2 (744846f84)
+
+packages/compiler/src/water-body.test.ts:
+(pass) water lowering is deterministic, appearance independent, and bounded [54.07ms]
+(pass) bed sampling follows the rendered triangle diagonal and supports closed borders [0.64ms]
+(pass) ocean queries invert the choppy surface and return its spatial derivative [1.08ms]
+(pass) the ocean has bounded horizon geometry with upward facing triangles [7.19ms]
+(pass) periodic wave cascades retain shared CPU phase and a bounded short-wave tail [1.17ms]
+(pass) positive crests compress and orbital velocity follows the travelling wave [0.35ms]
+(pass) wind retains meaning above six metres per second and sea-state conserves requested variance [0.51ms]
+(pass) fine bed triangles and contact remain independent of fluid allocation [22.13ms]
+
+packages/compiler/src/water-effects.test.ts:
+(pass) local sheets have bounded topology, explicit spray and reject ambiguous authoring [3.45ms]
+
+packages/runtime/src/water-body.test.ts:
+(pass) the sloping creek stays conservative through currents, rocks, sources and wet/dry transitions [575.11ms]
+using deprecated parameters for the initialization function; pass a single object instead
+(pass) runtime water impulses replay exactly and source edits retire old beds [347.22ms]
+(pass) scene extraction carries the live fluid and bed at separate elevations [141.73ms]
+(pass) a world restores independent water elevations, fluid state and translated bed collision [670.89ms]
+
+packages/runtime/src/water-simulation.test.ts:
+(pass) shallow water preserves a lake at rest over uneven terrain and dry banks [2.64ms]
+(pass) momentum impulses propagate, conserve volume, stay nonnegative and replay exactly [23.46ms]
+(pass) sources and sinks account for all exchanged volume [17.98ms]
+(pass) body drag returns the exact horizontal impulse to water without changing volume [2.90ms]
+(pass) local effects leave foam and drying memory, and replay restores their clock [23.66ms]
+
+packages/runtime/src/environment-water-host.test.ts:
+(pass) weather water agrees in extraction, fixed-step buoyancy, seeking and source roundtrip [78.02ms]
+
+packages/runtime/src/environment-authoring.test.ts:
+(pass) weather sampling coordinates channels, wraps time, and follows the short azimuth arc [0.05ms]
+(pass) solar clock wraps continuously while authored weather stays on its own period [0.29ms]
+(pass) weather fronts and cloud types interpolate without changing the solar clock [0.09ms]
+(pass) lighting zones blend continuously and resolve overlaps deterministically [0.22ms]
+(pass) environment output consumes sequence, zone, exposure, and color controls [0.09ms]
+(pass) invalid sequence timings fail at authoring boundaries [0.21ms]
+(pass) alpine lookdev source validates and supplies coherent clear/clouded/wet states [0.54ms]
+(pass) room lighting volumes rotate in metres and retain a continuous interior blend [0.14ms]
+(pass) weather-driven water preserves carrier timing, support geometry, source ownership, and authored bounds [0.30ms]
+(pass) semantic cloud formations preserve identity and fade across weather keys [0.07ms]
+(pass) cloud lifecycle and independent deck controls interpolate continuously [0.04ms]
+
+tools/water-resources.test.ts:
+(pass) first spectrum acquisition creates a real map, sharing retains its owner, and edits reuse a sole lease [0.74ms]
+(pass) bed and effects share a single upload; ticks only update the dynamic prefix and rebasing refreshes contact [7.66ms]
+(pass) foam and wetness packing keeps optical state within its error budget [2.53ms]
+
+packages/render-webgpu/src/water-packing.test.ts:
+(pass) water packing carries automatic quality, reference controls and finite shutter independently [0.34ms]
+
+packages/render-webgpu/src/water-transport.test.ts:
+(pass) water transport owns distinct snapshots, accounts memory and releases each once [0.34ms]
+(pass) water transport refuses incompatible snapshots before submitting any copies [0.05ms]
+(pass) half-width transport retains full depth and accounts odd-width color [0.05ms]
+
+packages/render-webgpu/src/temporal.test.ts:
+(pass) temporal jitter shifts by subpixels at every depth while preserving depth and the source projection [0.19ms]
+
+packages/render-webgpu/src/renderer.test.ts:
+(pass) WebGPU matrix convention > near and far map to zero and one [0.04ms]
+(pass) WebGPU matrix convention > view maps eye to origin and target down negative Z [0.09ms]
+(pass) WebGPU matrix convention > pole camera basis remains finite [0.02ms]
+(pass) WebGPU matrix convention > matrix multiplication preserves identity [0.03ms]
+(pass) WebGPU matrix convention > center ray targets the camera target [0.05ms]
+(pass) WGSL host layout > ordinary vertex stream preserves stationary foliage without allocating relief attributes [0.06ms]
+(pass) WGSL host layout > foliage phase and amplitude survive vertex packing [0.03ms]
+(pass) WGSL host layout > skin influences occupy four separate weights and indices [0.02ms]
+(pass) WGSL host layout > material values use aligned vec4 blocks [0.02ms]
+(pass) WGSL host layout > flat water preserves height with no waves [0.02ms]
+(pass) WGSL host layout > wave propagation parameters retain physical units and phase [0.02ms]
+(pass) bounded compatible instancing > material, selection, mesh and deformation incompatibility split draws [0.13ms]
+(pass) bounded compatible instancing > large populations split into bounded batches with stable keys [1.03ms]
+(pass) bounded compatible instancing > instance stride preserves current and previous transforms and generated instance identity [0.13ms]
+(pass) wind normalization preserves direction and a finite conservative cap across authored numeric extremes [0.04ms]
+(pass) world material lattices and layer offsets preserve coordinates across positive and negative rebases [0.13ms]
+(pass) material domains and layers split otherwise compatible instance batches [0.02ms]
+(pass) shared material packing preserves nested edits, selection, and independent skin instances [0.07ms]
+
+packages/render-webgpu/src/residency.test.ts:
+(pass) GPU budget refusal is typed incompleteness and capture refuses to certify it [2.76ms]
+(pass) bounded uploads transition to complete only after all required geometry is resident [4.98ms]
+(pass) material ranges allocate shared vertices once and submit their actual index ranges [0.30ms]
+(pass) offscreen surfaces allocate nothing when neither camera nor shadow needs them [0.10ms]
+(pass) out-of-bounds material draw ranges are rejected before buffer allocation [0.07ms]
+(pass) owned texture and buffer memory are reported separately and large targets reserve residency capacity [0.13ms]
+(pass) ordinary meshes reuse their immutable stream while relief alone pays for exact reference vertices [0.35ms]
+(pass) relief reference streams obey incremental upload budgets and are released on eviction [1.15ms]
+(pass) mixed relief draws select compact layouts in shadow, thin depth, color and water passes [0.62ms]
+(pass) live deformation keeps compact rest data immutable while updating current and previous positions [0.39ms]
+(pass) a relief mesh fits the exact compact residency allowance without reserving a duplicate full stream [0.20ms]
+(pass) pending coverage uploads stay retryable and complete when each frame cannot fit a whole mip chain [0.83ms]
+
+packages/render-webgpu/src/gpu-timing.test.ts:
+(pass) GPU frame extent includes overlapping and reordered pass intervals without double counting [0.66ms]
+(pass) reused atmosphere excludes stale query slots from the current frame [0.03ms]
+(pass) empty shadow passes ignore unwritten end timestamps [0.02ms]
+(pass) rejected timing decoding releases the readback for the next frame [0.04ms]
+(pass) thin coverage intervals extend frame bounds without folding them into color cost [0.02ms]
+(pass) wave synthesis is included even when the sky and shadow passes are reused [0.02ms]
+
+ 74 pass
+ 0 fail
+ 66150 expect() calls
+Ran 74 tests across 13 files. [2.09s]

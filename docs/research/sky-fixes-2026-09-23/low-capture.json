@@ -1,0 +1,143 @@
+{
+  "frames": [
+    {
+      "id": "cumulus-side",
+      "camera": {
+        "position": [
+          14,
+          7,
+          -24
+        ],
+        "target": [
+          -20,
+          43,
+          76
+        ],
+        "fov": 65
+      },
+      "time": 0,
+      "mode": "beauty",
+      "surfaces": 66,
+      "triangles": 135168,
+      "complete": true,
+      "timing": {
+        "frameToCompleteMs": 194.5,
+        "completeAt": 9762.5,
+        "uploadAttempts": 1
+      },
+      "resources": {
+        "cacheBytes": 0,
+        "installedBytes": 0,
+        "liveBytes": 0,
+        "reliefBytes": 0,
+        "indirectLightingBytes": 0,
+        "assemblyBytes": 0,
+        "waterBytes": 0,
+        "cacheEntries": 0
+      },
+      "indirectLighting": null,
+      "measurements": {
+        "cpuMs": 5.600000023841858,
+        "gpuMs": 3.080192,
+        "triangles": 77824,
+        "drawCalls": 97,
+        "gpuBytes": 44582801,
+        "frame": 2,
+        "adapter": "apple · metal-3",
+        "waterResources": {
+          "transport": 12,
+          "spectrum": 0,
+          "body": 16,
+          "geometry": 0,
+          "objects": 0,
+          "total": 28
+        },
+        "reconstruction": "none",
+        "gpuTimingDroppedFrames": 0,
+        "localShadowPasses": 0,
+        "localShadowDrawCalls": 0,
+        "materialCacheBytes": 0,
+        "qualityProfile": "low",
+        "uploadedBytes": 3468844,
+        "visibleSurfaces": 61,
+        "culledSurfaces": 5,
+        "detailSurfaces": 0,
+        "ownedTextureBytes": 35964965,
+        "bufferBytes": 8617836,
+        "outputResolution": [
+          1440,
+          900
+        ],
+        "renderResolution": [
+          1080,
+          675
+        ]
+      },
+      "gpuTimings": [
+        {
+          "frame": 1,
+          "atmosphereMs": 26.935296,
+          "thinDepthMs": 0,
+          "shadowMs": 0.393216,
+          "sceneMs": 16.646144,
+          "waterMs": 0,
+          "temporalMs": 0,
+          "displayMs": 1.179648,
+          "gpuMs": 31.719424,
+          "intervals": [
+            {
+              "pass": "atmosphere",
+              "startMs": 0,
+              "endMs": 26.935296
+            },
+            {
+              "pass": "shadow",
+              "startMs": 4.456448,
+              "endMs": 4.849664
+            },
+            {
+              "pass": "opaque",
+              "startMs": 14.155776,
+              "endMs": 30.80192
+            },
+            {
+              "pass": "display",
+              "startMs": 30.539776,
+              "endMs": 31.719424
+            }
+          ]
+        },
+        {
+          "frame": 2,
+          "atmosphereMs": 0,
+          "thinDepthMs": 0,
+          "shadowMs": 0.262144,
+          "sceneMs": 2.62144,
+          "waterMs": 0,
+          "temporalMs": 0,
+          "displayMs": 2.62144,
+          "gpuMs": 3.080192,
+          "intervals": [
+            {
+              "pass": "shadow",
+              "startMs": 0,
+              "endMs": 0.262144
+            },
+            {
+              "pass": "opaque",
+              "startMs": 0.131072,
+              "endMs": 2.752512
+            },
+            {
+              "pass": "display",
+              "startMs": 0.458752,
+              "endMs": 3.080192
+            }
+          ]
+        }
+      ],
+      "diagnostics": []
+    }
+  ],
+  "errors": []
+}

@@ -1,0 +1,273 @@
+{
+  "status": "shape-first prototype; visual approval and performance gates open",
+  "scope": "Native 1024x768 MSAA stills; short native 1080p temporal throughput trials, not sustained qualification. Full-tree and grove cameras and lighting are matched; branch camera tracks the inspected limb. Tree architecture, needle dimensions, and maturity mapping intentionally differ.",
+  "sources": {
+    "original": "output/vegetation-lookdev/1790183627304-40459/source/output/browser-1790183687279-40628",
+    "shaped": "output/vegetation-lookdev/1790183435598-39928/source/output/browser-1790183435753-39933",
+    "matrix": "output/vegetation-lookdev/1790183627304-40459/source/output/browser-1790183627495-40474"
+  },
+  "benchmarks": {
+    "shaped": {
+      "evidence": "output/vegetation-benchmarks/1790183505258-40164/source/output/browser-1790183505686-40167/vegetation-benchmark.json",
+      "settings": {
+        "width": 1920,
+        "height": 1080,
+        "warmup": 3,
+        "duration": 15,
+        "trials": 1,
+        "paced": false,
+        "moving": true,
+        "diagnostic": false,
+        "antialiasing": "temporal",
+        "vegetation": true,
+        "finiteSun": false,
+        "profileCpu": false,
+        "ablation": "none",
+        "materialSpecialization": true
+      },
+      "hardware": {
+        "hardware": [
+          {
+            "machine_name": "MacBook Air",
+            "machine_model": "Mac16,12",
+            "chip_type": "Apple M4",
+            "number_processors": "proc 10:4:6:0",
+            "physical_memory": "16 GB"
+          }
+        ],
+        "graphics": [
+          {
+            "chip": "Apple M4",
+            "cores": "8"
+          }
+        ],
+        "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=22478947)\t4%; charging; (no estimate) present: true\n",
+        "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83\n",
+        "memoryPressure": "The system has 17179869184 (1048576 pages with a page size of 16384).\nSystem-wide memory free percentage: 51%\n",
+        "swap": "vm.swapusage: total = 1024.00M  used = 216.06M  free = 807.94M  (encrypted)\n",
+        "powerSettings": "Battery Power:\n Sleep On Power Button 1\n lowpowermode         0\n standby              1\n hibernatemode        3\n powernap             1\n hibernatefile        /var/vm/sleepimage\n ttyskeepawake        1\n womp                 0\n displaysleep         2\n networkoversleep     0\n sleep                1\n lessbright           1\n tcpkeepalive         1\n disksleep            10\nAC Power:\n Sleep On Power Button 1\n lowpowermode         0\n standby              1\n hibernatemode        3\n powernap             1\n hibernatefile        /var/vm/sleepimage\n ttyskeepawake        1\n womp                 1\n displaysleep         10\n networkoversleep     0\n sleep                1\n tcpkeepalive         1\n disksleep            10\n"
+      },
+      "summary": {
+        "trial": 0,
+        "elapsedMs": 15029.141916,
+        "completedFrames": 1176,
+        "completedFramesPerSecond": 78.24798026213541,
+        "gpu": {
+          "samples": 1176,
+          "p50": 10.878976,
+          "p95": 13.303808,
+          "p99": 14.352384,
+          "minimum": 8.126464,
+          "maximum": 15.532032
+        },
+        "renderCpu": {
+          "samples": 1176,
+          "p50": 1.899999976158142,
+          "p95": 2.5,
+          "p99": 2.899999976158142,
+          "minimum": 1.1999999284744263,
+          "maximum": 3.100000023841858
+        },
+        "prepareCpu": {
+          "samples": 1176,
+          "p50": 0.2999999523162842,
+          "p95": 0.5,
+          "p99": 0.6000000238418579,
+          "minimum": 0.09999990463256836,
+          "maximum": 2.5
+        },
+        "totalCpu": {
+          "samples": 1176,
+          "p50": 2.100000023841858,
+          "p95": 3,
+          "p99": 3.4000000953674316,
+          "minimum": 1.399999976158142,
+          "maximum": 4.300000071525574
+        },
+        "passes": {
+          "atmosphere": {
+            "samples": 1176,
+            "p50": 0.065536,
+            "p95": 0.131072,
+            "p99": 0.6553599999999999,
+            "minimum": 0,
+            "maximum": 4.194304
+          },
+          "shadow": {
+            "samples": 1176,
+            "p50": 2.29376,
+            "p95": 4.653056,
+            "p99": 6.1603840000000005,
+            "minimum": 1.769472,
+            "maximum": 7.405568000000001
+          },
+          "opaque": {
+            "samples": 1176,
+            "p50": 5.767168,
+            "p95": 8.192,
+            "p99": 9.50272,
+            "minimum": 4.194304000000001,
+            "maximum": 10.15808
+          },
+          "thin-depth": {
+            "samples": 1176,
+            "p50": 2.883584,
+            "p95": 4.653056,
+            "p99": 5.505024,
+            "minimum": 2.228224,
+            "maximum": 6.160384
+          },
+          "temporal-display": {
+            "samples": 1176,
+            "p50": 2.29376,
+            "p95": 4.390912,
+            "p99": 4.653056,
+            "minimum": 1.8350080000000002,
+            "maximum": 5.373952000000001
+          }
+        },
+        "maximumGpuBytes": 254885937,
+        "finalTenMinutes": null
+      }
+    },
+    "original": {
+      "evidence": "output/vegetation-benchmarks/1790183505258-40164/source/output/browser-1790183563908-40289/vegetation-benchmark.json",
+      "settings": {
+        "width": 1920,
+        "height": 1080,
+        "warmup": 3,
+        "duration": 15,
+        "trials": 1,
+        "paced": false,
+        "moving": true,
+        "diagnostic": false,
+        "antialiasing": "temporal",
+        "vegetation": true,
+        "finiteSun": false,
+        "profileCpu": false,
+        "ablation": "none",
+        "materialSpecialization": true
+      },
+      "hardware": {
+        "hardware": [
+          {
+            "machine_name": "MacBook Air",
+            "machine_model": "Mac16,12",
+            "chip_type": "Apple M4",
+            "number_processors": "proc 10:4:6:0",
+            "physical_memory": "16 GB"
+          }
+        ],
+        "graphics": [
+          {
+            "chip": "Apple M4",
+            "cores": "8"
+          }
+        ],
+        "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=22478947)\t6%; charging; (no estimate) present: true\n",
+        "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83\n",
+        "memoryPressure": "The system has 17179869184 (1048576 pages with a page size of 16384).\nSystem-wide memory free percentage: 54%\n",
+        "swap": "vm.swapusage: total = 1024.00M  used = 216.06M  free = 807.94M  (encrypted)\n",
+        "powerSettings": "Battery Power:\n Sleep On Power Button 1\n lowpowermode         0\n standby              1\n hibernatemode        3\n powernap             1\n hibernatefile        /var/vm/sleepimage\n ttyskeepawake        1\n womp                 0\n displaysleep         2\n networkoversleep     0\n sleep                1\n lessbright           1\n tcpkeepalive         1\n disksleep            10\nAC Power:\n Sleep On Power Button 1\n lowpowermode         0\n standby              1\n hibernatemode        3\n powernap             1\n hibernatefile        /var/vm/sleepimage\n ttyskeepawake        1\n womp                 1\n displaysleep         10\n networkoversleep     0\n sleep                1\n tcpkeepalive         1\n disksleep            10\n"
+      },
+      "summary": {
+        "trial": 0,
+        "elapsedMs": 15197.560125,
+        "completedFrames": 1560,
+        "completedFramesPerSecond": 102.64805581744655,
+        "gpu": {
+          "samples": 1560,
+          "p50": 7.995392,
+          "p95": 11.337728,
+          "p99": 12.517376,
+          "minimum": 5.963776,
+          "maximum": 15.40096
+        },
+        "renderCpu": {
+          "samples": 1560,
+          "p50": 1.5,
+          "p95": 2.200000047683716,
+          "p99": 2.600000023841858,
+          "minimum": 0.5999999046325684,
+          "maximum": 3.100000023841858
+        },
+        "prepareCpu": {
+          "samples": 1560,
+          "p50": 0.20000004768371582,
+          "p95": 0.3999999761581421,
+          "p99": 0.5,
+          "minimum": 0,
+          "maximum": 2.299999952316284
+        },
+        "totalCpu": {
+          "samples": 1560,
+          "p50": 1.7999999523162842,
+          "p95": 2.600000023841858,
+          "p99": 3,
+          "minimum": 0.7999999523162842,
+          "maximum": 3.899999976158142
+        },
+        "passes": {
+          "atmosphere": {
+            "samples": 1560,
+            "p50": 0.065536,
+            "p95": 0.13107200000000002,
+            "p99": 1.0485760000000002,
+            "minimum": 0,
+            "maximum": 2.94912
+          },
+          "shadow": {
+            "samples": 1560,
+            "p50": 1.441792,
+            "p95": 3.2768,
+            "p99": 4.521984,
+            "minimum": 1.1796479999999998,
+            "maximum": 6.094848
+          },
+          "opaque": {
+            "samples": 1560,
+            "p50": 3.801088,
+            "p95": 6.619135999999999,
+            "p99": 7.4711039999999995,
+            "minimum": 3.014656,
+            "maximum": 8.454144
+          },
+          "thin-depth": {
+            "samples": 1560,
+            "p50": 1.835008,
+            "p95": 3.473408,
+            "p99": 4.58752,
+            "minimum": 1.3107199999999999,
+            "maximum": 5.308416
+          },
+          "temporal-display": {
+            "samples": 1560,
+            "p50": 2.162688000000001,
+            "p95": 4.2598400000000005,
+            "p99": 5.111808,
+            "minimum": 1.8350079999999993,
+            "maximum": 6.946816
+          }
+        },
+        "maximumGpuBytes": 228966776,
+        "finalTenMinutes": null
+      }
+    }
+  },
+  "tests": {
+    "passed": 28,
+    "failed": 0,
+    "typecheck": "passed",
+    "browserTypecheck": "passed",
+    "workspaceBoundaries": "passed",
+    "wholeWorkspaceCheck": "fails existing shared-workspace formatting/import/lint issues"
+  },
+  "limitations": [
+    "Procedural morphology and maturity schedule are art directed, not calibrated growth years or ecology.",
+    "No ecological competition, regrowth simulation or smooth growth animation on the architecture path.",
+    "Explicit whole-tree needle reference can exceed its budget; filtered twig products remain unqualified against full 3D source.",
+    "Branch junctions overlap; no watertight union.",
+    "Fine-needle shimmer/coverage and canopy lighting still need work.",
+    "No new crown/cell or forest streaming implementation; no sustained performance pass."
+  ]
+}

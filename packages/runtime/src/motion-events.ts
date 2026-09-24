@@ -1,4 +1,5 @@
 import type { Motion } from "@wrela/model";
+
 export type MotionEventMarker = {
   id: string;
   time: number;

@@ -1,0 +1,570 @@
+{
+  "comparison": {
+    "frames": 1200,
+    "warmupFrames": 240,
+    "sequence": "expanded/shared/shared/expanded",
+    "width": 1920,
+    "height": 1080,
+    "aa": "temporal",
+    "canopyVisibility": false,
+    "scope": "Identical source and simulation ticks; shared path adds per-shoot camera/light selection and explicit resolved needles. Both paths use approximate proxies at distance. Diagnostic ABBA, not sustained acceptance.",
+    "errors": []
+  },
+  "runs": [
+    {
+      "shared": false,
+      "gpu": {
+        "samples": 1200,
+        "p50": 6.815744,
+        "p95": 7.86432,
+        "p99": 8.192,
+        "minimum": 6.094848,
+        "maximum": 9.306112
+      },
+      "cpu": {
+        "samples": 1200,
+        "p50": 1.1999999284744263,
+        "p95": 1.6999999284744263,
+        "p99": 1.899999976158142,
+        "minimum": 0.6999999284744263,
+        "maximum": 3
+      },
+      "gpuBytes": 249031425,
+      "triangles": {
+        "samples": 1200,
+        "p50": 728002,
+        "p95": 728002,
+        "p99": 730050,
+        "minimum": 725954,
+        "maximum": 730050
+      },
+      "uploadedBytes": {
+        "samples": 1200,
+        "p50": 3136,
+        "p95": 3136,
+        "p99": 3136,
+        "minimum": 3136,
+        "maximum": 129628
+      }
+    },
+    {
+      "shared": true,
+      "gpu": {
+        "samples": 1200,
+        "p50": 5.177344,
+        "p95": 6.160384,
+        "p99": 6.619136,
+        "minimum": 4.784128,
+        "maximum": 7.077888
+      },
+      "cpu": {
+        "samples": 1200,
+        "p50": 1.399999976158142,
+        "p95": 1.8000000715255737,
+        "p99": 2,
+        "minimum": 1,
+        "maximum": 3.100000023841858
+      },
+      "gpuBytes": 228779001,
+      "triangles": {
+        "samples": 1200,
+        "p50": 463018,
+        "p95": 463018,
+        "p99": 465066,
+        "minimum": 460970,
+        "maximum": 465066
+      },
+      "uploadedBytes": {
+        "samples": 1200,
+        "p50": 3136,
+        "p95": 3136,
+        "p99": 3136,
+        "minimum": 3136,
+        "maximum": 129628
+      }
+    },
+    {
+      "shared": true,
+      "gpu": {
+        "samples": 1200,
+        "p50": 5.111808,
+        "p95": 6.094848,
+        "p99": 6.488064,
+        "minimum": 4.784128,
+        "maximum": 6.684672
+      },
+      "cpu": {
+        "samples": 1200,
+        "p50": 1.600000023841858,
+        "p95": 1.899999976158142,
+        "p99": 2.100000023841858,
+        "minimum": 1.0999999046325684,
+        "maximum": 2.899999976158142
+      },
+      "gpuBytes": 228779001,
+      "triangles": {
+        "samples": 1200,
+        "p50": 463018,
+        "p95": 463018,
+        "p99": 465066,
+        "minimum": 460970,
+        "maximum": 465066
+      },
+      "uploadedBytes": {
+        "samples": 1200,
+        "p50": 3136,
+        "p95": 3136,
+        "p99": 3136,
+        "minimum": 3136,
+        "maximum": 129628
+      }
+    },
+    {
+      "shared": false,
+      "gpu": {
+        "samples": 1200,
+        "p50": 6.750208,
+        "p95": 7.667712,
+        "p99": 8.060928,
+        "minimum": 6.160384,
+        "maximum": 8.257536
+      },
+      "cpu": {
+        "samples": 1200,
+        "p50": 1.5,
+        "p95": 1.8000000715255737,
+        "p99": 2,
+        "minimum": 0.8000000715255737,
+        "maximum": 3.299999952316284
+      },
+      "gpuBytes": 249031425,
+      "triangles": {
+        "samples": 1200,
+        "p50": 728002,
+        "p95": 728002,
+        "p99": 730050,
+        "minimum": 725954,
+        "maximum": 730050
+      },
+      "uploadedBytes": {
+        "samples": 1200,
+        "p50": 3136,
+        "p95": 3136,
+        "p99": 3136,
+        "minimum": 3136,
+        "maximum": 129628
+      }
+    }
+  ],
+  "quality": {
+    "status": "unqualified",
+    "scope": "Static, isolated source shoot. Coverage uses 4x/8x supersampling; radiance uses 4x, fixed daylight and foreground energy relative to empty background. These cases cannot qualify motion or light-angle changes.",
+    "results": [
+      {
+        "pixels": 16,
+        "angle": 0.31,
+        "elevation": 0.27,
+        "variant": 0,
+        "convergence": {
+          "relativeAreaBias": 0.023172905525846704,
+          "normalizedSpatialL1": 0.18538324420677363,
+          "referenceArea": 17.53125,
+          "candidateArea": 17.125
+        },
+        "coverage": {
+          "relativeAreaBias": 0.13992869875222816,
+          "normalizedSpatialL1": 0.20409982174688057,
+          "referenceArea": 17.53125,
+          "candidateArea": 15.078125
+        },
+        "radiance": {
+          "relativeForegroundEnergy": 0.1857918389813892,
+          "normalizedL1": 0.9671926822750284
+        },
+        "adapter": "apple \u00b7 metal-3",
+        "passes": false
+      },
+      {
+        "pixels": 16,
+        "angle": 1.62,
+        "elevation": 0.27,
+        "variant": 0,
+        "convergence": {
+          "relativeAreaBias": 0.004468275245755138,
+          "normalizedSpatialL1": 0.19571045576407506,
+          "referenceArea": 17.484375,
+          "candidateArea": 17.5625
+        },
+        "coverage": {
+          "relativeAreaBias": 0.1385165326184093,
+          "normalizedSpatialL1": 0.22430741733690795,
+          "referenceArea": 17.484375,
+          "candidateArea": 15.0625
+        },
+        "radiance": {
+          "relativeForegroundEnergy": 0.20507381245655676,
+          "normalizedL1": 0.9728798871106404
+        },
+        "adapter": "apple \u00b7 metal-3",
+        "passes": false
+      },
+      {
+        "pixels": 64,
+        "angle": 0.31,
+        "elevation": 0.27,
+        "variant": 0,
+        "convergence": {
+          "relativeAreaBias": 0.0034449497037343257,
+          "normalizedSpatialL1": 0.10693123880391346,
+          "referenceArea": 226.78125,
+          "candidateArea": 227.5625
+        },
+        "coverage": {
+          "relativeAreaBias": 0.1287722199255891,
+          "normalizedSpatialL1": 0.4035414082954389,
+          "referenceArea": 226.78125,
+          "candidateArea": 197.578125
+        },
+        "radiance": {
+          "relativeForegroundEnergy": 0.18767461077402778,
+          "normalizedL1": 0.8916248287309316
+        },
+        "adapter": "apple \u00b7 metal-3",
+        "passes": false
+      },
+      {
+        "pixels": 64,
+        "angle": 1.62,
+        "elevation": 0.27,
+        "variant": 0,
+        "convergence": {
+          "relativeAreaBias": 0.010628814372899953,
+          "normalizedSpatialL1": 0.1145854762394569,
+          "referenceArea": 227.859375,
+          "candidateArea": 225.4375
+        },
+        "coverage": {
+          "relativeAreaBias": 0.13440307207021876,
+          "normalizedSpatialL1": 0.39402043475279436,
+          "referenceArea": 227.859375,
+          "candidateArea": 197.234375
+        },
+        "radiance": {
+          "relativeForegroundEnergy": 0.16071169720766862,
+          "normalizedL1": 0.9154490447867429
+        },
+        "adapter": "apple \u00b7 metal-3",
+        "passes": false
+      },
+      {
+        "pixels": 128,
+        "angle": 0.31,
+        "elevation": 0.27,
+        "variant": 0,
+        "convergence": {
+          "relativeAreaBias": 0.0012656570505826387,
+          "normalizedSpatialL1": 0.06812726399860342,
+          "referenceArea": 716.03125,
+          "candidateArea": 715.125
+        },
+        "coverage": {
+          "relativeAreaBias": 0.1292715925457164,
+          "normalizedSpatialL1": 0.5242438790206433,
+          "referenceArea": 716.03125,
+          "candidateArea": 623.46875
+        },
+        "radiance": {
+          "relativeForegroundEnergy": 0.15622429332879723,
+          "normalizedL1": 0.8925966912410821
+        },
+        "adapter": "apple \u00b7 metal-3",
+        "passes": false
+      },
+      {
+        "pixels": 128,
+        "angle": 1.62,
+        "elevation": 0.27,
+        "variant": 0,
+        "convergence": {
+          "relativeAreaBias": 8.656509695290859e-05,
+          "normalizedSpatialL1": 0.0745325484764543,
+          "referenceArea": 722,
+          "candidateArea": 722.0625
+        },
+        "coverage": {
+          "relativeAreaBias": 0.13532288781163435,
+          "normalizedSpatialL1": 0.5386296745152355,
+          "referenceArea": 722,
+          "candidateArea": 624.296875
+        },
+        "radiance": {
+          "relativeForegroundEnergy": 0.17308771433087308,
+          "normalizedL1": 0.8944193290782723
+        },
+        "adapter": "apple \u00b7 metal-3",
+        "passes": false
+      }
+    ],
+    "errors": []
+  },
+  "sources": {
+    "benchmark": "/Users/ryanwible/projects/wrela/output/foliage-benchmark/1790189081385-55693/source/output/browser-1790189081515-55712",
+    "qualification": "/Users/ryanwible/projects/wrela/output/shoot-qualification/1790188500883-51755/source",
+    "temporal": "/Users/ryanwible/projects/wrela/output/forest-walk/1790189033036-54855/source"
+  },
+  "finalDefault": {
+    "source": "/Users/ryanwible/projects/wrela/output/vegetation-benchmarks/1790189669087-57282/source/output/browser-1790189669397-57295/vegetation-benchmark.json",
+    "settings": {
+      "specimen": "shaped-pine",
+      "width": 1920,
+      "height": 1080,
+      "warmup": 5,
+      "duration": 20,
+      "trials": 1,
+      "paced": false,
+      "moving": true,
+      "diagnostic": false,
+      "antialiasing": "temporal",
+      "vegetation": true,
+      "finiteSun": false,
+      "profileCpu": false,
+      "ablation": "none",
+      "materialSpecialization": true,
+      "thinCoveragePrepass": true
+    },
+    "hardware": {
+      "hardware": [
+        {
+          "machine_name": "MacBook Air",
+          "machine_model": "Mac16,12",
+          "chip_type": "Apple M4",
+          "number_processors": "proc 10:4:6:0",
+          "physical_memory": "16 GB"
+        }
+      ],
+      "graphics": [
+        {
+          "chip": "Apple M4",
+          "cores": "8"
+        }
+      ],
+      "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=22478947)\t99%; finishing charge; 0:25 remaining present: true\n",
+      "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83\n",
+      "memoryPressure": "The system has 17179869184 (1048576 pages with a page size of 16384).\nSystem-wide memory free percentage: 54%\n",
+      "swap": "vm.swapusage: total = 3072.00M  used = 1793.25M  free = 1278.75M  (encrypted)\n",
+      "powerSettings": "Battery Power:\n Sleep On Power Button 1\n lowpowermode         0\n standby              1\n hibernatemode        3\n powernap             1\n hibernatefile        /var/vm/sleepimage\n ttyskeepawake        1\n womp                 0\n displaysleep         2\n networkoversleep     0\n sleep                1\n lessbright           1\n tcpkeepalive         1\n disksleep            10\nAC Power:\n Sleep On Power Button 1\n lowpowermode         0\n standby              1\n hibernatemode        3\n powernap             1\n hibernatefile        /var/vm/sleepimage\n ttyskeepawake        1\n womp                 1\n displaysleep         10\n networkoversleep     0\n sleep                1\n tcpkeepalive         1\n disksleep            10\n"
+    },
+    "runs": [
+      {
+        "trial": 0,
+        "elapsedMs": 20118.272041000004,
+        "completedFrames": 3072,
+        "completedFramesPerSecond": 152.6970106448219,
+        "gpu": {
+          "samples": 3072,
+          "p50": 5.177344,
+          "p95": 6.160384,
+          "p99": 6.750208,
+          "minimum": 4.784128,
+          "maximum": 8.716288
+        },
+        "renderCpu": {
+          "samples": 3072,
+          "p50": 1.2000000476837158,
+          "p95": 1.600000023841858,
+          "p99": 1.7000000476837158,
+          "minimum": 0.8999999761581421,
+          "maximum": 3.4000000953674316
+        },
+        "prepareCpu": {
+          "samples": 3072,
+          "p50": 0.19999992847442627,
+          "p95": 0.2999999523162842,
+          "p99": 0.30000007152557373,
+          "minimum": 0,
+          "maximum": 1.1999999284744263
+        },
+        "totalCpu": {
+          "samples": 3072,
+          "p50": 1.399999976158142,
+          "p95": 1.8000000715255737,
+          "p99": 2.0999999046325684,
+          "minimum": 1,
+          "maximum": 4
+        },
+        "passes": {
+          "atmosphere": {
+            "samples": 3072,
+            "p50": 0.065536,
+            "p95": 0.06553600000000001,
+            "p99": 1.703936,
+            "minimum": 0,
+            "maximum": 3.014656
+          },
+          "shadow": {
+            "samples": 3072,
+            "p50": 0.917504,
+            "p95": 1.572864,
+            "p99": 2.490368,
+            "minimum": 0.851968,
+            "maximum": 3.2112640000000003
+          },
+          "opaque": {
+            "samples": 3072,
+            "p50": 2.62144,
+            "p95": 3.7355519999999998,
+            "p99": 4.194304,
+            "minimum": 2.5559039999999995,
+            "maximum": 4.325376
+          },
+          "thin-depth": {
+            "samples": 3072,
+            "p50": 0.917504,
+            "p95": 1.1796479999999998,
+            "p99": 1.900544,
+            "minimum": 0.7208959999999999,
+            "maximum": 2.162688
+          },
+          "temporal-display": {
+            "samples": 3072,
+            "p50": 1.5073280000000002,
+            "p95": 2.490368,
+            "p99": 2.6869759999999996,
+            "minimum": 1.3762559999999997,
+            "maximum": 3.2768
+          }
+        },
+        "maximumGpuBytes": 232945913,
+        "finalTenMinutes": null
+      }
+    ]
+  },
+  "rejectedNoPrepass": {
+    "source": "/Users/ryanwible/projects/wrela/output/vegetation-benchmarks/1790189428268-56464/source/output/browser-1790189428565-56470/vegetation-benchmark.json",
+    "settings": {
+      "specimen": "shaped-pine",
+      "width": 1920,
+      "height": 1080,
+      "warmup": 5,
+      "duration": 10,
+      "trials": 1,
+      "paced": false,
+      "moving": true,
+      "diagnostic": false,
+      "antialiasing": "temporal",
+      "vegetation": true,
+      "finiteSun": false,
+      "profileCpu": false,
+      "ablation": "none",
+      "materialSpecialization": true,
+      "thinCoveragePrepass": false
+    },
+    "hardware": {
+      "hardware": [
+        {
+          "machine_name": "MacBook Air",
+          "machine_model": "Mac16,12",
+          "chip_type": "Apple M4",
+          "number_processors": "proc 10:4:6:0",
+          "physical_memory": "16 GB"
+        }
+      ],
+      "graphics": [
+        {
+          "chip": "Apple M4",
+          "cores": "8"
+        }
+      ],
+      "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=22478947)\t99%; finishing charge; 0:28 remaining present: true\n",
+      "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83\n",
+      "memoryPressure": "The system has 17179869184 (1048576 pages with a page size of 16384).\nSystem-wide memory free percentage: 58%\n",
+      "swap": "vm.swapusage: total = 3072.00M  used = 1793.25M  free = 1278.75M  (encrypted)\n",
+      "powerSettings": "Battery Power:\n Sleep On Power Button 1\n lowpowermode         0\n standby              1\n hibernatemode        3\n powernap             1\n hibernatefile        /var/vm/sleepimage\n ttyskeepawake        1\n womp                 0\n displaysleep         2\n networkoversleep     0\n sleep                1\n lessbright           1\n tcpkeepalive         1\n disksleep            10\nAC Power:\n Sleep On Power Button 1\n lowpowermode         0\n standby              1\n hibernatemode        3\n powernap             1\n hibernatefile        /var/vm/sleepimage\n ttyskeepawake        1\n womp                 1\n displaysleep         10\n networkoversleep     0\n sleep                1\n tcpkeepalive         1\n disksleep            10\n"
+    },
+    "runs": [
+      {
+        "trial": 0,
+        "elapsedMs": 10234.345332999997,
+        "completedFrames": 480,
+        "completedFramesPerSecond": 46.900899313243855,
+        "gpu": {
+          "samples": 480,
+          "p50": 19.070976,
+          "p95": 23.92064,
+          "p99": 25.952256,
+          "minimum": 15.204352,
+          "maximum": 28.50816
+        },
+        "renderCpu": {
+          "samples": 480,
+          "p50": 2.200000047683716,
+          "p95": 3.700000047683716,
+          "p99": 4.300000071525574,
+          "minimum": 1,
+          "maximum": 4.700000047683716
+        },
+        "prepareCpu": {
+          "samples": 480,
+          "p50": 0.2999999523162842,
+          "p95": 0.5,
+          "p99": 0.7000000476837158,
+          "minimum": 0.09999990463256836,
+          "maximum": 1.600000023841858
+        },
+        "totalCpu": {
+          "samples": 480,
+          "p50": 2.5,
+          "p95": 4.200000047683716,
+          "p99": 4.700000047683716,
+          "minimum": 1.100000023841858,
+          "maximum": 5.100000023841858
+        },
+        "passes": {
+          "atmosphere": {
+            "samples": 480,
+            "p50": 0.065536,
+            "p95": 0.065536,
+            "p99": 1.6384,
+            "minimum": 0,
+            "maximum": 2.097152
+          },
+          "shadow": {
+            "samples": 480,
+            "p50": 0.917504,
+            "p95": 1.376256,
+            "p99": 1.96608,
+            "minimum": 0.851968,
+            "maximum": 2.031616
+          },
+          "opaque": {
+            "samples": 480,
+            "p50": 16.515072,
+            "p95": 21.430272,
+            "p99": 23.330816,
+            "minimum": 12.648448,
+            "maximum": 26.083327999999998
+          },
+          "temporal-display": {
+            "samples": 480,
+            "p50": 2.0316159999999996,
+            "p95": 2.8835840000000026,
+            "p99": 3.0801920000000003,
+            "minimum": 1.376255999999998,
+            "maximum": 3.211264
+          }
+        },
+        "maximumGpuBytes": 232926201,
+        "finalTenMinutes": null
+      }
+    ]
+  },
+  "validation": {
+    "tests": 207,
+    "files": 50,
+    "typeScript": true,
+    "browserTypeScript": true,
+    "boundaries": true,
+    "player": "/Users/ryanwible/projects/wrela/output/browser-1790189851364-57711/forest-player.json",
+    "heldout": "/Users/ryanwible/projects/wrela/output/vegetation-lookdev/1790189809203-57568/source/output/browser-1790189809378-57581/vegetation-lookdev.json"
+  }
+}

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Camera } from "@wrela/model";
+
 import { projectSegment } from "./capture";
 
 const camera: Camera = { position: [0, 0, 5], target: [0, 0, 0], fov: 90 };

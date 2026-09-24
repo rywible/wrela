@@ -1,0 +1,339 @@
+{
+  "date": "2026-09-23",
+  "purpose": "Sky art iteration following visual feedback",
+  "sourceFingerprint": "ccac9d9866dadbbbc20e77122ef8a8ca13c77398628edd1a3385c581afe88a08",
+  "snapshot": "/Users/ryanwible/projects/wrela/output/sky-art-iteration-2026-09-23/verified-wisps",
+  "sources": [
+    {
+      "path": "packages/render-webgpu/src/atmosphere-clouds.wgsl",
+      "sha256": "a933b8edff496161be9f24798b066e78b7934ec215bdafabc9963b4786d239dc",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-gpu.ts",
+      "sha256": "ee278784b4b616d6f5a28339ebaa6869394b16221721028ef2e66d4ff93f1e0a",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/render-webgpu/src/cloud-history.ts",
+      "sha256": "b3550b56245980e28b5a0d4f4fa5f4277eac1ae0e234721aa0f02f4400440b78",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/render-webgpu/src/cloud-history.test.ts",
+      "sha256": "94c56cf0c18df4f0869e7de9cdd0c7748b7582c38dc94c91a2b15526f63a590b",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/model/src/environment-lookdev.ts",
+      "sha256": "e98477577fe013a4c0f689958443923af650a95c2f851388a30556e8490408d9",
+      "matchesFrozen": true
+    },
+    {
+      "path": "tools/sky-art-review.ts",
+      "sha256": "dbf546e44216d0080427bcd80a043e062bfc550053e6ed9183aaab3d2716805c",
+      "matchesFrozen": true
+    },
+    {
+      "path": "tools/fixtures/sky-field.ts",
+      "sha256": "d410e1e96c6329d27ef3207e7117a21462f0637a3e6261b00de310274a314460",
+      "matchesFrozen": true
+    },
+    {
+      "path": "tools/sky-field-check.ts",
+      "sha256": "d9af4e68ac34def36a8b0a3b0986a0eb8c2e104ab5cbfcdaba506bdbc279d709",
+      "matchesFrozen": true
+    }
+  ],
+  "captures": {
+    "release-good-high": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-art-iteration-2026-09-23/verified-release-good/output/browser-1790187225714-49263",
+      "frames": [
+        "cumulus-side",
+        "cumulus-back",
+        "cumulus-front",
+        "storm",
+        "golden",
+        "blue-hour",
+        "zenith",
+        "sunset",
+        "opposite",
+        "east",
+        "west"
+      ]
+    },
+    "release-good-balanced": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-art-iteration-2026-09-23/verified-release-good/output/browser-1790187301656-49452",
+      "frames": [
+        "cumulus-side",
+        "cumulus-back",
+        "cumulus-front",
+        "storm",
+        "golden",
+        "blue-hour",
+        "zenith",
+        "sunset"
+      ]
+    },
+    "release-good-alpine": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-art-iteration-2026-09-23/verified-release-good/output/browser-1790187459487-49814",
+      "composition": "primary",
+      "profile": "balanced",
+      "budgetMet": false,
+      "budgetFailures": [
+        "near: GPU p95 20.054 ms exceeds 12 ms",
+        "near: CPU p95 8.300 ms exceeds 4 ms",
+        "gameplay: GPU p95 21.496 ms exceeds 12 ms",
+        "gameplay: CPU p95 8.700 ms exceeds 4 ms",
+        "landscape: GPU p95 22.872 ms exceeds 12 ms",
+        "landscape: CPU p95 8.800 ms exceeds 4 ms"
+      ],
+      "frames": [
+        {
+          "id": "near",
+          "budget": {
+            "target": {
+              "output": [
+                1920,
+                1080
+              ],
+              "quality": "balanced",
+              "gpuP95Ms": 12,
+              "cpuP95Ms": 4,
+              "gpuBytes": 268435456,
+              "installedBytes": 201326592
+            },
+            "frames": 48,
+            "gpuSamples": 48,
+            "uniqueFrames": true,
+            "validMeasurements": true,
+            "outputMatches": true,
+            "gpuP95": 20.054016,
+            "cpuP95": 8.299999952316284,
+            "maximumBytes": 266332083,
+            "installedBytes": 89627712,
+            "actualRenderResolutions": [
+              "1920\u00d71080"
+            ],
+            "failures": [
+              "GPU p95 20.054 ms exceeds 12 ms",
+              "CPU p95 8.300 ms exceeds 4 ms"
+            ],
+            "met": false,
+            "scope": "Static-view extraction plus render submission CPU, frame-tagged GPU timestamps, and engine-counted resource payloads on the measured adapter. Simulation, process heap and other hardware are unmeasured. Internal resolution is disclosed; output size does not establish native-resolution fidelity. Artistic acceptance remains unverified."
+          }
+        },
+        {
+          "id": "gameplay",
+          "budget": {
+            "target": {
+              "output": [
+                1920,
+                1080
+              ],
+              "quality": "balanced",
+              "gpuP95Ms": 12,
+              "cpuP95Ms": 4,
+              "gpuBytes": 268435456,
+              "installedBytes": 201326592
+            },
+            "frames": 48,
+            "gpuSamples": 48,
+            "uniqueFrames": true,
+            "validMeasurements": true,
+            "outputMatches": true,
+            "gpuP95": 21.495808,
+            "cpuP95": 8.699999928474426,
+            "maximumBytes": 266054127,
+            "installedBytes": 89627712,
+            "actualRenderResolutions": [
+              "1920\u00d71080"
+            ],
+            "failures": [
+              "GPU p95 21.496 ms exceeds 12 ms",
+              "CPU p95 8.700 ms exceeds 4 ms"
+            ],
+            "met": false,
+            "scope": "Static-view extraction plus render submission CPU, frame-tagged GPU timestamps, and engine-counted resource payloads on the measured adapter. Simulation, process heap and other hardware are unmeasured. Internal resolution is disclosed; output size does not establish native-resolution fidelity. Artistic acceptance remains unverified."
+          }
+        },
+        {
+          "id": "landscape",
+          "budget": {
+            "target": {
+              "output": [
+                1920,
+                1080
+              ],
+              "quality": "balanced",
+              "gpuP95Ms": 12,
+              "cpuP95Ms": 4,
+              "gpuBytes": 268435456,
+              "installedBytes": 201326592
+            },
+            "frames": 48,
+            "gpuSamples": 48,
+            "uniqueFrames": true,
+            "validMeasurements": true,
+            "outputMatches": true,
+            "gpuP95": 22.872064,
+            "cpuP95": 8.799999952316284,
+            "maximumBytes": 266169747,
+            "installedBytes": 89627712,
+            "actualRenderResolutions": [
+              "1920\u00d71080"
+            ],
+            "failures": [
+              "GPU p95 22.872 ms exceeds 12 ms",
+              "CPU p95 8.800 ms exceeds 4 ms"
+            ],
+            "met": false,
+            "scope": "Static-view extraction plus render submission CPU, frame-tagged GPU timestamps, and engine-counted resource payloads on the measured adapter. Simulation, process heap and other hardware are unmeasured. Internal resolution is disclosed; output size does not establish native-resolution fidelity. Artistic acceptance remains unverified."
+          }
+        }
+      ]
+    },
+    "tower-detail": {
+      "output": "/Users/ryanwible/projects/wrela/output/browser-1790187491458-49929",
+      "bundle": "/Users/ryanwible/projects/wrela/output/sky-art-iteration-2026-09-23/verified-release-good/output/browser-1790187225714-49263/fixture.js",
+      "originalBundleSha256": "02c96adc095a63625ba67a675d797343cd57b5128819f687926b967795717a66",
+      "bundleSha256": "1b656619e6efaed19736d275668af40c1aaff7b8ecf452073ccef4c7aab97f7a",
+      "performanceComparable": false,
+      "frames": [
+        {
+          "id": "tower-detail",
+          "complete": true,
+          "adapter": "apple \u00b7 metal-3"
+        }
+      ],
+      "errors": []
+    },
+    "current-tree-smoke": {
+      "output": "/Users/ryanwible/projects/wrela/output/browser-1790188124285-51113",
+      "frames": [
+        "cumulus-side"
+      ]
+    },
+    "same-settings": {
+      "output": "/Users/ryanwible/projects/wrela/output/browser-1790188172550-51211",
+      "bundle": "/Users/ryanwible/projects/wrela/output/sky-art-iteration-2026-09-23/verified-release-good/output/browser-1790187225714-49263/fixture.js",
+      "originalBundleSha256": "02c96adc095a63625ba67a675d797343cd57b5128819f687926b967795717a66",
+      "bundleSha256": "2fd6b4aefd4232d1b339dfa1e4cbf0f22988f46201b69bdf3646d7819c0ce255",
+      "cloudShaderSha256": "a933b8edff496161be9f24798b066e78b7934ec215bdafabc9963b4786d239dc",
+      "performanceComparable": false,
+      "frames": [
+        {
+          "id": "cumulus-side",
+          "complete": true,
+          "adapter": "apple \u00b7 metal-3"
+        }
+      ],
+      "errors": []
+    }
+  },
+  "validation": {
+    "unitTests": 20,
+    "unitLog": "/Users/ryanwible/projects/wrela/output/sky-art-iteration-2026-09-23/unit-checks.log",
+    "typeScript": [
+      "tsc --noEmit",
+      "tsc -p tsconfig.browser.json"
+    ],
+    "field": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-art-iteration-2026-09-23/verified-source/output/browser-1790186574675-47926",
+      "cases": 11,
+      "worstRms": 0.0029851642058328627,
+      "worstReferenceRms": 0.0005945372333796517,
+      "worstCacheRms": 0.0013370568708188939,
+      "familyOutput": "/Users/ryanwible/projects/wrela/output/sky-art-iteration-2026-09-23/verified-wisps/output/browser-1790188066113-50942",
+      "families": [
+        {
+          "name": "formations-bank",
+          "rms": 0.0018793157174980687,
+          "referenceRms": 0.0005249086033571984,
+          "cacheRms": 0.0005137413905349072
+        },
+        {
+          "name": "formations-wisp",
+          "rms": 0.0019128628097466731,
+          "referenceRms": 0.000531987890896819,
+          "cacheRms": 0.0003783939075354665
+        }
+      ]
+    },
+    "temporal": {
+      "initialOutput": "/Users/ryanwible/projects/wrela/output/sky-art-iteration-2026-09-23/verified-source/output/browser-1790186661694-48079",
+      "correctedOutput": "/Users/ryanwible/projects/wrela/output/sky-art-iteration-2026-09-23/verified-final/output/browser-1790186867915-48651",
+      "cases": 16,
+      "worstRms": 0.003980139888128185,
+      "rejectedThreeFrameReuseRms": 0.00717592602098599
+    },
+    "currentWorkspaceRenderPassed": true,
+    "daylightUnchangedAfterWispCorrection": true
+  },
+  "benchmarks": {
+    "matched-control-move": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-art-iteration-2026-09-23/matched-control/output/browser-1790186991382-48878",
+      "samples": 60,
+      "gpuMedianMs": 17.268736,
+      "gpuP95Ms": 30.343168,
+      "gpuMaxMs": 44.826624,
+      "atmosphereUpdateFrames": 8,
+      "adapter": "apple \u00b7 metal-3"
+    },
+    "release-good-balanced-move": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-art-iteration-2026-09-23/verified-release-good/output/browser-1790187338968-49510",
+      "samples": 60,
+      "gpuMedianMs": 20.381696,
+      "gpuP95Ms": 38.273024,
+      "gpuMaxMs": 44.89216,
+      "atmosphereUpdateFrames": 8,
+      "adapter": "apple \u00b7 metal-3"
+    },
+    "release-good-high-move": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-art-iteration-2026-09-23/verified-release-good/output/browser-1790187252291-49339",
+      "samples": 60,
+      "gpuMedianMs": 9.404416000000001,
+      "gpuP95Ms": 44.761088,
+      "gpuMaxMs": 49.545216,
+      "atmosphereUpdateFrames": 8,
+      "adapter": "apple \u00b7 metal-3"
+    },
+    "release-good-weather": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-art-iteration-2026-09-23/verified-release-good/output/browser-1790187392288-49608",
+      "samples": 60,
+      "gpuMedianMs": 20.774912,
+      "gpuP95Ms": 29.949952,
+      "gpuMaxMs": 42.532864,
+      "atmosphereUpdateFrames": 49,
+      "adapter": "apple \u00b7 metal-3"
+    }
+  },
+  "alpine": {
+    "captureComplete": true,
+    "budgetMet": false,
+    "budgetFailures": [
+      "near: GPU p95 20.054 ms exceeds 12 ms",
+      "near: CPU p95 8.300 ms exceeds 4 ms",
+      "gameplay: GPU p95 21.496 ms exceeds 12 ms",
+      "gameplay: CPU p95 8.700 ms exceeds 4 ms",
+      "landscape: GPU p95 22.872 ms exceeds 12 ms",
+      "landscape: CPU p95 8.800 ms exceeds 4 ms"
+    ]
+  },
+  "notes": [
+    "No image retouching, generated sky assets, or screenshot-only rendering path.",
+    "The initial motion run failed animated background coverage; reducing reuse to one frame corrected the targeted scenario without loosening the RMS gate.",
+    "A concurrent water pipeline layout change temporarily broke the fresh source snapshot. Frozen captures retain the known-good surrounding renderer. A later current-workspace smoke render succeeded.",
+    "Timing runs share surrounding renderer code but are single-machine single-run samples, not an ordinary-hardware or locked-60-fps claim.",
+    "Matched control uses the previous cloud shader, quality constants, history logic and environment composition on the same surrounding source base.",
+    "Final art placement was pulled back after the first world view showed the tower dominating the gameplay camera.",
+    "Final isolated wisp correction restores the thin sheared density family. Bank and wisp dense checks passed. The default daylight PNG in the current workspace is byte-identical before and after this correction; default captures and performance scenes contain towers/banks, not authored wisps. Primary captures and timing records retain their earlier snapshot; the final matched-settings capture uses the corrected shader."
+  ],
+  "limits": [
+    "Some broad overhead weather still appears soft.",
+    "Upper wisps are a thin procedural sheet and retain less variation than the real references.",
+    "High-quality redraws and whole-world frame times remain above a 60-fps target in some measured frames."
+  ],
+  "primaryCaptureSourceFingerprint": "5e46379b46de47c83a46730bd8e3a58cdc5b54789d3822d2d96ba42951a3def6",
+  "primaryCaptureSnapshot": "/Users/ryanwible/projects/wrela/output/sky-art-iteration-2026-09-23/verified-release-good"
+}

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { referenceProject } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
 import { WorkspaceBridge } from "./bridge";
 import { withWorkspacePublicationLock } from "./bridge-lock";
 

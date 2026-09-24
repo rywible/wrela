@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "baselineKey": "21a7186142df5436",
+  "candidateKey": "06d3269bd45ea194",
+  "constraintsKey": "22f5430c307d429c",
+  "results": [
+    {
+      "id": "geometry",
+      "status": "passed",
+      "evidence": [],
+      "measured": {
+        "triangles": 18416,
+        "extentX": 0.22099465399418228,
+        "extentY": 0.5238388214921872,
+        "extentZ": 0.193
+      },
+      "scope": "Compiled local bounds and expanded instance triangle count. Not a visual-quality score or measured GPU budget."
+    },
+    {
+      "id": "preserve-neutral",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    }
+  ],
+  "durationMs": 59.89416599998367,
+  "createdAt": "2026-09-24T03:47:43.332Z",
+  "evaluator": "wrela-authoring-review-1"
+}

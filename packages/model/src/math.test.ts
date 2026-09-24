@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { referenceProject } from "./fixtures";
+import { referenceProject } from "@wrela/examples/fixtures";
 import { canonical, contentKey } from "./math";
 import { parseProject } from "./validation";
 

@@ -1,4 +1,12 @@
-Runtime integration
+# Simulation and scene realization
+
+Owns fixed-step simulation, scene hosting and runtime inspection. GameDriver hosts trusted GameModule implementations with semantic input, source-bound saves and disposal. Game rules live under games/.
+
+Public imports are the explicit `exports` in package.json. Cross-package relative and private imports are rejected by `bun tools/boundaries.ts`. Browser packages contain no Node or Bun dependencies.
+
+Run `bun run test` for the scoped CPU suite, `bun run check` for types and boundaries, and `bun run verify` for hardware and UI verification.
+
+## Runtime integration
 
 Games submit tick commands (`setTarget`, `setFacing`, `playMotion`) and call
 `host.advance(seconds, camera)` followed by `host.extract(camera)`. Extraction

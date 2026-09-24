@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { compileCharacter } from "@wrela/compiler";
-import { type CharacterDefinition, type Joint, type Motion, referenceProject } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
+import type { CharacterDefinition, Joint, Motion } from "@wrela/model";
 import { blendPoses, poseMatrices, quatFromEuler, sampleMotion } from "./animation";
 import { FixedClock } from "./clock";
 import { PhysicsAdapter } from "./physics";
@@ -233,11 +234,12 @@ test("pose preview is reversible and a character moves on prepared streamed terr
   expect(
     host.evaluate(0, camera, "beauty").surfaces.find((s) => s.source === "polar-bunny")?.skin?.matrices,
   ).toEqual(before);
-  await host.moveCharacter("polar-bunny", [4, 0, 0]);
+  // The authored brook now occupies x=4; use the flat snowbank for this precision assertion.
+  await host.moveCharacter("polar-bunny", [-4, 0, 0]);
   host.evaluate(1 / 60, camera, "beauty");
   host.evaluate(2 / 60, camera, "beauty");
-  expect(host.characterPosition("polar-bunny")[0]).toBeCloseTo(4, 4);
-  expect(host.world?.queryGround(4, 0).status).toBe("ready");
+  expect(host.characterPosition("polar-bunny")[0]).toBeCloseTo(-4, 4);
+  expect(host.world?.queryGround(-4, 0).status).toBe("ready");
   host.dispose();
 });
 

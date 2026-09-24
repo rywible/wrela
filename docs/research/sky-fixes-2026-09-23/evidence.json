@@ -1,0 +1,933 @@
+{
+  "date": "2026-09-23",
+  "purpose": "Implement the five current sky audit fixes, with reference images, integration checks, motion checks, and measured cost.",
+  "sourceSnapshot": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/release-source",
+  "sourceFingerprint": "ba8d64a1a4b34c25e0d01a51e2de29cea3d5e1afb3be73ef47c36f7ff5222e75",
+  "sources": [
+    {
+      "path": "apps/studio/src/environment-authoring-panel.tsx",
+      "sha256": "d24d077de60a75a29d72ec74d5ba6d2aa5768404fe0a7026c1ee6c6e06ef7315",
+      "frozenSha256": "d24d077de60a75a29d72ec74d5ba6d2aa5768404fe0a7026c1ee6c6e06ef7315",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/model/src/environment-authoring.ts",
+      "sha256": "b3e49e30c435fcf6f764f7051dd561f9ebd209dcd8e137147fb0e34d08a33047",
+      "frozenSha256": "b3e49e30c435fcf6f764f7051dd561f9ebd209dcd8e137147fb0e34d08a33047",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/model/src/environment-lookdev.ts",
+      "sha256": "6b7bdf095733a14f25c7ef033aaf5a3bdc2c9c8b051d0698be47ace16485985d",
+      "frozenSha256": "6b7bdf095733a14f25c7ef033aaf5a3bdc2c9c8b051d0698be47ace16485985d",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/runtime/src/environment-state.ts",
+      "sha256": "432f19e0f1c1ad3a9283c03a1f9e1e252bafe3bc4bd0d14091ec3ab005d487b3",
+      "frozenSha256": "432f19e0f1c1ad3a9283c03a1f9e1e252bafe3bc4bd0d14091ec3ab005d487b3",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/runtime/src/environment-authoring.test.ts",
+      "sha256": "1d93388c3bb582f1e61e5c6e4e44b1c440c5724e56e18a33047974ce0101cb9e",
+      "frozenSha256": "1d93388c3bb582f1e61e5c6e4e44b1c440c5724e56e18a33047974ce0101cb9e",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/authoring/src/session.ts",
+      "sha256": "0a2c2013043879a00eebbe1441c884ca497b06a27a19909c7874dd5e2ee07c63",
+      "frozenSha256": "0a2c2013043879a00eebbe1441c884ca497b06a27a19909c7874dd5e2ee07c63",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/authoring/src/cloud-authoring.test.ts",
+      "sha256": "31fe0d716b73ef90a7c60485c930b011200724346c4b64dd1434bb256af518ef",
+      "frozenSha256": "31fe0d716b73ef90a7c60485c930b011200724346c4b64dd1434bb256af518ef",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/render-webgpu/src/cloud-formations.ts",
+      "sha256": "e84b206c5060961c7965ca2d13c99530f5f445aa3c3b32177380981cf8f82422",
+      "frozenSha256": "e84b206c5060961c7965ca2d13c99530f5f445aa3c3b32177380981cf8f82422",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/render-webgpu/src/cloud-formations.test.ts",
+      "sha256": "c6ed8297b30d5cabba261db4cf3d0a1469c1c8cdbdbc3e81d24c2986fb5c67bf",
+      "frozenSha256": "c6ed8297b30d5cabba261db4cf3d0a1469c1c8cdbdbc3e81d24c2986fb5c67bf",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/render-webgpu/src/cloud-history.ts",
+      "sha256": "dc8eaa8788975a4d39c304f9a32ee219937a538c6650eee0c6064e292700d8f4",
+      "frozenSha256": "dc8eaa8788975a4d39c304f9a32ee219937a538c6650eee0c6064e292700d8f4",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/render-webgpu/src/cloud-history.test.ts",
+      "sha256": "587e5f75933bfd3d03ecc9caeeeb02fc18fe46f9c1f82694713d4f8a305803b1",
+      "frozenSha256": "587e5f75933bfd3d03ecc9caeeeb02fc18fe46f9c1f82694713d4f8a305803b1",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-clouds.wgsl",
+      "sha256": "1605e088e3bd0b1a642fd9c6947b5ca0eaa381f9df1e94548a0e78aec92a4034",
+      "frozenSha256": "1605e088e3bd0b1a642fd9c6947b5ca0eaa381f9df1e94548a0e78aec92a4034",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-sky.wgsl",
+      "sha256": "8ba9baad5fcf119334a8971171ae4a1ce1832d26b65851c310a33e726d72ed84",
+      "frozenSha256": "8ba9baad5fcf119334a8971171ae4a1ce1832d26b65851c310a33e726d72ed84",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-multiple.wgsl",
+      "sha256": "4728312397ccdd76f3b4287ec04365e3e6dc88ea781744ec02c980703e36c8ac",
+      "frozenSha256": "4728312397ccdd76f3b4287ec04365e3e6dc88ea781744ec02c980703e36c8ac",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere.ts",
+      "sha256": "d84f245c82044e4dd791fbe4aaf87cc08f6ba8daa77f69024e2c06cf8e148715",
+      "frozenSha256": "d84f245c82044e4dd791fbe4aaf87cc08f6ba8daa77f69024e2c06cf8e148715",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/render-webgpu/src/atmosphere-gpu.ts",
+      "sha256": "1dbea87638c768bce526bd47eca2bb27efc56d261d35fafaba7ff8f0527d03a5",
+      "frozenSha256": "1dbea87638c768bce526bd47eca2bb27efc56d261d35fafaba7ff8f0527d03a5",
+      "matchesFrozen": true
+    },
+    {
+      "path": "packages/render-webgpu/src/scene.wgsl",
+      "sha256": "ccebdd919e296379e5c6aaab2215422851a14fc9a12bde63779e1ff87bb79072",
+      "frozenSha256": "9a9b3597451e7b3d7e154e311a66834c1540343378cf1f91ebc87d78458f49a5",
+      "matchesFrozen": false,
+      "skyGlobalsMatch": true,
+      "unrelatedChanges": "Current scene.wgsl also contains concurrent water-history and indirect-contact-lighting changes after this snapshot."
+    },
+    {
+      "path": "tools/sky-art-review.ts",
+      "sha256": "00669d789264be10930333aecbf5755fabee682a6a49e38dae9146a84293fab2",
+      "frozenSha256": "00669d789264be10930333aecbf5755fabee682a6a49e38dae9146a84293fab2",
+      "matchesFrozen": true
+    },
+    {
+      "path": "tools/sky-field-check.ts",
+      "sha256": "c6aecf1e1ca130d657a1296e174b499e15d620eed27ed2fdc8afa99a810a2138",
+      "frozenSha256": "c6aecf1e1ca130d657a1296e174b499e15d620eed27ed2fdc8afa99a810a2138",
+      "matchesFrozen": true
+    },
+    {
+      "path": "tools/fixtures/sky-field.ts",
+      "sha256": "7e6a8c994148e8141236ffcd2b7eade164e38368cf76b2fbcdaef564440219ab",
+      "frozenSha256": "7e6a8c994148e8141236ffcd2b7eade164e38368cf76b2fbcdaef564440219ab",
+      "matchesFrozen": true
+    }
+  ],
+  "captures": {
+    "high": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/release-source/output/browser-1790191856848-62120",
+      "frames": [
+        "cumulus-side",
+        "cumulus-back",
+        "cumulus-front",
+        "storm",
+        "golden",
+        "blue-hour",
+        "zenith",
+        "sunset",
+        "night",
+        "middle-only",
+        "cirrus-only",
+        "layered-horizon",
+        "opposite",
+        "east",
+        "west"
+      ]
+    },
+    "balanced": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/release-source/output/browser-1790191863489-62159",
+      "frames": [
+        "cumulus-side",
+        "cumulus-back",
+        "cumulus-front",
+        "storm",
+        "golden",
+        "blue-hour",
+        "zenith",
+        "sunset",
+        "opposite",
+        "east",
+        "west"
+      ]
+    },
+    "morphology": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/release-source/output/browser-1790191866703-62193",
+      "frames": [
+        "tower-7",
+        "tower-31",
+        "tower-83",
+        "tower-211",
+        "mature-tower",
+        "bank",
+        "remnants"
+      ]
+    },
+    "low": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/release-source/output/browser-1790191869283-62255",
+      "frames": [
+        "cumulus-side"
+      ]
+    },
+    "world": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/release-source/output/browser-1790191945912-62422",
+      "bundle": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/release-source/output/browser-1790191856848-62120/fixture.js",
+      "originalBundleSha256": "f156f7057d508e1704b0fcc200e63385fe0fdc4f532045a55a765ffadbf1a880",
+      "bundleSha256": "312e9c7c3c18a3b444d19d0c40991db705d180ace486728d4f00aae65fc2682b",
+      "performanceComparable": false,
+      "frames": [
+        {
+          "id": "gameplay",
+          "complete": true,
+          "adapter": "apple \u00b7 metal-3"
+        },
+        {
+          "id": "landscape",
+          "complete": true,
+          "adapter": "apple \u00b7 metal-3"
+        }
+      ],
+      "errors": []
+    }
+  },
+  "freshCaptures": 36,
+  "referenceImages": 12,
+  "tests": {
+    "focusedUnitTests": 24,
+    "unitExitCode": 0,
+    "typecheckExitCode": 0,
+    "browserTypecheckExitCode": 0,
+    "boundariesExitCode": 0,
+    "field": {
+      "exitCode": 0,
+      "output": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/release-source/output/browser-1790191689918-61778",
+      "cases": 14,
+      "maxViewRms": 0.003067014439480164,
+      "maxCacheRms": 0.0017948697290709002,
+      "maxReferenceRms": 0.0008716031557907887,
+      "errors": []
+    },
+    "motion": {
+      "exitCode": 0,
+      "output": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/release-source/output/browser-1790191756716-61979",
+      "cases": 20,
+      "maxRms": 0.003763956092916714,
+      "errors": []
+    }
+  },
+  "benchmarkInputs": {
+    "before": {
+      "original": "output/sky-current-audit-2026-09-23/source/output/browser-1790188815004-53405/fixture.js",
+      "bundle": "output/sky-fixes-2026-09-23/benchmark-before.js",
+      "originalSha256": "6f69abd431f676bcd6678c3d1bab048e3647d7df820220e61c480d111efad066",
+      "bundleSha256": "b5ba9f31b2b126672a7fb18688b7dde9de32b3d2c64818833b3cca518a6e7704"
+    },
+    "after": {
+      "original": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/release-source/output/browser-1790191863489-62159/fixture.js",
+      "bundle": "output/sky-fixes-2026-09-23/benchmark-after.js",
+      "originalSha256": "3cca0a1109d4a6d8761044b8e42635922118652a55d73dec3694771f855c30df",
+      "bundleSha256": "24029df9693c0f2f9a955b312b8037f7643f38cb897c92b613ebdf4f8684db7f"
+    },
+    "change": "Both review studies change cloudReconstruction from full to temporal. The same harness supplies camera and time sequence; no shader substitutions are made for timing."
+  },
+  "benchmarks": {
+    "before": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/release-source/output/browser-1790192469033-63529",
+      "bundle": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/matched-before-source/output/browser-1790192408996-63436/fixture.js",
+      "bundleSha256": "06dd707e7b94db52bf4916e099545bf1928f673edac1723e647c6d988262633e",
+      "width": 1024,
+      "height": 768,
+      "cases": [
+        {
+          "name": "static",
+          "adapter": "apple \u00b7 metal-3",
+          "gpuMs": {
+            "samples": 60,
+            "mean": 0.7918933333333338,
+            "p50": 0.65536,
+            "p95": 1.96608,
+            "p99": 2.162688,
+            "max": 2.162688
+          },
+          "cpuMs": {
+            "samples": 60,
+            "mean": 0.8083333253860474,
+            "p50": 0.7999999523162842,
+            "p95": 1,
+            "p99": 1.1999999284744263,
+            "max": 1.1999999284744263
+          },
+          "atmosphereMs": {
+            "samples": 60,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "updatedAtmosphereMs": null,
+          "gpuBytes": 75627129,
+          "timingFrames": 60,
+          "droppedTimings": 0
+        },
+        {
+          "name": "walking",
+          "adapter": "apple \u00b7 metal-3",
+          "gpuMs": {
+            "samples": 60,
+            "mean": 3.614310399999999,
+            "p50": 1.114112,
+            "p95": 20.97152,
+            "p99": 31.1296,
+            "max": 31.1296
+          },
+          "cpuMs": {
+            "samples": 60,
+            "mean": 0.8166666626930237,
+            "p50": 0.7999999523162842,
+            "p95": 1,
+            "p99": 1.100000023841858,
+            "max": 1.100000023841858
+          },
+          "atmosphereMs": {
+            "samples": 60,
+            "mean": 2.4728917333333333,
+            "p50": 0,
+            "p95": 20.447232,
+            "p99": 30.539776,
+            "max": 30.539776
+          },
+          "updatedAtmosphereMs": {
+            "samples": 8,
+            "mean": 18.546688,
+            "p50": 19.202048,
+            "p95": 30.539776,
+            "p99": 30.539776,
+            "max": 30.539776
+          },
+          "gpuBytes": 75771605,
+          "timingFrames": 60,
+          "droppedTimings": 0
+        },
+        {
+          "name": "turning",
+          "adapter": "apple \u00b7 metal-3",
+          "gpuMs": {
+            "samples": 60,
+            "mean": 3.6569087999999996,
+            "p50": 0.851968,
+            "p95": 27.131904,
+            "p99": 48.889856,
+            "max": 48.889856
+          },
+          "cpuMs": {
+            "samples": 60,
+            "mean": 0.7316666702429454,
+            "p50": 0.7000000476837158,
+            "p95": 0.8999999761581421,
+            "p99": 1,
+            "max": 1
+          },
+          "atmosphereMs": {
+            "samples": 60,
+            "mean": 2.807125333333332,
+            "p50": 0.131072,
+            "p95": 26.738688,
+            "p99": 47.382528,
+            "max": 47.382528
+          },
+          "updatedAtmosphereMs": {
+            "samples": 60,
+            "mean": 2.807125333333332,
+            "p50": 0.131072,
+            "p95": 26.738688,
+            "p99": 47.382528,
+            "max": 47.382528
+          },
+          "gpuBytes": 75781461,
+          "timingFrames": 60,
+          "droppedTimings": 0
+        },
+        {
+          "name": "weather",
+          "adapter": "apple \u00b7 metal-3",
+          "gpuMs": {
+            "samples": 60,
+            "mean": 3.734459733333334,
+            "p50": 0.589824,
+            "p95": 23.134208,
+            "p99": 33.685504,
+            "max": 33.685504
+          },
+          "cpuMs": {
+            "samples": 60,
+            "mean": 0.7316666682561238,
+            "p50": 0.7000000476837158,
+            "p95": 0.8000000715255737,
+            "p99": 1,
+            "max": 1
+          },
+          "atmosphereMs": {
+            "samples": 60,
+            "mean": 3.1195136,
+            "p50": 0,
+            "p95": 22.806528,
+            "p99": 33.42336,
+            "max": 33.42336
+          },
+          "updatedAtmosphereMs": {
+            "samples": 8,
+            "mean": 23.396352,
+            "p50": 21.495808,
+            "p95": 33.42336,
+            "p99": 33.42336,
+            "max": 33.42336
+          },
+          "gpuBytes": 75781461,
+          "timingFrames": 60,
+          "droppedTimings": 0
+        }
+      ]
+    },
+    "after": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/release-source/output/browser-1790192473193-63564",
+      "bundle": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/benchmark-after.js",
+      "bundleSha256": "24029df9693c0f2f9a955b312b8037f7643f38cb897c92b613ebdf4f8684db7f",
+      "width": 1024,
+      "height": 768,
+      "cases": [
+        {
+          "name": "static",
+          "adapter": "apple \u00b7 metal-3",
+          "gpuMs": {
+            "samples": 60,
+            "mean": 0.9011200000000006,
+            "p50": 0.786432,
+            "p95": 1.507328,
+            "p99": 4.325376,
+            "max": 4.325376
+          },
+          "cpuMs": {
+            "samples": 60,
+            "mean": 0.8566666722297669,
+            "p50": 0.8000000715255737,
+            "p95": 1.100000023841858,
+            "p99": 1.1999999284744263,
+            "max": 1.1999999284744263
+          },
+          "atmosphereMs": {
+            "samples": 60,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "updatedAtmosphereMs": null,
+          "gpuBytes": 75652329,
+          "timingFrames": 60,
+          "droppedTimings": 0
+        },
+        {
+          "name": "walking",
+          "adapter": "apple \u00b7 metal-3",
+          "gpuMs": {
+            "samples": 60,
+            "mean": 3.702784,
+            "p50": 1.048576,
+            "p95": 16.252928,
+            "p99": 29.556736,
+            "max": 29.556736
+          },
+          "cpuMs": {
+            "samples": 60,
+            "mean": 0.8683333317438762,
+            "p50": 0.8000000715255737,
+            "p95": 1.100000023841858,
+            "p99": 1.100000023841858,
+            "max": 1.100000023841858
+          },
+          "atmosphereMs": {
+            "samples": 60,
+            "mean": 2.4947370666666666,
+            "p50": 0,
+            "p95": 15.794176,
+            "p99": 28.311552,
+            "max": 28.311552
+          },
+          "updatedAtmosphereMs": {
+            "samples": 8,
+            "mean": 18.710528,
+            "p50": 15.72864,
+            "p95": 28.311552,
+            "p99": 28.311552,
+            "max": 28.311552
+          },
+          "gpuBytes": 75796805,
+          "timingFrames": 60,
+          "droppedTimings": 0
+        },
+        {
+          "name": "turning",
+          "adapter": "apple \u00b7 metal-3",
+          "gpuMs": {
+            "samples": 60,
+            "mean": 3.5444053333333323,
+            "p50": 1.048576,
+            "p95": 25.23136,
+            "p99": 37.814272,
+            "max": 37.814272
+          },
+          "cpuMs": {
+            "samples": 60,
+            "mean": 0.7933333277702331,
+            "p50": 0.7999999523162842,
+            "p95": 0.8999999761581421,
+            "p99": 1,
+            "max": 1
+          },
+          "atmosphereMs": {
+            "samples": 60,
+            "mean": 2.5941333333333336,
+            "p50": 0.131072,
+            "p95": 24.838144,
+            "p99": 37.289984,
+            "max": 37.289984
+          },
+          "updatedAtmosphereMs": {
+            "samples": 60,
+            "mean": 2.5941333333333336,
+            "p50": 0.131072,
+            "p95": 24.838144,
+            "p99": 37.289984,
+            "max": 37.289984
+          },
+          "gpuBytes": 75806661,
+          "timingFrames": 60,
+          "droppedTimings": 0
+        },
+        {
+          "name": "weather",
+          "adapter": "apple \u00b7 metal-3",
+          "gpuMs": {
+            "samples": 60,
+            "mean": 3.2604160000000006,
+            "p50": 0.720896,
+            "p95": 19.529728,
+            "p99": 30.212096,
+            "max": 30.212096
+          },
+          "cpuMs": {
+            "samples": 60,
+            "mean": 0.7516666571299235,
+            "p50": 0.7000000476837158,
+            "p95": 0.8999999761581421,
+            "p99": 0.9000000953674316,
+            "max": 0.9000000953674316
+          },
+          "atmosphereMs": {
+            "samples": 60,
+            "mean": 2.5657343999999997,
+            "p50": 0,
+            "p95": 19.202048,
+            "p99": 29.884416,
+            "max": 29.884416
+          },
+          "updatedAtmosphereMs": {
+            "samples": 8,
+            "mean": 19.243008,
+            "p50": 18.808832,
+            "p95": 29.884416,
+            "p99": 29.884416,
+            "max": 29.884416
+          },
+          "gpuBytes": 75806661,
+          "timingFrames": 60,
+          "droppedTimings": 0
+        }
+      ]
+    }
+  },
+  "limitations": [
+    "The cloud model and diffuse/scattering closures remain approximations, not an independently path-traced atmosphere/cloud reference.",
+    "The upper decks are thin spherical layers, not volumes intended for close flight.",
+    "Matched performance was measured on one Apple Metal adapter in a simple sky study; the matched run still contained roughly 38 ms frame-time spikes. Sustained 60 fps and broad hardware coverage remain unproven.",
+    "The full alpine world contains unfinished terrain, vegetation, and character art. Concurrent work may affect before/after world views."
+  ],
+  "preliminaryBenchmarks": {
+    "before": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/release-source/output/browser-1790192000968-62517",
+      "bundleSha256": "b5ba9f31b2b126672a7fb18688b7dde9de32b3d2c64818833b3cca518a6e7704",
+      "width": 1024,
+      "height": 768,
+      "cases": [
+        {
+          "name": "static",
+          "adapter": "apple \u00b7 metal-3",
+          "gpuMs": {
+            "samples": 60,
+            "mean": 0.705604266666667,
+            "p50": 0.589824,
+            "p95": 1.31072,
+            "p99": 1.6384,
+            "max": 1.6384
+          },
+          "cpuMs": {
+            "samples": 60,
+            "mean": 0.9216666579246521,
+            "p50": 0.8999999761581421,
+            "p95": 1.1999999284744263,
+            "p99": 1.3000000715255737,
+            "max": 1.3000000715255737
+          },
+          "atmosphereMs": {
+            "samples": 60,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "updatedAtmosphereMs": null,
+          "gpuBytes": 81919557,
+          "timingFrames": 60,
+          "droppedTimings": 0
+        },
+        {
+          "name": "walking",
+          "adapter": "apple \u00b7 metal-3",
+          "gpuMs": {
+            "samples": 60,
+            "mean": 4.306807466666666,
+            "p50": 1.114112,
+            "p95": 21.364736,
+            "p99": 36.503552,
+            "max": 36.503552
+          },
+          "cpuMs": {
+            "samples": 60,
+            "mean": 0.8416666666666667,
+            "p50": 0.8000000715255737,
+            "p95": 1.100000023841858,
+            "p99": 1.2000000476837158,
+            "max": 1.2000000476837158
+          },
+          "atmosphereMs": {
+            "samples": 60,
+            "mean": 2.8442624000000003,
+            "p50": 0,
+            "p95": 20.840448,
+            "p99": 35.848192,
+            "max": 35.848192
+          },
+          "updatedAtmosphereMs": {
+            "samples": 8,
+            "mean": 21.331968000000003,
+            "p50": 17.498112,
+            "p95": 35.848192,
+            "p99": 35.848192,
+            "max": 35.848192
+          },
+          "gpuBytes": 82064065,
+          "timingFrames": 60,
+          "droppedTimings": 0
+        },
+        {
+          "name": "turning",
+          "adapter": "apple \u00b7 metal-3",
+          "gpuMs": {
+            "samples": 60,
+            "mean": 3.9146837333333333,
+            "p50": 0.917504,
+            "p95": 28.83584,
+            "p99": 50.003968,
+            "max": 50.003968
+          },
+          "cpuMs": {
+            "samples": 60,
+            "mean": 0.7500000019868215,
+            "p50": 0.7000000476837158,
+            "p95": 0.8999999761581421,
+            "p99": 1,
+            "max": 1
+          },
+          "atmosphereMs": {
+            "samples": 60,
+            "mean": 3.0561621333333338,
+            "p50": 0.131072,
+            "p95": 28.442624,
+            "p99": 49.47968,
+            "max": 49.47968
+          },
+          "updatedAtmosphereMs": {
+            "samples": 60,
+            "mean": 3.0561621333333338,
+            "p50": 0.131072,
+            "p95": 28.442624,
+            "p99": 49.47968,
+            "max": 49.47968
+          },
+          "gpuBytes": 82073937,
+          "timingFrames": 60,
+          "droppedTimings": 0
+        },
+        {
+          "name": "weather",
+          "adapter": "apple \u00b7 metal-3",
+          "gpuMs": {
+            "samples": 60,
+            "mean": 3.733367466666667,
+            "p50": 0.589824,
+            "p95": 23.789568,
+            "p99": 33.816576,
+            "max": 33.816576
+          },
+          "cpuMs": {
+            "samples": 60,
+            "mean": 0.7016666690508525,
+            "p50": 0.7000000476837158,
+            "p95": 0.8999999761581421,
+            "p99": 0.8999999761581421,
+            "max": 0.8999999761581421
+          },
+          "atmosphereMs": {
+            "samples": 60,
+            "mean": 3.1544661333333335,
+            "p50": 0,
+            "p95": 23.461888,
+            "p99": 33.488896,
+            "max": 33.488896
+          },
+          "updatedAtmosphereMs": {
+            "samples": 8,
+            "mean": 23.658496,
+            "p50": 22.020096,
+            "p95": 33.488896,
+            "p99": 33.488896,
+            "max": 33.488896
+          },
+          "gpuBytes": 82073937,
+          "timingFrames": 60,
+          "droppedTimings": 0
+        }
+      ]
+    },
+    "after": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/release-source/output/browser-1790192005150-62563",
+      "bundleSha256": "24029df9693c0f2f9a955b312b8037f7643f38cb897c92b613ebdf4f8684db7f",
+      "width": 1024,
+      "height": 768,
+      "cases": [
+        {
+          "name": "static",
+          "adapter": "apple \u00b7 metal-3",
+          "gpuMs": {
+            "samples": 60,
+            "mean": 0.9360725333333338,
+            "p50": 0.786432,
+            "p95": 1.769472,
+            "p99": 2.752512,
+            "max": 2.752512
+          },
+          "cpuMs": {
+            "samples": 60,
+            "mean": 0.8550000051657359,
+            "p50": 0.8000000715255737,
+            "p95": 1.100000023841858,
+            "p99": 1.2000000476837158,
+            "max": 1.2000000476837158
+          },
+          "atmosphereMs": {
+            "samples": 60,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "updatedAtmosphereMs": null,
+          "gpuBytes": 75652329,
+          "timingFrames": 60,
+          "droppedTimings": 0
+        },
+        {
+          "name": "walking",
+          "adapter": "apple \u00b7 metal-3",
+          "gpuMs": {
+            "samples": 60,
+            "mean": 3.666739199999998,
+            "p50": 1.048576,
+            "p95": 19.136512,
+            "p99": 32.11264,
+            "max": 32.11264
+          },
+          "cpuMs": {
+            "samples": 60,
+            "mean": 0.8566666622956594,
+            "p50": 0.8999999761581421,
+            "p95": 1,
+            "p99": 1.100000023841858,
+            "max": 1.100000023841858
+          },
+          "atmosphereMs": {
+            "samples": 60,
+            "mean": 2.4466773333333336,
+            "p50": 0,
+            "p95": 18.481152,
+            "p99": 31.522816,
+            "max": 31.522816
+          },
+          "updatedAtmosphereMs": {
+            "samples": 8,
+            "mean": 18.350080000000002,
+            "p50": 14.614528,
+            "p95": 31.522816,
+            "p99": 31.522816,
+            "max": 31.522816
+          },
+          "gpuBytes": 75796805,
+          "timingFrames": 60,
+          "droppedTimings": 0
+        },
+        {
+          "name": "turning",
+          "adapter": "apple \u00b7 metal-3",
+          "gpuMs": {
+            "samples": 60,
+            "mean": 3.5007146666666653,
+            "p50": 0.98304,
+            "p95": 23.396352,
+            "p99": 50.528256,
+            "max": 50.528256
+          },
+          "cpuMs": {
+            "samples": 60,
+            "mean": 0.7733333388964335,
+            "p50": 0.7999999523162842,
+            "p95": 0.8999999761581421,
+            "p99": 0.9000000953674316,
+            "max": 0.9000000953674316
+          },
+          "atmosphereMs": {
+            "samples": 60,
+            "mean": 2.495829333333333,
+            "p50": 0.131072,
+            "p95": 22.806528,
+            "p99": 49.80736,
+            "max": 49.80736
+          },
+          "updatedAtmosphereMs": {
+            "samples": 59,
+            "mean": 2.5381315254237284,
+            "p50": 0.131072,
+            "p95": 24.969216,
+            "p99": 49.80736,
+            "max": 49.80736
+          },
+          "gpuBytes": 75806661,
+          "timingFrames": 60,
+          "droppedTimings": 0
+        },
+        {
+          "name": "weather",
+          "adapter": "apple \u00b7 metal-3",
+          "gpuMs": {
+            "samples": 60,
+            "mean": 3.3543509333333343,
+            "p50": 0.589824,
+            "p95": 19.922944,
+            "p99": 33.226752,
+            "max": 33.226752
+          },
+          "cpuMs": {
+            "samples": 60,
+            "mean": 0.7416666607062022,
+            "p50": 0.7000000476837158,
+            "p95": 0.8000000715255737,
+            "p99": 0.8999999761581421,
+            "max": 0.8999999761581421
+          },
+          "atmosphereMs": {
+            "samples": 60,
+            "mean": 2.7241130666666664,
+            "p50": 0,
+            "p95": 19.6608,
+            "p99": 31.78496,
+            "max": 31.78496
+          },
+          "updatedAtmosphereMs": {
+            "samples": 8,
+            "mean": 20.430847999999997,
+            "p50": 18.743296,
+            "p95": 31.78496,
+            "p99": 31.78496,
+            "max": 31.78496
+          },
+          "gpuBytes": 75806661,
+          "timingFrames": 60,
+          "droppedTimings": 0
+        }
+      ]
+    }
+  },
+  "matchedBenchmarkOverlay": {
+    "surroundingSource": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/release-source",
+    "skySource": "/Users/ryanwible/projects/wrela/output/sky-current-audit-2026-09-23/source",
+    "files": [
+      "packages/render-webgpu/src/cloud-formations.ts",
+      "packages/render-webgpu/src/cloud-history.ts",
+      "packages/render-webgpu/src/atmosphere-clouds.wgsl",
+      "packages/render-webgpu/src/atmosphere-sky.wgsl",
+      "packages/render-webgpu/src/atmosphere-multiple.wgsl",
+      "packages/render-webgpu/src/atmosphere.ts",
+      "packages/render-webgpu/src/atmosphere-gpu.ts",
+      "packages/model/src/environment-lookdev.ts"
+    ],
+    "sectionOnly": "scene.wgsl Globals",
+    "capture": {
+      "output": "/Users/ryanwible/projects/wrela/output/sky-fixes-2026-09-23/matched-before-source/output/browser-1790192408996-63436",
+      "frames": [
+        "cumulus-side"
+      ]
+    }
+  },
+  "liveWorkspaceIntegration": {
+    "exitCode": 0,
+    "output": "/Users/ryanwible/projects/wrela/output/browser-1790192255151-63171",
+    "frames": [
+      "cumulus-side"
+    ],
+    "typecheckExitCode": 0,
+    "browserTypecheckExitCode": 0
+  },
+  "formatVerification": {
+    "exitCode": 0,
+    "filesChecked": 16,
+    "fixesApplied": false,
+    "log": "format-check.txt"
+  },
+  "comparisonBoardReview": {
+    "presetsChecked": [
+      "Before / after",
+      "Growth variation",
+      "Alpine world"
+    ],
+    "referenceImagesLoaded": 12,
+    "selectedComparisonImagesLoaded": true,
+    "browserErrors": [],
+    "browserWarnings": []
+  }
+}

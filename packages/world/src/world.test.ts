@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { referenceProject, type TerrainDefinition, type WorldDefinition } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
+import type { TerrainDefinition, WorldDefinition } from "@wrela/model";
 import { absolutePosition, relativePosition, worldPosition } from "./coordinates";
 import { planTerrain } from "./planner";
 import { generatePlacements, PersistentWorldState } from "./population";

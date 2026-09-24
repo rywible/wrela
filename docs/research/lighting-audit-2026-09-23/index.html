@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wrela — Lighting audit, September 2026</title>
+<style>
+:root{color-scheme:dark;--bg:#141719;--panel:#1c2124;--ink:#e9eceb;--muted:#aeb9ba;--line:#384145;--accent:#c5ddbf}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,sans-serif}main{max-width:1460px;margin:auto;padding:36px 32px 64px}header{max-width:1060px}h1{font:500 clamp(30px,4vw,54px)/1.1 Georgia,serif;margin:12px 0 20px}h2{font-size:23px;font-weight:500;margin:28px 0 14px}h3{font-size:17px;font-weight:500;margin:0 0 8px}p{max-width:88ch}a{color:var(--accent);text-underline-offset:3px}small,.muted{color:var(--muted)}.eyebrow{font-size:13px;letter-spacing:.12em;text-transform:uppercase}.lede{font-size:19px;max-width:72ch}.nav{display:flex;flex-wrap:wrap;gap:8px;margin:28px 0 24px;padding-bottom:20px;border-bottom:1px solid var(--line)}button,select{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);padding:8px 14px;border-radius:3px;cursor:pointer}button[aria-pressed="true"]{background:var(--accent);color:#142017;border-color:var(--accent)}button:hover{border-color:var(--accent)}button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:3px}.row{display:flex;align-items:center;gap:16px;flex-wrap:wrap}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px}.three{grid-template-columns:repeat(3,minmax(0,1fr))}figure{margin:0;min-width:0}figure img{width:100%;height:auto;display:block;background:#090b0c}figcaption{padding:12px 0 20px}figcaption p{font-size:14px;color:var(--muted);margin:6px 0}figcaption a{font-size:14px}.hero{margin:16px 0}.hero img{max-height:72vh;object-fit:contain}.pill{display:inline-block;font-size:12px;border:1px solid var(--line);padding:2px 7px;margin-right:8px}.note{padding:14px 18px;background:var(--panel);border-left:3px solid var(--accent);margin:18px 0 24px;max-width:100ch}.compare{position:relative;aspect-ratio:4/3;background:#090b0c;overflow:hidden}.compare img{width:100%;height:100%;object-fit:contain;display:block}.compare .top{position:absolute;inset:0;clip-path:inset(0 50% 0 0)}.divider{position:absolute;top:0;bottom:0;left:50%;width:2px;background:#fff;pointer-events:none}.compare-labels{display:flex;justify-content:space-between;gap:16px;margin:10px 0}input[type="range"]{width:100%;accent-color:var(--accent)}.barrow{display:grid;grid-template-columns:135px 1fr 86px;gap:12px;align-items:center;margin:12px 0;font-size:14px}.track{height:23px;background:#252c2f}.bar{height:100%;background:var(--accent)}.bar.experimental{background:#bca995}.value{font-variant-numeric:tabular-nums;text-align:right}.chart{padding:8px 0 16px;max-width:800px}.reference img{aspect-ratio:16/10;object-fit:contain}.reference a.image{display:block}.credits{border-top:1px solid var(--line);padding-top:18px;font-size:13px}.steps{counter-reset:step;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.step{padding-top:16px;border-top:1px solid var(--line)}.step h3:before{counter-increment:step;content:"0" counter(step) " / ";color:var(--accent)}.step p{color:var(--muted);margin:8px 0}.tablewrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;padding:12px;border-bottom:1px solid var(--line);vertical-align:top}th{font-weight:500;color:var(--accent)}[hidden]{display:none!important}.full-link{font-size:14px}footer{margin-top:40px}.metric{font-variant-numeric:tabular-nums}ul{padding-left:22px}.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+@media(max-width:850px){main{padding:24px 18px}.three{grid-template-columns:1fr 1fr}.grid,.steps{grid-template-columns:1fr}.reference img{max-height:450px}.hero img{max-height:none}.barrow{grid-template-columns:115px 1fr 72px}.lede{font-size:17px}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<div class="eyebrow">Wrela / Lighting research / 23 September 2026</div>
+<h1>Good shading. Incomplete light transport.</h1>
+<p class="lede">Real PBR foundations and useful shadows are in place. The next leap is making nearby geometry, reflections, bounce and contact lighting agree — at a cost the whole game can afford.</p>
+<p><a href="../lighting-audit-2026-09-23.md">Read the full audit</a> · <a href="evidence.json">Measurements and provenance</a></p>
+</header>
+<nav class="nav" aria-label="Lighting study">
+<button type="button" data-panel="current" aria-pressed="true" aria-controls="current">Current scene</button>
+<button type="button" data-panel="transport" aria-pressed="false" aria-controls="transport">GI and shadows</button>
+<button type="button" data-panel="room" aria-pressed="false" aria-controls="room">Sealed-room failure</button>
+<button type="button" data-panel="references" aria-pressed="false" aria-controls="references">Nature and AAA</button>
+<button type="button" data-panel="compiler" aria-pressed="false" aria-controls="compiler">Compiler opportunities</button>
+</nav>
+<section id="current" aria-label="Current scene">
+<div class="row"><h2>Fresh Alpine captures</h2><label for="camera">Camera</label><select id="camera"><option value="landscape">Landscape</option><option value="gameplay">Gameplay</option><option value="near">Near</option></select></div>
+<figure class="hero"><a id="hero-link" href="primary-landscape.png"><img id="hero" src="primary-landscape.png" alt="Current Wrela valley with a creature, pine trees, rock overhangs, stone arch and brook"></a><figcaption id="hero-caption" aria-live="polite">Balanced · native 1920×1080 · current production renderer · GI disabled. GPU p95: <span class="metric">21.56 ms</span>.</figcaption></figure>
+<div class="note">The sky and directional light establish readable large forms. Shaded rock faces, the canopy, feet and ground need richer local light and contact detail. Geometry and foliage construction also limit this image; lighting alone cannot fix them.</div>
+<p>All three views completed. Their GPU p95 of 21.17–21.56 ms misses the scene’s 12 ms target; CPU extraction plus submission also misses its 4 ms target. These are short whole-scene observations on Apple / Metal, not isolated lighting costs.</p>
+<h2>Materials have distinct responses, with important approximations</h2>
+<div class="grid">
+<figure><a href="materials-neutral.png"><img src="materials-neutral.png" alt="Wrela's stone, skin, foliage, cloth, metal and glass material spheres under neutral light"></a><figcaption><h3>Neutral light</h3><p>Left to right: stone, skin, foliage; cloth, metal, glass. The metal shows a real specular response. The glass-like sphere samples the environment instead of refracting the actual scene.</p></figcaption></figure>
+<figure><a href="materials-backlit.png"><img src="materials-backlit.png" alt="The same material family spheres under backlight"></a><figcaption><h3>Backlight</h3><p>Specialized responses need suitable real shapes. A sphere gallery cannot establish the quality of thin leaves, fur or skin. Nearby spheres do not appear in the metal’s reflection.</p></figcaption></figure>
+</div>
+</section>
+<section id="transport" aria-label="GI and shadow comparisons" hidden>
+<h2>Winter: GI is real, but this rollout fails</h2>
+<div class="grid">
+<div>
+<div class="compare" id="winter-compare"><img src="winter.png" alt="Winter with the experimental GI field, including dark field boundaries"><img class="top" src="winter-unshadowed.png" alt="Winter with default atmosphere lighting"><span class="divider"></span></div>
+<div class="compare-labels"><span>Default atmosphere</span><span>Experimental GI</span></div>
+<label class="visually-hidden" for="winter-slider">Comparison divider</label><input id="winter-slider" type="range" min="0" max="100" value="50">
+<p class="muted">Matched camera, materials and exposure. Move the divider to inspect the terrain and water-edge discontinuities. Both are production-renderer captures, 640×480.</p>
+</div>
+<div>
+<h3>Whole-frame GPU median · same Winter scene</h3>
+<div class="chart" role="img" aria-label="Default frame median 2.621 milliseconds. Experimental GI frame median 15.335 milliseconds, 5.85 times the cost.">
+<div class="barrow"><span>Default</span><div class="track"><div class="bar" style="width:16.383%"></div></div><span class="value">2.62 ms</span></div>
+<div class="barrow"><span>GI enabled</span><div class="track"><div class="bar experimental" style="width:95.846%"></div></div><span class="value">15.34 ms</span></div>
+<small>Scale: 0–16 ms. 32 samples per condition, ABBA order, Apple / Metal.</small>
+</div>
+<p>One static diffuse bounce; 3.78 seconds to build this field. Its transport excludes 405 surfaces, including moving vegetation, the character and water.</p>
+<p>The field is opt-in. More probes alone will not solve the repeated visibility queries, probe placement and coverage transitions together.</p>
+<p><a href="lighting-upgrade.json">Raw experiment</a></p>
+</div>
+</div>
+<h2>Bounded scenes show useful bounce and local shadows</h2>
+<div class="grid three">
+<figure><a href="open-default.png"><img src="open-default.png" alt="Open colored room with default ambient light"></a><figcaption><h3>Open room / default</h3><p>Unoccluded sky fill keeps the room legible, but does not describe the room’s local transport.</p></figcaption></figure>
+<figure><a href="open-gi.png"><img src="open-gi.png" alt="Open colored room with one-bounce indirect light"></a><figcaption><h3>Open room / GI</h3><p>Surface bounce changes local color and shading. This is a sky-lit test room, not a reproduction of Cornell’s measured box.</p></figcaption></figure>
+<figure><a href="lantern.png"><img src="lantern.png" alt="Warm point light casting a shadow from a block"></a><figcaption><h3>Local shadow / cached</h3><p>Six cube faces initially, zero on stationary reuse, six after caster movement. Only two local lights can cast these shadows.</p></figcaption></figure>
+</div>
+<p class="muted">The cached and forced-rebuild local-shadow trials both measured 0.721 ms median here. Pass elimination is verified; this short replay does not show a median speedup.</p>
+</section>
+<section id="room" aria-label="Sealed-room diagnostic" hidden>
+<h2>A metal block reflects the sky through solid walls</h2>
+<p>The camera and block are inside a closed, nonemissive room. There are no interior lights. All three beauty views use identical exposure.</p>
+<div class="grid three">
+<figure><a href="sealed-default.png"><img src="sealed-default.png" alt="Sealed room is incorrectly illuminated by default sky lighting"></a><figcaption><h3>Default lighting</h3><p>Diffuse sky and sky reflections ignore the enclosing room. The walls and metal stay visible.</p></figcaption></figure>
+<figure><a href="sealed-gi.png"><img src="sealed-gi.png" alt="GI makes the sealed walls dark, but the metal remains bright"></a><figcaption><h3>GI enabled</h3><p>Diffuse enclosure improves substantially. The metal’s central face stays at <span class="metric">0.060632</span> mean linear luminance.</p></figcaption></figure>
+<figure><a href="sealed-gi-no-sky-reflection.png"><img src="sealed-gi-no-sky-reflection.png" alt="Removing sky reflections makes the metal almost black, leaving narrow wall seams"></a><figcaption><h3>Diagnostic: remove sky reflections</h3><p>The same face falls to <span class="metric">0.000267</span> — a <strong>99.56%</strong> reduction. This is an ablation, not an implemented fix.</p></figcaption></figure>
+</div>
+<div class="note">The next reflection feature must know what surrounds the material. A better BRDF cannot repair missing scene visibility.</div>
+<div class="grid">
+<figure><a href="sealed-gi-no-direct.png"><img src="sealed-gi-no-direct.png" alt="Without direct illumination the metal still reflects the sky but bright wall seams disappear"></a><figcaption><h3>Diagnostic: remove direct illumination</h3><p>The metal is unchanged, while prominent wall seams disappear. The seam behavior is consistent with shadow-map bias/filtering. Test thicker production walls too.</p></figcaption></figure>
+<figure><a href="sealed-diffuse-only.png"><img src="sealed-diffuse-only.png" alt="The diffuse-only diagnostic is visually almost black"></a><figcaption><h3>Diffuse-only diagnostic</h3><p>Full-frame mean luminance is 9.75×10⁻⁸, with a rare maximum RGB sample of 0.03528. Not exactly leak-free. This diagnostic bypasses the beauty display curve.</p></figcaption></figure>
+</div>
+<p><a href="lighting-audit.json">Statistics and fixture details</a> · Beauty measurements include aerial perspective. Central face region: x=240–399, y=310–409.</p>
+</section>
+<section id="references" aria-label="Real world and AAA references" hidden>
+<h2>Study local light, depth and coherence</h2>
+<p>Qualitative references. Different weather, lenses, grading and scene content; no absolute brightness matching or engine speed ranking is inferred. Select an image to inspect its original size.</p>
+<div class="grid reference">
+<figure><a class="image" href="https://polyhaven.com/a/snowy_hillside"><img src="https://cdn.polyhaven.com/asset_img/primary/snowy_hillside.png?height=760&amp;quality=95&amp;v=95431cb5" alt="Photographic HDRI preview of a snowy hillside with trees and a cloudy winter sky"></a><figcaption><span class="pill">Real world</span><h3>Snowy Hillside</h3><p>Readable small snow relief, dark tree masses and broad soft fill. Cloudier than our Winter scene; do not copy its exposure or color blindly.</p><a href="https://polyhaven.com/a/snowy_hillside">Andreas Mischok / Poly Haven · CC0 · tone-mapped photographic preview</a></figcaption></figure>
+<figure><a class="image" href="winter-unshadowed.png"><img src="winter-unshadowed.png" alt="Wrela Winter valley with a rabbit and snow"></a><figcaption><span class="pill">Wrela / fresh</span><h3>Winter default</h3><p>Useful cool shadows and readable form, but broad snow feels smooth and locally uniform. Improve shape and snow response alongside contact/bounce light.</p><a href="lighting-upgrade.json">Frozen production capture · 640×480</a></figcaption></figure>
+<figure><a class="image" href="../sky-reference-audit-2026-09-23/rdr2-official-4.jpg"><img src="../sky-reference-audit-2026-09-23/rdr2-official-4.jpg" alt="Official Red Dead Redemption 2 golden-hour landscape with riders, long shadows and illuminated haze"></a><figcaption><span class="pill">AAA / published capture</span><h3>Red Dead Redemption 2</h3><p>Ground shadows, bright vegetation edges and warm haze cooperate across several depths. This is a selected art-directed example, not a guarantee for every frame.</p><a href="https://store.steampowered.com/app/1174180/Red_Dead_Redemption_2/">Rockstar Games · publisher Steam gallery</a></figcaption></figure>
+<figure><a class="image" href="primary-landscape.png"><img src="primary-landscape.png" alt="Fresh Wrela Alpine landscape"></a><figcaption><span class="pill">Wrela / fresh</span><h3>Alpine valley</h3><p>Readable clouds and sun shadows; weak local variation on shaded slopes and under rocks. The sparse foliage and scene dressing are separate contributors.</p><a href="alpine-slice-review.json">Frozen production capture · native 1920×1080</a></figcaption></figure>
+<figure><a class="image" href="../sky-reference-audit-2026-09-23/horizon-ground-sunset.jpg"><img src="../sky-reference-audit-2026-09-23/horizon-ground-sunset.jpg" alt="Official Horizon Forbidden West Burning Shores storm scene with illuminated clouds and rocky foreground"></a><figcaption><span class="pill">AAA / official PS5 capture</span><h3>Horizon Forbidden West: Burning Shores</h3><p>A dark cloud mass, bright opening and distant haze organize attention. Strong composition is part of the lighting result; global saturation is not the lesson.</p><a href="https://blog.playstation.com/2023/03/29/pushing-the-envelope-achieving-next-level-clouds-in-horizon-forbidden-west-burning-shores/">Guerrilla / Sony Interactive Entertainment</a></figcaption></figure>
+<figure><a class="image" href="../sky-reference-audit-2026-09-23/nasa-cumulus-rockies.jpg"><img src="../sky-reference-audit-2026-09-23/nasa-cumulus-rockies.jpg" alt="NASA photograph of cumulus clouds over the Rocky Mountains"></a><figcaption><span class="pill">Real world</span><h3>Clouds over the Rockies</h3><p>Large light/shade regions and layered distances coexist. An older scanned photograph: useful for structure, not calibrated color or image sharpness.</p><a href="https://scool.larc.nasa.gov/GLOBE/cumulus.html">Jeff Caplan / NASA · August 2001</a></figcaption></figure>
+</div>
+<h2>What current AAA systems establish</h2>
+<div class="tablewrap"><table><thead><tr><th>Reference</th><th>Useful benchmark</th><th>Wrela implication</th></tr></thead><tbody>
+<tr><td><a href="https://dev.epicgames.com/documentation/en-us/unreal-engine/lumen-global-illumination-and-reflections-in-unreal-engine">UE5 / Lumen</a></td><td>Dynamic bounce, sky occlusion and scene reflections.</td><td>Complete-scene transport is a much larger gap than basic GGX shading.</td></tr>
+<tr><td><a href="https://dev.epicgames.com/documentation/en-us/unreal-engine/virtual-shadow-maps-in-unreal-engine">UE5 virtual shadows</a></td><td>Cached pages, clipmaps and contact hardening.</td><td>Improve coverage and cache static work before enlarging one map.</td></tr>
+<tr><td><a href="https://www.massive.se/article/snowdrops-ray-tracing-shines-a-light-on-pandora/">Snowdrop / Avatar</a></td><td>Dynamic interior transitions and small indirect shadows.</td><td>A doorway, canopy and wet rock are useful acceptance scenes.</td></tr>
+<tr><td><a href="https://www.ea.com/seed/news/siggraph21-global-illumination-surfels">Frostbite / GIBS</a></td><td>Cache indirect light on scene surfaces over time.</td><td>Reuse transport where geometry and light remain valid.</td></tr>
+</tbody></table></div>
+</section>
+<section id="compiler" aria-label="Compiler opportunities" hidden>
+<h2>Compile stable light transport; spend runtime work on change</h2>
+<p>These are proposed experiments, not implemented improvements or promised speedups. Our source semantics can describe shape, material, openness, repeated structure and change dependencies before a pixel is shaded.</p>
+<div class="steps">
+<article class="step"><h3>Surface-aware visibility</h3><p>Compile valid probe neighborhoods and conservative clear/blocked relationships for receiving patches. Refine around contacts, walls and openings. Stop rediscovering the same static blockers up to eight times per shaded pixel.</p><p><strong>Visual gate:</strong> closed rooms stay dark; no probe-boundary bands.</p></article>
+<article class="step"><h3>Static multi-bounce relighting</h3><p>Extend the existing sky-transfer basis to fixed geometry and reflectance with more diffuse bounces. Separate broad sky from sharp sun/aperture information. Track affected transport when doors or materials change.</p><p><strong>Visual gate:</strong> snow and pale stone bounce without uncontrolled leaks.</p></article>
+<article class="step"><h3>Local reflected surroundings</h3><p>Compile scene reflection/visibility products for rooms, rock groups and canopy. Use cheap radiance for rough surfaces; reserve richer queries for smooth hero materials. Diffuse and glossy light share a world, not identical bandwidth.</p><p><strong>Visual gate:</strong> the sealed-room metal test passes.</p></article>
+<article class="step"><h3>Near/far cached shadows</h3><p>Separate static casters from characters and wind-driven foliage; reuse valid static depth. Choose shadow detail from the light and receiver footprint, including off-camera casters.</p><p><strong>Visual gate:</strong> feet and thin objects stay grounded during traversal.</p></article>
+<article class="step"><h3>Smaller, correctly filtered material programs</h3><p>Specialize only proven feature combinations. Preserve slope, coverage and correlated lighting as details become unresolved. Align water/solid local-light rules and verify coat/roughness energy.</p><p><strong>Visual gate:</strong> no unstable sparkle, changing material identity or mismatched light range.</p></article>
+<article class="step"><h3>One integrated acceptance valley</h3><p>Walk from open ground through canopy into a room, past metal, wet stone, creature, brook and lantern. Test daylight, overcast, low sun and night. Record p95 frame cost, rebuild spikes, memory and reference error.</p><p><strong>Performance gate:</strong> existing Alpine 12 ms GPU / 4 ms CPU p95 targets, then weaker hardware.</p></article>
+</div>
+<div class="note">Yes, quality and performance can improve together. Fewer repeated queries can buy more correct visibility and bounce. Beating today’s GI-off frame while adding every effect remains an experiment.</div>
+<p>Relevant prior art: <a href="https://www.microsoft.com/en-us/research/publication/precomputed-radiance-transfer-real-time-rendering-dynamic-low-frequency-lighting-environments/">precomputed radiance transfer</a>, <a href="https://arxiv.org/abs/2009.10796">production irradiance probes</a>, <a href="https://dev.epicgames.com/documentation/en-us/unreal-engine/lumen-performance-guide-for-unreal-engine">current Lumen scaling and Lumen Lite</a>.</p>
+</section>
+<footer class="credits">Research and diagnostic captures only. No production lighting changed. External images retain their owners’ credits and are not game assets. Our captures are fresh frozen-source evidence; selected external references are qualitative. <a href="evidence.json">Source records and limitations</a>.</footer>
+</main>
+<script>
+const buttons=[...document.querySelectorAll('[data-panel]')];
+function showPanel(id){if(!buttons.some(b=>b.dataset.panel===id))id='current';buttons.forEach(b=>{const active=b.dataset.panel===id;b.setAttribute('aria-pressed',String(active));document.getElementById(b.dataset.panel).hidden=!active;});}
+buttons.forEach(button=>button.addEventListener('click',()=>{showPanel(button.dataset.panel);history.replaceState(null,'','#'+button.dataset.panel);}));
+showPanel(location.hash.slice(1));
+const camera=document.getElementById('camera');const hero=document.getElementById('hero');const heroLink=document.getElementById('hero-link');const caption=document.getElementById('hero-caption');
+const times={landscape:'21.56',gameplay:'21.17',near:'21.30'};
+camera.addEventListener('change',()=>{hero.src='primary-'+camera.value+'.png';heroLink.href=hero.src;caption.textContent='Balanced · native 1920×1080 · current production renderer · GI disabled. GPU p95: '+times[camera.value]+' ms.';});
+const slider=document.getElementById('winter-slider');const compare=document.getElementById('winter-compare');
+slider.addEventListener('input',()=>{compare.querySelector('.top').style.clipPath='inset(0 '+(100-Number(slider.value))+'% 0 0)';compare.querySelector('.divider').style.left=slider.value+'%';});
+</script>
+</body>
+</html>

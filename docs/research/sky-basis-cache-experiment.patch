@@ -1,0 +1,433 @@
+--- a/packages/render-webgpu/src/atmosphere.ts
++++ b/packages/render-webgpu/src/atmosphere.ts
+@@ -1,3 +1,4 @@
++import { CLOUD_BASIS_BASE, CLOUD_BASIS_EXTENT, CLOUD_BASIS_TOP, cloudBasisCoordinatesWGSL, cloudBasisLookupWGSL, cloudBasisReferenceWGSL } from "./cloud-basis";
+ import cloudNoiseSource from "./atmosphere-cloud-noise.wgsl" with { type: "text" };
+ import cloudSource from "./atmosphere-clouds.wgsl" with { type: "text" };
+ import multipleSource from "./atmosphere-multiple.wgsl" with { type: "text" };
+@@ -6,6 +7,11 @@
+ import { irradianceBasisWGSL } from "./irradiance";
+ 
+ const atmosphereSource = `${atmosphereCore}\n${cloudNoiseSource}\n${cloudSource}`;
++
++const cachedCloudSource = atmosphereSource.replace(
++  "fn physicalCloudBasis(stable:vec3f,footprint:f32)->vec4f {return vec4f(-1.0);}",
++  cloudBasisReferenceWGSL + cloudBasisLookupWGSL,
++);
+ 
+ const defaultAtmosphere = {
+   ...defaultTable,
+@@ -288,7 +294,7 @@
+ @group(0) @binding(5) var diffuseTexture:texture_2d<f32>;
+ @group(0) @binding(6) var physicalAtmosphereSampler:sampler;
+ @group(0) @binding(18) var cloudShadowOutput:texture_storage_2d<rgba8unorm,write>;
+-${atmosphereSource}
++${cachedCloudSource}
+ fn physicalFrame()->PhysicalAtmosphereFrame {return atmosphereFrame;}
+ fn physicalDiffuseRadiance(point:vec3f,sun:vec3f)->vec3f {
+   let c=compiledAtmosphereTable[0];let radius=length(point);
+@@ -343,7 +349,7 @@
+ @group(0) @binding(1) var<storage,read> compiledAtmosphereTable:array<vec4f>;
+ @group(0) @binding(6) var physicalAtmosphereSampler:sampler;
+ @group(0) @binding(20) var lightOutput:texture_storage_3d<rgba16float,write>;
+-${atmosphereSource}
++${cachedCloudSource}
+ fn physicalFrame()->PhysicalAtmosphereFrame {return atmosphereFrame;}
+ fn physicalDiffuseRadiance(point:vec3f,sun:vec3f)->vec3f {return vec3f(0.0);}
+ @compute @workgroup_size(4,4,4) fn main(@builtin(global_invocation_id) id:vec3u) {
+@@ -413,3 +419,24 @@
+   textureStore(noiseOutput,id,vec4f(value,cellular,0.0,1.0));
+ }
+ `;
++
++/** Partial evaluation of the immutable cloud field; no authored weather or light. */
++export const physicalCloudBasisComputeWGSL = /* wgsl */ `
++@group(0) @binding(0) var<uniform> atmosphereFrame:PhysicalAtmosphereFrame;
++@group(0) @binding(6) var physicalAtmosphereSampler:sampler;
++@group(0) @binding(23) var cloudBasisOutput:texture_storage_3d<rgba8unorm,write>;
++@group(0) @binding(1) var<storage,read> compiledAtmosphereTable:array<vec4f>;
++${atmosphereSource}
++${cloudBasisReferenceWGSL}
++${cloudBasisCoordinatesWGSL}
++fn physicalFrame()->PhysicalAtmosphereFrame {return atmosphereFrame;}
++fn physicalDiffuseRadiance(point:vec3f,sun:vec3f)->vec3f {return vec3f(0.0);}
++@compute @workgroup_size(4,4,4) fn main(@builtin(global_invocation_id) id:vec3u) {
++  let size=textureDimensions(cloudBasisOutput);if(any(id>=size)){return;}
++  let uv=vec3f(id)/vec3f(size-1u);
++  let material=vec3f(cloudBasisDomain.x+(uv.x-0.5)*${CLOUD_BASIS_EXTENT}.0,
++    ${CLOUD_BASIS_BASE}.0+uv.z*${CLOUD_BASIS_TOP-CLOUD_BASIS_BASE}.0,
++    cloudBasisDomain.y+(uv.y-0.5)*${CLOUD_BASIS_EXTENT}.0);
++  textureStore(cloudBasisOutput,id,physicalCloudBasisReference(material*0.00068+vec3f(8.2,1.9,3.7)));
++}
++`;
+--- a/packages/render-webgpu/src/atmosphere-clouds.wgsl
++++ b/packages/render-webgpu/src/atmosphere-clouds.wgsl
+@@ -45,6 +45,7 @@
+   let shape=mix(channels.x,channels.y,cellularWeight);
+   return mix(shape,0.5,smoothstep(0.3,0.9,footprint));
+ }
++fn physicalCloudBasis(stable:vec3f,footprint:f32)->vec4f {return vec4f(-1.0);}
+ fn physicalCloudDensityFiltered(world:vec3f,footprint:f32)->f32 {
+   let frame=physicalFrame();let cover=clamp(frame.cloud.x,0.0,1.0);
+   let stable=physicalCloudPosition(world);
+@@ -52,14 +53,17 @@
+   if(cover<=0.001||height<=0.0||height>=1.0) {return 0.0;}
+   let drift=vec3f(frame.cloud.y,0.0,frame.cloud.z)*frame.cloud.w;
+   let p=(stable-drift)*vec3f(0.00068,0.00068,0.00068)+vec3f(8.2,1.9,3.7);
+-  let region=physicalCloudNoise3(vec3f(p.x*0.48,3.17,p.z*0.48));
++  let basis=physicalCloudBasis(stable,footprint);
++  var region=basis.w;
++  if(basis.x<0.0) {region=physicalCloudNoise3(vec3f(p.x*0.48,3.17,p.z*0.48));}
+   let direction=frame.frontDirection.xy/max(0.0001,length(frame.frontDirection.xy));
+   let frontDistance=dot((stable.xz-drift.xz)-frame.frontOrigin.xy,direction);
+   let front=frame.cloudShape.w*(smoothstep(-frame.frontOrigin.z,frame.frontOrigin.z,frontDistance)-0.5);
+   let localCover=clamp(cover+(region-0.5)*0.5+front,0.0,1.0);
+   if(localCover<=0.005) {return 0.0;}
+   let warped=physicalCloudRotate(p+vec3f(region-0.5,0.0,(region-0.5)*0.7));
+-  let broad=physicalCloudFilteredShape(warped,footprint*0.0007,0.24);
++  var broad=basis.x;
++  if(basis.x<0.0) {broad=physicalCloudFilteredShape(warped,footprint*0.0007,0.24);}
+   let development=frame.cloudShape.x;
+   let stratiform=smoothstep(0.62,0.94,cover)*(1.0-development*0.55);
+   let threshold=0.67-localCover*0.30-frame.cloudShape.y*0.05;
+@@ -70,10 +74,12 @@
+   top=mix(top,0.58,stratiform);
+   let profile=smoothstep(0.0,0.1,height)*(1.0-smoothstep(top*0.55,top,height));
+   if(profile<=0.001) {return 0.0;}
+-  let billows=physicalCloudFilteredNoise(physicalCloudRotate(warped)*2.13+vec3f(11.4,7.3,2.8),footprint*0.0007*2.13);
++  var billows=basis.y;
++  if(basis.x<0.0) {billows=physicalCloudFilteredNoise(physicalCloudRotate(warped)*2.13+vec3f(11.4,7.3,2.8),footprint*0.0007*2.13);}
+   let body=broad*0.72+billows*0.28;
+   if(body<=threshold) {return 0.0;}
+-  let erosion=physicalCloudFilteredShape(physicalCloudRotate(warped)*5.37+vec3f(3.6,14.8,5.2),footprint*0.0007*5.37,0.7);
++  var erosion=basis.z;
++  if(basis.x<0.0) {erosion=physicalCloudFilteredShape(physicalCloudRotate(warped)*5.37+vec3f(3.6,14.8,5.2),footprint*0.0007*5.37,0.7);}
+   let density=clamp((body-threshold)/max(0.08,1.0-threshold),0.0,1.0);
+   let edgeErosion=(1.0-erosion)*0.18*(1.0-stratiform*0.55);
+   return clamp((density-edgeErosion)*2.2,0.0,1.0)*profile;
+--- a/packages/render-webgpu/src/atmosphere-gpu.ts
++++ b/packages/render-webgpu/src/atmosphere-gpu.ts
+@@ -1,3 +1,4 @@
++import { CLOUD_BASIS_SIZE, cloudBasisCenter } from "./cloud-basis";
+ import {
+   PHYSICAL_AERIAL_SIZE,
+   PHYSICAL_ATMOSPHERE_FRAME_FLOATS,
+@@ -9,6 +10,7 @@
+   PHYSICAL_SKY_SIZE,
+   physicalAtmosphereComputeWGSL,
+   physicalCloudComputeWGSL,
++  physicalCloudBasisComputeWGSL,
+   physicalCloudLightComputeWGSL,
+   physicalCloudNoiseComputeWGSL,
+   physicalCloudResolveWGSL,
+@@ -18,9 +20,9 @@
+ import type { RenderQuality } from "./quality";
+ 
+ const CLOUD_QUALITY = {
+-  low: { size: [384, 288], skySize: [256, 128], steps: 24 },
+-  balanced: { size: PHYSICAL_CLOUD_VIEW_SIZE, skySize: [384, 192], steps: 32 },
+-  high: { size: [768, 576], skySize: PHYSICAL_SKY_SIZE, steps: 40 },
++  low: { size: [384, 288], skySize: [256, 128], steps: 48 },
++  balanced: { size: PHYSICAL_CLOUD_VIEW_SIZE, skySize: [384, 192], steps: 64 },
++  high: { size: [768, 576], skySize: PHYSICAL_SKY_SIZE, steps: 96 },
+ } as const;
+ 
+ /** Rebuild bounded lighting products when their exact inputs change.
+@@ -63,6 +65,11 @@
+   private readonly cloudResolveBind: GPUBindGroup;
+   private readonly cloudNoiseBind: GPUBindGroup;
+   private noiseReady = false;
++  private basisKey = "";
++  private readonly basisDomain: GPUBuffer;
++  private readonly basisView: GPUTextureView;
++  private readonly basisPipeline: GPUComputePipeline;
++  private readonly basisBind: GPUBindGroup;
+   private cloudBind: GPUBindGroup | null = null;
+   private diffuseBind: GPUBindGroup | null = null;
+   private diffuseKey = "";
+@@ -85,14 +92,17 @@
+     cloudNoiseModule: GPUShaderModule,
+     cloudResolveModule: GPUShaderModule,
+     cloudLightModule: GPUShaderModule,
++    cloudBasisModule: GPUShaderModule,
+     readonly cloudNoiseMode: "compiled" | "reference",
+     quality: RenderQuality,
++    readonly cachedBasis: boolean,
++    steps?: number,
+   ) {
+     const cloudQuality = CLOUD_QUALITY[quality];
+     const viewSize = cloudQuality.size;
+     this.viewSize = viewSize;
+     this.skySize = cloudQuality.skySize;
+-    this.byteLength =
++    this.byteLength = CLOUD_BASIS_SIZE[0] * CLOUD_BASIS_SIZE[1] * CLOUD_BASIS_SIZE[2] * 4 + 16 +
+       (PHYSICAL_DIFFUSE_SIZE[0] * PHYSICAL_DIFFUSE_SIZE[1] +
+         (PHYSICAL_SKY_SIZE[0] * PHYSICAL_SKY_SIZE[1] + this.skySize[0] * this.skySize[1]) +
+         2 * viewSize[0] * viewSize[1] +
+@@ -138,6 +148,22 @@
+     });
+     this.textures.push(noiseTexture);
+     this.cloudNoiseView = noiseTexture.createView();
++    const basisTexture = device.createTexture({
++      label: "Partially evaluated cloud field",
++      size: [...CLOUD_BASIS_SIZE],
++      dimension: "3d",
++      format: "rgba8unorm",
++      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
++    });
++    this.textures.push(basisTexture);
++    this.basisView = basisTexture.createView();
++    this.basisDomain = device.createBuffer({ label: "Cloud field material domain", size: 16,
++      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
++    this.basisPipeline = device.createComputePipeline({
++      label: "Compile cloud field basis", layout: "auto",
++      compute: { module: cloudBasisModule, entryPoint: "main",
++        constants: { PHYSICAL_CLOUD_COMPILED_NOISE: Number(cloudNoiseMode === "compiled") } },
++    });
+     const shadowTexture = device.createTexture({
+       label: "Compiled cloud sun transmission",
+       size: [...PHYSICAL_CLOUD_SHADOW_SIZE],
+@@ -178,8 +204,16 @@
+       addressModeV: "clamp-to-edge",
+       addressModeW: "clamp-to-edge",
+     });
++    this.basisBind = device.createBindGroup({ layout: this.basisPipeline.getBindGroupLayout(0), entries: [
++      { binding: 6, resource: this.sampler },
++      { binding: 17, resource: this.cloudNoiseView },
++      { binding: 22, resource: { buffer: this.basisDomain } },
++      { binding: 23, resource: this.basisView },
++    ] });
+     this.cloudLightLayout = device.createBindGroupLayout({
+       entries: [
++        { binding: 21, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
++        { binding: 22, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+         { binding: 6, visibility: GPUShaderStage.COMPUTE, sampler: { type: "filtering" } },
+@@ -201,7 +235,7 @@
+       compute: {
+         module: cloudLightModule,
+         entryPoint: "main",
+-        constants: { PHYSICAL_CLOUD_COMPILED_NOISE: Number(cloudNoiseMode === "compiled") },
++        constants: { PHYSICAL_CLOUD_COMPILED_NOISE: Number(cloudNoiseMode === "compiled"), PHYSICAL_CLOUD_CACHED_BASIS: Number(cachedBasis) },
+       },
+     });
+     this.irradianceBuffer = device.createBuffer({
+@@ -268,6 +302,8 @@
+     });
+     this.cloudLayout = device.createBindGroupLayout({
+       entries: [
++        { binding: 21, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float", viewDimension: "3d" } },
++        { binding: 22, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+         { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float" } },
+@@ -309,7 +345,8 @@
+         entryPoint: "physicalCloudSkyBuild",
+         constants: {
+           PHYSICAL_CLOUD_COMPILED_NOISE: Number(cloudNoiseMode === "compiled"),
+-          PHYSICAL_CLOUD_VIEW_STEPS: cloudQuality.steps,
++          PHYSICAL_CLOUD_VIEW_STEPS: steps ?? cloudQuality.steps,
++          PHYSICAL_CLOUD_CACHED_BASIS: Number(cachedBasis),
+         },
+       },
+     });
+@@ -321,7 +358,8 @@
+         entryPoint: "physicalCloudViewBuild",
+         constants: {
+           PHYSICAL_CLOUD_COMPILED_NOISE: Number(cloudNoiseMode === "compiled"),
+-          PHYSICAL_CLOUD_VIEW_STEPS: cloudQuality.steps,
++          PHYSICAL_CLOUD_VIEW_STEPS: steps ?? cloudQuality.steps,
++          PHYSICAL_CLOUD_CACHED_BASIS: Number(cachedBasis),
+         },
+       },
+     });
+@@ -331,13 +369,13 @@
+       compute: {
+         module: cloudModule,
+         entryPoint: "physicalCloudShadowBuild",
+-        constants: { PHYSICAL_CLOUD_COMPILED_NOISE: Number(cloudNoiseMode === "compiled") },
++        constants: { PHYSICAL_CLOUD_COMPILED_NOISE: Number(cloudNoiseMode === "compiled"), PHYSICAL_CLOUD_CACHED_BASIS: Number(cachedBasis) },
+       },
+     });
+   }
+   static async create(
+     device: GPUDevice,
+-    options: { cloudNoise?: "compiled" | "reference"; quality?: RenderQuality } = {},
++    options: { cloudNoise?: "compiled" | "reference"; quality?: RenderQuality; cachedBasis?: boolean; cloudSteps?: number } = {},
+   ): Promise<PhysicalAtmosphereGpu> {
+     const modules = [
+       physicalAtmosphereComputeWGSL,
+@@ -346,6 +384,7 @@
+       physicalCloudNoiseComputeWGSL,
+       physicalCloudResolveWGSL,
+       physicalCloudLightComputeWGSL,
++      physicalCloudBasisComputeWGSL,
+     ].map((code, index) =>
+       device.createShaderModule({ label: `Physical atmosphere lookup builder ${index}`, code }),
+     );
+@@ -366,8 +405,11 @@
+       modules[3],
+       modules[4],
+       modules[5],
++      modules[6],
+       options.cloudNoise ?? "compiled",
+       options.quality ?? "balanced",
++      options.cachedBasis ?? true,
++      options.cloudSteps,
+     );
+   }
+   /** Globals is the renderer's current 228-float block, already render-relative. */
+@@ -384,6 +426,16 @@
+     // Clear-air sky ignores cloud drift and camera orientation. The camera cloud
+     // product follows orientation/FOV, while reflected clouds remain world-oriented.
+     const values = Array.from(this.frameData);
++    const datumX = values[12], datumZ = values[14];
++    const center = cloudBasisCenter([values[0] - datumX, values[2] - datumZ],
++      [values[37] * values[39], values[38] * values[39]]);
++    const basisKey = center.join("/");
++    const rebuildBasis = this.cachedBasis && values[36] > 0.001 && this.basisKey !== basisKey;
++    if (rebuildBasis) {
++      this.basisKey = basisKey;
++      this.device.queue.writeBuffer(this.basisDomain, 0, new Float32Array([...center, 0, 0]));
++    }
++
+     const quantize = (value: number, step: number) => Math.round(value / step);
+     const orientation = [16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29];
+     const key = (indices: number[]) => JSON.stringify(indices.map((index) => values[index]));
+@@ -449,15 +501,15 @@
+     const shadowKey = `${lightGridKey}/${Math.floor(values[0] / 125)}/${Math.floor(values[2] / 125)}`;
+     const changedTable = this.table !== table;
+     const rebuildClear = changedTable || this.clearKey !== clearKey;
+-    const rebuildSky = changedTable || this.skyKey !== skyKey;
++    const rebuildSky = rebuildBasis || changedTable || this.skyKey !== skyKey;
+     const rebuildAerial = changedTable || this.aerialKey !== aerialKey;
+-    const rebuildView = hasClouds && (changedTable || this.viewKey !== viewKey || viewTurned);
++    const rebuildView = hasClouds && (rebuildBasis || changedTable || this.viewKey !== viewKey || viewTurned);
+     if (rebuildView || !this.cloudViewBasisValid) {
+       this.cloudViewBasis.set(basis);
+       this.cloudViewBasisValid = true;
+     }
+     globals.set(this.cloudViewBasis, 212);
+-    const rebuildLightGrid = values[36] > 0.001 && (changedTable || this.lightGridKey !== lightGridKey);
++    const rebuildLightGrid = values[36] > 0.001 && (rebuildBasis || changedTable || this.lightGridKey !== lightGridKey);
+     const rebuildShadow = changedTable || this.shadowKey !== shadowKey || rebuildLightGrid;
+     if (
+       !rebuildClear &&
+@@ -502,6 +554,8 @@
+       this.cloudBind = this.device.createBindGroup({
+         layout: this.cloudLayout,
+         entries: [
++          { binding: 21, resource: this.basisView },
++          { binding: 22, resource: { buffer: this.basisDomain } },
+           { binding: 0, resource: { buffer: this.frame } },
+           { binding: 1, resource: { buffer: table } },
+           { binding: 2, resource: this.clearSkyView },
+@@ -517,6 +571,8 @@
+       this.cloudLightBind = this.device.createBindGroup({
+         layout: this.cloudLightLayout,
+         entries: [
++          { binding: 21, resource: this.basisView },
++          { binding: 22, resource: { buffer: this.basisDomain } },
+           { binding: 0, resource: { buffer: this.frame } },
+           { binding: 1, resource: { buffer: table } },
+           { binding: 6, resource: this.sampler },
+@@ -532,6 +588,7 @@
+     const buildNoise = !this.noiseReady;
+     const passCount =
+       Number(buildNoise) +
++      Number(rebuildBasis) +
+       Number(rebuildDiffuse) +
+       Number(buildAtmosphere) +
+       Number(rebuildLightGrid) +
+@@ -571,6 +628,13 @@
+       end(pass);
+       this.noiseReady = true;
+     }
++    if (rebuildBasis) {
++      const pass = begin("Compile cloud field basis");
++      pass.setPipeline(this.basisPipeline);
++      pass.setBindGroup(0, this.basisBind);
++      pass.dispatchWorkgroups(...CLOUD_BASIS_SIZE.map((n) => Math.ceil(n / 4)) as [number, number, number]);
++      end(pass);
++    }
+     if (rebuildDiffuse) {
+       if (!this.diffuseBind) throw new Error("Diffuse atmosphere bindings are missing");
+       const pass = begin("Physical atmosphere composition/ground diffuse construction");
+@@ -648,11 +712,12 @@
+       pass.dispatchWorkgroups(9);
+       end(pass);
+     }
+-    return this.frameUploadBytes;
++    return this.frameUploadBytes + (rebuildBasis ? 16 : 0);
+   }
+   destroy(): void {
+     for (const texture of this.textures) texture.destroy();
+     this.frame.destroy();
++    this.basisDomain.destroy();
+     this.irradianceBuffer.destroy();
+     this.bind = null;
+     this.cloudBind = null;
+--- a/packages/render-webgpu/src/cloud-basis.ts
++++ b/packages/render-webgpu/src/cloud-basis.ts
+@@ -0,0 +1,60 @@
++/** Lower the immutable spatial part of the cloud field separately from weather.
++ * Broad shape, billows, erosion and regional cover do not depend on sun, cover,
++ * cloud type or time. Rigid wind is a coordinate transform, not a rebuild.
++ * Interpolation is an approximation, not a conservative occupancy certificate. */
++export const CLOUD_BASIS_SIZE = [256, 256, 64] as const;
++export const CLOUD_BASIS_EXTENT = 16384;
++export const CLOUD_BASIS_SNAP = 2048;
++export const CLOUD_BASIS_BASE = 1100;
++export const CLOUD_BASIS_TOP = 6500;
++
++export function cloudBasisCenter(camera: readonly number[], drift: readonly number[]): [number, number] {
++  return [0, 1].map((i) => Math.round((camera[i] - drift[i]) / CLOUD_BASIS_SNAP) * CLOUD_BASIS_SNAP) as [number, number];
++}
++
++// Bake texel *nodes*, including both domain faces. Lookup maps the domain to
++// these nodes, avoiding clamped half-cell plateaus at the slab/cache boundaries.
++export const cloudBasisCoordinatesWGSL = /* wgsl */ `
++@group(0) @binding(22) var<uniform> cloudBasisDomain:vec4f;
++fn physicalCloudBasisUV(stable:vec3f)->vec3f {
++  let f=physicalFrame();
++  let drift=vec2f(f.cloud.y,f.cloud.z)*f.cloud.w;
++  return vec3f((stable.xz-drift-cloudBasisDomain.xy)/${CLOUD_BASIS_EXTENT}.0+0.5,
++    (stable.y-${CLOUD_BASIS_BASE}.0)/${CLOUD_BASIS_TOP-CLOUD_BASIS_BASE}.0);
++}
++`;
++
++export const cloudBasisLookupWGSL = /* wgsl */ `
++${cloudBasisCoordinatesWGSL}
++@group(0) @binding(21) var cloudBasisTexture:texture_3d<f32>;
++override PHYSICAL_CLOUD_CACHED_BASIS:bool=true;
++fn physicalCloudBasis(stable:vec3f,footprint:f32)->vec4f {
++  if(!PHYSICAL_CLOUD_CACHED_BASIS) {return vec4f(-1.0);}
++  let uv=physicalCloudBasisUV(stable);
++  // A procedural collar avoids a cache seam. Both evaluate the same field;
++  // blend the basis before thresholding, never the resulting cloud opacity.
++  if(any(uv<vec3f(0.0))||any(uv>vec3f(1.0))) {return vec4f(-1.0);}
++  let size=vec3f(textureDimensions(cloudBasisTexture));
++  var basis=textureSampleLevel(cloudBasisTexture,physicalAtmosphereSampler,
++    (uv*(size-1.0)+0.5)/size,0.0);
++  let edge=min(min(uv.x,1.0-uv.x),min(uv.y,1.0-uv.y));
++  if(edge<0.03125) {
++    let f=physicalFrame();
++    let p=(stable-vec3f(f.cloud.y,0.0,f.cloud.z)*f.cloud.w)*0.00068+vec3f(8.2,1.9,3.7);
++    basis=mix(physicalCloudBasisReference(p),basis,smoothstep(0.0,0.03125,edge));
++  }
++  let octaveFilter=smoothstep(vec3f(0.3),vec3f(0.9),footprint*0.0007*vec3f(1.0,2.13,5.37));
++  return vec4f(mix(basis.xyz,vec3f(0.5),octaveFilter),basis.w);
++}
++`;
++
++export const cloudBasisReferenceWGSL = /* wgsl */ `
++fn physicalCloudBasisReference(p:vec3f)->vec4f {
++  let region=physicalCloudNoise3(vec3f(p.x*0.48,3.17,p.z*0.48));
++  let warped=physicalCloudRotate(p+vec3f(region-0.5,0.0,(region-0.5)*0.7));
++  let broad=physicalCloudFilteredShape(warped,0.0,0.24);
++  let billows=physicalCloudNoise3(physicalCloudRotate(warped)*2.13+vec3f(11.4,7.3,2.8));
++  let erosion=physicalCloudFilteredShape(physicalCloudRotate(warped)*5.37+vec3f(3.6,14.8,5.2),0.0,0.7);
++  return vec4f(broad,billows,erosion,region);
++}
++`;

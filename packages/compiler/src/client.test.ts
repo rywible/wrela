@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { referenceProject } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
 import { BrowserCompiler } from "./client";
 
 const ActualWorker = globalThis.Worker;

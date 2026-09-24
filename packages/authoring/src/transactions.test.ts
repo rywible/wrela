@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { contentKey, referenceProject } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
+import { contentKey } from "@wrela/model";
 import type { EditBatch } from "./commands";
 import { AuthoringSession, RevisionConflict } from "./session";
 

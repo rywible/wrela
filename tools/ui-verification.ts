@@ -216,7 +216,7 @@ export async function verifyStudio(view: BrowserView, output: string) {
     checkpoint("Trusted pointer handle dragging commits source edits as one undo gesture");
 
     await view.scrollTo(".workspace-tabs");
-    await view.click(".workspace-tabs button:nth-child(3)");
+    await clickText(view, "Pose");
     const poseSource = await view.evaluate<string>("wrela.project()");
     await input(view, 'input[aria-label="Pose rotation Y"]', "0.22");
     await input(view, 'input[aria-label="Pose offset Y"]', "0.15");
@@ -280,11 +280,30 @@ export async function verifyStudio(view: BrowserView, output: string) {
       "Water, vegetation, material, environment and lighting inspectors edit and undo their domain source",
     );
 
+    await view.scrollTo('[data-document="valley-terrain"]');
     await view.click('[data-document="valley-terrain"]');
     await ready(view);
+    await view.scrollTo(".project-footer button");
     await view.click(".project-footer button");
     const operations = [
-      { kind: "terrain.widenValley", target: "valley-terrain", intervention: "river-valley", width: 80 },
+      {
+        kind: "terrain.intervene",
+        target: "valley-terrain",
+        intervention: {
+          id: "verification-valley",
+          kind: "valley",
+          center: [80, 80],
+          radius: 23,
+          strength: 7,
+          targetHeight: -3,
+        },
+      },
+      {
+        kind: "terrain.widenValley",
+        target: "valley-terrain",
+        intervention: "verification-valley",
+        width: 80,
+      },
       {
         kind: "world.placeForest",
         target: "winter-valley",
@@ -300,7 +319,7 @@ export async function verifyStudio(view: BrowserView, output: string) {
     await ready(view);
     assert(
       await view.evaluate(
-        'wrela.inspect("valley-terrain").interventions.find(i=>i.id==="river-valley").radius === 40',
+        'wrela.inspect("valley-terrain").interventions.find(i=>i.id==="verification-valley").radius === 40',
       ),
       "Agent valley operation failed",
     );
@@ -332,7 +351,7 @@ export async function verifyStudio(view: BrowserView, output: string) {
     await ready(view);
     assert(
       await view.evaluate(
-        'wrela.inspect("valley-terrain").interventions.find(i=>i.id==="river-valley").radius === 40',
+        'wrela.inspect("valley-terrain").interventions.find(i=>i.id==="verification-valley").radius === 40',
       ),
       "Saved intervention did not survive fresh page initialization",
     );
@@ -473,6 +492,8 @@ export async function verifyStudio(view: BrowserView, output: string) {
 
     const custom = JSON.parse(await view.evaluate<string>("wrela.project()"));
     custom.id = "verification-imported-project";
+    // The exported viewer intentionally offers this auxiliary study scene by ID.
+    custom.dynamicRoots = ["neutral-stage"];
     custom.name = "</script><script>globalThis.__exportInjection=1</script>";
     custom.documents.find((document: { kind: string }) => document.kind === "character").name =
       "</script><script>globalThis.__sourceInjection=1</script>";
@@ -527,7 +548,7 @@ export async function verifyStudio(view: BrowserView, output: string) {
     const html = await view.evaluate<string>("wrela.export().then(blob=>blob.text())");
     assert(
       html.includes("wrela-project") &&
-        html.includes("river-valley") &&
+        html.includes("verification-valley") &&
         html.includes("Apache License") &&
         html.includes("MIT License"),
       "Standalone export does not contain source documents",
@@ -641,8 +662,12 @@ export async function verifyStudio(view: BrowserView, output: string) {
     const winterGame = await verifyWinterGame(view, output);
     return { checks, capture, channels, named, mobile, travel, playerTravel, exported, winterGame };
   } catch (error) {
-    await Bun.write(join(output, "ui-failure.png"), await view.screenshot());
-    console.error(await view.evaluate("document.body.innerText"));
+    await view
+      .screenshot()
+      .then((image) => Bun.write(join(output, "ui-failure.png"), image))
+      .catch(() => {});
+    const body = await view.evaluate("document.body.innerText").catch(() => undefined);
+    if (body) console.error(body);
     throw error;
   } finally {
     await server.stop();

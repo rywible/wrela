@@ -1,0 +1,69 @@
+{
+  "reports": [
+    {
+      "phase": "cold",
+      "kind": "furnished",
+      "readyMs": 1160,
+      "builds": 1,
+      "storageHits": 0,
+      "storageWrites": 1,
+      "storageLoadMs": 24.899999976158142,
+      "storageWriteMs": 6.5,
+      "transferHash": "cf364981d4884990bb51aa97e8dc68dbcf24feb3713429908215731c2bf53a00",
+      "imageHash": "dc843480b683c38fc38a5209759e5970f049e0aafaa2d008fd5f9e16d3d33270",
+      "buildMs": 935.6999999284744,
+      "activeMs": 923.1000001430511,
+      "maxSliceMs": 4.199999928474426,
+      "errors": []
+    },
+    {
+      "phase": "cold",
+      "kind": "winter",
+      "readyMs": 2774.2000000476837,
+      "builds": 1,
+      "storageHits": 0,
+      "storageWrites": 1,
+      "storageLoadMs": 1.4000000953674316,
+      "storageWriteMs": 45.699999928474426,
+      "transferHash": "26b2b2889e9f5a77c1a313d30ab715c8da4802f6b5137b7f1d0ed7676d764c0c",
+      "imageHash": "06a10a89949f1fcef7d213d56bd5de30d1856a551629ca8cfcb7c19464502b29",
+      "buildMs": 2587,
+      "activeMs": 1845.1999994516373,
+      "maxSliceMs": 5,
+      "errors": []
+    },
+    {
+      "phase": "restored",
+      "kind": "furnished",
+      "readyMs": 34.40000009536743,
+      "builds": 0,
+      "storageHits": 1,
+      "storageWrites": 0,
+      "storageLoadMs": 21.800000071525574,
+      "storageWriteMs": 0,
+      "transferHash": "cf364981d4884990bb51aa97e8dc68dbcf24feb3713429908215731c2bf53a00",
+      "imageHash": "dc843480b683c38fc38a5209759e5970f049e0aafaa2d008fd5f9e16d3d33270",
+      "buildMs": 935.6999999284744,
+      "activeMs": 12.300000071525574,
+      "maxSliceMs": 2.399999976158142,
+      "errors": []
+    },
+    {
+      "phase": "restored",
+      "kind": "winter",
+      "readyMs": 187.70000004768372,
+      "builds": 0,
+      "storageHits": 1,
+      "storageWrites": 0,
+      "storageLoadMs": 182.30000007152557,
+      "storageWriteMs": 0,
+      "transferHash": "26b2b2889e9f5a77c1a313d30ab715c8da4802f6b5137b7f1d0ed7676d764c0c",
+      "imageHash": "06a10a89949f1fcef7d213d56bd5de30d1856a551629ca8cfcb7c19464502b29",
+      "buildMs": 2587,
+      "activeMs": 105.89999973773956,
+      "maxSliceMs": 3.399999976158142,
+      "errors": []
+    }
+  ],
+  "errors": []
+}

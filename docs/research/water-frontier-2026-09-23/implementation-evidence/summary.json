@@ -1,0 +1,383 @@
+{
+  "ocean": {
+    "path": "output/water-frontier-v2/source/output/browser-1790190871550-60003",
+    "sourceFingerprint": "3872e18ed62e3fed86dc44596c310199b1836de3f4e14190c385b2feb4fbadcd",
+    "runs": [
+      {
+        "waterOff": false,
+        "samples": 120,
+        "values": {
+          "gpuMs": {
+            "p50": 3.997696,
+            "p95": 5.177344
+          },
+          "cpuMs": {
+            "p50": 0.6499999761581421,
+            "p95": 0.9000000953674316
+          },
+          "fluidMs": {
+            "p50": 0.0,
+            "p95": 0
+          },
+          "uploadedBytes": {
+            "p50": 4176.0,
+            "p95": 4176
+          }
+        },
+        "waterResources": {
+          "transport": 12,
+          "spectrum": 5244864,
+          "body": 1984,
+          "geometry": 2534400,
+          "objects": 9856,
+          "total": 7791116
+        }
+      },
+      {
+        "waterOff": true,
+        "samples": 120,
+        "values": {
+          "gpuMs": {
+            "p50": 0.65536,
+            "p95": 1.769472
+          },
+          "cpuMs": {
+            "p50": 0.3999999761581421,
+            "p95": 0.7999999523162842
+          },
+          "fluidMs": {
+            "p50": 0.0,
+            "p95": 0
+          },
+          "uploadedBytes": {
+            "p50": 4160.0,
+            "p95": 4160
+          }
+        },
+        "waterResources": {
+          "transport": 12,
+          "spectrum": 0,
+          "body": 0,
+          "geometry": 0,
+          "objects": 0,
+          "total": 12
+        }
+      },
+      {
+        "waterOff": true,
+        "samples": 120,
+        "values": {
+          "gpuMs": {
+            "p50": 0.786432,
+            "p95": 1.900544
+          },
+          "cpuMs": {
+            "p50": 0.2999999523162842,
+            "p95": 0.5
+          },
+          "fluidMs": {
+            "p50": 0.0,
+            "p95": 0
+          },
+          "uploadedBytes": {
+            "p50": 4160.0,
+            "p95": 4160
+          }
+        },
+        "waterResources": {
+          "transport": 12,
+          "spectrum": 0,
+          "body": 0,
+          "geometry": 0,
+          "objects": 0,
+          "total": 12
+        }
+      },
+      {
+        "waterOff": false,
+        "samples": 120,
+        "values": {
+          "gpuMs": {
+            "p50": 4.456448,
+            "p95": 6.160384
+          },
+          "cpuMs": {
+            "p50": 0.7000000476837158,
+            "p95": 1
+          },
+          "fluidMs": {
+            "p50": 0.0,
+            "p95": 0
+          },
+          "uploadedBytes": {
+            "p50": 4176.0,
+            "p95": 4176
+          }
+        },
+        "waterResources": {
+          "transport": 12,
+          "spectrum": 5244864,
+          "body": 1984,
+          "geometry": 2534400,
+          "objects": 9856,
+          "total": 7791116
+        }
+      }
+    ],
+    "estimatedMedianIncrementMs": 3.506176
+  },
+  "creek": {
+    "path": "output/water-frontier-v2/source/output/browser-1790190935021-60180",
+    "sourceFingerprint": "3872e18ed62e3fed86dc44596c310199b1836de3f4e14190c385b2feb4fbadcd",
+    "runs": [
+      {
+        "waterOff": false,
+        "samples": 120,
+        "values": {
+          "gpuMs": {
+            "p50": 14.155776,
+            "p95": 16.121856
+          },
+          "cpuMs": {
+            "p50": 2.850000023841858,
+            "p95": 4.100000023841858
+          },
+          "fluidMs": {
+            "p50": 1.5499999523162842,
+            "p95": 2.200000047683716
+          },
+          "uploadedBytes": {
+            "p50": 268304.0,
+            "p95": 268304
+          }
+        },
+        "waterResources": {
+          "transport": 19353020,
+          "spectrum": 526280,
+          "body": 526272,
+          "geometry": 3788848,
+          "objects": 19712,
+          "total": 24214132
+        }
+      },
+      {
+        "waterOff": true,
+        "samples": 120,
+        "values": {
+          "gpuMs": {
+            "p50": 8.945664,
+            "p95": 11.010048
+          },
+          "cpuMs": {
+            "p50": 2.6999999284744263,
+            "p95": 3.299999952316284
+          },
+          "fluidMs": {
+            "p50": 1.5,
+            "p95": 1.899999976158142
+          },
+          "uploadedBytes": {
+            "p50": 268288.0,
+            "p95": 268288
+          }
+        },
+        "waterResources": {
+          "transport": 12,
+          "spectrum": 0,
+          "body": 526272,
+          "geometry": 1894424,
+          "objects": 9856,
+          "total": 2430564
+        }
+      },
+      {
+        "waterOff": true,
+        "samples": 120,
+        "values": {
+          "gpuMs": {
+            "p50": 8.192,
+            "p95": 12.910592
+          },
+          "cpuMs": {
+            "p50": 2.5,
+            "p95": 3.4000000953674316
+          },
+          "fluidMs": {
+            "p50": 1.399999976158142,
+            "p95": 1.899999976158142
+          },
+          "uploadedBytes": {
+            "p50": 268288.0,
+            "p95": 268288
+          }
+        },
+        "waterResources": {
+          "transport": 12,
+          "spectrum": 0,
+          "body": 526272,
+          "geometry": 1894424,
+          "objects": 9856,
+          "total": 2430564
+        }
+      },
+      {
+        "waterOff": false,
+        "samples": 120,
+        "values": {
+          "gpuMs": {
+            "p50": 13.795328000000001,
+            "p95": 15.335424
+          },
+          "cpuMs": {
+            "p50": 2.199999988079071,
+            "p95": 3.5
+          },
+          "fluidMs": {
+            "p50": 1.2000000476837158,
+            "p95": 1.9000000953674316
+          },
+          "uploadedBytes": {
+            "p50": 268304.0,
+            "p95": 268304
+          }
+        },
+        "waterResources": {
+          "transport": 19353020,
+          "spectrum": 526280,
+          "body": 526272,
+          "geometry": 3788848,
+          "objects": 19712,
+          "total": 24214132
+        }
+      }
+    ],
+    "estimatedMedianIncrementMs": 5.40672
+  },
+  "valley": {
+    "path": "output/water-frontier-v2/source/output/browser-1790190823009-59818",
+    "sourceFingerprint": "3872e18ed62e3fed86dc44596c310199b1836de3f4e14190c385b2feb4fbadcd",
+    "runs": [
+      {
+        "waterOff": false,
+        "samples": 120,
+        "values": {
+          "gpuMs": {
+            "p50": 15.204352,
+            "p95": 15.859712
+          },
+          "cpuMs": {
+            "p50": 3.299999952316284,
+            "p95": 3.899999976158142
+          },
+          "fluidMs": {
+            "p50": 0.2999999523162842,
+            "p95": 0.30000007152557373
+          },
+          "uploadedBytes": {
+            "p50": 72224.0,
+            "p95": 72224
+          }
+        },
+        "waterResources": {
+          "transport": 19353020,
+          "spectrum": 526280,
+          "body": 1116640,
+          "geometry": 8062000,
+          "objects": 19712,
+          "total": 29077652
+        }
+      },
+      {
+        "waterOff": true,
+        "samples": 120,
+        "values": {
+          "gpuMs": {
+            "p50": 8.650752,
+            "p95": 11.14112
+          },
+          "cpuMs": {
+            "p50": 1.75,
+            "p95": 2.899999976158142
+          },
+          "fluidMs": {
+            "p50": 0.19999992847442627,
+            "p95": 0.30000007152557373
+          },
+          "uploadedBytes": {
+            "p50": 72208.0,
+            "p95": 72208
+          }
+        },
+        "waterResources": {
+          "transport": 12,
+          "spectrum": 0,
+          "body": 1116640,
+          "geometry": 7589912,
+          "objects": 9856,
+          "total": 8716420
+        }
+      },
+      {
+        "waterOff": true,
+        "samples": 120,
+        "values": {
+          "gpuMs": {
+            "p50": 8.486912,
+            "p95": 11.79648
+          },
+          "cpuMs": {
+            "p50": 2.200000047683716,
+            "p95": 3
+          },
+          "fluidMs": {
+            "p50": 0.20000004768371582,
+            "p95": 0.30000007152557373
+          },
+          "uploadedBytes": {
+            "p50": 72208.0,
+            "p95": 72208
+          }
+        },
+        "waterResources": {
+          "transport": 12,
+          "spectrum": 0,
+          "body": 1116640,
+          "geometry": 7589912,
+          "objects": 9856,
+          "total": 8716420
+        }
+      },
+      {
+        "waterOff": false,
+        "samples": 120,
+        "values": {
+          "gpuMs": {
+            "p50": 15.138816,
+            "p95": 15.990784
+          },
+          "cpuMs": {
+            "p50": 2.25,
+            "p95": 3.299999952316284
+          },
+          "fluidMs": {
+            "p50": 0.20000004768371582,
+            "p95": 0.30000007152557373
+          },
+          "uploadedBytes": {
+            "p50": 72224.0,
+            "p95": 72224
+          }
+        },
+        "waterResources": {
+          "transport": 19353020,
+          "spectrum": 526280,
+          "body": 1116640,
+          "geometry": 8062000,
+          "objects": 19712,
+          "total": 29077652
+        }
+      }
+    ],
+    "estimatedMedianIncrementMs": 6.602751999999999
+  }
+}

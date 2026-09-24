@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { coniferFamilyFixture, referenceProject } from "./fixtures";
+import { coniferFamilyFixture, referenceProject } from "@wrela/examples/fixtures";
 import { migrateProjectSource } from "./migrations";
 import { instantiateRecipe, realizeRecipeProject } from "./recipes";
 import { parseProject, validateProject } from "./validation";

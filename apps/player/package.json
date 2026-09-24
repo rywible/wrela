@@ -2,5 +2,12 @@
   "name": "@wrela/player",
   "version": "0.1.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@wrela/runtime": "workspace:*",
+    "@wrela/model": "workspace:*",
+    "@wrela/authoring": "workspace:*",
+    "@wrela/render-webgpu": "workspace:*",
+    "@wrela/compiler": "workspace:*"
+  }
 }

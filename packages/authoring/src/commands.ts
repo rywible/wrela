@@ -1,4 +1,5 @@
 import {
+  assertSourceKeysPreserved,
   documentSchema,
   fieldNodeSchema,
   idSchema,
@@ -7,12 +8,15 @@ import {
   numberSchema,
   vec3Schema,
 } from "@wrela/model";
+
 import { z } from "zod";
+import { creatureCommandDescriptions, creatureOperationSchemas } from "./creature-commands";
 export const operationSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("document.create"), document: documentSchema }),
-  z.object({ kind: z.literal("document.delete"), target: idSchema }),
-  z.object({ kind: z.literal("document.rename"), target: idSchema, name: z.string().min(1).max(120) }),
-  z.object({
+  ...creatureOperationSchemas,
+  z.strictObject({ kind: z.literal("document.create"), document: documentSchema }),
+  z.strictObject({ kind: z.literal("document.delete"), target: idSchema }),
+  z.strictObject({ kind: z.literal("document.rename"), target: idSchema, name: z.string().min(1).max(120) }),
+  z.strictObject({
     kind: z.literal("document.set"),
     target: idSchema,
     path: z
@@ -21,25 +25,29 @@ export const operationSchema = z.discriminatedUnion("kind", [
       .max(8),
     value: z.unknown(),
   }),
-  z.object({ kind: z.literal("document.detach"), target: idSchema }),
-  z.object({ kind: z.literal("field.add"), target: idSchema, node: fieldNodeSchema }),
-  z.object({ kind: z.literal("field.remove"), target: idSchema, node: idSchema }),
-  z.object({
+  z.strictObject({ kind: z.literal("document.detach"), target: idSchema }),
+  z.strictObject({ kind: z.literal("field.add"), target: idSchema, node: fieldNodeSchema }),
+  z.strictObject({ kind: z.literal("field.remove"), target: idSchema, node: idSchema }),
+  z.strictObject({
     kind: z.literal("field.update"),
     target: idSchema,
     node: idSchema,
-    changes: fieldNodeSchema.partial().omit({ id: true }),
+    changes: fieldNodeSchema.partial().omit({ id: true }).strict(),
   }),
-  z.object({ kind: z.literal("material.assign"), target: idSchema, material: idSchema }),
-  z.object({ kind: z.literal("material.makeLocal"), target: idSchema, newId: idSchema }),
-  z.object({ kind: z.literal("terrain.intervene"), target: idSchema, intervention: interventionSchema }),
-  z.object({
+  z.strictObject({ kind: z.literal("material.assign"), target: idSchema, material: idSchema }),
+  z.strictObject({ kind: z.literal("material.makeLocal"), target: idSchema, newId: idSchema }),
+  z.strictObject({
+    kind: z.literal("terrain.intervene"),
+    target: idSchema,
+    intervention: interventionSchema,
+  }),
+  z.strictObject({
     kind: z.literal("terrain.widenValley"),
     target: idSchema,
     intervention: idSchema,
     width: z.number().min(2).max(2000),
   }),
-  z.object({
+  z.strictObject({
     kind: z.literal("world.placeForest"),
     target: idSchema,
     rule: idSchema,
@@ -48,16 +56,21 @@ export const operationSchema = z.discriminatedUnion("kind", [
     density: z.number().min(0).max(1),
     seed: z.number().int(),
   }),
-  z.object({ kind: z.literal("character.addJoint"), target: idSchema, joint: jointSchema }),
-  z.object({
+  z.strictObject({ kind: z.literal("character.addJoint"), target: idSchema, joint: jointSchema }),
+  z.strictObject({
     kind: z.literal("character.setJointLimit"),
     target: idSchema,
     joint: idSchema,
     minimum: numberSchema,
     maximum: numberSchema,
   }),
-  z.object({ kind: z.literal("character.pose"), target: idSchema, joint: idSchema, rotation: vec3Schema }),
-  z.object({
+  z.strictObject({
+    kind: z.literal("character.pose"),
+    target: idSchema,
+    joint: idSchema,
+    rotation: vec3Schema,
+  }),
+  z.strictObject({
     kind: z.literal("character.addKey"),
     target: idSchema,
     motion: idSchema,
@@ -69,13 +82,13 @@ export const operationSchema = z.discriminatedUnion("kind", [
 ]);
 export type Operation = z.infer<typeof operationSchema>;
 const revisionPrecondition = z.number().int().nonnegative().nullable();
-export const documentPreconditionsSchema = z.object({
+export const documentPreconditionsSchema = z.strictObject({
   /** null asserts that the document does not exist. */
   reads: z.record(idSchema, revisionPrecondition),
   writes: z.record(idSchema, revisionPrecondition),
 });
 export const batchSchema = z
-  .object({
+  .strictObject({
     expectedRevision: z.number().int().nonnegative().optional(),
     expectedDocuments: z.record(idSchema, z.number().int().nonnegative()).optional(),
     preconditions: documentPreconditionsSchema.optional(),
@@ -91,6 +104,7 @@ export const batchSchema = z
   });
 export type EditBatch = z.infer<typeof batchSchema>;
 export const commandDescriptions: Record<Operation["kind"], string> = {
+  ...creatureCommandDescriptions,
   "document.create": "Create a validated definition",
   "document.delete": "Delete an unreferenced definition",
   "document.rename": "Rename a definition without changing its identity",
@@ -109,3 +123,9 @@ export const commandDescriptions: Record<Operation["kind"], string> = {
   "character.pose": "Set a joint rest pose",
   "character.addKey": "Insert or replace a motion key",
 };
+
+export function parseEditBatch(input: unknown): EditBatch {
+  const batch = batchSchema.parse(input);
+  assertSourceKeysPreserved(input, batch, "batch");
+  return batch;
+}

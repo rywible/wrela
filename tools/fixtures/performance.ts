@@ -1,7 +1,8 @@
-import { type Camera, type Diagnostic, referenceProject } from "@wrela/model";
+import { BrowserCompiler } from "@wrela/compiler/client";
+import { referenceProject } from "@wrela/examples";
+import type { Camera, Diagnostic } from "@wrela/model";
 import { WebGPURenderer } from "@wrela/render-webgpu";
 import { BrowserSceneHost } from "@wrela/runtime";
-import { BrowserCompiler } from "../../packages/compiler/src/client";
 
 type Profile = "low" | "balanced" | "high";
 const target = window as unknown as {

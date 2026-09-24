@@ -14,6 +14,7 @@ export async function verifyWinterGame(view: BrowserView, output: string) {
   };
   const delivery = await view.evaluate<{
     launchMs: number;
+    launchPhases?: Record<string, number>;
     mode: string;
     cookedDocuments: number;
     sourceCompiledDocuments: number;
@@ -28,7 +29,7 @@ export async function verifyWinterGame(view: BrowserView, output: string) {
   );
   assert(
     delivery.launchMs > 0 && delivery.launchMs <= 5000,
-    `Reference cold launch exceeded the 5000ms local budget: ${delivery.launchMs}ms`,
+    `Reference cold launch exceeded the 5000ms local budget: ${JSON.stringify(delivery)}`,
   );
   checks.push(
     "Matching cooked export opens a complete first frame within the 5000ms local reference budget without finite source compilation",

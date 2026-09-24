@@ -1,0 +1,77 @@
+{
+  "date": "2026-09-23",
+  "wind": [
+    {
+      "windSpeed": 3,
+      "amplitudeBound": 1.0194852497883171,
+      "slopeVariance": 0.006900408286387708,
+      "choppiness": 0.6,
+      "identicalToWind6": false
+    },
+    {
+      "windSpeed": 6,
+      "amplitudeBound": 2.0389704995766342,
+      "slopeVariance": 0.027601633145550832,
+      "choppiness": 0.45650602254524775,
+      "identicalToWind6": true
+    },
+    {
+      "windSpeed": 8,
+      "amplitudeBound": 2.0389704995766342,
+      "slopeVariance": 0.027601633145550832,
+      "choppiness": 0.45650602254524775,
+      "identicalToWind6": true
+    },
+    {
+      "windSpeed": 15,
+      "amplitudeBound": 2.0389704995766342,
+      "slopeVariance": 0.027601633145550832,
+      "choppiness": 0.45650602254524775,
+      "identicalToWind6": true
+    },
+    {
+      "windSpeed": 30,
+      "amplitudeBound": 2.0389704995766342,
+      "slopeVariance": 0.027601633145550832,
+      "choppiness": 0.45650602254524775,
+      "identicalToWind6": true
+    }
+  ],
+  "analyticCrestProbe": {
+    "samples": 19200,
+    "minDeterminant": 0.7499045501916798,
+    "maxDeterminant": 1.3132231463764423,
+    "candidateFraction": 0.00046875,
+    "reversedChoppinessCandidateFraction": 0.09989583333333334,
+    "heightDeterminantCorrelation": 0.8392354841444132,
+    "note": "Analytic sample; candidate is determinant < 0.9 and positive height. Sign reversal is a proposed diagnostic. Not pixel coverage or filtered-GPU foam measurement."
+  },
+  "cascadeBudgets": [
+    {
+      "period": 112,
+      "kind": "largest",
+      "texelMetres": 0.4375
+    },
+    {
+      "period": 14,
+      "kind": "middle",
+      "texelMetres": 0.0546875
+    },
+    {
+      "period": 1.75,
+      "kind": "smallest",
+      "texelMetres": 0.0068359375
+    }
+  ],
+  "carrierEvaluationsPerSynthesis": 3538944,
+  "creekCellMetres": [
+    0.2204724409448819,
+    0.3779527559055118
+  ],
+  "gridBytes": {
+    "currentPacked": 786432,
+    "currentOnly": 262144,
+    "staticBed": 262144
+  },
+  "note": "Read-only source probe. No renderer changes."
+}

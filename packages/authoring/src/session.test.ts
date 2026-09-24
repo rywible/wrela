@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { referenceProject } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
 import { AuthoringSession, RevisionConflict } from "./session";
 
 test("atomic batches reject invalid dependencies without touching source or history", () => {
@@ -19,6 +19,7 @@ test("atomic batches reject invalid dependencies without touching source or hist
 });
 test("undo is monotonic and gesture coalescing preserves original content", () => {
   const s = new AuthoringSession(referenceProject());
+  const originalSky = structuredClone(s.getSnapshot().project.documents.find((d) => d.id === "winter-sky"));
   for (let i = 0; i < 5; i++)
     s.apply({
       expectedRevision: i,
@@ -30,9 +31,7 @@ test("undo is monotonic and gesture coalescing preserves original content", () =
   s.undo();
   expect(s.getSnapshot().revision).toBe(6);
   expect(s.getSnapshot().canUndo).toBe(false);
-  expect(s.getSnapshot().project.documents.find((d) => d.id === "winter-sky")).toMatchObject({
-    sunElevation: 0.48,
-  });
+  expect(s.getSnapshot().project.documents.find((d) => d.id === "winter-sky")).toEqual(originalSky);
   s.redo();
   expect(s.getSnapshot().revision).toBe(7);
   expect(() =>

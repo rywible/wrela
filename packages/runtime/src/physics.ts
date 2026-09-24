@@ -1,5 +1,6 @@
 import RAPIER from "@dimforge/rapier3d-compat";
 import type { Bounds, CharacterCollider, MeshData, Quat, Vec3 } from "@wrela/model";
+
 import { quatFromEuler, quatMultiply, rotateVector } from "./animation";
 export type PhysicsMode = "kinematic" | "dynamic" | "motor";
 export type BodyState = {
@@ -31,6 +32,17 @@ export type DiagnosticCollider = {
   | { shape: "sphere"; radius: number }
   | { shape: "capsule"; radius: number; halfHeight: number }
 );
+export type PhysicsConstraintConfiguration = {
+  id: string;
+  parent: string;
+  child: string;
+  kind: "spherical" | "revolute" | "fixed";
+  anchorParent: Vec3;
+  anchorChild: Vec3;
+  axis?: Vec3;
+  minimum?: number;
+  maximum?: number;
+};
 export type PhysicsCheckpoint = {
   snapshot: Uint8Array;
   bodies: [string, number, PhysicsMode][];
@@ -41,6 +53,8 @@ export type PhysicsCheckpoint = {
   colliderIds: [number, string][];
   restoredKinematicVelocities: [string, { velocity: Vec3; angularVelocity: Vec3 }][];
   origin: Vec3;
+  constraints?: [string, number, string, string][];
+  bodyOwners?: [string, string][];
 };
 let initialized: Promise<void> | undefined;
 const vector = (v: Vec3) => ({ x: v[0], y: v[1], z: v[2] });
@@ -50,6 +64,8 @@ export type PhysicsRayHit = { id: string; point: Vec3; normal: Vec3; distance: n
 export class PhysicsAdapter {
   private bodies = new Map<string, { body: RAPIER.RigidBody; mode: PhysicsMode }>();
   private terrain: RAPIER.Collider[] = [];
+  private constraints = new Map<string, { joint: RAPIER.ImpulseJoint; parent: string; child: string }>();
+  private bodyOwners = new Map<string, string>();
   private statics = new Map<string, { collider: RAPIER.Collider; offset: Vec3; rotation: Quat }[]>();
   private events = new RAPIER.EventQueue(true);
   private contacts: PhysicsContactEvent[] = [];
@@ -206,6 +222,16 @@ export class PhysicsAdapter {
     }
     return true;
   }
+  removeStaticObject(id: string): void {
+    const parts = this.statics.get(id);
+    if (!parts) return;
+    for (const part of parts) {
+      this.colliderIds.delete(part.collider.handle);
+      this.world.removeCollider(part.collider, true);
+    }
+    this.statics.delete(id);
+    this.staticOffsets.delete(id);
+  }
   private owner(collider: RAPIER.Collider): string {
     for (const [id, parts] of this.statics)
       if (parts.some((part) => part.collider.handle === collider.handle)) return id;
@@ -213,7 +239,7 @@ export class PhysicsAdapter {
     // expose a zero parent handle, which is also a valid first rigid-body handle.
     for (const [id, entry] of this.bodies)
       for (let index = 0; index < entry.body.numColliders(); index++)
-        if (entry.body.collider(index).handle === collider.handle) return id;
+        if (entry.body.collider(index).handle === collider.handle) return this.bodyOwners.get(id) ?? id;
     return "terrain";
   }
   raycast(origin: Vec3, direction: Vec3, maximum: number, excludeId?: string): PhysicsRayHit | null {
@@ -290,7 +316,94 @@ export class PhysicsAdapter {
     body.setRotation(quaternion(rotation), true);
     if (body.isKinematic()) body.setNextKinematicRotation(quaternion(rotation));
   }
+  hasBody(id: string): boolean {
+    return this.bodies.has(id);
+  }
+  setBodyOwner(id: string, owner: string) {
+    this.entry(id);
+    this.bodyOwners.set(id, owner);
+  }
+  addConstraint(configuration: PhysicsConstraintConfiguration) {
+    if (this.constraints.has(configuration.id)) throw new Error(`Duplicate constraint ${configuration.id}`);
+    if (this.constraints.size >= 256) throw new Error("Physics joint budget exceeded");
+    if (configuration.parent === configuration.child) throw new Error("Cannot constrain a body to itself");
+    if (
+      [...configuration.anchorParent, ...configuration.anchorChild].some((value) => !Number.isFinite(value))
+    )
+      throw new Error("Constraint anchors must be finite");
+    if (
+      configuration.kind === "revolute" &&
+      (!Number.isFinite(configuration.minimum ?? -Math.PI) ||
+        !Number.isFinite(configuration.maximum ?? Math.PI) ||
+        (configuration.minimum ?? -Math.PI) > (configuration.maximum ?? Math.PI))
+    )
+      throw new Error("Invalid hinge limits");
+    const parent = this.entry(configuration.parent).body,
+      child = this.entry(configuration.child).body;
+    const a = vector(configuration.anchorParent),
+      b = vector(configuration.anchorChild);
+    let descriptor: RAPIER.JointData;
+    if (configuration.kind === "revolute") {
+      const axis = configuration.axis ?? [1, 0, 0];
+      const length = Math.hypot(...axis);
+      if (!(length > 1e-8) || !Number.isFinite(length)) throw new Error("Invalid hinge axis");
+      descriptor = RAPIER.JointData.revolute(a, b, vector(axis.map((v) => v / length) as Vec3));
+    } else if (configuration.kind === "fixed") {
+      const p = parent.rotation(),
+        c = child.rotation();
+      const relative = quatMultiply([-p.x, -p.y, -p.z, p.w], [c.x, c.y, c.z, c.w]);
+      descriptor = RAPIER.JointData.fixed(a, quaternion(relative), b, quaternion([0, 0, 0, 1]));
+    } else descriptor = RAPIER.JointData.spherical(a, b);
+    const joint = this.world.createImpulseJoint(descriptor, parent, child, true);
+    joint.setContactsEnabled(false);
+    if (configuration.kind === "revolute")
+      (joint as RAPIER.RevoluteImpulseJoint).setLimits(
+        configuration.minimum ?? -Math.PI,
+        configuration.maximum ?? Math.PI,
+      );
+    this.constraints.set(configuration.id, {
+      joint,
+      parent: configuration.parent,
+      child: configuration.child,
+    });
+  }
+  hasConstraint(id: string): boolean {
+    return this.constraints.has(id);
+  }
+  removeConstraint(id: string) {
+    const entry = this.constraints.get(id);
+    if (!entry) return;
+    if (entry.joint.isValid()) this.world.removeImpulseJoint(entry.joint, true);
+    this.constraints.delete(id);
+  }
+  impulse(id: string, impulse: Vec3, torque: Vec3 = [0, 0, 0]) {
+    if ([...impulse, ...torque].some((value) => !Number.isFinite(value)))
+      throw new Error("Impulse must be finite");
+    const body = this.entry(id).body;
+    body.applyImpulse(vector(impulse), true);
+    body.applyTorqueImpulse(vector(torque), true);
+  }
+  setDamping(id: string, linear: number, angular: number) {
+    this.entry(id).body.setLinearDamping(linear);
+    this.entry(id).body.setAngularDamping(angular);
+  }
+  constraintError(id: string): number {
+    const entry = this.constraints.get(id);
+    if (!entry) throw new Error(`Unknown constraint ${id}`);
+    const a = entry.joint.anchor1(),
+      b = entry.joint.anchor2();
+    const parent = this.state(entry.parent),
+      child = this.state(entry.child);
+    const pa = rotateVector(parent.rotation, [a.x, a.y, a.z]),
+      pb = rotateVector(child.rotation, [b.x, b.y, b.z]);
+    return Math.hypot(
+      ...parent.position.map((value, axis) => value + pa[axis] - child.position[axis] - pb[axis]),
+    );
+  }
   remove(id: string) {
+    for (const [key, joint] of this.constraints)
+      if (joint.parent === id || joint.child === id) this.removeConstraint(key);
+    this.bodyOwners.delete(id);
     const entry = this.bodies.get(id);
     if (entry) {
       for (let index = 0; index < entry.body.numColliders(); index++)
@@ -353,6 +466,17 @@ export class PhysicsAdapter {
       entry.body.setNextKinematicTranslation(entry.body.translation());
       entry.body.setNextKinematicRotation(entry.body.rotation());
     }
+  }
+  /** Rigid machinery motion bypasses the character controller's sliding step. */
+  targetKinematic(id: string, position: Vec3, rotation: Quat) {
+    if ([...position, ...rotation].some((value) => !Number.isFinite(value)))
+      throw new Error("Kinematic target must be finite");
+    const entry = this.entry(id);
+    if (entry.mode !== "kinematic") throw new Error("Kinematic target requires a kinematic body");
+    entry.body.setNextKinematicTranslation(
+      vector(position.map((value, axis) => value - this.origin[axis]) as Vec3),
+    );
+    entry.body.setNextKinematicRotation(quaternion(rotation));
   }
   target(id: string, position: Vec3, rotation: Quat, dt: number) {
     const entry = this.entry(id),
@@ -431,6 +555,7 @@ export class PhysicsAdapter {
       (v, i) => ((surfaceVelocity[i] - v) * 3 + (i === 1 ? 9.81 * 1.4 : 0)) * submerged * mass * dt,
     ) as Vec3;
     entry.body.applyImpulse(vector(impulse), true);
+    return impulse;
   }
   teleport(id: string, position: Vec3) {
     this.restoredKinematicVelocities.delete(id);
@@ -559,7 +684,12 @@ export class PhysicsAdapter {
       if (!body.isEnabled()) continue;
       for (let index = 0; index < body.numColliders(); index++) {
         const collider = body.collider(index);
-        collect(id, this.colliderIds.get(collider.handle) ?? `collider-${index}`, collider, body);
+        collect(
+          this.bodyOwners.get(id) ?? id,
+          this.colliderIds.get(collider.handle) ?? `collider-${index}`,
+          collider,
+          body,
+        );
       }
     }
     for (const [id, parts] of this.statics)
@@ -580,6 +710,13 @@ export class PhysicsAdapter {
       colliderIds: [...this.colliderIds],
       restoredKinematicVelocities: structuredClone([...this.restoredKinematicVelocities]),
       origin: [...this.origin],
+      constraints: [...this.constraints].map(([id, value]) => [
+        id,
+        value.joint.handle,
+        value.parent,
+        value.child,
+      ]),
+      bodyOwners: [...this.bodyOwners],
     };
   }
   restore(checkpoint: PhysicsCheckpoint) {
@@ -607,6 +744,13 @@ export class PhysicsAdapter {
     this.colliderIds = new Map(checkpoint.colliderIds);
     this.restoredKinematicVelocities = new Map(structuredClone(checkpoint.restoredKinematicVelocities));
     this.origin = [...checkpoint.origin];
+    this.constraints = new Map(
+      (checkpoint.constraints ?? []).map(([id, handle, parent, child]) => [
+        id,
+        { joint: this.world.getImpulseJoint(handle), parent, child },
+      ]),
+    );
+    this.bodyOwners = new Map(checkpoint.bodyOwners ?? []);
   }
   dispose() {
     if (this.disposed) return;
@@ -615,6 +759,8 @@ export class PhysicsAdapter {
     this.events.free();
     this.contacts = [];
     this.bodies.clear();
+    this.constraints.clear();
+    this.bodyOwners.clear();
     this.terrain = [];
     this.statics.clear();
     this.staticOffsets.clear();

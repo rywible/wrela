@@ -1,0 +1,93 @@
+{
+  "reports": [
+    {
+      "phase": "travel-cold",
+      "kind": "winter",
+      "traversal": {
+        "residentGeometryOnly": true,
+        "distance": 22,
+        "durationMs": 5511.899999976158,
+        "frames": 332,
+        "intervalMs": {
+          "median": 16.699999928474426,
+          "p95": 18.299999952316284,
+          "max": 26.5
+        },
+        "applyMs": {
+          "median": 0.7000000476837158,
+          "p95": 0.9000000953674316,
+          "max": 1.100000023841858
+        },
+        "foregroundBuilds": 0,
+        "prefetchBuilds": 1,
+        "prefetchHits": 1,
+        "prefetchWaitMs": 0,
+        "changes": [
+          {
+            "distance": 20.035599999904615,
+            "elapsedMs": 5010
+          }
+        ],
+        "incompleteFrames": 0,
+        "pendingReceiverAdmissions": 0
+      },
+      "readyMs": 1184.8999999761581,
+      "builds": 1,
+      "storageHits": 0,
+      "storageWrites": 2,
+      "storageLoadMs": 0.7000000476837158,
+      "storageWriteMs": 43.799999952316284,
+      "transferHash": "1359b44ca59af4598dd6f8526a28fcd06d93b5a033106e07a6705956958536ce",
+      "imageHash": "27d52ce23e3d7cc07d09a2f040fa5d125f4bc2e70d3425db65da30dd482096c5",
+      "buildMs": 968.5,
+      "activeMs": 646.200000166893,
+      "maxSliceMs": 4.299999952316284,
+      "errors": []
+    },
+    {
+      "phase": "travel-restored",
+      "kind": "winter",
+      "traversal": {
+        "residentGeometryOnly": true,
+        "distance": 22,
+        "durationMs": 5518.299999952316,
+        "frames": 331,
+        "intervalMs": {
+          "median": 16.699999928474426,
+          "p95": 18.100000023841858,
+          "max": 23.09999990463257
+        },
+        "applyMs": {
+          "median": 0.7000000476837158,
+          "p95": 0.9000000953674316,
+          "max": 1.2999999523162842
+        },
+        "foregroundBuilds": 0,
+        "prefetchBuilds": 0,
+        "prefetchHits": 1,
+        "prefetchWaitMs": 0,
+        "changes": [
+          {
+            "distance": 20.058400000095347,
+            "elapsedMs": 5015.899999976158
+          }
+        ],
+        "incompleteFrames": 0,
+        "pendingReceiverAdmissions": 0
+      },
+      "readyMs": 195.5,
+      "builds": 0,
+      "storageHits": 2,
+      "storageWrites": 0,
+      "storageLoadMs": 150.69999992847443,
+      "storageWriteMs": 0,
+      "transferHash": "1359b44ca59af4598dd6f8526a28fcd06d93b5a033106e07a6705956958536ce",
+      "imageHash": "27d52ce23e3d7cc07d09a2f040fa5d125f4bc2e70d3425db65da30dd482096c5",
+      "buildMs": 968.5,
+      "activeMs": 108.20000004768372,
+      "maxSliceMs": 3.399999976158142,
+      "errors": []
+    }
+  ],
+  "errors": []
+}

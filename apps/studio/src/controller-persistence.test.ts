@@ -1,6 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import type { RecoveryDraft, SavedProject } from "@wrela/authoring";
-import { contentKey, type Project, referenceProject } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
+import { contentKey, type Project } from "@wrela/model";
 import { StudioController } from "./controller";
 
 /** Deterministic persistence scheduling around the actual controller. IndexedDB

@@ -1,4 +1,20 @@
 import { z } from "zod";
+import { assemblySchema } from "./assembly";
+import { creatureMaterialSchema, creatureSchema } from "./creature";
+import {
+  cloudscapeSchema,
+  dayCycleSchema,
+  environmentGradeSchema,
+  environmentSequenceSchema,
+  lightingZoneSchema,
+  waterAuthoringSchema,
+} from "./environment-authoring";
+import { terrainGeologySchema } from "./geology";
+import { performanceSchema } from "./performance";
+import { surfaceAppearanceSchema } from "./surface-appearance";
+import { botanicalSchema } from "./vegetation-authoring";
+import { waterDomainSchema, waterEffectSchema, waterOpticsSchema, waterSpectrumSchema } from "./water-body";
+import { worldCompositionSchema } from "./world-authoring";
 export const idSchema = z
   .string()
   .min(1)
@@ -43,6 +59,7 @@ export const fieldNodeSchema = z.object({
   kind: z.enum([
     "sphere",
     "ellipsoid",
+    "rock",
     "box",
     "capsule",
     "torus",
@@ -75,13 +92,16 @@ export const fieldSchema = z.object({
 });
 export type FieldDefinition = z.infer<typeof fieldSchema>;
 export const materialSchema = z.object({
+  emission: z.object({ color, intensity: z.number().min(0).max(10000) }).optional(),
   ...envelope,
   kind: z.literal("material"),
+  appearance: surfaceAppearanceSchema.optional(),
+  creature: creatureMaterialSchema.optional(),
   color,
   secondary: color,
   roughness: z.number().min(0.04).max(1),
   metallic: z.number().min(0).max(1),
-  pattern: z.enum(["solid", "noise", "stripes", "marble"]),
+  pattern: z.enum(["solid", "noise", "stripes", "marble", "weave"]),
   scale: z.number().min(0.01).max(100),
   normalStrength: z.number().min(0).max(1),
   domain: z.enum(["local", "world"]).optional(),
@@ -146,6 +166,7 @@ export type CharacterCollider = z.infer<typeof characterColliderSchema>;
 export const objectSchema = z.object({
   ...envelope,
   kind: z.literal("object"),
+  assembly: assemblySchema.optional(),
   field: fieldSchema,
   material: idSchema,
   collision: z.enum(["none", "box", "sphere", "mesh", "compound"]),
@@ -154,8 +175,10 @@ export const objectSchema = z.object({
 export const characterSchema = z.object({
   ...envelope,
   kind: z.literal("character"),
+  performance: performanceSchema.optional(),
   field: fieldSchema,
   material: idSchema,
+  creature: creatureSchema.optional(),
   joints: z.array(jointSchema).min(1).max(64),
   motions: z.array(motionSchema).max(32),
   physics: z.object({
@@ -169,10 +192,11 @@ export const characterSchema = z.object({
 export const vegetationSchema = z.object({
   ...envelope,
   kind: z.literal("vegetation"),
+  botanical: botanicalSchema.optional(),
   seed: z.number().int(),
   height: z.number().min(0.5).max(30),
   radius: z.number().min(0.1).max(10),
-  branches: z.number().int().min(3).max(32),
+  branches: z.number().int().min(3).max(96),
   material: idSchema,
   trunkMaterial: idSchema,
   windResponse: z.number().min(0).max(2),
@@ -181,6 +205,7 @@ export const vegetationSchema = z.object({
 export const lightingSchema = z.object({
   ...envelope,
   kind: z.literal("lighting"),
+  zones: z.array(lightingZoneSchema).max(16).optional(),
   lights: z
     .array(
       z.object({
@@ -189,6 +214,8 @@ export const lightingSchema = z.object({
         position: vec3Schema,
         color,
         intensity: z.number().min(0).max(30),
+        range: z.number().positive().max(10000).optional(),
+        shadows: z.boolean().optional(),
       }),
     )
     .max(8),
@@ -197,11 +224,16 @@ export const lightingSchema = z.object({
 export const environmentSchema = z.object({
   ...envelope,
   kind: z.literal("environment"),
+  sequence: environmentSequenceSchema.optional(),
+  dayCycle: dayCycleSchema.optional(),
+  cloudscape: cloudscapeSchema.optional(),
+  grade: environmentGradeSchema.optional(),
   model: z.literal("analytic-sky"),
-  sunElevation: z.number().min(-0.2).max(1.57),
+  sunElevation: z.number().min(-1.57).max(1.57),
   sunAzimuth: z.number().min(-6.29).max(6.29),
   turbidity: z.number().min(1).max(10),
   fogDensity: z.number().min(0).max(0.1),
+  cloudCover: z.number().min(0).max(1).optional(),
   skyColor: color,
   horizonColor: color,
   groundColor: color,
@@ -210,6 +242,18 @@ export const environmentSchema = z.object({
 export const waterSchema = z.object({
   ...envelope,
   kind: z.literal("water"),
+  domain: waterDomainSchema.optional(),
+  spectrum: waterSpectrumSchema.optional(),
+  optics: waterOpticsSchema.optional(),
+  effects: z
+    .array(waterEffectSchema)
+    .max(8)
+    .refine(
+      (effects) => new Set(effects.map((e) => e.id)).size === effects.length,
+      "Water effect identifiers must be unique",
+    )
+    .optional(),
+  flow: waterAuthoringSchema.optional(),
   level: z.number().min(-100).max(100),
   color,
   roughness: z.number().min(0.02).max(1),
@@ -236,6 +280,7 @@ export const interventionSchema = z.object({
 export const terrainSchema = z.object({
   ...envelope,
   kind: z.literal("terrain"),
+  geology: terrainGeologySchema.optional(),
   seed: z.number().int(),
   amplitude: z.number().min(0).max(100),
   frequency: z.number().min(0.0001).max(0.5),
@@ -247,11 +292,13 @@ export const terrainSchema = z.object({
 export const worldSchema = z.object({
   ...envelope,
   kind: z.literal("world"),
+  composition: worldCompositionSchema.optional(),
   generatorVersion: z.literal("wrela-world-1"),
   terrain: idSchema,
   environment: idSchema,
   lighting: idSchema,
   water: idSchema.optional(),
+  waters: z.array(idSchema).max(8).optional(),
   populations: z
     .array(
       z.object({
@@ -274,6 +321,7 @@ export const worldSchema = z.object({
         position: vec3Schema,
         rotation: vec3Schema,
         scale: z.number().min(0.01).max(100),
+        grounding: z.object({ offset: z.number().min(-20).max(20) }).optional(),
       }),
     )
     .max(256),
@@ -281,6 +329,7 @@ export const worldSchema = z.object({
 export const stageSchema = z.object({
   ...envelope,
   kind: z.literal("stage"),
+  grade: environmentGradeSchema.optional(),
   environment: idSchema,
   lighting: idSchema,
   ground: z.boolean(),
@@ -355,8 +404,9 @@ export const projectSchema = z.object({
   schemaVersion: z.literal(1),
   id: idSchema,
   name: z.string().min(1).max(120),
-  documents: z.array(documentSchema).min(1).max(256),
+  documents: z.array(documentSchema).min(1).max(100_000),
   entry: idSchema,
+  dynamicRoots: z.array(idSchema).max(256).optional(),
   recipes: z.array(recipeSchema).max(64).optional(),
   recipeInstances: z.array(recipeInstanceSchema).max(256).optional(),
 });

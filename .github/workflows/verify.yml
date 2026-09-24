@@ -18,8 +18,9 @@ jobs:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
       - run: bun run check
-      - run: bun test
+      - run: bun run test
       - run: bun run perf:author
+      - run: bun run perf:alternatives
       - run: bun run build
       - uses: actions/upload-artifact@v4
         if: always()
@@ -39,6 +40,11 @@ jobs:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
       - run: bun run verify
+        env:
+          WRELA_COLD_SHADERS: "1"
+      - run: bun run verify:agent-game
+        env:
+          WRELA_COLD_SHADERS: "1"
       - run: bun run perf
       - run: bun run perf:low
       - uses: actions/upload-artifact@v4

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { compileCharacter } from "@wrela/compiler";
-import { type CharacterDefinition, type Motion, referenceProject, type Vec3 } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
+import type { CharacterDefinition, Motion, Vec3 } from "@wrela/model";
 import { compileMotionTracks, sampleMotion } from "./animation";
 import { planEntityResidency } from "./lifecycle";
 import { PhysicsAdapter } from "./physics";

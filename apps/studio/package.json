@@ -2,5 +2,28 @@
   "name": "@wrela/studio",
   "version": "0.1.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@wrela/model": "workspace:*",
+    "@wrela/authoring": "workspace:*",
+    "@wrela/runtime": "workspace:*",
+    "react": "19.2.0",
+    "@wrela/examples": "workspace:*",
+    "react-dom": "19.2.0",
+    "@wrela/compiler": "workspace:*",
+    "@wrela/review": "workspace:*",
+    "zod": "4.1.12",
+    "@wrela/render-webgpu": "workspace:*",
+    "@wrela/game-creature": "workspace:*",
+    "@wrela/world": "workspace:*",
+    "@wrela/delivery": "workspace:*"
+  },
+  "devDependencies": {
+    "@wrela/model": "workspace:*",
+    "@wrela/compiler": "workspace:*",
+    "@wrela/examples": "workspace:*",
+    "@wrela/runtime": "workspace:*",
+    "@wrela/authoring": "workspace:*",
+    "@wrela/render-webgpu": "workspace:*"
+  }
 }

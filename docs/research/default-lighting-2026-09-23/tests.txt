@@ -1,0 +1,56 @@
+bun test v1.4.2 (744846f84)
+
+packages/compiler/src/indirect-reference.test.ts:
+(pass) reference reproduces the exact Lambertian constant-sky solution on an open floor [1.62ms]
+(pass) a closed opaque enclosure receives neither outside sun nor sky, including through a bounce [18.53ms]
+(pass) a visible red wall adds red diffuse bounce and darkening it removes that light [50.31ms]
+(pass) open-box and alpine references are deterministic finite linear RGB images [12.99ms]
+(pass) PFM export preserves HDR linear values, channel order and bottom-up scanlines [0.20ms]
+(pass) invalid reference sample budgets and camera inputs fail explicitly [0.18ms]
+
+packages/compiler/src/indirect-probes.test.ts:
+(pass) query BVH preserves affine-transformed nearest hits, ranges and absolute rebasing [0.17ms]
+(pass) bounded probe placement moves away from nearby back faces without moving open-space or distant probes [0.17ms]
+(pass) uniform incoming sky integrates to identical diffuse irradiance/pi for all orientations [2.72ms]
+(pass) fully closed diffuse enclosure blocks external sky and sun at an interior probe [6.53ms]
+
+packages/runtime/src/indirect-lighting.test.ts:
+(pass) diffuse cache publishes progressively, reuses immutable inputs and invalidates source changes [116.98ms]
+(pass) receiver-to-probe BVH checks prevent moment-field light leakage through closed-box corners [268.25ms]
+(pass) budget refusal removes stale illumination; cancelled builds cannot publish [28.59ms]
+(pass) excluded animated surfaces do not invalidate static lighting when they move [19.21ms]
+(pass) articulated rigid motion preserves a pending static cache and stationary frame occlusion [18.51ms]
+(pass) physical sky transfer reuses geometry under intensity/color changes and invalidates changing sun direction [52.98ms]
+(pass) camera volume holds world probe density and reuses only within its snapped absolute cell [6.28ms]
+(pass) surface caching is automatic, reuses explicit defaults and invalidates edited receiver normals [1084.17ms]
+(pass) unsupported receivers allocate no surface cache and retain their probe lighting [5.04ms]
+
+tools/indirect-runtime.test.ts:
+(pass) probe-plane receivers retain stable light across FP32-sized coordinate changes [722.43ms]
+(pass) nonzero-world-origin rebasing preserves both irradiance and packed BVH wall rejection [156.21ms]
+
+tools/default-lighting.test.ts:
+(pass) local sky visibility darkens a sealed enclosure and retains both sides [2.64ms]
+(pass) sky cache reuses lighting/camera/rebase edits, rejects changed geometry, and cancels disposal [184.11ms]
+(pass) open surfaces retain their sky, topology and packing; dynamic receivers are excluded [0.40ms]
+(pass) distance-only sky queries preserve closest-hit visibility, including the fade annulus [0.30ms]
+(pass) alternate realizations cannot consume a mesh sky stream [0.19ms]
+(pass) distant streaming edits reuse local sky while a nearby blocker invalidates it [545.68ms]
+(pass) receiver budgets count the full allocated stream even for a tiny draw range [0.70ms]
+(pass) a refused geometry budget publishes no incomplete lighting [1.81ms]
+
+packages/render-webgpu/src/material-specialization.test.ts:
+(pass) specialization requires source proof and falls back after feature edits [0.15ms]
+(pass) partial evaluation removes only exact component references [0.93ms]
+
+packages/render-webgpu/src/indirect.test.ts:
+(pass) indirect field packing rebases probe coordinates and disables missing transport [0.38ms]
+(pass) surface visibility proof requires the exact source mesh, range and absolute pose [0.24ms]
+
+packages/runtime/src/scene-host-indirect.test.ts:
+(pass) disabling preview lighting removes the field from a retained scene and releases its payload [32.67ms]
+
+ 34 pass
+ 0 fail
+ 572 expect() calls
+Ran 34 tests across 8 files. [3.40s]

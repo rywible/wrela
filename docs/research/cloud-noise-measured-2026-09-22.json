@@ -1,0 +1,117 @@
+{
+  "passed": true,
+  "failures": [],
+  "adapter": {
+    "vendor": "apple",
+    "architecture": "metal-3",
+    "device": "",
+    "description": ""
+  },
+  "samples": 4096,
+  "bytes": 1149984,
+  "density": {
+    "rms": 0.00404401653526261,
+    "max": 0.016463041305541992,
+    "bias": 6.788967039028648e-5,
+    "negative": 0
+  },
+  "homogeneousTransmission": {
+    "rms": 0.004708040802037196,
+    "max": 0.03661626577377319,
+    "bias": -0.0014789708939133561,
+    "negative": 0
+  },
+  "periodicity": 0,
+  "coordinateDiagnostics": {
+    "translatedCoordinateDrift": 0.00024509429931640625,
+    "manualTranslatedDrift": 1.430511474609375e-6,
+    "filteringDeviation": 0.0004832148551940918,
+    "maximumPhaseDrift": 0,
+    "changedPhaseAxes": 0,
+    "scope": "Arbitrary f32 coordinates change phase after adding a period. Exact binary-grid repeat is gated separately; hardware filtering deviation is measured, with no assumed portable precision bound."
+  },
+  "samplingMs": {
+    "analytic": {
+      "median": 0.003072,
+      "min": 0.002048,
+      "max": 0.008192,
+      "samples": [0.008192, 0.003072, 0.002048, 0.003072, 0.003072, 0.003072, 0.003072, 0.003072, 0.003072]
+    },
+    "compiled": {
+      "median": 0.004096,
+      "min": 0.003072,
+      "max": 0.032768,
+      "samples": [0.008192, 0.004096, 0.032768, 0.004096, 0.004096, 0.004096, 0.003072, 0.004096, 0.00512]
+    }
+  },
+  "constructionMs": {
+    "construction": {
+      "median": 0.065536,
+      "min": 0.049152,
+      "max": 0.08192,
+      "samples": [0.049152, 0.065536, 0.049152, 0.065536, 0.065536, 0.08192, 0.065536, 0.049152, 0.049152]
+    }
+  },
+  "cloudMarch": {
+    "size": [512, 384],
+    "cases": [
+      {
+        "name": "thin",
+        "cover": 0.25,
+        "finite": true,
+        "hdrError": {
+          "rms": 0.0018592592138314665,
+          "max": 0.019683837890625,
+          "bias": -0.0005796626986314853,
+          "negative": 0
+        },
+        "kernelMs": {
+          "analytic": {
+            "median": 3.670016,
+            "min": 3.60448,
+            "max": 4.25984,
+            "samples": [3.637248, 3.60448, 4.25984, 4.25984, 3.670016, 3.60448, 4.194304, 3.997696, 3.637248]
+          },
+          "compiled": {
+            "median": 1.409024,
+            "min": 1.409024,
+            "max": 2.097152,
+            "samples": [
+              2.097152, 1.409024, 1.441792, 1.409024, 1.441792, 1.96608, 1.409024, 1.409024, 1.409024
+            ]
+          }
+        }
+      },
+      {
+        "name": "overcast",
+        "cover": 0.92,
+        "finite": true,
+        "hdrError": {
+          "rms": 0.000286623410645907,
+          "max": 0.0079345703125,
+          "bias": 7.652884556187524e-6,
+          "negative": 0
+        },
+        "kernelMs": {
+          "analytic": {
+            "median": 4.718592,
+            "min": 4.58752,
+            "max": 5.24288,
+            "samples": [4.620288, 4.58752, 4.718592, 4.58752, 5.144576, 5.177344, 4.9152, 5.24288, 4.620288]
+          },
+          "compiled": {
+            "median": 1.671168,
+            "min": 1.6384,
+            "max": 2.359296,
+            "samples": [2.359296, 1.6384, 1.671168, 2.359296, 1.671168, 1.6384, 1.6384, 1.6384, 1.703936]
+          }
+        }
+      }
+    ],
+    "scope": "Actual production 32-segment camera-cloud kernel over matching clear-air/diffuse products. Timings exclude their construction, image readback, scene rendering, and display; image error is compiled versus analytic noise, not a converged transport reference."
+  },
+  "scope": "Component and production cloud-kernel A/B comparisons. Neither establishes a whole-frame speedup or a transport error certificate.",
+  "errors": [],
+  "sourceSnapshot": "output/lookdev-snapshots/1790117908531-38749/source",
+  "sourceFingerprint": "cec523cf6d9418e4a68addaf34835a8ff249e59dd8d8179142035cc53359fdf7"
+}

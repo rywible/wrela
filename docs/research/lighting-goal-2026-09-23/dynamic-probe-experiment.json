@@ -1,0 +1,77 @@
+{
+  "notes": "Compiler experiment only: rigid door overlay and selective probe transport. Receiver-mixture visibility, local-emission visibility, temporal scheduling, moving lights and skinned occluders are not implemented by this experiment. Timings are synchronous CPU, not GPU or frame times.",
+  "reports": [
+    {
+      "angle": 1.5,
+      "samples": 192,
+      "dirty": 192,
+      "rays": 50922,
+      "queryBuildMs": 0.334999999999809,
+      "dependencyMs": 0.08808300000009694,
+      "updateMs": 114.68604200000004,
+      "fullMs": 87.77641599999993,
+      "exact": true,
+      "dependencyBytes": 2851632
+    },
+    {
+      "angle": 1,
+      "samples": 192,
+      "dirty": 18,
+      "rays": 6700,
+      "queryBuildMs": 0.24137500000006185,
+      "dependencyMs": 1.0954999999999018,
+      "updateMs": 27.955917000000227,
+      "fullMs": 112.56808300000012,
+      "exact": true,
+      "dependencyBytes": 2853144
+    },
+    {
+      "angle": 0.5,
+      "samples": 192,
+      "dirty": 18,
+      "rays": 6685,
+      "queryBuildMs": 0.23066599999992832,
+      "dependencyMs": 0.26575000000002547,
+      "updateMs": 19.54033299999992,
+      "fullMs": 98.6690410000001,
+      "exact": true,
+      "dependencyBytes": 2852304
+    },
+    {
+      "angle": 0,
+      "samples": 192,
+      "dirty": 19,
+      "rays": 7033,
+      "queryBuildMs": 0.24066700000003038,
+      "dependencyMs": 0.20541700000012497,
+      "updateMs": 19.342791999999918,
+      "fullMs": 97.94358299999976,
+      "exact": true,
+      "dependencyBytes": 2851744
+    },
+    {
+      "angle": 0.5,
+      "samples": 192,
+      "dirty": 19,
+      "rays": 7043,
+      "queryBuildMs": 0.18675000000030195,
+      "dependencyMs": 0.20175000000017462,
+      "updateMs": 20.145708000000013,
+      "fullMs": 102.2217499999997,
+      "exact": true,
+      "dependencyBytes": 2852304
+    },
+    {
+      "angle": 1.5,
+      "samples": 192,
+      "dirty": 18,
+      "rays": 6673,
+      "queryBuildMs": 0.16899999999986903,
+      "dependencyMs": 0.19900000000006912,
+      "updateMs": 19.80533400000013,
+      "fullMs": 94.24512499999992,
+      "exact": true,
+      "dependencyBytes": 2851632
+    }
+  ]
+}

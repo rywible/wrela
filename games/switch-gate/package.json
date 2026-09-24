@@ -1,0 +1,14 @@
+{
+  "name": "@wrela/game-switch-gate",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/module.ts"
+  },
+  "dependencies": {
+    "@wrela/model": "workspace:*",
+    "@wrela/examples": "workspace:*",
+    "@wrela/runtime": "workspace:*",
+    "zod": "4.1.12"
+  }
+}

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { RenderSurface } from "@wrela/model";
+
 import { identityColor, identityMatrix, normalizeWind, transformMatrix } from "@wrela/model";
+
 import { batchSurfaces, INSTANCE_FLOATS, MAX_BATCH_INSTANCES, packInstances } from "./batching";
 import { cameraRay, lookAt, multiply, perspective } from "./math";
 import {
@@ -69,12 +71,18 @@ describe("WebGPU matrix convention", () => {
   });
 });
 describe("WGSL host layout", () => {
-  test("vertex stream uses 68 byte stride and supplies identity binding", () => {
+  test("ordinary vertex stream preserves stationary foliage without allocating relief attributes", () => {
     const packed = packVertices(surface.mesh);
     expect(packed.length).toBe(VERTEX_FLOATS);
     expect([...packed.slice(0, 6)]).toEqual([1, 2, 3, 0, 1, 0]);
     expect([...packed.slice(6, 9)]).toEqual([1, 1, 1]);
-    expect([...packed.slice(13)]).toEqual([1, 0, 0, 0]);
+    expect([...packed.slice(13, 17)]).toEqual([1, 0, 0, 0]);
+    expect([...packed.slice(17, 23)]).toEqual([0, 0, 0, 0, 0, 0]);
+    expect(packed.length).toBe(23);
+  });
+  test("foliage phase and amplitude survive vertex packing", () => {
+    const packed = packVertices({ ...surface.mesh, wind: new Float32Array([0.4, 0.2, 1.3, 0.03]) });
+    expect([...packed.slice(17, 21)]).toEqual([...new Float32Array([0.4, 0.2, 1.3, 0.03])]);
   });
   test("skin influences occupy four separate weights and indices", () => {
     const packed = packVertices(surface.mesh, {
@@ -163,7 +171,7 @@ describe("bounded compatible instancing", () => {
       groups.map((g) => g.key),
     );
   });
-  test("80 byte instance stride preserves transforms and generated instance identity", () => {
+  test("instance stride preserves current and previous transforms and generated instance identity", () => {
     const next = {
       ...surface,
       id: "material-piece",
@@ -172,8 +180,15 @@ describe("bounded compatible instancing", () => {
     };
     const packed = packInstances([surface, next]);
     expect(packed.length).toBe(INSTANCE_FLOATS * 2);
-    expect([...packed.slice(20, 36)]).toEqual([...next.matrix]);
-    for (let i = 0; i < 3; i++) expect(packed[36 + i]).toBeCloseTo(identityColor("tree-123")[i], 6);
+    expect([...packed.slice(INSTANCE_FLOATS, INSTANCE_FLOATS + 16)]).toEqual([...next.matrix]);
+    for (let i = 0; i < 3; i++)
+      expect(packed[INSTANCE_FLOATS + 16 + i]).toBeCloseTo(identityColor("tree-123")[i], 6);
+    expect([...packed.slice(20, 36)]).toEqual([...surface.matrix]);
+    expect(packed[19]).toBe(0);
+    const previous = transformMatrix([-1, 2, 3]);
+    const withHistory = packInstances([next], () => previous);
+    expect([...withHistory.slice(20, 36)]).toEqual([...previous]);
+    expect(withHistory[19]).toBe(1);
     expect(identityColor("tree-123")).not.toEqual(identityColor("tree-124"));
   });
 });
@@ -241,4 +256,41 @@ test("material domains and layers split otherwise compatible instance batches", 
     { ...surface, material: { ...surface.material, layers: [layer] } },
   ];
   expect(batchSurfaces(inputs, () => 1)).toHaveLength(3);
+});
+
+test("shared material packing preserves nested edits, selection, and independent skin instances", () => {
+  const a = {
+    ...surface,
+    id: "a",
+    material: {
+      ...surface.material,
+      layers: [
+        {
+          color: [1, 0, 0] as [number, number, number],
+          roughness: 0.5,
+          metallic: 0,
+          coverage: 0.5,
+          slopeBias: 0,
+          noiseScale: 1,
+          normalStrength: 0,
+        },
+      ],
+    },
+  };
+  const b = { ...a, id: "b", material: structuredClone(a.material) };
+  expect(batchSurfaces([a, b], () => 1)).toHaveLength(1);
+  b.material.layers[0].color[0] = 0.5;
+  expect(batchSurfaces([a, b], () => 1)).toHaveLength(2);
+  b.material.layers[0].color[0] = 1;
+  expect(batchSurfaces([a, { ...b, selected: true }], () => 1)).toHaveLength(2);
+  const skin = { jointIndices: new Uint16Array(4), weights: new Float32Array(4), matrices: identityMatrix() };
+  expect(
+    batchSurfaces(
+      [
+        { ...a, skin },
+        { ...b, skin },
+      ],
+      () => 1,
+    ),
+  ).toHaveLength(2);
 });

@@ -1,0 +1,309 @@
+{
+  "date": "2026-09-23",
+  "scope": "Read-only implementation audit, primary-source research, focused tests, one fresh hardware rendering capture. No production changes.",
+  "baseCommit": "13e39e2ca8915f6287a062fb9e6a81e0cc007b2b",
+  "sourceSnapshot": "output/lookdev-snapshots/1790176884102-24336/source",
+  "captureDirectory": "output/lookdev-snapshots/1790176884102-24336/source/output/browser-1790176884244-24350",
+  "captureManifest": {
+    "startedAt": "2026-09-23T15:21:24.266Z",
+    "finishedAt": "2026-09-23T15:21:29.458Z",
+    "sourceFingerprint": "45153a62859701a9dd68876cdea11eb6d4b588a0cde997026a423317b7edd660",
+    "finalSourceFingerprint": "45153a62859701a9dd68876cdea11eb6d4b588a0cde997026a423317b7edd660",
+    "sourceStable": true
+  },
+  "capture": {
+    "frames": [
+      {
+        "id": "environment-shore",
+        "camera": {
+          "position": [
+            10,
+            2.5,
+            -20
+          ],
+          "target": [
+            5,
+            -0.15,
+            -13
+          ],
+          "fov": 45
+        },
+        "time": 0,
+        "mode": "beauty",
+        "surfaces": 74,
+        "triangles": 729457,
+        "complete": true,
+        "timing": {
+          "frameToCompleteMs": 283,
+          "completeAt": 4465.299999952316,
+          "uploadAttempts": 1
+        },
+        "resources": {
+          "cacheBytes": 16644298,
+          "installedBytes": 16644298,
+          "liveBytes": 16644298,
+          "reliefBytes": 0,
+          "indirectLightingBytes": 0,
+          "assemblyBytes": 0,
+          "cacheEntries": 7
+        },
+        "indirectLighting": null,
+        "measurements": {
+          "cpuMs": 1.9000000953674316,
+          "gpuMs": 11.272192,
+          "triangles": 491257,
+          "drawCalls": 106,
+          "gpuBytes": 115795265,
+          "frame": 6,
+          "adapter": "apple \u00b7 metal-3",
+          "reconstruction": "none",
+          "gpuTimingDroppedFrames": 0,
+          "materialCacheBytes": 0,
+          "qualityProfile": "balanced",
+          "uploadedBytes": 148064,
+          "visibleSurfaces": 69,
+          "culledSurfaces": 5,
+          "detailSurfaces": 0,
+          "ownedTextureBytes": 71408689,
+          "bufferBytes": 44386576,
+          "outputResolution": [
+            1024,
+            768
+          ],
+          "renderResolution": [
+            1024,
+            768
+          ]
+        },
+        "gpuTimings": [
+          {
+            "frame": 1,
+            "atmosphereMs": 22.740992,
+            "thinDepthMs": 0,
+            "shadowMs": 1.6384,
+            "sceneMs": 21.62688,
+            "waterMs": 0,
+            "temporalMs": 0,
+            "displayMs": 20.97152,
+            "gpuMs": 30.670848,
+            "intervals": [
+              {
+                "pass": "atmosphere",
+                "startMs": 0,
+                "endMs": 22.740992
+              },
+              {
+                "pass": "shadow",
+                "startMs": 2.555904,
+                "endMs": 4.194304
+              },
+              {
+                "pass": "opaque",
+                "startMs": 8.84736,
+                "endMs": 30.47424
+              },
+              {
+                "pass": "display",
+                "startMs": 9.699328,
+                "endMs": 30.670848
+              }
+            ]
+          },
+          {
+            "frame": 2,
+            "atmosphereMs": 0,
+            "thinDepthMs": 0,
+            "shadowMs": 0.458752,
+            "sceneMs": 6.291456,
+            "waterMs": 0,
+            "temporalMs": 0,
+            "displayMs": 5.963776,
+            "gpuMs": 6.750208,
+            "intervals": [
+              {
+                "pass": "shadow",
+                "startMs": 0,
+                "endMs": 0.458752
+              },
+              {
+                "pass": "opaque",
+                "startMs": 0.262144,
+                "endMs": 6.5536
+              },
+              {
+                "pass": "display",
+                "startMs": 0.786432,
+                "endMs": 6.750208
+              }
+            ]
+          },
+          {
+            "frame": 3,
+            "atmosphereMs": 0,
+            "thinDepthMs": 0,
+            "shadowMs": 0.524288,
+            "sceneMs": 9.50272,
+            "waterMs": 0,
+            "temporalMs": 0,
+            "displayMs": 1.6384,
+            "gpuMs": 10.878976,
+            "intervals": [
+              {
+                "pass": "shadow",
+                "startMs": 0,
+                "endMs": 0.524288
+              },
+              {
+                "pass": "opaque",
+                "startMs": 0.32768,
+                "endMs": 9.8304
+              },
+              {
+                "pass": "display",
+                "startMs": 9.240576,
+                "endMs": 10.878976
+              }
+            ]
+          },
+          {
+            "frame": 4,
+            "atmosphereMs": 0,
+            "thinDepthMs": 0,
+            "shadowMs": 0.786432,
+            "sceneMs": 15.597567999999999,
+            "waterMs": 8.781824,
+            "temporalMs": 0,
+            "displayMs": 10.354688,
+            "gpuMs": 11.730944,
+            "intervals": [
+              {
+                "pass": "shadow",
+                "startMs": 0,
+                "endMs": 0.786432
+              },
+              {
+                "pass": "opaque",
+                "startMs": 0.524288,
+                "endMs": 7.340032
+              },
+              {
+                "pass": "water",
+                "startMs": 1.376256,
+                "endMs": 10.15808
+              },
+              {
+                "pass": "display",
+                "startMs": 1.376256,
+                "endMs": 11.730944
+              }
+            ]
+          },
+          {
+            "frame": 5,
+            "atmosphereMs": 0,
+            "thinDepthMs": 0,
+            "shadowMs": 0.786432,
+            "sceneMs": 15.72864,
+            "waterMs": 8.716288,
+            "temporalMs": 0,
+            "displayMs": 8.912896,
+            "gpuMs": 10.354688,
+            "intervals": [
+              {
+                "pass": "shadow",
+                "startMs": 0,
+                "endMs": 0.786432
+              },
+              {
+                "pass": "opaque",
+                "startMs": 0.524288,
+                "endMs": 7.53664
+              },
+              {
+                "pass": "water",
+                "startMs": 1.441792,
+                "endMs": 10.15808
+              },
+              {
+                "pass": "display",
+                "startMs": 1.441792,
+                "endMs": 10.354688
+              }
+            ]
+          },
+          {
+            "frame": 6,
+            "atmosphereMs": 0,
+            "thinDepthMs": 0,
+            "shadowMs": 1.769472,
+            "sceneMs": 15.728640000000002,
+            "waterMs": 8.585216,
+            "temporalMs": 0,
+            "displayMs": 8.781824,
+            "gpuMs": 11.272192,
+            "intervals": [
+              {
+                "pass": "shadow",
+                "startMs": 0,
+                "endMs": 1.769472
+              },
+              {
+                "pass": "opaque",
+                "startMs": 1.507328,
+                "endMs": 8.650752
+              },
+              {
+                "pass": "water",
+                "startMs": 2.490368,
+                "endMs": 11.075584
+              },
+              {
+                "pass": "display",
+                "startMs": 2.490368,
+                "endMs": 11.272192
+              }
+            ]
+          }
+        ],
+        "diagnostics": []
+      }
+    ],
+    "errors": []
+  },
+  "focusedTests": {
+    "command": "bun test ./packages/compiler/src/water-authoring.test.ts ./packages/compiler/src/water-glints.test.ts ./packages/compiler/src/phase.test.ts ./packages/render-webgpu/src/water-packing.test.ts ./packages/render-webgpu/src/water-transport.test.ts ./packages/runtime/src/environment-water-host.test.ts ./tools/water-approximation.test.ts ./tools/rendering-compiler/water-budget.test.ts",
+    "passed": 26,
+    "failed": 0,
+    "assertions": 2672,
+    "files": 8,
+    "limitation": "Executed in the active working tree; the image capture uses the frozen source snapshot."
+  },
+  "independentGpuReference": {
+    "command": "bun tools/rendering-compiler/water-check.ts",
+    "status": "failed-before-reference-evaluation",
+    "error": "unresolved call target 'physicalCachedSunTransmittance'",
+    "diagnosis": "water-reference.ts still stubs physicalSunTransmittance; current water.wgsl calls physicalCachedSunTransmittance. It also lacks the physicalSkyRoughReflection stub required by current shading.",
+    "interpretation": "Harness integration failure; no new GPU numerical accuracy result. Production scene capture succeeds."
+  },
+  "additionalLandscapeCapture": {
+    "status": "not-run-gpu-lease-timeout",
+    "interpretation": "A concurrent vegetation benchmark owned the cooperative GPU lease. Its process was left alone."
+  },
+  "historicalPerformance": {
+    "source": "docs/research/winter-rendering-scalability-2026-09-21.md",
+    "waterMarginalMs": 1.86,
+    "hardware": "Apple M4 / 16 GB, Chrome hardware WebGPU Metal",
+    "resolution": [
+      1920,
+      1080
+    ],
+    "method": "Median marginal repeated-water-pass cost, sustained four-frame bursts, three trials.",
+    "limitation": "Historical workload; not current-source timing, exclusive timing, cross-hardware proof, or a full new water-system cost."
+  },
+  "derivedMemory": {
+    "opaqueSnapshotBytesPerPixel": 12,
+    "opaqueSnapshotBytesAt1920x1080": 24883200,
+    "opaqueSnapshotMiBAt1920x1080": 23.73046875,
+    "scope": "Two textures owned by WaterTransportGpu only."
+  }
+}

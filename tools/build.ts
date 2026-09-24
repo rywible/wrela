@@ -1,9 +1,10 @@
 import { mkdir, rm } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { cookProject } from "@wrela/compiler";
-import { referenceProject } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
 import { compilerSourceFingerprint } from "./cook";
 import { writeEvidence } from "./evidence";
+import { buildGames } from "./game-build";
 
 export function snapshotKey(files: { path: string; bytes: Uint8Array }[]): string {
   const hash = new Bun.CryptoHasher("sha256");
@@ -58,6 +59,7 @@ export async function buildStudio(destination = "dist") {
     });
     if (!result.success) throw new AggregateError(result.logs, "Build failed");
   }
+  await buildGames(directory, compilerSource);
   for (const name of [
     "LICENSE",
     "THIRD_PARTY_NOTICES",

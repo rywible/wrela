@@ -1,10 +1,10 @@
 import { compileDocument, queryWater } from "@wrela/compiler";
+import { referenceProject } from "@wrela/examples";
 import {
   type EvaluatedScene,
   identityMatrix,
   type RenderMaterial,
   type RenderSurface,
-  referenceProject,
   transformMatrix,
   type Vec3,
   type WaterDefinition,
@@ -18,8 +18,8 @@ import {
   packSurface,
   WebGPURenderer,
 } from "@wrela/render-webgpu";
-import { verifyProjectStorage } from "../../packages/authoring/src/storage.browser";
-import { shader } from "../../packages/render-webgpu/src/shader";
+import { shader } from "@wrela/render-webgpu/shader";
+import { verifyProjectStorage } from "../../verification/project-storage.browser";
 
 const target = window as unknown as {
   ready?: boolean;
@@ -94,7 +94,8 @@ async function waterParity(
 @compute @workgroup_size(64) fn verifyWater(@builtin(global_invocation_id) id:vec3u) {
   let i=id.x; var v:Vertex; v.position=points[i].xyz; v.normal=vec3f(0,1,0);
   v.color=vec3f(1); v.joints=vec4f(0); v.weights=vec4f(1,0,0,0);
-  let r=deform(v,obj.model); answers[i*2]=vec4f(r.world,1); answers[i*2+1]=vec4f(r.normal,0);
+  var instance:Instance; instance.model=obj.model;
+  let r=deform(v,obj.model,g.params.x,g.wind.w,false,instance); answers[i*2]=vec4f(r.world,1); answers[i*2+1]=vec4f(r.normal,0);
 }`;
   const pipeline = await device.createComputePipelineAsync({
     layout: "auto",
@@ -104,6 +105,7 @@ async function waterParity(
   const global = make(GLOBAL_FLOATS * 4, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
     uniform = make(OBJECT_FLOATS * 4, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
     skin = make(4096, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST),
+    fluid = make(16, GPUBufferUsage.STORAGE),
     input = make(points.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST),
     result = make(count * 32, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
     read = make(count * 32, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);
@@ -125,12 +127,26 @@ async function waterParity(
     const encoder = device.createCommandEncoder(),
       pass = encoder.beginComputePass();
     pass.setPipeline(pipeline);
-    for (const [index, resources] of [[global], [uniform, skin], [input, result]].entries())
+    for (const [index, resources] of [
+      [[0, global]],
+      [
+        [0, uniform],
+        [1, skin],
+        [5, fluid],
+      ],
+      [
+        [0, input],
+        [1, result],
+      ],
+    ].entries())
       pass.setBindGroup(
         index,
         device.createBindGroup({
           layout: pipeline.getBindGroupLayout(index),
-          entries: resources.map((buffer, binding) => ({ binding, resource: { buffer } })),
+          entries: resources.map(([binding, buffer]) => ({
+            binding: binding as number,
+            resource: { buffer: buffer as GPUBuffer },
+          })),
         }),
       );
     pass.dispatchWorkgroups(1);
@@ -167,7 +183,7 @@ async function waterParity(
       ...(spacing ? { spacing, maxHeightError: waterGeometryErrorBound(water.waves, spacing) } : {}),
     };
   } finally {
-    for (const buffer of [global, uniform, skin, input, result, read]) buffer.destroy();
+    for (const buffer of [global, uniform, skin, fluid, input, result, read]) buffer.destroy();
   }
 }
 async function setup() {

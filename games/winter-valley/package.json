@@ -1,0 +1,23 @@
+{
+  "name": "@wrela/game-winter",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/module.ts",
+    "./rules": "./src/rules.ts",
+    "./player": "./src/player.ts",
+    "./style": "./src/style.ts"
+  },
+  "dependencies": {
+    "@wrela/runtime": "workspace:*",
+    "@wrela/examples": "workspace:*",
+    "@wrela/model": "workspace:*",
+    "@wrela/render-webgpu": "workspace:*",
+    "zod": "4.1.12"
+  },
+  "devDependencies": {
+    "@wrela/model": "workspace:*",
+    "@wrela/examples": "workspace:*",
+    "@wrela/runtime": "workspace:*"
+  }
+}

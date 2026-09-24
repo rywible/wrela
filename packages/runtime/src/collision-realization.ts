@@ -1,4 +1,5 @@
 import type { MeshData, ObjectDefinition, Quat, Vec3 } from "@wrela/model";
+
 import type { PhysicsAdapter } from "./physics";
 
 /** Collision is an explicit realization of the same source, independent of presentation. */

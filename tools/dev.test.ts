@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { referenceProject } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
 
 test("loopback bridge authenticates exact origin and refuses stale external writes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "wrela-http-"));

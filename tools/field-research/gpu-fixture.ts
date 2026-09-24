@@ -2,8 +2,9 @@
  * lowering, with identical instancing, lighting, depth, camera, and viewport.
  * This isolates geometry realization; it is not a complete-world FPS claim. */
 import { extractSurface } from "@wrela/compiler";
-import { type Camera, type FieldDefinition, referenceProject } from "@wrela/model";
-import { cameraRay, lookAt, multiply, perspective } from "../../packages/render-webgpu/src/math";
+import { referenceProject } from "@wrela/examples";
+import type { Camera, FieldDefinition } from "@wrela/model";
+import { cameraRay, lookAt, multiply, perspective } from "@wrela/render-webgpu/math";
 import { apply, lower } from "./local-program";
 
 const code = /* wgsl */ `

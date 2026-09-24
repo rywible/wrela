@@ -3,12 +3,18 @@ import {
   contentKey,
   coordinateHash,
   MAX_WORLD_COORDINATE,
+  type PersistentVegetationGrowth,
+  type PersistentWaterState,
+  persistentVegetationGrowthSchema,
+  persistentWaterStateSchema,
   random01,
   type TerrainDefinition,
   type Vec3,
   type WorldDefinition,
 } from "@wrela/model";
+
 import { z } from "zod";
+import { createCompositionPopulationSampler } from "./composition";
 import { worldPosition } from "./coordinates";
 export type Placement = { id: string; definition: string; position: Vec3; rotation: number; scale: number };
 export type Region = { minX: number; minZ: number; maxX: number; maxZ: number };
@@ -22,6 +28,7 @@ export type PopulationReport = {
   perRule: Record<string, number>;
 };
 export type PersistentOverride = {
+  growth?: PersistentVegetationGrowth;
   removed?: boolean;
   position?: Vec3;
   rotation?: Vec3;
@@ -43,6 +50,7 @@ export type WorldSave = {
   generatorKey: string;
   overrides: [string, PersistentOverride][];
   dormant: DormantEntity[];
+  waters?: PersistentWaterState[];
 };
 const savedVector = z.tuple([
   z.number().finite().min(-1e9).max(1e9),
@@ -54,6 +62,7 @@ const savedState = z
   .refine((state) => Object.keys(state).length <= 64, "Too many entity state fields");
 const overrideSchema = z
   .object({
+    growth: persistentVegetationGrowthSchema.optional(),
     removed: z.boolean().optional(),
     position: savedVector.optional(),
     rotation: savedVector.optional(),
@@ -79,6 +88,7 @@ const saveSchema = z
     generatorKey: z.string().min(1).max(128),
     overrides: z.array(z.tuple([z.string().min(1).max(512), overrideSchema])).max(100000),
     dormant: z.array(dormantSchema).max(100000),
+    waters: z.array(persistentWaterStateSchema).max(8).optional(),
   })
   .strict();
 export function generatorCompatibility(world: WorldDefinition, terrain: TerrainDefinition): string {
@@ -86,6 +96,7 @@ export function generatorCompatibility(world: WorldDefinition, terrain: TerrainD
     world: world.id,
     version: world.generatorVersion,
     populations: world.populations,
+    composition: world.composition ? { ...world.composition, review: undefined } : undefined,
     terrain: {
       id: terrain.id,
       seed: terrain.seed,
@@ -99,6 +110,7 @@ export function generatorCompatibility(world: WorldDefinition, terrain: TerrainD
 export class PersistentWorldState {
   readonly overrides = new Map<string, PersistentOverride>();
   readonly dormant = new Map<string, DormantEntity>();
+  private waters?: PersistentWaterState[];
   constructor(
     readonly world: string,
     readonly generatorVersion: string,
@@ -112,6 +124,7 @@ export class PersistentWorldState {
       generatorKey: this.generatorKey,
       overrides: [...this.overrides],
       dormant: [...this.dormant.values()],
+      ...(this.waters ? { waters: structuredClone(this.waters) } : {}),
     });
   }
   validate(input: WorldSave): WorldSave {
@@ -127,10 +140,16 @@ export class PersistentWorldState {
       new Set(save.dormant.map((entity) => entity.id)).size !== save.dormant.length
     )
       throw new Error("Runtime save contains duplicate identities");
+    if (save.waters && new Set(save.waters.map((water) => water.id)).size !== save.waters.length)
+      throw new Error("Runtime save contains duplicate water identities");
+    const growth = save.overrides.flatMap(([, override]) => (override.growth ? [override.growth] : []));
+    if (growth.length > 64 || growth.reduce((sum, plant) => sum + plant.checkpoint.shoots.length, 0) > 32768)
+      throw Error("Vegetation checkpoint residency budget exceeded");
     return save;
   }
   load(input: WorldSave) {
     const save = this.validate(input);
+    this.waters = save.waters;
     // Validate the complete save before replacing either collection.
     this.overrides.clear();
     this.dormant.clear();
@@ -145,6 +164,7 @@ export class PersistentWorldState {
     this.generatorKey = key;
   }
   clear() {
+    this.waters = undefined;
     this.overrides.clear();
     this.dormant.clear();
   }
@@ -183,6 +203,23 @@ export function generatePlacements(
   if (!Number.isInteger(limit) || limit < 1 || limit > 65536) throw new RangeError("Invalid placement limit");
   if (region.maxX < region.minX || region.maxZ < region.minZ)
     throw new RangeError("Invalid placement region");
+  // Authored exceptions participate in the same stable identity flow as saved changes.
+  // Runtime changes take precedence over their authored starting state.
+  if (world.composition?.overrides.length) {
+    const combined = new Map<string, PersistentOverride>(
+      world.composition.overrides.map((item) => [
+        item.id,
+        {
+          removed: item.removed,
+          position: item.position,
+          rotation: item.yaw === undefined ? undefined : [0, item.yaw, 0],
+          scale: item.scale,
+        },
+      ]),
+    );
+    for (const [id, value] of overrides) combined.set(id, value);
+    overrides = combined;
+  }
   const result: Placement[] = [],
     emitted = new Set<string>();
   let evaluated = 0,
@@ -208,6 +245,7 @@ export function generatePlacements(
   };
   const prefix = `${world.id}/${world.generatorVersion}/`;
   const rules = new Map(world.populations.map((rule) => [rule.id, rule]));
+  const compositionDensity = createCompositionPopulationSampler(world.composition);
   function candidate(
     rule: WorldDefinition["populations"][number],
     x: number,
@@ -222,6 +260,7 @@ export function generatePlacements(
     const px = (x + random01(seed ^ 0x21341)) * rule.spacing,
       pz = (z + random01(seed ^ 0x71371)) * rule.spacing;
     if (Math.abs(px) > MAX_WORLD_COORDINATE || Math.abs(pz) > MAX_WORLD_COORDINATE) return;
+    if (!override && random01(seed) > rule.density * compositionDensity(rule.id, px, pz)) return;
     const actualX = override?.position?.[0] ?? px,
       actualZ = override?.position?.[2] ?? pz;
     if (actualX < region.minX || actualX >= region.maxX || actualZ < region.minZ || actualZ >= region.maxZ)

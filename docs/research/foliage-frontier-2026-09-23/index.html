@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wrela — Foliage look development</title>
+<style>
+:root{--paper:#f0f5f7;--ink:#203035;--blue:#163c4c;--green:#284b39;--muted:#52656d;--line:#ccdce0;--bark:#705447;--white:#fff}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 "Avenir Next",Avenir,"Segoe UI",sans-serif}a{color:var(--blue);text-underline-offset:4px}button,select{font:inherit}button,a,select{touch-action:manipulation}button:focus-visible,a:focus-visible,select:focus-visible{outline:3px solid #467f9a;outline-offset:4px}button{cursor:pointer}.wrap{max-width:1480px;margin:auto;padding:0 36px}header{padding:32px 0 24px}.top{display:flex;gap:20px;align-items:center;justify-content:space-between}.brand{font-size:21px;font-weight:750;color:var(--green)}.links{display:flex;gap:22px;font-size:14px}.date{color:var(--muted);font-size:14px;margin:22px 0 7px}h1{font-weight:650;font-size:clamp(30px,3.4vw,48px);letter-spacing:-1.4px;line-height:1.12;margin:0 0 14px;max-width:900px}.intro{margin:0;max-width:88ch;color:var(--muted);font-size:17px}.workspace{background:#fff;padding:22px 22px 0;border-radius:12px}.presets{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:18px}.presets button{background:var(--paper);border:1px solid transparent;color:var(--blue);border-radius:30px;padding:8px 16px}.presets button[aria-pressed=true]{background:var(--blue);color:#fff}.comparison{display:grid;grid-template-columns:1fr 1fr;gap:22px}.pane{min-width:0}.pane label{display:block;font-size:13px;font-weight:650;color:var(--muted);margin-bottom:5px}.pane select{width:100%;border:0;border-bottom:1px solid var(--line);background:#fff;padding:6px 28px 9px 0;color:var(--ink);font-weight:600}.frame{display:block;border:0;padding:0;background:#e2e9eb;width:100%;height:430px;margin-top:14px;border-radius:5px;overflow:hidden;cursor:zoom-in}.frame img{width:100%;height:100%;object-fit:contain;display:block}.caption{font-size:14px;line-height:1.45;color:var(--muted);margin:12px 0 8px;min-height:61px}.caption strong{color:var(--ink);font-weight:650}.source{font-size:12px;min-height:24px}.readout{margin-top:18px;background:#e7f0ed;padding:20px 23px;border-radius:0 0 10px 10px;margin-left:-22px;margin-right:-22px;display:grid;grid-template-columns:1.2fr 1fr;gap:36px}.readout h2{font-size:19px;line-height:1.3;margin:0 0 8px;letter-spacing:-.2px}.readout p{font-size:15px;margin:0;max-width:78ch}.scope{font-size:12px;color:var(--muted);margin:14px 0 0}.body-section{margin:50px 0}.section-title{display:flex;align-items:baseline;justify-content:space-between;gap:25px;margin-bottom:20px}h2{font-size:29px;line-height:1.2;letter-spacing:-.5px;margin:0 0 12px}h3{font-size:19px;line-height:1.35;margin:0 0 8px}p{max-width:78ch}.columns{display:grid;grid-template-columns:repeat(3,1fr);gap:34px}.columns p{font-size:15px;color:var(--muted);margin-top:0}.number{font-size:13px;font-weight:650;color:var(--green);margin-bottom:7px}.flow{display:grid;grid-template-columns:1fr 2fr 1fr;gap:24px;padding:27px;background:#dce9ee;border-radius:9px;align-items:center}.flow p{font-size:14px;margin:7px 0 0;color:var(--muted)}.products{display:grid;gap:8px}.products div{background:#f8fbfc;padding:12px 17px;border-radius:6px;font-size:14px}.products b{display:inline-block;min-width:130px;color:var(--blue)}.aside{font-size:14px;color:var(--muted);max-width:90ch}.data-layout{display:grid;grid-template-columns:1.4fr 1fr;gap:35px}.table-scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:12px 12px 12px 0;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}th{font-weight:650;color:var(--muted)}td:nth-child(n+2){font-variant-numeric:tabular-nums}.perf-note{background:var(--blue);color:#fff;border-radius:8px;padding:22px}.perf-note p{font-size:15px;margin:8px 0;color:#e4eef2}.perf-note b{font-size:28px;font-weight:650}.status{font-size:13px;color:var(--bark);margin:12px 0}.frontier{display:grid;grid-template-columns:repeat(3,1fr);gap:28px}.frontier article{padding-top:16px;border-top:3px solid #aac0c8}.frontier p{font-size:14px;color:var(--muted)}.frontier a{font-size:13px}.gallery{display:grid;grid-template-columns:repeat(4,1fr);gap:15px}.gallery figure{margin:0}.gallery button{border:0;padding:0;background:#d9e2e6;width:100%;height:160px;border-radius:6px;cursor:zoom-in}.gallery img{width:100%;height:100%;object-fit:contain;display:block}.gallery figcaption{font-size:13px;color:var(--muted);margin-top:7px}.next{background:#dfeade;padding:27px 30px;border-radius:10px;display:grid;grid-template-columns:1fr 1fr;gap:30px}.next p{font-size:15px;margin:8px 0}.next ol{margin:0;padding-left:22px;font-size:15px}.next li{padding:4px 0}footer{padding:12px 0 35px;color:var(--muted);font-size:12px}footer p{max-width:110ch}dialog{border:0;padding:20px;border-radius:10px;background:#edf3f5;width:min(96vw,1600px);max-height:95vh}dialog::backdrop{background:rgba(10,24,31,.88)}dialog img{max-height:79vh;max-width:100%;display:block;margin:auto;object-fit:contain}dialog header{display:flex;justify-content:space-between;gap:20px;padding:0 0 12px}dialog button{border:1px solid #a0b3bd;background:#fff;color:var(--blue);border-radius:6px;padding:5px 13px}dialog p{font-size:13px;margin:12px 0 0}.hidden{display:none}
+@media(min-width:1500px){.frame{height:470px}}@media(max-width:1000px){.wrap{padding:0 20px}.frame{height:330px}.data-layout,.flow{grid-template-columns:1fr}.frontier,.columns{gap:20px}.flow{gap:15px}.caption{min-height:85px}}@media(max-width:700px){.wrap{padding:0 13px}.top{align-items:flex-start}.links{gap:12px;font-size:12px}.date{margin-top:18px}header{padding-top:20px}.workspace{padding:15px 15px 0}.comparison,.readout,.columns,.frontier,.next{grid-template-columns:1fr}.comparison{gap:19px}.frame{height:310px}.caption{min-height:0}.readout{margin-left:-15px;margin-right:-15px;gap:18px}.gallery{grid-template-columns:1fr 1fr}.section-title{display:block}.body-section{margin:35px 0}.next{gap:16px}.products b{min-width:115px}.scope{font-size:12px}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="top"><span class="brand">Wrela / Field studies</span><nav class="links" aria-label="Study documents"><a href="../foliage-implementation-2026-09-23/index.html">Implementation & results</a><a href="research.html">Full research</a><a href="evidence.json">Evidence</a><a href="references.json">Image credits</a></nav></div>
+  <p class="date">Foliage look development · September 23, 2026</p>
+  <h1>Give every shoot a convincing volume.</h1>
+  <p class="intro">Our pine needs denser local tufts, meaningful gaps, better branch transitions, and lighting that describes its shape. The compiler can preserve those qualities across distance while reducing repeated work.</p>
+</header>
+<main>
+<section class="workspace" aria-label="Interactive foliage comparison">
+  <div class="presets" aria-label="Comparison presets">
+    <button data-preset="shoot" aria-pressed="true">Shoot structure</button>
+    <button data-preset="tree" aria-pressed="false">Tree &amp; crown</button>
+    <button data-preset="grove" aria-pressed="false">Forest composition</button>
+    <button data-preset="light" aria-pressed="false">Light &amp; surface</button>
+    <button data-preset="temporal" aria-pressed="false">MSAA / temporal</button>
+  </div>
+  <div class="comparison">
+    <div class="pane"><label for="ours">Wrela capture</label><select id="ours"></select><button id="leftZoom" class="frame" aria-label="Enlarge Wrela capture"><img id="leftImage" alt=""></button><p class="caption" id="leftCaption"></p><div class="source" id="leftSource"></div></div>
+    <div class="pane"><label for="reference">Reference or control</label><select id="reference"></select><button id="rightZoom" class="frame" aria-label="Enlarge comparison image"><img id="rightImage" alt=""></button><p class="caption" id="rightCaption"></p><div class="source" id="rightSource"></div></div>
+  </div>
+  <div class="readout" aria-live="polite"><div><h2 id="findingTitle"></h2><p id="finding"></p></div><div><h2>Next experiment</h2><p id="experiment"></p></div></div>
+</section>
+<p class="scope">Qualitative references, not registered image tests. Species, age, scene dressing, cameras, lighting and resolution differ. Click an image to inspect it. Wrela captures are 1024 × 768; temporal comparisons use active reconstruction after 32 static history frames.</p>
+
+<section class="body-section">
+  <h2>The gap has three parts.</h2>
+  <div class="columns">
+    <article><div class="number">Authoring</div><h3>Build masses and gaps.</h3><p>Reference shoots have dense cores, wrapping needles, and exposed wood between tufts. Our repeated tiers and uniformly airy sprays need coordinated variation at shoot, branch, and crown scale.</p></article>
+    <article><div class="number">Representation</div><h3>Render the same plant.</h3><p>Today's three ribbons use patterns based on average shoot dimensions. They are not projections of the explicit 3D needles. Derive the reference and cheaper products from one canonical shoot.</p></article>
+    <article><div class="number">Lighting &amp; scene</div><h3>Make depth readable.</h3><p>Improve needle orientation, wood junctions and local canopy light. Then integrate the tree with a restrained understory, litter, roots, open ground and a coherent wind field.</p></article>
+  </div>
+</section>
+
+<section class="body-section" id="compiler">
+  <div class="section-title"><h2>A compiler that preserves appearance.</h2><a href="research.html#what-our-compiler-should-own">Read the implementation proposal</a></div>
+  <div class="flow">
+    <div><h3>One semantic shoot</h3><p>Needles, paired attachments, cohort, material, shape and motion bounds. Stable identities survive every realization.</p></div>
+    <div class="products"><div><b>Resolved detail</b>Explicit needles and wood</div><div><b>Intermediate</b>Qualified coverage, depth and orientation</div><div><b>Unresolved detail</b>Spatial, directional aggregates</div></div>
+    <div><h3>Measured selection</h3><p>Choose per branch or shoot using both camera and light footprints. Share repeated parts. Keep a complete fallback.</p></div>
+  </div>
+  <p class="aside">This is a proposal. Existing shader specialization and thin depth rendering are already valuable. The crown experiment remains unqualified; its failed coverage tests are not erased by a new plan.</p>
+</section>
+
+<section class="body-section" id="performance">
+  <h2>Current performance still exceeds the target.</h2>
+  <div class="data-layout">
+    <div><div class="table-scroll"><table><thead><tr><th>20-second trial</th><th>GPU p95</th><th>CPU p95</th><th>Completed fps</th></tr></thead><tbody><tr><td>1</td><td>8.19 ms</td><td>1.60 ms</td><td>124.0</td></tr><tr><td>2</td><td>7.73 ms</td><td>1.60 ms</td><td>128.8</td></tr><tr><td>3</td><td>7.86 ms</td><td>1.70 ms</td><td>126.9</td></tr></tbody></table></div><p class="aside">M4 Air, AC power, native 1080p temporal, moving nine-tree grove; 5-second warmup. Maximum tracked GPU allocation: 243.1 MiB. Short baseline, not a sustained pass or a before/after improvement. Completed throughput is not display presentation.</p></div>
+    <aside class="perf-note"><h3>Where to look first</h3><p><b>6 ms</b> whole-scene GPU p95 target</p><p>Investigate empty proxy area, shared shoot geometry, finer LOD, and shadow detail. The current distant tree still contains 20,658 triangles.</p><p>Coverage, shadow and opaque intervals overlap. Their timings cannot be added to predict savings.</p></aside>
+  </div>
+  <p class="status">All three trials miss the GPU target. The earlier sustained thermal failure remains open.</p>
+</section>
+
+<section class="body-section">
+  <h2>Transfer the useful ideas.</h2>
+  <div class="frontier">
+    <article><h3>Shared parts + aggregates</h3><p>Epic's experimental foliage combines instancing, voxel detail and skeletal motion. Our near-term test is a small reusable shoot vocabulary with measured appearance error.</p><a href="https://dev.epicgames.com/documentation/unreal-engine/nanite-foliage">Epic's current foliage documentation</a></article>
+    <article><h3>Fine culling + coherent wind</h3><p>Alan Wake 2 provides a production example of fine GPU culling and foliage rigs. Our branch graph can supply motion groups, tighter bounds and shared current/previous transforms.</p><a href="https://www.remedygames.com/article/how-northlight-makes-alan-wake-2-shine">Remedy's Northlight explanation</a></article>
+    <article><h3>Rules + local art direction</h3><p>Massive's placement relationships and Sucker Punch's restrained biome palettes suggest a practical authoring loop: reference-grounded recipes with deliberate local overrides.</p><a href="https://www.massive.se/article/crafting-pandoras-breathtaking-landscape-with-snowdrop/">Massive's scattering workflow</a></article>
+  </div>
+  <p class="aside">The full research also covers procedural grass, coverage filtering, directional microflake aggregates, temporal stability, and 2026 neural asset transport. Native mesh shaders and hardware ray tracing are not requirements for the proposed portable WebGPU baseline.</p>
+</section>
+
+<section class="body-section"><h2>Inspect the rest of the evidence.</h2><div class="gallery" id="gallery"></div></section>
+
+<section class="body-section next"><div><h2>The next work should stay small.</h2><p>First prove that a convincing shoot survives compilation. Expand to a whole tree and forest edge once the image earns it.</p><p><a href="research.html#a-bounded-implementation-sequence">Detailed experiments, quality gates and limits</a></p></div><ol><li>Approve a 3D shoot and branch against real references.</li><li>Compare explicit geometry, current ribbons, and a derived proxy.</li><li>Improve local light, bark and junctions.</li><li>Optimize the accepted result at fixed quality.</li><li>Finish one playable forest edge before scaling populations.</li></ol></section>
+</main>
+<footer><p>Wrela captures: frozen source c7003ec9…8d46. Reference imagery: NPS, Remedy, Guerrilla/Nixxes/Sony, Massive/Ubisoft/20th Century Studios, and Sucker Punch/Sony. Original images are retained for attributed research and criticism, not as game assets. <a href="references.json">Full credits and source URLs</a>.</p><p>This study contains no production renderer changes, no claimed optimization speedup, and no AAA visual approval.</p></footer>
+</div>
+<dialog id="zoom"><header><strong id="zoomTitle"></strong><button id="closeZoom">Close</button></header><img id="zoomImage" alt=""><p id="zoomCredit"></p></dialog>
+<script>
+const nps='https://www.nps.gov/features/yell/slidefile/plants/conifers/pine/Page-3.htm';
+const current={
+ branch:{label:'Isolated branch · MSAA',file:'captures/plant-branch.png',caption:'Current shaped pine. Fine comb-like coverage follows regularly spaced twigs. Branch isolation is a review tool, not a performance optimization.'},
+ beauty:{label:'Whole tree · MSAA',file:'captures/plant-beauty.png',caption:'Seed 73, authored maturity 0.85. The full-tree silhouette still exposes repeated tiers and a prominent central trunk.'},
+ detail:{label:'Close detail · MSAA',file:'captures/plant-detail.png',caption:'Close view of needle coverage and woody junctions. Thin ribbons and smooth inserted limbs remain easy to read.'},
+ near:{label:'Near grove · MSAA',file:'captures/stand-near.png',caption:'A neutral nine-tree test scene. This isolates tree quality; its bare floor is not intended as finished world art.'},
+ gameplay:{label:'Gameplay grove · MSAA',file:'captures/stand-gameplay.png',caption:'All trees remain individually readable. Source surface triangle counts differ from the renderer’s selected camera count.'},
+ far:{label:'Distant grove · MSAA',file:'captures/stand-far.png',caption:'The distant choice is exercised on 18 surfaces. The selected camera workload still includes 313,466 triangles, including terrain.'},
+ back:{label:'Backlight · MSAA',file:'captures/plant-backlit.png',caption:'The tree becomes dark against the sky. Separate needle optics, self-occlusion and external light before attributing the cause.'},
+ silhouette:{label:'Silhouette · MSAA',file:'captures/plant-silhouette.png',caption:'Use this to inspect mass, gaps and tier repetition independently of the material response.'},
+ temporalBeauty:{label:'Whole tree · active temporal',file:'captures/plant-beauty-temporal.png',caption:'Browser screenshot after 32 static history frames. The settled temporal output still reads as an airy crown.'},
+ temporalDetail:{label:'Close detail · active temporal',file:'captures/plant-detail-temporal.png',caption:'Active temporal reconstruction, same pose and camera as the MSAA close view. Stipple and the shoot pattern remain visible.'},
+ temporalNear:{label:'Near grove · active temporal',file:'captures/stand-near-temporal.png',caption:'Settled static temporal view. This is not a moving-camera, wind, or disocclusion acceptance test.'}
+};
+const refs={
+ shoot:{label:'Real lodgepole · needle tuft',file:'references/real-branch.jpg',caption:'Needles wrap around a dense shoot, with overlap, directional highlights and self-shade. Different magnification from the Wrela branch.',credit:'Jim Peaco / NPS, 1989. Photograph 13171.',url:nps},
+ branch:{label:'Real lodgepole · branch',file:'references/real-crown.jpg',caption:'Substantial tufts sit along exposed wood. Larger gaps coexist with dense local needle coverage. Archival photo, not calibrated color.',credit:'Jim Peaco / NPS, July 1998. Photograph 16971.',url:nps},
+ stand:{label:'Real lodgepole · mature stand',file:'references/real-stand.jpg',caption:'Tall crowded trees, varied live crowns, sparse lower branches and a layered forest floor. Different age and growing conditions from our young specimen.',credit:'Bob Stevensoon [source spelling] / NPS, October 27, 1988. Photograph 13170.',url:nps},
+ alan:{label:'Alan Wake 2 · forest',file:'references/alan-wake-forest.webp',caption:'Irregular crown masses, overlapping depth layers and a grounded understory. A scene-composition reference; these are not identified as lodgepole pines.',credit:'Remedy Entertainment. Official Northlight article, November 6, 2023.',url:'https://www.remedygames.com/article/how-northlight-makes-alan-wake-2-shine'},
+ horizon:{label:'Horizon Zero Dawn Remastered · forest floor',file:'references/horizon-forest.jpg',caption:'Readable open ground is framed by varied low plants, litter, moss and woody structure. Tropical vegetation is not an alpine density prescription.',credit:'Guerrilla / Nixxes / Sony Interactive Entertainment. Official PS5 capture.',url:'https://blog.playstation.com/2024/10/17/horizon-zero-dawn-remastered-a-deep-dive-into-its-enhancements/'},
+ avatar:{label:'Avatar: Frontiers of Pandora · canopy light',file:'references/avatar-forest.jpg',caption:'Sunlit edges, shaded interior masses and plants tied to the surfaces they grow on. Fictional species; compare depth and integration, not anatomy.',credit:'Massive / Ubisoft / 20th Century Studios. Official Snowdrop article.',url:'https://www.massive.se/article/snowdrops-ray-tracing-shines-a-light-on-pandora/'},
+ ghost:{label:'Ghost of Tsushima · landscape',file:'references/ghost-field.jpg',caption:'Distinct plant palettes and layered distance create a readable composition. This static official image does not demonstrate the documented wind system.',credit:'Sucker Punch / Sony Interactive Entertainment. Official PS4 Pro capture.',url:'https://blog.playstation.com/2020/07/09/crafting-the-world-of-tsushima/'},
+ taaBeauty:{...current.temporalBeauty,label:'Wrela control · whole tree temporal'},
+ taaDetail:{...current.temporalDetail,label:'Wrela control · close detail temporal'},
+ taaNear:{...current.temporalNear,label:'Wrela control · grove temporal'}
+};
+const presets={
+ shoot:{left:'branch',right:'branch',title:'Local density and larger gaps need to coexist.',finding:'The reference branch has substantial needle tufts separated by exposed wood. Our branch reads as fine, evenly distributed fuzz. This is a source-shape and proxy problem as well as a sampling problem.',experiment:'Build one untruncated 3D shoot. Derive its explicit needles and candidate coverage product from the same attachments, dimensions and orientations. Review several angles before adding density.'},
+ tree:{left:'beauty',right:'alan',title:'The crown needs a stronger middle scale.',finding:'Between the trunk and individual needles, convincing foliage forms irregular masses. Our tiers remain conspicuous. Alan Wake offers a useful massing reference, but its species, lighting and dressed scene differ.',experiment:'Art-direct three crown variants with coordinated branch reach, inclination and tuft spacing. Preserve purposeful gaps. Qualify the neutral specimen before evaluating it in a forest.'},
+ grove:{left:'near',right:'horizon',title:'A finished forest has several connected layers.',finding:'The neutral Wrela fixture is useful for critique. Horizon shows how low plants, litter, moss, rocks and open paths support the trees. Copy the relationships, not tropical plant density.',experiment:'After the pine passes, author one forest edge with a restrained understory and a clear walking route. Tie placement to terrain, neighbors and local art direction.'},
+ light:{left:'back',right:'avatar',title:'Light should explain the plant’s volume.',finding:'The current backlit pine loses much of its internal separation. Avatar is an example of light and shade revealing layered foliage. These are unmatched shots, not proof of a specific shader defect.',experiment:'Compare one shoot under front, back and grazing light at fixed exposure. Test needle orientation and optics, then local canopy visibility and ground bounce with controlled blockers.'},
+ temporal:{left:'detail',right:'taaDetail',title:'Temporal reconstruction does not fix the source pattern.',finding:'These Wrela views share the source, camera and pose. The right image uses the active temporal resolve after 32 static history frames. Fine stipple and the planar shoot pattern are still visible.',experiment:'Separate expected coverage bias from noise. Validate the true 3D source, overlapping masks and motion vectors. Use moving sequences for stability; these images establish only static appearance.'}
+};
+const ours=document.querySelector('#ours'),reference=document.querySelector('#reference');
+for(const [key,value] of Object.entries(current))ours.add(new Option(value.label,key));
+for(const [key,value] of Object.entries(refs))reference.add(new Option(value.label,key));
+let active='shoot';
+function renderPane(side,item,isReference){
+ const img=document.querySelector('#'+side+'Image');img.src=item.file;img.alt=item.label;
+ document.querySelector('#'+side+'Caption').textContent=item.caption;
+ const source=document.querySelector('#'+side+'Source');source.replaceChildren();
+ if(item.url){const a=document.createElement('a');a.href=item.url;a.textContent=item.credit;source.append(a);}else{const a=document.createElement('a');a.href='evidence.json';a.textContent='Wrela hardware capture · September 23, 2026';source.append(a);}
+}
+function render(){renderPane('left',current[ours.value],false);renderPane('right',refs[reference.value],true);const p=presets[active];document.querySelector('#findingTitle').textContent=p.title;document.querySelector('#finding').textContent=p.finding;document.querySelector('#experiment').textContent=p.experiment;}
+function selectPreset(id){active=id;ours.value=presets[id].left;reference.value=presets[id].right;for(const b of document.querySelectorAll('[data-preset]'))b.setAttribute('aria-pressed',String(b.dataset.preset===id));render();}
+for(const b of document.querySelectorAll('[data-preset]'))b.addEventListener('click',()=>selectPreset(b.dataset.preset));
+function custom(){render();document.querySelector('#findingTitle').textContent='Custom comparison';document.querySelector('#finding').textContent='Inspect the captions for each image’s scope. These images share a review board, not necessarily a camera, species, exposure or growing condition. Select a preset to return to a specific finding.';document.querySelector('#experiment').textContent='Use real photographs for anatomy, shipped-game images for scene integration, and the matched Wrela AA pair for static sampling. Avoid drawing cross-image numerical conclusions.';for(const b of document.querySelectorAll('[data-preset]'))b.setAttribute('aria-pressed','false');}
+ours.addEventListener('change',custom);reference.addEventListener('change',custom);
+const modal=document.querySelector('#zoom');
+function enlarge(item){document.querySelector('#zoomTitle').textContent=item.label;document.querySelector('#zoomImage').src=item.file;document.querySelector('#zoomImage').alt=item.label;document.querySelector('#zoomCredit').textContent=item.credit||'Wrela frozen-source hardware capture. '+item.caption;modal.showModal();}
+document.querySelector('#leftZoom').addEventListener('click',()=>enlarge(current[ours.value]));document.querySelector('#rightZoom').addEventListener('click',()=>enlarge(refs[reference.value]));document.querySelector('#closeZoom').addEventListener('click',()=>modal.close());modal.addEventListener('click',e=>{if(e.target===modal&&e.clientX<modal.getBoundingClientRect().left)modal.close();});
+const gallery=document.querySelector('#gallery');
+for(const key of ['beauty','silhouette','back','far']){const item=current[key];const figure=document.createElement('figure');const button=document.createElement('button');button.setAttribute('aria-label','Enlarge '+item.label);const img=document.createElement('img');img.src=item.file;img.alt=item.label;img.loading='lazy';button.append(img);button.addEventListener('click',()=>enlarge(item));const caption=document.createElement('figcaption');caption.textContent=item.label;figure.append(button,caption);gallery.append(figure);}
+selectPreset('shoot');
+</script>
+</body>
+</html>

@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "id": "vegetation-wrela-0",
+  "suiteKey": "f402700509bedf85",
+  "task": "vegetation",
+  "engine": "wrela",
+  "repetition": 0,
+  "agent": "fresh-domain-study-agent",
+  "model": "inherited-codex-model-version-unavailable",
+  "execution": "agent",
+  "status": "completed",
+  "reason": "Automatic reviewed handoff; no artistic acceptance inferred. Token/intervention counts remain unknown unless supplied by an instrumented host.",
+  "startedAt": "2026-09-24T01:18:53.348Z",
+  "endedAt": "2026-09-24T01:20:05.004Z",
+  "elapsedMs": 71656,
+  "tokens": null,
+  "humanInterventions": null,
+  "engineEdits": [],
+  "constraintsPassed": true,
+  "artifacts": [
+    {
+      "path": "final.json",
+      "sha256": "ce9220841db05164198550c5eebc5098846b3a10b9d4855cc60bd7c6749a865d",
+      "kind": "source"
+    },
+    {
+      "path": "handoff.json",
+      "sha256": "4b3e798dadc78ef6188a3fc95c25a4ca00c98887b497a555b564ee5d9e72bfb7",
+      "kind": "handoff"
+    },
+    {
+      "path": "handoff-bundle.json",
+      "sha256": "2aaba8aa17d80e6a7719852f2e3a6e29104690d446f64f9a0b78d38897321ba0",
+      "kind": "handoff"
+    },
+    {
+      "path": "authoring-trace.json",
+      "sha256": "6d8a85d132b64dcd238798eb063177b8e4a9d53aa99c9a2c1f161ed0fec637d3",
+      "kind": "transcript"
+    },
+    {
+      "path": "angle-final.png",
+      "sha256": "4b228992c27f1bae29c85d1d9e9269c73750338c2a28f23af14696c090cfd483",
+      "kind": "image"
+    },
+    {
+      "path": "detail-final.png",
+      "sha256": "d830c71165db453fac17517d5ae22327b064ede3fce78cfa93d12daa6b6149fc",
+      "kind": "image"
+    },
+    {
+      "path": "grazing-final.png",
+      "sha256": "177dc235278ad7e7cc7782a53649d10ec9576a0268193ea07a26a81fe8785c4e",
+      "kind": "image"
+    },
+    {
+      "path": "contact-sheet.png",
+      "sha256": "1c473a9b10755aa789ceb46ede0d7169bb76baf8db4dd4df411c809d81767b6a",
+      "kind": "review"
+    },
+    {
+      "path": "independent-review.json",
+      "sha256": "f6ce7ceefacebc0c1fd8163fd225d819c297a718b1341b7d0e10b7e9a2ef09be",
+      "kind": "review"
+    }
+  ],
+  "telemetry": {
+    "toolCalls": 2,
+    "failedCalls": 0,
+    "discoveryCalls": 0,
+    "discoveryMs": 0,
+    "firstCandidateImageMs": 44331,
+    "toolMs": 8591.360834000001,
+    "observedToolWallMs": 8591,
+    "unattributedMs": 63065,
+    "modelMs": null,
+    "scope": "CLI spans only. Unattributed time includes model latency, image inspection, manual shell work, orchestration and idle time; it is not measured reasoning time."
+  },
+  "stages": [
+    {
+      "name": "review-packet-tool-runtime",
+      "durationMs": 2735.9000000953674,
+      "origin": "agent-reported"
+    }
+  ]
+}

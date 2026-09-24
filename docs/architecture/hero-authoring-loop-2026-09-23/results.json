@@ -1,0 +1,287 @@
+{
+  "sourceFingerprints": {
+    "freshAgents": "a346cb9bc8816d16b007af6b3ee6d7671cbae1e118fdec97796edf175ea74c37",
+    "finalEngine": "840f073f2ce42389f58572f11f2474d4cac092243e292cb71041ff32d20dada7",
+    "integrationCheckpoint": "8b821c717e58a98889726312a73294ea84baa268fb93b8f08750bbb64374183f"
+  },
+  "attempts": [
+    {
+      "domain": "wood",
+      "elapsedMs": 78500,
+      "dispatch": "engine-started",
+      "telemetry": {
+        "toolCalls": 2,
+        "failedCalls": 0,
+        "discoveryCalls": 0,
+        "discoveryMs": 0,
+        "firstCandidateImageMs": 1532,
+        "firstReviewDeliveredMs": 2708,
+        "toolMs": 2334.574708,
+        "observedToolWallMs": 2335,
+        "unattributedMs": 76164,
+        "modelMs": null,
+        "scope": "CLI spans only. Unattributed time includes model latency, image inspection, manual shell work, orchestration and idle time; it is not measured reasoning time."
+      },
+      "independentChecks": 16,
+      "engineEdits": [],
+      "constraintsPassed": true,
+      "blankWorkspace": false,
+      "proposals": 3,
+      "deliveredProposal": "study-79409d9ed2bcef0a-1",
+      "tokens": null,
+      "humanInterventions": null,
+      "artisticAcceptance": null
+    },
+    {
+      "domain": "vegetation",
+      "elapsedMs": 70151,
+      "dispatch": "engine-started",
+      "telemetry": {
+        "toolCalls": 2,
+        "failedCalls": 0,
+        "discoveryCalls": 0,
+        "discoveryMs": 0,
+        "firstCandidateImageMs": 2824,
+        "firstReviewDeliveredMs": 5044,
+        "toolMs": 4753.796042,
+        "observedToolWallMs": 4754,
+        "unattributedMs": 65397,
+        "modelMs": null,
+        "scope": "CLI spans only. Unattributed time includes model latency, image inspection, manual shell work, orchestration and idle time; it is not measured reasoning time."
+      },
+      "independentChecks": 9,
+      "engineEdits": [],
+      "constraintsPassed": true,
+      "blankWorkspace": false,
+      "proposals": 3,
+      "deliveredProposal": "study-9bb5a001802e93b8-2",
+      "tokens": null,
+      "humanInterventions": null,
+      "artisticAcceptance": null
+    },
+    {
+      "domain": "lantern",
+      "elapsedMs": 257596,
+      "dispatch": "agent-started",
+      "telemetry": {
+        "toolCalls": 3,
+        "failedCalls": 0,
+        "discoveryCalls": 0,
+        "discoveryMs": 0,
+        "firstCandidateImageMs": 137976,
+        "firstReviewDeliveredMs": 138800,
+        "toolMs": 2859.200166000024,
+        "observedToolWallMs": 2859,
+        "unattributedMs": 254737,
+        "modelMs": null,
+        "scope": "CLI spans only. Unattributed time includes model latency, image inspection, manual shell work, orchestration and idle time; it is not measured reasoning time."
+      },
+      "independentChecks": 2,
+      "engineEdits": [],
+      "constraintsPassed": true,
+      "blankWorkspace": true,
+      "proposals": 2,
+      "deliveredProposal": "northwind-connected",
+      "tokens": null,
+      "humanInterventions": null,
+      "artisticAcceptance": null
+    },
+    {
+      "domain": "bell",
+      "elapsedMs": 273916,
+      "dispatch": "agent-started",
+      "telemetry": {
+        "toolCalls": 3,
+        "failedCalls": 0,
+        "discoveryCalls": 0,
+        "discoveryMs": 0,
+        "firstCandidateImageMs": 127808,
+        "firstReviewDeliveredMs": 128536,
+        "toolMs": 2544.4542089999595,
+        "observedToolWallMs": 2545,
+        "unattributedMs": 271371,
+        "modelMs": null,
+        "scope": "CLI spans only. Unattributed time includes model latency, image inspection, manual shell work, orchestration and idle time; it is not measured reasoning time."
+      },
+      "independentChecks": 2,
+      "engineEdits": [],
+      "constraintsPassed": true,
+      "blankWorkspace": true,
+      "proposals": 2,
+      "deliveredProposal": "tidemark-patina",
+      "tokens": null,
+      "humanInterventions": null,
+      "artisticAcceptance": null
+    }
+  ],
+  "latency": {
+    "repetitions": 5,
+    "warmStartupMs": 619.9093750000029,
+    "summary": [
+      {
+        "domain": "wood",
+        "coldToolMs": {
+          "samples": 5,
+          "mean": 1804.6591332000003,
+          "p50": 1800.9495840000018,
+          "p95": 1823.9769579999993,
+          "p99": 1823.9769579999993,
+          "max": 1823.9769579999993
+        },
+        "coldIncludingStartupMs": {
+          "samples": 5,
+          "mean": 2450.7745746,
+          "p50": 2441.1870830000007,
+          "p95": 2530.403958,
+          "p99": 2530.403958,
+          "max": 2530.403958
+        },
+        "warmToolMs": {
+          "samples": 5,
+          "mean": 1331.7949999999983,
+          "p50": 1199.7272499999963,
+          "p95": 1833.969624999998,
+          "p99": 1833.969624999998,
+          "max": 1833.969624999998
+        }
+      },
+      {
+        "domain": "vegetation",
+        "coldToolMs": {
+          "samples": 5,
+          "mean": 4147.450883399999,
+          "p50": 4151.092833999999,
+          "p95": 4163.927374999999,
+          "p99": 4163.927374999999,
+          "max": 4163.927374999999
+        },
+        "coldIncludingStartupMs": {
+          "samples": 5,
+          "mean": 4782.454541799996,
+          "p50": 4779.926001,
+          "p95": 4800.170124999997,
+          "p99": 4800.170124999997,
+          "max": 4800.170124999997
+        },
+        "warmToolMs": {
+          "samples": 5,
+          "mean": 3091.9816166000005,
+          "p50": 2977.8601669999916,
+          "p95": 3586.793208000003,
+          "p99": 3586.793208000003,
+          "max": 3586.793208000003
+        }
+      },
+      {
+        "domain": "lantern",
+        "coldToolMs": {
+          "samples": 5,
+          "mean": 1348.6557498000016,
+          "p50": 1348.8346670000028,
+          "p95": 1367.713708000003,
+          "p99": 1367.713708000003,
+          "max": 1367.713708000003
+        },
+        "coldIncludingStartupMs": {
+          "samples": 5,
+          "mean": 1986.6042416000018,
+          "p50": 1974.4902489999986,
+          "p95": 2054.1586670000033,
+          "p99": 2054.1586670000033,
+          "max": 2054.1586670000033
+        },
+        "warmToolMs": {
+          "samples": 5,
+          "mean": 794.4313086000009,
+          "p50": 793.1943330000067,
+          "p95": 811.4200419999979,
+          "p99": 811.4200419999979,
+          "max": 811.4200419999979
+        }
+      },
+      {
+        "domain": "bell",
+        "coldToolMs": {
+          "samples": 5,
+          "mean": 1186.0536416000007,
+          "p50": 1193.6952910000036,
+          "p95": 1195.7908749999988,
+          "p99": 1195.7908749999988,
+          "max": 1195.7908749999988
+        },
+        "coldIncludingStartupMs": {
+          "samples": 5,
+          "mean": 1811.583708200001,
+          "p50": 1806.8148749999982,
+          "p95": 1835.1195000000007,
+          "p99": 1835.1195000000007,
+          "max": 1835.1195000000007
+        },
+        "warmToolMs": {
+          "samples": 5,
+          "mean": 648.1111666000012,
+          "p50": 646.5065000000031,
+          "p95": 666.6237910000054,
+          "p99": 666.6237910000054,
+          "max": 666.6237910000054
+        }
+      }
+    ],
+    "scope": "Paired deterministic scripted tool execution; five unique inputs per domain. Known designs, not fresh-agent creation or artistic qualification. Cold means a fresh browser, not a purged driver or disk cache. Browser shutdown and setup of persisted work excluded from tool timing."
+  },
+  "toolkit": [
+    {
+      "id": "hollow-revolved-shell",
+      "status": "validated",
+      "trials": [
+        {
+          "work": "lantern",
+          "proposal": "northwind-connected",
+          "family": "lantern",
+          "sourceKey": "06d3269bd45ea194",
+          "reviewKey": "6c14e7fb2d470700",
+          "elapsedMs": 257596,
+          "accepted": false,
+          "reviewer": null
+        },
+        {
+          "work": "bell",
+          "proposal": "tidemark-patina",
+          "family": "bell",
+          "sourceKey": "bede36605420d4f4",
+          "reviewKey": "ae3483f534faee9f",
+          "elapsedMs": 273916,
+          "accepted": false,
+          "reviewer": null
+        }
+      ],
+      "approvedRejected": true,
+      "engineeringMs": null
+    },
+    {
+      "id": "thin-glass",
+      "status": "experimental",
+      "trials": [
+        {
+          "work": "lantern",
+          "proposal": "northwind-connected",
+          "family": "lantern",
+          "sourceKey": "06d3269bd45ea194",
+          "reviewKey": "6c14e7fb2d470700",
+          "elapsedMs": 257596,
+          "accepted": false,
+          "reviewer": null
+        }
+      ],
+      "approvedRejected": true,
+      "engineeringMs": null
+    }
+  ],
+  "limitations": [
+    "One fresh agent run per domain; no end-to-end distribution",
+    "No exact model version, token or dollar-cost measurement",
+    "No independent artistic acceptance",
+    "Tool time excludes model/host/image-review latency",
+    "Two hero families share rotational shells; broader hero coverage unproven"
+  ]
+}

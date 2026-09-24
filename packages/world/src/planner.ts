@@ -1,4 +1,5 @@
 import { MAX_WORLD_COORDINATE, type Vec3 } from "@wrela/model";
+
 import { worldPosition } from "./coordinates";
 export type InterestSource = {
   id: string;

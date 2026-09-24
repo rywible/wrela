@@ -2,6 +2,7 @@
  * never the primitive's known zero set. For Wrela's ellipsoid estimator,
  * f = Q w, Q = sum((p_i/s_i)^2)-1, w = q/(r(q+1)). */
 import type { Bounds, Vec3 } from "@wrela/model";
+
 import {
   add,
   apply,

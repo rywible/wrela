@@ -1,0 +1,69 @@
+{
+  "reports": [
+    {
+      "phase": "cold",
+      "kind": "furnished",
+      "readyMs": 3193.7000000476837,
+      "builds": 1,
+      "storageHits": 0,
+      "storageWrites": 1,
+      "storageLoadMs": 30,
+      "storageWriteMs": 14.399999976158142,
+      "transferHash": "cf364981d4884990bb51aa97e8dc68dbcf24feb3713429908215731c2bf53a00",
+      "imageHash": "bd1efbeeabf094c91bf2539b333d9ae7cc2cb774d65f7e2d36929688cf53529f",
+      "buildMs": 2964.1999999284744,
+      "activeMs": 2923.699999809265,
+      "maxSliceMs": 4.399999976158142,
+      "errors": []
+    },
+    {
+      "phase": "cold",
+      "kind": "winter",
+      "readyMs": 2796,
+      "builds": 1,
+      "storageHits": 0,
+      "storageWrites": 1,
+      "storageLoadMs": 1.399999976158142,
+      "storageWriteMs": 38.699999928474426,
+      "transferHash": "26b2b2889e9f5a77c1a313d30ab715c8da4802f6b5137b7f1d0ed7676d764c0c",
+      "imageHash": "06a10a89949f1fcef7d213d56bd5de30d1856a551629ca8cfcb7c19464502b29",
+      "buildMs": 2607.7000000476837,
+      "activeMs": 1855.2999993562698,
+      "maxSliceMs": 4.699999928474426,
+      "errors": []
+    },
+    {
+      "phase": "restored",
+      "kind": "furnished",
+      "readyMs": 45.699999928474426,
+      "builds": 0,
+      "storageHits": 1,
+      "storageWrites": 0,
+      "storageLoadMs": 33.199999928474426,
+      "storageWriteMs": 0,
+      "transferHash": "cf364981d4884990bb51aa97e8dc68dbcf24feb3713429908215731c2bf53a00",
+      "imageHash": "bd1efbeeabf094c91bf2539b333d9ae7cc2cb774d65f7e2d36929688cf53529f",
+      "buildMs": 2964.1999999284744,
+      "activeMs": 15.700000047683716,
+      "maxSliceMs": 2.100000023841858,
+      "errors": []
+    },
+    {
+      "phase": "restored",
+      "kind": "winter",
+      "readyMs": 175.30000007152557,
+      "builds": 0,
+      "storageHits": 1,
+      "storageWrites": 0,
+      "storageLoadMs": 169.89999997615814,
+      "storageWriteMs": 0,
+      "transferHash": "26b2b2889e9f5a77c1a313d30ab715c8da4802f6b5137b7f1d0ed7676d764c0c",
+      "imageHash": "06a10a89949f1fcef7d213d56bd5de30d1856a551629ca8cfcb7c19464502b29",
+      "buildMs": 2607.7000000476837,
+      "activeMs": 100.89999985694885,
+      "maxSliceMs": 3,
+      "errors": []
+    }
+  ],
+  "errors": []
+}

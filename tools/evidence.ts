@@ -6,7 +6,9 @@ export type SourceManifest = Awaited<ReturnType<typeof sourceManifest>>;
 /** Hash the actual checkout, including untracked source. Research is recorded separately. */
 export async function sourceManifest(scenario: string) {
   const paths = Array.from(
-    new Bun.Glob("{apps,packages,tools}/**/*.{ts,tsx,css,html,wgsl,json}").scanSync("."),
+    new Bun.Glob(
+      "{apps,games,packages,tools,verification}/**/*.{ts,tsx,js,mjs,cjs,py,sh,css,html,wgsl,json}",
+    ).scanSync("."),
   )
     .filter((path) => !/^tools\/(?:field|transport)-research\//.test(path))
     .concat([
@@ -17,6 +19,8 @@ export async function sourceManifest(scenario: string) {
       "tsconfig.browser.json",
       "biome.json",
       "AGENTS.md",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.txt",
       ".github/workflows/verify.yml",
     ])
     .sort();

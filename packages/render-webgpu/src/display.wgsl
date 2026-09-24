@@ -14,15 +14,17 @@ fn display(color:vec3f)->vec3f {
 fn luminance(color:vec3f)->f32 {return dot(color,vec3f(0.2126,0.7152,0.0722));}
 @fragment fn fragmentMain(screen:Screen)->@location(0) vec4f {
   // Diagnostic captures preserve their exact encoding and full resolution, without AA or display transforms.
-  if(frame.values[15].z>0.5) { return textureLoad(sceneColor,vec2i(screen.position.xy),0); }
+  let mode=frame.values[15].z;
+  if(mode>0.5&&!(mode>9.5&&mode<10.5)) { return textureLoad(sceneColor,vec2i(screen.position.xy),0); }
   let texel=1.0/vec2f(textureDimensions(sceneColor));
-  var color=display(textureSampleLevel(sceneColor,sceneSampler,screen.uv,0).xyz);
-  // Low tier uses a bounded edge filter; other tiers resolve four geometric samples before this pass.
+  var color=display(textureSampleLevel(sceneColor,sceneSampler,screen.uv,0.0).xyz);
+  // Spatial control and canonical captures use the edge filter. Temporal and
+  // MSAA already reconstruct edges; do not blur their output a second time.
   if(frame.values[19].w<2.0) {
-    let left=display(textureSampleLevel(sceneColor,sceneSampler,screen.uv-vec2f(texel.x,0),0).xyz);
-    let right=display(textureSampleLevel(sceneColor,sceneSampler,screen.uv+vec2f(texel.x,0),0).xyz);
-    let up=display(textureSampleLevel(sceneColor,sceneSampler,screen.uv-vec2f(0,texel.y),0).xyz);
-    let down=display(textureSampleLevel(sceneColor,sceneSampler,screen.uv+vec2f(0,texel.y),0).xyz);
+    let left=display(textureSampleLevel(sceneColor,sceneSampler,screen.uv-vec2f(texel.x,0),0.0).xyz);
+    let right=display(textureSampleLevel(sceneColor,sceneSampler,screen.uv+vec2f(texel.x,0),0.0).xyz);
+    let up=display(textureSampleLevel(sceneColor,sceneSampler,screen.uv-vec2f(0,texel.y),0.0).xyz);
+    let down=display(textureSampleLevel(sceneColor,sceneSampler,screen.uv+vec2f(0,texel.y),0.0).xyz);
     let minimum=min(luminance(color),min(min(luminance(left),luminance(right)),min(luminance(up),luminance(down))));
     let maximum=max(luminance(color),max(max(luminance(left),luminance(right)),max(luminance(up),luminance(down))));
     if(maximum-minimum>max(0.04,maximum*0.15)) {

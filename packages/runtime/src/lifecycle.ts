@@ -1,4 +1,5 @@
 import type { Vec3 } from "@wrela/model";
+
 export type EntityResidency = { id: string; position: Vec3; dormant: boolean; removed: boolean };
 export type EntityResidencyPlan = { wanted: Set<string>; regions: Map<string, Vec3> };
 /** Stable actor leases share nearby physical regions while respecting the world planner budget. */

@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
 import { type EvaluatedScene, identityMatrix, type RenderSurface, transformMatrix } from "@wrela/model";
+
 import { directionalShadow, shadowRadiusForScene } from "./shadows";
-import { intersectsFrustum, selectVisibility, surfaceBounds } from "./visibility";
+import {
+  intersectsFrustum,
+  MIN_SEMANTIC_OCCLUDER_COVERAGE,
+  projectedOccluderCoverage,
+  selectVisibility,
+  surfaceBounds,
+} from "./visibility";
 
 const surface: RenderSurface = {
   id: "surface",
@@ -113,7 +120,7 @@ test("shadow coordinates survive a render-origin change", () => {
 });
 
 test("subject coverage retains contact detail while world coverage is explicit and depth bias retains world units", () => {
-  expect(shadowRadiusForScene(scene, 120)).toBe(14);
+  expect(shadowRadiusForScene(scene, 120)).toBe(7);
   expect(shadowRadiusForScene({ ...scene, shadowRadius: 240 }, 120)).toBe(120);
   const close = directionalShadow(scene, 14, 2048);
   const world = directionalShadow(scene, 120, 2048);
@@ -126,4 +133,134 @@ test("subject coverage retains contact detail while world coverage is explicit a
     expect(worldBias * light.inverseDepthRange * (radius * 5 - 0.1)).toBeCloseTo(worldBias, 12);
     expect(worldBias).toBeLessThan(0.004);
   }
+});
+
+test("invalid bounds and malformed skin influences cannot remove visible work", () => {
+  expect(intersectsFrustum({ min: [3, 0, 0], max: [2, 1, 1] }, identityMatrix())).toBe(true);
+  expect(intersectsFrustum(surface.mesh.bounds, new Float32Array(4))).toBe(true);
+  for (const weights of [new Float32Array([-1, 2]), new Float32Array([2]), new Float32Array([NaN])]) {
+    const malformed = {
+      ...surface,
+      matrix: transformMatrix([10, 0, 0]),
+      skin: { matrices: identityMatrix(), jointIndices: new Uint16Array([0]), weights },
+    };
+    expect(intersectsFrustum(surfaceBounds(malformed, scene.environment), identityMatrix())).toBe(true);
+  }
+});
+
+test("opt-in survivor visibility preserves shadow-only contributors and uses the active analytic domain", () => {
+  const candidate: RenderSurface = {
+    ...surface,
+    mesh: { ...surface.mesh, bounds: { min: [-0.05, -0.05, 0.75], max: [0.05, 0.05, 0.85] } },
+  };
+  const blocker: RenderSurface = {
+    ...surface,
+    id: "blocker",
+    matrix: transformMatrix([0, 0, 0.3]),
+    selectedRenderProduct: {
+      kind: "analytic-quadric",
+      primitive: { center: [0, 0, 0], radii: [0.1, 0.1, 0.1], rotation: [0, 0, 0], nodeId: "sphere" },
+    } as NonNullable<RenderSurface["selectedRenderProduct"]>,
+  };
+  const query = {
+    ...scene,
+    surfaces: [candidate, blocker],
+    camera: {
+      position: [0, 0, 0] as [number, number, number],
+      target: [0, 0, 1] as [number, number, number],
+      fov: 60,
+    },
+    environment: { ...scene.environment, sunDirection: [1, 0, 0] as [number, number, number] },
+  };
+  // Positive-Z perspective, WebGPU near depth zero and far depth one.
+  const camera = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1.01, 1, 0, 0, -0.0101, 0]);
+  expect(selectVisibility(query, camera, identityMatrix()).get(candidate)).toEqual({
+    camera: true,
+    shadow: true,
+  });
+  expect(selectVisibility(query, camera, identityMatrix(), { enabled: true }).get(candidate)).toEqual({
+    camera: false,
+    shadow: true,
+  });
+  const analyticBounds = surfaceBounds(blocker, scene.environment);
+  expect(analyticBounds.min[2]).toBeCloseTo(0.2, 6);
+  expect(analyticBounds.max[2]).toBeCloseTo(0.4, 6);
+  const deformed = { ...query, surfaces: [candidate, { ...blocker, wind: 1 }] };
+  expect(selectVisibility(deformed, camera, identityMatrix(), { enabled: true }).get(candidate)?.camera).toBe(
+    true,
+  );
+});
+
+test("semantic proxy coverage drops tiny or clipped occluders without authorizing removal", () => {
+  const projection = identityMatrix();
+  projection[10] = 0.01;
+  expect(projectedOccluderCoverage({ center: [0, 0, 5], radius: 0.001 }, projection)).toBeLessThan(
+    MIN_SEMANTIC_OCCLUDER_COVERAGE,
+  );
+  expect(projectedOccluderCoverage({ center: [0, 0, 5], radius: 0.1 }, projection)).toBeGreaterThan(
+    MIN_SEMANTIC_OCCLUDER_COVERAGE,
+  );
+  expect(projectedOccluderCoverage({ center: [0, 0, 0], radius: 1 }, projection)).toBe(0);
+});
+
+test("affine rigid bounds match transformed corners under shear, reflection and rebasing", () => {
+  for (let seed = 1; seed <= 64; seed++) {
+    const m = identityMatrix();
+    for (let column = 0; column < 3; column++)
+      for (let row = 0; row < 3; row++)
+        m[column * 4 + row] = Math.sin(seed * 1.71 + column * 0.74 + row * 2.11) * 3;
+    m[12] = seed % 2 ? 1e6 : -40;
+    m[13] = seed * 0.5;
+    m[14] = -seed;
+    const b = { min: [-2, -0.4, 0.2], max: [1, 3, 4] } as const;
+    const subject = {
+      ...surface,
+      matrix: m,
+      mesh: { ...surface.mesh, bounds: { min: [...b.min], max: [...b.max] } },
+    } as RenderSurface;
+    const actual = surfaceBounds(subject, scene.environment);
+    const corners = Array.from({ length: 8 }, (_, i) => [
+      b[i & 1 ? "max" : "min"][0],
+      b[i & 2 ? "max" : "min"][1],
+      b[i & 4 ? "max" : "min"][2],
+    ]);
+    for (let axis = 0; axis < 3; axis++) {
+      const values = corners.map(
+        (p) => m[axis] * p[0] + m[axis + 4] * p[1] + m[axis + 8] * p[2] + m[axis + 12],
+      );
+      expect(actual.min[axis]).toBeCloseTo(Math.min(...values), 7);
+      expect(actual.max[axis]).toBeCloseTo(Math.max(...values), 7);
+    }
+  }
+});
+
+test("small-scene shadow fit contains every caster and declines uncertain animated bounds", () => {
+  const small = {
+    ...scene,
+    camera: {
+      position: [0, 0.5, 0.8] as [number, number, number],
+      target: [0, 0.5, 0] as [number, number, number],
+      fov: 70,
+    },
+  };
+  const radius = shadowRadiusForScene(small, 120);
+  expect(radius).toBeLessThan(14);
+  const light = directionalShadow(small, radius, 2048).matrix;
+  for (const s of small.surfaces)
+    for (let corner = 0; corner < 8; corner++) {
+      const local = [0, 1, 2].map((a) => (corner & (1 << a) ? s.mesh.bounds.max[a] : s.mesh.bounds.min[a]));
+      const point = [0, 1, 2].map(
+        (a) =>
+          s.matrix[a] * local[0] + s.matrix[4 + a] * local[1] + s.matrix[8 + a] * local[2] + s.matrix[12 + a],
+      );
+      const clip = [0, 1, 2].map(
+        (a) => light[a] * point[0] + light[4 + a] * point[1] + light[8 + a] * point[2] + light[12 + a],
+      );
+      expect(Math.abs(clip[0])).toBeLessThan(1);
+      expect(Math.abs(clip[1])).toBeLessThan(1);
+      expect(clip[2]).toBeGreaterThan(0);
+      expect(clip[2]).toBeLessThan(1);
+    }
+  const uncertain = { ...small, surfaces: small.surfaces.map((s) => ({ ...s, wind: 1 })) };
+  expect(shadowRadiusForScene(uncertain, 120)).toBe(14);
 });

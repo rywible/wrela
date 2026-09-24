@@ -1,0 +1,42 @@
+# Measured representation frontiers
+
+`model/render-frontier.ts` is a pure evidence-analysis helper over a finite set of compiled-product candidates. It does not add a runtime optimizer or silently change renderer selection. `selectRenderFrontier(candidates, policy)` returns exact comparison groups, admissibility decisions, conservative nondominated alternatives, ties, dominated-by explanations and reasons that pairs cannot be compared.
+
+Each candidate retains its actual `RenderProductMetadata` identities and source keys. A configuration may select multiple products; `frontierProductKey` names that exact sorted set for its existing `RenderCostObservation`. Comparison domains must match source project, product source keys, fixture, camera trajectory, light state/trajectory, motion, resolution, adapter, browser, rendering kernel, reference, error domain, CPU scope and memory scope. A faster unrelated scene, different camera, changed source or another adapter cannot remove a candidate. Stable candidate IDs determine output order, not which tied candidate survives: ties remain retained.
+
+Policies must explicitly state finite nonnegative quality budgets and cost axes. Supported quality coordinates are linear-radiance RMS and maximum, silhouette maximum in pixels, fractional pixel-coverage RMS and maximum, and temporal linear-radiance-difference RMS and maximum. Temporal measurements should compare motion-reprojected *error relative to a matched reference*; true motion is not an error. Coverage retains a separate measured evidence type because the renderer's existing geometric-error metrics do not represent fractional occupancy.
+
+Measurements reuse `ErrorEvidence` rather than converting geometry to appearance. Units and reference/domain identities are checked. World-space bounds must be projected explicitly by the producer and marked in pixels; the helper does not convert units. A maximum bound cannot pretend to be an RMS measurement. `real-bound` evidence with unknown numerical error remains inadmissible. Missing metrics, zero/missing sample counts, invalid values, unknown uncertainty and stale cost/product identity also remain inadmissible. A near mesh's identity to itself does not certify its fidelity to the ideal source field.
+
+Every active quality value includes an explicit absolute uncertainty. That uncertainty must include relevant reference-convergence and numerical/sampling uncertainty, rather than using zero because a producer did not estimate them. The upper endpoint must satisfy the quality budget. GPU p95 milliseconds, CPU milliseconds and owned bytes remain separate axes; CPU scope distinguishes preparation from render p95, and memory scope distinguishes selected payload from retained renderer allocations. CPU and GPU times are never added into a predicted frame duration. Uncertainty is null when unavailable.
+
+Dominance is deliberately conservative: every upper endpoint for candidate A must be no greater than B's lower endpoint, with strict improvement on at least one active quality/cost axis. Overlapping intervals can therefore retain extra candidates; they cannot prune a possible winner. The result is an empirical frontier under the chosen metrics and evidence domains, not a universal optimum, a perceptual/AAA certificate or a guarantee for untested lighting and motion.
+
+## Retained look-development reports
+
+`bun tools/frontier-lookdev-report.ts --input=<evidence.json> --out=<directory>` consumes a version-1 bundle containing `policy`, `candidates`, and optional `notes`. `tools/frontier-lookdev-input.ts` owns its strict schema. Each candidate names retained JSON evidence artifacts and JSON pointers (`#` means the entire document). The report verifies artifact/pointer availability, hashes the exact retained bytes, and writes normalized replayable input, `frontier.json` and an HTML decision table. This proves which input was used; it cannot establish that an upstream measurement protocol was scientifically valid.
+
+Existing relief captures have a native importer:
+
+```sh
+bun tools/frontier-lookdev-report.ts \
+  --relief=output/surface-relief-lookdev/v1/capture.json \
+  --policy=path/to/explicit-quality-budgets.json \
+  --out=output/frontier-lookdev/relief
+```
+
+It reads the actual matched far-camera automatic/forced-near records and adjacent `source-relief.json`, preserves the selected product set, GPU/CPU measurements, retained GPU bytes and projected geometry evidence. Browser/kernel versions absent from old reports receive an identity confined to that same capture artifact, so they cannot be compared across runs. The importer does not infer linear radiance from display PNGs, convert changed-pixel counts into silhouette distance, or turn short timing samples into a confidence bound. Missing timing uncertainty and appearance metrics stay null/missing. With quality policies requiring them, an empty frontier is the correct result: the report exposes exactly which new measurements are needed.
+
+Tests cover multiobjective tradeoffs, dominated reasons, stable ties, exact quality boundaries, wrong context/source/reference, unknown numerical error, missing quality and cost, overlapping uncertainty, artifact replay/hashes and HTML escaping. Actual GPU measurements are produced by existing lookdev tools; this reporter never launches GPU work.
+
+## Matched relief experiment
+
+`bun tools/frontier-relief-lookdev.ts` is a bounded hardware producer for this report. `--small` selects 320×240 instead of 640×480; `--samples=30` is the default and accepts multiples of five through 120. It uses the shared browser GPU lease and preserves the exact source snapshot through the existing browser evidence harness. It does not change production shader or selection behavior.
+
+The unchanged authored bark/stone specimens are rendered with automatic product selection and with only their compiled direct near products available. Five fixed camera distances share the same light, source, static time, native resolution and spatial antialiasing. Both alternatives warm at every view. Alternating-order rounds retain 30 uniquely tagged GPU observations per alternative, their cached scene-packet preparation durations, actual selected product identities, and peak selected mesh payload bytes. The memory number includes selected geometry/attributes/coverage data; it excludes common material resources and does not pretend that the warmed renderer freed unused resident allocations. Initial host compilation and renderer preparation are separate from steady-state preparation.
+
+The tool retains 20 display PNGs and scene-linear RGBA32F readbacks from the existing binary16 target: five views × two alternatives × beauty/native silhouette. `measurements.json` records exact source, frame tags, selections, image paths and hashes, per-view errors, reference scope, cost samples and requested policy. It feeds the normal reporter to produce `input.json`, `frontier.json` and `index.html`. Radiance RMS/maximum concern linear RGB; diagnostic occupancy and symmetric contour distance concern the exact finite native binary masks. Adjacent-view temporal measurements track changes in matched screen-space approximation error, without motion reprojection. They are not a general temporal-stability test.
+
+The reference is the highest triangle budget **among these tested candidates**: the runtime's finite compiled near mesh, currently capped at 12,000 triangles per part. Its error to the retained reference is exactly zero; its error to the ideal authored relief is unknown. Automatic radiance/temporal uncertainty adds a conservative binary16 quantization envelope. Exact mask/contour measurements have zero uncertainty only within that finite pixel domain. Timing uncertainty encloses the actual retained min/max around p95; this is not a statistical confidence bound or a future-performance guarantee. These restrictions are part of the persisted evidence, not an implicit claim of full-field certification.
+
+Before capture the tool fixes the research budgets: linear RGB RMS ≤0.025 and maximum ≤0.25, contour distance ≤1 pixel, mask RMS ≤0.02 and maximum ≤1, screen-space error-delta RMS ≤0.03 and maximum ≤0.35. All GPU, CPU and selected-byte cost axes remain active. The near identity can be admitted without inventing unknown source fidelity, while coarse choices may fail the sampled budgets. Passing these comparisons is not artistic acceptance or an AAA-quality threshold.

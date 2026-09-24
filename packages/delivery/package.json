@@ -1,0 +1,13 @@
+{
+  "name": "@wrela/delivery",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@wrela/runtime": "workspace:*",
+    "@wrela/compiler": "workspace:*",
+    "@wrela/model": "workspace:*"
+  }
+}

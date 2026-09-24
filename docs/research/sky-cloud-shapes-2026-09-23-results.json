@@ -1,0 +1,60 @@
+{
+  "date": "2026-09-23",
+  "purpose": "visual review only; no performance measurements or numerical-error benchmark claim",
+  "shaderSha256": "49a56ae26bc82224db6c21d82a0943f12b556c5fb061540f0ba9a3c34e3cb525",
+  "productionCapture": "output/browser-1790179985765-30258",
+  "productionFrames": [
+    {
+      "id": "cumulus-side",
+      "complete": true,
+      "adapter": "apple \u00b7 metal-3"
+    },
+    {
+      "id": "cumulus-back",
+      "complete": true,
+      "adapter": "apple \u00b7 metal-3"
+    },
+    {
+      "id": "cumulus-front",
+      "complete": true,
+      "adapter": "apple \u00b7 metal-3"
+    },
+    {
+      "id": "storm",
+      "complete": true,
+      "adapter": "apple \u00b7 metal-3"
+    },
+    {
+      "id": "golden",
+      "complete": true,
+      "adapter": "apple \u00b7 metal-3"
+    },
+    {
+      "id": "blue-hour",
+      "complete": true,
+      "adapter": "apple \u00b7 metal-3"
+    },
+    {
+      "id": "zenith",
+      "complete": true,
+      "adapter": "apple \u00b7 metal-3"
+    }
+  ],
+  "errors": [],
+  "quarterTurnBalanced": "output/browser-1790179985697-30259",
+  "iterations": {
+    "expandedCeilings": "output/browser-1790178948982-28106",
+    "regionalUpdrafts": "output/browser-1790179437179-29004",
+    "verticalStretch": "output/browser-1790179551780-29274",
+    "cellularElevationRejected": "output/browser-1790179663780-29553",
+    "envelopeOnlyRejected": "output/browser-1790179765381-29844",
+    "smoothIndependentElevation": "output/browser-1790179893421-30075"
+  },
+  "notes": [
+    "The entire checkout changed during capture because tasks share it; the cloud shader hash matches final production source and fixture.js preserves the exact compiled scene.",
+    "Native high captures succeeded after the temporary concurrent water shader errors were resolved.",
+    "Overhead softness, storm integration banding, and the blue-hour fixture exposure remain known limitations.",
+    "Prior numerical error and performance results describe the prior field, not this shape revision."
+  ],
+  "balancedMainView": "output/browser-1790180151947-30583"
+}

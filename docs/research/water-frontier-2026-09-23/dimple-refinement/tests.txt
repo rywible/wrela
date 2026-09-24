@@ -1,0 +1,24 @@
+bun test v1.4.2 (744846f84)
+
+packages/compiler/src/water-body.test.ts:
+(pass) water lowering is deterministic, appearance independent, and bounded [36.19ms]
+(pass) bed sampling follows the rendered triangle diagonal and supports closed borders [0.56ms]
+(pass) ocean queries invert the choppy surface and return its spatial derivative [0.83ms]
+(pass) the ocean has bounded horizon geometry with upward facing triangles [4.39ms]
+(pass) periodic wave cascades retain shared CPU phase and a bounded short-wave tail [0.58ms]
+(pass) positive crests compress and orbital velocity follows the travelling wave [0.28ms]
+(pass) wind retains meaning above six metres per second and sea-state conserves requested variance [0.43ms]
+(pass) fine bed triangles and contact remain independent of fluid allocation [20.00ms]
+
+tools/water-resources.test.ts:
+(pass) first spectrum acquisition creates a real map, sharing retains its owner, and edits reuse a sole lease [0.90ms]
+(pass) bed and effects share a single upload; ticks only update the dynamic prefix and rebasing refreshes contact [13.12ms]
+(pass) foam and wetness packing keeps optical state within its error budget [5.27ms]
+
+packages/render-webgpu/src/water-packing.test.ts:
+(pass) water packing carries automatic quality, reference controls and finite shutter independently [0.62ms]
+
+ 12 pass
+ 0 fail
+ 60253 expect() calls
+Ran 12 tests across 3 files. [120.00ms]

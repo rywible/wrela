@@ -1,0 +1,1966 @@
+{
+  "schemaVersion": 1,
+  "id": "winter-garden",
+  "name": "Winter brook trail",
+  "entry": "winter-valley",
+  "documents": [
+    {
+      "id": "snow-fur",
+      "name": "Porcelain snow",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "material",
+      "color": [0.88, 0.92, 0.92],
+      "secondary": [0.65, 0.74, 0.78],
+      "roughness": 0.83,
+      "metallic": 0,
+      "pattern": "noise",
+      "scale": 18,
+      "normalStrength": 0.12
+    },
+    {
+      "id": "onyx-eyes",
+      "name": "Onyx eyes",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "material",
+      "color": [0.009, 0.016, 0.022],
+      "secondary": [0.025, 0.035, 0.04],
+      "roughness": 0.16,
+      "metallic": 0,
+      "pattern": "solid",
+      "scale": 1,
+      "normalStrength": 0
+    },
+    {
+      "id": "rose-nose",
+      "name": "Rose nose",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "material",
+      "color": [0.38, 0.15, 0.18],
+      "secondary": [0.42, 0.2, 0.23],
+      "roughness": 0.42,
+      "metallic": 0,
+      "pattern": "solid",
+      "scale": 1,
+      "normalStrength": 0
+    },
+    {
+      "id": "rose-ears",
+      "name": "Warm inner ears",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "material",
+      "color": [0.7, 0.38, 0.4],
+      "secondary": [0.82, 0.5, 0.52],
+      "roughness": 0.86,
+      "metallic": 0,
+      "pattern": "noise",
+      "scale": 14,
+      "normalStrength": 0.04
+    },
+    {
+      "id": "pine-needles",
+      "name": "Alpine needles",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "material",
+      "color": [0.1, 0.23, 0.2],
+      "secondary": [0.32, 0.46, 0.39],
+      "roughness": 0.9,
+      "metallic": 0,
+      "pattern": "noise",
+      "scale": 4,
+      "normalStrength": 0.2
+    },
+    {
+      "id": "bark",
+      "name": "Silver bark",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "material",
+      "color": [0.21, 0.15, 0.12],
+      "secondary": [0.45, 0.34, 0.24],
+      "roughness": 0.95,
+      "metallic": 0,
+      "pattern": "stripes",
+      "scale": 6,
+      "normalStrength": 0.2
+    },
+    {
+      "id": "stone",
+      "name": "Glacial stone",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "material",
+      "color": [0.1, 0.17, 0.19],
+      "secondary": [0.28, 0.34, 0.34],
+      "roughness": 0.17,
+      "metallic": 0.05,
+      "pattern": "marble",
+      "scale": 3,
+      "normalStrength": 0.07
+    },
+    {
+      "id": "ground",
+      "name": "Alpine ground",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "material",
+      "color": [0.6, 0.72, 0.71],
+      "secondary": [0.9, 0.94, 0.93],
+      "roughness": 0.95,
+      "metallic": 0,
+      "pattern": "noise",
+      "scale": 0.4,
+      "normalStrength": 0.16
+    },
+    {
+      "id": "polar-bunny",
+      "name": "Polar bunny",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "character",
+      "material": "snow-fur",
+      "field": {
+        "root": "creature",
+        "nodes": [
+          {
+            "id": "creature",
+            "name": "Creature",
+            "kind": "union",
+            "position": [0, 0, 0],
+            "size": [1, 1, 1],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": [
+              "anatomy",
+              "left-eye",
+              "right-eye",
+              "nose",
+              "left-inner-ear",
+              "right-inner-ear",
+              "left-muzzle",
+              "right-muzzle"
+            ]
+          },
+          {
+            "id": "anatomy",
+            "name": "Anatomy",
+            "kind": "smoothUnion",
+            "position": [0, 0, 0],
+            "size": [1, 1, 1],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.12,
+            "children": [
+              "body",
+              "head",
+              "left-ear",
+              "right-ear",
+              "left-foot",
+              "right-foot",
+              "tail",
+              "left-arm",
+              "right-arm"
+            ]
+          },
+          {
+            "id": "body",
+            "name": "Body",
+            "kind": "ellipsoid",
+            "position": [0, 0.9, 0],
+            "size": [0.52, 0.68, 0.43],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": []
+          },
+          {
+            "id": "head",
+            "name": "Head",
+            "kind": "ellipsoid",
+            "position": [0, 1.68, 0.12],
+            "size": [0.4, 0.4, 0.37],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": []
+          },
+          {
+            "id": "left-ear",
+            "name": "Left ear",
+            "kind": "ellipsoid",
+            "position": [-0.22, 2.3, 0.04],
+            "size": [0.12, 0.55, 0.12],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": []
+          },
+          {
+            "id": "right-ear",
+            "name": "Right ear",
+            "kind": "ellipsoid",
+            "position": [0.22, 2.3, 0.04],
+            "size": [0.12, 0.55, 0.12],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": []
+          },
+          {
+            "id": "left-foot",
+            "name": "Left foot",
+            "kind": "ellipsoid",
+            "position": [-0.3, 0.22, 0.18],
+            "size": [0.23, 0.2, 0.43],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": []
+          },
+          {
+            "id": "right-foot",
+            "name": "Right foot",
+            "kind": "ellipsoid",
+            "position": [0.3, 0.22, 0.18],
+            "size": [0.23, 0.2, 0.43],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": []
+          },
+          {
+            "id": "tail",
+            "name": "Tail",
+            "kind": "ellipsoid",
+            "position": [0, 0.63, -0.46],
+            "size": [0.24, 0.24, 0.24],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": []
+          },
+          {
+            "id": "left-arm",
+            "name": "Left arm",
+            "kind": "ellipsoid",
+            "position": [-0.42, 0.95, 0.2],
+            "size": [0.17, 0.34, 0.18],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": []
+          },
+          {
+            "id": "right-arm",
+            "name": "Right arm",
+            "kind": "ellipsoid",
+            "position": [0.42, 0.95, 0.2],
+            "size": [0.17, 0.34, 0.18],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": []
+          },
+          {
+            "id": "left-eye",
+            "name": "Left eye",
+            "kind": "ellipsoid",
+            "position": [-0.19, 1.79, 0.435],
+            "size": [0.072, 0.09, 0.055],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": [],
+            "material": "onyx-eyes"
+          },
+          {
+            "id": "right-eye",
+            "name": "Right eye",
+            "kind": "ellipsoid",
+            "position": [0.19, 1.79, 0.435],
+            "size": [0.072, 0.09, 0.055],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": [],
+            "material": "onyx-eyes"
+          },
+          {
+            "id": "nose",
+            "name": "Nose",
+            "kind": "ellipsoid",
+            "position": [0, 1.66, 0.505],
+            "size": [0.068, 0.047, 0.053],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": [],
+            "material": "rose-nose"
+          },
+          {
+            "id": "left-inner-ear",
+            "name": "Left inner ear",
+            "kind": "ellipsoid",
+            "position": [-0.22, 2.31, 0.144],
+            "size": [0.064, 0.405, 0.04],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": [],
+            "material": "rose-ears"
+          },
+          {
+            "id": "right-inner-ear",
+            "name": "Right inner ear",
+            "kind": "ellipsoid",
+            "position": [0.22, 2.31, 0.144],
+            "size": [0.064, 0.405, 0.04],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": [],
+            "material": "rose-ears"
+          },
+          {
+            "id": "left-muzzle",
+            "name": "Left muzzle",
+            "kind": "ellipsoid",
+            "position": [-0.085, 1.58, 0.424],
+            "size": [0.115, 0.095, 0.085],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": []
+          },
+          {
+            "id": "right-muzzle",
+            "name": "Right muzzle",
+            "kind": "ellipsoid",
+            "position": [0.085, 1.58, 0.424],
+            "size": [0.115, 0.095, 0.085],
+            "rotation": [0, 0, 0],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": []
+          }
+        ],
+        "bounds": {
+          "min": [-0.9, -0.1, -0.9],
+          "max": [0.9, 3, 0.9]
+        },
+        "resolution": 40
+      },
+      "joints": [
+        {
+          "id": "root",
+          "name": "Root",
+          "parent": null,
+          "position": [0, 0.3, 0],
+          "rotation": [0, 0, 0],
+          "radius": 1,
+          "minimum": -1,
+          "maximum": 1
+        },
+        {
+          "id": "head-joint",
+          "name": "Head",
+          "parent": "root",
+          "position": [0, 1.65, 0.1],
+          "rotation": [0, 0, 0],
+          "radius": 0.65,
+          "minimum": -0.6,
+          "maximum": 0.6
+        },
+        {
+          "id": "ear-l",
+          "name": "Left ear",
+          "parent": "head-joint",
+          "position": [-0.22, 2.05, 0.04],
+          "rotation": [0, 0, 0],
+          "radius": 0.45,
+          "minimum": -0.7,
+          "maximum": 0.7
+        },
+        {
+          "id": "ear-r",
+          "name": "Right ear",
+          "parent": "head-joint",
+          "position": [0.22, 2.05, 0.04],
+          "rotation": [0, 0, 0],
+          "radius": 0.45,
+          "minimum": -0.7,
+          "maximum": 0.7
+        }
+      ],
+      "motions": [
+        {
+          "id": "idle",
+          "name": "Quiet breath",
+          "duration": 3,
+          "loop": true,
+          "keys": [
+            {
+              "joint": "root",
+              "time": 0,
+              "rotation": [0, 0, 0],
+              "translation": [0, 0, 0]
+            },
+            {
+              "joint": "root",
+              "time": 1.5,
+              "rotation": [0.025, 0, 0],
+              "translation": [0, 0.045, 0]
+            },
+            {
+              "joint": "root",
+              "time": 3,
+              "rotation": [0, 0, 0],
+              "translation": [0, 0, 0]
+            },
+            {
+              "joint": "ear-l",
+              "time": 0,
+              "rotation": [0, 0, -0.1],
+              "translation": [0, 0, 0]
+            },
+            {
+              "joint": "ear-l",
+              "time": 1.5,
+              "rotation": [0.1, 0, 0.1],
+              "translation": [0, 0, 0]
+            },
+            {
+              "joint": "ear-l",
+              "time": 3,
+              "rotation": [0, 0, -0.1],
+              "translation": [0, 0, 0]
+            }
+          ]
+        },
+        {
+          "id": "hop",
+          "name": "Snow hop",
+          "duration": 1.2,
+          "loop": true,
+          "keys": [
+            {
+              "joint": "root",
+              "time": 0,
+              "rotation": [0, 0, 0],
+              "translation": [0, 0, 0]
+            },
+            {
+              "joint": "root",
+              "time": 0.3,
+              "rotation": [-0.2, 0, 0],
+              "translation": [0, 0.7, 0.2]
+            },
+            {
+              "joint": "root",
+              "time": 0.6,
+              "rotation": [0.15, 0, 0],
+              "translation": [0, 0, 0.45]
+            },
+            {
+              "joint": "root",
+              "time": 1.2,
+              "rotation": [0, 0, 0],
+              "translation": [0, 0, 0]
+            }
+          ]
+        }
+      ],
+      "physics": {
+        "mode": "kinematic",
+        "mass": 2,
+        "restitution": 0.15,
+        "friction": 0.7
+      }
+    },
+    {
+      "id": "river-stone",
+      "name": "River stone",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "object",
+      "material": "stone",
+      "collision": "sphere",
+      "field": {
+        "root": "stone-root",
+        "nodes": [
+          {
+            "id": "stone-root",
+            "name": "Stone",
+            "kind": "ellipsoid",
+            "position": [0, 0.8, 0],
+            "size": [1.2, 0.8, 0.9],
+            "rotation": [0, 0.25, 0.18],
+            "radius": 0.3,
+            "blend": 0.16,
+            "children": []
+          }
+        ],
+        "bounds": {
+          "min": [-1.6, -0.3, -1.5],
+          "max": [1.6, 2, 1.5]
+        },
+        "resolution": 32
+      }
+    },
+    {
+      "id": "alpine-pine",
+      "name": "Alpine pine",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "vegetation",
+      "seed": 37,
+      "height": 7,
+      "radius": 2,
+      "branches": 9,
+      "material": "pine-needles",
+      "trunkMaterial": "bark",
+      "windResponse": 0.35,
+      "variation": 0.4
+    },
+    {
+      "id": "winter-sky",
+      "name": "Winter afternoon",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "environment",
+      "model": "analytic-sky",
+      "sunElevation": 0.2,
+      "sunAzimuth": -0.65,
+      "turbidity": 2,
+      "fogDensity": 0.00045,
+      "skyColor": [0.2, 0.36, 0.52],
+      "horizonColor": [0.82, 0.65, 0.44],
+      "groundColor": [0.58, 0.67, 0.7],
+      "wind": [0.5, 0, 0.2]
+    },
+    {
+      "id": "daylight",
+      "name": "Soft daylight",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "lighting",
+      "ambient": 0.6,
+      "lights": [
+        {
+          "id": "sun",
+          "type": "directional",
+          "position": [-3, 6, 4],
+          "color": [1, 1, 1],
+          "intensity": 3
+        }
+      ]
+    },
+    {
+      "id": "coastal-waves",
+      "name": "Glacial water",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "water",
+      "level": -0.3,
+      "color": [0.06, 0.2, 0.23],
+      "roughness": 0.08,
+      "waves": [
+        {
+          "amplitude": 0.06,
+          "wavelength": 8,
+          "speed": 1.2,
+          "direction": 0.4,
+          "phase": 0
+        },
+        {
+          "amplitude": 0.03,
+          "wavelength": 3.2,
+          "speed": 0.8,
+          "direction": 1.7,
+          "phase": 1
+        }
+      ]
+    },
+    {
+      "id": "valley-terrain",
+      "name": "Winter valley terrain",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "terrain",
+      "seed": 82,
+      "amplitude": 11,
+      "frequency": 0.016,
+      "octaves": 4,
+      "baseHeight": 0,
+      "material": "ground",
+      "interventions": [
+        {
+          "id": "home-clearing",
+          "kind": "flatten",
+          "center": [0, 0],
+          "radius": 18,
+          "strength": 1,
+          "targetHeight": 0
+        },
+        {
+          "id": "hero-sightline",
+          "kind": "clearing",
+          "center": [0, 2],
+          "radius": 20,
+          "strength": 1,
+          "targetHeight": 0
+        },
+        {
+          "id": "brook-0",
+          "kind": "river",
+          "center": [5, -11],
+          "radius": 4.2,
+          "strength": 1.1,
+          "targetHeight": -0.3
+        },
+        {
+          "id": "brook-1",
+          "kind": "river",
+          "center": [5.338785484037021, -8],
+          "radius": 4.2,
+          "strength": 1.1,
+          "targetHeight": -0.3
+        },
+        {
+          "id": "brook-2",
+          "kind": "river",
+          "center": [5.559223451580336, -5],
+          "radius": 4.2,
+          "strength": 1.1,
+          "targetHeight": -0.3
+        },
+        {
+          "id": "brook-3",
+          "kind": "river",
+          "center": [5.584308578526917, -2],
+          "radius": 4.2,
+          "strength": 1.1,
+          "targetHeight": -0.3
+        },
+        {
+          "id": "brook-4",
+          "kind": "river",
+          "center": [5.4052779083306906, 1],
+          "radius": 4.2,
+          "strength": 1.1,
+          "targetHeight": -0.3
+        },
+        {
+          "id": "brook-5",
+          "kind": "river",
+          "center": [5.08467200483592, 4],
+          "radius": 4.2,
+          "strength": 1.1,
+          "targetHeight": -0.3
+        },
+        {
+          "id": "brook-6",
+          "kind": "river",
+          "center": [4.734487734023089, 7],
+          "radius": 4.2,
+          "strength": 1.1,
+          "targetHeight": -0.3
+        },
+        {
+          "id": "brook-7",
+          "kind": "river",
+          "center": [4.477054536551847, 10],
+          "radius": 4.2,
+          "strength": 1.1,
+          "targetHeight": -0.3
+        },
+        {
+          "id": "stone-seat-0",
+          "kind": "flatten",
+          "center": [2.5, -8],
+          "radius": 1.6,
+          "strength": 1,
+          "targetHeight": -0.45
+        },
+        {
+          "id": "stone-seat-1",
+          "kind": "flatten",
+          "center": [7.168294196961579, -8],
+          "radius": 1.6,
+          "strength": 1,
+          "targetHeight": -0.45
+        },
+        {
+          "id": "stone-seat-2",
+          "kind": "flatten",
+          "center": [2.6818594853651363, -5.6],
+          "radius": 1.6,
+          "strength": 1,
+          "targetHeight": -0.45
+        },
+        {
+          "id": "stone-seat-3",
+          "kind": "flatten",
+          "center": [7.0282240016119735, -5.6],
+          "radius": 1.6,
+          "strength": 1,
+          "targetHeight": -0.45
+        },
+        {
+          "id": "stone-seat-4",
+          "kind": "flatten",
+          "center": [2.3486395009384142, -3.2],
+          "radius": 1.6,
+          "strength": 1,
+          "targetHeight": -0.45
+        },
+        {
+          "id": "stone-seat-5",
+          "kind": "flatten",
+          "center": [6.808215145067372, -3.2],
+          "radius": 1.6,
+          "strength": 1,
+          "targetHeight": -0.45
+        },
+        {
+          "id": "stone-seat-6",
+          "kind": "flatten",
+          "center": [2.444116900360215, -0.8000000000000007],
+          "radius": 1.6,
+          "strength": 1,
+          "targetHeight": -0.45
+        },
+        {
+          "id": "stone-seat-7",
+          "kind": "flatten",
+          "center": [7.1313973197437575, -0.8000000000000007],
+          "radius": 1.6,
+          "strength": 1,
+          "targetHeight": -0.45
+        },
+        {
+          "id": "stone-seat-8",
+          "kind": "flatten",
+          "center": [2.6978716493246764, 1.5999999999999996],
+          "radius": 1.6,
+          "strength": 1,
+          "targetHeight": -0.45
+        },
+        {
+          "id": "stone-seat-9",
+          "kind": "flatten",
+          "center": [7.082423697048351, 1.5999999999999996],
+          "radius": 1.6,
+          "strength": 1,
+          "targetHeight": -0.45
+        },
+        {
+          "id": "stone-seat-10",
+          "kind": "flatten",
+          "center": [2.391195777822126, 4],
+          "radius": 1.6,
+          "strength": 1,
+          "targetHeight": -0.45
+        },
+        {
+          "id": "stone-seat-11",
+          "kind": "flatten",
+          "center": [6.800001958689859, 4],
+          "radius": 1.6,
+          "strength": 1,
+          "targetHeight": -0.45
+        },
+        {
+          "id": "stone-seat-12",
+          "kind": "flatten",
+          "center": [2.392685416399913, 6.399999999999999],
+          "radius": 1.6,
+          "strength": 1,
+          "targetHeight": -0.45
+        },
+        {
+          "id": "stone-seat-13",
+          "kind": "flatten",
+          "center": [7.084033407365328, 6.399999999999999],
+          "radius": 1.6,
+          "strength": 1,
+          "targetHeight": -0.45
+        },
+        {
+          "id": "trail-bed-0",
+          "kind": "flatten",
+          "center": [0, 0.65],
+          "radius": 1.2,
+          "strength": 1,
+          "targetHeight": 0
+        },
+        {
+          "id": "trail-bed-1",
+          "kind": "flatten",
+          "center": [0, 1.25],
+          "radius": 1.2,
+          "strength": 1,
+          "targetHeight": 0
+        },
+        {
+          "id": "trail-bed-2",
+          "kind": "flatten",
+          "center": [0, 1.85],
+          "radius": 1.2,
+          "strength": 1,
+          "targetHeight": 0
+        },
+        {
+          "id": "trail-bed-3",
+          "kind": "flatten",
+          "center": [0, 2.4499999999999997],
+          "radius": 1.2,
+          "strength": 1,
+          "targetHeight": 0
+        },
+        {
+          "id": "trail-bed-4",
+          "kind": "flatten",
+          "center": [0, 3.05],
+          "radius": 1.2,
+          "strength": 1,
+          "targetHeight": 0
+        },
+        {
+          "id": "trail-bed-5",
+          "kind": "flatten",
+          "center": [0, 3.65],
+          "radius": 1.2,
+          "strength": 1,
+          "targetHeight": 0
+        },
+        {
+          "id": "trail-bed-6",
+          "kind": "flatten",
+          "center": [0, 4.25],
+          "radius": 1.2,
+          "strength": 1,
+          "targetHeight": 0
+        },
+        {
+          "id": "trail-bed-7",
+          "kind": "flatten",
+          "center": [0, 4.8500000000000005],
+          "radius": 1.2,
+          "strength": 1,
+          "targetHeight": 0
+        },
+        {
+          "id": "trail-bed-8",
+          "kind": "flatten",
+          "center": [0, 5.45],
+          "radius": 1.2,
+          "strength": 1,
+          "targetHeight": 0
+        },
+        {
+          "id": "trail-bed-9",
+          "kind": "flatten",
+          "center": [0, 6.05],
+          "radius": 1.2,
+          "strength": 1,
+          "targetHeight": 0
+        },
+        {
+          "id": "trail-bed-10",
+          "kind": "flatten",
+          "center": [0, 6.65],
+          "radius": 1.2,
+          "strength": 1,
+          "targetHeight": 0
+        },
+        {
+          "id": "trail-bed-11",
+          "kind": "flatten",
+          "center": [0, 7.25],
+          "radius": 1.2,
+          "strength": 1,
+          "targetHeight": 0
+        }
+      ]
+    },
+    {
+      "id": "winter-valley",
+      "name": "Winter valley",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "world",
+      "generatorVersion": "wrela-world-1",
+      "terrain": "valley-terrain",
+      "environment": "winter-sky",
+      "lighting": "daylight",
+      "water": "coastal-waves",
+      "populations": [
+        {
+          "id": "conifer-line",
+          "definition": "alpine-pine",
+          "spacing": 7,
+          "density": 0.85,
+          "minHeight": -0.4,
+          "maxHeight": 40,
+          "maxSlope": 0.8,
+          "seed": 42
+        }
+      ],
+      "instances": [
+        {
+          "id": "bunny-instance",
+          "definition": "polar-bunny",
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0],
+          "scale": 1
+        },
+        {
+          "id": "stone-instance",
+          "definition": "river-stone",
+          "position": [2.7, -0.34, -0.5],
+          "rotation": [0, 0.4, 0],
+          "scale": 0.65
+        },
+        {
+          "id": "brook-stone-0",
+          "definition": "river-stone",
+          "position": [2.5, -0.61, -8],
+          "rotation": [0, 0, 0],
+          "scale": 0.22
+        },
+        {
+          "id": "brook-stone-1",
+          "definition": "river-stone",
+          "position": [7.168294196961579, -0.61, -8],
+          "rotation": [0, 0.7, 0.06731767878463173],
+          "scale": 0.33999999999999997
+        },
+        {
+          "id": "brook-stone-2",
+          "definition": "river-stone",
+          "position": [2.6818594853651363, -0.61, -5.6],
+          "rotation": [0, 1.4, 0.07274379414605454],
+          "scale": 0.45999999999999996
+        },
+        {
+          "id": "brook-stone-3",
+          "definition": "river-stone",
+          "position": [7.0282240016119735, -0.61, -5.6],
+          "rotation": [0, 2.0999999999999996, 0.011289600644789377],
+          "scale": 0.22
+        },
+        {
+          "id": "brook-stone-4",
+          "definition": "river-stone",
+          "position": [2.3486395009384142, -0.61, -3.2],
+          "rotation": [0, 2.8, -0.06054419962463427],
+          "scale": 0.33999999999999997
+        },
+        {
+          "id": "brook-stone-5",
+          "definition": "river-stone",
+          "position": [6.808215145067372, -0.61, -3.2],
+          "rotation": [0, 3.5, -0.07671394197305108],
+          "scale": 0.45999999999999996
+        },
+        {
+          "id": "brook-stone-6",
+          "definition": "river-stone",
+          "position": [2.444116900360215, -0.61, -0.8000000000000007],
+          "rotation": [0, 4.199999999999999, -0.02235323985591407],
+          "scale": 0.22
+        },
+        {
+          "id": "brook-stone-7",
+          "definition": "river-stone",
+          "position": [7.1313973197437575, -0.61, -0.8000000000000007],
+          "rotation": [0, 4.8999999999999995, 0.052558927897503126],
+          "scale": 0.33999999999999997
+        },
+        {
+          "id": "brook-stone-8",
+          "definition": "river-stone",
+          "position": [2.6978716493246764, -0.61, 1.5999999999999996],
+          "rotation": [0, 5.6, 0.07914865972987055],
+          "scale": 0.45999999999999996
+        },
+        {
+          "id": "brook-stone-9",
+          "definition": "river-stone",
+          "position": [7.082423697048351, -0.61, 1.5999999999999996],
+          "rotation": [0, 6.3, 0.03296947881934053],
+          "scale": 0.22
+        },
+        {
+          "id": "brook-stone-10",
+          "definition": "river-stone",
+          "position": [2.391195777822126, -0.61, 4],
+          "rotation": [0, 7, -0.043521688871149586],
+          "scale": 0.33999999999999997
+        },
+        {
+          "id": "brook-stone-11",
+          "definition": "river-stone",
+          "position": [6.800001958689859, -0.61, 4],
+          "rotation": [0, 7.699999999999999, -0.07999921652405628],
+          "scale": 0.45999999999999996
+        },
+        {
+          "id": "brook-stone-12",
+          "definition": "river-stone",
+          "position": [2.392685416399913, -0.61, 6.399999999999999],
+          "rotation": [0, 8.399999999999999, -0.0429258334400348],
+          "scale": 0.22
+        },
+        {
+          "id": "brook-stone-13",
+          "definition": "river-stone",
+          "position": [7.084033407365328, -0.61, 6.399999999999999],
+          "rotation": [0, 9.1, 0.03361336294613127],
+          "scale": 0.33999999999999997
+        },
+        {
+          "id": "trail-print-0--1",
+          "definition": "trail-print",
+          "position": [-0.18, 0.018, 0.65],
+          "rotation": [0, -0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-0-1",
+          "definition": "trail-print",
+          "position": [0.18, 0.018, 0.65],
+          "rotation": [0, 0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-1--1",
+          "definition": "trail-print",
+          "position": [-0.11814901018636925, 0.018, 1.25],
+          "rotation": [0, -0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-1-1",
+          "definition": "trail-print",
+          "position": [0.24185098981363073, 0.018, 1.25],
+          "rotation": [0, 0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-2--1",
+          "definition": "trail-print",
+          "position": [-0.06014361534894924, 0.018, 1.85],
+          "rotation": [0, -0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-2-1",
+          "definition": "trail-print",
+          "position": [0.29985638465105074, 0.018, 1.85],
+          "rotation": [0, 0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-3--1",
+          "definition": "trail-print",
+          "position": [-0.009590309994166463, 0.018, 2.4499999999999997],
+          "rotation": [0, -0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-3-1",
+          "definition": "trail-print",
+          "position": [0.35040969000583355, 0.018, 2.4499999999999997],
+          "rotation": [0, 0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-4--1",
+          "definition": "trail-print",
+          "position": [0.030367746201974133, 0.018, 3.05],
+          "rotation": [0, -0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-4-1",
+          "definition": "trail-print",
+          "position": [0.3903677462019741, 0.018, 3.05],
+          "rotation": [0, 0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-5--1",
+          "definition": "trail-print",
+          "position": [0.05724615483889656, 0.018, 3.65],
+          "rotation": [0, -0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-5-1",
+          "definition": "trail-print",
+          "position": [0.41724615483889654, 0.018, 3.65],
+          "rotation": [0, 0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-6--1",
+          "definition": "trail-print",
+          "position": [0.06937374665101362, 0.018, 4.25],
+          "rotation": [0, -0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-6-1",
+          "definition": "trail-print",
+          "position": [0.4293737466510136, 0.018, 4.25],
+          "rotation": [0, 0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-7--1",
+          "definition": "trail-print",
+          "position": [0.06599648671848424, 0.018, 4.8500000000000005],
+          "rotation": [0, -0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-7-1",
+          "definition": "trail-print",
+          "position": [0.4259964867184842, 0.018, 4.8500000000000005],
+          "rotation": [0, 0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-8--1",
+          "definition": "trail-print",
+          "position": [0.047324356706420434, 0.018, 5.45],
+          "rotation": [0, -0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-8-1",
+          "definition": "trail-print",
+          "position": [0.4073243567064204, 0.018, 5.45],
+          "rotation": [0, 0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-9--1",
+          "definition": "trail-print",
+          "position": [0.014518299221980308, 0.018, 6.05],
+          "rotation": [0, -0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-9-1",
+          "definition": "trail-print",
+          "position": [0.3745182992219803, 0.018, 6.05],
+          "rotation": [0, 0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-10--1",
+          "definition": "trail-print",
+          "position": [-0.030381963974010884, 0.018, 6.65],
+          "rotation": [0, -0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-10-1",
+          "definition": "trail-print",
+          "position": [0.3296180360259891, 0.018, 6.65],
+          "rotation": [0, 0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-11--1",
+          "definition": "trail-print",
+          "position": [-0.08458475198691706, 0.018, 7.25],
+          "rotation": [0, -0.12, 0],
+          "scale": 1
+        },
+        {
+          "id": "trail-print-11-1",
+          "definition": "trail-print",
+          "position": [0.2754152480130829, 0.018, 7.25],
+          "rotation": [0, 0.12, 0],
+          "scale": 1
+        }
+      ]
+    },
+    {
+      "id": "neutral-stage",
+      "name": "Neutral studio",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "stage",
+      "environment": "winter-sky",
+      "lighting": "daylight",
+      "ground": true,
+      "exposure": 1,
+      "camera": {
+        "position": [5, 3.2, 7],
+        "target": [0, 1.2, 0],
+        "fov": 42
+      },
+      "subjects": ["polar-bunny"]
+    },
+    {
+      "id": "packed-snow",
+      "name": "Packed trail snow",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "material",
+      "color": [0.42, 0.51, 0.54],
+      "secondary": [0.55, 0.63, 0.64],
+      "roughness": 0.95,
+      "metallic": 0,
+      "pattern": "solid",
+      "scale": 1,
+      "normalStrength": 0
+    },
+    {
+      "id": "trail-print",
+      "name": "Bunny trail footprint",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "object",
+      "material": "packed-snow",
+      "collision": "none",
+      "field": {
+        "root": "print",
+        "nodes": [
+          {
+            "id": "print",
+            "name": "Compressed snow",
+            "kind": "ellipsoid",
+            "position": [0, 0, 0],
+            "rotation": [0, 0, 0],
+            "size": [0.105, 0.012, 0.16],
+            "radius": 1,
+            "blend": 0,
+            "children": []
+          }
+        ],
+        "bounds": {
+          "min": [-0.12, -0.02, -0.18],
+          "max": [0.12, 0.02, 0.18]
+        },
+        "resolution": 16
+      }
+    },
+    {
+      "id": "vegetation-review-stage",
+      "name": "Botanical daylight review",
+      "kind": "stage",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "environment": "vegetation-review-sky",
+      "lighting": "vegetation-review-light",
+      "ground": true,
+      "exposure": 1.2,
+      "subjects": [],
+      "camera": {
+        "position": [8, 5, 14],
+        "target": [0, 3.7, 0],
+        "fov": 42
+      }
+    },
+    {
+      "id": "shaped-pine",
+      "name": "Shaped lodgepole pine",
+      "kind": "vegetation",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "seed": 73,
+      "height": 8,
+      "radius": 2.25,
+      "branches": 56,
+      "material": "alpine-lookdev-needles",
+      "trunkMaterial": "alpine-lookdev-bark",
+      "windResponse": 0.35,
+      "variation": 0.7,
+      "botanical": {
+        "species": "pine",
+        "age": 0.85,
+        "growth": {
+          "levels": 3,
+          "children": 3,
+          "branchAngle": 1.05,
+          "lengthRatio": 0.48,
+          "taper": 0.45,
+          "tropism": 0.15,
+          "asymmetry": 0.5
+        },
+        "canopy": {
+          "density": 0.98,
+          "clusters": 5,
+          "leavesPerCluster": 10,
+          "leafLength": 0.22,
+          "leafWidth": 0.018,
+          "droop": 0.2
+        },
+        "damage": {
+          "brokenBranches": 0.015,
+          "leafLoss": 0.025
+        },
+        "pruning": {
+          "clearTrunk": 0,
+          "radiusLimit": 20,
+          "removedBranches": []
+        },
+        "branchEdits": [],
+        "motion": {
+          "stiffness": 0.6,
+          "branchSway": 0.55,
+          "leafFlutter": 0.45
+        },
+        "review": {
+          "distances": [3, 14, 45],
+          "standCount": 9,
+          "spacing": 4.8,
+          "seedVariation": 0.6,
+          "ageVariation": 0.5
+        },
+        "conifer": {
+          "architecture": {
+            "version": "pine-architecture-1",
+            "twigPairs": 3,
+            "twigLength": 0.26,
+            "limbThickness": 0.32,
+            "foliageStart": 0.3
+          },
+          "whorlSize": 4,
+          "whorlJitter": 0.85,
+          "crownStart": 0.1,
+          "crownBias": 0.9,
+          "crownPower": 0.7,
+          "limbSag": 0.14,
+          "trunkRadius": 0.12,
+          "trunkFlare": 0.6,
+          "shootsPerLimb": 6,
+          "shootSpread": 0.48,
+          "needlesPerShoot": 144,
+          "needleLength": 0.06,
+          "needleWidth": 0.002
+        }
+      }
+    },
+    {
+      "id": "alpine-lookdev-needles",
+      "name": "Alpine conifer needles",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "material",
+      "color": [0.042, 0.073, 0.043],
+      "secondary": [0.077, 0.122, 0.065],
+      "roughness": 0.8,
+      "metallic": 0,
+      "pattern": "noise",
+      "scale": 28,
+      "normalStrength": 0.025,
+      "domain": "local",
+      "appearance": {
+        "family": "foliage",
+        "weathering": 0,
+        "wetness": 0,
+        "dirt": 0,
+        "damage": 0,
+        "historyScale": 1,
+        "dirtColor": [0.16, 0.11, 0.06],
+        "damageColor": [0.45, 0.42, 0.35],
+        "transmission": 0.12,
+        "indexOfRefraction": 1.5,
+        "detail": {
+          "kind": "none",
+          "scale": 1,
+          "strength": 0.5
+        },
+        "layers": [],
+        "response": {
+          "subsurface": 0.05,
+          "thickness": 0.0008,
+          "scatterColor": [0.48, 0.72, 0.38]
+        }
+      }
+    },
+    {
+      "id": "alpine-lookdev-bark",
+      "name": "Alpine conifer bark",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "kind": "material",
+      "color": [0.068, 0.052, 0.039],
+      "secondary": [0.105, 0.081, 0.058],
+      "roughness": 0.96,
+      "metallic": 0,
+      "pattern": "noise",
+      "scale": 8,
+      "normalStrength": 0,
+      "appearance": {
+        "family": "generic",
+        "weathering": 0,
+        "wetness": 0,
+        "dirt": 0,
+        "damage": 0,
+        "historyScale": 1,
+        "dirtColor": [0.16, 0.11, 0.06],
+        "damageColor": [0.45, 0.42, 0.35],
+        "transmission": 0.4,
+        "indexOfRefraction": 1.5,
+        "detail": {
+          "kind": "bark",
+          "scale": 1,
+          "strength": 0.8
+        },
+        "layers": []
+      },
+      "domain": "local"
+    },
+    {
+      "id": "shaped-pine-stand-0",
+      "name": "Shaped lodgepole pine · stand variant 1",
+      "kind": "vegetation",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "seed": 73,
+      "height": 8,
+      "radius": 2.25,
+      "branches": 56,
+      "material": "alpine-lookdev-needles",
+      "trunkMaterial": "alpine-lookdev-bark",
+      "windResponse": 0.35,
+      "variation": 0.7,
+      "botanical": {
+        "species": "pine",
+        "age": 0.7122463047504425,
+        "growth": {
+          "levels": 3,
+          "children": 3,
+          "branchAngle": 1.05,
+          "lengthRatio": 0.48,
+          "taper": 0.45,
+          "tropism": 0.15,
+          "asymmetry": 0.5
+        },
+        "canopy": {
+          "density": 0.98,
+          "clusters": 5,
+          "leavesPerCluster": 10,
+          "leafLength": 0.22,
+          "leafWidth": 0.018,
+          "droop": 0.2
+        },
+        "damage": {
+          "brokenBranches": 0.015,
+          "leafLoss": 0.025
+        },
+        "pruning": {
+          "clearTrunk": 0,
+          "radiusLimit": 20,
+          "removedBranches": []
+        },
+        "branchEdits": [],
+        "motion": {
+          "stiffness": 0.6,
+          "branchSway": 0.55,
+          "leafFlutter": 0.45
+        },
+        "review": {
+          "distances": [3, 14, 45],
+          "standCount": 9,
+          "spacing": 4.8,
+          "seedVariation": 0.6,
+          "ageVariation": 0.5
+        },
+        "conifer": {
+          "architecture": {
+            "version": "pine-architecture-1",
+            "twigPairs": 3,
+            "twigLength": 0.26,
+            "limbThickness": 0.32,
+            "foliageStart": 0.3
+          },
+          "whorlSize": 4,
+          "whorlJitter": 0.85,
+          "crownStart": 0.1,
+          "crownBias": 0.9,
+          "crownPower": 0.7,
+          "limbSag": 0.14,
+          "trunkRadius": 0.12,
+          "trunkFlare": 0.6,
+          "shootsPerLimb": 6,
+          "shootSpread": 0.48,
+          "needlesPerShoot": 144,
+          "needleLength": 0.06,
+          "needleWidth": 0.002
+        }
+      }
+    },
+    {
+      "id": "shaped-pine-stand-1",
+      "name": "Shaped lodgepole pine · stand variant 2",
+      "kind": "vegetation",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "seed": 4824,
+      "height": 8,
+      "radius": 2.25,
+      "branches": 56,
+      "material": "alpine-lookdev-needles",
+      "trunkMaterial": "alpine-lookdev-bark",
+      "windResponse": 0.35,
+      "variation": 0.7,
+      "botanical": {
+        "species": "pine",
+        "age": 0.583752578496933,
+        "growth": {
+          "levels": 3,
+          "children": 3,
+          "branchAngle": 1.05,
+          "lengthRatio": 0.48,
+          "taper": 0.45,
+          "tropism": 0.15,
+          "asymmetry": 0.5
+        },
+        "canopy": {
+          "density": 0.98,
+          "clusters": 5,
+          "leavesPerCluster": 10,
+          "leafLength": 0.22,
+          "leafWidth": 0.018,
+          "droop": 0.2
+        },
+        "damage": {
+          "brokenBranches": 0.015,
+          "leafLoss": 0.025
+        },
+        "pruning": {
+          "clearTrunk": 0,
+          "radiusLimit": 20,
+          "removedBranches": []
+        },
+        "branchEdits": [],
+        "motion": {
+          "stiffness": 0.6,
+          "branchSway": 0.55,
+          "leafFlutter": 0.45
+        },
+        "review": {
+          "distances": [3, 14, 45],
+          "standCount": 9,
+          "spacing": 4.8,
+          "seedVariation": 0.6,
+          "ageVariation": 0.5
+        },
+        "conifer": {
+          "architecture": {
+            "version": "pine-architecture-1",
+            "twigPairs": 3,
+            "twigLength": 0.26,
+            "limbThickness": 0.32,
+            "foliageStart": 0.3
+          },
+          "whorlSize": 4,
+          "whorlJitter": 0.85,
+          "crownStart": 0.1,
+          "crownBias": 0.9,
+          "crownPower": 0.7,
+          "limbSag": 0.14,
+          "trunkRadius": 0.12,
+          "trunkFlare": 0.6,
+          "shootsPerLimb": 6,
+          "shootSpread": 0.48,
+          "needlesPerShoot": 144,
+          "needleLength": 0.06,
+          "needleWidth": 0.002
+        }
+      }
+    },
+    {
+      "id": "shaped-pine-stand-2",
+      "name": "Shaped lodgepole pine · stand variant 3",
+      "kind": "vegetation",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "seed": 9576,
+      "height": 8,
+      "radius": 2.25,
+      "branches": 56,
+      "material": "alpine-lookdev-needles",
+      "trunkMaterial": "alpine-lookdev-bark",
+      "windResponse": 0.35,
+      "variation": 0.7,
+      "botanical": {
+        "species": "pine",
+        "age": 0.5756057560443878,
+        "growth": {
+          "levels": 3,
+          "children": 3,
+          "branchAngle": 1.05,
+          "lengthRatio": 0.48,
+          "taper": 0.45,
+          "tropism": 0.15,
+          "asymmetry": 0.5
+        },
+        "canopy": {
+          "density": 0.98,
+          "clusters": 5,
+          "leavesPerCluster": 10,
+          "leafLength": 0.22,
+          "leafWidth": 0.018,
+          "droop": 0.2
+        },
+        "damage": {
+          "brokenBranches": 0.015,
+          "leafLoss": 0.025
+        },
+        "pruning": {
+          "clearTrunk": 0,
+          "radiusLimit": 20,
+          "removedBranches": []
+        },
+        "branchEdits": [],
+        "motion": {
+          "stiffness": 0.6,
+          "branchSway": 0.55,
+          "leafFlutter": 0.45
+        },
+        "review": {
+          "distances": [3, 14, 45],
+          "standCount": 9,
+          "spacing": 4.8,
+          "seedVariation": 0.6,
+          "ageVariation": 0.5
+        },
+        "conifer": {
+          "architecture": {
+            "version": "pine-architecture-1",
+            "twigPairs": 3,
+            "twigLength": 0.26,
+            "limbThickness": 0.32,
+            "foliageStart": 0.3
+          },
+          "whorlSize": 4,
+          "whorlJitter": 0.85,
+          "crownStart": 0.1,
+          "crownBias": 0.9,
+          "crownPower": 0.7,
+          "limbSag": 0.14,
+          "trunkRadius": 0.12,
+          "trunkFlare": 0.6,
+          "shootsPerLimb": 6,
+          "shootSpread": 0.48,
+          "needlesPerShoot": 144,
+          "needleLength": 0.06,
+          "needleWidth": 0.002
+        }
+      }
+    },
+    {
+      "id": "shaped-pine-stand-3",
+      "name": "Shaped lodgepole pine · stand variant 4",
+      "kind": "vegetation",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "seed": 14327,
+      "height": 8,
+      "radius": 2.25,
+      "branches": 56,
+      "material": "alpine-lookdev-needles",
+      "trunkMaterial": "alpine-lookdev-bark",
+      "windResponse": 0.35,
+      "variation": 0.7,
+      "botanical": {
+        "species": "pine",
+        "age": 0.6678713917732239,
+        "growth": {
+          "levels": 3,
+          "children": 3,
+          "branchAngle": 1.05,
+          "lengthRatio": 0.48,
+          "taper": 0.45,
+          "tropism": 0.15,
+          "asymmetry": 0.5
+        },
+        "canopy": {
+          "density": 0.98,
+          "clusters": 5,
+          "leavesPerCluster": 10,
+          "leafLength": 0.22,
+          "leafWidth": 0.018,
+          "droop": 0.2
+        },
+        "damage": {
+          "brokenBranches": 0.015,
+          "leafLoss": 0.025
+        },
+        "pruning": {
+          "clearTrunk": 0,
+          "radiusLimit": 20,
+          "removedBranches": []
+        },
+        "branchEdits": [],
+        "motion": {
+          "stiffness": 0.6,
+          "branchSway": 0.55,
+          "leafFlutter": 0.45
+        },
+        "review": {
+          "distances": [3, 14, 45],
+          "standCount": 9,
+          "spacing": 4.8,
+          "seedVariation": 0.6,
+          "ageVariation": 0.5
+        },
+        "conifer": {
+          "architecture": {
+            "version": "pine-architecture-1",
+            "twigPairs": 3,
+            "twigLength": 0.26,
+            "limbThickness": 0.32,
+            "foliageStart": 0.3
+          },
+          "whorlSize": 4,
+          "whorlJitter": 0.85,
+          "crownStart": 0.1,
+          "crownBias": 0.9,
+          "crownPower": 0.7,
+          "limbSag": 0.14,
+          "trunkRadius": 0.12,
+          "trunkFlare": 0.6,
+          "shootsPerLimb": 6,
+          "shootSpread": 0.48,
+          "needlesPerShoot": 144,
+          "needleLength": 0.06,
+          "needleWidth": 0.002
+        }
+      }
+    },
+    {
+      "id": "shaped-pine-stand-4",
+      "name": "Shaped lodgepole pine · stand variant 5",
+      "kind": "vegetation",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "seed": 19079,
+      "height": 8,
+      "radius": 2.25,
+      "branches": 56,
+      "material": "alpine-lookdev-needles",
+      "trunkMaterial": "alpine-lookdev-bark",
+      "windResponse": 0.35,
+      "variation": 0.7,
+      "botanical": {
+        "species": "pine",
+        "age": 0.6153304934501648,
+        "growth": {
+          "levels": 3,
+          "children": 3,
+          "branchAngle": 1.05,
+          "lengthRatio": 0.48,
+          "taper": 0.45,
+          "tropism": 0.15,
+          "asymmetry": 0.5
+        },
+        "canopy": {
+          "density": 0.98,
+          "clusters": 5,
+          "leavesPerCluster": 10,
+          "leafLength": 0.22,
+          "leafWidth": 0.018,
+          "droop": 0.2
+        },
+        "damage": {
+          "brokenBranches": 0.015,
+          "leafLoss": 0.025
+        },
+        "pruning": {
+          "clearTrunk": 0,
+          "radiusLimit": 20,
+          "removedBranches": []
+        },
+        "branchEdits": [],
+        "motion": {
+          "stiffness": 0.6,
+          "branchSway": 0.55,
+          "leafFlutter": 0.45
+        },
+        "review": {
+          "distances": [3, 14, 45],
+          "standCount": 9,
+          "spacing": 4.8,
+          "seedVariation": 0.6,
+          "ageVariation": 0.5
+        },
+        "conifer": {
+          "architecture": {
+            "version": "pine-architecture-1",
+            "twigPairs": 3,
+            "twigLength": 0.26,
+            "limbThickness": 0.32,
+            "foliageStart": 0.3
+          },
+          "whorlSize": 4,
+          "whorlJitter": 0.85,
+          "crownStart": 0.1,
+          "crownBias": 0.9,
+          "crownPower": 0.7,
+          "limbSag": 0.14,
+          "trunkRadius": 0.12,
+          "trunkFlare": 0.6,
+          "shootsPerLimb": 6,
+          "shootSpread": 0.48,
+          "needlesPerShoot": 144,
+          "needleLength": 0.06,
+          "needleWidth": 0.002
+        }
+      }
+    },
+    {
+      "id": "vegetation-review-stand",
+      "name": "Pine community across seed and maturity",
+      "kind": "world",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "generatorVersion": "wrela-world-1",
+      "terrain": "vegetation-review-ground",
+      "environment": "vegetation-review-sky",
+      "lighting": "vegetation-review-light",
+      "populations": [],
+      "instances": [
+        {
+          "id": "shaped-pine-stand-instance-0",
+          "definition": "shaped-pine-stand-0",
+          "position": [-4.080219340324402, 0, -4.723164496421814],
+          "rotation": [0, 4.786521148607056, 0],
+          "scale": 1.0845356321334838
+        },
+        {
+          "id": "shaped-pine-stand-instance-1",
+          "definition": "shaped-pine-stand-1",
+          "position": [-0.5549914741516112, 0, -4.256904158592223],
+          "rotation": [0, 1.0260417740040366, 0],
+          "scale": 1.112466139793396
+        },
+        {
+          "id": "shaped-pine-stand-instance-2",
+          "definition": "shaped-pine-stand-2",
+          "position": [4.094552478790283, 0, -4.2186603927612305],
+          "rotation": [0, 2.538268197630229, 0],
+          "scale": 0.9167132186889648
+        },
+        {
+          "id": "shaped-pine-stand-instance-3",
+          "definition": "shaped-pine-stand-3",
+          "position": [-4.92771550655365, 0, -0.829890089035034],
+          "rotation": [0, 2.3270368709976124, 0],
+          "scale": 1.0836414337158202
+        },
+        {
+          "id": "shaped-pine-stand-instance-4",
+          "definition": "shaped-pine-stand-4",
+          "position": [0.37219386577606195, 0, 0.7566931200027466],
+          "rotation": [0, 2.19732673625557, 0],
+          "scale": 1.0580374383926392
+        },
+        {
+          "id": "shaped-pine-stand-instance-5",
+          "definition": "shaped-pine-stand-0",
+          "position": [5.214463891983033, 0, -0.3591142272949219],
+          "rotation": [0, 3.303001063206503, 0],
+          "scale": 0.9308297061920165
+        },
+        {
+          "id": "shaped-pine-stand-instance-6",
+          "definition": "shaped-pine-stand-1",
+          "position": [-4.392085890769958, 0, 4.8125800609588625],
+          "rotation": [0, 2.785880635019282, 0],
+          "scale": 1.0184264039993285
+        },
+        {
+          "id": "shaped-pine-stand-instance-7",
+          "definition": "shaped-pine-stand-2",
+          "position": [0.060895786285400384, 0, 4.699736123085022],
+          "rotation": [0, 0.0618734296652711, 0],
+          "scale": 1.0517443466186522
+        },
+        {
+          "id": "shaped-pine-stand-instance-8",
+          "definition": "shaped-pine-stand-3",
+          "position": [4.695521106719971, 0, 4.1090707683563235],
+          "rotation": [0, 5.9750225734562195, 0],
+          "scale": 1.0144804811477661
+        }
+      ]
+    },
+    {
+      "id": "vegetation-review-sky",
+      "name": "Daylight",
+      "kind": "environment",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "model": "analytic-sky",
+      "sunElevation": 0.65,
+      "sunAzimuth": 0.55,
+      "turbidity": 2,
+      "fogDensity": 0,
+      "skyColor": [0.3, 0.44, 0.62],
+      "horizonColor": [0.72, 0.77, 0.8],
+      "groundColor": [0.2, 0.21, 0.2],
+      "wind": [5, 0, 1]
+    },
+    {
+      "id": "vegetation-review-light",
+      "name": "Soft daylight",
+      "kind": "lighting",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "ambient": 1.4,
+      "lights": [
+        {
+          "id": "key",
+          "type": "directional",
+          "position": [4, 8, 5],
+          "color": [1, 0.96, 0.9],
+          "intensity": 3.2
+        }
+      ]
+    },
+    {
+      "id": "vegetation-review-ground",
+      "name": "Neutral review ground",
+      "kind": "terrain",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "seed": 1,
+      "amplitude": 0,
+      "baseHeight": -0.02,
+      "frequency": 0.02,
+      "octaves": 1,
+      "material": "vegetation-review-floor",
+      "interventions": []
+    },
+    {
+      "id": "vegetation-review-floor",
+      "name": "Neutral gray ground",
+      "kind": "material",
+      "schemaVersion": 1,
+      "dependencies": [],
+      "color": [0.12, 0.13, 0.12],
+      "secondary": [0.12, 0.13, 0.12],
+      "roughness": 1,
+      "metallic": 0,
+      "pattern": "solid",
+      "scale": 1,
+      "normalStrength": 0
+    }
+  ]
+}

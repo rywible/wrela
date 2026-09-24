@@ -2,5 +2,26 @@
   "name": "@wrela/runtime",
   "version": "0.1.0",
   "type": "module",
-  "exports": "./src/index.ts"
+  "exports": {
+    ".": "./src/index.ts",
+    "./session": "./src/session.ts",
+    "./scene-host": "./src/scene-host.ts",
+    "./creature-review": "./src/creature-review.ts",
+    "./animation": "./src/animation.ts",
+    "./water-body": "./src/water-body.ts",
+    "./creature-motion-audit": "./src/creature-motion-audit.ts"
+  },
+  "devDependencies": {
+    "@wrela/model": "workspace:*",
+    "@wrela/examples": "workspace:*",
+    "@wrela/compiler": "workspace:*",
+    "@wrela/world": "workspace:*"
+  },
+  "dependencies": {
+    "@wrela/compiler": "workspace:*",
+    "@wrela/model": "workspace:*",
+    "@wrela/world": "workspace:*",
+    "@dimforge/rapier3d-compat": "0.19.2",
+    "zod": "4.1.12"
+  }
 }

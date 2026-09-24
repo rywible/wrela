@@ -27,9 +27,15 @@ Select a definition in the project browser. Use its inspector to edit it. Switch
 bun run dev --project /absolute/path/to/project
 ```
 
-The bridge binds to loopback, validates the configured origin, and uses an authenticated same-origin session. Files are ordinary JSON, one per definition. Crash-safe generations are stored under `.wrela/generations`; `.wrela/CURRENT` identifies the published generation. A cross-process publication lock covers source comparison and pointer replacement, so competing publishers cannot both succeed from the same base. Source edits within the current generation are detected before the next save. Internal symlinks are refused. The local bridge supports macOS and glibc Linux; direct file editors do not participate in its advisory lock.
+The bridge binds to loopback, validates the configured origin, and uses an authenticated same-origin session. Files are ordinary JSON, one per definition. Crash-safe generations are stored under `.wrela/generations`; `.wrela/CURRENT` identifies the published generation. A cross-process publication lock covers dependency checks and pointer replacement. CLI transactions on disjoint documents can rebase; overlapping edits and whole-project saves reject stale source. Stable transaction IDs recover durable receipts after restart. Source edits within the current generation are detected before the next save. Internal symlinks are refused. The local bridge supports macOS and glibc Linux; direct file editors do not participate in its advisory lock.
 
 ## Agent operations
+
+Creature development follows the [clay-first runbook](docs/creature-development-runbook.md): approve silhouette, skeleton, and movement before developing materials and fur. The [creature operation reference](packages/authoring/CREATURES.md) documents the shared source tools and candidate workflow. The [implementation map](docs/architecture/creature-authoring-implementation.md) and [retained verification](docs/research/creature-authoring-verification.md) distinguish installed capabilities from open art and performance gates.
+
+The [eight-domain authoring map](docs/architecture/authoring-system.md) links the specialized tools, source contracts and limits. Run `bun run author:lookdev` for a reproducible hardware-rendered review gallery across all eight categories; technical capture success and AAA visual acceptance are recorded separately.
+
+The [AAA development loop](docs/architecture/aaa-authoring-loop.md) connects constrained alternatives, reusable construction/history recipes, multiscale relief, thin foliage, static diffuse GI, atmosphere, and two source-authored alpine compositions. It includes reproducible visual reviews and explicit hardware budgets; these are measured development gates, not claims that the current output meets the AAA bar.
 
 Studio exposes `window.wrela`. It does not embed a chatbot. `discover()` returns operations, schemas, conventions, and limits; `inspect(id)` returns a focused copy. The same typed `AuthoringSession` and command types are available from `@wrela/authoring` to trusted TypeScript tools.
 
@@ -82,6 +88,17 @@ Run separate worktrees on different `PORT` values and use separate project direc
 
 `dist/` can be served by any static HTTP server. HTTPS or loopback is required for WebGPU. The production service worker caches a compatible snapshot; an update waits for the old client to close before activation.
 
+Botanical development and rendering experiments:
+
+- `bun run vegetation:lookdev --architecture` captures the controlled pine architecture; omit the flag for the original control. `--frame=plant-beauty,plant-branch,plant-silhouette,stand-gameplay` reviews the specimen gate. `--seed=1009 --age=0.55` checks another seed/stage. `--growth=pine --steps=24` and `--growth=birch` retain the experimental ecological models, whose appearance is not approved.
+- `bun run vegetation:lookdev --architecture --matrix` captures three fixed seeds across three maturity stages, with source projects for every specimen. `bun run vegetation:bench --architecture --aa=temporal --moving` measures the shaped grove.
+- `bun run vegetation:growth` freezes source and runs 1,024 seed/environment/stage cases with graph contact sheets and structural diagnostics. These are uncalibrated developmental steps.
+- `bun run vegetation:bench --aa=temporal --moving` measures three one-minute native 1080p trials. `--thermal` selects five-minute warmup plus 30-minute measurement; `--width=2560 --height=1664`, `--paced`, and `--cpu-profile` are separate modes. Profiling runs are diagnostic. Records include power state, memory pressure, matched GPU frame identities, allocations, and completeness.
+- `bun run vegetation:marginal --frames=1200` alternates tree-present/tree-absent GPU trials at matching camera and simulation ticks with the same shadow path. Signed differences include timing noise; they are interaction-sensitive estimates.
+- `bun run vegetation:frontier` compares experimental crown clusters with the compiled source silhouette; `--depth` tests the depth variant. These products remain candidates and are rejected by production selection. This test does not qualify full 3D needle fidelity, lighting, wind, or shadows.
+
+The [implementation evidence](docs/architecture/botanical-implementation-log.md) records passed checks, rejected experiments, and remaining acceptance work. The [species dossier](docs/architecture/botanical-species-dossier.md) distinguishes anatomical references from missing growth calibration.
+
 ## Scope and conventions
 
 Metres, seconds, radians; right handed, +Y up; column-major matrices and `[x,y,z,w]` quaternions. Authored colors are linear RGB. Finite field surfaces use derived meshes; terrain uses bounded regular-grid quadtree patches with explicit 2:1 edge stitching. Character animation and Rapier physics use fixed steps. Water rendering and queries share analytic components.
@@ -89,3 +106,5 @@ Metres, seconds, radians; right handed, +Y up; column-major matrices and `[x,y,z
 Heightfields do not support carved caves or overhangs. Water is an analytic surface, not a fluid solver. Physics supports authored primitives, compounds and static triangle collision, filtered queries and contact events through a narrow Rapier adapter. Finite field extraction reports unresolved semantic features; its general surface error is not certified. Vegetation has projected-size detail selection with hysteresis; hero character geometry stays at authored quality. Browser coverage and hardware performance must be verified on the actual release targets; a successful Metal run is not evidence for every GPU or shipping Safari version. Cloud accounts, marketplaces, downloaded plugins, and an arbitrary source language are outside this release’s design.
 
 Licensed under MIT. Distributed third-party licenses are included in `THIRD_PARTY_NOTICES.txt` and standalone exports; visual content in the reference project is generated from authored definitions.
+
+For module ownership, agent transactions, large catalogs and game delivery, see [Authoring games](docs/architecture/authoring-games.md). Run `bun run test` to exclude historical output snapshots.

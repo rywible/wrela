@@ -1,0 +1,786 @@
+{
+  "schemaVersion": 2,
+  "acceptanceVersion": "rendering-compiler-acceptance-2",
+  "status": "production-integrated-final-gpu-acceptance-pending",
+  "gpuTesting": "resumed-with-bounded-workloads-and-watchdog",
+  "currentSourceGpuValidated": false,
+  "implementedProductionStages": [
+    "A: contracts, persistence and completeness",
+    "B: primitive realizations, selection, picking and shadows",
+    "C: water phase metadata, bounded response integration and fallback",
+    "D: conservative visibility, compaction and finite sun",
+    "E: atmosphere products and scoped water reflection/refraction/absorption"
+  ],
+  "uiGameValidation": {
+    "status": "passed",
+    "path": "output/rendering-validation-snapshot/output/browser-1790028194962-80554",
+    "reportSha256": "00a52c307847895a08badf2e4c215515874994d3ebbf1befc1b0e9167373a07e",
+    "sourceFingerprint": "55abdc8178d2d4fde7767ba371fcc7f38b80a78c6b101100882c3f0af8d37a14",
+    "sourceStable": true,
+    "adapter": "apple \u00b7 metal-3",
+    "uiChecks": 19,
+    "gameChecks": 6,
+    "gpuErrors": 0,
+    "deviceLossRecovery": true,
+    "cookedDelivery": {
+      "launchMs": 2780.600000023842,
+      "mode": "cooked",
+      "cookedDocuments": 4,
+      "sourceCompiledDocuments": 0,
+      "compilerSource": "898bd5e0d87a67bcb485f2de03664ed948b7b8480de75e5cbdaed6a8f722d60d",
+      "cookedDocumentIds": ["polar-bunny", "river-stone", "trail-print", "alpine-pine"],
+      "sourceCompiledDocumentIds": []
+    },
+    "game": {
+      "nativeKeyboardSegment": true,
+      "routeBatches": 35,
+      "simulationTicks": 1919,
+      "restored": ["pine", "ridge", "brook"],
+      "phase": "won",
+      "pauseSavePortableImport": true,
+      "allQualityProfiles": [
+        {
+          "profile": "low",
+          "time": 0.7,
+          "complete": true
+        },
+        {
+          "profile": "high",
+          "time": 0.7,
+          "complete": true
+        },
+        {
+          "profile": "balanced",
+          "time": 0.7,
+          "complete": true
+        }
+      ],
+      "mobile": true,
+      "failureAndRestart": {
+        "phase": "lost",
+        "event": true,
+        "restarted": "exploring"
+      },
+      "simulationScope": "One native keyboard segment uses real RAF. Bounded scenario batches then run the same semantic input and RuntimeSession collision/fixed-update path; they do not measure real-time performance."
+    },
+    "scope": "Final production UI/game snapshot, with a stable manifest. Matched graphics benchmark evidence is recorded separately."
+  },
+  "boundedWaterGpuValidation": {
+    "path": "output/rendering-validation-snapshot/output/browser-1790027772693-76591",
+    "sourceFingerprint": "f23d4ed23c8514e90ea852eb1e00fc7b22e0219d72bf9e534649565cf9591a60",
+    "sourceStable": true,
+    "queries": 84,
+    "relativeRms": 0.005544616673494597,
+    "maximumQueryRelativeError": 0.012338054853183393,
+    "referenceConvergence": 3.24283501360039e-8,
+    "gpuErrors": 0,
+    "status": "passed-on-intermediate-source-snapshot"
+  },
+  "atmosphereEdgeValidation": {
+    "path": "output/rendering-validation-snapshot/output/browser-1790027765959-76551",
+    "sourceStable": true,
+    "cases": 8,
+    "gpuErrors": 0,
+    "checks": [
+      "finite and nonnegative",
+      "planet shadow",
+      "altitude response",
+      "sunset response",
+      "horizon continuity",
+      "linear exposure invariance",
+      "display exposure response"
+    ],
+    "scope": "Behavioral production-shader validation; not independent radiometric accuracy."
+  },
+  "winterDenseWaterComparison": {
+    "path": "output/rendering-validation-snapshot/output/browser-1790027859590-77761",
+    "sourceStable": true,
+    "resolution": [640, 360],
+    "relativeRms": 0.005983764004657783,
+    "denominatorFloor": 0.01,
+    "maximum": 0.03466796875,
+    "observation": "Distant authored two-wave bands are present in both production and dense integration.",
+    "scope": "Single matched frame, not a temporal stability certificate or AAA art-quality claim."
+  },
+  "physicalAtmosphereScope": {
+    "diffuseTableSize": [16, 32],
+    "diffuseTableBytes": 4096,
+    "scatteringOrders": 16,
+    "description": "Direct first-scattered sunlight and Lambertian ground transport, with a bounded nonnegative isotropic higher-order closure. Cached by atmosphere composition and ground albedo; camera/sun changes reuse the diffuse table.",
+    "limitations": [
+      "Isotropic closure is approximate",
+      "Terrain volumetric shadows and full global illumination are outside scope"
+    ]
+  },
+  "remainingValidation": [
+    "Final balanced/low matched whole-scene benchmarks and image/motion review after diffuse atmosphere integration",
+    "4096-stone production batching control measurement"
+  ],
+  "validationLimits": [
+    "One Apple integrated hardware adapter; low profile is not another hardware family",
+    "Independent whole-atmosphere radiometric reference remains unestablished",
+    "Adversarial visibility tests cover a bounded suite, not every possible scene",
+    "Proposed 20% complete-frame p95 improvement and 1080p/60 Hz targets must be read from final measurements, not inferred from kernel wins"
+  ],
+  "futureResearch": [
+    "Stage F residual global lighting and visible-crowd pose-sharing/compression experiments"
+  ],
+  "incident": {
+    "workload": "1920x1080 Winter scene profiling",
+    "suspectedCause": "Sharp-water tensor quadrature allowed 262144 response evaluations per pixel; full-scene run stalled. This is not an OS-level crash diagnosis.",
+    "cleanup": "Owned stalled test Chrome process group and orphan children terminated. GPU tests subsequently resumed through bounded staged smoke, profiling and reference checks.",
+    "correction": "Strict total water response budgets; browser deadlines and process-group cleanup; profiler defaults to 640x360 and 8 frames."
+  },
+  "intermediateEvidence": [
+    {
+      "path": "output/browser-1790025354457-61920",
+      "kind": "diagnostic-profile-before-sharp-highlight-fix",
+      "gpuP50Ms": 27.131904,
+      "gpuP95Ms": 31.260672,
+      "limitation": "Sequential diagnostic conditions, not matched alternating final-source acceptance."
+    },
+    {
+      "path": "output/browser-1790026290851-64862",
+      "kind": "rejected-expensive-water-kernel-numerical-check",
+      "queries": 84,
+      "relativeRms": 4.412035140330684e-6,
+      "maximumQueryRelativeError": 0.002732266221515702,
+      "referenceConvergence": 3.24283501360039e-8,
+      "limitation": "Passed isolated numerical accuracy but full-resolution performance unacceptable. Superseded by bounded implementation; not final-source GPU evidence."
+    }
+  ],
+  "boundedWaterCpuValidation": {
+    "ordinaryCases": 36,
+    "relativeRms": 0.005544979,
+    "maximumQueryRelativeError": 0.012338171,
+    "ordinaryHighlightMaximumResponses": 64,
+    "coherentRegularFallbackMaximumResponses": 256,
+    "denseDiagnosticMaximumResponses": 2048,
+    "tests": 2,
+    "assertions": 2163,
+    "assembledWGSL": "Naga CPU validation passed",
+    "gpuValidated": false,
+    "limitation": "The coherent conditional attempts precede its bounded regular fallback; 256 is the fallback budget, not the entire coherent invocation."
+  },
+  "runnerCpuValidation": {
+    "tests": 2,
+    "assertions": 5,
+    "checks": [
+      "Hung call deadline triggers cleanup",
+      "Isolated process group cleanup kills parent and child ignoring SIGTERM"
+    ]
+  },
+  "latestRepositoryCheck": {
+    "status": "blocked-by-concurrent-creature-integration",
+    "details": "Studio creature-tools references AuthoringSession methods still being implemented by the coordinated creature task. Last pre-integration check passed."
+  },
+  "historicalFirstIntegration": {
+    "schemaVersion": 1,
+    "acceptanceVersion": "rendering-compiler-acceptance-1",
+    "status": "captured",
+    "sourceFingerprint": "345c22412a83668e59c7b4aba5b1c455a433f54546dbb1b5248aab44ff33865e",
+    "sourceStable": true,
+    "created": "2026-09-21T20:29:03.330Z",
+    "rawOutput": "output/browser-1790022473440-54978",
+    "rawReportSha256": "ba7f168931d55471f7bd63ae582205d7061173106ca36ba02789d41eeea48249",
+    "environment": {
+      "sourceFingerprint": "345c22412a83668e59c7b4aba5b1c455a433f54546dbb1b5248aab44ff33865e",
+      "engine": "chrome",
+      "viewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+      "hardwareConcurrency": 10
+    },
+    "methodology": {
+      "controls": "Matched pre-evaluated immutable scene packets, camera, time and sun; direct and alternative pass through the production renderer. Explicit alternative requests are experiments, not default promotion.",
+      "timing": "Attributed unique full-frame GPU samples after warmup. CPU measures submission of the exact same pre-evaluated packets; scene evaluation/preparation and renderer initialization are separate. Callback intervals are not presentation timestamps. Capture/readback work is outside timing runs.",
+      "radiance": "Unclipped scene-linear rgba16float target sampled directly before display mapping. Relative RMS uses max(reference RGB RMS, 0.01); highlight channels are those above 90% of reference peak. Alpha excluded from RGB metrics but checked finite.",
+      "temporal": "Difference of consecutive recorded beauty captures compared with matched direct image differences. Sparse trajectory samples; not a complete video or temporal reconstruction certification.",
+      "completeness": "Every expected surface identity occurs exactly once in rendered or culled accounting; uploading/rejected/unknown identities fail. Accounting does not prove conservative culling or per-pixel coverage; differential identity/depth/normal captures are provided for review.",
+      "reference": "Direct production baseline, not an independent converged geometry/radiance reference. Deltas do not certify approximation error against physical truth."
+    },
+    "gates": {
+      "identityAccounting": true,
+      "noNonfiniteCapturedOutput": true,
+      "independentReferenceQuality": "pending",
+      "judgedVisualQuality": "pending",
+      "crossHardware": "pending",
+      "defaultPromotion": "not authorized by this report"
+    },
+    "tests": {
+      "passed": 297,
+      "failed": 0,
+      "check": "both TypeScript configurations, package boundaries and formatting passed"
+    },
+    "errors": [],
+    "results": [
+      {
+        "scenario": "winter-valley",
+        "runs": [
+          {
+            "variant": "direct",
+            "gpuMs": {
+              "samples": 91,
+              "mean": 11.68413257142857,
+              "p50": 11.665408,
+              "p95": 12.386304,
+              "p99": 13.565952,
+              "max": 13.565952
+            },
+            "cpuMs": {
+              "samples": 91,
+              "mean": 2.4879120928900584,
+              "p50": 2.399999976158142,
+              "p95": 3.100000023841858,
+              "p99": 3.3000000715255737,
+              "max": 3.3000000715255737
+            }
+          },
+          {
+            "variant": "analytic",
+            "gpuMs": {
+              "samples": 91,
+              "mean": 11.069822593406593,
+              "p50": 11.337728,
+              "p95": 13.369344,
+              "p99": 17.432576,
+              "max": 17.432576
+            },
+            "cpuMs": {
+              "samples": 91,
+              "mean": 3.679120883836851,
+              "p50": 3.700000047683716,
+              "p95": 3.899999976158142,
+              "p99": 4.399999976158142,
+              "max": 4.399999976158142
+            }
+          },
+          {
+            "variant": "regular-water",
+            "gpuMs": {
+              "samples": 91,
+              "mean": 9.947068483516482,
+              "p50": 8.716288,
+              "p95": 15.40096,
+              "p99": 25.362432,
+              "max": 25.362432
+            },
+            "cpuMs": {
+              "samples": 91,
+              "mean": 3.3549450557310503,
+              "p50": 3.600000023841858,
+              "p95": 4.100000023841858,
+              "p99": 4.199999928474426,
+              "max": 4.199999928474426
+            }
+          }
+        ]
+      },
+      {
+        "scenario": "primitive",
+        "runs": [
+          {
+            "variant": "direct",
+            "gpuMs": {
+              "samples": 91,
+              "mean": 10.124951912087916,
+              "p50": 9.437184,
+              "p95": 14.548992,
+              "p99": 26.279936,
+              "max": 26.279936
+            },
+            "cpuMs": {
+              "samples": 91,
+              "mean": 0.4835164887564523,
+              "p50": 0.5,
+              "p95": 0.7000000476837158,
+              "p99": 0.9000000953674316,
+              "max": 0.9000000953674316
+            }
+          },
+          {
+            "variant": "parametric",
+            "gpuMs": {
+              "samples": 91,
+              "mean": 10.73998206593407,
+              "p50": 9.8304,
+              "p95": 14.483456,
+              "p99": 26.017792,
+              "max": 26.017792
+            },
+            "cpuMs": {
+              "samples": 91,
+              "mean": 0.5395604437524146,
+              "p50": 0.6000000238418579,
+              "p95": 0.7000000476837158,
+              "p99": 0.9000000953674316,
+              "max": 0.9000000953674316
+            }
+          },
+          {
+            "variant": "analytic",
+            "gpuMs": {
+              "samples": 91,
+              "mean": 9.777827164835164,
+              "p50": 9.240576,
+              "p95": 16.449536,
+              "p99": 23.527424,
+              "max": 23.527424
+            },
+            "cpuMs": {
+              "samples": 91,
+              "mean": 0.5527472587732168,
+              "p50": 0.6000000238418579,
+              "p95": 0.7999999523162842,
+              "p99": 0.9000000953674316,
+              "max": 0.9000000953674316
+            }
+          }
+        ]
+      },
+      {
+        "scenario": "water",
+        "runs": [
+          {
+            "variant": "direct",
+            "gpuMs": {
+              "samples": 91,
+              "mean": 12.966045538461538,
+              "p50": 13.041664,
+              "p95": 13.76256,
+              "p99": 14.41792,
+              "max": 14.41792
+            },
+            "cpuMs": {
+              "samples": 91,
+              "mean": 0.28791208057613166,
+              "p50": 0.2999999523162842,
+              "p95": 0.40000009536743164,
+              "p99": 0.5,
+              "max": 0.5
+            }
+          },
+          {
+            "variant": "regular-water",
+            "gpuMs": {
+              "samples": 65,
+              "mean": 25.412844307692303,
+              "p50": 25.427968,
+              "p95": 27.066368,
+              "p99": 27.656192,
+              "max": 27.656192
+            },
+            "cpuMs": {
+              "samples": 91,
+              "mean": 0.3175824186304113,
+              "p50": 0.30000007152557373,
+              "p95": 0.5,
+              "p99": 0.6000000238418579,
+              "max": 0.6000000238418579
+            }
+          }
+        ]
+      },
+      {
+        "scenario": "lighting",
+        "runs": [
+          {
+            "variant": "lighting-baseline",
+            "gpuMs": {
+              "samples": 91,
+              "mean": 11.70789837362637,
+              "p50": 12.12416,
+              "p95": 13.828096,
+              "p99": 14.7456,
+              "max": 14.7456
+            },
+            "cpuMs": {
+              "samples": 91,
+              "mean": 0.5791208678549462,
+              "p50": 0.6000000238418579,
+              "p95": 0.8000000715255737,
+              "p99": 1,
+              "max": 1
+            }
+          },
+          {
+            "variant": "finite-sun",
+            "gpuMs": {
+              "samples": 91,
+              "mean": 12.172411780219777,
+              "p50": 12.058624,
+              "p95": 14.024704,
+              "p99": 14.614528,
+              "max": 14.614528
+            },
+            "cpuMs": {
+              "samples": 91,
+              "mean": 0.6714285756205465,
+              "p50": 0.7000000476837158,
+              "p95": 0.9000000953674316,
+              "p99": 1.2999999523162842,
+              "max": 1.2999999523162842
+            }
+          },
+          {
+            "variant": "atmosphere",
+            "gpuMs": {
+              "samples": 91,
+              "mean": 13.014297318681324,
+              "p50": 12.976128,
+              "p95": 14.352384,
+              "p99": 14.7456,
+              "max": 14.7456
+            },
+            "cpuMs": {
+              "samples": 91,
+              "mean": 0.5791208783348838,
+              "p50": 0.6000000238418579,
+              "p95": 0.8000000715255737,
+              "p99": 1,
+              "max": 1
+            }
+          }
+        ]
+      },
+      {
+        "scenario": "visibility",
+        "runs": [
+          {
+            "variant": "visibility-baseline",
+            "gpuMs": {
+              "samples": 91,
+              "mean": 6.651543912087914,
+              "p50": 5.636096,
+              "p95": 14.09024,
+              "p99": 15.466496,
+              "max": 15.466496
+            },
+            "cpuMs": {
+              "samples": 91,
+              "mean": 1.8714285643546136,
+              "p50": 1.899999976158142,
+              "p95": 2.399999976158142,
+              "p99": 2.399999976158142,
+              "max": 2.399999976158142
+            }
+          },
+          {
+            "variant": "visibility",
+            "gpuMs": {
+              "samples": 91,
+              "mean": 10.837925978021978,
+              "p50": 11.4688,
+              "p95": 14.680064,
+              "p99": 15.204352,
+              "max": 15.204352
+            },
+            "cpuMs": {
+              "samples": 91,
+              "mean": 1.5802197810057754,
+              "p50": 1.600000023841858,
+              "p95": 2.200000047683716,
+              "p99": 2.3000000715255737,
+              "max": 2.3000000715255737
+            }
+          }
+        ]
+      }
+    ],
+    "uiVerification": {
+      "report": "output/browser-1790022566939-55120/verification.json",
+      "sourceFingerprint": "345c22412a83668e59c7b4aba5b1c455a433f54546dbb1b5248aab44ff33865e",
+      "sourceStable": true,
+      "status": "passed",
+      "checks": 19,
+      "deviceLossRecovery": true
+    },
+    "lowProfile": {
+      "rawOutput": "output/browser-1790022592309-55219",
+      "rawReportSha256": "80964a9e326d1e6bd11691bb432a91997ef88a58f1e5391ec238629b29f9ce99",
+      "sourceFingerprint": "345c22412a83668e59c7b4aba5b1c455a433f54546dbb1b5248aab44ff33865e",
+      "sourceStable": true,
+      "status": "captured",
+      "profile": "low",
+      "resolution": [1280, 720],
+      "errors": [],
+      "results": [
+        {
+          "scenario": "winter-valley",
+          "runs": [
+            {
+              "variant": "direct",
+              "gpuMs": {
+                "samples": 91,
+                "mean": 3.620323868131871,
+                "p50": 3.60448,
+                "p95": 3.735552,
+                "p99": 3.801088,
+                "max": 3.801088
+              },
+              "cpuMs": {
+                "samples": 91,
+                "mean": 3.5747252768212623,
+                "p50": 3.700000047683716,
+                "p95": 4.200000047683716,
+                "p99": 4.300000071525574,
+                "max": 4.300000071525574
+              }
+            },
+            {
+              "variant": "analytic",
+              "gpuMs": {
+                "samples": 91,
+                "mean": 3.587915956043955,
+                "p50": 3.60448,
+                "p95": 3.735552,
+                "p99": 3.866624,
+                "max": 3.866624
+              },
+              "cpuMs": {
+                "samples": 91,
+                "mean": 3.636263738621722,
+                "p50": 3.600000023841858,
+                "p95": 3.9000000953674316,
+                "p99": 4.199999928474426,
+                "max": 4.199999928474426
+              }
+            },
+            {
+              "variant": "regular-water",
+              "gpuMs": {
+                "samples": 91,
+                "mean": 3.973930197802199,
+                "p50": 3.997696,
+                "p95": 4.390912,
+                "p99": 4.58752,
+                "max": 4.58752
+              },
+              "cpuMs": {
+                "samples": 91,
+                "mean": 3.1967032977512906,
+                "p50": 3.4000000953674316,
+                "p95": 3.9000000953674316,
+                "p99": 4.100000023841858,
+                "max": 4.100000023841858
+              }
+            }
+          ]
+        },
+        {
+          "scenario": "primitive",
+          "runs": [
+            {
+              "variant": "direct",
+              "gpuMs": {
+                "samples": 91,
+                "mean": 3.0153761758241777,
+                "p50": 2.359296,
+                "p95": 5.373952,
+                "p99": 5.832704,
+                "max": 5.832704
+              },
+              "cpuMs": {
+                "samples": 91,
+                "mean": 0.598901092351138,
+                "p50": 0.6000000238418579,
+                "p95": 0.8000000715255737,
+                "p99": 1,
+                "max": 1
+              }
+            },
+            {
+              "variant": "parametric",
+              "gpuMs": {
+                "samples": 91,
+                "mean": 3.031220043956045,
+                "p50": 2.359296,
+                "p95": 5.111808,
+                "p99": 5.373952,
+                "max": 5.373952
+              },
+              "cpuMs": {
+                "samples": 91,
+                "mean": 0.5483516546396109,
+                "p50": 0.5,
+                "p95": 0.8999999761581421,
+                "p99": 1,
+                "max": 1
+              }
+            },
+            {
+              "variant": "analytic",
+              "gpuMs": {
+                "samples": 91,
+                "mean": 3.358900043956043,
+                "p50": 2.490368,
+                "p95": 5.111808,
+                "p99": 5.701632,
+                "max": 5.701632
+              },
+              "cpuMs": {
+                "samples": 91,
+                "mean": 0.6307692291972401,
+                "p50": 0.6000000238418579,
+                "p95": 0.8999999761581421,
+                "p99": 1.100000023841858,
+                "max": 1.100000023841858
+              }
+            }
+          ]
+        },
+        {
+          "scenario": "water",
+          "runs": [
+            {
+              "variant": "direct",
+              "gpuMs": {
+                "samples": 91,
+                "mean": 4.521984000000002,
+                "p50": 4.718592,
+                "p95": 5.24288,
+                "p99": 5.57056,
+                "max": 5.57056
+              },
+              "cpuMs": {
+                "samples": 91,
+                "mean": 0.27032965880173904,
+                "p50": 0.20000004768371582,
+                "p95": 0.6000000238418579,
+                "p99": 0.6999999284744263,
+                "max": 0.6999999284744263
+              }
+            },
+            {
+              "variant": "regular-water",
+              "gpuMs": {
+                "samples": 91,
+                "mean": 8.848800351648352,
+                "p50": 8.781824,
+                "p95": 10.15808,
+                "p99": 10.878976,
+                "max": 10.878976
+              },
+              "cpuMs": {
+                "samples": 91,
+                "mean": 0.43736263683864046,
+                "p50": 0.40000009536743164,
+                "p95": 0.7000000476837158,
+                "p99": 0.8000000715255737,
+                "max": 0.8000000715255737
+              }
+            }
+          ]
+        },
+        {
+          "scenario": "lighting",
+          "runs": [
+            {
+              "variant": "lighting-baseline",
+              "gpuMs": {
+                "samples": 91,
+                "mean": 3.27175876923077,
+                "p50": 3.93216,
+                "p95": 4.521984,
+                "p99": 4.718592,
+                "max": 4.718592
+              },
+              "cpuMs": {
+                "samples": 91,
+                "mean": 0.7307692294592386,
+                "p50": 0.7999999523162842,
+                "p95": 1.0999999046325684,
+                "p99": 1.2000000476837158,
+                "max": 1.2000000476837158
+              }
+            },
+            {
+              "variant": "finite-sun",
+              "gpuMs": {
+                "samples": 91,
+                "mean": 3.8046888791208793,
+                "p50": 4.128768,
+                "p95": 4.58752,
+                "p99": 4.980736,
+                "max": 4.980736
+              },
+              "cpuMs": {
+                "samples": 91,
+                "mean": 0.6461538534898025,
+                "p50": 0.6000000238418579,
+                "p95": 1,
+                "p99": 1.100000023841858,
+                "max": 1.100000023841858
+              }
+            },
+            {
+              "variant": "atmosphere",
+              "gpuMs": {
+                "samples": 91,
+                "mean": 4.262000527472532,
+                "p50": 4.456448,
+                "p95": 5.308416,
+                "p99": 5.439488,
+                "max": 5.439488
+              },
+              "cpuMs": {
+                "samples": 91,
+                "mean": 0.690109888275901,
+                "p50": 0.7000000476837158,
+                "p95": 1,
+                "p99": 1.100000023841858,
+                "max": 1.100000023841858
+              }
+            }
+          ]
+        },
+        {
+          "scenario": "visibility",
+          "runs": [
+            {
+              "variant": "visibility-baseline",
+              "gpuMs": {
+                "samples": 91,
+                "mean": 1.2797524395604392,
+                "p50": 1.245184,
+                "p95": 1.441792,
+                "p99": 1.507328,
+                "max": 1.507328
+              },
+              "cpuMs": {
+                "samples": 91,
+                "mean": 1.9472527569466895,
+                "p50": 1.9000000953674316,
+                "p95": 2.399999976158142,
+                "p99": 2.600000023841858,
+                "max": 2.600000023841858
+              }
+            },
+            {
+              "variant": "visibility",
+              "gpuMs": {
+                "samples": 91,
+                "mean": 2.0301756483516473,
+                "p50": 1.245184,
+                "p95": 3.93216,
+                "p99": 4.194304,
+                "max": 4.194304
+              },
+              "cpuMs": {
+                "samples": 91,
+                "mean": 2.1219780235500125,
+                "p50": 2.100000023841858,
+                "p95": 2.799999952316284,
+                "p99": 2.9000000953674316,
+                "max": 2.9000000953674316
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "scope": "Historical superseded first integration. Full source manifests, capture data and observations remain in the linked raw reports, identified by their hashes."
+  }
+}

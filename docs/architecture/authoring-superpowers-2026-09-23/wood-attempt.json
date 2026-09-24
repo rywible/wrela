@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "id": "wood-wrela-0",
+  "suiteKey": "49a3507aa196814c",
+  "task": "wood",
+  "engine": "wrela",
+  "repetition": 0,
+  "agent": "fresh-dispatched-wood",
+  "model": "inherited-codex-model-version-unavailable",
+  "execution": "agent",
+  "dispatch": "engine-started",
+  "status": "completed",
+  "reason": "Automatic reviewed handoff; no artistic acceptance inferred. Token/intervention counts remain unknown unless supplied by an instrumented host.",
+  "startedAt": "2026-09-24T02:09:21.635Z",
+  "endedAt": "2026-09-24T02:10:15.606Z",
+  "elapsedMs": 53971,
+  "tokens": null,
+  "humanInterventions": null,
+  "engineEdits": [],
+  "constraintsPassed": true,
+  "deadlines": [
+    {
+      "seconds": 15,
+      "candidateImageAvailable": true,
+      "reviewedOutputAvailable": true,
+      "deliveryFinished": false,
+      "artisticAcceptance": null
+    },
+    {
+      "seconds": 30,
+      "candidateImageAvailable": true,
+      "reviewedOutputAvailable": true,
+      "deliveryFinished": false,
+      "artisticAcceptance": null
+    },
+    {
+      "seconds": 60,
+      "candidateImageAvailable": true,
+      "reviewedOutputAvailable": true,
+      "deliveryFinished": true,
+      "artisticAcceptance": null
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "final.json",
+      "sha256": "d3098925a11a821c3ff9f7c4bbca26927d1a244ef5ca45df349ecf5b28531eeb",
+      "kind": "source"
+    },
+    {
+      "path": "handoff.json",
+      "sha256": "b5198ae1c26f2dc297e30a4aa65599c18dc021ddb5d542e43e548755be5bfa75",
+      "kind": "handoff"
+    },
+    {
+      "path": "handoff-bundle.json",
+      "sha256": "bfb6fca3de8237f292dca8a8680474d7bebf63b2de1ea3b8680359c1dba11dcf",
+      "kind": "handoff"
+    },
+    {
+      "path": "authoring-trace.json",
+      "sha256": "03e49252ec6bd85dfdf8963a1590c26fa69753fa9daba3e97b9123dd8bf30abb",
+      "kind": "transcript"
+    },
+    {
+      "path": "angle-final.png",
+      "sha256": "0ae0f2c450afc8ea774dc69f6cc013498a3b96f120b4c47ef8097f6ba32cae8f",
+      "kind": "image"
+    },
+    {
+      "path": "detail-final.png",
+      "sha256": "f459e20ca3a491a570d93b962a648adec9bbd49b38c09c2d900d9b9fb5b7ce0f",
+      "kind": "image"
+    },
+    {
+      "path": "grazing-final.png",
+      "sha256": "135b2c7b7801c3d7ecf5c718c5f8e438a382c8b2cd9ce99c1ae46b1a02ffe3d1",
+      "kind": "image"
+    },
+    {
+      "path": "contact-sheet.png",
+      "sha256": "f77a8b18e77b487a55095d5a9475d545409bcf7430562134d2e7e7e451bdcae0",
+      "kind": "review"
+    },
+    {
+      "path": "independent-review.json",
+      "sha256": "73df8d9ee62aed3a569adbbe0e4278906581dd0f75b9be4055c9794bfbeae4eb",
+      "kind": "review"
+    }
+  ],
+  "telemetry": {
+    "toolCalls": 2,
+    "failedCalls": 0,
+    "discoveryCalls": 0,
+    "discoveryMs": 0,
+    "firstCandidateImageMs": 8203,
+    "toolMs": 10030.489459,
+    "observedToolWallMs": 10030,
+    "unattributedMs": 43941,
+    "modelMs": null,
+    "scope": "CLI spans only. Unattributed time includes model latency, image inspection, manual shell work, orchestration and idle time; it is not measured reasoning time."
+  },
+  "stages": [
+    {
+      "name": "review-packet-tool-runtime",
+      "durationMs": 7457.699999928474,
+      "origin": "agent-reported"
+    }
+  ]
+}

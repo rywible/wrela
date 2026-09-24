@@ -2,5 +2,50 @@
   "name": "@wrela/render-webgpu",
   "version": "0.1.0",
   "type": "module",
-  "exports": "./src/index.ts"
+  "exports": {
+    ".": "./src/index.ts",
+    "./indirect": "./src/indirect.ts",
+    "./packing": "./src/packing.ts",
+    "./realization": "./src/realization.ts",
+    "./water-body": "./src/water-body.ts",
+    "./water-spectrum-gpu": "./src/water-spectrum-gpu.ts",
+    "./batching": "./src/batching.ts",
+    "./shader": "./src/shader.ts",
+    "./surface-relief.wgsl": "./src/surface-relief.wgsl.ts",
+    "./atmosphere": "./src/atmosphere.ts",
+    "./atmosphere-cloud-noise.wgsl": "./src/atmosphere-cloud-noise.wgsl.ts",
+    "./water-body.wgsl": "./src/water-body.wgsl.ts",
+    "./foliage": "./src/foliage.ts",
+    "./foliage.wgsl": "./src/foliage.wgsl.ts",
+    "./thin-coverage.wgsl": "./src/thin-coverage.wgsl.ts",
+    "./thin-coverage-sampling": "./src/thin-coverage-sampling.ts",
+    "./environment-reflection": "./src/environment-reflection.ts",
+    "./atmosphere-cloud-transport.wgsl": "./src/atmosphere-cloud-transport.wgsl.ts",
+    "./cloud-formations": "./src/cloud-formations.ts",
+    "./cloud-history": "./src/cloud-history.ts",
+    "./water-temporal": "./src/water-temporal.ts",
+    "./thin-coverage": "./src/thin-coverage.ts",
+    "./vegetation-selection": "./src/vegetation-selection.ts",
+    "./water-transport": "./src/water-transport.ts",
+    "./material-lattice": "./src/material-lattice.ts",
+    "./material-lattice.wgsl": "./src/material-lattice.wgsl.ts",
+    "./scene.wgsl": "./src/scene.wgsl.ts",
+    "./water-budget": "./src/water-budget.ts",
+    "./gpu-visibility": "./src/gpu-visibility.ts",
+    "./brdf.wgsl": "./src/brdf.wgsl.ts",
+    "./water.wgsl": "./src/water.wgsl.ts",
+    "./water-glints.wgsl": "./src/water-glints.wgsl.ts",
+    "./display.wgsl": "./src/display.wgsl.ts",
+    "./temporal": "./src/temporal.ts",
+    "./transport": "./src/transport.ts",
+    "./irradiance": "./src/irradiance.ts",
+    "./math": "./src/math.ts"
+  },
+  "devDependencies": {
+    "@wrela/model": "workspace:*",
+    "@wrela/examples": "workspace:*"
+  },
+  "dependencies": {
+    "@wrela/model": "workspace:*"
+  }
 }

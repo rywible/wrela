@@ -1,0 +1,2837 @@
+{
+  "captures": [
+    {
+      "source": "constant-sky-and-directional-sun",
+      "bounces": 1,
+      "buildMs": 1517.1000000238419,
+      "referenceMs": 3344,
+      "width": 96,
+      "height": 72,
+      "referenceSamples": 256,
+      "referenceSkySamples": 16,
+      "field": {
+        "key": "b3e5b5d311ca5919",
+        "bytes": 466144,
+        "dimensions": [
+          12,
+          8,
+          12
+        ],
+        "report": {
+          "status": "ready",
+          "triangles": 20,
+          "rays": 221184,
+          "source": "constant-sky-and-directional-sun",
+          "bounces": 1,
+          "excluded": [],
+          "buildMs": 1516.6000000238419,
+          "maxSliceMs": 2.5,
+          "relocatedProbes": 24
+        }
+      },
+      "comparison": {
+        "rms": 0.010100576636856755,
+        "meanAbsolute": 0.005122955279924181,
+        "maximum": 0.10116100311279297,
+        "referenceMean": 0.06507235948695303,
+        "cpuGpuMaximum": 0.00017892569303512573,
+        "rebaseMaximum": 0.0001220703125,
+        "rebaseOrigin": [
+          16,
+          0,
+          -32
+        ],
+        "channelSamples": 11844
+      },
+      "visibilityPerformance": {
+        "viewport": [
+          640,
+          480
+        ],
+        "mode": "indirect-lighting",
+        "order": "ABCCBA",
+        "maximumCompiledBvhError": 0,
+        "fullBvh": {
+          "samples": 16,
+          "sceneMedianMs": 3.866624,
+          "sceneP95Ms": 5.505024,
+          "timings": [
+            {
+              "frame": 19,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.60448,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 3.670016,
+              "gpuMs": 3.670016,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.60448
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 3.670016
+                }
+              ]
+            },
+            {
+              "frame": 20,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 4.128768,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 4.128768,
+              "gpuMs": 4.194304,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 4.128768
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 4.194304
+                }
+              ]
+            },
+            {
+              "frame": 21,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.60448,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 3.60448,
+              "gpuMs": 3.60448,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.60448
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 3.60448
+                }
+              ]
+            },
+            {
+              "frame": 22,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 4.980736,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 4.980736,
+              "gpuMs": 4.980736,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 4.980736
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 4.980736
+                }
+              ]
+            },
+            {
+              "frame": 23,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 4.25984,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 4.25984,
+              "gpuMs": 4.325376,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 4.25984
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 4.325376
+                }
+              ]
+            },
+            {
+              "frame": 24,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.145728,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 3.145728,
+              "gpuMs": 3.211264,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.145728
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 3.211264
+                }
+              ]
+            },
+            {
+              "frame": 25,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 7.995392,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 8.060928,
+              "gpuMs": 8.060928,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 7.995392
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 8.060928
+                }
+              ]
+            },
+            {
+              "frame": 26,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.866624,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 3.866624,
+              "gpuMs": 3.866624,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.866624
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 3.866624
+                }
+              ]
+            },
+            {
+              "frame": 49,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.801088,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 3.801088,
+              "gpuMs": 3.866624,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.801088
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 3.866624
+                }
+              ]
+            },
+            {
+              "frame": 50,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.801088,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 7.143424,
+              "gpuMs": 7.143424,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.801088
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 7.143424
+                }
+              ]
+            },
+            {
+              "frame": 51,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.93216,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 3.93216,
+              "gpuMs": 3.997696,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.93216
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 3.997696
+                }
+              ]
+            },
+            {
+              "frame": 52,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.866624,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 3.801088,
+              "gpuMs": 3.866624,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.866624
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 3.866624
+                }
+              ]
+            },
+            {
+              "frame": 53,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 5.505024,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 7.602176,
+              "gpuMs": 7.602176,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 5.505024
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 7.602176
+                }
+              ]
+            },
+            {
+              "frame": 54,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.735552,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 3.735552,
+              "gpuMs": 3.801088,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.735552
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 3.801088
+                }
+              ]
+            },
+            {
+              "frame": 55,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.866624,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 3.801088,
+              "gpuMs": 3.866624,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.866624
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 3.866624
+                }
+              ]
+            },
+            {
+              "frame": 56,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.735552,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 3.801088,
+              "gpuMs": 3.801088,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.735552
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 3.801088
+                }
+              ]
+            }
+          ]
+        },
+        "savedSceneMedianMs": 0.8519679999999998,
+        "guarded": {
+          "samples": 16,
+          "sceneMedianMs": 3.014656,
+          "sceneP95Ms": 6.5536,
+          "timings": [
+            {
+              "frame": 9,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.883584,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 3.735552,
+              "gpuMs": 3.801088,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.883584
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 3.801088
+                }
+              ]
+            },
+            {
+              "frame": 10,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.883584,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 2.818048,
+              "gpuMs": 2.883584,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.883584
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 2.883584
+                }
+              ]
+            },
+            {
+              "frame": 11,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.014656,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 3.014656,
+              "gpuMs": 3.014656,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.014656
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 3.014656
+                }
+              ]
+            },
+            {
+              "frame": 12,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.94912,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 2.94912,
+              "gpuMs": 2.94912,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.94912
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 2.94912
+                }
+              ]
+            },
+            {
+              "frame": 13,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 6.5536,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 6.5536,
+              "gpuMs": 6.619136,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 6.5536
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 6.619136
+                }
+              ]
+            },
+            {
+              "frame": 14,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.145728,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 3.080192,
+              "gpuMs": 3.145728,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.145728
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 3.145728
+                }
+              ]
+            },
+            {
+              "frame": 15,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.883584,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 2.94912,
+              "gpuMs": 2.94912,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.883584
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 2.94912
+                }
+              ]
+            },
+            {
+              "frame": 16,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 4.325376,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 4.325376,
+              "gpuMs": 4.325376,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 4.325376
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 4.325376
+                }
+              ]
+            },
+            {
+              "frame": 59,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.94912,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 2.883584,
+              "gpuMs": 2.94912,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.94912
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 2.94912
+                }
+              ]
+            },
+            {
+              "frame": 60,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 6.5536,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 6.5536,
+              "gpuMs": 6.619136,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 6.5536
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 6.619136
+                }
+              ]
+            },
+            {
+              "frame": 61,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.883584,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 2.94912,
+              "gpuMs": 2.94912,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.883584
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 2.94912
+                }
+              ]
+            },
+            {
+              "frame": 62,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.080192,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 2.94912,
+              "gpuMs": 3.080192,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.080192
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.131072,
+                  "endMs": 3.080192
+                }
+              ]
+            },
+            {
+              "frame": 63,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.538944,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 3.866624,
+              "gpuMs": 3.93216,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.538944
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 3.93216
+                }
+              ]
+            },
+            {
+              "frame": 64,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.883584,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 2.94912,
+              "gpuMs": 2.94912,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.883584
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 2.94912
+                }
+              ]
+            },
+            {
+              "frame": 65,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.883584,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 2.752512,
+              "gpuMs": 2.883584,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.883584
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.131072,
+                  "endMs": 2.883584
+                }
+              ]
+            },
+            {
+              "frame": 66,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 6.619136,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 6.619136,
+              "gpuMs": 6.619136,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 6.619136
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 6.619136
+                }
+              ]
+            }
+          ]
+        },
+        "unguarded": {
+          "samples": 16,
+          "sceneMedianMs": 1.703936,
+          "sceneP95Ms": 1.835008,
+          "timings": [
+            {
+              "frame": 29,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.703936,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.703936,
+              "gpuMs": 1.769472,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.703936
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 1.769472
+                }
+              ]
+            },
+            {
+              "frame": 30,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.6384,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.703936,
+              "gpuMs": 1.703936,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.6384
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 1.703936
+                }
+              ]
+            },
+            {
+              "frame": 31,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.6384,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.703936,
+              "gpuMs": 1.703936,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.6384
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 1.703936
+                }
+              ]
+            },
+            {
+              "frame": 32,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.6384,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.572864,
+              "gpuMs": 1.6384,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.6384
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 1.6384
+                }
+              ]
+            },
+            {
+              "frame": 33,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.835008,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.835008,
+              "gpuMs": 1.900544,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.835008
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 1.900544
+                }
+              ]
+            },
+            {
+              "frame": 34,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.703936,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.703936,
+              "gpuMs": 1.769472,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.703936
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 1.769472
+                }
+              ]
+            },
+            {
+              "frame": 35,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.835008,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.900544,
+              "gpuMs": 1.900544,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.835008
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 1.900544
+                }
+              ]
+            },
+            {
+              "frame": 36,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.703936,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.703936,
+              "gpuMs": 1.703936,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.703936
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 1.703936
+                }
+              ]
+            },
+            {
+              "frame": 39,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.703936,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.703936,
+              "gpuMs": 1.769472,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.703936
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 1.769472
+                }
+              ]
+            },
+            {
+              "frame": 40,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.835008,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.900544,
+              "gpuMs": 1.96608,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.835008
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 1.96608
+                }
+              ]
+            },
+            {
+              "frame": 41,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.703936,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.769472,
+              "gpuMs": 1.769472,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.703936
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 1.769472
+                }
+              ]
+            },
+            {
+              "frame": 42,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.835008,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.835008,
+              "gpuMs": 1.900544,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.835008
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 1.900544
+                }
+              ]
+            },
+            {
+              "frame": 43,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.6384,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.703936,
+              "gpuMs": 1.703936,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.6384
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 1.703936
+                }
+              ]
+            },
+            {
+              "frame": 44,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.769472,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.703936,
+              "gpuMs": 1.769472,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.769472
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 1.769472
+                }
+              ]
+            },
+            {
+              "frame": 45,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.769472,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.835008,
+              "gpuMs": 1.835008,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.769472
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 1.835008
+                }
+              ]
+            },
+            {
+              "frame": 46,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.769472,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.835008,
+              "gpuMs": 1.835008,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.769472
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 1.835008
+                }
+              ]
+            }
+          ]
+        },
+        "addedSceneMedianMs": 1.31072,
+        "scope": "Short paired GPU scene-pass observations on this fixture; excludes field build/upload. Not a cross-hardware benchmark."
+      },
+      "measurements": {
+        "cpuMs": 0.7000000476837158,
+        "gpuMs": 0.196608,
+        "triangles": 20,
+        "drawCalls": 7,
+        "gpuBytes": 45915173,
+        "frame": 5,
+        "adapter": "apple · metal-3",
+        "waterResources": {
+          "transport": 12,
+          "history": 0,
+          "spectrum": 0,
+          "body": 16,
+          "geometry": 0,
+          "objects": 0,
+          "total": 28
+        },
+        "waterReconstruction": "spatial",
+        "reconstruction": "none",
+        "gpuTimingDroppedFrames": 0,
+        "localShadowPasses": 0,
+        "localShadowDrawCalls": 0,
+        "materialCacheBytes": 0,
+        "qualityProfile": "balanced",
+        "uploadedBytes": 12800,
+        "visibleSurfaces": 5,
+        "culledSurfaces": 0,
+        "detailSurfaces": 0,
+        "ownedTextureBytes": 43673029,
+        "bufferBytes": 2242144,
+        "outputResolution": [
+          96,
+          72
+        ],
+        "renderResolution": [
+          96,
+          72
+        ]
+      },
+      "gpuTimings": [
+        {
+          "frame": 1,
+          "atmosphereMs": 12.386304,
+          "thinDepthMs": 0,
+          "shadowMs": 0.262144,
+          "sceneMs": 6.291456,
+          "waterMs": 0,
+          "temporalMs": 0,
+          "displayMs": 6.22592,
+          "gpuMs": 15.335424,
+          "intervals": [
+            {
+              "pass": "atmosphere",
+              "startMs": 0,
+              "endMs": 12.386304
+            },
+            {
+              "pass": "shadow",
+              "startMs": 4.325376,
+              "endMs": 4.58752
+            },
+            {
+              "pass": "opaque",
+              "startMs": 8.84736,
+              "endMs": 15.138816
+            },
+            {
+              "pass": "display",
+              "startMs": 9.109504,
+              "endMs": 15.335424
+            }
+          ]
+        },
+        {
+          "frame": 2,
+          "atmosphereMs": 0,
+          "thinDepthMs": 0,
+          "shadowMs": 0.262144,
+          "sceneMs": 0.786432,
+          "waterMs": 0,
+          "temporalMs": 0,
+          "displayMs": 0.917504,
+          "gpuMs": 1.048576,
+          "intervals": [
+            {
+              "pass": "shadow",
+              "startMs": 0,
+              "endMs": 0.262144
+            },
+            {
+              "pass": "opaque",
+              "startMs": 0.065536,
+              "endMs": 0.851968
+            },
+            {
+              "pass": "display",
+              "startMs": 0.131072,
+              "endMs": 1.048576
+            }
+          ]
+        },
+        {
+          "frame": 3,
+          "atmosphereMs": 0,
+          "thinDepthMs": 0,
+          "shadowMs": 0.262144,
+          "sceneMs": 6.88128,
+          "waterMs": 0,
+          "temporalMs": 0,
+          "displayMs": 7.012352,
+          "gpuMs": 7.077888,
+          "intervals": [
+            {
+              "pass": "shadow",
+              "startMs": 0,
+              "endMs": 0.262144
+            },
+            {
+              "pass": "opaque",
+              "startMs": 0,
+              "endMs": 6.88128
+            },
+            {
+              "pass": "display",
+              "startMs": 0.065536,
+              "endMs": 7.077888
+            }
+          ]
+        },
+        {
+          "frame": 4,
+          "atmosphereMs": 0,
+          "thinDepthMs": 0,
+          "shadowMs": 0.196608,
+          "sceneMs": 4.456448,
+          "waterMs": 0,
+          "temporalMs": 0,
+          "displayMs": 4.58752,
+          "gpuMs": 4.58752,
+          "intervals": [
+            {
+              "pass": "shadow",
+              "startMs": 0,
+              "endMs": 0.196608
+            },
+            {
+              "pass": "opaque",
+              "startMs": 0,
+              "endMs": 4.456448
+            },
+            {
+              "pass": "display",
+              "startMs": 0,
+              "endMs": 4.58752
+            }
+          ]
+        },
+        {
+          "frame": 5,
+          "atmosphereMs": 0,
+          "thinDepthMs": 0,
+          "shadowMs": 0,
+          "sceneMs": 0.196608,
+          "waterMs": 0,
+          "temporalMs": 0,
+          "displayMs": 0.196608,
+          "gpuMs": 0.196608,
+          "intervals": [
+            {
+              "pass": "opaque",
+              "startMs": 0,
+              "endMs": 0.196608
+            },
+            {
+              "pass": "display",
+              "startMs": 0,
+              "endMs": 0.196608
+            }
+          ]
+        }
+      ],
+      "completeness": {
+        "frame": 5,
+        "complete": true,
+        "rendered": [
+          "floor",
+          "left-wall",
+          "right-wall",
+          "back-wall",
+          "neutral-block"
+        ],
+        "culled": [],
+        "uploading": [],
+        "rejected": [],
+        "realizations": [],
+        "appearance": [],
+        "details": [],
+        "transport": [
+          {
+            "kind": "finite-sun",
+            "selected": false,
+            "reason": "nonspherical blocker requires ordinary shadows"
+          },
+          {
+            "kind": "atmosphere",
+            "selected": true,
+            "reason": "composition optical-depth table, sky-view and aerial-perspective products"
+          }
+        ],
+        "visibility": [
+          {
+            "id": "floor",
+            "reason": "inactive-realization"
+          },
+          {
+            "id": "left-wall",
+            "reason": "inactive-realization"
+          },
+          {
+            "id": "right-wall",
+            "reason": "inactive-realization"
+          },
+          {
+            "id": "back-wall",
+            "reason": "inactive-realization"
+          },
+          {
+            "id": "neutral-block",
+            "reason": "inactive-realization"
+          }
+        ]
+      },
+      "limits": "Low-order SH and coarse probes approximate the irradiance field; bounded receiver-to-probe BVH queries reject occluded interpolation. Error is measured, not certified. Reference shares the query mesh and constant lighting source but samples independently."
+    },
+    {
+      "source": "constant-sky-and-directional-sun",
+      "bounces": 1,
+      "buildMs": 3985.8000000715256,
+      "referenceMs": 2879.8000000715256,
+      "width": 96,
+      "height": 72,
+      "referenceSamples": 256,
+      "referenceSkySamples": 16,
+      "field": {
+        "key": "2c272e06d104421a",
+        "bytes": 1050128,
+        "dimensions": [
+          16,
+          6,
+          16
+        ],
+        "report": {
+          "status": "ready",
+          "triangles": 674,
+          "rays": 294912,
+          "source": "constant-sky-and-directional-sun",
+          "bounces": 1,
+          "excluded": [],
+          "buildMs": 3985.7000000476837,
+          "maxSliceMs": 2.399999976158142,
+          "relocatedProbes": 92
+        }
+      },
+      "comparison": {
+        "rms": 0.0036683402336867934,
+        "meanAbsolute": 0.0014078139624657691,
+        "maximum": 0.057380713522434235,
+        "referenceMean": 0.058586165214851285,
+        "cpuGpuMaximum": 0.00012205541133880615,
+        "rebaseMaximum": 0.00006103515625,
+        "rebaseOrigin": [
+          16,
+          0,
+          -32
+        ],
+        "channelSamples": 13074
+      },
+      "visibilityPerformance": {
+        "viewport": [
+          640,
+          480
+        ],
+        "mode": "indirect-lighting",
+        "order": "ABCCBA",
+        "maximumCompiledBvhError": 0,
+        "fullBvh": {
+          "samples": 16,
+          "sceneMedianMs": 4.9152,
+          "sceneP95Ms": 5.963776,
+          "timings": [
+            {
+              "frame": 85,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 4.653056,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 4.58752,
+              "gpuMs": 4.653056,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 4.653056
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 4.653056
+                }
+              ]
+            },
+            {
+              "frame": 86,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 4.849664,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 4.718592,
+              "gpuMs": 4.849664,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 4.849664
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.131072,
+                  "endMs": 4.849664
+                }
+              ]
+            },
+            {
+              "frame": 87,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 5.046272,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 5.046272,
+              "gpuMs": 5.111808,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 5.046272
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 5.111808
+                }
+              ]
+            },
+            {
+              "frame": 88,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 4.653056,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 4.653056,
+              "gpuMs": 4.653056,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 4.653056
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 4.653056
+                }
+              ]
+            },
+            {
+              "frame": 89,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 5.963776,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 6.094848,
+              "gpuMs": 6.094848,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 5.963776
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 6.094848
+                }
+              ]
+            },
+            {
+              "frame": 90,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 4.849664,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 4.849664,
+              "gpuMs": 4.849664,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 4.849664
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 4.849664
+                }
+              ]
+            },
+            {
+              "frame": 91,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 4.9152,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 4.9152,
+              "gpuMs": 4.980736,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 4.9152
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 4.980736
+                }
+              ]
+            },
+            {
+              "frame": 92,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 5.373952,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 5.832704,
+              "gpuMs": 5.832704,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 5.373952
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 5.832704
+                }
+              ]
+            },
+            {
+              "frame": 115,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 4.9152,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 4.849664,
+              "gpuMs": 4.9152,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 4.9152
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 4.9152
+                }
+              ]
+            },
+            {
+              "frame": 116,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 5.89824,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 6.750208,
+              "gpuMs": 6.750208,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 5.89824
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 6.750208
+                }
+              ]
+            },
+            {
+              "frame": 117,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 5.177344,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 5.177344,
+              "gpuMs": 5.24288,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 5.177344
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 5.24288
+                }
+              ]
+            },
+            {
+              "frame": 118,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 5.636096,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 5.636096,
+              "gpuMs": 5.701632,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 5.636096
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 5.701632
+                }
+              ]
+            },
+            {
+              "frame": 119,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 4.784128,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 4.784128,
+              "gpuMs": 4.784128,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 4.784128
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 4.784128
+                }
+              ]
+            },
+            {
+              "frame": 120,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 4.9152,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 4.784128,
+              "gpuMs": 4.9152,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 4.9152
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.131072,
+                  "endMs": 4.9152
+                }
+              ]
+            },
+            {
+              "frame": 121,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 7.143424,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 7.077888,
+              "gpuMs": 7.143424,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 7.143424
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 7.143424
+                }
+              ]
+            },
+            {
+              "frame": 122,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 4.784128,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 4.784128,
+              "gpuMs": 4.784128,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 4.784128
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 4.784128
+                }
+              ]
+            }
+          ]
+        },
+        "savedSceneMedianMs": 1.9660799999999994,
+        "guarded": {
+          "samples": 16,
+          "sceneMedianMs": 2.94912,
+          "sceneP95Ms": 5.701632,
+          "timings": [
+            {
+              "frame": 75,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.883584,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 2.94912,
+              "gpuMs": 3.014656,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.883584
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 3.014656
+                }
+              ]
+            },
+            {
+              "frame": 76,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.883584,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 2.883584,
+              "gpuMs": 2.883584,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.883584
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 2.883584
+                }
+              ]
+            },
+            {
+              "frame": 77,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.538944,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 4.390912,
+              "gpuMs": 4.390912,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.538944
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 4.390912
+                }
+              ]
+            },
+            {
+              "frame": 78,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.883584,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 2.883584,
+              "gpuMs": 2.883584,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.883584
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 2.883584
+                }
+              ]
+            },
+            {
+              "frame": 79,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.94912,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 3.014656,
+              "gpuMs": 3.014656,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.94912
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 3.014656
+                }
+              ]
+            },
+            {
+              "frame": 80,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.94912,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 2.752512,
+              "gpuMs": 2.94912,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.94912
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.196608,
+                  "endMs": 2.94912
+                }
+              ]
+            },
+            {
+              "frame": 81,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.94912,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 2.94912,
+              "gpuMs": 3.014656,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.94912
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 3.014656
+                }
+              ]
+            },
+            {
+              "frame": 82,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.080192,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 3.080192,
+              "gpuMs": 3.080192,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.080192
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 3.080192
+                }
+              ]
+            },
+            {
+              "frame": 125,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 3.014656,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 6.488064,
+              "gpuMs": 6.488064,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 3.014656
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 6.488064
+                }
+              ]
+            },
+            {
+              "frame": 126,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 4.718592,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 4.718592,
+              "gpuMs": 4.784128,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 4.718592
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 4.784128
+                }
+              ]
+            },
+            {
+              "frame": 127,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.62144,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 2.490368,
+              "gpuMs": 2.62144,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.62144
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.131072,
+                  "endMs": 2.62144
+                }
+              ]
+            },
+            {
+              "frame": 128,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 6.029312,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 5.963776,
+              "gpuMs": 6.029312,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 6.029312
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 6.029312
+                }
+              ]
+            },
+            {
+              "frame": 129,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 4.25984,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 5.111808,
+              "gpuMs": 5.177344,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 4.25984
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 5.177344
+                }
+              ]
+            },
+            {
+              "frame": 130,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.424832,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 2.359296,
+              "gpuMs": 2.490368,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.424832
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.131072,
+                  "endMs": 2.490368
+                }
+              ]
+            },
+            {
+              "frame": 131,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 5.701632,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 8.388608,
+              "gpuMs": 8.454144,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 5.701632
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 8.454144
+                }
+              ]
+            },
+            {
+              "frame": 132,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 2.162688,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 2.097152,
+              "gpuMs": 2.162688,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 2.162688
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 2.162688
+                }
+              ]
+            }
+          ]
+        },
+        "unguarded": {
+          "samples": 16,
+          "sceneMedianMs": 0.917504,
+          "sceneP95Ms": 1.048576,
+          "timings": [
+            {
+              "frame": 95,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 0.917504,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 0.917504,
+              "gpuMs": 0.917504,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                }
+              ]
+            },
+            {
+              "frame": 96,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 0.917504,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 0.917504,
+              "gpuMs": 0.917504,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                }
+              ]
+            },
+            {
+              "frame": 97,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.048576,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.048576,
+              "gpuMs": 1.048576,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.048576
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 1.048576
+                }
+              ]
+            },
+            {
+              "frame": 98,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.703936,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.900544,
+              "gpuMs": 2.555904,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.703936
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.65536,
+                  "endMs": 2.555904
+                }
+              ]
+            },
+            {
+              "frame": 99,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 0.98304,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 0.98304,
+              "gpuMs": 0.98304,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 0.98304
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 0.98304
+                }
+              ]
+            },
+            {
+              "frame": 100,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 0.917504,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 0.917504,
+              "gpuMs": 0.917504,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                }
+              ]
+            },
+            {
+              "frame": 101,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 0.917504,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 0.917504,
+              "gpuMs": 0.917504,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                }
+              ]
+            },
+            {
+              "frame": 102,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 0.917504,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 0.98304,
+              "gpuMs": 0.98304,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 0.98304
+                }
+              ]
+            },
+            {
+              "frame": 105,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.048576,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.048576,
+              "gpuMs": 1.048576,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.048576
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 1.048576
+                }
+              ]
+            },
+            {
+              "frame": 106,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 1.048576,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 1.114112,
+              "gpuMs": 1.114112,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 1.048576
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 1.114112
+                }
+              ]
+            },
+            {
+              "frame": 107,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 0.917504,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 0.917504,
+              "gpuMs": 0.917504,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                }
+              ]
+            },
+            {
+              "frame": 108,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 0.917504,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 0.917504,
+              "gpuMs": 0.917504,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                }
+              ]
+            },
+            {
+              "frame": 109,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 0.917504,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 0.917504,
+              "gpuMs": 0.917504,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                }
+              ]
+            },
+            {
+              "frame": 110,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 0.917504,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 0.917504,
+              "gpuMs": 0.917504,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                }
+              ]
+            },
+            {
+              "frame": 111,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 0.917504,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 0.851968,
+              "gpuMs": 0.917504,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 0.917504
+                }
+              ]
+            },
+            {
+              "frame": 112,
+              "atmosphereMs": 0,
+              "thinDepthMs": 0,
+              "shadowMs": 0,
+              "sceneMs": 0.917504,
+              "waterMs": 0,
+              "temporalMs": 0,
+              "displayMs": 0.851968,
+              "gpuMs": 0.917504,
+              "intervals": [
+                {
+                  "pass": "opaque",
+                  "startMs": 0,
+                  "endMs": 0.917504
+                },
+                {
+                  "pass": "display",
+                  "startMs": 0.065536,
+                  "endMs": 0.917504
+                }
+              ]
+            }
+          ]
+        },
+        "addedSceneMedianMs": 2.031616,
+        "scope": "Short paired GPU scene-pass observations on this fixture; excludes field build/upload. Not a cross-hardware benchmark."
+      },
+      "measurements": {
+        "cpuMs": 0.5,
+        "gpuMs": 0.65536,
+        "triangles": 674,
+        "drawCalls": 6,
+        "gpuBytes": 46772117,
+        "frame": 71,
+        "adapter": "apple · metal-3",
+        "waterResources": {
+          "transport": 12,
+          "history": 0,
+          "spectrum": 0,
+          "body": 16,
+          "geometry": 0,
+          "objects": 0,
+          "total": 28
+        },
+        "waterReconstruction": "spatial",
+        "reconstruction": "none",
+        "gpuTimingDroppedFrames": 0,
+        "localShadowPasses": 0,
+        "localShadowDrawCalls": 0,
+        "materialCacheBytes": 0,
+        "qualityProfile": "balanced",
+        "uploadedBytes": 11072,
+        "visibleSurfaces": 4,
+        "culledSurfaces": 0,
+        "detailSurfaces": 0,
+        "ownedTextureBytes": 43673029,
+        "bufferBytes": 3099088,
+        "outputResolution": [
+          96,
+          72
+        ],
+        "renderResolution": [
+          96,
+          72
+        ]
+      },
+      "gpuTimings": [
+        {
+          "frame": 67,
+          "atmosphereMs": 8.454144,
+          "thinDepthMs": 0,
+          "shadowMs": 3.407872,
+          "sceneMs": 7.798784,
+          "waterMs": 0,
+          "temporalMs": 0,
+          "displayMs": 7.798784,
+          "gpuMs": 9.306112,
+          "intervals": [
+            {
+              "pass": "atmosphere",
+              "startMs": 0,
+              "endMs": 8.454144
+            },
+            {
+              "pass": "shadow",
+              "startMs": 0.851968,
+              "endMs": 4.25984
+            },
+            {
+              "pass": "opaque",
+              "startMs": 1.31072,
+              "endMs": 9.109504
+            },
+            {
+              "pass": "display",
+              "startMs": 1.507328,
+              "endMs": 9.306112
+            }
+          ]
+        },
+        {
+          "frame": 68,
+          "atmosphereMs": 0,
+          "thinDepthMs": 0,
+          "shadowMs": 0.262144,
+          "sceneMs": 0.917504,
+          "waterMs": 0,
+          "temporalMs": 0,
+          "displayMs": 1.048576,
+          "gpuMs": 1.114112,
+          "intervals": [
+            {
+              "pass": "shadow",
+              "startMs": 0,
+              "endMs": 0.262144
+            },
+            {
+              "pass": "opaque",
+              "startMs": 0,
+              "endMs": 0.917504
+            },
+            {
+              "pass": "display",
+              "startMs": 0.065536,
+              "endMs": 1.114112
+            }
+          ]
+        },
+        {
+          "frame": 69,
+          "atmosphereMs": 0,
+          "thinDepthMs": 0,
+          "shadowMs": 0.262144,
+          "sceneMs": 11.927552,
+          "waterMs": 0,
+          "temporalMs": 0,
+          "displayMs": 11.927552,
+          "gpuMs": 11.993088,
+          "intervals": [
+            {
+              "pass": "shadow",
+              "startMs": 0,
+              "endMs": 0.262144
+            },
+            {
+              "pass": "opaque",
+              "startMs": 0,
+              "endMs": 11.927552
+            },
+            {
+              "pass": "display",
+              "startMs": 0.065536,
+              "endMs": 11.993088
+            }
+          ]
+        },
+        {
+          "frame": 70,
+          "atmosphereMs": 0,
+          "thinDepthMs": 0,
+          "shadowMs": 0.065536,
+          "sceneMs": 6.88128,
+          "waterMs": 0,
+          "temporalMs": 0,
+          "displayMs": 6.946816,
+          "gpuMs": 6.946816,
+          "intervals": [
+            {
+              "pass": "shadow",
+              "startMs": 0,
+              "endMs": 0.065536
+            },
+            {
+              "pass": "opaque",
+              "startMs": 0,
+              "endMs": 6.88128
+            },
+            {
+              "pass": "display",
+              "startMs": 0,
+              "endMs": 6.946816
+            }
+          ]
+        },
+        {
+          "frame": 71,
+          "atmosphereMs": 0,
+          "thinDepthMs": 0,
+          "shadowMs": 0,
+          "sceneMs": 0.65536,
+          "waterMs": 0,
+          "temporalMs": 0,
+          "displayMs": 0.65536,
+          "gpuMs": 0.65536,
+          "intervals": [
+            {
+              "pass": "opaque",
+              "startMs": 0,
+              "endMs": 0.65536
+            },
+            {
+              "pass": "display",
+              "startMs": 0,
+              "endMs": 0.65536
+            }
+          ]
+        }
+      ],
+      "completeness": {
+        "frame": 71,
+        "complete": true,
+        "rendered": [
+          "alpine-ground",
+          "large-cool-rock",
+          "warm-rock",
+          "small-rock"
+        ],
+        "culled": [],
+        "uploading": [],
+        "rejected": [],
+        "realizations": [],
+        "appearance": [],
+        "details": [],
+        "transport": [
+          {
+            "kind": "finite-sun",
+            "selected": false,
+            "reason": "nonspherical blocker requires ordinary shadows"
+          },
+          {
+            "kind": "atmosphere",
+            "selected": true,
+            "reason": "composition optical-depth table, sky-view and aerial-perspective products"
+          }
+        ],
+        "visibility": [
+          {
+            "id": "alpine-ground",
+            "reason": "inactive-realization"
+          },
+          {
+            "id": "large-cool-rock",
+            "reason": "inactive-realization"
+          },
+          {
+            "id": "warm-rock",
+            "reason": "inactive-realization"
+          },
+          {
+            "id": "small-rock",
+            "reason": "inactive-realization"
+          }
+        ]
+      },
+      "limits": "Low-order SH and coarse probes approximate the irradiance field; bounded receiver-to-probe BVH queries reject occluded interpolation. Error is measured, not certified. Reference shares the query mesh and constant lighting source but samples independently."
+    }
+  ],
+  "checks": {
+    "closedBox": {
+      "maximum": 0,
+      "mean": 0,
+      "expected": 0
+    },
+    "errors": []
+  },
+  "errors": [],
+  "visualApproval": "Requires image review; this is a bounded one-bounce prototype, not an AAA or full-GI claim."
+}

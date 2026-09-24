@@ -1,4 +1,5 @@
 import type { Vec3 } from "@wrela/model";
+
 import { rotateVector } from "./animation";
 import type { DiagnosticCollider } from "./physics";
 import type { RuntimeSession } from "./session";

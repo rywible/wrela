@@ -5,14 +5,11 @@ import {
   type RigTemplateKind,
   rigTemplate,
 } from "@wrela/authoring";
+import { creatureFixtureCatalog, referenceProject, shape } from "@wrela/examples";
 import {
-  type CharacterDefinition,
-  cross,
-  dot,
   type FieldNode,
   normalize,
   type Document as SourceDocument,
-  shape,
   sub,
   type Vec3,
   VIEW_MODES,
@@ -20,7 +17,13 @@ import {
 import type React from "react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
+import { AuthoringHandles, NumberControl, PoseEditor } from "./authoring-controls";
+import { AuthoringWorkPanel } from "./authoring-work-panel";
 import { downloadBlob, studio } from "./controller";
+import { CreatureEncounterPanel } from "./creature-encounter-panel";
+import { CreaturePanel } from "./creature-panel";
+import { DomainAuthoringPanels } from "./domain-authoring-panels";
+import { DomainMotionPreview } from "./domain-motion-preview";
 import { RecoveryDrafts } from "./recovery-drafts";
 import "./style.css";
 declare const WRELA_PRODUCTION: boolean;
@@ -105,6 +108,7 @@ function Icon({ name }: { name: string }) {
 function App() {
   const source = useSyncExternalStore(studio.authoring.subscribe, studio.authoring.getSnapshot),
     preview = useSyncExternalStore(studio.subscribe, studio.getSnapshot);
+  const motionPreview = useRef(new DomainMotionPreview(studio));
   const canvas = useRef<HTMLCanvasElement>(null),
     importInput = useRef<HTMLInputElement>(null),
     overlayCanvas = useRef<HTMLCanvasElement>(null),
@@ -198,6 +202,10 @@ function App() {
         event.target instanceof HTMLInputElement ||
         event.target instanceof HTMLTextAreaElement ||
         event.target instanceof HTMLSelectElement;
+      if (studio.getSnapshot().encounter) {
+        if (event.key === "Escape") studio.creature.encounter.stop();
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
         act(() => studio.save(), "Project saved");
@@ -226,8 +234,10 @@ function App() {
     return () => window.removeEventListener("keydown", keyboard);
   }, [preview.stage]);
   useEffect(() => {
+    motionPreview.current.cancel();
+    studio.patch({ reviewSunElevation: undefined, reviewSunAzimuth: undefined });
     setNodeId("");
-    setWorkspace("Shape");
+    setWorkspace(selected.kind === "character" && selected.creature ? "Creature" : "Shape");
     setMotionId("");
   }, [source.selection]);
   useEffect(() => {
@@ -243,6 +253,7 @@ function App() {
     step = 0.01,
   ) => (
     <NumberControl
+      onGestureEnd={(id) => studio.authoring.endGesture(id)}
       key={path.join(".")}
       label={label}
       value={value}
@@ -497,6 +508,7 @@ function App() {
               {[
                 "sphere",
                 "ellipsoid",
+                "rock",
                 "box",
                 "capsule",
                 "torus",
@@ -562,7 +574,11 @@ function App() {
     ) : null;
   function create(kind: SourceDocument["kind"]) {
     act(() => {
-      const { document, dependencies } = planDefinitionCreation(studio.authoring.getSnapshot().project, kind);
+      const { document, dependencies } = planDefinitionCreation(
+        studio.authoring.getSnapshot().project,
+        kind,
+        referenceProject().documents,
+      );
       studio.apply({
         expectedRevision: studio.authoring.getSnapshot().revision,
         label: `Create ${kind}`,
@@ -598,7 +614,7 @@ function App() {
         return (
           <>
             <div className="workspace-tabs">
-              {["Shape", "Rig", "Pose", "Motion", "Physics"].map((w) => (
+              {["Shape", "Creature", "Rig", "Pose", "Motion", "Physics"].map((w) => (
                 <button
                   type="button"
                   key={w}
@@ -609,6 +625,9 @@ function App() {
                 </button>
               ))}
             </div>
+            {workspace === "Creature" && (
+              <CreaturePanel key={selected.id} character={selected} controller={studio} act={act} />
+            )}
             {workspace === "Shape" && (
               <>
                 {fieldInspector}
@@ -733,7 +752,7 @@ function App() {
               </section>
             )}
             {workspace === "Pose" && (
-              <PoseEditor key={selected.id} character={selected} edit={edit} act={act} />
+              <PoseEditor studio={studio} key={selected.id} character={selected} edit={edit} act={act} />
             )}
             {workspace === "Motion" && (
               <section>
@@ -770,6 +789,7 @@ function App() {
                     </summary>
                     {number("Duration", ["motions", i, "duration"], m.duration, 0.1, 120, 0.1)}
                     <NumberControl
+                      onGestureEnd={(id) => studio.authoring.endGesture(id)}
                       label="Blend duration"
                       value={blendDuration}
                       min={0}
@@ -980,7 +1000,7 @@ function App() {
                 "Pattern",
                 ["pattern"],
                 selected.pattern,
-                ["solid", "noise", "stripes", "marble"].map((id) => ({ id, name: id })),
+                ["solid", "noise", "stripes", "marble", "weave"].map((id) => ({ id, name: id })),
               )}
               {number("Pattern scale", ["scale"], selected.scale, 0.01, 30)}
               {number("Normal variation", ["normalStrength"], selected.normalStrength, 0, 1)}
@@ -1267,6 +1287,30 @@ function App() {
                     ))}
                 </select>
               </label>
+              {docs
+                .filter((d) => d.kind === "water" && d.id !== selected.water)
+                .map((water) => (
+                  <label className="row-control" key={water.id}>
+                    <span>{water.name}</span>
+                    <input
+                      type="checkbox"
+                      aria-label={`Include ${water.name}`}
+                      checked={selected.waters?.includes(water.id) ?? false}
+                      disabled={
+                        !selected.waters?.includes(water.id) &&
+                        new Set([selected.water, ...(selected.waters ?? [])].filter(Boolean)).size >= 8
+                      }
+                      onChange={(event) =>
+                        set(
+                          ["waters"],
+                          event.target.checked
+                            ? [...(selected.waters ?? []), water.id]
+                            : selected.waters?.filter((id) => id !== water.id),
+                        )
+                      }
+                    />
+                  </label>
+                ))}
             </section>
             <section>
               <h3>Procedural populations</h3>
@@ -1342,6 +1386,32 @@ function App() {
                   )}
                   {vector("Instance rotation", ["instances", i, "rotation"], instance.rotation, -6.29, 6.29)}
                   {number("Instance scale", ["instances", i, "scale"], instance.scale, 0.01, 100)}
+                  <label className="row-control">
+                    <input
+                      type="checkbox"
+                      checked={!!instance.grounding}
+                      onChange={(event) =>
+                        set(
+                          ["instances"],
+                          selected.instances.map((item, index) => {
+                            if (index !== i) return item;
+                            if (event.target.checked) return { ...item, grounding: { offset: 0 } };
+                            const { grounding: _grounding, ...ungrounded } = item;
+                            return ungrounded;
+                          }),
+                        )
+                      }
+                    />
+                    Follow terrain
+                  </label>
+                  {instance.grounding &&
+                    number(
+                      "Height above terrain",
+                      ["instances", i, "grounding", "offset"],
+                      instance.grounding.offset,
+                      -20,
+                      20,
+                    )}
                   <button
                     type="button"
                     className="subtle danger"
@@ -1576,6 +1646,35 @@ function App() {
           ))}
         </nav>
         <div className="project-footer">
+          <label className="creature-block-label" htmlFor="creature-study">
+            Open creature study
+          </label>
+          <select
+            id="creature-study"
+            aria-label="Open creature study"
+            value=""
+            disabled={busy}
+            onChange={(event) => {
+              const fixture = creatureFixtureCatalog.find((item) => item.id === event.target.value);
+              if (fixture)
+                act(
+                  () => studio.creature.openFixture(fixture.id),
+                  `${fixture.name} opened; previous project preserved in recovery`,
+                );
+            }}
+          >
+            <option value="">Choose a creature…</option>
+            {creatureFixtureCatalog.map((fixture) => (
+              <option key={fixture.id} value={fixture.id}>
+                {fixture.name}
+              </option>
+            ))}
+          </select>
+          {preview.returnProjectName && (
+            <button type="button" onClick={() => act(() => studio.creature.returnToProject())}>
+              Return to {preview.returnProjectName}
+            </button>
+          )}
           <button type="button" onClick={() => setAgent(true)}>
             <span className="agent-mark">⌘</span>Agent operations <span>↗</span>
           </button>
@@ -1664,8 +1763,10 @@ function App() {
             onWheel={(e) => studio.zoom(e.deltaY)}
           />
           <canvas ref={overlayCanvas} className="diagnostic-overlay" aria-hidden="true" tabIndex={-1} />
+          {preview.encounter && <CreatureEncounterPanel controller={studio} encounter={preview.encounter} />}
           {handles && preview.stage === "studio" && "field" in selected && canvas.current && (
             <AuthoringHandles
+              studio={studio}
               document={selected}
               workspace={workspace}
               width={canvas.current.clientWidth}
@@ -1817,6 +1918,74 @@ function App() {
           </div>
         </div>
         <div className="inspector-scroll">
+          <DomainAuthoringPanels
+            key={selected.id}
+            document={selected}
+            project={source.project}
+            onChange={(path, value, label) =>
+              edit(
+                [{ kind: "document.set", target: selected.id, path, value }],
+                label ?? `Edit ${path.join(" / ")}`,
+              )
+            }
+            onApply={edit}
+            onSeek={(seconds) => act(() => studio.seek(seconds))}
+            onSeekMotion={(motion, seconds) =>
+              act(async () => {
+                setMotionId(motion);
+                await motionPreview.current.seek(selected.id, motion, seconds);
+              })
+            }
+            onTransition={(from, to, at, elapsed, playing) =>
+              act(async () => {
+                setMotionId(to);
+                await motionPreview.current.transition(selected.id, from, to, at, elapsed, playing);
+              })
+            }
+            onPlay={(motion) =>
+              act(async () => {
+                if (motion && selected.kind === "character") {
+                  setMotionId(motion);
+                  await motionPreview.current.seek(selected.id, motion, 0, true);
+                } else {
+                  await studio.seek(0);
+                  studio.patch({ playing: true });
+                }
+              })
+            }
+            onReview={(scenarioId, cameraId, mode) =>
+              act(async () => {
+                if (selected.kind !== "character") return;
+                await studio.creature.playScenario(selected.id, scenarioId);
+                const camera = selected.creature?.reviewScenarios
+                  .find((s) => s.id === scenarioId)
+                  ?.cameras.find((c) => c.id === cameraId);
+                studio.patch({
+                  mode: mode === "lit" ? "beauty" : "silhouette",
+                  ...(camera ? { camera: { ...camera, fov: 48 } } : {}),
+                });
+              })
+            }
+            onPreview={(options) =>
+              act(async () => {
+                const camera = studio.getSnapshot().camera;
+                if (options.distance !== undefined) {
+                  const direction = normalize(sub(camera.position, camera.target));
+                  studio.patch({
+                    camera: {
+                      ...camera,
+                      position: camera.target.map((v, i) => v + direction[i] * options.distance!) as Vec3,
+                    },
+                  });
+                }
+                if (options.mode) studio.patch({ mode: options.mode === "lit" ? "beauty" : "silhouette" });
+                if (options.sunElevation !== undefined)
+                  studio.patch({ reviewSunElevation: options.sunElevation });
+                if (options.sunAzimuth !== undefined) studio.patch({ reviewSunAzimuth: options.sunAzimuth });
+                if (options.time !== undefined) await studio.seek(options.time);
+              })
+            }
+          />
           {domainInspector()}
           {studio.host?.world && (
             <section>
@@ -1910,6 +2079,7 @@ function App() {
               </select>
             </label>
             <NumberControl
+              onGestureEnd={(id) => studio.authoring.endGesture(id)}
               label="Exposure"
               value={preview.exposure}
               min={0.1}
@@ -1918,6 +2088,7 @@ function App() {
               onChange={(v) => studio.patch({ exposure: v })}
             />
             <NumberControl
+              onGestureEnd={(id) => studio.authoring.endGesture(id)}
               label="Wind multiplier"
               value={preview.wind}
               min={0}
@@ -2109,6 +2280,7 @@ function App() {
               </button>
             </div>
             <p>Humans and agents use the same validated operations. A batch commits as one undo step.</p>
+            <AuthoringWorkPanel operations={commands} />
             <div className="api-line">
               window.wrela.discover() <span>Revision {source.revision}</span>
             </div>
@@ -2209,310 +2381,6 @@ function App() {
             }, "Project imported");
           e.target.value = "";
         }}
-      />
-    </div>
-  );
-}
-function AuthoringHandles({
-  document: doc,
-  workspace,
-  width,
-  height,
-  selectedNode,
-  onSelect,
-  edit,
-}: {
-  document: Extract<SourceDocument, { kind: "object" | "character" }>;
-  workspace: string;
-  width: number;
-  height: number;
-  selectedNode: string;
-  onSelect: (id: string) => void;
-  edit: (ops: Operation[], label?: string, gesture?: string) => void;
-}) {
-  const camera = studio.getSnapshot().camera,
-    forward = normalize(sub(camera.target, camera.position)),
-    right = normalize(cross(forward, [0, 1, 0])),
-    up = cross(right, forward),
-    tangent = Math.tan((camera.fov * Math.PI) / 360);
-  const rig = doc.kind === "character" && (workspace === "Rig" || workspace === "Pose");
-  const points = rig
-    ? doc.joints.map((j, i) => ({
-        id: j.id,
-        name: j.name,
-        position: j.position,
-        parent: j.parent,
-        path: ["joints", i, "position"] as (string | number)[],
-      }))
-    : doc.field.nodes
-        .filter((n) => !n.children.length)
-        .map((n) => ({
-          id: n.id,
-          name: n.name,
-          position: n.position,
-          parent: null,
-          path: ["field", "nodes", doc.field.nodes.indexOf(n), "position"] as (string | number)[],
-        }));
-  const project = (p: Vec3) => {
-    const delta = sub(p, camera.position),
-      depth = dot(delta, forward);
-    return {
-      x: ((dot(delta, right) / ((depth * tangent * width) / height) + 1) * width) / 2,
-      y: ((1 - dot(delta, up) / (depth * tangent)) * height) / 2,
-      depth,
-    };
-  };
-  const drag = useRef<{
-    id: string;
-    x: number;
-    y: number;
-    position: Vec3;
-    gesture: string;
-    path: (string | number)[];
-    factor: number;
-  } | null>(null);
-  return (
-    <fieldset className="authoring-handles" aria-label={rig ? "Skeleton handles" : "Shape handles"}>
-      {rig && (
-        <svg aria-hidden="true" width={width} height={height}>
-          {points.map((p) => {
-            const parent = points.find((j) => j.id === p.parent);
-            if (!parent) return null;
-            const a = project(p.position),
-              b = project(parent.position);
-            return <line key={p.id} x1={a.x} y1={a.y} x2={b.x} y2={b.y} />;
-          })}
-        </svg>
-      )}
-      {points.map((p) => {
-        const screen = project(p.position);
-        if (screen.depth <= 0 || screen.x < 0 || screen.y < 0 || screen.x > width || screen.y > height)
-          return null;
-        return (
-          <button
-            type="button"
-            key={p.id}
-            className={`spatial-handle ${selectedNode === p.id ? "selected" : ""}`}
-            style={{ left: screen.x, top: screen.y }}
-            title={`Drag ${p.name}`}
-            aria-label={`Move ${p.name}`}
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              e.currentTarget.setPointerCapture(e.pointerId);
-              onSelect(p.id);
-              drag.current = {
-                id: p.id,
-                x: e.clientX,
-                y: e.clientY,
-                position: [...p.position],
-                path: p.path,
-                gesture: crypto.randomUUID(),
-                factor: (2 * screen.depth * tangent) / height,
-              };
-            }}
-            onPointerMove={(e) => {
-              const d = drag.current;
-              if (!d || d.id !== p.id) return;
-              e.stopPropagation();
-              const dx = (e.clientX - d.x) * d.factor,
-                dy = (e.clientY - d.y) * d.factor;
-              const position = d.position.map((v, i) => v + right[i] * dx - up[i] * dy) as Vec3;
-              edit(
-                [{ kind: "document.set", target: doc.id, path: d.path, value: position }],
-                `Move ${p.name}`,
-                d.gesture,
-              );
-            }}
-            onPointerUp={(e) => {
-              e.stopPropagation();
-              if (drag.current) studio.authoring.endGesture(drag.current.gesture);
-              drag.current = null;
-            }}
-            onPointerCancel={() => {
-              drag.current = null;
-            }}
-          >
-            <span />
-            <small>{p.name}</small>
-          </button>
-        );
-      })}
-    </fieldset>
-  );
-}
-function PoseEditor({
-  character,
-  edit,
-  act,
-}: {
-  character: CharacterDefinition;
-  edit: (ops: Operation[], label?: string) => void;
-  act: (fn: () => unknown | Promise<unknown>, message?: string) => void;
-}) {
-  const [joint, setJoint] = useState(character.joints[0].id),
-    [rotation, setRotation] = useState<Vec3>([0, 0, 0]),
-    [translation, setTranslation] = useState<Vec3>([0, 0, 0]),
-    [motion, setMotion] = useState(character.motions[0]?.id ?? "");
-  const applyPose = (kind: "rotation" | "translation", axis: number, value: number) => {
-    const next = [...(kind === "rotation" ? rotation : translation)] as Vec3;
-    next[axis] = value;
-    if (kind === "rotation") setRotation(next);
-    else setTranslation(next);
-    act(() => {
-      studio.host?.setPose(
-        character.id,
-        joint,
-        kind === "rotation" ? next : rotation,
-        kind === "translation" ? next : translation,
-      );
-      studio.patch({ playing: false });
-    });
-  };
-  return (
-    <section>
-      <h3>Pose & key</h3>
-      <label className="row-control">
-        <span>Joint</span>
-        <select
-          aria-label="Pose joint"
-          value={joint}
-          onChange={(e) => {
-            setJoint(e.target.value);
-            const pose = studio.host?.getPose(character.id, e.target.value);
-            setRotation(pose?.rotation ?? [0, 0, 0]);
-            setTranslation(pose?.translation ?? [0, 0, 0]);
-          }}
-        >
-          {character.joints.map((j) => (
-            <option key={j.id} value={j.id}>
-              {j.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <p className="hint">Preview a pose, then add it to a motion. Rest anatomy stays independent.</p>
-      {rotation.map((v, i) => (
-        <NumberControl
-          key={`r${i}`}
-          label={`Pose rotation ${"XYZ"[i]}`}
-          value={v}
-          min={-3.14}
-          max={3.14}
-          step={0.02}
-          onChange={(value) => applyPose("rotation", i, value)}
-        />
-      ))}
-      {translation.map((v, i) => (
-        <NumberControl
-          key={`t${i}`}
-          label={`Pose offset ${"XYZ"[i]}`}
-          value={v}
-          min={-2}
-          max={2}
-          step={0.02}
-          onChange={(value) => applyPose("translation", i, value)}
-        />
-      ))}
-      <label className="row-control">
-        <span>Motion</span>
-        <select aria-label="Key motion" value={motion} onChange={(e) => setMotion(e.target.value)}>
-          {character.motions.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <div className="button-row">
-        <button
-          type="button"
-          className="primary"
-          disabled={!motion}
-          onClick={() => {
-            const clip = character.motions.find((m) => m.id === motion);
-            if (clip)
-              edit(
-                [
-                  {
-                    kind: "character.addKey",
-                    target: character.id,
-                    motion,
-                    joint,
-                    time: Math.min(clip.duration, Number(studio.getSnapshot().time.toFixed(2))),
-                    rotation,
-                    translation,
-                  },
-                ],
-                "Key pose",
-              );
-          }}
-        >
-          Add pose key
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            act(() => {
-              studio.host?.clearPose(character.id);
-              setRotation([0, 0, 0]);
-              setTranslation([0, 0, 0]);
-              studio.patch({});
-            })
-          }
-        >
-          Clear pose
-        </button>
-      </div>
-    </section>
-  );
-}
-function NumberControl({
-  label,
-  value,
-  min,
-  max,
-  step = 0.01,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step?: number;
-  onChange: (v: number, gesture?: string) => void;
-}) {
-  const gesture = useRef("");
-  return (
-    <div className="number-control">
-      <div>
-        <span>{label}</span>
-        <input
-          aria-label={label}
-          type="number"
-          value={Number(value.toFixed(4))}
-          min={min}
-          max={max}
-          step={step}
-          onChange={(e) => {
-            if (e.target.value !== "") onChange(Number(e.target.value));
-          }}
-        />
-      </div>
-      <input
-        aria-label={`${label} slider`}
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onPointerDown={() => {
-          gesture.current = crypto.randomUUID();
-        }}
-        onPointerUp={() => {
-          studio.authoring.endGesture(gesture.current);
-          gesture.current = "";
-        }}
-        onChange={(e) => onChange(Number(e.target.value), gesture.current || undefined)}
       />
     </div>
   );

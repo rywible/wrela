@@ -68,7 +68,7 @@ export function lowerField(field: FieldDefinition): FieldIR {
     if (composition && !child.length) throw new Error(`${id} composition requires at least one child`);
     if (!composition && child.length) throw new Error(`Primitive ${id} cannot contain children`);
     let bounds: Bounds | null,
-      boundDistance = node.kind !== "ellipsoid",
+      boundDistance = node.kind !== "ellipsoid" && node.kind !== "rock",
       minimumFeatureSize: number | null = null;
     if (composition) {
       const selected = node.kind === "subtract" || node.kind === "intersect" ? [child[0]] : child;

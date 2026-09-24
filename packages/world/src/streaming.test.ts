@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { generateTerrainPatch } from "@wrela/compiler";
-import { referenceProject, type TerrainDefinition, type WorldDefinition } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
+import type { TerrainDefinition, WorldDefinition } from "@wrela/model";
 import { planTerrain } from "./planner";
 import { generatePlacements, PersistentWorldState } from "./population";
 import { BoundedScheduler } from "./scheduler";

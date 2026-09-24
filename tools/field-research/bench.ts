@@ -1,13 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { compileField, extractSurface } from "@wrela/compiler";
-import {
-  type Bounds,
-  type FieldDefinition,
-  type FieldNode,
-  referenceProject,
-  shape,
-  type Vec3,
-} from "@wrela/model";
+import { referenceProject, shape } from "@wrela/examples";
+import type { Bounds, FieldDefinition, FieldNode, Vec3 } from "@wrela/model";
 import { compileGauge, gaugeValue } from "./gauge";
 import { buildAtlas, correct, jet, lower, quadricHit, specialize, value } from "./local-program";
 

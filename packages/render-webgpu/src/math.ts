@@ -1,4 +1,5 @@
 import type { Camera, Vec3 } from "@wrela/model";
+
 import { cross, dot, normalize, sub } from "@wrela/model";
 
 export function multiply(a: Float32Array, b: Float32Array): Float32Array {

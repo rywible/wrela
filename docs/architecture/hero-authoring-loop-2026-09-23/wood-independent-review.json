@@ -1,0 +1,182 @@
+{
+  "version": 1,
+  "baselineKey": "a9f33281c43d670d",
+  "candidateKey": "e561495125a603e9",
+  "constraintsKey": "c581aadf6289a65e",
+  "results": [
+    {
+      "id": "trail",
+      "status": "passed",
+      "evidence": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-release/study/attempts/wood-wrela-0/independent-review/trail-spatial.json"
+      ],
+      "measured": {
+        "blockedSamples": 0,
+        "narrow": false,
+        "sampleSpacing": 0.34782608695652173,
+        "samples": 47
+      },
+      "scope": "Compiled assembly bounds and sampled graded terrain. No free-space navmesh or scattered vegetation collision guarantee."
+    },
+    {
+      "id": "view",
+      "status": "passed",
+      "evidence": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-release/study/attempts/wood-wrela-0/independent-review/view-spatial.json"
+      ],
+      "measured": {
+        "clear": true,
+        "obstruction": null
+      },
+      "scope": "sampled-terrain-conservative-instance-bounds"
+    },
+    {
+      "id": "doorway",
+      "evidence": [],
+      "status": "passed",
+      "measured": {
+        "blocked": false,
+        "triangles": 1824
+      },
+      "scope": "Compiled rest-local triangle/box intersection and closed-surface winding; depends on watertight outward-wound source, not an analytic field proof"
+    },
+    {
+      "id": "bounds-left-post",
+      "evidence": [],
+      "status": "passed",
+      "measured": {
+        "maxError": 9.536743172944284e-8,
+        "min0": -1.524999976158142,
+        "min1": 0,
+        "min2": -0.125,
+        "max0": -1.274999976158142,
+        "max1": 2.5999999046325684,
+        "max2": 0.125
+      },
+      "scope": "Compiled mesh or attributed-part axis-aligned bounds in rest-local metres; not internal clearance or animated bounds"
+    },
+    {
+      "id": "bounds-right-post",
+      "evidence": [],
+      "status": "passed",
+      "measured": {
+        "maxError": 9.536743172944284e-8,
+        "min0": 1.274999976158142,
+        "min1": 0,
+        "min2": -0.125,
+        "max0": 1.524999976158142,
+        "max1": 2.5999999046325684,
+        "max2": 0.125
+      },
+      "scope": "Compiled mesh or attributed-part axis-aligned bounds in rest-local metres; not internal clearance or animated bounds"
+    },
+    {
+      "id": "bounds-lintel",
+      "evidence": [],
+      "status": "passed",
+      "measured": {
+        "maxError": 9.536743172944284e-8,
+        "min0": -1.524999976158142,
+        "min1": 2.5999999046325684,
+        "min2": -0.125,
+        "max0": 1.524999976158142,
+        "max1": 2.8499999046325684,
+        "max2": 0.125
+      },
+      "scope": "Compiled mesh or attributed-part axis-aligned bounds in rest-local metres; not internal clearance or animated bounds"
+    },
+    {
+      "id": "material-owner",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    },
+    {
+      "id": "preserve-0-profile",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    },
+    {
+      "id": "preserve-0-rotation",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    },
+    {
+      "id": "preserve-0-sockets",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    },
+    {
+      "id": "preserve-1-profile",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    },
+    {
+      "id": "preserve-1-rotation",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    },
+    {
+      "id": "preserve-1-sockets",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    },
+    {
+      "id": "preserve-2-profile",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    },
+    {
+      "id": "preserve-2-rotation",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    },
+    {
+      "id": "preserve-2-sockets",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    }
+  ],
+  "durationMs": 32.01516700000502,
+  "createdAt": "2026-09-24T03:39:10.795Z",
+  "evaluator": "wrela-authoring-review-1"
+}

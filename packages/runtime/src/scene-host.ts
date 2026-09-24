@@ -1,40 +1,156 @@
-import { compileDocument, compilerKey } from "@wrela/compiler";
+import { RadianceLightingCache } from "./radiance-lighting";
+import {
+  compileDocument,
+  compilerKey,
+  compileWaterEffects,
+  compileWaterPhases,
+  compileWaterReflectionProxies,
+  oceanWaterMesh,
+  resolveWaterWaves,
+  riverWaterMesh,
+  sharedMaterialLattice,
+  waterMeshSpacing,
+} from "@wrela/compiler";
 import {
   type Camera,
+  type CompiledCharacter,
   contentKey,
+  createSurfaceAppearance,
   type Diagnostic,
   type Document,
   type EvaluatedScene,
+  type GrowthEvent,
   identityMatrix,
   type MaterialDefinition,
   type MeshData,
+  type PersistentVegetationGrowth,
   type Project,
   type Quality,
   type RenderMaterial,
   type RenderSurface,
   type StageDefinition,
   type SurfaceArtifact,
+  type TerrainDefinition,
   transformMatrix,
   type Vec3,
+  vegetationWindResponse,
+  type WaterDefinition,
+  type WaterPhaseProduct,
   type WorldDefinition,
   waterGeometryErrorBound,
+  worldCompositionReferences,
 } from "@wrela/model";
-import { CELL_SIZE, type WorldOptions, type WorldSave, WorldSession, worldPosition } from "@wrela/world";
+
+import {
+  CELL_SIZE,
+  realizeWorldComposition,
+  type WorldOptions,
+  type WorldSave,
+  WorldSession,
+  worldPosition,
+} from "@wrela/world";
 import { poseMatrices, quatFromEuler } from "./animation";
-import { installObjectCollision } from "./collision-realization";
-import { evaluateEnvironment } from "./environment";
+import { artifactBytes } from "./artifact-memory";
+import { CreatureDetailSelector, DEFAULT_CREATURE_VIEWPORT_HEIGHT } from "./creature-detail";
+import { applyCreatureInspection, creatureInspectionSource } from "./creature-inspection";
+import { evaluateEnvironment, evaluateEnvironmentState, evaluateWaterEnvironment } from "./environment";
+import { createGeologyPreview } from "./geology-preview";
+import { resolveGroomMaterial } from "./groom-material";
+import { IndirectLightingCache } from "./indirect-lighting";
 import {
   type RuntimeSaveMigration,
   type RuntimeSaveMigrationReport,
   remapRuntimeEntities,
 } from "./save-migration";
 import { RuntimeSession } from "./session";
+import { SkyVisibilityCache } from "./sky-visibility";
+import { applySurfaceAppearance } from "./surface-appearance";
+import { SurfaceReliefCache } from "./surface-relief";
+import {
+  prepareVegetationGrowth,
+  validateVegetationGrowth,
+  vegetationGrowthDocument,
+} from "./vegetation-growth";
+
+/** Resolve one authored environment for both rendering and physical water sampling. */
+function environmentSources(
+  documents: ReadonlyMap<string, Document>,
+  subject?: Document,
+  world?: WorldDefinition,
+  stage?: StageDefinition,
+) {
+  const environment = documents.get(
+    subject?.kind === "environment" ? subject.id : (world?.environment ?? stage?.environment ?? ""),
+  );
+  const lighting = documents.get(
+    subject?.kind === "lighting" ? subject.id : (world?.lighting ?? stage?.lighting ?? ""),
+  );
+  return {
+    environment: environment?.kind === "environment" ? environment : undefined,
+    lighting: lighting?.kind === "lighting" ? lighting : undefined,
+  };
+}
+function configureRuntimeWater(
+  runtime: RuntimeSession,
+  documents: ReadonlyMap<string, Document>,
+  subject?: Document,
+  world?: WorldDefinition,
+  stage?: StageDefinition,
+) {
+  const ids =
+    subject?.kind === "water"
+      ? [subject.id]
+      : [...new Set([world?.water, ...(world?.waters ?? [])].filter((id): id is string => !!id))];
+  const waters = ids
+    .map((id) => documents.get(id))
+    .filter((doc): doc is WaterDefinition => doc?.kind === "water");
+  const sources = environmentSources(documents, subject, world, stage);
+  runtime.setWaters(
+    waters.map((water) => ({
+      definition: water,
+      evaluate: water.flow?.weatherResponse
+        ? (time) =>
+            evaluateWaterEnvironment(
+              water,
+              evaluateEnvironmentState(sources.environment, sources.lighting, time),
+            )
+        : undefined,
+    })),
+  );
+}
 export type SceneHostOptions = {
+  /** Diagnostic static transport solver for bounded lookdev/reference fixtures.
+   * Player and Studio use the common renderer lighting; world transport has not
+   * met its coverage/performance gates. This is not a product lighting toggle. */
+  indirectLighting?: import("./indirect-lighting").IndirectLightingOptions;
+  /** Compile a reusable noise lattice for renderer experiments; disabled until it wins on the target workload. */
+  materialCache?: boolean;
   compile?: (document: Document, quality: Quality) => Promise<SurfaceArtifact | null>;
   generateTerrain?: WorldOptions["generate"];
+  growVegetation?: import("@wrela/compiler").GrowthCompileProvider;
   maxCacheBytes?: number;
   maxInstalledBytes?: number;
 };
+/** Keep at least four cells across authored terrain feature radii near an interest.
+ * Smaller leaves reuse the same bounded patch count and 256 m root coverage. */
+function terrainRealization(terrain: TerrainDefinition | undefined, quality: Quality) {
+  const resolution = quality === "export" ? 64 : quality === "review" ? 32 : 16;
+  const radius = Math.min(
+    Infinity,
+    ...(terrain?.geology?.landforms.map((item) =>
+      item.kind === "cliff" ? Math.max(0.25, item.width * 0.08) : item.width,
+    ) ?? []),
+    ...(terrain?.geology?.strata.strength ? [terrain.geology.strata.thickness] : []),
+    ...(terrain?.geology?.corridors?.flatMap((corridor) =>
+      [corridor.halfWidth, corridor.shoulder].filter((width) => width > 0),
+    ) ?? []),
+    ...(terrain?.interventions
+      .filter((item) => item.kind !== "clearing" && item.strength > 0)
+      .map((item) => item.radius) ?? []),
+  );
+  const baseSize = Math.max(8, Math.min(32, 2 ** Math.floor(Math.log2((radius * resolution) / 4))));
+  return { resolution, baseSize, levels: Math.log2(256 / baseSize) };
+}
 const defaultMaterial: RenderMaterial = {
   color: [0.55, 0.63, 0.62],
   secondary: [0.8, 0.84, 0.84],
@@ -44,19 +160,26 @@ const defaultMaterial: RenderMaterial = {
   scale: 1,
   normalStrength: 0,
 };
+const waterBedAppearance = {
+  ...createSurfaceAppearance(),
+  detail: { kind: "mineral" as const, scale: 0.35, strength: 0.55 },
+};
 export function renderMaterial(material?: MaterialDefinition): RenderMaterial {
   return material
-    ? {
+    ? applySurfaceAppearance({
+        emission: material.emission,
         color: material.color,
         secondary: material.secondary,
         roughness: material.roughness,
         metallic: material.metallic,
-        pattern: ["solid", "noise", "stripes", "marble"].indexOf(material.pattern),
+        pattern: ["solid", "noise", "stripes", "marble", "weave"].indexOf(material.pattern),
         scale: material.scale,
         normalStrength: material.normalStrength,
+        creature: material.creature,
         domain: material.domain,
         layers: material.layers,
-      }
+        appearance: material.appearance,
+      })
     : { ...defaultMaterial };
 }
 export function gridMesh(size: number, resolution = 1, height = 0): MeshData {
@@ -102,47 +225,58 @@ function instanceMatrix(position: Vec3, rotation: Vec3 = [0, 0, 0], scale = 1) {
   for (let i = 0; i < 12; i++) matrix[i] *= scale;
   return matrix;
 }
-export function artifactBytes(artifacts: Iterable<SurfaceArtifact>): number {
-  const buffers = new Set<ArrayBufferLike>(),
-    meshes = new Set<MeshData>();
-  const metadataArrays = new Set<object>();
-  let metadata = 0;
-  for (const artifact of new Set(artifacts)) {
-    const surfaces = artifact.kind === "vegetation" ? artifact.surfaces : [artifact];
-    for (const mesh of surfaces.flatMap((surface) => [
-      surface.mesh,
-      ...("details" in surface ? (surface.details?.map((detail) => detail.mesh) ?? []) : []),
-    ])) {
-      if (meshes.has(mesh)) continue;
-      meshes.add(mesh);
-      buffers.add(mesh.positions.buffer);
-      buffers.add(mesh.normals.buffer);
-      buffers.add(mesh.indices.buffer);
-      if (mesh.colors) buffers.add(mesh.colors.buffer);
-      if (mesh.sourceIds && !metadataArrays.has(mesh.sourceIds)) {
-        metadataArrays.add(mesh.sourceIds);
-        metadata +=
-          mesh.sourceIds.length * 8 +
-          [...new Set(mesh.sourceIds)].reduce((bytes, id) => bytes + id.length * 2, 0);
-      }
-      if (mesh.materialGroups && !metadataArrays.has(mesh.materialGroups)) {
-        metadataArrays.add(mesh.materialGroups);
-        metadata += mesh.materialGroups.reduce((bytes, group) => bytes + 32 + group.material.length * 2, 0);
-      }
-    }
-    if (artifact.kind === "character") {
-      buffers.add(artifact.jointIndices.buffer);
-      buffers.add(artifact.weights.buffer);
-      metadata += JSON.stringify({ joints: artifact.joints, motions: artifact.motions }).length * 2;
-    }
-  }
-  return [...buffers].reduce((sum, buffer) => sum + buffer.byteLength, metadata);
-}
+
+export { artifactBytes } from "./artifact-memory";
 export class BrowserSceneHost {
   world?: WorldSession;
   runtime?: RuntimeSession;
   private documents = new Map<string, Document>();
   private artifacts = new Map<string, SurfaceArtifact>();
+  private surfaceRelief = new SurfaceReliefCache();
+  private indirectLighting = new IndirectLightingCache();
+  private skyVisibility = new SkyVisibilityCache();
+  private radianceLighting = new RadianceLightingCache();
+  get radianceLightingError() { return this.radianceLighting.error; }
+  get radianceLightingReport() { return this.radianceLighting.report; }
+  get radianceLightingBuilds() { return this.radianceLighting.builds; }
+  async waitForRadianceLighting() { await this.radianceLighting.waitReady(); }
+  get skyVisibilityError() {
+    return this.skyVisibility.error;
+  }
+  get skyVisibilityBuilds() {
+    return this.skyVisibility.builds;
+  }
+  get skyVisibilityReport() {
+    return this.skyVisibility.report;
+  }
+  async waitForSkyVisibility() {
+    await this.skyVisibility.waitReady();
+  }
+  private indirectLightingOptions?: SceneHostOptions["indirectLighting"];
+  get indirectLightingReport() {
+    return this.indirectLighting.report;
+  }
+  get indirectLightingRevision() {
+    const field = this.indirectLighting.field;
+    return field ? `${field.key}:${field.revision}` : "none";
+  }
+  get indirectLightingProgress() {
+    const field = this.indirectLighting.field;
+    return field
+      ? { completed: field.completedProbes, total: field.totalProbes, status: field.report.status }
+      : undefined;
+  }
+  configureIndirectLighting(options?: SceneHostOptions["indirectLighting"]): void {
+    this.indirectLightingOptions = options;
+    this.indirectLighting.invalidate();
+  }
+  async waitForIndirectLighting(): Promise<void> {
+    await this.indirectLighting.waitReady();
+  }
+  get surfaceReliefReviews() {
+    return this.surfaceRelief.reviews;
+  }
+  private displayedCreatureArtifacts = new WeakMap<RenderSurface, Readonly<CompiledCharacter>>();
   private cache = new Map<string, SurfaceArtifact>();
   private subjectId = "";
   private stageId?: string;
@@ -152,11 +286,14 @@ export class BrowserSceneHost {
   private disposed = false;
   private lastTime = 0;
   private worldCamera: Vec3 = [0, 0, 0];
+  private viewportHeight = DEFAULT_CREATURE_VIEWPORT_HEIGHT;
+  private creatureDetailSelector = new CreatureDetailSelector();
   private cameraInterest: Vec3 = [Number.POSITIVE_INFINITY, 0, 0];
   private populationRevision = -1;
   private populationCenter = "";
   private populationSurfaces: RenderSurface[] = [];
   private ground = gridMesh(2000);
+  private waterPhaseProducts = new WeakMap<WaterDefinition, WaterPhaseProduct>();
   private waterMeshes = new Map<string, MeshData>();
   private selectedMaterial?: string;
   private renderOrigin: Vec3 = [0, 0, 0];
@@ -165,6 +302,7 @@ export class BrowserSceneHost {
   private requestedStageId?: string;
   private requestedQuality: Quality = "interactive";
   private installedSignature = "";
+  private growthArtifacts = new Set<string>();
   private installedTerrainKey = "";
   constructor(
     private project: Project,
@@ -174,13 +312,50 @@ export class BrowserSceneHost {
       if (budget !== undefined && (!Number.isFinite(budget) || budget < 0 || budget > 256 * 1024 * 1024))
         throw new RangeError("Invalid scene memory budget");
     this.documents = new Map(project.documents.map((d) => [d.id, d]));
+    this.indirectLightingOptions = options.indirectLighting;
+  }
+  /** Internal inspector bridge: only surfaces from the current extraction resolve.
+   * The callback sees the installed selected-LOD artifact; its result is detached
+   * before crossing the public inspector boundary. Never expose the artifact itself. */
+  inspectDisplayedCreature<T>(
+    surface: RenderSurface,
+    inspect: (artifact: Readonly<CompiledCharacter>) => T,
+  ): T | undefined {
+    const artifact = this.displayedCreatureArtifacts.get(surface);
+    if (!artifact || artifact.id !== surface.source || artifact.mesh !== surface.mesh) return;
+    return structuredClone(inspect(artifact));
+  }
+  /** Physical framebuffer pixels; unconfigured hosts explicitly use a 720 px estimate. */
+  setViewportHeight(height: number): void {
+    if (!Number.isFinite(height) || height < 1 || height > 32768)
+      throw new RangeError("Viewport height must be in [1,32768] framebuffer pixels");
+    this.viewportHeight = height;
   }
   get resourceUsage() {
+    const assemblyBytes = this.runtime?.assemblyBytes ?? 0;
+    const waterBytes = this.runtime?.waterBytes ?? 0;
+    const relief = this.surfaceRelief.artifacts;
     return {
-      cacheBytes: artifactBytes(this.cache.values()),
-      installedBytes: artifactBytes(this.artifacts.values()),
-      // Unique currently owned products; unpublished worker products and JS engine overhead are excluded.
-      liveBytes: artifactBytes([...this.cache.values(), ...this.artifacts.values()]),
+      cacheBytes: artifactBytes([...this.cache.values(), ...relief]),
+      installedBytes:
+        artifactBytes([...this.artifacts.values(), ...relief]) +
+        assemblyBytes +
+        waterBytes +
+        this.indirectLighting.byteLength +
+        this.skyVisibility.byteLength + this.radianceLighting.byteLength,
+      // Shared coarse buffers count once. Worker products and JS engine overhead are excluded.
+      liveBytes:
+        artifactBytes([...this.cache.values(), ...this.artifacts.values(), ...relief]) +
+        assemblyBytes +
+        waterBytes +
+        this.indirectLighting.byteLength +
+        this.skyVisibility.byteLength + this.radianceLighting.byteLength,
+      reliefBytes: this.surfaceRelief.byteLength,
+      indirectLightingBytes: this.indirectLighting.byteLength,
+      skyVisibilityBytes: this.skyVisibility.byteLength,
+      radianceLightingBytes: this.radianceLighting.byteLength,
+      assemblyBytes,
+      waterBytes,
       cacheEntries: this.cache.size,
     };
   }
@@ -194,7 +369,8 @@ export class BrowserSceneHost {
           message,
           document: this.world?.world.terrain,
         })) ?? [],
-      );
+      )
+      .concat(this.surfaceRelief.diagnostics);
   }
   async setProject(project: Project): Promise<void> {
     this.project = project;
@@ -206,7 +382,21 @@ export class BrowserSceneHost {
         this.requestedQuality,
       );
   }
-  private material(id: string) {
+  private material(id: string, source?: string) {
+    const artifact = source ? this.artifacts.get(source) : undefined;
+    const generated =
+      !this.selectedMaterial && artifact?.kind === "character"
+        ? artifact.creatureMaterials?.find((material) => material.id === id)
+        : undefined;
+    if (generated) {
+      const sourceId =
+        artifact?.kind === "character" ? artifact.creatureGroomMaterialSources?.[id] : undefined;
+      const opticalSource = sourceId ? this.documents.get(sourceId) : undefined;
+      return resolveGroomMaterial(
+        renderMaterial(generated),
+        opticalSource?.kind === "material" ? renderMaterial(opticalSource) : undefined,
+      );
+    }
     const document = this.documents.get(this.selectedMaterial ?? id);
     return renderMaterial(document?.kind === "material" ? document : undefined);
   }
@@ -278,7 +468,11 @@ export class BrowserSceneHost {
           : undefined;
     const terrain = this.documents.get(world?.terrain ?? (subject.kind === "terrain" ? subject.id : ""));
     const ids = world
-      ? [...world.instances.map((i) => i.definition), ...world.populations.map((p) => p.definition)]
+      ? [
+          ...world.instances.map((i) => i.definition),
+          ...world.populations.map((p) => p.definition),
+          ...worldCompositionReferences(world.composition),
+        ]
       : ["object", "character", "vegetation"].includes(subject.kind)
         ? [subject.id]
         : subject.kind === "water"
@@ -297,10 +491,25 @@ export class BrowserSceneHost {
         : { id };
     });
     return {
-      signature: contentKey({ subjectId, stage: stage?.id, ground: stage?.ground, quality, sources, world }),
+      signature: contentKey({
+        subjectId,
+        stage: stage?.id,
+        ground: stage?.ground,
+        quality,
+        sources,
+        world: world?.composition
+          ? { ...world, composition: { ...world.composition, review: undefined } }
+          : world,
+        geologyPreview:
+          subject.kind === "terrain"
+            ? { material: subject.material, formations: subject.geology?.formations ?? [] }
+            : undefined,
+        terrainRealization: terrainRealization(terrain?.kind === "terrain" ? terrain : undefined, quality),
+      }),
       terrainKey: terrain?.kind === "terrain" ? contentKey(terrain) : "",
       terrain,
       stage,
+      world,
     };
   }
   async prepare(
@@ -310,6 +519,7 @@ export class BrowserSceneHost {
     resetRuntime = false,
   ): Promise<void> {
     if (this.disposed) throw new Error("Scene host disposed");
+    this.displayedCreatureArtifacts = new WeakMap();
     const generation = ++this.generation;
     this.requestedSubjectId = subjectId;
     this.requestedStageId = stageId;
@@ -321,15 +531,24 @@ export class BrowserSceneHost {
       this.populationRevision = -1;
       for (const doc of this.documents.values())
         if (doc.kind === "character") this.runtime.updateCharacterParameters(doc);
-      const waterId = this.documents.get(subjectId)?.kind === "water" ? subjectId : this.world?.world.water;
-      const water = this.documents.get(waterId ?? "");
-      this.runtime.setWater(water?.kind === "water" ? water : undefined);
+      configureRuntimeWater(
+        this.runtime,
+        this.documents,
+        this.documents.get(subjectId),
+        this.world?.world,
+        this.stage,
+      );
       if (
         this.world &&
         source.terrain?.kind === "terrain" &&
         source.terrainKey !== this.installedTerrainKey
       ) {
-        this.world.replaceTerrain(source.terrain);
+        const sourceWorld = source.world;
+        const terrain =
+          sourceWorld?.kind === "world"
+            ? realizeWorldComposition(sourceWorld, source.terrain).terrain
+            : source.terrain;
+        this.world.replaceTerrain(terrain);
         const ready = await this.world.prepare();
         if (!ready.ready && generation === this.generation)
           throw new Error(`Terrain preparation incomplete: ${ready.missing.join(", ")}`);
@@ -355,18 +574,29 @@ export class BrowserSceneHost {
       const save = this.world.save();
       if (save.overrides.length || save.dormant.length) {
         try {
+          const vegetation = await candidate.prepareSavedVegetation(save);
           candidate.world.loadSave(save);
+          candidate.installGrowthProducts(vegetation);
+          if (this.disposed || generation !== this.generation) {
+            candidate.dispose();
+            return;
+          }
         } catch (error) {
           candidate.dispose();
           throw error;
         }
       }
     }
+    if (!resetRuntime && subjectId === this.subjectId && this.runtime && candidate.runtime)
+      candidate.runtime.retainCompatibleAssemblyJoints(this.runtime.snapshotEntities());
     const oldRuntime = this.runtime,
       oldWorld = this.world;
     this.runtime = candidate.runtime;
     this.world = candidate.world;
+    this.creatureDetailSelector.clear();
     this.artifacts = candidate.artifacts;
+    this.documents = candidate.documents;
+    this.growthArtifacts = candidate.growthArtifacts;
     this.cache = candidate.cache;
     this.subjectId = subjectId;
     this.stageId = stageId;
@@ -393,7 +623,10 @@ export class BrowserSceneHost {
     if (!ids.length || !this.runtime) throw new Error(`No live instance for ${definitionId}`);
     return ids;
   }
-  playMotion(definitionId: string, motion: string, blendSeconds = 0.2) {
+  setLocomotionSpeed(definitionId: string, speed: number) {
+    for (const id of this.instanceIds(definitionId)) this.runtime?.setLocomotionSpeed(id, speed);
+  }
+  playMotion(definitionId: string, motion: string, blendSeconds?: number) {
     for (const id of this.instanceIds(definitionId)) this.runtime?.playMotion(id, motion, blendSeconds);
   }
   setPose(definitionId: string, jointId: string, rotation: Vec3, translation: Vec3 = [0, 0, 0]) {
@@ -481,8 +714,8 @@ export class BrowserSceneHost {
     this.lastTime = 0;
     let world: WorldDefinition | undefined;
     if (subject.kind === "world") world = subject;
-    else if (subject.kind === "terrain")
-      world = this.project.documents.find(
+    else if (subject.kind === "terrain") {
+      const baseWorld = this.project.documents.find(
         (d): d is WorldDefinition => d.kind === "world" && d.terrain === subject.id,
       ) ?? {
         id: `${subject.id}-preview`,
@@ -497,15 +730,22 @@ export class BrowserSceneHost {
         populations: [],
         instances: [],
       };
+      const preview = createGeologyPreview(this.project, subject, baseWorld);
+      world = preview.world;
+      this.documents = preview.documents;
+    }
     if (world) {
-      const terrain = this.documents.get(world.terrain);
-      if (terrain?.kind !== "terrain") throw new Error("World terrain reference is unavailable");
+      const sourceTerrain = this.documents.get(world.terrain);
+      if (sourceTerrain?.kind !== "terrain") throw new Error("World terrain reference is unavailable");
+      const realization = realizeWorldComposition(world, sourceTerrain);
+      world = realization.world;
+      const terrain = realization.terrain;
       if (this.world?.world.id !== world.id || contentKey(this.world.world) !== contentKey(world)) {
         const save = this.world?.world.id === world.id ? this.world.save() : undefined;
         this.world?.dispose();
         this.world = new WorldSession(world, terrain, {
           generate: this.options.generateTerrain,
-          resolution: quality === "export" ? 64 : quality === "review" ? 32 : 16,
+          ...terrainRealization(terrain, quality),
         });
         if (save && (save.overrides.length || save.dormant.length)) this.world.loadSave(save);
       } else this.world.replaceTerrain(terrain);
@@ -541,9 +781,17 @@ export class BrowserSceneHost {
       for (const instance of world.instances) {
         const doc = this.documents.get(instance.definition),
           artifact = this.artifacts.get(instance.definition);
-        if (doc?.kind === "object" && artifact?.kind === "surface" && doc.collision !== "none")
-          installObjectCollision(
-            runtime.physics,
+        if (doc?.kind === "object" && artifact?.kind === "surface" && doc.assembly)
+          runtime.addAssembly(
+            instance.id,
+            doc.assembly,
+            artifact.mesh,
+            instanceMatrix(instance.position, instance.rotation, instance.scale),
+            doc.collision !== "none",
+            doc.id,
+          );
+        else if (doc?.kind === "object" && artifact?.kind === "surface" && doc.collision !== "none")
+          runtime.addStaticObject(
             instance.id,
             doc,
             artifact.mesh,
@@ -565,13 +813,33 @@ export class BrowserSceneHost {
       this.world?.dispose();
       this.world = undefined;
       if (this.stage?.ground !== false) runtime.physics.addGround();
+      // A single-character studio contains only its own collision proxies and
+      // this authored plane. Secondary ground queries can be specialized exactly;
+      // mixed stages and worlds retain the general support query.
+      if (this.stage?.ground !== false && subject.kind === "character")
+        runtime.setCreatureSecondaryGroundPlane({
+          height: 0,
+          minX: -1000,
+          maxX: 1000,
+          minZ: -1000,
+          maxZ: 1000,
+        });
       if (subject.kind === "character" || subject.kind === "object" || subject.kind === "vegetation") {
         const artifact = await this.artifact(subject.id, quality);
         if (generation !== this.generation) return;
         if (subject.kind === "character" && artifact?.kind === "character")
           runtime.addCharacter(subject.id, artifact, subject);
-        if (subject.kind === "object" && artifact?.kind === "surface" && subject.collision !== "none")
-          installObjectCollision(runtime.physics, subject.id, subject, artifact.mesh, [0, 0, 0]);
+        if (subject.kind === "object" && artifact?.kind === "surface" && subject.assembly)
+          runtime.addAssembly(
+            subject.id,
+            subject.assembly,
+            artifact.mesh,
+            identityMatrix(),
+            subject.collision !== "none",
+            subject.id,
+          );
+        else if (subject.kind === "object" && artifact?.kind === "surface" && subject.collision !== "none")
+          runtime.addStaticObject(subject.id, subject, artifact.mesh, [0, 0, 0], [0, 0, 0, 1]);
       } else if (subject.kind !== "water") {
         const references = this.referenceIds(this.stage);
         const prepared: { id: string; artifact: SurfaceArtifact; bounds: MeshData["bounds"] }[] = [];
@@ -597,14 +865,23 @@ export class BrowserSceneHost {
           const doc = this.documents.get(id);
           if (doc?.kind === "character" && artifact.kind === "character")
             runtime.addCharacter(id, artifact, doc, position);
-          if (doc?.kind === "object" && artifact.kind === "surface" && doc.collision !== "none")
-            installObjectCollision(runtime.physics, id, doc, artifact.mesh, position);
+          if (doc?.kind === "object" && artifact.kind === "surface" && doc.assembly)
+            runtime.addAssembly(
+              id,
+              doc.assembly,
+              artifact.mesh,
+              transformMatrix(position),
+              doc.collision !== "none",
+              doc.id,
+            );
+          else if (doc?.kind === "object" && artifact.kind === "surface" && doc.collision !== "none")
+            runtime.addStaticObject(id, doc, artifact.mesh, position, [0, 0, 0, 1]);
         }
       }
     }
-    const waterId = subject.kind === "water" ? subject.id : world?.water;
-    const water = waterId ? this.documents.get(waterId) : undefined;
-    runtime.setWater(water?.kind === "water" ? water : undefined);
+    configureRuntimeWater(runtime, this.documents, subject, world, this.stage);
+    if (this.resourceUsage.installedBytes > (this.options.maxInstalledBytes ?? 64 * 1024 * 1024))
+      throw new Error("Prepared scene exceeds the installed CPU artifact budget");
     runtime.resetReplay();
   }
   private appendArtifact(
@@ -614,36 +891,90 @@ export class BrowserSceneHost {
     matrix: Float32Array,
     source: string,
   ) {
+    const assemblyParts = this.runtime?.assemblyParts(id, matrix);
+    if (assemblyParts && artifact.kind === "surface") {
+      for (const part of assemblyParts)
+        surfaces.push({
+          id: `${id}/assembly/${part.id}`,
+          instanceId: id,
+          source,
+          mesh: part.mesh,
+          lightingMobility: part.dynamic ? "dynamic" : undefined,
+          matrix: part.matrix,
+          material: this.material(part.material ?? artifact.material),
+        });
+      return;
+    }
     if (artifact.kind === "vegetation")
-      for (const part of artifact.surfaces)
+      for (const part of artifact.surfaces) {
+        if (part.mesh.indices.length === 0) continue;
         surfaces.push({
           id: `${id}/${part.id}`,
           instanceId: id,
           source,
           mesh: part.mesh,
           details: part.details,
+          renderProducts: part.renderProducts,
           matrix,
           material: this.material(part.material),
           wind:
             this.documents.get(source)?.kind === "vegetation"
-              ? (this.documents.get(source) as Extract<Document, { kind: "vegetation" }>).windResponse
+              ? vegetationWindResponse(
+                  this.documents.get(source) as Extract<Document, { kind: "vegetation" }>,
+                )
               : artifact.windResponse,
         });
+      }
     else if (artifact.kind === "surface")
       surfaces.push({
         id,
         instanceId: id,
         source,
         mesh: artifact.mesh,
+        renderProducts: artifact.renderProducts,
         matrix,
         material: this.material(artifact.material),
       });
   }
   private materialSurfaces(surfaces: RenderSurface[]): RenderSurface[] {
+    this.surfaceRelief.beginFrame();
     return surfaces.flatMap((original) => {
       const definition = this.documents.get(original.source);
-      const surface =
-        definition?.kind === "vegetation" ? { ...original, wind: definition.windResponse } : original;
+      let surface =
+        definition?.kind === "vegetation"
+          ? { ...original, wind: vegetationWindResponse(definition) }
+          : original;
+      const groups = [...new Set(surface.mesh.materialGroups?.map((group) => group.material) ?? [])];
+      const artifact = this.artifacts.get(surface.source);
+      const part =
+        definition?.kind === "object"
+          ? definition.assembly?.parts.find((entry) => entry.id === surface.mesh.sourceIds?.[0])
+          : undefined;
+      const artifactMaterial =
+        artifact?.kind === "vegetation"
+          ? artifact.surfaces.find((entry) => entry.mesh === surface.mesh)?.material
+          : artifact?.material;
+      const materialId =
+        this.selectedMaterial ??
+        groups[0] ??
+        part?.material ??
+        artifactMaterial ??
+        (definition && "material" in definition ? definition.material : "unbound");
+      if (groups.length > 1) {
+        for (const id of groups) {
+          const relief = this.material(id, surface.source).appearance?.relief;
+          if (relief?.amplitude)
+            this.surfaceRelief.skip(
+              surface,
+              this.selectedMaterial ?? id,
+              relief,
+              "mixed-material-unsupported",
+            );
+        }
+      } else {
+        if (groups.length) surface = { ...surface, material: this.material(groups[0], surface.source) };
+        surface = this.surfaceRelief.apply(surface, materialId);
+      }
       if (!surface.mesh.materialGroups?.length) return [surface];
       return surface.mesh.materialGroups.map((group) => ({
         ...surface,
@@ -655,7 +986,10 @@ export class BrowserSceneHost {
           );
           return range ? [{ ...detail, drawRange: { start: range.start, count: range.count } }] : [];
         }),
-        material: this.material(group.material),
+        material: this.material(group.material, surface.source),
+        creatureInspection: surface.creatureInspection
+          ? { ...surface.creatureInspection, materialId: group.material }
+          : undefined,
       }));
     });
   }
@@ -696,7 +1030,9 @@ export class BrowserSceneHost {
     return this.extract(camera, mode);
   }
   /** Extract a render snapshot without advancing simulation or changing residency. */
-  extract(camera: Camera, mode: EvaluatedScene["mode"] = "beauty"): EvaluatedScene {
+  extract(camera: Camera, mode: EvaluatedScene["mode"] = "beauty", applyIndirect = true): EvaluatedScene {
+    this.displayedCreatureArtifacts = new WeakMap();
+    const displayedCharacters = new Map<string, CompiledCharacter>();
     const subject = this.documents.get(this.subjectId);
     const world = this.world;
     const surfaces: RenderSurface[] = [];
@@ -737,7 +1073,8 @@ export class BrowserSceneHost {
       }
       for (const instance of world.world.instances) {
         if (world.persistence.overrides.get(instance.id)?.removed) continue;
-        const artifact = this.artifacts.get(instance.definition);
+        const definition = world.persistence.overrides.get(instance.id)?.definition ?? instance.definition;
+        const artifact = this.artifacts.get(definition);
         if (artifact)
           this.appendArtifact(
             surfaces,
@@ -746,9 +1083,9 @@ export class BrowserSceneHost {
             instanceMatrix(
               relative(world.persistence.overrides.get(instance.id)?.position ?? instance.position),
               world.persistence.overrides.get(instance.id)?.rotation ?? instance.rotation,
-              instance.scale,
+              world.persistence.overrides.get(instance.id)?.scale ?? instance.scale,
             ),
-            instance.definition,
+            definition,
           );
       }
       const populationCenter = `${Math.floor(camera.position[0] / 24)}:${Math.floor(camera.position[2] / 24)}:${contentKey([...world.persistence.overrides])}`;
@@ -802,7 +1139,21 @@ export class BrowserSceneHost {
         );
     }
     if (this.runtime)
-      for (const instance of this.runtime.evaluatedCharacters(effectiveTime, origin))
+      for (const instance of this.runtime.evaluatedCharacters(
+        effectiveTime,
+        origin,
+        (artifact, position, scale, instanceId, skinMatrices) =>
+          this.creatureDetailSelector.select(
+            instanceId,
+            artifact,
+            position,
+            scale,
+            camera,
+            this.viewportHeight,
+            skinMatrices,
+          ).detail,
+      )) {
+        displayedCharacters.set(instance.id, instance.artifact);
         surfaces.push({
           id: instance.id,
           instanceId: instance.id,
@@ -815,74 +1166,156 @@ export class BrowserSceneHost {
             weights: instance.artifact.weights,
             matrices: instance.skinMatrices,
           },
+          deformation: instance.deformation,
+          creatureInspection: creatureInspectionSource(instance.artifact),
+          creatureDetail: instance.artifact.creature
+            ? this.creatureDetailSelector.inspect(instance.id)?.metadata
+            : undefined,
         });
-    const waterId = subject?.kind === "water" ? subject.id : world?.world.water;
-    const water = waterId ? this.documents.get(waterId) : undefined;
-    if (water?.kind === "water") {
-      const key = contentKey({ level: water.level, world: !!world });
-      let mesh = this.waterMeshes.get(key);
-      if (!mesh) {
-        mesh = gridMesh(world ? 640 : 30, world ? 256 : 64, water.level);
-        this.waterMeshes.clear();
-        this.waterMeshes.set(key, mesh);
       }
-      surfaces.push({
-        id: water.id,
-        source: water.id,
-        mesh,
-        matrix: transformMatrix(
-          relative(
-            world
-              ? [Math.floor(camera.position[0] / 32) * 32, 0, Math.floor(camera.position[2] / 32) * 32]
-              : [0, 0, 0],
-          ),
-        ),
-        material: {
-          ...defaultMaterial,
-          color: water.color,
-          secondary: water.color,
-          roughness: water.roughness,
-          metallic: 0.25,
-        },
-        waterApproximation: {
-          spacing: world ? 640 / 256 : 30 / 64,
-          maxHeightError: waterGeometryErrorBound(water.waves, world ? 640 / 256 : 30 / 64),
-        },
-        water: {
-          ...water,
-          waves: water.waves.map((wave) => ({
-            ...wave,
-            phase:
-              (wave.phase +
-                ((Math.cos(wave.direction) * origin[0] + Math.sin(wave.direction) * origin[2]) *
-                  2 *
-                  Math.PI) /
-                  wave.wavelength) %
-              (2 * Math.PI),
-          })),
-        },
-      });
-    }
-    const env = this.documents.get(
-        subject?.kind === "environment"
-          ? subject.id
-          : (world?.world.environment ?? this.stage?.environment ?? ""),
-      ),
-      lighting = this.documents.get(
-        subject?.kind === "lighting" ? subject.id : (world?.world.lighting ?? this.stage?.lighting ?? ""),
-      );
+    const sources = environmentSources(this.documents, subject, world?.world, this.stage);
     const environment = evaluateEnvironment(
-      env?.kind === "environment" ? env : undefined,
-      lighting?.kind === "lighting" ? lighting : undefined,
+      sources.environment,
+      sources.lighting,
       this.stage?.exposure ?? 1,
+      0,
+      { time: effectiveTime, position: camera.position, grade: this.stage?.grade },
     );
+    const waterIds =
+      subject?.kind === "water"
+        ? [subject.id]
+        : [
+            ...new Set(
+              [world?.world.water, ...(world?.world.waters ?? [])].filter((id): id is string => !!id),
+            ),
+          ];
+    for (const waterId of waterIds) {
+      const waterSource = waterId ? this.documents.get(waterId) : undefined;
+      const water =
+        waterSource?.kind === "water" ? evaluateWaterEnvironment(waterSource, environment) : undefined;
+      if (water?.kind === "water") {
+        const waterState = this.runtime?.waterBodies.get(water.id)?.renderState(water);
+        const key = contentKey({
+          level: water.level,
+          world: !!world,
+          river: water.flow?.river,
+          domain: waterState?.domain?.key,
+          spectrum: !!water.spectrum,
+        });
+        let mesh = this.waterMeshes.get(key);
+        if (!mesh) {
+          mesh =
+            waterState?.domain?.surface ??
+            (water.spectrum ? oceanWaterMesh() : undefined) ??
+            riverWaterMesh(water, world ? 640 / 256 : 30 / 64) ??
+            gridMesh(world ? 640 : 30, world ? 256 : 64, water.level);
+          if (this.waterMeshes.size >= 16) this.waterMeshes.clear();
+          this.waterMeshes.set(key, mesh);
+        }
+        const waterSpacing = waterMeshSpacing(mesh, world ? 640 / 256 : 30 / 64);
+        let waterPhases = this.waterPhaseProducts.get(water);
+        if (!waterPhases) {
+          waterPhases = compileWaterPhases(water);
+          this.waterPhaseProducts.set(water, waterPhases);
+        }
+        surfaces.push({
+          id: water.id,
+          source: water.id,
+          mesh,
+          waterState,
+          matrix: transformMatrix(
+            relative(
+              (world || water.spectrum) && !water.flow?.river && !water.domain
+                ? water.spectrum
+                  ? [camera.position[0], 0, camera.position[2]]
+                  : [Math.floor(camera.position[0] / 32) * 32, 0, Math.floor(camera.position[2] / 32) * 32]
+                : waterState?.domain
+                  ? [waterState.domain.min[0], 0, waterState.domain.min[1]]
+                  : [0, 0, 0],
+            ),
+          ),
+          material: {
+            ...defaultMaterial,
+            color: water.color,
+            secondary: water.color,
+            roughness: water.roughness,
+            metallic: 0.25,
+          },
+          waterPhases,
+          waterApproximation: {
+            spacing: waterSpacing,
+            maxHeightError: waterGeometryErrorBound(resolveWaterWaves(water), waterSpacing),
+          },
+          water: {
+            ...water,
+            flow: water.flow,
+            waves: resolveWaterWaves(water).map((wave) => ({
+              ...wave,
+              phase:
+                (wave.phase +
+                  ((Math.cos(wave.direction) * origin[0] + Math.sin(wave.direction) * origin[2]) *
+                    2 *
+                    Math.PI) /
+                    wave.wavelength) %
+                (2 * Math.PI),
+            })),
+          },
+        });
+        if (waterState && water.effects?.length) {
+          const parent = surfaces[surfaces.length - 1];
+          for (const [index, effectMesh] of compileWaterEffects(water).entries())
+            surfaces.push({
+              ...parent,
+              id: `${water.id}-effect-${water.effects[index].id}`,
+              mesh: effectMesh,
+              matrix: transformMatrix(relative([0, 0, 0])),
+              waterEffect: index,
+            });
+        }
+        if (waterState?.domain)
+          surfaces.push({
+            id: `${water.id}-bed`,
+            source: water.id,
+            mesh: waterState.domain.bed,
+            waterContact: { water, state: waterState },
+            matrix: transformMatrix(relative([waterState.domain.min[0], 0, waterState.domain.min[1]])),
+            material: {
+              ...defaultMaterial,
+              color: [0.12, 0.135, 0.12],
+              secondary: [0.37, 0.33, 0.245],
+              roughness: 0.86,
+              metallic: 0,
+              appearance: waterBedAppearance,
+              pattern: 0,
+              scale: 1.2,
+              normalStrength: 0,
+            },
+          });
+      }
+    }
+    if (surfaces.some((s) => s.waterState)) {
+      const reflections = compileWaterReflectionProxies(surfaces);
+      for (const surface of surfaces)
+        if (surface.waterState || surface.waterContact) surface.waterReflections = reflections;
+    }
     environment.windPhase = (origin[0] * 0.17 + origin[2] * 0.23) % (2 * Math.PI);
     environment.pointLights = environment.pointLights?.map((light) => ({
       ...light,
       position: relative(light.position),
     }));
-    return {
-      surfaces: this.materialSurfaces(surfaces),
+    const scene = applyCreatureInspection({
+      materialLattice: this.options.materialCache ? sharedMaterialLattice() : undefined,
+      surfaces: this.materialSurfaces(surfaces).map((surface) => {
+        if (!environment.wetness || surface.water) return surface;
+        const appearance = surface.material.appearance ?? createSurfaceAppearance();
+        return {
+          ...surface,
+          material: {
+            ...surface.material,
+            appearance: { ...appearance, wetness: Math.max(appearance.wetness, environment.wetness) },
+          },
+        };
+      }),
       camera: { ...camera, position: relative(camera.position), target: relative(camera.target) },
       environment,
       time: effectiveTime,
@@ -890,7 +1323,125 @@ export class BrowserSceneHost {
       ...(world ? { shadowRadius: 240 } : {}),
       mode,
       grid: !world && subject?.kind !== "water",
-    };
+    });
+    for (const surface of scene.surfaces) {
+      const artifact = surface.instanceId ? displayedCharacters.get(surface.instanceId) : undefined;
+      if (
+        artifact &&
+        surface.source === artifact.id &&
+        surface.mesh.positions === artifact.mesh.positions &&
+        surface.mesh.indices === artifact.mesh.indices
+      )
+        this.displayedCreatureArtifacts.set(surface, {
+          ...artifact,
+          mesh: surface.mesh,
+          creatureRegions: surface.creatureInspection?.regions ?? artifact.creatureRegions,
+          creatureCoordinates: surface.creatureInspection?.coordinates ?? artifact.creatureCoordinates,
+        });
+    }
+    if (applyIndirect) this.applyIndirectLighting(scene);
+    return scene;
+  }
+  /** Call after review lighting overrides, so the cache observes the displayed lighting. */
+  applyIndirectLighting(scene: EvaluatedScene): void {
+    this.radianceLighting.strip(scene);
+    if (this.indirectLightingOptions)
+      scene.indirectLighting = this.indirectLighting.update(scene, this.indirectLightingOptions);
+    else delete scene.indirectLighting;
+    this.skyVisibility.apply(scene);
+    this.radianceLighting.apply(scene);
+  }
+  /** Growth compilation is transactional and never runs inside extract/render. */
+  async growVegetation(
+    instanceId: string,
+    definitionId: string,
+    steps: number,
+    events: GrowthEvent[] = [],
+  ): Promise<PersistentVegetationGrowth> {
+    const world = this.world;
+    const source = this.documents.get(definitionId);
+    if (!world || source?.kind !== "vegetation") throw Error("A prepared world tree is required");
+    const instance = world.world.instances.find((instance) => instance.id === instanceId);
+    const visible = this.populationSurfaces.some((surface) => surface.instanceId === instanceId);
+    const previous = world.persistence.overrides.get(instanceId);
+    if (!instance && !visible && !previous?.growth) throw Error("Unknown resident tree identity");
+    if (instance && (previous?.growth?.definition ?? instance.definition) !== definitionId)
+      throw Error("Tree source mismatch");
+    const prepared = this.options.growVegetation
+      ? await this.options.growVegetation(
+          source,
+          instanceId,
+          steps,
+          previous?.growth,
+          events,
+          this.requestedQuality,
+        )
+      : undefined;
+    const growth = prepared?.growth ?? prepareVegetationGrowth(source, steps, previous?.growth, events);
+    const document = prepared?.document ?? vegetationGrowthDocument(source, growth, instanceId);
+    if (this.project.documents.some((source) => source.id === document.id))
+      throw Error("Growth realization conflicts with an authored document identity");
+    const artifact =
+      prepared?.artifact ??
+      (this.options.compile
+        ? await this.options.compile(document, this.requestedQuality)
+        : compileDocument(document, this.requestedQuality));
+    if (!artifact || artifact.kind !== "vegetation") throw Error("Tree compilation failed");
+    if (
+      world !== this.world ||
+      this.documents.get(definitionId) !== source ||
+      world.persistence.overrides.get(instanceId) !== previous
+    )
+      throw new DOMException("Growth edit superseded", "AbortError");
+    const proposed = new Map(world.persistence.overrides);
+    proposed.set(instanceId, { ...previous, growth, definition: document.id });
+    world.persistence.validate({ ...world.save(), overrides: [...proposed] });
+    const installed = new Map(this.artifacts);
+    installed.set(document.id, artifact);
+    if (artifactBytes(installed.values()) > (this.options.maxInstalledBytes ?? 64 * 1024 * 1024))
+      throw Error("Growth product exceeds installed memory budget");
+    this.documents.set(document.id, document);
+    this.artifacts.set(document.id, artifact);
+    this.growthArtifacts.add(document.id);
+    world.persistence.overrides.set(instanceId, { ...previous, growth, definition: document.id });
+    this.populationRevision = -1;
+    return structuredClone(growth);
+  }
+  private async prepareSavedVegetation(save: WorldSave) {
+    const prepared: { document: Document; artifact: SurfaceArtifact }[] = [];
+    for (const [id, override] of save.overrides) {
+      if (!override.growth) continue;
+      const source = this.documents.get(override.growth.definition);
+      if (source?.kind !== "vegetation") throw Error("Saved tree source is unavailable");
+      validateVegetationGrowth(source, override.growth);
+      const document = vegetationGrowthDocument(source, override.growth, id);
+      if (this.project.documents.some((source) => source.id === document.id))
+        throw Error("Saved growth realization conflicts with an authored document identity");
+      if (override.definition !== document.id) throw Error("Saved tree realization identity mismatch");
+      const artifact = this.options.compile
+        ? await this.options.compile(document, this.requestedQuality)
+        : compileDocument(document, this.requestedQuality);
+      if (!artifact || artifact.kind !== "vegetation") throw Error("Saved tree compilation failed");
+      prepared.push({ document, artifact });
+    }
+    const installed = new Map([...this.artifacts].filter(([id]) => !this.growthArtifacts.has(id)));
+    for (const entry of prepared) installed.set(entry.document.id, entry.artifact);
+    if (artifactBytes(installed.values()) > (this.options.maxInstalledBytes ?? 64 * 1024 * 1024))
+      throw Error("Saved growth products exceed installed memory budget");
+    return prepared;
+  }
+  private installGrowthProducts(records: { document: Document; artifact: SurfaceArtifact }[]) {
+    const desired = new Set(records.map((record) => record.document.id));
+    for (const id of this.growthArtifacts)
+      if (!desired.has(id)) {
+        this.documents.delete(id);
+        this.artifacts.delete(id);
+      }
+    for (const { document, artifact } of records) {
+      this.documents.set(document.id, document);
+      this.artifacts.set(document.id, artifact);
+    }
+    this.growthArtifacts = desired;
   }
   saveRuntime(): WorldSave {
     if (!this.world || !this.runtime)
@@ -898,7 +1449,7 @@ export class BrowserSceneHost {
     const save = this.world.save(),
       entities = new Map(save.dormant.map((entity) => [entity.id, entity]));
     for (const entity of this.runtime.snapshotEntities()) entities.set(entity.id, entity);
-    return { ...save, dormant: [...entities.values()] };
+    return { ...save, dormant: [...entities.values()], waters: this.runtime.snapshotWaters() };
   }
   async resetRuntime(): Promise<void> {
     if (!this.subjectId) throw new Error("Preview is not prepared");
@@ -920,6 +1471,7 @@ export class BrowserSceneHost {
     }
     // A rule cannot bypass live identity, quaternion, mode, motion or scale validation.
     this.runtime.validateEntityStates(save.dormant);
+    this.runtime.validateWaterStates(save.waters, save.dormant);
     return { save, migration: report };
   }
   async loadRuntime(
@@ -933,6 +1485,7 @@ export class BrowserSceneHost {
     const preparedSave = this.prepareRuntimeSave(input, options.migration),
       save = preparedSave.save;
     const characters = runtime.validateEntityStates(save.dormant);
+    const vegetation = await this.prepareSavedVegetation(save);
     runtime.cancelSeek();
     const paused = runtime.paused,
       previousInterests = world.interestSources();
@@ -975,7 +1528,9 @@ export class BrowserSceneHost {
       if (world !== this.world || runtime !== this.runtime)
         throw new DOMException("Runtime restore superseded", "AbortError");
       world.loadSave(save);
-      const time = runtime.restoreEntityStates(save.dormant);
+      this.installGrowthProducts(vegetation);
+      this.populationRevision = -1;
+      const time = runtime.restoreEntityStates(save.dormant, save.waters);
       this.lastTime = time;
       return { time, migration: preparedSave.migration };
     } catch (error) {
@@ -1011,12 +1566,19 @@ export class BrowserSceneHost {
   }
   dispose() {
     if (this.disposed) return;
+    this.displayedCreatureArtifacts = new WeakMap();
+    this.creatureDetailSelector.clear();
     this.disposed = true;
     this.generation++;
     this.runtime?.dispose();
     this.world?.dispose();
     this.artifacts.clear();
+    this.growthArtifacts.clear();
     this.cache.clear();
     this.waterMeshes.clear();
+    this.surfaceRelief.clear();
+    this.indirectLighting.dispose();
+    this.skyVisibility.dispose();
+    this.radianceLighting.dispose();
   }
 }

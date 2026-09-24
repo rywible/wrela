@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { type Bounds, type CharacterDefinition, parseProject, referenceProject } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
+import { type Bounds, type CharacterDefinition, parseProject } from "@wrela/model";
 import { type RigTemplateKind, rigTemplate } from "./rig-template";
 import { AuthoringSession } from "./session";
 

@@ -1,0 +1,330 @@
+{
+  "methodology": "Single-machine ABBA, 45 warmup / 120 dynamic measured frames per leg; water-off retains fluid and opaque scene. Difference of mean medians is not a p95 water cost. No cross-hardware performance claim.",
+  "captures": {
+    "ocean-day": "browser-1790185510457-46366/ocean.png",
+    "creek-day": "browser-1790185543093-46406/creek.png",
+    "creek-ripple": "browser-1790185543093-46406/creek-ripple.png",
+    "lake-noon": "browser-1790185717470-46663/creek.png",
+    "ocean-sunset": "browser-1790185720069-46701/ocean.png",
+    "ocean-overcast": "browser-1790185722012-46662/ocean.png",
+    "ocean-sign-diagnostic": "browser-1790185852808-46963/ocean-sign-diagnostic.png",
+    "creek-no-transport": "browser-1790185604075-46484/creek.png"
+  },
+  "benchmarks": [
+    {
+      "label": "ocean",
+      "rawDirectory": "/Users/ryanwible/projects/wrela/output/browser-1790185510457-46366",
+      "ablation": null,
+      "manifest": {
+        "startedAt": "2026-09-23T17:45:10.487Z",
+        "finishedAt": "2026-09-23T17:45:14.654Z",
+        "sourceFingerprint": "30177b9460ebf32a53ec10d18ddf1087dbda4eca9e177cced761d95c2b98ed89",
+        "finalSourceFingerprint": "30177b9460ebf32a53ec10d18ddf1087dbda4eca9e177cced761d95c2b98ed89",
+        "sourceStable": true
+      },
+      "environment": {
+        "sourceFingerprint": "30177b9460ebf32a53ec10d18ddf1087dbda4eca9e177cced761d95c2b98ed89",
+        "engine": "chrome",
+        "viewport": {
+          "width": 1920,
+          "height": 1080
+        },
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "hardwareConcurrency": 10
+      },
+      "runs": [
+        {
+          "omitWater": false,
+          "samples": 120,
+          "gpuMs": {
+            "p50": 2.097152,
+            "p95": 3.866624
+          },
+          "fluidMs": {
+            "p50": 0,
+            "p95": 0
+          },
+          "cpuMs": {
+            "p50": 0.3999999761581421,
+            "p95": 0.8999999761581421
+          },
+          "uploadedBytes": {
+            "p50": 2496,
+            "p95": 2496
+          }
+        },
+        {
+          "omitWater": true,
+          "samples": 120,
+          "gpuMs": {
+            "p50": 0.786432,
+            "p95": 2.031616
+          },
+          "fluidMs": {
+            "p50": 0,
+            "p95": 0
+          },
+          "cpuMs": {
+            "p50": 0.10000002384185791,
+            "p95": 0.2999999523162842
+          },
+          "uploadedBytes": {
+            "p50": 2480,
+            "p95": 2480
+          }
+        },
+        {
+          "omitWater": true,
+          "samples": 120,
+          "gpuMs": {
+            "p50": 0.65536,
+            "p95": 1.114112
+          },
+          "fluidMs": {
+            "p50": 0,
+            "p95": 0
+          },
+          "cpuMs": {
+            "p50": 0.10000002384185791,
+            "p95": 0.20000004768371582
+          },
+          "uploadedBytes": {
+            "p50": 2480,
+            "p95": 2480
+          }
+        },
+        {
+          "omitWater": false,
+          "samples": 120,
+          "gpuMs": {
+            "p50": 1.572864,
+            "p95": 2.818048
+          },
+          "fluidMs": {
+            "p50": 0,
+            "p95": 0
+          },
+          "cpuMs": {
+            "p50": 0.2999999523162842,
+            "p95": 0.6000000238418579
+          },
+          "uploadedBytes": {
+            "p50": 2496,
+            "p95": 2496
+          }
+        }
+      ],
+      "incrementalMedianEstimateMs": 1.114112
+    },
+    {
+      "label": "creek",
+      "rawDirectory": "/Users/ryanwible/projects/wrela/output/browser-1790185543093-46406",
+      "ablation": null,
+      "manifest": {
+        "startedAt": "2026-09-23T17:45:43.121Z",
+        "finishedAt": "2026-09-23T17:45:56.133Z",
+        "sourceFingerprint": "30177b9460ebf32a53ec10d18ddf1087dbda4eca9e177cced761d95c2b98ed89",
+        "finalSourceFingerprint": "30177b9460ebf32a53ec10d18ddf1087dbda4eca9e177cced761d95c2b98ed89",
+        "sourceStable": true
+      },
+      "environment": {
+        "sourceFingerprint": "30177b9460ebf32a53ec10d18ddf1087dbda4eca9e177cced761d95c2b98ed89",
+        "engine": "chrome",
+        "viewport": {
+          "width": 1920,
+          "height": 1080
+        },
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "hardwareConcurrency": 10
+      },
+      "runs": [
+        {
+          "omitWater": false,
+          "samples": 120,
+          "gpuMs": {
+            "p50": 12.976128,
+            "p95": 16.384
+          },
+          "fluidMs": {
+            "p50": 3.200000047683716,
+            "p95": 3.899999976158142
+          },
+          "cpuMs": {
+            "p50": 4.400000095367432,
+            "p95": 5.399999976158142
+          },
+          "uploadedBytes": {
+            "p50": 790784,
+            "p95": 790784
+          }
+        },
+        {
+          "omitWater": true,
+          "samples": 120,
+          "gpuMs": {
+            "p50": 8.650752,
+            "p95": 13.893632
+          },
+          "fluidMs": {
+            "p50": 2,
+            "p95": 2.399999976158142
+          },
+          "cpuMs": {
+            "p50": 2.700000047683716,
+            "p95": 3.3000000715255737
+          },
+          "uploadedBytes": {
+            "p50": 2480,
+            "p95": 2480
+          }
+        },
+        {
+          "omitWater": true,
+          "samples": 120,
+          "gpuMs": {
+            "p50": 6.619136,
+            "p95": 8.84736
+          },
+          "fluidMs": {
+            "p50": 1.3000000715255737,
+            "p95": 1.7000000476837158
+          },
+          "cpuMs": {
+            "p50": 1.899999976158142,
+            "p95": 2.5
+          },
+          "uploadedBytes": {
+            "p50": 2480,
+            "p95": 2480
+          }
+        },
+        {
+          "omitWater": false,
+          "samples": 120,
+          "gpuMs": {
+            "p50": 12.320768,
+            "p95": 17.03936
+          },
+          "fluidMs": {
+            "p50": 1.8000000715255737,
+            "p95": 2.100000023841858
+          },
+          "cpuMs": {
+            "p50": 3.3000000715255737,
+            "p95": 4.199999928474426
+          },
+          "uploadedBytes": {
+            "p50": 790784,
+            "p95": 790784
+          }
+        }
+      ],
+      "incrementalMedianEstimateMs": 5.0135039999999975
+    },
+    {
+      "label": "creek-no-transport",
+      "rawDirectory": "/Users/ryanwible/projects/wrela/output/browser-1790185604075-46484",
+      "ablation": "transport",
+      "manifest": {
+        "startedAt": "2026-09-23T17:46:44.102Z",
+        "finishedAt": "2026-09-23T17:46:57.832Z",
+        "sourceFingerprint": "30177b9460ebf32a53ec10d18ddf1087dbda4eca9e177cced761d95c2b98ed89",
+        "finalSourceFingerprint": "30177b9460ebf32a53ec10d18ddf1087dbda4eca9e177cced761d95c2b98ed89",
+        "sourceStable": true
+      },
+      "environment": {
+        "sourceFingerprint": "30177b9460ebf32a53ec10d18ddf1087dbda4eca9e177cced761d95c2b98ed89",
+        "engine": "chrome",
+        "viewport": {
+          "width": 1920,
+          "height": 1080
+        },
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+        "hardwareConcurrency": 10
+      },
+      "runs": [
+        {
+          "omitWater": false,
+          "samples": 120,
+          "gpuMs": {
+            "p50": 12.189696,
+            "p95": 16.973824
+          },
+          "fluidMs": {
+            "p50": 3.200000047683716,
+            "p95": 3.600000023841858
+          },
+          "cpuMs": {
+            "p50": 4.5,
+            "p95": 5.100000023841858
+          },
+          "uploadedBytes": {
+            "p50": 790784,
+            "p95": 790784
+          }
+        },
+        {
+          "omitWater": true,
+          "samples": 120,
+          "gpuMs": {
+            "p50": 10.027008,
+            "p95": 13.76256
+          },
+          "fluidMs": {
+            "p50": 2,
+            "p95": 2.399999976158142
+          },
+          "cpuMs": {
+            "p50": 2.799999952316284,
+            "p95": 3.399999976158142
+          },
+          "uploadedBytes": {
+            "p50": 2480,
+            "p95": 2480
+          }
+        },
+        {
+          "omitWater": true,
+          "samples": 120,
+          "gpuMs": {
+            "p50": 6.22592,
+            "p95": 10.15808
+          },
+          "fluidMs": {
+            "p50": 1.5,
+            "p95": 1.8000000715255737
+          },
+          "cpuMs": {
+            "p50": 2.100000023841858,
+            "p95": 2.600000023841858
+          },
+          "uploadedBytes": {
+            "p50": 2480,
+            "p95": 2480
+          }
+        },
+        {
+          "omitWater": false,
+          "samples": 120,
+          "gpuMs": {
+            "p50": 12.058624,
+            "p95": 14.876672
+          },
+          "fluidMs": {
+            "p50": 1.7000000476837158,
+            "p95": 2.100000023841858
+          },
+          "cpuMs": {
+            "p50": 3.200000047683716,
+            "p95": 3.799999952316284
+          },
+          "uploadedBytes": {
+            "p50": 790784,
+            "p95": 790784
+          }
+        }
+      ],
+      "incrementalMedianEstimateMs": 3.9976959999999995
+    }
+  ]
+}

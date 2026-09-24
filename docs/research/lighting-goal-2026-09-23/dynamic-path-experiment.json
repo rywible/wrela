@@ -1,0 +1,89 @@
+{
+  "notes": "Compiler experiment only: rigid door overlay and selective probe transport. Receiver-mixture visibility, local-emission visibility, temporal scheduling, moving lights and skinned occluders are not implemented by this experiment. Timings are synchronous CPU, not GPU or frame times.",
+  "reports": [
+    {
+      "angle": 1.5,
+      "samples": 192,
+      "dirty": 12288,
+      "unit": "path",
+      "rays": 50922,
+      "queryBuildMs": 0.3187089999998989,
+      "dependencyMs": 0.6118749999998272,
+      "updateMs": 115.80791699999986,
+      "fullMs": 90.29458299999988,
+      "exact": true,
+      "dependencyBytes": 2851632,
+      "transportBytes": 10924440
+    },
+    {
+      "angle": 1,
+      "samples": 192,
+      "dirty": 386,
+      "unit": "path",
+      "rays": 2502,
+      "queryBuildMs": 0.2361670000000231,
+      "dependencyMs": 1.699833000000126,
+      "updateMs": 14.791707999999971,
+      "fullMs": 109.25083300000006,
+      "exact": true,
+      "dependencyBytes": 2853144,
+      "transportBytes": 10923504
+    },
+    {
+      "angle": 0.5,
+      "samples": 192,
+      "dirty": 423,
+      "unit": "path",
+      "rays": 2703,
+      "queryBuildMs": 0.2211659999998119,
+      "dependencyMs": 0.5903339999999844,
+      "updateMs": 12.84204200000022,
+      "fullMs": 100.064167,
+      "exact": true,
+      "dependencyBytes": 2852304,
+      "transportBytes": 10922592
+    },
+    {
+      "angle": 0,
+      "samples": 192,
+      "dirty": 443,
+      "unit": "path",
+      "rays": 2789,
+      "queryBuildMs": 0.26308400000016263,
+      "dependencyMs": 0.5700000000001637,
+      "updateMs": 11.716082999999799,
+      "fullMs": 104.44575000000032,
+      "exact": true,
+      "dependencyBytes": 2851744,
+      "transportBytes": 10922544
+    },
+    {
+      "angle": 0.5,
+      "samples": 192,
+      "dirty": 443,
+      "unit": "path",
+      "rays": 2799,
+      "queryBuildMs": 0.2572500000001128,
+      "dependencyMs": 0.5876250000001164,
+      "updateMs": 11.687167000000045,
+      "fullMs": 94.41954100000021,
+      "exact": true,
+      "dependencyBytes": 2852304,
+      "transportBytes": 10922592
+    },
+    {
+      "angle": 1.5,
+      "samples": 192,
+      "dirty": 425,
+      "unit": "path",
+      "rays": 2706,
+      "queryBuildMs": 0.2314579999997477,
+      "dependencyMs": 0.42475000000013097,
+      "updateMs": 10.910417000000052,
+      "fullMs": 100.50137499999983,
+      "exact": true,
+      "dependencyBytes": 2851632,
+      "transportBytes": 10924440
+    }
+  ]
+}

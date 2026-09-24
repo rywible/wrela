@@ -2,5 +2,22 @@
   "name": "@wrela/model",
   "version": "0.1.0",
   "type": "module",
-  "exports": "./src/index.ts"
+  "exports": {
+    ".": "./src/index.ts",
+    "./documents": "./src/documents.ts",
+    "./math": "./src/math.ts",
+    "./creature-validation": "./src/creature-validation.ts",
+    "./validation": "./src/validation.ts",
+    "./vegetation-materials": "./src/vegetation-materials.ts",
+    "./surface-history": "./src/surface-history.ts",
+    "./world-construction": "./src/world-construction.ts",
+    "./contracts": "./src/contracts.ts",
+    "./recipes": "./src/recipes.ts"
+  },
+  "dependencies": {
+    "zod": "4.1.12"
+  },
+  "devDependencies": {
+    "@wrela/examples": "workspace:*"
+  }
 }

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { type Document, type Project, parseProject, referenceProject, references } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
+import { type Document, type Project, parseProject, references } from "@wrela/model";
 import { planDefinitionCreation } from "./creation";
 import { AuthoringSession } from "./session";
 
@@ -20,7 +21,7 @@ test("every kind can be created atomically in a minimal imported project and und
     const project = minimal(),
       before = structuredClone(project),
       session = new AuthoringSession(project);
-    const plan = planDefinitionCreation(session.getSnapshot().project, kind);
+    const plan = planDefinitionCreation(session.getSnapshot().project, kind, referenceProject().documents);
     expect(project).toEqual(before);
     expect(plan.document.kind).toBe(kind);
     const result = session.apply({
@@ -44,8 +45,8 @@ test("every kind can be created atomically in a minimal imported project and und
 });
 test("new worlds contain only required dependencies, while character feature materials stay distinct", () => {
   const project = minimal(),
-    world = planDefinitionCreation(project, "world"),
-    character = planDefinitionCreation(project, "character");
+    world = planDefinitionCreation(project, "world", referenceProject().documents),
+    character = planDefinitionCreation(project, "character", referenceProject().documents);
   expect(world.dependencies.map((document) => document.kind).sort()).toEqual([
     "environment",
     "lighting",
@@ -67,7 +68,7 @@ test("same-ID wrong-kind documents are never reused as dependencies", () => {
   const project = minimal();
   project.documents[0].id = "winter-sky";
   project.entry = "winter-sky";
-  const plan = planDefinitionCreation(project, "world");
+  const plan = planDefinitionCreation(project, "world", referenceProject().documents);
   if (plan.document.kind !== "world") throw Error("Wrong kind");
   expect(plan.document.environment).not.toBe("winter-sky");
   const environmentId = plan.document.environment;
@@ -82,7 +83,7 @@ test("cloning a generated definition detaches its source and preserves existing 
   if (!original) throw Error("Missing character");
   original.generated = { generator: "creatures-v2", policy: "locked" };
   original.dependencies = ["winter-sky"];
-  const plan = planDefinitionCreation(project, "character");
+  const plan = planDefinitionCreation(project, "character", referenceProject().documents);
   expect(plan.dependencies).toEqual([]);
   expect(plan.document.generated).toEqual({ generator: "creatures-v2", policy: "detached" });
   expect(plan.document.dependencies).toEqual(["winter-sky"]);

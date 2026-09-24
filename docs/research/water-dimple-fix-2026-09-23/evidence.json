@@ -1,0 +1,459 @@
+{
+  "directories": {
+    "before": "output/browser-1790197512660-31912",
+    "after": "output/browser-1790197810068-32725",
+    "creek": "output/browser-1790197868536-32781",
+    "sunset": "output/browser-1790197912997-51834"
+  },
+  "methodology": "1920x1080 balanced/spatial, Chrome Apple Metal. ABBA water on/off/off/on, 45 warmup + 120 dynamic samples per leg. Whole-frame GPU extent includes spectrum synthesis. No performance claim from snapshot timings.",
+  "runs": {
+    "before": {
+      "gpu": [
+        {
+          "omitWater": false,
+          "wholeFrame": {
+            "samples": 120,
+            "mean": 4.768836266666669,
+            "p50": 4.063232,
+            "p95": 5.373952,
+            "p99": 14.483456,
+            "max": 15.07328
+          },
+          "spectrum": {
+            "samples": 120,
+            "mean": 0.16547839999999975,
+            "p50": 0.131072,
+            "p95": 0.393216,
+            "p99": 0.851968,
+            "max": 1.179648
+          }
+        },
+        {
+          "omitWater": true,
+          "wholeFrame": {
+            "samples": 120,
+            "mean": 1.5947093333333326,
+            "p50": 0.851968,
+            "p95": 2.097152,
+            "p99": 16.973824,
+            "max": 23.789568
+          },
+          "spectrum": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          }
+        },
+        {
+          "omitWater": true,
+          "wholeFrame": {
+            "samples": 120,
+            "mean": 1.4947669333333322,
+            "p50": 0.851968,
+            "p95": 2.29376,
+            "p99": 14.811136,
+            "max": 18.67776
+          },
+          "spectrum": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          }
+        },
+        {
+          "omitWater": false,
+          "wholeFrame": {
+            "samples": 120,
+            "mean": 4.812526933333335,
+            "p50": 4.128768,
+            "p95": 5.701632,
+            "p99": 15.138816,
+            "max": 15.40096
+          },
+          "spectrum": {
+            "samples": 120,
+            "mean": 0.22828373333333324,
+            "p50": 0.131072,
+            "p95": 0.4587520000000005,
+            "p99": 1.3107199999999999,
+            "max": 1.441792
+          }
+        }
+      ],
+      "waterResources": {
+        "transport": 12,
+        "history": 0,
+        "spectrum": 5244864,
+        "body": 1984,
+        "geometry": 2534400,
+        "objects": 9856,
+        "total": 7791116
+      },
+      "conformance": {
+        "spectra": [
+          {
+            "ocean": false,
+            "mode": "creek",
+            "samples": 64,
+            "maximumError": 0.0000019641709533002594,
+            "origin": [
+              128,
+              19,
+              -128
+            ],
+            "shadingMap": {
+              "samples": 128,
+              "origin": [
+                128,
+                19,
+                -128
+              ],
+              "heightError": 0.0007652187625389675,
+              "slopeError": 0.007439660156355443,
+              "jacobianError": 0,
+              "seamError": 0.000010681338608264923,
+              "farVariance": 0.002941728802397847
+            }
+          },
+          {
+            "ocean": true,
+            "mode": "ocean",
+            "samples": 64,
+            "maximumError": 5.434825083028283e-7,
+            "origin": [
+              100000,
+              19,
+              -200000
+            ],
+            "shadingMap": {
+              "samples": 128,
+              "origin": [
+                100000,
+                19,
+                -200000
+              ],
+              "heightError": 0.003440606635008364,
+              "slopeError": 0.0035690087403826842,
+              "jacobianError": 0.001150931887248241,
+              "seamError": 0.000244140625,
+              "farVariance": 0.039234764873981476
+            }
+          },
+          {
+            "ocean": true,
+            "mode": "mixed",
+            "samples": 64,
+            "maximumError": 7.550140491141555e-7,
+            "origin": [
+              100000,
+              19,
+              -200000
+            ],
+            "shadingMap": {
+              "samples": 128,
+              "origin": [
+                100000,
+                19,
+                -200000
+              ],
+              "heightError": 0.00344063219744678,
+              "slopeError": 0.0035690357359302594,
+              "jacobianError": 0.0010301679614814763,
+              "seamError": 0.00024431943893432617,
+              "farVariance": 0.051049232482910156
+            }
+          }
+        ],
+        "depthHierarchy": [
+          {
+            "width": 65,
+            "height": 33,
+            "maximumError": 0
+          },
+          {
+            "width": 5,
+            "height": 3,
+            "maximumError": 0
+          },
+          {
+            "width": 1,
+            "height": 17,
+            "maximumError": 0
+          }
+        ],
+        "history": {
+          "results": [
+            {
+              "name": "accepted",
+              "correction": 0.005859375,
+              "detailError": 0.00244140625
+            },
+            {
+              "name": "identity-rejected",
+              "correction": 0,
+              "detailError": 0
+            },
+            {
+              "name": "depth-rejected",
+              "correction": 0,
+              "detailError": 0
+            },
+            {
+              "name": "opaque-excluded",
+              "correction": 0,
+              "detailError": 0
+            },
+            {
+              "name": "reset",
+              "correction": 0,
+              "detailError": 0
+            },
+            {
+              "name": "frozen",
+              "correction": 0,
+              "detailError": 0
+            }
+          ],
+          "byteLength": 528
+        }
+      },
+      "source": {
+        "startedAt": "2026-09-23T21:05:12.691Z",
+        "finishedAt": "2026-09-23T21:05:21.315Z",
+        "sourceFingerprint": "7ad8897d4d8f8b80d465732502faea662b4d94c6fbf69ecc42f8d4d97c27e562",
+        "finalSourceFingerprint": "7ad8897d4d8f8b80d465732502faea662b4d94c6fbf69ecc42f8d4d97c27e562",
+        "sourceStable": true
+      }
+    },
+    "after": {
+      "gpu": [
+        {
+          "omitWater": false,
+          "wholeFrame": {
+            "samples": 120,
+            "mean": 4.805427200000005,
+            "p50": 4.063232,
+            "p95": 5.636096,
+            "p99": 14.876672,
+            "max": 14.942208
+          },
+          "spectrum": {
+            "samples": 120,
+            "mean": 0.2632362666666665,
+            "p50": 0.131072,
+            "p95": 0.851968,
+            "p99": 1.441792,
+            "max": 1.507328
+          }
+        },
+        {
+          "omitWater": true,
+          "wholeFrame": {
+            "samples": 120,
+            "mean": 1.4789290666666661,
+            "p50": 0.851968,
+            "p95": 1.703936,
+            "p99": 15.663104,
+            "max": 18.153472
+          },
+          "spectrum": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          }
+        },
+        {
+          "omitWater": true,
+          "wholeFrame": {
+            "samples": 120,
+            "mean": 1.2828672000000003,
+            "p50": 0.720896,
+            "p95": 1.572864,
+            "p99": 13.1072,
+            "max": 13.1072
+          },
+          "spectrum": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          }
+        },
+        {
+          "omitWater": false,
+          "wholeFrame": {
+            "samples": 120,
+            "mean": 5.25161813333333,
+            "p50": 4.58752,
+            "p95": 6.291456,
+            "p99": 17.301504,
+            "max": 18.087936
+          },
+          "spectrum": {
+            "samples": 120,
+            "mean": 0.21954559999999992,
+            "p50": 0.131072,
+            "p95": 0.589824,
+            "p99": 0.98304,
+            "max": 0.98304
+          }
+        }
+      ],
+      "waterResources": {
+        "transport": 12,
+        "history": 0,
+        "spectrum": 5244864,
+        "body": 1984,
+        "geometry": 2534400,
+        "objects": 9856,
+        "total": 7791116
+      },
+      "conformance": {
+        "spectra": [
+          {
+            "ocean": false,
+            "mode": "creek",
+            "samples": 64,
+            "maximumError": 0.0000019315630197525024,
+            "origin": [
+              128,
+              19,
+              -128
+            ],
+            "shadingMap": {
+              "samples": 128,
+              "origin": [
+                128,
+                19,
+                -128
+              ],
+              "heightError": 0.0007727485632112382,
+              "slopeError": 0.007254226531700464,
+              "jacobianError": 0,
+              "seamError": 0.0000053406693041324615,
+              "farVariance": 0.0029214939568191767
+            }
+          },
+          {
+            "ocean": true,
+            "mode": "ocean",
+            "samples": 64,
+            "maximumError": 3.955106975261913e-7,
+            "origin": [
+              100000,
+              19,
+              -200000
+            ],
+            "shadingMap": {
+              "samples": 128,
+              "origin": [
+                100000,
+                19,
+                -200000
+              ],
+              "heightError": 0.0034141008805280426,
+              "slopeError": 0.003487261434479527,
+              "jacobianError": 0.0009681272627031223,
+              "seamError": 0.0001220703125,
+              "farVariance": 0.039108756929636
+            }
+          },
+          {
+            "ocean": true,
+            "mode": "mixed",
+            "samples": 64,
+            "maximumError": 6.188504650950222e-7,
+            "origin": [
+              100000,
+              19,
+              -200000
+            ],
+            "shadingMap": {
+              "samples": 128,
+              "origin": [
+                100000,
+                19,
+                -200000
+              ],
+              "heightError": 0.003414126442966514,
+              "slopeError": 0.003487288430027047,
+              "jacobianError": 0.0008521039723714541,
+              "seamError": 0.00012224912643432617,
+              "farVariance": 0.05092322453856468
+            }
+          }
+        ],
+        "depthHierarchy": [
+          {
+            "width": 65,
+            "height": 33,
+            "maximumError": 0
+          },
+          {
+            "width": 5,
+            "height": 3,
+            "maximumError": 0
+          },
+          {
+            "width": 1,
+            "height": 17,
+            "maximumError": 0
+          }
+        ],
+        "history": {
+          "results": [
+            {
+              "name": "accepted",
+              "correction": 0.005859375,
+              "detailError": 0.00244140625
+            },
+            {
+              "name": "identity-rejected",
+              "correction": 0,
+              "detailError": 0
+            },
+            {
+              "name": "depth-rejected",
+              "correction": 0,
+              "detailError": 0
+            },
+            {
+              "name": "opaque-excluded",
+              "correction": 0,
+              "detailError": 0
+            },
+            {
+              "name": "reset",
+              "correction": 0,
+              "detailError": 0
+            },
+            {
+              "name": "frozen",
+              "correction": 0,
+              "detailError": 0
+            }
+          ],
+          "byteLength": 528
+        }
+      },
+      "source": {
+        "startedAt": "2026-09-23T21:10:10.092Z",
+        "finishedAt": "2026-09-23T21:10:17.474Z",
+        "sourceFingerprint": "594868d8d7fad4c17eb27e3da0a076f226ebb8fa9852d58aa5e7928f9a64a49c",
+        "finalSourceFingerprint": "594868d8d7fad4c17eb27e3da0a076f226ebb8fa9852d58aa5e7928f9a64a49c",
+        "sourceStable": true
+      }
+    }
+  }
+}

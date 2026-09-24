@@ -6,18 +6,40 @@
   "packageManager": "bun@1.4.2",
   "workspaces": [
     "packages/*",
-    "apps/*"
+    "apps/*",
+    "games/*"
   ],
   "scripts": {
     "dev": "bun --hot tools/dev.ts",
-    "check": "tsc --noEmit && tsc -p tsconfig.browser.json && bun tools/boundaries.ts && biome check . --reporter=summary",
+    "check": "tsc --noEmit && tsc -p tsconfig.browser.json && bun tools/boundaries.ts && biome check packages apps games tools verification --reporter=summary",
     "verify": "bun tools/verify.ts",
     "perf": "bun tools/perf.ts",
     "perf:low": "bun tools/perf.ts --low",
     "perf:author": "bun tools/authoring-benchmark.ts",
     "author": "bun tools/author.ts",
+    "bench:agents": "bun tools/agent-authoring-benchmark.ts",
+    "author:lookdev": "bun tools/authoring-lookdev.ts",
+    "creature:review": "bun tools/creature-review.ts",
+    "creature:smoke": "bun tools/creature-smoke.ts",
+    "creature:bench": "bun tools/creature-benchmark.ts",
     "cook": "bun tools/cook.ts",
-    "build": "bun tools/build.ts"
+    "build": "bun tools/build.ts",
+    "creature:atlas": "bun tools/creature-atlas.ts",
+    "creature:notebook": "bun tools/creature-notebook.ts",
+    "perf:render": "bun tools/rendering-compiler/scalability-check.ts --full --saturated --burst=4",
+    "perf:reconstruction": "bun tools/rendering-compiler/performance-check.ts --full --reconstruction --saturated --burst=4",
+    "verify:material-cache": "bun tools/rendering-compiler/material-lattice-check.ts",
+    "perf:render:paced": "bun tools/rendering-compiler/scalability-check.ts --full",
+    "perf:passes": "bun tools/rendering-compiler/pass-cost-check.ts --saturated --burst=4",
+    "vegetation:lookdev": "bun tools/vegetation-lookdev.ts",
+    "vegetation:growth": "bun tools/botanical-growth-study.ts",
+    "vegetation:bench": "bun tools/vegetation-benchmark.ts",
+    "vegetation:marginal": "bun tools/vegetation-marginal.ts",
+    "vegetation:frontier": "bun tools/vegetation-frontier-lookdev.ts",
+    "test": "bun test ./packages ./apps ./games ./tools",
+    "test:architecture": "bun test ./packages/authoring/src/work-publication.test.ts ./tools/workspace-transactions.test.ts ./tools/remediation-contracts.test.ts",
+    "perf:alternatives": "bun tools/architecture-benchmark.ts",
+    "verify:agent-game": "bun tools/verify-agent-game.ts"
   },
   "dependencies": {
     "react": "19.2.0",

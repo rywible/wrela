@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { referenceProject, type SurfaceArtifact } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
+import type { SurfaceArtifact } from "@wrela/model";
 
 test("compile worker returns owned typed buffers and an explicit invalid-input failure", async () => {
   const worker = new Worker(new URL("./worker.ts", import.meta.url).href);
@@ -65,6 +66,51 @@ test("terrain generation worker transfers a bounded patch and rejects oversized 
     });
     expect(failure.mesh).toBeNull();
     expect(failure.error).toContain("256");
+  } finally {
+    worker.terminate();
+  }
+}, 10000);
+
+test("growth worker continues authoritative checkpoints and transfers the matching realization", async () => {
+  const { alpinePineLookdevDefinition } = await import("@wrela/examples");
+  const { botanicalDevelopmentSchema } = await import("@wrela/model");
+  const { prepareVegetationGrowth } = await import("./botanical-growth-request");
+  const source = alpinePineLookdevDefinition();
+  if (!source.botanical) throw Error("Expected botanical source");
+  source.botanical.development = botanicalDevelopmentSchema.parse({ species: "lodgepole-pine", steps: 6 });
+  const worker = new Worker(new URL("./worker.ts", import.meta.url).href);
+  const send = (data: unknown) =>
+    new Promise<{ result: import("./botanical-growth-request").GrowthCompileResult; error: string | null }>(
+      (resolve, reject) => {
+        worker.onmessage = (event) => resolve(event.data);
+        worker.onerror = (event) => reject(Error(event.message));
+        worker.postMessage(data);
+      },
+    );
+  try {
+    const first = await send({
+      id: "grow",
+      growth: { document: source, instanceId: "forest/tree/1", steps: 8, events: [] },
+      quality: "interactive",
+    });
+    expect(first.error).toBeNull();
+    expect(first.result.growth).toEqual(prepareVegetationGrowth(source, 8));
+    const next = await send({
+      id: "continue",
+      growth: {
+        document: source,
+        instanceId: "forest/tree/1",
+        steps: 10,
+        previous: first.result.growth,
+        events: [],
+      },
+      quality: "interactive",
+    });
+    expect(next.error).toBeNull();
+    expect(next.result.growth).toEqual(prepareVegetationGrowth(source, 10, first.result.growth));
+    expect(next.result.artifact.id).toBe(first.result.artifact.id);
+    expect(next.result.artifact.surfaces[0].mesh.materialCoordinates).toBeInstanceOf(Float32Array);
+    expect(next.result.artifact.surfaces[1].mesh.positions.byteLength).toBeGreaterThan(0);
   } finally {
     worker.terminate();
   }

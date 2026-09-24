@@ -1,0 +1,185 @@
+{
+  "notes": "Analytic diffuse enclosure energy check. Uniform unit emission, uniform albedo, no sky or point lights; camera/reference integration is before SH or spatial interpolation. Values are emitted irradiance/pi. This is an independent steady-state physical test, not another implementation of the same bounded path estimator.",
+  "reports": [
+    {
+      "albedo": 0,
+      "samples": 64,
+      "value": 1.027819238163864,
+      "expected": 1,
+      "relativeError": 0.027819238163864002,
+      "rays": 186,
+      "ms": 1.7316670000000016
+    },
+    {
+      "albedo": 0,
+      "samples": 256,
+      "value": 0.9968750346270661,
+      "expected": 1,
+      "relativeError": -0.003124965372933941,
+      "rays": 727,
+      "ms": 1.9841249999999988
+    },
+    {
+      "albedo": 0,
+      "samples": 4096,
+      "value": 1.0002920657519858,
+      "expected": 1,
+      "relativeError": 0.00029206575198581497,
+      "rays": 11599,
+      "ms": 10.864916999999998
+    },
+    {
+      "albedo": 0,
+      "samples": 16384,
+      "value": 0.9999581783028246,
+      "expected": 1,
+      "relativeError": -0.00004182169717537043,
+      "rays": 46460,
+      "ms": 31.372041000000003
+    },
+    {
+      "albedo": 0,
+      "samples": 65536,
+      "value": 1.0000360846491412,
+      "expected": 1,
+      "relativeError": 0.00003608464914117704,
+      "rays": 185691,
+      "ms": 92.53575000000001
+    },
+    {
+      "albedo": 0.4,
+      "samples": 64,
+      "value": 1.7115580732128517,
+      "expected": 1.6666666666666667,
+      "relativeError": 0.02693484392771097,
+      "rays": 774,
+      "ms": 0.8115829999999846
+    },
+    {
+      "albedo": 0.4,
+      "samples": 256,
+      "value": 1.6603827617536422,
+      "expected": 1.6666666666666667,
+      "relativeError": -0.0037703429478147307,
+      "rays": 3089,
+      "ms": 1.8756659999999954
+    },
+    {
+      "albedo": 0.4,
+      "samples": 4096,
+      "value": 1.6618063543171464,
+      "expected": 1.6666666666666667,
+      "relativeError": -0.002916187409712201,
+      "rays": 49132,
+      "ms": 28.012333000000012
+    },
+    {
+      "albedo": 0.4,
+      "samples": 16384,
+      "value": 1.6638192627650812,
+      "expected": 1.6666666666666667,
+      "relativeError": -0.0017084423409513326,
+      "rays": 196569,
+      "ms": 116.735375
+    },
+    {
+      "albedo": 0.4,
+      "samples": 65536,
+      "value": 1.6659487250548768,
+      "expected": 1.6666666666666667,
+      "relativeError": -0.000430764967073971,
+      "rays": 786960,
+      "ms": 367.37983299999996
+    },
+    {
+      "albedo": 0.7,
+      "samples": 64,
+      "value": 3.4117568181732074,
+      "expected": 3.333333333333333,
+      "relativeError": 0.023527045451962315,
+      "rays": 812,
+      "ms": 1.6045420000000377
+    },
+    {
+      "albedo": 0.7,
+      "samples": 256,
+      "value": 3.279541419415752,
+      "expected": 3.333333333333333,
+      "relativeError": -0.016137574175274328,
+      "rays": 3189,
+      "ms": 2.476750000000038
+    },
+    {
+      "albedo": 0.7,
+      "samples": 4096,
+      "value": 3.249673894705406,
+      "expected": 3.333333333333333,
+      "relativeError": -0.025097831588378174,
+      "rays": 51788,
+      "ms": 29.319458000000054
+    },
+    {
+      "albedo": 0.7,
+      "samples": 16384,
+      "value": 3.289619477520969,
+      "expected": 3.333333333333333,
+      "relativeError": -0.013114156743709195,
+      "rays": 208128,
+      "ms": 95.13274999999999
+    },
+    {
+      "albedo": 0.7,
+      "samples": 65536,
+      "value": 3.3317086309320647,
+      "expected": 3.333333333333333,
+      "relativeError": -0.000487410720380499,
+      "rays": 832981,
+      "ms": 385.687958
+    },
+    {
+      "albedo": 0.9,
+      "samples": 64,
+      "value": 11.865802683985075,
+      "expected": 10.000000000000002,
+      "relativeError": 0.1865802683985073,
+      "rays": 1422,
+      "ms": 0.553000000000111
+    },
+    {
+      "albedo": 0.9,
+      "samples": 256,
+      "value": 9.764683946463148,
+      "expected": 10.000000000000002,
+      "relativeError": -0.02353160535368541,
+      "rays": 5340,
+      "ms": 2.32545899999991
+    },
+    {
+      "albedo": 0.9,
+      "samples": 4096,
+      "value": 9.685699752315063,
+      "expected": 10.000000000000002,
+      "relativeError": -0.03143002476849385,
+      "rays": 88081,
+      "ms": 37.62708399999997
+    },
+    {
+      "albedo": 0.9,
+      "samples": 16384,
+      "value": 9.837732362948039,
+      "expected": 10.000000000000002,
+      "relativeError": -0.01622676370519631,
+      "rays": 354407,
+      "ms": 152.44795799999997
+    },
+    {
+      "albedo": 0.9,
+      "samples": 65536,
+      "value": 9.946050923309697,
+      "expected": 10.000000000000002,
+      "relativeError": -0.005394907669030501,
+      "rays": 1421599,
+      "ms": 613.3202500000002
+    }
+  ]
+}

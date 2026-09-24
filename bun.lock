@@ -22,34 +22,197 @@
     "apps/player": {
       "name": "@wrela/player",
       "version": "0.1.0",
+      "dependencies": {
+        "@wrela/authoring": "workspace:*",
+        "@wrela/compiler": "workspace:*",
+        "@wrela/model": "workspace:*",
+        "@wrela/render-webgpu": "workspace:*",
+        "@wrela/runtime": "workspace:*",
+      },
     },
     "apps/studio": {
       "name": "@wrela/studio",
       "version": "0.1.0",
+      "dependencies": {
+        "@wrela/authoring": "workspace:*",
+        "@wrela/compiler": "workspace:*",
+        "@wrela/delivery": "workspace:*",
+        "@wrela/examples": "workspace:*",
+        "@wrela/game-creature": "workspace:*",
+        "@wrela/model": "workspace:*",
+        "@wrela/render-webgpu": "workspace:*",
+        "@wrela/review": "workspace:*",
+        "@wrela/runtime": "workspace:*",
+        "@wrela/world": "workspace:*",
+        "react": "19.2.0",
+        "react-dom": "19.2.0",
+        "zod": "4.1.12",
+      },
+      "devDependencies": {
+        "@wrela/authoring": "workspace:*",
+        "@wrela/compiler": "workspace:*",
+        "@wrela/examples": "workspace:*",
+        "@wrela/model": "workspace:*",
+        "@wrela/render-webgpu": "workspace:*",
+        "@wrela/runtime": "workspace:*",
+      },
+    },
+    "games/creature-study": {
+      "name": "@wrela/game-creature",
+      "version": "0.1.0",
+      "dependencies": {
+        "@wrela/examples": "workspace:*",
+        "@wrela/model": "workspace:*",
+        "@wrela/runtime": "workspace:*",
+      },
+      "devDependencies": {
+        "@wrela/compiler": "workspace:*",
+        "@wrela/examples": "workspace:*",
+        "@wrela/model": "workspace:*",
+        "@wrela/runtime": "workspace:*",
+      },
+    },
+    "games/showcase": {
+      "name": "@wrela/showcase",
+      "version": "0.1.0",
+      "dependencies": {
+        "@wrela/compiler": "workspace:*",
+        "@wrela/examples": "workspace:*",
+        "@wrela/model": "workspace:*",
+        "@wrela/render-webgpu": "workspace:*",
+        "@wrela/runtime": "workspace:*",
+      },
+    },
+    "games/switch-gate": {
+      "name": "@wrela/game-switch-gate",
+      "version": "0.1.0",
+      "dependencies": {
+        "@wrela/examples": "workspace:*",
+        "@wrela/model": "workspace:*",
+        "@wrela/runtime": "workspace:*",
+        "zod": "4.1.12",
+      },
+    },
+    "games/winter-valley": {
+      "name": "@wrela/game-winter",
+      "version": "0.1.0",
+      "dependencies": {
+        "@wrela/examples": "workspace:*",
+        "@wrela/model": "workspace:*",
+        "@wrela/render-webgpu": "workspace:*",
+        "@wrela/runtime": "workspace:*",
+        "zod": "4.1.12",
+      },
+      "devDependencies": {
+        "@wrela/examples": "workspace:*",
+        "@wrela/model": "workspace:*",
+        "@wrela/runtime": "workspace:*",
+      },
     },
     "packages/authoring": {
       "name": "@wrela/authoring",
       "version": "0.1.0",
+      "dependencies": {
+        "@wrela/model": "workspace:*",
+        "zod": "4.1.12",
+      },
+      "devDependencies": {
+        "@wrela/examples": "workspace:*",
+        "@wrela/model": "workspace:*",
+      },
     },
     "packages/compiler": {
       "name": "@wrela/compiler",
       "version": "0.1.0",
+      "dependencies": {
+        "@wrela/model": "workspace:*",
+        "zod": "4.1.12",
+      },
+      "devDependencies": {
+        "@wrela/examples": "workspace:*",
+        "@wrela/model": "workspace:*",
+      },
+    },
+    "packages/delivery": {
+      "name": "@wrela/delivery",
+      "version": "0.1.0",
+      "dependencies": {
+        "@wrela/compiler": "workspace:*",
+        "@wrela/model": "workspace:*",
+        "@wrela/runtime": "workspace:*",
+      },
+    },
+    "packages/examples": {
+      "name": "@wrela/examples",
+      "version": "0.1.0",
+      "dependencies": {
+        "@wrela/model": "workspace:*",
+        "zod": "4.1.12",
+      },
     },
     "packages/model": {
       "name": "@wrela/model",
       "version": "0.1.0",
+      "dependencies": {
+        "zod": "4.1.12",
+      },
+      "devDependencies": {
+        "@wrela/examples": "workspace:*",
+      },
     },
     "packages/render-webgpu": {
       "name": "@wrela/render-webgpu",
       "version": "0.1.0",
+      "dependencies": {
+        "@wrela/model": "workspace:*",
+      },
+      "devDependencies": {
+        "@wrela/examples": "workspace:*",
+        "@wrela/model": "workspace:*",
+      },
+    },
+    "packages/review": {
+      "name": "@wrela/review",
+      "version": "0.1.0",
+      "dependencies": {
+        "@wrela/authoring": "workspace:*",
+        "@wrela/compiler": "workspace:*",
+        "@wrela/model": "workspace:*",
+        "@wrela/render-webgpu": "workspace:*",
+        "@wrela/runtime": "workspace:*",
+        "@wrela/world": "workspace:*",
+      },
     },
     "packages/runtime": {
       "name": "@wrela/runtime",
       "version": "0.1.0",
+      "dependencies": {
+        "@dimforge/rapier3d-compat": "0.19.2",
+        "@wrela/compiler": "workspace:*",
+        "@wrela/model": "workspace:*",
+        "@wrela/world": "workspace:*",
+        "zod": "4.1.12",
+      },
+      "devDependencies": {
+        "@wrela/compiler": "workspace:*",
+        "@wrela/examples": "workspace:*",
+        "@wrela/model": "workspace:*",
+        "@wrela/world": "workspace:*",
+      },
     },
     "packages/world": {
       "name": "@wrela/world",
       "version": "0.1.0",
+      "dependencies": {
+        "@wrela/compiler": "workspace:*",
+        "@wrela/model": "workspace:*",
+        "zod": "4.1.12",
+      },
+      "devDependencies": {
+        "@wrela/compiler": "workspace:*",
+        "@wrela/examples": "workspace:*",
+        "@wrela/model": "workspace:*",
+      },
     },
   },
   "packages": {
@@ -87,13 +250,27 @@
 
     "@wrela/compiler": ["@wrela/compiler@workspace:packages/compiler"],
 
+    "@wrela/delivery": ["@wrela/delivery@workspace:packages/delivery"],
+
+    "@wrela/examples": ["@wrela/examples@workspace:packages/examples"],
+
+    "@wrela/game-creature": ["@wrela/game-creature@workspace:games/creature-study"],
+
+    "@wrela/game-switch-gate": ["@wrela/game-switch-gate@workspace:games/switch-gate"],
+
+    "@wrela/game-winter": ["@wrela/game-winter@workspace:games/winter-valley"],
+
     "@wrela/model": ["@wrela/model@workspace:packages/model"],
 
     "@wrela/player": ["@wrela/player@workspace:apps/player"],
 
     "@wrela/render-webgpu": ["@wrela/render-webgpu@workspace:packages/render-webgpu"],
 
+    "@wrela/review": ["@wrela/review@workspace:packages/review"],
+
     "@wrela/runtime": ["@wrela/runtime@workspace:packages/runtime"],
+
+    "@wrela/showcase": ["@wrela/showcase@workspace:games/showcase"],
 
     "@wrela/studio": ["@wrela/studio@workspace:apps/studio"],
 

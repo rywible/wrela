@@ -1,11 +1,15 @@
-import { type Document, type Project, parseProject, referenceProject } from "@wrela/model";
+import { type Document, type Project, parseProject } from "@wrela/model";
 
 export type DefinitionCreationPlan = { document: Document; dependencies: Document[] };
 
 /** A previewable creation plan, committed by the caller as one document.create batch. */
-export function planDefinitionCreation(project: Project, kind: Document["kind"]): DefinitionCreationPlan {
+export function planDefinitionCreation(
+  project: Project,
+  kind: Document["kind"],
+  templates: readonly Document[] = project.documents,
+): DefinitionCreationPlan {
   const source = parseProject(project),
-    fixtures = referenceProject().documents,
+    fixtures = templates,
     dependencies: Document[] = [],
     identities = new Set(source.documents.map((document) => document.id)),
     resolved = new Map<string, string>();
@@ -61,6 +65,7 @@ export function planDefinitionCreation(project: Project, kind: Document["kind"])
         document.environment = resolve(document.environment);
         document.lighting = resolve(document.lighting);
         if (document.water) document.water = resolve(document.water);
+        if (document.waters) document.waters = document.waters.map((id) => resolve(id));
         for (const population of document.populations) population.definition = resolve(population.definition);
         for (const instance of document.instances) instance.definition = resolve(instance.definition);
         break;
@@ -84,6 +89,7 @@ export function planDefinitionCreation(project: Project, kind: Document["kind"])
       document.populations = [];
       document.instances = [];
       delete document.water;
+      delete document.waters;
     }
     if (document.kind === "stage") document.subjects = [];
     remap(document);

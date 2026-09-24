@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wrela — Sky fixes — before and after</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#e8e9ea;background:#191b1d;line-height:1.5}
+*{box-sizing:border-box}body{margin:0}main{max-width:1680px;margin:auto;padding:30px 28px 60px}h1{font-size:clamp(26px,3vw,40px);font-weight:550;letter-spacing:-.03em;line-height:1.2;margin:8px 0 14px}h2{font-size:22px;font-weight:550;margin:34px 0 14px}h3{font-size:16px;font-weight:550;margin:0 0 6px}p{margin:8px 0 14px}.eyebrow{color:#b4bbc0;font-size:12px;letter-spacing:.1em;text-transform:uppercase}.intro{max-width:980px;color:#c9cdd0}.links,.presets,.image-links{display:flex;gap:12px 20px;flex-wrap:wrap}.links{font-size:14px}a{color:#b4d9f1;text-underline-offset:3px}button,select{font:inherit;color:inherit;background:#292d30;border:1px solid #5a6268;border-radius:4px;padding:9px 12px}button{cursor:pointer}button:hover{background:#373e43}button[aria-pressed="true"]{color:#1b2226;background:#d1e2ec;border-color:#d1e2ec}button:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid #a6dafa;outline-offset:3px}.presets{gap:8px;margin:26px 0 14px}.question{max-width:1120px;min-height:48px}.compare{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}.panel{min-width:0}label{display:block;margin-bottom:7px;font-size:13px;color:#c5cbd0}select{width:100%;min-width:0;text-overflow:ellipsis}figure{margin:14px 0 0}.photo{display:block;width:100%;height:auto;aspect-ratio:16/10;object-fit:contain;background:#101214}.caption{padding-top:14px}.caption p{font-size:14px;max-width:680px}.credit{font-size:12px!important;color:#aeb8c0}.image-links{font-size:13px}.scope{font-size:13px;max-width:1100px;color:#b1bbc2;margin-top:25px}.findings{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px;margin:30px 0}.findings p{font-size:14px;color:#c1c9ce}.findings strong{color:#f0f0ef;font-weight:550}.gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:28px 20px}.reference{min-width:0}.reference img{width:100%;height:auto;aspect-ratio:16/10;object-fit:contain;background:#101214;display:block}.reference h3{margin-top:12px}.reference p{font-size:13px;color:#c1c9ce}.reference button{font-size:13px}.reference a{font-size:13px;margin-left:12px}footer{margin-top:35px;padding-top:20px;border-top:1px solid #454d53;color:#aeb8c0;font-size:12px}.error{color:#ffb5ad}
+@media(max-width:900px){main{padding:24px 18px 45px}.gallery{grid-template-columns:repeat(2,minmax(0,1fr))}.findings{gap:16px}.question{min-height:0}}
+@media(max-width:700px){.compare{grid-template-columns:1fr;gap:26px}.findings{grid-template-columns:1fr;gap:2px}.photo{aspect-ratio:auto}.presets button{min-height:44px}}
+@media(max-width:420px){.gallery{grid-template-columns:1fr}.links{gap:10px 14px}}
+</style>
+</head>
+<body>
+<main>
+<div class="eyebrow">Wrela / sky implementation review / 23 September 2026</div>
+<h1>Cloud structure, layers, depth, and light.</h1>
+<p class="intro">Compare the previous sky with the revised production renderer. Seeded growth changes whole cloud silhouettes; young tips and dissolving margins have different density; independent middle and high layers reach the curved horizon; distant weather and diffuse illumination now retain more separation.</p>
+<nav class="links" aria-label="Research documents"><a href="../sky-fixes-2026-09-23.md">Implementation and verification</a><a href="sources.json">Image credits</a><a href="evidence.json">Capture evidence</a><a href="#references">12 reference images</a></nav>
+<div class="presets" aria-label="Comparison presets">
+<button type="button" data-pair="shape" aria-pressed="true">Before / after</button>
+<button type="button" data-pair="seeds" aria-pressed="false">Growth variation</button>
+<button type="button" data-pair="maturity" aria-pressed="false">Growing / dissolving</button>
+<button type="button" data-pair="layers" aria-pressed="false">Layering</button>
+<button type="button" data-pair="wisps" aria-pressed="false">Upper wisps</button>
+<button type="button" data-pair="sunset" aria-pressed="false">Sunset</button>
+<button type="button" data-pair="light" aria-pressed="false">Golden light</button>
+<button type="button" data-pair="world" aria-pressed="false">Alpine world</button>
+<button type="button" data-pair="quality" aria-pressed="false">High / Balanced</button>
+<button type="button" data-pair="reference" aria-pressed="false">Real-cloud target</button>
+<button type="button" data-pair="aaa" aria-pressed="false">AAA reference</button>
+</div>
+<p class="question" id="question" aria-live="polite"></p>
+<div class="compare">
+<section class="panel" aria-label="Left image"><label for="left-select">Before or revised view</label><select id="left-select"></select><figure><img class="photo" id="left-img" alt=""><figcaption class="caption"><h3 id="left-title"></h3><p id="left-note"></p><p class="credit" id="left-credit"></p><div class="image-links"><a id="left-full" target="_blank" rel="noopener">Open original image</a><a id="left-source" target="_blank" rel="noopener">Source</a></div></figcaption></figure></section>
+<section class="panel" aria-label="Right image"><label for="right-select">Reference or comparison view</label><select id="right-select"></select><figure><img class="photo" id="right-img" alt=""><figcaption class="caption"><h3 id="right-title"></h3><p id="right-note"></p><p class="credit" id="right-credit"></p><div class="image-links"><a id="right-full" target="_blank" rel="noopener">Open original image</a><a id="right-source" target="_blank" rel="noopener">Source</a></div></figcaption></figure></section>
+</div>
+<p class="scope">36 fresh production captures at 1440 × 900, alongside 21 before views and 12 references. Images are unretouched. Before/after views use the same camera and exposure. High and Balanced keep their existing ray-sampling ceilings. The morphology study isolates formations with a closer camera; it is labeled separately. Game and nature references differ in weather, lens, altitude, and grading. Still images do not establish motion quality; the report includes separate motion and performance checks.</p>
+<div class="findings">
+<p><strong>Different growth, shared weather.</strong><br>Seeds select branch positions, widths, unequal crowns, and detached shoulders. Maturity and growth lean are editable and animate through weather keys.</p>
+<p><strong>Separate layers and softer margins.</strong><br>A middle deck and fine high fibers have independent coverage, altitude, orientation, and drift. Dissipating low fragments use less extinction and stronger erosion.</p>
+<p><strong>Light follows openings.</strong><br>Diffuse visibility samples four sky directions, independently of the sun shadow. Four distance bands separate near formations from more distant weather.</p>
+</div>
+<h2 id="references">The reference collection</h2>
+<div class="gallery" id="gallery"></div>
+<footer>Changes are in the production renderer, environment source, and authoring controls. Final captures and checks use a frozen source snapshot. Reference images remain credited research material, not Wrela game assets. The renderer remains an approximation; this review does not claim parity with every AAA reference or broad hardware certification.</footer>
+<noscript><p>Enable JavaScript to choose comparison views. The <a href="../sky-fixes-2026-09-23.md">research report</a> and <a href="sources.json">image list</a> are available without it.</p></noscript>
+</main>
+<script src="sources.js"></script>
+<script>
+const images=skyAudit.images;
+const byId=new Map(images.map(image=>[image.id,image]));
+const pairs={
+shape:['before-high-cumulus-side','high-cumulus-side','Same camera and exposure. Compare the large silhouette, eroded margins, middle layer, and separation toward the horizon.'],
+seeds:['morph-tower-7','morph-tower-83','Same formation bounds, lighting, maturity, and camera. The seed changes the growth structure, not only surface noise.'],
+maturity:['morph-tower-31','morph-mature-tower','Same seed and conditions. Maturity spreads growth and increases erosion on weaker shoulders; growing tips retain coherent billows.'],
+layers:['before-high-east','high-east','Same camera and light. Look for the independent middle layer and high fibers continuing toward the horizon.'],
+wisps:['before-high-zenith','high-zenith','Upper clouds now use continuous wind-stretched detail with oblique noise slices, rather than repeated curved ribbon envelopes.'],
+sunset:['before-high-sunset','high-sunset','Same exposure and sun angle. Clouds receive diffuse light from sky openings independently of the grazing sun column.'],
+light:['before-high-golden','high-golden','Compare shaded bodies, illuminated edges, and the atmospheric separation of distant formations.'],
+world:['before-world-landscape','world-landscape','The alpine camera places the sky in the game. Concurrent terrain, water, or foliage work may also affect the current world; the sky studies isolate sky changes.'],
+quality:['high-cumulus-side','balanced-cumulus-side','Same scene. High renders clouds at 1440 × 900; Balanced uses 768 × 512. Sampling ceilings remain 1,024 / 512 for authored formations.'],
+reference:['morph-tower-7','n-congestus','The NASA photograph remains a morphology target, not a calibrated exposure or matching weather test.'],
+aaa:['high-golden','h-towers','Compare against the official Horizon reference. Its composition, scale, time of day, and grading are different.']
+};
+function show(side,id){
+  const im=byId.get(id);if(!im)throw Error('Missing image '+id);
+  document.getElementById(side+'-select').value=id;
+  const photo=document.getElementById(side+'-img');photo.src=im.file;photo.alt=im.title;
+  document.getElementById(side+'-title').textContent=im.title;
+  document.getElementById(side+'-note').textContent=im.note;
+  document.getElementById(side+'-credit').textContent=im.credit;
+  document.getElementById(side+'-full').href=im.file;
+  document.getElementById(side+'-source').href=im.source;
+}
+function clearPreset(){document.querySelectorAll('[data-pair]').forEach(b=>b.setAttribute('aria-pressed','false'));}
+for(const side of ['left','right']){
+  const select=document.getElementById(side+'-select');
+  for(const category of ['Before','Revised High','Revised Balanced','Revised Low','Revised world','Morphology study','AAA','Nature']){
+    if(side==='left'&&(category==='AAA'||category==='Nature'))continue;
+    const group=document.createElement('optgroup');group.label=category;
+    for(const im of images.filter(x=>x.category===category)){const option=document.createElement('option');option.value=im.id;option.textContent=im.title;group.append(option);}
+    select.append(group);
+  }
+  select.addEventListener('change',()=>{show(side,select.value);clearPreset();document.getElementById('question').textContent='Custom comparison. Account for differences in cloud type, camera, lighting, exposure, and image resolution.';});
+}
+function setPair(key){const [left,right,note]=pairs[key];show('left',left);show('right',right);document.getElementById('question').textContent=note;document.querySelectorAll('[data-pair]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.pair===key)));}
+document.querySelectorAll('[data-pair]').forEach(b=>b.addEventListener('click',()=>setPair(b.dataset.pair)));
+for(const im of images.filter(x=>x.category==='AAA'||x.category==='Nature')){
+  const article=document.createElement('article');article.className='reference';
+  const photo=document.createElement('img');photo.src=im.file;photo.alt=im.title;photo.loading='lazy';
+  const title=document.createElement('h3');title.textContent=im.title;
+  const note=document.createElement('p');note.textContent=im.note;
+  const credit=document.createElement('p');credit.className='credit';credit.textContent=im.credit;
+  const button=document.createElement('button');button.type='button';button.textContent='Compare this reference';button.setAttribute('aria-label','Compare '+im.title);
+  button.addEventListener('click',()=>{show('right',im.id);clearPreset();document.getElementById('question').textContent='Reference selected. Choose a current Wrela view on the left to compare.';document.querySelector('.presets').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});});
+  const source=document.createElement('a');source.href=im.source;source.textContent='Source';source.target='_blank';source.rel='noopener';
+  article.append(photo,title,note,credit,button,source);document.getElementById('gallery').append(article);
+}
+setPair('shape');
+</script>
+</body>
+</html>

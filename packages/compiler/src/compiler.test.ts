@@ -10,6 +10,7 @@ import {
   type VegetationDefinition,
   type WaterDefinition,
 } from "@wrela/model";
+
 import {
   artifactTransfers,
   compileCharacter,
@@ -171,7 +172,19 @@ describe("surface compilation", () => {
     const artifact = compileDocument(object);
     if (!artifact) throw new Error("Expected compiled object");
     expect(artifact.key).toBe(compilerKey(object));
-    expect(artifactTransfers(artifact)).toHaveLength(3);
+    const transfers = artifactTransfers(artifact);
+    expect(new Set(transfers).size).toBe(transfers.length);
+    expect(transfers).toContain(
+      artifact.kind === "vegetation"
+        ? (artifact.surfaces[0].mesh.positions.buffer as ArrayBuffer)
+        : (artifact.mesh.positions.buffer as ArrayBuffer),
+    );
+    if (artifact.kind === "surface")
+      for (const product of artifact.renderProducts ?? [])
+        if (product.kind === "parametric-mesh") {
+          expect(transfers).toContain(product.mesh.positions.buffer as ArrayBuffer);
+          expect(transfers).toContain(product.mesh.indices.buffer as ArrayBuffer);
+        }
   });
   test("envelope bindings are finite normalized and rigid at isolated extremes", () => {
     const character: CharacterDefinition = {

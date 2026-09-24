@@ -1,0 +1,2118 @@
+{
+  "sourceFingerprint": "840f073f2ce42389f58572f11f2474d4cac092243e292cb71041ff32d20dada7",
+  "repetitions": 5,
+  "warmStartupMs": 619.9093750000029,
+  "summary": [
+    {
+      "domain": "wood",
+      "coldToolMs": {
+        "samples": 5,
+        "mean": 1804.6591332000003,
+        "p50": 1800.9495840000018,
+        "p95": 1823.9769579999993,
+        "p99": 1823.9769579999993,
+        "max": 1823.9769579999993
+      },
+      "coldIncludingStartupMs": {
+        "samples": 5,
+        "mean": 2450.7745746,
+        "p50": 2441.1870830000007,
+        "p95": 2530.403958,
+        "p99": 2530.403958,
+        "max": 2530.403958
+      },
+      "warmToolMs": {
+        "samples": 5,
+        "mean": 1331.7949999999983,
+        "p50": 1199.7272499999963,
+        "p95": 1833.969624999998,
+        "p99": 1833.969624999998,
+        "max": 1833.969624999998
+      }
+    },
+    {
+      "domain": "vegetation",
+      "coldToolMs": {
+        "samples": 5,
+        "mean": 4147.450883399999,
+        "p50": 4151.092833999999,
+        "p95": 4163.927374999999,
+        "p99": 4163.927374999999,
+        "max": 4163.927374999999
+      },
+      "coldIncludingStartupMs": {
+        "samples": 5,
+        "mean": 4782.454541799996,
+        "p50": 4779.926001,
+        "p95": 4800.170124999997,
+        "p99": 4800.170124999997,
+        "max": 4800.170124999997
+      },
+      "warmToolMs": {
+        "samples": 5,
+        "mean": 3091.9816166000005,
+        "p50": 2977.8601669999916,
+        "p95": 3586.793208000003,
+        "p99": 3586.793208000003,
+        "max": 3586.793208000003
+      }
+    },
+    {
+      "domain": "lantern",
+      "coldToolMs": {
+        "samples": 5,
+        "mean": 1348.6557498000016,
+        "p50": 1348.8346670000028,
+        "p95": 1367.713708000003,
+        "p99": 1367.713708000003,
+        "max": 1367.713708000003
+      },
+      "coldIncludingStartupMs": {
+        "samples": 5,
+        "mean": 1986.6042416000018,
+        "p50": 1974.4902489999986,
+        "p95": 2054.1586670000033,
+        "p99": 2054.1586670000033,
+        "max": 2054.1586670000033
+      },
+      "warmToolMs": {
+        "samples": 5,
+        "mean": 794.4313086000009,
+        "p50": 793.1943330000067,
+        "p95": 811.4200419999979,
+        "p99": 811.4200419999979,
+        "max": 811.4200419999979
+      }
+    },
+    {
+      "domain": "bell",
+      "coldToolMs": {
+        "samples": 5,
+        "mean": 1186.0536416000007,
+        "p50": 1193.6952910000036,
+        "p95": 1195.7908749999988,
+        "p99": 1195.7908749999988,
+        "max": 1195.7908749999988
+      },
+      "coldIncludingStartupMs": {
+        "samples": 5,
+        "mean": 1811.583708200001,
+        "p50": 1806.8148749999982,
+        "p95": 1835.1195000000007,
+        "p99": 1835.1195000000007,
+        "max": 1835.1195000000007
+      },
+      "warmToolMs": {
+        "samples": 5,
+        "mean": 648.1111666000012,
+        "p50": 646.5065000000031,
+        "p95": 666.6237910000054,
+        "p99": 666.6237910000054,
+        "max": 666.6237910000054
+      }
+    }
+  ],
+  "rows": [
+    {
+      "domain": "wood",
+      "mode": "cold",
+      "repetition": 0,
+      "elapsedMs": 1799.475375,
+      "startupMs": 730.928583,
+      "candidateKey": "69070fdfa7a206dc",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-0/.wrela/work/evidence/study-1484d337-b355-4bb0-bcbd-61a9225b9209/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.75,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-0/.wrela/work/evidence/study-1484d337-b355-4bb0-bcbd-61a9225b9209/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 8.5,
+            "captureMs": 814.3000000715256,
+            "totalMs": 822.8000000715256,
+            "firstCandidateImageMs": 681.8999999761581,
+            "firstCandidateImageAt": 1790222863347,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.59,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-0/.wrela/work/evidence/study-1484d337-b355-4bb0-bcbd-61a9225b9209/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 2,
+            "captureMs": 211,
+            "totalMs": 213,
+            "firstCandidateImageMs": 68,
+            "firstCandidateImageAt": 1790222863577,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.91,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-0/.wrela/work/evidence/study-1484d337-b355-4bb0-bcbd-61a9225b9209/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.600000023841858,
+            "captureMs": 218.39999997615814,
+            "totalMs": 220,
+            "firstCandidateImageMs": 75.89999997615814,
+            "firstCandidateImageAt": 1790222863807,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "vegetation",
+      "mode": "cold",
+      "repetition": 0,
+      "elapsedMs": 4129.732291,
+      "startupMs": 638.4043750000001,
+      "candidateKey": "3593649c05395f83",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-0/.wrela/work/evidence/study-ac6b5572-012d-40ea-b87b-39a7be8aa4b1/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.75,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-0/.wrela/work/evidence/study-ac6b5572-012d-40ea-b87b-39a7be8aa4b1/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 8.299999952316284,
+            "captureMs": 2002.5,
+            "totalMs": 2010.7999999523163,
+            "firstCandidateImageMs": 1885,
+            "firstCandidateImageAt": 1790222867086,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.59,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-0/.wrela/work/evidence/study-ac6b5572-012d-40ea-b87b-39a7be8aa4b1/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 2.100000023841858,
+            "captureMs": 692.5,
+            "totalMs": 694.6000000238419,
+            "firstCandidateImageMs": 579.5,
+            "firstCandidateImageAt": 1790222867803,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.91,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-0/.wrela/work/evidence/study-ac6b5572-012d-40ea-b87b-39a7be8aa4b1/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.6999999284744263,
+            "captureMs": 695.8000000715256,
+            "totalMs": 697.5,
+            "firstCandidateImageMs": 578.3999999761581,
+            "firstCandidateImageAt": 1790222868502,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "lantern",
+      "mode": "cold",
+      "repetition": 0,
+      "elapsedMs": 1330.8049170000013,
+      "startupMs": 622.9414169999991,
+      "candidateKey": "31e88415e4057464",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-lantern-0/.wrela/work/evidence/hero-09651d24-f6bd-434d-8de0-a27a0730457f/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-lantern-0/.wrela/work/evidence/hero-09651d24-f6bd-434d-8de0-a27a0730457f/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 34.39999997615814,
+            "captureMs": 1151.2999999523163,
+            "totalMs": 1185.6999999284744,
+            "firstCandidateImageMs": 682.5999999046326,
+            "firstCandidateImageAt": 1790222870703,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "bell",
+      "mode": "cold",
+      "repetition": 0,
+      "elapsedMs": 1193.7896659999988,
+      "startupMs": 613.0252089999994,
+      "candidateKey": "3ac9a5983cc12f0d",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-bell-0/.wrela/work/evidence/hero-a4dad1eb-dae7-4b90-a928-6e97b1b9db9b/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-bell-0/.wrela/work/evidence/hero-a4dad1eb-dae7-4b90-a928-6e97b1b9db9b/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 20,
+            "captureMs": 1037,
+            "totalMs": 1057,
+            "firstCandidateImageMs": 677.7000000476837,
+            "firstCandidateImageAt": 1790222872711,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "wood",
+      "mode": "cold",
+      "repetition": 1,
+      "elapsedMs": 1819.9257080000007,
+      "startupMs": 621.261375,
+      "candidateKey": "f919ef17aa0a8a3b",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-1/.wrela/work/evidence/study-86cf7ed3-552d-41bb-a503-9a314c27629d/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.765,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-1/.wrela/work/evidence/study-86cf7ed3-552d-41bb-a503-9a314c27629d/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 8.700000047683716,
+            "captureMs": 843.2000000476837,
+            "totalMs": 851.9000000953674,
+            "firstCandidateImageMs": 707.8000000715256,
+            "firstCandidateImageAt": 1790222874658,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.605,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-1/.wrela/work/evidence/study-86cf7ed3-552d-41bb-a503-9a314c27629d/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 2.3000000715255737,
+            "captureMs": 224.79999995231628,
+            "totalMs": 227.10000002384186,
+            "firstCandidateImageMs": 71.40000009536743,
+            "firstCandidateImageAt": 1790222874895,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.925,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-1/.wrela/work/evidence/study-86cf7ed3-552d-41bb-a503-9a314c27629d/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.6999999284744263,
+            "captureMs": 207.30000007152557,
+            "totalMs": 209,
+            "firstCandidateImageMs": 62.59999990463257,
+            "firstCandidateImageAt": 1790222875122,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "vegetation",
+      "mode": "cold",
+      "repetition": 1,
+      "elapsedMs": 4151.092833999999,
+      "startupMs": 628.8331670000007,
+      "candidateKey": "0baa9815c245e964",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-1/.wrela/work/evidence/study-7362380a-cdaf-4e84-9267-9748aa520c5d/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.765,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-1/.wrela/work/evidence/study-7362380a-cdaf-4e84-9267-9748aa520c5d/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 8.200000047683716,
+            "captureMs": 2012,
+            "totalMs": 2020.2000000476837,
+            "firstCandidateImageMs": 1883,
+            "firstCandidateImageAt": 1790222878369,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.605,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-1/.wrela/work/evidence/study-7362380a-cdaf-4e84-9267-9748aa520c5d/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 2,
+            "captureMs": 702.5,
+            "totalMs": 704.5,
+            "firstCandidateImageMs": 583.3000000715256,
+            "firstCandidateImageAt": 1790222879102,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.925,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-1/.wrela/work/evidence/study-7362380a-cdaf-4e84-9267-9748aa520c5d/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.899999976158142,
+            "captureMs": 694.3999999761581,
+            "totalMs": 696.2999999523163,
+            "firstCandidateImageMs": 578.5,
+            "firstCandidateImageAt": 1790222879807,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "lantern",
+      "mode": "cold",
+      "repetition": 1,
+      "elapsedMs": 1346.2229159999988,
+      "startupMs": 628.2673329999998,
+      "candidateKey": "7f07c66b2334a07d",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-lantern-1/.wrela/work/evidence/hero-86ab1d67-97fa-4cb0-a799-8f6d3da89eac/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-lantern-1/.wrela/work/evidence/hero-86ab1d67-97fa-4cb0-a799-8f6d3da89eac/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 35,
+            "captureMs": 1165.2000000476837,
+            "totalMs": 1200.2000000476837,
+            "firstCandidateImageMs": 672,
+            "firstCandidateImageAt": 1790222882012,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "bell",
+      "mode": "cold",
+      "repetition": 1,
+      "elapsedMs": 1169.4589590000032,
+      "startupMs": 615.5604160000003,
+      "candidateKey": "0ff2250bd72f996e",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-bell-1/.wrela/work/evidence/hero-7fe7bb6f-26c0-4d64-b930-0bba167a4c78/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-bell-1/.wrela/work/evidence/hero-7fe7bb6f-26c0-4d64-b930-0bba167a4c78/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 19.300000071525574,
+            "captureMs": 1017.8999999761581,
+            "totalMs": 1037.2000000476837,
+            "firstCandidateImageMs": 661.8000000715256,
+            "firstCandidateImageAt": 1790222884027,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "wood",
+      "mode": "cold",
+      "repetition": 2,
+      "elapsedMs": 1823.9769579999993,
+      "startupMs": 621.5926659999968,
+      "candidateKey": "86c642e90e9a25d6",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-2/.wrela/work/evidence/study-e317bcb4-adf9-4601-b974-d0d5260d8eff/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.78,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-2/.wrela/work/evidence/study-e317bcb4-adf9-4601-b974-d0d5260d8eff/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 8.400000095367432,
+            "captureMs": 844.3999999761581,
+            "totalMs": 852.8000000715256,
+            "firstCandidateImageMs": 703.3000000715256,
+            "firstCandidateImageAt": 1790222885956,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.62,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-2/.wrela/work/evidence/study-e317bcb4-adf9-4601-b974-d0d5260d8eff/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 2.200000047683716,
+            "captureMs": 221.5,
+            "totalMs": 223.70000004768372,
+            "firstCandidateImageMs": 78.89999997615814,
+            "firstCandidateImageAt": 1790222886206,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.9400000000000001,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-2/.wrela/work/evidence/study-e317bcb4-adf9-4601-b974-d0d5260d8eff/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.600000023841858,
+            "captureMs": 212.29999995231628,
+            "totalMs": 213.89999997615814,
+            "firstCandidateImageMs": 60.39999997615814,
+            "firstCandidateImageAt": 1790222886422,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "vegetation",
+      "mode": "cold",
+      "repetition": 2,
+      "elapsedMs": 4163.927374999999,
+      "startupMs": 636.2427499999976,
+      "candidateKey": "1b1925c0e10c4c75",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-2/.wrela/work/evidence/study-8633eaca-dea5-4e91-8392-bd115e0adeaa/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.78,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-2/.wrela/work/evidence/study-8633eaca-dea5-4e91-8392-bd115e0adeaa/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 8.800000071525574,
+            "captureMs": 2035.1999999284744,
+            "totalMs": 2044,
+            "firstCandidateImageMs": 1904,
+            "firstCandidateImageAt": 1790222889712,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.62,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-2/.wrela/work/evidence/study-8633eaca-dea5-4e91-8392-bd115e0adeaa/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 2.100000023841858,
+            "captureMs": 701.8999999761581,
+            "totalMs": 704,
+            "firstCandidateImageMs": 587,
+            "firstCandidateImageAt": 1790222890451,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.9400000000000001,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-2/.wrela/work/evidence/study-8633eaca-dea5-4e91-8392-bd115e0adeaa/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.7000000476837158,
+            "captureMs": 697.8999999761581,
+            "totalMs": 699.6000000238419,
+            "firstCandidateImageMs": 579.7999999523163,
+            "firstCandidateImageAt": 1790222891153,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "lantern",
+      "mode": "cold",
+      "repetition": 2,
+      "elapsedMs": 1349.7025410000024,
+      "startupMs": 623.9680829999998,
+      "candidateKey": "d853f0cbd257f019",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-lantern-2/.wrela/work/evidence/hero-7f962fdd-46f2-44eb-ba25-a84fbeaac7cd/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-lantern-2/.wrela/work/evidence/hero-7f962fdd-46f2-44eb-ba25-a84fbeaac7cd/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 34.40000009536743,
+            "captureMs": 1174.7999999523163,
+            "totalMs": 1209.2000000476837,
+            "firstCandidateImageMs": 705.8000000715256,
+            "firstCandidateImageAt": 1790222893374,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "bell",
+      "mode": "cold",
+      "repetition": 2,
+      "elapsedMs": 1177.5334169999987,
+      "startupMs": 651.5409580000014,
+      "candidateKey": "11a6e9497f2cdc63",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-bell-2/.wrela/work/evidence/hero-336604c1-7732-44f9-8667-02527db7aa97/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-bell-2/.wrela/work/evidence/hero-336604c1-7732-44f9-8667-02527db7aa97/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 20.200000047683716,
+            "captureMs": 1023.2999999523163,
+            "totalMs": 1043.5,
+            "firstCandidateImageMs": 655.7000000476837,
+            "firstCandidateImageAt": 1790222895421,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "wood",
+      "mode": "cold",
+      "repetition": 3,
+      "elapsedMs": 1800.9495840000018,
+      "startupMs": 639.2400410000046,
+      "candidateKey": "8fbaaa9f8a7b73d7",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-3/.wrela/work/evidence/study-4d35f834-1be0-4682-bc73-9afb6e06be03/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.795,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-3/.wrela/work/evidence/study-4d35f834-1be0-4682-bc73-9afb6e06be03/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 8.199999928474426,
+            "captureMs": 836,
+            "totalMs": 844.1999999284744,
+            "firstCandidateImageMs": 695.2999999523163,
+            "firstCandidateImageAt": 1790222897369,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.635,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-3/.wrela/work/evidence/study-4d35f834-1be0-4682-bc73-9afb6e06be03/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.899999976158142,
+            "captureMs": 213.89999997615814,
+            "totalMs": 215.79999995231628,
+            "firstCandidateImageMs": 78.60000002384186,
+            "firstCandidateImageAt": 1790222897616,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.9550000000000001,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-3/.wrela/work/evidence/study-4d35f834-1be0-4682-bc73-9afb6e06be03/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.600000023841858,
+            "captureMs": 206.39999997615814,
+            "totalMs": 208,
+            "firstCandidateImageMs": 61.800000071525574,
+            "firstCandidateImageAt": 1790222897824,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "vegetation",
+      "mode": "cold",
+      "repetition": 3,
+      "elapsedMs": 4154.114624999995,
+      "startupMs": 624.3542919999963,
+      "candidateKey": "573f739af60aeaed",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-3/.wrela/work/evidence/study-1e063528-a6da-41f3-b7fc-ca6a58b5a5a5/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.795,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-3/.wrela/work/evidence/study-1e063528-a6da-41f3-b7fc-ca6a58b5a5a5/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 8.299999952316284,
+            "captureMs": 2033.8000000715256,
+            "totalMs": 2042.1000000238419,
+            "firstCandidateImageMs": 1904.3999999761581,
+            "firstCandidateImageAt": 1790222901103,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.635,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-3/.wrela/work/evidence/study-1e063528-a6da-41f3-b7fc-ca6a58b5a5a5/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 2,
+            "captureMs": 699,
+            "totalMs": 701,
+            "firstCandidateImageMs": 582.5,
+            "firstCandidateImageAt": 1790222901835,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.9550000000000001,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-3/.wrela/work/evidence/study-1e063528-a6da-41f3-b7fc-ca6a58b5a5a5/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.6999999284744263,
+            "captureMs": 693.7000000476837,
+            "totalMs": 695.3999999761581,
+            "firstCandidateImageMs": 576.8999999761581,
+            "firstCandidateImageAt": 1790222902536,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "lantern",
+      "mode": "cold",
+      "repetition": 3,
+      "elapsedMs": 1348.8346670000028,
+      "startupMs": 628.1206670000029,
+      "candidateKey": "31a10673d365cd7b",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-lantern-3/.wrela/work/evidence/hero-77349be9-5c8b-4ca1-a9e2-d62dcce5d770/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-lantern-3/.wrela/work/evidence/hero-77349be9-5c8b-4ca1-a9e2-d62dcce5d770/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 35.39999997615814,
+            "captureMs": 1168.2999999523163,
+            "totalMs": 1203.6999999284744,
+            "firstCandidateImageMs": 692.3999999761581,
+            "firstCandidateImageAt": 1790222904754,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "bell",
+      "mode": "cold",
+      "repetition": 3,
+      "elapsedMs": 1195.7908749999988,
+      "startupMs": 639.3286250000019,
+      "candidateKey": "2a04411b669f01f4",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-bell-3/.wrela/work/evidence/hero-795f9cbc-1cc2-4136-b83c-2dadb93528eb/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-bell-3/.wrela/work/evidence/hero-795f9cbc-1cc2-4136-b83c-2dadb93528eb/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 20.200000047683716,
+            "captureMs": 1040.8999999761581,
+            "totalMs": 1061.1000000238419,
+            "firstCandidateImageMs": 683.3000000715256,
+            "firstCandidateImageAt": 1790222906798,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "wood",
+      "mode": "cold",
+      "repetition": 4,
+      "elapsedMs": 1778.968041,
+      "startupMs": 617.554541999998,
+      "candidateKey": "c3407c9f20996d45",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-4/.wrela/work/evidence/study-31c57d7d-d8f0-4a67-89c0-876f93e08e48/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.81,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-4/.wrela/work/evidence/study-31c57d7d-d8f0-4a67-89c0-876f93e08e48/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 9,
+            "captureMs": 819,
+            "totalMs": 828,
+            "firstCandidateImageMs": 687.2999999523163,
+            "firstCandidateImageAt": 1790222908711,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.65,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-4/.wrela/work/evidence/study-31c57d7d-d8f0-4a67-89c0-876f93e08e48/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 2,
+            "captureMs": 223.20000004768372,
+            "totalMs": 225.20000004768372,
+            "firstCandidateImageMs": 85,
+            "firstCandidateImageAt": 1790222908958,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.9700000000000001,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-wood-4/.wrela/work/evidence/study-31c57d7d-d8f0-4a67-89c0-876f93e08e48/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.6999999284744263,
+            "captureMs": 217.30000007152557,
+            "totalMs": 219,
+            "firstCandidateImageMs": 62.89999997615814,
+            "firstCandidateImageAt": 1790222909172,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "vegetation",
+      "mode": "cold",
+      "repetition": 4,
+      "elapsedMs": 4138.387291999999,
+      "startupMs": 647.1837079999968,
+      "candidateKey": "50a6e5fc1d1a989b",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-4/.wrela/work/evidence/study-37ed213a-f865-4cd4-94e2-0a9961f1dff0/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.81,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-4/.wrela/work/evidence/study-37ed213a-f865-4cd4-94e2-0a9961f1dff0/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 8.399999976158142,
+            "captureMs": 2012.6999999284744,
+            "totalMs": 2021.0999999046326,
+            "firstCandidateImageMs": 1898,
+            "firstCandidateImageAt": 1790222912435,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.65,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-4/.wrela/work/evidence/study-37ed213a-f865-4cd4-94e2-0a9961f1dff0/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 2,
+            "captureMs": 721.6000000238419,
+            "totalMs": 723.6000000238419,
+            "firstCandidateImageMs": 598.8999999761581,
+            "firstCandidateImageAt": 1790222913169,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.9700000000000001,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-vegetation-4/.wrela/work/evidence/study-37ed213a-f865-4cd4-94e2-0a9961f1dff0/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.7000000476837158,
+            "captureMs": 675.2999999523163,
+            "totalMs": 677,
+            "firstCandidateImageMs": 556.8000000715256,
+            "firstCandidateImageAt": 1790222913856,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "lantern",
+      "mode": "cold",
+      "repetition": 4,
+      "elapsedMs": 1367.713708000003,
+      "startupMs": 686.4449590000004,
+      "candidateKey": "c3d54f9d94816985",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-lantern-4/.wrela/work/evidence/hero-060e8a8a-4d07-4ffe-9514-4853db166a2d/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-lantern-4/.wrela/work/evidence/hero-060e8a8a-4d07-4ffe-9514-4853db166a2d/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 34.199999928474426,
+            "captureMs": 1193.9000000953674,
+            "totalMs": 1228.1000000238419,
+            "firstCandidateImageMs": 706.3999999761581,
+            "firstCandidateImageAt": 1790222916139,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "bell",
+      "mode": "cold",
+      "repetition": 4,
+      "elapsedMs": 1193.6952910000036,
+      "startupMs": 608.1951249999984,
+      "candidateKey": "94c34e16ac7fd841",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-bell-4/.wrela/work/evidence/hero-11820139-67ae-44bf-b580-16300ae98959/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/cold-bell-4/.wrela/work/evidence/hero-11820139-67ae-44bf-b580-16300ae98959/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 19.700000047683716,
+            "captureMs": 1039.7999999523163,
+            "totalMs": 1059.5,
+            "firstCandidateImageMs": 675.1000000238419,
+            "firstCandidateImageAt": 1790222918155,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "wood",
+      "mode": "warm",
+      "repetition": 0,
+      "elapsedMs": 1833.969624999998,
+      "startupMs": 0,
+      "candidateKey": "69070fdfa7a206dc",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-0/.wrela/work/evidence/study-1550be30-7d32-4fd9-a5ce-6128c670c731/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.75,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-0/.wrela/work/evidence/study-1550be30-7d32-4fd9-a5ce-6128c670c731/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 8.100000023841858,
+            "captureMs": 861.6000000238419,
+            "totalMs": 869.7000000476837,
+            "firstCandidateImageMs": 720.6000000238419,
+            "firstCandidateImageAt": 1790222920106,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.59,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-0/.wrela/work/evidence/study-1550be30-7d32-4fd9-a5ce-6128c670c731/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 2.200000047683716,
+            "captureMs": 231.10000002384186,
+            "totalMs": 233.30000007152557,
+            "firstCandidateImageMs": 78.5,
+            "firstCandidateImageAt": 1790222920354,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.91,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-0/.wrela/work/evidence/study-1550be30-7d32-4fd9-a5ce-6128c670c731/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.600000023841858,
+            "captureMs": 215.29999995231628,
+            "totalMs": 216.89999997615814,
+            "firstCandidateImageMs": 62.799999952316284,
+            "firstCandidateImageAt": 1790222920583,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "vegetation",
+      "mode": "warm",
+      "repetition": 0,
+      "elapsedMs": 3586.793208000003,
+      "startupMs": 0,
+      "candidateKey": "3593649c05395f83",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-0/.wrela/work/evidence/study-da8329b6-518e-41ff-b08d-abf5b4bce27f/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.75,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-0/.wrela/work/evidence/study-da8329b6-518e-41ff-b08d-abf5b4bce27f/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 2.799999952316284,
+            "captureMs": 1472.6000000238419,
+            "totalMs": 1475.3999999761581,
+            "firstCandidateImageMs": 1355.1000000238419,
+            "firstCandidateImageAt": 1790222922604,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.59,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-0/.wrela/work/evidence/study-da8329b6-518e-41ff-b08d-abf5b4bce27f/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 2.1999999284744263,
+            "captureMs": 715.3000000715256,
+            "totalMs": 717.5,
+            "firstCandidateImageMs": 598.5,
+            "firstCandidateImageAt": 1790222923334,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.91,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-0/.wrela/work/evidence/study-da8329b6-518e-41ff-b08d-abf5b4bce27f/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.7999999523162842,
+            "captureMs": 679.7999999523163,
+            "totalMs": 681.5999999046326,
+            "firstCandidateImageMs": 564.2999999523163,
+            "firstCandidateImageAt": 1790222924023,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "lantern",
+      "mode": "warm",
+      "repetition": 0,
+      "elapsedMs": 811.4200419999979,
+      "startupMs": 0,
+      "candidateKey": "31e88415e4057464",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-lantern-0/.wrela/work/evidence/hero-08670c44-8d65-448a-8017-fbc7ee7c7c55/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-lantern-0/.wrela/work/evidence/hero-08670c44-8d65-448a-8017-fbc7ee7c7c55/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 27.09999990463257,
+            "captureMs": 652.9000000953674,
+            "totalMs": 680,
+            "firstCandidateImageMs": 159.79999995231628,
+            "firstCandidateImageAt": 1790222924988,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "bell",
+      "mode": "warm",
+      "repetition": 0,
+      "elapsedMs": 657.8579170000012,
+      "startupMs": 0,
+      "candidateKey": "3ac9a5983cc12f0d",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-bell-0/.wrela/work/evidence/hero-3b2797a7-3335-44c2-9859-985f6c1b9b8f/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-bell-0/.wrela/work/evidence/hero-3b2797a7-3335-44c2-9859-985f6c1b9b8f/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 8.200000047683716,
+            "captureMs": 527.2999999523163,
+            "totalMs": 535.5,
+            "firstCandidateImageMs": 167,
+            "firstCandidateImageAt": 1790222925810,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "wood",
+      "mode": "warm",
+      "repetition": 1,
+      "elapsedMs": 1194.0896659999999,
+      "startupMs": 0,
+      "candidateKey": "f919ef17aa0a8a3b",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-1/.wrela/work/evidence/study-ba4fec9c-56fb-4ab1-958e-57fa256e6ad3/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.765,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-1/.wrela/work/evidence/study-ba4fec9c-56fb-4ab1-958e-57fa256e6ad3/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.6999999284744263,
+            "captureMs": 274.60000002384186,
+            "totalMs": 276.2999999523163,
+            "firstCandidateImageMs": 131.09999990463257,
+            "firstCandidateImageAt": 1790222926458,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.605,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-1/.wrela/work/evidence/study-ba4fec9c-56fb-4ab1-958e-57fa256e6ad3/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.399999976158142,
+            "captureMs": 204.10000002384186,
+            "totalMs": 205.5,
+            "firstCandidateImageMs": 64.89999997615814,
+            "firstCandidateImageAt": 1790222926690,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.925,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-1/.wrela/work/evidence/study-ba4fec9c-56fb-4ab1-958e-57fa256e6ad3/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.3000000715255737,
+            "captureMs": 211.69999992847443,
+            "totalMs": 213,
+            "firstCandidateImageMs": 64.80000007152557,
+            "firstCandidateImageAt": 1790222926906,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "vegetation",
+      "mode": "warm",
+      "repetition": 1,
+      "elapsedMs": 2947.949000000008,
+      "startupMs": 0,
+      "candidateKey": "0baa9815c245e964",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-1/.wrela/work/evidence/study-04eb1855-31d5-44b0-970c-cd53a4f9d429/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.765,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-1/.wrela/work/evidence/study-04eb1855-31d5-44b0-970c-cd53a4f9d429/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.600000023841858,
+            "captureMs": 823.1999999284744,
+            "totalMs": 824.7999999523163,
+            "firstCandidateImageMs": 704.2999999523163,
+            "firstCandidateImageAt": 1790222928239,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.605,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-1/.wrela/work/evidence/study-04eb1855-31d5-44b0-970c-cd53a4f9d429/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.600000023841858,
+            "captureMs": 714,
+            "totalMs": 715.6000000238419,
+            "firstCandidateImageMs": 596.8999999761581,
+            "firstCandidateImageAt": 1790222928968,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.925,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-1/.wrela/work/evidence/study-04eb1855-31d5-44b0-970c-cd53a4f9d429/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.7999999523162842,
+            "captureMs": 697.6000000238419,
+            "totalMs": 699.3999999761581,
+            "firstCandidateImageMs": 580.7999999523163,
+            "firstCandidateImageAt": 1790222929673,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "lantern",
+      "mode": "warm",
+      "repetition": 1,
+      "elapsedMs": 769.8378340000054,
+      "startupMs": 0,
+      "candidateKey": "7f07c66b2334a07d",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-lantern-1/.wrela/work/evidence/hero-a40a6a82-105a-404d-9f8b-58f7ff3a154e/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-lantern-1/.wrela/work/evidence/hero-a40a6a82-105a-404d-9f8b-58f7ff3a154e/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 21.5,
+            "captureMs": 616.8999999761581,
+            "totalMs": 638.3999999761581,
+            "firstCandidateImageMs": 147.69999992847443,
+            "firstCandidateImageAt": 1790222930629,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "bell",
+      "mode": "warm",
+      "repetition": 1,
+      "elapsedMs": 666.6237910000054,
+      "startupMs": 0,
+      "candidateKey": "0ff2250bd72f996e",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-bell-1/.wrela/work/evidence/hero-5894e441-0720-4377-a201-b062a76f1b97/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-bell-1/.wrela/work/evidence/hero-5894e441-0720-4377-a201-b062a76f1b97/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 7.899999976158142,
+            "captureMs": 535.1000000238419,
+            "totalMs": 543,
+            "firstCandidateImageMs": 171.29999995231628,
+            "firstCandidateImageAt": 1790222931427,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "wood",
+      "mode": "warm",
+      "repetition": 2,
+      "elapsedMs": 1199.7272499999963,
+      "startupMs": 0,
+      "candidateKey": "86c642e90e9a25d6",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-2/.wrela/work/evidence/study-578173a6-c5a6-4c38-8967-ccf82ef3e588/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.78,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-2/.wrela/work/evidence/study-578173a6-c5a6-4c38-8967-ccf82ef3e588/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.5,
+            "captureMs": 264.2000000476837,
+            "totalMs": 265.7000000476837,
+            "firstCandidateImageMs": 130.5,
+            "firstCandidateImageAt": 1790222932077,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.62,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-2/.wrela/work/evidence/study-578173a6-c5a6-4c38-8967-ccf82ef3e588/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.2000000476837158,
+            "captureMs": 221.60000002384186,
+            "totalMs": 222.80000007152557,
+            "firstCandidateImageMs": 67.30000007152557,
+            "firstCandidateImageAt": 1790222932300,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.9400000000000001,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-2/.wrela/work/evidence/study-578173a6-c5a6-4c38-8967-ccf82ef3e588/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.1999999284744263,
+            "captureMs": 207.90000009536743,
+            "totalMs": 209.10000002384186,
+            "firstCandidateImageMs": 57.799999952316284,
+            "firstCandidateImageAt": 1790222932524,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "vegetation",
+      "mode": "warm",
+      "repetition": 2,
+      "elapsedMs": 3017.584083000009,
+      "startupMs": 0,
+      "candidateKey": "1b1925c0e10c4c75",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-2/.wrela/work/evidence/study-3198f239-c526-4ae3-af3d-ba9f05415417/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.78,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-2/.wrela/work/evidence/study-3198f239-c526-4ae3-af3d-ba9f05415417/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.899999976158142,
+            "captureMs": 839.1000000238419,
+            "totalMs": 841,
+            "firstCandidateImageMs": 723.8000000715256,
+            "firstCandidateImageAt": 1790222933885,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.62,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-2/.wrela/work/evidence/study-3198f239-c526-4ae3-af3d-ba9f05415417/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.2999999523162842,
+            "captureMs": 731.2000000476837,
+            "totalMs": 732.5,
+            "firstCandidateImageMs": 609.8999999761581,
+            "firstCandidateImageAt": 1790222934623,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.9400000000000001,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-2/.wrela/work/evidence/study-3198f239-c526-4ae3-af3d-ba9f05415417/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.7000000476837158,
+            "captureMs": 715.2999999523163,
+            "totalMs": 717,
+            "firstCandidateImageMs": 577.7000000476837,
+            "firstCandidateImageAt": 1790222935329,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "lantern",
+      "mode": "warm",
+      "repetition": 2,
+      "elapsedMs": 810.6164589999971,
+      "startupMs": 0,
+      "candidateKey": "d853f0cbd257f019",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-lantern-2/.wrela/work/evidence/hero-8fc2d8aa-c4e0-475f-a599-7bae304240b2/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-lantern-2/.wrela/work/evidence/hero-8fc2d8aa-c4e0-475f-a599-7bae304240b2/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 21.700000047683716,
+            "captureMs": 656.5,
+            "totalMs": 678.2000000476837,
+            "firstCandidateImageMs": 160.10000002384186,
+            "firstCandidateImageAt": 1790222936339,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "bell",
+      "mode": "warm",
+      "repetition": 2,
+      "elapsedMs": 636.5041249999922,
+      "startupMs": 0,
+      "candidateKey": "11a6e9497f2cdc63",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-bell-2/.wrela/work/evidence/hero-aa2e011e-40fd-4cde-b1f5-897bd27fe914/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-bell-2/.wrela/work/evidence/hero-aa2e011e-40fd-4cde-b1f5-897bd27fe914/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 8.100000023841858,
+            "captureMs": 503.39999997615814,
+            "totalMs": 511.5,
+            "firstCandidateImageMs": 159.20000004768372,
+            "firstCandidateImageAt": 1790222937154,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "wood",
+      "mode": "warm",
+      "repetition": 3,
+      "elapsedMs": 1234.9361669999926,
+      "startupMs": 0,
+      "candidateKey": "8fbaaa9f8a7b73d7",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-3/.wrela/work/evidence/study-08dba60e-ef2a-46f0-9826-18ba08d89163/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.795,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-3/.wrela/work/evidence/study-08dba60e-ef2a-46f0-9826-18ba08d89163/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.7999999523162842,
+            "captureMs": 297.40000009536743,
+            "totalMs": 299.2000000476837,
+            "firstCandidateImageMs": 138.79999995231628,
+            "firstCandidateImageAt": 1790222937796,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.635,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-3/.wrela/work/evidence/study-08dba60e-ef2a-46f0-9826-18ba08d89163/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.2999999523162842,
+            "captureMs": 207.20000004768372,
+            "totalMs": 208.5,
+            "firstCandidateImageMs": 63.59999990463257,
+            "firstCandidateImageAt": 1790222938044,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.9550000000000001,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-3/.wrela/work/evidence/study-08dba60e-ef2a-46f0-9826-18ba08d89163/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.2000000476837158,
+            "captureMs": 196.89999997615814,
+            "totalMs": 198.10000002384186,
+            "firstCandidateImageMs": 62.39999997615814,
+            "firstCandidateImageAt": 1790222938262,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "vegetation",
+      "mode": "warm",
+      "repetition": 3,
+      "elapsedMs": 2977.8601669999916,
+      "startupMs": 0,
+      "candidateKey": "573f739af60aeaed",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-3/.wrela/work/evidence/study-b3a4d2ab-7f49-4e82-b47d-9f2895303860/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.795,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-3/.wrela/work/evidence/study-b3a4d2ab-7f49-4e82-b47d-9f2895303860/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.399999976158142,
+            "captureMs": 846.6000000238419,
+            "totalMs": 848,
+            "firstCandidateImageMs": 730.2999999523163,
+            "firstCandidateImageAt": 1790222939637,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.635,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-3/.wrela/work/evidence/study-b3a4d2ab-7f49-4e82-b47d-9f2895303860/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.7000000476837158,
+            "captureMs": 723,
+            "totalMs": 724.7000000476837,
+            "firstCandidateImageMs": 603.2999999523163,
+            "firstCandidateImageAt": 1790222940369,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.9550000000000001,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-3/.wrela/work/evidence/study-b3a4d2ab-7f49-4e82-b47d-9f2895303860/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.600000023841858,
+            "captureMs": 678.1000000238419,
+            "totalMs": 679.7000000476837,
+            "firstCandidateImageMs": 561,
+            "firstCandidateImageAt": 1790222941057,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "lantern",
+      "mode": "warm",
+      "repetition": 3,
+      "elapsedMs": 793.1943330000067,
+      "startupMs": 0,
+      "candidateKey": "31a10673d365cd7b",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-lantern-3/.wrela/work/evidence/hero-bf18eeec-c927-41e4-8d18-24af84a410b0/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-lantern-3/.wrela/work/evidence/hero-bf18eeec-c927-41e4-8d18-24af84a410b0/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 21.299999952316284,
+            "captureMs": 636.3999999761581,
+            "totalMs": 657.6999999284744,
+            "firstCandidateImageMs": 156,
+            "firstCandidateImageAt": 1790222942039,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "bell",
+      "mode": "warm",
+      "repetition": 3,
+      "elapsedMs": 646.5065000000031,
+      "startupMs": 0,
+      "candidateKey": "2a04411b669f01f4",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-bell-3/.wrela/work/evidence/hero-63acde61-ed41-4b24-bb0e-ab4586cda6dd/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-bell-3/.wrela/work/evidence/hero-63acde61-ed41-4b24-bb0e-ab4586cda6dd/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 8.199999928474426,
+            "captureMs": 510.60000002384186,
+            "totalMs": 518.7999999523163,
+            "firstCandidateImageMs": 164.10000002384186,
+            "firstCandidateImageAt": 1790222942843,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "wood",
+      "mode": "warm",
+      "repetition": 4,
+      "elapsedMs": 1196.2522920000047,
+      "startupMs": 0,
+      "candidateKey": "c3407c9f20996d45",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-4/.wrela/work/evidence/study-ba8de967-3d02-491e-a8c0-dc5b91753366/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.81,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-4/.wrela/work/evidence/study-ba8de967-3d02-491e-a8c0-dc5b91753366/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.7999999523162842,
+            "captureMs": 263.5,
+            "totalMs": 265.2999999523163,
+            "firstCandidateImageMs": 122.19999992847443,
+            "firstCandidateImageAt": 1790222943471,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.65,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-4/.wrela/work/evidence/study-ba8de967-3d02-491e-a8c0-dc5b91753366/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.2999999523162842,
+            "captureMs": 213.20000004768372,
+            "totalMs": 214.5,
+            "firstCandidateImageMs": 65.79999995231628,
+            "firstCandidateImageAt": 1790222943701,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.9700000000000001,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-wood-4/.wrela/work/evidence/study-ba8de967-3d02-491e-a8c0-dc5b91753366/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.1999999284744263,
+            "captureMs": 212.20000004768372,
+            "totalMs": 213.39999997615814,
+            "firstCandidateImageMs": 61.799999952316284,
+            "firstCandidateImageAt": 1790222943922,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "vegetation",
+      "mode": "warm",
+      "repetition": 4,
+      "elapsedMs": 2929.721624999991,
+      "startupMs": 0,
+      "candidateKey": "50a6e5fc1d1a989b",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-4/.wrela/work/evidence/study-ea44cf48-0026-4ede-8860-218a48ca003f/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "study-1f06c4140d625a27-0",
+          "conditions": {
+            "exposure": 0.81,
+            "moisture": 0.4,
+            "maturity": 0.85,
+            "variation": 0.55
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-4/.wrela/work/evidence/study-ea44cf48-0026-4ede-8860-218a48ca003f/study-1f06c4140d625a27-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.5999999046325684,
+            "captureMs": 824.8000000715256,
+            "totalMs": 826.3999999761581,
+            "firstCandidateImageMs": 709.1999999284744,
+            "firstCandidateImageAt": 1790222945268,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        },
+        {
+          "proposal": "study-6304f089af14ce19-1",
+          "conditions": {
+            "exposure": 0.65,
+            "moisture": 0.496,
+            "maturity": 0.85,
+            "variation": 0.47000000000000003
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-4/.wrela/work/evidence/study-ea44cf48-0026-4ede-8860-218a48ca003f/study-6304f089af14ce19-1-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.6999999284744263,
+            "captureMs": 704.8999999761581,
+            "totalMs": 706.5999999046326,
+            "firstCandidateImageMs": 588.6999999284744,
+            "firstCandidateImageAt": 1790222945986,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        },
+        {
+          "proposal": "study-23024d328a3560a4-2",
+          "conditions": {
+            "exposure": 0.9700000000000001,
+            "moisture": 0.30400000000000005,
+            "maturity": 0.85,
+            "variation": 0.63
+          },
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-vegetation-4/.wrela/work/evidence/study-ea44cf48-0026-4ede-8860-218a48ca003f/study-23024d328a3560a4-2-contact-sheet.png",
+          "timings": {
+            "reviewMs": 1.5,
+            "captureMs": 691.1000000238419,
+            "totalMs": 692.6000000238419,
+            "firstCandidateImageMs": 576.5,
+            "firstCandidateImageAt": 1790222946686,
+            "cacheHits": 3,
+            "renderedImages": 3
+          }
+        }
+      ]
+    },
+    {
+      "domain": "lantern",
+      "mode": "warm",
+      "repetition": 4,
+      "elapsedMs": 787.0878749999974,
+      "startupMs": 0,
+      "candidateKey": "c3d54f9d94816985",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-lantern-4/.wrela/work/evidence/hero-089bb00b-c1bd-4b23-98b0-a04074f88d20/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-lantern-4/.wrela/work/evidence/hero-089bb00b-c1bd-4b23-98b0-a04074f88d20/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 21,
+            "captureMs": 638.8999999761581,
+            "totalMs": 659.8999999761581,
+            "firstCandidateImageMs": 156.59999990463257,
+            "firstCandidateImageAt": 1790222947645,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    },
+    {
+      "domain": "bell",
+      "mode": "warm",
+      "repetition": 4,
+      "elapsedMs": 633.0635000000038,
+      "startupMs": 0,
+      "candidateKey": "94c34e16ac7fd841",
+      "images": [
+        "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-bell-4/.wrela/work/evidence/hero-ec697575-e95d-48f0-becf-f9a6870f9e66/study-gallery.png"
+      ],
+      "candidates": [
+        {
+          "proposal": "candidate-0",
+          "passed": true,
+          "contactSheet": "/Users/ryanwible/projects/wrela/output/hero-authoring-finalized/latency-isolated/warm-bell-4/.wrela/work/evidence/hero-ec697575-e95d-48f0-becf-f9a6870f9e66/candidate-0-contact-sheet.png",
+          "timings": {
+            "reviewMs": 10.199999928474426,
+            "captureMs": 498.8000000715256,
+            "totalMs": 509,
+            "firstCandidateImageMs": 167.60000002384186,
+            "firstCandidateImageAt": 1790222948447,
+            "cacheHits": 0,
+            "renderedImages": 6
+          }
+        }
+      ]
+    }
+  ],
+  "scope": "Paired deterministic scripted tool execution; five unique inputs per domain. Known designs, not fresh-agent creation or artistic qualification. Cold means a fresh browser, not a purged driver or disk cache. Browser shutdown and setup of persisted work excluded from tool timing."
+}

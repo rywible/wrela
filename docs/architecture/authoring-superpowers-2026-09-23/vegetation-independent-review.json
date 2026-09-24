@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "baselineKey": "d2f02cb50ba983f6",
+  "candidateKey": "c431bf563565d984",
+  "constraintsKey": "a81f0189284f9cd7",
+  "results": [
+    {
+      "id": "tree-geometry",
+      "status": "passed",
+      "evidence": [],
+      "measured": {
+        "triangles": 5546922,
+        "extentX": 5.075774730002339,
+        "extentY": 6.625006663670585,
+        "extentZ": 5.712639358189323
+      },
+      "scope": "Compiled local bounds and expanded instance triangle count. Not a visual-quality score or measured GPU budget."
+    },
+    {
+      "id": "preserve-seed",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    },
+    {
+      "id": "preserve-height",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    },
+    {
+      "id": "preserve-radius",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    },
+    {
+      "id": "preserve-trunkMaterial",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    },
+    {
+      "id": "preserve-material",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    },
+    {
+      "id": "preserve-species",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    },
+    {
+      "id": "preserve-pruning",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    },
+    {
+      "id": "preserve-branchEdits",
+      "status": "passed",
+      "measured": {
+        "equal": true
+      },
+      "evidence": [],
+      "scope": "Exact authored-source equality; appearance is not implied"
+    }
+  ],
+  "durationMs": 1051.4822080000013,
+  "createdAt": "2026-09-24T02:13:36.827Z",
+  "evaluator": "wrela-authoring-review-1"
+}

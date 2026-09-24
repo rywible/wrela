@@ -1,6 +1,6 @@
 /** Separate-process fixture for bridge-lock.test.ts. */
 import { join } from "node:path";
-import { referenceProject } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
 import { WorkspaceBridge } from "./bridge";
 import { withWorkspacePublicationLock } from "./bridge-lock";
 

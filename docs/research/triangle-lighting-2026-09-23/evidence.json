@@ -1,0 +1,500 @@
+{
+  "sourceFingerprint": "9f3c08a85c497cdfb43843e3c738cbec44309ececc024bdfb6af5b6a545aa888",
+  "baselineFingerprint": "fc6ef490e92695481db9441aeec8e380a6e88081a4cb4b746ba676da8aa718a1",
+  "frozenSource": "output/triangle-lighting/1790205030586-70379/source",
+  "adapter": "apple \u00b7 metal-3",
+  "viewport": [
+    1280,
+    960
+  ],
+  "timing": "Conventional median of 24 whole-frame GPU timestamp samples per condition, ABBA order, five warm-up frames per group. Build and upload excluded.",
+  "status": "Curved receiver visibility optimization; production world GI fails performance and coverage gates.",
+  "afterCapture": "Documentation only. The renderer regression snapshot predates only compiler allocation/endpoint guards and CPU test additions among the lighting implementation.",
+  "reports": [
+    {
+      "kind": "alpine",
+      "gpuMs": {
+        "control": 15.269888,
+        "compiled": 13.729792
+      },
+      "savedPercent": 10.085836909871249,
+      "comparisons": {
+        "beauty": {
+          "maximum": 0,
+          "mean": 0
+        },
+        "moved": {
+          "maximum": 0,
+          "mean": 0
+        },
+        "relit": {
+          "maximum": 0,
+          "mean": 0
+        },
+        "rebased": {
+          "maximum": 0,
+          "mean": 0
+        }
+      },
+      "coverage": {
+        "green": 307390,
+        "magenta": 467292,
+        "fraction": 0.3967950720424639
+      },
+      "field": {
+        "status": "ready",
+        "triangles": 674,
+        "rays": 24576,
+        "source": "physical-sky-and-directional-sun",
+        "bounces": 2,
+        "buildMs": 683.3999999761581,
+        "maxSliceMs": 3,
+        "relocatedProbes": 17
+      },
+      "cache": {
+        "triangles": 674,
+        "admitted": 445,
+        "clear": 254,
+        "blocked": 261,
+        "regionBytes": 62912,
+        "candidates": 6756,
+        "avoidedBuilds": 17,
+        "rejectedCost": 209,
+        "coneReuse": 90926,
+        "coneBuilds": 12094,
+        "bytes": 29760,
+        "buildMs": 283.6999999284744
+      },
+      "memory": {
+        "cpuFieldBytes": 1803552,
+        "controlGpuBytes": 81502501,
+        "compiledGpuBytes": 81783397
+      },
+      "errors": []
+    },
+    {
+      "kind": "material",
+      "gpuMs": {
+        "control": 20.217855999999998,
+        "compiled": 17.825792
+      },
+      "savedPercent": 11.831442463533214,
+      "comparisons": {
+        "beauty": {
+          "maximum": 0,
+          "mean": 0
+        },
+        "moved": {
+          "maximum": 0,
+          "mean": 0
+        },
+        "relit": {
+          "maximum": 0,
+          "mean": 0
+        },
+        "rebased": {
+          "maximum": 0,
+          "mean": 0
+        }
+      },
+      "coverage": {
+        "green": 307385,
+        "magenta": 467297,
+        "fraction": 0.39678861778123153
+      },
+      "field": {
+        "status": "ready",
+        "triangles": 674,
+        "rays": 24576,
+        "source": "physical-sky-and-directional-sun",
+        "bounces": 2,
+        "buildMs": 509.2000000476837,
+        "maxSliceMs": 2.399999976158142,
+        "relocatedProbes": 17
+      },
+      "cache": {
+        "triangles": 674,
+        "admitted": 445,
+        "clear": 254,
+        "blocked": 261,
+        "regionBytes": 62912,
+        "candidates": 6756,
+        "avoidedBuilds": 17,
+        "rejectedCost": 209,
+        "coneReuse": 90926,
+        "coneBuilds": 12094,
+        "bytes": 29760,
+        "buildMs": 194.30000007152557
+      },
+      "memory": {
+        "cpuFieldBytes": 1803552,
+        "controlGpuBytes": 81993445,
+        "compiledGpuBytes": 82274341
+      },
+      "errors": []
+    },
+    {
+      "kind": "sealed",
+      "gpuMs": {
+        "control": 7.20896,
+        "compiled": 6.782976
+      },
+      "savedPercent": 5.909090909090919,
+      "comparisons": {
+        "beauty": {
+          "maximum": 0,
+          "mean": 0
+        },
+        "moved": {
+          "maximum": 0,
+          "mean": 0
+        },
+        "relit": {
+          "maximum": 0,
+          "mean": 0
+        },
+        "rebased": {
+          "maximum": 0,
+          "mean": 0
+        }
+      },
+      "coverage": {
+        "green": 63350,
+        "magenta": 1165450,
+        "fraction": 0.051554361979166664
+      },
+      "field": {
+        "status": "ready",
+        "triangles": 12,
+        "rays": 24576,
+        "source": "physical-sky-and-directional-sun",
+        "bounces": 2,
+        "buildMs": 1758.7999999523163,
+        "maxSliceMs": 2.100000023841858,
+        "relocatedProbes": 36
+      },
+      "cache": {},
+      "memory": {
+        "cpuFieldBytes": 4698896,
+        "controlGpuBytes": 84869653,
+        "compiledGpuBytes": 84869653
+      },
+      "errors": []
+    },
+    {
+      "kind": "winter",
+      "gpuMs": {
+        "control": 63.176704,
+        "compiled": 62.226432
+      },
+      "savedPercent": 1.5041493775933557,
+      "comparisons": {
+        "beauty": {
+          "maximum": 0,
+          "mean": 0
+        },
+        "geometryOnly": {
+          "maximum": 0,
+          "mean": 0
+        },
+        "proofOnly": {
+          "maximum": 0,
+          "mean": 0
+        },
+        "moved": {
+          "maximum": 0,
+          "mean": 0
+        },
+        "relit": {
+          "maximum": 0,
+          "mean": 0
+        },
+        "rebased": {
+          "maximum": 0,
+          "mean": 0
+        }
+      },
+      "coverage": {
+        "green": 234706,
+        "magenta": 769782,
+        "fraction": 0.2336573458319064
+      },
+      "field": {
+        "status": "ready",
+        "triangles": 53360,
+        "rays": 55296,
+        "source": "physical-sky-and-directional-sun",
+        "bounces": 2,
+        "buildMs": 8398.699999928474,
+        "maxSliceMs": 3.5999999046325684,
+        "relocatedProbes": 54
+      },
+      "cache": {
+        "triangles": 53360,
+        "admitted": 8829,
+        "clear": 0,
+        "blocked": 9111,
+        "regionBytes": 1002560,
+        "candidates": 113629,
+        "avoidedBuilds": 37,
+        "rejectedCost": 78,
+        "coneReuse": 3686169,
+        "coneBuilds": 236161,
+        "bytes": 142240,
+        "buildMs": 5772.899999976158
+      },
+      "memory": {
+        "cpuFieldBytes": 8211600,
+        "controlGpuBytes": 109557285,
+        "compiledGpuBytes": 112299541
+      },
+      "errors": []
+    }
+  ],
+  "priorTrial": {
+    "sourceFingerprint": "325118b90b771234d7da5672eca691159bac0a6ebf54580c7a7d99eb2cfe097b",
+    "reports": [
+      {
+        "kind": "alpine",
+        "gpuMs": {
+          "control": 15.5648,
+          "compiled": 13.729792
+        },
+        "savedPercent": 11.789473684210527,
+        "comparisons": {
+          "beauty": {
+            "maximum": 0,
+            "mean": 0
+          },
+          "moved": {
+            "maximum": 0,
+            "mean": 0
+          },
+          "relit": {
+            "maximum": 0,
+            "mean": 0
+          },
+          "rebased": {
+            "maximum": 0,
+            "mean": 0
+          }
+        },
+        "coverage": {
+          "green": 307390,
+          "magenta": 467292,
+          "fraction": 0.3967950720424639
+        },
+        "field": {
+          "status": "ready",
+          "triangles": 674,
+          "rays": 24576,
+          "source": "physical-sky-and-directional-sun",
+          "bounces": 2,
+          "buildMs": 753.5,
+          "maxSliceMs": 2.5,
+          "relocatedProbes": 17
+        },
+        "cache": {
+          "triangles": 674,
+          "admitted": 445,
+          "clear": 254,
+          "blocked": 261,
+          "regionBytes": 62912,
+          "candidates": 6756,
+          "avoidedBuilds": 17,
+          "rejectedCost": 209,
+          "coneReuse": 90926,
+          "coneBuilds": 12094,
+          "bytes": 29760,
+          "buildMs": 336.5
+        },
+        "memory": {
+          "cpuFieldBytes": 1803552,
+          "controlGpuBytes": 81502501,
+          "compiledGpuBytes": 81783397
+        },
+        "errors": []
+      },
+      {
+        "kind": "material",
+        "gpuMs": {
+          "control": 20.48,
+          "compiled": 17.85856
+        },
+        "savedPercent": 12.8,
+        "comparisons": {
+          "beauty": {
+            "maximum": 0,
+            "mean": 0
+          },
+          "moved": {
+            "maximum": 0,
+            "mean": 0
+          },
+          "relit": {
+            "maximum": 0,
+            "mean": 0
+          },
+          "rebased": {
+            "maximum": 0,
+            "mean": 0
+          }
+        },
+        "coverage": {
+          "green": 307385,
+          "magenta": 467297,
+          "fraction": 0.39678861778123153
+        },
+        "field": {
+          "status": "ready",
+          "triangles": 674,
+          "rays": 24576,
+          "source": "physical-sky-and-directional-sun",
+          "bounces": 2,
+          "buildMs": 643.1999999284744,
+          "maxSliceMs": 2.299999952316284,
+          "relocatedProbes": 17
+        },
+        "cache": {
+          "triangles": 674,
+          "admitted": 445,
+          "clear": 254,
+          "blocked": 261,
+          "regionBytes": 62912,
+          "candidates": 6756,
+          "avoidedBuilds": 17,
+          "rejectedCost": 209,
+          "coneReuse": 90926,
+          "coneBuilds": 12094,
+          "bytes": 29760,
+          "buildMs": 309.59999990463257
+        },
+        "memory": {
+          "cpuFieldBytes": 1803552,
+          "controlGpuBytes": 81993445,
+          "compiledGpuBytes": 82274341
+        },
+        "errors": []
+      },
+      {
+        "kind": "sealed",
+        "gpuMs": {
+          "control": 7.602176,
+          "compiled": 7.3728
+        },
+        "savedPercent": 3.0172413793103425,
+        "comparisons": {
+          "beauty": {
+            "maximum": 0,
+            "mean": 0
+          },
+          "moved": {
+            "maximum": 0,
+            "mean": 0
+          },
+          "relit": {
+            "maximum": 0,
+            "mean": 0
+          },
+          "rebased": {
+            "maximum": 0,
+            "mean": 0
+          }
+        },
+        "coverage": {
+          "green": 63350,
+          "magenta": 1165450,
+          "fraction": 0.051554361979166664
+        },
+        "field": {
+          "status": "ready",
+          "triangles": 12,
+          "rays": 24576,
+          "source": "physical-sky-and-directional-sun",
+          "bounces": 2,
+          "buildMs": 3468.0999999046326,
+          "maxSliceMs": 3,
+          "relocatedProbes": 36
+        },
+        "cache": {},
+        "memory": {
+          "cpuFieldBytes": 4698896,
+          "controlGpuBytes": 84869653,
+          "compiledGpuBytes": 84869653
+        },
+        "errors": []
+      },
+      {
+        "kind": "winter",
+        "gpuMs": {
+          "control": 63.275008,
+          "compiled": 62.75072
+        },
+        "savedPercent": 0.8285862247540132,
+        "comparisons": {
+          "beauty": {
+            "maximum": 0,
+            "mean": 0
+          },
+          "geometryOnly": {
+            "maximum": 0,
+            "mean": 0
+          },
+          "proofOnly": {
+            "maximum": 0,
+            "mean": 0
+          },
+          "moved": {
+            "maximum": 0,
+            "mean": 0
+          },
+          "relit": {
+            "maximum": 0,
+            "mean": 0
+          },
+          "rebased": {
+            "maximum": 0,
+            "mean": 0
+          }
+        },
+        "coverage": {
+          "green": 234706,
+          "magenta": 769782,
+          "fraction": 0.2336573458319064
+        },
+        "field": {
+          "status": "ready",
+          "triangles": 53360,
+          "rays": 55296,
+          "source": "physical-sky-and-directional-sun",
+          "bounces": 2,
+          "buildMs": 11231,
+          "maxSliceMs": 4.100000023841858,
+          "relocatedProbes": 54
+        },
+        "cache": {
+          "triangles": 53360,
+          "admitted": 8829,
+          "clear": 0,
+          "blocked": 9111,
+          "regionBytes": 1002560,
+          "candidates": 113629,
+          "avoidedBuilds": 37,
+          "rejectedCost": 78,
+          "coneReuse": 3686169,
+          "coneBuilds": 236161,
+          "bytes": 142240,
+          "buildMs": 7647.600000023842
+        },
+        "memory": {
+          "cpuFieldBytes": 8211600,
+          "controlGpuBytes": 109557285,
+          "compiledGpuBytes": 112299541
+        },
+        "errors": []
+      }
+    ],
+    "raw": "pre-guard-raw.json"
+  },
+  "rendererRegressionSource": "output/triangle-lighting/final-source"
+}

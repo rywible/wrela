@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { referenceProject } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
 import { compileWaves, sampledMoments, waveMoments } from "./wave-moments";
 
 test("finite wave moments agree with independent spatial/shutter integration", () => {

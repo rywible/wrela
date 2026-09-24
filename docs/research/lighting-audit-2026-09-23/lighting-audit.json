@@ -1,0 +1,102 @@
+{
+  "captures": [
+    {
+      "name": "sealed-default",
+      "maximumRGB": 0.386474609375,
+      "meanLuminance": 0.05398678170883567,
+      "centralPatchMeanLuminance": 0.06063191362533526,
+      "adapter": "apple · metal-3",
+      "completeness": true,
+      "outputResolution": [
+        640,
+        480
+      ]
+    },
+    {
+      "name": "sealed-gi",
+      "maximumRGB": 0.3173828125,
+      "meanLuminance": 0.01918323532101004,
+      "centralPatchMeanLuminance": 0.06063191362533526,
+      "adapter": "apple · metal-3",
+      "completeness": true,
+      "outputResolution": [
+        640,
+        480
+      ]
+    },
+    {
+      "name": "sealed-diffuse-only",
+      "maximumRGB": 0.0352783203125,
+      "meanLuminance": 9.745009988546372e-8,
+      "centralPatchMeanLuminance": 0,
+      "adapter": "apple · metal-3",
+      "completeness": true,
+      "outputResolution": [
+        640,
+        480
+      ]
+    },
+    {
+      "name": "sealed-gi-no-sky-reflection",
+      "maximumRGB": 0.316162109375,
+      "meanLuminance": 0.00210597039979825,
+      "centralPatchMeanLuminance": 0.00026723143715858287,
+      "adapter": "apple · metal-3",
+      "completeness": true,
+      "outputResolution": [
+        640,
+        480
+      ]
+    },
+    {
+      "name": "sealed-gi-no-direct",
+      "maximumRGB": 0.1392822265625,
+      "meanLuminance": 0.017504230726647824,
+      "centralPatchMeanLuminance": 0.06063191362533526,
+      "adapter": "apple · metal-3",
+      "completeness": true,
+      "outputResolution": [
+        640,
+        480
+      ]
+    },
+    {
+      "name": "open-default",
+      "maximumRGB": 0.383544921875,
+      "meanLuminance": 0.14225704706097195,
+      "centralPatchMeanLuminance": 0.2521472204082726,
+      "adapter": "apple · metal-3",
+      "completeness": true,
+      "outputResolution": [
+        640,
+        480
+      ]
+    },
+    {
+      "name": "open-gi",
+      "maximumRGB": 0.43310546875,
+      "meanLuminance": 0.14097792258597217,
+      "centralPatchMeanLuminance": 0.2668817640506796,
+      "adapter": "apple · metal-3",
+      "completeness": true,
+      "outputResolution": [
+        640,
+        480
+      ]
+    }
+  ],
+  "report": {
+    "status": "ready",
+    "triangles": 24,
+    "rays": 49152,
+    "source": "physical-sky-and-directional-sun",
+    "bounces": 1,
+    "excluded": [],
+    "buildMs": 553.1000000238419,
+    "maxSliceMs": 2
+  },
+  "errors": [],
+  "interpretation": "Diagnostic ablations, not fixes. Images use identical exposure. Linear RGB statistics include the full frame. Aerial perspective remains active in beauty views.",
+  "browserErrors": [],
+  "performanceComparable": false
+}

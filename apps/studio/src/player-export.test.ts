@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { cookProject, createCookedCompiler } from "@wrela/compiler";
-import { referenceProject } from "@wrela/model";
+import { referenceProject } from "@wrela/examples";
+import { releaseProject } from "@wrela/model";
 import { standalonePlayer } from "./player-export";
 
 test("portable player preserves source and cooked products without allowing source to close its script", async () => {
@@ -15,7 +16,7 @@ test("portable player preserves source and cooked products without allowing sour
   ).text();
   const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)];
   expect(scripts).toHaveLength(4);
-  expect(JSON.parse(scripts[0][1])).toEqual(project);
+  expect(JSON.parse(scripts[0][1])).toEqual(JSON.parse(JSON.stringify(releaseProject(project))));
   const restored = JSON.parse(scripts[1][1]);
   expect(restored).toEqual(JSON.parse(JSON.stringify(cooked)));
   const compile = createCookedCompiler(restored, project, { compilerSource: "export-test" });

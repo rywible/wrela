@@ -1,0 +1,1091 @@
+{
+  "notes": "Uniform unit sky, authored point lights and emission; no direct sun. Independent surface-point cosine integration uses the same two-bounce diffuse path estimator and representative material albedo. It is a controlled diffuse reference, not full spectral or glossy ground truth.",
+  "reports": [
+    {
+      "door": "open",
+      "point": {
+        "name": "room-floor",
+        "position": [
+          2.3,
+          0.003,
+          0
+        ],
+        "normal": [
+          0,
+          1,
+          0
+        ]
+      },
+      "mapped": true,
+      "cached": {
+        "sky": [
+          0.011276548104392398,
+          0.01317156289371952,
+          0.006778218630864927
+        ],
+        "local": [
+          0.012664684351461999,
+          0.007739445091288008,
+          0.003269939183241328
+        ],
+        "emission": [
+          0.0003075991190900874,
+          0.00017409679387082527,
+          0.00007452500596465287
+        ]
+      },
+      "references": [
+        {
+          "rays": 4096,
+          "value": {
+            "sky": [
+              0.03394871670341492,
+              0.03570849772453308,
+              0.03449848243880272
+            ],
+            "local": [
+              0.024257738986554856,
+              0.019424276011305606,
+              0.01352715960948879
+            ],
+            "emission": [
+              0.01623498171969582,
+              0.009386963712164959,
+              0.003879092883788249
+            ]
+          }
+        },
+        {
+          "rays": 16384,
+          "value": {
+            "sky": [
+              0.034059746307939266,
+              0.03572919331356883,
+              0.03439184433327614
+            ],
+            "local": [
+              0.024838722246035384,
+              0.019788994110678665,
+              0.013591715565576971
+            ],
+            "emission": [
+              0.016359014100897358,
+              0.00945583700675441,
+              0.0039045109713081805
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "door": "open",
+      "point": {
+        "name": "room-ceiling",
+        "position": [
+          0.2,
+          2.997,
+          -1.9
+        ],
+        "normal": [
+          0,
+          -1,
+          0
+        ]
+      },
+      "mapped": true,
+      "cached": {
+        "sky": [
+          0.0027869303797560512,
+          0.002788555272688808,
+          0.002791021290598742
+        ],
+        "local": [
+          0.007269581883924017,
+          0.003943795018354425,
+          0.0014650196601931954
+        ],
+        "emission": [
+          0,
+          0,
+          0
+        ]
+      },
+      "references": [
+        {
+          "rays": 4096,
+          "value": {
+            "sky": [
+              0.0019685884048938752,
+              0.0021914197492599492,
+              0.0018707680654525757
+            ],
+            "local": [
+              0.012669039513477644,
+              0.00764488459799551,
+              0.003499347500294395
+            ],
+            "emission": [
+              0.07710191344781987,
+              0.043710521031596415,
+              0.01823576492373942
+            ]
+          }
+        },
+        {
+          "rays": 16384,
+          "value": {
+            "sky": [
+              0.0021375411292016504,
+              0.002461325463831424,
+              0.0021353054372817266
+            ],
+            "local": [
+              0.012116890072691608,
+              0.007381261026739534,
+              0.0034440796615982047
+            ],
+            "emission": [
+              0.07705736731022071,
+              0.04369735813606721,
+              0.018237476582691266
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "door": "open",
+      "point": {
+        "name": "plaster-back-wall",
+        "position": [
+          1.8,
+          1.6,
+          -2.997
+        ],
+        "normal": [
+          0,
+          0,
+          1
+        ]
+      },
+      "mapped": true,
+      "cached": {
+        "sky": [
+          0.008943889387371382,
+          0.009697011228391726,
+          0.0064127134073124715
+        ],
+        "local": [
+          0.02315775799152085,
+          0.014445499476672846,
+          0.006209501701280859
+        ],
+        "emission": [
+          0.0030729938785462613,
+          0.0016778650785339157,
+          0.0006356054389450071
+        ]
+      },
+      "references": [
+        {
+          "rays": 4096,
+          "value": {
+            "sky": [
+              0.03489757339494357,
+              0.035852704090125344,
+              0.03487070199819205
+            ],
+            "local": [
+              0.015773965536359232,
+              0.016393600504060885,
+              0.01924889418801667
+            ],
+            "emission": [
+              0.0016805151258060173,
+              0.000992194396131807,
+              0.00038686393102063844
+            ]
+          }
+        },
+        {
+          "rays": 16384,
+          "value": {
+            "sky": [
+              0.03517185714845982,
+              0.03614269218785353,
+              0.035163960630714475
+            ],
+            "local": [
+              0.015497358547120399,
+              0.016200036479643118,
+              0.019219239787003142
+            ],
+            "emission": [
+              0.0019191170684704439,
+              0.0011219601338373717,
+              0.0004363422292100929
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "door": "open",
+      "point": {
+        "name": "cave-entrance-floor",
+        "position": [
+          0.1,
+          0.003,
+          -4.7
+        ],
+        "normal": [
+          0,
+          1,
+          0
+        ]
+      },
+      "mapped": true,
+      "cached": {
+        "sky": [
+          0.007620013172521228,
+          0.007593337044839792,
+          0.007552852094215357
+        ],
+        "local": [
+          0.015312912486049322,
+          0.009157677406993987,
+          0.003910546312547836
+        ],
+        "emission": [
+          0.020217394596388417,
+          0.011260322754484926,
+          0.004516275646876375
+        ]
+      },
+      "references": [
+        {
+          "rays": 4096,
+          "value": {
+            "sky": [
+              0.0018927528047561646,
+              0.001958130967378616,
+              0.001790055290937424
+            ],
+            "local": [
+              0.005266611411940755,
+              0.0032622686694095447,
+              0.0014689161881975311
+            ],
+            "emission": [
+              0.010077489207067011,
+              0.00566683995909057,
+              0.0023107748837268797
+            ]
+          }
+        },
+        {
+          "rays": 16384,
+          "value": {
+            "sky": [
+              0.0018484221756607294,
+              0.0018546044646501538,
+              0.001703839208245277
+            ],
+            "local": [
+              0.00549319672076379,
+              0.00340050049097467,
+              0.0015148096618012395
+            ],
+            "emission": [
+              0.0090752957962759,
+              0.005121469413917452,
+              0.002106763780583111
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "door": "open",
+      "point": {
+        "name": "cave-middle-floor",
+        "position": [
+          0.1,
+          0.003,
+          -8
+        ],
+        "normal": [
+          0,
+          1,
+          0
+        ]
+      },
+      "mapped": true,
+      "cached": {
+        "sky": [
+          0,
+          0,
+          0
+        ],
+        "local": [
+          0.00005384161690645113,
+          0.00003604984589657177,
+          0.000015628684025771463
+        ],
+        "emission": [
+          0.000915180499034917,
+          0.0005215832676066883,
+          0.00021963108239847213
+        ]
+      },
+      "references": [
+        {
+          "rays": 4096,
+          "value": {
+            "sky": [
+              0.0012727094006538394,
+              0.0012779875481128693,
+              0.0012485082786083221
+            ],
+            "local": [
+              0.0004918491061143004,
+              0.0003089919693503384,
+              0.00013900301004801432
+            ],
+            "emission": [
+              0.00198577536112191,
+              0.0011104356881191575,
+              0.00044632673292748583
+            ]
+          }
+        },
+        {
+          "rays": 16384,
+          "value": {
+            "sky": [
+              0.0009633713819831609,
+              0.0009650002289265394,
+              0.0009482773707062007
+            ],
+            "local": [
+              0.0005802276161080821,
+              0.0003637056457045044,
+              0.00015896859582683324
+            ],
+            "emission": [
+              0.002059586336867277,
+              0.0011504990650287818,
+              0.0004612181609025738
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "door": "open",
+      "point": {
+        "name": "cave-deep-floor",
+        "position": [
+          0.1,
+          0.003,
+          -12.8
+        ],
+        "normal": [
+          0,
+          1,
+          0
+        ]
+      },
+      "mapped": true,
+      "cached": {
+        "sky": [
+          0,
+          0,
+          0
+        ],
+        "local": [
+          0.00536116430695344,
+          0.0032952048115075837,
+          0.0013170349522283805
+        ],
+        "emission": [
+          0.0003381997193465558,
+          0.0001927636988333261,
+          0.0000811447913955515
+        ]
+      },
+      "references": [
+        {
+          "rays": 4096,
+          "value": {
+            "sky": [
+              0.0004277958869934082,
+              0.000429142951965332,
+              0.00041921067237854005
+            ],
+            "local": [
+              0.00004552472374430386,
+              0.000029728052517500122,
+              0.00001586241801709848
+            ],
+            "emission": [
+              0.0002165653739784826,
+              0.00012321462936508226,
+              0.00005163253817536258
+            ]
+          }
+        },
+        {
+          "rays": 16384,
+          "value": {
+            "sky": [
+              0.0004619343876838684,
+              0.0004635703957080841,
+              0.0004541679656505585
+            ],
+            "local": [
+              0.00008091245907668144,
+              0.00005096113358985651,
+              0.000022972792449342907
+            ],
+            "emission": [
+              0.0002985032921479241,
+              0.00016776317793004478,
+              0.00006827160203301578
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "door": "closed",
+      "point": {
+        "name": "room-floor",
+        "position": [
+          2.3,
+          0.003,
+          0
+        ],
+        "normal": [
+          0,
+          1,
+          0
+        ]
+      },
+      "mapped": true,
+      "cached": {
+        "sky": [
+          0.009990494009246644,
+          0.009943984253288827,
+          0.009782875755054052
+        ],
+        "local": [
+          0.02537993558335667,
+          0.016646561935608456,
+          0.011092813452915132
+        ],
+        "emission": [
+          0.022641172866107354,
+          0.012527255355352727,
+          0.004990920914838475
+        ]
+      },
+      "references": [
+        {
+          "rays": 4096,
+          "value": {
+            "sky": [
+              0.034020689395427704,
+              0.03576794675350189,
+              0.03453951330709457
+            ],
+            "local": [
+              0.026322039217101096,
+              0.02081121759930952,
+              0.014189792862155352
+            ],
+            "emission": [
+              0.01623020907275643,
+              0.00938809809830712,
+              0.003880196993956759
+            ]
+          }
+        },
+        {
+          "rays": 16384,
+          "value": {
+            "sky": [
+              0.03424575915715097,
+              0.0359221556724608,
+              0.03456411942476033
+            ],
+            "local": [
+              0.026795266979109132,
+              0.021155224067933808,
+              0.014307066400827023
+            ],
+            "emission": [
+              0.016362688846592147,
+              0.009460279236745318,
+              0.003906512837675473
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "door": "closed",
+      "point": {
+        "name": "room-ceiling",
+        "position": [
+          0.2,
+          2.997,
+          -1.9
+        ],
+        "normal": [
+          0,
+          -1,
+          0
+        ]
+      },
+      "mapped": true,
+      "cached": {
+        "sky": [
+          0.0032432457220666613,
+          0.003135291951349776,
+          0.0029537656319369894
+        ],
+        "local": [
+          0.008561872876667397,
+          0.005517879419741765,
+          0.0034589935880964947
+        ],
+        "emission": [
+          0.0014380837921578122,
+          0.000991821005882322,
+          0.00042236291362011095
+        ]
+      },
+      "references": [
+        {
+          "rays": 4096,
+          "value": {
+            "sky": [
+              0.002578876193046569,
+              0.002817165994644165,
+              0.002398699014186859
+            ],
+            "local": [
+              0.014778663868244219,
+              0.011202083170720085,
+              0.00884459783935496
+            ],
+            "emission": [
+              0.07747104686224517,
+              0.04412861624919881,
+              0.018435728692407605
+            ]
+          }
+        },
+        {
+          "rays": 16384,
+          "value": {
+            "sky": [
+              0.0026093399695754035,
+              0.0029757474200725544,
+              0.0025693066691309207
+            ],
+            "local": [
+              0.014109321690730793,
+              0.010807441596438656,
+              0.008669151064544415
+            ],
+            "emission": [
+              0.07738427995519641,
+              0.044093864997857085,
+              0.01842930836159091
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "door": "closed",
+      "point": {
+        "name": "plaster-back-wall",
+        "position": [
+          1.8,
+          1.6,
+          -2.997
+        ],
+        "normal": [
+          0,
+          0,
+          1
+        ]
+      },
+      "mapped": true,
+      "cached": {
+        "sky": [
+          0.008943889387371382,
+          0.009697011228391726,
+          0.0064127134073124715
+        ],
+        "local": [
+          0.02349035273432833,
+          0.014638314128214557,
+          0.0062909807923743725
+        ],
+        "emission": [
+          0.0030729938785462613,
+          0.0016778650785339157,
+          0.0006356054389450071
+        ]
+      },
+      "references": [
+        {
+          "rays": 4096,
+          "value": {
+            "sky": [
+              0.035178917619292455,
+              0.036185109684074755,
+              0.0351885473888848
+            ],
+            "local": [
+              0.02332320855335495,
+              0.021691632362758707,
+              0.021788639767926075
+            ],
+            "emission": [
+              0.024946225168513858,
+              0.014142141077574938,
+              0.005720591413223587
+            ]
+          }
+        },
+        {
+          "rays": 16384,
+          "value": {
+            "sky": [
+              0.03547525770964438,
+              0.03650970156954631,
+              0.03548686384985068
+            ],
+            "local": [
+              0.023130328834649345,
+              0.021534834254539597,
+              0.021746240507248275
+            ],
+            "emission": [
+              0.024098595671174772,
+              0.013680054518379881,
+              0.005547387563049771
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "door": "closed",
+      "point": {
+        "name": "cave-entrance-floor",
+        "position": [
+          0.1,
+          0.003,
+          -4.7
+        ],
+        "normal": [
+          0,
+          1,
+          0
+        ]
+      },
+      "mapped": true,
+      "cached": {
+        "sky": [
+          0.0015631310907829206,
+          0.0015455663223819087,
+          0.001287723999615612
+        ],
+        "local": [
+          0,
+          0,
+          0
+        ],
+        "emission": [
+          0,
+          0,
+          0
+        ]
+      },
+      "references": [
+        {
+          "rays": 4096,
+          "value": {
+            "sky": [
+              0.000440263854265213,
+              0.0004330279276371002,
+              0.0003756242566108703
+            ],
+            "local": [
+              0,
+              0,
+              0
+            ],
+            "emission": [
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "rays": 16384,
+          "value": {
+            "sky": [
+              0.0005781910151541231,
+              0.0005630839451253413,
+              0.0004871955173164608
+            ],
+            "local": [
+              0,
+              0,
+              0
+            ],
+            "emission": [
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "door": "closed",
+      "point": {
+        "name": "cave-middle-floor",
+        "position": [
+          0.1,
+          0.003,
+          -8
+        ],
+        "normal": [
+          0,
+          1,
+          0
+        ]
+      },
+      "mapped": true,
+      "cached": {
+        "sky": [
+          0,
+          0,
+          0
+        ],
+        "local": [
+          0,
+          0,
+          0
+        ],
+        "emission": [
+          0,
+          0,
+          0
+        ]
+      },
+      "references": [
+        {
+          "rays": 4096,
+          "value": {
+            "sky": [
+              0.00006810742735862732,
+              0.00006555535793304443,
+              0.00005615522670745849
+            ],
+            "local": [
+              0,
+              0,
+              0
+            ],
+            "emission": [
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "rays": 16384,
+          "value": {
+            "sky": [
+              0.00004323992908000945,
+              0.000041917823806405076,
+              0.00003568173734843731
+            ],
+            "local": [
+              0,
+              0,
+              0
+            ],
+            "emission": [
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "door": "closed",
+      "point": {
+        "name": "cave-deep-floor",
+        "position": [
+          0.1,
+          0.003,
+          -12.8
+        ],
+        "normal": [
+          0,
+          1,
+          0
+        ]
+      },
+      "mapped": true,
+      "cached": {
+        "sky": [
+          0,
+          0,
+          0
+        ],
+        "local": [
+          0,
+          0,
+          0
+        ],
+        "emission": [
+          0,
+          0,
+          0
+        ]
+      },
+      "references": [
+        {
+          "rays": 4096,
+          "value": {
+            "sky": [
+              0.00009949350357055664,
+              0.00010084056854248046,
+              0.00009090828895568848
+            ],
+            "local": [
+              0,
+              0,
+              0
+            ],
+            "emission": [
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        {
+          "rays": 16384,
+          "value": {
+            "sky": [
+              0.000030030572041869164,
+              0.000030436233982443807,
+              0.000027154424294829368
+            ],
+            "local": [
+              0,
+              0,
+              0
+            ],
+            "emission": [
+              0,
+              0,
+              0
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "builds": [
+    {
+      "door": "open",
+      "samples": 192,
+      "reusedSamples": 0,
+      "reusedGeometry": false,
+      "triangles": 81980,
+      "rays": 50969,
+      "vertices": 55322,
+      "unmappedVertices": 13156,
+      "bytes": 20817216,
+      "buildMs": 4274.647708,
+      "excluded": [
+        {
+          "id": "pine-0-shaped-pine-trunk-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-0-shaped-pine-shoot-0-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-0-shaped-pine-shoot-1-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-0-shaped-pine-shoot-2-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-0-shaped-pine-shoot-3-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-0-shaped-pine-shoot-4-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-0-shaped-pine-shoot-5-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-0-shaped-pine-shoot-6-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-0-shaped-pine-shoot-7-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-trunk-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-shoot-0-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-shoot-1-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-shoot-2-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-shoot-3-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-shoot-4-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-shoot-5-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-shoot-6-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-shoot-7-foliage-0",
+          "reason": "dynamic geometry excluded"
+        }
+      ]
+    },
+    {
+      "door": "closed",
+      "samples": 192,
+      "reusedSamples": 0,
+      "reusedGeometry": false,
+      "triangles": 81980,
+      "rays": 50996,
+      "vertices": 55322,
+      "unmappedVertices": 13202,
+      "bytes": 20799744,
+      "buildMs": 4408.418457999999,
+      "excluded": [
+        {
+          "id": "pine-0-shaped-pine-trunk-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-0-shaped-pine-shoot-0-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-0-shaped-pine-shoot-1-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-0-shaped-pine-shoot-2-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-0-shaped-pine-shoot-3-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-0-shaped-pine-shoot-4-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-0-shaped-pine-shoot-5-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-0-shaped-pine-shoot-6-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-0-shaped-pine-shoot-7-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-trunk-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-shoot-0-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-shoot-1-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-shoot-2-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-shoot-3-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-shoot-4-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-shoot-5-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-shoot-6-foliage-0",
+          "reason": "dynamic geometry excluded"
+        },
+        {
+          "id": "pine-1-shaped-pine-shoot-7-foliage-0",
+          "reason": "dynamic geometry excluded"
+        }
+      ]
+    }
+  ]
+}

@@ -1,5 +1,20 @@
-import { AuthoringSession, downloadBlob, type EditBatch, ProjectStore } from "@wrela/authoring";
+import {
+  AuthoringSession,
+  type CreatureRepairRequest,
+  creatureGroundingStamp,
+  type DiscoveryQuery,
+  downloadBlob,
+  type EditBatch,
+  executeAgentRequest,
+  explainAuthoringSource,
+  groundCreatureHit,
+  type InspectionQuery,
+  ProjectStore,
+} from "@wrela/authoring";
 import { cookProjectAsync, queryWater } from "@wrela/compiler";
+import { BrowserCompiler } from "@wrela/compiler/client";
+import { type CreatureFixtureId, createCreatureFixture, referenceProject } from "@wrela/examples";
+import { CreatureEncounterGame } from "@wrela/game-creature/rules";
 import {
   type Camera,
   contentKey,
@@ -7,18 +22,29 @@ import {
   type EvaluatedScene,
   type FrameMeasurements,
   identityColor,
+  type Project,
   type Quality,
   type RenderCompleteness,
-  referenceProject,
   type Vec3,
   VIEW_MODES,
 } from "@wrela/model";
 import { WebGPURenderer } from "@wrela/render-webgpu";
-import { BrowserSceneHost, cameraRay, pickScene, runtimeDiagnostics } from "@wrela/runtime";
+import {
+  applyCreatureInspection,
+  BrowserSceneHost,
+  cameraRay,
+  inspectCreatureMaterialAtHit,
+  pickScene,
+  reviewCreature,
+  runtimeDiagnostics,
+} from "@wrela/runtime";
 import { z } from "zod";
-import { BrowserCompiler } from "../../../packages/compiler/src/client";
+import { AuthoringWorkbench } from "./authoring-workbench";
 import { drawOverlays, type Overlay, overlayCapture } from "./capture";
 import { CompilerClient } from "./compiler-client";
+import { type CandidatePreviewOptions, previewCreatureCandidate } from "./creature-candidate-preview";
+import { creaturePlayerMarker } from "./creature-encounter-marker";
+import { createCreatureStudioTools } from "./creature-tools";
 import { standalonePlayer } from "./player-export";
 import { assertRenderAccepted } from "./preview-readiness";
 import type { DraftSummary } from "./recovery-drafts";
@@ -59,17 +85,206 @@ export type PreviewState = {
   stageId?: string;
   quality: Quality;
   grid: boolean;
+  hideGroom: boolean;
   overlays: Overlay[];
   exposure: number;
+  reviewSunElevation?: number;
+  reviewSunAzimuth?: number;
   wind: number;
   measurements: FrameMeasurements | null;
   camera: Camera;
   diagnostics: Diagnostic[];
   pickedInstance?: string;
   recoveryDrafts: DraftSummary[];
+  returnProjectName?: string;
+  encounter?: ReturnType<CreatureEncounterGame["snapshot"]>;
+  encounterStarting?: boolean;
+  pickedCreatureMaterial?: ReturnType<typeof inspectCreatureMaterialAtHit>;
 };
 export class StudioController {
   readonly authoring = new AuthoringSession(referenceProject());
+  readonly work = new AuthoringWorkbench(
+    () => this.authoring,
+    async (sourceKey) => {
+      if (contentKey(this.authoring.getSnapshot().project) !== sourceKey)
+        throw Error("Source changed before adoption was saved; recover the pending publication");
+      const saved = await this.save();
+      if (saved.key !== sourceKey) throw Error("Saved source differs from adoption");
+    },
+  );
+  readonly creature = {
+    ...createCreatureStudioTools(this.authoring),
+    review: (target: string, scenarioId: string) => {
+      const document = this.authoring.getSnapshot().project.documents.find((item) => item.id === target);
+      if (document?.kind !== "character" || !document.creature)
+        throw Error("Select a character with creature source");
+      const scenario = document.creature.reviewScenarios.find((item) => item.id === scenarioId);
+      if (!scenario) throw Error("Unknown creature review scenario");
+      return reviewCreature(document, scenario);
+    },
+    playScenario: async (target: string, scenarioId: string) => {
+      this.stopCreatureEncounter();
+      const source = this.authoring.getSnapshot();
+      const document = source.project.documents.find((item) => item.id === target);
+      if (document?.kind !== "character") throw Error("Select a character");
+      const scenario = document.creature?.reviewScenarios.find((item) => item.id === scenarioId);
+      if (!scenario) throw Error("Unknown creature review scenario");
+      await this.prepare({
+        subject: target,
+        stage: "studio",
+        quality: "interactive",
+        revision: source.revision,
+      });
+      if (!this.host) throw Error("Creature preview is unavailable");
+      await this.seek(0);
+      if (scenario.motion) this.host.playMotion(target, scenario.motion, 0);
+      this.patch({ camera: { ...scenario.cameras[0], fov: 48 }, playing: true });
+    },
+    capture: (options: CaptureOptions = {}) => this.capture({ ...options, stage: "studio" }),
+    inspectView: (input: { channel?: EvaluatedScene["mode"]; skeleton?: boolean; hideGroom?: boolean }) => {
+      const options = z
+        .object({
+          channel: z.enum(VIEW_MODES).optional(),
+          skeleton: z.boolean().optional(),
+          hideGroom: z.boolean().optional(),
+        })
+        .strict()
+        .parse(input);
+      this.patch({
+        ...(options.channel ? { mode: options.channel } : {}),
+        ...(options.hideGroom !== undefined ? { hideGroom: options.hideGroom } : {}),
+        ...(options.skeleton !== undefined
+          ? {
+              overlays: options.skeleton
+                ? [...new Set<Overlay>([...this.state.overlays, "rig"])]
+                : this.state.overlays.filter((overlay) => overlay !== "rig"),
+            }
+          : {}),
+      });
+      return {
+        channel: this.state.mode,
+        overlays: this.state.overlays,
+        hideGroom: this.state.hideGroom,
+        visualApproval: "not-reviewed",
+      };
+    },
+    inspectPixel: (input: { x: number; y: number; width?: number; height?: number }) => {
+      const options = z
+        .object({
+          x: z.number().finite().nonnegative(),
+          y: z.number().finite().nonnegative(),
+          width: z.number().finite().positive().optional(),
+          height: z.number().finite().positive().optional(),
+        })
+        .strict()
+        .parse(input);
+      if (!this.lastScene || this.state.revision !== this.authoring.getSnapshot().revision)
+        throw Error("Wait for the current source to finish rendering before inspecting a pixel");
+      const width = options.width ?? this.viewportCanvas?.clientWidth ?? 1,
+        height = options.height ?? this.viewportCanvas?.clientHeight ?? 1;
+      if (options.x > width || options.y > height) throw Error("Pixel lies outside the supplied viewport");
+      const hit = pickScene(
+        this.lastScene,
+        cameraRay(this.lastScene.camera, options.x, options.y, width, height),
+      );
+      return hit ? inspectCreatureMaterialAtHit(this.lastScene, hit) : null;
+    },
+    groundPixel: (input: { x: number; y: number; width?: number; height?: number }) => {
+      const inspected = this.creature.inspectPixel(input);
+      const scene = this.lastScene,
+        host = this.encounterSession?.host ?? this.host;
+      if (!inspected || !scene || !host) return null;
+      const width = input.width ?? this.viewportCanvas?.clientWidth ?? 1,
+        height = input.height ?? this.viewportCanvas?.clientHeight ?? 1;
+      const hit = pickScene(scene, cameraRay(scene.camera, input.x, input.y, width, height));
+      const source = this.authoring.getSnapshot();
+      const character = source.project.documents.find((document) => document.id === inspected.documentId);
+      const surface = scene.surfaces.find((item) => item.id === hit?.surfaceId);
+      if (!hit || !surface || character?.kind !== "character") return null;
+      const grounded = host.inspectDisplayedCreature(surface, (artifact) =>
+        groundCreatureHit(character, artifact, {
+          ...creatureGroundingStamp(character, artifact, source.revision),
+          triangle: hit.triangle,
+          barycentric: hit.barycentric,
+        }),
+      );
+      if (!grounded) throw Error("Displayed creature realization changed; render and pick again");
+      return grounded;
+    },
+    previewCandidate: (id: string, options: CandidatePreviewOptions) =>
+      this.previewCreatureCandidate(id, options),
+    repairPixel: (input: {
+      id: string;
+      pixel: { x: number; y: number; width?: number; height?: number };
+      restDisplacement: Vec3;
+      support: CreatureRepairRequest["support"];
+      protectPixels?: { x: number; y: number; width?: number; height?: number }[];
+      tolerance?: number;
+      detail?: CreatureRepairRequest["detail"];
+      intent: string;
+    }) => {
+      if (this.encounterSession) throw Error("Return to authoring before proposing a surface repair");
+      const hit = this.creature.groundPixel(input.pixel);
+      if (!hit || hit.regions.length !== 1 || hit.geometrySources.length !== 1 || hit.groomRoots.length)
+        throw Error("Pick a body surface with one anatomical owner");
+      const snapshot = this.authoring.getSnapshot();
+      const character = snapshot.project.documents.find(
+        (d) => d.kind === "character" && contentKey(d) === hit.sourceKey,
+      );
+      if (!character || character.kind !== "character") throw Error("Rendered source changed; pick again");
+      if (
+        character.creature?.attachments.some((a) =>
+          a.nodeIds.some((id) => hit.geometrySources.some((s) => s.id === id)),
+        )
+      )
+        throw Error("Edit a mounted component through its attachment controls");
+      if ((input.protectPixels?.length ?? 0) > 32)
+        throw Error("At most 32 protected surface points are supported");
+      const protectedPoints = (input.protectPixels ?? []).map((pixel, i) => {
+        const point = this.creature.groundPixel(pixel);
+        if (
+          !point ||
+          point.sourceKey !== hit.sourceKey ||
+          point.regions.length !== 1 ||
+          point.regions[0].id !== hit.regions[0].id ||
+          point.geometrySources.length !== 1 ||
+          point.geometrySources[0].id !== hit.geometrySources[0].id ||
+          point.groomRoots.length
+        )
+          throw Error("Protected pixels must hit the same anatomical body region");
+        return { id: `pin-${i}`, position: point.restPoint, tolerance: input.tolerance ?? 0.001 };
+      });
+      return this.authoring.repairCreature({
+        id: input.id,
+        target: character.id,
+        sourceKey: hit.sourceKey,
+        expectedRevision: snapshot.revision,
+        region: hit.regions[0].id,
+        nodeId: hit.geometrySources[0].id,
+        handles: [
+          {
+            id: "picked-point",
+            position: hit.restPoint,
+            target: hit.restPoint.map((v, i) => v + input.restDisplacement[i]) as Vec3,
+            tolerance: input.tolerance ?? 0.001,
+          },
+        ],
+        protectedPoints,
+        support: input.support,
+        detail: input.detail,
+        intent: input.intent,
+      });
+    },
+    openFixture: (id: CreatureFixtureId) => this.openCreatureFixture(id),
+    returnToProject: () => this.returnFromCreatureFixture(),
+    encounter: {
+      start: (target?: string) => this.startCreatureEncounter(target),
+      stop: () => this.stopCreatureEncounter(),
+      input: (input: { move?: [number, number]; dodge?: boolean; strike?: boolean }) =>
+        this.setCreatureEncounterInput(input),
+      inspect: () => this.encounterSession?.game.snapshot() ?? null,
+    },
+  };
   readonly store = new ProjectStore();
   private compiler: CompilerClient | null = null;
   renderer: WebGPURenderer | null = null;
@@ -81,6 +296,21 @@ export class StudioController {
   private generation = 0;
   private seekGeneration = 0;
   private captureGeneration = 0;
+  private captureBusy = false;
+  private candidatePreviewAbort: AbortController | undefined;
+  private encounterSession:
+    | {
+        host: BrowserSceneHost;
+        game: CreatureEncounterGame;
+        camera: Camera;
+        playing: boolean;
+        time: number;
+        target: string;
+      }
+    | undefined;
+  private encounterStartGeneration = 0;
+  private encounterAccumulator = 0;
+  private encounterInput = { move: [0, 0] as [number, number], dodge: false, strike: false };
   private last = 0;
   private lastUI = 0;
   private recoveryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -95,6 +325,7 @@ export class StudioController {
     stage: "world",
     quality: "interactive",
     grid: false,
+    hideGroom: false,
     overlays: [],
     exposure: 1,
     wind: 1,
@@ -114,6 +345,9 @@ export class StudioController {
   private selection = "";
   private workspaceKey: string | null = null;
   private bridge = false;
+  private projectBeforeCreature:
+    | { project: Project; selection: string; stage: "world" | "studio"; stageId?: string }
+    | undefined;
   getSnapshot = () => this.state;
   subscribe = (fn: () => void) => {
     this.listeners.add(fn);
@@ -210,6 +444,7 @@ export class StudioController {
       this.compiler = new CompilerClient();
       this.host = new BrowserSceneHost(this.authoring.getSnapshot().project, {
         compile: this.compiler.compile,
+        growVegetation: this.compiler.growVegetation,
         generateTerrain: this.compiler.generateTerrain,
       });
       this.renderer = await WebGPURenderer.create(canvas, {
@@ -236,6 +471,8 @@ export class StudioController {
   private sourceChanged() {
     const snapshot = this.authoring.getSnapshot();
     if (snapshot.revision !== this.sourceRevision || snapshot.selection !== this.selection) {
+      this.emit({ pickedCreatureMaterial: undefined });
+      this.stopCreatureEncounter();
       const changeSelection = snapshot.selection !== this.selection && !this.preserveCamera;
       this.preserveCamera = false;
       this.sourceRevision = snapshot.revision;
@@ -303,7 +540,22 @@ export class StudioController {
     if (this.disposed) return;
     const delta = Math.max(0, Math.min(0.1, (now - this.last) / 1000 || 0));
     this.last = Math.max(this.last, now);
-    if (this.state.playing && !this.state.seeking && this.host) {
+    if (this.encounterSession) {
+      try {
+        this.encounterAccumulator = Math.min(0.1, this.encounterAccumulator + delta);
+        while (this.encounterAccumulator >= 1 / 60) {
+          this.encounterSession.game.step(1 / 60, this.encounterInput);
+          this.encounterSession.host.advance(1 / 60, this.state.camera);
+          this.encounterInput.dodge = false;
+          this.encounterInput.strike = false;
+          this.encounterAccumulator -= 1 / 60;
+        }
+        this.dirty = true;
+      } catch (error) {
+        this.stopCreatureEncounter();
+        this.report(error);
+      }
+    } else if (this.state.playing && !this.state.seeking && this.host) {
       try {
         this.host.advance(delta, this.state.camera);
         this.state = { ...this.state, time: this.host.runtime?.clock.time ?? this.state.time };
@@ -312,19 +564,43 @@ export class StudioController {
         this.report(error);
       }
     }
+    const visibleHost = this.encounterSession?.host ?? this.host;
     if (
       (this.dirty ||
         this.renderer?.needsRender ||
         this.host?.world?.metrics.pending ||
         (this.host?.world?.metrics.revision ?? -1) !== this.lastWorldRevision) &&
       !this.state.seeking &&
+      !this.candidatePreviewAbort &&
       this.renderer &&
       this.host
     ) {
       try {
-        this.host.updateView(this.state.camera);
-        const scene = this.host.extract(this.state.camera, this.state.mode);
+        if (!visibleHost) throw new Error("Visible preview is unavailable");
+        visibleHost.setViewportHeight(this.viewportCanvas?.height ?? 720);
+        visibleHost.updateView(this.state.camera);
+        const scene = applyCreatureInspection(
+          visibleHost.extract(this.state.camera, this.state.mode, false),
+          {
+            hideGroom: this.state.hideGroom,
+          },
+        );
+        if (this.encounterSession) {
+          const encounter = this.encounterSession.game.snapshot();
+          scene.surfaces.push(creaturePlayerMarker(encounter.playerPosition, encounter.invulnerable));
+        }
         scene.grid = this.state.grid;
+        if (this.state.reviewSunElevation !== undefined || this.state.reviewSunAzimuth !== undefined) {
+          const elevation = this.state.reviewSunElevation ?? Math.asin(scene.environment.sunDirection[1]);
+          const azimuth =
+            this.state.reviewSunAzimuth ??
+            Math.atan2(scene.environment.sunDirection[0], scene.environment.sunDirection[2]);
+          scene.environment.sunDirection = [
+            Math.cos(elevation) * Math.sin(azimuth),
+            Math.sin(elevation),
+            Math.cos(elevation) * Math.cos(azimuth),
+          ];
+        }
         scene.environment.exposure *= this.state.exposure;
         scene.environment.wind = scene.environment.wind.map((v) => v * this.state.wind) as Vec3;
         for (const surface of scene.surfaces)
@@ -333,6 +609,7 @@ export class StudioController {
             !["world", "terrain"].includes(
               this.authoring.getSnapshot().project.documents.find((d) => d.id === surface.source)?.kind ?? "",
             );
+        visibleHost.applyIndirectLighting(scene);
         this.renderer.render(scene);
         this.lastScene = this.renderer.realizedScene ?? scene;
         if (this.overlayCanvas) {
@@ -347,7 +624,7 @@ export class StudioController {
           const context = overlay.getContext("2d");
           if (context) {
             context.clearRect(0, 0, overlay.width, overlay.height);
-            if (this.state.overlays.length && this.host.runtime)
+            if (!this.encounterSession && this.state.overlays.length && this.host.runtime)
               drawOverlays(context, this.diagnosticLines().segments, scene.camera, this.state.overlays);
           }
         }
@@ -359,14 +636,148 @@ export class StudioController {
     }
     if (now - this.lastUI > 200) {
       this.lastUI = now;
-      this.emit({ measurements: this.renderer?.measurements ?? null });
+      this.emit({
+        measurements: this.renderer?.measurements ?? null,
+        encounter: this.encounterSession?.game.snapshot(),
+      });
     }
     this.raf = requestAnimationFrame(this.frame);
   };
   apply(batch: EditBatch) {
     return this.authoring.apply(batch);
   }
+  async startCreatureEncounter(target = this.authoring.getSnapshot().selection) {
+    if (this.captureBusy) throw Error("Wait for the current capture before starting an encounter");
+    if (!this.compiler || this.disposed) throw Error("Studio compiler is unavailable");
+    if (target !== "ash-warden" && target !== "reed-penitent")
+      throw Error("Open an original creature study before starting its encounter");
+    this.stopCreatureEncounter();
+    const generation = ++this.encounterStartGeneration;
+    const source = this.authoring.getSnapshot();
+    const character = source.project.documents.find((document) => document.id === target);
+    if (character?.kind !== "character") throw Error("Creature study is not present in this project");
+    const fixture = createCreatureFixture(target);
+    const host = new BrowserSceneHost(structuredClone(source.project), {
+      compile: this.compiler.compile,
+      growVegetation: this.compiler.growVegetation,
+      generateTerrain: this.compiler.generateTerrain,
+    });
+    this.emit({ encounterStarting: true });
+    try {
+      await host.prepare(
+        target,
+        source.project.documents.some((document) => document.id === fixture.stageId)
+          ? fixture.stageId
+          : "neutral-stage",
+        "interactive",
+      );
+      if (
+        generation !== this.encounterStartGeneration ||
+        this.captureBusy ||
+        this.disposed ||
+        this.authoring.getSnapshot().revision !== source.revision
+      )
+        throw Error("Encounter preparation superseded by changed source or another request");
+      if (!host.runtime) throw Error("Encounter runtime is unavailable");
+      const game = new CreatureEncounterGame({
+        creatureId: target,
+        encounter: fixture.encounter,
+        motions: character.motions,
+        runtime: host.runtime,
+      });
+      this.encounterSession = {
+        host,
+        game,
+        target,
+        camera: structuredClone(this.state.camera),
+        playing: this.state.playing,
+        time: this.state.time,
+      };
+      this.encounterAccumulator = 0;
+      this.emit({
+        encounter: game.snapshot(),
+        playing: false,
+        camera: { position: [0, 10, 15], target: [0, 0.8, 0], fov: 58 },
+      });
+      this.dirty = true;
+      return game.snapshot();
+    } catch (error) {
+      host.dispose();
+      throw error;
+    } finally {
+      if (generation === this.encounterStartGeneration) this.emit({ encounterStarting: false });
+    }
+  }
+  stopCreatureEncounter() {
+    this.encounterStartGeneration++;
+    const encounter = this.encounterSession;
+    this.encounterSession = undefined;
+    this.encounterInput = { move: [0, 0], dodge: false, strike: false };
+    if (encounter) {
+      encounter.game.dispose();
+      encounter.host.dispose();
+      this.emit({
+        encounter: undefined,
+        encounterStarting: false,
+        camera: encounter.camera,
+        playing: encounter.playing,
+        time: encounter.time,
+      });
+      this.dirty = true;
+    } else if (this.state.encounterStarting) this.emit({ encounterStarting: false });
+  }
+  private setCreatureEncounterInput(input: { move?: [number, number]; dodge?: boolean; strike?: boolean }) {
+    if (!this.encounterSession) throw Error("Start a creature encounter before sending actions");
+    const parsed = z
+      .object({
+        move: z.tuple([z.number().min(-1).max(1), z.number().min(-1).max(1)]).optional(),
+        dodge: z.boolean().optional(),
+        strike: z.boolean().optional(),
+      })
+      .strict()
+      .parse(input);
+    this.encounterInput = { ...this.encounterInput, ...parsed };
+    return this.encounterSession.game.snapshot();
+  }
+  async openCreatureFixture(id: CreatureFixtureId) {
+    const fixture = createCreatureFixture(id);
+    const source = this.authoring.getSnapshot();
+    await this.store.preserveRecovery(source.project, source.revision, "Before opening creature study");
+    if (this.authoring.getSnapshot().revision !== source.revision)
+      throw Error("Source changed while preserving your project. Open the creature study again.");
+    this.projectBeforeCreature ??= {
+      project: structuredClone(source.project),
+      selection: source.selection,
+      stage: this.state.stage,
+      stageId: this.state.stageId,
+    };
+    this.authoring.replace(fixture.project);
+    this.authoring.select(fixture.characterId);
+    this.patch({ stage: "studio", stageId: fixture.stageId, playing: false });
+    this.emit({ returnProjectName: this.projectBeforeCreature.project.name });
+    await this.refreshDrafts();
+    return { characterId: fixture.characterId, stageId: fixture.stageId, brief: fixture.brief };
+  }
+  async returnFromCreatureFixture() {
+    const previous = this.projectBeforeCreature;
+    if (!previous) throw Error("No earlier project is retained in this window");
+    const current = this.authoring.getSnapshot();
+    await this.store.preserveRecovery(
+      current.project,
+      current.revision,
+      "Creature study before returning to project",
+    );
+    if (this.authoring.getSnapshot().revision !== current.revision)
+      throw Error("Source changed while preserving the creature study. Return to the project again.");
+    this.authoring.replace(previous.project);
+    this.authoring.select(previous.selection);
+    this.patch({ stage: previous.stage, stageId: previous.stageId, playing: false });
+    this.projectBeforeCreature = undefined;
+    this.emit({ returnProjectName: undefined });
+    await this.refreshDrafts();
+  }
   async seek(time: number, playing = false) {
+    if (this.encounterSession) this.stopCreatureEncounter();
     if (!Number.isFinite(time) || time < 0 || time > 120)
       throw Error("Preview time must be between 0 and 120 seconds");
     if (!this.host) throw Error("Preview is not prepared");
@@ -398,17 +809,20 @@ export class StudioController {
       return;
     }
     const reprepare = patch.stage !== undefined || patch.stageId !== undefined || patch.quality !== undefined;
+    if (this.encounterSession && (reprepare || patch.playing !== undefined)) this.stopCreatureEncounter();
     this.emit(patch);
     this.dirty = true;
     if (reprepare) void this.refresh(true);
   }
   pick(x: number, y: number, width: number, height: number) {
+    if (this.encounterSession) return null;
     if (!this.lastScene) return null;
     const hit = pickScene(this.lastScene, cameraRay(this.lastScene.camera, x, y, width, height));
     if (hit) {
-      this.emit({ pickedInstance: hit.instanceId });
+      const pickedCreatureMaterial = inspectCreatureMaterialAtHit(this.lastScene, hit);
       this.preserveCamera = true;
       this.authoring.select(hit.documentId);
+      this.emit({ pickedInstance: hit.instanceId, pickedCreatureMaterial });
       this.dirty = true;
     }
     return hit;
@@ -675,6 +1089,132 @@ export class StudioController {
     return runtimeDiagnostics(this.host.runtime, { time: this.state.time, origin });
   }
   async capture(options: CaptureOptions = {}) {
+    if (this.encounterSession) throw Error("Stop the encounter before capturing source review images");
+    if (this.captureBusy) throw Error("A capture is already running; wait for it to finish");
+    this.captureBusy = true;
+    try {
+      return await this.captureCurrent(options);
+    } finally {
+      this.captureBusy = false;
+    }
+  }
+  async previewCreatureCandidate(id: string, options: CandidatePreviewOptions) {
+    if (this.encounterSession) throw Error("Stop the encounter before comparing source candidates");
+    if (this.captureBusy) throw Error("A capture is already running; wait for it to finish");
+    if (!this.compiler || this.disposed) throw Error("Studio compiler is unavailable");
+    const compiler = this.compiler;
+    this.captureBusy = true;
+    const abort = new AbortController();
+    this.candidatePreviewAbort = abort;
+    try {
+      return await previewCreatureCandidate(
+        this.authoring,
+        id,
+        options,
+        async (signal) => {
+          const canvas = document.createElement("canvas");
+          canvas.setAttribute("aria-hidden", "true");
+          canvas.style.cssText = `position:fixed;left:-10000px;top:0;width:${options.width ?? 320}px;height:${options.height ?? 240}px;pointer-events:none;visibility:hidden`;
+          document.body.append(canvas);
+          let renderer: WebGPURenderer | undefined;
+          const hosts = new Set<BrowserSceneHost>();
+          const hostsBySource = new Map<string, BrowserSceneHost>();
+          let disposed = false;
+          const dispose = () => {
+            if (disposed) return;
+            disposed = true;
+            signal.removeEventListener("abort", dispose);
+            for (const host of hosts) host.dispose();
+            hosts.clear();
+            hostsBySource.clear();
+            renderer?.dispose();
+            canvas.remove();
+          };
+          signal.addEventListener("abort", dispose, { once: true });
+          try {
+            signal.throwIfAborted();
+            renderer = await WebGPURenderer.create(canvas, {
+              quality: "low",
+              pixelRatio: 1,
+              maxGpuBytes: 64 * 1024 * 1024,
+              maxUploadBytesPerFrame: 4 * 1024 * 1024,
+            });
+            if (disposed || signal.aborted) {
+              renderer.dispose();
+              signal.throwIfAborted();
+              throw Error("Candidate preview was disposed");
+            }
+            const activeRenderer = renderer;
+            return {
+              dispose,
+              render: async (project, settings, renderSignal) => {
+                renderSignal.throwIfAborted();
+                const sourceKey = contentKey(project);
+                let host = hostsBySource.get(sourceKey);
+                if (!host) {
+                  if (hostsBySource.size >= 2)
+                    throw Error("Candidate preview exceeded its isolated host budget");
+                  host = new BrowserSceneHost(project, {
+                    compile: compiler.compile,
+                    growVegetation: compiler.growVegetation,
+                    generateTerrain: compiler.generateTerrain,
+                    maxCacheBytes: 32 * 1024 * 1024,
+                    maxInstalledBytes: 32 * 1024 * 1024,
+                  });
+                  hosts.add(host);
+                  await host.prepare(settings.subject, settings.stageId ?? "neutral-stage", "interactive");
+                  renderSignal.throwIfAborted();
+                  if (settings.motion) host.playMotion(settings.subject, settings.motion, 0);
+                  hostsBySource.set(sourceKey, host);
+                }
+                // Motion commands enter the isolated runtime on tick 1; requested tick is motion-relative.
+                await host.seek((settings.tick + (settings.motion ? 1 : 0)) / 60);
+                renderSignal.throwIfAborted();
+                host.setViewportHeight(settings.height);
+                const scene = applyCreatureInspection(host.extract(settings.camera, settings.channel), {
+                  hideGroom: settings.hideGroom,
+                });
+                scene.grid = false;
+                activeRenderer.render(scene);
+                const captured = await activeRenderer.capture();
+                const overlayDiagnostics =
+                  settings.overlays.length && host.runtime
+                    ? runtimeDiagnostics(host.runtime, {
+                        time: host.runtime.clock.time,
+                        origin: scene.origin ?? [0, 0, 0],
+                      })
+                    : undefined;
+                const blob = overlayDiagnostics
+                  ? await overlayCapture(
+                      captured,
+                      overlayDiagnostics.segments,
+                      scene.camera,
+                      settings.overlays,
+                    )
+                  : captured;
+                renderSignal.throwIfAborted();
+                assertRenderAccepted(activeRenderer.completeness);
+                return {
+                  blob,
+                  measurements: structuredClone(activeRenderer.measurements),
+                  diagnostics: [...host.diagnostics, ...activeRenderer.diagnostics],
+                };
+              },
+            };
+          } catch (error) {
+            dispose();
+            throw error;
+          }
+        },
+        abort.signal,
+      );
+    } finally {
+      this.candidatePreviewAbort = undefined;
+      this.captureBusy = false;
+      this.dirty = true;
+    }
+  }
+  private async captureCurrent(options: CaptureOptions = {}) {
     options = captureOptionsSchema.parse(options);
     const channels = options.channels ?? [this.state.mode];
     const overlays = options.overlays ?? this.state.overlays;
@@ -712,8 +1252,11 @@ export class StudioController {
           quality: this.state.quality,
           selection: this.authoring.getSnapshot().selection,
           exposure: this.state.exposure,
+          reviewSunElevation: this.state.reviewSunElevation,
+          reviewSunAzimuth: this.state.reviewSunAzimuth,
           wind: this.state.wind,
           grid: this.state.grid,
+          hideGroom: this.state.hideGroom,
           playing: this.state.playing,
           width: this.viewportCanvas?.clientWidth,
           height: this.viewportCanvas?.clientHeight,
@@ -762,7 +1305,14 @@ export class StudioController {
         tick: Math.round(this.state.time * 60),
         quality: this.state.quality,
         subject: this.authoring.getSnapshot().selection,
-        viewOverrides: { exposure: this.state.exposure, wind: this.state.wind, grid: this.state.grid },
+        viewOverrides: {
+          exposure: this.state.exposure,
+          reviewSunElevation: this.state.reviewSunElevation,
+          reviewSunAzimuth: this.state.reviewSunAzimuth,
+          wind: this.state.wind,
+          grid: this.state.grid,
+          hideGroom: this.state.hideGroom,
+        },
         rendering: {
           profile: this.renderer.qualityProfile,
           outputResolution: this.renderer.measurements.outputResolution,
@@ -872,10 +1422,10 @@ export class StudioController {
       throw error;
     }
   }
-  private expose() {
+  expose() {
     const api = {
-      discover: () => ({
-        ...this.authoring.discover(),
+      discover: (query: DiscoveryQuery = {}) => ({
+        ...this.authoring.discover(query),
         preview: {
           controls: z.toJSONSchema(previewControlsSchema),
           prepare: z.toJSONSchema(prepareOptionsSchema),
@@ -896,9 +1446,72 @@ export class StudioController {
           "world.load": "(WorldSave) → validate and restore a runtime backup",
           "world.reset": "() → clear live runtime changes",
           "world.removeInstance": "(instanceId, removed=true) → hide/restore a resident occurrence",
+          "creature.inspect": "(characterId, regionId?) → anatomy and linked authoring controls",
+          "creature.fields":
+            "(characterId) → typed fields with units, coordinate spaces, bounded support and actual edit operations",
+          "creature.dependencies": "(characterId,{domain,id},direction?) → source dependency/dependent paths",
+          "creature.select": "(characterId, restPoint, radius?) → anatomical source selection",
+          "creature.explain": "(characterId, regionId) → source dependencies",
+          "creature.solve": "(request) → bounded, inspectable authoring proposal",
+          "creature.repair":
+            "(request) → rest-space handle fit with protected points, displacement/gradient bounds, measured sensitivities and an isolated sculpt candidate",
+          "creature.repairPixel":
+            "({id,pixel,restDisplacement,support,protectPixels?,tolerance?,detail?,intent}) → ground the current body surface and prepare a repair; displacement is character-rest metres, not screen pixels; compare posed captures before adoption",
+          "creature.jobs":
+            "start({request,deadlineMs?,evaluationsPerSlice?}), inspect/list/pause/resume/cancel/await/release/usage; asynchronous solver prepares a candidate without adoption",
+          "creature.review": "(characterId, scenarioId) → deterministic CPU motion evidence",
+          "creature.playScenario":
+            "(characterId, scenarioId) → preview the authored motion and review camera",
+          "creature.capture": "(captureOptions) → revision-bound studio capture",
+          "creature.previewCandidate":
+            "(candidateId, {subject,camera,motion?,tick?,ticks?,channel?,overlays?,hideGroom?,stageId?,width?,height?,timeoutMs?}) → isolated matched A/B pose sequence; ≤8 frames,1 megapixel/version,512px/30s limits",
+          "creature.inspectView":
+            "({channel?,skeleton?,hideGroom?}) → presentation-only inspection. Clay + skeleton: {channel:'clay',skeleton:true,hideGroom:true}; preserves camera/source/pose",
+          "creature.inspectPixel":
+            "({x,y,width?,height?}) → actual rendered triangle's weighted anatomical regions, rest coordinates, material/optical properties and albedo factors; viewport pixels",
+          "creature.groundPixel":
+            "({x,y,width?,height?}) → validated current displayed-LOD source grounding: chart anchors, material/source nodes, skin joints and editable controls; rejects stale realization",
+          "creature.compareCaptures": "(baselineMetadata, candidateMetadata) → matching review conditions",
+          "creature.candidates": "propose, list, inspect, compare, adopt, cancel, release",
+          "creature.openFixture":
+            "(ash-warden | reed-penitent) → open an original study, preserving current work in recovery",
+          "creature.returnToProject":
+            "() → preserve the creature study and return to the earlier project in this window",
+          "creature.encounter":
+            "start(characterId?), input({move:[x,z],dodge?,strike?}), inspect(), stop(); isolated playable study with original preview restored on stop",
         },
       }),
       inspect: (id?: string) => this.authoring.inspect(id),
+      inspectFields: (query: InspectionQuery) => this.authoring.inspectFields(query),
+      impact: (batch: EditBatch) => this.authoring.impact(batch),
+      explain: (target: string, node?: string) =>
+        explainAuthoringSource(this.authoring.getSnapshot().project, target, node),
+      explainPixel: (input: { x: number; y: number; width?: number; height?: number }) => {
+        if (!this.lastScene || this.state.revision !== this.authoring.getSnapshot().revision)
+          throw Error("Prepare the current revision before picking");
+        const hit = pickScene(
+          this.lastScene,
+          cameraRay(
+            this.lastScene.camera,
+            input.x,
+            input.y,
+            input.width ?? this.viewportCanvas?.clientWidth ?? 1,
+            input.height ?? this.viewportCanvas?.clientHeight ?? 1,
+          ),
+        );
+        return hit
+          ? {
+              hit,
+              attribution: explainAuthoringSource(
+                this.authoring.getSnapshot().project,
+                hit.documentId,
+                hit.nodeId,
+              ),
+            }
+          : null;
+      },
+      work: this.work,
+      creature: this.creature,
       apply: (batch: EditBatch) => this.apply(batch),
       transactions: {
         preview: (batch: EditBatch) => this.authoring.preview(batch),
@@ -926,6 +1539,10 @@ export class StudioController {
           if (!this.host) throw Error("Preview is unavailable");
           this.host.playMotion(id, motion, blend);
           this.patch({ playing: true });
+        },
+        setLocomotionSpeed: (id: string, speed: number) => {
+          if (!this.host) throw Error("Preview is unavailable");
+          this.host.setLocomotionSpeed(id, speed);
         },
         travel: (x: number, z: number) => this.travel(x, z),
         inspect: () => ({
@@ -971,10 +1588,14 @@ export class StudioController {
       play: () => this.playGame(),
       project: () => this.authoring.export(),
     };
-    (window as any).wrela = api;
+    const agent = { ...api, execute: (request: unknown) => executeAgentRequest(api, request) };
+    window.wrela = agent;
+    return agent;
   }
   dispose() {
     this.disposed = true;
+    this.stopCreatureEncounter();
+    this.candidatePreviewAbort?.abort(new Error("Studio disposed"));
     cancelAnimationFrame(this.raf);
     this.resizeObserver?.disconnect();
     this.unsubscribeAuthoring?.();
@@ -1031,6 +1652,7 @@ const previewControlsSchema = z
     stageId: z.string().max(100).optional(),
     quality: z.enum(["interactive", "review", "export"]).optional(),
     grid: z.boolean().optional(),
+    hideGroom: z.boolean().optional(),
     overlays: z
       .array(z.enum(["rig", "colliders"]))
       .max(2)
@@ -1042,3 +1664,10 @@ const previewControlsSchema = z
   .strict();
 export const studio = new StudioController();
 export { downloadBlob };
+
+export type StudioAgentApi = ReturnType<StudioController["expose"]>;
+declare global {
+  interface Window {
+    wrela: StudioAgentApi;
+  }
+}

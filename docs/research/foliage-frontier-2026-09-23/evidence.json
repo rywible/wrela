@@ -1,0 +1,660 @@
+{
+  "date": "2026-09-23",
+  "source": "output/vegetation-lookdev/1790184534521-43476/source",
+  "sourceFingerprint": "c7003ec9e9e39c5c40e02c7804eb3063415d0bbcf9209d88d2ede45eb81c8d46",
+  "captureScope": "8 static MSAA images at 1024x768. Single-frame timings are excluded from performance claims. No image is an accepted AAA asset.",
+  "captureRaw": "output/vegetation-lookdev/1790184534521-43476/source/output/browser-1790184534686-43489/vegetation-lookdev.json",
+  "captures": [
+    {
+      "id": "plant-branch",
+      "camera": {
+        "position": [
+          1.227728872787558,
+          4.740848696421778,
+          3.3590278249489445
+        ],
+        "target": [
+          -0.472271127212442,
+          3.415529699041765,
+          0.7590278249489443
+        ],
+        "fov": 40
+      },
+      "time": 0,
+      "mode": "beauty",
+      "complete": true,
+      "triangles": 2004,
+      "renderedCameraTriangles": 2004,
+      "detailSurfaces": 0,
+      "adapter": "apple \u00b7 metal-3",
+      "file": "captures/plant-branch.png"
+    },
+    {
+      "id": "plant-beauty",
+      "camera": {
+        "position": [
+          8,
+          5,
+          14
+        ],
+        "target": [
+          0,
+          3.7,
+          0
+        ],
+        "fov": 42
+      },
+      "time": 0,
+      "mode": "beauty",
+      "complete": true,
+      "triangles": 93756,
+      "renderedCameraTriangles": 93756,
+      "detailSurfaces": 0,
+      "adapter": "apple \u00b7 metal-3",
+      "file": "captures/plant-beauty.png"
+    },
+    {
+      "id": "plant-silhouette",
+      "camera": {
+        "position": [
+          8,
+          5,
+          14
+        ],
+        "target": [
+          0,
+          3.7,
+          0
+        ],
+        "fov": 42
+      },
+      "time": 0,
+      "mode": "silhouette",
+      "complete": true,
+      "triangles": 93756,
+      "renderedCameraTriangles": 93756,
+      "detailSurfaces": 0,
+      "adapter": "apple \u00b7 metal-3",
+      "file": "captures/plant-silhouette.png"
+    },
+    {
+      "id": "plant-detail",
+      "camera": {
+        "position": [
+          1.4,
+          3.4,
+          2.3
+        ],
+        "target": [
+          0,
+          3.1,
+          0
+        ],
+        "fov": 40
+      },
+      "time": 0,
+      "mode": "beauty",
+      "complete": true,
+      "triangles": 93756,
+      "renderedCameraTriangles": 93756,
+      "detailSurfaces": 0,
+      "adapter": "apple \u00b7 metal-3",
+      "file": "captures/plant-detail.png"
+    },
+    {
+      "id": "plant-backlit",
+      "camera": {
+        "position": [
+          8,
+          5,
+          14
+        ],
+        "target": [
+          0,
+          3.7,
+          0
+        ],
+        "fov": 42
+      },
+      "time": 0,
+      "mode": "beauty",
+      "complete": true,
+      "triangles": 93756,
+      "renderedCameraTriangles": 93756,
+      "detailSurfaces": 0,
+      "adapter": "apple \u00b7 metal-3",
+      "file": "captures/plant-backlit.png"
+    },
+    {
+      "id": "stand-near",
+      "camera": {
+        "position": [
+          9,
+          2.4,
+          12
+        ],
+        "target": [
+          0,
+          3,
+          0
+        ],
+        "fov": 48
+      },
+      "time": 0,
+      "mode": "beauty",
+      "complete": true,
+      "triangles": 959426,
+      "renderedCameraTriangles": 717762,
+      "detailSurfaces": 0,
+      "adapter": "apple \u00b7 metal-3",
+      "file": "captures/stand-near.png"
+    },
+    {
+      "id": "stand-gameplay",
+      "camera": {
+        "position": [
+          18,
+          3,
+          26
+        ],
+        "target": [
+          0,
+          3,
+          0
+        ],
+        "fov": 48
+      },
+      "time": 0,
+      "mode": "beauty",
+      "complete": true,
+      "triangles": 955330,
+      "renderedCameraTriangles": 728002,
+      "detailSurfaces": 0,
+      "adapter": "apple \u00b7 metal-3",
+      "file": "captures/stand-gameplay.png"
+    },
+    {
+      "id": "stand-far",
+      "camera": {
+        "position": [
+          96,
+          12,
+          168
+        ],
+        "target": [
+          0,
+          3,
+          0
+        ],
+        "fov": 48
+      },
+      "time": 0,
+      "mode": "beauty",
+      "complete": true,
+      "triangles": 957378,
+      "renderedCameraTriangles": 313466,
+      "detailSurfaces": 18,
+      "adapter": "apple \u00b7 metal-3",
+      "file": "captures/stand-far.png"
+    }
+  ],
+  "benchmarkRaw": "output/vegetation-lookdev/1790184534521-43476/source/output/browser-1790184727871-44244/vegetation-benchmark.json",
+  "benchmark": {
+    "benchmarkRevision": 2,
+    "simulation": "one 1/120-second game update per submitted frame; no editor replay",
+    "hardware": {
+      "hardware": [
+        {
+          "machine_name": "MacBook Air",
+          "machine_model": "Mac16,12",
+          "chip_type": "Apple M4",
+          "number_processors": "proc 10:4:6:0",
+          "physical_memory": "16 GB"
+        }
+      ],
+      "graphics": [
+        {
+          "chip": "Apple M4",
+          "cores": "8"
+        }
+      ],
+      "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=22478947)\t39%; charging; 1:25 remaining present: true\n",
+      "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\t25G83\n",
+      "memoryPressure": "The system has 17179869184 (1048576 pages with a page size of 16384).\nSystem-wide memory free percentage: 51%\n",
+      "swap": "vm.swapusage: total = 1024.00M  used = 216.06M  free = 807.94M  (encrypted)\n",
+      "powerSettings": "Battery Power:\n Sleep On Power Button 1\n lowpowermode         0\n standby              1\n hibernatemode        3\n powernap             1\n hibernatefile        /var/vm/sleepimage\n ttyskeepawake        1\n womp                 0\n displaysleep         2\n networkoversleep     0\n sleep                1\n lessbright           1\n tcpkeepalive         1\n disksleep            10\nAC Power:\n Sleep On Power Button 1\n lowpowermode         0\n standby              1\n hibernatemode        3\n powernap             1\n hibernatefile        /var/vm/sleepimage\n ttyskeepawake        1\n womp                 1\n displaysleep         10\n networkoversleep     0\n sleep                1\n tcpkeepalive         1\n disksleep            10\n"
+    },
+    "frameId": "stand-gameplay",
+    "settings": {
+      "specimen": "shaped-pine",
+      "width": 1920,
+      "height": 1080,
+      "warmup": 5,
+      "duration": 20,
+      "trials": 3,
+      "paced": false,
+      "moving": true,
+      "diagnostic": false,
+      "antialiasing": "temporal",
+      "vegetation": true,
+      "finiteSun": false,
+      "profileCpu": false,
+      "ablation": "none",
+      "materialSpecialization": true
+    },
+    "powerAtEnd": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=22478947)\t40%; charging; 1:42 remaining present: true\n",
+    "thermalAtEnd": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+    "errors": [],
+    "scope": "Matched frame GPU intervals can overlap. Throughput includes bounded submissions and browser/tool overhead; presentation is separate."
+  },
+  "benchmarkRuns": [
+    {
+      "trial": 0,
+      "elapsedMs": 20123.415500000003,
+      "completedFrames": 2496,
+      "completedFramesPerSecond": 124.03461032745658,
+      "gpu": {
+        "samples": 2496,
+        "p50": 6.88128,
+        "p95": 8.192,
+        "p99": 9.17504,
+        "minimum": 6.029312,
+        "maximum": 30.539776
+      },
+      "renderCpu": {
+        "samples": 2496,
+        "p50": 1,
+        "p95": 1.3000000715255737,
+        "p99": 1.5,
+        "minimum": 0.5999999046325684,
+        "maximum": 2.5
+      },
+      "prepareCpu": {
+        "samples": 2496,
+        "p50": 0.19999992847442627,
+        "p95": 0.2999999523162842,
+        "p99": 0.3999999761581421,
+        "minimum": 0,
+        "maximum": 1.5
+      },
+      "totalCpu": {
+        "samples": 2496,
+        "p50": 1.1999999284744263,
+        "p95": 1.600000023841858,
+        "p99": 1.8000000715255737,
+        "minimum": 0.6999999284744263,
+        "maximum": 2.8000000715255737
+      },
+      "passes": {
+        "atmosphere": {
+          "samples": 2496,
+          "p50": 0.065536,
+          "p95": 0.13107200000000002,
+          "p99": 2.555904,
+          "minimum": 0,
+          "maximum": 5.505024000000001
+        },
+        "shadow": {
+          "samples": 2496,
+          "p50": 1.703936,
+          "p95": 2.9491199999999997,
+          "p99": 3.801088,
+          "minimum": 1.507328,
+          "maximum": 7.86432
+        },
+        "opaque": {
+          "samples": 2496,
+          "p50": 3.211264,
+          "p95": 4.653055999999999,
+          "p99": 5.2428799999999995,
+          "minimum": 3.0801919999999994,
+          "maximum": 26.2144
+        },
+        "thin-depth": {
+          "samples": 2496,
+          "p50": 2.031616,
+          "p95": 3.1457279999999996,
+          "p99": 3.6700159999999995,
+          "minimum": 1.6384000000000003,
+          "maximum": 12.517375999999999
+        },
+        "temporal-display": {
+          "samples": 2496,
+          "p50": 1.5073280000000002,
+          "p95": 2.490368,
+          "p99": 2.7525120000000003,
+          "minimum": 1.3762559999999997,
+          "maximum": 4.063232
+        }
+      },
+      "maximumGpuBytes": 254857217,
+      "finalTenMinutes": null
+    },
+    {
+      "trial": 1,
+      "elapsedMs": 20126.292833000003,
+      "completedFrames": 2592,
+      "completedFramesPerSecond": 128.78675777538308,
+      "gpu": {
+        "samples": 2592,
+        "p50": 6.422528,
+        "p95": 7.733248,
+        "p99": 8.060928,
+        "minimum": 5.963776,
+        "maximum": 8.978432
+      },
+      "renderCpu": {
+        "samples": 2592,
+        "p50": 1,
+        "p95": 1.3000000715255737,
+        "p99": 1.5,
+        "minimum": 0.5,
+        "maximum": 1.7000000476837158
+      },
+      "prepareCpu": {
+        "samples": 2592,
+        "p50": 0.19999992847442627,
+        "p95": 0.2999999523162842,
+        "p99": 0.30000007152557373,
+        "minimum": 0,
+        "maximum": 1.600000023841858
+      },
+      "totalCpu": {
+        "samples": 2592,
+        "p50": 1.100000023841858,
+        "p95": 1.600000023841858,
+        "p99": 1.7999999523162842,
+        "minimum": 0.6999999284744263,
+        "maximum": 2.8000000715255737
+      },
+      "passes": {
+        "atmosphere": {
+          "samples": 2591,
+          "p50": 0.065536,
+          "p95": 0.065536,
+          "p99": 2.490368,
+          "minimum": 0,
+          "maximum": 3.538944
+        },
+        "shadow": {
+          "samples": 2592,
+          "p50": 1.6383999999999999,
+          "p95": 2.359296,
+          "p99": 3.342336,
+          "minimum": 1.5728639999999998,
+          "maximum": 4.325375999999999
+        },
+        "opaque": {
+          "samples": 2592,
+          "p50": 3.145728,
+          "p95": 4.390912,
+          "p99": 4.980736,
+          "minimum": 3.0801919999999994,
+          "maximum": 5.308416
+        },
+        "thin-depth": {
+          "samples": 2592,
+          "p50": 1.9660799999999998,
+          "p95": 2.9491199999999997,
+          "p99": 3.211264,
+          "minimum": 1.572864,
+          "maximum": 3.60448
+        },
+        "temporal-display": {
+          "samples": 2592,
+          "p50": 1.5073280000000002,
+          "p95": 2.490368,
+          "p99": 2.555904,
+          "minimum": 1.3762559999999997,
+          "maximum": 2.7525120000000003
+        }
+      },
+      "maximumGpuBytes": 254886497,
+      "finalTenMinutes": null
+    },
+    {
+      "trial": 2,
+      "elapsedMs": 20048.432917,
+      "completedFrames": 2544,
+      "completedFramesPerSecond": 126.89271079351165,
+      "gpu": {
+        "samples": 2544,
+        "p50": 6.619136,
+        "p95": 7.86432,
+        "p99": 8.257536,
+        "minimum": 5.963776,
+        "maximum": 8.84736
+      },
+      "renderCpu": {
+        "samples": 2544,
+        "p50": 1,
+        "p95": 1.4000000953674316,
+        "p99": 1.600000023841858,
+        "minimum": 0.5,
+        "maximum": 1.899999976158142
+      },
+      "prepareCpu": {
+        "samples": 2544,
+        "p50": 0.19999992847442627,
+        "p95": 0.2999999523162842,
+        "p99": 0.30000007152557373,
+        "minimum": 0,
+        "maximum": 1.7999999523162842
+      },
+      "totalCpu": {
+        "samples": 2544,
+        "p50": 1.1999999284744263,
+        "p95": 1.6999999284744263,
+        "p99": 1.899999976158142,
+        "minimum": 0.5999999046325684,
+        "maximum": 3.100000023841858
+      },
+      "passes": {
+        "atmosphere": {
+          "samples": 2544,
+          "p50": 0.065536,
+          "p95": 0.065536,
+          "p99": 2.490368,
+          "minimum": 0,
+          "maximum": 3.342336
+        },
+        "shadow": {
+          "samples": 2544,
+          "p50": 1.6383999999999999,
+          "p95": 2.555904,
+          "p99": 3.342336,
+          "minimum": 1.5728639999999998,
+          "maximum": 4.194304
+        },
+        "opaque": {
+          "samples": 2544,
+          "p50": 3.211264,
+          "p95": 4.653056,
+          "p99": 5.111808,
+          "minimum": 3.0801919999999994,
+          "maximum": 5.701632
+        },
+        "thin-depth": {
+          "samples": 2544,
+          "p50": 2.031616,
+          "p95": 3.0146560000000004,
+          "p99": 3.2768000000000006,
+          "minimum": 1.6384000000000003,
+          "maximum": 3.60448
+        },
+        "temporal-display": {
+          "samples": 2544,
+          "p50": 1.5073280000000002,
+          "p95": 2.490368,
+          "p99": 2.6214400000000007,
+          "minimum": 1.3762559999999997,
+          "maximum": 3.211264
+        }
+      },
+      "maximumGpuBytes": 254886497,
+      "finalTenMinutes": null
+    }
+  ],
+  "limits": [
+    "Short current baseline; not an A/B optimization comparison, marginal cost measurement or thermal acceptance.",
+    "Temporal visual review uses a separate compositor capture because renderer.capture() disables temporal.",
+    "Official reference images are not matched cameras, species, exposure or hardware.",
+    "No implementation speedup is claimed."
+  ],
+  "temporalLookdev": {
+    "scope": "Browser compositor screenshot of active temporal resolve after 32 identical pose/camera history frames at time 0. Renderer.capture() deliberately bypasses temporal; that API is not used for the final image. Static-only visual evidence, not motion quality or performance.",
+    "source": "/Users/ryanwible/projects/wrela/output/vegetation-lookdev/1790184534521-43476/source",
+    "records": [
+      {
+        "id": "plant-beauty",
+        "camera": {
+          "position": [
+            8,
+            5,
+            14
+          ],
+          "target": [
+            0,
+            3.7,
+            0
+          ],
+          "fov": 42
+        },
+        "time": 0,
+        "complete": true,
+        "measurements": {
+          "cpuMs": 0.20000004768371582,
+          "gpuMs": 3.801088,
+          "triangles": 93756,
+          "drawCalls": 9,
+          "gpuBytes": 113998261,
+          "frame": 34,
+          "adapter": "apple \u00b7 metal-3",
+          "reconstruction": "storage",
+          "gpuTimingDroppedFrames": 0,
+          "localShadowPasses": 0,
+          "localShadowDrawCalls": 0,
+          "materialCacheBytes": 0,
+          "qualityProfile": "balanced",
+          "uploadedBytes": 2496,
+          "visibleSurfaces": 3,
+          "culledSurfaces": 0,
+          "detailSurfaces": 0,
+          "ownedTextureBytes": 100452105,
+          "bufferBytes": 13546156,
+          "outputResolution": [
+            1024,
+            768
+          ],
+          "renderResolution": [
+            1024,
+            768
+          ]
+        },
+        "diagnostics": []
+      },
+      {
+        "id": "plant-detail",
+        "camera": {
+          "position": [
+            1.4,
+            3.4,
+            2.3
+          ],
+          "target": [
+            0,
+            3.1,
+            0
+          ],
+          "fov": 40
+        },
+        "time": 0,
+        "complete": true,
+        "measurements": {
+          "cpuMs": 0.20000004768371582,
+          "gpuMs": 5.767168,
+          "triangles": 93756,
+          "drawCalls": 9,
+          "gpuBytes": 113998261,
+          "frame": 34,
+          "adapter": "apple \u00b7 metal-3",
+          "reconstruction": "storage",
+          "gpuTimingDroppedFrames": 0,
+          "localShadowPasses": 0,
+          "localShadowDrawCalls": 0,
+          "materialCacheBytes": 0,
+          "qualityProfile": "balanced",
+          "uploadedBytes": 2496,
+          "visibleSurfaces": 3,
+          "culledSurfaces": 0,
+          "detailSurfaces": 0,
+          "ownedTextureBytes": 100452105,
+          "bufferBytes": 13546156,
+          "outputResolution": [
+            1024,
+            768
+          ],
+          "renderResolution": [
+            1024,
+            768
+          ]
+        },
+        "diagnostics": []
+      },
+      {
+        "id": "stand-near",
+        "camera": {
+          "position": [
+            9,
+            2.4,
+            12
+          ],
+          "target": [
+            0,
+            3,
+            0
+          ],
+          "fov": 48
+        },
+        "time": 0,
+        "complete": true,
+        "measurements": {
+          "cpuMs": 1.1999999284744263,
+          "gpuMs": 11.14112,
+          "triangles": 717762,
+          "drawCalls": 180,
+          "gpuBytes": 163247553,
+          "frame": 40,
+          "adapter": "apple \u00b7 metal-3",
+          "reconstruction": "storage",
+          "gpuTimingDroppedFrames": 0,
+          "localShadowPasses": 0,
+          "localShadowDrawCalls": 0,
+          "materialCacheBytes": 0,
+          "qualityProfile": "balanced",
+          "uploadedBytes": 2496,
+          "visibleSurfaces": 131,
+          "culledSurfaces": 47,
+          "detailSurfaces": 0,
+          "ownedTextureBytes": 101850217,
+          "bufferBytes": 61397336,
+          "outputResolution": [
+            1024,
+            768
+          ],
+          "renderResolution": [
+            1024,
+            768
+          ]
+        },
+        "diagnostics": []
+      }
+    ],
+    "errors": [],
+    "rawPath": "output/browser-1790184955030-44753/temporal-lookdev.json"
+  },
+  "excludedTemporalAttempt": {
+    "rawPath": "output/browser-1790184888658-44622/temporal-lookdev.json",
+    "reason": "Renderer.capture disables temporal; these single-sample images are not valid temporal evidence."
+  }
+}

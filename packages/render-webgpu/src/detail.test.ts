@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { type EvaluatedScene, identityMatrix, type RenderSurface } from "@wrela/model";
+import { type EvaluatedScene, identityMatrix, type RenderSurface, surfaceReliefSchema } from "@wrela/model";
+
 import { DetailSelector, projectedDiameter } from "./detail";
 
 const base = {
@@ -100,4 +101,34 @@ test("canonical capture selection is independent of the preceding camera path", 
   selector.clear();
   expect(selector.select(sceneAtDiameter(70), 1080).scene.surfaces[0].mesh).toBe(base);
   expect(new DetailSelector().select(sceneAtDiameter(70), 1080).scene.surfaces[0].mesh).toBe(base);
+});
+
+test("coarse wind and generator details restore all relief bands to appearance", () => {
+  const near: RenderSurface = {
+    ...surface,
+    wind: 0.5,
+    mesh: { ...base, reliefCoordinates: base.positions.slice(), reliefNormals: base.normals.slice() },
+    reliefAppearance: {
+      recipe: surfaceReliefSchema.parse({
+        kind: "bark",
+        amplitude: 0.02,
+        scale: 0.07,
+        seed: 37,
+        targetEdgeLength: 0.02,
+      }),
+      geometryWeights: [1, 0.5, 0],
+      residualWeights: [0, 0.5, 1],
+      slopeVariance: [0.1, 0.2, 0.3],
+    },
+  };
+  const selector = new DetailSelector();
+  const far = selector.select({ ...sceneAtDiameter(1), surfaces: [near] }, 1080).scene.surfaces[0];
+  expect(far.mesh).toBe(coarse);
+  expect(far.reliefAppearance?.geometryWeights).toEqual([0, 0, 0]);
+  expect(far.reliefAppearance?.residualWeights).toEqual([1, 1, 1]);
+  expect(far.reliefAppearance?.recipe).toBe(near.reliefAppearance?.recipe);
+  const close = selector.select({ ...sceneAtDiameter(10000), surfaces: [near] }, 1080).scene.surfaces[0];
+  expect(close.mesh).toBe(near.mesh);
+  expect(close.reliefAppearance?.geometryWeights).toEqual([1, 0.5, 0]);
+  expect(near.reliefAppearance?.geometryWeights).toEqual([1, 0.5, 0]);
 });

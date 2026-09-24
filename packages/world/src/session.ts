@@ -7,6 +7,8 @@ import {
   type Vec3,
   type WorldDefinition,
 } from "@wrela/model";
+
+import { compositionInterests } from "./composition";
 import { worldPosition } from "./coordinates";
 import { type InterestSource, type PatchAddress, type PlannerOptions, planTerrain } from "./planner";
 import {
@@ -157,8 +159,23 @@ export class WorldSession {
   }
   update(): void {
     if (this.disposed) throw new Error("World disposed");
+    const observers = [...this.interests.values()];
+    const regions = new Map(
+      observers
+        .flatMap((observer) => compositionInterests(this.world.composition, observer.position))
+        .map((region) => [region.id, region]),
+    );
+    const available = Math.max(0, 8 - observers.length);
+    const additional = [...regions.values()]
+      .sort((a, b) => (b.priority ?? 1) - (a.priority ?? 1) || a.id.localeCompare(b.id))
+      .slice(0, available)
+      .map((region) => ({
+        ...region,
+        visualRadius: Math.min(region.visualRadius, this.options.maxRadius ?? 768),
+        collisionRadius: Math.min(region.collisionRadius, this.options.maxRadius ?? 768),
+      }));
     const plan = planTerrain(
-      [...this.interests.values()],
+      [...observers, ...additional],
       this.options,
       new Set(this.installed.map((p) => p.id)),
     );

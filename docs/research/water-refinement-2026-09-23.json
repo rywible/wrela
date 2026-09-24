@@ -1,0 +1,3343 @@
+{
+  "date": "2026-09-23",
+  "methodology": "Apple Metal; ABBA water on/off/off/on; 45 warmup and 120 dynamic samples per run; whole-frame interval includes wave synthesis. Paired median subtraction is not a water p95. Shared workstation load is variable. Low profile renders at reduced resolution on the same adapter.",
+  "benchmarks": {
+    "baselineOcean": {
+      "path": "output/browser-1790183380925-39815",
+      "provenance": {
+        "startedAt": "2026-09-23T17:09:40.956Z",
+        "finishedAt": "2026-09-23T17:09:51.309Z",
+        "sourceFingerprint": "124092542f86a994ac8e2ad7c7c680e342a11cef41189fe3e840c3263016ec60",
+        "finalSourceFingerprint": "124092542f86a994ac8e2ad7c7c680e342a11cef41189fe3e840c3263016ec60",
+        "sourceStable": true
+      },
+      "runs": [
+        {
+          "omitWater": false,
+          "gpu": {
+            "samples": 120,
+            "mean": 5.1298304,
+            "p50": 4.521984,
+            "p95": 6.488064,
+            "p99": 15.794176,
+            "max": 15.990784
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 0.4449999998013178,
+            "p50": 0.40000009536743164,
+            "p95": 0.6000000238418579,
+            "p99": 0.6000000238418579,
+            "max": 0.6999999284744263
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "measurements": {
+            "cpuMs": 0.40000009536743164,
+            "gpuMs": 4.521984,
+            "triangles": 43392,
+            "drawCalls": 3,
+            "gpuBytes": 130614417,
+            "frame": 167,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2480,
+            "visibleSurfaces": 1,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 126423425,
+            "bufferBytes": 4190992,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        },
+        {
+          "omitWater": true,
+          "gpu": {
+            "samples": 120,
+            "mean": 1.3478570666666663,
+            "p50": 0.851968,
+            "p95": 2.162688,
+            "p99": 11.927552,
+            "max": 13.238272
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 0.36333333353201547,
+            "p50": 0.3999999761581421,
+            "p95": 0.5,
+            "p99": 0.6000000238418579,
+            "max": 0.6000000238418579
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "measurements": {
+            "cpuMs": 0.2999999523162842,
+            "gpuMs": 0.786432,
+            "triangles": 0,
+            "drawCalls": 2,
+            "gpuBytes": 128069377,
+            "frame": 332,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2480,
+            "visibleSurfaces": 0,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 126423425,
+            "bufferBytes": 1645952,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        },
+        {
+          "omitWater": true,
+          "gpu": {
+            "samples": 120,
+            "mean": 1.6853674666666671,
+            "p50": 1.048576,
+            "p95": 2.62144,
+            "p99": 16.384,
+            "max": 17.825792
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 0.33166666130224864,
+            "p50": 0.2999999523162842,
+            "p95": 0.5,
+            "p99": 0.5,
+            "max": 0.5999999046325684
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "measurements": {
+            "cpuMs": 0.2999999523162842,
+            "gpuMs": 2.62144,
+            "triangles": 0,
+            "drawCalls": 2,
+            "gpuBytes": 128069377,
+            "frame": 497,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2480,
+            "visibleSurfaces": 0,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 126423425,
+            "bufferBytes": 1645952,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        },
+        {
+          "omitWater": false,
+          "gpu": {
+            "samples": 120,
+            "mean": 6.478233599999999,
+            "p50": 5.701632,
+            "p95": 7.798784,
+            "p99": 20.709376,
+            "max": 20.709376
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 0.5175000061591466,
+            "p50": 0.5,
+            "p95": 0.7000000476837158,
+            "p99": 0.8000000715255737,
+            "max": 0.8000000715255737
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "measurements": {
+            "cpuMs": 0.20000004768371582,
+            "gpuMs": 5.111808,
+            "triangles": 43392,
+            "drawCalls": 3,
+            "gpuBytes": 130614417,
+            "frame": 662,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2480,
+            "visibleSurfaces": 1,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 126423425,
+            "bufferBytes": 4190992,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        }
+      ],
+      "incrementalMedianEstimate": 4.161536
+    },
+    "baselineCreek": {
+      "path": "output/browser-1790183420989-39876",
+      "provenance": {
+        "startedAt": "2026-09-23T17:10:21.018Z",
+        "finishedAt": "2026-09-23T17:10:32.241Z",
+        "sourceFingerprint": "124092542f86a994ac8e2ad7c7c680e342a11cef41189fe3e840c3263016ec60",
+        "finalSourceFingerprint": "124092542f86a994ac8e2ad7c7c680e342a11cef41189fe3e840c3263016ec60",
+        "sourceStable": true
+      },
+      "runs": [
+        {
+          "omitWater": false,
+          "gpu": {
+            "samples": 120,
+            "mean": 10.160810666666668,
+            "p50": 9.8304,
+            "p95": 15.269888,
+            "p99": 20.840448,
+            "max": 22.9376
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 2.0233333349227904,
+            "p50": 2.100000023841858,
+            "p95": 2.799999952316284,
+            "p99": 3.100000023841858,
+            "max": 3.299999952316284
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0.661666672428449,
+            "p50": 0.7000000476837158,
+            "p95": 0.9000000953674316,
+            "p99": 1.100000023841858,
+            "max": 1.100000023841858
+          },
+          "measurements": {
+            "cpuMs": 1.100000023841858,
+            "gpuMs": 8.192,
+            "triangles": 15876,
+            "drawCalls": 5,
+            "gpuBytes": 129230561,
+            "frame": 167,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 199984,
+            "visibleSurfaces": 2,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 126423425,
+            "bufferBytes": 2807136,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        },
+        {
+          "omitWater": true,
+          "gpu": {
+            "samples": 120,
+            "mean": 8.436667733333332,
+            "p50": 7.53664,
+            "p95": 12.45184,
+            "p99": 22.413312,
+            "max": 23.461888
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 1.6858333339293798,
+            "p50": 1.600000023841858,
+            "p95": 2.3000000715255737,
+            "p99": 2.5,
+            "max": 2.600000023841858
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0.8533333381017049,
+            "p50": 0.8999999761581421,
+            "p95": 1,
+            "p99": 1.100000023841858,
+            "max": 1.100000023841858
+          },
+          "measurements": {
+            "cpuMs": 0.2999999523162842,
+            "gpuMs": 8.781824,
+            "triangles": 7938,
+            "drawCalls": 4,
+            "gpuBytes": 128551225,
+            "frame": 332,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2480,
+            "visibleSurfaces": 1,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 126423425,
+            "bufferBytes": 2127800,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        },
+        {
+          "omitWater": true,
+          "gpu": {
+            "samples": 120,
+            "mean": 9.325772800000003,
+            "p50": 8.323072,
+            "p95": 15.138816,
+            "p99": 25.493504,
+            "max": 28.573696
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 2.0283333361148834,
+            "p50": 1.899999976158142,
+            "p95": 2.6999999284744263,
+            "p99": 2.899999976158142,
+            "max": 3.5
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0.9708333343267441,
+            "p50": 1,
+            "p95": 1.2000000476837158,
+            "p99": 1.2999999523162842,
+            "max": 1.3000000715255737
+          },
+          "measurements": {
+            "cpuMs": 0.3999999761581421,
+            "gpuMs": 8.51968,
+            "triangles": 7938,
+            "drawCalls": 4,
+            "gpuBytes": 128551225,
+            "frame": 497,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2480,
+            "visibleSurfaces": 1,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 126423425,
+            "bufferBytes": 2127800,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        },
+        {
+          "omitWater": false,
+          "gpu": {
+            "samples": 120,
+            "mean": 13.0940928,
+            "p50": 12.517376,
+            "p95": 15.335424,
+            "p99": 24.182784,
+            "max": 25.493504
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 2.5875000009934106,
+            "p50": 2.600000023841858,
+            "p95": 3.299999952316284,
+            "p99": 3.4000000953674316,
+            "max": 3.5
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0.8808333337306976,
+            "p50": 0.8999999761581421,
+            "p95": 1.100000023841858,
+            "p99": 1.2000000476837158,
+            "max": 1.2000000476837158
+          },
+          "measurements": {
+            "cpuMs": 1.2999999523162842,
+            "gpuMs": 12.058624,
+            "triangles": 15876,
+            "drawCalls": 5,
+            "gpuBytes": 129230561,
+            "frame": 662,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 199984,
+            "visibleSurfaces": 2,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 126423425,
+            "bufferBytes": 2807136,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        }
+      ],
+      "incrementalMedianEstimate": 3.244032
+    },
+    "finalOcean": {
+      "path": "output/browser-1790185036709-44930",
+      "provenance": {
+        "startedAt": "2026-09-23T17:37:16.737Z",
+        "finishedAt": "2026-09-23T17:37:20.877Z",
+        "sourceFingerprint": "9b1a9f83dfee3e9fb625f64dbbe9b8e09ec1741edd55cff8faee4ba2e6bf0b11",
+        "finalSourceFingerprint": "9b1a9f83dfee3e9fb625f64dbbe9b8e09ec1741edd55cff8faee4ba2e6bf0b11",
+        "sourceStable": true
+      },
+      "runs": [
+        {
+          "omitWater": false,
+          "gpu": {
+            "samples": 120,
+            "mean": 2.2713685333333333,
+            "p50": 1.703936,
+            "p95": 2.94912,
+            "p99": 14.286848,
+            "max": 14.483456
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 0.2433333267768224,
+            "p50": 0.20000004768371582,
+            "p95": 0.6000000238418579,
+            "p99": 0.6999999284744263,
+            "max": 0.7000000476837158
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "measurements": {
+            "cpuMs": 0.3999999761581421,
+            "gpuMs": 1.703936,
+            "triangles": 43392,
+            "drawCalls": 3,
+            "gpuBytes": 134810241,
+            "frame": 167,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2496,
+            "visibleSurfaces": 1,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 130617761,
+            "bufferBytes": 4192480,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        },
+        {
+          "omitWater": true,
+          "gpu": {
+            "samples": 120,
+            "mean": 1.2861440000000004,
+            "p50": 0.720896,
+            "p95": 1.900544,
+            "p99": 13.43488,
+            "max": 13.828096
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 0.2041666676600774,
+            "p50": 0.20000004768371582,
+            "p95": 0.30000007152557373,
+            "p99": 0.3999999761581421,
+            "max": 0.3999999761581421
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "measurements": {
+            "cpuMs": 0.10000002384185791,
+            "gpuMs": 0.720896,
+            "triangles": 0,
+            "drawCalls": 2,
+            "gpuBytes": 128069937,
+            "frame": 332,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2480,
+            "visibleSurfaces": 0,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 126423473,
+            "bufferBytes": 1646464,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        },
+        {
+          "omitWater": true,
+          "gpu": {
+            "samples": 120,
+            "mean": 1.2779520000000013,
+            "p50": 0.720896,
+            "p95": 1.769472,
+            "p99": 13.697024,
+            "max": 14.09024
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 0.09249999721844991,
+            "p50": 0.10000002384185791,
+            "p95": 0.20000004768371582,
+            "p99": 0.2999999523162842,
+            "max": 0.2999999523162842
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "measurements": {
+            "cpuMs": 0,
+            "gpuMs": 0.65536,
+            "triangles": 0,
+            "drawCalls": 2,
+            "gpuBytes": 128069937,
+            "frame": 497,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2480,
+            "visibleSurfaces": 0,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 126423473,
+            "bufferBytes": 1646464,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        },
+        {
+          "omitWater": false,
+          "gpu": {
+            "samples": 120,
+            "mean": 2.101521066666668,
+            "p50": 1.572864,
+            "p95": 2.752512,
+            "p99": 13.369344,
+            "max": 13.565952
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 0.16333333055178326,
+            "p50": 0.19999992847442627,
+            "p95": 0.2999999523162842,
+            "p99": 0.3999999761581421,
+            "max": 0.3999999761581421
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "measurements": {
+            "cpuMs": 0.10000002384185791,
+            "gpuMs": 2.097152,
+            "triangles": 43392,
+            "drawCalls": 3,
+            "gpuBytes": 134810241,
+            "frame": 662,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2496,
+            "visibleSurfaces": 1,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 130617761,
+            "bufferBytes": 4192480,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        }
+      ],
+      "incrementalMedianEstimate": 0.9175039999999999
+    },
+    "finalCreek": {
+      "path": "output/browser-1790185135858-45066",
+      "provenance": {
+        "startedAt": "2026-09-23T17:38:55.878Z",
+        "finishedAt": "2026-09-23T17:39:07.419Z",
+        "sourceFingerprint": "7a24d811c789a94b792b956121dabae35e6b1ff9340f80883624947570468ee6",
+        "finalSourceFingerprint": "7a24d811c789a94b792b956121dabae35e6b1ff9340f80883624947570468ee6",
+        "sourceStable": true
+      },
+      "runs": [
+        {
+          "omitWater": false,
+          "gpu": {
+            "samples": 120,
+            "mean": 12.179865600000003,
+            "p50": 11.665408,
+            "p95": 18.0224,
+            "p99": 24.969216,
+            "max": 26.148864
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 3.5508333345254264,
+            "p50": 3.600000023841858,
+            "p95": 4.299999952316284,
+            "p99": 4.5,
+            "max": 5.100000023841858
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 2.5066666662693025,
+            "p50": 2.5,
+            "p95": 3.100000023841858,
+            "p99": 3.200000047683716,
+            "max": 3.299999952316284
+          },
+          "measurements": {
+            "cpuMs": 0.5,
+            "gpuMs": 12.45184,
+            "triangles": 64516,
+            "drawCalls": 5,
+            "gpuBytes": 136860881,
+            "frame": 167,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 790784,
+            "visibleSurfaces": 2,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 130617761,
+            "bufferBytes": 6243120,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        },
+        {
+          "omitWater": true,
+          "gpu": {
+            "samples": 120,
+            "mean": 6.1980672,
+            "p50": 5.701632,
+            "p95": 8.454144,
+            "p99": 13.631488,
+            "max": 14.352384
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 1.5949999998013178,
+            "p50": 1.5,
+            "p95": 2,
+            "p99": 2.100000023841858,
+            "max": 2.5
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 1.0691666702429454,
+            "p50": 1,
+            "p95": 1.399999976158142,
+            "p99": 1.5,
+            "max": 1.600000023841858
+          },
+          "measurements": {
+            "cpuMs": 0.20000004768371582,
+            "gpuMs": 5.767168,
+            "triangles": 32258,
+            "drawCalls": 4,
+            "gpuBytes": 129974121,
+            "frame": 332,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2480,
+            "visibleSurfaces": 1,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 126423473,
+            "bufferBytes": 3550648,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        },
+        {
+          "omitWater": true,
+          "gpu": {
+            "samples": 120,
+            "mean": 8.374954666666666,
+            "p50": 7.995392,
+            "p95": 9.961472,
+            "p99": 18.874368,
+            "max": 20.119552
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 2.039166667064031,
+            "p50": 2,
+            "p95": 2.5999999046325684,
+            "p99": 2.799999952316284,
+            "max": 2.799999952316284
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 1.3958333313465119,
+            "p50": 1.399999976158142,
+            "p95": 1.7999999523162842,
+            "p99": 1.7999999523162842,
+            "max": 1.8000000715255737
+          },
+          "measurements": {
+            "cpuMs": 0.30000007152557373,
+            "gpuMs": 9.764864,
+            "triangles": 32258,
+            "drawCalls": 4,
+            "gpuBytes": 129974121,
+            "frame": 497,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2480,
+            "visibleSurfaces": 1,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 126423473,
+            "bufferBytes": 3550648,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        },
+        {
+          "omitWater": false,
+          "gpu": {
+            "samples": 120,
+            "mean": 9.48688213333333,
+            "p50": 8.912896,
+            "p95": 12.910592,
+            "p99": 17.235968,
+            "max": 18.743296
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 2.4825000047683714,
+            "p50": 2.5999999046325684,
+            "p95": 3.100000023841858,
+            "p99": 3.1999999284744263,
+            "max": 3.600000023841858
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 1.3874999940395356,
+            "p50": 1.399999976158142,
+            "p95": 1.7000000476837158,
+            "p99": 1.8000000715255737,
+            "max": 1.8000000715255737
+          },
+          "measurements": {
+            "cpuMs": 0.8000000715255737,
+            "gpuMs": 13.303808,
+            "triangles": 64516,
+            "drawCalls": 5,
+            "gpuBytes": 136860881,
+            "frame": 662,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 790784,
+            "visibleSurfaces": 2,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 130617761,
+            "bufferBytes": 6243120,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        }
+      ],
+      "incrementalMedianEstimate": 3.44064
+    },
+    "repeatedOcean": {
+      "path": "output/water-refinement-delivery/source/output/browser-1790184702649-44110",
+      "provenance": {
+        "startedAt": "2026-09-23T17:31:42.679Z",
+        "finishedAt": "2026-09-23T17:31:47.253Z",
+        "sourceFingerprint": "34ceb6a3514d41dc2f8c5fac6a1c54bdb2bfcdeabbf6d416b0e94bc2206c783a",
+        "finalSourceFingerprint": "34ceb6a3514d41dc2f8c5fac6a1c54bdb2bfcdeabbf6d416b0e94bc2206c783a",
+        "sourceStable": true
+      },
+      "runs": [
+        {
+          "omitWater": false,
+          "gpu": {
+            "samples": 120,
+            "mean": 2.956765866666666,
+            "p50": 2.162688,
+            "p95": 3.801088,
+            "p99": 18.284544,
+            "max": 19.202048
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 0.5424999992052714,
+            "p50": 0.6000000238418579,
+            "p95": 0.8000000715255737,
+            "p99": 1.100000023841858,
+            "max": 1.100000023841858
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "measurements": {
+            "cpuMs": 0.19999992847442627,
+            "gpuMs": 2.555904,
+            "triangles": 43392,
+            "drawCalls": 3,
+            "gpuBytes": 134810241,
+            "frame": 167,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2496,
+            "visibleSurfaces": 1,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 130617761,
+            "bufferBytes": 4192480,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        },
+        {
+          "omitWater": true,
+          "gpu": {
+            "samples": 120,
+            "mean": 1.4794752000000018,
+            "p50": 0.786432,
+            "p95": 2.359296,
+            "p99": 16.187392,
+            "max": 18.874368
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 0.16333333750565845,
+            "p50": 0.10000002384185791,
+            "p95": 0.30000007152557373,
+            "p99": 0.3999999761581421,
+            "max": 0.40000009536743164
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "measurements": {
+            "cpuMs": 0.09999990463256836,
+            "gpuMs": 0.720896,
+            "triangles": 0,
+            "drawCalls": 2,
+            "gpuBytes": 128069937,
+            "frame": 332,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2480,
+            "visibleSurfaces": 0,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 126423473,
+            "bufferBytes": 1646464,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        },
+        {
+          "omitWater": true,
+          "gpu": {
+            "samples": 120,
+            "mean": 1.0971818666666653,
+            "p50": 0.589824,
+            "p95": 0.720896,
+            "p99": 12.12416,
+            "max": 12.648448
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 0.22083333432674407,
+            "p50": 0.20000004768371582,
+            "p95": 0.40000009536743164,
+            "p99": 0.5,
+            "max": 0.7000000476837158
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "measurements": {
+            "cpuMs": 0.10000002384185791,
+            "gpuMs": 0.589824,
+            "triangles": 0,
+            "drawCalls": 2,
+            "gpuBytes": 128069937,
+            "frame": 497,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2480,
+            "visibleSurfaces": 0,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 126423473,
+            "bufferBytes": 1646464,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        },
+        {
+          "omitWater": false,
+          "gpu": {
+            "samples": 120,
+            "mean": 2.5635498666666665,
+            "p50": 1.900544,
+            "p95": 3.473408,
+            "p99": 17.498112,
+            "max": 18.284544
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 0.6508333285649618,
+            "p50": 0.6000000238418579,
+            "p95": 0.8999999761581421,
+            "p99": 1.100000023841858,
+            "max": 1.2000000476837158
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "measurements": {
+            "cpuMs": 0.6000000238418579,
+            "gpuMs": 1.900544,
+            "triangles": 43392,
+            "drawCalls": 3,
+            "gpuBytes": 134810241,
+            "frame": 662,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2496,
+            "visibleSurfaces": 1,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 130617761,
+            "bufferBytes": 4192480,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1920,
+              1080
+            ]
+          }
+        }
+      ],
+      "incrementalMedianEstimate": 1.343488
+    },
+    "lowOcean": {
+      "path": "output/water-refinement-delivery/source/output/browser-1790184719386-44182",
+      "provenance": {
+        "startedAt": "2026-09-23T17:31:59.412Z",
+        "finishedAt": "2026-09-23T17:32:05.764Z",
+        "sourceFingerprint": "34ceb6a3514d41dc2f8c5fac6a1c54bdb2bfcdeabbf6d416b0e94bc2206c783a",
+        "finalSourceFingerprint": "34ceb6a3514d41dc2f8c5fac6a1c54bdb2bfcdeabbf6d416b0e94bc2206c783a",
+        "sourceStable": true
+      },
+      "runs": [
+        {
+          "omitWater": false,
+          "gpu": {
+            "samples": 120,
+            "mean": 3.5405824000000004,
+            "p50": 2.94912,
+            "p95": 6.22592,
+            "p99": 6.88128,
+            "max": 7.733248
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 0.34916666050752004,
+            "p50": 0.30000007152557373,
+            "p95": 0.6000000238418579,
+            "p99": 0.6000000238418579,
+            "max": 0.6999999284744263
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "measurements": {
+            "cpuMs": 0.20000004768371582,
+            "gpuMs": 5.111808,
+            "triangles": 43392,
+            "drawCalls": 3,
+            "gpuBytes": 69330049,
+            "frame": 167,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "low",
+            "uploadedBytes": 2496,
+            "visibleSurfaces": 1,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 66403233,
+            "bufferBytes": 2926816,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1440,
+              810
+            ]
+          }
+        },
+        {
+          "omitWater": true,
+          "gpu": {
+            "samples": 120,
+            "mean": 1.9567957333333332,
+            "p50": 1.376256,
+            "p95": 4.456448,
+            "p99": 6.88128,
+            "max": 10.223616
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 0.2758333404858907,
+            "p50": 0.2999999523162842,
+            "p95": 0.5,
+            "p99": 0.5,
+            "max": 0.6000000238418579
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "measurements": {
+            "cpuMs": 0.10000002384185791,
+            "gpuMs": 2.555904,
+            "triangles": 0,
+            "drawCalls": 2,
+            "gpuBytes": 62589745,
+            "frame": 332,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "low",
+            "uploadedBytes": 2480,
+            "visibleSurfaces": 0,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 62208945,
+            "bufferBytes": 380800,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1440,
+              810
+            ]
+          }
+        },
+        {
+          "omitWater": true,
+          "gpu": {
+            "samples": 120,
+            "mean": 2.106436266666666,
+            "p50": 1.31072,
+            "p95": 5.701632,
+            "p99": 9.306112,
+            "max": 9.371648
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 0.15583332379659018,
+            "p50": 0.10000002384185791,
+            "p95": 0.30000007152557373,
+            "p99": 0.5,
+            "max": 0.6000000238418579
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "measurements": {
+            "cpuMs": 0.09999990463256836,
+            "gpuMs": 1.179648,
+            "triangles": 0,
+            "drawCalls": 2,
+            "gpuBytes": 62589745,
+            "frame": 497,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "low",
+            "uploadedBytes": 2480,
+            "visibleSurfaces": 0,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 62208945,
+            "bufferBytes": 380800,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1440,
+              810
+            ]
+          }
+        },
+        {
+          "omitWater": false,
+          "gpu": {
+            "samples": 120,
+            "mean": 2.7492352,
+            "p50": 2.228224,
+            "p95": 5.046272,
+            "p99": 5.832704,
+            "max": 5.963776
+          },
+          "cpu": {
+            "samples": 120,
+            "mean": 0.2141666700442632,
+            "p50": 0.20000004768371582,
+            "p95": 0.3999999761581421,
+            "p99": 0.40000009536743164,
+            "max": 0.5
+          },
+          "fluid": {
+            "samples": 120,
+            "mean": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "measurements": {
+            "cpuMs": 0.10000002384185791,
+            "gpuMs": 3.801088,
+            "triangles": 43392,
+            "drawCalls": 3,
+            "gpuBytes": 69330049,
+            "frame": 662,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "low",
+            "uploadedBytes": 2496,
+            "visibleSurfaces": 1,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 66403233,
+            "bufferBytes": 2926816,
+            "outputResolution": [
+              1920,
+              1080
+            ],
+            "renderResolution": [
+              1440,
+              810
+            ]
+          }
+        }
+      ],
+      "incrementalMedianEstimate": 1.2451839999999998
+    }
+  },
+  "conformance": [
+    {
+      "ocean": false,
+      "mode": "creek",
+      "samples": 64,
+      "maximumError": 0.0000019315630197525024,
+      "origin": [
+        128,
+        19,
+        -128
+      ],
+      "shadingMap": {
+        "samples": 128,
+        "origin": [
+          128,
+          19,
+          -128
+        ],
+        "heightError": 0.0001369978470406076,
+        "slopeError": 0.0012389649106727546,
+        "jacobianError": 0,
+        "seamError": 0.000007987022399902344,
+        "farVariance": 0.001470327377319336
+      }
+    },
+    {
+      "ocean": true,
+      "mode": "ocean",
+      "samples": 64,
+      "maximumError": 4.722491992736888e-7,
+      "origin": [
+        100000,
+        19,
+        -200000
+      ],
+      "shadingMap": {
+        "samples": 128,
+        "origin": [
+          100000,
+          19,
+          -200000
+        ],
+        "heightError": 0.002977944706950869,
+        "slopeError": 0.0033568652790547104,
+        "jacobianError": 0.0011509279794000848,
+        "seamError": 0.0001220703125,
+        "farVariance": 0.029386520385742188
+      }
+    },
+    {
+      "ocean": true,
+      "mode": "mixed",
+      "samples": 64,
+      "maximumError": 7.113774085631963e-7,
+      "origin": [
+        100000,
+        19,
+        -200000
+      ],
+      "shadingMap": {
+        "samples": 128,
+        "origin": [
+          100000,
+          19,
+          -200000
+        ],
+        "heightError": 0.002978510662324102,
+        "slopeError": 0.0033568755315692977,
+        "jacobianError": 0.0010324803499561774,
+        "seamError": 0.00012224912643432617,
+        "farVariance": 0.04120098799467087
+      }
+    }
+  ],
+  "solver": {
+    "resolution": 128,
+    "stateError": 0,
+    "renderError": 0,
+    "runs": [
+      {
+        "implementation": "before",
+        "ms": {
+          "samples": 300,
+          "mean": 1.0747913666666633,
+          "p50": 1.069166999999993,
+          "p95": 1.1013749999999618,
+          "p99": 1.135499999999979,
+          "max": 1.170959000000039
+        }
+      },
+      {
+        "implementation": "after",
+        "ms": {
+          "samples": 300,
+          "mean": 0.9345966766666758,
+          "p50": 0.9285419999998794,
+          "p95": 0.9828330000000278,
+          "p99": 1.0587500000001455,
+          "max": 1.1935409999998683
+        }
+      },
+      {
+        "implementation": "after",
+        "ms": {
+          "samples": 300,
+          "mean": 0.9323698866666715,
+          "p50": 0.9288329999999405,
+          "p95": 0.9613750000000891,
+          "p99": 0.9983340000001135,
+          "max": 1.0169160000000375
+        }
+      },
+      {
+        "implementation": "before",
+        "ms": {
+          "samples": 300,
+          "mean": 1.0741702633333208,
+          "p50": 1.0697909999998956,
+          "p95": 1.1015830000001188,
+          "p99": 1.1180410000001757,
+          "max": 1.1516670000000886
+        }
+      }
+    ]
+  },
+  "packing": {
+    "bitwiseEqualOrigins": [
+      [
+        0,
+        0,
+        0
+      ],
+      [
+        128,
+        19,
+        -128
+      ],
+      [
+        100000,
+        -34,
+        -200000
+      ]
+    ],
+    "temporaryAllocationsRemovedPer128Grid": 49152
+  },
+  "motion": {
+    "path": "output/water-refinement-delivery/source/output/browser-1790184733034-44102",
+    "result": {
+      "cases": [
+        {
+          "subject": "ocean",
+          "antialiasing": "default",
+          "changes": [
+            {
+              "frame": 16,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 17,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 18,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 19,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 20,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 21,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 22,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 23,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 24,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 25,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 26,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 27,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 28,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 29,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 30,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 31,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 32,
+              "phase": "moving",
+              "mean": 1.1863755967880891,
+              "changedFraction": 0.0042765299479166664,
+              "sky": 0,
+              "water": 2.7765583989505758
+            },
+            {
+              "frame": 33,
+              "phase": "moving",
+              "mean": 1.190243869357535,
+              "changedFraction": 0.004231770833333333,
+              "sky": 0,
+              "water": 2.7926878280843894
+            },
+            {
+              "frame": 34,
+              "phase": "moving",
+              "mean": 1.2182915581596092,
+              "changedFraction": 0.0045125325520833336,
+              "sky": 0,
+              "water": 2.863279199475468
+            },
+            {
+              "frame": 35,
+              "phase": "moving",
+              "mean": 1.2363905164929094,
+              "changedFraction": 0.0045166015625,
+              "sky": 0,
+              "water": 2.9066847112864713
+            },
+            {
+              "frame": 36,
+              "phase": "moving",
+              "mean": 1.2621012369790383,
+              "changedFraction": 0.004890950520833334,
+              "sky": 0,
+              "water": 2.992125984252357
+            },
+            {
+              "frame": 37,
+              "phase": "moving",
+              "mean": 1.272543674045008,
+              "changedFraction": 0.004829915364583334,
+              "sky": 0,
+              "water": 3.014702263779866
+            },
+            {
+              "frame": 38,
+              "phase": "moving",
+              "mean": 1.309501139322742,
+              "changedFraction": 0.0052734375,
+              "sky": 0,
+              "water": 3.114755577428254
+            },
+            {
+              "frame": 39,
+              "phase": "moving",
+              "mean": 1.320567491319296,
+              "changedFraction": 0.00557861328125,
+              "sky": 0,
+              "water": 3.1491264763782865
+            },
+            {
+              "frame": 40,
+              "phase": "moving",
+              "mean": 1.3430121527776084,
+              "changedFraction": 0.00582275390625,
+              "sky": 0,
+              "water": 3.2200418307090586
+            },
+            {
+              "frame": 41,
+              "phase": "moving",
+              "mean": 1.3628797743053764,
+              "changedFraction": 0.0060791015625,
+              "sky": 0,
+              "water": 3.2558686023624834
+            },
+            {
+              "frame": 42,
+              "phase": "moving",
+              "mean": 1.3850680881074549,
+              "changedFraction": 0.006380208333333333,
+              "sky": 0,
+              "water": 3.33941519028876
+            },
+            {
+              "frame": 43,
+              "phase": "moving",
+              "mean": 1.3865885416664991,
+              "changedFraction": 0.0063720703125,
+              "sky": 0,
+              "water": 3.364870406824196
+            },
+            {
+              "frame": 44,
+              "phase": "moving",
+              "mean": 1.4148803710935567,
+              "changedFraction": 0.006624348958333333,
+              "sky": 0,
+              "water": 3.448605643044538
+            },
+            {
+              "frame": 45,
+              "phase": "moving",
+              "mean": 1.456056043836637,
+              "changedFraction": 0.007470703125,
+              "sky": 0.031070963541666878,
+              "water": 3.504461942257134
+            },
+            {
+              "frame": 46,
+              "phase": "moving",
+              "mean": 1.454142252603981,
+              "changedFraction": 0.007706705729166667,
+              "sky": 0,
+              "water": 3.562569717847702
+            },
+            {
+              "frame": 47,
+              "phase": "moving",
+              "mean": 1.4780531141491347,
+              "changedFraction": 0.00799560546875,
+              "sky": 0,
+              "water": 3.647543471128487
+            }
+          ],
+          "errors": [],
+          "measurements": {
+            "cpuMs": 0.2999999523162842,
+            "gpuMs": 1.507328,
+            "triangles": 43392,
+            "drawCalls": 3,
+            "gpuBytes": 61696641,
+            "frame": 48,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2496,
+            "visibleSurfaces": 1,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 57504161,
+            "bufferBytes": 4192480,
+            "outputResolution": [
+              640,
+              384
+            ],
+            "renderResolution": [
+              640,
+              384
+            ]
+          }
+        },
+        {
+          "subject": "ocean",
+          "antialiasing": "temporal",
+          "changes": [
+            {
+              "frame": 16,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 17,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 18,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 19,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 20,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 21,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 22,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 23,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 24,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 25,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 26,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 27,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 28,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 29,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 30,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 31,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 32,
+              "phase": "moving",
+              "mean": 1.1863755967880891,
+              "changedFraction": 0.0042765299479166664,
+              "sky": 0,
+              "water": 2.7765583989505758
+            },
+            {
+              "frame": 33,
+              "phase": "moving",
+              "mean": 1.190243869357535,
+              "changedFraction": 0.004231770833333333,
+              "sky": 0,
+              "water": 2.7926878280843894
+            },
+            {
+              "frame": 34,
+              "phase": "moving",
+              "mean": 1.2182915581596092,
+              "changedFraction": 0.0045125325520833336,
+              "sky": 0,
+              "water": 2.863279199475468
+            },
+            {
+              "frame": 35,
+              "phase": "moving",
+              "mean": 1.2363905164929094,
+              "changedFraction": 0.0045166015625,
+              "sky": 0,
+              "water": 2.9066847112864713
+            },
+            {
+              "frame": 36,
+              "phase": "moving",
+              "mean": 1.2621012369790383,
+              "changedFraction": 0.004890950520833334,
+              "sky": 0,
+              "water": 2.992125984252357
+            },
+            {
+              "frame": 37,
+              "phase": "moving",
+              "mean": 1.272543674045008,
+              "changedFraction": 0.004829915364583334,
+              "sky": 0,
+              "water": 3.014702263779866
+            },
+            {
+              "frame": 38,
+              "phase": "moving",
+              "mean": 1.309501139322742,
+              "changedFraction": 0.0052734375,
+              "sky": 0,
+              "water": 3.114755577428254
+            },
+            {
+              "frame": 39,
+              "phase": "moving",
+              "mean": 1.320567491319296,
+              "changedFraction": 0.00557861328125,
+              "sky": 0,
+              "water": 3.1491264763782865
+            },
+            {
+              "frame": 40,
+              "phase": "moving",
+              "mean": 1.3430121527776084,
+              "changedFraction": 0.00582275390625,
+              "sky": 0,
+              "water": 3.2200418307090586
+            },
+            {
+              "frame": 41,
+              "phase": "moving",
+              "mean": 1.3628797743053764,
+              "changedFraction": 0.0060791015625,
+              "sky": 0,
+              "water": 3.2558686023624834
+            },
+            {
+              "frame": 42,
+              "phase": "moving",
+              "mean": 1.3850680881074549,
+              "changedFraction": 0.006380208333333333,
+              "sky": 0,
+              "water": 3.33941519028876
+            },
+            {
+              "frame": 43,
+              "phase": "moving",
+              "mean": 1.3865885416664991,
+              "changedFraction": 0.0063720703125,
+              "sky": 0,
+              "water": 3.364870406824196
+            },
+            {
+              "frame": 44,
+              "phase": "moving",
+              "mean": 1.4148803710935567,
+              "changedFraction": 0.006624348958333333,
+              "sky": 0,
+              "water": 3.448605643044538
+            },
+            {
+              "frame": 45,
+              "phase": "moving",
+              "mean": 1.456056043836637,
+              "changedFraction": 0.007470703125,
+              "sky": 0.031070963541666878,
+              "water": 3.504461942257134
+            },
+            {
+              "frame": 46,
+              "phase": "moving",
+              "mean": 1.454142252603981,
+              "changedFraction": 0.007706705729166667,
+              "sky": 0,
+              "water": 3.562569717847702
+            },
+            {
+              "frame": 47,
+              "phase": "moving",
+              "mean": 1.4780531141491347,
+              "changedFraction": 0.00799560546875,
+              "sky": 0,
+              "water": 3.647543471128487
+            }
+          ],
+          "errors": [],
+          "measurements": {
+            "cpuMs": 0.20000004768371582,
+            "gpuMs": 3.538944,
+            "triangles": 43392,
+            "drawCalls": 3,
+            "gpuBytes": 61696641,
+            "frame": 48,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2496,
+            "visibleSurfaces": 1,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 57504161,
+            "bufferBytes": 4192480,
+            "outputResolution": [
+              640,
+              384
+            ],
+            "renderResolution": [
+              640,
+              384
+            ]
+          }
+        },
+        {
+          "subject": "ocean",
+          "antialiasing": "spatial",
+          "changes": [
+            {
+              "frame": 16,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 17,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 18,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 19,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 20,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 21,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 22,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 23,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 24,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 25,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 26,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 27,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 28,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 29,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 30,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 31,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 32,
+              "phase": "moving",
+              "mean": 1.1863755967880891,
+              "changedFraction": 0.0042765299479166664,
+              "sky": 0,
+              "water": 2.7765583989505758
+            },
+            {
+              "frame": 33,
+              "phase": "moving",
+              "mean": 1.190243869357535,
+              "changedFraction": 0.004231770833333333,
+              "sky": 0,
+              "water": 2.7926878280843894
+            },
+            {
+              "frame": 34,
+              "phase": "moving",
+              "mean": 1.2182915581596092,
+              "changedFraction": 0.0045125325520833336,
+              "sky": 0,
+              "water": 2.863279199475468
+            },
+            {
+              "frame": 35,
+              "phase": "moving",
+              "mean": 1.2363905164929094,
+              "changedFraction": 0.0045166015625,
+              "sky": 0,
+              "water": 2.9066847112864713
+            },
+            {
+              "frame": 36,
+              "phase": "moving",
+              "mean": 1.2621012369790383,
+              "changedFraction": 0.004890950520833334,
+              "sky": 0,
+              "water": 2.992125984252357
+            },
+            {
+              "frame": 37,
+              "phase": "moving",
+              "mean": 1.272543674045008,
+              "changedFraction": 0.004829915364583334,
+              "sky": 0,
+              "water": 3.014702263779866
+            },
+            {
+              "frame": 38,
+              "phase": "moving",
+              "mean": 1.309501139322742,
+              "changedFraction": 0.0052734375,
+              "sky": 0,
+              "water": 3.114755577428254
+            },
+            {
+              "frame": 39,
+              "phase": "moving",
+              "mean": 1.320567491319296,
+              "changedFraction": 0.00557861328125,
+              "sky": 0,
+              "water": 3.1491264763782865
+            },
+            {
+              "frame": 40,
+              "phase": "moving",
+              "mean": 1.3430121527776084,
+              "changedFraction": 0.00582275390625,
+              "sky": 0,
+              "water": 3.2200418307090586
+            },
+            {
+              "frame": 41,
+              "phase": "moving",
+              "mean": 1.3628797743053764,
+              "changedFraction": 0.0060791015625,
+              "sky": 0,
+              "water": 3.2558686023624834
+            },
+            {
+              "frame": 42,
+              "phase": "moving",
+              "mean": 1.3850680881074549,
+              "changedFraction": 0.006380208333333333,
+              "sky": 0,
+              "water": 3.33941519028876
+            },
+            {
+              "frame": 43,
+              "phase": "moving",
+              "mean": 1.3865885416664991,
+              "changedFraction": 0.0063720703125,
+              "sky": 0,
+              "water": 3.364870406824196
+            },
+            {
+              "frame": 44,
+              "phase": "moving",
+              "mean": 1.4148803710935567,
+              "changedFraction": 0.006624348958333333,
+              "sky": 0,
+              "water": 3.448605643044538
+            },
+            {
+              "frame": 45,
+              "phase": "moving",
+              "mean": 1.456056043836637,
+              "changedFraction": 0.007470703125,
+              "sky": 0.031070963541666878,
+              "water": 3.504461942257134
+            },
+            {
+              "frame": 46,
+              "phase": "moving",
+              "mean": 1.454142252603981,
+              "changedFraction": 0.007706705729166667,
+              "sky": 0,
+              "water": 3.562569717847702
+            },
+            {
+              "frame": 47,
+              "phase": "moving",
+              "mean": 1.4780531141491347,
+              "changedFraction": 0.00799560546875,
+              "sky": 0,
+              "water": 3.647543471128487
+            }
+          ],
+          "errors": [],
+          "measurements": {
+            "cpuMs": 0.19999992847442627,
+            "gpuMs": 3.145728,
+            "triangles": 43392,
+            "drawCalls": 3,
+            "gpuBytes": 61696641,
+            "frame": 48,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 2496,
+            "visibleSurfaces": 1,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 57504161,
+            "bufferBytes": 4192480,
+            "outputResolution": [
+              640,
+              384
+            ],
+            "renderResolution": [
+              640,
+              384
+            ]
+          }
+        },
+        {
+          "subject": "creek",
+          "antialiasing": "default",
+          "changes": [
+            {
+              "frame": 16,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 17,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 18,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 19,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 20,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 21,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 22,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 23,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 24,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 25,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 26,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 27,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 28,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 29,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 30,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 31,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 32,
+              "phase": "moving",
+              "mean": 0.42715928819441584,
+              "changedFraction": 0.0009195963541666667,
+              "sky": 0.007527669270833333,
+              "water": 0.9643167650918443
+            },
+            {
+              "frame": 33,
+              "phase": "moving",
+              "mean": 0.432222493489551,
+              "changedFraction": 0.00096435546875,
+              "sky": 0.0066528320312499905,
+              "water": 0.9793471128608796
+            },
+            {
+              "frame": 34,
+              "phase": "moving",
+              "mean": 0.42939588758678016,
+              "changedFraction": 0.0009033203125,
+              "sky": 0.00907389322916667,
+              "water": 0.9722112860892295
+            },
+            {
+              "frame": 35,
+              "phase": "moving",
+              "mean": 0.4259819878471942,
+              "changedFraction": 0.0009195963541666667,
+              "sky": 0.008386230468749985,
+              "water": 0.9622006233595853
+            },
+            {
+              "frame": 36,
+              "phase": "moving",
+              "mean": 0.42492404513886556,
+              "changedFraction": 0.0009236653645833333,
+              "sky": 0.008011881510416671,
+              "water": 0.9611712598425184
+            },
+            {
+              "frame": 37,
+              "phase": "moving",
+              "mean": 0.42884657118052955,
+              "changedFraction": 0.0010009765625,
+              "sky": 0.011010742187500044,
+              "water": 0.9676673228346354
+            },
+            {
+              "frame": 38,
+              "phase": "moving",
+              "mean": 0.4256442599826084,
+              "changedFraction": 0.00091552734375,
+              "sky": 0.006595865885416654,
+              "water": 0.9619053477690246
+            },
+            {
+              "frame": 39,
+              "phase": "moving",
+              "mean": 0.42604437934024564,
+              "changedFraction": 0.0009358723958333334,
+              "sky": 0.008117675781250009,
+              "water": 0.9598548228346502
+            },
+            {
+              "frame": 40,
+              "phase": "moving",
+              "mean": 0.4243503146701154,
+              "changedFraction": 0.0010091145833333334,
+              "sky": 0.009346516927083343,
+              "water": 0.9536417322834605
+            },
+            {
+              "frame": 41,
+              "phase": "moving",
+              "mean": 0.42420383029511044,
+              "changedFraction": 0.0010091145833333334,
+              "sky": 0.009586588541666701,
+              "water": 0.9562541010498712
+            },
+            {
+              "frame": 42,
+              "phase": "moving",
+              "mean": 0.42582058376733156,
+              "changedFraction": 0.0010335286458333333,
+              "sky": 0.006937662760416656,
+              "water": 0.9638287401574746
+            },
+            {
+              "frame": 43,
+              "phase": "moving",
+              "mean": 0.42136773003469286,
+              "changedFraction": 0.0010213216145833334,
+              "sky": 0.009370930989583373,
+              "water": 0.9513082349081393
+            },
+            {
+              "frame": 44,
+              "phase": "moving",
+              "mean": 0.4262315538194168,
+              "changedFraction": 0.00103759765625,
+              "sky": 0.008349609375,
+              "water": 0.9541830708661476
+            },
+            {
+              "frame": 45,
+              "phase": "moving",
+              "mean": 0.423181152343724,
+              "changedFraction": 0.0010457356770833333,
+              "sky": 0.010384114583333395,
+              "water": 0.9492864173228375
+            },
+            {
+              "frame": 46,
+              "phase": "moving",
+              "mean": 0.42606879340274706,
+              "changedFraction": 0.0009114583333333333,
+              "sky": 0.00785319010416666,
+              "water": 0.9577673884514505
+            },
+            {
+              "frame": 47,
+              "phase": "moving",
+              "mean": 0.42053900824650825,
+              "changedFraction": 0.0009480794270833333,
+              "sky": 0.007840983072916648,
+              "water": 0.9445866141732396
+            }
+          ],
+          "errors": [],
+          "measurements": {
+            "cpuMs": 1.6999999284744263,
+            "gpuMs": 3.080192,
+            "triangles": 64516,
+            "drawCalls": 5,
+            "gpuBytes": 63747281,
+            "frame": 48,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 790784,
+            "visibleSurfaces": 2,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 57504161,
+            "bufferBytes": 6243120,
+            "outputResolution": [
+              640,
+              384
+            ],
+            "renderResolution": [
+              640,
+              384
+            ]
+          }
+        },
+        {
+          "subject": "creek",
+          "antialiasing": "temporal",
+          "changes": [
+            {
+              "frame": 16,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 17,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 18,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 19,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 20,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 21,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 22,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 23,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 24,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 25,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 26,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 27,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 28,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 29,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 30,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 31,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 32,
+              "phase": "moving",
+              "mean": 0.42715928819441584,
+              "changedFraction": 0.0009195963541666667,
+              "sky": 0.007527669270833333,
+              "water": 0.9643167650918443
+            },
+            {
+              "frame": 33,
+              "phase": "moving",
+              "mean": 0.432222493489551,
+              "changedFraction": 0.00096435546875,
+              "sky": 0.0066528320312499905,
+              "water": 0.9793471128608796
+            },
+            {
+              "frame": 34,
+              "phase": "moving",
+              "mean": 0.42939588758678016,
+              "changedFraction": 0.0009033203125,
+              "sky": 0.00907389322916667,
+              "water": 0.9722112860892295
+            },
+            {
+              "frame": 35,
+              "phase": "moving",
+              "mean": 0.4259819878471942,
+              "changedFraction": 0.0009195963541666667,
+              "sky": 0.008386230468749985,
+              "water": 0.9622006233595853
+            },
+            {
+              "frame": 36,
+              "phase": "moving",
+              "mean": 0.42492404513886556,
+              "changedFraction": 0.0009236653645833333,
+              "sky": 0.008011881510416671,
+              "water": 0.9611712598425184
+            },
+            {
+              "frame": 37,
+              "phase": "moving",
+              "mean": 0.42884657118052955,
+              "changedFraction": 0.0010009765625,
+              "sky": 0.011010742187500044,
+              "water": 0.9676673228346354
+            },
+            {
+              "frame": 38,
+              "phase": "moving",
+              "mean": 0.4256442599826084,
+              "changedFraction": 0.00091552734375,
+              "sky": 0.006595865885416654,
+              "water": 0.9619053477690246
+            },
+            {
+              "frame": 39,
+              "phase": "moving",
+              "mean": 0.42604437934024564,
+              "changedFraction": 0.0009358723958333334,
+              "sky": 0.008117675781250009,
+              "water": 0.9598548228346502
+            },
+            {
+              "frame": 40,
+              "phase": "moving",
+              "mean": 0.4243503146701154,
+              "changedFraction": 0.0010091145833333334,
+              "sky": 0.009346516927083343,
+              "water": 0.9536417322834605
+            },
+            {
+              "frame": 41,
+              "phase": "moving",
+              "mean": 0.42420383029511044,
+              "changedFraction": 0.0010091145833333334,
+              "sky": 0.009586588541666701,
+              "water": 0.9562541010498712
+            },
+            {
+              "frame": 42,
+              "phase": "moving",
+              "mean": 0.42582058376733156,
+              "changedFraction": 0.0010335286458333333,
+              "sky": 0.006937662760416656,
+              "water": 0.9638287401574746
+            },
+            {
+              "frame": 43,
+              "phase": "moving",
+              "mean": 0.42136773003469286,
+              "changedFraction": 0.0010213216145833334,
+              "sky": 0.009370930989583373,
+              "water": 0.9513082349081393
+            },
+            {
+              "frame": 44,
+              "phase": "moving",
+              "mean": 0.4262315538194168,
+              "changedFraction": 0.00103759765625,
+              "sky": 0.008349609375,
+              "water": 0.9541830708661476
+            },
+            {
+              "frame": 45,
+              "phase": "moving",
+              "mean": 0.423181152343724,
+              "changedFraction": 0.0010457356770833333,
+              "sky": 0.010384114583333395,
+              "water": 0.9492864173228375
+            },
+            {
+              "frame": 46,
+              "phase": "moving",
+              "mean": 0.42606879340274706,
+              "changedFraction": 0.0009114583333333333,
+              "sky": 0.00785319010416666,
+              "water": 0.9577673884514505
+            },
+            {
+              "frame": 47,
+              "phase": "moving",
+              "mean": 0.42053900824650825,
+              "changedFraction": 0.0009480794270833333,
+              "sky": 0.007840983072916648,
+              "water": 0.9445866141732396
+            }
+          ],
+          "errors": [],
+          "measurements": {
+            "cpuMs": 1.899999976158142,
+            "gpuMs": 3.407872,
+            "triangles": 64516,
+            "drawCalls": 5,
+            "gpuBytes": 63747281,
+            "frame": 48,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 790784,
+            "visibleSurfaces": 2,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 57504161,
+            "bufferBytes": 6243120,
+            "outputResolution": [
+              640,
+              384
+            ],
+            "renderResolution": [
+              640,
+              384
+            ]
+          }
+        },
+        {
+          "subject": "creek",
+          "antialiasing": "spatial",
+          "changes": [
+            {
+              "frame": 16,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 17,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 18,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 19,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 20,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 21,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 22,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 23,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 24,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 25,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 26,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 27,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 28,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 29,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 30,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 31,
+              "phase": "frozen",
+              "mean": 0,
+              "changedFraction": 0,
+              "sky": 0,
+              "water": 0
+            },
+            {
+              "frame": 32,
+              "phase": "moving",
+              "mean": 0.42715928819441584,
+              "changedFraction": 0.0009195963541666667,
+              "sky": 0.007527669270833333,
+              "water": 0.9643167650918443
+            },
+            {
+              "frame": 33,
+              "phase": "moving",
+              "mean": 0.432222493489551,
+              "changedFraction": 0.00096435546875,
+              "sky": 0.0066528320312499905,
+              "water": 0.9793471128608796
+            },
+            {
+              "frame": 34,
+              "phase": "moving",
+              "mean": 0.42939588758678016,
+              "changedFraction": 0.0009033203125,
+              "sky": 0.00907389322916667,
+              "water": 0.9722112860892295
+            },
+            {
+              "frame": 35,
+              "phase": "moving",
+              "mean": 0.4259819878471942,
+              "changedFraction": 0.0009195963541666667,
+              "sky": 0.008386230468749985,
+              "water": 0.9622006233595853
+            },
+            {
+              "frame": 36,
+              "phase": "moving",
+              "mean": 0.42492404513886556,
+              "changedFraction": 0.0009236653645833333,
+              "sky": 0.008011881510416671,
+              "water": 0.9611712598425184
+            },
+            {
+              "frame": 37,
+              "phase": "moving",
+              "mean": 0.42884657118052955,
+              "changedFraction": 0.0010009765625,
+              "sky": 0.011010742187500044,
+              "water": 0.9676673228346354
+            },
+            {
+              "frame": 38,
+              "phase": "moving",
+              "mean": 0.4256442599826084,
+              "changedFraction": 0.00091552734375,
+              "sky": 0.006595865885416654,
+              "water": 0.9619053477690246
+            },
+            {
+              "frame": 39,
+              "phase": "moving",
+              "mean": 0.42604437934024564,
+              "changedFraction": 0.0009358723958333334,
+              "sky": 0.008117675781250009,
+              "water": 0.9598548228346502
+            },
+            {
+              "frame": 40,
+              "phase": "moving",
+              "mean": 0.4243503146701154,
+              "changedFraction": 0.0010091145833333334,
+              "sky": 0.009346516927083343,
+              "water": 0.9536417322834605
+            },
+            {
+              "frame": 41,
+              "phase": "moving",
+              "mean": 0.42420383029511044,
+              "changedFraction": 0.0010091145833333334,
+              "sky": 0.009586588541666701,
+              "water": 0.9562541010498712
+            },
+            {
+              "frame": 42,
+              "phase": "moving",
+              "mean": 0.42582058376733156,
+              "changedFraction": 0.0010335286458333333,
+              "sky": 0.006937662760416656,
+              "water": 0.9638287401574746
+            },
+            {
+              "frame": 43,
+              "phase": "moving",
+              "mean": 0.42136773003469286,
+              "changedFraction": 0.0010213216145833334,
+              "sky": 0.009370930989583373,
+              "water": 0.9513082349081393
+            },
+            {
+              "frame": 44,
+              "phase": "moving",
+              "mean": 0.4262315538194168,
+              "changedFraction": 0.00103759765625,
+              "sky": 0.008349609375,
+              "water": 0.9541830708661476
+            },
+            {
+              "frame": 45,
+              "phase": "moving",
+              "mean": 0.423181152343724,
+              "changedFraction": 0.0010457356770833333,
+              "sky": 0.010384114583333395,
+              "water": 0.9492864173228375
+            },
+            {
+              "frame": 46,
+              "phase": "moving",
+              "mean": 0.42606879340274706,
+              "changedFraction": 0.0009114583333333333,
+              "sky": 0.00785319010416666,
+              "water": 0.9577673884514505
+            },
+            {
+              "frame": 47,
+              "phase": "moving",
+              "mean": 0.42053900824650825,
+              "changedFraction": 0.0009480794270833333,
+              "sky": 0.007840983072916648,
+              "water": 0.9445866141732396
+            }
+          ],
+          "errors": [],
+          "measurements": {
+            "cpuMs": 1.7999999523162842,
+            "gpuMs": 2.228224,
+            "triangles": 64516,
+            "drawCalls": 5,
+            "gpuBytes": 63747281,
+            "frame": 48,
+            "adapter": "apple · metal-3",
+            "reconstruction": "none",
+            "gpuTimingDroppedFrames": 0,
+            "localShadowPasses": 0,
+            "localShadowDrawCalls": 0,
+            "materialCacheBytes": 0,
+            "qualityProfile": "balanced",
+            "uploadedBytes": 790784,
+            "visibleSurfaces": 2,
+            "culledSurfaces": 0,
+            "detailSurfaces": 0,
+            "ownedTextureBytes": 57504161,
+            "bufferBytes": 6243120,
+            "outputResolution": [
+              640,
+              384
+            ],
+            "renderResolution": [
+              640,
+              384
+            ]
+          }
+        }
+      ],
+      "errors": []
+    }
+  },
+  "validation": {
+    "tests": 53,
+    "assertions": 49445,
+    "testsLog": "output/water-refinement-delivery/tests.log",
+    "player": "output/browser-1790184895483-44665/player-check.json",
+    "opaque": "output/water-refinement-delivery/source/output/browser-1790184828699-44513",
+    "build": "output/water-refinement-build",
+    "typeChecks": true,
+    "boundaries": true
+  }
+}

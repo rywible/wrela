@@ -1,0 +1,100 @@
+{
+  "output": "/Users/ryanwible/projects/wrela/output/hero-authoring-verified-v2/source/output/browser-1790222482177-70520",
+  "report": {
+    "results": [
+      {
+        "target": "timber-frame",
+        "warm": {
+          "reviewMs": 2.899999976158142,
+          "captureMs": 139,
+          "totalMs": 141.89999997615814,
+          "firstCandidateImageMs": 58.200000047683716,
+          "firstCandidateImageAt": 1790222483745,
+          "cacheHits": 2,
+          "renderedImages": 2
+        },
+        "cold": {
+          "reviewMs": 2.100000023841858,
+          "captureMs": 815.7000000476837,
+          "totalMs": 817.8000000715256,
+          "firstCandidateImageMs": 750.6000000238419,
+          "firstCandidateImageAt": 1790222484628,
+          "cacheHits": 0,
+          "renderedImages": 4
+        },
+        "repeated": {
+          "reviewMs": 2.100000023841858,
+          "captureMs": 46.5,
+          "totalMs": 48.60000002384186,
+          "firstCandidateImageMs": 10.300000071525574,
+          "firstCandidateImageAt": 1790222483839,
+          "cacheHits": 4,
+          "renderedImages": 0
+        },
+        "pixelMeanAbsoluteError": 0,
+        "maxChannelError": 0
+      },
+      {
+        "target": "study-tree",
+        "warm": {
+          "reviewMs": 2.200000047683716,
+          "captureMs": 744.5,
+          "totalMs": 746.7000000476837,
+          "firstCandidateImageMs": 656.5,
+          "firstCandidateImageAt": 1790222486471,
+          "cacheHits": 2,
+          "renderedImages": 2
+        },
+        "cold": {
+          "reviewMs": 1.600000023841858,
+          "captureMs": 929.7999999523163,
+          "totalMs": 931.3999999761581,
+          "firstCandidateImageMs": 859.7000000476837,
+          "firstCandidateImageAt": 1790222487461,
+          "cacheHits": 0,
+          "renderedImages": 4
+        },
+        "repeated": {
+          "reviewMs": 1.7999999523162842,
+          "captureMs": 38.10000002384186,
+          "totalMs": 39.89999997615814,
+          "firstCandidateImageMs": 8.199999928474426,
+          "firstCandidateImageAt": 1790222486570,
+          "cacheHits": 4,
+          "renderedImages": 0
+        },
+        "pixelMeanAbsoluteError": 0,
+        "maxChannelError": 0
+      }
+    ],
+    "captureEncodingPixelsPreserved": true,
+    "encodingPaths": [
+      "worker",
+      "offscreen-fallback",
+      "dom-fallback"
+    ],
+    "crossJobSourceResolutionModeChecks": [
+      {
+        "index": 0,
+        "pixelMeanAbsoluteError": 0,
+        "retained": 3
+      },
+      {
+        "index": 1,
+        "pixelMeanAbsoluteError": 0,
+        "retained": 3
+      },
+      {
+        "index": 2,
+        "pixelMeanAbsoluteError": 0,
+        "retained": 3
+      },
+      {
+        "index": 3,
+        "pixelMeanAbsoluteError": 0,
+        "retained": 3
+      }
+    ],
+    "budgetStopVerified": true
+  }
+}
