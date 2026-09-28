@@ -285,11 +285,11 @@ The repository is not the primary home for organizational knowledge. Write code 
 
 Wrela maintains a separate knowledge system for durable non-code knowledge in Confluence.
 
-Knowledge Base: [insert Confluence space URL]
+Knowledge Base: https://wrela.atlassian.net/wiki/spaces/KB
 
-Intake: [insert Confluence space URL]
+Intake: https://wrela.atlassian.net/wiki/spaces/Intake
 
-Jira: [insert project URL and project key]
+Jira: https://wrela.atlassian.net/jira/software/projects/KAN (project key: KAN)
 
 Consult maintained knowledge relevant to the task. If required context is unavailable, state what is missing and continue work that does not depend on it. Ask Ryan only when the missing context prevents a sound decision.
 
@@ -424,6 +424,6 @@ Measure it.
 
 ### Technology and Architecture
 
-The maintained architecture overview lives in the Knowledge Base in Confluence: [insert architecture page link].
+The maintained architecture overview lives in the Knowledge Base in Confluence: https://wrela.atlassian.net/wiki/spaces/KB/pages/98594/Architecture+Overview.
 
 Use it to understand the system’s major components, their responsibilities, and the reasoning behind important technical choices. It is a good entrypoint into the knowledge base. If you are going to implement something that changes the architecture or invalidates something in the knowledge base, discuss it with Ryan before continuing.
