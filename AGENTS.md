@@ -107,6 +107,8 @@ The tools you help build should:
 
 A technically impressive system that does not produce a better game is not a success.
 
+For each game, maintain a concise description of the intended player experience, visual references, representative hardware, performance targets, and current playable milestone in the Knowledge Base. Use these to guide implementation and evaluate tradeoffs. Make unresolved product choices explicit and develop them with Ryan.
+
 ---
 
 # Technical Theses
@@ -192,14 +194,26 @@ When an old constraint seems fundamental, determine whether it is a law of the p
 
 # How We Work
 
+## Conversation and Collaboration
+
+Reviews, explanations, and exploratory conversations can be complete when they answer Ryan’s request. They do not automatically require a worktree, Jira tracking, a PR, or knowledge promotion.
+
+Infer the kind of work from the request and conversation. Ryan should not need to label every interaction. Apply the delivery workflows below when the request calls for implementation or a formal investigation.
+
+During a conversation, you may capture an idea in Intake without immediately launching knowledge processing. Follow the discussion and keep any commitments clear.
+
 ## Branching
 
-Use an isolated worktree to work on your task. Use these rules for branch naming:
+Use an isolated worktree for repository changes and experiments. Read-only inspection does not require a separate worktree. Use these rules for branch naming:
 - If it is a known feature or implementation, create a branch off of main, prefixed with "feature".
 - If it is speculative work, like research or a spike, prefix it with "speculative"
 - If it is for performance testing, prefix it with "performance"
 
-Only branches prefixed with "feature" should ever be merged into main. Dedicated performance experiments and benchmark suites belong on performance branches, not the permanent test suite. Production tests may enforce specific performance invariants when performance is part of correctness.
+Only branches prefixed with "feature" should ever be merged into main.
+
+Dedicated performance experiments belong on performance branches. Maintained benchmarks and representative workloads may live in main when they help us detect regressions or evaluate production changes. Keep them reproducible and document their execution conditions. They may run separately from the default test suite.
+
+Use automated performance thresholds where measurements are sufficiently stable and the threshold protects a meaningful product requirement.
 
 Speculative and performance branches are never merged into main. If their findings imply a production change, implement that change separately on a feature branch cut from main.
 
@@ -217,19 +231,29 @@ When a step doesn't need my input, keep going. Put status notes in the same mess
 
 ## Definition of Done
 
-There are two terminal states depending on the kind of work you are doing:
-1. New knowledge integrated into the maintained Knowledge Base.
-2. A feature merged into main
+Implementation and formal investigations have these completion conditions:
+
+Features: the original acceptance criteria are satisfied and all required changes are merged into main.
+
+Spikes and research: findings have been reviewed against the Knowledge Base, useful new knowledge has been integrated or the reviewer has established that no update is needed, and Intake has been cleared according to the process below.
 
 ### Features
-When you have completed the definition of done specified in the request for the feature, push it to remote and cut a PR. Then, launch an independent subagent with fresh context to review it. After you have addressed its review, you can merge it into main if you think it is of high quality.
+When an implementation change is ready for review, push it to remote and open a PR. Launch an independent subagent with fresh context to review it. Give the reviewer the original goal and acceptance criteria, access to the code, and the verification results.
+
+You may merge when the change satisfies its intended scope, appropriate checks pass on the final revision, and material review findings have been fixed or dismissed with an explicit, evidence-based explanation. Changes made during review must receive verification appropriate to their impact.
+
+Evaluate user-visible changes through direct use whenever practical. Passing checks and reviewer agreement support your judgment; you remain responsible for the result.
+
+The feature is complete only when the original acceptance criteria are satisfied and all required changes are merged into main.
 
 ### Spikes and Research
-When you have completed the definition of done specified in the request for a spike or research, push the branch to remote. Then, synthesize your findings into a document in the Intake Confluence space. After you have created the intake document, launch an independent subagent to process the new Intake against the Knowledge base. Spikes and research are complete only when their findings have been processed against the existing Knowledge Base, any durable knowledge has been integrated into the Knowledge Base, and the original Intake document has been deleted. If the investigation confirms that no Knowledge Base change is necessary, that is an acceptable outcome. The reviewing agent should report that conclusion, after which the original Intake document should still be deleted.
+When the investigation satisfies its original acceptance criteria, push the research branch if one was created and synthesize the findings into the Intake Confluence space. Launch an independent subagent to review the findings against the existing Knowledge Base and integrate any durable knowledge.
 
-## Conversation and Collaboration
+Before deleting Intake, ensure that maintained knowledge preserves the conclusions, important limitations, and enough evidence to evaluate or reproduce the result. Where evidence lives in the repository, link to a specific commit and identify the relevant workload, execution conditions, and reproduction instructions.
 
-Not everything needs to be a rigidly defined process. Oftentimes, we'll begin work with a conversation. Ryan will typically signal this in his prompt. If it's a conversation and you are working with Ryan, go with the flow. You may create an intake doc and not immediately launch a subagent to process it, for instance. Ryan will signal when he wants you to follow a defined process or when he wants to have a conversation and collaborate on something together.
+Preserve failed approaches when understanding why they failed would prevent repeated work or inform future decisions.
+
+If no Knowledge Base update is necessary, the reviewing agent should report why. Delete the Intake document after integration or that review conclusion. Research is complete only after this process is finished.
 
 ## Task Tracking
 
@@ -260,6 +284,14 @@ A fresh agent should be able to inspect the epic, its current tasks, the Knowled
 The repository is not the primary home for organizational knowledge. Write code that communicates its structure and intent clearly. Use comments for invariants, constraints, surprising decisions, and genuinely difficult reasoning.
 
 Wrela maintains a separate knowledge system for durable non-code knowledge in Confluence.
+
+Knowledge Base: [insert Confluence space URL]
+
+Intake: [insert Confluence space URL]
+
+Jira: [insert project URL and project key]
+
+Consult maintained knowledge relevant to the task. If required context is unavailable, state what is missing and continue work that does not depend on it. Ask Ryan only when the missing context prevents a sound decision.
 
 ## Two Knowledge States
 
@@ -387,3 +419,11 @@ Do not trade visible quality for benchmark wins unless the product tradeoff is u
 Do not assume conventional wisdom applies to Wrela's architecture.
 
 Measure it.
+
+## Working in This Repository
+
+### Technology and Architecture
+
+The maintained architecture overview lives in the Knowledge Base in Confluence: [insert architecture page link].
+
+Use it to understand the system’s major components, their responsibilities, and the reasoning behind important technical choices. If you are going to implement something that changes the architecture or invalidates something in the knowledge base, discuss it with Ryan before continuing.
