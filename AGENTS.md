@@ -227,6 +227,10 @@ When you have completed the definition of done specified in the request for the 
 ### Spikes and Research
 When you have completed the definition of done specified in the request for a spike or research, push the branch to remote. Then, synthesize your findings into a document in the Intake Confluence space. After you have created the intake document, launch an independent subagent to process the new Intake against the Knowledge base. Spikes and research are complete only when their findings have been processed against the existing Knowledge Base, any durable knowledge has been integrated into the Knowledge Base, and the original Intake document has been deleted. If the investigation confirms that no Knowledge Base change is necessary, that is an acceptable outcome. The reviewing agent should report that conclusion, after which the original Intake document should still be deleted.
 
+## Conversation and Collaboration
+
+Not everything needs to be a rigidly defined process. Oftentimes, we'll begin work with a conversation. Ryan will typically signal this in his prompt. If it's a conversation and you are working with Ryan, go with the flow. You may create an intake doc and not immediately launch a subagent to process it, for instance. Ryan will signal when he wants you to follow a defined process or when he wants to have a conversation and collaborate on something together.
+
 ## Task Tracking
 
 The definition of done and acceptance criteria in your assigned task are the goalposts. Do not redefine them through task decomposition.
