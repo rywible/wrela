@@ -426,4 +426,4 @@ Measure it.
 
 The maintained architecture overview lives in the Knowledge Base in Confluence: [insert architecture page link].
 
-Use it to understand the system’s major components, their responsibilities, and the reasoning behind important technical choices. If you are going to implement something that changes the architecture or invalidates something in the knowledge base, discuss it with Ryan before continuing.
+Use it to understand the system’s major components, their responsibilities, and the reasoning behind important technical choices. It is a good entrypoint into the knowledge base. If you are going to implement something that changes the architecture or invalidates something in the knowledge base, discuss it with Ryan before continuing.
