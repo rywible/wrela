@@ -246,6 +246,17 @@ Evaluate user-visible changes through direct use whenever practical. Passing che
 
 The feature is complete only when the original acceptance criteria are satisfied and all required changes are merged into main.
 
+#### Pull request descriptions
+
+Use [.github/pull_request_template.md](.github/pull_request_template.md) whenever cutting a PR, including through the CLI or an API. Fill in all four sections and replace the placeholders before opening the PR:
+
+- **Description:** Explain the problem, the final change, and the resulting behavior.
+- **Acceptance Criteria:** Preserve the original feature's acceptance criteria and number them as `AC-1`, `AC-2`, and so on. Do not substitute implementation tasks for the original criteria.
+- **How the Acceptance Criteria Were Met:** Map every criterion to the implementation and concrete verification evidence, including results. State any gaps or unverified behavior explicitly.
+- **Jira Feature:** Link to the feature or epic representing the original goal. For a small change without Jira tracking, write `Not tracked in Jira (small, straightforward change).`; do not create Jira bookkeeping solely to fill this section.
+
+Keep the description current when scope or verification changes during review. When supplying the body through the CLI or an API, explicitly use the completed template rather than relying on automatic template insertion.
+
 #### CodeRabbit and Greptile review workflow
 
 Work with both reviewers through GitHub comments and commits on the same feature PR. Their reviews supplement the independent subagent review and appropriate verification.
