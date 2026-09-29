@@ -238,13 +238,23 @@ Features: the original acceptance criteria are satisfied and all required change
 Spikes and research: findings have been reviewed against the Knowledge Base, useful new knowledge has been integrated or the reviewer has established that no update is needed, and Intake has been cleared according to the process below.
 
 ### Features
-When an implementation change is ready for review, push it to remote and open a PR. Launch an independent subagent with fresh context to review it. Give the reviewer the original goal and acceptance criteria, access to the code, and the verification results.
+When an implementation change is ready for review, before cutting a PR, launch an independent subagent with fresh context to review it. Give the reviewer the original goal and acceptance criteria, access to the code, and the verification results. Verify and address any findings they have, and then push to origin and cut the PR.
 
-You may merge when the change satisfies its intended scope, appropriate checks pass on the final revision, and material review findings have been fixed or dismissed with an explicit, evidence-based explanation. Changes made during review must receive verification appropriate to their impact.
+You may merge only when the change satisfies its intended scope, appropriate checks pass on the final revision, material review findings have been fixed or dismissed with an explicit, evidence-based explanation, and both CodeRabbit and Greptile have approved the final revision through GitHub PR reviews. Follow the review workflow below. Changes made during review must receive verification appropriate to their impact.
 
 Evaluate user-visible changes through direct use whenever practical. Passing checks and reviewer agreement support your judgment; you remain responsible for the result.
 
 The feature is complete only when the original acceptance criteria are satisfied and all required changes are merged into main.
+
+#### CodeRabbit and Greptile review workflow
+
+Work with both reviewers through GitHub comments and commits on the same feature PR. Their reviews supplement the independent subagent review and appropriate verification.
+
+1. Open the PR ready for review and check whether both bots are already reviewing it. If a review is missing or the final revision needs another review, use a top-level `@coderabbitai review` comment or `@greptileai` comment for the relevant bot. CodeRabbit reviews incrementally; if it reports that the commit was already reviewed, use `@coderabbitai full review` when a deliberate review of the entire changeset is needed. Wait for a running review before triggering another.
+2. Read each bot's review submissions, inline threads, summary comments, and check results. Bots may edit existing summaries, so read their current contents on each review cycle.
+3. Evaluate findings against the original goal and the code. For valid findings, commit fixes, run verification appropriate to the change, push, and reply in the original thread with the fix commit and relevant results. When you disagree, reply in the original thread with concrete reasoning and evidence, mention the bot if needed, and ask it to reconsider. Do not change correct behavior merely to satisfy a suggestion.
+4. Continue until material findings are addressed and both bots have reviewed and approved the current PR head commit. Resolving a thread or explaining a disagreement does not itself constitute approval. Do not use CodeRabbit's top-level `approve` or `resolve` commands to bypass a completed review, disable either reviewer, dismiss a blocking review, or weaken review settings to make a PR mergeable.
+5. Immediately before merging, verify each bot's latest review decision is `APPROVED`, its reviewed commit matches the current PR head, required checks pass for that revision, and no material findings remain unresolved. A summary, confidence score, successful check, skipped review, or approval of an older commit does not substitute for either bot's approval. Any new commit requires both bots to review and approve again.
 
 ### Spikes and Research
 When the investigation satisfies its original acceptance criteria, push the research branch if one was created and synthesize the findings into the Intake Confluence space. Launch an independent subagent to review the findings against the existing Knowledge Base and integrate any durable knowledge.
