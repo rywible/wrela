@@ -62,8 +62,13 @@ impl ProspectiveTypes<'_> {
             }) => Err(Failure::Depth),
             Err(lalrpop_util::ParseError::User { .. }) => Err(Failure::Tokens),
             Err(error) => {
-                let expected = crate::parsing::expected(&error);
-                let type_start = type_starts().iter().all(|start| expected.contains(start));
+                let type_start = match &error {
+                    lalrpop_util::ParseError::UnrecognizedEof { expected, .. }
+                    | lalrpop_util::ParseError::UnrecognizedToken { expected, .. } => {
+                        type_starts().iter().all(|start| expected.contains(start))
+                    }
+                    _ => false,
+                };
                 // The adopted budget excludes non-type kind peeks, but counts a
                 // failed required terminal such as a missing closing angle.
                 let visits = match error {

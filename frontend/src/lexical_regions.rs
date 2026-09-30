@@ -37,7 +37,7 @@ enum Transition {
     Leave,
 }
 
-// Generate the recognizer directly from ordered immutable transition rules.
+// Expand ordered immutable policy rules into the pure transition function.
 // The macro supplies no token decisions or region defaults of its own.
 macro_rules! lexical_region_policy {
     (($event:ident, $region:ident, $previous:ident, $nested:ident) {
