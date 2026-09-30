@@ -5,8 +5,11 @@ on:
     branches: [main]
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  frontend:
+  normal:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -20,9 +23,55 @@ jobs:
         run: cargo test --workspace --locked
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+  generation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+      - name: Fetch pinned dependencies for offline verification
+        run: cargo fetch --locked
       - name: Generated grammar reproducibility
         run: python3 scripts/verify-generation.py
+  conflicts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+      - name: Fetch pinned dependencies for offline verification
+        run: cargo fetch --locked
       - name: Grammar conflict negative control
         run: python3 scripts/verify-conflicts.py
+  rule-authority:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+      - name: Fetch pinned dependencies for offline verification
+        run: cargo fetch --locked
       - name: Authored rule authority negative controls
         run: python3 scripts/verify-rule-authority.py
+  frontend:
+    needs: [normal, generation, conflicts, rule-authority]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every frontend check to succeed
+        env:
+          NORMAL_RESULT: ${{ needs.normal.result }}
+          GENERATION_RESULT: ${{ needs.generation.result }}
+          CONFLICTS_RESULT: ${{ needs.conflicts.result }}
+          RULE_AUTHORITY_RESULT: ${{ needs.rule-authority.result }}
+        run: |
+          test "$NORMAL_RESULT" = success
+          test "$GENERATION_RESULT" = success
+          test "$CONFLICTS_RESULT" = success
+          test "$RULE_AUTHORITY_RESULT" = success
