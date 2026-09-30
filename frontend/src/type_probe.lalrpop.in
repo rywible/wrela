@@ -1,0 +1,10 @@
+// No recovery productions: malformed candidates must stop at their first error.
+grammar(type_depth: &mut crate::type_syntax::TypeDepth);
+use crate::token::{Tok, TokenId};
+use crate::type_syntax::recognition as types;
+
+// @shared-type-syntax
+
+pub ProspectiveArguments: types::Arguments = TypeArguments;
+
+// @shared-terminals

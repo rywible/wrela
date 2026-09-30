@@ -10,6 +10,10 @@ lalrpop_util::lalrpop_mod!(
     #[allow(clippy::all)]
     grammar
 );
+lalrpop_util::lalrpop_mod!(
+    #[allow(clippy::all)]
+    pub(crate) type_probe
+);
 pub type RecognitionError = ParseError<usize, Tok, &'static str>;
 #[derive(Clone, Debug)]
 pub struct Parsed {
@@ -51,8 +55,12 @@ pub fn parse(source: &Source, tokens: &[(usize, Tok, usize)]) -> Parsed {
 }
 pub fn parse_with_limit(source: &Source, tokens: &[(usize, Tok, usize)], maximum: usize) -> Parsed {
     let mut errors = RecoveryDiagnostics::new(maximum);
-    let result =
-        grammar::DocumentParser::new().parse(source, &mut errors, tokens.iter().copied().map(Ok));
+    let result = grammar::DocumentParser::new().parse(
+        source,
+        &mut errors,
+        &mut crate::type_syntax::TypeDepth::unlimited(),
+        tokens.iter().copied().map(Ok),
+    );
     match result {
         Ok(document) => {
             if let Some(error) = errors.last_eof.take() {
@@ -197,6 +205,7 @@ fn incomplete_document(
         .parse(
             source,
             &mut recovered,
+            &mut crate::type_syntax::TypeDepth::unlimited(),
             tokens[..start].iter().copied().map(Ok),
         )
         .unwrap_or(Document {
@@ -216,6 +225,7 @@ fn incomplete_document(
         if let Ok(header) = grammar::FunctionPrefixParser::new().parse(
             source,
             &mut scratch,
+            &mut crate::type_syntax::TypeDepth::unlimited(),
             tokens[start..end].iter().copied().map(Ok),
         ) {
             prefix = Some((header, end));
@@ -234,6 +244,7 @@ fn incomplete_document(
                     if let Ok(statement) = grammar::StatementParser::new().parse(
                         source,
                         &mut scratch,
+                        &mut crate::type_syntax::TypeDepth::unlimited(),
                         tokens[begin..i].iter().copied().map(Ok),
                     ) {
                         statements.push(statement);
