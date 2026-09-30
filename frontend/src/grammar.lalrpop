@@ -1,0 +1,136 @@
+grammar(source: &crate::source::Source, errors: &mut crate::parsing::RecoveryDiagnostics);
+use crate::syntax::*;
+use crate::token::{Tok, TokenId};
+use crate::source::ByteRange;
+
+pub Document: Document = {
+ <separators:Separator*> <entries:DeclarationEntries> => {
+ let mut entries=entries; entries.0.reverse(); entries.1.reverse();
+ let mut all=separators; all.extend(entries.1);
+ let syntax_range=entries.0.first().map_or(ByteRange::empty(source.len()), |n| ByteRange::new(n.range.start,entries.0.last().unwrap().range.end));
+ Document {range:ByteRange::new(0,source.len()),syntax_range,declarations:entries.0,separators:all}
+ }
+};
+DeclarationEntries: (Vec<Node<Declaration>>,Vec<TokenId>) = {
+ => (vec![],vec![]),
+ <d:Declaration> <rest:DeclarationTail> => { let mut rest=rest; rest.0.push(d); rest }
+};
+DeclarationTail: (Vec<Node<Declaration>>,Vec<TokenId>) = {
+ => (vec![],vec![]),
+ <sep:Separator+> <rest:DeclarationEntries> => { let mut rest=rest; rest.1.extend(sep.into_iter().rev()); rest }
+};
+Declaration: Node<Declaration> = {
+ <l:@L> <f:Function> <r:@R> => Node::new(l,r,Declaration::Function(f)),
+ <l:@L> <keyword:"record"> <name:"ident"> <generics:GenericParameters?> <constraints:WhereClause?> <open:"{"> <fields:CommaList<RecordField>> <close:"}"> <r:@R> => Node::new(l,r,Declaration::Record(Record {keyword,name,generics,constraints,fields:Delimited{open,contents:fields,close}})),
+ <l:@L> <keyword:"enum"> <name:"ident"> <generics:GenericParameters?> <constraints:WhereClause?> <open:"{"> <variants:CommaList<EnumVariant>> <close:"}"> <r:@R> => Node::new(l,r,Declaration::Enum(Enum {keyword,name,generics,constraints,variants:Delimited{open,contents:variants,close}})),
+ <l:@L> <error:!> <r:@R> => {let node=crate::parsing::error_syntax(source,l,r,&error,errors.can_record()); errors.record(source,error.error);Node::new(l,r,Declaration::Error(node))}
+};
+Function: Function = {
+ <keyword:"fn"> <name:"ident"> <generics:GenericParameters?> <parameters:Parameters<NamedParameter>> <result:ResultType> <constraints:WhereClause?> <body:Block> => Function {keyword,name,generics,parameters,result,constraints,body}
+};
+pub FunctionPrefix: Node<FunctionPrefix> = { <l:@L> <keyword:"fn"> <name:"ident"> <generics:GenericParameters?> <parameters:Parameters<NamedParameter>> <result:ResultType> <constraints:WhereClause?> <open:"{"> <r:@R> => Node::new(l,r,FunctionPrefix{keyword,name,generics,parameters,result,constraints,open}) };
+GenericParameters: Delimited<Separated<TokenId>> = { <open:"type<"> <contents:NonemptyCommaList<"ident">> <close:"type>"> => Delimited{open,contents,close} };
+Parameters<P>: Delimited<Separated<Node<Parameter>>> = { <open:"("> <contents:CommaList<P>> <close:")"> => Delimited{open,contents,close} };
+NamedParameter: Node<Parameter> = { <l:@L> <permission:"mut"?> <name:"ident"> <annotation:Annotation> <r:@R> => Node::new(l,r,Parameter{permission,name,annotation:Some(annotation)}) };
+LambdaParameter: Node<Parameter> = { <l:@L> <permission:"mut"?> <name:"ident"> <annotation:Annotation?> <r:@R> => Node::new(l,r,Parameter{permission,name,annotation}) };
+Annotation: Annotation = { <colon:":"> <ty:Type> => Annotation{colon,ty} };
+ResultType: ResultType = { <arrow:"->"> <ty:Type> => ResultType{arrow,ty} };
+WhereClause: WhereClause = { <keyword:"where"> <constraints:NonemptyCommaList<Constraint>> => WhereClause{keyword,constraints} };
+Constraint: Node<Constraint> = { <l:@L> <parameter:Type> <colon:":"> <first:Type> <rest:("+" Type)*> <r:@R> => {let mut bounds=Separated {items:vec![first],separators:vec![]};for (plus,ty) in rest {bounds.separators.push(plus);bounds.items.push(ty);}Node::new(l,r,Constraint{parameter,colon,bounds})} };
+RecordField: Node<RecordField> = { <l:@L> <name:"ident"> <annotation:Annotation> <r:@R> => Node::new(l,r,RecordField{name,annotation}) };
+EnumVariant: Node<EnumVariant> = { <l:@L> <name:"ident"> <payload:Payload<Type>?> <r:@R> => Node::new(l,r,EnumVariant{name,payload}) };
+Payload<T>: Delimited<Separated<T>> = { <open:"("> <contents:CommaList<T>> <close:")"> => Delimited{open,contents,close} };
+Type: Type = {
+ <l:@L> <path:Path> <arguments:TypeArguments?> <r:@R> => Node::new(l,r,TypeKind::Named{path,arguments}),
+ <l:@L> <payload:Payload<Type>> <r:@R> => Node::new(l,r,TypeKind::Tuple(payload)),
+ <l:@L> <open:"["> <ty:Type> <close:"]"> <r:@R> => Node::new(l,r,TypeKind::Array(Delimited{open,contents:Box::new(ty),close}))
+};
+TypeArguments: Delimited<Separated<Type>> = { <open:"type<"> <contents:NonemptyCommaList<Type>> <close:"type>"> => Delimited{open,contents,close} };
+CallTypeArguments: Delimited<Separated<Type>> = { <open:"generic<"> <contents:NonemptyCommaList<Type>> <close:"generic>"> => Delimited{open,contents,close} };
+Path: Path = { <first:"ident"> <rest:("::" "ident")*> => {let mut path=Path{segments:vec![first],separators:vec![]};for (sep,name) in rest {path.separators.push(sep);path.segments.push(name);}path} };
+
+Block: Block = { <l:@L> <open:"{"> <sep:Separator*> <entries:StatementEntries> <close:"}"> <r:@R> => {let mut entries=entries; entries.0.reverse(); entries.1.reverse(); let mut separators=sep;separators.extend(entries.1);Block{range:ByteRange::new(l,r),open,statements:entries.0,separators,close}} };
+StatementEntries: (Vec<Statement>,Vec<TokenId>) = {
+ => (vec![],vec![]),
+ <s:Statement> <rest:StatementTail> => { let mut rest=rest; rest.0.push(s); rest }
+};
+StatementTail: (Vec<Statement>,Vec<TokenId>) = {
+ => (vec![],vec![]),
+ <sep:Separator+> <rest:StatementEntries> => { let mut rest=rest; rest.1.extend(sep.into_iter().rev()); rest }
+};
+pub Statement: Statement = {
+ <l:@L> <binding:Binding> <name:"ident"> <annotation:Annotation?> <equal:"="> <value:Expression> <r:@R> => Node::new(l,r,StatementKind::Local{binding,name,annotation,equal,value}),
+ <l:@L> <target:Expression> <equal:"="> <value:Expression> <r:@R> => Node::new(l,r,StatementKind::Assign{target,equal,value}),
+ <value:Expression> => Node::new(value.range.start,value.range.end,StatementKind::Expression(value)),
+ <l:@L> <keyword:"return"> <value:Expression?> <r:@R> => Node::new(l,r,StatementKind::Return{keyword,value}),
+ <s:IfStatement> => s,
+ <l:@L> <error:!> <r:@R> => {let node=crate::parsing::error_syntax(source,l,r,&error,errors.can_record());errors.record(source,error.error);Node::new(l,r,StatementKind::Error(node))},
+ <l:@L> <iteration:Iteration> <binding:"ident"> <in_keyword:"in"> <iterable:Expr<HeadAtom>> <body:Block> <r:@R> => Node::new(l,r,StatementKind::Iterate{iteration,binding,in_keyword,iterable,body}),
+ <l:@L> <keyword:"match"> <scrutinee:Expr<HeadAtom>> <open:"{"> <arms:CommaList<MatchArm>> <close:"}"> <r:@R> => Node::new(l,r,StatementKind::Match{keyword,scrutinee,arms:Delimited{open,contents:arms,close}}),
+};
+IfStatement: Statement = { <l:@L> <keyword:"if"> <condition:Expr<HeadAtom>> <then_block:Block> <otherwise:ElseBranch?> <r:@R> => Node::new(l,r,StatementKind::If{keyword,condition,then_block,otherwise}) };
+ElseBranch: ElseBranch = { <keyword:"else"> <body:Block> => ElseBranch{keyword,body:ElseBody::Block(body)}, <keyword:"else"> <body:IfStatement> => ElseBranch{keyword,body:ElseBody::If(Box::new(body))} };
+Binding: Binding = { <t:"let">=>Binding::Let(t),<t:"var">=>Binding::Var(t) };
+Iteration: Iteration = { <t:"for">=>Iteration::For(t),<t:"every">=>Iteration::Every(t) };
+MatchArm: Node<MatchArm> = { <l:@L> <pattern:Pattern> <arrow:"=>"> <body:Block> <r:@R> => Node::new(l,r,MatchArm{pattern,arrow,body}) };
+Pattern: Pattern = {
+ <l:@L> <path:Path> <payload:Payload<Pattern>?> <r:@R> => {let kind=if path.segments.len()==1 && payload.is_none() && source.token_text(path.segments[0])==Some("_") {PatternKind::Wildcard(path.segments[0])}else{PatternKind::Path{path,payload}};Node::new(l,r,kind)},
+ <l:@L> <t:"number"> <r:@R> => Node::new(l,r,PatternKind::Number(t)),
+ <l:@L> <t:Boolean> <r:@R> => Node::new(l,r,PatternKind::Boolean(t))
+};
+
+Expression: Expr = Expr<Atom>;
+Expr<A>: Expr = Or<A>;
+Or<A>: Expr = { <left:Or<A>> <t:"||"> <right:And<A>>=>binary(left,(BinaryOperator::Or,t),right), And<A> };
+And<A>: Expr = { <left:And<A>> <t:"&&"> <right:Comparison<A>>=>binary(left,(BinaryOperator::And,t),right), Comparison<A> };
+Comparison<A>: Expr = { <left:Sum<A>> <op:ComparisonOperator> <right:Sum<A>>=>binary(left,op,right), Sum<A> };
+ComparisonOperator: (BinaryOperator,TokenId) = {
+ <t:"==">=>(BinaryOperator::Equal,t),<t:"!=">=>(BinaryOperator::NotEqual,t),<t:"<">=>(BinaryOperator::Less,t),<t:"<=">=>(BinaryOperator::LessEqual,t),<t:">">=>(BinaryOperator::Greater,t),<t:">=">=>(BinaryOperator::GreaterEqual,t)
+};
+Sum<A>: Expr = { <left:Sum<A>> <t:"+"> <right:Product<A>>=>binary(left,(BinaryOperator::Add,t),right), <left:Sum<A>> <t:"-"> <right:Product<A>>=>binary(left,(BinaryOperator::Subtract,t),right), Product<A> };
+Product<A>: Expr = { <left:Product<A>> <t:"*"> <right:Prefix<A>>=>binary(left,(BinaryOperator::Multiply,t),right), <left:Product<A>> <t:"/"> <right:Prefix<A>>=>binary(left,(BinaryOperator::Divide,t),right), <left:Product<A>> <t:"%"> <right:Prefix<A>>=>binary(left,(BinaryOperator::Remainder,t),right), Prefix<A> };
+Prefix<A>: Expr = { <l:@L> <t:"-"> <operand:Prefix<A>> <r:@R>=>Node::new(l,r,ExprKind::Unary{operator:UnaryOperator::Negate,token:t,operand:Box::new(operand)}), <l:@L> <t:"!"> <operand:Prefix<A>> <r:@R>=>Node::new(l,r,ExprKind::Unary{operator:UnaryOperator::Not,token:t,operand:Box::new(operand)}), Postfixed<A> };
+Postfixed<A>: Expr = { <base:A> <tails:Postfix*>=>postfix(base,tails,|id|source.range(id).end) };
+Postfix: Postfix = {
+ <args:CallArguments>=>Postfix::Call(args),
+ <dot:"."> <name:"ident"> <r:@R>=>Postfix::Field(dot,name,r),
+ <open:"["> <value:Expression> <close:"]"> <r:@R>=>Postfix::Index(Delimited{open,contents:Box::new(value),close},r),
+ <question:"?"> <r:@R>=>Postfix::Propagate(question,r)
+};
+Atom: Expr = { HeadAtom, <l:@L> <path:Path> <open:"{"> <contents:CommaList<FieldValue>> <close:"}"> <r:@R>=>Node::new(l,r,ExprKind::Record{path,fields:Delimited{open,contents,close}}) };
+HeadAtom: Expr = {
+ <l:@L> <path:Path> <type_arguments:CallTypeArguments> <arguments:CallArguments> <r:@R>=> {let callee=Node::new(l,source.range(*path.segments.last().unwrap()).end,ExprKind::Path(path));Node::new(l,r,ExprKind::Call{callee:Box::new(callee),type_arguments:Some(type_arguments),arguments})},
+ <l:@L> <path:Path> <r:@R>=>Node::new(l,r,ExprKind::Path(path)),
+ <l:@L> <t:"number"> <r:@R>=>Node::new(l,r,ExprKind::Number(t)),
+ <l:@L> <t:"string"> <r:@R>=>Node::new(l,r,ExprKind::String(t)),
+ <l:@L> <t:Boolean> <r:@R>=>Node::new(l,r,ExprKind::Boolean(t)),
+ <l:@L> <open:"("> <contents:CommaList<Expression>> <close:")"> <r:@R>=> if contents.items.len()==1 && contents.separators.is_empty() {Node::new(l,r,ExprKind::Group(Delimited{open,contents:Box::new(contents.items.into_iter().next().unwrap()),close}))} else {Node::new(l,r,ExprKind::Tuple(Delimited{open,contents,close}))},
+ <l:@L> <open:"["> <contents:CommaList<Expression>> <close:"]"> <r:@R>=>Node::new(l,r,ExprKind::Array(Delimited{open,contents,close})),
+ <l:@L> <keyword:"fn"> <parameters:Parameters<LambdaParameter>> <result:ResultType?> <body:Block> <r:@R>=>Node::new(l,r,ExprKind::Lambda{keyword,parameters,result,body})
+};
+Boolean: TokenId = { "true", "false" };
+CallArguments: Delimited<Separated<Node<Argument>>> = { <open:"("> <contents:CommaList<Argument>> <close:")"> => Delimited{open,contents,close} };
+Argument: Node<Argument> = { <l:@L> <permission:"mut"?> <value:Expression> <r:@R>=>Node::new(l,r,Argument{permission,value}) };
+FieldValue: Node<FieldValue> = { <l:@L> <name:"ident"> <colon:":"> <value:Expression> <r:@R>=>Node::new(l,r,FieldValue{name,colon,value}) };
+// Right-recursive reductions append into reversed vectors. Restore source order
+// once at each public list boundary rather than copying the entire tail per item.
+CommaList<T>: Separated<T> = { <ignored:Newlines> <items:MaybeReversedCommaList<T>> => items.restore_order() };
+NonemptyCommaList<T>: Separated<T> = { <items:ReversedNonemptyCommaList<T>> => items.restore_order() };
+#[inline]
+MaybeReversedCommaList<T>: Separated<T> = { =>Separated::default(), ReversedNonemptyCommaList<T> };
+ReversedNonemptyCommaList<T>: Separated<T> = { <item:T> <ignored:Newlines> <rest:ReversedCommaRest<T>>=>Separated::push_reversed(item,rest.0,rest.1) };
+ReversedCommaRest<T>: (Option<TokenId>,Separated<T>) = { =>(None,Separated::default()), <comma:","> <ignored:Newlines> <rest:MaybeReversedCommaList<T>>=>(Some(comma),rest) };
+#[inline]
+Newlines: Vec<TokenId> = "newline"*;
+Separator: TokenId = { "newline", ";" };
+
+extern {
+ type Location=usize;
+ type Error=&'static str;
+ enum Tok {
+ "ident"=>Tok::Ident(<TokenId>), "number"=>Tok::Number(<TokenId>), "string"=>Tok::String(<TokenId>),
+ "fn"=>Tok::Fn(<TokenId>), "record"=>Tok::Record(<TokenId>), "enum"=>Tok::Enum(<TokenId>), "where"=>Tok::Where(<TokenId>), "let"=>Tok::Let(<TokenId>), "var"=>Tok::Var(<TokenId>), "mut"=>Tok::Mut(<TokenId>), "return"=>Tok::Return(<TokenId>), "if"=>Tok::If(<TokenId>), "else"=>Tok::Else(<TokenId>), "match"=>Tok::Match(<TokenId>), "for"=>Tok::For(<TokenId>), "every"=>Tok::Every(<TokenId>), "in"=>Tok::In(<TokenId>), "true"=>Tok::True(<TokenId>), "false"=>Tok::False(<TokenId>),
+ "("=>Tok::LParen(<TokenId>), ")"=>Tok::RParen(<TokenId>), "["=>Tok::LBracket(<TokenId>), "]"=>Tok::RBracket(<TokenId>), "{"=>Tok::LBrace(<TokenId>), "}"=>Tok::RBrace(<TokenId>), ","=>Tok::Comma(<TokenId>), ":"=>Tok::Colon(<TokenId>), ";"=>Tok::Semicolon(<TokenId>), "."=>Tok::Dot(<TokenId>), "::"=>Tok::PathSeparator(<TokenId>), "->"=>Tok::Arrow(<TokenId>), "=>"=>Tok::FatArrow(<TokenId>), "?"=>Tok::Question(<TokenId>),
+ "+"=>Tok::Plus(<TokenId>), "-"=>Tok::Minus(<TokenId>), "*"=>Tok::Star(<TokenId>), "/"=>Tok::Slash(<TokenId>), "%"=>Tok::Percent(<TokenId>), "!"=>Tok::Bang(<TokenId>), "="=>Tok::Equal(<TokenId>), "=="=>Tok::EqualEqual(<TokenId>), "!="=>Tok::BangEqual(<TokenId>), "<"=>Tok::Less(<TokenId>), "<="=>Tok::LessEqual(<TokenId>), ">"=>Tok::Greater(<TokenId>), ">="=>Tok::GreaterEqual(<TokenId>), "&&"=>Tok::AndAnd(<TokenId>), "||"=>Tok::OrOr(<TokenId>), "generic<"=>Tok::GenericOpen(<TokenId>), "generic>"=>Tok::GenericClose(<TokenId>), "type<"=>Tok::TypeOpen(<TokenId>), "type>"=>Tok::TypeClose(<TokenId>), "newline"=>Tok::Newline(<TokenId>)
+ }
+}
