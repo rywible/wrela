@@ -1353,4 +1353,78 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn prospective_generic_budget_also_bounds_comparisons_with_type_shaped_operands() {
+        // '< (b,c)' is still a possible generic type-list prefix. The seventh
+        // inspected token, '}', establishes that this particular source is a
+        // comparison. An exhausted classifier cannot safely choose that fallback.
+        let text = b"fn f() -> Unit { a < (b,c) }";
+        for budget in [5, 6, 7, 8] {
+            let limits = Limits {
+                max_generic_tokens: budget,
+                ..Limits::default()
+            };
+            let lexed = lex(text, limits);
+            assert_eq!(lexed.source.render(), text);
+            assert_eq!(
+                lexed
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::Limit),
+                budget < 7
+            );
+            assert_eq!(
+                crate::parse_with_limits(text, limits).is_syntax_eligible(),
+                budget >= 7
+            );
+            if budget < 7 {
+                assert_eq!(
+                    lexed.source.pieces.last().unwrap().kind,
+                    PieceKind::Unparsed
+                );
+            }
+        }
+        for count in [2046, 2047] {
+            let names = std::iter::repeat_n("b", count)
+                .collect::<Vec<_>>()
+                .join(",");
+            let text = format!("fn f() -> Unit {{ a < ({names}) }}");
+            let first = lex(text.as_bytes(), Limits::default());
+            let second = lex(text.as_bytes(), Limits::default());
+            assert_eq!(first.source.render(), text.as_bytes());
+            assert_eq!(first.diagnostics, second.diagnostics);
+            assert_eq!(
+                first
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::Limit),
+                count == 2047
+            );
+            assert_eq!(
+                crate::parse(text.as_bytes()).is_syntax_eligible(),
+                count == 2046
+            );
+            // Grouping the left operand removes the named-callee prefix, so the
+            // same broad tuple is recognized directly as a comparison operand.
+            let grouped = format!("fn f() -> Unit {{ (a) < ({names}) }}");
+            assert!(crate::parse(grouped.as_bytes()).is_syntax_eligible());
+        }
+        // A non-type kind peek resolves the ambiguity without consuming a
+        // candidate terminal check. Only '<' and '(' consume this budget.
+        for budget in [1, 2] {
+            let parsed = crate::parse_with_limits(
+                b"fn f() -> Unit { a < (1,b) }",
+                Limits {
+                    max_generic_tokens: budget,
+                    ..Limits::default()
+                },
+            );
+            assert_eq!(parsed.is_syntax_eligible(), budget == 2);
+        }
+        // An expression-only scalar resolves the ambiguity before the budget is
+        // exhausted, even when the rest of the tuple is substantially broader.
+        let names = std::iter::repeat_n("b", 3000).collect::<Vec<_>>().join(",");
+        let text = format!("fn f() -> Unit {{ a < (1,{names}) }}");
+        assert!(crate::parse(text.as_bytes()).is_syntax_eligible());
+    }
 }

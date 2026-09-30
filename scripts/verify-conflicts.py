@@ -19,7 +19,8 @@ with tempfile.TemporaryDirectory(prefix="wrela-conflict-") as temporary:
     result = subprocess.run(["cargo", "build", "--locked", "--offline"], cwd=checkout,
         env=dict(os.environ, CARGO_TARGET_DIR=str(checkout / "target")), capture_output=True, text=True)
     output = result.stdout + result.stderr
-    if result.returncode == 0 or not ("Conflict detected" in output or "Local ambiguity detected" in output):
+    if (result.returncode == 0 or "conflict.lalrpop" not in output
+            or not ("Conflict detected" in output or "Local ambiguity detected" in output)):
         print(output)
         raise SystemExit("conflict negative control did not fail for grammar ambiguity")
     print("ambiguous grammar rejected by generation/build")

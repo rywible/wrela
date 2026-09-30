@@ -56,7 +56,7 @@ pub fn parse_with_limit(source: &Source, tokens: &[(usize, Tok, usize)], maximum
     match result {
         Ok(document) => {
             if let Some(error) = errors.last_eof.take() {
-                let document = incomplete_document(source, tokens, &error, &mut errors);
+                let document = incomplete_document(source, tokens, &error, errors.maximum);
                 Parsed {
                     document,
                     diagnostics: errors.diagnostics,
@@ -72,7 +72,7 @@ pub fn parse_with_limit(source: &Source, tokens: &[(usize, Tok, usize)], maximum
         }
         Err(error) => {
             errors.record(source, error.clone());
-            let document = incomplete_document(source, tokens, &error, &mut errors);
+            let document = incomplete_document(source, tokens, &error, errors.maximum);
             Parsed {
                 document,
                 diagnostics: errors.diagnostics,
@@ -175,11 +175,13 @@ fn track_delimiter(stack: &mut Vec<Delimiter>, token: Tok) {
 
 /// On terminal EOF failure, preserve prior complete declarations and a generated,
 /// typed function header. Recovery recognizes complete statement islands only.
+/// The primary document parse owns diagnostics; reparsing islands reconstructs
+/// structure without reporting the same failures or slice-local EOFs again.
 fn incomplete_document(
     source: &Source,
     tokens: &[(usize, Tok, usize)],
     error: &RecognitionError,
-    diagnostics: &mut RecoveryDiagnostics,
+    diagnostic_limit: usize,
 ) -> Document {
     let mut stack = Vec::new();
     let mut starts = Vec::new();
@@ -190,7 +192,7 @@ fn incomplete_document(
         track_delimiter(&mut stack, *tok);
     }
     let start = starts.last().copied().unwrap_or(0);
-    let mut recovered = RecoveryDiagnostics::new(diagnostics.maximum);
+    let mut recovered = RecoveryDiagnostics::new(diagnostic_limit);
     let mut document = grammar::DocumentParser::new()
         .parse(
             source,
@@ -210,7 +212,7 @@ fn incomplete_document(
             .position(|t| matches!(t.1, Tok::LBrace(_)))
     {
         let end = start + open + 1;
-        let mut scratch = RecoveryDiagnostics::new(diagnostics.maximum);
+        let mut scratch = RecoveryDiagnostics::new(diagnostic_limit);
         if let Ok(header) = grammar::FunctionPrefixParser::new().parse(
             source,
             &mut scratch,
@@ -228,20 +230,13 @@ fn incomplete_document(
             let tok = tokens[i].1;
             if depth.is_empty() && matches!(tok, Tok::Newline(_) | Tok::Semicolon(_)) {
                 if begin < i {
-                    let mut scratch = RecoveryDiagnostics::new(diagnostics.maximum);
+                    let mut scratch = RecoveryDiagnostics::new(diagnostic_limit);
                     if let Ok(statement) = grammar::StatementParser::new().parse(
                         source,
                         &mut scratch,
                         tokens[begin..i].iter().copied().map(Ok),
                     ) {
                         statements.push(statement);
-                        for diagnostic in scratch.diagnostics {
-                            push_bounded(
-                                &mut diagnostics.diagnostics,
-                                diagnostic,
-                                diagnostics.maximum,
-                            );
-                        }
                     }
                 }
                 separators.push(tok.id());
@@ -364,5 +359,68 @@ mod tests {
             !error.tokens.is_empty(),
             "source references must survive diagnostic truncation"
         );
+    }
+    #[test]
+    fn incomplete_recovery_reports_primary_errors_once_without_spending_extra_budget() {
+        let text = "fn ready() -> Unit { return }\nfn broken() -> Unit {\n    let bad = ;\n    let good = 3\n    // trailing 🚀\r\n  ";
+        let lexed = lex(text.as_bytes(), Limits::default());
+        assert!(lexed.diagnostics.is_empty());
+        let semicolon = text.find(';').unwrap();
+        let expected_ranges = [
+            ByteRange::new(semicolon, semicolon + 1),
+            ByteRange::empty(text.len()),
+        ];
+        for maximum in [64, 2] {
+            let parsed = parse_with_limit(&lexed.source, &lexed.tokens, maximum);
+            assert_eq!(
+                parsed.diagnostics.len(),
+                2,
+                "statement-island reparsing must not add diagnostics: {:?}",
+                parsed.diagnostics
+            );
+            assert_eq!(
+                parsed
+                    .diagnostics
+                    .iter()
+                    .map(|d| d.range)
+                    .collect::<Vec<_>>(),
+                expected_ranges
+            );
+            assert!(
+                parsed
+                    .diagnostics
+                    .iter()
+                    .all(|d| d.code == DiagnosticCode::Syntax)
+            );
+            assert_eq!(
+                parsed
+                    .diagnostics
+                    .iter()
+                    .filter(|d| d.range == ByteRange::empty(text.len()))
+                    .count(),
+                1
+            );
+            assert!(!parsed.complete);
+            assert!(parsed.document.has_errors());
+            assert_eq!(lexed.source.render(), text.as_bytes());
+            assert!(matches!(
+                parsed.document.declarations[0].kind,
+                Declaration::Function(_)
+            ));
+            let Declaration::IncompleteFunction(function) = &parsed.document.declarations[1].kind
+            else {
+                panic!("typed function prefix lost");
+            };
+            assert_eq!(function.missing_close, ByteRange::empty(text.len()));
+            assert_eq!(function.statements.len(), 2);
+            assert!(matches!(
+                function.statements[0].kind,
+                StatementKind::Error(_)
+            ));
+            let StatementKind::Local { name, .. } = &function.statements[1].kind else {
+                panic!("later local lost");
+            };
+            assert_eq!(lexed.source.token_text(*name), Some("good"));
+        }
     }
 }
