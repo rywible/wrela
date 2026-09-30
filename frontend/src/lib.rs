@@ -1,12 +1,16 @@
 //! Wrela's source frontend. Syntax admission is deliberately separate from semantic validity.
 pub mod cst;
 pub mod diagnostic;
+mod generic_selection;
 pub mod inspection;
 pub mod lexer;
+mod lexical;
+mod lexical_regions;
 pub mod parsing;
 pub mod source;
 pub mod syntax;
 pub mod token;
+mod type_syntax;
 mod unicode16;
 
 use diagnostic::{Diagnostic, DiagnosticCode, push_bounded};

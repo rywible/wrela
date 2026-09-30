@@ -1,7 +1,8 @@
-grammar(source: &crate::source::Source, errors: &mut crate::parsing::RecoveryDiagnostics);
+grammar(source: &crate::source::Source, errors: &mut crate::parsing::RecoveryDiagnostics, type_depth: &mut crate::type_syntax::TypeDepth);
 use crate::syntax::*;
 use crate::token::{Tok, TokenId};
 use crate::source::ByteRange;
+use crate::type_syntax::construction as types;
 
 pub Document: Document = {
  <separators:Separator*> <entries:DeclarationEntries> => {
@@ -40,14 +41,7 @@ Constraint: Node<Constraint> = { <l:@L> <parameter:Type> <colon:":"> <first:Type
 RecordField: Node<RecordField> = { <l:@L> <name:"ident"> <annotation:Annotation> <r:@R> => Node::new(l,r,RecordField{name,annotation}) };
 EnumVariant: Node<EnumVariant> = { <l:@L> <name:"ident"> <payload:Payload<Type>?> <r:@R> => Node::new(l,r,EnumVariant{name,payload}) };
 Payload<T>: Delimited<Separated<T>> = { <open:"("> <contents:CommaList<T>> <close:")"> => Delimited{open,contents,close} };
-Type: Type = {
- <l:@L> <path:Path> <arguments:TypeArguments?> <r:@R> => Node::new(l,r,TypeKind::Named{path,arguments}),
- <l:@L> <payload:Payload<Type>> <r:@R> => Node::new(l,r,TypeKind::Tuple(payload)),
- <l:@L> <open:"["> <ty:Type> <close:"]"> <r:@R> => Node::new(l,r,TypeKind::Array(Delimited{open,contents:Box::new(ty),close}))
-};
-TypeArguments: Delimited<Separated<Type>> = { <open:"type<"> <contents:NonemptyCommaList<Type>> <close:"type>"> => Delimited{open,contents,close} };
-CallTypeArguments: Delimited<Separated<Type>> = { <open:"generic<"> <contents:NonemptyCommaList<Type>> <close:"generic>"> => Delimited{open,contents,close} };
-Path: Path = { <first:"ident"> <rest:("::" "ident")*> => {let mut path=Path{segments:vec![first],separators:vec![]};for (sep,name) in rest {path.separators.push(sep);path.segments.push(name);}path} };
+// @shared-type-syntax
 
 Block: Block = { <l:@L> <open:"{"> <sep:Separator*> <entries:StatementEntries> <close:"}"> <r:@R> => {let mut entries=entries; entries.0.reverse(); entries.1.reverse(); let mut separators=sep;separators.extend(entries.1);Block{range:ByteRange::new(l,r),open,statements:entries.0,separators,close}} };
 StatementEntries: (Vec<Statement>,Vec<TokenId>) = {
@@ -124,13 +118,4 @@ ReversedCommaRest<T>: (Option<TokenId>,Separated<T>) = { =>(None,Separated::defa
 Newlines: Vec<TokenId> = "newline"*;
 Separator: TokenId = { "newline", ";" };
 
-extern {
- type Location=usize;
- type Error=&'static str;
- enum Tok {
- "ident"=>Tok::Ident(<TokenId>), "number"=>Tok::Number(<TokenId>), "string"=>Tok::String(<TokenId>),
- "fn"=>Tok::Fn(<TokenId>), "record"=>Tok::Record(<TokenId>), "enum"=>Tok::Enum(<TokenId>), "where"=>Tok::Where(<TokenId>), "let"=>Tok::Let(<TokenId>), "var"=>Tok::Var(<TokenId>), "mut"=>Tok::Mut(<TokenId>), "return"=>Tok::Return(<TokenId>), "if"=>Tok::If(<TokenId>), "else"=>Tok::Else(<TokenId>), "match"=>Tok::Match(<TokenId>), "for"=>Tok::For(<TokenId>), "every"=>Tok::Every(<TokenId>), "in"=>Tok::In(<TokenId>), "true"=>Tok::True(<TokenId>), "false"=>Tok::False(<TokenId>),
- "("=>Tok::LParen(<TokenId>), ")"=>Tok::RParen(<TokenId>), "["=>Tok::LBracket(<TokenId>), "]"=>Tok::RBracket(<TokenId>), "{"=>Tok::LBrace(<TokenId>), "}"=>Tok::RBrace(<TokenId>), ","=>Tok::Comma(<TokenId>), ":"=>Tok::Colon(<TokenId>), ";"=>Tok::Semicolon(<TokenId>), "."=>Tok::Dot(<TokenId>), "::"=>Tok::PathSeparator(<TokenId>), "->"=>Tok::Arrow(<TokenId>), "=>"=>Tok::FatArrow(<TokenId>), "?"=>Tok::Question(<TokenId>),
- "+"=>Tok::Plus(<TokenId>), "-"=>Tok::Minus(<TokenId>), "*"=>Tok::Star(<TokenId>), "/"=>Tok::Slash(<TokenId>), "%"=>Tok::Percent(<TokenId>), "!"=>Tok::Bang(<TokenId>), "="=>Tok::Equal(<TokenId>), "=="=>Tok::EqualEqual(<TokenId>), "!="=>Tok::BangEqual(<TokenId>), "<"=>Tok::Less(<TokenId>), "<="=>Tok::LessEqual(<TokenId>), ">"=>Tok::Greater(<TokenId>), ">="=>Tok::GreaterEqual(<TokenId>), "&&"=>Tok::AndAnd(<TokenId>), "||"=>Tok::OrOr(<TokenId>), "generic<"=>Tok::GenericOpen(<TokenId>), "generic>"=>Tok::GenericClose(<TokenId>), "type<"=>Tok::TypeOpen(<TokenId>), "type>"=>Tok::TypeClose(<TokenId>), "newline"=>Tok::Newline(<TokenId>)
- }
-}
+// @shared-terminals

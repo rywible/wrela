@@ -24,3 +24,5 @@ jobs:
         run: python3 scripts/verify-generation.py
       - name: Grammar conflict negative control
         run: python3 scripts/verify-conflicts.py
+      - name: Authored rule authority negative controls
+        run: python3 scripts/verify-rule-authority.py

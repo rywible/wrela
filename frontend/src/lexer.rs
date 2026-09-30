@@ -30,12 +30,6 @@ pub struct Lexed {
 fn ignorable(c: char) -> bool {
     unicode16::contains(unicode16::DEFAULT_IGNORABLE_CODE_POINT, c)
 }
-fn start(c: char) -> bool {
-    c == '_' || unicode16::contains(unicode16::XID_START, c)
-}
-fn continuation(c: char) -> bool {
-    c == '_' || unicode16::contains(unicode16::XID_CONTINUE, c)
-}
 fn scalar(bytes: &[u8], at: usize) -> Option<(char, usize)> {
     let b = *bytes.get(at)?;
     let n = match b {
@@ -47,27 +41,6 @@ fn scalar(bytes: &[u8], at: usize) -> Option<(char, usize)> {
     };
     let text = std::str::from_utf8(bytes.get(at..at + n)?).ok()?;
     Some((text.chars().next()?, n))
-}
-fn keyword(bytes: &[u8]) -> TokenKind {
-    match bytes {
-        b"fn" => Fn,
-        b"record" => Record,
-        b"enum" => Enum,
-        b"where" => Where,
-        b"let" => Let,
-        b"var" => Var,
-        b"mut" => Mut,
-        b"return" => Return,
-        b"if" => If,
-        b"else" => Else,
-        b"match" => Match,
-        b"for" => For,
-        b"every" => Every,
-        b"in" => In,
-        b"true" => True,
-        b"false" => False,
-        _ => Ident,
-    }
 }
 struct Scanner<'a> {
     bytes: &'a [u8],
@@ -108,304 +81,218 @@ impl Scanner<'_> {
     fn newline(&mut self, id: TokenId, from: usize, to: usize) {
         self.raw.push((from, Tok::Newline(id), to));
     }
-    fn scan(&mut self) {
-        while self.at < self.bytes.len() {
-            let from = self.at;
-            let b = self.bytes[from];
-            match b {
-                b' ' | b'\t' => {
-                    while matches!(self.bytes.get(self.at), Some(b' ' | b'\t')) {
-                        self.at += 1;
-                    }
-                    self.piece(from, PieceKind::Trivia(TriviaKind::Whitespace));
-                }
-                b'\r' | b'\n' => {
-                    self.at += 1;
-                    if b == b'\r' && self.bytes.get(self.at) == Some(&b'\n') {
-                        self.at += 1;
-                    }
-                    let id = self.piece(from, PieceKind::Trivia(TriviaKind::Newline));
-                    self.newline(id, from, self.at);
-                }
-                b'/' if self.bytes.get(from + 1) == Some(&b'/') => {
-                    self.at += 2;
-                    while self.at < self.bytes.len()
-                        && !matches!(self.bytes[self.at], b'\r' | b'\n')
-                    {
-                        self.at += 1;
-                    }
-                    let valid = std::str::from_utf8(&self.bytes[from..self.at]).is_ok();
-                    self.piece(
+    fn emit_with_delimiter_limit(&mut self, from: usize, width: usize, kind: PieceKind) -> bool {
+        if let PieceKind::Token(token) = kind {
+            if matches!(token, LParen | LBracket | LBrace) {
+                if self.delimiters.len() >= self.limits.max_depth {
+                    self.error(
+                        DiagnosticCode::Limit,
+                        "delimiter depth limit exceeded",
                         from,
-                        if valid {
-                            PieceKind::Trivia(TriviaKind::LineComment)
-                        } else {
-                            PieceKind::Invalid
-                        },
-                    );
-                    if !valid {
-                        self.error(
-                            DiagnosticCode::Lexical,
-                            "invalid UTF-8 in comment",
-                            from,
-                            self.at,
-                        );
-                    }
-                }
-                b'/' if self.bytes.get(from + 1) == Some(&b'*') => {
-                    self.at += 2;
-                    let mut depth = 1usize;
-                    let mut newline = None;
-                    let mut exceeded = depth > self.limits.max_depth;
-                    while self.at < self.bytes.len() && depth > 0 && !exceeded {
-                        if self.bytes.get(self.at..self.at + 2) == Some(b"/*") {
-                            depth += 1;
-                            if depth > self.limits.max_depth {
-                                exceeded = true;
-                                break;
-                            }
-                            self.at += 2;
-                        } else if self.bytes.get(self.at..self.at + 2) == Some(b"*/") {
-                            depth -= 1;
-                            self.at += 2;
-                        } else {
-                            if newline.is_none() && matches!(self.bytes[self.at], b'\r' | b'\n') {
-                                newline = Some(self.at);
-                            }
-                            self.at += 1;
-                        }
-                    }
-                    if exceeded {
-                        self.error(
-                            DiagnosticCode::Limit,
-                            "nested comment depth limit exceeded",
-                            self.at,
-                            self.at,
-                        );
-                        self.at = from;
-                        self.remainder();
-                        break;
-                    }
-                    let valid = std::str::from_utf8(&self.bytes[from..self.at]).is_ok();
-                    let id = self.piece(
                         from,
-                        if depth == 0 && valid {
-                            PieceKind::Trivia(TriviaKind::BlockComment)
-                        } else {
-                            PieceKind::Invalid
-                        },
                     );
-                    if depth != 0 {
-                        self.error(
-                            DiagnosticCode::Lexical,
-                            "unterminated block comment",
-                            self.bytes.len(),
-                            self.bytes.len(),
-                        );
-                    } else if !valid {
-                        self.error(
-                            DiagnosticCode::Lexical,
-                            "invalid UTF-8 in comment",
-                            from,
-                            self.at,
-                        );
-                    }
-                    if let Some(n) = newline {
-                        let end = n + if self.bytes.get(n..n + 2) == Some(b"\r\n") {
-                            2
-                        } else {
-                            1
-                        };
-                        self.newline(id, n, end);
-                    }
+                    self.remainder();
+                    return false;
                 }
+                self.delimiters.push(token);
+            } else if matches!(token, RParen | RBracket | RBrace) {
+                let open = match token {
+                    RParen => LParen,
+                    RBracket => LBracket,
+                    RBrace => LBrace,
+                    _ => unreachable!(),
+                };
+                if self.delimiters.last() == Some(&open) {
+                    self.delimiters.pop();
+                }
+            }
+        }
+        self.at += width;
+        let id = self.piece(from, kind);
+        if kind == PieceKind::Trivia(TriviaKind::Newline) {
+            self.newline(id, from, self.at);
+        }
+        true
+    }
+    /// Retain an invalid string through its closing quote or physical newline.
+    fn malformed_string(&mut self, from: usize) {
+        self.at += 1;
+        while self.at < self.bytes.len() && !matches!(self.bytes[self.at], b'\r' | b'\n') {
+            match self.bytes[self.at] {
                 b'"' => {
                     self.at += 1;
-                    let mut valid = true;
-                    let mut closed = false;
-                    while self.at < self.bytes.len()
-                        && !matches!(self.bytes[self.at], b'\r' | b'\n')
-                    {
-                        match self.bytes[self.at] {
-                            b'"' => {
-                                self.at += 1;
-                                closed = true;
-                                break;
-                            }
-                            b'\\' => {
-                                self.at += 1;
-                                if self.at == self.bytes.len()
-                                    || matches!(self.bytes[self.at], b'\r' | b'\n')
-                                {
-                                    valid = false;
-                                    break;
-                                }
-                                if !matches!(self.bytes[self.at], b'n' | b'r' | b't' | b'"' | b'\\')
-                                {
-                                    valid = false;
-                                }
-                                self.at += 1;
-                            }
-                            _ => {
-                                if let Some((_, n)) = scalar(self.bytes, self.at) {
-                                    self.at += n;
-                                } else {
-                                    valid = false;
-                                    self.at += 1;
-                                }
-                            }
-                        }
-                    }
-                    valid &= closed;
-                    self.piece(
-                        from,
-                        if valid {
-                            PieceKind::Token(String)
-                        } else {
-                            PieceKind::Invalid
-                        },
-                    );
-                    if !valid {
-                        self.error(
-                            DiagnosticCode::Lexical,
-                            "unterminated string, invalid escape, or invalid UTF-8",
-                            from,
-                            self.at,
-                        );
-                    }
+                    break;
                 }
-                b'0'..=b'9' => {
+                b'\\' => {
                     self.at += 1;
-                    while self.bytes.get(self.at).is_some_and(u8::is_ascii_digit) {
-                        self.at += 1;
+                    if self.at == self.bytes.len() || matches!(self.bytes[self.at], b'\r' | b'\n') {
+                        break;
                     }
-                    if self.bytes.get(self.at) == Some(&b'.')
-                        && self.bytes.get(self.at + 1).is_some_and(u8::is_ascii_digit)
-                    {
-                        self.at += 1;
-                        while self.bytes.get(self.at).is_some_and(u8::is_ascii_digit) {
-                            self.at += 1;
-                        }
+                    self.at += 1;
+                }
+                _ => self.at += 1,
+            }
+        }
+        self.piece(from, PieceKind::Invalid);
+        self.error(
+            DiagnosticCode::Lexical,
+            "unterminated string, invalid escape, or invalid UTF-8",
+            from,
+            self.at,
+        );
+    }
+    /// Consume nested comments with bounded depth and retain their first newline.
+    fn nested_comment(&mut self, from: usize) -> bool {
+        self.at += 2;
+        let mut depth = 1usize;
+        let mut newline = None;
+        let mut exceeded = depth > self.limits.max_depth;
+        while self.at < self.bytes.len() && depth > 0 && !exceeded {
+            if self.bytes.get(self.at..self.at + 2) == Some(b"/*") {
+                depth += 1;
+                if depth > self.limits.max_depth {
+                    exceeded = true;
+                    break;
+                }
+                self.at += 2;
+            } else if self.bytes.get(self.at..self.at + 2) == Some(b"*/") {
+                depth -= 1;
+                self.at += 2;
+            } else {
+                if newline.is_none() && matches!(self.bytes[self.at], b'\r' | b'\n') {
+                    newline = Some(self.at);
+                }
+                self.at += 1;
+            }
+        }
+        if exceeded {
+            self.error(
+                DiagnosticCode::Limit,
+                "nested comment depth limit exceeded",
+                self.at,
+                self.at,
+            );
+            self.at = from;
+            self.remainder();
+            return false;
+        }
+        let valid = std::str::from_utf8(&self.bytes[from..self.at]).is_ok();
+        let id = self.piece(
+            from,
+            if depth == 0 && valid {
+                PieceKind::Trivia(TriviaKind::BlockComment)
+            } else {
+                PieceKind::Invalid
+            },
+        );
+        if depth != 0 {
+            self.error(
+                DiagnosticCode::Lexical,
+                "unterminated block comment",
+                self.bytes.len(),
+                self.bytes.len(),
+            );
+        } else if !valid {
+            self.error(
+                DiagnosticCode::Lexical,
+                "invalid UTF-8 in comment",
+                from,
+                self.at,
+            );
+        }
+        if let Some(n) = newline {
+            let end = n + if self.bytes.get(n..n + 2) == Some(b"\r\n") {
+                2
+            } else {
+                1
+            };
+            self.newline(id, n, end);
+        }
+        true
+    }
+    /// Preserve one rejected scalar, or a maximal group of invalid UTF-8 bytes.
+    fn rejected_bytes(&mut self, from: usize) {
+        if let Some((_, width)) = scalar(self.bytes, from) {
+            self.at += width;
+            self.piece(from, PieceKind::Invalid);
+            self.error(
+                DiagnosticCode::Lexical,
+                "character is not admitted by the lexical policy",
+                from,
+                self.at,
+            );
+        } else {
+            self.at += 1;
+            while self.at < self.bytes.len() && scalar(self.bytes, self.at).is_none() {
+                self.at += 1;
+            }
+            self.piece(from, PieceKind::Invalid);
+            self.error(
+                DiagnosticCode::Lexical,
+                "invalid UTF-8 bytes",
+                from,
+                self.at,
+            );
+        }
+    }
+    fn scan(&mut self) {
+        use crate::lexical::Lexeme;
+        while self.at < self.bytes.len() {
+            let from = self.at;
+            match crate::lexical::regular(&self.bytes[from..]) {
+                Some((Lexeme::BlockCommentStart, _)) => {
+                    if !self.nested_comment(from) {
+                        break;
                     }
-                    let mut valid = true;
-                    if matches!(self.bytes.get(self.at), Some(b'e' | b'E')) {
-                        self.at += 1;
-                        if matches!(self.bytes.get(self.at), Some(b'+' | b'-')) {
-                            self.at += 1;
-                        }
-                        let digits = self.at;
-                        while self.bytes.get(self.at).is_some_and(u8::is_ascii_digit) {
-                            self.at += 1;
-                        }
-                        valid = self.at > digits;
-                    }
-                    while let Some((c, n)) = scalar(self.bytes, self.at) {
-                        if continuation(c) || ignorable(c) {
-                            valid = false;
-                            self.at += n;
-                        } else {
-                            break;
-                        }
-                    }
-                    self.piece(
+                }
+                Some((Lexeme::StringStart, _)) => self.malformed_string(from),
+                Some((Lexeme::InvalidIdentifier, width)) => {
+                    self.emit_with_delimiter_limit(from, width, PieceKind::Invalid);
+                    let text = std::str::from_utf8(&self.bytes[from..self.at]).unwrap();
+                    let (offset, c) = text
+                        .char_indices()
+                        .find(|(_, c)| ignorable(*c))
+                        .expect("generated invalid identifier must contain a forbidden scalar");
+                    self.error(
+                        DiagnosticCode::Lexical,
+                        "default-ignorable character forbidden in identifier",
+                        from + offset,
+                        from + offset + c.len_utf8(),
+                    );
+                }
+                Some((Lexeme::InvalidNumber, width)) => {
+                    self.emit_with_delimiter_limit(from, width, PieceKind::Invalid);
+                    self.error(
+                        DiagnosticCode::Lexical,
+                        "invalid decimal number spelling",
                         from,
+                        self.at,
+                    );
+                }
+                Some((lexeme, width)) => {
+                    let valid = !matches!(lexeme, Lexeme::String | Lexeme::LineComment)
+                        || std::str::from_utf8(&self.bytes[from..from + width]).is_ok();
+                    if !self.emit_with_delimiter_limit(
+                        from,
+                        width,
                         if valid {
-                            PieceKind::Token(Number)
+                            lexeme.piece().unwrap()
                         } else {
                             PieceKind::Invalid
                         },
-                    );
+                    ) {
+                        break;
+                    }
                     if !valid {
-                        self.error(
-                            DiagnosticCode::Lexical,
-                            "invalid decimal number spelling",
-                            from,
-                            self.at,
-                        );
-                    }
-                }
-                _ => {
-                    if let Some((c, n)) = scalar(self.bytes, from) {
-                        if start(c) || ignorable(c) {
-                            let mut valid = start(c) && !ignorable(c);
-                            let mut forbidden =
-                                ignorable(c).then_some(ByteRange::new(self.at, self.at + n));
-                            self.at += n;
-                            while let Some((c, n)) = scalar(self.bytes, self.at) {
-                                if continuation(c) || ignorable(c) {
-                                    valid &= !ignorable(c);
-                                    if ignorable(c) && forbidden.is_none() {
-                                        forbidden = Some(ByteRange::new(self.at, self.at + n));
-                                    }
-                                    self.at += n;
-                                } else {
-                                    break;
-                                }
-                            }
-                            let kind = if valid {
-                                PieceKind::Token(keyword(&self.bytes[from..self.at]))
-                            } else {
-                                PieceKind::Invalid
-                            };
-                            self.piece(from, kind);
-                            if let Some(range) = forbidden {
-                                self.error(
-                                    DiagnosticCode::Lexical,
-                                    "default-ignorable character forbidden in identifier",
-                                    range.start,
-                                    range.end,
-                                );
-                            }
-                        } else if let Some((kind, width)) = punctuation(&self.bytes[from..]) {
-                            if matches!(kind, LParen | LBracket | LBrace) {
-                                if self.delimiters.len() >= self.limits.max_depth {
-                                    self.error(
-                                        DiagnosticCode::Limit,
-                                        "delimiter depth limit exceeded",
-                                        from,
-                                        from,
-                                    );
-                                    self.remainder();
-                                    break;
-                                }
-                                self.delimiters.push(kind);
-                            } else if matches!(kind, RParen | RBracket | RBrace) {
-                                let opening = match kind {
-                                    RParen => LParen,
-                                    RBracket => LBracket,
-                                    RBrace => LBrace,
-                                    _ => unreachable!(),
-                                };
-                                if self.delimiters.last() == Some(&opening) {
-                                    self.delimiters.pop();
-                                }
-                            }
-                            self.at += width;
-                            self.piece(from, PieceKind::Token(kind));
+                        let message = if lexeme == Lexeme::LineComment {
+                            "invalid UTF-8 in comment"
                         } else {
-                            self.at += n;
-                            self.piece(from, PieceKind::Invalid);
-                            self.error(
-                                DiagnosticCode::Lexical,
-                                "character is not admitted by the lexical policy",
-                                from,
-                                self.at,
-                            );
-                        }
-                    } else {
-                        self.at += 1;
-                        while self.at < self.bytes.len() && scalar(self.bytes, self.at).is_none() {
-                            self.at += 1;
-                        }
-                        self.piece(from, PieceKind::Invalid);
-                        self.error(
-                            DiagnosticCode::Lexical,
-                            "invalid UTF-8 bytes",
-                            from,
-                            self.at,
-                        );
+                            "unterminated string, invalid escape, or invalid UTF-8"
+                        };
+                        self.error(DiagnosticCode::Lexical, message, from, self.at);
                     }
                 }
+                None => self.rejected_bytes(from),
             }
             if self
                 .diagnostics
@@ -417,47 +304,6 @@ impl Scanner<'_> {
             }
         }
     }
-}
-fn punctuation(bytes: &[u8]) -> Option<(TokenKind, usize)> {
-    let two = match bytes.get(..2) {
-        Some(b"::") => Some(PathSeparator),
-        Some(b"->") => Some(Arrow),
-        Some(b"=>") => Some(FatArrow),
-        Some(b"==") => Some(EqualEqual),
-        Some(b"!=") => Some(BangEqual),
-        Some(b"<=") => Some(LessEqual),
-        Some(b">=") => Some(GreaterEqual),
-        Some(b"&&") => Some(AndAnd),
-        Some(b"||") => Some(OrOr),
-        _ => None,
-    };
-    if let Some(k) = two {
-        return Some((k, 2));
-    }
-    let k = match bytes.first()? {
-        b'(' => LParen,
-        b')' => RParen,
-        b'[' => LBracket,
-        b']' => RBracket,
-        b'{' => LBrace,
-        b'}' => RBrace,
-        b',' => Comma,
-        b':' => Colon,
-        b';' => Semicolon,
-        b'.' => Dot,
-        b'?' => Question,
-        b'+' => Plus,
-        b'-' => Minus,
-        b'*' => Star,
-        b'/' => Slash,
-        b'%' => Percent,
-        b'!' => Bang,
-        b'=' => Equal,
-        b'<' => Less,
-        b'>' => Greater,
-        _ => return None,
-    };
-    Some((k, 1))
 }
 fn trailing(k: TokenKind) -> bool {
     matches!(
@@ -506,7 +352,7 @@ pub fn lex(bytes: &[u8], limits: Limits) -> Lexed {
     } else {
         scanner.scan();
     }
-    let mut tokens = logical_tokens(&mut scanner);
+    let mut tokens = adapt_newlines_and_generics(&mut scanner);
     bound_expression_complexity(&mut scanner, &mut tokens);
     Lexed {
         source: scanner.source,
@@ -515,235 +361,7 @@ pub fn lex(bytes: &[u8], limits: Limits) -> Lexed {
     }
 }
 
-/// A bounded syntax-only recognizer for prospective type lists. No symbol lookup.
-struct TypeLookahead<'a> {
-    kinds: &'a [TokenKind],
-    at: usize,
-    visited: usize,
-    limit: usize,
-    depth_limit: usize,
-    angles: Vec<(usize, usize)>,
-}
-#[derive(Clone, Copy, Debug)]
-enum LookaheadFailure {
-    NotType,
-    Tokens,
-    Depth,
-}
-impl TypeLookahead<'_> {
-    fn take(&mut self, k: TokenKind) -> Result<(), LookaheadFailure> {
-        if self.visited >= self.limit {
-            return Err(LookaheadFailure::Tokens);
-        }
-        self.visited += 1;
-        if self.kinds.get(self.at) != Some(&k) {
-            return Err(LookaheadFailure::NotType);
-        }
-        self.at += 1;
-        Ok(())
-    }
-    fn ty(&mut self, depth: usize) -> Result<(), LookaheadFailure> {
-        if depth > self.depth_limit {
-            return Err(LookaheadFailure::Depth);
-        }
-        match self.kinds.get(self.at).copied() {
-            Some(Ident) => {
-                self.take(Ident)?;
-                while self.kinds.get(self.at) == Some(&PathSeparator) {
-                    self.take(PathSeparator)?;
-                    self.take(Ident)?;
-                }
-                if self.kinds.get(self.at) == Some(&Less) {
-                    self.list(depth + 1)?;
-                }
-                Ok(())
-            }
-            Some(LParen) => {
-                self.take(LParen)?;
-                if self.kinds.get(self.at) != Some(&RParen) {
-                    self.ty(depth + 1)?;
-                    while self.kinds.get(self.at) == Some(&Comma) {
-                        self.take(Comma)?;
-                        if self.kinds.get(self.at) == Some(&RParen) {
-                            break;
-                        }
-                        self.ty(depth + 1)?;
-                    }
-                }
-                self.take(RParen)
-            }
-            Some(LBracket) => {
-                self.take(LBracket)?;
-                self.ty(depth + 1)?;
-                self.take(RBracket)
-            }
-            _ => Err(LookaheadFailure::NotType),
-        }
-    }
-    fn list(&mut self, depth: usize) -> Result<(), LookaheadFailure> {
-        if depth > self.depth_limit {
-            return Err(LookaheadFailure::Depth);
-        }
-        let open = self.at;
-        self.take(Less)?;
-        self.ty(depth)?;
-        while self.kinds.get(self.at) == Some(&Comma) {
-            self.take(Comma)?;
-            if self.kinds.get(self.at) == Some(&Greater) {
-                break;
-            }
-            self.ty(depth)?;
-        }
-        let close = self.at;
-        self.take(Greater)?;
-        self.angles.push((open, close));
-        Ok(())
-    }
-}
-/// Angle classification follows lexical syntax regions rather than assigning a
-/// meaning to punctuation globally. In particular, construction fields contain
-/// expressions while declaration fields and parameter annotations contain types.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum BraceContents {
-    Block,
-    RecordFields,
-    EnumVariants,
-    FieldValues,
-}
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DeclarationHead {
-    Function,
-    Record,
-    Enum,
-    Control,
-}
-struct AngleScope {
-    delimiter: Option<TokenKind>,
-    contents: BraceContents,
-    type_context: bool,
-    list_types: bool,
-    declaration_name: bool,
-    parameters_pending: bool,
-    head: Option<DeclarationHead>,
-}
-impl AngleScope {
-    fn new(delimiter: Option<TokenKind>, contents: BraceContents, list_types: bool) -> Self {
-        Self {
-            delimiter,
-            contents,
-            type_context: list_types,
-            list_types,
-            declaration_name: false,
-            parameters_pending: false,
-            head: None,
-        }
-    }
-}
-struct AngleContext {
-    scopes: Vec<AngleScope>,
-}
-impl AngleContext {
-    fn new() -> Self {
-        Self {
-            scopes: vec![AngleScope::new(None, BraceContents::Block, false)],
-        }
-    }
-    fn is_type(&self) -> bool {
-        self.scopes.last().unwrap().type_context
-    }
-    fn boundary(&mut self) {
-        let scope = self.scopes.last_mut().unwrap();
-        scope.type_context = scope.list_types;
-        scope.declaration_name = false;
-    }
-    fn observe(&mut self, kind: TokenKind, previous: Option<TokenKind>) {
-        let nested = self.scopes.len() > 1;
-        let scope = self.scopes.last_mut().unwrap();
-        match kind {
-            Fn | Record | Enum => {
-                scope.head = Some(match kind {
-                    Fn => DeclarationHead::Function,
-                    Record => DeclarationHead::Record,
-                    Enum => DeclarationHead::Enum,
-                    _ => unreachable!(),
-                });
-                scope.declaration_name = true;
-                scope.parameters_pending = kind == Fn;
-                scope.type_context = false;
-            }
-            If | For | Every | Match | Else => {
-                scope.head = Some(DeclarationHead::Control);
-                scope.type_context = false;
-            }
-            Ident if scope.declaration_name => {
-                scope.declaration_name = false;
-                scope.type_context = true;
-            }
-            Colon => scope.type_context = scope.contents != BraceContents::FieldValues,
-            Arrow => scope.type_context = true,
-            Where => {
-                scope.type_context = true;
-                scope.list_types = true;
-            }
-            Let | Var | Equal | Semicolon => {
-                scope.type_context = false;
-                scope.declaration_name = false;
-            }
-            Comma => scope.type_context = scope.list_types,
-            LParen | LBracket => {
-                // The function header's first parentheses contain parameters.
-                // Enum variant payloads and grouped/array annotations contain types.
-                let parameters = kind == LParen && scope.parameters_pending;
-                let list_types = if parameters {
-                    false
-                } else if scope.contents == BraceContents::EnumVariants {
-                    true
-                } else {
-                    scope.type_context
-                };
-                if parameters {
-                    scope.parameters_pending = false;
-                    scope.type_context = false;
-                    scope.declaration_name = false;
-                }
-                self.scopes.push(AngleScope::new(
-                    Some(kind),
-                    BraceContents::Block,
-                    list_types,
-                ));
-            }
-            LBrace => {
-                let contents = match scope.head.take() {
-                    Some(DeclarationHead::Record) => BraceContents::RecordFields,
-                    Some(DeclarationHead::Enum) => BraceContents::EnumVariants,
-                    Some(DeclarationHead::Function | DeclarationHead::Control) => {
-                        BraceContents::Block
-                    }
-                    None if previous == Some(Ident) => BraceContents::FieldValues,
-                    None => BraceContents::Block,
-                };
-                scope.type_context = false;
-                scope.declaration_name = false;
-                self.scopes
-                    .push(AngleScope::new(Some(LBrace), contents, false));
-            }
-            RParen | RBracket | RBrace => {
-                let opening = match kind {
-                    RParen => LParen,
-                    RBracket => LBracket,
-                    RBrace => LBrace,
-                    _ => unreachable!(),
-                };
-                if nested && scope.delimiter == Some(opening) {
-                    self.scopes.pop();
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-fn logical_tokens(scanner: &mut Scanner<'_>) -> Vec<(usize, Tok, usize)> {
+fn adapt_newlines_and_generics(scanner: &mut Scanner<'_>) -> Vec<(usize, Tok, usize)> {
     let raw = &scanner.raw;
     let significant: Vec<usize> = raw
         .iter()
@@ -791,22 +409,22 @@ fn logical_tokens(scanner: &mut Scanner<'_>) -> Vec<(usize, Tok, usize)> {
     let gap_allowed = |left: usize, right: usize| {
         (left + 1..right).all(|i| raw[i].1.kind() != Newline || continued[i])
     };
+    let mut regions = crate::lexical_regions::LexicalRegions::new();
     let mut suppress = vec![false; raw.len()];
-    let mut angle_context = AngleContext::new();
     let mut stop = None;
     let mut s = 0;
     while s < significant.len() {
         let k = kinds[s];
         if s > 0 && !gap_allowed(significant[s - 1], significant[s]) {
-            angle_context.boundary();
+            regions.boundary();
         }
-        let type_context = angle_context.is_type();
+        let type_context = regions.expects_type_angles();
         if k == Less
             && s > 0
             && kinds[s - 1] == Ident
             && (type_context || gap_allowed(significant[s - 1], significant[s]))
         {
-            let mut look = TypeLookahead {
+            let mut look = crate::generic_selection::ProspectiveTypes {
                 kinds: &kinds,
                 at: s,
                 visited: 0,
@@ -814,7 +432,7 @@ fn logical_tokens(scanner: &mut Scanner<'_>) -> Vec<(usize, Tok, usize)> {
                 depth_limit: scanner.limits.max_depth,
                 angles: Vec::new(),
             };
-            match look.list(1) {
+            match look.recognize() {
                 Ok(()) => {
                     let end = look.at;
                     let call = end < kinds.len()
@@ -842,14 +460,14 @@ fn logical_tokens(scanner: &mut Scanner<'_>) -> Vec<(usize, Tok, usize)> {
                         continue;
                     }
                 }
-                Err(LookaheadFailure::NotType) => {}
+                Err(crate::generic_selection::Failure::NotType) => {}
                 Err(problem) => {
                     stop = Some((s, problem));
                     break;
                 }
             }
         }
-        angle_context.observe(k, s.checked_sub(1).map(|previous| kinds[previous]));
+        regions.observe(k, s.checked_sub(1).map(|previous| kinds[previous]));
         s += 1;
     }
     if let Some((s, problem)) = stop {
@@ -857,9 +475,9 @@ fn logical_tokens(scanner: &mut Scanner<'_>) -> Vec<(usize, Tok, usize)> {
         let start = raw[raw_index].0;
         let id = raw[raw_index].1.id();
         let message = match problem {
-            LookaheadFailure::Tokens => "prospective generic token limit exceeded",
-            LookaheadFailure::Depth => "prospective generic depth limit exceeded",
-            LookaheadFailure::NotType => unreachable!(),
+            crate::generic_selection::Failure::Tokens => "prospective generic token limit exceeded",
+            crate::generic_selection::Failure::Depth => "prospective generic depth limit exceeded",
+            crate::generic_selection::Failure::NotType => unreachable!(),
         };
         scanner.error(DiagnosticCode::Limit, message, start, start);
         scanner.source.pieces.truncate(id.0);
