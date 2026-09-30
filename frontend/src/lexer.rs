@@ -600,6 +600,149 @@ impl TypeLookahead<'_> {
         Ok(())
     }
 }
+/// Angle classification follows lexical syntax regions rather than assigning a
+/// meaning to punctuation globally. In particular, construction fields contain
+/// expressions while declaration fields and parameter annotations contain types.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BraceContents {
+    Block,
+    RecordFields,
+    EnumVariants,
+    FieldValues,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeclarationHead {
+    Function,
+    Record,
+    Enum,
+    Control,
+}
+struct AngleScope {
+    delimiter: Option<TokenKind>,
+    contents: BraceContents,
+    type_context: bool,
+    list_types: bool,
+    declaration_name: bool,
+    parameters_pending: bool,
+    head: Option<DeclarationHead>,
+}
+impl AngleScope {
+    fn new(delimiter: Option<TokenKind>, contents: BraceContents, list_types: bool) -> Self {
+        Self {
+            delimiter,
+            contents,
+            type_context: list_types,
+            list_types,
+            declaration_name: false,
+            parameters_pending: false,
+            head: None,
+        }
+    }
+}
+struct AngleContext {
+    scopes: Vec<AngleScope>,
+}
+impl AngleContext {
+    fn new() -> Self {
+        Self {
+            scopes: vec![AngleScope::new(None, BraceContents::Block, false)],
+        }
+    }
+    fn is_type(&self) -> bool {
+        self.scopes.last().unwrap().type_context
+    }
+    fn boundary(&mut self) {
+        let scope = self.scopes.last_mut().unwrap();
+        scope.type_context = scope.list_types;
+        scope.declaration_name = false;
+    }
+    fn observe(&mut self, kind: TokenKind, previous: Option<TokenKind>) {
+        let nested = self.scopes.len() > 1;
+        let scope = self.scopes.last_mut().unwrap();
+        match kind {
+            Fn | Record | Enum => {
+                scope.head = Some(match kind {
+                    Fn => DeclarationHead::Function,
+                    Record => DeclarationHead::Record,
+                    Enum => DeclarationHead::Enum,
+                    _ => unreachable!(),
+                });
+                scope.declaration_name = true;
+                scope.parameters_pending = kind == Fn;
+                scope.type_context = false;
+            }
+            If | For | Every | Match | Else => {
+                scope.head = Some(DeclarationHead::Control);
+                scope.type_context = false;
+            }
+            Ident if scope.declaration_name => {
+                scope.declaration_name = false;
+                scope.type_context = true;
+            }
+            Colon => scope.type_context = scope.contents != BraceContents::FieldValues,
+            Arrow => scope.type_context = true,
+            Where => {
+                scope.type_context = true;
+                scope.list_types = true;
+            }
+            Let | Var | Equal | Semicolon => {
+                scope.type_context = false;
+                scope.declaration_name = false;
+            }
+            Comma => scope.type_context = scope.list_types,
+            LParen | LBracket => {
+                // The function header's first parentheses contain parameters.
+                // Enum variant payloads and grouped/array annotations contain types.
+                let parameters = kind == LParen && scope.parameters_pending;
+                let list_types = if parameters {
+                    false
+                } else if scope.contents == BraceContents::EnumVariants {
+                    true
+                } else {
+                    scope.type_context
+                };
+                if parameters {
+                    scope.parameters_pending = false;
+                    scope.type_context = false;
+                    scope.declaration_name = false;
+                }
+                self.scopes.push(AngleScope::new(
+                    Some(kind),
+                    BraceContents::Block,
+                    list_types,
+                ));
+            }
+            LBrace => {
+                let contents = match scope.head.take() {
+                    Some(DeclarationHead::Record) => BraceContents::RecordFields,
+                    Some(DeclarationHead::Enum) => BraceContents::EnumVariants,
+                    Some(DeclarationHead::Function | DeclarationHead::Control) => {
+                        BraceContents::Block
+                    }
+                    None if previous == Some(Ident) => BraceContents::FieldValues,
+                    None => BraceContents::Block,
+                };
+                scope.type_context = false;
+                scope.declaration_name = false;
+                self.scopes
+                    .push(AngleScope::new(Some(LBrace), contents, false));
+            }
+            RParen | RBracket | RBrace => {
+                let opening = match kind {
+                    RParen => LParen,
+                    RBracket => LBracket,
+                    RBrace => LBrace,
+                    _ => unreachable!(),
+                };
+                if nested && scope.delimiter == Some(opening) {
+                    self.scopes.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn logical_tokens(scanner: &mut Scanner<'_>) -> Vec<(usize, Tok, usize)> {
     let raw = &scanner.raw;
     let significant: Vec<usize> = raw
@@ -649,16 +792,15 @@ fn logical_tokens(scanner: &mut Scanner<'_>) -> Vec<(usize, Tok, usize)> {
         (left + 1..right).all(|i| raw[i].1.kind() != Newline || continued[i])
     };
     let mut suppress = vec![false; raw.len()];
-    let mut type_context = false;
-    let mut declaration_name = false;
+    let mut angle_context = AngleContext::new();
     let mut stop = None;
     let mut s = 0;
     while s < significant.len() {
         let k = kinds[s];
         if s > 0 && !gap_allowed(significant[s - 1], significant[s]) {
-            type_context = false;
-            declaration_name = false;
+            angle_context.boundary();
         }
+        let type_context = angle_context.is_type();
         if k == Less
             && s > 0
             && kinds[s - 1] == Ident
@@ -707,24 +849,7 @@ fn logical_tokens(scanner: &mut Scanner<'_>) -> Vec<(usize, Tok, usize)> {
                 }
             }
         }
-        match k {
-            Fn | Record | Enum => {
-                declaration_name = true;
-                type_context = false;
-            }
-            Ident if declaration_name => {
-                declaration_name = false;
-                type_context = true;
-            }
-            Colon | Arrow | Where => type_context = true,
-            Equal | Semicolon | LBrace | RBrace => {
-                type_context = false;
-                declaration_name = false;
-            }
-            // A declaration's parameter list starts fresh annotation contexts.
-            LParen if s > 0 && matches!(kinds[s - 1], Ident | TypeClose) => type_context = false,
-            _ => {}
-        }
+        angle_context.observe(k, s.checked_sub(1).map(|previous| kinds[previous]));
         s += 1;
     }
     if let Some((s, problem)) = stop {
@@ -1143,6 +1268,89 @@ mod tests {
             for d in out.diagnostics {
                 assert!(d.range.start <= d.range.end && d.range.end <= bytes.len());
             }
+        }
+    }
+    #[test]
+    fn record_field_values_use_expression_angles_and_declaration_fields_use_type_angles() {
+        use crate::syntax::{Declaration, ExprKind, StatementKind, TypeKind};
+        for expression in [
+            "make<T>(v)",
+            "lib::make<T>(v)",
+            "(make<T>(v))",
+            "a < b",
+            "(a < b)",
+            "run(fn(v: T) -> T { return make<T>(v) })",
+            "Inner { value: make<T>(v) }",
+        ] {
+            let text = format!("fn f() -> Unit {{ let x = Box {{ value: {expression} }} }}");
+            let parsed = crate::parse(text.as_bytes());
+            assert!(
+                parsed.is_syntax_eligible(),
+                "{text}: {:?}",
+                parsed.diagnostics
+            );
+            let lexed = lex(text.as_bytes(), Limits::default());
+            if expression.contains("make<T>") {
+                assert!(
+                    lexed.tokens.iter().any(|(_, t, _)| t.kind() == GenericOpen),
+                    "{text}"
+                );
+            } else {
+                assert!(
+                    lexed.tokens.iter().any(|(_, t, _)| t.kind() == Less),
+                    "{text}"
+                );
+            }
+        }
+        let parsed = crate::parse(
+            b"fn f() -> Unit { let x = Box { value: make<Array<T>>(v), compare: a < b } }",
+        );
+        assert!(parsed.is_syntax_eligible(), "{:?}", parsed.diagnostics);
+        let Declaration::Function(f) = &parsed.syntax.declarations[0].kind else {
+            panic!("function missing")
+        };
+        let StatementKind::Local { value, .. } = &f.body.statements[0].kind else {
+            panic!("local missing")
+        };
+        let ExprKind::Record { fields, .. } = &value.kind else {
+            panic!("record missing")
+        };
+        let ExprKind::Call {
+            type_arguments: Some(arguments),
+            ..
+        } = &fields.contents.items[0].kind.value.kind
+        else {
+            panic!("generic call erased")
+        };
+        let TypeKind::Named {
+            arguments: Some(nested),
+            ..
+        } = &arguments.contents.items[0].kind
+        else {
+            panic!("nested type argument erased")
+        };
+        assert_eq!(nested.contents.items.len(), 1);
+        assert!(matches!(
+            fields.contents.items[1].kind.value.kind,
+            ExprKind::Binary {
+                operator: crate::syntax::BinaryOperator::Less,
+                ..
+            }
+        ));
+        for text in [
+            "record Box<T> { value: Array<T>, pair: (Array<T>, [T]) }",
+            "enum Value<T> { Some(Array<T>), Pair((Array<T>, [T])) }",
+            "fn typed(value: (Array<T>, [T])) -> (Array<T>, [T]) { return value }",
+            "fn constrained<T,U>() -> Unit where Array<T>: Bound<T>, Array<U>: Bound<U> { return }",
+            "fn f() -> Unit { let x: (Array<T>, [T]) = make<T>(v) }",
+            "fn f() -> Unit { if run(Box { value: make<T>(v) }) { return } }",
+        ] {
+            let parsed = crate::parse(text.as_bytes());
+            assert!(
+                parsed.is_syntax_eligible(),
+                "{text}: {:?}",
+                parsed.diagnostics
+            );
         }
     }
 }

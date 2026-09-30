@@ -36,12 +36,19 @@ impl<T> Default for Separated<T> {
     }
 }
 impl<T> Separated<T> {
-    pub fn prepend(item: T, comma: Option<TokenId>, mut rest: Self) -> Self {
-        rest.items.insert(0, item);
+    /// Parser-only accumulation: right-recursive reductions encounter the tail
+    /// first. Append in that order, then restore source order at the list boundary.
+    pub(crate) fn push_reversed(item: T, comma: Option<TokenId>, mut rest: Self) -> Self {
+        rest.items.push(item);
         if let Some(comma) = comma {
-            rest.separators.insert(0, comma);
+            rest.separators.push(comma);
         }
         rest
+    }
+    pub(crate) fn restore_order(mut self) -> Self {
+        self.items.reverse();
+        self.separators.reverse();
+        self
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

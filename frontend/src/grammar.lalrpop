@@ -5,6 +5,7 @@ use crate::source::ByteRange;
 
 pub Document: Document = {
  <separators:Separator*> <entries:DeclarationEntries> => {
+ let mut entries=entries; entries.0.reverse(); entries.1.reverse();
  let mut all=separators; all.extend(entries.1);
  let syntax_range=entries.0.first().map_or(ByteRange::empty(source.len()), |n| ByteRange::new(n.range.start,entries.0.last().unwrap().range.end));
  Document {range:ByteRange::new(0,source.len()),syntax_range,declarations:entries.0,separators:all}
@@ -12,11 +13,11 @@ pub Document: Document = {
 };
 DeclarationEntries: (Vec<Node<Declaration>>,Vec<TokenId>) = {
  => (vec![],vec![]),
- <d:Declaration> <rest:DeclarationTail> => { let mut items=vec![d];items.extend(rest.0);(items,rest.1) }
+ <d:Declaration> <rest:DeclarationTail> => { let mut rest=rest; rest.0.push(d); rest }
 };
 DeclarationTail: (Vec<Node<Declaration>>,Vec<TokenId>) = {
  => (vec![],vec![]),
- <sep:Separator+> <rest:DeclarationEntries> => {let mut all=sep;all.extend(rest.1);(rest.0,all)}
+ <sep:Separator+> <rest:DeclarationEntries> => { let mut rest=rest; rest.1.extend(sep.into_iter().rev()); rest }
 };
 Declaration: Node<Declaration> = {
  <l:@L> <f:Function> <r:@R> => Node::new(l,r,Declaration::Function(f)),
@@ -48,14 +49,14 @@ TypeArguments: Delimited<Separated<Type>> = { <open:"type<"> <contents:NonemptyC
 CallTypeArguments: Delimited<Separated<Type>> = { <open:"generic<"> <contents:NonemptyCommaList<Type>> <close:"generic>"> => Delimited{open,contents,close} };
 Path: Path = { <first:"ident"> <rest:("::" "ident")*> => {let mut path=Path{segments:vec![first],separators:vec![]};for (sep,name) in rest {path.separators.push(sep);path.segments.push(name);}path} };
 
-Block: Block = { <l:@L> <open:"{"> <sep:Separator*> <entries:StatementEntries> <close:"}"> <r:@R> => {let mut separators=sep;separators.extend(entries.1);Block{range:ByteRange::new(l,r),open,statements:entries.0,separators,close}} };
+Block: Block = { <l:@L> <open:"{"> <sep:Separator*> <entries:StatementEntries> <close:"}"> <r:@R> => {let mut entries=entries; entries.0.reverse(); entries.1.reverse(); let mut separators=sep;separators.extend(entries.1);Block{range:ByteRange::new(l,r),open,statements:entries.0,separators,close}} };
 StatementEntries: (Vec<Statement>,Vec<TokenId>) = {
  => (vec![],vec![]),
- <s:Statement> <rest:StatementTail> => {let mut items=vec![s];items.extend(rest.0);(items,rest.1)}
+ <s:Statement> <rest:StatementTail> => { let mut rest=rest; rest.0.push(s); rest }
 };
 StatementTail: (Vec<Statement>,Vec<TokenId>) = {
  => (vec![],vec![]),
- <sep:Separator+> <rest:StatementEntries> => {let mut all=sep;all.extend(rest.1);(rest.0,all)}
+ <sep:Separator+> <rest:StatementEntries> => { let mut rest=rest; rest.1.extend(sep.into_iter().rev()); rest }
 };
 pub Statement: Statement = {
  <l:@L> <binding:Binding> <name:"ident"> <annotation:Annotation?> <equal:"="> <value:Expression> <r:@R> => Node::new(l,r,StatementKind::Local{binding,name,annotation,equal,value}),
@@ -111,11 +112,14 @@ Boolean: TokenId = { "true", "false" };
 CallArguments: Delimited<Separated<Node<Argument>>> = { <open:"("> <contents:CommaList<Argument>> <close:")"> => Delimited{open,contents,close} };
 Argument: Node<Argument> = { <l:@L> <permission:"mut"?> <value:Expression> <r:@R>=>Node::new(l,r,Argument{permission,value}) };
 FieldValue: Node<FieldValue> = { <l:@L> <name:"ident"> <colon:":"> <value:Expression> <r:@R>=>Node::new(l,r,FieldValue{name,colon,value}) };
-CommaList<T>: Separated<T> = { <ignored:Newlines> <items:MaybeCommaList<T>> => items };
+// Right-recursive reductions append into reversed vectors. Restore source order
+// once at each public list boundary rather than copying the entire tail per item.
+CommaList<T>: Separated<T> = { <ignored:Newlines> <items:MaybeReversedCommaList<T>> => items.restore_order() };
+NonemptyCommaList<T>: Separated<T> = { <items:ReversedNonemptyCommaList<T>> => items.restore_order() };
 #[inline]
-MaybeCommaList<T>: Separated<T> = { =>Separated::default(), NonemptyCommaList<T> };
-NonemptyCommaList<T>: Separated<T> = { <item:T> <ignored:Newlines> <rest:CommaRest<T>>=>Separated::prepend(item,rest.0,rest.1) };
-CommaRest<T>: (Option<TokenId>,Separated<T>) = { =>(None,Separated::default()), <comma:","> <rest:CommaList<T>>=>(Some(comma),rest) };
+MaybeReversedCommaList<T>: Separated<T> = { =>Separated::default(), ReversedNonemptyCommaList<T> };
+ReversedNonemptyCommaList<T>: Separated<T> = { <item:T> <ignored:Newlines> <rest:ReversedCommaRest<T>>=>Separated::push_reversed(item,rest.0,rest.1) };
+ReversedCommaRest<T>: (Option<TokenId>,Separated<T>) = { =>(None,Separated::default()), <comma:","> <ignored:Newlines> <rest:MaybeReversedCommaList<T>>=>(Some(comma),rest) };
 #[inline]
 Newlines: Vec<TokenId> = "newline"*;
 Separator: TokenId = { "newline", ";" };
