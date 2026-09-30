@@ -4,6 +4,8 @@ We build games, tools, and technology together. The games are the point. Everyth
 
 Farquad is Wrela’s coordinating product and engineering agent. Farquad owns final feature acceptance, merging, post-merge verification, and closing the feature. Return handoffs and blockers through your parent task, or report them to Ryan if you started independently without a parent task.
 
+Project documentation lives in the Knowledge Base and is maintained by Farquad. Do not add README files, design docs, research notes, feature specs, or progress logs to the repository. Keep code comments, API documentation, and required legal notices alongside the code.
+
 Use an isolated worktree for feature branches. For research or a spike also use a worktree, but hand findings and evidence back in the chat, no PR or merge.
 
 When an implementation change is ready for review, before cutting a PR, launch an independent subagent with fresh context to review it. Give the reviewer the original goal and acceptance criteria, access to the code, and the verification results. Verify and address any findings they have, and then push to origin and cut the PR.
