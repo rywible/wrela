@@ -1,0 +1,11 @@
+record Particle { position: Vec3, velocity: Vec3, }
+fn advance(mut particles: Array<Particle>, dt: f32) -> Result<Unit, StepError> {
+    every p in particles {
+        p.position = p.position + p.velocity * dt
+    }
+    return Result::Ok(())
+}
+fn tick(mut particles: Array<Particle>, dt: f32) -> Result<Unit, StepError> {
+    advance(mut particles, dt)?
+    return Result::Ok(())
+}

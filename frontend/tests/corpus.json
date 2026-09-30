@@ -1,0 +1,651 @@
+{
+  "schema_version": 1,
+  "corpus_version": "0.1",
+  "status": "Representative planned seed for approved feature; detailed assertions are proposed implementation defaults",
+  "authority": "Ryan-approved SPEC.md AC-1 through AC-8; corpus sources and expectations are independently authored, not parser output",
+  "groups": {
+    "valid": 12,
+    "invalid": 14,
+    "semantic-later": 7
+  },
+  "total": 33,
+  "limitations": [
+    "Not a complete conformance suite.",
+    "No production frontend execution.",
+    "Unknown library/type names are deliberate syntax-only examples.",
+    "Default_Ignorable identifier exclusion is approved in APPROVED-ADDENDUM.md; resource-limit values remain proposed defaults."
+  ],
+  "cases": [
+    {
+      "id": "V01",
+      "group": "valid",
+      "title": "Particles and visible mutation permission",
+      "source": "record Particle { position: Vec3, velocity: Vec3, }\nfn advance(mut particles: Array<Particle>, dt: f32) -> Result<Unit, StepError> {\n    every p in particles {\n        p.position = p.position + p.velocity * dt\n    }\n    return Result::Ok(())\n}\nfn tick(mut particles: Array<Particle>, dt: f32) -> Result<Unit, StepError> {\n    advance(mut particles, dt)?\n    return Result::Ok(())\n}\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "Record fields and ordered function parameters survive.",
+        "Every differs from For; mutation permission at parameter and call survives.",
+        "Propagation wraps the advance call; multiplication binds before addition.",
+        "No wave, storage, permission or Result semantics are executed."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "proposed_example",
+      "approval_scope": "Concrete spellings, shape or recovery contract need implementation-policy adoption; this case is not an extra acceptance requirement.",
+      "source_byte_length": 382,
+      "source_sha256": "c96e2aba7c5cbf506574986b6ac1cebc85d8ad00d3d4fb26072e33fa3d9c97c1"
+    },
+    {
+      "id": "V02",
+      "group": "valid",
+      "title": "Ordered iteration and ordinary indexing",
+      "source": "fn visit(values: Array<f32>) -> Unit {\n    for value in values { inspect(value) }\n    inspect(values[0])\n    return\n}\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "For node differs from Every.",
+        "Index selects values at literal 0; return has no expression."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "proposed_example",
+      "approval_scope": "Concrete spellings, shape or recovery contract need implementation-policy adoption; this case is not an extra acceptance requirement.",
+      "source_byte_length": 118,
+      "source_sha256": "09adbe08e6436e148bfc0fa4f3002b7f37919b023229e80d6f64e08e996f3e20"
+    },
+    {
+      "id": "V03",
+      "group": "valid",
+      "title": "Payload enums and absent versus empty payload syntax",
+      "source": "enum Bare { Empty, }\nenum Parenthesized { Empty(), }\nenum Event { Hit(Vec3, f32), Idle, }\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "Bare.Empty has absent payload syntax; Parenthesized.Empty has present empty payload syntax.",
+        "Hit has two ordered payload types; all trailing commas remain in CST."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "proposal": "Preserving empty payload syntax in normalization is a suggested default under AC-3, not a separately approved criterion.",
+      "approval_status": "proposed_example",
+      "approval_scope": "Concrete spellings, shape or recovery contract need implementation-policy adoption; this case is not an extra acceptance requirement.",
+      "source_byte_length": 90,
+      "source_sha256": "1af83cb71d89037d0711f43df08c140708cd95ac783be831d6170ee0443da6bd"
+    },
+    {
+      "id": "V04",
+      "group": "valid",
+      "title": "Constraints and nested annotation closes",
+      "source": "fn twice<T>(value: T) -> T where T: Numeric + Copy {\n    return value + value\n}\nfn keep<T>(values: Array<Array<T>>) -> Array<Array<T>> {\n    return values\n}\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "Generic parameter and two ordered constraints survive.",
+        "Nested annotation closes parse without shift tokens.",
+        "Types are syntax only; constraints are not resolved."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "proposed_example",
+      "approval_scope": "Concrete spellings, shape or recovery contract need implementation-policy adoption; this case is not an extra acceptance requirement.",
+      "source_byte_length": 157,
+      "source_sha256": "d171b1829165fcab1e2281ccbee03d58f361d3a28144138d7d1e0c6b2e68f599"
+    },
+    {
+      "id": "V05",
+      "group": "valid",
+      "title": "Generic tie break and permitted continuation",
+      "source": "fn generic_examples(x: T) -> Unit {\n    inspect(a<b>(x)); inspect(a<b)\n    inspect((f\n        <T>(x)))\n    inspect((f// comment across a permitted continuation\n        <T>(x)))\n    run(f\n        <T>(x))\n    inspect((f<T>\n        (x)))\n    inspect(f<\n        Array<T>,\n    >(x))\n    return\n}\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "a<b>(x) is Call with type b; a<b is Less.",
+        "All four continued f calls remain generic calls with type T.",
+        "Multiline angle interiors are the reviewed direction; call boundary continuation still controls.",
+        "The first three newline-before-angle shapes are known failing follow-up witnesses, not language exceptions."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 291,
+      "source_sha256": "4f467d01c55d75737acbb5e0eca1e44bdb81e5de39e8fd1ea0e4d8a1a05c8851"
+    },
+    {
+      "id": "V06",
+      "group": "valid",
+      "title": "Statement boundaries reset inside lambda blocks",
+      "source": "fn boundaries(x: T) -> Unit {\n    var n = 1; n = n +\n        2\n    f\n    (x)\n    run(fn() {\n        f\n        (x)\n        return\n    })\n    return\n    inspect(x)\n}\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "f newline (x) forms two expression statements at each block level, never a call.",
+        "The lambda block resets enclosing call continuation.",
+        "Trailing + continues one addition; bare return ends before inspect.",
+        "Unreachable-code checking is later."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 164,
+      "source_sha256": "305d98cf6cb0fe8f78a15ecf5cbc1a833e84b9f6ab7477b88d4b155744b0e416"
+    },
+    {
+      "id": "V07",
+      "group": "valid",
+      "title": "Contextual and annotated fn lambdas",
+      "source": "fn callbacks(values: Array<f32>) -> Unit {\n    map(values, fn(value) { return value * 2 })\n    map(values, fn(value: f32) -> f32 { return value + 1 })\n    invoke(fn() { return 1 })\n    return\n}\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "Three fn lambdas retain explicit Return nodes.",
+        "First parameter/result annotations are absent; second are explicit; third has zero parameters.",
+        "Contextual inference is not implemented here."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 194,
+      "source_sha256": "f4d4b0a3a36c810255f37d6f349f5c559498f06f4d2893566e6fed203d09b2b8"
+    },
+    {
+      "id": "V08",
+      "group": "valid",
+      "title": "Grouped record construction in control heads",
+      "source": "fn test_point(p: Point) -> bool {\n    if (Point { x: 1, } == p) { return true } else { return false }\n}\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "Record construction is inside grouped control condition.",
+        "If has distinct then/else blocks; both return explicitly."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 104,
+      "source_sha256": "a12c196f46631684d813bfdfa3e650762339a4fc89331a696a1f5089188bb0ef"
+    },
+    {
+      "id": "V09",
+      "group": "valid",
+      "title": "Statement match with block arms",
+      "source": "enum Event { Hit(Vec3, f32), Idle, }\nfn magnitude(event: Event) -> f32 {\n    match event {\n        Event::Hit(position, power) => { return power },\n        Event::Idle => { return 0 },\n    }\n}\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "Statement Match owns a scrutinee and two ordered arms.",
+        "Hit has two ordered pattern bindings; each arm is a block with explicit return.",
+        "Exhaustiveness and binding meaning are later checks."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "proposed_example",
+      "approval_scope": "Concrete spellings, shape or recovery contract need implementation-policy adoption; this case is not an extra acceptance requirement.",
+      "source_byte_length": 193,
+      "source_sha256": "31883134b6ef816ff2fe67005dae70dc340fe0abee18b90699855cf69e6aa183"
+    },
+    {
+      "id": "V10",
+      "group": "valid",
+      "title": "Field and UI library call syntax only",
+      "source": "fn body() -> Field {\n    return field::smooth_min(field::sphere<f32>(1), field::box_field<f32>(2), 0.2)\n}\nfn panel() -> Ui {\n    return ui::column([\n        ui::text(\"Ready\"),\n        ui::button(\"Start\", fn() { return Action::Start }),\n    ])\n}\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "Qualified library generic calls and nested ordinary calls retain ordered arguments.",
+        "UI construction is an ordinary array/call/fn-lambda composition.",
+        "No closed widget vocabulary, accessibility, rendering, field staging or layout syntax is selected."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "proposed_example",
+      "approval_scope": "Concrete spellings, shape or recovery contract need implementation-policy adoption; this case is not an extra acceptance requirement.",
+      "source_byte_length": 245,
+      "source_sha256": "f67930342a5257b277f30f4a314d9d58f0cb456200370599bcb62bd2798116d8"
+    },
+    {
+      "id": "V11",
+      "group": "valid",
+      "title": "Unicode spelling, nested comments, supported escapes and CRLF",
+      "source": "fn unicode() -> Unit {\r\n    /* outer /* nested */ remains outer */\r\n    let é = \"🚀\\n\\r\\t\\\"\\\\\"\r\n    let é = \"direct Unicode‌‍\"\r\n    inspect(é, é) // composed and decomposed stay distinct; join controls here: ‌‍\r\n    return\r\n}\r\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "Composed é and decomposed e plus combining acute are distinct identifiers.",
+        "String contains direct astral Unicode and exactly the five permitted escape forms.",
+        "Nested comments are one complete comment with nested structure if exposed; no interior text becomes syntax.",
+        "All line terminators are CRLF in exact source.",
+        "Approved identifier addendum allows join controls in strings/comments; their bytes stay intact."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 243,
+      "source_sha256": "b27e138fd198fe4602b00dc07be2d4b2d4403f1424fd87eaf3ed8805ade07043"
+    },
+    {
+      "id": "V12",
+      "group": "valid",
+      "title": "Independent precedence and association witness",
+      "source": "fn order(a: f32, b: f32, c: f32, enabled: bool) -> bool {\n    return a - b - c * 2 < 10 && enabled || false\n}\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "Expected shape: Or(And(Less(Sub(Sub(a,b),Mul(c,2)),10),enabled),false).",
+        "Grouping in this independently specified shape expresses structure, not source punctuation."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "token_edit": {
+        "old": "2",
+        "new": "3",
+        "expected_source": "fn order(a: f32, b: f32, c: f32, enabled: bool) -> bool {\n    return a - b - c * 3 < 10 && enabled || false\n}\n"
+      },
+      "approval_status": "proposed_example",
+      "approval_scope": "Concrete spellings, shape or recovery contract need implementation-policy adoption; this case is not an extra acceptance requirement.",
+      "source_byte_length": 110,
+      "source_sha256": "58fded972cbaccfa915a1c13fdb8bd964a4411eea89812c84b7bb01894411a37"
+    },
+    {
+      "id": "I01",
+      "group": "invalid",
+      "title": "No next line generic call at statement level",
+      "source": "fn bad(x: T) -> Unit { f<T>\n(x)\nreturn }\n",
+      "syntax_eligible": false,
+      "expectations": [
+        "Reject; the newline cannot complete a bare generic call."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 41,
+      "source_sha256": "7bcbd8d1ca3348e9ac96047089635cbda9dfb04eb690173701ceec92d932ec8e"
+    },
+    {
+      "id": "I02",
+      "group": "invalid",
+      "title": "Ungrouped record in control head",
+      "source": "fn bad(p: Point) -> Unit { if Point { x: 1 } == p { return } }\n",
+      "syntax_eligible": false,
+      "expectations": [
+        "Reject direct ungrouped record construction in the control head."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 63,
+      "source_sha256": "266a8e141d47f971e3dc01f7231af04ab869244536875d8aec5752f3dc634f45"
+    },
+    {
+      "id": "I03",
+      "group": "invalid",
+      "title": "Raw string is outside the initial slice",
+      "source": "fn bad() -> Unit { let s = r#\"raw\"#\nreturn }\n",
+      "syntax_eligible": false,
+      "expectations": [
+        "Reject raw strings; their old provisional lexer defect is excluded, not fixed."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 45,
+      "source_sha256": "f5e1730e093dcae8758d338a81cdf2a0a25f61b3849e0dd20f9ee19a961a972b"
+    },
+    {
+      "id": "I04",
+      "group": "invalid",
+      "title": "lexical-middle",
+      "source": "fn bad() -> Unit {\n    @\n    return\n}\nfn good() -> Unit { return }\n",
+      "syntax_eligible": false,
+      "expectations": [
+        "One lexical primary error at @; retain return and fn good structure.",
+        "All bytes retained; next-phase gate rejects."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "primary_error_tokens": [
+        "@"
+      ],
+      "survive": [
+        "bad.Return",
+        "Function(good)"
+      ],
+      "approval_status": "proposed_example",
+      "approval_scope": "Concrete spellings, shape or recovery contract need implementation-policy adoption; this case is not an extra acceptance requirement.",
+      "source_byte_length": 67,
+      "source_sha256": "1c484dddd81a89dd00c9f58a355771552be8d4c6a49dac4728f4e6b2259e1cd4",
+      "expected_primary_byte_ranges": [
+        [
+          23,
+          24
+        ]
+      ]
+    },
+    {
+      "id": "I05",
+      "group": "invalid",
+      "title": "two-errors",
+      "source": "fn bad() -> Unit {\n    let a = ;\n    let b = ;\n    let c = 3\n    return\n}\nfn good() -> Unit { return }\n",
+      "syntax_eligible": false,
+      "expectations": [
+        "Two independent missing-initializer primary diagnostics at the two semicolons.",
+        "Retain Local(c) and Function(good); source ownership remains complete."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "primary_error_tokens": [
+        ";",
+        ";"
+      ],
+      "survive": [
+        "Local(c)",
+        "Function(good)"
+      ],
+      "approval_status": "proposed_example",
+      "approval_scope": "Concrete spellings, shape or recovery contract need implementation-policy adoption; this case is not an extra acceptance requirement.",
+      "source_byte_length": 103,
+      "source_sha256": "a3756c08481d711c8ec1721e084f3d17fd1124512f1bf9046db85828d68c691f",
+      "expected_primary_byte_ranges": [
+        [
+          31,
+          32
+        ],
+        [
+          45,
+          46
+        ]
+      ]
+    },
+    {
+      "id": "I06",
+      "group": "invalid",
+      "title": "nested-element",
+      "source": "fn bad() -> Unit {\n    consume([1, , 2]);\n    let tail = 3\n    return\n}\nfn good() -> Unit { return }\n",
+      "syntax_eligible": false,
+      "expectations": [
+        "Primary diagnostic at the second comma in otherwise paired brackets.",
+        "Synchronize within the array list; retain Local(tail) and Function(good)."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "primary_error_tokens": [
+        ", ,"
+      ],
+      "survive": [
+        "Local(tail)",
+        "Function(good)"
+      ],
+      "approval_status": "proposed_example",
+      "approval_scope": "Concrete spellings, shape or recovery contract need implementation-policy adoption; this case is not an extra acceptance requirement.",
+      "source_byte_length": 101,
+      "source_sha256": "d0ddbf88c27ca0da765ccc72cc7b45565ce473e2a81aa9d2133f7de162a0647d",
+      "expected_primary_byte_ranges": [
+        [
+          35,
+          36
+        ]
+      ]
+    },
+    {
+      "id": "I07",
+      "group": "invalid",
+      "title": "crossed-delimiters",
+      "source": "fn bad() -> Unit {\n    consume([1, 2)]);\n    let tail = 3\n    return\n}\nfn good() -> Unit { return }\n",
+      "syntax_eligible": false,
+      "expectations": [
+        "Report the crossed delimiter at the first ) while [ is open.",
+        "Quarantine the malformed statement through its explicit semicolon; retain Local(tail) and Function(good)."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "primary_error_tokens": [
+        ")]"
+      ],
+      "survive": [
+        "Local(tail)",
+        "Function(good)"
+      ],
+      "approval_status": "proposed_example",
+      "approval_scope": "Concrete spellings, shape or recovery contract need implementation-policy adoption; this case is not an extra acceptance requirement.",
+      "source_byte_length": 100,
+      "source_sha256": "35b25e240718f543af29b5f10a787ae806942cfda9300f3c96262d406a3b3084",
+      "expected_primary_byte_ranges": [
+        [
+          36,
+          37
+        ]
+      ]
+    },
+    {
+      "id": "I08",
+      "group": "invalid",
+      "title": "EOF-trivia",
+      "source": "fn bad() -> Unit {\r\n    let s = \"🚀\"\r\n    // trailing comment\r\n  ",
+      "syntax_eligible": false,
+      "expectations": [
+        "EOF primary diagnostic is zero-width at physical source byte length.",
+        "Retain typed source and partial function prefix; do not promise a completed function or suffix."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "physical_eof": true,
+      "approval_status": "proposed_example",
+      "approval_scope": "Concrete spellings, shape or recovery contract need implementation-policy adoption; this case is not an extra acceptance requirement.",
+      "source_byte_length": 67,
+      "source_sha256": "096f29451e90e76267c3dd324d842b791ebc8bed3dd02619d33fa851009085dc",
+      "expected_primary_byte_ranges": [
+        [
+          67,
+          67
+        ]
+      ]
+    },
+    {
+      "id": "I09",
+      "group": "invalid",
+      "title": "newline-string",
+      "source": "fn bad() -> Unit {\n    let s = \"unfinished\n    let tail = 3\n    return\n}\nfn good() -> Unit { return }\n",
+      "syntax_eligible": false,
+      "expectations": [
+        "Unterminated string error owns opening quote through before physical newline.",
+        "Recover at newline; retain Local(tail) and Function(good)."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "primary_error_tokens": [
+        "\"unfinished"
+      ],
+      "survive": [
+        "Local(tail)",
+        "Function(good)"
+      ],
+      "approval_status": "proposed_example",
+      "approval_scope": "Concrete spellings, shape or recovery contract need implementation-policy adoption; this case is not an extra acceptance requirement.",
+      "source_byte_length": 102,
+      "source_sha256": "28b7008e54de71445db40c6591f4eae5981bcc9913386e01bb14bddb48739feb",
+      "expected_primary_byte_ranges": [
+        [
+          31,
+          42
+        ]
+      ]
+    },
+    {
+      "id": "I10",
+      "group": "invalid",
+      "title": "unclosed-comment",
+      "source": "fn bad() -> Unit { return }\n/* outer /* closed inner */ still open\nfn later() -> Unit { return }\n",
+      "syntax_eligible": false,
+      "expectations": [
+        "Retain unclosed comment remainder through EOF; report an unterminated block comment.",
+        "Earlier function structure may survive; later text belongs to comment/error bytes, with no later-function promise."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "proposed_example",
+      "approval_scope": "Concrete spellings, shape or recovery contract need implementation-policy adoption; this case is not an extra acceptance requirement.",
+      "source_byte_length": 97,
+      "source_sha256": "bd43debdc19b13c190801e465ae2d6c95de62002bbfe84015e493f6872c72805"
+    },
+    {
+      "id": "I11",
+      "group": "invalid",
+      "title": "Pipe lambda is excluded",
+      "source": "fn bad() -> Unit { map(values, |x| => x)\nreturn }\n",
+      "syntax_eligible": false,
+      "expectations": [
+        "Reject pipe/arrow lambda spelling."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 50,
+      "source_sha256": "532f87e4f323647271e2d4c7c62ad38455c8d6763bbb86d133fce591c77d5614"
+    },
+    {
+      "id": "I12",
+      "group": "invalid",
+      "title": "Unknown string escape is excluded",
+      "source": "fn bad() -> Unit { let s = \"\\u1234\"\nreturn }\n",
+      "syntax_eligible": false,
+      "expectations": [
+        "Reject Unicode escape syntax; direct Unicode spelling is available."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 45,
+      "source_sha256": "d26d7ad8c2ebfd99ff103962db9a6ace5ae9a249b3190c37114c96e1a99eda70"
+    },
+    {
+      "id": "I13",
+      "group": "invalid",
+      "title": "Excluded join control U200C in identifier",
+      "source": "fn bad() -> Unit { let bad‌name = 1\nreturn }\n",
+      "syntax_eligible": false,
+      "expectations": [
+        "Approved Unicode addendum: diagnose U+200C in identifier, preserve all bytes, never strip or normalize."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "primary_error_tokens": [
+        "‌"
+      ],
+      "approved_policy": "Sentinel_b88ecc551e6081918d23dd91c7dfd6e7",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 47,
+      "source_sha256": "366e867bbd585e965ae11c173d14513a8c74858d178de025f5f9074985f6635e",
+      "expected_primary_byte_ranges": [
+        [
+          26,
+          29
+        ]
+      ]
+    },
+    {
+      "id": "I14",
+      "group": "invalid",
+      "title": "Excluded join control U200D in identifier",
+      "source": "fn bad() -> Unit { let bad‍name = 1\nreturn }\n",
+      "syntax_eligible": false,
+      "expectations": [
+        "Approved Unicode addendum: diagnose U+200D in identifier, preserve all bytes, never strip or normalize."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "primary_error_tokens": [
+        "‍"
+      ],
+      "approved_policy": "Sentinel_b88ecc551e6081918d23dd91c7dfd6e7",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 47,
+      "source_sha256": "4fc02b994710fe168af9b877299f99eb66ccdd0de8c3c013a75494fa1aa58d0f",
+      "expected_primary_byte_ranges": [
+        [
+          26,
+          29
+        ]
+      ]
+    },
+    {
+      "id": "S01",
+      "group": "semantic-later",
+      "title": "Read-only local assignment is semantic",
+      "source": "fn readonly() -> Unit { let x = 1\nx = 2\nreturn }\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "Syntax accepts Local(let) plus Assign; permission enforcement rejects this later."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 49,
+      "source_sha256": "10638a45e46aa65f11428bd0be5e2235ed08f6ef995475b42ae3e211159aabe7"
+    },
+    {
+      "id": "S02",
+      "group": "semantic-later",
+      "title": "Mutation target legality is semantic",
+      "source": "fn literal_target() -> Unit { change(mut 3)\nreturn }\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "Syntax retains mut on a literal argument; target legality belongs to later checking."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 53,
+      "source_sha256": "4d247e1ce6700f513cc7dc8c13962b0eedf62a6c95cd1f0c7b5509ff82a77425"
+    },
+    {
+      "id": "S03",
+      "group": "semantic-later",
+      "title": "No shadowing enforcement yet",
+      "source": "fn shadow(x: i32) -> i32 { let x = 2\nreturn x }\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "Syntax accepts distinct declarations; the accepted no-shadowing rule is enforced later."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 48,
+      "source_sha256": "8b133a4ac116bbde6091cbf0426bd73cf66131ec5f7b3e2c1334205b8b1e614d"
+    },
+    {
+      "id": "S04",
+      "group": "semantic-later",
+      "title": "Exhaustiveness enforcement later",
+      "source": "enum Event { Hit(f32), Idle }\nfn partial(event: Event) -> Unit { match event { Event::Idle => { return }, } }\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "Syntax accepts one match arm; missing Hit coverage belongs to later checking."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 110,
+      "source_sha256": "b8c88333c66b4492d59125a88fa9f4d07861d667df3a2d8302f550c9536fb15b"
+    },
+    {
+      "id": "S05",
+      "group": "semantic-later",
+      "title": "Ignored Result enforcement later",
+      "source": "fn ignore() -> Unit { might_fail()\nreturn }\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "Syntax accepts expression statement; ignored-Result rejection needs a resolved Result type later."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 44,
+      "source_sha256": "cf64265ca42602bb901e9041f4746da21e91ebe9d982c14cc16f5d92672b4465"
+    },
+    {
+      "id": "S06",
+      "group": "semantic-later",
+      "title": "Final expression never creates a return",
+      "source": "fn missing_return() -> i32 { 1 }\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "Body contains ExpressionStatement(Number(1)), not Return.",
+        "Missing-return/type validity belongs to later checking; semicolon cannot change this meaning."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 33,
+      "source_sha256": "3fb030f98aa68dfc66826a80baa8201602c660e8bdb479ecb5d9a31754c396c2"
+    },
+    {
+      "id": "S07",
+      "group": "semantic-later",
+      "title": "Missing mutation permission is semantic",
+      "source": "fn caller(values: Array<i32>) -> Unit { change(values)\nreturn }\n",
+      "syntax_eligible": true,
+      "expectations": [
+        "Syntax accepts unmarked argument; callee-specific permission requirement is checked later."
+      ],
+      "execution": "planned; not run against a production frontend",
+      "approval_status": "approved_behavior_seed",
+      "approval_scope": "Expected behavior follows accepted language direction and approved feature boundary; full source spellings remain representative and not individually user-reviewed.",
+      "source_byte_length": 64,
+      "source_sha256": "8e2f9b6d682a5b814e7577ad641937ca6484cadfc50c443a4c9117ca06331af6"
+    }
+  ]
+}
