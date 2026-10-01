@@ -4,7 +4,7 @@ wrela is a new language, compiler, engine and agent-native studio for AAA-ambiti
 
 ## Status
 
-Design phase. There's no code yet. The language is being designed sketch by sketch (D-024).
+Design phase. There's no code yet. The language is being designed sketch by sketch (D-024). The next step is measurement, not more design (D-067).
 
 ## Read before changing anything
 
@@ -14,6 +14,7 @@ Design phase. There's no code yet. The language is being designed sketch by sket
 - **`docs/design/memory-model.md`** is the one place the memory rules live: parameter modes, projections, exclusivity, regions, snapshots.
 - **`docs/design/vision.md`** covers the goal, the four theses and the architecture.
 - **`docs/design/sketches/`** holds programs in imagined syntax. The language is derived from them.
+- **`docs/design/reviews/`** holds independent audits, plus the responses that map each finding to a decision.
 
 ## Rules
 
@@ -22,8 +23,9 @@ Design phase. There's no code yet. The language is being designed sketch by sket
   - The test for any language feature: would it make sense in a wrela program that isn't a game?
   - General sugar is fine.
 - **Never rewrite a decision.** Add a new entry that supersedes it, then annotate the old entry's status line, for example "Superseded by D-NNN."
-- **Proposed is not agreed.** Only the project owner accepts decisions.
-- **Label performance numbers as estimates until they're measured.**
+- **Proposed is not agreed.** Only the project owner accepts decisions. The owner may delegate a choice; delegated decisions say "Accepted (delegated)". Statuses are defined in the header of `decisions.md`.
+- **Accepted is not validated.** Check the evidence table near the end of `decisions.md` before building on a load-bearing decision.
+- **Label performance numbers as estimates until they're measured.** Label claims that haven't been tested as hypotheses.
 - **Sketches use ` ```wrela ` code fences,** and source files use the `.wrela` extension (D-040).
 
 ## Layers (D-006, D-016)
@@ -31,7 +33,7 @@ Design phase. There's no code yet. The language is being designed sketch by sket
 | Layer | What | Written in |
 |---|---|---|
 | 0 | Platform hosts: browser and native | TypeScript, Rust |
-| 1 | Language: compiler and stdlib | Rust |
+| 1 | Language: compiler (run at build time) and stdlib | Rust (compiler), wrela (stdlib, with a small unsafe core) |
 | 2 | Engine | wrela |
 | 3 | Studio | wrela + Rust tooling |
 | 4 | Games | wrela |

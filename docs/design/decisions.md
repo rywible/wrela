@@ -1,18 +1,27 @@
 # wrela: decisions log
 
-Each entry has a stable ID so other docs can cite it. Statuses:
-- **Accepted:** agreed.
-- **Proposed:** recommended, but not yet explicitly agreed.
-- **Open:** undecided.
+Each entry has a stable ID so other docs can cite it.
 
-To change a decision, add a new entry that supersedes it. Don't rewrite history.
+**Statuses:**
+- **Accepted:** agreed by the project owner.
+- **Accepted (delegated):** the owner delegated the choice, and Claude made it. Push back on any of these freely.
+- **Accepted in direction:** the direction is agreed; details may still change.
+- **Proposed:** recommended, but not yet agreed.
+- **Open:** undecided.
+- **Withdrawn:** dropped before acceptance.
+
+A status line may also say **Superseded by**, **Amended by**, **Refined by** or **Revised by** a later entry. When it does, the later entry wins.
+
+**Accepted means agreed, not validated.** As of 2026-10-01, no decision rests on a measurement. "Evidence and revisit triggers" (near the end of this log) lists the load-bearing decisions and what would reopen each one.
+
+To change a decision, add a new entry that supersedes it, then annotate the old entry's status line. Don't rewrite history.
 
 ---
 
 ## Content and scope
 
 ### D-001 · Fields are the source of truth; how they're realized is a choice
-**Status:** Accepted (2026-10-01)
+**Status:** Accepted (2026-10-01). Revised by D-086.
 
 Content is authored as fields. Realization is chosen per object, per level of detail and per use. The options include triangles extracted on the client, SDF bricks, distance fields, points and impostors.
 - **Close-up visibility:** rasterized triangles.
@@ -81,7 +90,7 @@ Platform hosts (D-016) sit below layer 1.
 - Rust compiles to WASM, so the specializing back end can ship in the browser.
 
 ### D-008 · The compiler has two tiers; the IR is the distribution format
-**Status:** Accepted (2026-10-01)
+**Status:** Accepted (2026-10-01). Superseded by D-069.
 
 - **Front end (ahead of time):** parses, typechecks and optimizes, then emits a compact, versioned IR.
 - **Back end (in the browser):** specializes the IR against actual game state and emits WASM and WGSL. It's written in Rust and compiled to WASM.
@@ -145,7 +154,7 @@ Memory is value types, arenas, frame allocators and generational handles (indice
 **Why:** predictable frames. It also makes sim state relocatable, so a snapshot is a memcpy (D-015).
 
 ### D-015 · The language must support multiplayer: determinism
-**Status:** Accepted (2026-10-01). Item 1 revised by D-052.
+**Status:** Accepted (2026-10-01). Item 1 revised by D-052. Item 2 revised by D-074.
 
 1. **A sim/presentation split, enforced by effects.**
    - `sim` code can't read the wall clock, ambient randomness, GPU results or presentation state.
@@ -207,7 +216,7 @@ The platform layer is the only boundary between compiled wrela code and the outs
 - **Cross-origin isolated (COOP/COEP) from day one.** This is required for SharedArrayBuffer, threads and sharing memory with the audio worklet.
 
 ### D-018 · The console: games.wrela.dev
-**Status:** Accepted (2026-10-01)
+**Status:** Accepted (2026-10-01). Revised by D-069 and D-082.
 
 - **It's a PWA.** The runtime is cached by a service worker, like firmware. Each game is just its IR.
 - **Games never touch OPFS directly.** The console gives each game a namespaced save API.
@@ -216,7 +225,7 @@ The platform layer is the only boundary between compiled wrela code and the outs
 - **The dashboard is a wrela program.** That dogfoods UI and field-based text early.
 
 ### D-019 · IR is versioned; cooked caches have keys
-**Status:** Accepted (2026-10-01)
+**Status:** Accepted (2026-10-01). Superseded by D-069; cache keys revised by D-083.
 
 - **IR:** carries a version number and a compatibility policy from the first release.
 - **Cooked caches in OPFS:** keyed by game version, runtime version and GPU adapter.
@@ -282,7 +291,7 @@ Write sketches of real workloads before compiler code, and derive the language f
 These resolve sketch 01's questions Q1–Q12, in order.
 
 ### D-025 · Units are library constants
-**Status:** Accepted (2026-10-01)
+**Status:** Accepted (2026-10-01). Revised by D-076.
 
 - **Units are ordinary constants:** `m`, `kg`, `s`, `rad`, `deg` and so on.
 - **Compound units are plain arithmetic:** `1050 * kg/m^3`.
@@ -313,7 +322,7 @@ The struct's blending is the composition of its members'.
 **Requires:** traits/interfaces early in the language.
 
 ### D-027 · Lipschitz bounds are compiler-derived
-**Status:** Accepted (2026-10-01). Generalized by D-057.
+**Status:** Accepted (2026-10-01). Generalized by D-057. Revised by D-077.
 
 - **Derived:** the compiler computes the bound (D-012) and exposes it through a query.
 - **Optional assertion:** `@lipschitz(max: 1.5)` errors if the bound is exceeded.
@@ -399,7 +408,7 @@ Binding times, contexts and entry points all use one form: `@comptime`, `@load`,
 The user delegated these open items to Claude on 2026-10-01. Push back on any of them freely.
 
 ### D-037 · `@` attributes are a closed set that's part of types
-**Status:** Accepted (delegated, 2026-10-01). Refines D-035. Attribute set revised by D-051 and D-052.
+**Status:** Accepted (delegated, 2026-10-01). Refines D-035. Attribute set revised by D-051 and D-052. Amended by D-081.
 
 - **The language defines every `@` attribute.** Each one is part of the type of the function or parameter it decorates. If user-defined metadata is ever needed, it gets a different syntax, so `@` always means "semantic."
 - **Binding-time attributes also apply to parameters,** as in `@load field: &F`. D-030 needs this for public boundaries, and kernels need it to specialize on their arguments (sketch 02).
@@ -408,7 +417,7 @@ The user delegated these open items to Claude on 2026-10-01. Push back on any of
 **Why attributes rather than keywords:** about ten names would otherwise be reserved, and `load` is far too common an identifier to steal. `@` is already a familiar *shape* to agents from Python, Swift, TS and WGSL, even when the names are new.
 
 ### D-038 · Newlines end statements
-**Status:** Accepted (delegated, 2026-10-01)
+**Status:** Accepted (delegated, 2026-10-01). Revised by D-079.
 
 A newline ends a statement unless one of these holds:
 - the next line starts with `.` or a binary operator, which keeps leading-dot combinator chains working (D-028)
@@ -434,7 +443,7 @@ A line that starts with `(` or `[` always begins a new statement. This avoids Ja
 It's unambiguous, easy to grep and easy for GitHub to detect. There's precedent in `.zig`, `.odin` and `.swift`. The short alternative `.wrl` is already taken by VRML.
 
 ### D-041 · Size and time budgets
-**Status:** Accepted (delegated, 2026-10-01). Sets the numbers for D-020. These are targets to revisit once we have measurements.
+**Status:** Accepted (delegated, 2026-10-01). Sets the numbers for D-020. These are targets to revisit once we have measurements. Revised by D-069 and D-083.
 
 | Budget | Target (compressed) |
 |---|---|
@@ -470,7 +479,7 @@ CI measures these and fails the build when a budget is exceeded.
 - **Revises D-013:** defaults come from the engine type, not the compiler. Per-device tuning is a runtime policy.
 
 ### D-044 · Specialize on structure; values become uniforms
-**Status:** Accepted (2026-10-01). Override syntax revised by D-053.
+**Status:** Accepted (2026-10-01). Override syntax revised by D-053. Structure/data line superseded by D-070.
 
 - **Structure is what gets compiled into code:** expression shape, types, and any value that steers control flow. Binding-time analysis tells them apart.
 - **Values that only feed arithmetic become uniforms.**
@@ -479,7 +488,7 @@ CI measures these and fails the build when a budget is exceeded.
 - **A query reports** how many pipelines a definition needs, and why.
 
 ### D-045 · Pruning is a derived interpretation
-**Status:** Accepted (2026-10-01). Extends D-012.
+**Status:** Accepted (2026-10-01). Extends D-012. Revised by D-080.
 
 - `f.prune(bounds) -> LiveMask` and `f.with_live(mask)` are derived from interval analysis of ordinary code, for any pure function. The compiler doesn't need to know what a smooth union is.
 - WGSL has no u64, so masks are arrays of u32. Deep trees need hierarchical masks.
@@ -509,7 +518,7 @@ The compiler chooses padding and field order. Any lossy encoding (`Unorm8`, `Oct
 ## The compiler knows nothing about the engine
 
 ### D-050 · Principle: the engine gets no special treatment
-**Status:** Accepted (user, 2026-10-01)
+**Status:** Accepted (user, 2026-10-01). Revised by D-081.
 
 The engine is built only on the language and its stdlib. The compiler never knows about the engine:
 - no keywords, attributes or lang items for engine concepts
@@ -527,7 +536,7 @@ The compiler may know about exactly three things:
 D-051 to D-055 apply this principle to earlier decisions.
 
 ### D-051 · Binding times are `@comptime` and `@specialize`
-**Status:** Accepted (follows from D-050; specifics chosen by Claude, so push back freely). Revises D-011.
+**Status:** Accepted (follows from D-050; specifics chosen by Claude, so push back freely). Revises D-011. `@specialize` superseded by D-070.
 
 D-011's four stages were compile time, load, per frame and per pixel. "Load" and "frame" are engine concepts, so the language's stages become:
 
@@ -542,7 +551,7 @@ The *engine* decides when specialization happens: at level load, when a creature
 **The function-level `@load` assertion goes away.** A pure function's results can be passed to `@specialize` parameters automatically. Public functions state their effects (D-030), so purity is visible at the boundary.
 
 ### D-052 · `@deterministic` replaces `@sim`; `@present` is removed
-**Status:** Accepted (follows from D-050; specifics chosen by Claude, so push back freely). Revises D-015 item 1 and D-033.
+**Status:** Accepted (follows from D-050; specifics chosen by Claude, so push back freely). Revises D-015 item 1 and D-033. Revised by D-078.
 
 **What the language provides: the `@deterministic` effect constraint.** Inside it:
 - floats are strict
@@ -568,7 +577,7 @@ The *engine* decides when specialization happens: at level load, when a creature
 - **A general Halide-style `schedule` construct** for *any* function's evaluation (tiling, workgroup size, unrolling, where it runs) stays possible as future sugar under D-050. Add it only if kernels need it.
 
 ### D-054 · Auto traits
-**Status:** Accepted (2026-10-01)
+**Status:** Accepted (2026-10-01). Revised by D-078.
 
 A marker trait can be declared *auto*. Every type whose fields all implement it gets it automatically, and individual types can opt out. Rust's `Send` and `Sync` are the precedent.
 
@@ -582,7 +591,7 @@ Libraries can attach messages to traits and types, for when a bound isn't satisf
 **Why:** engine-specific errors with zero engine knowledge in the compiler. For example: "`GrazerLook` is presentation data and can't be stored in sim state; keep it in the creature's look and read sim state from there."
 
 ### D-056 · Fields are plain stdlib code
-**Status:** Accepted (user, 2026-10-01). Supersedes the lang-item part of D-012.
+**Status:** Accepted (user, 2026-10-01). Supersedes the lang-item part of D-012. Revised by D-077.
 
 - **Field kinds** (`Sdf`, `SdfBound`, `Density`, ...) are ordinary stdlib types.
 - **Kind rules are ordinary type checking.** Their messages come from library diagnostics (D-055).
@@ -593,7 +602,7 @@ What math alone can't give is supplied two ways:
 - **Declared facts** (D-057) supply what's derived poorly: Lipschitz constants through singular primitives, and noise ranges.
 
 ### D-057 · Declared facts on functions
-**Status:** Accepted (2026-10-01). Generalizes D-027.
+**Status:** Accepted (2026-10-01). Generalizes D-027. Revised by D-077.
 
 A pure function may declare properties the compiler can't prove, such as `@lipschitz(1)` or `@range(-1, 1)`.
 - **The compiler trusts them** and composes them through callers: the Lipschitz constant of `f∘g` is at most L(f)·L(g), of `min` at most the max of its inputs', and so on.
@@ -622,7 +631,7 @@ A pure function may declare properties the compiler can't prove, such as `@lipsc
 **Cost:** views and borrowing iterators have to be expressed as projections, closures, or indices and handles.
 
 ### D-059 · Moves by default; `Copy` for small plain types; explicit `.copy()` otherwise
-**Status:** Accepted (2026-10-01). Amended by D-064.
+**Status:** Accepted (2026-10-01). Amended by D-064. Revised by D-083.
 
 This is Rust's model. Big copies, like snapshots, are visible in the code, and move errors suggest `.copy()`.
 
@@ -636,7 +645,7 @@ A trait can provide a structural default, written in ordinary wrela, that runs a
 - **Diagnostics point at the user's type,** not the generated code.
 
 ### D-061 · Errors are `Result` with `?`; bugs panic
-**Status:** Accepted (2026-10-01)
+**Status:** Accepted (2026-10-01). GPU question resolved by D-074.
 
 - **In `@deterministic` code, a panic is a deterministic trap.** The engine can turn it into a repro bundle: the last snapshot plus the inputs since.
 - **Panics in GPU code are still open.** WGSL clamps out-of-bounds access instead of trapping, so single-source code can behave differently on CPU and GPU.
@@ -650,9 +659,9 @@ A trait can provide a structural default, written in ordinary wrela, that runs a
 - **Per-entity RNG streams** keep results independent of thread scheduling.
 
 ### D-063 · Engine: systems may read last tick's world
-**Status:** Accepted (2026-10-01) (engine design, not language)
+**Status:** Accepted (2026-10-01) (engine design, not language). Superseded by D-085.
 
-`Timeline` already keeps the previous tick's world, so the engine can offer `tick(prev: &W, now: &mut W)`:
+`Timeline` already keeps the previous tick's world, so the engine can offer `tick(prev: W, now: mut W)`:
 - systems read `prev` and write `now`
 - most borrow puzzles disappear
 - results don't depend on the order systems run in
@@ -666,7 +675,7 @@ The cost is one tick of latency for interactions within a tick. The engine offer
 The full rules are in [memory-model.md](memory-model.md).
 
 ### D-064 · Parameter modes, explicit transfers, non-escaping types
-**Status:** Accepted (user, 2026-10-01). Amends D-058 and D-059. The binding forms and the call-site `take` were chosen by Claude while writing memory-model.md; push back freely.
+**Status:** Accepted (user, 2026-10-01). Amends D-058 and D-059. The binding forms and the call-site `take` were chosen by Claude while writing memory-model.md; push back freely. Revised by D-083 and D-084.
 
 - **`&T` is not a type.** Parameters have modes: `borrow` (the default), `mut` and `take`.
   - The caller writes `mut x` and `take x` at the call site. Method receivers aren't marked.
@@ -688,7 +697,7 @@ The full rules are in [memory-model.md](memory-model.md).
 **Why:** `&T` is a false friend. Agents trained on Rust would expect to store it and annotate lifetimes. With modes there's no reference type to misuse, and all mutation, moves and copies show up where they happen.
 
 ### D-065 · Regions and relocatable data
-**Status:** Accepted (user, 2026-10-01)
+**Status:** Accepted (user, 2026-10-01). Revised by D-084.
 
 - **`Region<T>`** is a chunked memory area holding one root value. Its containers (`Arena`, `List`, `Text`) store region-relative offsets instead of pointers.
 - **Two stdlib auto traits (D-054) describe byte-level data:**
@@ -699,7 +708,7 @@ The full rules are in [memory-model.md](memory-model.md).
 - The region-context mechanism lives in the stdlib's unsafe core. The compiler doesn't know regions exist (D-050).
 
 ### D-066 · Snapshots use copy-on-first-write chunks
-**Status:** Accepted (user, 2026-10-01)
+**Status:** Accepted (user, 2026-10-01). Revised by D-084.
 
 - **`region.checkpoint`, `rewind` and `keyframe`** are stdlib operations.
 - **A chunk's old bytes are saved the first time it's written in an epoch,** so per-tick cost is proportional to the chunks written, not the world's size.
@@ -709,8 +718,295 @@ The full rules are in [memory-model.md](memory-model.md).
 
 ---
 
+## Response to the 2026-10-01 audit
+
+These entries answer [reviews/2026-10-01-audit.md](reviews/2026-10-01-audit.md). Finding IDs (T, F, M, U, S, P) refer to that document, and [reviews/2026-10-01-audit-response.md](reviews/2026-10-01-audit-response.md) maps every finding to its outcome. The owner delegated these choices on 2026-10-01.
+
+### D-067 · Validate before designing further
+**Status:** Accepted (delegated, 2026-10-01). Answers T1, T3, T4.
+
+The next work is measurement, not more language design.
+
+1. **Measurement spike.** Hand-write the WGSL and WASM the compiler *would* emit for the grazer:
+   - the extraction kernels
+   - skinning and per-pixel shading
+   - strict-float CPU field evaluation in WASM
+
+   Run it on the reference devices (D-068), and record:
+   - extraction time per individual
+   - per-pixel shading cost
+   - pipeline creation time
+   - CPU field evaluations per millisecond
+2. **Kill criteria, written before measuring.**
+   - **The herd scene:** 40 grazers on terrain at 1080p must hold 60 fps on the primary reference device, with creatures taking at most 8 ms of GPU time.
+   - **If hand-written output can't hit that,** no compiler will. Creatures then fall back to *cooking on device*: field programs are baked at load into meshes and textures, and rendered conventionally. The "ship the recipe" thesis survives that fallback; per-pixel field shading doesn't.
+   - **The comparison that matters** is specialized field evaluation against baked lookups. A naive grid is not the baseline (T1).
+3. **Agent-authoring experiment** (T4). With existing tools (GLSL fields and a render-and-look loop), have an agent author a creature, then judge the result honestly. This needs no wrela code.
+4. **Agent syntax test** (T4). When the parser and checker exist, measure how often agents write correct wrela from the spec alone. This tests D-064's new syntax.
+
+### D-068 · Reference devices and budgets
+**Status:** Accepted (delegated, 2026-10-01). Answers U7.
+
+| Role | Device |
+|---|---|
+| **Primary** | MacBook Air M1, 8 GB, Chrome stable |
+| Secondary | A laptop with Intel Iris Xe graphics, Chrome stable |
+| Secondary | A desktop with an RTX 3060-class GPU, Chrome stable |
+
+- **Safari and Firefox** are tested on the primary device.
+- **Phones are out of scope** for the creature milestone.
+
+**Budgets on the primary device:**
+
+| Budget | Target |
+|---|---|
+| Frame time | 16.7 ms at 1080p |
+| Memory | ≤ 1.5 GB per tab |
+| Pipelines | ≤ 64 per scene |
+| Sim | ≤ 4 ms per tick on one core, including CPU field queries (T3) |
+
+**A working definition of "AAA" for this project:** hero-quality creatures and animation on screen at the same time as a large world. It doesn't mean photoreal humans (D-003).
+
+### D-069 · No compiler in the browser for now
+**Status:** Accepted (user, 2026-10-01). Answers T2 and U8. Supersedes D-008 and D-019. Revises D-018 and D-041. The owner confirmed this was always the intent: the compiler is an ahead-of-time Rust program on desktop. D-008's browser tier came from Claude misreading thesis 4.
+
+- **The compiler and specializer run at build time,** as a Rust program.
+- **Games ship WASM, WGSL and data.** The IR stays internal and unversioned.
+- **The engine is compiled into each game.** Whole-program monomorphization needs it there (U8).
+- **Console "firmware"** is just the platform host plus the console shell.
+- **"Cook on device" remains:** generators *run* on the client. They just aren't *compiled* there.
+- **Add a browser tier only when a sketch shows a win that needs it.** User-generated content, in-game sculpting and a browser-based studio are the likely cases. Until then, fields built at runtime use `stage::interpret` (D-029).
+- **Budgets (revises D-041):**
+  - firmware ≤ 1 MB
+  - a game's time-to-play payload, engine code included, ≤ 6 MB
+  - cold start ≤ 8 MB in total, unchanged
+
+**Thesis 4's "at runtime" meant the game's runtime semantics,** not a compiler running in the browser. The compiler sees the whole game's semantics ahead of time, and runtime values arrive as data. vision.md says so.
+
+### D-070 · Structure is types
+**Status:** Accepted (delegated, 2026-10-01). Answers U1 and F8. Supersedes D-044's structure/data line and D-051's `@specialize`.
+
+- **A field's structure is its type.** Combinators are generic types, such as a smooth union of two ellipsoids.
+  - Specialization is ordinary monomorphization.
+  - A field *value* is plain data (radii, `k`, seeds), and it reaches the GPU as uniforms.
+- **Signature convention, as in Rust's `impl Trait`:**
+  - **In return position,** `Field<K, C>` and `Creature<C>` name one concrete type, inferred by the compiler.
+  - **In parameter position,** they mean "any concrete type with this shape," which makes the function implicitly generic.
+- **Choosing structure at runtime:**
+  - **From a known, finite set:** use an enum. Every case is compiled into one pipeline, with a uniform branch.
+  - **Unbounded** (built at runtime): use `stage::interpret` over a runtime expression value.
+- **Control-flow values are data.** Loop bounds and comparisons become uniforms, and unrolling is an optimization choice.
+- **`@specialize` is removed.** The pipeline-count query from D-044 survives: it reports how many instantiations each kernel has.
+- **Compile-time-known values** are constant-folded, as in any compiler.
+
+### D-071 · Generics and traits
+**Status:** Accepted (delegated, 2026-10-01). Answers U2.
+
+- **Generics are always monomorphized.**
+- **Traits** have associated types and default methods.
+- **Coherence follows Rust's orphan rule:** an `impl` must be in the crate of the trait or of the type.
+- **`dyn Trait`** is allowed in CPU code only. It's never allowed in GPU or `@audio` code.
+- **Effects are checked per instantiation.** A public generic function states its effects relative to its bounds' methods (D-030).
+
+### D-072 · The effect set, and guaranteed staging
+**Status:** Accepted (delegated, 2026-10-01). Answers U3 and F9.
+
+**Named effects:** `alloc`, `io`, `nondet`, `recursion` (unbounded), `dyn`, `host`, `panic`.
+
+Each context forbids a subset:
+
+| Context | Forbidden |
+|---|---|
+| GPU entry points | `alloc`, `io`, `nondet`, `recursion`, `dyn`, `host`, `panic` |
+| `@audio` | `alloc`, `io`, `recursion`, `dyn`, `host` |
+| `@deterministic` | `nondet`, `host` (except declared deterministic host calls) |
+| Compile-time evaluation | `io` (except declared embeds, D-073), `host`, `nondet` |
+| Derived interpretations (gradient, interval) | `alloc`, `io`, `nondet`, `host` |
+
+"Pure" was four predicates hiding in one word. Now each is a row of this table.
+
+**Staging is guaranteed or rejected, never best-effort (F9).** The optimizer may hoist work, but code must not *rely* on it. Work that has to happen earlier is written earlier, for example as a `const` or a parameter.
+
+### D-073 · Compile-time evaluation
+**Status:** Accepted (delegated, 2026-10-01). Answers U4.
+
+- **An interpreter inside the compiler** runs `@comptime` code and `const` initializers.
+- **Types are compile-time values,** so reflection can enumerate a struct's fields and an enum's variants.
+- **Compile-time heap values** may be embedded in the output only if they're `Plain`.
+- **File reads at compile time** must go through declared `embed` paths inside the package. They're hashed so builds are reproducible.
+
+### D-074 · Numerics: strict floats on the CPU; one table per target
+**Status:** Accepted (delegated, 2026-10-01). Answers U5, F5, F11 and the integer part of U10. Revises D-015 item 2; resolves D-061's open GPU question.
+
+- **CPU code always uses strict floats.** There is no "fast" CPU mode, so no function is compiled twice with different numerics (U5). GPU code follows WGSL semantics, and its results are presentation-only.
+- **NaN bits are canonicalized in `@deterministic` code** wherever they can be observed: bit casts, `copysign` and sign-bit tests, stores into `Plain` or `Relocatable` memory, and hashing. Debug builds trap when a NaN is created (F5).
+- **Corrected wording:** a value's bytes are a deterministic function of its fields (zeroed padding, canonical NaNs). They are *not* equal for all equal values: `-0.0 == 0.0`.
+- **The numeric semantics table** (F11), to be written in the language spec:
+
+| Case | CPU | GPU |
+|---|---|---|
+| Integer overflow | traps in every build (keeps replays identical across builds) | wraps (WGSL) |
+| Integer divide by zero, out-of-range float→int | traps | WGSL-defined values |
+| Out-of-bounds index | traps | debug builds set an error flag; release builds clamp |
+
+- **GPU code is type-checked against what WGSL has.** There's no `f64` or `u64`, and 8- and 16-bit integers exist only packed in storage.
+
+### D-075 · GPU interval arithmetic widens outward
+**Status:** Accepted (delegated, 2026-10-01). Answers F12.
+
+Derived interval code on the GPU widens each operation's result outward by that operation's WGSL error bound. Tests compare GPU intervals against CPU reference intervals.
+
+### D-076 · Units
+**Status:** Accepted (delegated, 2026-10-01). Answers F1, U6, and F14's exponent point. Revises D-025.
+
+- **Unit suffixes resolve in their own namespace,** which locals can't shadow. `2m` means metres even inside a scope with a local named `m`.
+- **The exponent operator is `**`:** `1050 * kg/m**3`. `^` is XOR, as in C-family languages.
+- **A unit is a dimension plus a scale.** `cm` is metres scaled by 0.01. Scales convert at compile time; dimensions are checked.
+- **Angle is its own dimension.**
+  - `sin` and friends take `f32<rad>`.
+  - Arc length is written `r * θ.ratio()`.
+  - Confusing degrees with radians is a type error.
+- **Units are generic** (`vec3<U>`) and flow through derived gradients: d(out)/d(in) has unit out/in.
+- **Transforms carry their length unit** (`Transform<m>`). General matrices are unitless.
+
+### D-077 · Field kinds and declared facts
+**Status:** Accepted (delegated, 2026-10-01). Answers F2, F3, T5. Revises D-027, D-056, D-057.
+
+**Kinds are stdlib types:**
+
+| Kind | Meaning |
+|---|---|
+| `Exact` | The true distance. |
+| `Bound` | Never overestimates distance; Lipschitz constant ≤ 1. |
+| `Lipschitz` | Sign-correct, with a derived constant L that may exceed 1. |
+
+`displace` produces a `Lipschitz` field. `.to_bound()` divides by the derived L, which library code reads through a compile-time query, `facts::lipschitz(f)`.
+
+**Assertions and assumptions get different spellings (F2):**
+- `@assert(lipschitz <= 1.5)` is checked.
+- `@assume(lipschitz: 1)` is trusted. The stdlib uses it on primitives, debug builds spot-check it by sampling, and every assumption is greppable.
+
+**Filtering (T5).** `@assume(bandlimit: ...)` on noise primitives is promoted from "possible later" to required for the creature milestone. Bandlimits compose through domain transforms. The stdlib's noise takes a pixel footprint (from `fwidth`) and fades octaves above the Nyquist limit. Beyond a set distance, the engine may bake channels into bricks instead.
+
+### D-078 · `SimState` is declared, not automatic
+**Status:** Accepted (delegated, 2026-10-01). Answers F4. Revises D-052 and D-054.
+
+`SimState` is a declared trait with a structural check (D-060). Every field must also be `SimState`. Presentation types simply never declare it, so the guarantee no longer depends on someone remembering to opt out.
+
+Auto traits remain for `Plain`, `Relocatable`, `Sendable` and `Shareable`.
+
+### D-079 · Line continuation
+**Status:** Accepted (delegated, 2026-10-01). Answers F6. Revises D-038.
+
+Only a leading `.` continues the previous line. Binary operators must *trail* the line they continue. A leading `-` or `|` always starts a new expression. The formatter enforces this.
+
+### D-080 · Pruning masks are opaque
+**Status:** Accepted (delegated, 2026-10-01). Answers F7 and S4. Revises D-045.
+
+- **A choice point** is a `min`, `max`, `select`, `if` or `match` arm whose outcome an interval can decide.
+- **`LiveMask<F>`** is typed by the function it prunes. Library code can store it and pass it around, but can't interpret its bits.
+- **Creature parts are an engine concept.** The engine culls parts itself, using each part's derived interval, and keeps its own `PartMask`. The compiler's pruning applies inside each part's expression, invisibly.
+
+### D-081 · The stdlib has an admission test
+**Status:** Accepted (delegated, 2026-10-01). Answers F10. Revises D-037 and D-050.
+
+- **The language spec publishes the closed list of stdlib items the compiler knows about.** Candidates include `Copy`, `Clone`, `Option`, the iteration protocol, the operator traits, GPU entry-point lowering and `Plain` layout.
+- **D-050's test applies to stdlib modules too.** Acoustics moves to the engine.
+- **D-037 is amended:** `@diagnostic` is the one attribute that isn't part of a type. `@assert` and `@assume` are part of a function's contract.
+- **The stdlib's root name is `std::`** (S5). The stdlib is written in wrela, with a small unsafe core; the compiler is Rust.
+
+### D-082 · One origin per game
+**Status:** Accepted (delegated, 2026-10-01). Answers F13. Revises D-018.
+
+- **Every game is served from its own origin.**
+- **The console shell has its own origin too.** It embeds games and brokers saves and sign-in through `postMessage`.
+- **A bug in one game can't reach another game's storage.** The trust model is the browser's origin model.
+
+### D-083 · Small fixes
+**Status:** Accepted (delegated, 2026-10-01). Answers F14. Revises D-059, D-064, D-041 and D-019.
+
+- **Explicit deep copies are `.clone()`,** from a `Clone` trait. `Copy` stays the trait for implicit copies, matching Rust's meaning of both words.
+- **Music gets its own streamed budget** of 32 MB. The 32 MB total in D-041 now excludes music.
+- **Cache keys depend on the artifact.** Extracted meshes are keyed by build and seed. Anything adapter-specific is keyed by adapter too.
+
+### D-084 · Memory-model amendments
+**Status:** Accepted (delegated, 2026-10-01). Answers M1, M3–M9. Revises D-064, D-065, D-066. The rules are folded into [memory-model.md](memory-model.md).
+
+- **M1: region-bound values stay in their region.** A value that's `Relocatable` but not `Plain` can't be owned outside its region. It's reached by projection only, and cloned only into the same region.
+- **M3: sim state refers to outside data by a deterministic key** (definition plus seed), never by a handle into an arena outside the region.
+- **M4: checksums are incremental.** Keep one hash per chunk, rehash only the chunks written this tick, and combine them.
+- **M5: a kernel's `mut` parameters must be safe to share across invocations.** That means atomics, `Append<T>`, and slot-per-invocation views.
+- **M6: consuming methods need `take`.** Calling a `take self` method on a named place is written `take x.finish()`. The `mut self` exception is stated in the goals.
+- **M7: two rules for projections.**
+  - `borrow T` and `mut T` are non-escaping types, so they can appear as type arguments (`Option<borrow T>`).
+  - Assigning into a field of a non-escaping value, or passing one as `mut` next to borrowed arguments, extends the set of things it borrows.
+- **M8: keyframes are same-build only.** They're for rollback, repro bundles and network sync within one version. Save files use structural `Serialize` (D-060) with stable field identifiers.
+- **M9: details.**
+  - Parallel combinators mark chunks in a sequential pre-pass.
+  - Region containers are created explicitly (`r.list::<T>()`) and find their allocator by region ID.
+  - A declared `GpuData` trait fixes a type's layout to WGSL rules everywhere.
+  - Cost estimates count active entities as written every tick.
+
+### D-085 · The engine double-buffers what crosses entities
+**Status:** Accepted (delegated, 2026-10-01) (engine design). Answers M2 and S1. Supersedes D-063.
+
+Under D-066 there's no previous world to read, so D-063's premise is gone. Instead, systems that read *other* entities read compact snapshots built at the start of the tick. For example, the herd's positions go into a spatial grid. The grid is a copy, so it never overlaps the `mut` access to the entities being updated.
+
+### D-086 · Deforming creatures and distance fields
+**Status:** Accepted (delegated, 2026-10-01). Answers U9. Revises D-001.
+
+- **Deforming creatures cast shadows through shadow maps** of their skinned mesh.
+- **Their sim collision is per-bone shapes.**
+- **Distance-field shadows and collision** stay for terrain, static objects and rigid objects. There, the field is the posed field.
+
+### D-087 · Remaining defaults
+**Status:** Accepted (delegated, 2026-10-01). Answers the rest of U10.
+
+- **Async (resolves the open item):** structured concurrency only. Projections and non-escaping values can't cross an `await` in a task that outlives its caller.
+- **Strings:**
+  - `String`: heap-owned, UTF-8.
+  - `Text`: region-resident.
+  - `str`: a borrowed run.
+- **Destructors:** user-defined `Drop` is allowed for types that aren't region-bound. Region data is freed with its region.
+- **After a deterministic trap:** the engine rewinds to the tick's checkpoint and writes a repro bundle. What happens next is game policy.
+- **Modules and packages:** deferred to a sketch. D-030 depends on them.
+
+### D-088 · Process: evidence, a current-state spec, feature tiers
+**Status:** Accepted (delegated, 2026-10-01). Answers P1–P6 and T6.
+
+- **Evidence levels** are tracked in the table below (P1).
+- **`language.md`, a current-state description of the whole language,** must exist before any compiler code. It gets the same treatment `memory-model.md` gave memory, and it's the seed of D-021's small spec (P2).
+- **Statuses** are defined in this log's header (P3).
+- **Unqualified claims are relabelled as hypotheses** in vision.md and sketch 02 (P6).
+- **Feature tiers (T6):**
+
+| Tier | Contents |
+|---|---|
+| **0: hello field** | Structs, enums, generics (monomorphized), traits with associated types, non-escaping closures, parameter modes with exclusivity, scalar/vector/matrix types, `@compute`/`@vertex`/`@fragment`, typed builtins, lossless GPU layout, derived `gradient` and `interval`, WGSL and WASM emission. |
+| **1: creature milestone** | Units, `@deterministic` and numeric rules, compile-time evaluation and reflection, auto traits, `@assert`/`@assume`, bandlimits, pruning, regions, arenas, handles, views and iterators, library diagnostics, `Result` and panics. |
+| **2: later** | Threads and parallel combinators, `@audio`, checkpoints, `dyn`, async, `stage::interpret`, and any browser compiler tier. |
+
+---
+
+## Evidence and revisit triggers
+
+Every load-bearing decision is **untested** as of 2026-10-01.
+
+| Decision | Evidence | Revisit if |
+|---|---|---|
+| D-001, D-002: fields, realized as triangles | untested | The D-067 spike misses its kill criteria. |
+| D-015: determinism on WASM | untested | The CI hash comparison across browsers finds divergence that canonicalization can't fix. |
+| D-041, D-069: size and time budgets | untested | The spike's engine code or pipeline creation alone breaks the cold-start budget. |
+| D-058, D-064: the memory model | untested | The agent syntax test (D-067) shows agents can't write it from the spec, or the sketches find a pattern it can't express. |
+| D-065, D-066: regions and snapshots | untested | Copy-on-first-write costs more than full copies at realistic world sizes. |
+| D-069: no browser compiler | untested | A sketch needs runtime-chosen structure that enums and `stage::interpret` can't serve fast enough. |
+| D-070: structure is types | untested | Type sizes or instantiation counts explode in real content. |
+| Thesis 1: agent authoring | untested | The D-067 authoring experiment produces content a human wouldn't ship. |
+
+---
+
 ## Open
 
 - **The first game's concept.** This belongs to the creative director, so it wasn't delegated.
-- **Panics and out-of-bounds behavior in GPU code** (D-061).
-- **Async and references.** The leaning: projections and non-escaping values can't cross an `await` in a task that outlives its caller, so only structured concurrency is allowed. Decide this with platform IO.
+- **`from param` annotations on projections** (memory-model.md, Open).
+- **Chunk and undo-ring sizes,** to be measured.

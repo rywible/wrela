@@ -1,6 +1,6 @@
 # Sketch 01: a creature as a field
 
-*Status: draft, 2026-10-01. Questions Q1–Q12 were resolved the same day as D-025–D-036 in [../decisions.md](../decisions.md). Revised for D-050–D-053: the compiler knows nothing about the engine. The syntax is still imagined. Nothing here is decided unless it cites a decision.*
+*Status: draft, 2026-10-01. Questions Q1–Q12 were resolved the same day as D-025–D-036 in [../decisions.md](../decisions.md). Revised for D-050–D-053 (the compiler knows nothing about the engine) and for the [2026-10-01 audit](../reviews/2026-10-01-audit.md) (D-067–D-088). The syntax is still imagined. Nothing here is decided unless it cites a decision.*
 
 This is the code we'd want to write for the creature milestone.
 
@@ -10,7 +10,7 @@ This is the code we'd want to write for the creature milestone.
 - Herds: variation from a seed.
 
 **Conventions:**
-- Rust-family syntax. Newlines end statements (D-038).
+- Rust-family syntax. Newlines end statements; only a leading `.` continues a line (D-038, D-079).
 - Memory ([memory-model.md](../memory-model.md)):
   - parameters are borrowed by default
   - `mut` marks exclusive mutable access, at the call site too
@@ -18,14 +18,14 @@ This is the code we'd want to write for the creature milestone.
   - `var` declares an owned mutable local
 - Named arguments are optional; positional ones come first (D-039).
 - Files use the `.wrela` extension (D-040).
-- Units are library constants (D-025):
-  - `15cm` is shorthand for `15 * cm`
-  - compound units are arithmetic: `1050 * kg/m^3`
-  - types are written `f32<kg/m^3>`
-- Function properties are attributes: `@comptime`, `@specialize`, `@deterministic`, `@audio` (D-035, D-051, D-052).
+- Units (D-025, D-076):
+  - `15cm` is shorthand for `15 * cm`; suffixes live in their own namespace, so a local named `m` or `s` can't shadow them
+  - compound units are arithmetic: `1050 * kg/m**3`
+  - types are written `f32<kg/m**3>`
+- Function properties are attributes: `@comptime`, `@deterministic`, `@audio`, `@assert(...)`, `@assume(...)` (D-035, D-052, D-077).
 - **Layers** (D-050):
-  - `Field`, `Sdf`, units and `Rng` are stdlib.
-  - `Creature`, `Skeleton`, `Pose`, `GaitNet`, `CreatureLook` and `SimState` are **engine** types, built from the language and stdlib with no compiler support.
+  - `Field`, the kinds (`Exact`, `Bound`, `Lipschitz`), units and `Rng` are stdlib (`std::`).
+  - `Creature`, `Skeleton`, `Pose`, `GaitNet`, `CreatureLook`, `SimState` and acoustics are **engine** types, built from the language and stdlib with no compiler support.
   - The grazer itself is **game** code.
 - `vec3(y: 1.3m)`: unnamed components default to zero.
 
@@ -34,15 +34,15 @@ This is the code we'd want to write for the creature milestone.
 ## 1. Channels: what a point knows about itself
 
 ```wrela
-use wrela::field::{Field, Sdf, SdfBound, Blend, Cat, ellipsoid, round_cone, half_space, fbm}
-use wrela::units::{m, cm, mm, kg, s}
-use wrela::acoustics::Absorption
+use std::field::{Field, Exact, Bound, Lipschitz, Blend, Cat, ellipsoid, round_cone, half_space, fbm}
+use std::units::{m, cm, mm, kg, s}
+use engine::acoustics::Absorption              // acoustics is engine, not stdlib (D-081)
 
 /// What a point on or inside the grazer knows, besides its distance to the surface.
 struct Tissue: Blend {
     albedo:     Color,           // blends in linear space
     roughness:  f32,             // blends linearly
-    density:    f32<kg/m^3>,     // read by physics
+    density:    f32<kg/m**3>,    // read by physics
     absorption: Absorption,      // read by acoustics
     material:   Cat<Material>,   // categorical: taken from the winning surface, never averaged
 }
@@ -50,7 +50,7 @@ struct Tissue: Blend {
 const HIDE = Tissue {
     albedo:     rgb(0.42, 0.33, 0.24),
     roughness:  0.7,
-    density:    1050 * kg/m^3,
+    density:    1050 * kg/m**3,
     absorption: Absorption::SOFT_TISSUE,
     material:   Cat(Material::Hide),
 }
@@ -58,7 +58,7 @@ const HIDE = Tissue {
 const HOOF = Tissue {
     albedo:     rgb(0.12, 0.10, 0.09),
     roughness:  0.35,
-    density:    1300 * kg/m^3,
+    density:    1300 * kg/m**3,
     absorption: Absorption::KERATIN,
     material:   Cat(Material::Keratin),
 }
@@ -79,23 +79,23 @@ const HOOF = Tissue {
 
 ```wrela
 /// Torso, in the chest bone's space. +z is forward, +y is up.
-@lipschitz(max: 1.5)        // optional assertion; the bound itself is compiler-derived (D-027)
-fn torso(bulk: f32, seed: Seed) -> Field<SdfBound, Tissue> {
-    ellipsoid(radii: vec3(0.45m, 0.50m, 0.90m) * bulk)          // no exact SDF exists for ellipsoids: a bound
+@assert(lipschitz <= 1.5)   // checked; the constant itself is compiler-derived (D-077)
+fn torso(bulk: f32, seed: Seed) -> Field<Lipschitz, Tissue> {
+    ellipsoid(radii: vec3(0.45m, 0.50m, 0.90m) * bulk)          // no exact SDF exists for ellipsoids: a `Bound`
         .smooth_union(
             ellipsoid(radii: vec3(0.38m, 0.42m, 0.50m) * bulk).translate(z: -0.7m),   // haunch
             k: 15cm)
-        .displace(fbm(freq: 25 / m, octaves: 4), amp: 3mm)      // wrinkles; the Lipschitz bound grows
+        .displace(fbm(freq: 25 / m, octaves: 4), amp: 3mm)      // wrinkles: now `Lipschitz`, with L > 1
         .with(|p| Tissue { albedo: dapple(p, seed), ..HIDE })   // channels can vary over space
 }
 
 /// One leg segment hanging down its bone's -y axis. A round cone is an exact SDF.
-fn leg_segment(len: f32<m>, r_top: f32<m>, r_bottom: f32<m>) -> Field<Sdf, Tissue> {
+fn leg_segment(len: f32<m>, r_top: f32<m>, r_bottom: f32<m>) -> Field<Exact, Tissue> {
     round_cone(vec3(), vec3(y: -len), r_top, r_bottom).with(HIDE)
 }
 
-/// Intersection only yields a bound, so declaring this `Sdf` would be a compile error.
-fn hoof() -> Field<SdfBound, Tissue> {
+/// Intersection only yields a bound, so declaring this `Exact` would be a compile error.
+fn hoof() -> Field<Bound, Tissue> {
     round_cone(vec3(), vec3(y: -8cm), r_top: 6cm, r_bottom: 7cm)
         .intersect(half_space(normal: vec3(y: 1), offset: -7cm))   // flat sole
         .with(HOOF)
@@ -104,13 +104,15 @@ fn hoof() -> Field<SdfBound, Tissue> {
 
 **Notes:**
 - **Combinators are methods** (D-028). Smoothing parameters and kind changes stay visible.
-- **Field kinds are ordinary stdlib types** (D-056). Every op states in its return type what it preserves:
-  - `smooth_union`, `intersect` and `displace` turn an `Sdf` into an `SdfBound`.
+- **Field kinds are ordinary stdlib types** (D-056, D-077). Every op states in its return type what it preserves:
+  - `smooth_union` and `intersect` turn `Exact` into `Bound`: never overestimates, Lipschitz constant ≤ 1.
+  - `displace` turns either into `Lipschitz`: sign-correct, but L may exceed 1, so it can overestimate.
+  - `.to_bound()` turns a `Lipschitz` field back into a `Bound` by dividing by its derived L (`facts::lipschitz`).
   - `.with(...)` only touches channels, so the kind is unchanged.
-  - An `Sdf` converts to an `SdfBound` implicitly, never the other way.
-- **Closures are allowed** (`|p| ...`) even though fields end up on the GPU. A field is specialized before WGSL is generated, either ahead of time or by the client-side specializer, so no closure is left in the shader (D-051).
-  - If a field's structure can't be specialized, the entry point errors with a binding-time trace.
-  - Fields that genuinely change at runtime use the stdlib's interpreted evaluator, `stage::interpret` (D-029, D-053).
+  - `Exact` converts to `Bound`, and `Bound` to `Lipschitz`, implicitly. Never the other way.
+- **Filtering:** `fbm` declares `@assume(bandlimit: ...)`, so shading can fade octaves that are finer than a pixel instead of aliasing (D-077).
+- **Closures are allowed** (`|p| ...`) even though fields end up on the GPU. A field's structure is its type (D-070), and closures are monomorphized and inlined at build time, so no closure is left in the shader.
+  - Fields built at runtime from an unbounded space use the stdlib's interpreted evaluator, `stage::interpret` (D-029).
 
 ---
 
@@ -154,11 +156,12 @@ pub fn grazer(seed: Seed) -> Creature<Tissue> {
 **Notes:**
 - **Binding times mix within a single value.** The skeleton's *structure* is known at compile time, so `"chest"` is checked against it (D-031). Its *scale* is only known when `grazer` runs.
 - **`take s` hands the skeleton to the creature** (D-064). Using `s` afterwards would be an error, which is why bones are named on the builder, not looked up through `s`.
-- **`grazer` is pure,** so its result can be passed to `@specialize` parameters (sketch 02).
-  - *When* that happens (level load, spawn) is the engine's decision. The language only defines what it means (D-051).
+- **Every grazer has the same type** (D-070). A field's structure is its type, so the whole herd shares one set of pipelines, and the seed-derived numbers reach the GPU as data.
+  - *When* individuals are realized (level load, spawn) is the engine's decision.
   - `grazer` is exported, so its effects are stated at the boundary (D-030). It has none, so there's nothing to write.
-- **Private helpers rely on inference** (D-030). The `@lipschitz` on `torso` is just an optional assertion.
-- **`Creature<Tissue>`'s kind is inferred.** `.blend` smooth-unions the parts, so it's an `SdfBound`.
+  - `Creature<Tissue>` in return position names one concrete type that the compiler infers (D-070).
+- **Private helpers rely on inference** (D-030). The `@assert` on `torso` is optional.
+- **`Creature<Tissue>`'s kind is inferred.** `.blend` smooth-unions parts including the torso's `Lipschitz` field, so the creature is `Lipschitz`. Anything that sphere-traces it calls `.to_bound()` first.
 
 ---
 
@@ -170,7 +173,7 @@ pub fn grazer(seed: Seed) -> Creature<Tissue> {
 @deterministic
 pub fn grazer_physique(c: Creature<Tissue>) -> Physique {
     Physique {
-        mass:      c.integrate(|t| t.density, per: Bone, cell: 1cm),   // mass, center of mass, inertia per bone
+        mass:      c.integrate(|t| t.density, per: Bone, finest: 1cm), // adaptive; mass, center of mass, inertia per bone
         collision: c.fit_capsules(per: Bone, tolerance: 1cm),          // cheap shapes to re-simulate on rollback
     }
 }
@@ -179,7 +182,11 @@ pub fn grazer_physique(c: Creature<Tissue>) -> Physique {
 **Notes:**
 - **Anything the sim reads is computed by `@deterministic` code** (D-052), so it's bit-identical on every client.
   - A 1cm vs. 2cm integration grid gives a different mass. A different mass gives a different simulation, and a different simulation means a desync.
-  - So `cell` and `tolerance` are part of the gameplay, and they live here, in the definition.
+  - So `finest` and `tolerance` are part of the gameplay, and they live here, in the definition.
+- **Integration is adaptive** (T3). Intervals classify cells as fully inside, fully outside or straddling, and only straddling cells are refined.
+  - That makes the cost proportional to surface area: roughly 100,000 cells for a grazer, instead of the 15 million a uniform 1cm grid would take (an estimate).
+  - It runs once per individual, at spawn.
+  - The D-067 spike measures it against the sim budget (D-068).
 - **Draw settings can't leak in.** `GRAZER_LOOK` (§5) only feeds GPU work. Reading GPU results requires readback, which `@deterministic` forbids.
 - **The engine decides when this runs,** for example once at spawn. Nothing about it is a language-level "load".
 
@@ -194,7 +201,7 @@ pub const GRAZER_LOOK = CreatureLook {
     surface: Mesh { tolerance: 1mm },                  // up close: rasterized triangles (D-001)
     deform:  Skin { weights: ByPart { falloff: 6cm } }, // D-023 default
     far:     Some(Bricks { voxel: 3cm, beyond: 40m }),
-    shadow:  DistanceVolume { voxel: 6cm },
+    shadow:  ShadowMap { resolution: 1024 },           // it deforms: shadow maps, not distance fields (D-086)
 }
 ```
 
@@ -209,10 +216,11 @@ pub const GRAZER_LOOK = CreatureLook {
 ## 6. Simulation and presentation
 
 ```wrela
-/// Sim state. Lives in the sim arena and is snapshotted every tick for rollback.
-/// `SimState` is an engine-defined auto trait (D-054): every field must be sim state too.
+/// Sim state. Lives in the world's region and is checkpointed every tick (D-066).
+/// `SimState` is a declared engine trait with a structural check (D-078): every field must be
+/// sim state too.
 struct GrazerSim: SimState {
-    individual: Handle<Creature<Tissue>>,
+    kind:       CreatureKey,    // definition + seed: a deterministic key, never a handle outside the region (D-084)
     tier:       SimTier,        // Full: pose lives in sim. Ambient: root + phase only (D-034)
     rng:        Rng,            // per-grazer stream, seeded from (world seed, handle): parallel-safe
     root:       Transform,
@@ -247,14 +255,14 @@ fn step(g: mut GrazerSim, terrain: Terrain, intent: Intent) {
 
 fn animate(g: GrazerSim, look: mut GrazerLook, world: World, dt: f32<s>) {
     look.pose = match g.tier {
-        SimTier::Full    => g.pose.copy(),                            // explicit: `g` is borrowed (D-064)
+        SimTier::Full    => g.pose.clone(),                           // explicit: `g` is borrowed (D-064)
         SimTier::Ambient => g.gait.pose().planted_on(world.terrain),   // same work, but never rolled back
     }
     look.tail.follow(look.pose["tail"], dt)      // secondary motion is presentation-only
 }
 
 fn draw(g: GrazerSim, look: GrazerLook, frame: mut Frame) {
-    frame.draw(g.individual, pose: look.pose.layer(look.tail).layer(look.ears))
+    frame.draw(g.kind, pose: look.pose.layer(look.tail).layer(look.ears))   // the engine finds the realized mesh by key
 }
 ```
 
@@ -266,7 +274,7 @@ fn draw(g: GrazerSim, look: GrazerLook, frame: mut Frame) {
 
 **Two bugs the memory model caught here** ([memory-model.md](../memory-model.md)):
 - **The first draft** looped `for foot in g.pose.feet()` while calling `g.pose.plant(...)` in the body. That mutates the pose while iterating over it, and exclusivity rejects it. Iterating `legs()` as disjoint mutable projections is the fix.
-- **`animate` wrote `look.pose = g.pose`.** That moves out of borrowed sim state, so it now says `.copy()`, and the cost of the copy is visible.
+- **`animate` wrote `look.pose = g.pose`.** That moves out of borrowed sim state, so it now says `.clone()`, and the cost of the copy is visible.
 
 What gets rejected, and by whom:
 
@@ -282,28 +290,32 @@ fn bad_draw(g: GrazerSim, look: GrazerLook, frame: mut Frame) {
 
 struct CheatingSim: SimState {
     look: GrazerLook                // engine: "`GrazerLook` is presentation data and can't be stored
-}                                   //          in sim state" (auto trait D-054 + engine message D-055)
+}                                   //          in sim state" (structural check D-078 + message D-055)
 ```
 
-The compiler catches the first two with general rules. It catches the third only because the engine defined `SimState` and wrote the message. The compiler doesn't know what sim state *is*.
+The compiler catches the first two with general rules. It catches the third only because the engine defined `SimState`, `GrazerLook` never declared it, and the engine wrote the message. The compiler doesn't know what sim state *is*.
 
 ---
 
 ## 7. Sound
 
 ```wrela
-/// A hoof hits the ground. The hoof's vibration modes come from its field (shape + density).
-/// They don't depend on the hit, so the compiler hoists that analysis out of the audio
-/// callback. `hoof()` is constant, so it can even run ahead of time.
+/// The hoof's vibration modes, from its field (shape + density). This is an eigenvalue solve,
+/// so it's written as a `const` and runs at compile time. Staging is never left to the
+/// optimizer (D-072).
+const HOOF_MODES = modal_modes(hoof())
+
+/// A hoof hits the ground.
 @audio
 fn hoof_strike(hit: Contact) -> Voice {
-    modal(shape: hoof(), against: hit.surface.absorption, impulse: hit.impulse)
+    modal(HOOF_MODES, against: hit.surface.absorption, impulse: hit.impulse)
 }
 ```
 
 **Notes:**
 - The same field that renders the hoof decides how heavy it is and how it sounds.
 - `hit.surface.absorption` is the terrain field's acoustic channel at the contact point.
+- **The first draft relied on the compiler hoisting** `modal(shape: hoof(), ...)` out of the audio callback. If that hoisting ever failed silently, an eigenvalue solve would run on the audio thread. Now the staging is written explicitly (F9).
 
 ---
 
