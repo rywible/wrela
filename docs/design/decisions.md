@@ -723,7 +723,7 @@ The full rules are in [memory-model.md](memory-model.md).
 These entries answer [reviews/2026-10-01-audit.md](reviews/2026-10-01-audit.md). Finding IDs (T, F, M, U, S, P) refer to that document, and [reviews/2026-10-01-audit-response.md](reviews/2026-10-01-audit-response.md) maps every finding to its outcome. The owner delegated these choices on 2026-10-01.
 
 ### D-067 · Validate before designing further
-**Status:** Accepted (delegated, 2026-10-01). Answers T1, T3, T4. Spike results: D-089 to D-093.
+**Status:** Accepted (delegated, 2026-10-01). Answers T1, T3, T4. Spike results: D-089 to D-093. Authoring experiment: D-095.
 
 The next work is measurement, not more language design.
 
@@ -809,7 +809,7 @@ The next work is measurement, not more language design.
 - **Effects are checked per instantiation.** A public generic function states its effects relative to its bounds' methods (D-030).
 
 ### D-072 · The effect set, and guaranteed staging
-**Status:** Accepted (delegated, 2026-10-01). Answers U3 and F9.
+**Status:** Accepted (delegated, 2026-10-01). Answers U3 and F9. `@deterministic` row amended by D-094.
 
 **Named effects:** `alloc`, `io`, `nondet`, `recursion` (unbounded), `dyn`, `host`, `panic`.
 
@@ -990,7 +990,7 @@ Under D-066 there's no previous world to read, so D-063's premise is gone. Inste
 
 ## From spike 01 and sketch 04
 
-These record [spike 01](../../spikes/01-grazer/)'s measurements (D-067) and what they imply. [Sketch 04](sketches/04-what-ships.md) draws the compiler requirements out of the same code. The owner delegated the what's-next list on 2026-10-01. D-092 would change the language, so it's only Proposed.
+These record [spike 01](../../spikes/01-grazer/)'s measurements and the [agent-authoring experiment](../../experiments/agent-authoring/) (D-067), and what they imply. [Sketch 04](sketches/04-what-ships.md) draws the compiler requirements out of the same code. The owner delegated the what's-next list on 2026-10-01. D-092 would change the language, so it's only Proposed.
 
 ### D-089 · Per-pixel field shading stays the default, provisionally
 **Status:** Accepted (delegated, 2026-10-01). Records D-067's kill-criteria outcome.
@@ -1038,6 +1038,31 @@ These record [spike 01](../../spikes/01-grazer/)'s measurements (D-067) and what
 - **The spike needed it.** `place_vertices` evaluates each block's 125 corners once into workgroup memory and shares them across 64 invocations. Without that, each corner would be evaluated up to 8 times.
 - **WGSL has `var<workgroup>` and `workgroupBarrier()`.** wrela needs an equivalent that fits the memory model: a workgroup-scoped value, with exclusivity rules for who may write which part of it between barriers.
 
+### D-094 · `@deterministic` forbids unbounded recursion
+**Status:** Accepted (delegated, 2026-10-01). Reconciles D-015 item 5 with D-072.
+
+- **The conflict:** D-015 item 5 requires bounded recursion in sim code, because stack limits differ between engines, so a deep recursion could trap on one client and not another. D-072's context table didn't list `recursion` for `@deterministic`, and no decision revised D-015 item 5.
+- **Resolution:** `@deterministic` forbids the `recursion` effect (unbounded recursion), as D-015 intended. Bounded recursion, where the compiler can see the bound, is fine.
+- Found by the consistency review of language.md.
+
+### D-095 · Agent authoring reaches placeholder quality; build the authoring tools before re-testing
+**Status:** Accepted (delegated, 2026-10-01). Records D-067 item 3 (T4).
+
+- **What ran:** two agents, each with a brief and a render-and-look loop (`fieldview`) and no human input, authored a grazer and a wolf as WGSL fields ([experiments/agent-authoring](../../experiments/agent-authoring/)). Each took ~20 minutes and up to 15 renders.
+- **Result:**
+  - The wolf is a recognisable **placeholder**; the grazer is **blockout to placeholder**. Neither is shippable.
+  - Both first renders were already recognisable. Iteration refined detail but didn't move either one up a class.
+  - Judged by the same model family as the authors.
+- **Both agents asked for the same general features:**
+  - named parts that diagnostics can point at
+  - joints and frames as values
+  - channels attached to parts
+  - geometric assertions
+  - probe and measure tools
+
+  The first four match sketch 01's part-and-skeleton model (D-002, D-031). The tools are studio work (layer 3).
+- **Next:** re-run the experiment with those tools, reference images and a human art director between rounds, and see whether quality moves up a class. Thesis 1 stays a hypothesis until then.
+
 ---
 
 ## Evidence and revisit triggers
@@ -1054,8 +1079,8 @@ As of 2026-10-01, spike 01 has measured a few load-bearing decisions on one mach
 | D-065, D-066: regions and snapshots | untested | Copy-on-first-write costs more than full copies at realistic world sizes. |
 | D-069: no browser compiler | untested | A sketch needs runtime-chosen structure that enums and `stage::interpret` can't serve fast enough. |
 | D-070: structure is types | **Partly measured:** one pipeline per kernel served all 40 individuals, with their numbers as uniforms | Type sizes or instantiation counts explode in real content. |
-| D-077: declared facts | **Contradicted in part:** a global Lipschitz constant fails for the stdlib's ellipsoid (D-092) | D-092 is decided. |
-| Thesis 1: agent authoring | untested | The D-067 authoring experiment produces content a human wouldn't ship. |
+| D-077: declared facts | **Contradicted in part:** a global Lipschitz constant fails for the stdlib's ellipsoid (D-092). Spike 01's probe and both authoring agents (D-095) found it independently. | D-092 is decided. |
+| Thesis 1: agent authoring | **Tested once:** two unaided agents reached placeholder quality in ~20 min each (D-095), judged by the same model family | The re-run with authoring tools and human art direction (D-095) still doesn't move quality up a class. |
 
 ---
 

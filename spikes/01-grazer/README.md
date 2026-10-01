@@ -117,7 +117,7 @@ GPU ms per pass, best variant for each (all herd variants are faster without the
 ### Pipelines
 
 - **8 per scene** (budget: 64).
-- **Cold**, with unique source so nothing is cached: `place_vertices` 312 ms, `shade_field` 137 ms, everything else ≤ 6 ms. All of them at once take 314 ms.
+- **Cold**, with unique source so nothing is cached: `place_vertices` 312 ms, `shade_field` 137 ms, everything else ≤ 6.4 ms. All of them at once take 314 ms.
 - **Warm**, in the same session: 3.4 ms in total.
 - The cross-session disk cache wasn't measured.
 

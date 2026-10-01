@@ -133,7 +133,7 @@ total: 8 of a 64-pipeline budget (D-068)
 
 | Case | Time |
 |---|---|
-| Cold, unique source, one at a time | `place_vertices` 312 ms, `shade_field` 137 ms, everything else ≤ 6 ms |
+| Cold, unique source, one at a time | `place_vertices` 312 ms, `shade_field` 137 ms, everything else ≤ 6.4 ms |
 | Cold, all at once | 314 ms |
 | Warm, same session | 3.4 ms total |
 
@@ -152,12 +152,12 @@ The manifest records each layout, and the build checks that both sides agree. In
 
 | Work | When | Measured (WASM, M4) |
 |---|---|---|
-| `grazer(seed)`: compute the 1,312-byte value | At spawn | Negligible |
-| `grazer_physique`: adaptive mass integration | At spawn | 39 ms at a 2cm finest cell; 151 ms at 1cm. Same mass within 0.03%. |
+| `grazer(seed)`: compute the 1,312-byte value | At spawn | Not measured: the spike computes it in JS. It's a few hundred float operations. |
+| `grazer_physique`: adaptive mass integration | At spawn | 39 ms at a 2cm finest cell; 151 ms at 1cm. The two agree within 0.02%, and both are within 0.03% of the uniform-grid ground truth. |
 | `step`: one raycast per foot | Every tick | 0.52 ms for 40 grazers (of the 4 ms sim budget) |
 | Field evaluation, whole grazer | | 2,284 per ms (4,837 with pruning) |
 
-**Bit-identical across targets** (D-074): the CPU code in the spike gave identical hashes compiled to wasm32 and to native aarch64. Strict IEEE f32, no fused multiply-add, only correctly rounded operations.
+**Bit-identical across one pair of targets** (D-074): the CPU code in the spike gave identical hashes compiled to wasm32 and to native aarch64. x86 isn't tested. Strict IEEE f32, no fused multiply-add, only correctly rounded operations.
 
 **One consequence for the source.** `finest: 1cm` in `grazer_physique` (sketch 01 §4) costs four times `finest: 2cm` and changes the mass by 0.02%. Since the value is gameplay (D-033), a game author should see that cost: the cost query (D-021) is how they'd see it.
 

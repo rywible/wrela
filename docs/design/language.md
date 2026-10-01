@@ -43,7 +43,7 @@ The compiler knows about exactly these execution targets:
 | A newline ends a statement, unless it's inside open brackets or the next line starts with `.` | T0 | D-038, D-079 |
 | A binary operator that continues a line must *trail* the line; a leading `-` or `\|` starts a new expression | T0 | D-079 |
 | `;` may separate statements on one line; the formatter normalizes | T0 | D-038 |
-| `//` comments, `///` doc comments | T0 | sketches |
+| `//` comments, `///` doc comments | T0 | Placeholder (sketches) |
 | Files use the `.wrela` extension | T0 | D-040 |
 | Number literals have no type suffixes (no `1.0f32`) | T0 | D-025 |
 | A unit can follow a number as a suffix: `15cm` means `15 * cm` | T1 | D-025, D-076 |
@@ -83,7 +83,7 @@ leg_segment(45cm, r_top: 9cm)          // positional first, then named
 
 - **Fields may have defaults**, which must be evaluable at compile time (D-048). A struct literal may omit defaulted fields.
 - **A struct opts in to traits in its declaration:** `struct Tissue: Blend { ... }` (D-026, D-078).
-- **`..base`** fills the remaining fields from another value (sketch 01).
+- **`..base`** fills the remaining fields from another value. Placeholder: sketch 01 uses it; no decision covers it.
 
 ```wrela
 pub struct CreatureLook {
@@ -111,9 +111,9 @@ pub enum Edit: SimState + StateHash + Serialize + Copy {
 - **Coherence follows Rust's orphan rule:** an `impl` lives in the crate of the trait or of the type (D-071). T0.
 - **Structural defaults:** a trait can provide an implementation written in ordinary wrela that runs at compile time over a type's fields (D-060). That's how `Copy`, `Clone`, `StateHash`, `Serialize` and engine traits like `SimState` get implemented without anyone writing them by hand. T1. **Placeholder syntax:** `@comptime default for<T: struct> { ... }` (sketch 03 §5).
 
-### Constants (T0, compile-time evaluation T1)
+### Constants (T0 for literal values; T1 when the initializer must be evaluated)
 
-`const` items are evaluated at compile time (D-073). Staging work earlier is done by writing a `const`, never by relying on the optimizer (D-072).
+`const` items are evaluated at compile time (D-073). A `const` whose initializer calls functions needs the compile-time interpreter, which is tier 1 (D-088). Staging work earlier is done by writing a `const`, never by relying on the optimizer (D-072).
 
 ```wrela
 const HOOF_MODES = modal_modes(hoof())     // an eigenvalue solve, run by the compiler
@@ -135,12 +135,13 @@ const HOOF_MODES = modal_modes(hoof())     // an eigenvalue solve, run by the co
 | `f16` | Explicit lossy type | T1 | D-049 |
 | `vec2<U>`, `vec3<U>`, `vec4<U>`, `mat3`, `mat4`, `Quat` | Vectors are generic over a unit (§5); `vec3` alone is unitless | T0 | D-076 |
 | `[T; N]` | Fixed-size array | T0 | |
-| `[T]`, `mut [T]` | A contiguous run, borrowed or mutable; a parameter type, not storable | T0 | memory-model §2 |
+| `[T]`, `mut [T]` | A contiguous run, borrowed or mutable | T0 | memory-model §2 |
 | `(A, B)` | Tuple | T0 | |
-| `Option<T>`, `Result<T, E>` | There's no null | T0 | memory-model §1, D-061 |
+| `Option<T>` | An ordinary enum; there's no null | T0 | memory-model §1 |
+| `Result<T, E>` and `?` | Recoverable errors | T1 | D-061, D-088 |
 | `String`, `Text`, `str` | Heap-owned UTF-8, region-resident text, a borrowed run | T1 | D-087 |
-| `borrow T`, `mut T` | Projection types: non-escaping, allowed as type arguments (`Option<borrow T>`) | T0 | D-064, D-084 |
-| Closures | Non-escaping by default; `@escaping` captures only owned values and handles | T0 | D-064 |
+| `borrow T`, `mut T` | Projection types: non-escaping. Returning them is T0; using them as type arguments (`Option<borrow T>`) comes with views and iterators in T1. | T0 / T1 | D-064, D-084, D-088 |
+| Closures | Non-escaping by default (T0). An `@escaping` closure captures only owned values and handles (T1). | T0 / T1 | D-064 |
 | `Handle<T>`, `Arena<T>`, `List<T>`, `Region<T>` | Stdlib containers (§6) | T1 | D-065 |
 | `Unorm8`, `Oct16`, … | Lossy encodings are always explicit types | T1 | D-049 |
 | `dyn Trait` | CPU only, never in GPU or `@audio` code | T2 | D-071 |
@@ -177,12 +178,15 @@ let wrong = density + 2m        // error: can't add kg/m³ to m
 | **Moving out of a named place is written `take`.** Deep copies are `.clone()`; small `Copy` types copy implicitly. Temporaries and returned locals need no marker. | T0 |
 | **Bindings:** `let` projects a place read-only or owns a temporary; `var` owns mutably; `mut` projects a place mutably. | T0 |
 | **Projections:** a function may return `-> borrow T` or `-> mut T` of one of its parameters. Projections never outlive the caller's scope. | T0 |
-| **Exclusivity:** while a `mut` access is live, nothing may touch an overlapping place. Disjoint fields don't overlap. Checked within each function. | T0 |
-| **Non-escaping types:** any type containing a view (`Span<T>`, borrowing iterators, projections) follows the projection rules. That's how views and iterator chains work without lifetimes. | T0 |
-| **Closures are non-escaping by default;** `@escaping` closures capture only owned values and handles. | T0 |
+| **Exclusivity:** while a `mut` access is live, nothing may touch an overlapping place. Disjoint fields don't overlap; every element of a container overlaps every other (`pair_mut` and `split_at_mut` check at runtime). Checked within each function. | T0 |
+| **No mutable globals, and no interior mutability** like `Cell` or `RefCell`. Shared mutable state lives in an arena. | T0 |
+| **A projection must come from a `borrow` or `mut` parameter,** and the caller treats the result as borrowing every such argument. | T0 |
+| **Non-escaping types:** any type containing a view (`Span<T>`, borrowing iterators, projections) follows the projection rules. That's how views and iterator chains work without lifetimes. | T1 (views and iterators, D-088) |
+| **Closures are non-escaping by default** (T0). An escaping closure is marked `@escaping` and captures only owned values and handles (T1). | T0 / T1 |
 | **Long-lived relationships are handles into arenas,** never pointers. | T1 |
 | **Regions:** `Region<T>` holds one root value in chunks. Its containers store offsets. Region-bound values (`Relocatable` but not `Plain`) stay in their region. | T1 |
-| **Byte-level data:** the auto traits `Plain` and `Relocatable`; a declared `GpuData` trait fixes WGSL layout everywhere. | T1 |
+| **GPU layout:** a declared `GpuData` trait fixes a type's layout to WGSL rules everywhere. This is how tier 0's lossless GPU layout is expressed. | T0 |
+| **Byte-level data:** the auto traits `Plain` and `Relocatable`. | T1 |
 | **Snapshots:** copy-on-first-write chunk checkpoints are stdlib operations on regions, not language features. | T2 |
 | **Destructors:** deterministic, at end of scope in reverse order; user `Drop` for types that aren't region-bound (D-087). | T1 |
 | **`unsafe`** exists only for the stdlib's core; packages declare whether they use it. | T1 |
@@ -238,7 +242,7 @@ fn cull_blocks<F: Surface>(field: F, grid: Grid, live: mut Append<LiveBlock>, id
 |---|---|---|
 | GPU entry points (`@compute`, `@vertex`, `@fragment`) | `alloc`, `io`, `nondet`, `recursion`, `dyn`, `host`, `panic` | T0 |
 | `@audio` | `alloc`, `io`, `recursion`, `dyn`, `host` | T2 |
-| `@deterministic` | `nondet`, `host` (except declared deterministic host calls) | T1 |
+| `@deterministic` | `nondet`, `host` (except declared deterministic host calls), `recursion` (D-094) | T1 |
 | Compile-time evaluation | `io` (except declared embeds), `host`, `nondet` | T1 |
 | Derived interpretations (gradient, interval) | `alloc`, `io`, `nondet`, `host` | T0 |
 
@@ -262,7 +266,7 @@ fn cull_blocks<F: Surface>(field: F, grid: Grid, live: mut Append<LiveBlock>, id
 | `@deterministic` | functions, function types | The determinism constraint (§14) | T1 |
 | `@assert(fact)` | functions | A checked fact, e.g. `@assert(lipschitz <= 1.5)` (D-077) | T1 |
 | `@assume(fact)` | functions | A trusted fact, e.g. `@assume(lipschitz: 1)`, `@assume(bandlimit: ...)`. Debug builds spot-check by sampling; every assumption is greppable. (D-077) | T1 |
-| `@escaping` | closure parameters | The closure may outlive the call (D-064) | T1 |
+| `@escaping` | closures | The closure may outlive the call. memory-model §7 writes it on the closure expression: `@escaping \|w\| ...`. (D-064) | T1 |
 | `@diagnostic(...)` | traits, types | A library-authored error message; not part of the type (D-055, D-081) | T1 |
 | `@audio` | functions | Audio-worklet entry point (D-072) | T2 |
 
@@ -282,7 +286,9 @@ User-defined metadata, if it's ever needed, gets a different syntax, so `@` alwa
 
 ## 11. Numerics
 
-**CPU code always uses strict IEEE floats** (D-074). There's no fast-math mode, no reassociation, no implicit FMA contraction and no relaxed SIMD. Transcendentals come from the stdlib, compiled to WASM, never from the host (D-015). T0 for strictness; T1 for the stdlib transcendentals.
+**CPU code always uses strict IEEE floats** (D-074). There's no fast-math mode, no reassociation, no implicit FMA contraction and no relaxed SIMD. Transcendentals come from the stdlib, compiled to WASM, never from the host (D-015).
+
+**Tiers:** tier 0 emits WASM, whose float arithmetic is already IEEE-strict apart from NaN bits. The numeric rules (the table below, NaN canonicalization, stdlib transcendentals) are tier 1 with `@deterministic` (D-088).
 
 **GPU code follows WGSL semantics,** and its results are presentation-only: GPU results can't reach `@deterministic` code (§14).
 
@@ -307,8 +313,8 @@ User-defined metadata, if it's ever needed, gets a different syntax, so `@` alwa
 |---|---|---|
 | **Entry points:** `@compute(...)`, `@vertex`, `@fragment` | T0 | D-010, D-035 |
 | **Builtins are typed:** `GlobalId`, `WorkgroupId`, `LocalId`, `ClipPosition`, and `Flat<T>` for values that aren't interpolated. The docs map them to WGSL's `@builtin(...)`. | T0 | D-046 |
-| **Closures and iterators are allowed when statically resolved:** monomorphized and inlined, fixed-size iterators unrolled. Diagnostics flag unrolling or inlining blowups. | T0 | D-047 |
-| **Layout is automatic but lossless.** `GpuData` fixes a type's layout to WGSL rules everywhere; lossy encodings are explicit types. Nobody pads by hand. | T0 / T1 | D-049, D-084 |
+| **Closures and iterators are allowed when statically resolved:** monomorphized and inlined, fixed-size iterators unrolled. Diagnostics flag unrolling or inlining blowups. | T0 (closures) / T1 (iterators) | D-047, D-088 |
+| **Layout is automatic but lossless.** `GpuData` fixes a type's layout to WGSL rules everywhere (T0); lossy encodings are explicit types (T1). Nobody pads by hand. | T0 / T1 | D-049, D-084 |
 | **A kernel's `mut` parameters must be safe to share across invocations:** atomics, `Append<T>`, `Slots<T>` (each invocation writes only its own slot), `AtomicMap`. A plain `mut [u32]` is rejected. | T0 | D-084 |
 | **Uniform vs varying** is the target's own distinction, which WGSL already analyzes. | T0 | D-051 |
 | **Workgroup-shared memory and barriers.** Spike 01's `place_vertices` needed them. **Open:** the design. | T0 | D-093 |
@@ -339,7 +345,7 @@ The compiler derives these from any function that qualifies under the effect tab
 
 - **A choice point** is a `min`, `max`, `select`, `if` or `match` arm whose outcome an interval can decide (D-080).
 - **`LiveMask<F>` is opaque and typed by the function it prunes.** Library code can store and pass it, but can't read its bits (D-080).
-- **Declared facts** supply what derivation can't: `@assume(lipschitz: 1)` on `length`, `@assume(range: -1, 1)` and `@assume(bandlimit: ...)` on noise (D-057, D-077). The compiler composes them through callers.
+- **Declared facts** supply what derivation can't: `@assume(lipschitz: 1)` on `length`, and a range and `@assume(bandlimit: ...)` on noise (D-057, D-077). The compiler composes them through callers. Placeholder: D-077 spells only `lipschitz` and `bandlimit`, so the spelling of a range fact is open.
 - **Bandlimits** let noise fade octaves finer than a footprint instead of aliasing, on the GPU and anywhere else a footprint is known (D-077).
 - **Open (from spike 01):** a fact may hold only near where it's used. The ellipsoid bound's gradient is unbounded at its centre, so a global Lipschitz constant fails even though the constant holds within reach of the surface. See D-092.
 
@@ -350,7 +356,7 @@ The compiler derives these from any function that qualifies under the effect tab
 `@deterministic` is an effect constraint on functions and function types (D-052).
 
 - **Inside it:** strict floats (always true on the CPU), stdlib transcendentals, canonical NaNs at observation points.
-- **Forbidden:** the clock, ambient randomness, GPU readback, unordered iteration, relaxed SIMD, and anything that depends on memory addresses (D-015, D-052).
+- **Forbidden:** the clock, ambient randomness, GPU readback, unordered iteration, relaxed SIMD, anything that depends on memory addresses (D-015, D-052), and unbounded recursion, because stack limits differ between engines (D-015, D-094).
 - **A panic is a deterministic trap:** every client traps on the same tick (D-061).
 - **Parallelism is data-parallel only** (D-062), through stdlib combinators (`par_each_mut`, `par_map_reduce`). Exclusivity proves disjointness; `Shareable` covers captured data; reductions combine in a fixed tree order; per-entity RNG streams keep results independent of scheduling. T2.
 
@@ -402,7 +408,7 @@ The sim/presentation split is an engine pattern built on this, not a language fe
   | `Bound` | Never overestimates; Lipschitz ≤ 1 |
   | `Lipschitz` | Sign-correct; derived L may exceed 1 |
 
-  Each op states in its return type what it preserves. `Exact` converts to `Bound` and `Bound` to `Lipschitz` implicitly, never the other way. `.to_bound()` divides by the derived L.
+  Each op states in its return type what it preserves. `.to_bound()` divides by the derived L (D-077). Placeholder: sketch 01 has `Exact` convert to `Bound`, and `Bound` to `Lipschitz`, implicitly. No decision covers implicit conversions, and the language has no general mechanism for them yet.
 - **Combinators are methods** (D-028): `a.smooth_union(b, k: 15cm)`, and n-ary on collections. There's no operator overloading on fields; vectors and units do get operators.
 - **Fields built at runtime** from an unbounded space use `stage::interpret` (D-029, D-053). T2.
 
@@ -410,13 +416,15 @@ The sim/presentation split is an engine pattern built on this, not a language fe
 
 ## 18. What wrela leaves out, compared with Rust
 
-- **References as types,** and with them lifetime annotations (D-058, D-064)
+- **References as types,** and with them lifetime parameters, variance, `'static` and higher-ranked bounds (D-058, D-064)
+- **`Pin`,** because references can't live across suspension points (memory-model §15)
+- **`Cell` and `RefCell`** (interior mutability), and **`Rc` and `Arc`** in ordinary code (memory-model §16)
+- **Mutable globals** (memory-model §5)
 - **Implicit moves out of named places** (D-064)
 - **A garbage collector** (D-014)
 - **Procedural macros:** compile-time reflection replaces them (D-060)
 - **Fast-math on the CPU** (D-074)
 - **User-defined attributes** (D-037)
-- **Operator overloading on fields** (D-028)
 - **Null** (memory-model §1)
 
 ---
@@ -464,8 +472,8 @@ fn normals<F: Surface>(field: F, pos: vec3) -> Color {
 
 | Tier | Features |
 |---|---|
-| **T0** | Statements and literals; functions with modes and named arguments; structs with defaults; enums; traits with associated types and default methods; monomorphized generics and `impl Trait`; projections, exclusivity, non-escaping types and closures; scalar, vector and matrix types; `@compute`/`@vertex`/`@fragment`/`@gpu`; typed builtins; invocation-safe kernel outputs; lossless GPU layout; derived `gradient` and `interval`; WGSL and WASM emission; strict CPU floats. |
-| **T1** | Units; `@comptime`, `const` and reflection; structural defaults; auto and declared traits; `@diagnostic`; `@deterministic` and the numeric table; `@assert`/`@assume` and bandlimits; Lipschitz facts and pruning; handles, arenas and regions; `Plain`/`Relocatable`/`GpuData`; strings; destructors; `Result` and panics; `@escaping`; the pipeline-count query. |
+| **T0** | Statements and literals; functions with modes and named arguments; structs with defaults; enums (including `Option`); `const` with literal values; traits with associated types and default methods; monomorphized generics and `impl Trait`; projections and exclusivity; non-escaping closures; scalar, vector and matrix types; `@compute`/`@vertex`/`@fragment`/`@gpu`; typed builtins; invocation-safe kernel outputs; workgroup-shared memory (D-093); lossless GPU layout through `GpuData`; derived `gradient` and `interval`; WGSL and WASM emission. |
+| **T1** | Units; `@comptime`, evaluated `const` initializers and reflection; structural defaults; auto and declared traits; `@diagnostic`; `@deterministic` and the numeric rules; `@assert`/`@assume` and bandlimits; Lipschitz facts and pruning; handles, arenas and regions; `Plain`/`Relocatable`; views, iterators and other non-escaping types; lossy GPU encodings; strings; destructors; `Result`, `?` and panics; `@escaping`; the pipeline-count query. |
 | **T2** | Threads and parallel combinators; async; `@audio`; checkpoints and keyframes; `dyn Trait`; `stage::interpret`; any compiler tier in the browser. |
 
 ---
