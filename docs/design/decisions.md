@@ -12,7 +12,7 @@ Each entry has a stable ID so other docs can cite it.
 
 A status line may also say **Superseded by**, **Amended by**, **Refined by** or **Revised by** a later entry. When it does, the later entry wins.
 
-**Accepted means agreed, not validated.** As of 2026-10-01, no decision rests on a measurement. "Evidence and revisit triggers" (near the end of this log) lists the load-bearing decisions and what would reopen each one.
+**Accepted means agreed, not validated.** As of 2026-10-01, only spike 01's measurements back any decision, and only on one machine. "Evidence and revisit triggers" (near the end of this log) lists the load-bearing decisions, their evidence, and what would reopen each one.
 
 To change a decision, add a new entry that supersedes it, then annotate the old entry's status line. Don't rewrite history.
 
@@ -21,7 +21,7 @@ To change a decision, add a new entry that supersedes it, then annotate the old 
 ## Content and scope
 
 ### D-001 · Fields are the source of truth; how they're realized is a choice
-**Status:** Accepted (2026-10-01). Revised by D-086.
+**Status:** Accepted (2026-10-01). Revised by D-086. Refined by D-090.
 
 Content is authored as fields. Realization is chosen per object, per level of detail and per use. The options include triangles extracted on the client, SDF bricks, distance fields, points and impostors.
 - **Close-up visibility:** rasterized triangles.
@@ -723,7 +723,7 @@ The full rules are in [memory-model.md](memory-model.md).
 These entries answer [reviews/2026-10-01-audit.md](reviews/2026-10-01-audit.md). Finding IDs (T, F, M, U, S, P) refer to that document, and [reviews/2026-10-01-audit-response.md](reviews/2026-10-01-audit-response.md) maps every finding to its outcome. The owner delegated these choices on 2026-10-01.
 
 ### D-067 · Validate before designing further
-**Status:** Accepted (delegated, 2026-10-01). Answers T1, T3, T4.
+**Status:** Accepted (delegated, 2026-10-01). Answers T1, T3, T4. Spike results: D-089 to D-093.
 
 The next work is measurement, not more language design.
 
@@ -870,7 +870,7 @@ Derived interval code on the GPU widens each operation's result outward by that 
 - **Transforms carry their length unit** (`Transform<m>`). General matrices are unitless.
 
 ### D-077 · Field kinds and declared facts
-**Status:** Accepted (delegated, 2026-10-01). Answers F2, F3, T5. Revises D-027, D-056, D-057.
+**Status:** Accepted (delegated, 2026-10-01). Answers F2, F3, T5. Revises D-027, D-056, D-057. D-092 (Proposed) would amend it.
 
 **Kinds are stdlib types:**
 
@@ -972,7 +972,7 @@ Under D-066 there's no previous world to read, so D-063's premise is gone. Inste
 - **Modules and packages:** deferred to a sketch. D-030 depends on them.
 
 ### D-088 · Process: evidence, a current-state spec, feature tiers
-**Status:** Accepted (delegated, 2026-10-01). Answers P1–P6 and T6.
+**Status:** Accepted (delegated, 2026-10-01). Answers P1–P6 and T6. [language.md](language.md) was written on 2026-10-01.
 
 - **Evidence levels** are tracked in the table below (P1).
 - **`language.md`, a current-state description of the whole language,** must exist before any compiler code. It gets the same treatment `memory-model.md` gave memory, and it's the seed of D-021's small spec (P2).
@@ -988,19 +988,73 @@ Under D-066 there's no previous world to read, so D-063's premise is gone. Inste
 
 ---
 
+## From spike 01 and sketch 04
+
+These record [spike 01](../../spikes/01-grazer/)'s measurements (D-067) and what they imply. [Sketch 04](sketches/04-what-ships.md) draws the compiler requirements out of the same code. The owner delegated the what's-next list on 2026-10-01. D-092 would change the language, so it's only Proposed.
+
+### D-089 · Per-pixel field shading stays the default, provisionally
+**Status:** Accepted (delegated, 2026-10-01). Records D-067's kill-criteria outcome.
+
+- **Measured on a MacBook Air M4 in Chromium, not on the primary device:**
+
+  | Herd of 40 at 1080p | Creatures (GPU) | Whole frame (GPU) |
+  |---|---|---|
+  | 3cm mesh | 2.49 ms | 3.67 ms |
+  | 1.5cm mesh | 6.49 ms | 7.21 ms |
+
+- **The margin rule, set before measuring:** the primary device is an M1. A result counts as a provisional pass only at ≤ 4 ms here. Between 4 and 8 ms it's inconclusive until measured on an M1.
+- **So:** a provisional pass with mesh LOD (D-090), and inconclusive without. The cooking fallback isn't triggered.
+- **The comparison that matters (T1):** per-pixel field evaluation costs 1.6× (herd) to 2.8× (close-up) a texture-lookup proxy. That's +0.65 ms in the herd.
+- **Revisit if** an M1 measurement puts creatures above 8 ms with LOD.
+
+### D-090 · Creature cost is triangle-bound, so mesh LOD by screen size is required
+**Status:** Accepted (delegated, 2026-10-01) (engine design). Refines D-001.
+
+- **At 1.5cm cells, the herd is 4.2M triangles,** most of them smaller than a pixel. The shadow and depth passes each cost ~2.4 ms.
+- **A 3cm mesh at herd distance changes the image by a mean of 0.07/255;** 0.1% of pixels change by more than 8/255. Per-pixel shading carries the detail.
+- **So the engine picks extraction resolution from screen-space size,** and drops it much nearer than sketch 01's 40 m brick distance.
+- **A depth prepass cost more than it saved** in every herd configuration. The engine shouldn't assume one.
+
+### D-091 · Realization is amortized and kept off the critical path
+**Status:** Accepted (delegated, 2026-10-01) (engine design).
+
+- **Extraction costs 2.2 ms (3cm) to 21 ms (1cm) of GPU per individual.** The engine realizes coarse first and refines later, or spreads the work across frames.
+- **Spawn-time physique runs in a worker.** Mass integration takes 39 ms of CPU per individual at a 2cm finest cell, and matches 1cm to within 0.02%. Content should use 2cm unless a game needs more.
+- **Samples shared between pruned blocks are evaluated under one mask,** or pruning is made bit-exact. Otherwise two masks can disagree on a shared corner's sign and leave a hole: 2 in ~2M quads at 1.5cm.
+
+### D-092 · Declared facts can be scoped
+**Status:** Proposed (2026-10-01). Would amend D-077.
+
+- **The problem:** the stdlib's ellipsoid bound has an unbounded gradient at its centre; the spike's probe found a maximum of 11. A derived global Lipschitz constant therefore fails sketch 01's `@assert(lipschitz <= 1.5)`, even though every consumer (culling near the surface, root-finding, sphere tracing) only looks within a band around the surface.
+- **The proposal:** a fact may carry a scope. `@assume(lipschitz: 1, near: 10cm)` means "holds wherever |f| < 10cm."
+  - Derived bounds track the scope.
+  - Consumers state the scope they need. An interval test over a block that straddles the surface needs `near` of at least the block's radius.
+- **The alternative:** keep facts global, and give the stdlib an ellipsoid approximation whose gradient is bounded everywhere.
+- **Why Proposed:** it adds a concept to the language.
+
+### D-093 · Kernels get workgroup-shared memory and barriers
+**Status:** Accepted in direction (delegated, 2026-10-01). Syntax open. Tier 0 (D-088).
+
+- **The spike needed it.** `place_vertices` evaluates each block's 125 corners once into workgroup memory and shares them across 64 invocations. Without that, each corner would be evaluated up to 8 times.
+- **WGSL has `var<workgroup>` and `workgroupBarrier()`.** wrela needs an equivalent that fits the memory model: a workgroup-scoped value, with exclusivity rules for who may write which part of it between barriers.
+
+---
+
 ## Evidence and revisit triggers
 
-Every load-bearing decision is **untested** as of 2026-10-01.
+As of 2026-10-01, spike 01 has measured a few load-bearing decisions on one machine (a MacBook Air M4, not the primary device). Everything else is **untested**.
 
 | Decision | Evidence | Revisit if |
 |---|---|---|
-| D-001, D-002: fields, realized as triangles | untested | The D-067 spike misses its kill criteria. |
-| D-015: determinism on WASM | untested | The CI hash comparison across browsers finds divergence that canonicalization can't fix. |
-| D-041, D-069: size and time budgets | untested | The spike's engine code or pipeline creation alone breaks the cold-start budget. |
+| D-001, D-002: fields, realized as triangles | **Measured on the M4 (spike 01):** a provisional pass with mesh LOD (D-089) | An M1 measurement puts creatures above 8 ms with LOD. |
+| D-015, D-074: determinism on WASM | **Partly measured:** Rust compiled to wasm32 (in Chromium) and to native aarch64 gave identical bits for field evaluation, mass integration and raycasts | The CI hash comparison across browsers, or an x86 machine, finds divergence that canonicalization can't fix. |
+| D-041, D-069: size and time budgets | **Partly measured:** cold pipeline creation 0.3 s; herd extraction 86 ms GPU at 3cm; physique 1.5 s of one core for 40 grazers (so it needs workers, D-091); the grazer's code and data are under 30 KB compressed (an estimate) | The spike's engine code or pipeline creation alone breaks the cold-start budget. |
+| D-068: the sim budget | **Measured on the M4:** one raycast per foot for 40 grazers is 0.52 ms of the 4 ms tick | Gait evaluation or collision pushes the tick past 4 ms. |
 | D-058, D-064: the memory model | untested | The agent syntax test (D-067) shows agents can't write it from the spec, or the sketches find a pattern it can't express. |
 | D-065, D-066: regions and snapshots | untested | Copy-on-first-write costs more than full copies at realistic world sizes. |
 | D-069: no browser compiler | untested | A sketch needs runtime-chosen structure that enums and `stage::interpret` can't serve fast enough. |
-| D-070: structure is types | untested | Type sizes or instantiation counts explode in real content. |
+| D-070: structure is types | **Partly measured:** one pipeline per kernel served all 40 individuals, with their numbers as uniforms | Type sizes or instantiation counts explode in real content. |
+| D-077: declared facts | **Contradicted in part:** a global Lipschitz constant fails for the stdlib's ellipsoid (D-092) | D-092 is decided. |
 | Thesis 1: agent authoring | untested | The D-067 authoring experiment produces content a human wouldn't ship. |
 
 ---

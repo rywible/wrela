@@ -154,7 +154,7 @@ GPU ms per pass, best variant for each (all herd variants are faster without the
 
 ### What this means for the design
 
-These are recorded as D-089–D-093 in `docs/design/decisions.md`.
+These are recorded as D-089–D-092 in `docs/design/decisions.md`.
 
 1. **Keep per-pixel field shading as the default.** The fallback isn't triggered here, but it's provisional until the M1 is measured.
 2. **Creature cost is triangle-bound, so screen-size mesh LOD is required** (engine). It needs to drop resolution much nearer than sketch 01's 40 m bricks.

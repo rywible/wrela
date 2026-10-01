@@ -4,17 +4,22 @@ wrela is a new language, compiler, engine and agent-native studio for AAA-ambiti
 
 ## Status
 
-Design phase. There's no code yet. The language is being designed sketch by sketch (D-024). The next step is measurement, not more design (D-067).
+Design phase, with first measurements. There's no compiler yet.
+- Spike 01 measured hand-written output for the grazer (D-089). It's a provisional pass on an M4; the M1 is still owed.
+- `docs/design/language.md` describes the whole language as it stands, so compiler work may start (D-088).
+- Spikes and experiments are throwaway code that answers a question. They aren't the start of the engine or compiler.
 
 ## Read before changing anything
 
 - **`docs/design/decisions.md` is the source of truth.**
   - Every entry has a stable ID (D-NNN).
   - Every entry has a status: Accepted, Proposed, Open or Withdrawn.
+- **`docs/design/language.md`** describes the whole language as it stands, with feature tiers. Keep it current when a decision changes the language.
 - **`docs/design/memory-model.md`** is the one place the memory rules live: parameter modes, projections, exclusivity, regions, snapshots.
 - **`docs/design/vision.md`** covers the goal, the four theses and the architecture.
 - **`docs/design/sketches/`** holds programs in imagined syntax. The language is derived from them.
 - **`docs/design/reviews/`** holds independent audits, plus the responses that map each finding to a decision.
+- **`spikes/`** and **`experiments/`** hold measurements and experiments. Each has a README with its method, results and caveats.
 
 ## Rules
 
