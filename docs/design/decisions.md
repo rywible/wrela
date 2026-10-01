@@ -138,7 +138,7 @@ The algorithm is *what* to compute. The schedule is *how* it's realized: resolut
 - **Sim-facing computation** must be bit-exact (D-015). That means a schedule can only describe presentation. Anything the sim reads belongs to the algorithm (see sketch 01). *Refined by D-033.*
 
 ### D-014 · No tracing GC in the core
-**Status:** Accepted (2026-10-01)
+**Status:** Accepted (2026-10-01). Snapshot mechanism refined by D-065 and D-066.
 
 Memory is value types, arenas, frame allocators and generational handles (indices, not pointers).
 
@@ -606,6 +606,111 @@ A pure function may declare properties the compiler can't prove, such as `@lipsc
 
 ---
 
+## From sketch 03
+
+### D-058 · References are second-class
+**Status:** Accepted (2026-10-01). Amended by D-064.
+
+1. **Storage:** references can be passed into functions, but never stored in structs or collections, or captured by escaping closures.
+2. **Projections:** a function may return a reference only as a projection of one of its reference parameters. The caller treats it as borrowing that argument. With several reference parameters, it borrows all of them, conservatively.
+3. **Exclusivity:** checked locally, within a function. A live `&mut` excludes all other access to the same place, and disjoint fields don't conflict.
+4. **Long-lived relationships** use handles into arenas.
+5. **No lifetime annotations exist.**
+
+**Why:** it fits value types, arenas and handles (D-014), and keeps snapshots trivial (D-015). It's also the most agent-friendly safe model: Hylo's approach, or Swift's `inout`.
+
+**Cost:** views and borrowing iterators have to be expressed as projections, closures, or indices and handles.
+
+### D-059 · Moves by default; `Copy` for small plain types; explicit `.copy()` otherwise
+**Status:** Accepted (2026-10-01). Amended by D-064.
+
+This is Rust's model. Big copies, like snapshots, are visible in the code, and move errors suggest `.copy()`.
+
+### D-060 · Structural implementations through compile-time reflection
+**Status:** Accepted (2026-10-01)
+
+A trait can provide a structural default, written in ordinary wrela, that runs at compile time over a type's fields. That's how `StateHash`, `Serialize`, `Copy` and engine traits get implemented without anyone writing them by hand.
+
+- **No procedural macros.**
+- **No compiler knowledge of specific traits.** This realizes D-015 item 4 under D-050.
+- **Diagnostics point at the user's type,** not the generated code.
+
+### D-061 · Errors are `Result` with `?`; bugs panic
+**Status:** Accepted (2026-10-01)
+
+- **In `@deterministic` code, a panic is a deterministic trap.** The engine can turn it into a repro bundle: the last snapshot plus the inputs since.
+- **Panics in GPU code are still open.** WGSL clamps out-of-bounds access instead of trapping, so single-source code can behave differently on CPU and GPU.
+
+### D-062 · Deterministic parallelism is data-parallel only
+**Status:** Accepted (2026-10-01)
+
+- **Stdlib combinators:** `par_each_mut`, `par_map_reduce`, and so on.
+- **Safety comes from general rules:** exclusivity proves disjointness, and a stdlib auto trait, `Shareable`, covers captured data (D-054).
+- **Reductions combine in a fixed tree order.**
+- **Per-entity RNG streams** keep results independent of thread scheduling.
+
+### D-063 · Engine: systems may read last tick's world
+**Status:** Accepted (2026-10-01) (engine design, not language)
+
+`Timeline` already keeps the previous tick's world, so the engine can offer `tick(prev: &W, now: &mut W)`:
+- systems read `prev` and write `now`
+- most borrow puzzles disappear
+- results don't depend on the order systems run in
+
+The cost is one tick of latency for interactions within a tick. The engine offers both styles, and each system picks.
+
+---
+
+## Memory model
+
+The full rules are in [memory-model.md](memory-model.md).
+
+### D-064 · Parameter modes, explicit transfers, non-escaping types
+**Status:** Accepted (user, 2026-10-01). Amends D-058 and D-059. The binding forms and the call-site `take` were chosen by Claude while writing memory-model.md; push back freely.
+
+- **`&T` is not a type.** Parameters have modes: `borrow` (the default), `mut` and `take`.
+  - The caller writes `mut x` and `take x` at the call site. Method receivers aren't marked.
+  - Projections are returned as `-> borrow T` or `-> mut T`.
+- **Every transfer is visible.**
+  - Moving out of a named place is written `take`. This amends D-059's implicit moves.
+  - Deep copies are `.copy()`, and small `Copy` types copy implicitly.
+  - Temporaries, and returning a local, need no marker.
+- **Local bindings:**
+  - `let` projects a place read-only, or owns a temporary.
+  - `var` owns a value mutably.
+  - `mut` projects a place mutably.
+- **Non-escaping types,** as in Swift's `~Escapable`:
+  - The stdlib provides the roots: `Span<T>`, `SpanMut<T>`, borrowing iterators, and closures that capture projections.
+  - Any type with a non-escaping part is non-escaping, and follows the projection rules.
+  - This is what lets views and iterator chains work without lifetimes.
+- **Closures are non-escaping by default.** `@escaping` closures capture only owned values and handles.
+
+**Why:** `&T` is a false friend. Agents trained on Rust would expect to store it and annotate lifetimes. With modes there's no reference type to misuse, and all mutation, moves and copies show up where they happen.
+
+### D-065 · Regions and relocatable data
+**Status:** Accepted (user, 2026-10-01)
+
+- **`Region<T>`** is a chunked memory area holding one root value. Its containers (`Arena`, `List`, `Text`) store region-relative offsets instead of pointers.
+- **Two stdlib auto traits (D-054) describe byte-level data:**
+  - `Plain`: no pointers and no offsets, with zeroed padding. Used for GPU buffers, network messages and handles.
+  - `Relocatable`: `Plain` data plus region containers. Used for region roots, sim state and saves.
+- **The engine's `SimState` requires `Relocatable`.**
+- **Scratch arenas hand out non-escaping containers,** so exclusivity proves nothing outlives a reset.
+- The region-context mechanism lives in the stdlib's unsafe core. The compiler doesn't know regions exist (D-050).
+
+### D-066 · Snapshots use copy-on-first-write chunks
+**Status:** Accepted (user, 2026-10-01)
+
+- **`region.checkpoint`, `rewind` and `keyframe`** are stdlib operations.
+- **A chunk's old bytes are saved the first time it's written in an epoch,** so per-tick cost is proportional to the chunks written, not the world's size.
+- **Keyframes** (full copies) are taken every few seconds, for repro bundles and saves.
+
+**Soundness rests on D-058 and D-064:** projections can't outlive their call, and checkpoints take `mut` access to the region. Together they guarantee no write lands in the wrong epoch.
+
+---
+
 ## Open
 
 - **The first game's concept.** This belongs to the creative director, so it wasn't delegated.
+- **Panics and out-of-bounds behavior in GPU code** (D-061).
+- **Async and references.** The leaning: projections and non-escaping values can't cross an `await` in a task that outlives its caller, so only structured concurrency is allowed. Decide this with platform IO.

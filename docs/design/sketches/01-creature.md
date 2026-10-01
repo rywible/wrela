@@ -11,6 +11,11 @@ This is the code we'd want to write for the creature milestone.
 
 **Conventions:**
 - Rust-family syntax. Newlines end statements (D-038).
+- Memory ([memory-model.md](../memory-model.md)):
+  - parameters are borrowed by default
+  - `mut` marks exclusive mutable access, at the call site too
+  - `take` moves
+  - `var` declares an owned mutable local
 - Named arguments are optional; positional ones come first (D-039).
 - Files use the `.wrela` extension (D-040).
 - Units are library constants (D-025):
@@ -115,7 +120,7 @@ fn hoof() -> Field<SdfBound, Tissue> {
 /// Built at compile time, so bone names are checked.
 @comptime
 fn grazer_skeleton() -> Skeleton {
-    let mut s = Skeleton::new()
+    var s = Skeleton::new()
     let pelvis = s.root("pelvis", at: vec3(y: 1.3m))
     let chest  = s.bone("chest", parent: pelvis, at: vec3(z: 1.1m))
     let neck   = s.chain("neck", parent: chest, joints: 4, span: vec3(y: 0.6m, z: 0.5m))
@@ -132,22 +137,23 @@ fn grazer_skeleton() -> Skeleton {
 
 /// One grazer. Each member of a herd uses a different seed, so variation costs zero bytes.
 pub fn grazer(seed: Seed) -> Creature<Tissue> {
-    let mut rng = Rng::new(seed)
+    var rng = Rng::new(seed)
     let bulk = rng.range(0.9, 1.15)
     let s = grazer_skeleton().scaled(rng.range(0.92, 1.08))   // structure known at compile time, scale per individual
 
-    Creature::new(s)
-        .part(s["chest"], torso(bulk, seed))
-        .part(s["neck"],  neck_tube(r_base: 22cm * bulk, r_tip: 12cm))   // a part can span a whole chain
-        .part(s["head"],  head(seed))
-        .part(s["tail"],  tail())
+    Creature::new(take s)                // the creature owns its skeleton from here on
+        .part("chest", torso(bulk, seed))     // bone names are checked against the skeleton (D-031)
+        .part("neck",  neck_tube(r_base: 22cm * bulk, r_tip: 12cm))   // a part can span a whole chain
+        .part("head",  head(seed))
+        .part("tail",  tail())
         .each_leg(|leg| leg.fill(|seg| leg_segment(seg.len, 9cm * bulk, 6cm)).foot(hoof()))
         .blend(k: 6cm)       // smooth-union across joints: organic joints for free
 }
 ```
 
 **Notes:**
-- **Binding times mix within a single value.** The skeleton's *structure* is known at compile time, so `s["chest"]` is checked and returns a typed `Bone` handle (D-031). Its *scale* is only known when `grazer` runs.
+- **Binding times mix within a single value.** The skeleton's *structure* is known at compile time, so `"chest"` is checked against it (D-031). Its *scale* is only known when `grazer` runs.
+- **`take s` hands the skeleton to the creature** (D-064). Using `s` afterwards would be an error, which is why bones are named on the builder, not looked up through `s`.
 - **`grazer` is pure,** so its result can be passed to `@specialize` parameters (sketch 02).
   - *When* that happens (level load, spawn) is the engine's decision. The language only defines what it means (D-051).
   - `grazer` is exported, so its effects are stated at the boundary (D-030). It has none, so there's nothing to write.
@@ -162,7 +168,7 @@ pub fn grazer(seed: Seed) -> Creature<Tissue> {
 /// What the simulation sees. These values change gameplay, so they're part of what the
 /// grazer *is*, not how it's drawn. They must come out bit-identical on every client (D-015).
 @deterministic
-pub fn grazer_physique(c: &Creature<Tissue>) -> Physique {
+pub fn grazer_physique(c: Creature<Tissue>) -> Physique {
     Physique {
         mass:      c.integrate(|t| t.density, per: Bone, cell: 1cm),   // mass, center of mass, inertia per bone
         collision: c.fit_capsules(per: Bone, tolerance: 1cm),          // cheap shapes to re-simulate on rollback
@@ -208,6 +214,7 @@ pub const GRAZER_LOOK = CreatureLook {
 struct GrazerSim: SimState {
     individual: Handle<Creature<Tissue>>,
     tier:       SimTier,        // Full: pose lives in sim. Ambient: root + phase only (D-034)
+    rng:        Rng,            // per-grazer stream, seeded from (world seed, handle): parallel-safe
     root:       Transform,
     gait:       GaitState,      // phase, speed, mode
     pose:       Pose,           // gameplay pose: hitboxes, foot contacts (Full tier only)
@@ -223,48 +230,54 @@ struct GrazerLook {
 /// Small learned controller, trained offline. Quantized weights with recorded provenance (D-036).
 const GAIT = GaitNet::embed("grazer_gait.wnn")
 
+/// Takes the terrain, not the whole world: the grazer lives inside the world, so mutating it
+/// while borrowing the world would overlap (sketch 03 §2).
 @deterministic
-fn step(g: &mut GrazerSim, world: &World, intent: Intent) {
-    g.gait = GAIT.eval(g.gait, intent, slope: world.terrain.slope_under(g.root))
+fn step(g: mut GrazerSim, terrain: Terrain, intent: Intent) {
+    g.gait = GAIT.eval(g.gait, intent, slope: terrain.slope_under(g.root))
     g.root = g.root.advance(g.gait.root_motion())
     if g.tier == SimTier::Full {
         g.pose = g.gait.pose()
-        for foot in g.pose.feet() {
-            let ground = world.terrain.raycast(from: foot.pos, dir: DOWN)   // field query on the CPU, strict floats
-            g.pose.plant(foot, on: ground)                                  // two-bone IK
+        for mut leg in g.pose.legs() {                                  // each leg: a mutable projection of its own bones
+            let ground = terrain.raycast(from: leg.foot_pos(), dir: DOWN)  // field query on the CPU, strict floats
+            leg.plant(on: ground)                                       // two-bone IK
         }
     }
 }
 
-fn animate(g: &GrazerSim, look: &mut GrazerLook, world: &World, dt: f32<s>) {
+fn animate(g: GrazerSim, look: mut GrazerLook, world: World, dt: f32<s>) {
     look.pose = match g.tier {
-        SimTier::Full    => g.pose,
+        SimTier::Full    => g.pose.copy(),                            // explicit: `g` is borrowed (D-064)
         SimTier::Ambient => g.gait.pose().planted_on(world.terrain),   // same work, but never rolled back
     }
     look.tail.follow(look.pose["tail"], dt)      // secondary motion is presentation-only
 }
 
-fn draw(g: &GrazerSim, look: &GrazerLook, frame: &mut Frame) {
+fn draw(g: GrazerSim, look: GrazerLook, frame: mut Frame) {
     frame.draw(g.individual, pose: look.pose.layer(look.tail).layer(look.ears))
 }
 ```
 
 **Notes:**
 - **The sim/presentation split is an engine pattern** (D-052).
-  - The engine calls `step` with `&mut` sim state.
-  - It calls `animate` and `draw` with sim state behind `&`.
+  - The engine calls `step` with `mut` access to sim state.
+  - It calls `animate` and `draw` with sim state borrowed, which is the default mode and read-only.
   - Presentation functions need no attribute. They're just ordinary code.
+
+**Two bugs the memory model caught here** ([memory-model.md](../memory-model.md)):
+- **The first draft** looped `for foot in g.pose.feet()` while calling `g.pose.plant(...)` in the body. That mutates the pose while iterating over it, and exclusivity rejects it. Iterating `legs()` as disjoint mutable projections is the fix.
+- **`animate` wrote `look.pose = g.pose`.** That moves out of borrowed sim state, so it now says `.copy()`, and the cost of the copy is visible.
 
 What gets rejected, and by whom:
 
 ```wrela
 @deterministic
-fn bad_step(g: &mut GrazerSim) {
+fn bad_step(g: mut GrazerSim) {
     let t = clock::now()            // compiler: reading the clock is nondeterministic (D-052)
 }
 
-fn bad_draw(g: &GrazerSim, look: &GrazerLook, frame: &mut Frame) {
-    g.root.y += look.tail.sway      // compiler: can't assign through `&` (ordinary mutability)
+fn bad_draw(g: GrazerSim, look: GrazerLook, frame: mut Frame) {
+    g.root.y += look.tail.sway      // compiler: `g` is borrowed, not `mut` (ordinary mutability)
 }
 
 struct CheatingSim: SimState {

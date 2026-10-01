@@ -1,6 +1,6 @@
 # Sketch 02: drawing the grazer
 
-*Status: draft for discussion, 2026-10-01. Revised for D-050–D-053: the compiler knows nothing about the engine. The syntax is imagined. Decisions are cited as D-NNN from [../decisions.md](../decisions.md). Questions continue from sketch 01, at Q13. Q14–Q19 were accepted as recommended (D-044–D-049).*
+*Status: draft for discussion, 2026-10-01. Written in the memory model's parameter modes ([memory-model.md](../memory-model.md)). Revised for D-050–D-053: the compiler knows nothing about the engine. The syntax is imagined. Decisions are cited as D-NNN from [../decisions.md](../decisions.md). Questions continue from sketch 01, at Q13. Q14–Q19 were accepted as recommended (D-044–D-049).*
 
 Sketch 01 was game content. This sketch is **engine code** (layer 2): what turns the grazer into pixels. It tests two things:
 - Is wrela pleasant for writing the engine itself?
@@ -40,7 +40,7 @@ pub struct CreatureLook {
 
 **Notes:**
 - **The engine's guarantees come from general features:**
-  - **Drawing can't affect gameplay.** Realization takes the creature by `&`, so it can't write to it. Its outputs live on the GPU, and reading them back is nondeterministic, which `@deterministic` code forbids (D-052).
+  - **Drawing can't affect gameplay.** Realization borrows the creature (the default mode), so it can't write to it. Its outputs live on the GPU, and reading them back is nondeterministic, which `@deterministic` code forbids (D-052).
   - **Error bounds** (`tolerance`) are an engine contract, checked by engine debug code that samples the field against the mesh.
 - **Struct field defaults** (D-048) let game code mention only what it changes. That's the general sugar that replaced the old `schedule` block (D-053).
 
@@ -75,9 +75,9 @@ Nobody pads anything by hand. The same struct is used from the CPU, when allocat
 /// Which blocks does the surface pass through, and which parts matter in each?
 @compute(64)
 fn cull_blocks<F: Surface>(
-    @specialize field: &F,
-    grid: &Grid,
-    live: &mut Append<LiveBlock>,
+    @specialize field: F,
+    grid: Grid,
+    live: mut Append<LiveBlock>,
     id:   GlobalId,
 ) {
     let block = grid.block(id.x)
@@ -112,11 +112,11 @@ fn cull_blocks<F: Surface>(
 /// best fits the surface crossings on the cell's edges (dual contouring's QEF).
 @compute(4, 4, 4)
 fn place_vertices<F: Surface + Parts>(
-    @specialize field: &F,
-    @specialize skin:  &Skin,
-    blocks:   &[LiveBlock],
-    verts:    &mut Append<SkinVertex>,
-    cell_map: &mut CellMap,
+    @specialize field: F,
+    @specialize skin:  Skin,
+    blocks:   [LiveBlock],
+    verts:    mut Append<SkinVertex>,
+    cell_map: mut CellMap,
     block_id: WorkgroupId,
     cell_id:  LocalId,
 ) {
@@ -124,7 +124,7 @@ fn place_vertices<F: Surface + Parts>(
     let cell  = block.cell(cell_id)
     let f     = field.with_live(block.parts)              // evaluate only what matters here
 
-    let mut qef = Qef::new()
+    var qef = Qef::new()
     for edge in cell.edges() {                            // 12 edges, unrolled at compile time
         if f.sign(edge.a) == f.sign(edge.b) { continue }
         let p = edge.root(|x| f.distance(x), iters: 4)    // where the surface crosses this edge
@@ -184,21 +184,21 @@ None of this is engine-specific. Any wrela program that passes a value to a `@sp
 /// Turn one creature into a skinned mesh on the GPU. Ordinary engine code: the engine
 /// decides when to call it (at spawn) and caches the result.
 pub fn realize_mesh<C: Blend>(
-    @specialize creature: &Creature<C>,
-    look: &CreatureLook,
-    gpu:  &mut Gpu,
+    @specialize creature: Creature<C>,
+    look: CreatureLook,
+    gpu:  mut Gpu,
 ) -> SkinnedMesh {
     let field = creature.field()
     let grid  = Grid::covering(creature.bounds(), cell: look.surface.cell_size(field))   // tolerance + curvature bound
-    let live  = gpu.append::<LiveBlock>(capacity: grid.block_count())
-    let verts = gpu.append::<SkinVertex>(capacity: grid.cell_count() / 8)
-    let cells = gpu.cell_map(&grid)
-    let quads = gpu.indices(capacity: verts.capacity() * 6)
+    var live  = gpu.append::<LiveBlock>(capacity: grid.block_count())     // `var`: passed as `mut` below
+    var verts = gpu.append::<SkinVertex>(capacity: grid.cell_count() / 8)
+    var cells = gpu.cell_map(grid)
+    var quads = gpu.indices(capacity: verts.capacity() * 6)
 
-    gpu.dispatch(cull_blocks, (field, &grid, &mut live), count: grid.block_count())
+    gpu.dispatch(cull_blocks, (field, grid, mut live), count: grid.block_count())
     gpu.dispatch_indirect(place_vertices,
-        (field, &look.deform, &live, &mut verts, &mut cells), groups: live.count())
-    gpu.dispatch_indirect(emit_quads, (&live, &cells, &mut quads), groups: live.count())
+        (field, look.deform, live, mut verts, mut cells), groups: live.count())
+    gpu.dispatch_indirect(emit_quads, (live, cells, mut quads), groups: live.count())
 
     SkinnedMesh { verts, quads, draw: quads.indirect_draw() }    // counts stay on the GPU
 }
@@ -224,7 +224,7 @@ pub struct Skinned {
 }
 
 @vertex
-fn skin(v: SkinVertex, palette: &Palette, view: &View) -> Skinned {
+fn skin(v: SkinVertex, palette: Palette, view: View) -> Skinned {
     let m = v.bones.zip(v.weights).sum(|(b, w)| palette.bones[b] * w.to_f32())
     Skinned {
         clip:     view.project(m * v.rest_pos),
@@ -237,10 +237,10 @@ fn skin(v: SkinVertex, palette: &Palette, view: &View) -> Skinned {
 
 @fragment
 fn shade<F: Surface + Channels<C>, C: Blend>(
-    @specialize field:   &F,
+    @specialize field:   F,
     @specialize shading: Shading,
     s:      Skinned,
-    lights: &Lights,
+    lights: Lights,
 ) -> Color {
     let f = field.with_live(s.live.0)                 // 2–3 parts per pixel, not 20
     let t = f.channels(s.rest_pos)                    // compiles in only albedo, roughness, material (D-002)
@@ -264,9 +264,9 @@ fn shade<F: Surface + Channels<C>, C: Blend>(
 **Allowed:** a per-frame value that only feeds arithmetic.
 
 ```wrela
-fn draw_wobbly(g: &GrazerSim, frame: &FrameInfo, gpu: &mut Gpu) {
+fn draw_wobbly(g: GrazerSim, frame: FrameInfo, gpu: mut Gpu) {
     let f = grazer_field(g).displace(fbm(freq: 10 / m), amp: sin(frame.time) * 2cm)
-    gpu.dispatch(cull_blocks, (&f, ...))
+    gpu.dispatch(cull_blocks, (f, ...))
     // ok: `amp` only feeds arithmetic, so it's data (§5): a uniform updated each frame
 }
 ```
@@ -276,10 +276,10 @@ fn draw_wobbly(g: &GrazerSim, frame: &FrameInfo, gpu: &mut Gpu) {
 **Rejected:** a value that changes structure each frame.
 
 ```wrela
-fn draw_shedding(g: &GrazerSim, frame: &FrameInfo, gpu: &mut Gpu) {
+fn draw_shedding(g: GrazerSim, frame: FrameInfo, gpu: mut Gpu) {
     let horns = if frame.time > 10s { horns_long() } else { horns_short() }
     let f = grazer_field(g).union(horns)
-    gpu.dispatch(cull_blocks, (&f, ...))
+    gpu.dispatch(cull_blocks, (f, ...))
     // error: `cull_blocks` specializes on the structure of `field`, but that structure is
     //        chosen at runtime (one of 2 shapes)
     //   help: if both shapes are known ahead of time, hoist the choice:
@@ -294,11 +294,11 @@ The others are ordinary errors:
 
 ```wrela
 @compute(64)
-fn bad_cull<F: Surface>(@specialize field: &F, names: &Vec<String>, id: GlobalId) { ... }
+fn bad_cull<F: Surface>(@specialize field: F, names: Vec<String>, id: GlobalId) { ... }
 // error: `Vec<String>` allocates; GPU entry points can't take it (D-010)
 
-pub fn cheating_realize<C: Blend>(@specialize creature: &Creature<C>, gpu: &mut Gpu) -> SkinnedMesh {
-    creature.physique.mass *= 2      // error: can't assign through `&` (ordinary mutability)
+pub fn cheating_realize<C: Blend>(@specialize creature: Creature<C>, gpu: mut Gpu) -> SkinnedMesh {
+    creature.physique.mass *= 2      // error: `creature` is borrowed, not `mut` (ordinary mutability)
     ...
 }
 ```

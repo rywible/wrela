@@ -11,6 +11,7 @@ Design phase. There's no code yet. The language is being designed sketch by sket
 - **`docs/design/decisions.md` is the source of truth.**
   - Every entry has a stable ID (D-NNN).
   - Every entry has a status: Accepted, Proposed, Open or Withdrawn.
+- **`docs/design/memory-model.md`** is the one place the memory rules live: parameter modes, projections, exclusivity, regions, snapshots.
 - **`docs/design/vision.md`** covers the goal, the four theses and the architecture.
 - **`docs/design/sketches/`** holds programs in imagined syntax. The language is derived from them.
 
