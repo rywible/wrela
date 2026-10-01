@@ -1,6 +1,6 @@
 # Sketch 01: a creature as a field
 
-*Status: draft, 2026-10-01. Questions Q1–Q12 were resolved the same day as D-025–D-036 in [../decisions.md](../decisions.md). Revised for D-050–D-053 (the compiler knows nothing about the engine) and for the [2026-10-01 audit](../reviews/2026-10-01-audit.md) (D-067–D-088). The syntax is still imagined. Nothing here is decided unless it cites a decision.*
+*Status: draft, 2026-10-01. Questions Q1–Q12 were resolved the same day as D-025–D-036 in [../decisions.md](../decisions.md). Revised for D-050–D-053 (the compiler knows nothing about the engine), for the [2026-10-01 audit](../reviews/2026-10-01-audit.md) (D-067–D-088), and for scoped facts (D-092). The syntax is still imagined. Nothing here is decided unless it cites a decision.*
 
 This is the code we'd want to write for the creature milestone.
 
@@ -79,7 +79,7 @@ const HOOF = Tissue {
 
 ```wrela
 /// Torso, in the chest bone's space. +z is forward, +y is up.
-@assert(lipschitz <= 1.5)   // checked; the constant itself is compiler-derived (D-077)
+@assert(lipschitz <= 1.5, near: 10cm)   // checked near the surface; the constant is compiler-derived (D-077, D-092)
 fn torso(bulk: f32, seed: Seed) -> Field<Lipschitz, Tissue> {
     ellipsoid(radii: vec3(0.45m, 0.50m, 0.90m) * bulk)          // no exact SDF exists for ellipsoids: a `Bound`
         .smooth_union(

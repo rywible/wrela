@@ -5,7 +5,7 @@ wrela is a new language, compiler, engine and agent-native studio for AAA-ambiti
 ## Status
 
 Design phase, with first measurements. There's no compiler yet.
-- Spike 01 measured hand-written output for the grazer (D-089). It's a provisional pass on an M4; the M1 is still owed.
+- Spike 01 measured hand-written output for the grazer on the primary reference device, a MacBook Air M4 (D-089, D-096). It passes D-067's kill criteria.
 - `docs/design/language.md` describes the whole language as it stands, so compiler work may start (D-088).
 - Spikes and experiments are throwaway code that answers a question. They aren't the start of the engine or compiler.
 

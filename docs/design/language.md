@@ -264,8 +264,8 @@ fn cull_blocks<F: Surface>(field: F, grid: Grid, live: mut Append<LiveBlock>, id
 | `@gpu` | functions | Asserts the function is GPU-safe, so a violation errors at its definition (D-010) | T0 |
 | `@comptime` | functions, parameters | Runs, or is known, when the compiler runs (D-051, D-073) | T1 |
 | `@deterministic` | functions, function types | The determinism constraint (§14) | T1 |
-| `@assert(fact)` | functions | A checked fact, e.g. `@assert(lipschitz <= 1.5)` (D-077) | T1 |
-| `@assume(fact)` | functions | A trusted fact, e.g. `@assume(lipschitz: 1)`, `@assume(bandlimit: ...)`. Debug builds spot-check by sampling; every assumption is greppable. (D-077) | T1 |
+| `@assert(fact)` | functions | A checked fact, e.g. `@assert(lipschitz <= 1.5, near: 10cm)`. The `near:` scope is optional. (D-077, D-092) | T1 |
+| `@assume(fact)` | functions | A trusted fact, e.g. `@assume(lipschitz: 1)`, `@assume(bandlimit: ...)`, optionally scoped with `near:`. Debug builds spot-check by sampling within the scope; every assumption is greppable. (D-077, D-092) | T1 |
 | `@escaping` | closures | The closure may outlive the call. memory-model §7 writes it on the closure expression: `@escaping \|w\| ...`. (D-064) | T1 |
 | `@diagnostic(...)` | traits, types | A library-authored error message; not part of the type (D-055, D-081) | T1 |
 | `@audio` | functions | Audio-worklet entry point (D-072) | T2 |
@@ -347,7 +347,10 @@ The compiler derives these from any function that qualifies under the effect tab
 - **`LiveMask<F>` is opaque and typed by the function it prunes.** Library code can store and pass it, but can't read its bits (D-080).
 - **Declared facts** supply what derivation can't: `@assume(lipschitz: 1)` on `length`, and a range and `@assume(bandlimit: ...)` on noise (D-057, D-077). The compiler composes them through callers. Placeholder: D-077 spells only `lipschitz` and `bandlimit`, so the spelling of a range fact is open.
 - **Bandlimits** let noise fade octaves finer than a footprint instead of aliasing, on the GPU and anywhere else a footprint is known (D-077).
-- **Open (from spike 01):** a fact may hold only near where it's used. The ellipsoid bound's gradient is unbounded at its centre, so a global Lipschitz constant fails even though the constant holds within reach of the surface. See D-092.
+- **Facts can be scoped** (D-092). `@assume(lipschitz: 1, near: 10cm)` means the fact holds wherever |f| < 10cm.
+  - Derived bounds carry the scope through composition.
+  - A consumer states the scope it needs. An interval test over a block that straddles the surface needs `near` of at least the block's radius.
+  - Why: the stdlib's ellipsoid bound has an unbounded gradient at its centre. A global Lipschitz constant fails there, even though the constant holds everywhere culling, root-finding and sphere tracing look. Spike 01's probe and both authoring agents (D-095) hit this.
 
 ---
 
@@ -485,7 +488,7 @@ fn normals<F: Surface>(field: F, pos: vec3) -> Color {
 - **The closed list of stdlib items the compiler knows** (D-081).
 - **Syntax for structural defaults:** `@comptime default for<T: struct>` is a placeholder (§3).
 - **How a generic parameter declares that it accepts non-escaping types** (memory-model §4).
-- **Scope for declared facts** (§13, D-092).
+- **Checking scopes:** how the compiler matches the scope a consumer needs against the scope a fact declares, and how scopes compose (D-092).
 - **Workgroup-shared memory and barriers in kernels** (§12, D-093).
 - **`from param` annotations** (decisions.md, Open).
 - **Region chunk sizes and undo-ring sizes** (memory-model.md, Open).

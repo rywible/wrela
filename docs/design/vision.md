@@ -14,7 +14,7 @@ wrela is an MIT-licensed, spare-time project done for fun. It's run with busines
 
 ## Theses
 
-**These are hypotheses, not findings.** D-067 sets out how each will be tested, and what would count as failing. The first measurements, on one machine that isn't the reference device, bear on theses 1–4; see milestone 0.
+**These are hypotheses, not findings.** D-067 sets out how each will be tested, and what would count as failing. The first measurements, on the primary reference device (D-096) and in one browser, bear on theses 1–4; see milestone 0.
 
 1. **Agent-native authoring.** An engine and language designed for agents first lets one human plus a team of agents operate like an AAA studio.
 2. **Fields are the substrate.** Content is authored as fields: functions over space. Fields are compact, need no prebaked assets, and can be cheaply distributed over a CDN. Games should be megabytes, not gigabytes.
@@ -65,11 +65,11 @@ The architecture already points this way:
 
 0. **Measure first (D-067).**
    - Hand-write the WGSL and WASM the compiler would emit for the grazer, and measure it on the reference devices (D-068) against written kill criteria.
-     - *Done on a MacBook Air M4, 2026-10-01* ([spike 01](../../spikes/01-grazer/), D-089): a provisional pass with mesh LOD (creatures 2.49 ms of GPU time for a 40-grazer herd at 1080p), and inconclusive without LOD (6.49 ms). **Still owed:** the M1 itself, the secondary devices, Safari and Firefox.
+     - *Done on the primary device, 2026-10-01* ([spike 01](../../spikes/01-grazer/), D-089, D-096): **passes.** Creatures take 2.49 ms of GPU time for a 40-grazer herd at 1080p with mesh LOD, and 6.49 ms without, against an 8 ms budget. **Still owed:** Chrome stable, Safari and Firefox on this device, and the secondary devices.
    - Separately, test whether agents can author good-looking creatures as field code.
      - *Done once, 2026-10-01* ([experiments/agent-authoring](../../experiments/agent-authoring/), D-095): two unaided agents reached placeholder quality in about 20 minutes each. A re-run with better authoring tools and human art direction is next.
 1. **Hello field.** Wrela source compiles to WASM and WGSL, and an SDF renders in a browser tab.
-2. **Creature.** One creature walks convincingly across uneven field terrain, in a browser tab, at 60fps on the primary reference device, a MacBook Air M1 (D-068). This tests field authoring, extraction to triangles, deformation, the animation stack and browser performance all at once.
+2. **Creature.** One creature walks convincingly across uneven field terrain, in a browser tab, at 60fps on the primary reference device, a MacBook Air M4 (D-096). This tests field authoring, extraction to triangles, deformation, the animation stack and browser performance all at once.
 
 ## Non-goals (for now)
 

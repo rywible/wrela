@@ -105,7 +105,7 @@ For each pure function an entry point reaches, the compiler emits only the inter
 | Primal, `*_d` | culling, root-finding | `grazer_d` | |
 | Forward derivative, `*_g` | normals in extraction and shading | `grazer_g` | Per-pixel field shading costs 1.6–2.8× a texture-lookup proxy (spike results) |
 | Interval | `cull_blocks` | Each part's distance at the block centre ± L × radius | Keeps 14–35% of blocks, against sketch 02's estimate of 5–10%. **Tightness is a compiler quality metric:** looser intervals cost extraction time directly. |
-| Lipschitz facts | interval, `.to_bound()` | Assumed per part (`L_ELLIPSOID = 1.25`) | The ellipsoid bound's gradient reaches 11 near its centre. A global constant would fail sketch 01's `@assert`; see D-092. |
+| Lipschitz facts | interval, `.to_bound()` | Assumed per part (`L_ELLIPSOID = 1.25`) | The ellipsoid bound's gradient reaches 11 near its centre. A global constant would fail sketch 01's `@assert`, so facts are now scoped to near the surface (D-092). |
 | Channel slices | `shade`, mass integration | Separate functions per consumer | Extraction computes no channels; mass computes density only (D-002). |
 
 The spike had to write the channel slices by hand, and it was easy to compute a channel nobody reads. Slicing per consumer is worth having in the compiler.
@@ -187,7 +187,7 @@ The spike surfaced these. Each is a requirement on the compiler or the language,
 3. **Derive tight intervals.** Interval tightness sets extraction cost; it's a measurable quality metric for the compiler.
 4. **Make pruned evaluation agree at shared samples.** Two blocks with different masks evaluated a shared corner and occasionally disagreed on its sign, which left a hole: 2 holes in ~2M quads. Either pruned evaluation is bit-exact with unpruned evaluation, or the engine evaluates shared samples under one mask (D-091).
 5. **Support workgroup-shared memory and barriers in kernels.** `place_vertices` evaluates each block's 125 corners once into workgroup memory, then shares them across 64 invocations. Sketch 02 didn't show this, the language has no design for it yet, and the spike needed it (D-093).
-6. **Scope declared facts** (D-092).
+6. **Track the scope of declared facts** through composition, and check it against what each consumer needs (D-092).
 7. **Check the layout contract** between WASM and WGSL at build time (§5).
 
 ---

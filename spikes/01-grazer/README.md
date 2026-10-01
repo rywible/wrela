@@ -24,16 +24,12 @@ This is the WGSL and WASM the wrela compiler *would* emit for the grazer in sket
 2. **If the hand-written version can't meet that,** creatures fall back to cooking on device: baked meshes and textures, rendered conventionally.
 3. **The comparison that matters** is per-pixel field shading against the texture-lookup baseline, not against a naive grid.
 
-### This machine is not the reference device
+### The reference device
 
-The spike ran on a **MacBook Air M4 (8-core GPU, 16 GB)** in Chromium 152 (the Claude desktop app's browser pane). The primary reference device is a MacBook Air M1, 8 GB, on Chrome stable (D-068).
-
-- **An unverified estimate:** public GPU benchmarks put the M4 at about 1.5–2× the M1.
-- **Rule, set before measuring:** a pass here counts as a *provisional* pass for the M1 only if creatures take **≤ 4 ms** of GPU time, a 2× margin.
-- Between 4 and 8 ms, the result is **inconclusive until measured on an M1**.
-- Above 8 ms, the result is a **fail**, since the M1 won't be faster.
-
-The secondary devices (Iris Xe, RTX 3060) and Safari/Firefox weren't tested.
+- The spike ran on a **MacBook Air M4 (8-core GPU, 16 GB)** in Chromium 152, the Claude desktop app's browser pane.
+- **When the spike was written,** D-068 named a MacBook Air M1 as the primary device. So a margin rule was set before measuring: a result here would count as a provisional pass only at ≤ 4 ms, because the M4 was assumed (unverified) to be about 1.5–2× faster.
+- **After the run, the owner confirmed this M4 is the primary reference device** (D-096). That retires the margin rule, and the kill criterion is simply ≤ 8 ms here.
+- **Not yet checked:** Chrome stable (which D-068 specifies), Safari, Firefox, and the secondary devices (Iris Xe, RTX 3060).
 
 ## Layout
 
@@ -75,13 +71,14 @@ cd spikes/01-grazer/cpu && node params.mjs > params-seed1.f32 && cargo run --rel
 
 ### Verdict
 
-| Kill criterion | Measured here | Verdict under the margin rule |
+| Kill criterion | Measured here | Verdict |
 |---|---|---|
-| Herd: creatures ≤ 8 ms GPU on the M1 | **2.49 ms** with a 3cm mesh at herd distance; **6.49 ms** with a 1.5cm mesh on everyone | **Provisional pass** with LOD; **inconclusive** without |
+| Herd: creatures ≤ 8 ms GPU on the primary device | **2.49 ms** with a 3cm mesh at herd distance; **6.49 ms** with a 1.5cm mesh on everyone | **Pass**, with and without LOD |
 | Herd: 60 fps | Whole frame 3.67 ms (LOD) / 7.21 ms (no LOD). Paced at 60 Hz, 0 of 150 frames over 16.7 ms in either. | Pass here |
 
-- **Per-pixel field shading survives on this device.** The cooking fallback isn't triggered.
-- **The margin depends on two things not yet measured:** an engine with mesh LOD, and the M1 itself.
+- **Per-pixel field shading survives on the primary device.** The cooking fallback isn't triggered.
+- **With LOD, creatures use under a third of the 8 ms budget;** without it, about 80%.
+- *Under the original margin rule (before D-096), these read as a provisional pass with LOD and inconclusive without.*
 
 ### Where creature time goes
 
@@ -145,7 +142,7 @@ GPU ms per pass, best variant for each (all herd variants are faster without the
 
 ### Caveats
 
-- **Device:** an M4, not the M1. The secondary devices, Safari and Firefox weren't tested.
+- **Browser:** Chromium 152 inside the Claude desktop app, not Chrome stable. The secondary devices, Safari and Firefox weren't tested.
 - **Clock scaling:** the first run timed frames one at a time, and idle gaps let the GPU clock down: the same terrain pass measured 0.4–1.6 ms. The final numbers are sustained back-to-back frames instead. When frames were paced at 60 Hz, the OS lowered clocks and the same 1.5cm herd frame took 13.6 ms instead of 7.2. That's fine for holding 60 fps, but it means 60 Hz pacing hides how much headroom is left.
 - **The page was hidden** in the app's browser pane during the runs. Timestamps are unaffected; the 60 Hz pacing used a busy-wait because requestAnimationFrame and timers are throttled.
 - **Timestamps are quantized to ~65.5 µs** (2^16 ns observed). Passes under ~0.2 ms are imprecise.
@@ -154,9 +151,9 @@ GPU ms per pass, best variant for each (all herd variants are faster without the
 
 ### What this means for the design
 
-These are recorded as D-089–D-092 in `docs/design/decisions.md`.
+These are recorded as D-089–D-092 and D-096 in `docs/design/decisions.md`.
 
-1. **Keep per-pixel field shading as the default.** The fallback isn't triggered here, but it's provisional until the M1 is measured.
+1. **Keep per-pixel field shading as the default.** The fallback isn't triggered (D-089, D-096).
 2. **Creature cost is triangle-bound, so screen-size mesh LOD is required** (engine). It needs to drop resolution much nearer than sketch 01's 40 m bricks.
 3. **Realization must be amortized** (engine): coarse first, then refine.
 4. **CPU field queries fit the sim budget.** Spawn-time physique should use a 2cm finest cell and run off the main thread.

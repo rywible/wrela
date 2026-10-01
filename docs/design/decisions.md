@@ -12,7 +12,7 @@ Each entry has a stable ID so other docs can cite it.
 
 A status line may also say **Superseded by**, **Amended by**, **Refined by** or **Revised by** a later entry. When it does, the later entry wins.
 
-**Accepted means agreed, not validated.** As of 2026-10-01, only spike 01's measurements back any decision, and only on one machine. "Evidence and revisit triggers" (near the end of this log) lists the load-bearing decisions, their evidence, and what would reopen each one.
+**Accepted means agreed, not validated.** As of 2026-10-01, only spike 01's measurements back any decision: on the primary device, in one browser. "Evidence and revisit triggers" (near the end of this log) lists the load-bearing decisions, their evidence, and what would reopen each one.
 
 To change a decision, add a new entry that supersedes it, then annotate the old entry's status line. Don't rewrite history.
 
@@ -723,7 +723,7 @@ The full rules are in [memory-model.md](memory-model.md).
 These entries answer [reviews/2026-10-01-audit.md](reviews/2026-10-01-audit.md). Finding IDs (T, F, M, U, S, P) refer to that document, and [reviews/2026-10-01-audit-response.md](reviews/2026-10-01-audit-response.md) maps every finding to its outcome. The owner delegated these choices on 2026-10-01.
 
 ### D-067 · Validate before designing further
-**Status:** Accepted (delegated, 2026-10-01). Answers T1, T3, T4. Spike results: D-089 to D-093. Authoring experiment: D-095.
+**Status:** Accepted (delegated, 2026-10-01). Answers T1, T3, T4. Spike results: D-089 to D-093, re-read by D-096. Authoring experiment: D-095.
 
 The next work is measurement, not more language design.
 
@@ -745,7 +745,7 @@ The next work is measurement, not more language design.
 4. **Agent syntax test** (T4). When the parser and checker exist, measure how often agents write correct wrela from the spec alone. This tests D-064's new syntax.
 
 ### D-068 · Reference devices and budgets
-**Status:** Accepted (delegated, 2026-10-01). Answers U7.
+**Status:** Accepted (delegated, 2026-10-01). Answers U7. Primary device superseded by D-096.
 
 | Role | Device |
 |---|---|
@@ -870,7 +870,7 @@ Derived interval code on the GPU widens each operation's result outward by that 
 - **Transforms carry their length unit** (`Transform<m>`). General matrices are unitless.
 
 ### D-077 · Field kinds and declared facts
-**Status:** Accepted (delegated, 2026-10-01). Answers F2, F3, T5. Revises D-027, D-056, D-057. D-092 (Proposed) would amend it.
+**Status:** Accepted (delegated, 2026-10-01). Answers F2, F3, T5. Revises D-027, D-056, D-057. Amended by D-092.
 
 **Kinds are stdlib types:**
 
@@ -990,10 +990,10 @@ Under D-066 there's no previous world to read, so D-063's premise is gone. Inste
 
 ## From spike 01 and sketch 04
 
-These record [spike 01](../../spikes/01-grazer/)'s measurements and the [agent-authoring experiment](../../experiments/agent-authoring/) (D-067), and what they imply. [Sketch 04](sketches/04-what-ships.md) draws the compiler requirements out of the same code. The owner delegated the what's-next list on 2026-10-01. D-092 would change the language, so it's only Proposed.
+These record [spike 01](../../spikes/01-grazer/)'s measurements and the [agent-authoring experiment](../../experiments/agent-authoring/) (D-067), and what they imply. [Sketch 04](sketches/04-what-ships.md) draws the compiler requirements out of the same code. The owner delegated the what's-next list on 2026-10-01, and decided D-092 and D-096 directly.
 
 ### D-089 · Per-pixel field shading stays the default, provisionally
-**Status:** Accepted (delegated, 2026-10-01). Records D-067's kill-criteria outcome.
+**Status:** Accepted (delegated, 2026-10-01). Records D-067's kill-criteria outcome. Margin rule and verdict superseded by D-096: the measured machine is the primary device, so both results pass.
 
 - **Measured on a MacBook Air M4 in Chromium, not on the primary device:**
 
@@ -1023,7 +1023,7 @@ These record [spike 01](../../spikes/01-grazer/)'s measurements and the [agent-a
 - **Samples shared between pruned blocks are evaluated under one mask,** or pruning is made bit-exact. Otherwise two masks can disagree on a shared corner's sign and leave a hole: 2 in ~2M quads at 1.5cm.
 
 ### D-092 · Declared facts can be scoped
-**Status:** Proposed (2026-10-01). Would amend D-077.
+**Status:** Accepted (user, 2026-10-01): the scoped-facts proposal, not the alternative. Amends D-077.
 
 - **The problem:** the stdlib's ellipsoid bound has an unbounded gradient at its centre; the spike's probe found a maximum of 11. A derived global Lipschitz constant therefore fails sketch 01's `@assert(lipschitz <= 1.5)`, even though every consumer (culling near the surface, root-finding, sphere tracing) only looks within a band around the surface.
 - **The proposal:** a fact may carry a scope. `@assume(lipschitz: 1, near: 10cm)` means "holds wherever |f| < 10cm."
@@ -1063,15 +1063,33 @@ These record [spike 01](../../spikes/01-grazer/)'s measurements and the [agent-a
   The first four match sketch 01's part-and-skeleton model (D-002, D-031). The tools are studio work (layer 3).
 - **Next:** re-run the experiment with those tools, reference images and a human art director between rounds, and see whether quality moves up a class. Thesis 1 stays a hypothesis until then.
 
+### D-096 · The primary reference device is the owner's MacBook Air M4
+**Status:** Accepted (user, 2026-10-01). Supersedes D-068's primary device and D-089's margin rule.
+
+- **Primary:** a MacBook Air M4 (Mac16,12) with an 8-core GPU and 16 GB, on Chrome stable. This is the machine spike 01 ran on.
+  - D-068's budgets are unchanged: 16.7 ms at 1080p, ≤ 1.5 GB per tab, ≤ 64 pipelines per scene, ≤ 4 ms of sim per tick.
+  - The secondary devices are unchanged.
+- **D-089's margin rule is retired.** It existed only because spike 01 ran on a machine assumed to be faster than the primary.
+- **D-067's kill criterion, re-read:** creatures may take at most 8 ms of GPU time on the primary device.
+
+  | Herd of 40 at 1080p | Creatures (GPU) | Whole frame (GPU) | Verdict |
+  |---|---|---|---|
+  | 3cm mesh | 2.49 ms | 3.67 ms | **Pass** |
+  | 1.5cm mesh | 6.49 ms | 7.21 ms | **Pass** |
+
+  Paced at 60 Hz, no frame went over 16.7 ms.
+- **D-090 still stands.** With LOD, creatures use under a third of the budget, which leaves room for more creatures, terrain and effects. Without LOD they use about 80% of it.
+- **One gap remains:** spike 01 ran in Chromium 152 inside the Claude desktop app, not in Chrome stable. Both use the same WebGPU implementation (Dawn), so a large difference is a hypothesis worth checking, not an expectation.
+
 ---
 
 ## Evidence and revisit triggers
 
-As of 2026-10-01, spike 01 has measured a few load-bearing decisions on one machine (a MacBook Air M4, not the primary device). Everything else is **untested**.
+As of 2026-10-01, spike 01 has measured a few load-bearing decisions on the primary device (D-096), in one browser. Everything else is **untested**.
 
 | Decision | Evidence | Revisit if |
 |---|---|---|
-| D-001, D-002: fields, realized as triangles | **Measured on the M4 (spike 01):** a provisional pass with mesh LOD (D-089) | An M1 measurement puts creatures above 8 ms with LOD. |
+| D-001, D-002: fields, realized as triangles | **Measured on the primary device (spike 01, D-096):** passes. Creatures take 2.49 ms with mesh LOD, 6.49 ms without. | Chrome stable, Safari or Firefox on this device puts creatures above 8 ms with LOD, or a full scene (terrain, effects, more creatures) pushes the frame past 16.7 ms. |
 | D-015, D-074: determinism on WASM | **Partly measured:** Rust compiled to wasm32 (in Chromium) and to native aarch64 gave identical bits for field evaluation, mass integration and raycasts | The CI hash comparison across browsers, or an x86 machine, finds divergence that canonicalization can't fix. |
 | D-041, D-069: size and time budgets | **Partly measured:** cold pipeline creation 0.3 s; herd extraction 86 ms GPU at 3cm; physique 1.5 s of one core for 40 grazers (so it needs workers, D-091); the grazer's code and data are under 30 KB compressed (an estimate) | The spike's engine code or pipeline creation alone breaks the cold-start budget. |
 | D-068: the sim budget | **Measured on the M4:** one raycast per foot for 40 grazers is 0.52 ms of the 4 ms tick | Gait evaluation or collision pushes the tick past 4 ms. |
@@ -1079,7 +1097,7 @@ As of 2026-10-01, spike 01 has measured a few load-bearing decisions on one mach
 | D-065, D-066: regions and snapshots | untested | Copy-on-first-write costs more than full copies at realistic world sizes. |
 | D-069: no browser compiler | untested | A sketch needs runtime-chosen structure that enums and `stage::interpret` can't serve fast enough. |
 | D-070: structure is types | **Partly measured:** one pipeline per kernel served all 40 individuals, with their numbers as uniforms | Type sizes or instantiation counts explode in real content. |
-| D-077: declared facts | **Contradicted in part:** a global Lipschitz constant fails for the stdlib's ellipsoid (D-092). Spike 01's probe and both authoring agents (D-095) found it independently. | D-092 is decided. |
+| D-077, D-092: declared facts | A global Lipschitz constant fails for the stdlib's ellipsoid; spike 01's probe and both authoring agents (D-095) found it independently. D-092 scopes facts to answer it (untested). | Scoped facts prove too weak to keep intervals and culling conservative, or too fiddly for authors. |
 | Thesis 1: agent authoring | **Tested once:** two unaided agents reached placeholder quality in ~20 min each (D-095), judged by the same model family | The re-run with authoring tools and human art direction (D-095) still doesn't move quality up a class. |
 
 ---
