@@ -230,6 +230,11 @@ export class ScreenRenderer implements CommandSink {
         `internal: a DRAW of pipeline ${pipeline} reached the renderer unchecked`,
       );
     }
+    // A draw of nothing is already checked and changes no pixel. Skipping it keeps it from taking
+    // a uniform slot, so such draws can't add a buffer each to the frame.
+    if (vertexCount === 0 || instanceCount === 0) {
+      return;
+    }
     pass.setPipeline(built.pipeline);
     if (built.uniform !== undefined) {
       const slot = this.nextSlot(pipeline, built.uniform);

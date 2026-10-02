@@ -1,0 +1,10 @@
+# Third-party actions are pinned to commit SHAs; this keeps the pins current. "/" covers
+# .github/workflows; the composite actions are listed separately.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - "/"
+      - "/.github/actions/*"
+    schedule:
+      interval: weekly

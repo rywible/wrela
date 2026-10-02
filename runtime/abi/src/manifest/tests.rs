@@ -67,8 +67,9 @@ fn render(manifest: &mut Manifest) -> &mut RenderPipeline {
     }
 }
 
-/// serde rejects a key given twice and a number with a fraction or exponent where an integer
-/// goes; the browser runtime's manifest tests check the same cases.
+/// serde rejects a key given twice, and a number with a fraction or exponent or written `-0` (which
+/// it reads as a float) where an integer goes; the browser runtime's manifest tests check the same
+/// cases.
 #[test]
 fn json_that_serde_rejects_is_rejected() {
     let example = spec_example();
@@ -79,6 +80,8 @@ fn json_that_serde_rejects_is_rejected() {
         ("\"size\": 16", "\"size\": 1.6e1"),
         ("\"size\": 16", "\"size\": 16, \"size\": 16"),
         ("\"offset\": 8", "\"offset\": 8.0"),
+        ("\"version\": 0,", "\"version\": -0,"),
+        ("\"id\": 0", "\"id\": -0"),
     ];
     for (from, to) in cases {
         assert!(example.contains(from), "{from}");

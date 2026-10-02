@@ -199,6 +199,18 @@ describe("the screen renderer", () => {
     expect(device.uncaptured).toEqual([]);
   });
 
+  test("a draw of zero vertices or instances takes no uniform slot and isn't encoded", async () => {
+    const { device, screen } = await renderer();
+    const a = bytes(...Array(16).fill(1));
+    screen.beginScreenPass([0, 0, 0, 1]);
+    screen.draw(0, 0, 1, a);
+    screen.draw(0, 3, 0, a);
+    screen.present();
+    expect(device.buffers).toEqual([]);
+    expect(device.submitted[0]?.[0]?.draws).toEqual([]);
+    expect(device.uncaptured).toEqual([]);
+  });
+
   test("the uniform bytes are copied when drawn, so the program may reuse its memory", async () => {
     const { device, screen } = await renderer();
     const memory = new Uint8Array(16).fill(7);

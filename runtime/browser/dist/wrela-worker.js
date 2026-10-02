@@ -1253,7 +1253,7 @@ function strictScan(text) {
         i++;
       }
       const lexeme = text.slice(start2, i);
-      if (/[.eE]/.test(lexeme)) {
+      if (/[.eE]/.test(lexeme) || lexeme === "-0") {
         throw jsonError(path, `expected an integer, found ${lexeme}`);
       }
     } else {
@@ -1569,6 +1569,9 @@ var ScreenRenderer = class {
       throw new HostError(
         `internal: a DRAW of pipeline ${pipeline} reached the renderer unchecked`
       );
+    }
+    if (vertexCount === 0 || instanceCount === 0) {
+      return;
     }
     pass.setPipeline(built.pipeline);
     if (built.uniform !== void 0) {

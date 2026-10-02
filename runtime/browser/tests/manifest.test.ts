@@ -106,6 +106,8 @@ test("duplicate keys and non-integer numbers are rejected, as serde rejects them
     ['"size": 16', '"size": 1.6e1'],
     ['"size": 16', '"size": 16, "size": 16'],
     ['"offset": 8', '"offset": 8.0'],
+    ['"version": 0,', '"version": -0,'],
+    ['"id": 0', '"id": -0'],
   ];
   for (const [from, to] of cases) {
     expect(example.includes(from)).toBe(true);
@@ -123,6 +125,11 @@ test("duplicate keys and non-integer numbers are rejected, as serde rejects them
   expect(float.message).toContain(
     "pipelines[0].bindings[0].size: expected an integer, found 1.6e1",
   );
+  // serde reads `-0` as the float -0.0, so it isn't a u16 or u32 either.
+  const negativeZero = thrown(() =>
+    Manifest.fromJson(example.replace('"version": 0,', '"version": -0,')),
+  ) as ManifestError;
+  expect(negativeZero.message).toContain("version: expected an integer, found -0");
   // Escaped keys are the same key, and strings may hold anything.
   expect(
     thrown(() =>

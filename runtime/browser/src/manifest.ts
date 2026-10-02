@@ -403,8 +403,9 @@ function checkLayout(layout: Layout): string | undefined {
 
 /**
  * Rejects what `JSON.parse` accepts and serde doesn't in a manifest: an object with a key twice,
- * and a number written with a fraction or an exponent (every number in a manifest is an integer:
- * serde rejects `0.0` and `1e1` for a `u32`). The text is already known to be valid JSON.
+ * and a number written with a fraction or an exponent, or as `-0` (every number in a manifest is an
+ * integer: serde rejects `0.0` and `1e1` for a `u32`, and reads `-0` as the float -0.0). The text
+ * is already known to be valid JSON.
  */
 function strictScan(text: string): void {
   let i = 0;
@@ -467,7 +468,8 @@ function strictScan(text: string): void {
         i++;
       }
       const lexeme = text.slice(start, i);
-      if (/[.eE]/.test(lexeme)) {
+      // `-00` isn't JSON, so `-0` is the only way to write negative zero without `.` or `e`.
+      if (/[.eE]/.test(lexeme) || lexeme === "-0") {
         throw jsonError(path, `expected an integer, found ${lexeme}`);
       }
     } else {
