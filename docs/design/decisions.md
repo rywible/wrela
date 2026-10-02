@@ -1089,8 +1089,8 @@ As of 2026-10-01, spike 01 has measured a few load-bearing decisions on the prim
 
 | Decision | Evidence | Revisit if |
 |---|---|---|
-| D-001, D-002: fields, realized as triangles | **Measured on the primary device (spike 01, D-096):** passes. Creatures take 2.49 ms with mesh LOD, 6.49 ms without. | Chrome stable, Safari or Firefox on this device puts creatures above 8 ms with LOD, or a full scene (terrain, effects, more creatures) pushes the frame past 16.7 ms. |
-| D-015, D-074: determinism on WASM | **Partly measured:** Rust compiled to wasm32 (in Chromium) and to native aarch64 gave identical bits for field evaluation, mass integration and raycasts | The CI hash comparison across browsers, or an x86 machine, finds divergence that canonicalization can't fix. |
+| D-001, D-002: fields, realized as triangles | **Measured on the primary device (spike 01, D-096):** passes. Creatures take 2.49 ms with mesh LOD, 6.49 ms without. Chrome stable 154 reproduced this. | Chrome stable, Safari or Firefox on this device puts creatures above 8 ms with LOD, or a full scene (terrain, effects, more creatures) pushes the frame past 16.7 ms. |
+| D-015, D-074: determinism on WASM | **Partly measured:** Rust compiled to wasm32 (in Chromium 152 and in Chrome 154) and to native aarch64 gave identical bits for field evaluation, mass integration and raycasts | The CI hash comparison across browsers, or an x86 machine, finds divergence that canonicalization can't fix. |
 | D-041, D-069: size and time budgets | **Partly measured:** cold pipeline creation 0.3 s; herd extraction 86 ms GPU at 3cm; physique 1.5 s of one core for 40 grazers (so it needs workers, D-091); the grazer's code and data are under 30 KB compressed (an estimate) | The spike's engine code or pipeline creation alone breaks the cold-start budget. |
 | D-068: the sim budget | **Measured on the M4:** one raycast per foot for 40 grazers is 0.52 ms of the 4 ms tick | Gait evaluation or collision pushes the tick past 4 ms. |
 | D-058, D-064: the memory model | untested | The agent syntax test (D-067) shows agents can't write it from the spec, or the sketches find a pattern it can't express. |

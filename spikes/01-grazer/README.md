@@ -29,7 +29,8 @@ This is the WGSL and WASM the wrela compiler *would* emit for the grazer in sket
 - The spike ran on a **MacBook Air M4 (8-core GPU, 16 GB)** in Chromium 152, the Claude desktop app's browser pane.
 - **When the spike was written,** D-068 named a MacBook Air M1 as the primary device. So a margin rule was set before measuring: a result here would count as a provisional pass only at ≤ 4 ms, because the M4 was assumed (unverified) to be about 1.5–2× faster.
 - **After the run, the owner confirmed this M4 is the primary reference device** (D-096). That retires the margin rule, and the kill criterion is simply ≤ 8 ms here.
-- **Not yet checked:** Chrome stable (which D-068 specifies), Safari, Firefox, and the secondary devices (Iris Xe, RTX 3060).
+- **Chrome stable, checked afterwards:** Chrome 154, run headless with `spikes/headless.sh`, reproduced the same GPU numbers (herd with LOD: 2.49 ms creatures, 3.74 ms frame) and the same determinism hash (`results/run-2026-10-02T00-00-14-979Z.json`).
+- **Not yet checked:** Safari, Firefox, and the secondary devices (Iris Xe, RTX 3060).
 
 ## Layout
 
@@ -54,7 +55,7 @@ spikes/01-grazer/cpu/build.sh
 python3 spikes/serve.py 8417
 ```
 
-Open <http://localhost:8417/01-grazer/>, then press **Run all**. Results appear on the page and in `window.__results`, and are saved to `results/`. `#quick` extracts the herd and draws one frame without measuring.
+Open <http://localhost:8417/01-grazer/>, then press **Run all**. Or run it headless in Chrome stable with `spikes/headless.sh 01-grazer '#run'`. Results appear on the page and in `window.__results`, and are saved to `results/`. `#quick` extracts the herd and draws one frame without measuring.
 
 The native comparison:
 
@@ -142,7 +143,7 @@ GPU ms per pass, best variant for each (all herd variants are faster without the
 
 ### Caveats
 
-- **Browser:** Chromium 152 inside the Claude desktop app, not Chrome stable. The secondary devices, Safari and Firefox weren't tested.
+- **Browsers:** the main runs used Chromium 152 inside the Claude desktop app. Chrome stable 154 later reproduced them. The secondary devices, Safari and Firefox weren't tested.
 - **Clock scaling:** the first run timed frames one at a time, and idle gaps let the GPU clock down: the same terrain pass measured 0.4–1.6 ms. The final numbers are sustained back-to-back frames instead. When frames were paced at 60 Hz, the OS lowered clocks and the same 1.5cm herd frame took 13.6 ms instead of 7.2. That's fine for holding 60 fps, but it means 60 Hz pacing hides how much headroom is left.
 - **The page was hidden** in the app's browser pane during the runs. Timestamps are unaffected; the 60 Hz pacing used a busy-wait because requestAnimationFrame and timers are throttled.
 - **Timestamps are quantized to ~65.5 µs** (2^16 ns observed). Passes under ~0.2 ms are imprecise.

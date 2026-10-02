@@ -739,6 +739,7 @@ async function runAll() {
     log('FAILED:', e.stack || e.message);
     R.error = String(e.stack || e.message);
   }
+  await save('DONE', R.error ? 'failed' : 'ok');   // tells spikes/headless.sh the run is over
   $('run').disabled = false;
 }
 
