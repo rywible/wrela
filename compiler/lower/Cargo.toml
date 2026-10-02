@@ -1,6 +1,6 @@
 [package]
-name = "wrela-driver"
-description = "Runs the compiler: loads a package, checks it, builds it, through a small incremental query layer"
+name = "wrela-lower"
+description = "Monomorphizes checked wrela into IR: instances per target, closures, the GPU entry points and pipelines, and effects per instantiation"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,10 +11,6 @@ wrela-diag.workspace = true
 wrela-syntax.workspace = true
 wrela-sema.workspace = true
 wrela-ir.workspace = true
-wrela-lower.workspace = true
-wrela-wasm.workspace = true
-wrela-wgsl.workspace = true
-wrela-abi.workspace = true
 
 [lints]
 workspace = true
