@@ -63,6 +63,7 @@ wrela is a new language, compiler, engine and agent-native studio for AAA-ambiti
 
 - Open it as a **draft**: CodeRabbit and Greptile skip drafts, and CI still runs.
 - Before marking it ready, run a fresh-context code review.
+- Both bots review on their own when a PR is marked ready (seen on #33); later pushes need the re-trigger.
 
 **Don't wait on review.** Start the next slice.
 
