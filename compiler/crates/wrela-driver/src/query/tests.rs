@@ -1,6 +1,6 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use super::{Cycle, Db, Derived, Input, Query, QueryError};
+use super::{Db, Derived, Input, Query, QueryError};
 
 /// `text(k)`: an input string.
 struct Text;
@@ -106,6 +106,65 @@ impl Derived for Recover {
     }
 }
 
+/// `c(k) = d(k) + 1`
+struct C;
+impl Query for C {
+    type Key = u32;
+    type Value = usize;
+    const NAME: &'static str = "c";
+}
+impl Derived for C {
+    fn compute(db: &Db, key: &u32) -> Result<usize, QueryError> {
+        Ok(db.get::<D>(key)? + 1)
+    }
+}
+
+/// `d(k) = c(k), or 0 if that's a cycle`: a query inside the cycle that tries to recover.
+struct D;
+impl Query for D {
+    type Key = u32;
+    type Value = usize;
+    const NAME: &'static str = "d";
+}
+impl Derived for D {
+    fn compute(db: &Db, key: &u32) -> Result<usize, QueryError> {
+        match db.get::<C>(key) {
+            Err(QueryError::Cycle(_)) => Ok(0),
+            other => other,
+        }
+    }
+}
+
+/// `e(k) = (f(k), or 7 if that's a cycle) + text(k).len()`: tries to recover, then reads an input.
+struct E;
+impl Query for E {
+    type Key = u32;
+    type Value = usize;
+    const NAME: &'static str = "e";
+}
+impl Derived for E {
+    fn compute(db: &Db, key: &u32) -> Result<usize, QueryError> {
+        let f = match db.get::<F>(key) {
+            Err(QueryError::Cycle(_)) => 7,
+            other => other?,
+        };
+        Ok(f + db.input::<Text>(key)?.len())
+    }
+}
+
+/// `f(k) = e(k)`
+struct F;
+impl Query for F {
+    type Key = u32;
+    type Value = usize;
+    const NAME: &'static str = "f";
+}
+impl Derived for F {
+    fn compute(db: &Db, key: &u32) -> Result<usize, QueryError> {
+        db.get::<E>(key)
+    }
+}
+
 /// `explode(k)` panics while `text(k)` is "boom".
 struct Explode;
 impl Query for Explode {
@@ -204,28 +263,71 @@ fn dependencies_follow_the_last_run() {
     assert_eq!(db.take_log(), ["execute len(1)", "execute pick(7)"]);
 }
 
-fn cycle(participants: &[&str]) -> Result<usize, QueryError> {
-    Err(QueryError::Cycle(Cycle::new(
-        participants.iter().map(ToString::to_string).collect(),
-    )))
+/// The cycle in `result`, as its participants; panics if it isn't a cycle.
+fn cycle(result: Result<usize, QueryError>) -> Vec<String> {
+    match result {
+        Err(QueryError::Cycle(cycle)) => cycle.participants().map(str::to_string).collect(),
+        other => panic!("expected a cycle, got {other:?}"),
+    }
 }
 
 #[test]
 fn cycles_are_errors_whichever_query_is_asked_first() {
     let mut first_a = db();
     first_a.set::<Flag>(&0, true);
-    assert_eq!(first_a.get::<A>(&0), cycle(&["a(0)", "b(0)"]));
-    assert_eq!(first_a.get::<B>(&0), cycle(&["a(0)", "b(0)"]));
+    assert_eq!(cycle(first_a.get::<A>(&0)), ["a(0)", "b(0)"]);
+    assert_eq!(cycle(first_a.get::<B>(&0)), ["a(0)", "b(0)"]);
 
     let mut first_b = db();
     first_b.set::<Flag>(&0, true);
-    assert_eq!(first_b.get::<B>(&0), cycle(&["a(0)", "b(0)"]));
-    assert_eq!(first_b.get::<A>(&0), cycle(&["a(0)", "b(0)"]));
+    assert_eq!(cycle(first_b.get::<B>(&0)), ["a(0)", "b(0)"]);
+    assert_eq!(cycle(first_b.get::<A>(&0)), ["a(0)", "b(0)"]);
 
     let Err(error) = first_a.get::<A>(&0) else {
         panic!("expected a cycle")
     };
     assert_eq!(error.to_string(), "query cycle: a(0) -> b(0) -> a(0)");
+    let QueryError::Cycle(c) = error else {
+        panic!("expected a cycle")
+    };
+    assert_eq!(c.keys::<A>(), [0]);
+    assert_eq!(c.keys::<B>(), [0]);
+    assert!(c.keys::<Len>().is_empty());
+}
+
+/// A query in the cycle can't recover from it: if it could, its value would depend on which
+/// member was asked for first (`c` first: `d` sees the cycle and gives 0, so `c` = 1; `d` first:
+/// `c` sees the cycle and fails, and `d` gives 0).
+#[test]
+fn a_query_in_the_cycle_gets_the_error_even_if_it_recovers() {
+    for c_first in [true, false] {
+        let db = db();
+        let (c, d) = if c_first {
+            let c = db.get::<C>(&0);
+            (c, db.get::<D>(&0))
+        } else {
+            let d = db.get::<D>(&0);
+            (db.get::<C>(&0), d)
+        };
+        assert_eq!(cycle(c), ["c(0)", "d(0)"], "c first: {c_first}");
+        assert_eq!(cycle(d), ["c(0)", "d(0)"], "c first: {c_first}");
+    }
+}
+
+/// Re-validating `e` re-runs `f`, which finds the cycle through `e`'s verifying frame; `e` then
+/// re-runs and reads `f`'s memoized error. It must still count as in the cycle, as it does fresh.
+#[test]
+fn a_query_in_the_cycle_stays_an_error_after_an_edit() {
+    let mut edited = db();
+    edited.set::<Text>(&0, "x".into());
+    assert_eq!(cycle(edited.get::<E>(&0)), ["e(0)", "f(0)"]);
+    edited.set::<Text>(&0, "yy".into());
+    let after_edit = (edited.get::<E>(&0), edited.get::<F>(&0));
+
+    let mut fresh = db();
+    fresh.set::<Text>(&0, "yy".into());
+    assert_eq!(after_edit, (fresh.get::<E>(&0), fresh.get::<F>(&0)));
+    assert_eq!(cycle(after_edit.0), ["e(0)", "f(0)"]);
 }
 
 #[test]
@@ -249,12 +351,12 @@ fn a_memoized_cycle_is_revalidated_without_recursing_forever() {
     assert!(db.get::<A>(&0).is_err());
     // A new revision forces re-validation of a dependency graph that contains the cycle.
     db.set::<Text>(&0, "y".into());
-    assert_eq!(db.get::<A>(&0), cycle(&["a(0)", "b(0)"]));
-    assert_eq!(db.get::<B>(&0), cycle(&["a(0)", "b(0)"]));
+    assert_eq!(cycle(db.get::<A>(&0)), ["a(0)", "b(0)"]);
+    assert_eq!(cycle(db.get::<B>(&0)), ["a(0)", "b(0)"]);
 }
 
 #[test]
-fn a_query_can_recover_from_a_cycle() {
+fn a_query_outside_the_cycle_can_recover_from_it() {
     let mut db = db();
     db.set::<Flag>(&0, true);
     assert_eq!(db.get::<Recover>(&0), Ok(99));

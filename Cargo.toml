@@ -28,8 +28,10 @@ rust_2018_idioms = { level = "warn", priority = -1 }
 # Clippy's default set plus a short, deliberate list. Each entry catches a real bug class or keeps
 # code uniform cheaply; pedantic as a whole is too noisy for its value.
 [workspace.lints.clippy]
-# Panics and leftovers: the compiler must not panic on any input.
+# Panics and leftovers: the compiler must not panic on any input. An invariant that truly can't
+# fail takes `#[expect(clippy::expect_used, reason = "...")]`, so each one is visible and argued.
 unwrap_used = "warn"
+expect_used = "warn"
 dbg_macro = "warn"
 todo = "warn"
 unimplemented = "warn"

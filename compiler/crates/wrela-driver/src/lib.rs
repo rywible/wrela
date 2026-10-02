@@ -1,7 +1,8 @@
 //! The compiler driver: the query layer and the pipeline built on it.
 //!
 //! The pipeline so far: [`SourceText`] (input) → [`Lex`] → [`Check`]. A [`Session`] owns the
-//! query database and the [`SourceMap`] that diagnostics are rendered against.
+//! query database and the [`SourceMap`] that diagnostics are rendered against, and is the only
+//! thing that changes either, so the two always hold the same text.
 
 pub mod query;
 
@@ -61,6 +62,10 @@ impl Derived for Check {
 }
 
 /// One compilation: its files and the query database over them.
+///
+/// A file's text lives in both the [`SourceMap`] (for rendering) and the [`SourceText`] input
+/// (for queries), sharing one `Arc`. Only [`Session::add_file`] and [`Session::set_text`] change
+/// them, together; the database is reachable only by shared reference, which can't set inputs.
 #[derive(Debug, Default)]
 pub struct Session {
     db: Db,
@@ -121,8 +126,14 @@ impl Session {
         &self.db
     }
 
-    pub fn db_mut(&mut self) -> &mut Db {
-        &mut self.db
+    /// Records every query execution from now on, for tests (see [`Db::enable_log`]).
+    pub fn enable_log(&mut self) {
+        self.db.enable_log();
+    }
+
+    /// Returns and clears the execution log.
+    pub fn take_log(&mut self) -> Vec<String> {
+        self.db.take_log()
     }
 }
 
@@ -149,11 +160,11 @@ mod tests {
         let a = session.add_file("a.wrela", "$").unwrap();
         let b = session.add_file("b.wrela", "x").unwrap();
         assert_eq!(session.check_all().unwrap().len(), 1);
-        session.db_mut().enable_log();
+        session.enable_log();
         assert!(session.set_text(b, "y $").unwrap());
         assert_eq!(session.check(a).unwrap().len(), 1);
         assert_eq!(session.check(b).unwrap().len(), 1);
-        let log = session.db_mut().take_log();
+        let log = session.take_log();
         assert_eq!(log, ["execute lex(FileId(1))", "execute check(FileId(1))"]);
         assert_eq!(session.sources().get(b).unwrap().text(), "y $");
     }
@@ -163,11 +174,11 @@ mod tests {
         let mut session = Session::new();
         let a = session.add_file("a.wrela", "x").unwrap();
         assert!(session.check(a).unwrap().is_empty());
-        session.db_mut().enable_log();
+        session.enable_log();
         // Trailing whitespace: `lex` re-runs, produces equal tokens, and `check` is reused.
         session.set_text(a, "x ").unwrap();
         assert!(session.check(a).unwrap().is_empty());
-        assert_eq!(session.db_mut().take_log(), ["execute lex(FileId(0))"]);
+        assert_eq!(session.take_log(), ["execute lex(FileId(0))"]);
     }
 
     #[test]

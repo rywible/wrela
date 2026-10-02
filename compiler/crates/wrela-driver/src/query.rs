@@ -10,8 +10,10 @@
 //!   first, recursively. Otherwise the query re-runs.
 //! - **Early cutoff:** a re-run that produces a value equal to the old one keeps the old
 //!   "changed at" revision, so queries that depend on it don't re-run.
-//! - **Cycles** are errors, not panics: a query that (transitively) asks for itself gets
-//!   [`QueryError::Cycle`], which a query can recover from or pass up with `?`.
+//! - **Cycles** are errors, not panics. Every query in a cycle gets [`QueryError::Cycle`],
+//!   whatever its `compute` returns, so the result doesn't depend on which query was asked
+//!   first. A query outside the cycle that reads a member can recover (match on the error) or
+//!   pass it up with `?`; [`Cycle::keys`] gives back the members' keys, to build a diagnostic.
 //!
 //! Values are cloned out of the memo table, so large values should be behind an `Arc`.
 //! Single-threaded by design (M1 doesn't need parallel queries); the `Db` can move between
@@ -26,7 +28,8 @@ use std::sync::Arc;
 
 /// A query's identity and types. Implement [`Input`] or [`Derived`] as well.
 pub trait Query: 'static {
-    type Key: Clone + Eq + Hash + Debug + Send + 'static;
+    /// `Sync` so a [`Cycle`] can hand the keys of its members back out.
+    type Key: Clone + Eq + Hash + Debug + Send + Sync + 'static;
     type Value: Clone + Eq + Debug + Send + 'static;
     /// The name used in cycle reports and the execution log, like `lex`.
     const NAME: &'static str;
@@ -68,34 +71,93 @@ impl fmt::Display for QueryError {
 
 impl std::error::Error for QueryError {}
 
-/// The queries in a cycle, each written `name(key)`. The list is rotated to start at the least
-/// participant, so the same cycle reads the same whichever query was asked for first.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+/// The queries in a cycle, in the order each asked for the next. The list is rotated to start at
+/// the member whose `name(key)` sorts first, so the same cycle reads the same whichever query was
+/// asked for first.
+///
+/// Two cycles are equal when they have the same members in the same order. Only cycles from the
+/// same [`Db`] can be compared meaningfully.
+#[derive(Clone)]
 pub struct Cycle {
-    participants: Vec<String>,
+    members: Arc<[Member]>,
+}
+
+/// One query in a cycle.
+#[derive(Clone)]
+struct Member {
+    dep: DepKey,
+    query: TypeId,
+    key: Arc<dyn Any + Send + Sync>,
+    /// `name(key)`, as cycle reports show it.
+    description: String,
 }
 
 impl Cycle {
-    fn new(mut participants: Vec<String>) -> Self {
-        let first = (0..participants.len())
-            .min_by_key(|&i| &participants[i])
+    fn new(mut members: Vec<Member>) -> Self {
+        let first = (0..members.len())
+            .min_by_key(|&i| &members[i].description)
             .unwrap_or(0);
-        participants.rotate_left(first);
-        Cycle { participants }
+        members.rotate_left(first);
+        Cycle {
+            members: members.into(),
+        }
     }
 
-    pub fn participants(&self) -> &[String] {
-        &self.participants
+    /// Each member as `name(key)`, like `lex(FileId(0))`.
+    pub fn participants(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.members.iter().map(|m| m.description.as_str())
+    }
+
+    /// The keys of the members that are `Q` queries, in cycle order: what a diagnostic needs to
+    /// point at each one ("`A` requires `B`, which requires `A`").
+    pub fn keys<Q: Query>(&self) -> Vec<Q::Key> {
+        self.members
+            .iter()
+            .filter(|m| m.query == TypeId::of::<Q>())
+            .filter_map(|m| m.key.downcast_ref::<Q::Key>())
+            .cloned()
+            .collect()
+    }
+
+    fn contains(&self, dep: DepKey) -> bool {
+        self.members.iter().any(|m| m.dep == dep)
+    }
+}
+
+impl PartialEq for Cycle {
+    fn eq(&self, other: &Self) -> bool {
+        self.members.len() == other.members.len()
+            && self
+                .members
+                .iter()
+                .zip(other.members.iter())
+                .all(|(a, b)| a.dep == b.dep)
+    }
+}
+
+impl Eq for Cycle {}
+
+impl Hash for Cycle {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for member in self.members.iter() {
+            member.dep.hash(state);
+        }
+    }
+}
+
+impl Debug for Cycle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.participants()).finish()
     }
 }
 
 impl fmt::Display for Cycle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("query cycle: ")?;
-        for participant in &self.participants {
+        for participant in self.participants() {
             write!(f, "{participant} -> ")?;
         }
-        f.write_str(self.participants.first().map_or("", String::as_str))
+        f.write_str(self.participants().next().unwrap_or(""))
     }
 }
 
@@ -144,6 +206,9 @@ struct Frame {
     deps: Vec<DepKey>,
     seen: HashSet<DepKey>,
     computing: bool,
+    /// The first cycle found to run through this query. Its result is then that cycle's error,
+    /// whatever `compute` returns.
+    cycle: Option<Cycle>,
 }
 
 /// One query type's storage, type-erased, with the monomorphized functions that operate on it.
@@ -152,8 +217,8 @@ struct Table {
     data: Box<dyn Any + Send>,
     /// Brings the entry up to date and reports whether it changed after the given revision.
     changed_after: fn(&Db, DepKey, Revision) -> bool,
-    /// `name(key)`, for cycle reports.
-    describe: fn(&Runtime, DepKey) -> String,
+    /// The entry as a cycle member.
+    member: fn(&Runtime, DepKey) -> Member,
 }
 
 struct Interner<K> {
@@ -174,6 +239,10 @@ impl<K: Clone + Eq + Hash> Interner<K> {
         if let Some(&i) = self.index.get(key) {
             return (i, false);
         }
+        #[expect(
+            clippy::expect_used,
+            reason = "keys index source items, far fewer than 2^32"
+        )]
         let i = u32::try_from(self.keys.len()).expect("fewer than 2^32 keys per query");
         self.keys.push(key.clone());
         self.index.insert(key.clone(), i);
@@ -211,23 +280,28 @@ impl Runtime {
         name: &'static str,
         new: impl FnOnce() -> T,
         changed_after: fn(&Db, DepKey, Revision) -> bool,
-        describe: fn(&Runtime, DepKey) -> String,
+        member: fn(&Runtime, DepKey) -> Member,
     ) -> u32 {
         let type_id = TypeId::of::<T>();
         if let Some(&i) = self.table_index.get(&type_id) {
             return i;
         }
+        #[expect(
+            clippy::expect_used,
+            reason = "the compiler defines a few dozen query types"
+        )]
         let i = u32::try_from(self.tables.len()).expect("fewer than 2^32 query types");
         self.tables.push(Table {
             name,
             data: Box::new(new()),
             changed_after,
-            describe,
+            member,
         });
         self.table_index.insert(type_id, i);
         i
     }
 
+    #[expect(clippy::expect_used, reason = "an invariant of `table_for`")]
     fn data<T: Any>(&self, table: u32) -> &T {
         self.tables[table as usize]
             .data
@@ -235,6 +309,7 @@ impl Runtime {
             .expect("a table's type matches its index")
     }
 
+    #[expect(clippy::expect_used, reason = "an invariant of `table_for`")]
     fn data_mut<T: Any>(&mut self, table: u32) -> &mut T {
         self.tables[table as usize]
             .data
@@ -250,7 +325,7 @@ impl Runtime {
                 slots: Vec::new(),
             },
             input_changed_after::<Q>,
-            describe_input::<Q>,
+            member_of_input::<Q>,
         );
         let data = self.data_mut::<InputTable<Q>>(table);
         let (key, new) = data.keys.intern(key);
@@ -268,7 +343,7 @@ impl Runtime {
                 memos: Vec::new(),
             },
             derived_changed_after::<Q>,
-            describe_derived::<Q>,
+            member_of_derived::<Q>,
         );
         let data = self.data_mut::<DerivedTable<Q>>(table);
         let (key, new) = data.keys.intern(key);
@@ -278,8 +353,8 @@ impl Runtime {
         DepKey { table, key }
     }
 
-    fn describe(&self, dep: DepKey) -> String {
-        (self.tables[dep.table as usize].describe)(self, dep)
+    fn member(&self, dep: DepKey) -> Member {
+        (self.tables[dep.table as usize].member)(self, dep)
     }
 
     fn record(&mut self, dep: DepKey) {
@@ -310,14 +385,28 @@ fn derived_changed_after<Q: Derived>(db: &Db, dep: DepKey, since: Revision) -> b
     memo.is_none_or(|memo| memo.changed_at > since)
 }
 
-fn describe_input<Q: Input>(runtime: &Runtime, dep: DepKey) -> String {
-    let key = &runtime.data::<InputTable<Q>>(dep.table).keys.keys[dep.key as usize];
-    format!("{}({key:?})", Q::NAME)
+// Only derived queries are ever on the stack, but every table needs the function.
+fn member_of_input<Q: Input>(runtime: &Runtime, dep: DepKey) -> Member {
+    member::<Q>(
+        dep,
+        &runtime.data::<InputTable<Q>>(dep.table).keys.keys[dep.key as usize],
+    )
 }
 
-fn describe_derived<Q: Derived>(runtime: &Runtime, dep: DepKey) -> String {
-    let key = &runtime.data::<DerivedTable<Q>>(dep.table).keys.keys[dep.key as usize];
-    format!("{}({key:?})", Q::NAME)
+fn member_of_derived<Q: Derived>(runtime: &Runtime, dep: DepKey) -> Member {
+    member::<Q>(
+        dep,
+        &runtime.data::<DerivedTable<Q>>(dep.table).keys.keys[dep.key as usize],
+    )
+}
+
+fn member<Q: Query>(dep: DepKey, key: &Q::Key) -> Member {
+    Member {
+        dep,
+        query: TypeId::of::<Q>(),
+        key: Arc::new(key.clone()),
+        description: format!("{}({key:?})", Q::NAME),
+    }
 }
 
 /// Pops the frame it guards, even if the query's `compute` panics, so a caught panic doesn't
@@ -398,25 +487,42 @@ impl Db {
             let dep = runtime.intern_derived::<Q>(key);
             runtime.record(dep);
             if runtime.active.contains(&dep) {
+                // Everything on the stack from `dep`'s frame up is in the cycle. That includes
+                // frames still verifying an old memo: a verifying query reached this point by
+                // checking its dependencies in the order its deterministic `compute` read them,
+                // so re-running it would read the same path into `dep` again.
                 let start = runtime
                     .stack
                     .iter()
                     .position(|frame| frame.query == dep)
                     .unwrap_or(0);
-                let participants = runtime.stack[start..]
+                let members = runtime.stack[start..]
                     .iter()
-                    .map(|frame| runtime.describe(frame.query))
+                    .map(|frame| runtime.member(frame.query))
                     .collect();
-                return Err(QueryError::Cycle(Cycle::new(participants)));
+                let cycle = Cycle::new(members);
+                for frame in &mut runtime.stack[start..] {
+                    frame.cycle.get_or_insert_with(|| cycle.clone());
+                }
+                return Err(QueryError::Cycle(cycle));
             }
             dep
         };
         self.refresh::<Q>(dep);
-        let runtime = self.runtime.borrow();
-        match &runtime.data::<DerivedTable<Q>>(dep.table).memos[dep.key as usize] {
+        let mut runtime = self.runtime.borrow_mut();
+        let value = match &runtime.data::<DerivedTable<Q>>(dep.table).memos[dep.key as usize] {
             Some(memo) => memo.value.clone(),
             None => unreachable!("refresh leaves a memo for an inactive query"),
+        };
+        // A memoized cycle that names the reader puts the reader in it too, as computing the
+        // cycle afresh from here would have.
+        if let Err(QueryError::Cycle(cycle)) = &value
+            && let Some(frame) = runtime.stack.last_mut().filter(|frame| frame.computing)
+            && cycle.contains(frame.query)
+        {
+            frame.cycle.get_or_insert_with(|| cycle.clone());
         }
+        value
     }
 
     /// Records every query execution from now on, for tests: `execute name(key)`.
@@ -493,6 +599,10 @@ impl Db {
         };
         let value = Q::compute(self, &key);
         let frame = guard.pop();
+        let value = match frame.cycle {
+            Some(cycle) => Err(QueryError::Cycle(cycle)),
+            None => value,
+        };
 
         let mut runtime = self.runtime.borrow_mut();
         let current = runtime.revision;
@@ -517,11 +627,16 @@ impl Db {
             deps: Vec::new(),
             seen: HashSet::new(),
             computing,
+            cycle: None,
         });
     }
 
     fn pop_frame(&self) -> Frame {
         let mut runtime = self.runtime.borrow_mut();
+        #[expect(
+            clippy::expect_used,
+            reason = "`FrameGuard` pops exactly the frames pushed"
+        )]
         let frame = runtime
             .stack
             .pop()
