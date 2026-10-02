@@ -145,7 +145,7 @@ impl Lexer<'_> {
         // A `\r` ends the comment too: the `\r` of a `\r\n` isn't part of it, and an editor that
         // shows a lone `\r` (or another line break) as a line break would show the text after it
         // as code, so it's lexed as code (after the line break is reported).
-        self.eat_while(|c| c != '\n' && c != '\r' && !is_other_line_break(c));
+        self.eat_while(|c| !is_line_break(c));
         let text = &self.text[start..self.pos];
         let doc = text.starts_with("///") && !text.starts_with("////");
         let kind = if doc {
@@ -303,9 +303,10 @@ impl Lexer<'_> {
         }
 
         let comment = &self.text[start..self.pos];
-        let line_rest = self.rest().split('\n').next().unwrap_or("");
+        let line_rest = self.rest().split(is_line_break).next().unwrap_or("");
         let diagnostic = Diagnostic::new(BLOCK_COMMENT, message, span);
-        let diagnostic = if comment.contains('\n') {
+        // A `//` comment ends at any line break: rewritten, the text after one would be code.
+        let diagnostic = if comment.contains(is_line_break) {
             diagnostic.with_help("start each comment line with `//`")
         } else if !(line_rest.trim().is_empty() || line_rest.trim_start().starts_with("//")) {
             diagnostic.with_help("write it as a `//` comment on its own line or at the line's end")
@@ -313,7 +314,10 @@ impl Lexer<'_> {
             let inner = &comment[2..comment.len() - 2];
             // A doc comment documents the item below it, so `/** */` after code on its line
             // becomes a plain comment.
-            let line_before = self.text[..start].rsplit('\n').next().unwrap_or("");
+            let line_before = self.text[..start]
+                .rsplit(is_line_break)
+                .next()
+                .unwrap_or("");
             let own_line = line_before.trim().is_empty();
             let (prefix, inner) = match inner.strip_prefix('*') {
                 Some(doc) if own_line && !doc.trim().is_empty() => ("///", doc),
@@ -378,9 +382,15 @@ impl Lexer<'_> {
 /// break, which is reported on its own.
 fn starts_token(c: char) -> bool {
     is_ident_char(c)
-        || matches!(c, ' ' | '\t' | '\r' | '\n')
-        || is_other_line_break(c)
+        || matches!(c, ' ' | '\t')
+        || is_line_break(c)
         || PUNCTS.iter().any(|p| p.starts_with(c))
+}
+
+/// Whether `c` ends a line, for the lexer: `\n`, `\r` or another line break. The lexer reads
+/// every one as a line break (reporting all but `\n` and `\r\n`), so a `//` comment ends there.
+fn is_line_break(c: char) -> bool {
+    matches!(c, '\n' | '\r') || is_other_line_break(c)
 }
 
 /// The characters other than `\n` and `\r` that Unicode counts as line breaks: vertical tab, form

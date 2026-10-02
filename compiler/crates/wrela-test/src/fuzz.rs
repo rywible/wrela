@@ -5,6 +5,7 @@
 //! its seed and index. Each input is checked:
 //! - without panicking, through `check`, the text rendering and the JSON rendering;
 //! - with every span inside its file and the JSON parsing back with one entry per diagnostic;
+//! - with each `/* */` rewrite (E0002's fix) leaving no diagnostic inside the comment it writes;
 //! - incrementally: a session edited from the previous input gives the same diagnostics as a
 //!   fresh one, which exercises the query layer's invalidation.
 
@@ -214,6 +215,33 @@ fn invariants(input: &str, previous: &str) -> Result<(), String> {
     let count = value["diagnostics"].as_array().map_or(usize::MAX, Vec::len);
     if value["version"] != wrela_diag::JSON_VERSION || count != diagnostics.len() {
         return Err(format!("the JSON has the wrong version or count:\n{json}"));
+    }
+
+    // A `/* */` rewrite is the whole fix: the comment it writes has no diagnostic inside it.
+    let block_comments = diagnostics
+        .iter()
+        .filter(|d| d.code == wrela_diag::codes::BLOCK_COMMENT);
+    for edit in block_comments.flat_map(|d| d.help.iter().flat_map(|h| &h.edits)) {
+        let mut text = input.to_string();
+        text.replace_range(edit.span.range(), &edit.replacement);
+        let mut fixed = Session::new();
+        let file = fixed
+            .add_file("fuzz.wrela", text)
+            .map_err(|e| e.to_string())?;
+        let after = fixed.check(file).map_err(|e| format!("query error: {e}"))?;
+        let (start, end) = (
+            edit.span.start(),
+            edit.span.start() + edit.replacement.len() as u32,
+        );
+        if let Some(d) = after
+            .iter()
+            .find(|d| d.primary.span.start() < end && d.primary.span.end() > start)
+        {
+            return Err(format!(
+                "the E0002 rewrite {:?} leaves {} inside it: {}",
+                edit.replacement, d.code, d.message
+            ));
+        }
     }
 
     let mut edited = Session::new();

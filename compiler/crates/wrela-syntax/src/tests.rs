@@ -259,8 +259,38 @@ fn invisible_characters_are_named_by_code_point_with_a_fix() {
     );
 }
 
+/// `text` with every edit of every diagnostic's help applied.
+fn fixed(text: &str) -> String {
+    let (lexed, _) = lexed(text);
+    let mut edits: Vec<&wrela_diag::Edit> = lexed
+        .diagnostics
+        .iter()
+        .flat_map(|d| d.help.iter().flat_map(|h| &h.edits))
+        .collect();
+    edits.sort_by_key(|e| std::cmp::Reverse(e.span.start()));
+    let mut text = text.to_string();
+    for edit in edits {
+        text.replace_range(edit.span.range(), &edit.replacement);
+    }
+    text
+}
+
 #[test]
 fn block_comments_are_e0002_with_a_rewrite_when_mechanical() {
+    // Each rewrite is the whole fix: the result lexes cleanly.
+    for text in [
+        "/* a */\nx",
+        "/** docs */",
+        "\n  /** docs */",
+        "let x = 1 /** doc */",
+        "x /* a */ // b",
+        "x\u{2028}/** doc */",
+    ] {
+        let after = fixed(text);
+        assert_ne!(after, text, "{text:?} has a rewrite");
+        assert!(codes(&after).is_empty(), "{text:?} -> {after:?}");
+    }
+
     let (lexed, _) = lexed("/* a */\nx");
     assert_eq!(lexed.diagnostics.len(), 1);
     let d = &lexed.diagnostics[0];
@@ -284,6 +314,12 @@ fn block_comments_are_e0002_with_a_rewrite_when_mechanical() {
     let trailing_doc = lexed_one("let x = 1 /** doc */");
     assert_eq!(trailing_doc.help[0].edits[0].replacement, "// doc");
     assert_eq!(trailing_doc.help[0].message, "write it as a `//` comment");
+    // Any line break the lexer reads as one starts a new line, so this one is on its own line.
+    let (after_break, _) = self::lexed("x\u{2028}/** doc */");
+    assert_eq!(
+        after_break.diagnostics[1].help[0].edits[0].replacement,
+        "/// doc"
+    );
     // A line comment after it merges into the rewrite.
     let trailing = lexed_one("x /* a */ // b");
     assert_eq!(trailing.help[0].edits[0].replacement, "// a");
@@ -291,6 +327,21 @@ fn block_comments_are_e0002_with_a_rewrite_when_mechanical() {
     assert!(lexed_one("/* a */ x").help[0].edits.is_empty());
     // Multi-line: advice only.
     assert!(lexed_one("/* a\n b */").help[0].edits.is_empty());
+}
+
+/// A `//` comment ends at any line break, so a rewrite would turn the text after one into code.
+#[test]
+fn block_comments_with_any_line_break_get_advice_not_a_rewrite() {
+    let breaks = std::iter::once('\r').chain(OTHER_LINE_BREAKS.map(|(c, _)| c));
+    for c in breaks {
+        let d = lexed_one(&format!("/* a{c}b */"));
+        assert_eq!(d.code.id(), "E0002", "{c:?}");
+        assert_eq!(
+            d.help[0].message, "start each comment line with `//`",
+            "{c:?}"
+        );
+        assert!(d.help[0].edits.is_empty(), "{c:?}: {:?}", d.help[0].edits);
+    }
 }
 
 fn lexed_one(text: &str) -> wrela_diag::Diagnostic {

@@ -12,8 +12,9 @@
 #
 # "Reviewed the head commit" needs evidence: the bots' own checks go green when they skip a PR or
 # are rate-limited, and a bot's reply in a thread is filed as a review on the head commit.
-#   CodeRabbit: its commit status (or check run) on the head says "Review completed", or it posted
-#               a review of the head ("Actionable comments posted: N").
+#   CodeRabbit: its commit status (posted by coderabbitai[bot]) or check run on the head says
+#               "Review completed", or it posted a review of the head
+#               ("Actionable comments posted: N").
 #   Greptile:   its summary comment's "Last reviewed commit" is the head, or its check run on the
 #               head says "Greptile has reviewed the Pull Request".
 # A review still running on the head fails its row whatever else is there: a re-triggered review
@@ -105,11 +106,14 @@ OTHER="$(gh api --paginate "$RUNS" --jq '
 if [ "$CI" = success ]; then pass ci "success"; else fail ci "$CI"; fi
 if [ -n "$OTHER" ]; then row "" "" "not passing on the head: $(oneline "$OTHER")"; fi
 
-# CodeRabbit. The combined status holds the latest status per context, as `state description`.
-CR_STATUS="$(gh api "repos/$REPO/commits/$HEAD/status" --jq '
-  [.statuses[] | select(.context | test("^coderabbit"; "i")) | "\(.state) \(.description // "")"]
-  | first // ""')" ||
+# CodeRabbit. Its statuses on the head, newest first, as `state description`. Only the ones it
+# posted count: anyone who can write statuses can post one under its context, and the combined
+# status (`.../status`) doesn't say who posted it, so this reads the list.
+CR_STATUSES="$(gh api --paginate "repos/$REPO/commits/$HEAD/statuses?per_page=100" --jq '
+  .[] | select(.creator.login == "coderabbitai[bot]" and (.context | test("^coderabbit"; "i")))
+  | "\(.state) \(.description // "")"')" ||
   die "can't read commit statuses"
+CR_STATUS="$(printf '%s\n' "$CR_STATUSES" | head -n 1)"
 CR_CHECK="$(gh api --paginate "$RUNS" --jq '
   .check_runs[] | select(.app.slug == "coderabbitai") | "\(.output.title // "") \(.output.summary // "")"')" ||
   die "can't read check runs"
