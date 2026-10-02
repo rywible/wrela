@@ -1,0 +1,16 @@
+[package]
+name = "wrela-ir"
+description = "The mid-level IR: typed, monomorphic, structured; its validator and printer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# `wrela_ir::fixtures`: hand-built modules, such as first light, for other crates' tests.
+fixtures = []
+
+[lints]
+workspace = true
