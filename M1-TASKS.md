@@ -24,14 +24,16 @@ passes locally.
 
 ## AC status
 
-- [ ] AC1 end to end in the browser
-- [ ] AC2 compiled grazer matches the hand-written one
-- [ ] AC3 derived interpretations
-- [ ] AC4 checker enforces tier 0
-- [ ] AC5 the grammar is the spec
-- [ ] AC6 diagnostics bar
-- [ ] AC7 strict CPU numerics
-- [ ] AC8 runtime
-- [ ] AC9 foundation
+- [ ] AC1 end to end in the browser: works by hand (byte-identical frames, same hash); automate:
+      golden PNG, headless comparison, CPU probe pixels
+- [x] AC2 compiled grazer matches the hand-written one (tests/grazer.rs, GPU)
+- [x] AC3 derived interpretations (tests/derive.rs, tests/grazer.rs culling 17.9% vs 19.5%)
+- [ ] AC4 checker enforces tier 0: conformance runner + suite; sema GPU signature rules
+      (E0601/E0602, varyings); lower_draw buffers
+- [ ] AC5 the grammar is the spec: done (oracle, 10^6 differential, GBNF); record numbers
+- [ ] AC6 diagnostics bar: >= 50 curated, JSON goldens
+- [ ] AC7 strict CPU numerics: hash test Chrome vs wasmtime, relaxed-SIMD test, overflow test
+- [ ] AC8 runtime: verify size, golden bytes, version rejection tests exist
+- [ ] AC9 foundation: tools/check.sh, reproducible builds, check < 200 ms, build < 2 s
 - [ ] AC10 agent baseline
-- [ ] AC11 record
+- [ ] AC11 record: language.md, #26, retrospective, delete this file
