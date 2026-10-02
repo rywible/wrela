@@ -6,3 +6,7 @@ docs/vision.md has the vision for the project
 Don't add any more docs besides the grammar and the lexical spec. Don't add CI. Work fully locally.
 
 Full milestones with AC are stored in github. When you're working on a milestone, you can durably keep track of your tasks in a doc in the repo if you need to break it down, just delete the file once the milestone is complete.
+
+Go 80% of the way on ASD-STE100 when communicating technical details (and strive for clear english in all communication)
+
+If a diagram is a better way to communicate an idea, use a diagram.
