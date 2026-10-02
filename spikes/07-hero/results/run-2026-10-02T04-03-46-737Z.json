@@ -1,0 +1,3821 @@
+{
+  "started": "2026-10-02T04:03:46.737Z",
+  "device": {
+    "vendor": "apple",
+    "architecture": "metal-3",
+    "description": "",
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36",
+    "timestampQuery": true,
+    "pageVisibility": "visible"
+  },
+  "setup": {
+    "strands": {
+      "count": 13312,
+      "tile_m": 0.128,
+      "texels": 512,
+      "layers": 16,
+      "texture_mb": 10.667
+    },
+    "pipelines_ms": 174.7,
+    "trace_variants": 17,
+    "bounds_ms": 6.5,
+    "rest_boxes": {
+      "croup": [
+        0.22,
+        0.237,
+        0.264
+      ],
+      "loin": [
+        0.19,
+        0.207,
+        0.425
+      ],
+      "chest": [
+        0.253,
+        0.318,
+        0.443
+      ],
+      "neck": [
+        0.253,
+        0.375,
+        0.307
+      ],
+      "head": [
+        0.221,
+        0.25,
+        0.264
+      ],
+      "tail0": [
+        0.142,
+        0.199,
+        0.149
+      ],
+      "tail1": [
+        0.127,
+        0.198,
+        0.13
+      ],
+      "tail2": [
+        0.126,
+        0.199,
+        0.127
+      ],
+      "scapula": [
+        0.152,
+        0.268,
+        0.156
+      ],
+      "upperarm": [
+        0.156,
+        0.237,
+        0.19
+      ],
+      "forearm": [
+        0.112,
+        0.265,
+        0.138
+      ],
+      "manus": [
+        0.107,
+        0.141,
+        0.115
+      ],
+      "thigh": [
+        0.171,
+        0.392,
+        0.401
+      ],
+      "gaskin": [
+        0.128,
+        0.294,
+        0.212
+      ],
+      "pes": [
+        0.105,
+        0.189,
+        0.116
+      ],
+      "joint_neck": [
+        0.3,
+        0.424,
+        0.362
+      ],
+      "joint_elbow": [
+        0.207,
+        0.406,
+        0.32
+      ],
+      "joint_hock": [
+        0.184,
+        0.4,
+        0.345
+      ]
+    },
+    "raster": {
+      "cell_m": 0.005,
+      "grid": [
+        108,
+        228,
+        368
+      ],
+      "vertices": 109762,
+      "triangles": 219528,
+      "holes": 0,
+      "flags": 0,
+      "extract_gpu_ms": {
+        "corners": 19.464,
+        "cells": 24.052,
+        "quads": 0.59,
+        "worst_slab": 2.556
+      },
+      "mesh_mb": 7.54,
+      "setup_ms": 85.8,
+      "shells": 16,
+      "shadow_map": 2048
+    },
+    "params": {
+      "fovy_deg": 38,
+      "sun": [
+        0.44997750168735945,
+        0.49997500187484384,
+        -0.7399630027747688
+      ],
+      "fur": {
+        "hin": 0.006,
+        "hout": 0.012,
+        "tile": 0.128
+      },
+      "light_cells": 64,
+      "ao_volume": {
+        "dims": [
+          12,
+          14,
+          24
+        ],
+        "cell": 0.1,
+        "off": [
+          -0.6,
+          -0.05,
+          -1.2
+        ]
+      },
+      "cov_dir": [
+        0.9432123925173526,
+        0.14047844143875465,
+        0.30102523165447426
+      ],
+      "cov_target": [
+        0,
+        0.58,
+        -0.1
+      ],
+      "T_SNAP": 0.75
+    }
+  },
+  "coverage": {
+    "1": {
+      "distance_m": 0.227,
+      "coverage_mean": 0.999,
+      "coverage_min": 0.997,
+      "coverage_max": 1
+    },
+    "0.01": {
+      "distance_m": 8.758,
+      "coverage_mean": 0.01,
+      "coverage_min": 0.01,
+      "coverage_max": 0.01
+    },
+    "0.03": {
+      "distance_m": 4.961,
+      "coverage_mean": 0.03,
+      "coverage_min": 0.03,
+      "coverage_max": 0.03
+    },
+    "0.1": {
+      "distance_m": 2.722,
+      "coverage_mean": 0.102,
+      "coverage_min": 0.101,
+      "coverage_max": 0.102
+    },
+    "0.25": {
+      "distance_m": 1.743,
+      "coverage_mean": 0.254,
+      "coverage_min": 0.25,
+      "coverage_max": 0.257
+    },
+    "0.5": {
+      "distance_m": 1.133,
+      "coverage_mean": 0.494,
+      "coverage_min": 0.484,
+      "coverage_max": 0.503
+    },
+    "0.75": {
+      "distance_m": 0.742,
+      "coverage_mean": 0.769,
+      "coverage_min": 0.746,
+      "coverage_max": 0.787
+    }
+  },
+  "frames": {
+    "1080p/0.01/env": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 0.786,
+      "trace_p95": 0.852,
+      "total": 0.786,
+      "total_p95": 0.852,
+      "wall_ms_per_frame": 0.821,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1
+    },
+    "1080p/0.01/rigid-s": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 3.867,
+      "trace_p95": 4.456,
+      "total": 3.932,
+      "total_p95": 4.522,
+      "wall_ms_per_frame": 3.983,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1
+    },
+    "1080p/0.01/warp-s": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 5.177,
+      "trace_p95": 6.488,
+      "total": 5.308,
+      "total_p95": 6.619,
+      "wall_ms_per_frame": 5.376,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.905
+    },
+    "1080p/0.01/rigid-v": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 4.325,
+      "trace_p95": 4.784,
+      "total": 4.325,
+      "total_p95": 4.85,
+      "wall_ms_per_frame": 4.36,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1
+    },
+    "1080p/0.01/warp-v": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 5.702,
+      "trace_p95": 7.143,
+      "total": 5.833,
+      "total_p95": 7.274,
+      "wall_ms_per_frame": 5.944,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.905
+    },
+    "1080p/0.03/env": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 0.786,
+      "trace_p95": 0.852,
+      "total": 0.786,
+      "total_p95": 0.852,
+      "wall_ms_per_frame": 0.82,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "1080p/0.03/rigid-s": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 7.995,
+      "trace_p95": 8.716,
+      "total": 8.061,
+      "total_p95": 8.716,
+      "wall_ms_per_frame": 8.088,
+      "bands": 2,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1
+    },
+    "1080p/0.03/warp-s": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 9.634,
+      "trace_p95": 11.338,
+      "total": 9.765,
+      "total_p95": 11.469,
+      "wall_ms_per_frame": 9.98,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.905
+    },
+    "1080p/0.03/rigid-v": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 12.976,
+      "trace_p95": 14.352,
+      "total": 13.042,
+      "total_p95": 14.418,
+      "wall_ms_per_frame": 13.124,
+      "bands": 3,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "1080p/0.03/warp-v": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 18.022,
+      "trace_p95": 23.462,
+      "total": 18.219,
+      "total_p95": 23.658,
+      "wall_ms_per_frame": 18.95,
+      "bands": 2,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.905
+    },
+    "1080p/0.1/env": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 0.786,
+      "trace_p95": 0.852,
+      "total": 0.786,
+      "total_p95": 0.852,
+      "wall_ms_per_frame": 0.821,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "1080p/0.1/rigid-s": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 16.777,
+      "trace_p95": 18.219,
+      "total": 16.843,
+      "total_p95": 18.285,
+      "wall_ms_per_frame": 16.975,
+      "bands": 2,
+      "warmup_frames": 23,
+      "timed_frames": 68,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "1080p/0.1/warp-s": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 22.348,
+      "trace_p95": 27.197,
+      "total": 22.479,
+      "total_p95": 27.329,
+      "wall_ms_per_frame": 22.996,
+      "bands": 2,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.905
+    },
+    "1080p/0.1/rigid-v": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 34.734,
+      "trace_p95": 35.848,
+      "total": 34.8,
+      "total_p95": 35.914,
+      "wall_ms_per_frame": 34.655,
+      "bands": 4,
+      "warmup_frames": 13,
+      "timed_frames": 38,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1
+    },
+    "1080p/0.1/warp-v": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 47.12,
+      "trace_p95": 60.031,
+      "total": 47.317,
+      "total_p95": 60.162,
+      "wall_ms_per_frame": 48.93,
+      "bands": 3,
+      "warmup_frames": 18,
+      "timed_frames": 53,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.912
+    },
+    "1080p/0.25/env": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 0.786,
+      "trace_p95": 0.852,
+      "total": 0.786,
+      "total_p95": 0.852,
+      "wall_ms_per_frame": 0.819,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "1080p/0.25/rigid-s": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 34.537,
+      "trace_p95": 36.045,
+      "total": 34.603,
+      "total_p95": 36.11,
+      "wall_ms_per_frame": 34.485,
+      "bands": 3,
+      "warmup_frames": 14,
+      "timed_frames": 40,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1
+    },
+    "1080p/0.25/warp-s": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 44.237,
+      "trace_p95": 53.215,
+      "total": 44.368,
+      "total_p95": 53.346,
+      "wall_ms_per_frame": 45.207,
+      "bands": 2,
+      "warmup_frames": 19,
+      "timed_frames": 55,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.912
+    },
+    "1080p/0.25/rigid-v": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 69.272,
+      "trace_p95": 72.155,
+      "total": 69.337,
+      "total_p95": 72.221,
+      "wall_ms_per_frame": 69.729,
+      "bands": 5,
+      "warmup_frames": 7,
+      "timed_frames": 21,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1
+    },
+    "1080p/0.25/warp-v": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 88.932,
+      "trace_p95": 108.593,
+      "total": 89.129,
+      "total_p95": 108.724,
+      "wall_ms_per_frame": 91.397,
+      "bands": 4,
+      "warmup_frames": 10,
+      "timed_frames": 29,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.912
+    },
+    "1080p/0.5/env": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 0.786,
+      "trace_p95": 0.852,
+      "total": 0.786,
+      "total_p95": 0.852,
+      "wall_ms_per_frame": 0.82,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "1080p/0.5/rigid-s": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 51.577,
+      "trace_p95": 54.329,
+      "total": 51.642,
+      "total_p95": 54.395,
+      "wall_ms_per_frame": 50.996,
+      "bands": 4,
+      "warmup_frames": 9,
+      "timed_frames": 27,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "1080p/0.5/warp-s": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 67.24,
+      "trace_p95": 84.607,
+      "total": 67.371,
+      "total_p95": 84.738,
+      "wall_ms_per_frame": 68.121,
+      "bands": 3,
+      "warmup_frames": 13,
+      "timed_frames": 38,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1.905
+    },
+    "1080p/0.5/rigid-v": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 106.037,
+      "trace_p95": 110.232,
+      "total": 106.103,
+      "total_p95": 110.297,
+      "wall_ms_per_frame": 106.155,
+      "bands": 7,
+      "warmup_frames": 5,
+      "timed_frames": 20,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "1080p/0.5/warp-v": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 134.349,
+      "trace_p95": 163.054,
+      "total": 134.545,
+      "total_p95": 163.185,
+      "wall_ms_per_frame": 139.638,
+      "bands": 5,
+      "warmup_frames": 7,
+      "timed_frames": 21,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1.912
+    },
+    "1080p/0.75/env": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 0.786,
+      "trace_p95": 0.852,
+      "total": 0.786,
+      "total_p95": 0.852,
+      "wall_ms_per_frame": 0.82,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "1080p/0.75/rigid-s": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 65.208,
+      "trace_p95": 69.337,
+      "total": 65.274,
+      "total_p95": 69.403,
+      "wall_ms_per_frame": 65.527,
+      "bands": 4,
+      "warmup_frames": 8,
+      "timed_frames": 22,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1
+    },
+    "1080p/0.75/warp-s": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 85.918,
+      "trace_p95": 102.105,
+      "total": 86.049,
+      "total_p95": 102.302,
+      "wall_ms_per_frame": 87.234,
+      "bands": 3,
+      "warmup_frames": 10,
+      "timed_frames": 29,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.912
+    },
+    "1080p/0.75/rigid-v": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 129.368,
+      "trace_p95": 134.545,
+      "total": 129.434,
+      "total_p95": 134.611,
+      "wall_ms_per_frame": 128.77,
+      "bands": 8,
+      "warmup_frames": 4,
+      "timed_frames": 20,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1
+    },
+    "1080p/0.75/warp-v": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 171.901,
+      "trace_p95": 201.982,
+      "total": 172.032,
+      "total_p95": 202.179,
+      "wall_ms_per_frame": 173.95,
+      "bands": 6,
+      "warmup_frames": 5,
+      "timed_frames": 20,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.905
+    },
+    "1080p/1/env": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 0.786,
+      "trace_p95": 0.852,
+      "total": 0.786,
+      "total_p95": 0.852,
+      "wall_ms_per_frame": 0.817,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "1080p/1/rigid-s": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 56.492,
+      "trace_p95": 72.679,
+      "total": 56.623,
+      "total_p95": 72.745,
+      "wall_ms_per_frame": 57.584,
+      "bands": 5,
+      "warmup_frames": 11,
+      "timed_frames": 31,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1
+    },
+    "1080p/1/warp-s": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 70.91,
+      "trace_p95": 88.08,
+      "total": 71.107,
+      "total_p95": 88.211,
+      "wall_ms_per_frame": 70.75,
+      "bands": 4,
+      "warmup_frames": 11,
+      "timed_frames": 32,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.905
+    },
+    "1080p/1/rigid-v": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 89.653,
+      "trace_p95": 115.278,
+      "total": 89.719,
+      "total_p95": 115.343,
+      "wall_ms_per_frame": 95.04,
+      "bands": 5,
+      "warmup_frames": 6,
+      "timed_frames": 20,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "1080p/1/warp-v": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 118.948,
+      "trace_p95": 135.463,
+      "total": 119.144,
+      "total_p95": 135.594,
+      "wall_ms_per_frame": 115.05,
+      "bands": 4,
+      "warmup_frames": 7,
+      "timed_frames": 20,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1.905
+    },
+    "540p/0.01/env": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 0.197,
+      "trace_p95": 0.262,
+      "total": 0.197,
+      "total_p95": 0.262,
+      "wall_ms_per_frame": 0.213,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "540p/0.01/rigid-s": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 1.901,
+      "trace_p95": 2.359,
+      "total": 1.901,
+      "total_p95": 2.359,
+      "wall_ms_per_frame": 1.988,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "540p/0.01/rigid-v": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 2.097,
+      "trace_p95": 2.49,
+      "total": 2.097,
+      "total_p95": 2.556,
+      "wall_ms_per_frame": 2.167,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1
+    },
+    "540p/0.01/warp-v": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 2.753,
+      "trace_p95": 3.801,
+      "total": 2.884,
+      "total_p95": 3.932,
+      "wall_ms_per_frame": 2.986,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.905
+    },
+    "540p/0.03/env": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 0.197,
+      "trace_p95": 0.262,
+      "total": 0.197,
+      "total_p95": 0.262,
+      "wall_ms_per_frame": 0.213,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "540p/0.03/rigid-s": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 3.211,
+      "trace_p95": 3.604,
+      "total": 3.277,
+      "total_p95": 3.604,
+      "wall_ms_per_frame": 3.238,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "540p/0.03/rigid-v": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 3.67,
+      "trace_p95": 4.129,
+      "total": 3.67,
+      "total_p95": 4.129,
+      "wall_ms_per_frame": 3.64,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "540p/0.03/warp-v": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 4.784,
+      "trace_p95": 5.767,
+      "total": 4.915,
+      "total_p95": 5.898,
+      "wall_ms_per_frame": 4.969,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.905
+    },
+    "540p/0.1/env": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 0.197,
+      "trace_p95": 0.262,
+      "total": 0.197,
+      "total_p95": 0.262,
+      "wall_ms_per_frame": 0.214,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "540p/0.1/rigid-s": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 6.226,
+      "trace_p95": 6.816,
+      "total": 6.226,
+      "total_p95": 6.816,
+      "wall_ms_per_frame": 6.301,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "540p/0.1/rigid-v": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 9.961,
+      "trace_p95": 10.813,
+      "total": 9.961,
+      "total_p95": 10.813,
+      "wall_ms_per_frame": 9.986,
+      "bands": 2,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1
+    },
+    "540p/0.1/warp-v": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 12.124,
+      "trace_p95": 14.025,
+      "total": 12.255,
+      "total_p95": 14.156,
+      "wall_ms_per_frame": 12.446,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1.905
+    },
+    "540p/0.25/env": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 0.197,
+      "trace_p95": 0.262,
+      "total": 0.197,
+      "total_p95": 0.262,
+      "wall_ms_per_frame": 0.213,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "540p/0.25/rigid-s": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 11.665,
+      "trace_p95": 12.648,
+      "total": 11.665,
+      "total_p95": 12.714,
+      "wall_ms_per_frame": 11.786,
+      "bands": 2,
+      "warmup_frames": 28,
+      "timed_frames": 83,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "540p/0.25/rigid-v": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 26.739,
+      "trace_p95": 28.443,
+      "total": 26.804,
+      "total_p95": 28.443,
+      "wall_ms_per_frame": 26.889,
+      "bands": 3,
+      "warmup_frames": 15,
+      "timed_frames": 44,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "540p/0.25/warp-v": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 36.176,
+      "trace_p95": 46.793,
+      "total": 36.307,
+      "total_p95": 46.858,
+      "wall_ms_per_frame": 37.784,
+      "bands": 3,
+      "warmup_frames": 20,
+      "timed_frames": 58,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.905
+    },
+    "540p/0.5/env": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 0.197,
+      "trace_p95": 0.262,
+      "total": 0.197,
+      "total_p95": 0.262,
+      "wall_ms_per_frame": 0.214,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "540p/0.5/rigid-s": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 16.384,
+      "trace_p95": 17.826,
+      "total": 16.45,
+      "total_p95": 17.891,
+      "wall_ms_per_frame": 16.502,
+      "bands": 2,
+      "warmup_frames": 21,
+      "timed_frames": 62,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1
+    },
+    "540p/0.5/rigid-v": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 37.749,
+      "trace_p95": 42.271,
+      "total": 37.749,
+      "total_p95": 42.271,
+      "wall_ms_per_frame": 37.962,
+      "bands": 3,
+      "warmup_frames": 11,
+      "timed_frames": 32,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "540p/0.5/warp-v": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 49.938,
+      "trace_p95": 61.669,
+      "total": 50.07,
+      "total_p95": 61.8,
+      "wall_ms_per_frame": 50.954,
+      "bands": 3,
+      "warmup_frames": 16,
+      "timed_frames": 48,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.905
+    },
+    "540p/0.75/env": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 0.197,
+      "trace_p95": 0.262,
+      "total": 0.197,
+      "total_p95": 0.262,
+      "wall_ms_per_frame": 0.213,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "540p/0.75/rigid-s": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 19.202,
+      "trace_p95": 21.627,
+      "total": 19.268,
+      "total_p95": 21.627,
+      "wall_ms_per_frame": 19.411,
+      "bands": 2,
+      "warmup_frames": 18,
+      "timed_frames": 53,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "540p/0.75/rigid-v": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 44.63,
+      "trace_p95": 47.645,
+      "total": 44.63,
+      "total_p95": 47.71,
+      "wall_ms_per_frame": 44.94,
+      "bands": 4,
+      "warmup_frames": 10,
+      "timed_frames": 30,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1
+    },
+    "540p/0.75/warp-v": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 54.46,
+      "trace_p95": 66.65,
+      "total": 54.591,
+      "total_p95": 66.781,
+      "wall_ms_per_frame": 56.198,
+      "bands": 3,
+      "warmup_frames": 14,
+      "timed_frames": 41,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.912
+    },
+    "540p/1/env": {
+      "refit": 0,
+      "bins": 0,
+      "trace": 0.197,
+      "trace_p95": 0.262,
+      "total": 0.197,
+      "total_p95": 0.262,
+      "wall_ms_per_frame": 0.213,
+      "bands": 1,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "540p/1/rigid-s": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 16.646,
+      "trace_p95": 23.396,
+      "total": 16.646,
+      "total_p95": 23.462,
+      "wall_ms_per_frame": 16.722,
+      "bands": 2,
+      "warmup_frames": 30,
+      "timed_frames": 90,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1
+    },
+    "540p/1/rigid-v": {
+      "refit": 0,
+      "bins": 0.066,
+      "trace": 23.462,
+      "trace_p95": 34.865,
+      "total": 23.527,
+      "total_p95": 34.865,
+      "wall_ms_per_frame": 24.24,
+      "bands": 2,
+      "warmup_frames": 21,
+      "timed_frames": 62,
+      "cpu_pose_ms": 0,
+      "warp_L_max": 1
+    },
+    "540p/1/warp-v": {
+      "refit": 0.066,
+      "bins": 0.066,
+      "trace": 27.591,
+      "trace_p95": 41.878,
+      "total": 27.722,
+      "total_p95": 42.009,
+      "wall_ms_per_frame": 28.589,
+      "bands": 2,
+      "warmup_frames": 22,
+      "timed_frames": 64,
+      "cpu_pose_ms": 0.1,
+      "warp_L_max": 1.905
+    }
+  },
+  "creature_ms": {
+    "1080p/0.01": {
+      "rigid-s": {
+        "median": 3.146,
+        "p95": 3.736,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 3.081,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0.1
+      },
+      "warp-s": {
+        "median": 4.522,
+        "p95": 5.833,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 4.391,
+        "warp_L_max": 1.905,
+        "cpu_pose_ms": 0.1
+      },
+      "rigid-v": {
+        "median": 3.539,
+        "p95": 4.064,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 3.539,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0.1
+      },
+      "warp-v": {
+        "median": 5.047,
+        "p95": 6.488,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 4.916,
+        "warp_L_max": 1.905,
+        "cpu_pose_ms": 0.1
+      }
+    },
+    "1080p/0.03": {
+      "rigid-s": {
+        "median": 7.275,
+        "p95": 7.93,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 7.209,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0.1
+      },
+      "warp-s": {
+        "median": 8.979,
+        "p95": 10.683,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 8.848,
+        "warp_L_max": 1.905,
+        "cpu_pose_ms": 0.1
+      },
+      "rigid-v": {
+        "median": 12.256,
+        "p95": 13.632,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 12.19,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0
+      },
+      "warp-v": {
+        "median": 17.433,
+        "p95": 22.872,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 17.236,
+        "warp_L_max": 1.905,
+        "cpu_pose_ms": 0.1
+      }
+    },
+    "1080p/0.1": {
+      "rigid-s": {
+        "median": 16.057,
+        "p95": 17.499,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 15.991,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0
+      },
+      "warp-s": {
+        "median": 21.693,
+        "p95": 26.543,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 21.562,
+        "warp_L_max": 1.905,
+        "cpu_pose_ms": 0.1
+      },
+      "rigid-v": {
+        "median": 34.014,
+        "p95": 35.128,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 33.948,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0.1
+      },
+      "warp-v": {
+        "median": 46.531,
+        "p95": 59.376,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 46.334,
+        "warp_L_max": 1.912,
+        "cpu_pose_ms": 0.1
+      }
+    },
+    "1080p/0.25": {
+      "rigid-s": {
+        "median": 33.817,
+        "p95": 35.324,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 33.751,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0.1
+      },
+      "warp-s": {
+        "median": 43.582,
+        "p95": 52.56,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 43.451,
+        "warp_L_max": 1.912,
+        "cpu_pose_ms": 0.1
+      },
+      "rigid-v": {
+        "median": 68.551,
+        "p95": 71.435,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 68.486,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0.1
+      },
+      "warp-v": {
+        "median": 88.343,
+        "p95": 107.938,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 88.146,
+        "warp_L_max": 1.912,
+        "cpu_pose_ms": 0.1
+      }
+    },
+    "1080p/0.5": {
+      "rigid-s": {
+        "median": 50.856,
+        "p95": 53.609,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 50.791,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0
+      },
+      "warp-s": {
+        "median": 66.585,
+        "p95": 83.952,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 66.454,
+        "warp_L_max": 1.905,
+        "cpu_pose_ms": 0
+      },
+      "rigid-v": {
+        "median": 105.317,
+        "p95": 109.511,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 105.251,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0
+      },
+      "warp-v": {
+        "median": 133.759,
+        "p95": 162.399,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 133.563,
+        "warp_L_max": 1.912,
+        "cpu_pose_ms": 0
+      }
+    },
+    "1080p/0.75": {
+      "rigid-s": {
+        "median": 64.488,
+        "p95": 68.617,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 64.422,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0.1
+      },
+      "warp-s": {
+        "median": 85.263,
+        "p95": 101.516,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 85.132,
+        "warp_L_max": 1.912,
+        "cpu_pose_ms": 0.1
+      },
+      "rigid-v": {
+        "median": 128.648,
+        "p95": 133.825,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 128.582,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0.1
+      },
+      "warp-v": {
+        "median": 171.246,
+        "p95": 201.393,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 171.115,
+        "warp_L_max": 1.905,
+        "cpu_pose_ms": 0.1
+      }
+    },
+    "1080p/1": {
+      "rigid-s": {
+        "median": 55.837,
+        "p95": 71.959,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 55.706,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0.1
+      },
+      "warp-s": {
+        "median": 70.321,
+        "p95": 87.425,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 70.124,
+        "warp_L_max": 1.905,
+        "cpu_pose_ms": 0.1
+      },
+      "rigid-v": {
+        "median": 88.933,
+        "p95": 114.557,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 88.867,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0
+      },
+      "warp-v": {
+        "median": 118.358,
+        "p95": 134.808,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 118.162,
+        "warp_L_max": 1.905,
+        "cpu_pose_ms": 0
+      }
+    },
+    "540p/0.01": {
+      "rigid-s": {
+        "median": 1.704,
+        "p95": 2.162,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 1.704,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0
+      },
+      "rigid-v": {
+        "median": 1.9,
+        "p95": 2.359,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 1.9,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0.1
+      },
+      "warp-v": {
+        "median": 2.687,
+        "p95": 3.735,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 2.556,
+        "warp_L_max": 1.905,
+        "cpu_pose_ms": 0.1
+      }
+    },
+    "540p/0.03": {
+      "rigid-s": {
+        "median": 3.08,
+        "p95": 3.407,
+        "refit": 0,
+        "bins": 0,
+        "trace_minus_env": 3.014,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0
+      },
+      "rigid-v": {
+        "median": 3.473,
+        "p95": 3.932,
+        "refit": 0,
+        "bins": 0,
+        "trace_minus_env": 3.473,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0
+      },
+      "warp-v": {
+        "median": 4.718,
+        "p95": 5.701,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 4.587,
+        "warp_L_max": 1.905,
+        "cpu_pose_ms": 0.1
+      }
+    },
+    "540p/0.1": {
+      "rigid-s": {
+        "median": 6.029,
+        "p95": 6.619,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 6.029,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0
+      },
+      "rigid-v": {
+        "median": 9.764,
+        "p95": 10.616,
+        "refit": 0,
+        "bins": 0,
+        "trace_minus_env": 9.764,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0.1
+      },
+      "warp-v": {
+        "median": 12.058,
+        "p95": 13.959,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 11.927,
+        "warp_L_max": 1.905,
+        "cpu_pose_ms": 0
+      }
+    },
+    "540p/0.25": {
+      "rigid-s": {
+        "median": 11.468,
+        "p95": 12.517,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 11.468,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0
+      },
+      "rigid-v": {
+        "median": 26.607,
+        "p95": 28.246,
+        "refit": 0,
+        "bins": 0,
+        "trace_minus_env": 26.542,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0
+      },
+      "warp-v": {
+        "median": 36.11,
+        "p95": 46.661,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 35.979,
+        "warp_L_max": 1.905,
+        "cpu_pose_ms": 0.1
+      }
+    },
+    "540p/0.5": {
+      "rigid-s": {
+        "median": 16.253,
+        "p95": 17.694,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 16.187,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0.1
+      },
+      "rigid-v": {
+        "median": 37.552,
+        "p95": 42.074,
+        "refit": 0,
+        "bins": 0,
+        "trace_minus_env": 37.552,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0
+      },
+      "warp-v": {
+        "median": 49.873,
+        "p95": 61.603,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 49.741,
+        "warp_L_max": 1.905,
+        "cpu_pose_ms": 0.1
+      }
+    },
+    "540p/0.75": {
+      "rigid-s": {
+        "median": 19.071,
+        "p95": 21.43,
+        "refit": 0,
+        "bins": 0,
+        "trace_minus_env": 19.005,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0
+      },
+      "rigid-v": {
+        "median": 44.433,
+        "p95": 47.513,
+        "refit": 0,
+        "bins": 0,
+        "trace_minus_env": 44.433,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0.1
+      },
+      "warp-v": {
+        "median": 54.394,
+        "p95": 66.584,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 54.263,
+        "warp_L_max": 1.912,
+        "cpu_pose_ms": 0.1
+      }
+    },
+    "540p/1": {
+      "rigid-s": {
+        "median": 16.449,
+        "p95": 23.265,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 16.449,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0.1
+      },
+      "rigid-v": {
+        "median": 23.33,
+        "p95": 34.668,
+        "refit": 0,
+        "bins": 0.066,
+        "trace_minus_env": 23.265,
+        "warp_L_max": 1,
+        "cpu_pose_ms": 0
+      },
+      "warp-v": {
+        "median": 27.525,
+        "p95": 41.812,
+        "refit": 0.066,
+        "bins": 0.066,
+        "trace_minus_env": 27.394,
+        "warp_L_max": 1.905,
+        "cpu_pose_ms": 0.1
+      }
+    }
+  },
+  "stats": {
+    "1080p/0.01/rigid-s": {
+      "creature_px": 19379,
+      "steps": 305952,
+      "evals": 3116239,
+      "caps": 0,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 272549,
+      "shadow_caps": 84,
+      "rays": 48566,
+      "ray_parts": 178711,
+      "tile_parts": 318656,
+      "surface_px": 19379,
+      "hit_steps": 115514,
+      "stops": 1004,
+      "jumps": 0,
+      "coverage": 0.009,
+      "steps_per_creature_px": 5.961,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 1.503,
+      "parts_per_ray": 3.68,
+      "tile_parts_per_px": 0.154,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 0.131,
+      "stops_per_creature_px": 0.052,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.01/warp-s": {
+      "creature_px": 19419,
+      "steps": 416916,
+      "evals": 3836367,
+      "caps": 0,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 362786,
+      "shadow_caps": 379,
+      "rays": 53949,
+      "ray_parts": 187858,
+      "tile_parts": 323264,
+      "surface_px": 19419,
+      "hit_steps": 160819,
+      "stops": 531,
+      "jumps": 0,
+      "coverage": 0.009,
+      "steps_per_creature_px": 8.282,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 1.85,
+      "parts_per_ray": 3.482,
+      "tile_parts_per_px": 0.156,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 0.175,
+      "stops_per_creature_px": 0.027,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.01/rigid-v": {
+      "creature_px": 19379,
+      "steps": 325072,
+      "evals": 3459149,
+      "caps": 0,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 284047,
+      "shadow_caps": 88,
+      "rays": 51749,
+      "ray_parts": 200613,
+      "tile_parts": 351424,
+      "surface_px": 19379,
+      "hit_steps": 116908,
+      "stops": 1774,
+      "jumps": 0,
+      "coverage": 0.009,
+      "steps_per_creature_px": 6.033,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 1.668,
+      "parts_per_ray": 3.877,
+      "tile_parts_per_px": 0.169,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 0.137,
+      "stops_per_creature_px": 0.092,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.01/warp-v": {
+      "creature_px": 19419,
+      "steps": 443457,
+      "evals": 4323187,
+      "caps": 0,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 380593,
+      "shadow_caps": 424,
+      "rays": 57287,
+      "ray_parts": 208426,
+      "tile_parts": 353280,
+      "surface_px": 19419,
+      "hit_steps": 165771,
+      "stops": 868,
+      "jumps": 0,
+      "coverage": 0.009,
+      "steps_per_creature_px": 8.537,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 2.085,
+      "parts_per_ray": 3.638,
+      "tile_parts_per_px": 0.17,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 0.184,
+      "stops_per_creature_px": 0.045,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.03/rigid-s": {
+      "creature_px": 60565,
+      "steps": 1023471,
+      "evals": 10374264,
+      "caps": 0,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 917440,
+      "shadow_caps": 426,
+      "rays": 153983,
+      "ray_parts": 560207,
+      "tile_parts": 930624,
+      "surface_px": 60565,
+      "hit_steps": 402023,
+      "stops": 2865,
+      "jumps": 0,
+      "coverage": 0.029,
+      "steps_per_creature_px": 6.638,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 5.003,
+      "parts_per_ray": 3.638,
+      "tile_parts_per_px": 0.449,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 0.442,
+      "stops_per_creature_px": 0.047,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.03/warp-s": {
+      "creature_px": 60673,
+      "steps": 1394056,
+      "evals": 12794494,
+      "caps": 0,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 1221072,
+      "shadow_caps": 1385,
+      "rays": 172050,
+      "ray_parts": 589584,
+      "tile_parts": 949184,
+      "surface_px": 60673,
+      "hit_steps": 559401,
+      "stops": 1398,
+      "jumps": 0,
+      "coverage": 0.029,
+      "steps_per_creature_px": 9.22,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 6.17,
+      "parts_per_ray": 3.427,
+      "tile_parts_per_px": 0.458,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 0.589,
+      "stops_per_creature_px": 0.023,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.03/rigid-v": {
+      "creature_px": 61239,
+      "steps": 1178771,
+      "evals": 14296181,
+      "caps": 0,
+      "fur_steps": 548229,
+      "fur_caps": 447,
+      "segments": 51844,
+      "shadow_steps": 1003597,
+      "shadow_caps": 457,
+      "rays": 164130,
+      "ray_parts": 629048,
+      "tile_parts": 1034048,
+      "surface_px": 15689,
+      "hit_steps": 875244,
+      "stops": 3911,
+      "jumps": 0,
+      "coverage": 0.03,
+      "steps_per_creature_px": 14.292,
+      "fur_steps_per_creature_px": 8.952,
+      "part_evals_per_px": 6.894,
+      "parts_per_ray": 3.833,
+      "tile_parts_per_px": 0.499,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 0.484,
+      "stops_per_creature_px": 0.064,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.03/warp-v": {
+      "creature_px": 61324,
+      "steps": 1598143,
+      "evals": 17422530,
+      "caps": 0,
+      "fur_steps": 572650,
+      "fur_caps": 505,
+      "segments": 52489,
+      "shadow_steps": 1340565,
+      "shadow_caps": 1571,
+      "rays": 182786,
+      "ray_parts": 654177,
+      "tile_parts": 1048896,
+      "surface_px": 15468,
+      "hit_steps": 1058281,
+      "stops": 1457,
+      "jumps": 1,
+      "coverage": 0.03,
+      "steps_per_creature_px": 17.257,
+      "fur_steps_per_creature_px": 9.338,
+      "part_evals_per_px": 8.402,
+      "parts_per_ray": 3.579,
+      "tile_parts_per_px": 0.506,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 0.646,
+      "stops_per_creature_px": 0.024,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.1/rigid-s": {
+      "creature_px": 205243,
+      "steps": 3732786,
+      "evals": 36965668,
+      "caps": 0,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 3048068,
+      "shadow_caps": 1442,
+      "rays": 543423,
+      "ray_parts": 1903440,
+      "tile_parts": 3062976,
+      "surface_px": 205243,
+      "hit_steps": 1507686,
+      "stops": 7249,
+      "jumps": 0,
+      "coverage": 0.099,
+      "steps_per_creature_px": 7.346,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 17.827,
+      "parts_per_ray": 3.503,
+      "tile_parts_per_px": 1.477,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 1.47,
+      "stops_per_creature_px": 0.035,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.1/warp-s": {
+      "creature_px": 205590,
+      "steps": 5068634,
+      "evals": 45624073,
+      "caps": 0,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 4112829,
+      "shadow_caps": 5228,
+      "rays": 614023,
+      "ray_parts": 2010388,
+      "tile_parts": 3129728,
+      "surface_px": 205590,
+      "hit_steps": 2094277,
+      "stops": 3485,
+      "jumps": 0,
+      "coverage": 0.099,
+      "steps_per_creature_px": 10.187,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 22.002,
+      "parts_per_ray": 3.274,
+      "tile_parts_per_px": 1.509,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 1.983,
+      "stops_per_creature_px": 0.017,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.1/rigid-v": {
+      "creature_px": 209694,
+      "steps": 4347397,
+      "evals": 57627532,
+      "caps": 0,
+      "fur_steps": 3391573,
+      "fur_caps": 3404,
+      "segments": 244929,
+      "shadow_steps": 3446775,
+      "shadow_caps": 1571,
+      "rays": 582469,
+      "ray_parts": 2140825,
+      "tile_parts": 3417088,
+      "surface_px": 0,
+      "hit_steps": 4417717,
+      "stops": 6345,
+      "jumps": 0,
+      "coverage": 0.101,
+      "steps_per_creature_px": 21.067,
+      "fur_steps_per_creature_px": 16.174,
+      "part_evals_per_px": 27.791,
+      "parts_per_ray": 3.675,
+      "tile_parts_per_px": 1.648,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 1.662,
+      "stops_per_creature_px": 0.03,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.1/warp-v": {
+      "creature_px": 210054,
+      "steps": 5881949,
+      "evals": 69312955,
+      "caps": 0,
+      "fur_steps": 3566213,
+      "fur_caps": 4113,
+      "segments": 245811,
+      "shadow_steps": 4666726,
+      "shadow_caps": 6041,
+      "rays": 654649,
+      "ray_parts": 2235171,
+      "tile_parts": 3461632,
+      "surface_px": 0,
+      "hit_steps": 5129082,
+      "stops": 2564,
+      "jumps": 0,
+      "coverage": 0.101,
+      "steps_per_creature_px": 24.418,
+      "fur_steps_per_creature_px": 16.978,
+      "part_evals_per_px": 33.426,
+      "parts_per_ray": 3.414,
+      "tile_parts_per_px": 1.669,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 2.251,
+      "stops_per_creature_px": 0.012,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.25/rigid-s": {
+      "creature_px": 515707,
+      "steps": 9591899,
+      "evals": 88475300,
+      "caps": 1,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 6932472,
+      "shadow_caps": 3334,
+      "rays": 1308498,
+      "ray_parts": 4744577,
+      "tile_parts": 7280384,
+      "surface_px": 515707,
+      "hit_steps": 4116035,
+      "stops": 9973,
+      "jumps": 0,
+      "coverage": 0.249,
+      "steps_per_creature_px": 7.981,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 42.667,
+      "parts_per_ray": 3.626,
+      "tile_parts_per_px": 3.511,
+      "cap_share_of_creature_px": 0.000001939085566028772,
+      "shadow_steps_per_px": 3.343,
+      "stops_per_creature_px": 0.019,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.25/warp-s": {
+      "creature_px": 516509,
+      "steps": 12985765,
+      "evals": 109643574,
+      "caps": 8,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 9342086,
+      "shadow_caps": 13061,
+      "rays": 1446445,
+      "ray_parts": 4958222,
+      "tile_parts": 7146752,
+      "surface_px": 516509,
+      "hit_steps": 5688272,
+      "stops": 7059,
+      "jumps": 0,
+      "coverage": 0.249,
+      "steps_per_creature_px": 11.013,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 52.876,
+      "parts_per_ray": 3.428,
+      "tile_parts_per_px": 3.447,
+      "cap_share_of_creature_px": 0.000015488597488136703,
+      "shadow_steps_per_px": 4.505,
+      "stops_per_creature_px": 0.014,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.25/rigid-v": {
+      "creature_px": 527922,
+      "steps": 10696278,
+      "evals": 139481271,
+      "caps": 0,
+      "fur_steps": 9006490,
+      "fur_caps": 9350,
+      "segments": 612382,
+      "shadow_steps": 7859989,
+      "shadow_caps": 3674,
+      "rays": 1385422,
+      "ray_parts": 5320814,
+      "tile_parts": 8120512,
+      "surface_px": 0,
+      "hit_steps": 11648443,
+      "stops": 9629,
+      "jumps": 0,
+      "coverage": 0.255,
+      "steps_per_creature_px": 22.065,
+      "fur_steps_per_creature_px": 17.06,
+      "part_evals_per_px": 67.265,
+      "parts_per_ray": 3.841,
+      "tile_parts_per_px": 3.916,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 3.791,
+      "stops_per_creature_px": 0.018,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.25/warp-v": {
+      "creature_px": 528725,
+      "steps": 14431020,
+      "evals": 167550144,
+      "caps": 0,
+      "fur_steps": 9474701,
+      "fur_caps": 11788,
+      "segments": 615476,
+      "shadow_steps": 10658866,
+      "shadow_caps": 15135,
+      "rays": 1519823,
+      "ray_parts": 5492903,
+      "tile_parts": 7896832,
+      "surface_px": 0,
+      "hit_steps": 13444376,
+      "stops": 6284,
+      "jumps": 0,
+      "coverage": 0.255,
+      "steps_per_creature_px": 25.428,
+      "fur_steps_per_creature_px": 17.92,
+      "part_evals_per_px": 80.802,
+      "parts_per_ray": 3.614,
+      "tile_parts_per_px": 3.808,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 5.14,
+      "stops_per_creature_px": 0.012,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.5/rigid-s": {
+      "creature_px": 1034406,
+      "steps": 17183273,
+      "evals": 153573030,
+      "caps": 16,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 9666423,
+      "shadow_caps": 2382,
+      "rays": 2020331,
+      "ray_parts": 9673972,
+      "tile_parts": 13188608,
+      "surface_px": 1034406,
+      "hit_steps": 8860460,
+      "stops": 16182,
+      "jumps": 0,
+      "coverage": 0.499,
+      "steps_per_creature_px": 8.566,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 74.061,
+      "parts_per_ray": 4.788,
+      "tile_parts_per_px": 6.36,
+      "cap_share_of_creature_px": 0.00001546781437849355,
+      "shadow_steps_per_px": 4.662,
+      "stops_per_creature_px": 0.016,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.5/warp-s": {
+      "creature_px": 1036666,
+      "steps": 22877725,
+      "evals": 187000675,
+      "caps": 74,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 12504588,
+      "shadow_caps": 6381,
+      "rays": 2036232,
+      "ray_parts": 9719442,
+      "tile_parts": 12792576,
+      "surface_px": 1036666,
+      "hit_steps": 12462618,
+      "stops": 19936,
+      "jumps": 0,
+      "coverage": 0.5,
+      "steps_per_creature_px": 12.022,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 90.182,
+      "parts_per_ray": 4.773,
+      "tile_parts_per_px": 6.169,
+      "cap_share_of_creature_px": 0.00007138268256121065,
+      "shadow_steps_per_px": 6.03,
+      "stops_per_creature_px": 0.019,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.5/rigid-v": {
+      "creature_px": 1067273,
+      "steps": 17759116,
+      "evals": 253466441,
+      "caps": 0,
+      "fur_steps": 18341087,
+      "fur_caps": 18952,
+      "segments": 1186710,
+      "shadow_steps": 10835532,
+      "shadow_caps": 2730,
+      "rays": 2049575,
+      "ray_parts": 10649311,
+      "tile_parts": 14209408,
+      "surface_px": 0,
+      "hit_steps": 24387156,
+      "stops": 17336,
+      "jumps": 0,
+      "coverage": 0.515,
+      "steps_per_creature_px": 22.85,
+      "fur_steps_per_creature_px": 17.185,
+      "part_evals_per_px": 122.235,
+      "parts_per_ray": 5.196,
+      "tile_parts_per_px": 6.853,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 5.225,
+      "stops_per_creature_px": 0.016,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.5/warp-v": {
+      "creature_px": 1069807,
+      "steps": 23740235,
+      "evals": 298247462,
+      "caps": 1,
+      "fur_steps": 19178864,
+      "fur_caps": 23531,
+      "segments": 1193951,
+      "shadow_steps": 14296360,
+      "shadow_caps": 8945,
+      "rays": 2055548,
+      "ray_parts": 10639395,
+      "tile_parts": 13702720,
+      "surface_px": 0,
+      "hit_steps": 28246270,
+      "stops": 16925,
+      "jumps": 0,
+      "coverage": 0.516,
+      "steps_per_creature_px": 26.403,
+      "fur_steps_per_creature_px": 17.927,
+      "part_evals_per_px": 143.831,
+      "parts_per_ray": 5.176,
+      "tile_parts_per_px": 6.608,
+      "cap_share_of_creature_px": 9.347480433386583e-7,
+      "shadow_steps_per_px": 6.894,
+      "stops_per_creature_px": 0.016,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.75/rigid-s": {
+      "creature_px": 1553078,
+      "steps": 22156057,
+      "evals": 217127998,
+      "caps": 64,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 13395236,
+      "shadow_caps": 3355,
+      "rays": 2073600,
+      "ray_parts": 12073115,
+      "tile_parts": 15612928,
+      "surface_px": 1553078,
+      "hit_steps": 14471830,
+      "stops": 37396,
+      "jumps": 0,
+      "coverage": 0.749,
+      "steps_per_creature_px": 9.318,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 104.711,
+      "parts_per_ray": 5.822,
+      "tile_parts_per_px": 7.529,
+      "cap_share_of_creature_px": 0.00004120849049436023,
+      "shadow_steps_per_px": 6.46,
+      "stops_per_creature_px": 0.024,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.75/warp-s": {
+      "creature_px": 1552551,
+      "steps": 29790184,
+      "evals": 269675512,
+      "caps": 349,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 17119313,
+      "shadow_caps": 7546,
+      "rays": 2073600,
+      "ray_parts": 12452138,
+      "tile_parts": 15323712,
+      "surface_px": 1552551,
+      "hit_steps": 20459430,
+      "stops": 27562,
+      "jumps": 0,
+      "coverage": 0.749,
+      "steps_per_creature_px": 13.178,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 130.052,
+      "parts_per_ray": 6.005,
+      "tile_parts_per_px": 7.39,
+      "cap_share_of_creature_px": 0.00022479132730583408,
+      "shadow_steps_per_px": 8.256,
+      "stops_per_creature_px": 0.018,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.75/rigid-v": {
+      "creature_px": 1594008,
+      "steps": 20431045,
+      "evals": 355512383,
+      "caps": 0,
+      "fur_steps": 27670451,
+      "fur_caps": 32680,
+      "segments": 1731388,
+      "shadow_steps": 14634900,
+      "shadow_caps": 4104,
+      "rays": 2073600,
+      "ray_parts": 13059065,
+      "tile_parts": 16707136,
+      "surface_px": 0,
+      "hit_steps": 37455447,
+      "stops": 36436,
+      "jumps": 0,
+      "coverage": 0.769,
+      "steps_per_creature_px": 23.498,
+      "fur_steps_per_creature_px": 17.359,
+      "part_evals_per_px": 171.447,
+      "parts_per_ray": 6.298,
+      "tile_parts_per_px": 8.057,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 7.058,
+      "stops_per_creature_px": 0.023,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/0.75/warp-v": {
+      "creature_px": 1593407,
+      "steps": 27801772,
+      "evals": 424557260,
+      "caps": 2,
+      "fur_steps": 28759069,
+      "fur_caps": 37633,
+      "segments": 1735021,
+      "shadow_steps": 18941630,
+      "shadow_caps": 10824,
+      "rays": 2073600,
+      "ray_parts": 13373409,
+      "tile_parts": 16265984,
+      "surface_px": 0,
+      "hit_steps": 43356756,
+      "stops": 27306,
+      "jumps": 0,
+      "coverage": 0.768,
+      "steps_per_creature_px": 27.21,
+      "fur_steps_per_creature_px": 18.049,
+      "part_evals_per_px": 204.744,
+      "parts_per_ray": 6.449,
+      "tile_parts_per_px": 7.844,
+      "cap_share_of_creature_px": 0.0000012551720935078106,
+      "shadow_steps_per_px": 9.135,
+      "stops_per_creature_px": 0.017,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/1/rigid-s": {
+      "creature_px": 2070328,
+      "steps": 18879187,
+      "evals": 213615265,
+      "caps": 43,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 16016304,
+      "shadow_caps": 0,
+      "rays": 2073600,
+      "ray_parts": 10476225,
+      "tile_parts": 15515520,
+      "surface_px": 2070328,
+      "hit_steps": 18592782,
+      "stops": 0,
+      "jumps": 0,
+      "coverage": 0.998,
+      "steps_per_creature_px": 8.981,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 103.017,
+      "parts_per_ray": 5.052,
+      "tile_parts_per_px": 7.482,
+      "cap_share_of_creature_px": 0.000020769655822652255,
+      "shadow_steps_per_px": 7.724,
+      "stops_per_creature_px": 0,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/1/warp-s": {
+      "creature_px": 2069722,
+      "steps": 20081596,
+      "evals": 228713863,
+      "caps": 841,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 17892434,
+      "shadow_caps": 233,
+      "rays": 2073600,
+      "ray_parts": 11525331,
+      "tile_parts": 14668992,
+      "surface_px": 2069722,
+      "hit_steps": 19596327,
+      "stops": 5183,
+      "jumps": 0,
+      "coverage": 0.998,
+      "steps_per_creature_px": 9.468,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 110.298,
+      "parts_per_ray": 5.558,
+      "tile_parts_per_px": 7.074,
+      "cap_share_of_creature_px": 0.0004063347637991962,
+      "shadow_steps_per_px": 8.629,
+      "stops_per_creature_px": 0.003,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/1/rigid-v": {
+      "creature_px": 2073492,
+      "steps": 13280840,
+      "evals": 302190664,
+      "caps": 0,
+      "fur_steps": 32355298,
+      "fur_caps": 17455,
+      "segments": 2098448,
+      "shadow_steps": 15516766,
+      "shadow_caps": 0,
+      "rays": 2073600,
+      "ray_parts": 10970494,
+      "tile_parts": 17175296,
+      "surface_px": 0,
+      "hit_steps": 45623500,
+      "stops": 205,
+      "jumps": 0,
+      "coverage": 1,
+      "steps_per_creature_px": 22.003,
+      "fur_steps_per_creature_px": 15.604,
+      "part_evals_per_px": 145.732,
+      "parts_per_ray": 5.291,
+      "tile_parts_per_px": 8.283,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 7.483,
+      "stops_per_creature_px": 0,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/1/warp-v": {
+      "creature_px": 2073491,
+      "steps": 13845998,
+      "evals": 319444855,
+      "caps": 0,
+      "fur_steps": 32521464,
+      "fur_caps": 24651,
+      "segments": 2105812,
+      "shadow_steps": 17774918,
+      "shadow_caps": 0,
+      "rays": 2073600,
+      "ray_parts": 12063584,
+      "tile_parts": 16273344,
+      "surface_px": 0,
+      "hit_steps": 46352575,
+      "stops": 1790,
+      "jumps": 0,
+      "coverage": 1,
+      "steps_per_creature_px": 22.355,
+      "fur_steps_per_creature_px": 15.684,
+      "part_evals_per_px": 154.053,
+      "parts_per_ray": 5.818,
+      "tile_parts_per_px": 7.848,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 8.572,
+      "stops_per_creature_px": 0.001,
+      "jumps_per_creature_px": 0
+    },
+    "hero/rigid-s": {
+      "creature_px": 286856,
+      "steps": 6772451,
+      "evals": 52442670,
+      "caps": 0,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 3859272,
+      "shadow_caps": 2044,
+      "rays": 823501,
+      "ray_parts": 3245773,
+      "tile_parts": 4502016,
+      "surface_px": 286856,
+      "hit_steps": 3186926,
+      "stops": 75153,
+      "jumps": 4978,
+      "coverage": 0.138,
+      "steps_per_creature_px": 11.11,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 25.291,
+      "parts_per_ray": 3.941,
+      "tile_parts_per_px": 2.171,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 1.861,
+      "stops_per_creature_px": 0.262,
+      "jumps_per_creature_px": 0.017
+    },
+    "hero/warp-s": {
+      "creature_px": 286977,
+      "steps": 9078399,
+      "evals": 65062050,
+      "caps": 11,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 5196094,
+      "shadow_caps": 7530,
+      "rays": 906282,
+      "ray_parts": 3392315,
+      "tile_parts": 4630656,
+      "surface_px": 286977,
+      "hit_steps": 4343938,
+      "stops": 81693,
+      "jumps": 0,
+      "coverage": 0.138,
+      "steps_per_creature_px": 15.137,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 31.376,
+      "parts_per_ray": 3.743,
+      "tile_parts_per_px": 2.233,
+      "cap_share_of_creature_px": 0.000038330597922481594,
+      "shadow_steps_per_px": 2.506,
+      "stops_per_creature_px": 0.285,
+      "jumps_per_creature_px": 0
+    },
+    "hero/rigid-v": {
+      "creature_px": 290722,
+      "steps": 7544440,
+      "evals": 80043860,
+      "caps": 0,
+      "fur_steps": 4987088,
+      "fur_caps": 6113,
+      "segments": 348281,
+      "shadow_steps": 4375897,
+      "shadow_caps": 2152,
+      "rays": 870502,
+      "ray_parts": 3642444,
+      "tile_parts": 5054976,
+      "surface_px": 0,
+      "hit_steps": 7247559,
+      "stops": 58164,
+      "jumps": 2532,
+      "coverage": 0.14,
+      "steps_per_creature_px": 24.93,
+      "fur_steps_per_creature_px": 17.154,
+      "part_evals_per_px": 38.601,
+      "parts_per_ray": 4.184,
+      "tile_parts_per_px": 2.438,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 2.11,
+      "stops_per_creature_px": 0.2,
+      "jumps_per_creature_px": 0.009
+    },
+    "hero/warp-v": {
+      "creature_px": 290866,
+      "steps": 10069091,
+      "evals": 96245416,
+      "caps": 2,
+      "fur_steps": 5298738,
+      "fur_caps": 7776,
+      "segments": 349885,
+      "shadow_steps": 5893836,
+      "shadow_caps": 8440,
+      "rays": 949789,
+      "ray_parts": 3750851,
+      "tile_parts": 5144064,
+      "surface_px": 0,
+      "hit_steps": 8577859,
+      "stops": 39381,
+      "jumps": 0,
+      "coverage": 0.14,
+      "steps_per_creature_px": 29.491,
+      "fur_steps_per_creature_px": 18.217,
+      "part_evals_per_px": 46.415,
+      "parts_per_ray": 3.949,
+      "tile_parts_per_px": 2.481,
+      "cap_share_of_creature_px": 0.00000687601851024183,
+      "shadow_steps_per_px": 2.842,
+      "stops_per_creature_px": 0.135,
+      "jumps_per_creature_px": 0
+    },
+    "portrait/rigid-s": {
+      "creature_px": 738147,
+      "steps": 21635072,
+      "evals": 110842374,
+      "caps": 123,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 6401420,
+      "shadow_caps": 545,
+      "rays": 2001033,
+      "ray_parts": 8574077,
+      "tile_parts": 10731328,
+      "surface_px": 738147,
+      "hit_steps": 10670901,
+      "stops": 127731,
+      "jumps": 19,
+      "coverage": 0.356,
+      "steps_per_creature_px": 14.456,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 53.454,
+      "parts_per_ray": 4.285,
+      "tile_parts_per_px": 5.175,
+      "cap_share_of_creature_px": 0.00016663347544594776,
+      "shadow_steps_per_px": 3.087,
+      "stops_per_creature_px": 0.173,
+      "jumps_per_creature_px": 0
+    },
+    "portrait/warp-s": {
+      "creature_px": 737356,
+      "steps": 27138460,
+      "evals": 135291500,
+      "caps": 381,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 7808435,
+      "shadow_caps": 2716,
+      "rays": 2020947,
+      "ray_parts": 8855115,
+      "tile_parts": 10763840,
+      "surface_px": 737356,
+      "hit_steps": 13768317,
+      "stops": 227685,
+      "jumps": 7,
+      "coverage": 0.356,
+      "steps_per_creature_px": 18.673,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 65.245,
+      "parts_per_ray": 4.382,
+      "tile_parts_per_px": 5.191,
+      "cap_share_of_creature_px": 0.0005167110595153495,
+      "shadow_steps_per_px": 3.766,
+      "stops_per_creature_px": 0.309,
+      "jumps_per_creature_px": 0
+    },
+    "portrait/rigid-v": {
+      "creature_px": 750650,
+      "steps": 22312152,
+      "evals": 169926750,
+      "caps": 15,
+      "fur_steps": 12862247,
+      "fur_caps": 17399,
+      "segments": 886688,
+      "shadow_steps": 7720678,
+      "shadow_caps": 553,
+      "rays": 2031495,
+      "ray_parts": 9428329,
+      "tile_parts": 11664064,
+      "surface_px": 0,
+      "hit_steps": 19963260,
+      "stops": 134186,
+      "jumps": 6,
+      "coverage": 0.362,
+      "steps_per_creature_px": 26.595,
+      "fur_steps_per_creature_px": 17.135,
+      "part_evals_per_px": 81.948,
+      "parts_per_ray": 4.641,
+      "tile_parts_per_px": 5.625,
+      "cap_share_of_creature_px": 0.000019982681675880903,
+      "shadow_steps_per_px": 3.723,
+      "stops_per_creature_px": 0.179,
+      "jumps_per_creature_px": 0
+    },
+    "portrait/warp-v": {
+      "creature_px": 749890,
+      "steps": 27973478,
+      "evals": 200278140,
+      "caps": 131,
+      "fur_steps": 13491448,
+      "fur_caps": 21327,
+      "segments": 889525,
+      "shadow_steps": 9382260,
+      "shadow_caps": 2400,
+      "rays": 2041739,
+      "ray_parts": 9649462,
+      "tile_parts": 11591872,
+      "surface_px": 0,
+      "hit_steps": 23007048,
+      "stops": 124376,
+      "jumps": 2,
+      "coverage": 0.362,
+      "steps_per_creature_px": 30.681,
+      "fur_steps_per_creature_px": 17.991,
+      "part_evals_per_px": 96.585,
+      "parts_per_ray": 4.726,
+      "tile_parts_per_px": 5.59,
+      "cap_share_of_creature_px": 0.00017469228820226967,
+      "shadow_steps_per_px": 4.525,
+      "stops_per_creature_px": 0.166,
+      "jumps_per_creature_px": 0
+    },
+    "elbow/rigid-s": {
+      "creature_px": 963289,
+      "steps": 21529042,
+      "evals": 178220829,
+      "caps": 200,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 9754238,
+      "shadow_caps": 3534,
+      "rays": 2073600,
+      "ray_parts": 12026469,
+      "tile_parts": 16962304,
+      "surface_px": 963289,
+      "hit_steps": 10345080,
+      "stops": 23980,
+      "jumps": 0,
+      "coverage": 0.465,
+      "steps_per_creature_px": 10.739,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 85.948,
+      "parts_per_ray": 5.8,
+      "tile_parts_per_px": 8.18,
+      "cap_share_of_creature_px": 0.00020762201167043328,
+      "shadow_steps_per_px": 4.704,
+      "stops_per_creature_px": 0.025,
+      "jumps_per_creature_px": 0
+    },
+    "elbow/warp-s": {
+      "creature_px": 954336,
+      "steps": 29967224,
+      "evals": 207992677,
+      "caps": 755,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 12221833,
+      "shadow_caps": 7328,
+      "rays": 2073600,
+      "ray_parts": 10902963,
+      "tile_parts": 14483584,
+      "surface_px": 954336,
+      "hit_steps": 14809054,
+      "stops": 283,
+      "jumps": 396,
+      "coverage": 0.46,
+      "steps_per_creature_px": 15.518,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 100.305,
+      "parts_per_ray": 5.258,
+      "tile_parts_per_px": 6.985,
+      "cap_share_of_creature_px": 0.0007911259765952453,
+      "shadow_steps_per_px": 5.894,
+      "stops_per_creature_px": 0,
+      "jumps_per_creature_px": 0
+    },
+    "elbow/rigid-v": {
+      "creature_px": 982073,
+      "steps": 21882862,
+      "evals": 299413515,
+      "caps": 0,
+      "fur_steps": 19324559,
+      "fur_caps": 35402,
+      "segments": 1176994,
+      "shadow_steps": 11333025,
+      "shadow_caps": 4390,
+      "rays": 2073600,
+      "ray_parts": 13503447,
+      "tile_parts": 18245888,
+      "surface_px": 0,
+      "hit_steps": 24629923,
+      "stops": 44983,
+      "jumps": 25,
+      "coverage": 0.474,
+      "steps_per_creature_px": 25.08,
+      "fur_steps_per_creature_px": 19.677,
+      "part_evals_per_px": 144.393,
+      "parts_per_ray": 6.512,
+      "tile_parts_per_px": 8.799,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 5.465,
+      "stops_per_creature_px": 0.046,
+      "jumps_per_creature_px": 0
+    },
+    "elbow/warp-v": {
+      "creature_px": 972265,
+      "steps": 30074325,
+      "evals": 326751814,
+      "caps": 0,
+      "fur_steps": 20166729,
+      "fur_caps": 39873,
+      "segments": 1167719,
+      "shadow_steps": 14177291,
+      "shadow_caps": 8511,
+      "rays": 2073600,
+      "ray_parts": 11971093,
+      "tile_parts": 15492416,
+      "surface_px": 0,
+      "hit_steps": 28597626,
+      "stops": 1341,
+      "jumps": 2243,
+      "coverage": 0.469,
+      "steps_per_creature_px": 29.413,
+      "fur_steps_per_creature_px": 20.742,
+      "part_evals_per_px": 157.577,
+      "parts_per_ray": 5.773,
+      "tile_parts_per_px": 7.471,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 6.837,
+      "stops_per_creature_px": 0.001,
+      "jumps_per_creature_px": 0.002
+    },
+    "hock/rigid-s": {
+      "creature_px": 733697,
+      "steps": 17950099,
+      "evals": 135831479,
+      "caps": 0,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 8872843,
+      "shadow_caps": 1102,
+      "rays": 2069268,
+      "ray_parts": 8762004,
+      "tile_parts": 11392320,
+      "surface_px": 733697,
+      "hit_steps": 7710529,
+      "stops": 45786,
+      "jumps": 0,
+      "coverage": 0.354,
+      "steps_per_creature_px": 10.509,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 65.505,
+      "parts_per_ray": 4.234,
+      "tile_parts_per_px": 5.494,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 4.279,
+      "stops_per_creature_px": 0.062,
+      "jumps_per_creature_px": 0
+    },
+    "hock/warp-s": {
+      "creature_px": 751472,
+      "steps": 37591084,
+      "evals": 192963805,
+      "caps": 387,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 16113392,
+      "shadow_caps": 38527,
+      "rays": 2073600,
+      "ray_parts": 7359490,
+      "tile_parts": 8938752,
+      "surface_px": 751472,
+      "hit_steps": 17131125,
+      "stops": 0,
+      "jumps": 0,
+      "coverage": 0.362,
+      "steps_per_creature_px": 22.797,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 93.057,
+      "parts_per_ray": 3.549,
+      "tile_parts_per_px": 4.311,
+      "cap_share_of_creature_px": 0.0005149892477697107,
+      "shadow_steps_per_px": 7.771,
+      "stops_per_creature_px": 0,
+      "jumps_per_creature_px": 0
+    },
+    "hock/rigid-v": {
+      "creature_px": 735313,
+      "steps": 20271194,
+      "evals": 239126737,
+      "caps": 0,
+      "fur_steps": 15710700,
+      "fur_caps": 20453,
+      "segments": 1063966,
+      "shadow_steps": 11962777,
+      "shadow_caps": 1255,
+      "rays": 2073600,
+      "ray_parts": 9643539,
+      "tile_parts": 12123456,
+      "surface_px": 0,
+      "hit_steps": 19047343,
+      "stops": 60344,
+      "jumps": 0,
+      "coverage": 0.355,
+      "steps_per_creature_px": 25.904,
+      "fur_steps_per_creature_px": 21.366,
+      "part_evals_per_px": 115.32,
+      "parts_per_ray": 4.651,
+      "tile_parts_per_px": 5.847,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 5.769,
+      "stops_per_creature_px": 0.082,
+      "jumps_per_creature_px": 0
+    },
+    "hock/warp-v": {
+      "creature_px": 753704,
+      "steps": 40344066,
+      "evals": 314159290,
+      "caps": 13,
+      "fur_steps": 20792185,
+      "fur_caps": 53155,
+      "segments": 1083700,
+      "shadow_steps": 21325863,
+      "shadow_caps": 43271,
+      "rays": 2073600,
+      "ray_parts": 7808116,
+      "tile_parts": 9445952,
+      "surface_px": 0,
+      "hit_steps": 29818047,
+      "stops": 48,
+      "jumps": 0,
+      "coverage": 0.363,
+      "steps_per_creature_px": 39.562,
+      "fur_steps_per_creature_px": 27.587,
+      "part_evals_per_px": 151.504,
+      "parts_per_ray": 3.765,
+      "tile_parts_per_px": 4.555,
+      "cap_share_of_creature_px": 0.000017248150467557557,
+      "shadow_steps_per_px": 10.284,
+      "stops_per_creature_px": 0,
+      "jumps_per_creature_px": 0
+    },
+    "neck/rigid-s": {
+      "creature_px": 1187614,
+      "steps": 18643367,
+      "evals": 145218462,
+      "caps": 2,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 9842926,
+      "shadow_caps": 470,
+      "rays": 2067353,
+      "ray_parts": 8814572,
+      "tile_parts": 12076736,
+      "surface_px": 1187614,
+      "hit_steps": 10227279,
+      "stops": 11114,
+      "jumps": 0,
+      "coverage": 0.573,
+      "steps_per_creature_px": 8.612,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 70.032,
+      "parts_per_ray": 4.264,
+      "tile_parts_per_px": 5.824,
+      "cap_share_of_creature_px": 0.0000016840488576254574,
+      "shadow_steps_per_px": 4.747,
+      "stops_per_creature_px": 0.009,
+      "jumps_per_creature_px": 0
+    },
+    "neck/warp-s": {
+      "creature_px": 1186125,
+      "steps": 23889360,
+      "evals": 173914103,
+      "caps": 51,
+      "fur_steps": 0,
+      "fur_caps": 0,
+      "segments": 0,
+      "shadow_steps": 11885990,
+      "shadow_caps": 2074,
+      "rays": 2073600,
+      "ray_parts": 9223968,
+      "tile_parts": 12438400,
+      "surface_px": 1186125,
+      "hit_steps": 13598590,
+      "stops": 129837,
+      "jumps": 0,
+      "coverage": 0.572,
+      "steps_per_creature_px": 11.465,
+      "fur_steps_per_creature_px": 0,
+      "part_evals_per_px": 83.871,
+      "parts_per_ray": 4.448,
+      "tile_parts_per_px": 5.998,
+      "cap_share_of_creature_px": 0.00004299715460006323,
+      "shadow_steps_per_px": 5.732,
+      "stops_per_creature_px": 0.109,
+      "jumps_per_creature_px": 0
+    },
+    "neck/rigid-v": {
+      "creature_px": 1218453,
+      "steps": 18097695,
+      "evals": 234649896,
+      "caps": 0,
+      "fur_steps": 19789035,
+      "fur_caps": 17365,
+      "segments": 1335304,
+      "shadow_steps": 11035521,
+      "shadow_caps": 665,
+      "rays": 2072548,
+      "ray_parts": 9629957,
+      "tile_parts": 13092672,
+      "surface_px": 0,
+      "hit_steps": 26240349,
+      "stops": 10593,
+      "jumps": 0,
+      "coverage": 0.588,
+      "steps_per_creature_px": 21.536,
+      "fur_steps_per_creature_px": 16.241,
+      "part_evals_per_px": 113.161,
+      "parts_per_ray": 4.646,
+      "tile_parts_per_px": 6.314,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 5.322,
+      "stops_per_creature_px": 0.009,
+      "jumps_per_creature_px": 0
+    },
+    "neck/warp-v": {
+      "creature_px": 1216763,
+      "steps": 22825174,
+      "evals": 266503773,
+      "caps": 0,
+      "fur_steps": 20247856,
+      "fur_caps": 19575,
+      "segments": 1334884,
+      "shadow_steps": 13158340,
+      "shadow_caps": 2140,
+      "rays": 2073600,
+      "ray_parts": 9951441,
+      "tile_parts": 13315520,
+      "surface_px": 0,
+      "hit_steps": 29186110,
+      "stops": 7824,
+      "jumps": 0,
+      "coverage": 0.587,
+      "steps_per_creature_px": 23.987,
+      "fur_steps_per_creature_px": 16.641,
+      "part_evals_per_px": 128.522,
+      "parts_per_ray": 4.799,
+      "tile_parts_per_px": 6.421,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 6.346,
+      "stops_per_creature_px": 0.006,
+      "jumps_per_creature_px": 0
+    },
+    "1080p/1/warp-v_nolod": {
+      "creature_px": 2073141,
+      "steps": 13832056,
+      "evals": 318332714,
+      "caps": 0,
+      "fur_steps": 32327521,
+      "fur_caps": 23203,
+      "segments": 2104215,
+      "shadow_steps": 17760764,
+      "shadow_caps": 0,
+      "rays": 2073600,
+      "ray_parts": 12063584,
+      "tile_parts": 16273344,
+      "surface_px": 0,
+      "hit_steps": 46095205,
+      "stops": 1789,
+      "jumps": 0,
+      "coverage": 1,
+      "steps_per_creature_px": 22.234,
+      "fur_steps_per_creature_px": 15.593,
+      "part_evals_per_px": 153.517,
+      "parts_per_ray": 5.818,
+      "tile_parts_per_px": 7.848,
+      "cap_share_of_creature_px": 0,
+      "shadow_steps_per_px": 8.565,
+      "stops_per_creature_px": 0.001,
+      "jumps_per_creature_px": 0
+    }
+  },
+  "quality": {
+    "cov100": {
+      "rigid-s": {
+        "mean_abs_255": 0.039,
+        "share_over_8": 0.0000029,
+        "max": 22,
+        "over_8_per_creature_px": 0.0000029,
+        "crop": null,
+        "ref_ms": 4033.9,
+        "ref_worst_band_ms": 37.5,
+        "caps_share": 0.000020769655822652255,
+        "creature_px": 2070328
+      },
+      "warp-s": {
+        "mean_abs_255": 0.045,
+        "share_over_8": 0.0002951,
+        "max": 34,
+        "over_8_per_creature_px": 0.0002957,
+        "crop": null,
+        "ref_ms": 5703.7,
+        "ref_worst_band_ms": 52.7,
+        "caps_share": 0.0004063347637991962,
+        "creature_px": 2069722
+      },
+      "warp-v": {
+        "crop_px": [
+          240,
+          136
+        ],
+        "fast_vs_ref16": {
+          "mean_abs_255": 1.479,
+          "share_over_8": 0.0000613,
+          "max": 9,
+          "over_8_per_creature_px": 0.0000613
+        },
+        "ref1_vs_ref16": {
+          "mean_abs_255": 0.026,
+          "share_over_8": 0,
+          "max": 1,
+          "over_8_per_creature_px": 0
+        },
+        "nolod_vs_ref16": {
+          "mean_abs_255": 2.465,
+          "share_over_8": 0.026317399999999998,
+          "max": 18,
+          "over_8_per_creature_px": 0.026319
+        },
+        "e3_vs_ref16": {
+          "mean_abs_255": 1.475,
+          "share_over_8": 0.0000613,
+          "max": 9,
+          "over_8_per_creature_px": 0.0000613
+        },
+        "steps24_vs_ref16": {
+          "mean_abs_255": 1.151,
+          "share_over_8": 0,
+          "max": 7,
+          "over_8_per_creature_px": 0
+        },
+        "ref16_ms": 3834.6,
+        "ref16_worst_band_ms": 13.6,
+        "caps_share": 0,
+        "fur_caps": 24651
+      }
+    },
+    "elbow": {
+      "rigid-s": {
+        "mean_abs_255": 0.043,
+        "share_over_8": 0.0000057000000000000005,
+        "max": 94,
+        "crop": [
+          60,
+          34,
+          120,
+          68
+        ],
+        "ref_ms": 2364.1,
+        "ref_worst_band_ms": 53.9,
+        "caps_share": 0.00020762201167043328,
+        "creature_px": 963289
+      },
+      "warp-s": {
+        "mean_abs_255": 0.034,
+        "share_over_8": 0.000044,
+        "max": 109,
+        "crop": [
+          60,
+          34,
+          120,
+          68
+        ],
+        "ref_ms": 3066.4,
+        "ref_worst_band_ms": 52.1,
+        "caps_share": 0.0007911259765952453,
+        "creature_px": 954336
+      }
+    },
+    "hock": {
+      "rigid-s": {
+        "mean_abs_255": 0.056,
+        "share_over_8": 0,
+        "max": 4,
+        "crop": [
+          60,
+          34,
+          120,
+          68
+        ],
+        "ref_ms": 3065,
+        "ref_worst_band_ms": 44.7,
+        "caps_share": 0,
+        "creature_px": 733697
+      },
+      "warp-s": {
+        "mean_abs_255": 0.031,
+        "share_over_8": 0.0000019,
+        "max": 30,
+        "crop": [
+          60,
+          34,
+          120,
+          68
+        ],
+        "ref_ms": 5851.8,
+        "ref_worst_band_ms": 69.1,
+        "caps_share": 0.0005149892477697107,
+        "creature_px": 751472
+      }
+    }
+  },
+  "paced": {
+    "1080p/0.1/warp-v": {
+      "pacing": "busy-wait at 60 Hz",
+      "frames": 80,
+      "bands": 3,
+      "frame_gpu_median": 46.989,
+      "frame_gpu_p95": 58.524,
+      "frame_gpu_max": 60.424,
+      "frame_gpu_over_16_7": 80
+    },
+    "540p/0.1/warp-v": {
+      "pacing": "busy-wait at 60 Hz",
+      "frames": 80,
+      "bands": 1,
+      "frame_gpu_median": 12.452,
+      "frame_gpu_p95": 15.139,
+      "frame_gpu_max": 16.056,
+      "frame_gpu_over_16_7": 0
+    }
+  },
+  "raster": {
+    "1080p/0.01": {
+      "ground_only": 18.088,
+      "mesh": {
+        "shadow": 0.328,
+        "ground": 1.049,
+        "mesh": 1.311,
+        "shells": 0,
+        "creature": 1.638,
+        "creature_p95": 1.704
+      },
+      "mesh_shells": {
+        "shadow": 0.328,
+        "ground": 1.18,
+        "mesh": 1.573,
+        "shells": 6.881,
+        "creature": 8.716,
+        "creature_p95": 9.241
+      }
+    },
+    "1080p/0.03": {
+      "ground_only": 17.76,
+      "mesh": {
+        "shadow": 0.328,
+        "ground": 1.049,
+        "mesh": 1.442,
+        "shells": 0,
+        "creature": 1.769,
+        "creature_p95": 1.901
+      },
+      "mesh_shells": {
+        "shadow": 0.328,
+        "ground": 1.18,
+        "mesh": 1.704,
+        "shells": 8.389,
+        "creature": 10.42,
+        "creature_p95": 11.207
+      }
+    },
+    "1080p/0.1": {
+      "ground_only": 18.088,
+      "mesh": {
+        "shadow": 0.328,
+        "ground": 1.049,
+        "mesh": 1.769,
+        "shells": 0,
+        "creature": 2.097,
+        "creature_p95": 2.228
+      },
+      "mesh_shells": {
+        "shadow": 0.328,
+        "ground": 1.18,
+        "mesh": 2.097,
+        "shells": 10.617,
+        "creature": 13.042,
+        "creature_p95": 13.566
+      }
+    },
+    "1080p/0.25": {
+      "ground_only": 18.022,
+      "mesh": {
+        "shadow": 0.328,
+        "ground": 1.049,
+        "mesh": 2.228,
+        "shells": 0,
+        "creature": 2.556,
+        "creature_p95": 2.621
+      },
+      "mesh_shells": {
+        "shadow": 0.328,
+        "ground": 1.18,
+        "mesh": 2.556,
+        "shells": 13.369,
+        "creature": 16.253,
+        "creature_p95": 16.777
+      }
+    },
+    "1080p/0.5": {
+      "ground_only": 18.153,
+      "mesh": {
+        "shadow": 0.328,
+        "ground": 1.049,
+        "mesh": 2.621,
+        "shells": 0,
+        "creature": 2.949,
+        "creature_p95": 3.08
+      },
+      "mesh_shells": {
+        "shadow": 0.328,
+        "ground": 1.18,
+        "mesh": 3.015,
+        "shells": 16.187,
+        "creature": 19.595,
+        "creature_p95": 19.923
+      }
+    },
+    "1080p/0.75": {
+      "ground_only": 18.547,
+      "mesh": {
+        "shadow": 0.328,
+        "ground": 1.049,
+        "mesh": 3.015,
+        "shells": 0,
+        "creature": 3.342,
+        "creature_p95": 3.473
+      },
+      "mesh_shells": {
+        "shadow": 0.328,
+        "ground": 1.18,
+        "mesh": 3.539,
+        "shells": 16.646,
+        "creature": 20.513,
+        "creature_p95": 20.906
+      }
+    },
+    "1080p/1": {
+      "ground_only": 18.612,
+      "mesh": {
+        "shadow": 0.328,
+        "ground": 1.049,
+        "mesh": 3.015,
+        "shells": 0,
+        "creature": 3.342,
+        "creature_p95": 3.408
+      },
+      "mesh_shells": {
+        "shadow": 0.328,
+        "ground": 1.18,
+        "mesh": 3.604,
+        "shells": 12.976,
+        "creature": 16.908,
+        "creature_p95": 17.236
+      }
+    },
+    "540p/0.01": {
+      "ground_only": 3.67,
+      "mesh": {
+        "shadow": 0.328,
+        "ground": 0.393,
+        "mesh": 0.59,
+        "shells": 0,
+        "creature": 0.852,
+        "creature_p95": 0.983
+      },
+      "mesh_shells": {
+        "shadow": 0.328,
+        "ground": 0.459,
+        "mesh": 0.721,
+        "shells": 5.702,
+        "creature": 6.685,
+        "creature_p95": 6.816
+      }
+    },
+    "540p/0.03": {
+      "ground_only": 3.932,
+      "mesh": {
+        "shadow": 0.328,
+        "ground": 0.393,
+        "mesh": 0.59,
+        "shells": 0,
+        "creature": 0.918,
+        "creature_p95": 1.049
+      },
+      "mesh_shells": {
+        "shadow": 0.328,
+        "ground": 0.459,
+        "mesh": 0.721,
+        "shells": 6.357,
+        "creature": 7.34,
+        "creature_p95": 8.061
+      }
+    },
+    "540p/0.1": {
+      "ground_only": 3.998,
+      "mesh": {
+        "shadow": 0.328,
+        "ground": 0.393,
+        "mesh": 0.786,
+        "shells": 0,
+        "creature": 1.114,
+        "creature_p95": 1.245
+      },
+      "mesh_shells": {
+        "shadow": 0.328,
+        "ground": 0.459,
+        "mesh": 0.918,
+        "shells": 8.258,
+        "creature": 9.503,
+        "creature_p95": 10.027
+      }
+    },
+    "540p/0.25": {
+      "ground_only": 4.129,
+      "mesh": {
+        "shadow": 0.328,
+        "ground": 0.393,
+        "mesh": 0.983,
+        "shells": 0,
+        "creature": 1.311,
+        "creature_p95": 1.376
+      },
+      "mesh_shells": {
+        "shadow": 0.328,
+        "ground": 0.459,
+        "mesh": 1.049,
+        "shells": 9.83,
+        "creature": 11.272,
+        "creature_p95": 11.862
+      }
+    },
+    "540p/0.5": {
+      "ground_only": 3.932,
+      "mesh": {
+        "shadow": 0.328,
+        "ground": 0.393,
+        "mesh": 1.049,
+        "shells": 0,
+        "creature": 1.376,
+        "creature_p95": 1.507
+      },
+      "mesh_shells": {
+        "shadow": 0.328,
+        "ground": 0.459,
+        "mesh": 1.18,
+        "shells": 10.158,
+        "creature": 11.665,
+        "creature_p95": 12.255
+      }
+    },
+    "540p/0.75": {
+      "ground_only": 4.063,
+      "mesh": {
+        "shadow": 0.328,
+        "ground": 0.393,
+        "mesh": 1.114,
+        "shells": 0,
+        "creature": 1.376,
+        "creature_p95": 1.507
+      },
+      "mesh_shells": {
+        "shadow": 0.328,
+        "ground": 0.459,
+        "mesh": 1.311,
+        "shells": 9.11,
+        "creature": 10.748,
+        "creature_p95": 11.01
+      }
+    },
+    "540p/1": {
+      "ground_only": 3.801,
+      "mesh": {
+        "shadow": 0.328,
+        "ground": 0.393,
+        "mesh": 0.918,
+        "shells": 0,
+        "creature": 1.18,
+        "creature_p95": 1.311
+      },
+      "mesh_shells": {
+        "shadow": 0.328,
+        "ground": 0.393,
+        "mesh": 1.049,
+        "shells": 6.554,
+        "creature": 7.93,
+        "creature_p95": 8.126
+      }
+    }
+  },
+  "fur_knobs": {
+    "v": {
+      "creature_median": 117.179,
+      "trace": 117.768,
+      "timed_frames": 20
+    },
+    "v_nolod": {
+      "creature_median": 100.664,
+      "trace": 101.319,
+      "timed_frames": 22
+    },
+    "v6": {
+      "creature_median": 94.765,
+      "trace": 95.42,
+      "timed_frames": 22
+    },
+    "v24": {
+      "creature_median": 156.566,
+      "trace": 157.221,
+      "timed_frames": 20
+    },
+    "v_noao": {
+      "creature_median": 79.168,
+      "trace": 79.823,
+      "timed_frames": 27
+    },
+    "v_nosh": {
+      "creature_median": 76.678,
+      "trace": 77.332,
+      "timed_frames": 26
+    },
+    "v_e3": {
+      "creature_median": 100.467,
+      "trace": 101.122,
+      "timed_frames": 20
+    },
+    "s": {
+      "creature_median": 71.566,
+      "trace": 72.221,
+      "timed_frames": 32
+    },
+    "s_nosh_noao": {
+      "creature_median": 24.052,
+      "trace": 24.707,
+      "timed_frames": 78
+    }
+  },
+  "overhead_out_of_view": {
+    "rigid-s": {
+      "creature_median": 0.132,
+      "env_trace": 0.786,
+      "trace": 0.852
+    },
+    "rigid-v": {
+      "creature_median": 0.197,
+      "env_trace": 0.786,
+      "trace": 0.918
+    },
+    "warp-v": {
+      "creature_median": 0.328,
+      "env_trace": 0.786,
+      "trace": 0.983
+    }
+  },
+  "summary": {
+    "budget_ms": 2.5,
+    "curves": {
+      "1080p/rigid-s": [
+        [
+          0.01,
+          3.146
+        ],
+        [
+          0.03,
+          7.275
+        ],
+        [
+          0.102,
+          16.057
+        ],
+        [
+          0.254,
+          33.817
+        ],
+        [
+          0.494,
+          50.856
+        ],
+        [
+          0.769,
+          64.488
+        ],
+        [
+          0.999,
+          55.837
+        ]
+      ],
+      "1080p/warp-s": [
+        [
+          0.01,
+          4.522
+        ],
+        [
+          0.03,
+          8.979
+        ],
+        [
+          0.102,
+          21.693
+        ],
+        [
+          0.254,
+          43.582
+        ],
+        [
+          0.494,
+          66.585
+        ],
+        [
+          0.769,
+          85.263
+        ],
+        [
+          0.999,
+          70.321
+        ]
+      ],
+      "1080p/rigid-v": [
+        [
+          0.01,
+          3.539
+        ],
+        [
+          0.03,
+          12.256
+        ],
+        [
+          0.102,
+          34.014
+        ],
+        [
+          0.254,
+          68.551
+        ],
+        [
+          0.494,
+          105.317
+        ],
+        [
+          0.769,
+          128.648
+        ],
+        [
+          0.999,
+          88.933
+        ]
+      ],
+      "1080p/warp-v": [
+        [
+          0.01,
+          5.047
+        ],
+        [
+          0.03,
+          17.433
+        ],
+        [
+          0.102,
+          46.531
+        ],
+        [
+          0.254,
+          88.343
+        ],
+        [
+          0.494,
+          133.759
+        ],
+        [
+          0.769,
+          171.246
+        ],
+        [
+          0.999,
+          118.358
+        ]
+      ],
+      "1080p/raster-mesh": [
+        [
+          0.01,
+          1.638
+        ],
+        [
+          0.03,
+          1.769
+        ],
+        [
+          0.102,
+          2.097
+        ],
+        [
+          0.254,
+          2.556
+        ],
+        [
+          0.494,
+          2.949
+        ],
+        [
+          0.769,
+          3.342
+        ],
+        [
+          0.999,
+          3.342
+        ]
+      ],
+      "1080p/raster-mesh_shells": [
+        [
+          0.01,
+          8.716
+        ],
+        [
+          0.03,
+          10.42
+        ],
+        [
+          0.102,
+          13.042
+        ],
+        [
+          0.254,
+          16.253
+        ],
+        [
+          0.494,
+          19.595
+        ],
+        [
+          0.769,
+          20.513
+        ],
+        [
+          0.999,
+          16.908
+        ]
+      ],
+      "540p/rigid-s": [
+        [
+          0.01,
+          1.704
+        ],
+        [
+          0.03,
+          3.08
+        ],
+        [
+          0.102,
+          6.029
+        ],
+        [
+          0.254,
+          11.468
+        ],
+        [
+          0.494,
+          16.253
+        ],
+        [
+          0.769,
+          19.071
+        ],
+        [
+          0.999,
+          16.449
+        ]
+      ],
+      "540p/rigid-v": [
+        [
+          0.01,
+          1.9
+        ],
+        [
+          0.03,
+          3.473
+        ],
+        [
+          0.102,
+          9.764
+        ],
+        [
+          0.254,
+          26.607
+        ],
+        [
+          0.494,
+          37.552
+        ],
+        [
+          0.769,
+          44.433
+        ],
+        [
+          0.999,
+          23.33
+        ]
+      ],
+      "540p/warp-v": [
+        [
+          0.01,
+          2.687
+        ],
+        [
+          0.03,
+          4.718
+        ],
+        [
+          0.102,
+          12.058
+        ],
+        [
+          0.254,
+          36.11
+        ],
+        [
+          0.494,
+          49.873
+        ],
+        [
+          0.769,
+          54.394
+        ],
+        [
+          0.999,
+          27.525
+        ]
+      ],
+      "540p/raster-mesh": [
+        [
+          0.01,
+          0.852
+        ],
+        [
+          0.03,
+          0.918
+        ],
+        [
+          0.102,
+          1.114
+        ],
+        [
+          0.254,
+          1.311
+        ],
+        [
+          0.494,
+          1.376
+        ],
+        [
+          0.769,
+          1.376
+        ],
+        [
+          0.999,
+          1.18
+        ]
+      ],
+      "540p/raster-mesh_shells": [
+        [
+          0.01,
+          6.685
+        ],
+        [
+          0.03,
+          7.34
+        ],
+        [
+          0.102,
+          9.503
+        ],
+        [
+          0.254,
+          11.272
+        ],
+        [
+          0.494,
+          11.665
+        ],
+        [
+          0.769,
+          10.748
+        ],
+        [
+          0.999,
+          7.93
+        ]
+      ]
+    },
+    "crossings": {
+      "1080p/rigid-s": {
+        "at_2_5ms": "< 0.01",
+        "at_5ms": 0.019
+      },
+      "1080p/warp-s": {
+        "at_2_5ms": "< 0.01",
+        "at_5ms": 0.012
+      },
+      "1080p/rigid-v": {
+        "at_2_5ms": "< 0.01",
+        "at_5ms": 0.013
+      },
+      "1080p/warp-v": {
+        "at_2_5ms": "< 0.01",
+        "at_5ms": "< 0.01"
+      },
+      "1080p/raster-mesh": {
+        "at_2_5ms": 0.235,
+        "at_5ms": "> 0.999 (never crosses)"
+      },
+      "1080p/raster-mesh_shells": {
+        "at_2_5ms": "< 0.01",
+        "at_5ms": "< 0.01"
+      },
+      "540p/rigid-s": {
+        "at_2_5ms": 0.022,
+        "at_5ms": 0.077
+      },
+      "540p/rigid-v": {
+        "at_2_5ms": 0.018,
+        "at_5ms": 0.047
+      },
+      "540p/warp-v": {
+        "at_2_5ms": "< 0.01",
+        "at_5ms": 0.033
+      },
+      "540p/raster-mesh": {
+        "at_2_5ms": "> 0.999 (never crosses)",
+        "at_5ms": "> 0.999 (never crosses)"
+      },
+      "540p/raster-mesh_shells": {
+        "at_2_5ms": "< 0.01",
+        "at_5ms": "< 0.01"
+      }
+    },
+    "at_100pct_1080p": {
+      "rigid-s": 55.837,
+      "warp-s": 70.321,
+      "rigid-v": 88.933,
+      "warp-v": 118.358
+    },
+    "warp_cost_ratio_100pct": 1.331,
+    "warp_cost_ratio_100pct_surface": 1.259
+  },
+  "finished": "2026-10-02T04:07:03.670Z",
+  "run_seconds": 196.922
+}

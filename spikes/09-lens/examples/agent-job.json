@@ -1,0 +1,18 @@
+{
+  "source": "../subjects/wolf.wgsl",
+  "commands": [
+    { "op": "info" },
+    { "op": "ray", "o": [0.3, 0.919, 0.654], "d": [-1, 0, 0] },
+    { "op": "query", "point": [0.0, 0.87, 0.81] },
+    { "op": "probe", "point": [0.045, 0.919, 0.654] },
+    { "op": "move", "from": { "point": [0.0, 0.87, 0.8132] }, "to": { "delta": [0, 0, 0.012] } },
+    { "op": "pieces" },
+    { "op": "render", "view": "side", "size": 512, "name": "after-move" },
+    { "op": "isolate", "part": "sd_head", "view": "front", "size": 384 },
+    { "op": "render", "view": "side", "size": 384, "mode": "influence", "literal": "EAR_H", "name": "influence-ear" },
+    { "op": "diff" },
+    { "op": "reset" },
+    { "op": "fit", "target": { "source": "../subjects/wolf-target.wgsl" }, "literals": ["J_HEAD.y", "J_HEAD.z", "EAR_H"] },
+    { "op": "write" }
+  ]
+}

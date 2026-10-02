@@ -6,16 +6,16 @@
 |---|---|---|
 | [01-grazer](01-grazer/) | Can hand-written field code draw a herd of creatures in budget? (triangles: extraction, skinning, per-pixel shading) | Done: passes (D-089, D-096) |
 | [02-raymarch](02-raymarch/) | Can the same herd be drawn with no triangles at all? | Done: ties at herd distance, 2.2× worse in close-ups |
-| 03-forest | Can a ray-marched forest look beautiful in budget? | In progress |
-| 04-vista | Can a world be cooked on device and ray-marched to the horizon while the player moves? | In progress |
-| 05-light | Can fields give soft shadows, sky occlusion and bounce light in budget, including indoors? | In progress |
-| 06-crowds | What do hundreds of moving things, and live world edits, cost in a ray-marched world? | In progress |
-| 07-hero | Can a furred hero creature fill the screen with believable joints? (ray marching's worst case from 02) | In progress |
-| 08-water | Can lakes and rivers with true reflections and refraction be ray-marched in budget? | In progress |
-| 09-lens | Can a studio tool edit fields by direct manipulation (click to source, drag to edit, fit to a reference) while the source stays the truth (D-105)? | In progress |
-| 10-materials | Can field-derived quantities (thickness, curvature, occlusion, footprint) give skin, eyes, translucency, wet, layered stone and filtered speculars cheaply? | In progress |
-| 11-hair-cloth | Can thin, deforming things (long hair, manes, capes, banners, clothing) work in a field world, simulated and drawn in budget? | In progress |
-| 12-styles | What do realistic, anime/cel and painterly looks cost, and how much does a stylized look cheapen the hard cases? | In progress |
+| 03-forest | Can a ray-marched forest look beautiful in budget? | Done: **fail** traced (vegetation 42–61 ms vs 4); raster near + far volumes is the path |
+| 04-vista | Can a world be cooked on device and ray-marched to the horizon while the player moves? | Done: marched cache **fails** (10–26 ms vs 3); raster terrain clipmap **passes** (1.3 ms) |
+| 05-light | Can fields give soft shadows, sky occlusion and bounce light in budget, including indoors? | Done: per-frame over (4.0–5.7 ms vs 3.5); baked probes + traced sun **pass** (2.2–2.6 ms); interiors wrong |
+| 06-crowds | What do hundreds of moving things, and live world edits, cost in a ray-marched world? | Done: 300 moving things **pass** (1.8 ms), edits pass; marched static town fails (9.0 ms vs 3) |
+| 07-hero | Can a furred hero creature fill the screen with believable joints? (ray marching's worst case from 02) | Done: traced furred hero **fails** (89 ms vs 2.5); raster mesh 1.6–3.3 ms |
+| 08-water | Can lakes and rivers with true reflections and refraction be ray-marched in budget? | Done: traced reflections **fail** (12.8 ms vs 1) |
+| 09-lens | Can a studio tool edit fields by direct manipulation (click to source, drag to edit, fit to a reference) while the source stays the truth (D-105)? | Done: works mechanically (≈1 ms queries, sub-mm drags, exact fits); authoring quality untested |
+| 10-materials | Can field-derived quantities (thickness, curvature, occlusion, footprint) give skin, eyes, translucency, wet, layered stone and filtered speculars cheaply? | Done: eyes pass; skin, leaves, layered stone **fail** per pixel; cook the inputs instead |
+| 11-hair-cloth | Can thin, deforming things (long hair, manes, capes, banners, clothing) work in a field world, simulated and drawn in budget? | Done: raster + depth-bounded tracing **passes** (1.05 ms), sim 0.39 ms; pure fields fail close up |
+| 12-styles | What do realistic, anime/cel and painterly looks cost, and how much does a stylized look cheapen the hard cases? | Done: cel with field-native outlines most attractive; stylized content saves 20–36% |
 
 Spikes 03–08 test the hardest cases for a pure ray-marched renderer in the flagship game (D-103): a beautiful open world, forests first, then landscapes, towers and creatures. Volumetric clouds and atmosphere are left out on purpose: they're ray-marched in shipped games already (Horizon's Nubis, for example).
 
@@ -79,3 +79,5 @@ spikes/headless.sh 03-forest '#run' 600
 - **Keep `#quick` light** (~10 s), and use it while developing. Save `#run` for when the spike is ready.
 
 **Timings taken while other GPU work runs are indicative only.** Spikes 03–12 are built in parallel, so their final measurements are run one at a time on a quiet machine.
+
+**Outcome (2026-10-02):** the renderer is decided: cook fields on device, rasterize what's big on screen, trace what's small, light with cooked fields. See `docs/vision.md`. Each spike's README ends with its quiet-machine rerun, which changed no verdict.

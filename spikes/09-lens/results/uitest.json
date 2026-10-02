@@ -1,0 +1,50 @@
+{
+ "steps": [
+  {
+   "step": "click nose",
+   "ok": true,
+   "part": "sd_head",
+   "title": "Part: sd_head (line 146) · 23 ms",
+   "ms": 36
+  },
+  {
+   "step": "drag nose +30 mm",
+   "ok": true,
+   "changes": [
+    "sd_head:154:44: 0.188 -> 0.212",
+    "sd_head:154:73: 0.011 -> 0.013",
+    "sd_head:154:37: 0.006 -> 0.012"
+   ],
+   "errMm": 0.1793,
+   "ms": 442,
+   "diff": "@@ -154 +154 @@\n-  d = smin(d, sd_ell(q - vec3f(0.0, 0.006, 0.188), vec3f(0.0155, 0.011, 0.011)), 0.006);  // nose pad\n+  d = smin(d, sd_ell(q - vec3f(0.0, 0.012, 0.212), vec3f(0.0155, 0.011, 0.013)), 0.006);  // nose pad"
+  },
+  {
+   "step": "select literal",
+   "ok": true,
+   "literal": "sd_head:154:44"
+  },
+  {
+   "step": "write back",
+   "ok": true,
+   "status": "wrote 3 literals on 1 lines in 5 ms → spikes/09-lens/results/ui-edited-wolf.wgsl"
+  },
+  {
+   "step": "views and modes",
+   "ok": true
+  }
+ ],
+ "ok": true,
+ "log": [
+  "wolf.wgsl: 606 literals lifted (388 reach field), 7 not lifted; compile 67 ms",
+  "query surface sd_head: 23 ms",
+  "query surface sd_head: 17 ms",
+  "drag started in 9 ms",
+  "moved 30 mm: 0.1793 mm off, 3 literals: sd_head:154:44 0.188→0.212, sd_head:154:73 0.011→0.013, sd_head:154:37 0.006→0.012",
+  "write-back:",
+  "@@ -154 +154 @@",
+  "-  d = smin(d, sd_ell(q - vec3f(0.0, 0.006, 0.188), vec3f(0.0155, 0.011, 0.011)), 0.006);  // nose pad",
+  "+  d = smin(d, sd_ell(q - vec3f(0.0, 0.012, 0.212), vec3f(0.0155, 0.011, 0.013)), 0.006);  // nose pad",
+  ""
+ ]
+}

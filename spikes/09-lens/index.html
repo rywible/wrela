@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spike 09: the lens</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f6f5f2; --fg: #1d1c1a; --muted: #6b6862; --panel: #ffffff; --line: #dedbd4;
+    --accent: #c4561b; --hl: #fff1c2; --add: #e3f4e1; --del: #fbe3e1; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161615; --fg: #e9e7e3; --muted: #9a968f; --panel: #1f1e1c; --line: #34322e;
+    --accent: #f08a4b; --hl: #4a3f1c; --add: #1f3a22; --del: #45201d; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px 16px; background: var(--bg); color: var(--fg); font: 13px/1.45 system-ui, sans-serif; }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  p.lede { margin: 0 0 10px; color: var(--muted); max-width: 1100px; }
+  .wrap { display: grid; grid-template-columns: minmax(320px, 680px) minmax(300px, 1fr); gap: 14px; align-items: start; }
+  @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } }
+  .stage { position: relative; width: 100%; aspect-ratio: 1; background: #000; border-radius: 6px; overflow: hidden; touch-action: none; }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #overlay { cursor: crosshair; }
+  .bar { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin: 8px 0; }
+  .bar label { color: var(--muted); }
+  select, button, input { font: inherit; }
+  button { padding: 4px 10px; border-radius: 5px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); cursor: pointer; }
+  button.primary { border-color: var(--accent); color: var(--accent); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-bottom: 10px; }
+  .panel h2 { font-size: 13px; margin: 0 0 6px; }
+  table { border-collapse: collapse; width: 100%; font: 12px/1.35 ui-monospace, monospace; }
+  td, th { padding: 2px 6px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { text-align: right; }
+  tr.lit { cursor: pointer; }
+  tr.lit:hover { background: var(--hl); }
+  pre { font: 12px/1.4 ui-monospace, monospace; margin: 0; white-space: pre-wrap; word-break: break-word; }
+  #source { max-height: 420px; overflow: auto; }
+  #source .ln { color: var(--muted); display: inline-block; width: 3.2em; user-select: none; }
+  #source .hot { background: var(--hl); }
+  #source .lt { border-bottom: 1px dotted var(--accent); cursor: pointer; }
+  #source .lt.sel { background: var(--accent); color: #fff; }
+  #diff .add { background: var(--add); display: block; }
+  #diff .del { background: var(--del); display: block; }
+  #status { color: var(--muted); font: 12px ui-monospace, monospace; }
+  #log { color: var(--muted); max-height: 160px; overflow: auto; }
+  .hint { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>Spike 09: the lens</h1>
+  <p class="lede">The field file is the truth. Click the creature to see which part and which literals made that pixel. Drag a surface point to move it: the lens solves for a small change to the most influential literals and shows the diff. Write back splices the new values into the source.</p>
+  <div class="wrap">
+    <div>
+      <div class="stage" id="stage"><canvas id="view"></canvas><canvas id="overlay"></canvas></div>
+      <div class="bar">
+        <label>View <select id="viewSel"><option>side</option><option>front</option><option>top</option><option value="threeq">three-quarter</option><option>sheet</option></select></label>
+        <label>Mode <select id="modeSel"><option>shaded</option><option>parts</option><option>tint</option><option>isolate</option><option>influence</option><option>silhouette</option></select></label>
+        <label>Part <select id="partSel"></select></label>
+        <label>Literals per drag <select id="kSel"><option>2</option><option>4</option><option selected>8</option><option>16</option><option value="all">all</option></select></label>
+        <label><input type="checkbox" id="anchorsChk" checked> anchors</label>
+        <label><input type="checkbox" id="shadowChk" checked> shadows</label>
+      </div>
+      <div class="bar">
+        <button id="undoBtn">Undo</button>
+        <button id="resetBtn">Reset</button>
+        <button id="writeBtn" class="primary">Write back</button>
+        <button id="fitBtn">Fit demo</button>
+        <a id="dl" class="hint" style="display:none">download</a>
+        <span id="status"></span>
+      </div>
+      <p class="hint">Click: part and literals at that pixel. Drag from the creature: move that surface point (the target stays on the plane facing you). Influence mode shows where the selected literal acts: orange moves the surface out as the literal grows, blue moves it in. Click a literal in the table or the source to select it.</p>
+    </div>
+    <div>
+      <div class="panel"><h2 id="qTitle">Query</h2><div id="query" class="hint">Click the creature.</div></div>
+      <div class="panel"><h2>Diff against the file</h2><pre id="diff" class="hint">No edits.</pre></div>
+      <div class="panel"><h2 id="srcTitle">Source</h2><pre id="source"></pre></div>
+      <div class="panel"><h2>Log</h2><pre id="log"></pre></div>
+    </div>
+  </div>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

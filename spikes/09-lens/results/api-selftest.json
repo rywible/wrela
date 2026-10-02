@@ -1,0 +1,833 @@
+[
+ {
+  "op": "load",
+  "loaded": "subjects/wolf.wgsl",
+  "liftMs": 3.3,
+  "compileMs": 46.5,
+  "totalMs": 61.79999999701977,
+  "name": "subjects/wolf.wgsl",
+  "entry": "field",
+  "literals": {
+   "lifted": 606,
+   "reachField": 388,
+   "unlifted": 7,
+   "unliftedByReason": {
+    "integer literal: may be used where only an integer is allowed (octave count, index); telling uses apart needs type checking": 7
+   },
+   "libraryFloatLiterals": 24,
+   "libraryNote": "lib.wgsl is shared code; its literals are not lifted"
+  },
+  "unlifted": [
+   {
+    "line": 107,
+    "col": 112,
+    "text": "2",
+    "reason": "integer literal: may be used where only an integer is allowed (octave count, index); telling uses apart needs type checking"
+   },
+   {
+    "line": 110,
+    "col": 120,
+    "text": "2",
+    "reason": "integer literal: may be used where only an integer is allowed (octave count, index); telling uses apart needs type checking"
+   },
+   {
+    "line": 113,
+    "col": 119,
+    "text": "2",
+    "reason": "integer literal: may be used where only an integer is allowed (octave count, index); telling uses apart needs type checking"
+   },
+   {
+    "line": 151,
+    "col": 109,
+    "text": "2",
+    "reason": "integer literal: may be used where only an integer is allowed (octave count, index); telling uses apart needs type checking"
+   },
+   {
+    "line": 190,
+    "col": 63,
+    "text": "3",
+    "reason": "integer literal: may be used where only an integer is allowed (octave count, index); telling uses apart needs type checking"
+   },
+   {
+    "line": 203,
+    "col": 47,
+    "text": "3",
+    "reason": "integer literal: may be used where only an integer is allowed (octave count, index); telling uses apart needs type checking"
+   },
+   {
+    "line": 214,
+    "col": 27,
+    "text": "3",
+    "reason": "integer literal: may be used where only an integer is allowed (octave count, index); telling uses apart needs type checking"
+   }
+  ],
+  "parts": [
+   {
+    "index": 0,
+    "name": "sd_head",
+    "callLine": 195,
+    "fnLine": 146,
+    "fns": [
+     "sd_head",
+     "head_local",
+     "sd_ell",
+     "sd_muzzle",
+     "sd_flat_cone",
+     "sd_ear",
+     "ear_local",
+     "sd_ear_cavity"
+    ],
+    "consts": [
+     "EYE_C",
+     "HEAD_SCALE",
+     "J_HEAD",
+     "HEAD_PITCH",
+     "EAR_H",
+     "EAR_BASE"
+    ]
+   },
+   {
+    "index": 1,
+    "name": "sd_torso",
+    "callLine": 196,
+    "fnLine": 94,
+    "fns": [
+     "sd_torso",
+     "sd_ell"
+    ],
+    "consts": [
+     "J_CHEST",
+     "J_WITHERS",
+     "J_LUMBAR",
+     "J_PELVIS"
+    ]
+   },
+   {
+    "index": 2,
+    "name": "sd_neck",
+    "callLine": 197,
+    "fnLine": 103,
+    "fns": [
+     "sd_neck",
+     "sd_ell"
+    ],
+    "consts": [
+     "J_HEAD",
+     "J_NECK"
+    ]
+   },
+   {
+    "index": 3,
+    "name": "sd_foreleg",
+    "callLine": 199,
+    "fnLine": 161,
+    "fns": [
+     "sd_foreleg",
+     "sd_flat_cone",
+     "sd_paw",
+     "sd_ell"
+    ],
+    "consts": [
+     "J_SCAPULA",
+     "J_SHOULDER",
+     "J_ELBOW",
+     "J_CARPUS",
+     "J_FPAW",
+     "TOE_IN",
+     "TOE_OUT"
+    ]
+   },
+   {
+    "index": 4,
+    "name": "sd_hindleg",
+    "callLine": 200,
+    "fnLine": 171,
+    "fns": [
+     "sd_hindleg",
+     "sd_flat_cone",
+     "sd_paw",
+     "sd_ell"
+    ],
+    "consts": [
+     "J_HIP",
+     "J_STIFLE",
+     "J_HOCK",
+     "J_HPAW",
+     "TOE_IN",
+     "TOE_OUT"
+    ]
+   },
+   {
+    "index": 5,
+    "name": "sd_tail",
+    "callLine": 201,
+    "fnLine": 186,
+    "fns": [
+     "sd_tail"
+    ],
+    "consts": [
+     "J_TAIL0",
+     "J_TAIL1",
+     "J_TAIL2",
+     "J_TAIL3"
+    ]
+   }
+  ],
+  "notes": [],
+  "ms": 62.7
+ },
+ {
+  "op": "query",
+  "at": {
+   "op": "query",
+   "view": "side",
+   "pixel": [
+    30,
+    152
+   ],
+   "size": 512,
+   "ray": {
+    "o": [
+     6,
+     0.8694,
+     0.7992
+    ],
+    "d": [
+     -1,
+     0,
+     0
+    ]
+   }
+  },
+  "hit": "surface",
+  "point": [
+   0.01908,
+   0.869375,
+   0.799219
+  ],
+  "normal": [
+   0.8816,
+   -0.2113,
+   0.422
+  ],
+  "d": 0,
+  "gradLen": 0.8596,
+  "part": {
+   "index": 0,
+   "name": "sd_head",
+   "line": 195,
+   "fnLine": 146
+  },
+  "partValues": [
+   {
+    "name": "sd_head",
+    "d": -0.000416
+   },
+   {
+    "name": "sd_torso",
+    "d": 0.400861
+   },
+   {
+    "name": "sd_neck",
+    "d": 0.203161
+   },
+   {
+    "name": "sd_foreleg",
+    "d": 0.486502
+   },
+   {
+    "name": "sd_hindleg",
+    "d": 0.669228
+   },
+   {
+    "name": "sd_tail",
+    "d": 1.181984
+   }
+  ],
+  "literals": [
+   {
+    "id": 15,
+    "name": "J_HEAD.x",
+    "value": 0,
+    "source_value": 0,
+    "text": "0.0",
+    "line": 14,
+    "col": 25,
+    "fn": null,
+    "const": "J_HEAD",
+    "sites": 2,
+    "comment": "skull centre",
+    "grad": -0.731045,
+    "mmPerMm": 0.8505,
+    "inPart": true
+   },
+   {
+    "id": 197,
+    "name": "sd_muzzle:134:12",
+    "value": 0.192,
+    "source_value": 0.192,
+    "text": "0.192",
+    "line": 134,
+    "col": 12,
+    "fn": "sd_muzzle",
+    "const": null,
+    "sites": 1,
+    "grad": -0.501177,
+    "mmPerMm": 0.5831,
+    "inPart": true
+   },
+   {
+    "id": 203,
+    "name": "sd_muzzle:137:23",
+    "value": 0.022,
+    "source_value": 0.022,
+    "text": "0.022",
+    "line": 137,
+    "col": 23,
+    "fn": "sd_muzzle",
+    "const": null,
+    "sites": 1,
+    "grad": -0.42042,
+    "mmPerMm": 0.4891,
+    "inPart": true
+   },
+   {
+    "id": 249,
+    "name": "sd_head:154:32",
+    "value": 0,
+    "source_value": 0,
+    "text": "0.0",
+    "line": 154,
+    "col": 32,
+    "fn": "sd_head",
+    "const": null,
+    "sites": 1,
+    "comment": "nose pad",
+    "grad": -0.393513,
+    "mmPerMm": 0.4578,
+    "inPart": true
+   },
+   {
+    "id": 17,
+    "name": "J_HEAD.z",
+    "value": 0.592,
+    "source_value": 0.592,
+    "text": "0.592",
+    "line": 14,
+    "col": 38,
+    "fn": null,
+    "const": "J_HEAD",
+    "sites": 2,
+    "comment": "skull centre",
+    "grad": -0.387384,
+    "mmPerMm": 0.4507,
+    "inPart": true
+   },
+   {
+    "id": 252,
+    "name": "sd_head:154:58",
+    "value": 0.0155,
+    "source_value": 0.0155,
+    "text": "0.0155",
+    "line": 154,
+    "col": 58,
+    "fn": "sd_head",
+    "const": null,
+    "sites": 1,
+    "comment": "nose pad",
+    "grad": -0.385033,
+    "mmPerMm": 0.4479,
+    "inPart": true
+   },
+   {
+    "id": 207,
+    "name": "sd_muzzle:139:22",
+    "value": 0.019,
+    "source_value": 0.019,
+    "text": "0.019",
+    "line": 139,
+    "col": 22,
+    "fn": "sd_muzzle",
+    "const": null,
+    "sites": 1,
+    "grad": 0.278817,
+    "mmPerMm": -0.3244,
+    "inPart": true
+   },
+   {
+    "id": 255,
+    "name": "sd_head:154:82",
+    "value": 0.006,
+    "source_value": 0.006,
+    "text": "0.006",
+    "line": 154,
+    "col": 82,
+    "fn": "sd_head",
+    "const": null,
+    "sites": 1,
+    "comment": "nose pad",
+    "grad": -0.250094,
+    "mmPerMm": 0.291,
+    "inPart": true
+   },
+   {
+    "id": 16,
+    "name": "J_HEAD.y",
+    "value": 0.912,
+    "source_value": 0.912,
+    "text": "0.912",
+    "line": 14,
+    "col": 30,
+    "fn": null,
+    "const": "J_HEAD",
+    "sites": 2,
+    "comment": "skull centre",
+    "grad": 0.168413,
+    "mmPerMm": -0.1959,
+    "inPart": true
+   },
+   {
+    "id": 250,
+    "name": "sd_head:154:37",
+    "value": 0.006,
+    "source_value": 0.006,
+    "text": "0.006",
+    "line": 154,
+    "col": 37,
+    "fn": "sd_head",
+    "const": null,
+    "sites": 1,
+    "comment": "nose pad",
+    "grad": 0.116224,
+    "mmPerMm": -0.1352,
+    "inPart": true
+   },
+   {
+    "id": 208,
+    "name": "sd_muzzle:140:38",
+    "value": 0.5,
+    "source_value": 0.5,
+    "text": "0.5",
+    "line": 140,
+    "col": 38,
+    "fn": "sd_muzzle",
+    "const": null,
+    "sites": 1,
+    "grad": -0.097743,
+    "mmPerMm": 0.1137,
+    "inPart": true
+   },
+   {
+    "id": 19,
+    "name": "HEAD_SCALE",
+    "value": 1.13,
+    "source_value": 1.13,
+    "text": "1.13",
+    "line": 16,
+    "col": 20,
+    "fn": null,
+    "const": "HEAD_SCALE",
+    "sites": 2,
+    "grad": -0.090073,
+    "mmPerMm": 0.1048,
+    "inPart": true
+   }
+  ],
+  "lines": [
+   {
+    "line": 14,
+    "share": 0.3087,
+    "text": "const J_HEAD    = vec3f(0.0, 0.912,  0.592);  // skull centre"
+   },
+   {
+    "line": 154,
+    "share": 0.2887,
+    "text": "  d = smin(d, sd_ell(q - vec3f(0.0, 0.006, 0.188), vec3f(0.0155, 0.011, 0.011)), 0.006);  // nose pad"
+   },
+   {
+    "line": 134,
+    "share": 0.1202,
+    "text": "  let z1 = 0.192;"
+   },
+   {
+    "line": 137,
+    "share": 0.1038,
+    "text": "  let hx = mix(0.043, 0.022, t);"
+   },
+   {
+    "line": 139,
+    "share": 0.0688,
+    "text": "  let r = mix(0.028, 0.019, t);"
+   },
+   {
+    "line": 204,
+    "share": 0.0265,
+    "text": "  let amp = 0.0045 * smoothstep(0.12, 0.35, p.y) * mix(0.2, 1.0, smoothstep(-0.01, 0.03, dh));  // thin ears/face: little fur noise"
+   }
+  ],
+  "ms": 1.4
+ },
+ {
+  "op": "probe",
+  "point": [
+   0.045,
+   0.919,
+   0.654
+  ],
+  "d": -0.0098,
+  "inside": true,
+  "winningPart": "sd_head",
+  "parts": [
+   {
+    "name": "sd_head",
+    "d": -0.011
+   },
+   {
+    "name": "sd_torso",
+    "d": 0.2945
+   },
+   {
+    "name": "sd_neck",
+    "d": 0.0693
+   },
+   {
+    "name": "sd_foreleg",
+    "d": 0.4051
+   },
+   {
+    "name": "sd_hindleg",
+    "d": 0.5893
+   },
+   {
+    "name": "sd_tail",
+    "d": 1.0654
+   }
+  ],
+  "gradLen": 0.4723,
+  "ms": 0.8
+ },
+ {
+  "op": "ray",
+  "hit": "surface",
+  "point": [
+   0.0567,
+   0.919,
+   0.654
+  ],
+  "distance": 0.2433,
+  "normal": [
+   0.8184,
+   -0.1918,
+   0.5416
+  ],
+  "part": "sd_head",
+  "ms": 1.1
+ },
+ {
+  "op": "project",
+  "pixel": [
+   29.8,
+   151.8
+  ],
+  "ms": 0
+ },
+ {
+  "op": "literals",
+  "count": 3,
+  "literals": [
+   {
+    "id": 15,
+    "name": "J_HEAD.x",
+    "value": 0,
+    "source_value": 0,
+    "text": "0.0",
+    "line": 14,
+    "col": 25,
+    "fn": null,
+    "const": "J_HEAD",
+    "sites": 2,
+    "comment": "skull centre",
+    "inField": true,
+    "source": "const J_HEAD    = vec3f(0.0, 0.912,  0.592);  // skull centre"
+   },
+   {
+    "id": 16,
+    "name": "J_HEAD.y",
+    "value": 0.912,
+    "source_value": 0.912,
+    "text": "0.912",
+    "line": 14,
+    "col": 30,
+    "fn": null,
+    "const": "J_HEAD",
+    "sites": 2,
+    "comment": "skull centre",
+    "inField": true,
+    "source": "const J_HEAD    = vec3f(0.0, 0.912,  0.592);  // skull centre"
+   },
+   {
+    "id": 17,
+    "name": "J_HEAD.z",
+    "value": 0.592,
+    "source_value": 0.592,
+    "text": "0.592",
+    "line": 14,
+    "col": 38,
+    "fn": null,
+    "const": "J_HEAD",
+    "sites": 2,
+    "comment": "skull centre",
+    "inField": true,
+    "source": "const J_HEAD    = vec3f(0.0, 0.912,  0.592);  // skull centre"
+   }
+  ],
+  "ms": 0.2
+ },
+ {
+  "op": "isolate",
+  "image": "spikes/09-lens/results/api-selftest-1-isolate-side-sd_head.png",
+  "width": 256,
+  "height": 256,
+  "views": [
+   {
+    "name": "side",
+    "x0": 0,
+    "y0": 0,
+    "size": 256,
+    "ortho": true,
+    "metresPerPixel": 0.0067188,
+    "centre": [
+     0,
+     0.52,
+     0.04
+    ],
+    "forward": [
+     -1,
+     0,
+     0
+    ],
+    "right": [
+     0,
+     0,
+     -1
+    ],
+    "up": [
+     0,
+     1,
+     0
+    ],
+    "note": "orthographic: pixel (x, y) = centre + right*((x - x0)/size*2-1)*half - up*((y - y0)/size*2-1)*half"
+   }
+  ],
+  "gpuMs": 7.1,
+  "ms": 10.4
+ },
+ {
+  "op": "move",
+  "p0": [
+   0,
+   0.87,
+   0.81319
+  ],
+  "target": [
+   0,
+   0.87,
+   0.82519
+  ],
+  "moveMm": 12,
+  "mode": {
+   "patch": true,
+   "patchPoints": 7,
+   "ringWeight": 0.02,
+   "select": "residual",
+   "anchors": true,
+   "k": 8,
+   "symmetry": {
+    "detected": true,
+    "worstMm": 5.0146
+   },
+   "mirrorRows": true
+  },
+  "selected": [
+   "sd_head:154:44",
+   "sd_head:154:73",
+   "J_HEAD.z",
+   "HEAD_SCALE",
+   "sd_head:154:37",
+   "J_HEAD.y",
+   "field:204:13",
+   "sd_head:154:66"
+  ],
+  "pruned": [
+   "J_HEAD.z",
+   "HEAD_SCALE",
+   "J_HEAD.y",
+   "field:204:13",
+   "sd_head:154:66"
+  ],
+  "errMmSolved": 0.0055,
+  "errMm": 0.0042,
+  "patchRmsMm": 0.1298,
+  "changes": [
+   {
+    "id": 251,
+    "name": "sd_head:154:44",
+    "value": 0.198,
+    "source_value": 0.188,
+    "text": "0.188",
+    "line": 154,
+    "col": 44,
+    "fn": "sd_head",
+    "const": null,
+    "sites": 1,
+    "comment": "nose pad",
+    "from": 0.188,
+    "to": 0.198,
+    "delta": 0.01
+   },
+   {
+    "id": 254,
+    "name": "sd_head:154:73",
+    "value": 0.01134,
+    "source_value": 0.011,
+    "text": "0.011",
+    "line": 154,
+    "col": 73,
+    "fn": "sd_head",
+    "const": null,
+    "sites": 1,
+    "comment": "nose pad",
+    "from": 0.011,
+    "to": 0.01134,
+    "delta": 0.00034
+   },
+   {
+    "id": 250,
+    "name": "sd_head:154:37",
+    "value": 0.008,
+    "source_value": 0.006,
+    "text": "0.006",
+    "line": 154,
+    "col": 37,
+    "fn": "sd_head",
+    "const": null,
+    "sites": 1,
+    "comment": "nose pad",
+    "from": 0.006,
+    "to": 0.008,
+    "delta": 0.002
+   }
+  ],
+  "locality": {
+   "falloffMm": 90,
+   "far": {
+    "n": 259,
+    "rmsMm": 0,
+    "maxMm": 0,
+    "over1mm": 0,
+    "worstAt": [
+     0.0902,
+     1.0477,
+     0.5677
+    ]
+   },
+   "near": {
+    "n": 0
+   },
+   "tied": {
+    "n": 4,
+    "rmsMm": 0,
+    "maxMm": 0,
+    "over1mm": 0
+   }
+  },
+  "pieces": {
+   "before": 1,
+   "after": 1,
+   "split": false,
+   "ms": 23.7
+  },
+  "ms": 90.8,
+  "part": "sd_head",
+  "updates": [
+   {
+    "errMm": 0.0267,
+    "ms": 2.8
+   }
+  ],
+  "beginMs": 6.6,
+  "totalMs": 90.8
+ },
+ {
+  "op": "diff",
+  "changes": [
+   {
+    "id": 250,
+    "name": "sd_head:154:37",
+    "line": 154,
+    "from": "0.006",
+    "to": "0.008",
+    "value": 0.008
+   },
+   {
+    "id": 251,
+    "name": "sd_head:154:44",
+    "line": 154,
+    "from": "0.188",
+    "to": "0.198",
+    "value": 0.198
+   },
+   {
+    "id": 254,
+    "name": "sd_head:154:73",
+    "line": 154,
+    "from": "0.011",
+    "to": "0.01134",
+    "value": 0.01134
+   }
+  ],
+  "diff": "@@ -154 +154 @@\n-  d = smin(d, sd_ell(q - vec3f(0.0, 0.006, 0.188), vec3f(0.0155, 0.011, 0.011)), 0.006);  // nose pad\n+  d = smin(d, sd_ell(q - vec3f(0.0, 0.008, 0.198), vec3f(0.0155, 0.011, 0.01134)), 0.006);  // nose pad",
+  "changedLines": 1,
+  "verified": true,
+  "ms": 3.7
+ },
+ {
+  "op": "render",
+  "image": "spikes/09-lens/results/api-selftest-parts.png",
+  "width": 256,
+  "height": 256,
+  "views": [
+   {
+    "name": "side",
+    "x0": 0,
+    "y0": 0,
+    "size": 256,
+    "ortho": true,
+    "metresPerPixel": 0.0067188,
+    "centre": [
+     0,
+     0.52,
+     0.04
+    ],
+    "forward": [
+     -1,
+     0,
+     0
+    ],
+    "right": [
+     0,
+     0,
+     -1
+    ],
+    "up": [
+     0,
+     1,
+     0
+    ],
+    "note": "orthographic: pixel (x, y) = centre + right*((x - x0)/size*2-1)*half - up*((y - y0)/size*2-1)*half"
+   }
+  ],
+  "gpuMs": 11.5,
+  "ms": 15.6
+ }
+]
