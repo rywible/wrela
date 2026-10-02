@@ -1,0 +1,28 @@
+{
+  "version": 0,
+  "wasm": "program.wasm",
+  "pipelines": [
+    {
+      "kind": "render",
+      "id": 0,
+      "module": "program.0.wgsl",
+      "vertex": "cover",
+      "fragment": "shade",
+      "color_target": "rgba8unorm",
+      "bindings": [
+        { "group": 0, "binding": 0, "kind": "uniform", "visibility": ["fragment"], "size": 16 }
+      ]
+    }
+  ],
+  "layouts": [
+    {
+      "name": "Scene",
+      "size": 16,
+      "align": 8,
+      "fields": [
+        { "name": "resolution", "offset": 0, "size": 8, "type": "vec2" },
+        { "name": "time", "offset": 8, "size": 4, "type": "f32" }
+      ]
+    }
+  ]
+}

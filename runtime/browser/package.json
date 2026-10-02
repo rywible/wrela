@@ -1,0 +1,23 @@
+{
+  "name": "@wrela/browser-runtime",
+  "description": "The standard browser runtime: runs a wrela program's WASM and WGSL from its manifest",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "bun@1.4.2",
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "check": "tsc --noEmit -p . && biome check . && bun scripts/build.ts --check && bun scripts/fixture.ts --check",
+    "fixture": "bun scripts/fixture.ts",
+    "format": "biome check --write .",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/bun": "1.4.2",
+    "@webgpu/types": "0.1.74",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "wabt": "1.0.39"
+  }
+}

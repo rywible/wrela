@@ -102,12 +102,48 @@ jobs:
           persist-credentials: false
       - run: python3 tools/tests/headless.py -v
 
+  # The browser runtime (runtime/browser): types, lint and format, the unit tests (a fake GPU, no
+  # browser), dist/ rebuilt from src/ and equal to the committed dist/ that every `wrela build`
+  # ships, within its 1 MB budget (D-069), and the fixture's WASM matching its WAT. bun's version
+  # comes from package.json's packageManager.
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: runtime/browser
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: runtime/browser/package.json
+      - run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bunx tsc --noEmit -p .
+      - name: Lint and format
+        run: bunx biome check .
+      - name: Unit tests
+        run: bun test
+      # build.ts also fails if the runtime is over its 1 MB budget.
+      - name: Rebuild dist/ and require it to equal the committed dist/
+        run: |
+          bun run build
+          if [ -n "$(git status --porcelain -- dist)" ]; then
+            git status --short -- dist
+            echo "::error::runtime/browser/dist isn't what src/ builds to: run \`bun run build\` and commit dist/"
+            exit 1
+          fi
+      - name: Check the fixture's WASM matches its WAT
+        run: bun scripts/fixture.ts --check
+
   # The one check the main ruleset requires: a stable name that stays correct as jobs are added.
   # `always()` matters: a skipped required check counts as passing, so this job must run (and
   # fail) when anything it needs failed or was cancelled.
   ci:
     if: always()
-    needs: [base, fmt, clippy, test, fuzz, tools]
+    needs: [base, fmt, clippy, test, fuzz, tools, runtime]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -119,6 +155,7 @@ jobs:
           TEST: ${{ needs.test.result }}
           FUZZ: ${{ needs.fuzz.result }}
           TOOLS: ${{ needs.tools.result }}
+          RUNTIME: ${{ needs.runtime.result }}
         run: |
           failed=0
           check() {
@@ -131,4 +168,5 @@ jobs:
           check test "$TEST"
           check fuzz "$FUZZ"
           check tools "$TOOLS"
+          check runtime "$RUNTIME"
           exit "$failed"
