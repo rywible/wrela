@@ -10,6 +10,7 @@ which the plan has the runtime use later, only in an isolated page."""
 import http.server
 import os
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the repo root
 
@@ -44,8 +45,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         dest = os.path.join(ROOT, rel)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         length = int(self.headers.get("Content-Length", 0))
-        with open(dest, "wb") as f:
-            f.write(self.rfile.read(length))
+        body = self.rfile.read(length)
+        if len(body) != length:
+            self.send_error(400, "the body is shorter than its Content-Length")
+            return
+        # Written aside, then renamed into place: a reader (headless.sh polling for DONE) sees
+        # the old file or the whole new one, never a part.
+        fd, part = tempfile.mkstemp(dir=os.path.dirname(dest), prefix=".", suffix=".part")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(body)
+            os.replace(part, dest)
+        except BaseException:
+            os.unlink(part)
+            raise
         self.send_response(201)
         self.end_headers()
 

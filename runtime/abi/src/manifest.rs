@@ -359,7 +359,9 @@ fn check_bindings(pipeline: &Pipeline) -> Result<(), ManifestError> {
             ));
         }
         if !b.size.is_multiple_of(4) || b.stride.is_some_and(|s| s == 0 || !s.is_multiple_of(4)) {
-            return Err(problem("sizes and strides are positive multiples of 4"));
+            return Err(problem(
+                "sizes are multiples of 4, and strides positive multiples of 4",
+            ));
         }
         match (b.kind, b.stride) {
             (BindingKind::Uniform, Some(_)) => {

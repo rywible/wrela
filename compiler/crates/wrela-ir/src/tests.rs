@@ -1,7 +1,7 @@
 use crate::fixtures::first_light;
 use crate::{
     Arg, BinaryOp, Builtin, Const, EntryParam, EntryPoint, Expr, FuncId, FunctionBuilder,
-    GpuLayout, Io, IoBinding, LayoutError, Module, ParamMode, PipelineId, Place, Record,
+    GpuLayout, Io, IoBinding, LayoutError, Module, ParamMode, PipelineId, Place, Record, Resource,
     ResourceKind, Scalar, Stage, Stmt, StructField, Type, TypeId, Types, ValueId, VectorSize,
     validate,
 };
@@ -494,6 +494,125 @@ fn gpu_code_cannot_recurse() {
     });
     let errors = errors(&module);
     assert_eq!(errors, ["in `ping`: is GPU code but recurses"]);
+}
+
+/// Adds a compute kernel with a local of type `ty`, so `ty` is used by GPU code.
+fn add_kernel_using(module: &mut Module, ty: TypeId) {
+    let unit = module.types.unit();
+    let mut b = FunctionBuilder::new("kernel", unit);
+    b.local("x", ty);
+    let kernel = module.add_function(b.finish());
+    module.add_entry_point(EntryPoint {
+        function: kernel,
+        stage: Stage::Compute {
+            workgroup_size: [64, 1, 1],
+        },
+        params: vec![],
+        result: None,
+        resources: vec![],
+    });
+}
+
+#[test]
+fn a_type_that_shares_its_parts_is_checked_once() {
+    // `S{k}` has two fields of type `S{k-1}`, so a check that walked every use would look at
+    // the base type 2^64 times.
+    for (base, expected) in [
+        (Scalar::F32, None),
+        (Scalar::F64, Some("in `kernel`: is GPU code but uses S63")),
+    ] {
+        let mut module = first_light();
+        let mut ty = module.types.scalar(base);
+        for k in 0..64 {
+            let field = |name: &str| StructField {
+                name: name.into(),
+                ty,
+            };
+            ty = module
+                .types
+                .add_struct(format!("S{k}"), vec![field("a"), field("b")], false)
+                .unwrap();
+        }
+        add_kernel_using(&mut module, ty);
+        let errors = errors(&module);
+        match expected {
+            None => assert_eq!(errors, Vec::<String>::new()),
+            Some(needle) => assert!(errors.iter().any(|e| e.contains(needle)), "{errors:#?}"),
+        }
+    }
+}
+
+#[test]
+fn a_deep_type_is_checked_without_recursing() {
+    let mut module = first_light();
+    let mut ty = module.types.scalar(Scalar::F32);
+    for k in 0..100_000 {
+        let field = StructField {
+            name: "a".into(),
+            ty,
+        };
+        ty = module
+            .types
+            .add_struct(format!("C{k}"), vec![field], false)
+            .unwrap();
+    }
+    add_kernel_using(&mut module, ty);
+    assert_eq!(errors(&module), Vec::<String>::new());
+}
+
+#[test]
+fn atomics_are_only_in_writable_storage() {
+    for kind in [
+        ResourceKind::Uniform,
+        ResourceKind::StorageRead,
+        ResourceKind::StorageReadWrite,
+    ] {
+        let mut module = first_light();
+        let atomic = module.types.intern(Type::Atomic(Scalar::U32));
+        let field = StructField {
+            name: "n".into(),
+            ty: atomic,
+        };
+        let counters = module
+            .types
+            .add_struct("Counters", vec![field], true)
+            .unwrap();
+        let array = module.types.intern(Type::Array {
+            element: atomic,
+            len: 4,
+        });
+        let slice = module.types.intern(Type::Slice { element: atomic });
+        let unit = module.types.unit();
+        let kernel = module.add_function(FunctionBuilder::new("kernel", unit).finish());
+        // An atomic nested in a struct, an array and a slice, and one on its own.
+        let resources = [counters, array, slice, atomic]
+            .into_iter()
+            .zip(0..)
+            .map(|(ty, binding)| Resource {
+                group: 0,
+                binding,
+                kind,
+                ty,
+            })
+            .collect();
+        module.add_entry_point(EntryPoint {
+            function: kernel,
+            stage: Stage::Compute {
+                workgroup_size: [64, 1, 1],
+            },
+            params: vec![],
+            result: None,
+            resources,
+        });
+        let errors = errors(&module);
+        let rejected = errors.iter().filter(|e| e.contains("can't hold")).count();
+        let expected = if kind == ResourceKind::StorageReadWrite {
+            0
+        } else {
+            4
+        };
+        assert_eq!(rejected, expected, "{kind:?}: {errors:#?}");
+    }
 }
 
 #[test]

@@ -12,6 +12,7 @@
 # WRELA_CHROME is the Chrome binary (default: Google Chrome's on macOS, else google-chrome,
 # chromium or chromium-browser from PATH); WRELA_CHROME_FLAGS adds flags to its command line.
 # Only one run uses the GPU at a time (see the lock below); others wait their turn.
+# tools/tests/headless.py tests this script with a fake Chrome.
 
 set -u
 PAGE="${1:?usage: headless.sh <page-dir> [hash] [timeout-seconds]}"
@@ -34,45 +35,67 @@ if [ -z "$CHROME" ]; then
   fi
 fi
 [ -n "$CHROME" ] || { echo "no Chrome found; set WRELA_CHROME to its binary" >&2; exit 2; }
+command -v python3 >/dev/null 2>&1 || { echo "headless.sh needs python3, for its GPU lock" >&2; exit 2; }
 
 curl -s -o /dev/null "http://127.0.0.1:$PORT/" || { echo "the server isn't running on $PORT (python3 tools/serve.py $PORT)" >&2; exit 2; }
-PROFILE="$(mktemp -d /tmp/wrela-chrome.XXXXXX)"
+
+# Every way out of this script stops Chrome and removes its profile. INT and TERM exit, which
+# runs the EXIT trap; a trap that only cleaned up would let the script carry on with Chrome
+# running.
+PID=
+PROFILE="$(mktemp -d "${TMPDIR:-/tmp}/wrela-chrome.XXXXXX")"
+stop_chrome() {
+  if [ -n "$PID" ] && kill "$PID" 2>/dev/null; then
+    sleep 1
+    kill -9 "$PID" 2>/dev/null
+  fi
+  PID=
+}
+trap 'stop_chrome; rm -rf "$PROFILE"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # One GPU user at a time. On 2026-10-01, ~12 concurrent headless runs starved WindowServer of GPU
-# time for over 5 s; macOS's watchdog killed it and the whole desktop reset. Runs now queue on a
-# lock (a directory, so creating it is atomic).
-#
-# A lock whose holder has died is reclaimed by renaming it aside, which only one waiter can do,
-# then removing it only if it still names the dead holder; one that changed hands is put back.
-# (Removing it in place would race: two waiters that both saw the dead holder could each remove
-# it, the slower one removing the lock the faster one had just taken.) A holder is alive if
-# `ps -p` finds it, whoever owns it: `kill -0` fails for another user's process.
-LOCK=/tmp/wrela-gpu.lock
-alive() { ps -p "$1" >/dev/null 2>&1; }
-WAITED=0
-while ! mkdir "$LOCK" 2>/dev/null; do
-  HOLDER="$(cat "$LOCK/pid" 2>/dev/null)"
-  if [ -n "$HOLDER" ] && ! alive "$HOLDER"; then
-    ASIDE="$LOCK.stale.$$"
-    rm -rf "$ASIDE"
-    if mv "$LOCK" "$ASIDE" 2>/dev/null; then
-      if [ "$(cat "$ASIDE/pid" 2>/dev/null)" = "$HOLDER" ]; then
-        rm -rf "$ASIDE"
-      elif [ ! -e "$LOCK" ]; then
-        mv "$ASIDE" "$LOCK"
-      fi
-    fi
-    continue
+# time for over 5 s; macOS's watchdog killed it and the whole desktop reset. Runs now queue on an
+# flock(2) of one file, held through fd 9. The kernel releases it when the last process holding
+# that descriptor exits, however it dies, so there's no dead holder's lock to reclaim (which
+# can't be done without a race), and Chrome, which inherits fd 9, keeps the GPU locked for as long
+# as it outlives this script. sh has no flock and macOS has no flock(1), so python3 takes it. A
+# lock on a file that's since been replaced at the path doesn't count. The file's text names the
+# holder, for a waiter's message. Older copies of this script make the same path a directory:
+# this waits while one is there, and they wait while the file is.
+LOCK="${WRELA_GPU_LOCK:-/tmp/wrela-gpu.lock}"   # tools/tests/headless.py moves it
+take_lock() {
+  { true >>"$LOCK"; } 2>/dev/null
+  command exec 9<"$LOCK" || return 1
+  python3 - "$LOCK" <<'EOF'
+import fcntl, os, stat, sys
+held = os.fstat(9)
+if not stat.S_ISREG(held.st_mode):
+    sys.exit(1)  # an older headless.sh's lock directory
+try:
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit(1)
+now = os.stat(sys.argv[1])
+sys.exit(0 if (now.st_dev, now.st_ino) == (held.st_dev, held.st_ino) else 1)
+EOF
+}
+holder() {
+  if [ -d "$LOCK" ]; then
+    echo "pid $(cat "$LOCK/pid" 2>/dev/null), an older headless.sh: $(cat "$LOCK/page" 2>/dev/null)"
+  else
+    cat "$LOCK" 2>/dev/null
   fi
-  [ "$WAITED" -eq 0 ] && echo "waiting for the GPU lock (held by ${HOLDER:-?}: $(cat "$LOCK/page" 2>/dev/null))" >&2
+}
+WAITED=0
+until take_lock; do
+  [ "$WAITED" -eq 0 ] && echo "waiting for the GPU lock (held by $(holder))" >&2
   WAITED=$((WAITED + 2))
   [ "$WAITED" -ge 3600 ] && { echo "gave up waiting for the GPU lock after an hour" >&2; exit 3; }
   sleep 2
 done
-echo $$ > "$LOCK/pid"
-echo "$PAGE $HASH" > "$LOCK/page"
-# Release the lock only while it's still ours.
-trap '[ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"' EXIT INT TERM
+{ echo "pid $$: $PAGE $HASH" > "$LOCK"; } 2>/dev/null
 [ "$WAITED" -gt 0 ] && echo "got the GPU lock after ${WAITED}s" >&2
 
 mkdir -p "$RESULTS"
@@ -85,6 +108,7 @@ rm -f "$RESULTS/DONE" "$RESULTS/run.json" "$RESULTS/frame.png"
   --enable-logging=stderr --v=0 --window-size=1920,1080 ${WRELA_CHROME_FLAGS:-} \
   "http://127.0.0.1:$PORT/$PAGE/$HASH" 2> "$RESULTS/chrome.log" &
 PID=$!
+{ echo "pid $$ (chrome $PID): $PAGE $HASH" > "$LOCK"; } 2>/dev/null
 
 START=$(date +%s)
 STATUS=1
@@ -101,10 +125,7 @@ while :; do
   if [ $(( $(date +%s) - START )) -ge "$TIMEOUT" ]; then echo "timed out after ${TIMEOUT}s" >&2; break; fi
   sleep 1
 done
-kill "$PID" 2>/dev/null
-sleep 1
-kill -9 "$PID" 2>/dev/null
-rm -rf "$PROFILE"
+stop_chrome
 
 # Page console lines only (Chrome logs them as "INFO:CONSOLE:<line>] ...").
 grep 'CONSOLE' "$RESULTS/chrome.log" | sed -e 's/^.*CONSOLE:[0-9]*\] //' -e 's/, source: .*$//' > "$RESULTS/console.log"

@@ -92,12 +92,22 @@ jobs:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: cargo run -p wrela-test --release --locked --bin fuzz-smoke -- --seconds 60 --seed "$((16#${SHA:0:15}))"
 
+  # tools/headless.sh's GPU lock and cleanup and tools/serve.py's PUTs, with a fake Chrome: no GPU.
+  tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: python3 tools/tests/headless.py -v
+
   # The one check the main ruleset requires: a stable name that stays correct as jobs are added.
   # `always()` matters: a skipped required check counts as passing, so this job must run (and
   # fail) when anything it needs failed or was cancelled.
   ci:
     if: always()
-    needs: [base, fmt, clippy, test, fuzz]
+    needs: [base, fmt, clippy, test, fuzz, tools]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -108,6 +118,7 @@ jobs:
           CLIPPY: ${{ needs.clippy.result }}
           TEST: ${{ needs.test.result }}
           FUZZ: ${{ needs.fuzz.result }}
+          TOOLS: ${{ needs.tools.result }}
         run: |
           failed=0
           check() {
@@ -119,4 +130,5 @@ jobs:
           check clippy "$CLIPPY"
           check test "$TEST"
           check fuzz "$FUZZ"
+          check tools "$TOOLS"
           exit "$failed"

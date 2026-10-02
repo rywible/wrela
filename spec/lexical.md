@@ -56,7 +56,7 @@ one from the lexical range E0001–E0099; a *tier error* comes from E0900–E099
 - **L12.** A number token starts with a digit and takes the longest run of letters, digits and `_`.
   A decimal number (one that doesn't start with `0` then `x`, `X`, `b`, `B`, `o` or `O`) also takes
   one `.` that is followed by a digit, and a `+` or `-` directly after an `e` or `E` when a digit
-  follows the sign. Two exceptions keep a `.` out: a `.` followed by
+  directly follows the sign. Two exceptions keep a `.` out: a `.` followed by
   another `.` (`1..5` is `1`, `..`, `5`), and a number directly after a `.` token, with no space
   between, takes no `.` and no exponent sign (`t.0.1` is `t`, `.`, `0`, `.`, `1`).
 - **L13.** The token's text is then classified. An `_` may appear anywhere among a form's digits,

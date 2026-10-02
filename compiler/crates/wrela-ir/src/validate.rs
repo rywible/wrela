@@ -387,17 +387,19 @@ impl Validator<'_> {
 
     fn check_entry_points(&mut self) {
         let module = self.module;
+        let atomic = self.atomic_types();
         for (index, entry) in module.entry_points.iter().enumerate() {
             let Some(f) = module.function(entry.function) else {
                 self.error(format!("entry point {index} names a missing function"));
                 continue;
             };
             let what = format!("entry point `{}`", f.name);
-            self.check_entry_point(&what, entry, f);
+            self.check_entry_point(&what, entry, f, &atomic);
         }
     }
 
-    fn check_entry_point(&mut self, what: &str, entry: &EntryPoint, f: &Function) {
+    /// `atomic` is [`Validator::atomic_types`].
+    fn check_entry_point(&mut self, what: &str, entry: &EntryPoint, f: &Function, atomic: &[bool]) {
         let stage = entry.stage;
         if entry.params.len() != f.params.len() {
             self.error(format!(
@@ -414,12 +416,16 @@ impl Validator<'_> {
                     r.group, r.binding
                 ));
             }
-            // A uniform holds GPU data; storage may also hold a runtime-sized slice of it, and
-            // writable storage may hold atomics.
+            // A uniform holds GPU data; storage may also hold a runtime-sized slice of it. Only
+            // writable storage may hold atomics, at any depth (WGSL allows them nowhere else).
             let fits = match (r.kind, self.types.get(r.ty)) {
-                (ResourceKind::Uniform, Some(Type::Slice { .. } | Type::Atomic(_))) => false,
+                (ResourceKind::Uniform, Some(Type::Slice { .. })) => false,
+                (ResourceKind::Uniform | ResourceKind::StorageRead, _)
+                    if atomic.get(r.ty.index()).copied().unwrap_or(false) =>
+                {
+                    false
+                }
                 (_, Some(Type::Slice { element })) => self.types.gpu_size_align(*element).is_ok(),
-                (ResourceKind::StorageRead, Some(Type::Atomic(_))) => false,
                 _ => self.types.gpu_size_align(r.ty).is_ok(),
             };
             if !fits {
@@ -592,23 +598,36 @@ impl Validator<'_> {
         seen
     }
 
-    fn gpu_type(&self, ty: TypeId) -> bool {
-        match self.types.get(ty) {
-            None => false,
-            Some(Type::Unit | Type::Matrix { .. } | Type::Atomic(_)) => true,
-            Some(Type::Scalar(s) | Type::Vector { scalar: s, .. }) => s.is_gpu(),
-            Some(Type::Array { element, .. } | Type::Slice { element }) => self.gpu_type(*element),
-            Some(Type::Tuple(elements)) => elements.iter().all(|&e| self.gpu_type(e)),
-            Some(Type::Struct(s)) => s.fields.iter().all(|f| self.gpu_type(f.ty)),
-            Some(Type::Enum(e)) => e
+    /// Which types, by id, the GPU has: nothing inside them is a scalar it lacks.
+    fn gpu_types(&self) -> Vec<bool> {
+        per_type(self.types, |ty, gpu| match ty {
+            Type::Unit | Type::Matrix { .. } | Type::Atomic(_) => true,
+            Type::Scalar(s) | Type::Vector { scalar: s, .. } => s.is_gpu(),
+            Type::Array { element, .. } | Type::Slice { element } => gpu(*element),
+            Type::Tuple(elements) => elements.iter().all(|&e| gpu(e)),
+            Type::Struct(s) => s.fields.iter().all(|f| gpu(f.ty)),
+            Type::Enum(e) => e.variants.iter().all(|v| v.fields.iter().all(|&t| gpu(t))),
+        })
+    }
+
+    /// Which types, by id, hold an atomic at any depth.
+    fn atomic_types(&self) -> Vec<bool> {
+        per_type(self.types, |ty, atomic| match ty {
+            Type::Atomic(_) => true,
+            Type::Unit | Type::Scalar(_) | Type::Vector { .. } | Type::Matrix { .. } => false,
+            Type::Array { element, .. } | Type::Slice { element } => atomic(*element),
+            Type::Tuple(elements) => elements.iter().any(|&e| atomic(e)),
+            Type::Struct(s) => s.fields.iter().any(|f| atomic(f.ty)),
+            Type::Enum(e) => e
                 .variants
                 .iter()
-                .all(|v| v.fields.iter().all(|&t| self.gpu_type(t))),
-        }
+                .any(|v| v.fields.iter().any(|&t| atomic(t))),
+        })
     }
 
     fn check_gpu_code(&mut self) {
         let gpu = self.gpu_functions();
+        let gpu_types = self.gpu_types();
         for &id in &gpu {
             let Some(f) = self.module.function(id) else {
                 continue;
@@ -633,7 +652,8 @@ impl Validator<'_> {
                 .chain(f.locals.iter().map(|l| l.ty))
                 .chain(f.values.iter().copied())
                 .chain([f.ret]);
-            if let Some(ty) = types.into_iter().find(|&t| !self.gpu_type(t)) {
+            let on_gpu = |t: TypeId| gpu_types.get(t.index()).copied().unwrap_or(false);
+            if let Some(ty) = types.into_iter().find(|&t| !on_gpu(t)) {
                 let message = format!(
                     "is GPU code but uses {}, which the GPU doesn't have",
                     self.name(ty)
@@ -711,6 +731,21 @@ impl Validator<'_> {
             at = caller_of.get(&id).copied();
         }
     }
+}
+
+/// A property of every type, by id, from `rule`, which sees the type and the property of the
+/// types it refers to. Types refer only to earlier ones (`check_types`), so one pass in id order
+/// does it: no recursion to overflow the stack on a deep type, and a type shared many times
+/// inside another is still looked at once.
+fn per_type(types: &Types, rule: impl Fn(&Type, &dyn Fn(TypeId) -> bool) -> bool) -> Vec<bool> {
+    let mut table = Vec::with_capacity(types.len());
+    for (_, ty) in types.iter() {
+        let value = rule(ty, &|id: TypeId| {
+            table.get(id.index()).copied().unwrap_or(false)
+        });
+        table.push(value);
+    }
+    table
 }
 
 /// Calls every statement in `block`, nested blocks included, in order.
