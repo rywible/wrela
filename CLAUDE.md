@@ -4,13 +4,13 @@ wrela is a new language, compiler, engine and agent-native studio for AAA-ambiti
 
 ## Where things are
 
-| Path | What |
-|---|---|
-| `docs/vision.md` | Goal, theses and their evidence, architecture, the renderer, and the **constraints** everything rests on. Read it before any architectural change. |
-| `docs/language.md` | The language reference, with feature tiers. The syntax is imagined until the parser exists. |
-| `spec/` | The grammar: normative and executable (from M1). |
-| `compiler/`, `std/`, `runtime/` | The code (from M1). |
-| `tools/` | `serve.py` (static server that accepts PUTs into `results/`) and `headless.sh` (runs a page in headless Chrome on the real GPU). |
+| Path                            | What                                                                                                                                               |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/vision.md`                | Goal, theses and their evidence, architecture, the renderer, and the **constraints** everything rests on. Read it before any architectural change. |
+| `docs/language.md`              | The language reference, with feature tiers. The syntax is imagined until the parser exists.                                                        |
+| `spec/`                         | The grammar: normative and executable (from M1).                                                                                                   |
+| `compiler/`, `std/`, `runtime/` | The code (from M1).                                                                                                                                |
+| `tools/`                        | `serve.py` (static server that accepts PUTs into `results/`) and `headless.sh` (runs a page in headless Chrome on the real GPU).                   |
 
 - **Plans live in GitHub issues on rywible/wrela, not in the repo.**
   - Milestones M1–M6, each with a scope issue.
@@ -40,36 +40,42 @@ wrela is a new language, compiler, engine and agent-native studio for AAA-ambiti
 ## How work flows: milestones, slices, PRs
 
 **Milestones**
+
 - Each milestone has a scope issue: outcome, in scope, and out of scope with where each item goes.
 - **Nothing leaves a milestone** without landing in a later milestone or the backlog (#31).
 - A milestone is broken into slice issues, each with acceptance criteria, only when it's next.
 
 **One PR per slice**
+
 - It says "Closes #N", carries the acceptance checklist, and names the decisions it touches.
 - Never a PR per task; never one PR per milestone.
 - Split a slice that grows past ~30 reviewable files.
 
 **Branches and worktrees**
+
 - `slice/mN-sNN` is cut from `main`, in its own worktree.
 - Task agents merge into the slice branch locally, and the tests pass before a PR exists.
 
 **Opening the PR**
+
 - Open it as a **draft**: CodeRabbit and Greptile skip drafts, and CI still runs.
 - Before marking it ready, run a fresh-context code review.
-- Mark at most ~4 PRs ready per hour, because CodeRabbit's rate limit is shared.
 
 **Don't wait on review.** Start the next slice.
+
 - A dependent slice branches from its parent's tip locally.
 - After the parent merges, rebase onto `main` and open its PR.
 - No GitHub stacked PRs: both bots skip PRs whose base isn't `main`.
 
 **A shepherd agent handles bot findings**
+
 - Fix real bugs, each with a regression test.
 - Reject wrong findings, with the reason in a reply.
 - Defer the rest to a `bot-followup` issue.
 - Push the fixes in one batch, then re-trigger (`@coderabbitai review`, `@greptileai`). After two rounds, label it `needs-owner`.
 
 **Merging**
+
 - Squash, with auto-merge, once the gate passes:
   - CI is green
   - both bots reviewed the head commit (not skipped or rate-limited)
@@ -79,10 +85,10 @@ wrela is a new language, compiler, engine and agent-native studio for AAA-ambiti
 
 ## Layers
 
-| Layer | What | Written in |
-|---|---|---|
-| 0 | Platform hosts: the browser runtime and the native host | TypeScript, Rust |
-| 1 | Language: the compiler (run at build time) and the stdlib | Rust (compiler), wrela (stdlib, with a small unsafe core) |
-| 2 | Engine | wrela |
-| 3 | Studio | wrela + Rust tooling |
-| 4 | Games | wrela |
+| Layer | What                                                      | Written in                                                |
+| ----- | --------------------------------------------------------- | --------------------------------------------------------- |
+| 0     | Platform hosts: the browser runtime and the native host   | TypeScript, Rust                                          |
+| 1     | Language: the compiler (run at build time) and the stdlib | Rust (compiler), wrela (stdlib, with a small unsafe core) |
+| 2     | Engine                                                    | wrela                                                     |
+| 3     | Studio                                                    | wrela + Rust tooling                                      |
+| 4     | Games                                                     | wrela                                                     |
