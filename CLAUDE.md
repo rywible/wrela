@@ -2,44 +2,87 @@
 
 wrela is a new language, compiler, engine and agent-native studio for AAA-ambition games played from a browser link. Content is authored as fields: functions over space. It's MIT-licensed and built in spare time, but run with business-grade discipline: high code quality and honest engineering claims.
 
-## Status
+## Where things are
 
-Design phase, with first measurements. There's no compiler yet.
-- Spike 01 measured hand-written output for the grazer on the primary reference device, a MacBook Air M4 (D-089, D-096). It passes D-067's kill criteria.
-- `docs/design/language.md` describes the whole language as it stands, so compiler work may start (D-088).
-- Spikes and experiments are throwaway code that answers a question. They aren't the start of the engine or compiler.
+| Path | What |
+|---|---|
+| `docs/vision.md` | Goal, theses and their evidence, architecture, the renderer, and the **constraints** everything rests on. Read it before any architectural change. |
+| `docs/language.md` | The language reference, with feature tiers. The syntax is imagined until the parser exists. |
+| `spec/` | The grammar: normative and executable (from M1). |
+| `compiler/`, `std/`, `runtime/` | The code (from M1). |
+| `tools/` | `serve.py` (static server that accepts PUTs into `results/`) and `headless.sh` (runs a page in headless Chrome on the real GPU). |
 
-## Read before changing anything
-
-- **`docs/design/decisions.md` is the source of truth.**
-  - Every entry has a stable ID (D-NNN).
-  - Every entry has a status: Accepted, Proposed, Open or Withdrawn.
-- **`docs/design/language.md`** describes the whole language as it stands, with feature tiers. Keep it current when a decision changes the language.
-- **`docs/design/memory-model.md`** is the one place the memory rules live: parameter modes, projections, exclusivity, regions, snapshots.
-- **`docs/design/platform.md`** is the one place the browser runtime is described: what ships, threads, the CPU–GPU boundary, console play.
-- **`docs/design/vision.md`** covers the goal, the four theses and the architecture.
-- **`docs/design/sketches/`** holds programs in imagined syntax. The language is derived from them.
-- **`docs/design/reviews/`** holds independent audits, plus the responses that map each finding to a decision.
-- **`spikes/`** and **`experiments/`** hold measurements and experiments. Each has a README with its method, results and caveats.
+- **Plans live in GitHub issues on rywible/wrela, not in the repo.**
+  - Milestones M1–M6, each with a scope issue.
+  - #26: status against the vision (pinned).
+  - #31: the vision backlog.
+- **History:** the design record (decisions D-001–D-105, sketches, reviews), spikes 01–12 and experiments are in the git tag `design-archive-2026-10`. D-NNN IDs in the docs refer to its `docs/design/decisions.md`.
 
 ## Rules
 
-- **The compiler knows nothing about the engine (D-050).**
+- **The compiler knows nothing about the engine.**
   - No keywords, attributes, lang items or compiler rules phrased in engine terms.
   - The test for any language feature: would it make sense in a wrela program that isn't a game?
   - General sugar is fine.
-- **Never rewrite a decision.** Add a new entry that supersedes it, then annotate the old entry's status line, for example "Superseded by D-NNN."
-- **Proposed is not agreed.** Only the project owner accepts decisions. The owner may delegate a choice; delegated decisions say "Accepted (delegated)". Statuses are defined in the header of `decisions.md`.
-- **Accepted is not validated.** Check the evidence table near the end of `decisions.md` before building on a load-bearing decision.
-- **Label performance numbers as estimates until they're measured.** Label claims that haven't been tested as hypotheses.
-- **Sketches use ` ```wrela ` code fences,** and source files use the `.wrela` extension (D-040).
+- **The constraints in `docs/vision.md` are load-bearing.** Only the owner changes one; record the change and its reason in the commit and in vision.md.
+- **Keep docs to the minimum.**
+  - No new prose docs or plan files in the repo.
+  - The "why" of a change goes in its commit message or PR. Plans go in issues.
+  - Prefer knowledge in executable form: tests, diagnostics with `wrela explain` texts, the grammar.
+  - When something is built, replace the prose describing it with a pointer to its code and tests, in the same change.
+- **Label performance numbers as estimates until they're measured.** Label untested claims as hypotheses.
+- **Source files use `.wrela`;** docs use ` ```wrela ` fences.
+- **GPU safety:**
+  - Run GPU pages only through `tools/headless.sh`. It holds a lock, so only one GPU user runs at a time.
+  - Keep every GPU submission under ~100 ms.
+  - Concurrent heavy GPU work once starved WindowServer and reset the owner's desktop.
 
-## Layers (D-006, D-016)
+## How work flows: milestones, slices, PRs
+
+**Milestones**
+- Each milestone has a scope issue: outcome, in scope, and out of scope with where each item goes.
+- **Nothing leaves a milestone** without landing in a later milestone or the backlog (#31).
+- A milestone is broken into slice issues, each with acceptance criteria, only when it's next.
+
+**One PR per slice**
+- It says "Closes #N", carries the acceptance checklist, and names the decisions it touches.
+- Never a PR per task; never one PR per milestone.
+- Split a slice that grows past ~30 reviewable files.
+
+**Branches and worktrees**
+- `slice/mN-sNN` is cut from `main`, in its own worktree.
+- Task agents merge into the slice branch locally, and the tests pass before a PR exists.
+
+**Opening the PR**
+- Open it as a **draft**: CodeRabbit and Greptile skip drafts, and CI still runs.
+- Before marking it ready, run a fresh-context code review.
+- Mark at most ~4 PRs ready per hour, because CodeRabbit's rate limit is shared.
+
+**Don't wait on review.** Start the next slice.
+- A dependent slice branches from its parent's tip locally.
+- After the parent merges, rebase onto `main` and open its PR.
+- No GitHub stacked PRs: both bots skip PRs whose base isn't `main`.
+
+**A shepherd agent handles bot findings**
+- Fix real bugs, each with a regression test.
+- Reject wrong findings, with the reason in a reply.
+- Defer the rest to a `bot-followup` issue.
+- Push the fixes in one batch, then re-trigger (`@coderabbitai review`, `@greptileai`). After two rounds, label it `needs-owner`.
+
+**Merging**
+- Squash, with auto-merge, once the gate passes:
+  - CI is green
+  - both bots reviewed the head commit (not skipped or rate-limited)
+  - all threads are resolved
+  - no `needs-owner` label
+- Never force-push a PR that's ready for review.
+
+## Layers
 
 | Layer | What | Written in |
 |---|---|---|
-| 0 | Platform hosts: browser and native | TypeScript, Rust |
-| 1 | Language: compiler (run at build time) and stdlib | Rust (compiler), wrela (stdlib, with a small unsafe core) |
+| 0 | Platform hosts: the browser runtime and the native host | TypeScript, Rust |
+| 1 | Language: the compiler (run at build time) and the stdlib | Rust (compiler), wrela (stdlib, with a small unsafe core) |
 | 2 | Engine | wrela |
 | 3 | Studio | wrela + Rust tooling |
 | 4 | Games | wrela |

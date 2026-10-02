@@ -6,15 +6,13 @@ wrela is an experiment in AAA-ambition games that you play by opening a link. It
 - a new language and compiler
 - a game engine written in that language, with content authored as fields rather than baked assets
 - an authoring studio designed for agents first
-- the games themselves
+- the games themselves, starting with a forest-first open-world RPG
 
-**Status:** early design, with first measurements. There's no compiler yet.
+**Status:** the design and the measurements are done; the compiler is being built (milestone 1).
 
-- [Vision](docs/design/vision.md): the goal, the theses, the architecture
-- [Decisions](docs/design/decisions.md): every design decision, with its status and evidence
-- [The language](docs/design/language.md): the whole language as it stands
-- [Sketches](docs/design/sketches/): imagined wrela programs the language is derived from
-- [Spike 01](spikes/01-grazer/): hand-written GPU and CPU code for a creature, measured against kill criteria
-- [Agent authoring](experiments/agent-authoring/): can an agent author a creature as a field?
+- [Vision](docs/vision.md): the goal, the theses and their evidence, the architecture, the renderer, the constraints
+- [The language](docs/language.md): the whole language as it stands
+- [Milestones](https://github.com/rywible/wrela/milestones) and [issues](https://github.com/rywible/wrela/issues): the plan
+- The design record, spikes and experiments: the `design-archive-2026-10` tag
 
 wrela is a spare-time project, run with professional discipline. Licensed under [MIT](LICENSE).
