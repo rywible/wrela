@@ -32,6 +32,10 @@ reviews:
   poem: false
   in_progress_fortune: false
   review_status: true # says in the walkthrough why a review was skipped (draft, rate limit)
+  # The merge gate reads the legacy commit status ("Review completed" on the head). Pin it: the
+  # newer progress check runs replace it by default, and their wording isn't verified yet.
+  review_progress: false
+  commit_status: true
 
   # Reviews start when a PR is opened or marked ready. After fixes are pushed (in one batch), the
   # shepherd asks for the next round with `@coderabbitai review`, so a burst of pushes spends one
@@ -42,12 +46,11 @@ reviews:
     base_branches: [] # only the default branch, main
     auto_incremental_review: false
 
-  # Generated or blessed outputs: their source (and the test that produced them) is reviewed instead.
+  # Bulky generated output: its source (and the test that produced it) is reviewed instead. Golden
+  # `.stderr` and `.json` files stay in: they're the user-visible diagnostics, small enough to read.
   path_filters:
     - "!Cargo.lock"
     - "!runtime/browser/dist/**"
-    - "!compiler/tests/golden/**/*.stderr"
-    - "!compiler/tests/golden/**/*.json"
     - "!compiler/tests/golden/**/*.wgsl"
     - "!compiler/tests/golden/**/*.wat"
     - "!**/results/**"

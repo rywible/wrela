@@ -15,6 +15,11 @@
 #               a review of the head ("Actionable comments posted: N").
 #   Greptile:   its summary comment's "Last reviewed commit" is the head, or its check run on the
 #               head says "Greptile has reviewed the Pull Request".
+# A review still running on the head fails its row whatever else is there: a re-triggered review
+# of an unchanged head may yet post threads.
+#
+# CodeRabbit puts outside-the-diff and nitpick comments in the review's body, not in threads, so
+# the gate can't tell whether they were handled; it prints their counts as a reminder (`note`).
 
 set -u
 
@@ -99,22 +104,41 @@ OTHER="$(gh api --paginate "$RUNS" --jq '
 if [ "$CI" = success ]; then pass ci "success"; else fail ci "$CI"; fi
 if [ -n "$OTHER" ]; then row "" "" "not passing on the head: $(oneline "$OTHER")"; fi
 
-# CodeRabbit.
+# CodeRabbit. The combined status holds the latest status per context, as `state description`.
 CR_STATUS="$(gh api "repos/$REPO/commits/$HEAD/status" --jq '
-  [.statuses[] | select(.context | test("^coderabbit"; "i")) | .description] | first // ""')" ||
+  [.statuses[] | select(.context | test("^coderabbit"; "i")) | "\(.state) \(.description // "")"]
+  | first // ""')" ||
   die "can't read commit statuses"
 CR_CHECK="$(gh api --paginate "$RUNS" --jq '
   .check_runs[] | select(.app.slug == "coderabbitai") | "\(.output.title // "") \(.output.summary // "")"')" ||
+  die "can't read check runs"
+CR_RUNNING="$(gh api --paginate "$RUNS" --jq '
+  .check_runs[] | select(.app.slug == "coderabbitai" and .status != "completed") | .name')" ||
   die "can't read check runs"
 CR_REVIEWS="$(gh api --paginate "repos/$REPO/pulls/$PR/reviews?per_page=100" --jq "
   .[] | select(.commit_id == \"$HEAD\" and .user.login == \"coderabbitai[bot]\"
                and (.body | contains(\"Actionable comments posted\"))) | .id")" ||
   die "can't read reviews"
+case "$CR_STATUS" in pending* | *"in progress"* | *"In progress"*) CR_RUNNING="${CR_RUNNING}status" ;; esac
 CR_SEEN="status: ${CR_STATUS:-none}; reviews of the head: $(count "$CR_REVIEWS")"
-case "$CR_STATUS $CR_CHECK" in
-  *"Review completed"*) pass coderabbit "$CR_SEEN" ;;
-  *) if [ -n "$CR_REVIEWS" ]; then pass coderabbit "$CR_SEEN"; else fail coderabbit "$CR_SEEN"; fi ;;
-esac
+if [ -n "$CR_RUNNING" ]; then
+  fail coderabbit "a review is still running ($CR_SEEN)"
+else
+  case "$CR_STATUS $CR_CHECK" in
+    *"Review completed"*) pass coderabbit "$CR_SEEN" ;;
+    *) if [ -n "$CR_REVIEWS" ]; then pass coderabbit "$CR_SEEN"; else fail coderabbit "$CR_SEEN"; fi ;;
+  esac
+fi
+# Reviews come back oldest first; the last one of the head is the current review.
+CR_LAST="$(printf '%s\n' "$CR_REVIEWS" | tail -n 1)"
+if [ -n "$CR_LAST" ]; then
+  CR_BODY="$(gh api "repos/$REPO/pulls/$PR/reviews/$CR_LAST" --jq '.body')" ||
+    die "can't read review $CR_LAST"
+  CR_EXTRA="$(printf '%s\n' "$CR_BODY" | grep -oE '(Outside diff range|Nitpick) comments \([0-9]+\)')"
+  if [ -n "$CR_EXTRA" ]; then
+    row "" note "the review's body has $(printf '%s\n' "$CR_EXTRA" | paste -sd ',' - | sed 's/,/, /g'): not threads, so handle each and reply"
+  fi
+fi
 
 # Greptile.
 GR_LAST="$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" --jq '
@@ -125,9 +149,18 @@ GR_LAST="$(printf '%s\n' "$GR_LAST" | tail -n 1)"
 GR_CHECK="$(gh api --paginate "$RUNS" --jq '
   .check_runs[] | select(.app.slug == "greptile-apps") | .output.summary // "" | split("\n")[0]')" ||
   die "can't read check runs"
+GR_RUNNING="$(gh api --paginate "$RUNS" --jq '
+  .check_runs[] | select(.app.slug == "greptile-apps" and .status != "completed") | .name')" ||
+  die "can't read check runs"
 GR_SEEN="last reviewed commit: $(printf '%.7s' "${GR_LAST:-none}"); check: $(oneline "${GR_CHECK:-none}")"
 case "$GR_CHECK" in *"Greptile has reviewed"*) GR_CHECKED=yes ;; *) GR_CHECKED=no ;; esac
-if [ "$GR_LAST" = "$HEAD" ] || [ "$GR_CHECKED" = yes ]; then pass greptile "$GR_SEEN"; else fail greptile "$GR_SEEN"; fi
+if [ -n "$GR_RUNNING" ]; then
+  fail greptile "a review is still running ($GR_SEEN)"
+elif [ "$GR_LAST" = "$HEAD" ] || [ "$GR_CHECKED" = yes ]; then
+  pass greptile "$GR_SEEN"
+else
+  fail greptile "$GR_SEEN"
+fi
 
 # Review threads: all must be resolved, outdated ones included (the ruleset counts those too).
 # shellcheck disable=SC2016 # the $s are GraphQL variables

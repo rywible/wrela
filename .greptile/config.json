@@ -4,7 +4,7 @@
   "autoReview": ["open"],
   "triggerOnDrafts": false,
   "includeBranches": ["main"],
-  "ignorePatterns": "Cargo.lock\nruntime/browser/dist/\ncompiler/tests/golden/**/*.stderr\ncompiler/tests/golden/**/*.json\ncompiler/tests/golden/**/*.wgsl\ncompiler/tests/golden/**/*.wat\nresults/",
+  "ignorePatterns": "Cargo.lock\nruntime/browser/dist/\ncompiler/tests/golden/**/*.wgsl\ncompiler/tests/golden/**/*.wat\nresults/",
   "statusCheck": true,
   "autoApprove": { "enabled": false },
   "sequenceDiagramSection": { "included": false },

@@ -79,7 +79,12 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-rust
-      - run: cargo run -p wrela-test --release --locked --bin fuzz-smoke -- --seconds 60
+      # The seed comes from the commit (60 bits of its SHA): each commit explores new inputs, and
+      # re-running a failed run replays the same inputs instead of drawing a seed that may pass.
+      - name: fuzz-smoke
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: cargo run -p wrela-test --release --locked --bin fuzz-smoke -- --seconds 60 --seed "$((16#${SHA:0:15}))"
 
   # The one check the main ruleset requires: a stable name that stays correct as jobs are added.
   # `always()` matters: a skipped required check counts as passing, so this job must run (and
