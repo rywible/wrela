@@ -109,8 +109,8 @@ pub fn compare(
     for diagnostic in actual {
         let span = diagnostic.primary.span;
         let line = sources
-            .get(span.file)
-            .map_or(0, |file| file.line_col(span.start).line);
+            .get(span.file())
+            .map_or(0, |file| file.line_col(span.start()).line);
         let found = unmatched.iter().position(|e| {
             e.line == line
                 && e.severity == diagnostic.severity

@@ -1,0 +1,8 @@
+//@ check-pass
+// Comments may hold any text: $ π “quotes” `ticks` /* not a block comment */
+//// Four slashes make a plain comment, not a doc comment.
+
+/// A doc comment.
+fn add(a: i32, b: i32) -> i32 {
+    a + b // a trailing comment
+}

@@ -43,7 +43,7 @@ The compiler knows about exactly these execution targets:
 | A newline ends a statement, unless it's inside open brackets or the next line starts with `.` | T0 | D-038, D-079 |
 | A binary operator that continues a line must *trail* the line; a leading `-` or `\|` starts a new expression | T0 | D-079 |
 | `;` may separate statements on one line; the formatter normalizes | T0 | D-038 |
-| `//` comments, `///` doc comments | T0 | Placeholder (sketches) |
+| `//` comments, `///` doc comments; no `/* */` | T0 | Built: `wrela explain E0002`, `compiler/tests/conformance/lexer/` |
 | Files use the `.wrela` extension | T0 | D-040 |
 | Number literals have no type suffixes (no `1.0f32`) | T0 | D-025 |
 | A unit can follow a number as a suffix: `15cm` means `15 * cm` | T1 | D-025, D-076 |

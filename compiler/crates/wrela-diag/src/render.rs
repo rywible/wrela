@@ -72,7 +72,7 @@ pub fn render(diagnostic: &Diagnostic, sources: &SourceMap) -> String {
             let _ = writeln!(out, "{pad}{arrow} <unknown file #{}>", file.index());
             continue;
         };
-        let anchor = labels[0].span.start;
+        let anchor = labels[0].span.start();
         let at = source.line_col(anchor);
         let _ = writeln!(
             out,
@@ -109,7 +109,7 @@ pub fn render(diagnostic: &Diagnostic, sources: &SourceMap) -> String {
             let Some(source) = sources.get(hunk.file) else {
                 continue;
             };
-            if hunk.file != diagnostic.primary.span.file {
+            if hunk.file != diagnostic.primary.span.file() {
                 let _ = writeln!(out, "{pad}::: {}", source.name());
             }
             let _ = writeln!(out, "{pad} |");
@@ -126,9 +126,12 @@ pub fn render(diagnostic: &Diagnostic, sources: &SourceMap) -> String {
 fn group_labels(diagnostic: &Diagnostic) -> Vec<(FileId, Vec<&Label>)> {
     let mut groups: Vec<(FileId, Vec<&Label>)> = Vec::new();
     for label in std::iter::once(&diagnostic.primary).chain(&diagnostic.secondary) {
-        match groups.iter_mut().find(|(file, _)| *file == label.span.file) {
+        match groups
+            .iter_mut()
+            .find(|(file, _)| *file == label.span.file())
+        {
             Some((_, labels)) => labels.push(label),
-            None => groups.push((label.span.file, vec![label])),
+            None => groups.push((label.span.file(), vec![label])),
         }
     }
     groups
@@ -146,7 +149,7 @@ fn render_snippet(
         .iter()
         .flat_map(|label| {
             [
-                source.line_index(label.span.start),
+                source.line_index(label.span.start()),
                 last_line(source, label),
             ]
         })
@@ -173,28 +176,24 @@ fn render_snippet(
         for label in labels {
             let is_primary = std::ptr::eq(*label, &diagnostic.primary);
             let mark = if is_primary { '^' } else { '-' };
-            let start_line = source.line_index(label.span.start);
+            let start_line = source.line_index(label.span.start());
             let end_line = last_line(source, label);
             let message = label.message.as_deref();
-            let line_start = source.line_start(line);
+            let col = |at: u32| display_col(source, line, at as usize);
             if start_line == line && end_line == line {
-                let from = display_col(source, line_start, label.span.start);
-                let to = display_col(source, line_start, label.span.end);
+                let from = col(label.span.start());
+                let to = col(label.span.end());
                 marks.push((from, to.saturating_sub(from).max(1), mark, message));
             } else if start_line == line {
                 // A multi-line label underlines to the end of its first line...
-                let from = display_col(source, line_start, label.span.start);
+                let from = col(label.span.start());
                 let to = display_width(text);
                 marks.push((from, to.saturating_sub(from).max(1), mark, None));
             } else if end_line == line {
                 // ...and from its last line's indentation to its end, where the message goes.
                 let indent = text.len() - text.trim_start().len();
-                let from = display_col(
-                    source,
-                    line_start,
-                    line_start.saturating_add(offset(indent)),
-                );
-                let to = display_col(source, line_start, label.span.end);
+                let from = display_col(source, line, source.line_text_range(line).start + indent);
+                let to = col(label.span.end());
                 marks.push((from, to.saturating_sub(from).max(1), mark, message));
             }
         }
@@ -210,10 +209,10 @@ fn render_snippet(
 /// The 0-based line of a label's last character, so a span ending in a newline stays on its line.
 fn last_line(source: &SourceFile, label: &Label) -> usize {
     let span = label.span;
-    source.line_index(if span.end > span.start {
-        span.end - 1
+    source.line_index(if span.end() > span.start() {
+        span.end() - 1
     } else {
-        span.start
+        span.start()
     })
 }
 
@@ -235,37 +234,37 @@ impl Hunk {
 /// skipped rather than producing garbled text.
 fn hunks(edits: &[Edit], sources: &SourceMap) -> Vec<Hunk> {
     let mut edits: Vec<&Edit> = edits.iter().collect();
-    edits.sort_by_key(|edit| (edit.span.file, edit.span.start, edit.span.end));
+    edits.sort_by_key(|edit| (edit.span.file(), edit.span.start(), edit.span.end()));
 
     let mut hunks = Vec::new();
     let mut i = 0;
     while i < edits.len() {
-        let file = edits[i].span.file;
+        let file = edits[i].span.file();
         let Some(source) = sources.get(file) else {
             i += 1;
             continue;
         };
-        let first = source.line_index(edits[i].span.start);
-        let mut last = source.line_index(edits[i].span.end);
+        let first = source.line_index(edits[i].span.start());
+        let mut last = source.line_index(edits[i].span.end());
         let mut group = vec![edits[i]];
         i += 1;
         while i < edits.len()
-            && edits[i].span.file == file
-            && source.line_index(edits[i].span.start) <= last
+            && edits[i].span.file() == file
+            && source.line_index(edits[i].span.start()) <= last
         {
-            last = last.max(source.line_index(edits[i].span.end));
+            last = last.max(source.line_index(edits[i].span.end()));
             group.push(edits[i]);
             i += 1;
         }
 
-        let start = source.line_start(first) as usize;
+        let start = source.line_text_range(first).start;
         let end = start_of_next_line(source, last);
         let text = source.text();
         let mut patched = String::new();
         let mut cursor = start;
         for edit in group {
-            let edit_start = clamp(text, edit.span.start as usize).max(start);
-            let edit_end = clamp(text, edit.span.end as usize).min(end);
+            let edit_start = clamp(text, edit.span.start() as usize).max(start);
+            let edit_end = clamp(text, edit.span.end() as usize).min(end);
             if edit_start < cursor {
                 continue;
             }
@@ -298,17 +297,13 @@ fn clamp(text: &str, offset: usize) -> usize {
     text.floor_char_boundary(offset.min(text.len()))
 }
 
-fn offset(n: usize) -> u32 {
-    u32::try_from(n).unwrap_or(u32::MAX)
-}
-
-/// The display column of `at` within the line that starts at `line_start`.
-fn display_col(source: &SourceFile, line_start: u32, at: u32) -> usize {
+/// The display column of byte offset `at` on line `line` (0-based), as the line is printed: an
+/// offset in the line ending counts as the end of the line's text.
+fn display_col(source: &SourceFile, line: usize, at: usize) -> usize {
     let text = source.text();
-    let from = clamp(text, line_start as usize);
-    let line_end = from + text[from..].find('\n').unwrap_or(text.len() - from);
-    let to = clamp(text, (at as usize).clamp(from, line_end));
-    display_width(&text[from..to])
+    let range = source.line_text_range(line);
+    let to = clamp(text, at.clamp(range.start, range.end));
+    display_width(&text[range.start..to])
 }
 
 fn display_width(text: &str) -> usize {
@@ -425,6 +420,36 @@ error[E0002]: m
             rendered.contains("  |                  ^^^^^^^^\n"),
             "{rendered}"
         );
+    }
+
+    #[test]
+    fn crlf_line_endings_are_not_underlined() {
+        let (map, f) = map("let x = foo(a, b)\r\nnext\r\n");
+        let d = Diagnostic::new(UNEXPECTED_CHARACTER, "m", Span::new(f, 0, 19));
+        let rendered = render(&d, &map);
+        assert!(
+            rendered.contains(&format!("1 | let x = foo(a, b)\n  | {}\n", "^".repeat(17))),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_not_shown() {
+        let (map, f) = map("\u{FEFF}fn $\n");
+        let d = Diagnostic::new(UNEXPECTED_CHARACTER, "m", Span::new(f, 6, 7))
+            .with_fix("delete it", vec![Edit::new(Span::new(f, 6, 7), "")]);
+        let expected = "\
+error[E0001]: m
+ --> main.wrela:1:4
+  |
+1 | fn $
+  |    ^
+  |
+help: delete it
+  |
+1 | fn
+";
+        assert_eq!(render(&d, &map), expected);
     }
 
     #[test]

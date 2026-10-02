@@ -14,14 +14,17 @@
 //!
 //! A `SPAN` is `{ "file": NAME, "start": POS, "end": POS }`, and a `POS` is
 //! `{ "offset": BYTES, "line": 1-BASED, "column": 1-BASED CHARS }`. Every key is always present;
-//! an absent label message is `null`. Changing this shape means bumping [`JSON_VERSION`]; the
-//! golden tests pin it.
+//! an absent label message is `null`.
+//!
+//! Compatibility: consumers must ignore keys they don't know, so adding a key (a fix's
+//! applicability, say) keeps the version. Removing or renaming a key, or changing what a value
+//! means, bumps [`JSON_VERSION`]. The golden tests pin the shape either way.
 
 use serde::Serialize;
 
 use crate::{Code, Diagnostic, Edit, Help, Label, Severity, SourceMap, Span};
 
-/// The version of the JSON shape.
+/// The version of the JSON shape; it changes only when a change would break a consumer.
 pub const JSON_VERSION: u32 = 1;
 
 #[derive(Serialize)]
@@ -120,7 +123,7 @@ fn edit<'a>(edit: &'a Edit, sources: &'a SourceMap) -> JsonEdit<'a> {
 }
 
 fn span(span: Span, sources: &SourceMap) -> JsonSpan<'_> {
-    let Some(file) = sources.get(span.file) else {
+    let Some(file) = sources.get(span.file()) else {
         let unknown = |offset| Position {
             offset,
             line: 0,
@@ -128,8 +131,8 @@ fn span(span: Span, sources: &SourceMap) -> JsonSpan<'_> {
         };
         return JsonSpan {
             file: "<unknown>",
-            start: unknown(span.start),
-            end: unknown(span.end),
+            start: unknown(span.start()),
+            end: unknown(span.end()),
         };
     };
     let position = |offset: u32| {
@@ -142,8 +145,8 @@ fn span(span: Span, sources: &SourceMap) -> JsonSpan<'_> {
     };
     JsonSpan {
         file: file.name(),
-        start: position(span.start),
-        end: position(span.end),
+        start: position(span.start()),
+        end: position(span.end()),
     }
 }
 

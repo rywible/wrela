@@ -192,9 +192,10 @@ fn invariants(input: &str, previous: &str) -> Result<(), String> {
             .chain(d.secondary.iter().map(|l| l.span))
             .chain(d.help.iter().flat_map(|h| h.edits.iter().map(|e| e.span)));
         for span in spans {
-            let in_bounds = span.file == file && span.start <= span.end && span.end as usize <= len;
-            let on_chars = input.is_char_boundary(span.start as usize)
-                && input.is_char_boundary(span.end as usize);
+            let in_bounds =
+                span.file() == file && span.start() <= span.end() && span.end() as usize <= len;
+            let on_chars = input.is_char_boundary(span.start() as usize)
+                && input.is_char_boundary(span.end() as usize);
             if !in_bounds || !on_chars {
                 return Err(format!(
                     "{}: span {span:?} is outside the input or splits a char",

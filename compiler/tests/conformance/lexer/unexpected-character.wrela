@@ -13,6 +13,9 @@ fn café() -> u32 {
     0
 }
 
+// A name with non-ASCII letters is one error, however many there are: the name stays whole.
+fn naïve_café() -> u32 { 0 } //~ ERROR E0001 unexpected characters `ï` `é`
+
 #[inline] //~ ERROR E0001 `#`
 fn fast() {}
 

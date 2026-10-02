@@ -14,14 +14,15 @@ impl FileId {
     }
 }
 
-/// A half-open byte range `start..end` in one file.
+/// A half-open byte range `start..end` in one file, with `start <= end`.
 ///
+/// The fields are private so the order holds: [`Span::new`] is the only way to make one.
 /// Offsets are `u32`: [`SourceMap::add`] rejects files of 4 GiB or more, so every offset fits.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct Span {
-    pub file: FileId,
-    pub start: u32,
-    pub end: u32,
+    file: FileId,
+    start: u32,
+    end: u32,
 }
 
 impl Span {
@@ -37,6 +38,18 @@ impl Span {
     /// A span from a `usize` range, as produced by slicing source text.
     pub fn from_range(file: FileId, range: std::ops::Range<usize>) -> Self {
         Span::new(file, offset_u32(range.start), offset_u32(range.end))
+    }
+
+    pub fn file(self) -> FileId {
+        self.file
+    }
+
+    pub fn start(self) -> u32 {
+        self.start
+    }
+
+    pub fn end(self) -> u32 {
+        self.end
     }
 
     pub fn len(self) -> u32 {
@@ -64,6 +77,9 @@ impl Span {
         self.start as usize..self.end as usize
     }
 }
+
+/// The byte-order mark some editors write at the start of a UTF-8 file.
+const BOM: char = '\u{FEFF}';
 
 fn offset_u32(offset: usize) -> u32 {
     u32::try_from(offset).unwrap_or(u32::MAX)
@@ -152,32 +168,47 @@ impl SourceFile {
         self.line_starts[index.min(self.line_starts.len() - 1)]
     }
 
-    /// The text of line `index` (0-based), without its line ending (`\n` or `\r\n`).
+    /// The text of line `index` (0-based), without its line ending (`\n` or `\r\n`) and, on the
+    /// first line, without a leading byte-order mark, as an editor shows it.
     pub fn line_text(&self, index: usize) -> &str {
+        &self.text[self.line_text_range(index)]
+    }
+
+    /// The byte range of [`SourceFile::line_text`]. A `\r` is only part of the line ending
+    /// when a `\n` follows it; a lone one stays in the text.
+    pub fn line_text_range(&self, index: usize) -> std::ops::Range<usize> {
         let index = index.min(self.line_starts.len() - 1);
-        let start = self.line_starts[index] as usize;
-        let end = self
-            .line_starts
-            .get(index + 1)
-            .map_or(self.text.len(), |&next| next as usize);
-        let line = &self.text[start..end];
-        let line = line.strip_suffix('\n').unwrap_or(line);
-        line.strip_suffix('\r').unwrap_or(line)
+        let mut start = self.line_starts[index] as usize;
+        if index == 0 && self.text.starts_with(BOM) {
+            start = BOM.len_utf8();
+        }
+        let end = match self.line_starts.get(index + 1) {
+            Some(&next) => {
+                let line = &self.text[start..next as usize - 1];
+                start + line.strip_suffix('\r').unwrap_or(line).len()
+            }
+            None => self.text.len(),
+        };
+        start..end
     }
 
     /// The 1-based line and column of `offset`.
     ///
     /// Offsets past the end clamp to the end. An offset inside a multi-byte character counts that
-    /// character, so a span's end column stays after its start column.
+    /// character, so a span's end column stays after its start column. A leading byte-order mark
+    /// isn't counted: editors don't show it.
     pub fn line_col(&self, offset: u32) -> LineCol {
         let offset = offset.min(self.len());
         let index = self.line_index(offset);
-        let start = self.line_starts[index] as usize;
+        let start = self.line_text_range(index).start;
         let offset = offset as usize;
-        let floor = self.text.floor_char_boundary(offset);
-        let mut chars = self.text[start..floor].chars().count();
-        if floor != offset {
-            chars += 1;
+        let mut chars = 0;
+        if offset > start {
+            let floor = self.text.floor_char_boundary(offset);
+            chars = self.text[start..floor].chars().count();
+            if floor != offset {
+                chars += 1;
+            }
         }
         LineCol {
             line: offset_u32(index + 1),
@@ -291,6 +322,26 @@ mod tests {
         assert_eq!(f.line_text(1), "two");
         assert_eq!(f.line_text(2), "three");
         assert_eq!(f.line_text(9), "three");
+    }
+
+    #[test]
+    fn a_lone_carriage_return_stays_in_the_line() {
+        let f = file("a\rb\r\nc\r");
+        assert_eq!(f.line_text(0), "a\rb");
+        assert_eq!(f.line_text(1), "c\r");
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_not_shown_or_counted() {
+        let f = file("\u{FEFF}ab\n\u{FEFF}");
+        assert_eq!(f.line_text(0), "ab");
+        assert_eq!(f.line_col(0), LineCol { line: 1, column: 1 });
+        assert_eq!(f.line_col(1), LineCol { line: 1, column: 1 }); // inside the mark
+        assert_eq!(f.line_col(3), LineCol { line: 1, column: 1 });
+        assert_eq!(f.line_col(4), LineCol { line: 1, column: 2 });
+        // Only at the start of the file.
+        assert_eq!(f.line_text(1), "\u{FEFF}");
+        assert_eq!(f.line_col(9), LineCol { line: 2, column: 2 });
     }
 
     #[test]
