@@ -9,7 +9,11 @@ use wrela_test::{check_text, files_with_extension, repo_relative, repo_root};
 
 fn main() -> ExitCode {
     let dir = repo_root().join("compiler/tests/conformance");
-    let cases = files_with_extension(&dir, "wrela")
+    let files = match files_with_extension(&dir, "wrela") {
+        Ok(files) => files,
+        Err(problem) => return harness::main(vec![Case::new("conformance", || Err(problem))]),
+    };
+    let cases = files
         .into_iter()
         .map(|path| {
             let name = repo_relative(&path);

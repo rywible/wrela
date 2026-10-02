@@ -1,0 +1,5 @@
+﻿//@ check-pass
+// This file starts with a byte-order mark, which some editors write. The lexer skips it.
+fn one() -> i32 {
+    1
+}

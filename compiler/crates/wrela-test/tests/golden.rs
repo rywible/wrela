@@ -12,8 +12,12 @@ use wrela_test::{files_with_extension, repo_relative, repo_root};
 fn main() -> ExitCode {
     let root = repo_root();
     let bless = std::env::var_os("WRELA_BLESS").is_some_and(|v| v != "0" && !v.is_empty());
+    let files = match files_with_extension(&root.join("compiler/tests/golden"), "wrela") {
+        Ok(files) => files,
+        Err(problem) => return harness::main(vec![Case::new("golden", || Err(problem))]),
+    };
     let mut cases = Vec::new();
-    for path in files_with_extension(&root.join("compiler/tests/golden"), "wrela") {
+    for path in files {
         let name = repo_relative(&path);
         let stem = path
             .file_stem()

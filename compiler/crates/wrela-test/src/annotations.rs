@@ -5,7 +5,9 @@
 //!   Text after the code must appear in the message: `//~ ERROR E0001 unexpected character`.
 //! - `//@ check-pass` (a whole-line directive) expects no diagnostics at all.
 //!
-//! A file must say which it is: annotations, or `check-pass`.
+//! A file must say which it is: annotations, or `check-pass`. Anything that looks like an
+//! annotation or directive but isn't one exactly (`// ~ ERROR`, a `//@` after code) is an error,
+//! so an expectation can't sit there inactive while the test passes.
 
 use wrela_diag::{Code, Diagnostic, Severity, SourceMap};
 
@@ -37,6 +39,8 @@ pub enum Policy {
 pub fn parse(text: &str, policy: Policy) -> Result<Expectations, Vec<String>> {
     let mut expectations = Expectations::default();
     let mut errors = Vec::new();
+    // The lexer skips a leading byte-order mark; so do directives on the first line.
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
     for (index, line) in text.lines().enumerate() {
         let number = u32::try_from(index + 1).unwrap_or(u32::MAX);
         if let Some(directive) = line.trim_start().strip_prefix("//@") {
@@ -46,7 +50,13 @@ pub fn parse(text: &str, policy: Policy) -> Result<Expectations, Vec<String>> {
             }
             continue;
         }
-        let Some(at) = line.find("//~") else { continue };
+        let annotation = line.find("//~");
+        // Before the annotation (the rest of the line is its message), look for near misses.
+        let before = &line[..annotation.unwrap_or(line.len())];
+        if let Some(problem) = near_miss(before) {
+            errors.push(format!("{number}: {problem}"));
+        }
+        let Some(at) = annotation else { continue };
         match parse_annotation(&line[at + 3..], number) {
             Ok(expected) => expectations.expected.push(expected),
             Err(problem) => errors.push(format!("{number}: {problem}")),
@@ -64,6 +74,41 @@ pub fn parse(text: &str, policy: Policy) -> Result<Expectations, Vec<String>> {
     } else {
         Err(errors)
     }
+}
+
+/// A comment in `text` that looks meant as an annotation or directive but won't be read as one:
+/// `// ~ ERROR` (a space after `//`), or a `//@` directive after code. A `///` doc comment
+/// isn't one.
+fn near_miss(text: &str) -> Option<String> {
+    let mut search = 0;
+    while let Some(found) = text[search..].find("//") {
+        let at = search + found;
+        search = at + 2;
+        if at > 0 && text.as_bytes()[at - 1] == b'/' {
+            continue;
+        }
+        let after = &text[at + 2..];
+        if after.starts_with('@') {
+            return Some("a `//@` directive must be on a line of its own".to_string());
+        }
+        let spaced = after.trim_start();
+        if spaced.len() < after.len()
+            && let Some(rest) = spaced.strip_prefix('~')
+        {
+            let word = rest.trim_start_matches('^').split_whitespace().next();
+            if word
+                .is_some_and(|w| w.eq_ignore_ascii_case("error") || w.eq_ignore_ascii_case("warn"))
+            {
+                return Some(
+                    "write `//~` without spaces, or it isn't read as an annotation".into(),
+                );
+            }
+        }
+        if spaced.len() < after.len() && spaced.starts_with("@check-pass") {
+            return Some("write `//@` without spaces, or it isn't read as a directive".into());
+        }
+    }
+    None
 }
 
 fn parse_annotation(rest: &str, line: u32) -> Result<Expected, String> {
@@ -188,5 +233,29 @@ mod tests {
         assert!(problems("//@ run\n")[0].contains("unknown directive"));
         assert!(problems("//@ check-pass\n$ //~ ERROR E0001\n")[0].contains("contradicts"));
         assert!(parse("x\n", Policy::CleanByDefault).is_ok());
+    }
+
+    #[test]
+    fn rejects_near_misses_that_would_sit_inactive() {
+        let problems = |text| parse(text, Policy::CleanByDefault).unwrap_err();
+        // An annotation with a space isn't read, so line 1 would expect nothing.
+        let found = problems("$ // ~ ERROR E0001\nx //~ ERROR E0001\n");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].starts_with("1: write `//~` without spaces"),
+            "{found:?}"
+        );
+        assert!(problems("x // ~^ warn W0001\n")[0].contains("without spaces"));
+        assert!(problems("x //@ check-pass\n")[0].contains("on a line of its own"));
+        assert!(problems("// @check-pass\n")[0].contains("without spaces"));
+        // Ordinary comments, doc comments and an annotation's own message are fine.
+        for text in [
+            "x // ~5 iterations\n",
+            "/// ~ ERROR in a doc comment\n",
+            "x // see @compute\n",
+            "$ //~ ERROR E0001 unexpected // ~ ERROR\n",
+        ] {
+            assert!(parse(text, Policy::CleanByDefault).is_ok(), "{text:?}");
+        }
     }
 }

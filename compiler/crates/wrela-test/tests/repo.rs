@@ -1,16 +1,14 @@
 //! Repository-level checks that keep the docs honest and small:
 //! - every ```` ```wrela ```` block in `docs/` checks as its `//~` annotations say (clean when it
-//!   has none), unless its fence says ```` ```wrela imagined ````;
+//!   has none), unless its fence says ```` ```wrela imagined ```` (see `wrela_test::docs`);
 //! - the number of imagined blocks only falls;
 //! - the default reading path for agents stays within a token budget.
 
 use std::path::Path;
 use std::process::ExitCode;
 
-use wrela_test::annotations::{self, Policy};
 use wrela_test::harness::{self, Case};
-use wrela_test::markdown::fenced_blocks;
-use wrela_test::{check_text, files_with_extension, repo_relative, repo_root};
+use wrela_test::{docs, files_with_extension, repo_relative, repo_root};
 
 /// The ratchet: imagined blocks in `docs/` are syntax ahead of the compiler. As features land,
 /// blocks become checked and this number only falls; lower it when they do.
@@ -28,7 +26,11 @@ fn main() -> ExitCode {
     let root = repo_root();
     let mut cases = Vec::new();
     let mut imagined = 0;
-    for doc in files_with_extension(&root.join("docs"), "md") {
+    let files = match files_with_extension(&root.join("docs"), "md") {
+        Ok(files) => files,
+        Err(problem) => return harness::main(vec![Case::new("docs", || Err(problem))]),
+    };
+    for doc in files {
         let shown = repo_relative(&doc);
         let text = match std::fs::read_to_string(&doc) {
             Ok(text) => text,
@@ -38,28 +40,18 @@ fn main() -> ExitCode {
                 continue;
             }
         };
-        for block in fenced_blocks(&text) {
-            let tags = block.tags();
-            let name = format!("{shown}:{}", block.line);
-            match tags.as_slice() {
-                ["wrela", "imagined"] => imagined += 1,
-                ["wrela"] => cases.push(Case::new(format!("docs::{name}"), move || {
-                    let expectations =
-                        annotations::parse(&block.content, Policy::CleanByDefault)
-                            .map_err(|problems| format!("{name}: {}", problems.join("; ")))?;
-                    let (session, diagnostics) = check_text(&name, &block.content)?;
-                    annotations::compare(&name, &expectations, &diagnostics, session.sources())
-                })),
-                ["wrela", ..] => {
-                    let info = block.info.clone();
-                    cases.push(Case::new(format!("docs::{name}"), move || {
-                        Err(format!(
-                            "{name}: unknown fence `{info}`; use ```wrela or ```wrela imagined"
-                        ))
-                    }));
-                }
-                _ => {}
-            }
+        let scan = docs::scan(&shown, &text);
+        imagined += scan.imagined;
+        if !scan.problems.is_empty() {
+            let problems = scan.problems.join("\n");
+            cases.push(Case::new(format!("docs::{shown}::fences"), move || {
+                Err(problems)
+            }));
+        }
+        for (name, content) in scan.checked {
+            cases.push(Case::new(format!("docs::{name}"), move || {
+                docs::check_block(&name, &content)
+            }));
         }
     }
     cases.push(Case::new("docs::imagined-ratchet", move || {
@@ -88,9 +80,13 @@ fn ratchet(imagined: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Estimated tokens: ceil(chars / 4), the usual rule of thumb for English prose, with each run of
-/// spaces counted as one char, since tokenizers encode a run of spaces as about one token and the
-/// padding that aligns Markdown tables isn't content.
+/// Estimated tokens: ceil(chars / 4), with each run of spaces counted as one char.
+///
+/// Both parts are hypotheses, not calibrated against a real tokenizer: chars / 4 is the usual
+/// rule of thumb for English prose, and collapsing runs of spaces assumes a tokenizer spends about
+/// one token on a run (most of the runs here are the padding that aligns Markdown tables). The
+/// collapsing matters: on 2026-10-02, CLAUDE.md + docs/vision.md came to ~4,807 with it and
+/// ~5,066 without. Calibrate both against a tokenizer before tightening the budget.
 fn estimate_tokens(text: &str) -> usize {
     let mut chars = 0usize;
     let mut previous_space = false;
@@ -139,17 +135,20 @@ fn context_budget(root: &Path) -> Result<(), String> {
     }
 
     let mut total = estimate_tokens(&claude);
+    let mut plain = claude.chars().count().div_ceil(4);
     let mut report = format!("CLAUDE.md: {total}");
     for path in READ_FIRST {
         let text = std::fs::read_to_string(root.join(path)).map_err(|e| format!("{path}: {e}"))?;
         let tokens = estimate_tokens(&text);
         total += tokens;
+        plain += text.chars().count().div_ceil(4);
         report.push_str(&format!(", {path}: {tokens}"));
     }
     if total > BUDGET_TOKENS {
         return Err(format!(
-            "the default reading path is ~{total} tokens, over the budget of {BUDGET_TOKENS} ({report}). \
-             Cut CLAUDE.md or what it says to read first; move detail into code, tests or `wrela explain`."
+            "the default reading path is an estimated ~{total} tokens ({report}; ~{plain} by plain \
+             chars / 4), over the budget of {BUDGET_TOKENS}. Cut CLAUDE.md or what it says to read \
+             first; move detail into code, tests or `wrela explain`."
         ));
     }
     Ok(())

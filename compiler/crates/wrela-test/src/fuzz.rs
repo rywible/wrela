@@ -288,7 +288,7 @@ mod tests {
     /// The quick variant for `cargo test`; CI also runs the `fuzz-smoke` binary for a minute.
     #[test]
     fn smoke() {
-        let corpus = crate::fuzz_corpus();
+        let corpus = crate::fuzz_corpus().unwrap();
         assert!(
             corpus.len() > 10,
             "the corpus should hold the tests, explanations and docs"

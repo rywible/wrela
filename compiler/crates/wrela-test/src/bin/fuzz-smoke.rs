@@ -52,7 +52,13 @@ fn main() -> ExitCode {
             .unwrap_or_default();
         u64::try_from(now.as_nanos() & u128::from(u64::MAX)).unwrap_or(0)
     });
-    let corpus = wrela_test::fuzz_corpus();
+    let corpus = match wrela_test::fuzz_corpus() {
+        Ok(corpus) => corpus,
+        Err(problem) => {
+            eprintln!("fuzz-smoke: can't build the corpus: {problem}");
+            return ExitCode::from(2);
+        }
+    };
     let budget = Duration::from_secs(seconds);
     println!(
         "fuzz-smoke: seed {seed}, starting at input {start}, for {seconds} s{}, corpus of {} files",
