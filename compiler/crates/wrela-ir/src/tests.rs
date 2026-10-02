@@ -1,6 +1,6 @@
 use crate::fixtures::first_light;
 use crate::{
-    Arg, BinaryOp, Builtin, Const, EntryParam, EntryPoint, Expr, FuncId, FunctionBuilder,
+    Arg, AtomicOp, BinaryOp, Builtin, Const, EntryParam, EntryPoint, Expr, FuncId, FunctionBuilder,
     GpuLayout, Io, IoBinding, LayoutError, Module, ParamMode, PipelineId, Place, Record, Resource,
     ResourceKind, Scalar, Stage, Stmt, StructField, Type, TypeId, Types, ValueId, VectorSize,
     validate,
@@ -613,6 +613,89 @@ fn atomics_are_only_in_writable_storage() {
         };
         assert_eq!(rejected, expected, "{kind:?}: {errors:#?}");
     }
+}
+
+/// A module with `Counters { n: atomic<u32> }` and one function, `f`, returning `Counters` or
+/// `()`. `build` makes its body, given the types `[atomic<u32>, Counters, u32]`.
+fn with_counters(
+    returns_counters: bool,
+    build: impl FnOnce(&mut FunctionBuilder, [TypeId; 3]),
+) -> Module {
+    let mut module = Module::new();
+    let u32 = module.types.scalar(Scalar::U32);
+    let atomic = module.types.intern(Type::Atomic(Scalar::U32));
+    let field = StructField {
+        name: "n".into(),
+        ty: atomic,
+    };
+    let counters = module
+        .types
+        .add_struct("Counters", vec![field], true)
+        .unwrap();
+    let ret = if returns_counters {
+        counters
+    } else {
+        module.types.unit()
+    };
+    let mut b = FunctionBuilder::new("f", ret);
+    build(&mut b, [atomic, counters, u32]);
+    module.add_function(b.finish());
+    module
+}
+
+/// Atomics are reached only through places: no value, local or result holds one, at any depth,
+/// and a parameter that does is `InOut`.
+#[test]
+fn values_and_locals_never_hold_atomics() {
+    // `f(c: mut Counters)` adding to `c.n`: how atomics are used.
+    let ok = with_counters(false, |b, [_, counters, u32]| {
+        let c = b.param("c", counters, ParamMode::InOut);
+        let one = b.value(u32, Expr::Const(Const::U32(1)));
+        b.value(
+            u32,
+            Expr::Atomic {
+                op: AtomicOp::Add,
+                place: c.field(0),
+                args: vec![one],
+            },
+        );
+    });
+    assert_eq!(errors(&ok), Vec::<String>::new());
+
+    let load = with_counters(false, |b, [_, counters, _]| {
+        let c = b.param("c", counters, ParamMode::InOut);
+        b.value(counters, Expr::Load(c));
+    });
+    rejects(&load, "%0 holds an atomic");
+    let extract = with_counters(false, |b, [atomic, counters, _]| {
+        let c = b.param("c", counters, ParamMode::InOut);
+        let all = b.value(counters, Expr::Load(c));
+        b.value(
+            atomic,
+            Expr::Extract {
+                value: all,
+                index: 0,
+            },
+        );
+    });
+    rejects(&extract, "%1 holds an atomic");
+    let ret = with_counters(true, |b, [_, counters, _]| {
+        let c = b.param("c", counters, ParamMode::InOut);
+        let all = b.value(counters, Expr::Load(c));
+        b.ret(Some(all));
+    });
+    rejects(&ret, "its result holds an atomic");
+    let local = with_counters(false, |b, [_, counters, _]| {
+        b.local("l", counters);
+    });
+    rejects(&local, "local l0 holds an atomic");
+    let borrowed = with_counters(false, |b, [_, counters, _]| {
+        b.param("c", counters, ParamMode::In);
+    });
+    rejects(
+        &borrowed,
+        "parameter 0 holds an atomic, so it must be `InOut`",
+    );
 }
 
 #[test]

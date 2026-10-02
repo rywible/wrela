@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Tests tools/headless.sh and tools/serve.py with a fake Chrome (fake-chrome.py), so no GPU:
 runs take turns on the GPU lock, a Chrome that outlives its killed run keeps the lock, a killed
-run stops its Chrome and cleans up, and a result is never read half written.
+run stops its Chrome and cleans up, a result is never read half written, an older checkout's lock
+directory is explained rather than waited on, and a symlink at the lock path is never followed.
 
 Each test copies both tools into a scratch repo root, serves it on a free port, and points the
 lock (WRELA_GPU_LOCK) and Chrome profiles (TMPDIR) into it, so it never touches a real run's.
@@ -193,6 +194,44 @@ class Headless(unittest.TestCase):
             self.assertEqual(f.read(), "ok")
         self.assertEqual(sorted(os.listdir(results)), ["DONE", "console.log"])
 
+
+    def test_an_older_directory_lock_is_explained_not_waited_on(self):
+        # Older checkouts lock with a directory holding `pid` and `page`. Nothing releases one
+        # left by a run that died, so a run says what it is and how to clear it, at once.
+        lock = os.path.join(self.root, "gpu.lock")
+        os.mkdir(lock)
+        dead = subprocess.Popen(["true"])
+        dead.wait()
+        with open(os.path.join(lock, "pid"), "w") as f:
+            f.write(f"{dead.pid}\n")
+        with open(os.path.join(lock, "page"), "w") as f:
+            f.write("old/page #run\n")
+        status, output = self.finish(self.run_page("new"), 5)
+        self.assertEqual(status, 3, output)
+        self.assertIn(f"rm -r {lock}", output)
+        self.assertIn("old/page #run", output)
+        self.assertIsNone(self.started("new"), "it ran beside an older checkout's lock")
+        self.assertTrue(os.path.isfile(os.path.join(lock, "pid")), "it changed the older lock")
+        shutil.rmtree(lock)
+        status, output = self.finish(self.run_page("new"))
+        self.assertEqual(status, 0, output)
+
+    def test_a_symlink_at_the_lock_path_is_never_followed(self):
+        lock = os.path.join(self.root, "gpu.lock")
+        victim = os.path.join(self.root, "victim")
+        with open(victim, "w") as f:
+            f.write("precious")
+        missing = os.path.join(self.root, "missing")
+        for target in [victim, missing]:
+            os.symlink(target, lock)
+            status, output = self.finish(self.run_page("sym"), 5)
+            self.assertEqual(status, 2, output)
+            self.assertIn("symbolic link", output)
+            self.assertIsNone(self.started("sym"), "it ran with a symlink as its lock")
+            os.remove(lock)
+        with open(victim) as f:
+            self.assertEqual(f.read(), "precious", "it wrote through the symlink")
+        self.assertFalse(os.path.exists(missing), "it created a file through the symlink")
 
 if __name__ == "__main__":
     unittest.main()

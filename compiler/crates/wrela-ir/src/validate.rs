@@ -4,8 +4,9 @@
 //! What's checked: types are well formed and acyclic, and stored `GpuData` layouts are right;
 //! names are unique; in each function, every value is defined once, before its uses and in scope,
 //! every expression's operands have the types it needs and its result has the declared type,
-//! stores go to writable places, `Break` and `Continue` are inside a loop, and a function that
-//! returns a value can't fall off its end; entry points, pipelines, exports and imports fit their
+//! stores go to writable places, `Break` and `Continue` are inside a loop, a function that
+//! returns a value can't fall off its end, and no value, local or result holds an atomic (a
+//! parameter that does is `InOut`); entry points, pipelines, exports and imports fit their
 //! functions; and code reachable from a GPU entry point records no commands, calls no host
 //! functions, can't trap or recurse, and uses only types the GPU has.
 
@@ -46,9 +47,10 @@ pub fn validate(module: &Module) -> Result<(), Vec<ValidationError>> {
     v.check_types();
     // Everything after this walks types, which is only safe once they're known to be acyclic.
     if v.errors.is_empty() {
+        let atomic = v.atomic_types();
         v.check_names();
         for function in &module.functions {
-            let errors = FnCx::check(module, function);
+            let errors = FnCx::check(module, function, &atomic);
             v.errors
                 .extend(errors.into_iter().map(|message| ValidationError {
                     function: Some(function.name.clone()),
@@ -56,7 +58,7 @@ pub fn validate(module: &Module) -> Result<(), Vec<ValidationError>> {
                 }));
         }
         v.check_imports();
-        v.check_entry_points();
+        v.check_entry_points(&atomic);
         v.check_pipelines();
         v.check_exports();
         v.check_gpu_code();
@@ -385,16 +387,16 @@ impl Validator<'_> {
         }
     }
 
-    fn check_entry_points(&mut self) {
+    /// `atomic` is [`Validator::atomic_types`].
+    fn check_entry_points(&mut self, atomic: &[bool]) {
         let module = self.module;
-        let atomic = self.atomic_types();
         for (index, entry) in module.entry_points.iter().enumerate() {
             let Some(f) = module.function(entry.function) else {
                 self.error(format!("entry point {index} names a missing function"));
                 continue;
             };
             let what = format!("entry point `{}`", f.name);
-            self.check_entry_point(&what, entry, f, &atomic);
+            self.check_entry_point(&what, entry, f, atomic);
         }
     }
 
@@ -825,7 +827,8 @@ struct FnCx<'a> {
 }
 
 impl<'a> FnCx<'a> {
-    fn check(module: &'a Module, f: &'a Function) -> Vec<String> {
+    /// `atomic` is [`Validator::atomic_types`].
+    fn check(module: &'a Module, f: &'a Function, atomic: &[bool]) -> Vec<String> {
         let mut cx = FnCx {
             module,
             types: &module.types,
@@ -852,6 +855,34 @@ impl<'a> FnCx<'a> {
         if tys.into_iter().any(|&t| cx.types.get(t).is_none()) {
             cx.errors
                 .push("a value or the result has a type that doesn't exist".to_string());
+        }
+        // An atomic is reached only through a place, with `Expr::Atomic`: WGSL has no atomic
+        // values or function-scope atomics, and the CPU needs neither. A parameter is a place,
+        // but one holding an atomic must be writable, as atomics are only in writable storage.
+        let holds_atomic = |t: TypeId| atomic.get(t.index()).copied().unwrap_or(false);
+        let only_places = "atomics are reached only through places";
+        for (i, p) in f.params.iter().enumerate() {
+            if holds_atomic(p.ty) && p.mode != ParamMode::InOut {
+                cx.errors.push(format!(
+                    "parameter {i} holds an atomic, so it must be `InOut`"
+                ));
+            }
+        }
+        for (i, l) in f.locals.iter().enumerate() {
+            if holds_atomic(l.ty) {
+                cx.errors
+                    .push(format!("local l{i} holds an atomic; {only_places}"));
+            }
+        }
+        for (i, &t) in f.values.iter().enumerate() {
+            if holds_atomic(t) {
+                cx.errors
+                    .push(format!("%{i} holds an atomic; {only_places}"));
+            }
+        }
+        if holds_atomic(f.ret) {
+            cx.errors
+                .push(format!("its result holds an atomic; {only_places}"));
         }
         cx.block(&f.body);
         if !cx.is(f.ret, |t| matches!(t, Type::Unit)) && !diverges(&f.body) {
