@@ -238,7 +238,7 @@ Bulk data belongs in containers, which mark one element's chunk at a time. A hug
 
 ## 12. Threads
 
-- **Platform:** web workers plus SharedArrayBuffer (D-017).
+- **Platform:** web workers plus SharedArrayBuffer (D-017). Every worker shares one WASM memory, whose maximum is reserved at startup. [platform.md](platform.md) §3 has the thread layout (D-098).
 - **Two stdlib auto traits:** `Sendable` (may move to another thread) and `Shareable` (may be borrowed from several threads at once).
 - **Parallelism goes through data-parallel combinators** (D-062). Exclusivity proves disjointness, so there are no locks in game or engine code.
 - **Atomics and queues** live in the stdlib's unsafe core.
@@ -254,6 +254,7 @@ Bulk data belongs in containers, which mark one element's chunk at a time. A hug
 
   A plain `mut` array parameter is rejected.
 - **Data that crosses to the GPU must be `Plain` and `GpuData`.**
+- **GPU-resident data is reached through handles** (D-102). `GpuBuffer<T>` is `Plain` and `Copy`, like `Handle<T>`, and can't be read through on the CPU. Uploads are explicit copies; readback is asynchronous and `nondet`. There's no zero-copy path between WASM memory and the GPU ([platform.md](platform.md) §4).
 - **`@audio` code** borrows preallocated `Plain` buffers and never allocates.
 
 ## 14. The unsafe core

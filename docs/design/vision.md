@@ -41,7 +41,7 @@ wrela is an MIT-licensed, spare-time project done for fun. It's run with busines
 
 **The layering rule (D-050):** the compiler knows nothing about the engine. The engine is built only on the language and its stdlib, with no special keywords, attributes or lang items. General sugar is welcome. The test for any language feature: would it make sense in a wrela program that isn't a game?
 
-**What ships (D-069):** a game ships as WASM, WGSL and data, with the engine compiled in. Generators *run* on the client, cooking fields into meshes and other cached realizations. Nothing is *compiled* there.
+**What ships (D-069, D-099, D-100):** a game ships as WASM, WGSL, a manifest and data, with the engine compiled in, packaged with a pinned copy of the standard browser runtime. Generators *run* on the client, cooking fields into meshes and other cached realizations. Nothing is *compiled* there. Bulk data stays on the GPU; the CPU sends it recipes and changes (D-097). [platform.md](platform.md) has the whole picture.
 
 ## The console (moonshot)
 
@@ -51,8 +51,8 @@ wrela is an MIT-licensed, spare-time project done for fun. It's run with busines
 - Sign-in, cloud saves and multiplayer may come later.
 
 The architecture already points this way:
-- **The "firmware" is small:** the platform host and the console shell (D-069).
-- **Each game is served from its own origin,** and the shell embeds it (D-082). A bug in one game can't reach another game's saves.
+- **The "firmware" is small:** the standard runtime (≤ 1 MB), which every game and the shell carry a pinned copy of (D-069, D-100).
+- **Each game is served from its own origin,** and the shell embeds it (D-082). A bug in one game can't reach another game's saves. Saves stay in the game's origin; the shell brokers sign-in, cloud saves and the library (D-101).
 
 ## First game: constraints
 

@@ -319,6 +319,9 @@ User-defined metadata, if it's ever needed, gets a different syntax, so `@` alwa
 | **Uniform vs varying** is the target's own distinction, which WGSL already analyzes. | T0 | D-051 |
 | **Workgroup-shared memory and barriers.** Spike 01's `place_vertices` needed them. **Open:** the design. | T0 | D-093 |
 | **GPU interval arithmetic widens each result outward** by its operation's WGSL error bound, so it stays conservative. | T0 | D-075 |
+| **GPU-resident data is a type.** `GpuBuffer<T: GpuData>` and `GpuSpan<T>` are opaque `Plain`, `Copy` handles: CPU code can pass them to kernels, write into them or copy between them, but can't read through them. Names are placeholders. | T0 | D-102 |
+| **Transfers are explicit.** `gpu.write(buf, data)` copies. Calling a `@compute` function from CPU code (`dispatch`) records a dispatch; small `GpuData` arguments travel as uniforms, bulk data as buffers. Writes and dispatches take effect in recorded order, with no barriers between dispatches. GPU calls carry the `host` effect. | T0 | D-102 |
+| **Readback is asynchronous:** `gpu.read(span)` returns a future and has the `nondet` effect, so `@deterministic` code can't call it. | T2 | D-102 |
 
 ```wrela
 @fragment
@@ -395,7 +398,7 @@ The sim/presentation split is an engine pattern built on this, not a language fe
 |---|---|
 | `std::field` | `Field<K, C>`, the kinds `Exact` / `Bound` / `Lipschitz`, `Surface`, `Channels`, `Blend`, `Cat<T>`, primitives, combinators, noise |
 | `std::units` | `m`, `cm`, `mm`, `kg`, `s`, `rad`, `deg`, … |
-| `std::gpu` | `dispatch`, `Append<T>`, `Slots<T>`, `AtomicMap`, typed builtins |
+| `std::gpu` | `dispatch`, `GpuBuffer<T>`, `GpuSpan<T>`, `write`, `read`, `Append<T>`, `Slots<T>`, `AtomicMap`, typed builtins |
 | `std::region` | `Region<T>`, `Arena<T>`, `List<T>`, `Handle<T>`, checkpoints |
 | `std::stage` | `interpret`: a tape evaluator for fields built at runtime |
 | `std::hash`, `std::serialize` | `StateHash`, `Serialize`, with structural defaults |
@@ -475,9 +478,9 @@ fn normals<F: Surface>(field: F, pos: vec3) -> Color {
 
 | Tier | Features |
 |---|---|
-| **T0** | Statements and literals; functions with modes and named arguments; structs with defaults; enums (including `Option`); `const` with literal values; traits with associated types and default methods; monomorphized generics and `impl Trait`; projections and exclusivity; non-escaping closures; scalar, vector and matrix types; `@compute`/`@vertex`/`@fragment`/`@gpu`; typed builtins; invocation-safe kernel outputs; workgroup-shared memory (D-093); lossless GPU layout through `GpuData`; derived `gradient` and `interval`; WGSL and WASM emission. |
+| **T0** | Statements and literals; functions with modes and named arguments; structs with defaults; enums (including `Option`); `const` with literal values; traits with associated types and default methods; monomorphized generics and `impl Trait`; projections and exclusivity; non-escaping closures; scalar, vector and matrix types; `@compute`/`@vertex`/`@fragment`/`@gpu`; typed builtins; invocation-safe kernel outputs; workgroup-shared memory (D-093); lossless GPU layout through `GpuData`; GPU buffer handles, uploads and dispatch from CPU code (D-102); derived `gradient` and `interval`; WGSL and WASM emission. |
 | **T1** | Units; `@comptime`, evaluated `const` initializers and reflection; structural defaults; auto and declared traits; `@diagnostic`; `@deterministic` and the numeric rules; `@assert`/`@assume` and bandlimits; Lipschitz facts and pruning; handles, arenas and regions; `Plain`/`Relocatable`; views, iterators and other non-escaping types; lossy GPU encodings; strings; destructors; `Result`, `?` and panics; `@escaping`; the pipeline-count query. |
-| **T2** | Threads and parallel combinators; async; `@audio`; checkpoints and keyframes; `dyn Trait`; `stage::interpret`; any compiler tier in the browser. |
+| **T2** | Threads and parallel combinators; async; GPU readback; `@audio`; checkpoints and keyframes; `dyn Trait`; `stage::interpret`; any compiler tier in the browser. |
 
 ---
 
@@ -490,6 +493,7 @@ fn normals<F: Surface>(field: F, pos: vec3) -> Color {
 - **How a generic parameter declares that it accepts non-escaping types** (memory-model §4).
 - **Checking scopes:** how the compiler matches the scope a consumer needs against the scope a fact declares, and how scopes compose (D-092).
 - **Workgroup-shared memory and barriers in kernels** (§12, D-093).
+- **GPU buffer names and syntax, and kernels whose parameters exceed the target's binding limits** (§12, D-102).
 - **`from param` annotations** (decisions.md, Open).
 - **Region chunk sizes and undo-ring sizes** (memory-model.md, Open).
 - **A general `schedule` construct** for any function's evaluation stays possible as future sugar (D-053). Add it only when kernels need it.

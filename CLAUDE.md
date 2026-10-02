@@ -16,6 +16,7 @@ Design phase, with first measurements. There's no compiler yet.
   - Every entry has a status: Accepted, Proposed, Open or Withdrawn.
 - **`docs/design/language.md`** describes the whole language as it stands, with feature tiers. Keep it current when a decision changes the language.
 - **`docs/design/memory-model.md`** is the one place the memory rules live: parameter modes, projections, exclusivity, regions, snapshots.
+- **`docs/design/platform.md`** is the one place the browser runtime is described: what ships, threads, the CPU–GPU boundary, console play.
 - **`docs/design/vision.md`** covers the goal, the four theses and the architecture.
 - **`docs/design/sketches/`** holds programs in imagined syntax. The language is derived from them.
 - **`docs/design/reviews/`** holds independent audits, plus the responses that map each finding to a decision.

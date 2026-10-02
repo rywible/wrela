@@ -12,8 +12,12 @@
 | 06-crowds | What do hundreds of moving things, and live world edits, cost in a ray-marched world? | In progress |
 | 07-hero | Can a furred hero creature fill the screen with believable joints? (ray marching's worst case from 02) | In progress |
 | 08-water | Can lakes and rivers with true reflections and refraction be ray-marched in budget? | In progress |
+| 09-lens | Can a studio tool edit fields by direct manipulation (click to source, drag to edit, fit to a reference) while the source stays the truth (D-105)? | In progress |
+| 10-materials | Can field-derived quantities (thickness, curvature, occlusion, footprint) give skin, eyes, translucency, wet, layered stone and filtered speculars cheaply? | In progress |
+| 11-hair-cloth | Can thin, deforming things (long hair, manes, capes, banners, clothing) work in a field world, simulated and drawn in budget? | In progress |
+| 12-styles | What do realistic, anime/cel and painterly looks cost, and how much does a stylized look cheapen the hard cases? | In progress |
 
-Spikes 03–08 test the hardest cases for a pure ray-marched renderer in the flagship game: a beautiful open world, forests first, then landscapes, towers and creatures. Volumetric clouds and atmosphere are left out on purpose: they're ray-marched in shipped games already (Horizon's Nubis, for example).
+Spikes 03–08 test the hardest cases for a pure ray-marched renderer in the flagship game (D-103): a beautiful open world, forests first, then landscapes, towers and creatures. Volumetric clouds and atmosphere are left out on purpose: they're ray-marched in shipped games already (Horizon's Nubis, for example).
 
 ## The frame budget (a hypothesis to test, not a decision)
 
@@ -66,4 +70,12 @@ spikes/headless.sh 03-forest '#run' 600
 - `#run` measures everything and saves `results/run-<timestamp>.json` plus screenshots. Keep a full run under ~3 minutes on a quiet GPU.
 - `#quick` renders each scene once and saves screenshots, for development.
 
-**Timings taken while other GPU work runs are indicative only.** Spikes 03–08 are built in parallel, so their final measurements are run one at a time on a quiet machine.
+**GPU safety rules.** On 2026-10-01, about twelve concurrent headless runs, with heavy kernels and 31 Metal shader-compiler processes, starved WindowServer of GPU time for over 5 seconds. macOS's watchdog killed WindowServer and the whole desktop reset.
+- **`headless.sh` holds a lock,** so only one page uses the GPU at a time; the others queue. Never launch Chrome, or any other GPU workload, outside `headless.sh`.
+- **No single GPU submission may run longer than ~100 ms.**
+  - Split brute-force references, path tracing and other long renders into tiles or progressive passes, with one `queue.submit` each.
+  - Await `onSubmittedWorkDone()` between them, so the display gets the GPU in between.
+  - Cap loop counts in kernels: step caps in the low thousands per pixel are fine only when a dispatch covers a tile, not the whole frame.
+- **Keep `#quick` light** (~10 s), and use it while developing. Save `#run` for when the spike is ready.
+
+**Timings taken while other GPU work runs are indicative only.** Spikes 03–12 are built in parallel, so their final measurements are run one at a time on a quiet machine.

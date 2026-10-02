@@ -189,7 +189,7 @@ Memory is value types, arenas, frame allocators and generational handles (indice
 ## Platform and runtime
 
 ### D-016 · Platform hosts: thin, written in existing languages
-**Status:** Accepted (2026-10-01)
+**Status:** Accepted (2026-10-01). Refined by D-099 and D-100.
 
 The platform layer is the only boundary between compiled wrela code and the outside world. There are two hosts:
 
@@ -209,14 +209,14 @@ The platform layer is the only boundary between compiled wrela code and the outs
 **Online services** (accounts, cloud-save storage, signaling, matchmaking) aren't wrela either. They're Rust or managed infrastructure, because they gain nothing from wrela's semantics. Game servers are the exception: the native host runs the same compiled sim WASM.
 
 ### D-017 · Browser runtime shape
-**Status:** Accepted (2026-10-01)
+**Status:** Accepted (2026-10-01). Threads revised by D-098; the command stream's purpose restated by D-099.
 
 - **The game runs in a worker** with OffscreenCanvas. The main thread only forwards input.
 - **WASM↔JS crossings are batched.** Commands are recorded into WASM memory and the host decodes them in bulk.
 - **Cross-origin isolated (COOP/COEP) from day one.** This is required for SharedArrayBuffer, threads and sharing memory with the audio worklet.
 
 ### D-018 · The console: games.wrela.dev
-**Status:** Accepted (2026-10-01). Revised by D-069 and D-082.
+**Status:** Accepted (2026-10-01). Revised by D-069, D-082, D-100 and D-101.
 
 - **It's a PWA.** The runtime is cached by a service worker, like firmware. Each game is just its IR.
 - **Games never touch OPFS directly.** The console gives each game a namespaced save API.
@@ -768,7 +768,7 @@ The next work is measurement, not more language design.
 **A working definition of "AAA" for this project:** hero-quality creatures and animation on screen at the same time as a large world. It doesn't mean photoreal humans (D-003).
 
 ### D-069 · No compiler in the browser for now
-**Status:** Accepted (user, 2026-10-01). Answers T2 and U8. Supersedes D-008 and D-019. Revises D-018 and D-041. The owner confirmed this was always the intent: the compiler is an ahead-of-time Rust program on desktop. D-008's browser tier came from Claude misreading thesis 4.
+**Status:** Accepted (user, 2026-10-01). Answers T2 and U8. Supersedes D-008 and D-019. Revises D-018 and D-041. "Console firmware" revised by D-100. The owner confirmed this was always the intent: the compiler is an ahead-of-time Rust program on desktop. D-008's browser tier came from Claude misreading thesis 4.
 
 - **The compiler and specializer run at build time,** as a Rust program.
 - **Games ship WASM, WGSL and data.** The IR stays internal and unversioned.
@@ -916,7 +916,7 @@ Only a leading `.` continues the previous line. Binary operators must *trail* th
 - **The stdlib's root name is `std::`** (S5). The stdlib is written in wrela, with a small unsafe core; the compiler is Rust.
 
 ### D-082 · One origin per game
-**Status:** Accepted (delegated, 2026-10-01). Answers F13. Revises D-018.
+**Status:** Accepted (delegated, 2026-10-01). Answers F13. Revises D-018. Refined by D-101.
 
 - **Every game is served from its own origin.**
 - **The console shell has its own origin too.** It embeds games and brokers saves and sign-in through `postMessage`.
@@ -1083,6 +1083,138 @@ These record [spike 01](../../spikes/01-grazer/)'s measurements and the [agent-a
 
 ---
 
+## The platform runtime and the CPU–GPU boundary
+
+These came out of a design conversation on 2026-10-01 about how WASM, JS and WGSL fit together, and how console play works. The owner agreed to them directly. [platform.md](platform.md) describes the result as one picture. Several of the browser facts they rest on are untested; the evidence table lists them.
+
+### D-097 · Bulk data lives on the GPU; the boundary carries recipes and changes
+**Status:** Accepted (user, 2026-10-01) (engine and runtime design).
+
+- **The rule:** data lives where it's consumed. Bulk presentation data is generated on the GPU, consumed there, and never read back. Examples are realized meshes, posed instances, tile lists and indirect-draw arguments.
+- **What crosses from CPU to GPU:** field values (a grazer is 1,312 bytes of parameters), the sim's per-tick presentation snapshot, field edits, the camera. Never results: one grazer's 3cm mesh is about 0.9 MB (spike 01).
+- **This isn't "as much computation on the GPU as possible."**
+  - The sim and the field queries it makes stay on the CPU (D-015).
+  - Small, serial control logic stays on the CPU.
+  - WebGPU has one queue and no async compute, so GPU work competes with drawing (D-091). The CPU has spare cores for workers.
+- **Why: the browser's constraints.**
+  - **There's no zero-copy path between WASM memory and a GPU buffer.** Every upload copies into the browser's GPU process, so unified memory doesn't help. Uploads stay small; at a few KB to a few hundred KB per frame, the copy shouldn't matter (an estimate).
+  - **Readback is asynchronous.** It probably arrives 1–3 frames late (a hypothesis). It's only for consumers that can wait: studio probes, picking, debug hashes.
+  - **WebGPU calls cost more than the JS↔WASM crossing** (a hypothesis), so the engine keeps the call count down: pooled buffers, few bind groups, indirect draws.
+  - **There's no bindless, and default limits are tight:** 8 storage buffers per shader stage, 128 MiB per storage binding. Spike 01's herd at 1.5cm is 143 MB. So the engine sub-allocates from pools, requests the adapter's real limits, and refers to GPU data by u32 offsets, as `Handle<T>` does on the CPU.
+  - **Core WebGPU has no multi-draw-indirect,** so GPU-driven drawing uses one indirect draw per pipeline with vertex pulling.
+- **Consequences:**
+  - **Presentation posing moves to a compute pass.** Spike 02 posed in JS on the main thread: 0.6 ms per frame for 40 grazers, 1.7 ms for 160. Sim-tier poses stay on the CPU (D-034).
+  - **Some fields are evaluated on both sides,** terrain for example: on the CPU with strict floats for the sim, and on the GPU for drawing, from one source (D-009). The results differ by rounding. The CPU result is authoritative, and the GPU result never feeds back.
+
+### D-098 · A render worker owns the GPU; the sim hands it snapshots
+**Status:** Accepted (user, 2026-10-01) (runtime design). Revises D-017's "the game runs in a worker".
+
+| Thread | Does |
+|---|---|
+| Main | Input, and the few things that need the DOM. Nothing else. |
+| Render worker | Owns the `GPUDevice` and the OffscreenCanvas. Reads the latest sim snapshot, interpolates between ticks, runs presentation code, records GPU commands. |
+| Sim worker | Runs the fixed tick. Writes a presentation snapshot at the end of each tick, double-buffered. |
+| Helper workers | Parallel combinators (D-062), spawn-time physique (D-091), storage |
+| Audio worklet | Reads a ring buffer in shared memory (D-017) |
+
+- **All of them share one WASM memory,** a SharedArrayBuffer. Its maximum size is reserved at startup: a shared memory must declare one anyway, and growing it replaces the buffer object, so every view the host holds would need refreshing.
+- **Why:**
+  - WebGPU objects belong to the worker that created them, so one worker makes every GPU call.
+  - A 4 ms tick shouldn't delay frame submission.
+  - The snapshot is D-015's sim/presentation split at the thread level, built the same way as D-085's double buffers. Presentation reads the sim and never writes it.
+
+### D-099 · The compiler emits WASM, WGSL and a manifest; nothing else
+**Status:** Accepted (user, 2026-10-01). Refines D-016 and D-069.
+
+- **No JS, HTML or CSS comes out of the compiler.** Every game ships them, but they're the standard runtime (D-100), the same for every game. Packaging copies it in.
+- **The host interface is fixed and small.** Game code reaches it through WASM imports declared in the stdlib's unsafe core. That's ordinary FFI, so the compiler doesn't learn anything about JS or the engine (D-050).
+- **Everything game-specific is data:** the manifest from sketch 04 §1 lists pipelines, bind group layouts and every `GpuData` layout. The runtime reads it; nothing is generated from it per game.
+- **The command stream (D-017) uses a generic vocabulary:** create a buffer, write a range of WASM memory into it, dispatch pipeline N with bind group M, draw indirect. Commands name GPU objects by u32 handles, and the host keeps the tables.
+- **Why batch commands, now that crossings are cheap:**
+  - fewer WebGPU calls (D-097)
+  - the same stream drives the native host's wgpu
+  - a recorded stream can be replayed for agent tooling (D-021)
+- **A game that needs a Web API the runtime lacks** gets it by extending the runtime for every game, never by shipping its own JS.
+- **Contrast:** wasm-bindgen generates glue per crate because every crate's imports differ. Ours don't.
+
+### D-100 · One standard browser runtime, shipped with each game
+**Status:** Accepted (user, 2026-10-01). Refines D-016. Revises D-018's caching and D-069's "console firmware".
+
+- **The runtime is D-016's browser host:** hand-written TypeScript, plus a bootstrap HTML template, the same for every game. [platform.md](platform.md) lists its parts: the main-thread shim, the GPU decoder, storage, fetch, audio, the service worker and the console bridge.
+- **Mechanism in the runtime, policy in wrela (D-016).** Storage, for example, is "read and write bytes at a path" over OPFS, run in a worker because OPFS's synchronous access handles only exist there. Save slots, versioning and migration are wrela code.
+- **Each game pins the runtime version it was built with,** and packaging copies that version into the game. A runtime update can't break a shipped game.
+- **"Cached once, like firmware" now means once per game.** Service-worker and HTTP caches are partitioned by origin, and each game has its own origin (D-082), so each game downloads its own copy. D-069's ≤ 1 MB budget applies to the runtime.
+- **The console shell is a wrela program** with its own copy of the runtime, like any game.
+- **The native host implements the same interface** with files instead of OPFS and no console bridge. Headless agent runs and dedicated servers run the same game WASM.
+
+### D-101 · Console play: saves stay in the game's origin; the shell brokers what spans games
+**Status:** Accepted (user, 2026-10-01). Revises D-018's "namespaced save API". Refines D-082.
+
+- **A game's local saves live in its own origin's OPFS,** whether it runs standalone or inside the console. The origin is the namespace D-018 asked for.
+- **Games are served from subdomains of the shell's site** (wrela.dev). Browsers partition an embedded frame's storage by the top-level site, and same-site frames keep their first-party storage, so a game sees the same saves both ways. A game hosted on another site would get separate saves inside the console. *Untested in all three browsers.*
+- **The shell embeds a game in an iframe with `allow="cross-origin-isolated; fullscreen; gamepad"`.** Without `cross-origin-isolated`, the embedded game isn't cross-origin isolated, so it loses SharedArrayBuffer and threads.
+- **The shell brokers only what spans games:** sign-in, cloud-save sync, the library, save export and import, and returning to the console.
+- **The bridge is a versioned `postMessage` protocol, and it's the one compatibility contract in the system.** A new shell must embed old games, which carry old runtimes (D-100). It's versioned from the first release.
+- **D-018's storage advice stands:** OPFS is best-effort, so call `navigator.storage.persist()`, encourage install, and ship save export early.
+
+### D-102 · GPU-resident data is a type; transfers are explicit
+**Status:** Accepted in direction (user, 2026-10-01). Names and syntax are placeholders. Tiers: T0, except readback (T2).
+
+- **`GpuBuffer<T: GpuData>` and `GpuSpan<T>` are opaque handles,** `Plain` and `Copy`. CPU code can't read through them. It can pass them to kernels, write into them, or copy between them. The type says where the data lives.
+- **Uploads copy, visibly:** `gpu.write(buf, data)`. Writes and dispatches take effect on the GPU in the order they were recorded.
+- **Readback is asynchronous:** `gpu.read(span)` returns a future and has the `nondet` effect, so `@deterministic` code can't call it (D-015, D-072). It needs async, so it's T2.
+- **Calling a `@compute` function from CPU code records a dispatch** (`std::gpu::dispatch`). Parameter modes map to bindings as memory-model.md §13 says. Small `GpuData` values passed directly travel as uniforms, copied when the dispatch is recorded, like any by-value argument (D-070). Bulk data goes through `GpuBuffer`.
+- **No barriers between dispatches.** WebGPU orders them itself. Barriers only exist inside a kernel (D-093).
+- **GPU calls carry the `host` effect,** so the sim can't make them. It hands presentation a snapshot instead (D-098).
+- **D-050's test:** an image-processing or machine-learning program in wrela needs exactly these. Nothing here mentions frames, meshes or the engine.
+- **Open:**
+  - the final names and syntax
+  - what happens when a kernel's parameters exceed the target's binding limits (the compiler could pack spans from one pool into one binding plus offsets)
+
+---
+
+## Direction from the owner, 2026-10-01 (evening)
+
+### D-103 · The flagship game: a forest-first open-world RPG
+**Status:** Accepted in direction (user, 2026-10-01). Resolves the "first game's concept" open item. Details are the owner's to refine.
+
+- **The game:** an MMORPG-style open-world RPG, played offline. Networking and multiplayer aren't in scope for it. D-015 and D-042 still keep them possible.
+- **Priorities, in the owner's order:**
+  1. A beautiful, living forest and vegetation: "that's what makes worlds feel alive."
+  2. Nature and landscapes.
+  3. Towers and architecture.
+  4. Beautiful creatures in those worlds.
+- **Consequences:**
+  - The renderer is judged on worlds first and creatures second.
+  - Spikes 03–08 test the hardest cases for a pure ray-marched renderer against a first frame budget ([spikes/README.md](../../spikes/README.md)).
+  - The art direction (stylized or realistic) and the world's scale are still open.
+
+### D-104 · The grammar is a machine-checkable spec; the parser is held to it
+**Status:** Accepted (user, 2026-10-01).
+
+- **One grammar file is the normative definition of wrela's syntax.** It covers the lexical rules too: newlines and leading-`.` continuation (D-079), unit suffixes (D-076), and `**`.
+- **Derived from it, or checked against it:**
+  - the syntax section of language.md
+  - a tree-sitter grammar for editors
+  - a grammar for constrained decoding (e.g. GBNF), so agents can be kept from emitting syntax errors
+  - a generated reference parser, used as an oracle in differential tests
+  - grammar-based fuzzing, with formatter round-trips
+- **The compiler's parser is hand-written** (recursive descent), for error messages and recovery (D-021). It conforms by test, not by generation.
+- **Semantics matter more than syntax for agents.** The grammar gets agents to valid-looking code; the checker's errors get them to correct code. Mechanizing the memory model, even as a small model, is the next most valuable formal artifact.
+
+### D-105 · The studio's lens rule
+**Status:** Accepted (user, 2026-10-01). Studio design (layer 3), plus two general compiler queries.
+
+- **The source is the truth; every tool is a lens that reads and writes it.** A viewport, a sculpting brush or a pose tool edits code, or compact structured data that code references and that diffs well (edit lists, curves, keyframes). No tool owns state the code can't see.
+- **Opaque blobs aren't source.** Sculpted voxels or painted textures as the source of truth would break agent readability and "ship the recipe." If they're ever allowed (hand-sculpted detail layers, say), they're explicit data with a size budget.
+- **Every tool action is also an API call,** so agents get the same precision tools humans do: "move this point to (x, y, z)", "fit to this silhouette", "isolate this part".
+- **Two compiler queries make this work. Both are general (D-050), since they make sense for any program:**
+  - **Provenance:** which expression and which source literal produced a given output value. In the studio, click a pixel and land on the part and constant that made it.
+  - **Parameter gradients:** how an output changes with each source literal, a derived interpretation like D-012's gradients but with respect to parameters. In the studio, drag a surface point and solve for the constants that put it there; fit a field to a reference silhouette by optimization.
+- **Precedent:** output-directed programming (Sketch-n-Sketch); Dreams' edit lists for sculpting.
+
+---
+
 ## Evidence and revisit triggers
 
 As of 2026-10-01, spike 01 has measured a few load-bearing decisions on the primary device (D-096), in one browser. Everything else is **untested**.
@@ -1096,6 +1228,8 @@ As of 2026-10-01, spike 01 has measured a few load-bearing decisions on the prim
 | D-058, D-064: the memory model | untested | The agent syntax test (D-067) shows agents can't write it from the spec, or the sketches find a pattern it can't express. |
 | D-065, D-066: regions and snapshots | untested | Copy-on-first-write costs more than full copies at realistic world sizes. |
 | D-069: no browser compiler | untested | A sketch needs runtime-chosen structure that enums and `stage::interpret` can't serve fast enough. |
+| D-097, D-099: the CPU–GPU boundary | untested: readback latency, the cost of each WebGPU call, and whether `writeBuffer` accepts shared WASM memory as its source in Chrome, Safari and Firefox | Uploads or WebGPU calls take a significant share of a frame's CPU time, or a browser rejects writes from shared memory (then the runtime stages through a non-shared buffer, one more copy). |
+| D-101: the same saves standalone and in the console | untested | A browser partitions a same-site embedded game's storage away from its standalone storage. |
 | D-070: structure is types | **Partly measured:** one pipeline per kernel served all 40 individuals, with their numbers as uniforms | Type sizes or instantiation counts explode in real content. |
 | D-077, D-092: declared facts | A global Lipschitz constant fails for the stdlib's ellipsoid; spike 01's probe and both authoring agents (D-095) found it independently. D-092 scopes facts to answer it (untested). | Scoped facts prove too weak to keep intervals and culling conservative, or too fiddly for authors. |
 | Thesis 1: agent authoring | **Tested once:** two unaided agents reached placeholder quality in ~20 min each (D-095), judged by the same model family | The re-run with authoring tools and human art direction (D-095) still doesn't move quality up a class. |
@@ -1104,6 +1238,6 @@ As of 2026-10-01, spike 01 has measured a few load-bearing decisions on the prim
 
 ## Open
 
-- **The first game's concept.** This belongs to the creative director, so it wasn't delegated.
+- **The flagship's art direction** (stylized or realistic) **and world scale** (D-103). These belong to the creative director.
 - **`from param` annotations on projections** (memory-model.md, Open).
 - **Chunk and undo-ring sizes,** to be measured.

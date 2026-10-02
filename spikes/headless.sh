@@ -7,7 +7,7 @@
 #   spikes/headless.sh 03-forest '#quick' 120
 #
 # Needs the spikes server on 127.0.0.1:8417 (python3 spikes/serve.py 8417).
-# Timing taken while other GPU work runs is indicative only.
+# Only one run uses the GPU at a time (see the lock below); others wait their turn.
 
 set -u
 SPIKE="${1:?usage: headless.sh <spike-dir> [hash] [timeout-seconds]}"
@@ -18,9 +18,28 @@ RESULTS="$ROOT/$SPIKE/results"
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 PROFILE="$(mktemp -d /tmp/wrela-chrome.XXXXXX)"
 
+curl -s -o /dev/null "http://127.0.0.1:8417/" || { echo "spikes server isn't running on 8417" >&2; exit 2; }
+
+# One GPU user at a time. On 2026-10-01, ~12 concurrent headless runs starved WindowServer of GPU
+# time for over 5 s; macOS's watchdog killed it and the whole desktop reset. Runs now queue on a
+# lock (a directory, so creating it is atomic). A lock whose holder has died is reclaimed.
+LOCK=/tmp/wrela-gpu.lock
+WAITED=0
+while ! mkdir "$LOCK" 2>/dev/null; do
+  HOLDER="$(cat "$LOCK/pid" 2>/dev/null)"
+  if [ -n "$HOLDER" ] && ! kill -0 "$HOLDER" 2>/dev/null; then rm -rf "$LOCK"; continue; fi
+  [ "$WAITED" -eq 0 ] && echo "waiting for the GPU lock (held by ${HOLDER:-?}: $(cat "$LOCK/spike" 2>/dev/null))" >&2
+  WAITED=$((WAITED + 2))
+  [ "$WAITED" -ge 3600 ] && { echo "gave up waiting for the GPU lock after an hour" >&2; exit 3; }
+  sleep 2
+done
+echo $$ > "$LOCK/pid"
+echo "$SPIKE $HASH" > "$LOCK/spike"
+trap 'rm -rf "$LOCK"' EXIT INT TERM
+[ "$WAITED" -gt 0 ] && echo "got the GPU lock after ${WAITED}s" >&2
+
 mkdir -p "$RESULTS"
 rm -f "$RESULTS/DONE"
-curl -s -o /dev/null "http://127.0.0.1:8417/" || { echo "spikes server isn't running on 8417" >&2; exit 2; }
 
 "$CHROME" --headless=new --user-data-dir="$PROFILE" --no-first-run --no-default-browser-check \
   --disable-extensions --disable-background-timer-throttling --disable-renderer-backgrounding \
