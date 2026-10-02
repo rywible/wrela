@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  pull_request: # any base branch, so `base` can reject PRs that don't target main
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A new push to a PR cancels that PR's run in progress. Pushes to main are never cancelled, so
+# every commit on main gets a complete result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Both review bots skip PRs whose base isn't main, so a stacked PR would merge unreviewed.
+  base:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the PR to target main
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$BASE_REF" != main ]; then
+            echo "::error::this PR targets '$BASE_REF'; PRs must target main (no stacked PRs). Rebase onto main, retarget, then push: a re-run reuses the old base."
+            exit 1
+          fi
+
+  fmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: rustfmt
+          cache: "false"
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  # Unit, conformance, golden and explain tests, the docs check and the context budget all run
+  # under `cargo test`. GPU tests are opt-in (WRELA_GPU_TESTS=1) and never run here.
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - run: cargo test --workspace --locked
+
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - run: cargo run -p wrela-test --release --locked --bin fuzz-smoke -- --seconds 60
+
+  # The one check the main ruleset requires: a stable name that stays correct as jobs are added.
+  # `always()` matters: a skipped required check counts as passing, so this job must run (and
+  # fail) when anything it needs failed or was cancelled.
+  ci:
+    if: always()
+    needs: [base, fmt, clippy, test, fuzz]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to succeed
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ needs.base.result }}
+          FMT: ${{ needs.fmt.result }}
+          CLIPPY: ${{ needs.clippy.result }}
+          TEST: ${{ needs.test.result }}
+          FUZZ: ${{ needs.fuzz.result }}
+        run: |
+          failed=0
+          check() {
+            echo "$1: $2"
+            [ "$2" = success ] || { echo "::error::job '$1' finished as '$2'"; failed=1; }
+          }
+          # `base` only runs on pull requests; on a push to main, skipped is its only correct result.
+          if [ "$EVENT" = push ] && [ "$BASE" = skipped ]; then echo "base: skipped (push)"; else check base "$BASE"; fi
+          check fmt "$FMT"
+          check clippy "$CLIPPY"
+          check test "$TEST"
+          check fuzz "$FUZZ"
+          exit "$failed"
