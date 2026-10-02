@@ -1,0 +1,37 @@
+{
+  "strictness": 2,
+  "commentTypes": ["logic", "syntax"],
+  "autoReview": ["open"],
+  "triggerOnDrafts": false,
+  "includeBranches": ["main"],
+  "ignorePatterns": "Cargo.lock\nruntime/browser/dist/\ncompiler/tests/golden/**/*.stderr\ncompiler/tests/golden/**/*.json\ncompiler/tests/golden/**/*.wgsl\ncompiler/tests/golden/**/*.wat\nresults/",
+  "statusCheck": true,
+  "autoApprove": { "enabled": false },
+  "sequenceDiagramSection": { "included": false },
+  "rules": [
+    {
+      "id": "compiler-never-panics",
+      "rule": "The compiler must never panic on any input: flag unwrap, expect, unchecked indexing and arithmetic overflow on paths reachable from user source.",
+      "scope": ["compiler/**/*.rs"],
+      "severity": "high"
+    },
+    {
+      "id": "deterministic-output",
+      "rule": "Compiler output must be deterministic (byte-identical builds): flag iteration over HashMap or HashSet whose order reaches output.",
+      "scope": ["compiler/**/*.rs"],
+      "severity": "high"
+    },
+    {
+      "id": "compiler-engine-agnostic",
+      "rule": "The compiler knows nothing about the engine: flag keywords, attributes, lang items or rules phrased in engine terms (creatures, meshes, render frames, distance fields). General language terms, such as struct fields, are fine.",
+      "scope": ["compiler/**"],
+      "severity": "high"
+    },
+    {
+      "id": "ci-aggregate-check",
+      "rule": "The `ci` job is the only check the main ruleset requires. Every other job must be in its `needs` list, and it must fail when any of them did not succeed.",
+      "scope": [".github/workflows/**"],
+      "severity": "high"
+    }
+  ]
+}

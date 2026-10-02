@@ -1,0 +1,87 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Reference: https://docs.coderabbit.ai/reference/configuration
+# CodeRabbit reads this file from the PR's own branch. It also reads CLAUDE.md as code guidelines.
+language: en-US
+tone_instructions: >-
+  Be direct and specific. Prioritize correctness, soundness, determinism and panics over style;
+  rustfmt and clippy already enforce style. No praise or filler.
+early_access: false
+
+reviews:
+  profile: assertive
+
+  # Never approve. The merge gate (tools/merge-gate.sh) checks that a review covered the head
+  # commit; an approval would only be a second, weaker signal.
+  request_changes_workflow: false
+  # Stops an agent acting as the author from bulk-resolving threads with `@coderabbitai resolve`
+  # (or approving with `@coderabbitai approve`): each thread gets a fix or a reasoned reply.
+  allow_author_approval: false
+
+  # The PR description belongs to the author (it carries the acceptance checklist), so the summary
+  # goes into the walkthrough comment, which keeps only the summary and the linked-issue check.
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  assess_linked_issues: true
+  changed_files_summary: false
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  related_issues: false
+  related_prs: false
+  suggested_labels: false
+  suggested_reviewers: false
+  poem: false
+  in_progress_fortune: false
+  review_status: true # says in the walkthrough why a review was skipped (draft, rate limit)
+
+  # Reviews start when a PR is opened or marked ready. After fixes are pushed (in one batch), the
+  # shepherd asks for the next round with `@coderabbitai review`, so a burst of pushes spends one
+  # review, not several, from the rate limit.
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches: [] # only the default branch, main
+    auto_incremental_review: false
+
+  # Generated or blessed outputs: their source (and the test that produced them) is reviewed instead.
+  path_filters:
+    - "!Cargo.lock"
+    - "!runtime/browser/dist/**"
+    - "!compiler/tests/golden/**/*.stderr"
+    - "!compiler/tests/golden/**/*.json"
+    - "!compiler/tests/golden/**/*.wgsl"
+    - "!compiler/tests/golden/**/*.wat"
+    - "!**/results/**"
+
+  path_instructions:
+    - path: "compiler/**/*.rs"
+      instructions: >-
+        The compiler must never panic on any input: flag unwrap, expect, unchecked indexing and
+        arithmetic overflow on paths reachable from user source. Output must be deterministic
+        (byte-identical builds): flag iteration over HashMap/HashSet that reaches output. The
+        compiler knows nothing about the engine: flag keywords, attributes, lang items or rules
+        phrased in engine terms (creatures, meshes, render frames, distance fields). General
+        language terms, such as struct fields, are fine.
+    - path: ".github/workflows/**"
+      instructions: >-
+        The `ci` job is the only check the main ruleset requires. Every other job must be in its
+        `needs` list, and it must fail when any of them did not succeed.
+
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    title:
+      mode: "off"
+    description:
+      mode: "off"
+    issue_assessment:
+      mode: warning
+
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+
+chat:
+  auto_reply: true
+  art: false
