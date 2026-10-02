@@ -14,7 +14,7 @@ wrela is a new language, compiler, engine and agent-native studio for AAA-ambiti
 | `std/`, `runtime/` | The stdlib and the runtimes (from M1).                                                                                                             |
 | `tools/`           | `serve.py` (static server that accepts PUTs into `results/`) and `headless.sh` (runs a page in headless Chrome on the real GPU).                   |
 
-- **Checks, as CI runs them:** `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, `cargo run -p wrela-test --release --bin fuzz-smoke -- --seconds 60`.
+- **Checks, as CI runs them:** `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, `cargo run -p wrela-test --release --locked --bin fuzz-smoke -- --seconds 60`.
 - **Plans live in GitHub issues on rywible/wrela, not in the repo.**
   - Milestones M1–M6, each with a scope issue.
   - #26: status against the vision (pinned).
@@ -79,7 +79,7 @@ wrela is a new language, compiler, engine and agent-native studio for AAA-ambiti
 
 **Merging**
 
-- Squash, with auto-merge, once the gate passes:
+- Squash, with auto-merge, once the gate passes (`tools/merge-gate.sh <pr>` checks it):
   - CI is green
   - both bots reviewed the head commit (not skipped or rate-limited)
   - all threads are resolved
