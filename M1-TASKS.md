@@ -24,16 +24,14 @@ passes locally.
 
 ## AC status
 
-- [ ] AC1 end to end in the browser: works by hand (byte-identical frames, same hash); automate:
-      golden PNG, headless comparison, CPU probe pixels
+- [x] AC1 end to end in the browser (tests/hello_field.rs)
 - [x] AC2 compiled grazer matches the hand-written one (tests/grazer.rs, GPU)
 - [x] AC3 derived interpretations (tests/derive.rs, tests/grazer.rs culling 17.9% vs 19.5%)
-- [ ] AC4 checker enforces tier 0: conformance runner + suite; sema GPU signature rules
-      (E0601/E0602, varyings); lower_draw buffers
-- [ ] AC5 the grammar is the spec: done (oracle, 10^6 differential, GBNF); record numbers
-- [ ] AC6 diagnostics bar: >= 50 curated, JSON goldens
-- [ ] AC7 strict CPU numerics: hash test Chrome vs wasmtime, relaxed-SIMD test, overflow test
-- [ ] AC8 runtime: verify size, golden bytes, version rejection tests exist
-- [ ] AC9 foundation: tools/check.sh, reproducible builds, check < 200 ms, build < 2 s
+- [x] AC4 checker enforces tier 0 (tests/conformance.rs, 69 cases, 55 rules)
+- [x] AC5 the grammar is the spec (wrela-grammar; 10^6 run: 0 disagreements, 0 round-trip failures)
+- [x] AC6 diagnostics bar (tests/diagnostics.rs, 61 cases, 24 fixes)
+- [x] AC7 strict CPU numerics (hello_field hash, numerics.rs, wrela-wasm relaxed SIMD)
+- [x] AC8 runtime (bun checks: 27.9 KB; ABI golden bytes; both hosts reject other versions)
+- [x] AC9 foundation (tools/check.sh; reproducible.rs; fuzz.rs; check 40 ms, build 42 ms)
 - [ ] AC10 agent baseline
 - [ ] AC11 record: language.md, #26, retrospective, delete this file
