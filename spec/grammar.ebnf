@@ -1,0 +1,123 @@
+# wrela grammar. Normative (D-104). This is the first slice (M1 S1): first light's constructs,
+# plus the rest of tier 0's expression core (every operator, `true`/`false`, `if`/`else`,
+# `return`, `;`, indexing, method calls, `::` paths), `pub` fields and attribute arguments. S2
+# widens it to all of tier 0 and builds an oracle parser from it.
+#
+# Dialect
+#   name ::= expr     a rule. It ends where the next `name ::=` begins, or at the end of the file.
+#   a b               sequence
+#   a | b             alternatives (binds loosest)
+#   ( a )             grouping
+#   a?  a*  a+        optional, zero or more, one or more (postfix, binds tightest)
+#   "fn"  "+="        a terminal: a keyword, `_`, or an operator or punctuation token, by its text
+#   IDENT INT FLOAT   token classes (UPPERCASE), defined in spec/lexical.md (L21); this slice
+#   NEWLINE EOF       uses only these five
+#   # ...             a comment, to the end of the line
+# Rule names are lowercase_with_underscores; each is defined once. The start rule is `file`.
+#
+# Splitting `>` (lexical.md L16): where a rule closes a generic argument list with `">"`, that
+# terminal also matches the first `>` of a `>>`, `>=` or `>>=` token, whose rest stays a token
+# for what follows. This slice has no generics, so no rule uses it yet.
+#
+# Tokens come from spec/lexical.md. Comments are trivia, and NEWLINE appears only where L17 emits
+# it: never inside ( ) or [ ], never after a token that can't end a statement, never before a
+# leading `.`. So a NEWLINE in a rule below is always a statement or item boundary, or one of the
+# optional NEWLINEs before a closing `}` or after an attribute.
+#
+# A repeated binary operator, `a ("+" a)*`, associates to the left; `**` associates to the right
+# (its right operand is a `unary_expr`). The grammar is meant to be unambiguous: one parse per
+# accepted token sequence. S2's oracle checks that claim.
+
+# ---------------------------------------------------------------------------------------------
+# Files and items
+
+file             ::= (item (sep item)* sep?)? EOF
+sep              ::= NEWLINE | ";"
+
+item             ::= attribute* "pub"? (fn_item | struct_item)
+attribute        ::= "@" IDENT call_args? NEWLINE?
+
+fn_item          ::= "fn" IDENT "(" params? ")" ("->" type)? block
+params           ::= param ("," param)* ","?
+param            ::= IDENT ":" type
+
+# `struct S: A + B { ... }` opts S in to the traits A and B.
+struct_item      ::= "struct" IDENT (":" trait_list)? "{" field_decls? NEWLINE? "}"
+trait_list       ::= path ("+" path)*
+field_decls      ::= field_decl ("," field_decl)* ","?
+field_decl       ::= "pub"? IDENT ":" type
+
+type             ::= path
+path             ::= IDENT ("::" IDENT)*
+
+# ---------------------------------------------------------------------------------------------
+# Blocks and statements. A block's value is its last statement when that is an expression.
+
+block            ::= "{" stmts "}"
+stmts            ::= (stmt (sep stmt)* sep?)?
+stmt             ::= let_stmt | return_stmt | expr_stmt
+let_stmt         ::= "let" IDENT (":" type)? "=" expr
+return_stmt      ::= "return" expr?
+expr_stmt        ::= expr
+
+# ---------------------------------------------------------------------------------------------
+# Expressions, loosest-binding first.
+
+expr             ::= or_expr
+or_expr          ::= and_expr ("||" and_expr)*
+and_expr         ::= cmp_expr ("&&" cmp_expr)*
+cmp_expr         ::= bitor_expr (cmp_op bitor_expr)?          # comparisons don't chain
+cmp_op           ::= "==" | "!=" | "<" | "<=" | ">" | ">="
+bitor_expr       ::= bitxor_expr ("|" bitxor_expr)*
+bitxor_expr      ::= bitand_expr ("^" bitand_expr)*
+bitand_expr      ::= shift_expr ("&" shift_expr)*
+shift_expr       ::= add_expr (("<<" | ">>") add_expr)*
+add_expr         ::= mul_expr (("+" | "-") mul_expr)*
+mul_expr         ::= unary_expr (("*" | "/" | "%") unary_expr)*
+unary_expr       ::= ("-" | "!") unary_expr | power_expr
+power_expr       ::= postfix_expr ("**" unary_expr)?          # -x ** 2 is -(x ** 2)
+
+# A field access is never directly followed by call arguments: `.name(` is always a method call.
+# To call a function stored in a field, write `(a.f)(x)`.
+postfix_expr     ::= primary_expr (postfix | field_access+ (index | method_call))* field_access*
+postfix          ::= call_args | index | method_call
+method_call      ::= "." IDENT call_args
+field_access     ::= "." (IDENT | INT)                  # a field, a swizzle (`.xy`) or a tuple field (`.0`)
+index            ::= "[" expr "]"
+
+# Positional arguments come first; once one is named, the rest are named too (D-039).
+call_args        ::= "(" args? ")"
+args             ::= positional_args ("," named_args)? ","? | named_args ","?
+positional_args  ::= expr ("," expr)*
+named_args       ::= named_arg ("," named_arg)*
+named_arg        ::= IDENT ":" expr
+
+primary_expr     ::= literal | path | struct_literal | "(" expr ")" | block | if_expr
+literal          ::= INT | FLOAT | "true" | "false"
+
+# `time` alone is short for `time: time`.
+struct_literal   ::= path "{" field_inits? NEWLINE? "}"
+field_inits      ::= field_init ("," field_init)* ","?
+field_init       ::= IDENT (":" expr)?
+
+if_expr          ::= "if" expr_ns block ("else" (if_expr | block))?
+
+# ---------------------------------------------------------------------------------------------
+# The head of an `if` can't hold a struct literal outside brackets, as in Rust: in `if a == S { }`
+# the `{` starts the block. These rules repeat the chain above without `struct_literal`; inside
+# ( ), [ ] or call arguments the full `expr` is back.
+
+expr_ns          ::= or_expr_ns
+or_expr_ns       ::= and_expr_ns ("||" and_expr_ns)*
+and_expr_ns      ::= cmp_expr_ns ("&&" cmp_expr_ns)*
+cmp_expr_ns      ::= bitor_expr_ns (cmp_op bitor_expr_ns)?
+bitor_expr_ns    ::= bitxor_expr_ns ("|" bitxor_expr_ns)*
+bitxor_expr_ns   ::= bitand_expr_ns ("^" bitand_expr_ns)*
+bitand_expr_ns   ::= shift_expr_ns ("&" shift_expr_ns)*
+shift_expr_ns    ::= add_expr_ns (("<<" | ">>") add_expr_ns)*
+add_expr_ns      ::= mul_expr_ns (("+" | "-") mul_expr_ns)*
+mul_expr_ns      ::= unary_expr_ns (("*" | "/" | "%") unary_expr_ns)*
+unary_expr_ns    ::= ("-" | "!") unary_expr_ns | power_expr_ns
+power_expr_ns    ::= postfix_expr_ns ("**" unary_expr_ns)?
+postfix_expr_ns  ::= primary_expr_ns (postfix | field_access+ (index | method_call))* field_access*
+primary_expr_ns  ::= literal | path | "(" expr ")" | block | if_expr

@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["compiler/crates/*"]
-default-members = ["compiler/crates/*"]
+members = ["compiler/crates/*", "runtime/abi"]
+default-members = ["compiler/crates/*", "runtime/abi"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,9 +12,11 @@ repository = "https://github.com/rywible/wrela"
 publish = false
 
 [workspace.dependencies]
+wrela-abi = { path = "runtime/abi" }
 wrela-cli = { path = "compiler/crates/wrela-cli" }
 wrela-diag = { path = "compiler/crates/wrela-diag" }
 wrela-driver = { path = "compiler/crates/wrela-driver" }
+wrela-ir = { path = "compiler/crates/wrela-ir" }
 wrela-syntax = { path = "compiler/crates/wrela-syntax" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

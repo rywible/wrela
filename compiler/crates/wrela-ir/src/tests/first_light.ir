@@ -1,0 +1,117 @@
+struct Scene gpu(size 16, align 8) {
+    resolution: vec2<f32> @ 0
+    time: f32 @ 8
+}
+
+fn cover(p0 vertex: u32) -> vec4<f32> {
+    %0: u32 = load p0
+    %1: u32 = const u32 2
+    %2: u32 = rem %0, %1
+    %3: f32 = convert f32(%2)
+    %4: f32 = const f32 4.0
+    %5: f32 = mul %3, %4
+    %6: f32 = const f32 1.0
+    %7: f32 = sub %5, %6
+    %8: u32 = div %0, %1
+    %9: f32 = convert f32(%8)
+    %10: f32 = mul %9, %4
+    %11: f32 = sub %10, %6
+    %12: f32 = const f32 0.0
+    %13: vec4<f32> = construct vec4<f32>(%7, %11, %12, %6)
+    return %13
+}
+
+fn shade(p0 pixel: vec4<f32>, p1 scene: Scene) -> vec4<f32> {
+    %0: vec4<f32> = load p0
+    %1: vec2<f32> = swizzle %0.xy
+    %2: f32 = const f32 2.0
+    %3: vec2<f32> = mul %1, %2
+    %4: vec2<f32> = load p1.0
+    %5: vec2<f32> = sub %3, %4
+    %6: f32 = extract %4.1
+    %7: vec2<f32> = div %5, %6
+    %8: f32 = load p1.1
+    %9: f32 = extract %7.0
+    %10: f32 = extract %7.1
+    %11: f32 = neg %10
+    %12: f32 = const f32 0.25
+    %13: f32 = const f32 0.7
+    %14: f32 = mul %8, %13
+    %15: f32 = math sin(%14)
+    %16: f32 = mul %12, %15
+    %17: vec3<f32> = construct vec3<f32>(%9, %11, %16)
+    %18: f32 = const f32 0.35
+    %19: f32 = math cos(%8)
+    %20: f32 = mul %18, %19
+    %21: f32 = const f32 0.2
+    %22: f32 = const f32 1.3
+    %23: f32 = mul %8, %22
+    %24: f32 = math sin(%23)
+    %25: f32 = mul %21, %24
+    %26: f32 = const f32 0.0
+    %27: vec3<f32> = construct vec3<f32>(%20, %25, %26)
+    %28: f32 = const f32 0.45
+    %29: f32 = const f32 0.05
+    %30: f32 = mul %8, %2
+    %31: f32 = math sin(%30)
+    %32: f32 = mul %29, %31
+    %33: f32 = add %28, %32
+    %34: vec3<f32> = sub %17, %27
+    %35: f32 = math length(%34)
+    %36: f32 = sub %35, %33
+    %37: f32 = const f32 1.0
+    %38: f32 = const f32 0.55
+    %39: vec3<f32> = construct vec3<f32>(%37, %38, %12)
+    %40: f32 = const f32 0.85
+    %41: vec3<f32> = construct vec3<f32>(%12, %28, %40)
+    %42: f32 = math step(%26, %36)
+    %43: vec3<f32> = math mix(%39, %41, %42)
+    %44: f32 = const f32 0.5
+    %45: f32 = const f32 62.831852
+    %46: f32 = mul %36, %45
+    %47: f32 = math cos(%46)
+    %48: f32 = mul %44, %47
+    %49: f32 = add %44, %48
+    %50: f32 = math abs(%36)
+    %51: f32 = const f32 1.5
+    %52: f32 = mul %50, %51
+    %53: f32 = sub %37, %52
+    %54: f32 = math clamp(%53, %26, %37)
+    %55: f32 = const f32 0.75
+    %56: f32 = mul %12, %49
+    %57: f32 = mul %56, %54
+    %58: f32 = add %55, %57
+    %59: vec3<f32> = mul %43, %58
+    %60: f32 = const f32 0.015
+    %61: f32 = math smoothstep(%26, %60, %50)
+    %62: f32 = sub %37, %61
+    %63: vec3<f32> = splat vec3<f32>(%37)
+    %64: vec3<f32> = math mix(%59, %63, %62)
+    %65: vec4<f32> = construct vec4<f32>(%64, %37)
+    return %65
+}
+
+fn frame(p0 time: f32, p1 width: u32, p2 height: u32) -> () {
+    %0: u32 = load p1
+    %1: f32 = convert f32(%0)
+    %2: u32 = load p2
+    %3: f32 = convert f32(%2)
+    %4: vec2<f32> = construct vec2<f32>(%1, %3)
+    %5: f32 = load p0
+    %6: Scene = construct Scene(%4, %5)
+    %7: f32 = const f32 0.0
+    %8: f32 = const f32 1.0
+    %9: vec4<f32> = construct vec4<f32>(%7, %7, %7, %8)
+    record begin_screen_pass(clear %9)
+    %10: u32 = const u32 3
+    %11: u32 = const u32 1
+    record draw(pipeline 0, vertices %10, instances %11, uniforms %6)
+    record present
+}
+
+entry 0: vertex cover(p0: builtin vertex_index) -> builtin clip_position
+entry 1: fragment shade(p0: builtin frag_coord, p1: resource 0) -> location 0
+    resource 0: group 0, binding 0, uniform Scene
+
+pipeline 0: render(vertex entry 0, fragment entry 1)
+export "frame" = frame
