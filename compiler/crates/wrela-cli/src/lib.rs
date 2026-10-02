@@ -48,6 +48,7 @@ pub fn run(args: &[OsString], cwd: &Path, stdout: &mut dyn Write, stderr: &mut d
     match cli.dispatch(args) {
         Ok(code) => code,
         Err(Failure(message)) => {
+            // Nowhere is left to report a failure to write this.
             let _ = writeln!(cli.stderr, "error: {message}");
             EXIT_FAILURE
         }
@@ -81,11 +82,11 @@ impl Cli<'_> {
             Some("fmt") => not_yet("fmt", "with the parser and formatter (M1 slice S3)"),
             Some("explain") => self.explain(rest),
             Some("help" | "-h" | "--help") => {
-                self.out(USAGE);
+                self.out(USAGE)?;
                 Ok(EXIT_OK)
             }
             Some("--version" | "-V") => {
-                self.out(&format!("wrela {}\n", env!("CARGO_PKG_VERSION")));
+                self.out(&format!("wrela {}\n", env!("CARGO_PKG_VERSION")))?;
                 Ok(EXIT_OK)
             }
             _ => Err(usage(format_args!(
@@ -95,8 +96,8 @@ impl Cli<'_> {
         }
     }
 
-    fn out(&mut self, text: &str) {
-        let _ = self.stdout.write_all(text.as_bytes());
+    fn out(&mut self, text: &str) -> Result<(), Failure> {
+        write_flushed(self.stdout, text)
     }
 
     fn check(&mut self, args: &[OsString]) -> Result<u8, Failure> {
@@ -128,17 +129,19 @@ impl Cli<'_> {
 
         let mut session = Session::new();
         for path in collect_files(&paths, self.cwd)? {
-            let shown = path.display();
             let bytes = std::fs::read(self.cwd.join(&path))
-                .map_err(|e| Failure(format!("couldn't read `{shown}`: {e}")))?;
+                .map_err(|e| Failure(format!("couldn't read `{}`: {e}", shown(&path))))?;
             let text = String::from_utf8(bytes).map_err(|e| {
                 let at = e.utf8_error().valid_up_to();
                 Failure(format!(
-                    "`{shown}` isn't UTF-8: the first invalid byte is at offset {at}"
+                    "`{}` isn't UTF-8: the first invalid byte is at offset {at}",
+                    shown(&path)
                 ))
             })?;
+            // The source map keeps the name as it is, so the JSON names the file exactly; the
+            // text rendering spells out what can't be shown.
             session
-                .add_file(shown.to_string(), text)
+                .add_file(path.display().to_string(), text)
                 .map_err(|e| Failure(e.to_string()))?;
         }
         let diagnostics = session
@@ -147,13 +150,14 @@ impl Cli<'_> {
 
         match format {
             Format::Text => {
-                let rendered = wrela_diag::render_all(&diagnostics, session.sources());
-                let _ = self.stderr.write_all(rendered.as_bytes());
+                let mut rendered = wrela_diag::render_all(&diagnostics, session.sources());
                 if let Some(summary) = summary(&diagnostics) {
-                    let _ = writeln!(self.stderr, "{summary}");
+                    rendered.push_str(&summary);
+                    rendered.push('\n');
                 }
+                write_flushed(self.stderr, &rendered)?;
             }
-            Format::Json => self.out(&wrela_diag::to_json(&diagnostics, session.sources())),
+            Format::Json => self.out(&wrela_diag::to_json(&diagnostics, session.sources()))?,
         }
         Ok(if diagnostics.iter().any(Diagnostic::is_error) {
             EXIT_ERRORS
@@ -169,7 +173,7 @@ impl Cli<'_> {
                     .iter()
                     .map(|code| format!("{code}  {}\n", code.title()))
                     .collect();
-                self.out(&list);
+                self.out(&list)?;
                 Ok(EXIT_OK)
             }
             [id] => {
@@ -179,12 +183,26 @@ impl Cli<'_> {
                         "`{id}` isn't a wrela diagnostic code; `wrela explain` lists them all"
                     ))
                 })?;
-                self.out(code.explanation());
+                self.out(code.explanation())?;
                 Ok(EXIT_OK)
             }
             _ => Err(usage("`wrela explain` takes one code")),
         }
     }
+}
+
+/// Writes all of `text` and flushes it: output that didn't arrive whole is a failure (exit 2), so
+/// a tool reading it never takes a truncated result for a complete one.
+fn write_flushed(to: &mut dyn Write, text: &str) -> Result<(), Failure> {
+    to.write_all(text.as_bytes())
+        .and_then(|()| to.flush())
+        .map_err(|e| Failure(format!("couldn't write the output: {e}")))
+}
+
+/// A path as it's shown in a message, with invisible characters spelled out (see
+/// [`wrela_diag::display_name`]).
+fn shown(path: &Path) -> String {
+    wrela_diag::display_name(&path.display().to_string())
 }
 
 fn not_yet(command: &str, when: &str) -> Result<u8, Failure> {
@@ -205,12 +223,14 @@ fn parse_format(value: &OsStr) -> Result<Format, Failure> {
 }
 
 /// The files to check, in order: each file argument as given, and for each directory every
-/// `.wrela` file under it (skipping hidden entries), sorted. Duplicates are dropped.
+/// `.wrela` file under it (skipping hidden entries), sorted. Duplicates are dropped. A symbolic
+/// link to a directory inside a directory is an error rather than skipped, so a check can't pass
+/// without reading the files behind it.
 fn collect_files(paths: &[PathBuf], cwd: &Path) -> Result<Vec<PathBuf>, Failure> {
     let mut files = Vec::new();
     for path in paths {
         let metadata = std::fs::metadata(cwd.join(path))
-            .map_err(|e| Failure(format!("couldn't read `{}`: {e}", path.display())))?;
+            .map_err(|e| Failure(format!("couldn't read `{}`: {e}", shown(path))))?;
         if metadata.is_dir() {
             let before = files.len();
             walk(path, cwd, &mut files)?;
@@ -218,7 +238,7 @@ fn collect_files(paths: &[PathBuf], cwd: &Path) -> Result<Vec<PathBuf>, Failure>
             if files.len() == before {
                 return Err(Failure(format!(
                     "no `.wrela` files under `{}`",
-                    path.display()
+                    shown(path)
                 )));
             }
         } else {
@@ -231,9 +251,8 @@ fn collect_files(paths: &[PathBuf], cwd: &Path) -> Result<Vec<PathBuf>, Failure>
 }
 
 fn walk(dir: &Path, cwd: &Path, files: &mut Vec<PathBuf>) -> Result<(), Failure> {
-    let failure = |path: &Path, e: std::io::Error| {
-        Failure(format!("couldn't read `{}`: {e}", path.display()))
-    };
+    let failure =
+        |path: &Path, e: std::io::Error| Failure(format!("couldn't read `{}`: {e}", shown(path)));
     for entry in std::fs::read_dir(cwd.join(dir)).map_err(|e| failure(dir, e))? {
         let entry = entry.map_err(|e| failure(dir, e))?;
         let name = entry.file_name();
@@ -244,6 +263,14 @@ fn walk(dir: &Path, cwd: &Path, files: &mut Vec<PathBuf>) -> Result<(), Failure>
         let file_type = entry.file_type().map_err(|e| failure(&path, e))?;
         if file_type.is_dir() {
             walk(&path, cwd, files)?;
+        } else if file_type.is_symlink()
+            && std::fs::metadata(cwd.join(&path)).is_ok_and(|target| target.is_dir())
+        {
+            return Err(Failure(format!(
+                "`{}` is a symbolic link to a directory, which `wrela check` doesn't follow; \
+                 check its target directly",
+                shown(&path)
+            )));
         } else if path.extension() == Some(OsStr::new("wrela")) {
             files.push(path);
         }
@@ -390,6 +417,113 @@ mod tests {
         let (code, out, _) = run_in(&dir, &["explain"]);
         assert_eq!(code, EXIT_OK);
         assert!(out.starts_with("E0001  unexpected character\n"), "{out}");
+    }
+
+    /// A writer whose every write fails, like a closed pipe or a full disk.
+    struct Broken;
+
+    impl Write for Broken {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("broken"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A writer that takes the bytes but fails to deliver them.
+    struct FlushFails;
+
+    impl Write for FlushFails {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::other("flush failed"))
+        }
+    }
+
+    #[test]
+    fn output_that_cannot_be_written_exits_2() {
+        let dir = temp_dir("broken");
+        std::fs::write(dir.join("ok.wrela"), "fn f() {}\n").unwrap();
+        std::fs::write(dir.join("bad.wrela"), "fn f() { $ }\n").unwrap();
+        let commands: [&[&str]; 6] = [
+            &["check", "--format=json", "ok.wrela"],
+            &["check", "--format=json", "bad.wrela"],
+            &["explain"],
+            &["explain", "E0001"],
+            &["--help"],
+            &["--version"],
+        ];
+        for args in commands {
+            let args: Vec<OsString> = args.iter().map(OsString::from).collect();
+            let outs: [&mut dyn Write; 2] = [&mut Broken, &mut FlushFails];
+            for out in outs {
+                let mut err = Vec::new();
+                let code = run(&args, &dir, out, &mut err);
+                let err = String::from_utf8(err).unwrap();
+                assert_eq!(code, EXIT_FAILURE, "{args:?}: {err}");
+                assert!(
+                    err.starts_with("error: couldn't write the output: "),
+                    "{args:?}: {err}"
+                );
+            }
+        }
+        // Text goes to stderr; when that fails, the exit status is all that's left to say so.
+        let args = [OsString::from("check"), OsString::from("bad.wrela")];
+        let errs: [&mut dyn Write; 2] = [&mut Broken, &mut FlushFails];
+        for err in errs {
+            assert_eq!(run(&args, &dir, &mut Vec::new(), err), EXIT_FAILURE);
+        }
+    }
+
+    /// File names come from the file system, so they can hold escape sequences and line breaks.
+    #[cfg(unix)]
+    #[test]
+    fn file_names_in_messages_spell_out_invisible_characters() {
+        let dir = temp_dir("names");
+        std::fs::create_dir(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/bad\u{1B}[2J.wrela"), b"x \xE9").unwrap();
+        let (code, _, err) = run_in(&dir, &["check", "src"]);
+        assert_eq!(code, EXIT_FAILURE, "{err}");
+        assert!(
+            err.contains("`src/bad<U+001B>[2J.wrela` isn't UTF-8"),
+            "{err}"
+        );
+        assert!(!err.contains('\u{1B}'), "{err:?}");
+
+        std::fs::write(dir.join("src/bad\u{1B}[2J.wrela"), "$\n").unwrap();
+        let (code, _, err) = run_in(&dir, &["check", "src"]);
+        assert_eq!(code, EXIT_ERRORS, "{err}");
+        assert!(err.contains(" --> src/bad<U+001B>[2J.wrela:1:1\n"), "{err}");
+        assert!(!err.contains('\u{1B}'), "{err:?}");
+        // JSON keeps the name exactly, so a tool can open the file.
+        let (_, out, _) = run_in(&dir, &["check", "--format=json", "src"]);
+        assert!(out.contains("bad\\u001b[2J.wrela"), "{out}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symbolic_link_to_a_directory_is_an_error_not_skipped() {
+        let dir = temp_dir("symlink");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        std::fs::write(dir.join("src/main.wrela"), "fn f() {}\n").unwrap();
+        std::fs::write(dir.join("real/hidden.wrela"), "$\n").unwrap();
+        std::os::unix::fs::symlink("../real", dir.join("src/linked")).unwrap();
+        let (code, _, err) = run_in(&dir, &["check", "src"]);
+        assert_eq!(code, EXIT_FAILURE, "{err}");
+        assert!(
+            err.starts_with(
+                "error: `src/linked` is a symbolic link to a directory, which `wrela check` \
+                 doesn't follow; check its target directly"
+            ),
+            "{err}"
+        );
+        // Given directly, a link is followed like any path.
+        let (code, _, err) = run_in(&dir, &["check", "src/linked"]);
+        assert_eq!(code, EXIT_ERRORS, "{err}");
     }
 
     #[test]

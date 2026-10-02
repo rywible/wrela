@@ -28,9 +28,25 @@ pub fn is_visible(c: char) -> bool {
         ))
 }
 
+/// A file name as it's shown in a diagnostic or an error message: the ASCII space and visible
+/// characters as they are, every other character as its code point (`<U+001B>`). A name comes
+/// from the file system, so it can hold a control or bidirectional character that would rewrite
+/// the terminal, or a line break that would forge a line of output.
+pub fn display_name(name: &str) -> String {
+    let mut shown = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c == ' ' || is_visible(c) {
+            shown.push(c);
+        } else {
+            shown.push_str(&format!("<U+{:04X}>", u32::from(c)));
+        }
+    }
+    shown
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_visible;
+    use super::{display_name, is_visible};
 
     #[test]
     fn invisible_characters() {
@@ -42,5 +58,14 @@ mod tests {
         ] {
             assert!(!is_visible(c), "{c:?}");
         }
+    }
+
+    #[test]
+    fn names_show_invisible_characters_by_code_point() {
+        assert_eq!(display_name("src/my file.wrela"), "src/my file.wrela");
+        assert_eq!(
+            display_name("a\u{1B}[31m\u{202E}\tb\n.wrela"),
+            "a<U+001B>[31m<U+202E><U+0009>b<U+000A>.wrela"
+        );
     }
 }

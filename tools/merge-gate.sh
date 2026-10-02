@@ -1,6 +1,7 @@
 #!/bin/sh
 # Checks a PR against the merge gate in CLAUDE.md and prints each condition. Read only: it never
-# merges, approves, comments or resolves anything.
+# merges, approves, comments or resolves anything. When the gate passes it prints the merge
+# command, bound to the head commit it checked: a push after the check makes GitHub refuse it.
 #
 # Usage: tools/merge-gate.sh <pr-number>
 # Exit:  0 the gate passes, 1 it doesn't, 2 usage or GitHub API error.
@@ -186,6 +187,7 @@ esac
 echo
 if [ -z "$FAILED" ]; then
   echo "gate: pass"
+  echo "merge with: gh pr merge $PR --repo $REPO --squash --auto --match-head-commit $HEAD"
   exit 0
 fi
 echo "gate: FAIL ($(echo "$FAILED" | sed 's/^ //; s/ /, /g'))"

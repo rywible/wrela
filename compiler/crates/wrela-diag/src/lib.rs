@@ -8,7 +8,7 @@ mod json;
 mod render;
 mod source;
 
-pub use chars::is_visible;
+pub use chars::{display_name, is_visible};
 pub use codes::{Code, CodeInfo};
 pub use diagnostic::{Diagnostic, Edit, Help, Label, Severity};
 pub use json::{JSON_VERSION, to_json};

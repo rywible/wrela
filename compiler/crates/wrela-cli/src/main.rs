@@ -1,6 +1,5 @@
 //! The `wrela` binary. All the behavior is in the library, so tests run it in-process.
 
-use std::io::Write;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -9,6 +8,5 @@ fn main() -> ExitCode {
     let mut stdout = std::io::stdout().lock();
     let mut stderr = std::io::stderr().lock();
     let code = wrela_cli::run(&args, &cwd, &mut stdout, &mut stderr);
-    let _ = stdout.flush();
     ExitCode::from(code)
 }

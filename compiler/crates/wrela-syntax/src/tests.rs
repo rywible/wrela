@@ -137,6 +137,42 @@ fn a_lone_carriage_return_is_e0001_and_reads_as_a_line_break() {
     assert_eq!(codes("// a\rb"), ["E0001"]);
 }
 
+/// Vertical tab, form feed, next line, line separator, paragraph separator: some editors show
+/// each as a line break, so like a lone `\r` each ends a comment and is an error.
+const OTHER_LINE_BREAKS: [(char, &str); 5] = [
+    ('\u{000B}', "U+000B"),
+    ('\u{000C}', "U+000C"),
+    ('\u{0085}', "U+0085"),
+    ('\u{2028}', "U+2028"),
+    ('\u{2029}', "U+2029"),
+];
+
+#[test]
+fn other_line_breaks_end_comments_and_are_e0001() {
+    for (c, code_point) in OTHER_LINE_BREAKS {
+        let text = format!("// a{c}b");
+        assert_eq!(
+            tokens(&text),
+            ["LineComment:// a", "NL", "Ident:b"],
+            "{c:?}"
+        );
+        let d = lexed_one(&text);
+        assert_eq!(d.message, format!("unexpected character {code_point}"));
+        let at = "// a".len() as u32;
+        assert_eq!(
+            (d.primary.span.start(), d.primary.span.end()),
+            (at, at + c.len_utf8() as u32)
+        );
+        assert_eq!(d.help[0].message, "replace it with a line break");
+        assert_eq!(d.help[0].edits[0].replacement, "\n");
+
+        // Outside a comment too: a line break, not a space, and its own error next to others.
+        let d = lexed_one(&format!("a{c}b"));
+        assert_eq!(d.help[0].edits[0].replacement, "\n", "{c:?}");
+        assert_eq!(codes(&format!("\u{A0}{c}")), ["E0001", "E0001"], "{c:?}");
+    }
+}
+
 #[test]
 fn a_leading_byte_order_mark_is_skipped() {
     let (lexed, _) = lexed("\u{FEFF}fn f() {}\n");
@@ -279,7 +315,20 @@ fn block_comments_nest_and_unclosed_ones_point_at_the_opener() {
 #[test]
 fn every_input_makes_progress_and_spans_tile_the_tokens() {
     for text in [
-        "", "\n", "/", "*", "/*", "\u{FEFF}", "0", "0x", "1e", "1e-", "a\r\nb", "é",
+        "",
+        "\n",
+        "/",
+        "*",
+        "/*",
+        "\u{FEFF}",
+        "0",
+        "0x",
+        "1e",
+        "1e-",
+        "a\r\nb",
+        "é",
+        "a\u{2028}b",
+        "//\u{85}",
     ] {
         let (lexed, _) = lexed(text);
         let mut end = 0;

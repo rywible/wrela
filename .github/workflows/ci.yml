@@ -19,16 +19,22 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # Both review bots skip PRs whose base isn't main, so a stacked PR would merge unreviewed.
+  # Both review bots skip PRs whose base isn't main, so a stacked PR would merge unreviewed. On a
+  # push to main there's nothing to check, but the job still succeeds, so `ci` can require every
+  # job's success with no exceptions.
   base:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require the PR to target main
         env:
+          EVENT: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
         run: |
+          if [ "$EVENT" != pull_request ]; then
+            echo "push to main: nothing to check"
+            exit 0
+          fi
           if [ "$BASE_REF" != main ]; then
             echo "::error::this PR targets '$BASE_REF'; PRs must target main (no stacked PRs). Rebase onto main, retarget, then push: a re-run reuses the old base."
             exit 1
@@ -97,7 +103,6 @@ jobs:
     steps:
       - name: Require every job to succeed
         env:
-          EVENT: ${{ github.event_name }}
           BASE: ${{ needs.base.result }}
           FMT: ${{ needs.fmt.result }}
           CLIPPY: ${{ needs.clippy.result }}
@@ -109,8 +114,7 @@ jobs:
             echo "$1: $2"
             [ "$2" = success ] || { echo "::error::job '$1' finished as '$2'"; failed=1; }
           }
-          # `base` only runs on pull requests; on a push to main, skipped is its only correct result.
-          if [ "$EVENT" = push ] && [ "$BASE" = skipped ]; then echo "base: skipped (push)"; else check base "$BASE"; fi
+          check base "$BASE"
           check fmt "$FMT"
           check clippy "$CLIPPY"
           check test "$TEST"

@@ -12,12 +12,12 @@
 //!
 //! Tabs show as four spaces. Characters that aren't visible glyphs (see [`is_visible`]) show as
 //! their code point, `<U+00A0>`, so an invisible character can be seen and a control or
-//! bidirectional override can't rearrange the terminal. Columns assume every other character is
-//! one cell wide.
+//! bidirectional override can't rearrange the terminal; file names are shown the same way (see
+//! [`display_name`]). Columns assume every other character is one cell wide.
 
 use std::fmt::Write as _;
 
-use crate::{Diagnostic, Edit, FileId, Label, SourceFile, SourceMap, is_visible};
+use crate::{Diagnostic, Edit, FileId, Label, SourceFile, SourceMap, display_name, is_visible};
 
 const TAB_WIDTH: usize = 4;
 
@@ -77,7 +77,7 @@ pub fn render(diagnostic: &Diagnostic, sources: &SourceMap) -> String {
         let _ = writeln!(
             out,
             "{pad}{arrow} {}:{}:{}",
-            source.name(),
+            display_name(source.name()),
             at.line,
             at.column
         );
@@ -110,7 +110,7 @@ pub fn render(diagnostic: &Diagnostic, sources: &SourceMap) -> String {
                 continue;
             };
             if hunk.file != diagnostic.primary.span.file() {
-                let _ = writeln!(out, "{pad}::: {}", source.name());
+                let _ = writeln!(out, "{pad}::: {}", display_name(source.name()));
             }
             let _ = writeln!(out, "{pad} |");
             for (n, line) in hunk.text.split('\n').enumerate() {
@@ -450,6 +450,39 @@ help: delete it
 1 | fn
 ";
         assert_eq!(render(&d, &map), expected);
+    }
+
+    /// A file name comes from the file system, so it can hold anything but `/` and NUL.
+    const HOSTILE_NAME: &str = "a\u{1B}[31m\u{202E}\nerror: forged.wrela";
+    const HOSTILE_SHOWN: &str = "a<U+001B>[31m<U+202E><U+000A>error: forged.wrela";
+
+    #[test]
+    fn file_names_spell_out_invisible_characters() {
+        let mut map = SourceMap::new();
+        let f = map.add(HOSTILE_NAME, "$\n").unwrap();
+        let d = Diagnostic::new(UNEXPECTED_CHARACTER, "m", Span::new(f, 0, 1));
+        let rendered = render(&d, &map);
+        assert!(
+            rendered.contains(&format!(" --> {HOSTILE_SHOWN}:1:1\n")),
+            "{rendered}"
+        );
+        assert!(!rendered.contains(['\u{1B}', '\u{202E}']), "{rendered}");
+        assert_eq!(rendered.lines().count(), 5, "{rendered}");
+    }
+
+    #[test]
+    fn a_fix_in_another_file_spells_out_its_name() {
+        let mut map = SourceMap::new();
+        let main = map.add("main.wrela", "$\n").unwrap();
+        let other = map.add(HOSTILE_NAME, "x\n").unwrap();
+        let d = Diagnostic::new(UNEXPECTED_CHARACTER, "m", Span::new(main, 0, 1))
+            .with_fix("rename it", vec![Edit::new(Span::new(other, 0, 1), "y")]);
+        let rendered = render(&d, &map);
+        assert!(
+            rendered.contains(&format!("\n ::: {HOSTILE_SHOWN}\n")),
+            "{rendered}"
+        );
+        assert!(!rendered.contains(['\u{1B}', '\u{202E}']), "{rendered}");
     }
 
     #[test]

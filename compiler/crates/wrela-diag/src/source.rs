@@ -104,7 +104,8 @@ impl fmt::Display for SourceTooLarge {
         write!(
             f,
             "`{}` is {} bytes; source files must be smaller than 4 GiB",
-            self.name, self.len
+            crate::display_name(&self.name),
+            self.len
         )
     }
 }
@@ -371,6 +372,18 @@ mod tests {
         assert_eq!(
             Span::new(f, 0, 1).cover(Span::new(f, 2, 3)),
             Span::new(f, 0, 3)
+        );
+    }
+
+    #[test]
+    fn too_large_spells_out_invisible_characters_in_the_name() {
+        let error = SourceTooLarge {
+            name: "a\u{1B}[2J\n.wrela".into(),
+            len: 1 << 32,
+        };
+        assert_eq!(
+            error.to_string(),
+            "`a<U+001B>[2J<U+000A>.wrela` is 4294967296 bytes; source files must be smaller than 4 GiB"
         );
     }
 }

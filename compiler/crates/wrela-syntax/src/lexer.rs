@@ -6,8 +6,9 @@
 //!
 //! Recovery: each mistake is reported once, and the tokens are what the user most likely meant,
 //! so the parser doesn't pile further errors on top. A name with a non-ASCII letter (`café`) is
-//! one [`TokenKind::Ident`]; a lone `\r` is a [`TokenKind::Newline`]. A byte-order mark at the
-//! very start of the file is skipped silently; offsets still count it.
+//! one [`TokenKind::Ident`]; a lone `\r`, or another character some editors show as a line break,
+//! is a [`TokenKind::Newline`]. A byte-order mark at the very start of the file is skipped
+//! silently; offsets still count it.
 
 use wrela_diag::codes::{BLOCK_COMMENT, UNEXPECTED_CHARACTER};
 use wrela_diag::{Diagnostic, Edit, FileId, Span};
@@ -27,8 +28,8 @@ pub enum TokenKind {
     LineComment,
     /// `/// ...` (but not `////`).
     DocComment,
-    /// A `\n`, or a lone `\r` (already reported as `E0001`). Whether it ends a statement is the
-    /// parser's business.
+    /// A `\n`, or a lone `\r` or another line break such as U+2028 (already reported as
+    /// `E0001`). Whether it ends a statement is the parser's business.
     Newline,
     /// A run of characters that can't start a token; already reported as `E0001`.
     Unknown,
@@ -89,7 +90,7 @@ impl Lexer<'_> {
             match c {
                 ' ' | '\t' => self.pos += 1,
                 '\r' if self.rest().starts_with("\r\n") => self.pos += 1,
-                '\r' => self.lone_carriage_return(),
+                c if c == '\r' || is_other_line_break(c) => self.stray_line_break(c),
                 '\n' => {
                     self.pos += 1;
                     self.push(TokenKind::Newline, start);
@@ -142,9 +143,9 @@ impl Lexer<'_> {
     fn line_comment(&mut self) {
         let start = self.pos;
         // A `\r` ends the comment too: the `\r` of a `\r\n` isn't part of it, and an editor that
-        // shows a lone `\r` as a line break would show the text after it as code, so it's lexed
-        // as code (after the `\r` is reported).
-        self.eat_while(|c| c != '\n' && c != '\r');
+        // shows a lone `\r` (or another line break) as a line break would show the text after it
+        // as code, so it's lexed as code (after the line break is reported).
+        self.eat_while(|c| c != '\n' && c != '\r' && !is_other_line_break(c));
         let text = &self.text[start..self.pos];
         let doc = text.starts_with("///") && !text.starts_with("////");
         let kind = if doc {
@@ -198,14 +199,21 @@ impl Lexer<'_> {
         self.push(TokenKind::Number, start);
     }
 
-    /// A `\r` without a `\n` after it. Some editors show it as a line break and others don't,
-    /// so it's an error; the lexer reads it as the line break it most likely was.
-    fn lone_carriage_return(&mut self) {
+    /// A `\r` without a `\n` after it, or another line break (see [`is_other_line_break`]). Some
+    /// editors show it as a line break and others don't, so it's an error; the lexer reads it as
+    /// the line break it most likely was.
+    fn stray_line_break(&mut self, c: char) {
         let start = self.pos;
-        self.pos += 1;
+        self.pos += c.len_utf8();
         let span = self.span(start);
-        let diagnostic = Diagnostic::new(UNEXPECTED_CHARACTER, "unexpected character U+000D", span)
-            .with_label("a carriage return without a line feed after it")
+        let label = if c == '\r' {
+            "a carriage return without a line feed after it"
+        } else {
+            "a line break in some editors, but not in others"
+        };
+        let message = format!("unexpected character U+{:04X}", u32::from(c));
+        let diagnostic = Diagnostic::new(UNEXPECTED_CHARACTER, message, span)
+            .with_label(label)
             .with_note("a line ends with `\\n` or `\\r\\n`")
             .with_fix("replace it with a line break", vec![Edit::new(span, "\n")]);
         self.out.diagnostics.push(diagnostic);
@@ -366,11 +374,23 @@ impl Lexer<'_> {
     }
 }
 
-/// Whether `c` can begin a token, a comment or whitespace that the lexer accepts.
+/// Whether `c` can begin a token, a comment or whitespace that the lexer accepts, or is a line
+/// break, which is reported on its own.
 fn starts_token(c: char) -> bool {
     is_ident_char(c)
         || matches!(c, ' ' | '\t' | '\r' | '\n')
+        || is_other_line_break(c)
         || PUNCTS.iter().any(|p| p.starts_with(c))
+}
+
+/// The characters other than `\n` and `\r` that Unicode counts as line breaks: vertical tab, form
+/// feed, next line, line separator and paragraph separator. Some editors show them as line breaks,
+/// so they end a comment, as a lone `\r` does.
+fn is_other_line_break(c: char) -> bool {
+    matches!(
+        c,
+        '\u{000B}' | '\u{000C}' | '\u{0085}' | '\u{2028}' | '\u{2029}'
+    )
 }
 
 /// Whether `c` continues an identifier: `_` or a letter or digit, ASCII or not. A non-ASCII one is
