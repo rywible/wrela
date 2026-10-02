@@ -1,0 +1,20 @@
+[package]
+name = "wrela-cli"
+description = "The `wrela` command: check, build, fmt, explain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "wrela"
+path = "src/main.rs"
+
+[dependencies]
+wrela-diag.workspace = true
+wrela-driver.workspace = true
+
+[lints]
+workspace = true

@@ -4,14 +4,17 @@ wrela is a new language, compiler, engine and agent-native studio for AAA-ambiti
 
 ## Where things are
 
-| Path                            | What                                                                                                                                               |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `docs/vision.md`                | Goal, theses and their evidence, architecture, the renderer, and the **constraints** everything rests on. Read it before any architectural change. |
-| `docs/language.md`              | The language reference, with feature tiers. The syntax is imagined until the parser exists.                                                        |
-| `spec/`                         | The grammar: normative and executable (from M1).                                                                                                   |
-| `compiler/`, `std/`, `runtime/` | The code (from M1).                                                                                                                                |
-| `tools/`                        | `serve.py` (static server that accepts PUTs into `results/`) and `headless.sh` (runs a page in headless Chrome on the real GPU).                   |
+| Path               | What                                                                                                                                               |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/vision.md`   | Goal, theses and their evidence, architecture, the renderer, and the **constraints** everything rests on. Read it before any architectural change. |
+| `docs/language.md` | The language reference, with feature tiers. The syntax is imagined until the parser exists.                                                        |
+| `spec/`            | The grammar: normative and executable (from M1).                                                                                                   |
+| `compiler/crates/` | The compiler: `wrela-diag` (spans, codes and their `explain/` texts, JSON), `-syntax`, `-driver` (queries), `-cli` (`wrela`), `-test`.             |
+| `compiler/tests/`  | `conformance/` (`//~ ERROR E0001` on the line, `//~^` the line above, `//@ check-pass`) and `golden/` (`WRELA_BLESS=1` rewrites).                  |
+| `std/`, `runtime/` | The stdlib and the runtimes (from M1).                                                                                                             |
+| `tools/`           | `serve.py` (static server that accepts PUTs into `results/`) and `headless.sh` (runs a page in headless Chrome on the real GPU).                   |
 
+- **Checks, as CI runs them:** `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, `cargo run -p wrela-test --release --locked --bin fuzz-smoke -- --seconds 60`.
 - **Plans live in GitHub issues on rywible/wrela, not in the repo.**
   - Milestones M1–M6, each with a scope issue.
   - #26: status against the vision (pinned).
@@ -31,7 +34,7 @@ wrela is a new language, compiler, engine and agent-native studio for AAA-ambiti
   - Prefer knowledge in executable form: tests, diagnostics with `wrela explain` texts, the grammar.
   - When something is built, replace the prose describing it with a pointer to its code and tests, in the same change.
 - **Label performance numbers as estimates until they're measured.** Label untested claims as hypotheses.
-- **Source files use `.wrela`;** docs use ` ```wrela ` fences.
+- **Source files use `.wrela`;** docs use ` ```wrela ` fences, which the tests check. ` ```wrela imagined ` marks syntax ahead of the compiler; that count only falls.
 - **GPU safety:**
   - Run GPU pages only through `tools/headless.sh`. It holds a lock, so only one GPU user runs at a time.
   - Keep every GPU submission under ~100 ms.
@@ -60,6 +63,7 @@ wrela is a new language, compiler, engine and agent-native studio for AAA-ambiti
 
 - Open it as a **draft**: CodeRabbit and Greptile skip drafts, and CI still runs.
 - Before marking it ready, run a fresh-context code review.
+- Both bots review on their own when a PR is marked ready (seen on #33); later pushes need the re-trigger.
 
 **Don't wait on review.** Start the next slice.
 
@@ -76,7 +80,7 @@ wrela is a new language, compiler, engine and agent-native studio for AAA-ambiti
 
 **Merging**
 
-- Squash, with auto-merge, once the gate passes:
+- Squash, with auto-merge, once the gate passes (`tools/merge-gate.sh <pr>` checks it):
   - CI is green
   - both bots reviewed the head commit (not skipped or rate-limited)
   - all threads are resolved

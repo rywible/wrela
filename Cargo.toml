@@ -1,0 +1,56 @@
+[workspace]
+resolver = "3"
+members = ["compiler/crates/*"]
+default-members = ["compiler/crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+repository = "https://github.com/rywible/wrela"
+publish = false
+
+[workspace.dependencies]
+wrela-cli = { path = "compiler/crates/wrela-cli" }
+wrela-diag = { path = "compiler/crates/wrela-diag" }
+wrela-driver = { path = "compiler/crates/wrela-driver" }
+wrela-syntax = { path = "compiler/crates/wrela-syntax" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unused_qualifications = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+# Clippy's default set plus a short, deliberate list. Each entry catches a real bug class or keeps
+# code uniform cheaply; pedantic as a whole is too noisy for its value.
+[workspace.lints.clippy]
+# Panics and leftovers: the compiler must not panic on any input. An invariant that truly can't
+# fail takes `#[expect(clippy::expect_used, reason = "...")]`, so each one is visible and argued.
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+allow_attributes_without_reason = "warn"
+# Idioms (pedantic), cheap to follow.
+cloned_instead_of_copied = "warn"
+explicit_iter_loop = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+manual_let_else = "warn"
+needless_pass_by_value = "warn"
+redundant_closure_for_method_calls = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+unnested_or_patterns = "warn"
+wildcard_imports = "warn"
+
+# Overflow checks stay on: an overflow in the compiler is a bug to report, not wrap silently, and
+# the fuzz smoke test runs in release. Line tables give its panics a usable backtrace.
+[profile.release]
+overflow-checks = true
+debug = "line-tables-only"

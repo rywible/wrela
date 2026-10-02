@@ -1,0 +1,16 @@
+// `/* */` comments are E0002. The lexer skips each one whole, nesting like Rust's, and keeps going.
+/* a block comment */ //~ ERROR E0002
+fn f() -> u32 {
+    1 /* trailing */ //~ ERROR E0002
+}
+
+/* nested /* comments */ are skipped whole */ fn g() {} //~ ERROR E0002
+
+/** a doc block */ //~ ERROR E0002
+fn h() {}
+
+/* a comment over
+   two lines */
+//~^^ ERROR E0002
+
+fn after() -> u32 { 2 $ } //~ ERROR E0001

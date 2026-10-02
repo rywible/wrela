@@ -1,0 +1,13 @@
+// A non-ASCII name, stray characters and an invisible space.
+fn area(r: f32) -> f32 {
+    let π = 3.14159
+    π * r * r
+}
+
+fn price(cost: u32) -> u32 {
+	cost * 2 $$
+}
+
+fn spaced(x: f32) -> f32 {
+    x + 1.0
+}

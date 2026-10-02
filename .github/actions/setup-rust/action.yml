@@ -1,0 +1,39 @@
+name: Set up Rust
+description: Install the toolchain pinned in rust-toolchain.toml and restore the cargo cache.
+
+inputs:
+  components:
+    description: Comma-separated rustup components to install.
+    required: false
+    default: ""
+  cache:
+    description: Restore (and, on main, save) the cargo cache.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # dtolnay/rust-toolchain does not read rust-toolchain.toml, so the channel is read here: the
+    # file stays the single source of truth for the toolchain version.
+    - id: pin
+      shell: bash
+      run: |
+        channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml)"
+        if [ -z "$channel" ]; then
+          echo "::error file=rust-toolchain.toml::no channel = \"...\" line found"
+          exit 1
+        fi
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+    - uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: ${{ steps.pin.outputs.channel }}
+        components: ${{ inputs.components }}
+
+    # Only main saves caches: PR runs restore main's, so pushes to PRs do not evict them from the
+    # repository's 10 GB cache quota.
+    - if: inputs.cache == 'true'
+      uses: Swatinem/rust-cache@v2
+      with:
+        save-if: ${{ github.ref == 'refs/heads/main' }}

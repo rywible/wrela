@@ -1,0 +1,232 @@
+{
+  "version": 1,
+  "diagnostics": [
+    {
+      "code": "E0002",
+      "severity": "error",
+      "message": "`/* */` comments aren't supported",
+      "primary": {
+        "span": {
+          "file": "compiler/tests/golden/e0002-block-comment.wrela",
+          "start": {
+            "offset": 0,
+            "line": 1,
+            "column": 1
+          },
+          "end": {
+            "offset": 27,
+            "line": 1,
+            "column": 28
+          }
+        },
+        "message": null
+      },
+      "secondary": [],
+      "notes": [],
+      "help": [
+        {
+          "message": "write it as a `//` comment",
+          "edits": [
+            {
+              "span": {
+                "file": "compiler/tests/golden/e0002-block-comment.wrela",
+                "start": {
+                  "offset": 0,
+                  "line": 1,
+                  "column": 1
+                },
+                "end": {
+                  "offset": 27,
+                  "line": 1,
+                  "column": 28
+                }
+              },
+              "replacement": "// The area of a circle."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "code": "E0002",
+      "severity": "error",
+      "message": "`/* */` comments aren't supported",
+      "primary": {
+        "span": {
+          "file": "compiler/tests/golden/e0002-block-comment.wrela",
+          "start": {
+            "offset": 73,
+            "line": 3,
+            "column": 21
+          },
+          "end": {
+            "offset": 91,
+            "line": 3,
+            "column": 39
+          }
+        },
+        "message": null
+      },
+      "secondary": [],
+      "notes": [],
+      "help": [
+        {
+          "message": "write it as a `//` comment",
+          "edits": [
+            {
+              "span": {
+                "file": "compiler/tests/golden/e0002-block-comment.wrela",
+                "start": {
+                  "offset": 73,
+                  "line": 3,
+                  "column": 21
+                },
+                "end": {
+                  "offset": 91,
+                  "line": 3,
+                  "column": 39
+                }
+              },
+              "replacement": "// pi r squared"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "code": "E0002",
+      "severity": "error",
+      "message": "`/* */` comments aren't supported",
+      "primary": {
+        "span": {
+          "file": "compiler/tests/golden/e0002-block-comment.wrela",
+          "start": {
+            "offset": 95,
+            "line": 6,
+            "column": 1
+          },
+          "end": {
+            "offset": 126,
+            "line": 6,
+            "column": 32
+          }
+        },
+        "message": null
+      },
+      "secondary": [],
+      "notes": [],
+      "help": [
+        {
+          "message": "write it as a `///` doc comment",
+          "edits": [
+            {
+              "span": {
+                "file": "compiler/tests/golden/e0002-block-comment.wrela",
+                "start": {
+                  "offset": 95,
+                  "line": 6,
+                  "column": 1
+                },
+                "end": {
+                  "offset": 126,
+                  "line": 6,
+                  "column": 32
+                }
+              },
+              "replacement": "/// Doc comment, Rust style."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "code": "E0002",
+      "severity": "error",
+      "message": "`/* */` comments aren't supported",
+      "primary": {
+        "span": {
+          "file": "compiler/tests/golden/e0002-block-comment.wrela",
+          "start": {
+            "offset": 157,
+            "line": 8,
+            "column": 5
+          },
+          "end": {
+            "offset": 202,
+            "line": 8,
+            "column": 50
+          }
+        },
+        "message": null
+      },
+      "secondary": [],
+      "notes": [],
+      "help": [
+        {
+          "message": "write it as a `//` comment on its own line or at the line's end",
+          "edits": []
+        }
+      ]
+    },
+    {
+      "code": "E0002",
+      "severity": "error",
+      "message": "`/* */` comments aren't supported",
+      "primary": {
+        "span": {
+          "file": "compiler/tests/golden/e0002-block-comment.wrela",
+          "start": {
+            "offset": 214,
+            "line": 11,
+            "column": 1
+          },
+          "end": {
+            "offset": 251,
+            "line": 13,
+            "column": 4
+          }
+        },
+        "message": null
+      },
+      "secondary": [],
+      "notes": [],
+      "help": [
+        {
+          "message": "start each comment line with `//`",
+          "edits": []
+        }
+      ]
+    },
+    {
+      "code": "E0002",
+      "severity": "error",
+      "message": "`/* */` comments aren't supported",
+      "primary": {
+        "span": {
+          "file": "compiler/tests/golden/e0002-block-comment.wrela",
+          "start": {
+            "offset": 299,
+            "line": 18,
+            "column": 18
+          },
+          "end": {
+            "offset": 301,
+            "line": 18,
+            "column": 20
+          }
+        },
+        "message": "this comment is never closed"
+      },
+      "secondary": [],
+      "notes": [
+        "the rest of the file was skipped"
+      ],
+      "help": [
+        {
+          "message": "start each comment line with `//`",
+          "edits": []
+        }
+      ]
+    }
+  ]
+}

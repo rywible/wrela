@@ -1,0 +1,15 @@
+[package]
+name = "wrela-syntax"
+description = "The wrela lexer (and, from S1, the parser, AST and formatter)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+wrela-diag.workspace = true
+
+[lints]
+workspace = true

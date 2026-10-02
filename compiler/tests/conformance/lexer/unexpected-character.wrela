@@ -1,0 +1,31 @@
+// Characters that can't start a token are E0001, one diagnostic per run of them.
+fn area(r: f32) -> f32 {
+    let π = 3.14159 //~ ERROR E0001 unexpected character `π`
+    π * r * r //~ ERROR E0001
+}
+
+fn price(cost: u32) -> u32 {
+    cost * 2 $$ //~ ERROR E0001 unexpected characters `$$`
+}
+
+fn café() -> u32 {
+//~^ ERROR E0001 unexpected character `é`
+    0
+}
+
+// A name with non-ASCII letters is one error, however many there are: the name stays whole.
+fn naïve_café() -> u32 { 0 } //~ ERROR E0001 unexpected characters `ï` `é`
+
+#[inline] //~ ERROR E0001 `#`
+fn fast() {}
+
+// Invisible characters, and the backtick, are named by code point.
+fn spaced(x: f32) -> f32 {
+    x + 1.0 //~ ERROR E0001 U+00A0
+}
+
+fn hidden(x: f32) -> f32 {
+    x​ //~ ERROR E0001 U+200B
+}
+
+fn tick() {} ` //~ ERROR E0001 U+0060

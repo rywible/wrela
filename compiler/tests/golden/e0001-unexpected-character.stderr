@@ -1,0 +1,33 @@
+error[E0001]: unexpected character `π`
+ --> compiler/tests/golden/e0001-unexpected-character.wrela:3:9
+  |
+3 |     let π = 3.14159
+  |         ^
+  |
+  = note: identifiers are ASCII: letters, digits and `_`
+
+error[E0001]: unexpected character `π`
+ --> compiler/tests/golden/e0001-unexpected-character.wrela:4:5
+  |
+4 |     π * r * r
+  |     ^
+  |
+  = note: identifiers are ASCII: letters, digits and `_`
+
+error[E0001]: unexpected characters `$$`
+ --> compiler/tests/golden/e0001-unexpected-character.wrela:8:11
+  |
+8 |     cost * 2 $$
+  |              ^^
+
+error[E0001]: unexpected character U+00A0
+  --> compiler/tests/golden/e0001-unexpected-character.wrela:12:8
+   |
+12 |     x +<U+00A0>1.0
+   |        ^^^^^^^^ invisible in most editors
+   |
+help: replace it with a space
+   |
+12 |     x + 1.0
+
+check failed: 4 errors

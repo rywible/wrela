@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "diagnostics": [
+    {
+      "code": "E0001",
+      "severity": "error",
+      "message": "unexpected character `π`",
+      "primary": {
+        "span": {
+          "file": "compiler/tests/golden/e0001-unexpected-character.wrela",
+          "start": {
+            "offset": 95,
+            "line": 3,
+            "column": 9
+          },
+          "end": {
+            "offset": 97,
+            "line": 3,
+            "column": 10
+          }
+        },
+        "message": null
+      },
+      "secondary": [],
+      "notes": [
+        "identifiers are ASCII: letters, digits and `_`"
+      ],
+      "help": []
+    },
+    {
+      "code": "E0001",
+      "severity": "error",
+      "message": "unexpected character `π`",
+      "primary": {
+        "span": {
+          "file": "compiler/tests/golden/e0001-unexpected-character.wrela",
+          "start": {
+            "offset": 112,
+            "line": 4,
+            "column": 5
+          },
+          "end": {
+            "offset": 114,
+            "line": 4,
+            "column": 6
+          }
+        },
+        "message": null
+      },
+      "secondary": [],
+      "notes": [
+        "identifiers are ASCII: letters, digits and `_`"
+      ],
+      "help": []
+    },
+    {
+      "code": "E0001",
+      "severity": "error",
+      "message": "unexpected characters `$$`",
+      "primary": {
+        "span": {
+          "file": "compiler/tests/golden/e0001-unexpected-character.wrela",
+          "start": {
+            "offset": 165,
+            "line": 8,
+            "column": 11
+          },
+          "end": {
+            "offset": 167,
+            "line": 8,
+            "column": 13
+          }
+        },
+        "message": null
+      },
+      "secondary": [],
+      "notes": [],
+      "help": []
+    },
+    {
+      "code": "E0001",
+      "severity": "error",
+      "message": "unexpected character U+00A0",
+      "primary": {
+        "span": {
+          "file": "compiler/tests/golden/e0001-unexpected-character.wrela",
+          "start": {
+            "offset": 205,
+            "line": 12,
+            "column": 8
+          },
+          "end": {
+            "offset": 207,
+            "line": 12,
+            "column": 9
+          }
+        },
+        "message": "invisible in most editors"
+      },
+      "secondary": [],
+      "notes": [],
+      "help": [
+        {
+          "message": "replace it with a space",
+          "edits": [
+            {
+              "span": {
+                "file": "compiler/tests/golden/e0001-unexpected-character.wrela",
+                "start": {
+                  "offset": 205,
+                  "line": 12,
+                  "column": 8
+                },
+                "end": {
+                  "offset": 207,
+                  "line": 12,
+                  "column": 9
+                }
+              },
+              "replacement": " "
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
