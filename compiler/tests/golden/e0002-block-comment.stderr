@@ -1,0 +1,59 @@
+error[E0002]: `/* */` comments aren't supported
+ --> compiler/tests/golden/e0002-block-comment.wrela:1:1
+  |
+1 | /* The area of a circle. */
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+help: write it as a `//` comment
+  |
+1 | // The area of a circle.
+
+error[E0002]: `/* */` comments aren't supported
+ --> compiler/tests/golden/e0002-block-comment.wrela:3:21
+  |
+3 |     3.14159 * r * r /* pi r squared */
+  |                     ^^^^^^^^^^^^^^^^^^
+  |
+help: write it as a `//` comment
+  |
+3 |     3.14159 * r * r // pi r squared
+
+error[E0002]: `/* */` comments aren't supported
+ --> compiler/tests/golden/e0002-block-comment.wrela:6:1
+  |
+6 | /** Doc comment, Rust style. */
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+help: write it as a `///` doc comment
+  |
+6 | /// Doc comment, Rust style.
+
+error[E0002]: `/* */` comments aren't supported
+ --> compiler/tests/golden/e0002-block-comment.wrela:8:5
+  |
+8 |     /* nested /* comments */ are skipped whole */ x * 2.0
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: write it as a `//` comment on its own line or at the line's end
+
+error[E0002]: `/* */` comments aren't supported
+  --> compiler/tests/golden/e0002-block-comment.wrela:11:1
+   |
+11 | /*
+   | ^^
+...
+13 |  */
+   |  ^^
+   |
+   = help: start each comment line with `//`
+
+error[E0002]: `/* */` comments aren't supported
+  --> compiler/tests/golden/e0002-block-comment.wrela:18:18
+   |
+18 | fn unclosed() {} /* never closed
+   |                  ^^ this comment is never closed
+   |
+   = note: the rest of the file was skipped
+   = help: start each comment line with `//`
+
+check failed: 6 errors

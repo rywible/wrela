@@ -1,0 +1,4 @@
+// An unclosed `/*` is reported at the opener, and the rest of the file is skipped.
+fn f() {}
+/* this comment is never closed //~ ERROR E0002
+fn g() { $ }

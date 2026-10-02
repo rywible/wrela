@@ -1,0 +1,38 @@
+[package]
+name = "wrela-test"
+description = "Test runners: conformance annotations, golden files, explain texts, docs, fuzz smoke"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+wrela-cli.workspace = true
+wrela-diag.workspace = true
+wrela-driver.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "fuzz-smoke"
+path = "src/bin/fuzz-smoke.rs"
+
+[[test]]
+name = "conformance"
+harness = false
+
+[[test]]
+name = "golden"
+harness = false
+
+[[test]]
+name = "explain"
+harness = false
+
+[[test]]
+name = "repo"
+harness = false
+
+[lints]
+workspace = true

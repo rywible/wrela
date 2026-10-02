@@ -49,7 +49,7 @@ The compiler knows about exactly these execution targets:
 | A unit can follow a number as a suffix: `15cm` means `15 * cm` | T1 | D-025, D-076 |
 | `**` is exponentiation; `^` is XOR | T0 | D-076 |
 
-```wrela
+```wrela imagined
 let r = ellipsoid(radii: vec3(0.45m, 0.50m, 0.90m))
     .smooth_union(haunch, k: 15cm)      // a leading `.` continues the expression
     .displace(fbm(freq: 25 / m, octaves: 4), amp: 3mm)
@@ -71,7 +71,7 @@ let total = base +                      // a continued line ends with the operat
 - **Properties are attributes** (§9): `@deterministic fn step(...)`.
 - **Return-position `Field<K, C>`** (or any trait-shaped type) names one concrete, inferred type, like Rust's `impl Trait` (D-070).
 
-```wrela
+```wrela imagined
 fn leg_segment(len: f32<m>, r_top: f32<m>, r_bottom: f32<m> = 6cm) -> Field<Exact, Tissue> {
     round_cone(vec3(), vec3(y: -len), r_top, r_bottom).with(HIDE)
 }
@@ -85,7 +85,7 @@ leg_segment(45cm, r_top: 9cm)          // positional first, then named
 - **A struct opts in to traits in its declaration:** `struct Tissue: Blend { ... }` (D-026, D-078).
 - **`..base`** fills the remaining fields from another value. Placeholder: sketch 01 uses it; no decision covers it.
 
-```wrela
+```wrela imagined
 pub struct CreatureLook {
     pub surface: Mesh   = Mesh { tolerance: 2mm },
     pub shadow:  Shadow = Shadow::Map { resolution: 1024 },
@@ -98,7 +98,7 @@ const GRAZER_LOOK = CreatureLook { surface: Mesh { tolerance: 1mm } }   // shado
 
 Enums are sum types with payloads, matched with `match`. They're how structure is chosen at runtime from a known, finite set: every case is compiled, with a uniform branch (D-070).
 
-```wrela
+```wrela imagined
 pub enum Edit: SimState + StateHash + Serialize + Copy {
     Dig  { at: vec3<m>, radius: f32<m> },
     Fill { at: vec3<m>, radius: f32<m> },
@@ -115,7 +115,7 @@ pub enum Edit: SimState + StateHash + Serialize + Copy {
 
 `const` items are evaluated at compile time (D-073). A `const` whose initializer calls functions needs the compile-time interpreter, which is tier 1 (D-088). Staging work earlier is done by writing a `const`, never by relying on the optimizer (D-072).
 
-```wrela
+```wrela imagined
 const HOOF_MODES = modal_modes(hoof())     // an eigenvalue solve, run by the compiler
 ```
 
@@ -123,7 +123,7 @@ const HOOF_MODES = modal_modes(hoof())     // an eigenvalue solve, run by the co
 
 **Modules (T0):** a program is one package. A file is a module and a directory is a module tree: `shapes/blob.wrela` is `shapes::blob`. `use` imports names; `pub` makes an item visible outside its file. The stdlib's root is `std::` (D-081).
 
-```wrela
+```wrela imagined
 use shapes::blob::blob      // from shapes/blob.wrela
 use std::gpu::dispatch
 ```
@@ -169,7 +169,7 @@ Units are part of types and erase at compile time (D-022, D-025, D-076).
 - **Units flow through derived gradients:** d(out)/d(in) has unit out/in.
 - **Constraint:** no unit may collide with numeric syntax. There's no unit named `e`.
 
-```wrela
+```wrela imagined
 let density: f32<kg/m**3> = 1050 * kg/m**3
 let wrong = density + 2m        // error: can't add kg/m³ to m
 ```
@@ -210,7 +210,7 @@ let wrong = density + 2m        // error: can't add kg/m³ to m
 
 ### 6.1 Values, copies and moves
 
-```wrela
+```wrela imagined
 let a = vec3(1m, 2m, 3m)
 let b = a                      // vec3 is Copy: an implicit copy
 
@@ -249,7 +249,7 @@ log.push(edit)                 // error: `log` was moved into `archive` on line 
 | `var x = temporary`, `var x = take place`, or `var x = place.clone()` | Owned and mutable. |
 | `mut x = place` | A mutable projection of an existing place. |
 
-```wrela
+```wrela imagined
 let g = world.grazers[h]       // read-only projection: no copy
 mut t = world.terrain          // mutable projection
 t.edits.push(Edit::Dig { at, radius: 1m })
@@ -260,7 +260,7 @@ var spare = world.grazers[h].clone()   // an owned copy, mutable (fine: GrazerSi
 
 A function can hand back access to part of one of its parameters, instead of a value:
 
-```wrela
+```wrela imagined
 fn grazer(world: mut World, h: Handle<GrazerSim>) -> mut GrazerSim {
     mut world.grazers[h]
 }
@@ -283,7 +283,7 @@ g.root.pos.y += 1m
 
 **The rule:** while a `mut` access is live, from where it's created to its last use, no other access may touch an overlapping place. In a single call, arguments may not overlap if any of them is `mut`.
 
-```wrela
+```wrela imagined
 for mut g in world.grazers {
     step(mut g, world, intent)
     // error: `world` overlaps `world.grazers`, which `g` is mutably borrowing
@@ -310,7 +310,7 @@ Some values need to *hold* access to other data: views, and iterators that walk 
 - **Any type with a non-escaping part is non-escaping too.** This is structural and automatic.
 - **Non-escaping values follow the projection rules.** They can be passed down and returned as projections. They can never be stored in an escapable type, put in a collection, or captured by an escaping closure.
 
-```wrela
+```wrela imagined
 for e in cell.edges().filter(|e| crosses(e)) { ... }   // a borrowing iterator chain: fine
 
 struct Window { rows: Span<f32>, width: u32 }          // non-escaping, because Span is
@@ -332,7 +332,7 @@ This is what removed most of the cost of second-class references (D-058). Views 
 - **By default, a closure parameter is non-escaping.** The callee must finish with it before it returns. These closures can capture projections, both `borrow` and `mut`, and that access counts as live for the duration of the call.
 - **An escaping closure is marked `@escaping`.** It can be stored or spawned, and it captures only owned values and handles. Moving a named place into one is written `take`.
 
-```wrela
+```wrela imagined
 world.grazers.par_each_mut(|g| step(mut g, world.terrain, intent))   // non-escaping: may capture projections
 timers.after(2s, @escaping |w| w.spawn(take herd))                   // escaping: owns what it captures
 ```
@@ -352,7 +352,7 @@ timers.after(2s, @escaping |w| w.spawn(take herd))                   // escaping
 - **The global heap** backs `Vec`, `String` and `Box`. They own their memory and free it when dropped.
 - **Scratch arenas** (per frame, per pass) hand out non-escaping containers:
 
-```wrela
+```wrela imagined
 fn build_lists(scratch: mut Scratch, ...) {
     var near = scratch.list::<Handle<GrazerSim>>()   // non-escaping: borrows `scratch`
     ...
@@ -396,7 +396,7 @@ This is what makes "nothing outside the region points into it" (§6.11) a rule r
 
 ### 6.11 Snapshots: copy-on-first-write chunks
 
-```wrela
+```wrela imagined
 region.checkpoint(epoch)     // start an epoch: each chunk's old bytes are saved the first time it's written
 region.rewind(to: epoch)     // restore every chunk saved since then
 region.keyframe() -> Bytes   // the whole region, for save files and repro bundles
@@ -497,7 +497,7 @@ error: `edits` is region-bound and can't be owned outside its region
 | **Library-authored diagnostics:** `@diagnostic(...)` attaches a message to a trait or type, for when a bound isn't met. | T1 | D-055 |
 | **Effects are checked per instantiation.** | T0 | D-071 |
 
-```wrela
+```wrela imagined
 /// Generic over any field with this shape; monomorphized per concrete field type.
 @compute(64)
 fn cull_blocks<F: Surface>(field: F, grid: Grid, live: mut Append<LiveBlock>, id: GlobalId) {
@@ -600,7 +600,7 @@ User-defined metadata, if it's ever needed, gets a different syntax, so `@` alwa
 | **Transfers are explicit.** `gpu.write(buf, data)` copies. Calling a `@compute` function from CPU code (`dispatch`) records a dispatch; small `GpuData` arguments travel as uniforms, bulk data as buffers. Writes and dispatches take effect in recorded order, with no barriers between dispatches. GPU calls carry the `host` effect. | T0 | D-102 |
 | **Readback is asynchronous:** `gpu.read(span)` returns a future and has the `nondet` effect, so `@deterministic` code can't call it. | T2 | D-102 |
 
-```wrela
+```wrela imagined
 @fragment
 fn shade<F: Surface + Channels<C>, C: Blend>(field: F, s: Skinned, lights: Lights) -> Color {
     let fp = fwidth(s.rest_pos)                         // this pixel's footprint
@@ -716,7 +716,7 @@ The sim/presentation split is an engine pattern built on this, not a language fe
 
 This is the subset needed for "hello field" (D-088 tier 0): a field, a derived gradient, one compute kernel and one fragment shader. No units, regions or determinism.
 
-```wrela
+```wrela imagined
 use std::field::{Field, Bound, Surface, sphere, round_cone}
 use std::gpu::{GlobalId, Slots}
 

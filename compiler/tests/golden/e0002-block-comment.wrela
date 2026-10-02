@@ -1,0 +1,19 @@
+/* The area of a circle. */
+fn area(r: f32) -> f32 {
+    3.14159 * r * r /* pi r squared */
+}
+
+/** Doc comment, Rust style. */
+fn twice(x: f32) -> f32 {
+    /* nested /* comments */ are skipped whole */ x * 2.0
+}
+
+/*
+ * A comment over three lines.
+ */
+fn zero() -> f32 {
+    0.0
+}
+
+fn unclosed() {} /* never closed
+fn hidden() { $ }
