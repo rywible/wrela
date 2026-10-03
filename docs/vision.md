@@ -1,6 +1,6 @@
 # wrela: vision
 
-*The goal, the theses and their evidence, the architecture, the renderer, and the constraints everything else rests on. Updated 2026-10-02, after spikes 01–12. Decision IDs (D-NNN), sketches and spikes refer to the design record in the git tag `design-archive-2026-10`.*
+*The goal, the theses and their evidence, the architecture, the renderer, and the constraints everything else rests on. Updated 2026-10-02, after spikes 01–13. Decision IDs (D-NNN), sketches and spikes refer to the design record in the git tag `design-archive-2026-10`; spike 13 is in the tag `spike-13-field-math`.*
 
 ## Goal
 
@@ -21,7 +21,7 @@ They're hypotheses. Each line says where the evidence stands.
 | **1. Agent-native authoring.** An engine and language designed for agents first lets one human plus a team of agents operate like an AAA studio. | **Weakest.** Unaided agents author recognisable creatures as fields, but only at placeholder quality. The lens tool (click to source, drag to edit, fit to a reference) works mechanically, but nobody has authored with it yet. Tested properly in M4. |
 | **2. Fields are the substrate.** Content is authored as fields: functions over space. They're compact and need no prebaked assets, so games are megabytes, not gigabytes. | **Holds as the source; not as the per-frame representation.** Evaluating authored fields per pixel per frame fails for anything big on screen. Cooking them on device into meshes, caches and textures works (see the renderer below). |
 | **3. The browser is the platform.** WebGPU makes AAA-class rendering viable there. | **Holds on the reference device** for creatures, terrain and lighting with the renderer below. Chrome only so far; Safari, Firefox and the secondary devices are untested. |
-| **4. A compiler that sees the game wins.** A compiler that sees the whole game's semantics can do what engines with opaque assets can't. | **Unproven.** Hand-written "compiler output" is fast enough, and derived gradients, intervals and part masks earned their keep by hand. M1's golden test is the first time a compiler produces them; M2 tests it at scale. The claim that fields beat baked assets on raw speed is not supported: per-pixel field shading costs 1.6–2.8× a texture lookup. The case is generality and size. |
+| **4. A compiler that sees the game wins.** A compiler that sees the whole game's semantics can do what engines with opaque assets can't. | **Unproven.** Hand-written "compiler output" is fast enough, and derived gradients, intervals and part masks earned their keep by hand. M1's golden test is the first time a compiler produces them; M2 tests it at scale. Spike 13: the compiler's nested derivations certify a smooth creature's mesh and its topology across an animation, something an opaque asset can't offer; noisy and sharp-edged fields don't certify yet. The claim that fields beat baked assets on raw speed is not supported: per-pixel field shading costs 1.6–2.8× a texture lookup. The case is generality and size. |
 
 **How they interlock:** fields turn art production into programming, which is what agents are good at (1–2). When content is code, the compiler sees the whole game (2–4). Fields trade bytes for compute, and the browser is where compute is tightest (2–3); the compiler and on-device cooking reconcile them.
 
@@ -88,6 +88,7 @@ Decided after spikes 01–12 (2026-10-02). **Cook fields on device; rasterize wh
 | 10 | Materials from field quantities | Eyes pass (+0.4 ms); skin +6.7 ms, layered stone +8.8 ms and leaves +68 ms fail when evaluated per pixel |
 | 11 | Hair and cloth | **Raster plus depth-bounded tracing passes** at 1.05 ms (0.39 ms close up); simulation 0.39 ms; pure fields 2.1 ms, failing close up (3.8 ms) |
 | 12 | Styles | Cel with field-native outlines is the most attractive; stylized content saves 20–36% |
+| 13 | Certified field math (native host: wasmtime and wgpu) | Nested derived bounds certify the smooth creature for meshing (0 open boxes to 3.9 mm; 5 ms per 2M boxes on the GPU) and its topology for every breath (0.4 s); a corner-sampled grid misses a 12 mm part the certificate finds. Bark noise and box edges don't certify; segment tracing with derived bounds costs 3–50× sphere tracing |
 
 ## Constraints
 
