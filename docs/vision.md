@@ -18,10 +18,10 @@ They're hypotheses. Each line says where the evidence stands.
 
 | Thesis | Evidence so far |
 |---|---|
-| **1. Agent-native authoring.** An engine and language designed for agents first lets one human plus a team of agents operate like an AAA studio. | **Weakest.** Unaided agents author recognisable creatures as fields, but only at placeholder quality. The lens tool (click to source, drag to edit, fit to a reference) works mechanically, but nobody has authored with it yet. Tested properly in M4. |
+| **1. Agent-native authoring.** An engine and language designed for agents first lets one human plus a team of agents operate like an AAA studio. | **Weakest.** Unaided agents author recognisable creatures as fields, but only at placeholder quality. The lens tool (click to source, drag to edit, fit to a reference) works mechanically, but nobody has authored with it yet. Tested properly in M5. |
 | **2. Fields are the substrate.** Content is authored as fields: functions over space. They're compact and need no prebaked assets, so games are megabytes, not gigabytes. | **Holds as the source; not as the per-frame representation.** Evaluating authored fields per pixel per frame fails for anything big on screen. Cooking them on device into meshes, caches and textures works (see the renderer below). |
 | **3. The browser is the platform.** WebGPU makes AAA-class rendering viable there. | **Holds on the reference device** for creatures, terrain and lighting with the renderer below. Chrome only so far; Safari, Firefox and the secondary devices are untested. |
-| **4. A compiler that sees the game wins.** A compiler that sees the whole game's semantics can do what engines with opaque assets can't. | **Unproven.** Hand-written "compiler output" is fast enough, and derived gradients, intervals and part masks earned their keep by hand. M1's golden test is the first time a compiler produces them; M2 tests it at scale. Spike 13: the compiler's nested derivations certify a smooth creature's mesh and its topology across an animation, something an opaque asset can't offer; noisy and sharp-edged fields don't certify yet. The claim that fields beat baked assets on raw speed is not supported: per-pixel field shading costs 1.6–2.8× a texture lookup. The case is generality and size. |
+| **4. A compiler that sees the game wins.** A compiler that sees the whole game's semantics can do what engines with opaque assets can't. | **Unproven.** Hand-written "compiler output" is fast enough, and derived gradients, intervals and part masks earned their keep by hand. M1's golden test is the first time a compiler produces them; M3 tests it at scale. Spike 13: the compiler's nested derivations certify a smooth creature's mesh and its topology across an animation, something an opaque asset can't offer; noisy and sharp-edged fields don't certify yet. The claim that fields beat baked assets on raw speed is not supported: per-pixel field shading costs 1.6–2.8× a texture lookup. The case is generality and size. |
 
 **How they interlock:** fields turn art production into programming, which is what agents are good at (1–2). When content is code, the compiler sees the whole game (2–4). Fields trade bytes for compute, and the browser is where compute is tightest (2–3); the compiler and on-device cooking reconcile them.
 
@@ -137,11 +137,12 @@ Planned in GitHub issues on rywible/wrela, not here. Each milestone has a scope 
 |---|---|
 | **M0: measure first** | Done: spikes 01–12 |
 | **M1: hello field** | wrela compiles to WASM and WGSL; a field renders in a browser tab |
-| **M2: the engine's spine** | Spike 01's herd rendered from wrela source, matching the hand-written numbers |
-| **M3: a clearing** | A forest clearing at 60 fps with a creature walking across it, in the chosen art direction |
-| **M4: authoring** | Humans and agents authoring in wrela with real tools; thesis 1 tested |
-| **M5: a playable slice** | Something you can play from a link |
-| **M6: the world** | A streamed open-world region you can ride and fly across |
+| **M2: the language** | The language and stdlib, complete: tiers 0–2, without a compiler in the browser |
+| **M3: the engine's spine** | Spike 01's herd rendered from wrela source, matching the hand-written numbers |
+| **M4: a clearing** | A forest clearing at 60 fps with a creature walking across it, in the chosen art direction |
+| **M5: authoring** | Humans and agents authoring in wrela with real tools; thesis 1 tested |
+| **M6: a playable slice** | Something you can play from a link |
+| **M7: the world** | A streamed open-world region you can ride and fly across |
 
 Everything else in the vision is in the backlog issue (#31). The pinned issue #26 tracks status against the vision.
 
