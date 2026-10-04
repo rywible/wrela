@@ -18,10 +18,10 @@ They're hypotheses. Each line says where the evidence stands.
 
 | Thesis | Evidence so far |
 |---|---|
-| **1. Agent-native authoring.** An engine and language designed for agents first lets one human plus a team of agents operate like an AAA studio. | **Weakest.** Unaided agents author recognisable creatures as fields, but only at placeholder quality. The lens tool (click to source, drag to edit, fit to a reference) works mechanically, but nobody has authored with it yet. Tested properly in M5. |
+| **1. Agent-native authoring.** An engine and language designed for agents first lets one human plus a team of agents operate like an AAA studio. | **Weakest.** Unaided agents author recognisable creatures as fields, but only at placeholder quality. The lens tool (click to source, drag to edit, fit to a reference) works mechanically, but nobody has authored with it yet. Tested in M3: a second authoring round with the lens, judged blind against the first. |
 | **2. Fields are the substrate.** Content is authored as fields: functions over space. They're compact and need no prebaked assets, so games are megabytes, not gigabytes. | **Holds as the source; not as the per-frame representation.** Evaluating authored fields per pixel per frame fails for anything big on screen. Cooking them on device into meshes, caches and textures works (see the renderer below). |
 | **3. The browser is the platform.** WebGPU makes AAA-class rendering viable there. | **Holds on the reference device** for creatures, terrain and lighting with the renderer below. Chrome only so far; Safari, Firefox and the secondary devices are untested. |
-| **4. A compiler that sees the game wins.** A compiler that sees the whole game's semantics can do what engines with opaque assets can't. | **Unproven.** Hand-written "compiler output" is fast enough, and derived gradients, intervals and part masks earned their keep by hand. M1's golden test is the first time a compiler produces them; M3 tests it at scale. Spike 13: the compiler's nested derivations certify a smooth creature's mesh and its topology across an animation, something an opaque asset can't offer; noisy and sharp-edged fields don't certify yet. The claim that fields beat baked assets on raw speed is not supported: per-pixel field shading costs 1.6–2.8× a texture lookup. The case is generality and size. |
+| **4. A compiler that sees the game wins.** A compiler that sees the whole game's semantics can do what engines with opaque assets can't. | **Unproven.** Hand-written "compiler output" is fast enough, and derived gradients, intervals and part masks earned their keep by hand. M1's golden test is the first time a compiler produces them; M4 tests it at scale. Spike 13: the compiler's nested derivations certify a smooth creature's mesh and its topology across an animation, something an opaque asset can't offer; noisy and sharp-edged fields don't certify yet. The claim that fields beat baked assets on raw speed is not supported: per-pixel field shading costs 1.6–2.8× a texture lookup. The case is generality and size. |
 
 **How they interlock:** fields turn art production into programming, which is what agents are good at (1–2). When content is code, the compiler sees the whole game (2–4). Fields trade bytes for compute, and the browser is where compute is tightest (2–3); the compiler and on-device cooking reconcile them.
 
@@ -110,7 +110,7 @@ The load-bearing rules. Changing one needs the owner, and the change and its rea
 | **One origin per game;** saves stay in the game's origin (D-082, D-101). | A bug in one game can't reach another's saves. |
 | **Reference device:** MacBook Air M4 in Chrome. **Budgets:** 16.7 ms per frame at 1080p, ≤ 1.5 GB per tab, ≤ 64 pipelines per scene, sim ≤ 4 ms per tick (D-068, D-096). | Every claim is measured against these. |
 | **Size budgets:** runtime ≤ 1 MB; time-to-play ≤ 6 MB; cold start ≤ 8 MB, playable within 5 s; total ≤ 32 MB plus 32 MB of streamed music (D-041, D-069, D-083). | "Megabytes, not gigabytes." |
-| **Facts about functions can be scoped;** trusted facts are spot-checked by sampling in debug builds (D-077, D-092). | Authors' declared bounds were wrong three times in the spikes. |
+| **A field's declared bounds are checked,** not trusted: a bound is a stdlib method (`Lipschitz`), and debug builds and tests check it against the bound the compiler derives (D-077, D-092; revised by the owner's language review of 2026-10-02, which replaced facts as compiler attributes). | Authors' declared bounds were wrong three times in the spikes. |
 | **The grammar is the spec;** the hand-written parser conforms by test (D-104). | Agents and tools get a machine-checkable definition. |
 | **The source is the truth; every tool is a lens that reads and writes it,** and every tool action is also an API call (D-105). | Agents and humans edit the same thing. |
 | **Estimates are labelled until measured; untested claims are hypotheses.** | Honest engineering. |
@@ -138,9 +138,9 @@ Planned in GitHub issues on rywible/wrela, not here. Each milestone has a scope 
 | **M0: measure first** | Done: spikes 01–12 |
 | **M1: hello field** | wrela compiles to WASM and WGSL; a field renders in a browser tab |
 | **M2: the language** | The language and stdlib, complete: tiers 0–2, without a compiler in the browser |
-| **M3: the engine's spine** | Spike 01's herd rendered from wrela source, matching the hand-written numbers |
-| **M4: a clearing** | A forest clearing at 60 fps with a creature walking across it, in the chosen art direction |
-| **M5: authoring** | Humans and agents authoring in wrela with real tools; thesis 1 tested |
+| **M3: the first lens** | Agents author creatures with the lens, a studio tool written in wrela; thesis 1 tested blind against the first authoring round |
+| **M4: the engine's spine** | Spike 01's herd rendered from wrela source, matching the hand-written numbers |
+| **M5: a clearing** | A forest clearing at 60 fps with a creature walking across it, in the chosen art direction, authored with the lens |
 | **M6: a playable slice** | Something you can play from a link |
 | **M7: the world** | A streamed open-world region you can ride and fly across |
 
