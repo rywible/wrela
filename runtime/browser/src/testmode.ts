@@ -4,7 +4,10 @@
 // the program printed (`log.txt`) and each frame's CPU time, when it began, and the frame each
 // printed line came in (`frames.json`) to `results/` for
 // tools/headless.py. With `audio`, the main thread also renders that many
-// quanta of the program's voice offline, in an AudioWorklet, and saves the samples; with
+// quanta of the program's voice offline, in an AudioWorklet, and saves the samples (and how long
+// the render took, `audio-ms.json`); with `live=s`, it plays the voice in real time for s seconds
+// instead and saves what the browser says of the playback (`live.json`: its underruns, where it
+// reports them); with
 // `timestamps=1`, each pass's GPU time (`timings.json`, where the device has timestamp queries);
 // with `nohash=1`, no state hash (hashing every submitted byte costs CPU time a timing run
 // shouldn't count; `hash.txt` then says `none`);
@@ -36,6 +39,8 @@ export interface TestParams {
   workers: number;
   /** Quanta of the voice to render (0: none). */
   audio: number;
+  /** Seconds to play the voice in real time instead (0: none). */
+  live: number;
   /** 1: time each pass on the GPU. */
   timestamps: number;
   /** 1: keep no state hash. */
@@ -63,6 +68,7 @@ export const TEST_DEFAULTS: TestParams = {
   fps: 60,
   workers: 1,
   audio: 0,
+  live: 0,
   timestamps: 0,
   nohash: 0,
   input: "",

@@ -92,9 +92,11 @@ export const KEYS = [{keys}] as const;
 export const HOST_FUNCTIONS = [
 {host_functions}] as const;
 export const EXPORT_AUDIO = {export_audio:?};
-/** The audio thread's rate and render quantum, and where `__audio` leaves a quantum's samples. */
+/** The audio thread's rate, render quantum and channels, and where `__audio` leaves a quantum's
+ * samples: the left channel's, then the right's. */
 export const AUDIO_SAMPLE_RATE = {audio_sample_rate};
 export const AUDIO_QUANTUM = {audio_quantum};
+export const AUDIO_CHANNELS = {audio_channels};
 export const AUDIO_OUT = {audio_out};
 /** The threads (runtime/abi `memory`): their numbers, their blocks, and the words of a block and
  * of a job slot a host reads and writes. */
@@ -182,6 +184,7 @@ export const PANIC_CAP = {panic_cap};
         export_audio = crate::EXPORT_AUDIO,
         audio_sample_rate = crate::AUDIO_SAMPLE_RATE,
         audio_quantum = crate::AUDIO_QUANTUM,
+        audio_channels = crate::AUDIO_CHANNELS,
         audio_out = crate::memory::AUDIO_OUT,
         threads = crate::memory::THREADS,
         thread_main = crate::memory::THREAD_MAIN,

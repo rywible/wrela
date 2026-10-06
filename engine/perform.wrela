@@ -1,0 +1,635 @@
+// Performances (spike 14, #48): how a score is played. A pianist controls four things for each
+// note, and nothing else: when the key goes down, how fast the hammer hits it, when the key
+// comes up, and the pedals. So a performance is each note's onset, velocity and release, and
+// the pedals' depth over time; every "feel" is made of those.
+//
+// `perform` makes one from a score (engine::score: what the composer wrote), a taste (the
+// player's habits, true of any piece) and marks (this piece, this time, at places in the
+// score). The score says what; the taste and the marks say how much. With a taste of only a
+// tempo and no marks, it gives the deadpan: the score played exactly.
+//
+// The rules follow the KTH performance rules in spirit (Friberg, Bresin and Sundberg's Director
+// Musices): each is a small change, scaled by a strength, and a strength of 0 turns it off. The
+// phrase arch is Todd's (1992), and the final ritardando Friberg and Sundberg's (1999). Times a
+// flourish takes (a roll, a breath, the melody's lead) are in seconds, not beats: they don't
+// stretch with the tempo (Desain and Honing, "Tempo curves considered harmful").
+//
+// A performance is made when the program loads, not in a constant, so a lifted build lifts the
+// taste's and the marks' literals, and the lens's tools can change them as it runs.
+
+use rng::{Rng, seed}
+use score::{ACCENT, FERMATA, Level, NO_SLUR, STACCATO, Score, TENUTO, TICKS}
+use std::collections::Vec
+use std::math::PI
+
+/// A note as played: its key, its voice, when its hammer strikes and when its key is let go
+/// (seconds from the start), and its velocity: the hammer's speed, from 0 to 1 (MIDI's
+/// velocity over 127). `note` is its index in the score.
+pub struct Played: Copy {
+    pub key: u32,
+    pub voice: u32,
+    pub onset: f64,
+    pub release: f64,
+    pub velocity: f32,
+    pub note: u32,
+}
+
+/// A pedal's depth at a time: 0 up, 1 fully down; linear between points.
+pub struct PedalPoint: Copy {
+    pub at: f64,
+    pub depth: f32,
+}
+
+/// A score as played.
+pub struct Performance {
+    /// By onset.
+    pub notes: Vec<Played>,
+    /// The sustain pedal, which lifts the dampers.
+    pub sustain: Vec<PedalPoint>,
+    /// The soft pedal (una corda), which shifts the hammers onto fewer strings.
+    pub soft: Vec<PedalPoint>,
+    /// When each beat of the score starts, in seconds: the tempo, as it was played.
+    pub beats: Vec<f64>,
+    /// The last release, in seconds.
+    pub length: f64,
+}
+
+/// How the sustain pedal is used.
+pub enum Pedal: Copy {
+    /// As the score marks it (`!ped`, `!unped`), and not otherwise.
+    Written,
+    /// Changed where `voice` plays a note (the bass, where the harmony moves): let up as the
+    /// note sounds, and pressed again to `depth` after `catch` seconds, so the new note is
+    /// caught and the last harmony cleared. Written marks still hold.
+    ByVoice { voice: Text, catch: f32, depth: f32 },
+}
+
+/// A player's habits. Every strength is 0 by default, which turns its rule off; a taste of only
+/// a tempo is the deadpan.
+pub struct Taste: Copy {
+    /// Quarter notes a minute, where nothing else moves the tempo.
+    pub tempo: f32 = 72.0,
+    /// The voice that sings (empty: none). Phrases are its slurs.
+    pub lead: Text = "",
+    /// How much harder the lead's hammers hit than the others' (1: the same).
+    pub voicing: f32 = 1.0,
+    /// The same, for the others.
+    pub under: f32 = 1.0,
+    /// Seconds the lead sounds before the notes struck with it.
+    pub melody_lead: f32 = 0.0,
+    /// The voice at the bottom (empty: none), and how hard it is struck, as `voicing` is.
+    pub bass: Text = "",
+    pub bass_weight: f32 = 1.0,
+    /// How much faster and louder a phrase gets toward its peak: 0.1 is 10% at the peak.
+    pub arch_tempo: f32 = 0.0,
+    pub arch_loudness: f32 = 0.0,
+    /// Where the arch peaks, from the phrase's start (0) to its end (1).
+    pub arch_peak: f32 = 0.5,
+    /// How much a phrase's last quarter slows, as a fraction of the tempo.
+    pub phrase_end: f32 = 0.0,
+    /// Seconds taken before each phrase but the first: a breath.
+    pub breath: f32 = 0.0,
+    /// The last bars' ritardando: the tempo falls to `1 - final_rit` of itself, over
+    /// `final_bars`, along Friberg and Sundberg's curve with exponent `final_curve`.
+    pub final_rit: f32 = 0.0,
+    pub final_bars: u32 = 4,
+    pub final_curve: f32 = 2.0,
+    /// How much longer a fermata's note lasts (1: as written).
+    pub fermata: f32 = 1.0,
+    /// How far apart the dynamic levels are (1: the table below), and a shift of them all.
+    pub range: f32 = 1.0,
+    pub level: f32 = 0.0,
+    /// How a hairpin moves: 1 evenly; over 1, late; under 1, early.
+    pub hairpin_curve: f32 = 1.0,
+    /// How much harder a bar's first beat is struck than its others.
+    pub metre: f32 = 0.0,
+    /// How much harder each octave above middle C is struck (below, softer).
+    pub high_loud: f32 = 0.0,
+    /// How much harder an accented note is struck.
+    pub accent: f32 = 0.25,
+    /// Seconds a slurred note overlaps the next (legato), and the fraction cut from the end of
+    /// a note under no slur.
+    pub legato: f32 = 0.0,
+    pub detache: f32 = 0.0,
+    pub pedal: Pedal = Pedal::Written,
+    /// Seconds the sustain pedal holds the last sound after the last key is let go, before
+    /// it's lifted (over 0.8 s). 0: it's lifted as the score leaves it.
+    pub ring: f32 = 0.0,
+    /// The soft pedal's depth where the music is at `soft_below` or softer (0: never used).
+    pub soft: f32 = 0.0,
+    pub soft_below: f32 = 0.3,
+    /// Small random differences, as a hand makes: the spread of onsets in seconds, and of
+    /// velocities as a fraction. `seed` chooses them, so the same taste plays the same way.
+    pub jitter_time: f32 = 0.0,
+    pub jitter_velocity: f32 = 0.0,
+    pub seed: u32 = 1,
+}
+
+/// A place in the score: a bar (from 1) and a beat in it (from 1; 2.5 is halfway through the
+/// second beat).
+pub struct At: Copy {
+    pub bar: u32,
+    pub beat: f32,
+}
+
+/// Bar `n`'s first beat.
+pub fn bar(n: u32) -> At {
+    At { bar: n, beat: 1.0 }
+}
+
+impl At {
+    /// Beat `b` of this bar.
+    pub fn on(self, b: f32) -> At {
+        At { bar: self.bar, beat: b }
+    }
+}
+
+/// Bars `first` to `last`, both included.
+pub struct Bars: Copy {
+    pub first: u32,
+    pub last: u32,
+}
+
+pub fn bars(first: u32, last: u32) -> Bars {
+    Bars { first, last }
+}
+
+/// What a player does at one place, this time.
+pub enum Mark: Copy {
+    /// Strike `voice`'s notes at `at` `by` times as hard (under 1, softer).
+    Lean { at: At, voice: Text, by: f32 },
+    /// Take `length` seconds before `at`.
+    Breathe { at: At, length: f32 },
+    /// Ease the tempo to `to` times itself across the bars, then take it up again after them
+    /// (over 1, push).
+    Drag { over: Bars, to: f32 },
+    /// Strike the notes that start at `at` one after another, from the lowest up, over `spread`
+    /// seconds.
+    Roll { at: At, spread: f32 },
+    /// Let `voice` fall behind the others and catch up again across the bars, by `by` beats at
+    /// most (Chopin's rubato: one hand keeps time).
+    Rubato { over: Bars, voice: Text, by: f32 },
+    /// Make the beat at `at` last `by` times longer.
+    Hold { at: At, by: f32 },
+    /// Strike everything across the bars `by` times as hard.
+    Swell { over: Bars, by: f32 },
+}
+
+/// Each written level as a velocity, before a taste's range and shift.
+const LEVELS: [f32; 8] = [0.14, 0.22, 0.32, 0.43, 0.54, 0.66, 0.78, 0.9]
+
+/// Ticks between the points the tempo is integrated at: a 64th note.
+const STEP: u32 = 60
+
+const NONE: u32 = 4294967295
+
+/// Plays `score` with `taste` and `marks`.
+pub fn perform(score: Score, taste: Taste, marks: [Mark]) -> Performance {
+    let lead = voice_or_none(score, taste.lead)
+    let low = voice_or_none(score, taste.bass)
+    let time = time_map(score, taste, marks, lead)
+    let beat_seconds = 60.0 / f64(taste.tempo) * f64(score.meter.beat()) / f64(TICKS)
+    var rng = Rng::new(seed(taste.seed))
+
+    var notes: Vec<Played> = Vec::with_capacity(score.notes.len())
+    for i in 0..score.notes.len() {
+        let n = score.notes[i]
+        // When: the time map, then what moves this note alone.
+        var onset = time.at(n.start)
+        if n.voice == lead {
+            onset -= f64(taste.melody_lead)
+        }
+        for m in marks {
+            match m {
+                Mark::Rubato { over, voice, by } => {
+                    if score.voice_named(voice) == n.voice {
+                        let (from, to) = span(score, over)
+                        if n.start >= from && n.start < to {
+                            let u = f32(n.start - from) / f32(to - from)
+                            onset += f64(by * sin_pi(u)) * beat_seconds
+                        }
+                    }
+                },
+                Mark::Roll { at, spread } => {
+                    if n.start == tick(score, at) {
+                        let (rank, count) = rank_at(score, n.start, n.key)
+                        if count > 1 {
+                            onset += f64(spread) * f64(rank) / f64(count - 1)
+                        }
+                    }
+                },
+                _ => {},
+            }
+        }
+        onset += f64(taste.jitter_time) * gaussian(mut rng)
+
+        // How long: to the next note of a slur, or the written end less a détaché.
+        let end = time.before(n.end())
+        var release = end
+        if n.has(STACCATO) {
+            release = onset + 0.4 * (end - onset)
+        } else if n.slur != NO_SLUR && slurred_on(score, i) {
+            release = end + f64(taste.legato)
+        } else if !n.has(TENUTO) {
+            release = end - f64(taste.detache) * (end - onset)
+        }
+        release = max(release, onset + 0.03)
+
+        // How hard.
+        var v = loudness(score, taste, n.start)
+        v = v * (1.0 + arch(score, taste, lead, n.start) * taste.arch_loudness)
+        if lead != NONE {
+            v = v * (if n.voice == lead { taste.voicing } else { taste.under })
+        }
+        if n.voice == low {
+            v = v * taste.bass_weight
+        }
+        let beat_in_bar = n.start % score.meter.bar()
+        v = v * (if beat_in_bar == 0 { 1.0 + taste.metre } else { 1.0 - taste.metre / 3.0 })
+        v = v * (1.0 + taste.high_loud * (f32(n.key) - 60.0) / 12.0)
+        if n.has(ACCENT) {
+            v = v * (1.0 + taste.accent)
+        }
+        for m in marks {
+            match m {
+                Mark::Lean { at, voice, by } => {
+                    if n.start == tick(score, at) && score.voice_named(voice) == n.voice {
+                        v = v * by
+                    }
+                },
+                Mark::Swell { over, by } => {
+                    let (from, to) = span(score, over)
+                    if n.start >= from && n.start < to {
+                        v = v * by
+                    }
+                },
+                _ => {},
+            }
+        }
+        v = v * (1.0 + taste.jitter_velocity * f32(gaussian(mut rng)))
+        v = clamp(v, 0.01, 1.0)
+        notes.push(Played { key: n.key, voice: n.voice, onset, release, velocity: v, note: i })
+    }
+    // A note that moved (a lead, a roll, a lag) can pass another.
+    notes.sort_by(|a, b| a.onset < b.onset)
+    var last = 0.0
+    for p in notes {
+        last = max(last, p.release)
+    }
+    let length = if taste.ring > 0.0 { last + f64(taste.ring) + 0.8 } else { last }
+
+    let sustain = sustain_pedal(score, taste, time, notes, last)
+    let soft = soft_pedal(score, taste, time)
+    var beats: Vec<f64> = Vec::new()
+    var t = 0
+    while t <= score.length() {
+        beats.push(time.at(t))
+        t += score.meter.beat()
+    }
+    Performance { notes, sustain, soft, beats, length }
+}
+
+/// The score played exactly at `tempo`: no taste, no marks.
+pub fn deadpan(score: Score, tempo: f32) -> Performance {
+    perform(score, Taste { tempo }, [Mark::Hold { at: bar(1), by: 1.0 }; 0])
+}
+
+/// When each tick of the score is played: the tempo integrated over the score, plus the time
+/// breaths take.
+struct TimeMap {
+    /// The time at every `STEP`th tick, breaths at it excluded.
+    times: Vec<f64>,
+    breaths: Vec<Breath>,
+}
+
+/// Seconds taken before a tick.
+struct Breath: Copy {
+    at: u32,
+    seconds: f64,
+}
+
+impl TimeMap {
+    /// When a note that starts at tick `t` sounds: after any breath at `t`.
+    fn at(self, t: u32) -> f64 {
+        self.before(t) + self.breath_at(t)
+    }
+
+    /// When a note that ends at tick `t` ends: before any breath at `t`.
+    fn before(self, t: u32) -> f64 {
+        let i = t / STEP
+        let f = f64(t % STEP) / f64(STEP)
+        let a = self.times[min(i, self.times.len() - 1)]
+        let b = self.times[min(i + 1, self.times.len() - 1)]
+        var s = a + (b - a) * f
+        for b in self.breaths {
+            if b.at < t {
+                s += b.seconds
+            }
+        }
+        s
+    }
+
+    fn breath_at(self, t: u32) -> f64 {
+        var s = 0.0
+        for b in self.breaths {
+            if b.at == t {
+                s += b.seconds
+            }
+        }
+        s
+    }
+}
+
+fn time_map(score: Score, taste: Taste, marks: [Mark], lead: u32) -> TimeMap {
+    let seconds_per_tick = 60.0 / (f64(taste.tempo) * f64(TICKS))
+    let steps = score.length() / STEP + 1
+    var times: Vec<f64> = Vec::with_capacity(steps + 1)
+    var t = 0.0
+    times.push(0.0)
+    let last_bar = score.bar_start(max(score.bars + 1 - min(taste.final_bars, score.bars), 1))
+    for i in 0..steps {
+        let c = i * STEP + STEP / 2
+        var m = 1.0 + f64(arch(score, taste, lead, c) * taste.arch_tempo)
+        m = m * f64(1.0 - taste.phrase_end * phrase_end(score, lead, c))
+        if taste.final_rit > 0.0 && c >= last_bar {
+            // Friberg and Sundberg: v(x) = (1 + (w^q - 1) x)^(1/q), x from 0 to 1 over the
+            // ritardando, w the tempo it ends at.
+            let x = f32(c - last_bar) / f32(score.length() - last_bar)
+            let q = taste.final_curve
+            let w = 1.0 - taste.final_rit
+            m = m * f64(pow(1.0 + (pow(w, q) - 1.0) * x, 1.0 / q))
+        }
+        var stretch = 1.0
+        for m2 in marks {
+            match m2 {
+                Mark::Drag { over, to } => {
+                    let (from, to_tick) = span(score, over)
+                    if c >= from && c < to_tick {
+                        let u = f32(c - from) / f32(to_tick - from)
+                        m = m * f64(1.0 + (to - 1.0) * ease(u))
+                    }
+                },
+                Mark::Hold { at, by } => {
+                    let from = tick(score, at)
+                    if c >= from && c < from + score.meter.beat() {
+                        stretch = stretch * f64(by)
+                    }
+                },
+                _ => {},
+            }
+        }
+        if taste.fermata != 1.0 {
+            for n in score.notes {
+                if n.start > c {
+                    break
+                }
+                if n.has(FERMATA) && c < n.end() {
+                    stretch = stretch * f64(taste.fermata)
+                    break
+                }
+            }
+        }
+        t += f64(STEP) * seconds_per_tick * stretch / max(m, 0.05)
+        times.push(t)
+    }
+    var breaths: Vec<Breath> = Vec::new()
+    for m in marks {
+        if let Mark::Breathe { at, length } = m {
+            breaths.push(Breath { at: tick(score, at), seconds: f64(length) })
+        }
+    }
+    if taste.breath > 0.0 {
+        var first = true
+        for s in score.slurs {
+            if s.voice == phrase_voice(score, lead) {
+                if !first {
+                    breaths.push(Breath { at: s.from, seconds: f64(taste.breath) })
+                }
+                first = false
+            }
+        }
+    }
+    TimeMap { times, breaths }
+}
+
+/// The voice whose slurs are the phrases: the lead, or else the first.
+fn phrase_voice(score: Score, lead: u32) -> u32 {
+    if lead != NONE { lead } else { 0 }
+}
+
+/// The phrase arch at tick `c`: 0 at a phrase's ends, 1 at its peak, and 0 outside phrases.
+fn arch(score: Score, taste: Taste, lead: u32, c: u32) -> f32 {
+    if taste.arch_tempo == 0.0 && taste.arch_loudness == 0.0 {
+        return 0.0
+    }
+    let v = phrase_voice(score, lead)
+    for s in score.slurs {
+        if s.voice == v && c >= s.from && c < s.to {
+            let u = f32(c - s.from) / f32(s.to - s.from)
+            // sin(π u^γ), with γ putting its peak where the taste says.
+            let p = clamp(taste.arch_peak, 0.05, 0.95)
+            let gamma = log(0.5) / log(p)
+            return sin_pi(pow(u, gamma))
+        }
+    }
+    0.0
+}
+
+/// How far into a phrase's last quarter tick `c` is: from 0 to 1, smoothly.
+fn phrase_end(score: Score, lead: u32, c: u32) -> f32 {
+    let v = phrase_voice(score, lead)
+    for s in score.slurs {
+        if s.voice == v && c >= s.from && c < s.to {
+            let u = f32(c - s.from) / f32(s.to - s.from)
+            return smoothstep(0.75, 1.0, u)
+        }
+    }
+    0.0
+}
+
+/// The velocity the written dynamics give at tick `t`, hairpins followed, before any voice's
+/// or note's changes.
+fn loudness(score: Score, taste: Taste, t: u32) -> f32 {
+    let step = 0.11 * taste.range
+    var current = if score.dynamics.is_empty() {
+        level(taste, Level::MP)
+    } else {
+        level(taste, score.dynamics[0].level)
+    }
+    var d = 0
+    var h = 0
+    loop {
+        let next_d = if d < score.dynamics.len() { score.dynamics[d].at } else { NONE }
+        let next_h = if h < score.hairpins.len() { score.hairpins[h].from } else { NONE }
+        if min(next_d, next_h) > t {
+            return current
+        }
+        if next_d <= next_h {
+            current = level(taste, score.dynamics[d].level)
+            d += 1
+        } else {
+            let pin = score.hairpins[h]
+            h += 1
+            // The level it reaches: one written where it ends, or one step on.
+            var target = if pin.louder { current + step } else { current - step }
+            for w in score.dynamics {
+                if w.at == pin.to {
+                    target = level(taste, w.level)
+                }
+            }
+            if t < pin.to {
+                let u = f32(t - pin.from) / f32(pin.to - pin.from)
+                return current + (target - current) * pow(u, taste.hairpin_curve)
+            }
+            current = target
+        }
+    }
+}
+
+fn level(taste: Taste, l: Level) -> f32 {
+    let i = match l {
+        Level::PPP => 0,
+        Level::PP => 1,
+        Level::P => 2,
+        Level::MP => 3,
+        Level::MF => 4,
+        Level::F => 5,
+        Level::FF => 6,
+        Level::FFF => 7,
+    }
+    0.485 + (LEVELS[i] - 0.485) * taste.range + taste.level
+}
+
+/// Whether note `i`'s slur goes on past it: a note of its voice starts where it ends, under the
+/// same slur.
+fn slurred_on(score: Score, i: u32) -> bool {
+    let n = score.notes[i]
+    for j in i + 1..score.notes.len() {
+        let m = score.notes[j]
+        if m.start > n.end() {
+            return false
+        }
+        if m.voice == n.voice && m.start == n.end() && m.slur == n.slur {
+            return true
+        }
+    }
+    false
+}
+
+/// The sustain pedal: written marks, and the taste's changes.
+fn sustain_pedal(
+    score: Score,
+    taste: Taste,
+    time: TimeMap,
+    notes: Vec<Played>,
+    last: f64,
+) -> Vec<PedalPoint> {
+    var points: Vec<PedalPoint> = Vec::new()
+    points.push(PedalPoint { at: 0.0, depth: 0.0 })
+    for p in score.pedal {
+        let at = time.at(p.at)
+        points.push(PedalPoint { at, depth: if p.down { 0.0 } else { 1.0 } })
+        points.push(PedalPoint { at: at + 0.04, depth: if p.down { 1.0 } else { 0.0 } })
+    }
+    match taste.pedal {
+        Pedal::Written => {},
+        Pedal::ByVoice { voice, catch, depth } => {
+            let v = score.voice_named(voice)
+            var last = -1.0
+            for p in notes {
+                // Each chord of the voice once.
+                if p.voice != v || p.onset - last < 0.05 {
+                    continue
+                }
+                last = p.onset
+                // Up as the note sounds (the dampers take some 30 ms to land), down again
+                // after `catch`.
+                points.push(PedalPoint { at: p.onset, depth })
+                points.push(PedalPoint { at: p.onset + 0.03, depth: 0.0 })
+                points.push(PedalPoint { at: p.onset + f64(catch), depth: 0.0 })
+                points.push(PedalPoint { at: p.onset + f64(catch) + 0.05, depth })
+            }
+        },
+    }
+    points.sort_by(|a, b| a.at < b.at)
+    if taste.ring > 0.0 && !points.is_empty() {
+        // Held while the last sound rings, then lifted slowly.
+        let depth = points[points.len() - 1].depth
+        points.push(PedalPoint { at: last + f64(taste.ring), depth })
+        points.push(PedalPoint { at: last + f64(taste.ring) + 0.8, depth: 0.0 })
+    }
+    points
+}
+
+/// The soft pedal, where the music is soft enough.
+fn soft_pedal(score: Score, taste: Taste, time: TimeMap) -> Vec<PedalPoint> {
+    var points: Vec<PedalPoint> = Vec::new()
+    points.push(PedalPoint { at: 0.0, depth: 0.0 })
+    if taste.soft == 0.0 {
+        return points
+    }
+    var down = false
+    var t = 0
+    while t < score.length() {
+        let soft = loudness(score, taste, t) <= taste.soft_below
+        if soft != down {
+            let at = time.at(t)
+            points.push(PedalPoint { at, depth: if soft { 0.0 } else { taste.soft } })
+            points.push(PedalPoint { at: at + 0.1, depth: if soft { taste.soft } else { 0.0 } })
+            down = soft
+        }
+        t += score.meter.beat()
+    }
+    points
+}
+
+/// The tick of a place in the score.
+fn tick(score: Score, at: At) -> u32 {
+    let b = score.meter.beat()
+    let into = f64(at.beat - 1.0) * f64(b)
+    assert(
+        at.beat >= 1.0 && at.beat < f32(score.meter.beats) + 1.0,
+        f"bar {at.bar} has beats 1 to {score.meter.beats}, not {at.beat}",
+    )
+    score.bar_start(at.bar) + u32(into + 0.5)
+}
+
+/// The ticks bars cover: from the first's start to the last's end.
+fn span(score: Score, over: Bars) -> (u32, u32) {
+    assert(over.first <= over.last, f"bars {over.first} to {over.last} run backwards")
+    (score.bar_start(over.first), score.bar_start(over.last + 1))
+}
+
+/// A note's rank from the lowest among the notes that start at `t`, and how many there are.
+fn rank_at(score: Score, t: u32, key: u32) -> (u32, u32) {
+    var rank = 0
+    var count = 0
+    for n in score.notes {
+        if n.start == t {
+            count += 1
+            if n.key < key {
+                rank += 1
+            }
+        }
+    }
+    (rank, count)
+}
+
+fn voice_or_none(score: Score, name: Text) -> u32 {
+    if name.is_empty() { NONE } else { score.voice_named(name) }
+}
+
+/// sin(π u).
+fn sin_pi(u: f32) -> f32 {
+    sin(PI * u)
+}
+
+/// From 0 to 1 as `u` does, starting and ending slowly.
+fn ease(u: f32) -> f32 {
+    0.5 - 0.5 * cos(PI * u)
+}
+
+/// A draw near 0 with a spread of about 1: the sum of three uniform draws, centred.
+fn gaussian(rng: mut Rng) -> f64 {
+    2.0 * (rng.next() + rng.next() + rng.next() - 1.5)
+}

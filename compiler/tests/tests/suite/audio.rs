@@ -18,7 +18,10 @@ fn native(dir: &std::path::Path) -> Vec<f32> {
 fn the_voice_sounds() {
     let (dir, _) = page("compiler/tests/audio", "audio-native");
     let samples = native(&dir);
-    assert_eq!(samples.len(), QUANTA as usize * 128);
+    assert_eq!(samples.len(), QUANTA as usize * 128 * 2);
+    // Two channels, interleaved: the bars are to the left.
+    let (l, r): (Vec<f32>, Vec<f32>) = samples.chunks_exact(2).map(|p| (p[0], p[1])).unzip();
+    assert!(l.iter().zip(&r).all(|(a, b)| *b == 0.5 * *a));
     // Silent until the first strike, then ringing, within [-1, 1].
     let peak = samples.iter().fold(0.0f32, |m, x| m.max(x.abs()));
     assert!(peak > 0.05 && peak <= 1.0, "peak {peak}");

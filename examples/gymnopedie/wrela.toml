@@ -1,0 +1,8 @@
+# Spike 14 (#48): Satie's first Gymnopédie as a program. The score is what he wrote
+# (score.wrela); the performance is a pianist's taste, in code (performance.wrela); the piano
+# that plays it is engine::piano.
+[package]
+name = "gymnopedie"
+
+[dependencies]
+engine = { path = "../../engine" }

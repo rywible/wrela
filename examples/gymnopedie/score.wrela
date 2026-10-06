@@ -1,0 +1,109 @@
+// Erik Satie's first Gymnopédie (1888), as he wrote it: the notes, the slurs, the dynamics and
+// the hairpins, and nothing a player adds. Transcribed from the Mutopia Project's edition
+// (Mutopia-2014/12/14-37, typeset by Evin Robertson from the Dover reprint of the original,
+// placed in the public domain). The repeat and its two endings are the form below, as code.
+//
+// The voices: the melody; the chords on beats 2 and 3; the bass on beat 1; and an inner voice
+// that the bass staff has for one bar of each ending.
+
+use engine::score::{Score, meter, score}
+
+/// Bars 1 to 31, played twice.
+const A = score("A", meter(beats: 3, unit: 4))
+    .voice(
+        "melody",
+        [
+            "r/2. | r/2. | r/2. | r/2. |",
+            "r/4 f#5/4 ( !pp !< a5 | g5 f#5 c#5 | b4 c#5 !! d5 !> | a4/2. |",
+            "f#4/2. !! ) ~ | f#4/2. ~ | f#4/2. ~ | f#4/2. |",
+            "r/4 f#5/4 !< ( a5 | g5 f#5 c#5 | b4 c#5 d5 !! | a4/2. !> |",
+            "c#5/2. | f#5/2. | e4/2. !! ) ~ | e4/2. ~ |",
+            "e4/2. | a4/4 ( !< b4 c5 | e5 d5 b4 | d5 c5 b4 !! |",
+            "d5/2. !> ~ | d5/2 !! ) d5/4 ( !< | e5 f5 g5 | a5 c5 d5 !! |",
+            "e5 !> d5 b4 | d5/2. !! ~ | d5/2 ) d5/4 |",
+        ],
+    )
+    .voice(
+        "chords",
+        [
+            "r/4 <b3 d4 f#4>/2 | r/4 <a3 c#4 f#4>/2 | r/4 <b3 d4 f#4>/2 | r/4 <a3 c#4 f#4>/2 |",
+            "r/4 <b3 d4 f#4>/2 | r/4 <a3 c#4 f#4>/2 | r/4 <b3 d4 f#4>/2 | r/4 <a3 c#4 f#4>/2 |",
+            "r/4 <b3 d4 f#4>/2 !f | r/4 <a3 c#4 f#4>/2 | r/4 <b3 d4 f#4>/2 | r/4 <a3 c#4 f#4>/2 |",
+            "r/4 <b3 d4 f#4>/2 !pp | r/4 <a3 c#4 f#4>/2 | r/4 <b3 d4 f#4>/2 | r/4 <a3 c#4 f#4>/2 |",
+            "r/4 <a3 c#4 f#4>/2 | r/4 <b3 d4 f#4>/2 | r/4 <g3 b3>/2 | r/4 <b3 d4 g4>/2 |",
+            "r/4 <f3 a3 d4>/2 | r/4 <a3 c4 e4>/2 !p | r/4 <g3 b3 e4>/2 | r/4 <d3 g3 b3 e4>/2 |",
+            "r/4 <c3 e3 a3 d4>/2 | r/4 <c3 f#3 a3 d4>/2 | r/4 <a3 c4 f4>/2 | r/4 <a3 c4 e4>/2 |",
+            "r/4 <d3 g3 b3 e4>/2 | r/4 <c3 e3 a3 d4>/2 | r/4 <c3 f#3 a3 d4>/2 |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "g2/2. | d2 | g2 | d2 |",
+            "g2 | d2 | g2 | d2 |",
+            "g2 | d2 | g2 | d2 |",
+            "g2 | d2 | g2 | d2 |",
+            "f#2 | b1 | e2 | e2 |",
+            "d2 | a1 | d2 | d2 |",
+            "d2 | d2 | d2 | d2 |",
+            "d2 | d2 | d2 |",
+        ],
+    )
+
+/// Bars 32 to 39: the first ending.
+const FIRST = score("first ending", meter(beats: 3, unit: 4))
+    .voice(
+        "melody",
+        [
+            "g5/2. ( !< | f#5/2. !! | b4/4 a4 b4 | c#5 d5 e5 |",
+            "c#5 d5 !> e5 | f#4/2. | <c4 e4 a4 c5>/2. !! ) | <d4 f#4 a4 d5>/2. |",
+        ],
+    )
+    .voice(
+        "chords",
+        [
+            "r/4 <b3 e4 g4>/2 | r/4 <a3 c#4 f#4>/2 | r/4 <b3 d4 f#4>/2 | r/4 <c#4 e4 a4>/2 |",
+            "r/4 <a3 c#4 f#4 a4>/2 | r/4 <a3 d4>/4 <b3 d4 g4> | r/2. | r/2. |",
+        ],
+    )
+    .voice("bass", [
+        "e2/2. | f#2 | b1 | e2 |",
+        "e2 | e2 | <a2 g3> | <d2 a2 d3> |",
+    ])
+    .voice("inner", [
+        "r/2. | r/2. | r/2. | r/2. |",
+        "r/2. | r/4 b2 e3 | r/2. | r/2. |",
+    ])
+
+/// Bars 71 to 78: the second ending, which turns to D minor.
+const SECOND = score("second ending", meter(beats: 3, unit: 4))
+    .voice(
+        "melody",
+        [
+            "g5/2. ( !< | f5/2. !! | b4/4 c5 f5 | e5 d5 c5 |",
+            "e5 d5 c5 !> | f4/2. | <c4 e4 a4 c5>/2. | <d4 f4 a4 d5>/2. !! ) |",
+        ],
+    )
+    .voice(
+        "chords",
+        [
+            "r/4 <b3 e4 g4>/2 | r/4 <a3 d4 f4 a4>/2 | r/4 <a3 c4 f4>/2 | r/4 <c4 e4 a4>/2 |",
+            "r/4 <a3 c4 f4 a4>/2 | r/4 <a3 d4>/4 <b3 d4 g4> | r/2. | r/2. |",
+        ],
+    )
+    .voice("bass", [
+        "e2/2. | e2 | e2 | e2 |",
+        "e2 | e2 | <a2 g3> | <d2 a2 d3> |",
+    ])
+    .voice("inner", [
+        "r/2. | r/2. | r/2. | r/2. |",
+        "r/2. | r/4 b2 e3 | r/2. | r/2. |",
+    ])
+
+/// The whole piece: 78 bars.
+pub const GYMNOPEDIE: Score = score("Gymnopédie No. 1", meter(beats: 3, unit: 4))
+    .with_tempo("Lent et douloureux")
+    .then(A)
+    .then(FIRST)
+    .then(A)
+    .then(SECOND)

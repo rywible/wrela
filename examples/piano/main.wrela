@@ -1,0 +1,78 @@
+// One note on engine::piano: `choose(key, velocity)` (MIDI's numbers) before the first frame,
+// then the note is struck at once and held for 12 seconds, with no pedal. It follows
+// `wrela audio`'s protocol: `wrela audio examples/piano wav c4.wav --take 60,64`.
+
+use engine::perform::{PedalPoint, Performance, Played}
+use engine::piano::{Model, piano, play_piano}
+use engine::piano_grand::GRAND
+use std::audio::play
+use std::collections::Vec
+use std::io::print
+
+pub struct Bench {
+    key: u32,
+    velocity: u32,
+    started: bool,
+}
+
+pub fn init() -> Bench {
+    Bench { key: 60, velocity: 64, started: false }
+}
+
+pub fn choose(b: mut Bench, key: u32, velocity: u32) {
+    assert(!b.started, "a note is chosen before the first frame")
+    assert(key >= 21 && key <= 108, "a key is one of the piano's 88: 21 to 108")
+    assert(velocity >= 1 && velocity <= 127, "a velocity is MIDI's: 1 to 127")
+    b.key = key
+    b.velocity = velocity
+}
+
+/// How long the note is held.
+const HOLD: f64 = 12.0
+
+fn note(b: Bench) -> Performance {
+    var notes: Vec<Played> = Vec::new()
+    notes.push(
+        Played {
+            key: b.key,
+            voice: 0,
+            onset: 0.0,
+            release: HOLD,
+            velocity: f32(b.velocity) / 127.0,
+            note: 0,
+        },
+    )
+    var none: Vec<PedalPoint> = Vec::new()
+    none.push(PedalPoint { at: 0.0, depth: 0.0 })
+    var beats: Vec<f64> = Vec::new()
+    beats.push(0.0)
+    beats.push(HOLD)
+    Performance { notes, sustain: none.clone(), soft: none, beats, length: HOLD }
+}
+
+pub fn frame(b: mut Bench, time: f32, width: u32, height: u32) {
+    if !b.started {
+        b.started = true
+        // The strings alone, as the model was measured: no board, room or knock, and gain 1.
+        let strings = Model { gain: 1.0, board: 0.0, room: 0.0, knock: 0.0, ..GRAND }
+        play(piano(strings, note(b)), play_piano)
+    }
+}
+
+pub fn seconds(b: Bench) -> f32 {
+    f32(HOLD) + 2.0
+}
+
+pub fn describe(b: Bench) {
+    print(
+        f"{{\"title\":\"one note\",\"take\":\"key {b.key} at {b.velocity}\",\"bars\":1,\"beats_per_bar\":1,\"seconds\":{HOLD}}}",
+    )
+    print("{\"voice\":0,\"name\":\"note\"}")
+    print(
+        f"{{\"key\":{b.key},\"voice\":0,\"onset\":0,\"release\":{HOLD},\"velocity\":{f32(b.velocity) / 127.0},\"bar\":1}}",
+    )
+    print("{\"sustain\":0,\"depth\":0}")
+    print("{\"soft\":0,\"depth\":0}")
+    print("{\"beat\":0}")
+    print(f"{{\"beat\":{HOLD}}}")
+}

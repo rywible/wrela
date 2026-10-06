@@ -81,7 +81,7 @@ pub const IMPORT_MEMORY: &str = "memory";
 /// `__worker(thread)`: a helper's thread entry (`memory`'s threads and helpers).
 pub const EXPORT_WORKER: &str = "__worker";
 /// `__audio(thread, task, context)`: renders one quantum of the voice `wrela.audio` started, at
-/// [`memory::AUDIO_OUT`], on the audio thread ([`memory::THREAD_AUDIO`]), on its own instance
+/// [`memory::AUDIO_OUT`] (its left channel, then its right), on the audio thread ([`memory::THREAD_AUDIO`]), on its own instance
 /// of the module, with the same memory.
 pub const EXPORT_AUDIO: &str = "__audio";
 /// `__tick(thread, task, context, tick)`: runs tick `tick` of the ticker `wrela.tick` started,
@@ -93,6 +93,8 @@ pub const EXPORT_TICK: &str = "__tick";
 /// device's.
 pub const AUDIO_SAMPLE_RATE: u32 = 48000;
 pub const AUDIO_QUANTUM: u32 = 128;
+/// The voice's channels: left, then right.
+pub const AUDIO_CHANNELS: u32 = 2;
 /// What `request_status` says of a request that isn't answered yet, and of one that failed.
 pub const REQUEST_PENDING: i32 = -1;
 pub const REQUEST_FAILED: i32 = -2;
@@ -255,6 +257,7 @@ mod tests {
             ("audio.wrela", "OUT", AUDIO_OUT),
             ("audio.wrela", "SAMPLE_RATE", crate::AUDIO_SAMPLE_RATE),
             ("audio.wrela", "QUANTUM", crate::AUDIO_QUANTUM),
+            ("audio.wrela", "CHANNELS", crate::AUDIO_CHANNELS),
             ("tick.wrela", "WANT_HASH", TICK_WANT_HASH),
             ("tick.wrela", "HASH", TICK_HASH),
             ("tick.wrela", "ORIGIN", TICK_ORIGIN),

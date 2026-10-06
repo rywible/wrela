@@ -1,0 +1,788 @@
+// Scores (spike 14, #48): what a composer wrote, as values the build makes. Each voice's notes
+// are text, read by `voice` in a constant; the form (which passage plays after which) is code.
+// Time is in ticks, 960 to a quarter note, so nothing in a score is rounded. This module says
+// *what* is played; how much (how long a fermata, how loud a `p`) is engine::perform's.
+//
+// The notation, one voice at a time, after LilyPond's:
+//
+//   e4 f#4 bb3        a pitch: a letter, then sharps (#) or flats (b), then an octave (C4 is
+//                     middle C). Pitches are absolute: a key signature changes none of them.
+//   e4/4 g4/8.        a duration: /1 /2 /4 /8 /16 /32 or /64, then dots, then `t` for a
+//                     triplet. A note without one keeps the one before (a quarter at first).
+//   <d4 f#4 a4>/2     a chord
+//   r/4               a rest
+//   f#4/2.~ f#4/4     a tie: the next note of the same pitch continues this one
+//   |                 a bar line. Every bar must hold its meter.
+//   ( )               a slur, from the note before `(` to the note before `)`
+//   !pp !p !mp !mf !f !ff (and !ppp, !fff)   a dynamic, from the note before it
+//   !< !> !!          a crescendo or a diminuendo from the note before it; `!!` ends it there,
+//                     and so does the next dynamic or hairpin
+//   !accent !staccato !tenuto !fermata       a mark on the note (or chord) before it
+//   !ped !unped       the sustain pedal, down or up at the note before it
+//
+// Dynamics, hairpins and the pedal are the whole score's, as they are between a piano's
+// staves; slurs and the other marks are their voice's.
+
+use std::collections::Vec
+use std::string::String
+
+/// Ticks in a quarter note: 2⁶ · 3 · 5, so triplets and quintuplets divide it.
+pub const TICKS: u32 = 960
+
+/// A time signature: `beats` notes of 1/`unit` to a bar.
+pub struct Meter: Copy + Eq {
+    pub beats: u32,
+    pub unit: u32,
+}
+
+pub fn meter(beats: u32, unit: u32) -> Meter {
+    assert(
+        beats > 0 && (unit == 1 || unit == 2 || unit == 4 || unit == 8 || unit == 16),
+        "a meter is beats of a whole, half, quarter, eighth or sixteenth note",
+    )
+    Meter { beats, unit }
+}
+
+impl Meter {
+    /// Ticks in a beat.
+    pub fn beat(self) -> u32 {
+        4 * TICKS / self.unit
+    }
+
+    /// Ticks in a bar.
+    pub fn bar(self) -> u32 {
+        self.beats * self.beat()
+    }
+}
+
+/// A note's marks, as bits of `Note::marks`.
+pub const ACCENT: u32 = 1
+pub const STACCATO: u32 = 2
+pub const TENUTO: u32 = 4
+pub const FERMATA: u32 = 8
+
+/// `Note::slur` of a note under no slur.
+pub const NO_SLUR: u32 = 4294967295
+
+/// A note as written: its voice, when it starts and how long it lasts (in ticks from the
+/// score's start), its key (MIDI's numbering: 60 is middle C, 21 to 108 the piano's 88), its
+/// marks, and the slur it's under.
+pub struct Note: Copy {
+    pub voice: u32,
+    pub start: u32,
+    pub length: u32,
+    pub key: u32,
+    pub marks: u32,
+    pub slur: u32,
+}
+
+impl Note {
+    pub fn end(self) -> u32 {
+        self.start + self.length
+    }
+
+    pub fn has(self, mark: u32) -> bool {
+        (self.marks & mark) != 0
+    }
+}
+
+/// A dynamic level, softest first.
+pub enum Level: Copy + Eq + Ord {
+    PPP,
+    PP,
+    P,
+    MP,
+    MF,
+    F,
+    FF,
+    FFF,
+}
+
+/// Where a dynamic is written, and which.
+pub struct Dynamic: Copy {
+    pub at: u32,
+    pub level: Level,
+}
+
+/// A crescendo (`louder`) or a diminuendo, from one tick to another.
+pub struct Hairpin: Copy {
+    pub from: u32,
+    pub to: u32,
+    pub louder: bool,
+}
+
+/// A slur over a voice's notes: from its first note's start to its last note's end.
+pub struct Slur: Copy {
+    pub voice: u32,
+    pub from: u32,
+    pub to: u32,
+}
+
+/// The sustain pedal, written down or up.
+pub struct PedalMark: Copy {
+    pub at: u32,
+    pub down: bool,
+}
+
+/// A named run of bars (bars are numbered from 1), from the passages a score is made of.
+pub struct Section: Copy {
+    pub name: Text,
+    pub first_bar: u32,
+    pub bars: u32,
+}
+
+/// A score, or a passage of one: its voices' notes and its marks, sorted by time.
+pub struct Score: Clone {
+    pub title: Text,
+    /// The composer's tempo word ("Lent et douloureux"); a performance chooses the speed.
+    pub tempo: Text,
+    pub meter: Meter,
+    pub voices: Vec<Text>,
+    /// By start, then voice, then key.
+    pub notes: Vec<Note>,
+    pub dynamics: Vec<Dynamic>,
+    pub hairpins: Vec<Hairpin>,
+    pub slurs: Vec<Slur>,
+    pub pedal: Vec<PedalMark>,
+    pub sections: Vec<Section>,
+    pub bars: u32,
+}
+
+/// An empty score (or passage) named `title`, in `meter`, which voices or passages fill.
+pub fn score(title: Text, meter: Meter) -> Score {
+    Score {
+        title,
+        tempo: "",
+        meter,
+        voices: Vec::new(),
+        notes: Vec::new(),
+        dynamics: Vec::new(),
+        hairpins: Vec::new(),
+        slurs: Vec::new(),
+        pedal: Vec::new(),
+        sections: Vec::new(),
+        bars: 0,
+    }
+}
+
+impl Score {
+    /// Ticks from the start to the end.
+    pub fn length(self) -> u32 {
+        self.bars * self.meter.bar()
+    }
+
+    /// The first tick of bar `n`, counted from 1.
+    pub fn bar_start(self, n: u32) -> u32 {
+        assert(n >= 1 && n <= self.bars + 1, f"the score has bars 1 to {self.bars}, not {n}")
+        (n - 1) * self.meter.bar()
+    }
+
+    /// Which bar (from 1) tick `t` is in.
+    pub fn bar_of(self, t: u32) -> u32 {
+        t / self.meter.bar() + 1
+    }
+
+    /// Voice `name`'s number. A name the score doesn't have panics.
+    pub fn voice_named(self, name: Text) -> u32 {
+        for i in 0..self.voices.len() {
+            if self.voices[i] == name {
+                return i
+            }
+        }
+        panic(f"the score has no voice `{name}`")
+    }
+
+    /// The composer's tempo word.
+    pub fn with_tempo(take self, word: Text) -> Score {
+        var s = take self
+        s.tempo = word
+        s
+    }
+
+    /// Adds voice `name`, whose notes `lines` write in the notation above (read one after
+    /// another, as one text), over this passage. The first voice sets how many bars the passage
+    /// has, and each voice after it must have as many. A mistake in the text panics, which a
+    /// constant reports as a build error, with the passage, the voice, the bar and the beat.
+    pub fn voice(take self, name: Text, lines: [Text]) -> Score {
+        var s = take self
+        let first = s.voices.is_empty()
+        let v = s.voice_index(name)
+        var text = String::new()
+        for line in lines {
+            text.push_str(line)
+            text.push_str(" ")
+        }
+        var r = Reader {
+            text: take text,
+            at: 0,
+            score: s.title,
+            voice: name,
+            meter: s.meter,
+            t: 0,
+            bars: 0,
+            length: TICKS,
+            last: Vec::new(),
+            last_start: 0,
+            last_end: 0,
+            has_last: false,
+            tied: Vec::new(),
+            hairpin: None,
+            slur: None,
+            notes: Vec::new(),
+            dynamics: Vec::new(),
+            hairpins: Vec::new(),
+            slurs: Vec::new(),
+            pedal: Vec::new(),
+        }
+        r.read()
+        if first {
+            s.bars = r.bars
+        } else if r.bars != s.bars {
+            panic(
+                f"{s.title}: voice `{name}` has {r.bars} bars, but the voices before it have {s.bars}",
+            )
+        }
+        let first_slur = s.slurs.len()
+        for slur in r.slurs {
+            s.slurs.push(Slur { voice: v, ..slur })
+        }
+        var notes: Vec<Note> = Vec::new()
+        for n in r.notes {
+            let slur = if n.slur == NO_SLUR { NO_SLUR } else { n.slur + first_slur }
+            notes.push(Note { voice: v, slur, ..n })
+        }
+        s.notes = merge_notes(s.notes, notes)
+        s.dynamics = merge_dynamics(s.dynamics, r.dynamics)
+        s.hairpins = merge_hairpins(s.hairpins, r.hairpins)
+        s.pedal = merge_pedal(s.pedal, r.pedal)
+        s
+    }
+
+    /// This score, then `next` after it, in the same meter: the form, written as code. `next`'s
+    /// voices join this score's by name, and `next` becomes a section (or its sections do).
+    pub fn then(take self, next: Score) -> Score {
+        var s = take self
+        if s.meter != next.meter {
+            panic(f"{s.title}: `{next.title}` is in another meter")
+        }
+        let offset = s.length()
+        let first_slur = s.slurs.len()
+        var voice_of: Vec<u32> = Vec::new()
+        for name in next.voices {
+            voice_of.push(s.voice_index(name))
+        }
+        for slur in next.slurs {
+            s.slurs.push(
+                Slur {
+                    voice: voice_of[slur.voice],
+                    from: slur.from + offset,
+                    to: slur.to + offset,
+                },
+            )
+        }
+        var notes: Vec<Note> = Vec::new()
+        for n in next.notes {
+            notes.push(
+                Note {
+                    voice: voice_of[n.voice],
+                    start: n.start + offset,
+                    slur: if n.slur == NO_SLUR { NO_SLUR } else { n.slur + first_slur },
+                    ..n,
+                },
+            )
+        }
+        // Voices numbered differently can interleave, so this merges rather than appends.
+        s.notes = merge_notes(s.notes, notes)
+        for d in next.dynamics {
+            s.dynamics.push(Dynamic { at: d.at + offset, level: d.level })
+        }
+        for h in next.hairpins {
+            s.hairpins.push(Hairpin { from: h.from + offset, to: h.to + offset, louder: h.louder })
+        }
+        for p in next.pedal {
+            s.pedal.push(PedalMark { at: p.at + offset, down: p.down })
+        }
+        if next.sections.is_empty() {
+            s.sections.push(Section { name: next.title, first_bar: s.bars + 1, bars: next.bars })
+        } else {
+            for sec in next.sections {
+                s.sections.push(Section { first_bar: sec.first_bar + s.bars, ..sec })
+            }
+        }
+        if s.tempo.is_empty() {
+            s.tempo = next.tempo
+        }
+        s.bars += next.bars
+        s
+    }
+
+    /// The dynamic written at or before tick `t`: the first one written, before any is.
+    pub fn level_at(self, t: u32) -> Level {
+        var level = if self.dynamics.is_empty() { Level::MP } else { self.dynamics[0].level }
+        for d in self.dynamics {
+            if d.at > t {
+                break
+            }
+            level = d.level
+        }
+        level
+    }
+
+    fn voice_index(mut self, name: Text) -> u32 {
+        for i in 0..self.voices.len() {
+            if self.voices[i] == name {
+                return i
+            }
+        }
+        self.voices.push(name)
+        self.voices.len() - 1
+    }
+}
+
+/// Whether note `a` goes before `b`: by start, then voice, then key.
+fn before(a: Note, b: Note) -> bool {
+    if a.start != b.start {
+        return a.start < b.start
+    }
+    if a.voice != b.voice {
+        return a.voice < b.voice
+    }
+    a.key < b.key
+}
+
+fn merge_notes(a: Vec<Note>, b: Vec<Note>) -> Vec<Note> {
+    var out: Vec<Note> = Vec::with_capacity(a.len() + b.len())
+    var i = 0
+    var j = 0
+    while i < a.len() || j < b.len() {
+        if j == b.len() || (i < a.len() && !before(b[j], a[i])) {
+            out.push(a[i])
+            i += 1
+        } else {
+            out.push(b[j])
+            j += 1
+        }
+    }
+    out
+}
+
+fn merge_dynamics(a: Vec<Dynamic>, b: Vec<Dynamic>) -> Vec<Dynamic> {
+    var out: Vec<Dynamic> = Vec::with_capacity(a.len() + b.len())
+    var i = 0
+    var j = 0
+    while i < a.len() || j < b.len() {
+        if j == b.len() || (i < a.len() && a[i].at <= b[j].at) {
+            out.push(a[i])
+            i += 1
+        } else {
+            out.push(b[j])
+            j += 1
+        }
+    }
+    out
+}
+
+fn merge_hairpins(a: Vec<Hairpin>, b: Vec<Hairpin>) -> Vec<Hairpin> {
+    var out: Vec<Hairpin> = Vec::with_capacity(a.len() + b.len())
+    var i = 0
+    var j = 0
+    while i < a.len() || j < b.len() {
+        if j == b.len() || (i < a.len() && a[i].from <= b[j].from) {
+            out.push(a[i])
+            i += 1
+        } else {
+            out.push(b[j])
+            j += 1
+        }
+    }
+    out
+}
+
+fn merge_pedal(a: Vec<PedalMark>, b: Vec<PedalMark>) -> Vec<PedalMark> {
+    var out: Vec<PedalMark> = Vec::with_capacity(a.len() + b.len())
+    var i = 0
+    var j = 0
+    while i < a.len() || j < b.len() {
+        if j == b.len() || (i < a.len() && a[i].at <= b[j].at) {
+            out.push(a[i])
+            i += 1
+        } else {
+            out.push(b[j])
+            j += 1
+        }
+    }
+    out
+}
+
+/// A hairpin begun and not yet ended.
+struct Open: Copy {
+    from: u32,
+    louder: bool,
+}
+
+/// Reads one voice's text.
+struct Reader {
+    text: String,
+    at: u32,
+    score: Text,
+    voice: Text,
+    meter: Meter,
+    /// The tick the next note starts at, from the passage's start.
+    t: u32,
+    bars: u32,
+    /// The duration a note without one gets: the last one written.
+    length: u32,
+    /// The last note or chord read (indexes into `notes`), for the marks after it.
+    last: Vec<u32>,
+    last_start: u32,
+    last_end: u32,
+    has_last: bool,
+    /// Notes tied forward, waiting for their continuation.
+    tied: Vec<u32>,
+    hairpin: Option<Open>,
+    slur: Option<u32>,
+    notes: Vec<Note>,
+    dynamics: Vec<Dynamic>,
+    hairpins: Vec<Hairpin>,
+    slurs: Vec<Slur>,
+    pedal: Vec<PedalMark>,
+}
+
+impl Reader {
+    fn read(mut self) {
+        loop {
+            self.skip_space()
+            if self.at >= self.text.len() {
+                break
+            }
+            let c = self.text.byte(self.at)
+            if c == 124 {
+                // `|`
+                self.at += 1
+                self.bar_line()
+            } else if c == 60 {
+                // `<`: a chord
+                self.at += 1
+                var keys: Vec<u32> = Vec::new()
+                loop {
+                    self.skip_space()
+                    if self.at >= self.text.len() {
+                        panic(self.say("a chord has no `>`"))
+                    }
+                    if self.text.byte(self.at) == 62 {
+                        self.at += 1
+                        break
+                    }
+                    keys.push(self.pitch())
+                }
+                if keys.is_empty() {
+                    panic(self.say("a chord has no notes"))
+                }
+                let length = self.duration()
+                self.event(keys, length)
+            } else if c == 114 {
+                // `r`: a rest
+                self.at += 1
+                let length = self.duration()
+                self.event(Vec::new(), length)
+            } else if c >= 97 && c <= 103 {
+                var keys: Vec<u32> = Vec::new()
+                keys.push(self.pitch())
+                let length = self.duration()
+                self.event(keys, length)
+            } else if c == 126 {
+                // `~`: the last note or chord is tied forward
+                self.at += 1
+                if self.last.is_empty() {
+                    panic(self.say("a tie follows no note"))
+                }
+                for i in self.last {
+                    self.tied.push(i)
+                }
+            } else if c == 40 {
+                // `(`
+                self.at += 1
+                if !self.has_last || self.last.is_empty() {
+                    panic(self.say("a slur starts after no note"))
+                }
+                if self.slur.is_some() {
+                    panic(self.say("a slur starts inside another"))
+                }
+                self.slur = Some(self.last_start)
+            } else if c == 41 {
+                // `)`
+                self.at += 1
+                let Some(from) = self.slur else {
+                    panic(self.say("a slur ends that didn't start"))
+                }
+                if self.last.is_empty() {
+                    panic(self.say("a slur ends after no note"))
+                }
+                let index = self.slurs.len()
+                self.slurs.push(Slur { voice: 0, from, to: self.last_end })
+                for mut n in self.notes {
+                    if n.start >= from && n.start < self.last_end {
+                        n.slur = index
+                    }
+                }
+                self.slur = None
+            } else if c == 33 {
+                // `!`: a mark
+                self.at += 1
+                self.mark()
+            } else {
+                panic(self.say("this isn't a note, a chord, a rest, a bar line or a mark"))
+            }
+        }
+        if self.t > self.bars * self.meter.bar() {
+            self.bar_line()
+        }
+        if !self.tied.is_empty() {
+            panic(self.say("a tie at the end continues to no note"))
+        }
+        if self.hairpin.is_some() {
+            panic(self.say("a hairpin isn't ended"))
+        }
+        if self.slur.is_some() {
+            panic(self.say("a slur isn't ended"))
+        }
+    }
+
+    fn skip_space(mut self) {
+        while self.at < self.text.len() {
+            let c = self.text.byte(self.at)
+            if c != 32 && c != 9 && c != 10 && c != 13 {
+                break
+            }
+            self.at += 1
+        }
+    }
+
+    /// A pitch: its key.
+    fn pitch(mut self) -> u32 {
+        let c = self.text.byte(self.at)
+        if c < 97 || c > 103 {
+            panic(self.say("a pitch starts with a letter from a to g"))
+        }
+        self.at += 1
+        // C D E F G A B from c: a=97.
+        let semitones: [i32; 7] = [9, 11, 0, 2, 4, 5, 7]
+        var key = semitones[u32(c - 97)]
+        while self.at < self.text.len() {
+            let a = self.text.byte(self.at)
+            if a == 35 {
+                key += 1
+            } else if a == 98 {
+                key -= 1
+            } else {
+                break
+            }
+            self.at += 1
+        }
+        if self.at >= self.text.len() ||
+            self.text.byte(self.at) < 48 ||
+            self.text.byte(self.at) > 56 {
+            panic(self.say("a pitch needs an octave from 0 to 8 (C4 is middle C)"))
+        }
+        let octave = i32(self.text.byte(self.at) - 48)
+        self.at += 1
+        let midi = 12 * (octave + 1) + key
+        if midi < 21 || midi > 108 {
+            panic(self.say("this pitch isn't one of the piano's 88 keys (A0 to C8)"))
+        }
+        u32(midi)
+    }
+
+    /// A duration, if one is written; else the last one.
+    fn duration(mut self) -> u32 {
+        if self.at >= self.text.len() || self.text.byte(self.at) != 47 {
+            return self.length
+        }
+        self.at += 1
+        var n = 0
+        let first = self.at
+        while self.at < self.text.len() &&
+            self.text.byte(self.at) >= 48 &&
+            self.text.byte(self.at) <= 57 {
+            n = n * 10 + u32(self.text.byte(self.at) - 48)
+            self.at += 1
+            if n > 64 {
+                break
+            }
+        }
+        if self.at == first ||
+            !(n == 1 || n == 2 || n == 4 || n == 8 || n == 16 || n == 32 || n == 64) {
+            panic(self.say("a duration is /1, /2, /4, /8, /16, /32 or /64"))
+        }
+        var length = 4 * TICKS / n
+        // Each dot adds half what the last added.
+        var add = length
+        while self.at < self.text.len() && self.text.byte(self.at) == 46 {
+            if add % 2 != 0 {
+                panic(self.say("too many dots for this duration"))
+            }
+            add = add / 2
+            length += add
+            self.at += 1
+        }
+        if self.at < self.text.len() && self.text.byte(self.at) == 116 {
+            length = length * 2 / 3
+            self.at += 1
+        }
+        self.length = length
+        length
+    }
+
+    /// A note, a chord (`keys`) or a rest (none), `length` ticks long, at the current tick.
+    fn event(mut self, keys: Vec<u32>, length: u32) {
+        var last: Vec<u32> = Vec::new()
+        // A tied note continues; any other key is a new note.
+        var continued = 0
+        for key in keys {
+            var found = false
+            for i in self.tied {
+                if self.notes[i].key == key && self.notes[i].end() == self.t {
+                    self.notes[i].length += length
+                    continued += 1
+                    last.push(i)
+                    found = true
+                    break
+                }
+            }
+            if !found {
+                let n = Note {
+                    voice: 0,
+                    start: self.t,
+                    length,
+                    key,
+                    marks: 0,
+                    slur: NO_SLUR,
+                }
+                self.notes.push(n)
+                last.push(self.notes.len() - 1)
+            }
+        }
+        if continued != self.tied.len() {
+            panic(self.say("a tie continues to no note of the same pitch"))
+        }
+        self.tied.clear()
+        self.last = take last
+        self.last_start = self.t
+        self.last_end = self.t + length
+        self.has_last = true
+        self.t += length
+    }
+
+    fn bar_line(mut self) {
+        let bar = self.meter.bar()
+        let want = (self.bars + 1) * bar
+        if self.t != want {
+            let held = self.t - min(self.t, self.bars * bar)
+            let beats = f32(held) / f32(self.meter.beat())
+            panic(
+                self.say(
+                    f"bar {self.bars + 1} holds {beats} beats, but {self.meter.beats}/{self.meter.unit} has {self.meter.beats}",
+                ),
+            )
+        }
+        self.bars += 1
+    }
+
+    fn mark(mut self) {
+        let from = self.at
+        while self.at < self.text.len() {
+            let c = self.text.byte(self.at)
+            if c == 32 ||
+                c == 9 ||
+                c == 10 ||
+                c == 13 ||
+                c == 124 ||
+                c == 40 ||
+                c == 41 ||
+                c == 126 {
+                break
+            }
+            self.at += 1
+        }
+        // An owned copy, so the reader can change while the word is read.
+        let owned = self.text.slice(from, self.at).to_string()
+        borrow word = owned.as_str()
+        if !self.has_last {
+            panic(self.say("a mark comes before any note"))
+        }
+        let t = self.last_start
+        if word == "<" || word == ">" {
+            self.end_hairpin(t)
+            self.hairpin = Some(Open { from: t, louder: word == "<" })
+        } else if word == "!" {
+            if self.hairpin.is_none() {
+                panic(self.say("`!!` ends no hairpin"))
+            }
+            self.end_hairpin(t)
+        } else if word == "accent" {
+            self.mark_last(ACCENT)
+        } else if word == "staccato" {
+            self.mark_last(STACCATO)
+        } else if word == "tenuto" {
+            self.mark_last(TENUTO)
+        } else if word == "fermata" {
+            self.mark_last(FERMATA)
+        } else if word == "ped" {
+            self.pedal.push(PedalMark { at: t, down: true })
+        } else if word == "unped" {
+            self.pedal.push(PedalMark { at: t, down: false })
+        } else {
+            let level = if word == "ppp" {
+                Level::PPP
+            } else if word == "pp" {
+                Level::PP
+            } else if word == "p" {
+                Level::P
+            } else if word == "mp" {
+                Level::MP
+            } else if word == "mf" {
+                Level::MF
+            } else if word == "f" {
+                Level::F
+            } else if word == "ff" {
+                Level::FF
+            } else if word == "fff" {
+                Level::FFF
+            } else {
+                panic(self.say(f"`!{word}` isn't a mark"))
+            }
+            self.end_hairpin(t)
+            self.dynamics.push(Dynamic { at: t, level })
+        }
+    }
+
+    fn end_hairpin(mut self, t: u32) {
+        if let Some(h) = self.hairpin {
+            if t <= h.from {
+                panic(self.say("a hairpin ends where it starts"))
+            }
+            self.hairpins.push(Hairpin { from: h.from, to: t, louder: h.louder })
+            self.hairpin = None
+        }
+    }
+
+    fn mark_last(mut self, mark: u32) {
+        if self.last.is_empty() {
+            panic(self.say("this mark follows a rest"))
+        }
+        for i in self.last {
+            self.notes[i].marks = self.notes[i].marks | mark
+        }
+    }
+
+    /// Panics with where the reader is: the passage, the voice, the bar and beat, and the text
+    /// around it.
+    fn say(self, why: str) -> String {
+        let bar = self.meter.bar()
+        let beat = (self.t % bar) / self.meter.beat() + 1
+        let from = if self.at > 16 { self.at - 16 } else { 0 }
+        let to = min(self.at + 16, self.text.len())
+        borrow near = self.text.slice(from, to)
+        f"{self.score}, voice `{self.voice}`, bar {self.t / bar + 1}, beat {beat}: {why} (near \"{near}\")"
+    }
+}

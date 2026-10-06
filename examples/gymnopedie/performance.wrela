@@ -1,0 +1,79 @@
+// A performance of the first Gymnopédie: a taste (habits that would hold for any piece) and
+// marks (this piece, this time). Functions, not constants, so a lifted build lifts every
+// number here and the lens's tools can change them while the piece plays.
+//
+// The reading, by Claude, from the score and the sheet (`wrela audio ... sheet`), before anyone
+// listened. "Lent et douloureux": slow and grieving, and restrained. The left hand is a
+// pendulum, bass on one and the chord on two, and keeps time; the melody sings above it, a
+// little late at its peaks and a little ahead of the chords. The pedal changes with each bass
+// note. Nearly all of it is soft, on the soft pedal; the forte the first edition gives the
+// chords in bar 9 is a swell, not a shout. Each phrase breathes before the next; the repeat
+// is quieter, as a memory is; the last bars slow, and the D minor chord is let ring.
+//
+// Bars are counted as the piece is played: the repeat written out, so its second time
+// through is bars 40 to 70, and the second ending 71 to 78.
+
+use engine::perform::{Mark, Pedal, Taste, bar, bars}
+
+pub fn taste() -> Taste {
+    Taste {
+        tempo: 66.0,
+        lead: "melody",
+        voicing: 1.2,
+        under: 0.85,
+        melody_lead: 0.015,
+        bass: "bass",
+        bass_weight: 1.1,
+        arch_tempo: 0.04,
+        arch_loudness: 0.12,
+        arch_peak: 0.35,
+        phrase_end: 0.08,
+        final_rit: 0.3,
+        final_bars: 3,
+        final_curve: 2.0,
+        range: 0.7,
+        level: 0.0,
+        hairpin_curve: 1.0,
+        metre: 0.04,
+        high_loud: 0.03,
+        legato: 0.04,
+        detache: 0.03,
+        pedal: Pedal::ByVoice { voice: "bass", catch: 0.09, depth: 0.85 },
+        ring: 3.5,
+        soft: 0.7,
+        soft_below: 0.36,
+        jitter_time: 0.005,
+        jitter_velocity: 0.04,
+        seed: 7,
+    }
+}
+
+pub fn marks() -> [Mark; 17] {
+    [
+        // Breaths where the melody's phrases begin, at their bar lines; the longest before the
+        // repeat and before the second ending.
+        Mark::Breathe { at: bar(13), length: 0.25 },
+        Mark::Breathe { at: bar(22), length: 0.35 },
+        Mark::Breathe { at: bar(32), length: 0.3 },
+        Mark::Breathe { at: bar(40), length: 0.9 },
+        Mark::Breathe { at: bar(52), length: 0.25 },
+        Mark::Breathe { at: bar(61), length: 0.35 },
+        Mark::Breathe { at: bar(71), length: 0.45 },
+        // The first entry, softly; the climax, the A5 in bar 28 (and 67), leaned on.
+        Mark::Lean { at: bar(5).on(2.0), voice: "melody", by: 0.92 },
+        Mark::Lean { at: bar(28), voice: "melody", by: 1.15 },
+        Mark::Lean { at: bar(67), voice: "melody", by: 1.1 },
+        // The melody lags the chords and catches up, at its first phrase and its climax.
+        Mark::Rubato { over: bars(5, last: 8), voice: "melody", by: 0.15 },
+        Mark::Rubato { over: bars(26, last: 29), voice: "melody", by: 0.2 },
+        // The forte in bar 9 rises, and stays below a shout.
+        Mark::Swell { over: bars(9, last: 12), by: 0.85 },
+        // The first ending's D major chord, held before the repeat.
+        Mark::Hold { at: bar(39).on(3.0), by: 1.8 },
+        // The repeat, a memory: quieter.
+        Mark::Swell { over: bars(40, last: 70), by: 0.92 },
+        // The last chord rolled gently from the bass up, and held.
+        Mark::Roll { at: bar(78), spread: 0.06 },
+        Mark::Hold { at: bar(78).on(3.0), by: 2.0 },
+    ]
+}

@@ -1,7 +1,8 @@
 // The audio worklet: renders the program's voice on the audio thread, one render quantum per
 // `process` call, by calling wrela_abi's `__audio` (on the audio thread, wrela_abi memory's
 // `THREAD_AUDIO`) on its own instance of the program's module,
-// which shares the program's memory. The samples are at `AUDIO_OUT` after each call.
+// which shares the program's memory. The samples are at `AUDIO_OUT` after each call: the left
+// channel's, then the right's.
 
 import { AUDIO_OUT, AUDIO_QUANTUM, EXPORT_AUDIO, HOST_FUNCTIONS, IMPORT_MEMORY, IMPORT_MODULE, THREAD_AUDIO } from "./abi.gen.ts";
 import { VOICE_PROCESSOR, type VoiceOptions } from "./messages.ts";
@@ -17,7 +18,8 @@ declare function registerProcessor(
 
 class Voice extends AudioWorkletProcessor {
   readonly #render: (thread: number, task: number, context: number) => void;
-  readonly #samples: Float32Array;
+  readonly #left: Float32Array;
+  readonly #right: Float32Array;
   readonly #task: number;
   readonly #context: number;
   #failed = false;
@@ -35,7 +37,8 @@ class Voice extends AudioWorkletProcessor {
     const instance = new WebAssembly.Instance(module, imports);
     this.#render = instance.exports[EXPORT_AUDIO] as (thread: number, task: number, context: number) => void;
     // The memory may grow, but a view of shared memory stays valid, and this one is below the heap.
-    this.#samples = new Float32Array(memory.buffer, AUDIO_OUT, AUDIO_QUANTUM);
+    this.#left = new Float32Array(memory.buffer, AUDIO_OUT, AUDIO_QUANTUM);
+    this.#right = new Float32Array(memory.buffer, AUDIO_OUT + 4 * AUDIO_QUANTUM, AUDIO_QUANTUM);
     this.#task = task;
     this.#context = context;
   }
@@ -50,7 +53,8 @@ class Voice extends AudioWorkletProcessor {
       this.port.postMessage({ type: "trap", message: e instanceof Error ? e.message : String(e) });
       return false;
     }
-    outputs[0]?.[0]?.set(this.#samples);
+    outputs[0]?.[0]?.set(this.#left);
+    outputs[0]?.[1]?.set(this.#right);
     return true;
   }
 }

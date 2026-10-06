@@ -392,6 +392,9 @@ pub struct ChromeRun {
     pub workers: u32,
     /// Quanta of the program's voice to render offline (0: none).
     pub audio: u32,
+    /// Seconds to play the voice in real time instead; the page saves what the browser says of
+    /// the playback in `results/live.json` (0: none).
+    pub live: u32,
     /// Time each pass on the GPU.
     pub timestamps: bool,
     /// A script of input events, relative to the page (runtime/abi `input`); "" for none.
@@ -422,6 +425,7 @@ impl ChromeRun {
             fps,
             workers: 1,
             audio: 0,
+            live: 0,
             timestamps: false,
             input: String::new(),
             latency: 0,
@@ -437,7 +441,8 @@ impl ChromeRun {
     /// Seconds the run may take: 300, or three times its frames' paced time and two minutes
     /// more, for a long run.
     fn timeout(&self) -> u32 {
-        (f64::from(self.frames) / self.fps * 3.0 + 120.0).max(300.0) as u32
+        (f64::from(self.frames) / self.fps * 3.0 + 120.0 + 2.0 * f64::from(self.live)).max(300.0)
+            as u32
     }
 
     /// The page's URL fragment that asks for this run.
@@ -449,6 +454,7 @@ impl ChromeRun {
             fps,
             workers,
             audio,
+            live,
             timestamps,
             input,
             latency,
@@ -461,8 +467,9 @@ impl ChromeRun {
         } = self;
         let count = |name: &str, n: u32| if n > 0 { format!("&{name}={n}") } else { String::new() };
         format!(
-            "#test&frames={frames}&width={width}&height={height}&fps={fps}&workers={workers}{}{}{}{}{}{}{}{}{}{}",
+            "#test&frames={frames}&width={width}&height={height}&fps={fps}&workers={workers}{}{}{}{}{}{}{}{}{}{}{}",
             count("audio", *audio),
+            count("live", *live),
             if *timestamps { "&timestamps=1" } else { "" },
             if input.is_empty() { String::new() } else { format!("&input={input}") },
             count("latency", *latency),

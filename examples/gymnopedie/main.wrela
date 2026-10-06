@@ -1,0 +1,117 @@
+// Spike 14 (#48): Satie's first Gymnopédie, played by engine::piano. Take 0 is the deadpan (the
+// score exactly, at the performance's tempo, steady); take 1 is the performance in
+// performance.wrela. Takes 2 and 3 are the same, dry: without the room, as the listening test
+// plays them beside a recorded piano. The program plays take 1 unless `choose` says otherwise
+// before the first frame. `describe` prints the take for `wrela audio`'s tools.
+
+use engine::perform::{Performance, deadpan, perform}
+use engine::piano::{Model, piano, play_piano}
+use engine::piano_grand::GRAND
+use engine::score::{Level, TICKS}
+use performance::{marks, taste}
+use score::GYMNOPEDIE
+use std::audio::play
+use std::io::print
+
+pub struct Game {
+    which: u32,
+    started: bool,
+}
+
+pub fn init() -> Game {
+    Game { which: 1, started: false }
+}
+
+/// Plays take `which`: 0 the deadpan, 1 the performance; 2 and 3 the same, dry. Only before the
+/// first frame.
+pub fn choose(game: mut Game, which: u32) {
+    assert(!game.started, "a take is chosen before the piece starts")
+    assert(
+        which < 4,
+        "the takes are 0 (the deadpan), 1 (the performance), and 2 and 3 (the same, dry)",
+    )
+    game.which = which
+}
+
+fn take_of(which: u32) -> Performance {
+    if which % 2 == 0 { deadpan(GYMNOPEDIE, tempo: taste().tempo) } else {
+        perform(GYMNOPEDIE, taste(), marks())
+    }
+}
+
+pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
+    if !game.started {
+        game.started = true
+        let model = if game.which >= 2 { Model { room: 0.0, ..GRAND } } else { GRAND }
+        play(piano(model, take_of(game.which)), play_piano)
+    }
+}
+
+/// How long the take sounds, its room's tail included.
+pub fn seconds(game: Game) -> f32 {
+    f32(take_of(game.which).length) + 4.0
+}
+
+/// The take as JSON lines: the piece, its voices, each note as played, the pedals, and when
+/// each beat fell.
+pub fn describe(game: Game) {
+    let p = take_of(game.which)
+    let name = if game.which % 2 == 0 { "deadpan" } else { "performance" }
+    print(
+        f"{{\"title\":\"{GYMNOPEDIE.title}\",\"take\":\"{name}\",\"bars\":{GYMNOPEDIE.bars},\"beats_per_bar\":{GYMNOPEDIE.meter.beats},\"seconds\":{p.length}}}",
+    )
+    for i in 0..GYMNOPEDIE.voices.len() {
+        print(f"{{\"voice\":{i},\"name\":\"{GYMNOPEDIE.voices[i]}\"}}")
+    }
+    for n in p.notes {
+        let written = GYMNOPEDIE.notes[n.note]
+        print(
+            f"{{\"key\":{n.key},\"voice\":{n.voice},\"onset\":{n.onset},\"release\":{n.release},\"velocity\":{n.velocity},\"bar\":{GYMNOPEDIE.bar_of(written.start)}}}",
+        )
+    }
+    for s in p.sustain {
+        print(f"{{\"sustain\":{s.at},\"depth\":{s.depth}}}")
+    }
+    for s in p.soft {
+        print(f"{{\"soft\":{s.at},\"depth\":{s.depth}}}")
+    }
+    for b in p.beats {
+        print(f"{{\"beat\":{b}}}")
+    }
+}
+
+@test
+fn the_score_has_78_bars_in_four_voices() {
+    assert(GYMNOPEDIE.bars == 78)
+    assert(GYMNOPEDIE.voices.len() == 4)
+    assert(GYMNOPEDIE.sections.len() == 4)
+    assert(GYMNOPEDIE.sections[3].first_bar == 71)
+    // The melody's first note: F#5 on beat 2 of bar 5, pianissimo.
+    let melody = GYMNOPEDIE.voice_named("melody")
+    var first = GYMNOPEDIE.notes[0]
+    for n in GYMNOPEDIE.notes {
+        if n.voice == melody {
+            first = n
+            break
+        }
+    }
+    assert(first.key == 78 && first.start == GYMNOPEDIE.bar_start(5) + TICKS)
+    assert(GYMNOPEDIE.level_at(first.start) == Level::PP)
+}
+
+@test
+fn the_deadpan_plays_the_score_exactly() {
+    let p = deadpan(GYMNOPEDIE, tempo: 72.0)
+    assert(p.notes.len() == GYMNOPEDIE.notes.len())
+    // 78 bars of 3 beats at 72 a minute: 195 seconds.
+    assert(abs(p.beats[234] - 195.0) < 1e-9)
+    assert(p.sustain.len() == 1 && p.sustain[0].depth == 0.0)
+    // The melody's first note, on beat 2 of bar 5: 13 beats in.
+    let melody = GYMNOPEDIE.voice_named("melody")
+    for n in p.notes {
+        if n.voice == melody {
+            assert(abs(n.onset - 13.0 * 60.0 / 72.0) < 1e-9)
+            break
+        }
+    }
+}
