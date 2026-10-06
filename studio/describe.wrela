@@ -1,0 +1,171 @@
+// What a subject is, in one answer (`describe`): its parts (each one's volume, its box and the
+// parts it touches), and the whole's box, volume, mass, pieces and lowest point, and how nearly
+// mirror-symmetric it is. For any surface: the field and the part that decides it (provenance,
+// language.md §22) are sampled on the diagnosis's grid on the GPU, and the rest is counted on
+// the CPU.
+
+use diagnose::{Grid, report}
+use json::{List, list, obj}
+use solve::filled
+use std::collections::Vec
+use std::field::Surface
+use std::gpu::{GlobalId, GpuBuffer, Slots, buffer, dispatch}
+use std::string::String
+use surface::{Reading, arrived, got, reading}
+
+/// The field at each cell's centre, and the part that decides it there.
+@compute(256)
+pub fn sample_parts<S: Surface>(
+    field: S,
+    grid: Grid,
+    d: mut Slots<f32>,
+    part: mut Slots<u32>,
+    id: GlobalId,
+) {
+    let n = grid.n
+    if id.x >= n * n * n {
+        return
+    }
+    let (dist, i) = field.part_at(grid.at(id.x % n, (id.x / n) % n, id.x / (n * n)))
+    d[id] = dist
+    part[id] = i
+}
+
+/// A description on its way back from the GPU: the samples' distances and parts.
+pub struct Describing {
+    pub grid: Grid,
+    pub d: Reading<f32>,
+    pub part: Reading<u32>,
+}
+
+pub fn start<S: Surface>(field: S, grid: Grid) -> Describing {
+    let count = grid.count()
+    var d: GpuBuffer<f32> = buffer(count)
+    var part: GpuBuffer<u32> = buffer(count)
+    dispatch(
+        sample_parts.bind(field: field, grid: grid, d: mut d, part: mut part),
+        groups: (count + 255) / 256,
+    )
+    Describing { grid, d: reading(take d, count), part: reading(take part, count) }
+}
+
+/// The samples, once both have come back (`None` before; empty if the GPU failed).
+pub fn poll(s: mut Describing) -> Option<(Vec<f32>, Vec<u32>)> {
+    let a = arrived(mut s.d)
+    let b = arrived(mut s.part)
+    if !(a && b) {
+        return None
+    }
+    Some((got(mut s.d), got(mut s.part)))
+}
+
+/// Each part's share of the inside: its cells, and their centres' box.
+struct Share: Copy {
+    cells: u32,
+    lo: vec3,
+    hi: vec3,
+}
+
+/// The description, as JSON: from the samples `d` and `part` on `grid`, with names from
+/// `field`, and the asymmetry (the most the field's distance differs from its mirror image's,
+/// at points near the surface: every 8th cell within a cell of it).
+pub fn answer<S: Surface>(field: S, grid: Grid, d: [f32], part: [u32]) -> String {
+    let n = grid.n
+    let parts = field.parts()
+    let r = report(grid, d)
+    let vox = grid.cell * grid.cell * grid.cell
+    var shares = filled(parts, Share { cells: 0, lo: vec3(1.0e9), hi: vec3(-1.0e9) })
+    // Contacts: the faces between inside cells decided by different parts, by pair.
+    var contacts: Vec<(u32, u32, u32)> = Vec::new()
+    var asymmetry = 0.0
+    var near = 0
+    for c in 0..n * n * n {
+        let (i, j, k) = (c % n, (c / n) % n, c / (n * n))
+        if abs(d[c]) < grid.cell {
+            if near % 8 == 0 {
+                let p = grid.at(i, j, k)
+                asymmetry = max(
+                    asymmetry,
+                    abs(field.distance(p) - field.distance(vec3(-p.x, p.y, p.z))),
+                )
+            }
+            near += 1
+        }
+        if !(d[c] < 0.0) || part[c] >= parts {
+            continue
+        }
+        let a = part[c]
+        let p = grid.at(i, j, k)
+        shares[a] = Share {
+            cells: shares[a].cells + 1,
+            lo: min(shares[a].lo, p),
+            hi: max(shares[a].hi, p),
+        }
+        for m in 0..3 {
+            let next = if m == 0 { if i + 1 < n { c + 1 } else { c } } else if m == 1 {
+                if j + 1 < n { c + n } else { c }
+            } else if k + 1 < n { c + n * n } else { c }
+            if next != c && d[next] < 0.0 && part[next] < parts && part[next] != a {
+                let (x, y) = (min(a, part[next]), max(a, part[next]))
+                var found = false
+                for q in 0..contacts.len() {
+                    if contacts[q].0 == x && contacts[q].1 == y {
+                        contacts[q] = (x, y, contacts[q].2 + 1)
+                        found = true
+                    }
+                }
+                if !found {
+                    contacts.push((x, y, 1))
+                }
+            }
+        }
+    }
+    var ps = list()
+    for a in 0..parts {
+        let s = shares[a]
+        let name = field.part_name(a)
+        var touches = list()
+        for q in contacts {
+            let (x, y, faces) = q
+            if x == a || y == a {
+                let other = if x == a { y } else { x }
+                let t = obj()
+                    .int("part", other)
+                    .text("name", field.part_name(other).name)
+                    .num("area_cm2", f32(faces) * grid.cell * grid.cell * 1.0e4)
+                    .done()
+                touches.add(t.as_str())
+            }
+        }
+        let touches = take touches.done()
+        var j = obj()
+            .int("index", a)
+            .text("name", name.name)
+            .text("group", name.group)
+            .flag("mirrored", name.mirrored)
+            .num("volume", f32(s.cells) * vox)
+        if s.cells > 0 {
+            j = take j.vec("lo", s.lo - vec3(0.5 * grid.cell))
+            j = take j.vec("hi", s.hi + vec3(0.5 * grid.cell))
+        }
+        j = take j.raw("touches", touches.as_str())
+        let j = take j.done()
+        ps.add(j.as_str())
+    }
+    let ps = take ps.done()
+    obj()
+        .text("action", "describe")
+        .int("cells", n)
+        .num("cell", grid.cell)
+        .vec("lo", r.lo - vec3(0.5 * grid.cell))
+        .vec("hi", r.hi + vec3(0.5 * grid.cell))
+        .num("volume", r.volume)
+        .num("mass", r.mass)
+        .int("pieces", r.pieces)
+        .num("lowest", r.lo.y - 0.5 * grid.cell)
+        .num("below_ground", r.below)
+        .num("asymmetry_mm", 1000.0 * asymmetry)
+        .flag("mirror_symmetric", asymmetry < 0.001)
+        .raw("parts", ps.as_str())
+        .done()
+}

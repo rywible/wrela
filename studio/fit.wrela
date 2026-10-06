@@ -1,0 +1,469 @@
+// Fit to a reference (AC9 of #39): spike 09's fit on real wrela. Chosen literals change until a
+// view's silhouette matches a reference image, a mask of the same view (`studio/reference`,
+// which the studio's server or the headless runner answers from a PNG: dark is inside).
+//
+// For each pixel, m is the least distance along its ray: the pixel is inside the silhouette
+// where m < 0. A pixel on the reference's boundary (one of its four neighbours is on the other
+// side) gets a residual in metres toward the boundary passing at the pixel's edge: m + h where
+// the reference is inside, m − h where it's outside (h, half a pixel). Every other pixel gets the
+// same residual only while it has the wrong sign (a hinge). The boundary's residuals, at many
+// pixels, place the silhouette to a fraction of a pixel. It's a distance loss computed from the
+// field, not from a picture. By the envelope theorem, ∂m/∂θ is ∂d/∂θ at the point where the ray found
+// m: the derivatives come from the glue's `grad8` and `grad16`. Levenberg–Marquardt takes the
+// steps, accepting one that lowers the loss and damping more after one that doesn't. The
+// intersection over union is reported, not optimized. As the spike found, raw m, not m over its
+// gradient's length: the latter is ill-conditioned at deep minima inside.
+//
+// The rays run on the GPU in passes, one evaluation of the field each (see view.wrela).
+
+use drag
+use json::{List, list, obj}
+use lens::source_json
+use solve::{add_row, cholesky, derive, filled, set, value}
+use std::collections::Vec
+use std::field::Surface
+use std::gpu::{FragCoord, GlobalId, GpuBuffer, Slots, buffer, dispatch, read}
+use std::io::Pending
+use std::lift::Literal
+use std::string::String
+use view::Ortho
+
+/// A fit's view: `view`, `res` pixels square from (0, 0), and half a pixel in metres.
+pub struct FitView: Copy + GpuData {
+    pub view: Ortho,
+    pub res: u32,
+    pub half_pixel: f32,
+}
+
+/// The view of `res` pixels square centred at `centre`, `2 half` metres wide, looking along
+/// `-back` with `up` up: a facing's (`view::framed`) at an author's or agent's framing.
+pub fn fit_view(centre: vec3, back: vec3, up: vec3, half: f32, reach: f32, res: u32) -> FitView {
+    FitView {
+        view: Ortho {
+            centre,
+            right: normalize(cross(up, back)),
+            up,
+            back,
+            half,
+            reach,
+            x0: 0.0,
+            y0: 0.0,
+            size: f32(res),
+        },
+        res,
+        half_pixel: half / f32(res),
+    }
+}
+
+/// How many passes of the field the rays get.
+pub const PASSES: u32 = 64
+
+/// Starts each pixel's ray: (t, least distance so far, where, 0 while going).
+@compute(64)
+pub fn start_minima(fv: FitView, out: mut Slots<vec4>, id: GlobalId) {
+    if id.x >= fv.res * fv.res {
+        return
+    }
+    out[id] = vec4(0.0, 1.0e9, 0.0, 0.0)
+}
+
+/// One pass of the field over the rays still going: sphere steps outside (0.8 of the
+/// distance), steps of the depth inside, at least a quarter of a pixel; a ray ends past twice
+/// its view's reach.
+@compute(64)
+pub fn step_minima<S: Surface>(
+    field: S,
+    fv: FitView,
+    rays: [vec4],
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= fv.res * fv.res {
+        return
+    }
+    let r = rays[id.x]
+    if r.w != 0.0 {
+        out[id] = r
+        return
+    }
+    let (o, dir) = fv.view.ray(f32(id.x % fv.res) + 0.5, f32(id.x / fv.res) + 0.5)
+    let d = field.distance(o + dir * r.x)
+    let (least, at) = if d < r.y { (d, r.x) } else { (r.y, r.z) }
+    let step = if d > 0.0 { 0.8 * d } else { -d }
+    let t = r.x + max(step, 0.5 * fv.half_pixel)
+    out[id] = vec4(t, least, at, if t > 2.0 * fv.view.reach { 1.0 } else { 0.0 })
+}
+
+/// A pixel of the silhouette the rays found: inside dark, outside light (the reference's
+/// colours).
+@fragment
+pub fn draw_minima(pixel: FragCoord, fv: FitView, rays: [vec4]) -> vec4 {
+    let (x, y) = (u32(pixel.position.x), u32(pixel.position.y))
+    if x >= fv.res || y >= fv.res {
+        return vec4(0.5, 0.5, 0.5, 1.0)
+    }
+    if rays[y * fv.res + x].y < 0.0 { vec4(0.0, 0.0, 0.0, 1.0) } else { vec4(1.0, 1.0, 1.0, 1.0) }
+}
+
+/// The rays of `fv` traced through `field` into `a` (and `b`, the passes' other buffer): the
+/// state ends in `a`.
+pub fn trace_minima<S: Surface>(
+    field: S,
+    fv: FitView,
+    a: mut GpuBuffer<vec4>,
+    b: mut GpuBuffer<vec4>,
+) {
+    let groups = (fv.res * fv.res + 63) / 64
+    dispatch(start_minima.bind(fv: fv, out: mut a), groups: groups)
+    for _ in 0..PASSES {
+        // Each pass reads one buffer and writes the other.
+        dispatch(step_minima.bind(field: field, fv: fv, rays: a, out: mut b), groups: groups)
+        swap(mut a, mut b)
+    }
+}
+
+/// The intersection over union of the silhouette `m < 0` and the reference's inside.
+pub fn iou(rays: [vec4], reference: [u8]) -> f32 {
+    var both = 0
+    var either = 0
+    for i in 0..min(rays.len(), reference.len()) {
+        let a = rays[i].y < 0.0
+        let b = reference[i] != 0
+        if a && b {
+            both += 1
+        }
+        if a || b {
+            either += 1
+        }
+    }
+    if either == 0 { 1.0 } else { f32(both) / f32(either) }
+}
+
+/// A pixel's residual: its index and its hinge residual (m).
+struct Row: Copy {
+    pixel: u32,
+    e: f32,
+}
+
+/// Whether pixel `i` of a reference `res` wide is on its boundary: a neighbour is on the other
+/// side.
+fn on_boundary(reference: [u8], res: u32, i: u32) -> bool {
+    let (x, y) = (i % res, i / res)
+    let v = reference[i] != 0
+    (x > 0 && (reference[i - 1] != 0) != v) ||
+        (x + 1 < res && (reference[i + 1] != 0) != v) ||
+        (y > 0 && (reference[i - res] != 0) != v) ||
+        (y + 1 < res && (reference[i + res] != 0) != v)
+}
+
+/// The rows (see the top of this file) and their loss (Σ e²).
+fn residuals(rays: [vec4], reference: [u8], res: u32, h: f32) -> (Vec<Row>, f32) {
+    var rows: Vec<Row> = Vec::new()
+    var loss = 0.0
+    for i in 0..min(rays.len(), reference.len()) {
+        let m = rays[i].y
+        let e = if reference[i] != 0 { m + h } else { m - h }
+        let wrong = if reference[i] != 0 { e > 0.0 } else { e < 0.0 }
+        if e != 0.0 && (wrong || on_boundary(reference, res, i)) {
+            rows.push(Row { pixel: i, e })
+            loss += e * e
+        }
+    }
+    (rows, loss)
+}
+
+/// The most rows a step's derivatives are taken at, every nth past it, until the fit settles;
+/// then it polishes with every row, `POLISH` steps at most (a sample's noise moved the grazer's
+/// neck's radius 2.7 mm, every row 0.8 mm).
+const ROWS: u32 = 480
+
+/// How many steps a fit takes at most, and polishes with at most.
+const STEPS: u32 = 40
+const POLISH: u32 = 3
+
+/// What the fit waits for.
+pub enum Waiting {
+    /// The reference, from the server.
+    Reference,
+    /// The rays at the values being tried.
+    Rays,
+}
+
+/// A fit under way.
+pub struct Fit {
+    pub fv: FitView,
+    pub lits: Vec<u32>,
+    /// The literals' values when the fit began, at the last accepted step, and being tried.
+    pub original: Vec<f32>,
+    pub accepted: Vec<f32>,
+    pub trying: Vec<f32>,
+    pub reference: Vec<u8>,
+    pub waiting: Waiting,
+    pub asked: Option<Pending<u8>>,
+    pub rays: GpuBuffer<vec4>,
+    pub other: GpuBuffer<vec4>,
+    pub pending: Option<Pending<vec4>>,
+    /// The loss at the last accepted step (negative before the first measure), its rows'
+    /// pixels' points and residuals, and Levenberg–Marquardt's damping.
+    pub loss: f32,
+    pub rows: Vec<(vec3, f32)>,
+    pub mu: f32,
+    pub steps: u32,
+    pub accepted_steps: u32,
+    pub iou_before: f32,
+    pub iou_after: f32,
+    /// Accepted steps in a row that lowered the loss by under 0.1%, and steps rejected in a row:
+    /// three of the first, or six of the second, and it's done.
+    pub small: u32,
+    pub rejected: u32,
+    /// Polishing (every row), and how many polishing steps it has taken; rounding (its last
+    /// measure, of the values rounded to their sources' decimals).
+    pub polishing: bool,
+    pub polished: u32,
+    pub rounding: bool,
+}
+
+fn set_all(lits: [u32], values: [f32]) {
+    for i in 0..lits.len() {
+        set(lits[i], values[i])
+    }
+}
+
+/// A fit of the literals `lits` in the view `fv`; it asks the server for the reference first.
+pub fn start(fv: FitView, lits: [u32]) -> Fit {
+    var f = start_without(fv, lits)
+    let body = String::from("reference")
+    f.asked = Some(std::io::post("studio/reference", body.as_bytes()))
+    f
+}
+
+/// A fit waiting for its reference, asked of no one yet.
+fn start_without(fv: FitView, lits: [u32]) -> Fit {
+    var v: Vec<f32> = Vec::new()
+    var l: Vec<u32> = Vec::new()
+    for i in lits {
+        l.push(i)
+        v.push(value(i))
+    }
+    let n = fv.res * fv.res
+    Fit {
+        fv,
+        lits: take l,
+        original: v.clone(),
+        accepted: v.clone(),
+        trying: take v,
+        reference: Vec::new(),
+        waiting: Waiting::Reference,
+        asked: None,
+        rays: buffer(n),
+        other: buffer(n),
+        pending: None,
+        loss: -1.0,
+        rows: Vec::new(),
+        mu: 1.0e-3,
+        steps: 0,
+        accepted_steps: 0,
+        iou_before: 0.0,
+        iou_after: 0.0,
+        small: 0,
+        rejected: 0,
+        polishing: false,
+        polished: 0,
+        rounding: false,
+    }
+}
+
+/// `start`, with the reference given (a blueprint's mask, `blueprint::mask`) instead of
+/// asked of the server.
+pub fn start_with(fv: FitView, lits: [u32], reference: take Vec<u8>) -> Fit {
+    var f = start_without(fv, lits)
+    f.reference = take reference
+    f
+}
+
+/// What a frame did to a fit: it goes on, it's finished, or it can't be done (why).
+pub enum FitProgress {
+    Going,
+    Finished,
+    Failed(String),
+}
+
+/// Traces the rays at the values being tried.
+fn measure<S: Surface>(f: mut Fit, subject: fn() -> S) {
+    set_all(f.lits, f.trying)
+    trace_minima(subject(), f.fv, mut f.rays, mut f.other)
+    f.pending = Some(read(f.rays.span(start: 0, count: f.fv.res * f.fv.res)))
+    f.waiting = Waiting::Rays
+}
+
+/// One frame of a fit.
+pub fn advance<S: Surface>(
+    f: mut Fit,
+    subject: fn() -> S,
+    grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
+    grad16: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+) -> FitProgress {
+    match f.waiting {
+        Waiting::Reference => {
+            if f.asked.is_none() {
+                // Given, not asked: measure at once.
+                if f.reference.len() == f.fv.res * f.fv.res {
+                    measure(mut f, subject)
+                    return FitProgress::Going
+                }
+                return FitProgress::Failed(String::from("the reference isn't the view's size"))
+            }
+            let answer = match mut f.asked {
+                Some(p) => p.poll(),
+                None => None,
+            }
+            match take answer {
+                Some(Ok(bytes)) => {
+                    let n = f.fv.res * f.fv.res
+                    if bytes.len() != 4 + n {
+                        return FitProgress::Failed(
+                            String::from("the reference isn't the view's size"),
+                        )
+                    }
+                    let res = u32(bytes[0]) |
+                        (u32(bytes[1]) << 8) |
+                        (u32(bytes[2]) << 16) |
+                        (u32(bytes[3]) << 24)
+                    if res != f.fv.res {
+                        return FitProgress::Failed(
+                            String::from("the reference isn't the view's size"),
+                        )
+                    }
+                    f.reference = Vec::with_capacity(n)
+                    for i in 0..n {
+                        f.reference.push(bytes[4 + i])
+                    }
+                    f.asked = None
+                    measure(mut f, subject)
+                },
+                Some(Err(e)) => return FitProgress::Failed(String::from(e.message())),
+                None => {},
+            }
+            FitProgress::Going
+        },
+        Waiting::Rays => {
+            let answer = match mut f.pending {
+                Some(p) => p.poll(),
+                None => None,
+            }
+            let rays = match take answer {
+                Some(Ok(r)) => take r,
+                Some(Err(e)) => return FitProgress::Failed(String::from(e.message())),
+                None => return FitProgress::Going,
+            }
+            f.pending = None
+            let (rows, loss) = residuals(rays, f.reference, f.fv.res, f.fv.half_pixel)
+            if f.loss < 0.0 || loss < f.loss {
+                // Accepted (or the first measure, or polishing's).
+                if f.loss == -1.0 {
+                    f.iou_before = iou(rays, f.reference)
+                } else if f.loss > 0.0 && !f.rounding {
+                    f.accepted_steps += 1
+                    f.small = if loss > 0.999 * f.loss { f.small + 1 } else { 0 }
+                    f.mu = max(f.mu / 3.0, 1.0e-7)
+                }
+                f.loss = loss
+                f.accepted = f.trying.clone()
+                f.iou_after = iou(rays, f.reference)
+                f.rows = Vec::new()
+                let every = if f.polishing { 1 } else { max(1, (rows.len() + ROWS - 1) / ROWS) }
+                for k in 0..rows.len() {
+                    if k % every == 0 {
+                        let r = rows[k]
+                        let (o, dir) = f.fv.view.ray(
+                            f32(r.pixel % f.fv.res) + 0.5,
+                            f32(r.pixel / f.fv.res) + 0.5,
+                        )
+                        f.rows.push((o + dir * rays[r.pixel].z, r.e))
+                    }
+                }
+                f.rejected = 0
+            } else {
+                f.mu = min(f.mu * 4.0, 1.0e6)
+                f.rejected += 1
+            }
+            let settled = f.rows.len() == 0 || f.steps >= STEPS || f.small >= 3 || f.rejected >= 6
+            if settled && !f.polishing && f.rows.len() > 0 {
+                // Settled on a sample: polish with every row, from the rays at the accepted
+                // values.
+                f.polishing = true
+                f.small = 0
+                f.rejected = 0
+                f.loss = -2.0
+                f.trying = f.accepted.clone()
+                measure(mut f, subject)
+                return FitProgress::Going
+            }
+            if f.polishing {
+                f.polished += 1
+            }
+            if f.rounding {
+                // The rounded values' IoU, measured: done.
+                set_all(f.lits, f.accepted)
+                return FitProgress::Finished
+            }
+            if settled || f.polished > POLISH {
+                // Round each literal to its source's decimals (as a drag does), and measure the
+                // silhouette at them.
+                for i in 0..f.lits.len() {
+                    f.trying[i] = drag::to_decimals(f.lits[i], f.accepted[i])
+                }
+                f.rounding = true
+                f.loss = 1.0e30
+                measure(mut f, subject)
+                return FitProgress::Going
+            }
+            // The next step from the accepted values.
+            set_all(f.lits, f.accepted)
+            let k = f.lits.len()
+            var a: Vec<f32> = filled(k * k, 0.0)
+            var b: Vec<f32> = filled(k, 0.0)
+            for row in f.rows {
+                let (p, e) = row
+                let (_, j) = derive(grad8, grad16, p, f.lits)
+                add_row(mut a, mut b, k, j, e, w: 1.0)
+            }
+            for i in 0..k {
+                a[i * k + i] += f.mu * max(a[i * k + i], 1.0e-9)
+            }
+            let delta = cholesky(a, b, k)
+            for i in 0..k {
+                f.trying[i] = f.accepted[i] + delta[i]
+            }
+            f.steps += 1
+            measure(mut f, subject)
+            FitProgress::Going
+        },
+    }
+}
+
+/// A fit's answer: each literal's value before and after, the IoU before and after, and the
+/// steps.
+pub fn answer(f: Fit) -> String {
+    var lits = list()
+    for i in 0..f.lits.len() {
+        let src = source_json(f.lits[i], None)
+        let j = obj()
+            .int("literal", f.lits[i])
+            .num("before", f.original[i])
+            .num("after", f.accepted[i])
+            .raw("source", src.as_str())
+            .done()
+        lits.add(j.as_str())
+    }
+    let lits = take lits.done()
+    obj()
+        .text("action", "fit")
+        .int("res", f.fv.res)
+        .num("iou_before", f.iou_before)
+        .num("iou_after", f.iou_after)
+        .int("steps", f.steps)
+        .int("accepted", f.accepted_steps)
+        .raw("literals", lits.as_str())
+        .done()
+}

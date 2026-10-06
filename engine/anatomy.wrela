@@ -1,0 +1,1223 @@
+// An anatomy kit: building blocks at the level a creature artist works in (muscles from origin to
+// insertion, bones that show at the joints, a canid's skull, ears and paws, colour that changes
+// across a part), and a canine built from them from a few proportions. An author changes the
+// canine's proportions and its muscles' bulk, or builds their own creature from the blocks,
+// instead of placing ellipsoids.
+//
+// It's molded clay: forms only, no fur. A coat's mass (a ruff, a tail's brush) is part of the
+// forms, and fine surface detail is left to materials, later.
+//
+// Units: metres. +y up, the animal faces +z, +x is its left; a part is written for the left side
+// and mirrored. Every block is a union of exact distances (round cones, spheres, ovals inside),
+// blended smoothly, so the whole has a gradient near 1 (`diagnose`).
+
+use creature::{Body, Bone, Group, Inside, Modify, Placed, Skeleton, Then, creature, group, smooth}
+pub use creature::{Ground, ground}
+use std::derive::Box3
+use std::field::{
+    Blend, Field, Lipschitz, Oval, PartName, Rotate, SmoothUnionAll, Surface, Translate, Tube, oval,
+    round_cone, smax, smin, tube,
+}
+use std::math::PI
+use std::quat::Quat
+use std::units::deg
+
+// ---- muscles and bones ---------------------------------------------------------------------------
+
+/// A muscle: a spindle from its origin to its insertion, thickest at its belly and narrowing
+/// to a tendon at each end, bowed out sideways if asked. Six round cones along its length, so
+/// its distance is exact.
+pub type Muscle = Tube<6>
+
+/// A muscle from `origin` to `insertion`, `bulk` thick (a radius) at its belly, `belly` of the
+/// way along; its ends are `ends` (a fraction of `bulk`) thick at the origin and the insertion;
+/// `bow` bends its middle by that much.
+pub fn muscle(
+    origin: vec3,
+    insertion: vec3,
+    bulk: f32,
+    belly: f32 = 0.45,
+    ends: vec2 = vec2(0.45, 0.25),
+    bow: vec3 = vec3(),
+) -> Muscle {
+    var points = [vec3(); 6]
+    var radii = [0.0; 6]
+    for i in 0..6 {
+        let t = f32(i) / 5.0
+        // A bump that peaks at `belly`: 0 at the ends, 1 there.
+        let u = if t < belly { 0.5 * t / max(belly, 0.01) } else {
+            0.5 + 0.5 * (t - belly) / max(1.0 - belly, 0.01)
+        }
+        // (sin(π) is a hair below 0 in f32: a power of it would be NaN.)
+        let bump = pow(max(sin(PI * u), 0.0), 0.75)
+        let tendon = ends.x + (ends.y - ends.x) * t
+        points[i] = origin + (insertion - origin) * t + bow * sin(PI * t)
+        radii[i] = bulk * (tendon + (1.0 - tendon) * bump)
+    }
+    tube(points, radii)
+}
+
+/// A bone's knob showing under the skin (the point of the elbow, the carpus, the hock): a ball
+/// `r` across at `at`.
+pub fn knob(at: vec3, r: f32) -> Muscle {
+    tube([at; 6], [r; 6])
+}
+
+/// A tendon or a slim bone from `a` to `b`, `r_a` and `r_b` thick at its ends.
+pub fn tendon(a: vec3, b: vec3, r_a: f32, r_b: f32) -> Muscle {
+    var points = [vec3(); 6]
+    var radii = [0.0; 6]
+    for i in 0..6 {
+        let t = f32(i) / 5.0
+        points[i] = a + (b - a) * t
+        radii[i] = r_a + (r_b - r_a) * t
+    }
+    tube(points, radii)
+}
+
+/// Muscles, knobs and tendons blended into one mass, `k` the width of the blend (a few
+/// centimetres: skin over them): one part of a creature. Smooth unions of exact distances, so
+/// its bound is 1.
+pub fn bundle<const N: u32>(members: [Muscle; N], k: f32) -> SmoothUnionAll<Muscle, N> {
+    members.smooth_union(k)
+}
+
+// ---- colour across a part -----------------------------------------------------------------------
+
+/// A part's colour (its channels), changing with height in the part's frame: `bottom` below
+/// `from`, `top` above `to`, and a blend between. A grey back over a cream belly, a dark
+/// saddle, a darker tip.
+pub struct Paint<C>: Copy + GpuData {
+    pub bottom: C,
+    pub top: C,
+    pub from: f32,
+    pub to: f32,
+}
+
+/// The same colour all over.
+pub fn flat<C: Copy + GpuData>(c: C) -> Paint<C> {
+    Paint { bottom: c, top: c, from: 0.0, to: 1.0 }
+}
+
+/// `bottom` below `from`, `top` above `to` (heights in the part's frame).
+pub fn shade<C: Copy + GpuData>(bottom: C, top: C, from: f32, to: f32) -> Paint<C> {
+    Paint { bottom, top, from, to }
+}
+
+/// A surface with a `Paint`.
+pub struct Painted<S, C>: Copy + GpuData {
+    pub inner: S,
+    pub paint: Paint<C>,
+}
+
+/// `s` painted with `paint`.
+pub fn painted<S: Surface, C: Copy + GpuData>(s: S, paint: Paint<C>) -> Painted<S, C> {
+    Painted { inner: s, paint }
+}
+
+impl<S: Surface, C: Copy + GpuData> Surface for Painted<S, C> {
+    fn distance(self, p: vec3) -> f32 {
+        self.inner.distance(p)
+    }
+
+    fn part_offset(self, p: vec3, i: u32, by: f32) -> f32 {
+        self.inner.part_offset(p, i, by)
+    }
+
+    fn parts(self) -> u32 {
+        self.inner.parts()
+    }
+
+    fn part_at(self, p: vec3) -> (f32, u32) {
+        self.inner.part_at(p)
+    }
+
+    fn part_distance(self, p: vec3, i: u32) -> f32 {
+        self.inner.part_distance(p, i)
+    }
+
+    fn part_name(self, i: u32) -> PartName {
+        self.inner.part_name(i)
+    }
+}
+
+impl<S: Lipschitz, C: Copy + GpuData> Lipschitz for Painted<S, C> {
+    fn lipschitz(self, near: f32) -> f32 {
+        self.inner.lipschitz(near)
+    }
+}
+
+impl<S: Surface, C: Copy + GpuData + Blend> Field<C> for Painted<S, C> {
+    fn channels(self, p: vec3) -> C {
+        let t = smoothstep(self.paint.from, self.paint.to, p.y)
+        self.paint.bottom.blend(self.paint.top, t)
+    }
+}
+
+// ---- a canid's head, ears and paws -------------------------------------------------------------
+
+/// A canid's head, in its frame (the origin at the back of the skull, +z along the muzzle):
+/// a cranium, the zygomatic arches, a muzzle with a flat top and sides that narrows to the nose,
+/// a stop between them, the brows, a lower jaw with a mouth line, the cheeks' muscle and the
+/// nose pad. `length` from the back of the skull to the nose; `muzzle` its share of that.
+pub struct CanidHead: Copy + GpuData {
+    pub length: f32,
+    pub muzzle: f32,
+    /// The cranium's width and the muzzle's width at its root, as fractions of `length`.
+    pub width: f32,
+    pub snout: f32,
+    /// How deep the stop (the step from forehead to muzzle) is, as a fraction of `length`.
+    pub stop: f32,
+}
+
+impl Surface for CanidHead {
+    fn distance(self, p: vec3) -> f32 {
+        let l = self.length
+        let m = self.muzzle * l
+        let cz = l - m
+        let w = self.width * l
+        let q = vec3(abs(p.x), p.y, p.z)
+        // The cranium: an oval over the brain, narrowing forward, and the arches at the cheeks.
+        let cranium = oval(vec3(0.5 * w, 0.24 * l, 0.46 * cz + 0.04 * l)).distance(
+            p - vec3(0.0, 0.0, 0.48 * cz),
+        )
+        let arch = round_cone(
+            vec3(0.46 * w, -0.04 * l, 0.35 * cz),
+            vec3(0.3 * w, -0.07 * l, cz + 0.04 * l),
+            r_top: 0.075 * l,
+            r_bottom: 0.055 * l,
+        ).distance(q)
+        // The muzzle: a cone from its root to the nose, its top and sides flattened.
+        let root = vec3(0.0, -0.05 * l, cz - 0.02 * l)
+        let tip = vec3(0.0, -0.075 * l, l - 0.05 * l)
+        let r0 = 0.22 * l
+        let r1 = r0 * self.snout
+        let cone = round_cone(root, tip, r_top: r0, r_bottom: r1).distance(p)
+        let along = clamp((p.z - root.z) / max(tip.z - root.z, 0.001), 0.0, 1.0)
+        let top_y = root.y + r0 * 0.8 + (tip.y + r1 * 0.85 - root.y - r0 * 0.8) * along
+        let side_x = r0 * 0.82 + (r1 * 0.9 - r0 * 0.82) * along
+        let muzzle = smax(smax(cone, p.y - top_y, 0.02 * l), abs(p.x) - side_x, 0.03 * l)
+        // The stop: the forehead steps down to the muzzle.
+        let stop_cut = length(vec3(p.x * 0.7, p.y - 0.17 * l, p.z - (cz + 0.03 * l))) -
+            self.stop * l
+        let brows = oval(vec3(0.09 * l, 0.055 * l, 0.09 * l)).distance(
+            q - vec3(0.3 * w, 0.11 * l, cz - 0.05 * l),
+        )
+        // The lower jaw: from below the ear to the chin, and the cheek's muscle over its back.
+        let jaw = round_cone(
+            vec3(0.3 * w, -0.17 * l, 0.25 * cz),
+            vec3(0.1 * w, -0.21 * l, l - 0.13 * l),
+            r_top: 0.09 * l,
+            r_bottom: 0.05 * l,
+        ).distance(q)
+        let cheek = oval(vec3(0.15 * l, 0.14 * l, 0.19 * l)).distance(
+            q - vec3(0.34 * w, -0.09 * l, 0.42 * cz),
+        )
+        var d = smin(cranium, arch, 0.05 * l)
+        d = smin(d, brows, 0.04 * l)
+        d = smin(d, muzzle, 0.1 * l)
+        d = smax(d, -stop_cut, 0.02 * l)
+        d = smin(d, jaw, 0.07 * l)
+        d = smin(d, cheek, 0.08 * l)
+        // The nose pad.
+        let nose = oval(vec3(0.07 * l, 0.055 * l, 0.055 * l)).distance(
+            p - vec3(0.0, -0.06 * l, l - 0.03 * l),
+        )
+        smin(d, nose, 0.02 * l)
+    }
+}
+
+impl Lipschitz for CanidHead {
+    /// Smooth unions and intersections of exact distances and ovals.
+    fn lipschitz(self, near: f32) -> f32 {
+        1.0
+    }
+}
+
+/// A canid's ear, in its frame (its root's centre): a triangle `length` tall and `width` wide
+/// at the root, cupped forward (its front hollowed), tilted out by `out` degrees.
+pub struct CanidEar: Copy + GpuData {
+    pub length: f32,
+    pub width: f32,
+    pub out: f32,
+}
+
+/// The exact distance to an isosceles triangle in the plane, its apex at the origin, its base
+/// `half` wide either side at depth `height` (+y down from the apex) (Inigo Quilez's).
+fn triangle(p: vec2, half: f32, height: f32) -> f32 {
+    let q = vec2(half, height)
+    let px = vec2(abs(p.x), p.y)
+    let a = px - q * clamp(dot(px, q) / dot(q, q), 0.0, 1.0)
+    let b = px - q * vec2(clamp(px.x / q.x, 0.0, 1.0), 1.0)
+    let k = -sign(q.y)
+    let d = min(vec2(dot(a, a), k * (px.x * q.y - px.y * q.x)), vec2(dot(b, b), k * (px.y - q.y)))
+    -sqrt(d.x) * sign(d.y)
+}
+
+/// A plane shape (its distance `d2`) given thickness `t` across z about `z0`, its edges
+/// rounded by `r`: exact.
+fn extrude(d2: f32, z: f32, t: f32, r: f32) -> f32 {
+    let w = vec2(d2 + r, abs(z) - t)
+    min(max(w.x, w.y), 0.0) + length(max(w, vec2(0.0))) - r
+}
+
+impl Surface for CanidEar {
+    fn distance(self, p: vec3) -> f32 {
+        let a = -self.out * deg
+        let (c, s) = (cos(a), sin(a))
+        let q = vec3(c * p.x - s * p.y, s * p.x + c * p.y, p.z)
+        let h = self.length
+        let w = self.width
+        // A half cone: round behind, its front cut flat, dished out to leave a shell. Seen
+        // from the side it's a pointed triangle; from the front, a triangle with a hollow.
+        let cone = round_cone(vec3(), vec3(0.0, h, -0.08 * h), r_top: 0.5 * w, r_bottom: 0.03 * w)
+        let outer = max(cone.distance(q), q.z - 0.06 * w)
+        let dish = round_cone(
+            vec3(0.0, 0.2 * h, 0.16 * w),
+            vec3(0.0, 0.85 * h, -0.04 * h),
+            r_top: 0.28 * w,
+            r_bottom: 0.02 * w,
+        ).distance(q)
+        max(outer, -dish)
+    }
+}
+
+impl Lipschitz for CanidEar {
+    /// An exact distance with an exact one cut from it.
+    fn lipschitz(self, near: f32) -> f32 {
+        1.0
+    }
+}
+
+/// A canid's paw, in its frame (the paw's centre, its sole `drop` below): four toes in a tight
+/// oval, the middle two ahead, a pad behind them, the knuckles arched; `size` across.
+pub struct CanidPaw: Copy + GpuData {
+    pub size: f32,
+    pub drop: f32,
+    /// How far the toes reach forward of the pad (0.5 compact, 0.8 long).
+    pub reach: f32,
+}
+
+impl Surface for CanidPaw {
+    fn distance(self, p: vec3) -> f32 {
+        let s = self.size
+        let ground = -self.drop
+        let pad = oval(vec3(0.34 * s, 0.2 * s, 0.34 * s)).distance(
+            p - vec3(0.0, ground + 0.18 * s, -0.05 * s),
+        )
+        var toes = 1.0e9
+        for i in 0..4 {
+            let side = f32(i) - 1.5
+            let ahead = if i == 1 || i == 2 { 1.0 } else { 0.72 }
+            let c = vec3(side * 0.21 * s, ground + 0.12 * s, self.reach * 0.55 * s * ahead)
+            let knuckle = c + vec3(0.0, 0.08 * s, -0.14 * s)
+            let toe = round_cone(knuckle, c, r_top: 0.11 * s, r_bottom: 0.11 * s).distance(p)
+            toes = min(toes, toe)
+        }
+        let d = smin(pad, toes, 0.06 * s)
+        max(d, ground - p.y)
+    }
+}
+
+impl Lipschitz for CanidPaw {
+    fn lipschitz(self, near: f32) -> f32 {
+        1.0
+    }
+}
+
+// ---- a canine -----------------------------------------------------------------------------------
+
+/// A canine's proportions. Most are fractions of the withers' height; the defaults are a grey
+/// wolf's, measured from the reference photo (references/wolf/side-standing.jpg).
+pub struct Canine: Copy {
+    /// Height at the withers, in metres.
+    pub withers: f32,
+    /// The body's length, from the point of the shoulder to the point of the buttock.
+    pub length: f32,
+    /// The chest's depth (withers to brisket), and its width as a fraction of the depth.
+    pub chest: f32,
+    pub width: f32,
+    /// The flank's depth as a fraction of the chest's: how tucked up the waist is.
+    pub tuck: f32,
+    /// The neck's length, and its angle above the horizontal in degrees.
+    pub neck: f32,
+    pub neck_angle: f32,
+    /// The head's length (back of the skull to the nose), the muzzle's share of it, and how
+    /// far the nose points down, in degrees.
+    pub head: f32,
+    pub muzzle: f32,
+    pub head_angle: f32,
+    /// The ears' length, as a fraction of the head's.
+    pub ears: f32,
+    /// The legs' bone and tendon thickness, and the muscles' bulk (1 is a wolf's).
+    pub bone: f32,
+    pub muscle: f32,
+    /// The tail's length, and how far it hangs below the horizontal, in degrees.
+    pub tail: f32,
+    pub tail_hang: f32,
+    /// How far the legs stand staggered, in metres: the left fore and right hind paws that
+    /// far ahead of the others (0 square, as a rig's rest pose).
+    pub stance: f32,
+    /// The coat's mass, as form, in metres: the ruff's depth around the neck, and the tail's
+    /// brush around its bones.
+    pub ruff: f32,
+    pub brush: f32,
+}
+
+/// A grey wolf's proportions.
+pub fn wolf() -> Canine {
+    Canine {
+        withers: 0.8,
+        length: 1.07,
+        chest: 0.5,
+        width: 0.52,
+        tuck: 0.72,
+        neck: 0.33,
+        neck_angle: 38.0,
+        head: 0.29,
+        muzzle: 0.48,
+        head_angle: 28.0,
+        ears: 0.44,
+        bone: 1.0,
+        muscle: 1.0,
+        tail: 0.6,
+        tail_hang: 74.0,
+        stance: 0.09,
+        ruff: 0.022,
+        brush: 0.028,
+    }
+}
+
+/// The colour (or other channels) of each region of a canine's coat.
+pub struct Coat<C>: Copy {
+    /// The back and the saddle over it, and the belly and the legs below.
+    pub back: C,
+    pub saddle: C,
+    pub belly: C,
+    pub legs: C,
+    pub muzzle: C,
+    pub ears: C,
+    pub eyes: C,
+    pub nose: C,
+    pub tail_tip: C,
+}
+
+/// Where a canine's joints are, in its rest space (z = 0 midway between the nose and the
+/// tail's root, as the reference photo's outline has it).
+pub struct CanineFrame: Copy {
+    pub h: f32,
+    pub withers: vec3,
+    pub chest: vec3,
+    pub lumbar: vec3,
+    pub pelvis: vec3,
+    pub neck: vec3,
+    pub head: vec3,
+    pub tail: vec3,
+    pub scapula: vec3,
+    /// A fore leg's joints (left): shoulder, elbow, carpus, paw; a hind leg's: hip, stifle,
+    /// hock, paw.
+    pub fore: [vec3; 4],
+    pub hind: [vec3; 4],
+}
+
+/// `c`'s joints. Measured from the reference photo at a withers of 0.8 m; the body's length
+/// stretches what's behind the withers.
+pub fn canine_frame(c: Canine) -> CanineFrame {
+    let h = c.withers
+    let at = |z: f32, y: f32| vec3(0.0, y * h, z * h)
+    let s = c.length / 1.07
+    let back = |z: f32, y: f32| vec3(0.0, y * h, (0.09 + (z - 0.09) * s) * h)
+    let withers = at(0.09, 0.93)
+    let neck_base = at(0.2, 0.87)
+    let a = c.neck_angle * deg
+    let head = neck_base + vec3(0.0, sin(a), cos(a)) * c.neck * h
+    CanineFrame {
+        h,
+        withers,
+        chest: at(0.0, 0.74),
+        lumbar: back(-0.32, 0.79),
+        pelvis: back(-0.55, 0.75),
+        neck: neck_base,
+        head,
+        tail: back(-0.7, 0.82),
+        scapula: at(0.1, 0.9),
+        fore: [at(0.29, 0.66), at(0.05, 0.53), at(0.085, 0.16), at(0.13, 0.045)],
+        hind: [back(-0.53, 0.74), back(-0.43, 0.5), back(-0.67, 0.265), back(-0.635, 0.045)],
+    }
+}
+
+/// `c`'s skeleton: pelvis, lumbar, chest, withers, neck, head, four tail joints, the shoulder
+/// blades, and four legs (shoulder, elbow, carpus, fore paw; hip, stifle, hock, hind paw).
+pub fn canine_skeleton(c: Canine) -> Skeleton {
+    let f = canine_frame(c)
+    var s = Skeleton::new()
+    let pelvis = s.root("pelvis", f.pelvis)
+    let lumbar = s.joint("lumbar", pelvis, f.lumbar)
+    let chest = s.joint("chest", lumbar, f.chest)
+    let withers = s.joint("withers", chest, f.withers)
+    let neck = s.joint("neck", withers, f.neck)
+    s.joint("head", neck, f.head)
+    // The tail leaves the croup gently and hangs more steeply along its length.
+    var t = s.joint("tail 0", pelvis, f.tail)
+    var at = f.tail
+    for i in 1..4 {
+        let a = min(c.tail_hang * (0.95 + 0.07 * f32(i)), 100.0) * deg
+        at = at + vec3(0.0, -sin(a), -cos(a)) * (c.tail * f.h / 3.0)
+        t = s.joint(["tail 0", "tail 1", "tail 2", "tail 3"][i], t, at)
+    }
+    let right = |v: vec3| vec3(-v.x, v.y, v.z)
+    let x = 0.3 * c.chest * c.width * f.h
+    let (sl, sr) = s.joint_pair("scapula left", "scapula right", withers, sx(f.scapula, x))
+    let fore = [
+        sx(f.fore[0], x),
+        sx(f.fore[1], x * 0.95),
+        sx(f.fore[2], x * 0.85),
+        sx(f.fore[3], x * 0.8),
+    ]
+    let hind = [
+        sx(f.hind[0], x),
+        sx(f.hind[1], x * 1.05),
+        sx(f.hind[2], x * 0.8),
+        sx(f.hind[3], x * 0.8),
+    ]
+    // The stance: a leg's lower joints moved along z, the elbow or stifle by half as much.
+    let step = |leg: [vec3; 4], by: f32| [
+        leg[0],
+        leg[1] + vec3(0.0, 0.0, 0.5 * by),
+        leg[2] + vec3(0.0, 0.0, by),
+        leg[3] + vec3(0.0, 0.0, by),
+    ]
+    let k = 0.5 * c.stance
+    let fl = s.leg_at(
+        ["shoulder left", "elbow left", "carpus left", "fore paw left"],
+        sl,
+        step(fore, k),
+    )
+    let fr = s.leg_at(
+        ["shoulder right", "elbow right", "carpus right", "fore paw right"],
+        sr,
+        step([right(fore[0]), right(fore[1]), right(fore[2]), right(fore[3])], -k),
+    )
+    let hl = s.leg_at(
+        ["hip left", "stifle left", "hock left", "hind paw left"],
+        pelvis,
+        step(hind, -k),
+    )
+    let hr = s.leg_at(
+        ["hip right", "stifle right", "hock right", "hind paw right"],
+        pelvis,
+        step([right(hind[0]), right(hind[1]), right(hind[2]), right(hind[3])], k),
+    )
+    s.pair_legs(fl, fr)
+    s.pair_legs(hl, hr)
+    s
+}
+
+// ---- the canine's groups ------------------------------------------------------------------------
+
+/// A part with a paint, placed on its bone.
+type P<F, C> = Placed<Painted<F, C>>
+
+/// The torso's parts: ribcage, chest (sternum and pectorals), back (the loin's long muscles and
+/// the belly), croup (the gluteals and the points of the hips) and withers.
+pub type CanineTorso<C> = Then<Then<Then<Then<P<Translate<Oval>, C>, P<SmoothUnionAll<Muscle, 4>, C>>, P<SmoothUnionAll<Muscle, 4>, C>>, P<SmoothUnionAll<Muscle, 5>, C>>, P<SmoothUnionAll<Muscle, 3>, C>>
+
+/// The neck's parts: its core, with the ruff around it, and its long muscles.
+pub type CanineNeck<C> = Then<P<Tube<3>, C>, P<SmoothUnionAll<Muscle, 4>, C>>
+
+/// The head's parts: the skull, an ear and an eye (both mirrored), and the nose.
+pub type CanineHead<C> = Then<Then<Then<P<Rotate<CanidHead>, C>, P<Translate<Rotate<Rotate<CanidEar>>>, C>>, P<Translate<Oval>, C>>, P<Translate<Oval>, C>>
+
+/// A fore leg's parts: shoulder blade, upper arm, forearm, pastern and paw; then the ground.
+pub type CanineForeLeg<C> = Then<Then<Then<Then<Then<P<SmoothUnionAll<Muscle, 3>, C>, P<SmoothUnionAll<Muscle, 5>, C>>, P<SmoothUnionAll<Muscle, 5>, C>>, P<SmoothUnionAll<Muscle, 2>, C>>, P<CanidPaw, C>>, Modify<Ground>>
+
+/// A hind leg's parts: thigh, gaskin, metatarsus and paw; then the ground.
+pub type CanineHindLeg<C> = Then<Then<Then<Then<P<SmoothUnionAll<Muscle, 6>, C>, P<SmoothUnionAll<Muscle, 5>, C>>, P<SmoothUnionAll<Muscle, 2>, C>>, P<CanidPaw, C>>, Modify<Ground>>
+
+/// The tail: one tube, its brush included.
+pub type CanineTail<C> = P<Tube<4>, C>
+
+/// The whole canine (`canine`).
+pub type CanineParts<C> = Then<Then<Then<Then<Then<Then<Then<Group<CanineTorso<C>>, Group<CanineNeck<C>>>, Group<CanineHead<C>>>, Group<CanineForeLeg<C>>>, Group<CanineForeLeg<C>>>, Group<CanineHindLeg<C>>>, Group<CanineHindLeg<C>>>, Group<CanineTail<C>>>
+
+/// `v` at x on the left.
+fn sx(v: vec3, x: f32) -> vec3 {
+    vec3(x, v.y, v.z)
+}
+
+/// The torso: the ribcage, the chest's keel and pectorals, the long muscles of the back over a
+/// tucked belly, the croup's gluteals and the points of the hips, and the withers.
+pub fn canine_torso<C: Copy + GpuData + Blend>(
+    s: Skeleton,
+    c: Canine,
+    coat: Coat<C>,
+) -> Group<CanineTorso<C>> {
+    let f = canine_frame(c)
+    let h = f.h
+    let m = c.muscle
+    let depth = c.chest * h
+    let half = 0.5 * c.width * depth
+    let chest = s.find("chest")
+    let lumbar = s.find("lumbar")
+    let pelvis = s.find("pelvis")
+    let withers = s.find("withers")
+    let (rc, rl, rp, rw) = (s.rest(chest), s.rest(lumbar), s.rest(pelvis), s.rest(withers))
+    let body = shade(coat.belly, coat.saddle, -0.12 * h, 0.1 * h)
+    let brisket = f.fore[1] + vec3(0.0, -0.02 * h, -0.02 * h)
+    let prosternum = vec3(0.0, f.fore[0].y + 0.04 * h, f.fore[0].z + 0.06 * h)
+    let flank = vec3(
+        0.0,
+        f.fore[1].y + 0.06 * h + (1.0 - c.tuck) * 0.35 * depth,
+        0.5 * (f.lumbar.z + f.pelvis.z),
+    )
+    group(
+        s,
+        "torso",
+        |g: Inside| {
+            g.join(
+                "ribcage",
+                chest,
+                painted(
+                    oval(vec3(half, 0.43 * depth, 0.36 * h)).translate(
+                        vec3(0.0, f.withers.y - 0.47 * depth, f.chest.z - 0.03 * h) - rc,
+                    ),
+                    body,
+                ),
+            )
+                .join(
+                    "chest",
+                    chest,
+                    painted(
+                        bundle(
+                            [
+                                muscle(
+                                    prosternum - rc,
+                                    brisket - rc,
+                                    0.07 * m * h,
+                                    belly: 0.35,
+                                    bow: vec3(0.0, -0.02 * h, 0.0),
+                                ),
+                                muscle(
+                                    sx(prosternum, 0.03 * h) - rc,
+                                    sx(f.fore[1], 0.75 * half) + vec3(0.0, 0.02 * h, 0.05 * h) - rc,
+                                    0.05 * m * h,
+                                ),
+                                muscle(
+                                    sx(prosternum, -0.03 * h) - rc,
+                                    sx(f.fore[1], -0.75 * half) +
+                                        vec3(0.0, 0.02 * h, 0.05 * h) -
+                                        rc,
+                                    0.05 * m * h,
+                                ),
+                                muscle(
+                                    brisket - rc,
+                                    flank + vec3(0.0, -0.01 * h, 0.04 * h) - rc,
+                                    0.06 * c.tuck * h,
+                                    belly: 0.3,
+                                    ends: vec2(0.9, 0.6),
+                                ),
+                            ],
+                            0.04 * h,
+                        ),
+                        shade(coat.belly, coat.back, -0.15 * h, 0.05 * h),
+                    ),
+                    seam: smooth(0.05 * h),
+                )
+                .join(
+                    "back",
+                    lumbar,
+                    painted(
+                        bundle(
+                            [
+                                muscle(
+                                    sx(f.withers, 0.04 * h) + vec3(0.0, -0.04 * h, 0.0) - rl,
+                                    sx(f.pelvis, 0.05 * h) + vec3(0.0, 0.1 * h, 0.02 * h) - rl,
+                                    0.06 * m * h,
+                                    belly: 0.55,
+                                    ends: vec2(0.8, 0.7),
+                                ),
+                                muscle(
+                                    sx(f.withers, -0.04 * h) + vec3(0.0, -0.04 * h, 0.0) - rl,
+                                    sx(f.pelvis, -0.05 * h) + vec3(0.0, 0.1 * h, 0.02 * h) - rl,
+                                    0.06 * m * h,
+                                    belly: 0.55,
+                                    ends: vec2(0.8, 0.7),
+                                ),
+                                muscle(
+                                    vec3(0.0, f.lumbar.y - 0.08 * h, f.chest.z - 0.1 * h) - rl,
+                                    flank + vec3(0.0, 0.07 * h, 0.0) - rl,
+                                    0.85 * half,
+                                    belly: 0.25,
+                                    ends: vec2(1.0, 0.75),
+                                ),
+                                muscle(
+                                    flank + vec3(0.0, 0.07 * h, 0.0) - rl,
+                                    f.hind[1] + vec3(0.0, 0.08 * h, 0.06 * h) - rl,
+                                    0.7 * half,
+                                    belly: 0.3,
+                                    ends: vec2(1.0, 0.6),
+                                ),
+                            ],
+                            0.06 * h,
+                        ),
+                        body,
+                    ),
+                    seam: smooth(0.1 * h),
+                )
+                .join(
+                    "croup",
+                    pelvis,
+                    painted(
+                        bundle(
+                            [
+                                muscle(
+                                    sx(f.lumbar, 0.05 * h) + vec3(0.0, 0.08 * h, 0.0) - rp,
+                                    sx(f.hind[0], 0.6 * half) + vec3(0.0, 0.0, -0.02 * h) - rp,
+                                    0.055 * m * h,
+                                ),
+                                muscle(
+                                    sx(f.lumbar, -0.05 * h) + vec3(0.0, 0.08 * h, 0.0) - rp,
+                                    sx(f.hind[0], -0.6 * half) + vec3(0.0, 0.0, -0.02 * h) - rp,
+                                    0.055 * m * h,
+                                ),
+                                muscle(
+                                    vec3(0.0, f.pelvis.y + 0.1 * h, f.pelvis.z + 0.08 * h) - rp,
+                                    f.tail - rp,
+                                    0.055 * m * h,
+                                    belly: 0.4,
+                                ),
+                                knob(
+                                    sx(f.pelvis, 0.07 * h) + vec3(0.0, 0.08 * h, 0.1 * h) - rp,
+                                    0.026 * h,
+                                ),
+                                knob(
+                                    sx(f.pelvis, -0.07 * h) + vec3(0.0, 0.08 * h, 0.1 * h) - rp,
+                                    0.026 * h,
+                                ),
+                            ],
+                            0.04 * h,
+                        ),
+                        body,
+                    ),
+                    seam: smooth(0.06 * h),
+                )
+                .join(
+                    "withers",
+                    withers,
+                    painted(
+                        bundle(
+                            [
+                                muscle(
+                                    f.neck + vec3(0.0, 0.02 * h, -0.02 * h) - rw,
+                                    f.withers + vec3(0.0, 0.0, -0.16 * h) - rw,
+                                    0.05 * m * h,
+                                    belly: 0.4,
+                                ),
+                                muscle(
+                                    sx(f.scapula, 0.4 * half) - rw,
+                                    sx(f.fore[0], 0.55 * half) +
+                                        vec3(0.0, 0.06 * h, -0.04 * h) -
+                                        rw,
+                                    0.035 * m * h,
+                                    belly: 0.4,
+                                ),
+                                muscle(
+                                    sx(f.scapula, -0.4 * half) - rw,
+                                    sx(f.fore[0], -0.55 * half) +
+                                        vec3(0.0, 0.06 * h, -0.04 * h) -
+                                        rw,
+                                    0.035 * m * h,
+                                    belly: 0.4,
+                                ),
+                            ],
+                            0.04 * h,
+                        ),
+                        body,
+                    ),
+                    seam: smooth(0.05 * h),
+                )
+        },
+        seam: smooth(0.04 * h),
+    )
+}
+
+/// The neck: a core from the chest to the head, `ruff` thicker for the coat's mass around it,
+/// and the long muscles from the skull to the point of the shoulder and the throat.
+pub fn canine_neck<C: Copy + GpuData + Blend>(
+    s: Skeleton,
+    c: Canine,
+    coat: Coat<C>,
+) -> Group<CanineNeck<C>> {
+    let f = canine_frame(c)
+    let h = f.h
+    let m = c.muscle
+    let neck = s.find("neck")
+    let rn = s.rest(neck)
+    let base = vec3(0.0, f.withers.y - 0.2 * h, f.neck.z - 0.06 * h)
+    group(
+        s,
+        "neck",
+        |g: Inside| {
+            g.join(
+                "neck",
+                neck,
+                painted(
+                    tube(
+                        [
+                            base - rn,
+                            0.5 * (base + f.head) - rn,
+                            f.head + vec3(0.0, -0.04 * h, -0.02 * h) - rn,
+                        ],
+                        [0.11 * h + c.ruff, 0.08 * h + c.ruff, 0.065 * h + c.ruff],
+                    ),
+                    shade(coat.belly, coat.back, -0.08 * h, 0.04 * h),
+                ),
+            )
+                .join(
+                    "neck muscles",
+                    neck,
+                    painted(
+                        bundle(
+                            [
+                                muscle(
+                                    sx(f.head, 0.05 * h) + vec3(0.0, -0.02 * h, -0.03 * h) - rn,
+                                    sx(f.fore[0], 0.07 * h) + vec3(0.0, 0.02 * h, 0.03 * h) - rn,
+                                    0.05 * m * h,
+                                ),
+                                muscle(
+                                    sx(f.head, -0.05 * h) + vec3(0.0, -0.02 * h, -0.03 * h) - rn,
+                                    sx(f.fore[0], -0.07 * h) + vec3(0.0, 0.02 * h, 0.03 * h) - rn,
+                                    0.05 * m * h,
+                                ),
+                                muscle(
+                                    f.head + vec3(0.0, -0.1 * h, 0.04 * h) - rn,
+                                    vec3(0.0, f.fore[0].y + 0.04 * h, f.fore[0].z + 0.04 * h) - rn,
+                                    0.06 * m * h,
+                                    belly: 0.5,
+                                ),
+                                muscle(
+                                    f.withers + vec3(0.0, -0.02 * h, 0.04 * h) - rn,
+                                    f.head + vec3(0.0, 0.0, -0.06 * h) - rn,
+                                    0.055 * m * h,
+                                    belly: 0.4,
+                                ),
+                            ],
+                            0.05 * h,
+                        ),
+                        shade(coat.belly, coat.back, -0.08 * h, 0.04 * h),
+                    ),
+                    seam: smooth(0.05 * h),
+                )
+        },
+        seam: smooth(0.05 * h),
+    )
+}
+
+/// The head: the skull (`CanidHead`) turned down by `head_angle`, an eye and an ear (both
+/// mirrored), and the nose.
+pub fn canine_head<C: Copy + GpuData + Blend>(
+    s: Skeleton,
+    c: Canine,
+    coat: Coat<C>,
+) -> Group<CanineHead<C>> {
+    let f = canine_frame(c)
+    let h = f.h
+    let l = c.head * h
+    let head = s.find("head")
+    let turn = Quat::axis_angle(vec3(1.0, 0.0, 0.0), c.head_angle * deg)
+    let skull = CanidHead { length: l, muzzle: c.muzzle, width: 0.6, snout: 0.48, stop: 0.05 }
+    let cz = l * (1.0 - c.muzzle)
+    let at = |p: vec3| turn.rotate(p)
+    let ear_root = at(vec3(0.28 * l, 0.15 * l, 0.32 * cz))
+    group(
+        s,
+        "head",
+        |g: Inside| {
+            g.join(
+                "skull",
+                head,
+                painted(skull.rotate(turn), shade(coat.muzzle, coat.back, -0.08 * l, 0.06 * l)),
+            )
+                .join(
+                    "ear",
+                    head,
+                    painted(
+                        CanidEar { length: c.ears * l, width: 0.34 * l, out: 12.0 }
+                            .rotate(Quat::axis_angle(vec3(0.0, 1.0, 0.0), 0.25))
+                            .rotate(Quat::axis_angle(vec3(1.0, 0.0, 0.0), -0.15))
+                            .translate(ear_root),
+                        flat(coat.ears),
+                    ),
+                    mirror: true,
+                )
+                .join(
+                    "eye",
+                    head,
+                    painted(
+                        oval(vec3(0.06 * l, 0.038 * l, 0.05 * l)).translate(
+                            at(vec3(0.15 * l, 0.035 * l, cz + 0.06 * l)),
+                        ),
+                        flat(coat.eyes),
+                    ),
+                    seam: smooth(0.01 * l),
+                    mirror: true,
+                )
+                .join(
+                    "nose",
+                    head,
+                    painted(
+                        oval(vec3(0.075 * l, 0.06 * l, 0.06 * l)).translate(
+                            at(vec3(0.0, -0.05 * l, l - 0.02 * l)),
+                        ),
+                        flat(coat.nose),
+                    ),
+                    seam: smooth(0.015 * l),
+                )
+        },
+        seam: smooth(0.04 * h),
+    )
+}
+
+/// A fore leg, on the left (`side` 1) or the right (−1): the shoulder blade's muscles, the upper arm (triceps
+/// behind, biceps in front, the point of the shoulder and of the elbow), the forearm (thick at
+/// the elbow, narrowing to the carpus, which shows), the pastern and the paw; then the ground.
+pub fn canine_fore_leg<C: Copy + GpuData + Blend>(
+    s: Skeleton,
+    c: Canine,
+    coat: Coat<C>,
+    side: f32,
+) -> Group<CanineForeLeg<C>> {
+    let f = canine_frame(c)
+    let h = f.h
+    let (m, b) = (c.muscle, c.bone)
+    let j = s.legs()[if side > 0.0 { 0 } else { 1 }].joints
+    let (shoulder, elbow, carpus, paw) = (j[0], j[1], j[2], j[3])
+    let scap = s.parent(shoulder)
+    let (r0, r1, r2, r3, r4) = (
+        s.rest(scap),
+        s.rest(shoulder),
+        s.rest(elbow),
+        s.rest(carpus),
+        s.rest(paw),
+    )
+    let legs = shade(coat.legs, coat.back, -0.05 * h, 0.08 * h)
+    group(
+        s,
+        if side > 0.0 { "fore leg left" } else { "fore leg right" },
+        |g: Inside| {
+            g.join(
+                "shoulder blade",
+                scap,
+                painted(
+                    bundle(
+                        [
+                            muscle(
+                                r0 + vec3(0.0, 0.0, 0.02 * h) - r0,
+                                r1 + vec3(0.0, 0.03 * h, 0.03 * h) - r0,
+                                0.05 * m * h,
+                                belly: 0.4,
+                            ),
+                            muscle(
+                                r0 + vec3(0.0, -0.02 * h, -0.04 * h) - r0,
+                                r1 + vec3(0.0, -0.02 * h, -0.05 * h) - r0,
+                                0.05 * m * h,
+                                belly: 0.4,
+                            ),
+                            muscle(
+                                r0 + vec3(0.0, -0.02 * h, -0.06 * h) - r0,
+                                r2 + vec3(0.0, 0.02 * h, -0.05 * h) - r0,
+                                0.06 * m * h,
+                                belly: 0.35,
+                            ),
+                        ],
+                        0.035 * h,
+                    ),
+                    shade(coat.back, coat.saddle, -0.1 * h, 0.05 * h),
+                ),
+            )
+                .join(
+                    "upper arm",
+                    shoulder,
+                    painted(
+                        bundle(
+                            [
+                                muscle(
+                                    r1 + vec3(0.0, 0.0, -0.06 * h) - r1,
+                                    r2 + vec3(0.0, 0.0, -0.03 * h) - r1,
+                                    0.06 * m * h,
+                                    belly: 0.4,
+                                ),
+                                muscle(
+                                    r1 + vec3(0.0, 0.0, 0.04 * h) - r1,
+                                    r2 + vec3(0.0, -0.01 * h, 0.04 * h) - r1,
+                                    0.04 * m * h,
+                                    belly: 0.35,
+                                ),
+                                muscle(
+                                    r1 + vec3(side * 0.01 * h, 0.02 * h, 0.0) - r1,
+                                    r1 + vec3(side * 0.01 * h, -0.08 * h, -0.02 * h) - r1,
+                                    0.045 * m * h,
+                                ),
+                                knob(r1 + vec3(0.0, 0.0, 0.035 * h) - r1, 0.035 * b * h),
+                                knob(r2 + vec3(0.0, 0.0, -0.045 * h) - r1, 0.03 * b * h),
+                            ],
+                            0.03 * h,
+                        ),
+                        legs,
+                    ),
+                    seam: smooth(0.04 * h),
+                )
+                .join(
+                    "forearm",
+                    elbow,
+                    painted(
+                        bundle(
+                            [
+                                muscle(
+                                    r2 + vec3(side * 0.005 * h, 0.0, 0.03 * h) - r2,
+                                    r3 + vec3(0.0, 0.03 * h, 0.012 * h) - r2,
+                                    0.042 * m * h,
+                                    belly: 0.2,
+                                    ends: vec2(0.8, 0.4),
+                                ),
+                                muscle(
+                                    r2 + vec3(side * -0.005 * h, 0.0, -0.025 * h) - r2,
+                                    r3 + vec3(0.0, 0.03 * h, -0.012 * h) - r2,
+                                    0.038 * m * h,
+                                    belly: 0.22,
+                                    ends: vec2(0.85, 0.4),
+                                ),
+                                tendon(r2 - r2, r3 - r2, 0.02 * b * h, 0.017 * b * h),
+                                knob(r3 + vec3(0.0, 0.0, 0.006 * h) - r2, 0.024 * b * h),
+                                knob(r3 + vec3(0.0, -0.005 * h, -0.02 * h) - r2, 0.016 * b * h),
+                            ],
+                            0.025 * h,
+                        ),
+                        flat(coat.legs),
+                    ),
+                    seam: smooth(0.03 * h),
+                )
+                .join(
+                    "pastern",
+                    carpus,
+                    painted(
+                        bundle(
+                            [
+                                tendon(
+                                    r3 - r3,
+                                    r4 + vec3(0.0, 0.02 * h, 0.005 * h) - r3,
+                                    0.025 * b * h,
+                                    0.022 * b * h,
+                                ),
+                                tendon(
+                                    r3 + vec3(0.0, 0.0, -0.012 * h) - r3,
+                                    r4 + vec3(0.0, 0.03 * h, -0.02 * h) - r3,
+                                    0.014 * b * h,
+                                    0.016 * b * h,
+                                ),
+                            ],
+                            0.015 * h,
+                        ),
+                        flat(coat.legs),
+                    ),
+                    seam: smooth(0.025 * h),
+                )
+                .join(
+                    "paw",
+                    paw,
+                    painted(CanidPaw { size: 0.1 * h, drop: r4.y, reach: 0.6 }, flat(coat.legs)),
+                    seam: smooth(0.02 * h),
+                )
+                .then(ground())
+        },
+        seam: smooth(0.04 * h),
+    )
+}
+
+/// A hind leg, on the left (`side` 1) or the right (−1): the thigh (biceps femoris and semitendinosus behind, the
+/// quadriceps in front, the gluteal over the hip, the stifle and the point of the buttock), the
+/// gaskin (the calf's muscle narrowing to the Achilles tendon and the point of the hock), the
+/// metatarsus and the paw; then the ground.
+pub fn canine_hind_leg<C: Copy + GpuData + Blend>(
+    s: Skeleton,
+    c: Canine,
+    coat: Coat<C>,
+    side: f32,
+) -> Group<CanineHindLeg<C>> {
+    let f = canine_frame(c)
+    let h = f.h
+    let (m, b) = (c.muscle, c.bone)
+    let j = s.legs()[if side > 0.0 { 2 } else { 3 }].joints
+    let (hip, stifle, hock, paw) = (j[0], j[1], j[2], j[3])
+    let (r1, r2, r3, r4) = (s.rest(hip), s.rest(stifle), s.rest(hock), s.rest(paw))
+    let ischium = r1 + vec3(side * -0.01 * h, 0.0, -0.13 * h)
+    let legs = shade(coat.legs, coat.back, -0.15 * h, 0.05 * h)
+    group(
+        s,
+        if side > 0.0 { "hind leg left" } else { "hind leg right" },
+        |g: Inside| {
+            g.join(
+                "thigh",
+                hip,
+                painted(
+                    bundle(
+                        [
+                            muscle(
+                                ischium - r1,
+                                r2 + vec3(0.0, -0.02 * h, -0.06 * h) - r1,
+                                0.058 * m * h,
+                                belly: 0.4,
+                                bow: vec3(0.0, 0.0, -0.015 * h),
+                            ),
+                            muscle(
+                                ischium + vec3(0.0, -0.02 * h, 0.02 * h) - r1,
+                                r2 + vec3(0.0, -0.06 * h, -0.11 * h) - r1,
+                                0.045 * m * h,
+                                belly: 0.45,
+                                bow: vec3(0.0, 0.0, -0.015 * h),
+                            ),
+                            muscle(
+                                r1 + vec3(0.0, 0.03 * h, 0.06 * h) - r1,
+                                r2 + vec3(0.0, 0.01 * h, 0.04 * h) - r1,
+                                0.06 * m * h,
+                                belly: 0.5,
+                                bow: vec3(0.0, 0.0, 0.03 * h),
+                            ),
+                            muscle(
+                                r1 + vec3(0.0, 0.14 * h, 0.06 * h) - r1,
+                                r1 + vec3(side * 0.01 * h, -0.02 * h, -0.02 * h) - r1,
+                                0.055 * m * h,
+                            ),
+                            knob(r2 + vec3(0.0, 0.005 * h, 0.05 * h) - r1, 0.03 * b * h),
+                            knob(ischium - r1, 0.028 * b * h),
+                        ],
+                        0.065 * h,
+                    ),
+                    legs,
+                ),
+            )
+                .join(
+                    "gaskin",
+                    stifle,
+                    painted(
+                        bundle(
+                            [
+                                muscle(
+                                    r2 + vec3(0.0, -0.01 * h, -0.07 * h) - r2,
+                                    r3 + vec3(0.0, 0.08 * h, -0.02 * h) - r2,
+                                    0.045 * m * h,
+                                    belly: 0.3,
+                                    ends: vec2(0.7, 0.3),
+                                ),
+                                tendon(
+                                    r3 + vec3(0.0, 0.1 * h, -0.025 * h) - r2,
+                                    r3 + vec3(0.0, 0.01 * h, -0.032 * h) - r2,
+                                    0.012 * b * h,
+                                    0.015 * b * h,
+                                ),
+                                muscle(
+                                    r2 + vec3(0.0, -0.01 * h, 0.03 * h) - r2,
+                                    r3 + vec3(0.0, 0.03 * h, 0.02 * h) - r2,
+                                    0.03 * m * h,
+                                    belly: 0.3,
+                                    ends: vec2(0.8, 0.4),
+                                ),
+                                tendon(r2 - r2, r3 - r2, 0.02 * b * h, 0.017 * b * h),
+                                knob(r3 + vec3(0.0, 0.01 * h, -0.032 * h) - r2, 0.022 * b * h),
+                            ],
+                            0.025 * h,
+                        ),
+                        legs,
+                    ),
+                    seam: smooth(0.035 * h),
+                )
+                .join(
+                    "metatarsus",
+                    hock,
+                    painted(
+                        bundle(
+                            [
+                                tendon(
+                                    r3 - r3,
+                                    r4 + vec3(0.0, 0.02 * h, 0.01 * h) - r3,
+                                    0.025 * b * h,
+                                    0.022 * b * h,
+                                ),
+                                tendon(
+                                    r3 + vec3(0.0, 0.0, -0.02 * h) - r3,
+                                    r4 + vec3(0.0, 0.03 * h, -0.015 * h) - r3,
+                                    0.016 * b * h,
+                                    0.016 * b * h,
+                                ),
+                            ],
+                            0.015 * h,
+                        ),
+                        flat(coat.legs),
+                    ),
+                    seam: smooth(0.025 * h),
+                )
+                .join(
+                    "paw",
+                    paw,
+                    painted(CanidPaw { size: 0.095 * h, drop: r4.y, reach: 0.55 }, flat(coat.legs)),
+                    seam: smooth(0.02 * h),
+                )
+                .then(ground())
+        },
+        seam: smooth(0.07 * h),
+    )
+}
+
+/// The tail: a tube down the tail's joints, `brush` thicker for the coat's mass (less at its
+/// root and tip), darker at its tip.
+pub fn canine_tail<C: Copy + GpuData + Blend>(
+    s: Skeleton,
+    c: Canine,
+    coat: Coat<C>,
+) -> Group<CanineTail<C>> {
+    let f = canine_frame(c)
+    let h = f.h
+    let t0 = s.find("tail 0")
+    let r0 = s.rest(t0)
+    let t1 = s.rest(s.find("tail 1"))
+    let t2 = s.rest(s.find("tail 2"))
+    let t3 = s.rest(s.find("tail 3"))
+    group(
+        s,
+        "tail",
+        |g: Inside| {
+            g.join(
+                "tail",
+                t0,
+                painted(
+                    tube(
+                        [vec3(), t1 - r0, t2 - r0, t3 - r0],
+                        [
+                            0.022 * h + 0.5 * c.brush,
+                            0.028 * h + c.brush,
+                            0.025 * h + c.brush,
+                            0.012 * h + 0.6 * c.brush,
+                        ],
+                    ),
+                    shade(coat.tail_tip, coat.back, t3.y - r0.y + 0.04 * h, t3.y - r0.y + 0.12 * h),
+                ),
+            )
+        },
+        seam: smooth(0.04 * h),
+    )
+}
+
+/// A canine from `c`, coloured by `coat`: torso, neck, head, fore legs, hind legs and tail,
+/// each a group of anatomical parts on the canine's skeleton (`canine_skeleton`).
+pub fn canine<C: Copy + GpuData + Blend>(c: Canine, coat: Coat<C>) -> Body<CanineParts<C>> {
+    let s = canine_skeleton(c)
+    creature(s)
+        .add(canine_torso(s, c, coat))
+        .add(canine_neck(s, c, coat))
+        .add(canine_head(s, c, coat))
+        .add(canine_fore_leg(s, c, coat, 1.0))
+        .add(canine_fore_leg(s, c, coat, -1.0))
+        .add(canine_hind_leg(s, c, coat, 1.0))
+        .add(canine_hind_leg(s, c, coat, -1.0))
+        .add(canine_tail(s, c, coat))
+}

@@ -1,0 +1,61 @@
+// A screen of source code in the monospace font at 13 pixels per em, 10,000 glyphs at 1080p,
+// drawn each frame (compiler/tests/tests/suite/text.rs times it).
+
+use std::gpu::{begin_screen_pass, present}
+use ui::draw::{DrawList, Renderer}
+use ui::text::{Face, Fonts}
+
+const LINES: [Text; 4] = [
+    "fn torso(chest: vec3, bulk: f32, size: f32) -> Field<Tissue> + Lipschitz {",
+    "    ellipsoid(radii: vec3(0.42m, 0.48m, 0.80m) * size * bulk).translate(chest)",
+    "        .smooth_union(round_cone(vec3(), vec3(y: -45cm), 9cm, 6.5cm), k: 15cm)",
+    "    let d = smin(d, sd_ell(p - J_CHEST, vec3(0.130, 0.180, 0.305)), 0.07) // ribs",
+]
+
+pub struct Scene {
+    fonts: Fonts,
+    renderer: Renderer,
+    list: DrawList,
+    glyphs: u32,
+}
+
+pub fn init() -> Scene {
+    let fonts = Fonts::load()
+    let renderer = Renderer::new(fonts)
+    Scene { fonts, renderer, list: DrawList::new(), glyphs: 0 }
+}
+
+pub fn frame(state: mut Scene, time: f32, width: u32, height: u32) {
+    let screen = vec2(f32(width), f32(height))
+    state.list.clear(screen)
+    let size = 13.0
+    let line = state.fonts.mono.line_height(size)
+    var y = 0.0
+    var k = 0
+    while y < screen.y && state.list.quads.len() < 10000 {
+        // Each line repeated across the screen's width.
+        var x = 0.0
+        while x < screen.x && state.list.quads.len() < 10000 {
+            x += state.list.text(
+                state.fonts,
+                Face::Mono,
+                LINES[k % 4],
+                size,
+                vec2(x, y),
+                vec4(0.85, 0.87, 0.9, 1.0),
+            )
+        }
+        y += line
+        k += 1
+    }
+    state.glyphs = state.list.quads.len()
+    state.renderer.upload(state.list)
+    begin_screen_pass(clear: vec4(0.08, 0.08, 0.09, 1.0))
+    state.renderer.draw(screen)
+    present()
+}
+
+/// How many glyphs the last frame drew.
+pub fn glyphs(state: Scene) -> u32 {
+    state.glyphs
+}

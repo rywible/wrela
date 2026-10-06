@@ -1,0 +1,7 @@
+# Test strings at several sizes, in both fonts, which the Rust suite compares with a reference
+# rasterizer's (AC2).
+[package]
+name = "text"
+
+[dependencies]
+ui = { path = "../.." }

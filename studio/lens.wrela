@@ -1,0 +1,1757 @@
+// The lens (AC8–AC10 of #39): views of any surface, probes, diagnostics, click to source,
+// drag to edit and fit to a reference, each an action an agent can call and a person can do.
+//
+// The lens keeps plain state. The program `wrela studio` writes around it (the glue) passes
+// four functions to the actions that need them, since a lens function can't keep a function
+// in a closure: `subject()`, which builds the subject's field from its literals (in a lifted
+// build an edit is a write to the table, and the next call sees it); `grad(p, which)`, the
+// distance at `p` and its derivatives by up to 16 literals (language.md §22); `reached()`, the
+// literals the distance reads; and `channels(p)`, the channels at `p` as JSON.
+//
+// Each action prints its answer as one line of JSON (`std::io::print`). A person types the
+// same actions as commands (`probe 0 0.5 0.1`), or clicks: a click in a view is `click`.
+
+use blueprint
+use bounds::bounds
+use describe
+use fit
+use panel
+use paint::Colours
+use diagnose::{Report, Sampling, grid, report, start}
+use json::{List, list, obj}
+use std::collections::Vec
+use std::derive::Box3
+use std::field::{Lipschitz, PartName, Surface}
+use std::gpu::{
+    AppendBuffer, GpuBuffer, Texture, append_buffer, begin_pass, begin_screen_pass, buffer,
+    dispatch, draw, present, texture,
+}
+use std::input::{Button, Event, Key, events}
+use std::io::print
+use std::lift::{Literal, file_name, file_text, literal}
+use std::string::String
+use ui::draw::Renderer
+use ui::text::{Fonts, previous}
+use ui::widgets::Ui
+use view::{
+    Alone, Coarse, DRAG_TAIL_PASSES, Facing, MODES, Mode, Ortho, PASSES, SHEET, Sheet, TAIL_PASSES,
+    colour, cover, find_colours, find_parts, framed, gather_rays, gathered_groups, sample_corners,
+    seed_gathered, settle_rays, show_canvas, start_rays, step_rays, trace,
+}
+
+/// What the lens shows and has found.
+pub struct Lens {
+    /// The subject's box, from its interval.
+    pub bounds: Box3,
+    pub mode: Mode,
+    pub part: u32,
+    /// One view filling the screen, or the contact sheet (`None`).
+    pub single: Option<Facing>,
+    /// A framing the views use in place of the subject's (`zoom`): its centre, and in `w` half
+    /// its width, in metres; `w` 0 for none.
+    pub focus: vec4,
+    pub marks: [vec4; 4],
+    pub next_mark: u32,
+    pub width: u32,
+    pub height: u32,
+    /// A diagnosis on its way: the grid, sampled on the GPU.
+    pub sampling: Option<Sampling>,
+    pub stated: f32,
+    /// A description on its way (`describe`).
+    pub describing: Option<describe::Describing>,
+    /// A drag under way, and the write of edits on its way to the server.
+    pub job: Option<drag::Job>,
+    pub writing: Option<std::io::Pending<u8>>,
+    /// What that write sent: each literal's value when it was posted.
+    pub sent: Vec<f32>,
+    /// Each literal's value as the source has it (the build's, then each write's).
+    pub written: Vec<f32>,
+    /// The literals named for the next drag (none: a drag chooses its own).
+    pub named: Vec<u32>,
+    /// The views as last drawn, and the literals' values then: a frame draws the views again
+    /// only when what they show changed (`dirty`), their size, or a literal's value. The
+    /// diagnosis's grid of the field (sampled again when a literal changes) guides the views'
+    /// rays.
+    pub canvas: Option<Texture>,
+    pub drawn: Vec<f32>,
+    pub dirty: bool,
+    pub coarse: GpuBuffer<f32>,
+    pub coarse_live: bool,
+    pub coarse_slack: f32,
+    /// The passes' buffers, a slot per pixel of the canvas (see view.wrela): the rays' states
+    /// (two, each pass reading one and writing the other), the field around each hit, and the
+    /// part there; and the group counts of a pass over every pixel. Then the rays still going
+    /// after the passes over every pixel, gathered: their pixels, each pixel's place among them,
+    /// their passes' group counts, and their states (two again), room for a 16th of the pixels.
+    pub rays: GpuBuffer<vec4>,
+    pub rays_next: GpuBuffer<vec4>,
+    pub corners: GpuBuffer<f32>,
+    pub hit_parts: GpuBuffer<u32>,
+    pub pixel_groups: GpuBuffer<u32>,
+    pub gathered: AppendBuffer<u32>,
+    pub gathered_at: GpuBuffer<u32>,
+    pub gathered_groups: GpuBuffer<u32>,
+    pub tail: GpuBuffer<vec4>,
+    pub tail_next: GpuBuffer<vec4>,
+    /// A fit under way (`fit`), and the silhouette view the canvas shows in place of the views
+    /// (`silhouette`, or the fit's): its rays' buffers.
+    pub fit: Option<fit::Fit>,
+    pub mask: Option<fit::FitView>,
+    /// A blueprint's outline over the views (`blueprint`): its points' world positions, the
+    /// facing in `w`; and its buffer.
+    pub outline: Vec<vec4>,
+    pub outline_buf: GpuBuffer<vec4>,
+    pub mask_rays: GpuBuffer<vec4>,
+    pub mask_other: GpuBuffer<vec4>,
+    /// The panel (`panel.wrela`): its toolkit and renderer, the parts' names, the part
+    /// picked, the last click's literals and their labels in its list, the one picked, and the
+    /// latest answers.
+    pub ui: Ui,
+    pub renderer: Renderer,
+    pub part_names: Vec<String>,
+    pub part_pick: i32,
+    pub picks: Vec<panel::Pick>,
+    pub pick_labels: Vec<String>,
+    pub picked: i32,
+    pub log: Vec<String>,
+    /// Where the pointer went down in a view (a click, or a drag's start), and whether it has
+    /// moved enough to be a drag.
+    pub press: Option<Press>,
+    pub dragging: bool,
+    /// What the panel showed when it was last laid out: the answers so far and the screen's
+    /// size. A frame with no input and nothing new draws the panel's last quads again.
+    pub panel_answers: u32,
+    pub panel_size: vec2,
+    /// Whether the screen shows what the canvas and the panel do now: a frame that changes
+    /// neither draws nothing (the screen keeps its last image).
+    pub shown: bool,
+    /// The command being typed.
+    pub line: String,
+    /// How many answers the lens has printed.
+    pub answers: u32,
+}
+
+/// The cells along each edge of the grid that guides the views' rays: 64³ is sampled again
+/// after an edit in 13 ms of Chrome's GPU time on the wolf (96³: 44 ms), and its rays take a few
+/// more steps near the surface.
+const GUIDE: u32 = 64
+
+/// The views' guide grid around `b`.
+fn guide(b: Box3) -> diagnose::Grid {
+    diagnose::around_in(b, n: GUIDE)
+}
+
+/// Where the pointer went down in a view: the pixel, the surface's point there, and the view.
+pub struct Press: Copy {
+    pub at: vec2,
+    pub point: vec3,
+    pub view: Ortho,
+}
+
+/// A part's label: its name, then `sep` and its group if it has one, and ' (image)' for a
+/// mirror image.
+fn part_label(n: PartName, sep: str) -> String {
+    var s = String::from(if n.name.len() > 0 { n.name } else { "(unnamed)" })
+    if n.group.len() > 0 {
+        s.push_str(sep)
+        s.push_str(n.group)
+    }
+    if n.mirrored {
+        s.push_str(" (image)")
+    }
+    s
+}
+
+/// Each part's name as the panel lists it.
+fn names<S: Surface>(field: S) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for i in 0..field.parts() {
+        out.push(part_label(field.part_name(i), ", "))
+    }
+    out
+}
+
+/// The lens on `subject`, the function that builds the subject's field.
+pub fn open<S: Surface + Lipschitz>(subject: fn() -> S) -> Lens {
+    let fonts = Fonts::load()
+    let renderer = Renderer::new(fonts)
+    var ui = Ui::new(take fonts)
+    ui.theme = ui::widgets::Theme { size: 13.0, row: 20.0, spacing: 3.0, pad: 4.0 }
+    Lens {
+        bounds: bounds(subject(), depth: 8),
+        mode: Mode::Shaded,
+        part: 0,
+        single: None,
+        focus: vec4(0.0),
+        marks: [vec4(0.0); 4],
+        next_mark: 0,
+        width: 640,
+        height: 640,
+        sampling: None,
+        stated: 0.0,
+        describing: None,
+        job: None,
+        writing: None,
+        sent: Vec::new(),
+        written: literal_values(built: true),
+        named: Vec::new(),
+        canvas: None,
+        drawn: Vec::new(),
+        dirty: true,
+        coarse: buffer(GUIDE * GUIDE * GUIDE),
+        coarse_live: false,
+        coarse_slack: 0.0,
+        rays: buffer(1),
+        rays_next: buffer(1),
+        corners: buffer(4),
+        hit_parts: buffer(1),
+        pixel_groups: buffer(3),
+        gathered: append_buffer(1),
+        gathered_at: buffer(1),
+        gathered_groups: buffer(3),
+        tail: buffer(1),
+        tail_next: buffer(1),
+        fit: None,
+        mask: None,
+        outline: Vec::new(),
+        outline_buf: buffer(1),
+        mask_rays: buffer(1),
+        mask_other: buffer(1),
+        ui: take ui,
+        renderer,
+        part_names: names(subject()),
+        part_pick: -1,
+        picks: Vec::new(),
+        pick_labels: Vec::new(),
+        picked: -1,
+        log: Vec::new(),
+        press: None,
+        dragging: false,
+        panel_answers: 0xffffffff,
+        panel_size: vec2(0.0),
+        shown: false,
+        line: String::new(),
+        answers: 0,
+    }
+}
+
+impl Lens {
+    /// The views on the screen: the contact sheet (2 × 2) or one view, each square, centred.
+    pub fn views(self) -> ([Ortho; 4], u32) {
+        let (w, h) = (f32(self.width) - panel::width(self.width), f32(self.height))
+        let blank = framed(self.bounds, Facing::Side, x0: 0.0, y0: 0.0, size: 1.0)
+        var out = [blank; 4]
+        match self.single {
+            Some(f) => {
+                let s = min(w, h)
+                out[0] = self.focused(
+                    framed(self.bounds, f, x0: 0.5 * (w - s), y0: 0.5 * (h - s), size: s),
+                )
+                (out, 1)
+            },
+            None => {
+                let s = floor(min(w, h) * 0.5)
+                let (x0, y0) = (floor(0.5 * (w - 2.0 * s)), floor(0.5 * (h - 2.0 * s)))
+                for i in 0..4 {
+                    let (cx, cy) = (f32(i % 2), f32(i / 2))
+                    out[i] = self.focused(
+                        framed(
+                            self.bounds,
+                            SHEET[i],
+                            x0: x0 + cx * s,
+                            y0: y0 + cy * s,
+                            size: s,
+                        ),
+                    )
+                }
+                (out, 4)
+            },
+        }
+    }
+
+    /// `v` framed as `zoom` asked, if it did: centred on the focus, its width across. Rays
+    /// start far enough back to clear the whole subject.
+    pub fn focused(self, v: Ortho) -> Ortho {
+        if self.focus.w <= 0.0 {
+            return v
+        }
+        let e = self.bounds.hi - self.bounds.lo
+        let reach = 2.0 * max(e.x, max(e.y, e.z)) +
+            length(self.focus.xyz - 0.5 * (self.bounds.lo + self.bounds.hi)) +
+            0.1
+        Ortho { centre: self.focus.xyz, half: self.focus.w, reach, ..v }
+    }
+
+    /// The views' uniform.
+    pub fn sheet(self) -> Sheet {
+        let (views, count) = self.views()
+        let g = guide(self.bounds)
+        Sheet {
+            views,
+            count,
+            mode: self.mode,
+            part: self.part,
+            // 10 cm squares; 1 cm when zoomed in to less than 30 cm across.
+            grid: if self.focus.w > 0.0 && self.focus.w < 0.15 { 0.01 } else { 0.1 },
+            outline_count: self.outline.len(),
+            marks: self.marks,
+            coarse: Coarse {
+                origin: g.origin,
+                cell: g.cell,
+                n: g.n,
+                live: u32(self.coarse_live),
+                slack: self.coarse_slack,
+            },
+        }
+    }
+
+    /// Prints an answer.
+    pub fn answer(mut self, json: str) {
+        print(json)
+        self.answers += 1
+        // The panel shows the latest five, cut to 90 bytes.
+        var l = String::from(json.slice(from: 0, to: min(json.len(), 90)))
+        if json.len() > 90 {
+            l.push_str("...")
+        }
+        self.log.push(take l)
+        if self.log.len() > 5 {
+            self.log.remove(0)
+        }
+    }
+
+    /// Marks `p` in the views (the oldest of four marks goes).
+    pub fn mark(mut self, p: vec3) {
+        self.marks[self.next_mark % 4] = vec4(p, 1.0)
+        self.next_mark += 1
+        self.dirty = true
+    }
+}
+
+/// The name of facing `f`, as commands and answers write it.
+pub fn facing_name(f: Facing) -> Text {
+    match f {
+        Facing::Side => "side",
+        Facing::Front => "front",
+        Facing::ThreeQuarter => "three-quarter",
+        Facing::Top => "top",
+    }
+}
+
+/// The names of the views' modes, by number (in `view::MODES`'s order): what `mode` takes.
+pub const MODE_NAMES: [Text; 6] = ["shaded", "parts", "tint", "isolate", "silhouette", "colour"]
+
+/// Answers that action `action` failed, and why.
+fn fail(lens: mut Lens, action: str, why: str) {
+    let a = obj().text("action", action).text("error", why).done()
+    lens.answer(a.as_str())
+}
+
+// ---- actions ------------------------------------------------------------------------------------
+
+/// Shows the contact sheet (`facing` 4), or one view: 0 side, 1 front, 2 three-quarter, 3 top.
+pub fn show(lens: mut Lens, facing: u32) {
+    lens.single = if facing < 4 { Some(SHEET[facing]) } else { None }
+    lens.mask = None
+    lens.dirty = true
+    let name: Text = if facing < 4 { facing_name(SHEET[facing]) } else { "sheet" }
+    // Each facing's framing, for `silhouette` and `fit`.
+    var frames = list()
+    for i in 0..4 {
+        let v = framed(lens.bounds, SHEET[i], x0: 0.0, y0: 0.0, size: 1.0)
+        let j = obj()
+            .text("facing", facing_name(SHEET[i]))
+            .vec("centre", v.centre)
+            .num("half", v.half)
+            .done()
+        frames.add(j.as_str())
+    }
+    let frames = take frames.done()
+    let a = obj().text("action", "view").text("view", name).raw("framings", frames.as_str()).done()
+    lens.answer(a.as_str())
+}
+
+/// The subject's spec (`spec.wrela`'s checks, std::lift's `Checks`): each check's value,
+/// target and miss, and how many hold.
+pub fn spec_answer(lens: mut Lens, spec: fn() -> String) {
+    let r = spec()
+    var a = String::from("{\"action\":\"spec\",")
+    a.push_str(r.as_str().slice(from: 1, to: r.len()))
+    lens.answer(a.as_str())
+}
+
+/// Shows facing `f`'s outline from the subject's blueprint (`blueprint.wrela`) over a view of
+/// that facing, and answers where the silhouette misses it (`blueprint::report`).
+pub fn show_blueprint<S: Surface>(
+    lens: mut Lens,
+    subject: fn() -> S,
+    outline: fn(u32) -> Vec<vec2>,
+    f: u32,
+) {
+    let pts = outline(f)
+    if pts.len() < 3 {
+        let name = blueprint::BLUEPRINT_NAMES[min(f, 2)]
+        let why = f"there's no {name} outline: write `pub fn {name}() -> Vec<vec2>` in the subject's blueprint.wrela"
+        fail(mut lens, "blueprint", why.as_str())
+        return
+    }
+    lens.outline.clear()
+    for q in pts {
+        lens.outline.push(vec4(blueprint::world(f, q), f32(blueprint::sheet_facing(f))))
+    }
+    lens.outline_buf = buffer(lens.outline.len())
+    std::gpu::write(mut lens.outline_buf, 0, lens.outline)
+    show(mut lens, blueprint::sheet_facing(f))
+    let e = lens.bounds.hi - lens.bounds.lo
+    let a = blueprint::report(subject(), f, pts, max(e.x, max(e.y, e.z)) + 0.5)
+    lens.answer(a.as_str())
+}
+
+/// Takes the outline off the views.
+pub fn blueprint_off(lens: mut Lens) {
+    lens.outline.clear()
+    lens.dirty = true
+    let a = obj().text("action", "blueprint").text("outline", "off").done()
+    lens.answer(a.as_str())
+}
+
+/// Fits the literals named (`choose`) so the silhouette from facing `f` fills the blueprint's
+/// outline (`fit_reference`, with the outline as the reference), at a framing that holds both,
+/// `res` pixels square.
+pub fn fit_blueprint(lens: mut Lens, outline: fn(u32) -> Vec<vec2>, f: u32, res: u32) {
+    let pts = outline(f)
+    if pts.len() < 3 || lens.named.len() == 0 {
+        let why = if pts.len() < 3 { "the blueprint has no outline from that side" } else {
+            "name the literals to fit first (`choose`)"
+        }
+        fail(mut lens, "fit", why)
+        return
+    }
+    // A framing around the outline and the subject together.
+    var lo = vec2(1.0e9)
+    var hi = vec2(-1.0e9)
+    for q in pts {
+        lo = min(lo, q)
+        hi = max(hi, q)
+    }
+    let bl = blueprint::plane(f, lens.bounds.lo)
+    let bh = blueprint::plane(f, lens.bounds.hi)
+    lo = min(lo, min(bl, bh))
+    hi = max(hi, max(bl, bh))
+    let c2 = 0.5 * (lo + hi)
+    let half = 0.55 * max(hi.x - lo.x, hi.y - lo.y) + 0.02
+    let fv = fit_view_of(lens, blueprint::sheet_facing(f), blueprint::world(f, c2), half, res)
+    let m = blueprint::mask(fv, f, pts)
+    lens.mask = Some(fv)
+    lens.dirty = true
+    lens.fit = Some(fit::start_with(fv, lens.named, take m))
+}
+
+/// Frames the views on `centre`, `2 half` metres across (a close-up), or with `half` 0 on the
+/// subject again. Answers with the framing.
+pub fn zoom(lens: mut Lens, centre: vec3, half: f32) {
+    lens.focus = if half > 0.0 { vec4(centre, half) } else { vec4(0.0) }
+    lens.dirty = true
+    let a = if half > 0.0 {
+        obj().text("action", "zoom").vec("centre", centre).num("half", half).done()
+    } else {
+        obj().text("action", "zoom").text("framing", "the subject").done()
+    }
+    lens.answer(a.as_str())
+}
+
+/// The fit view of `facing` (0 side, 1 front, 2 three-quarter, 3 top) centred at `centre`, `2
+/// half` metres wide, `res` pixels square.
+fn fit_view_of(lens: Lens, facing: u32, centre: vec3, half: f32, res: u32) -> fit::FitView {
+    let (back, up) = view::axes(SHEET[min(facing, 3)])
+    let e = lens.bounds.hi - lens.bounds.lo
+    fit::fit_view(
+        centre,
+        back,
+        up,
+        half,
+        reach: max(e.x, max(e.y, e.z)) +
+            0.1 +
+            length(centre - 0.5 * (lens.bounds.lo + lens.bounds.hi)),
+        res: max(res, 1),
+    )
+}
+
+/// Shows the silhouette of `facing` at a framing (`centre`, `half`: `view`'s answer gives each
+/// facing's), `res` pixels square at the screen's top left, inside dark: the image a fit
+/// matches, as a reference is drawn.
+pub fn silhouette(lens: mut Lens, facing: u32, centre: vec3, half: f32, res: u32) {
+    let fv = fit_view_of(lens, facing, centre, half, res)
+    lens.mask = Some(fv)
+    lens.dirty = true
+    let a = obj()
+        .text("action", "silhouette")
+        .text("facing", facing_name(SHEET[min(facing, 3)]))
+        .vec("centre", centre)
+        .num("half", half)
+        .int("res", fv.res)
+        .done()
+    lens.answer(a.as_str())
+}
+
+/// Fits the literals named (`choose`) so the silhouette of `facing` at a framing (`centre`,
+/// `half`), `res` pixels square, matches the reference the server gives (`studio/reference`).
+/// Its answer comes when it's done: each literal before and after, and the IoU.
+pub fn fit_reference(lens: mut Lens, facing: u32, centre: vec3, half: f32, res: u32) {
+    if lens.named.len() == 0 {
+        fail(mut lens, "fit", "name the literals to fit first (`choose`)")
+        return
+    }
+    let fv = fit_view_of(lens, facing, centre, half, res)
+    lens.mask = Some(fv)
+    lens.dirty = true
+    lens.fit = Some(fit::start(fv, lens.named))
+}
+
+/// Carries a fit on, a frame at a time: its answer when it's done.
+fn advance_fit<S: Surface>(
+    lens: mut Lens,
+    subject: fn() -> S,
+    grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
+    grad: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+) {
+    let progress = match mut lens.fit {
+        Some(f) => fit::advance(mut f, subject, grad8, grad),
+        None => return,
+    }
+    match take progress {
+        fit::FitProgress::Going => {},
+        fit::FitProgress::Finished => {
+            let a = match lens.fit {
+                Some(f) => fit::answer(f),
+                None => String::new(),
+            }
+            lens.fit = None
+            lens.dirty = true
+            lens.answer(a.as_str())
+        },
+        fit::FitProgress::Failed(why) => {
+            lens.fit = None
+            fail(mut lens, "fit", why.as_str())
+        },
+    }
+}
+
+/// Shows the views as `mode` (0 shaded, 1 parts, 2 tint, 3 isolate, 4 silhouette, 5 colour),
+/// tinting or isolating part `part`.
+pub fn set_mode(lens: mut Lens, mode: u32, part: u32) {
+    let m = min(mode, 5)
+    lens.mode = MODES[m]
+    lens.part = part
+    lens.dirty = true
+    let a = obj().text("action", "mode").text("mode", MODE_NAMES[m]).int("part", part).done()
+    lens.answer(a.as_str())
+}
+
+/// Part `i`'s name, group, frame and image as a JSON object.
+fn part_json<S: Surface>(field: S, i: u32) -> String {
+    let n = field.part_name(i)
+    obj()
+        .int("index", i)
+        .text("name", n.name)
+        .text("group", n.group)
+        .text("frame", n.frame)
+        .flag("mirrored", n.mirrored)
+        .done()
+}
+
+/// The subject's parts: each one's index, name, group, frame (a creature's bone) and whether
+/// it's a mirror image.
+pub fn parts<S: Surface + Lipschitz>(lens: mut Lens, subject: fn() -> S) {
+    let f = subject()
+    var all = list()
+    for i in 0..f.parts() {
+        let p = part_json(f, i)
+        all.add(p.as_str())
+    }
+    let all = take all.done()
+    let a = obj().text("action", "parts").int("count", f.parts()).raw("parts", all.as_str()).done()
+    lens.answer(a.as_str())
+}
+
+/// What the field is at `p`: its distance, its gradient, whether `p` is inside, the part that
+/// decides it, and the channels there. Marks `p` in the views.
+pub fn probe<S: Surface + Lipschitz>(
+    lens: mut Lens,
+    subject: fn() -> S,
+    channels: fn(vec3) -> String,
+    p: vec3,
+) {
+    let f = subject()
+    let (d, i) = f.part_at(p)
+    let g = f.gradient(p)
+    let part = part_json(f, i)
+    var c = channels(p)
+    if c.is_empty() {
+        c.push_str("null")
+    }
+    lens.mark(p)
+    let a = obj()
+        .text("action", "probe")
+        .vec("point", p)
+        .num("distance", d)
+        .vec("gradient", g)
+        .num("gradient_length", length(g))
+        .flag("inside", d < 0.0)
+        .raw("part", part.as_str())
+        .raw("channels", c.as_str())
+        .done()
+    lens.answer(a.as_str())
+}
+
+/// Where `p` is on the screen in each view: the pixel, and whether the view holds it.
+pub fn project(lens: mut Lens, p: vec3) {
+    let (views, count) = lens.views()
+    var all = list()
+    for i in 0..count {
+        let v = views[i]
+        let px = v.project(p)
+        let name: Text = if count == 1 { facing_name(lens.single.unwrap_or(Facing::Side)) } else {
+            facing_name(SHEET[i])
+        }
+        let j = obj()
+            .text("view", name)
+            .num("x", px.x)
+            .num("y", px.y)
+            .flag("in", v.holds(px.x, px.y))
+            .done()
+        all.add(j.as_str())
+    }
+    let all = take all.done()
+    let a = obj().text("action", "project").vec("point", p).raw("views", all.as_str()).done()
+    lens.answer(a.as_str())
+}
+
+/// Drag to edit, as an agent asks: the surface at `from` (snapped to it) moved to `to`, the
+/// target moving there in eight steps, each checked whole on the GPU before the next (a drag
+/// job, which frames carry on). Its answer is the literals changed and what moved; `write`
+/// writes them to the source.
+pub fn move_point<S: Surface + Lipschitz>(
+    lens: mut Lens,
+    subject: fn() -> S,
+    from: vec3,
+    to: vec3,
+) {
+    lens.mark(to)
+    start_drag(mut lens, subject, from, Some(to))
+}
+
+/// Starts a drag job at `from`, snapped to the surface, with the literals named: an agent's
+/// toward `to` in eight steps, or with `to` none a person's, held, whose targets come from the
+/// pointer.
+fn start_drag<S: Surface>(lens: mut Lens, subject: fn() -> S, from: vec3, to: Option<vec3>) {
+    let p0 = solve::snap(subject(), from)
+    var path: Vec<vec3> = Vec::new()
+    if let Some(t) = to {
+        for s in 1..9 {
+            path.push(mix(p0, t, vec3(f32(s) / 8.0)))
+        }
+    }
+    let grid = diagnose::around_in(lens.bounds, n: drag::GUARD)
+    let target = to.unwrap_or(p0)
+    lens.job = Some(
+        drag::job(subject, p0, target, lens.named.clone(), take path, grid, held: to.is_none()),
+    )
+}
+
+/// Names literal `literal` for the next drags (with the others named), or with `none`, names
+/// none (drags choose their own literals again). Answers with the literals named.
+pub fn choose(lens: mut Lens, literal_index: u32, none: bool) {
+    if none {
+        lens.named.clear()
+    } else if literal_index < std::lift::count() {
+        var there = false
+        for i in lens.named {
+            there = there || i == literal_index
+        }
+        if !there {
+            lens.named.push(literal_index)
+        }
+    }
+    var all = list()
+    for i in lens.named {
+        let l = source_json(i, None)
+        all.add(l.as_str())
+    }
+    let all = take all.done()
+    let a = obj().text("action", "choose").raw("literals", all.as_str()).done()
+    lens.answer(a.as_str())
+}
+
+/// Carries a drag job on, a frame at a time: its answer when it finishes.
+fn advance_job<S: Surface + Lipschitz>(
+    lens: mut Lens,
+    subject: fn() -> S,
+    grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
+    grad: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+    reached: fn() -> Vec<Literal>,
+) {
+    let progress = match mut lens.job {
+        Some(j) => drag::advance(mut j, subject, grad8, grad, reached),
+        None => return,
+    }
+    if let drag::Progress::Finished(done) = take progress {
+        let a = match lens.job {
+            Some(j) => drag::answer(take done, j),
+            None => String::new(),
+        }
+        lens.job = None
+        lens.answer(a.as_str())
+    }
+}
+
+/// The first surface hit along the ray from `o` in direction `dir` (within 10 m): the point,
+/// how far, and the part there. Marks it.
+pub fn ray<S: Surface + Lipschitz>(lens: mut Lens, subject: fn() -> S, o: vec3, dir: vec3) {
+    let f = subject()
+    let d = normalize(dir)
+    let t = trace(f, o, d, 10.0)
+    if t < 0.0 {
+        let a = obj()
+            .text("action", "ray")
+            .vec("from", o)
+            .vec("direction", d)
+            .flag("hit", b: false)
+            .done()
+        lens.answer(a.as_str())
+        return
+    }
+    let p = o + d * t
+    let part = part_json(f, f.part_at(p).1)
+    lens.mark(p)
+    let a = obj()
+        .text("action", "ray")
+        .vec("from", o)
+        .vec("direction", d)
+        .flag("hit", b: true)
+        .vec("point", p)
+        .num("distance", t)
+        .raw("part", part.as_str())
+        .done()
+    lens.answer(a.as_str())
+}
+
+/// The distance between two points (a tape measure); both are marked.
+pub fn measure(lens: mut Lens, a: vec3, b: vec3) {
+    lens.mark(a)
+    lens.mark(b)
+    let j = obj()
+        .text("action", "measure")
+        .vec("from", a)
+        .vec("to", b)
+        .num("distance", length(b - a))
+        .done()
+    lens.answer(j.as_str())
+}
+
+/// Samples the field on fieldview's grid over the cube at `centre`, `radius` to each face (0:
+/// around the subject's box), on the GPU; the report comes on a later frame.
+pub fn diagnose<S: Surface + Lipschitz>(
+    lens: mut Lens,
+    subject: fn() -> S,
+    centre: vec3,
+    radius: f32,
+) {
+    let f = subject()
+    let g = if radius > 0.0 { grid(centre, radius) } else { diagnose::around(lens.bounds) }
+    lens.stated = f.lipschitz(near: 0.1)
+    lens.sampling = Some(start(f, g))
+}
+
+/// Each lifted literal's value now, or as built (`built`).
+fn literal_values(built: bool) -> Vec<f32> {
+    var out: Vec<f32> = Vec::new()
+    for i in 0..std::lift::count() {
+        if let Some(l) = literal(i) {
+            out.push(if built { l.built_value() } else { l.value() })
+        }
+    }
+    out
+}
+
+/// Whether the lens is waiting (for the GPU: a diagnosis, a drag's checks; for the server: a
+/// write): the headless runner frames until not.
+pub fn busy(lens: Lens) -> bool {
+    lens.sampling.is_some() ||
+        lens.job.is_some() ||
+        lens.writing.is_some() ||
+        lens.fit.is_some() ||
+        lens.describing.is_some()
+}
+
+/// Describes the subject (`describe.wrela`): its parts, their volumes, boxes and contacts, the
+/// whole's box, volume, mass, pieces, lowest point and symmetry. Its answer comes when the GPU's
+/// samples do.
+pub fn describe_subject<S: Surface>(lens: mut Lens, subject: fn() -> S) {
+    lens.describing = Some(describe::start(subject(), diagnose::around(lens.bounds)))
+}
+
+/// Takes a description the GPU has finished: its answer.
+fn poll_describe<S: Surface>(lens: mut Lens, subject: fn() -> S) {
+    let got = match mut lens.describing {
+        Some(s) => describe::poll(mut s),
+        None => None,
+    }
+    let Some(samples) = got else { return }
+    let g = if let Some(s) = lens.describing { s.grid } else { return }
+    lens.describing = None
+    let (d, part) = samples
+    if d.len() != g.count() || part.len() != g.count() {
+        fail(mut lens, "describe", "the GPU's answer didn't come")
+        return
+    }
+    let a = describe::answer(subject(), g, d, part)
+    lens.answer(a.as_str())
+}
+
+/// Writes every literal whose value isn't the source's to the source, through the server
+/// (`wrela edit`): a post of `{"edits": [[literal, value], ...]}` to `studio/edit`. Its answer
+/// comes on a later frame.
+pub fn write(lens: mut Lens) {
+    var edits = list()
+    var n = 0
+    var sent: Vec<f32> = Vec::new()
+    for i in 0..lens.written.len() {
+        let v = if let Some(l) = literal(i) { l.value() } else { lens.written[i] }
+        sent.push(v)
+        if bitcast_u32(v) != bitcast_u32(lens.written[i]) {
+            let e = f"[{i},{v}]"
+            edits.add(e.as_str())
+            n += 1
+        }
+    }
+    if n == 0 {
+        let a = obj().text("action", "write").int("edits", 0).flag("written", b: false).done()
+        lens.answer(a.as_str())
+        return
+    }
+    let body = take edits.done()
+    let j = obj().raw("edits", body.as_str()).done()
+    lens.sent = take sent
+    lens.writing = Some(std::io::post("studio/edit", j.as_bytes()))
+}
+
+/// Takes the server's answer to a write: the literals written are the source's now.
+fn poll_write(lens: mut Lens) {
+    let answer = match mut lens.writing {
+        Some(w) => w.poll(),
+        None => None,
+    }
+    if answer.is_none() {
+        return
+    }
+    lens.writing = None
+    match take answer {
+        Some(Ok(bytes)) => {
+            var text = if let Some(s) = String::from_utf8(take bytes) { take s } else {
+                String::new()
+            }
+            if text.as_str().find("\"written\":true").is_some() {
+                // The values posted, not the values now: a literal changed while the write was
+                // on its way isn't written yet.
+                for i in 0..min(lens.written.len(), lens.sent.len()) {
+                    lens.written[i] = lens.sent[i]
+                }
+            }
+            if text.is_empty() {
+                text.push_str("null")
+            }
+            let a = obj().text("action", "write").raw("answer", text.as_str()).done()
+            lens.answer(a.as_str())
+        },
+        _ => {
+            let a = obj()
+                .text("action", "write")
+                .flag("written", b: false)
+                .text("why", "the server didn't answer")
+                .done()
+            lens.answer(a.as_str())
+        },
+    }
+}
+
+/// The lifted literals: each one's index, value, file, line, column and text.
+pub fn literals(lens: mut Lens) {
+    var all = list()
+    for i in 0..std::lift::count() {
+        let l = source_json(i, None)
+        all.add(l.as_str())
+    }
+    let all = take all.done()
+    let a = obj()
+        .text("action", "literals")
+        .int("count", std::lift::count())
+        .raw("literals", all.as_str())
+        .done()
+    lens.answer(a.as_str())
+}
+
+/// Sets literal `i` to `value`: the views and every answer from now on see it.
+pub fn set(lens: mut Lens, i: u32, value: f32) {
+    let ok = if let Some(l) = literal(i) {
+        l.set(value)
+        true
+    } else {
+        false
+    }
+    let a = obj()
+        .text("action", "set")
+        .int("literal", i)
+        .num("value", value)
+        .flag("done", ok)
+        .done()
+    lens.answer(a.as_str())
+}
+
+/// Literal `i`'s source, as JSON: its package and file (the path in its package), line, column,
+/// text and value, the line's text, and the derivative given, if one is.
+pub fn source_json(i: u32, derivative: Option<f32>) -> String {
+    let Some(l) = literal(i) else { return obj().int("index", i).done() }
+    let s = l.source()
+    let text = file_text(s.file)
+    let name = file_name(s.file)
+    let cut = if let Some(c) = name.find("] ") { c } else { 0 }
+    var j = obj()
+        .int("index", i)
+        .text("package", package_of(name, cut))
+        .text("file", file_of(name, cut))
+        .int("line", s.line)
+        .int("column", s.column)
+        .text("text", text.slice(s.start, s.end))
+        .num("value", l.value())
+        .text("source", line_of(text, s.start))
+    if let Some(d) = derivative {
+        j = take j.num("derivative", d)
+    }
+    take j.done()
+}
+
+/// The package of a file named as diagnostics name it (`[wolf] parts.wrela`: `wolf`), its `] `
+/// at `cut`.
+fn package_of(name: str, cut: u32) -> borrow str {
+    if cut > 0 { name.slice(from: 1, to: cut) } else { name.slice(from: 0, to: 0) }
+}
+
+/// The path in its package of a file named as diagnostics name it (`parts.wrela`).
+fn file_of(name: str, cut: u32) -> borrow str {
+    if cut > 0 { name.slice(from: cut + 2, to: name.len()) } else {
+        name.slice(from: 0, to: name.len())
+    }
+}
+
+/// Literal `i` as the panel shows it: its value and its line's source, and its label in the
+/// panel's list (its text, line and file).
+fn pick(i: u32) -> (panel::Pick, String) {
+    let Some(l) = literal(i) else {
+        return (panel::Pick { index: i, value: 0.0, source: String::new() }, String::new())
+    }
+    let s = l.source()
+    let text = file_text(s.file)
+    let name = file_name(s.file)
+    let cut = if let Some(c) = name.find("] ") { c } else { 0 }
+    let label = f"{text.slice(s.start, s.end)}  {file_of(name, cut)}:{s.line}"
+    let p = panel::Pick {
+        index: i,
+        value: l.value(),
+        source: String::from(line_of(text, s.start).trim()),
+    }
+    (p, label)
+}
+
+/// The line of `text` holding byte `at`, without its line break.
+pub fn line_of(text: str, at: u32) -> borrow str {
+    var start = at
+    while start > 0 && text.byte(start - 1) != 10 {
+        start -= 1
+    }
+    var end = at
+    while end < text.len() && text.byte(end) != 10 {
+        end += 1
+    }
+    text.slice(start, end)
+}
+
+/// The distance's derivatives at `p` by each of `lits` (those it reads: the glue's
+/// `reached()`), through the glue's `grad` (`solve::derive16`): (index, derivative), in `lits`'
+/// order.
+pub fn derivatives(
+    grad: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+    lits: [Literal],
+    p: vec3,
+) -> Vec<(u32, f32)> {
+    let (_, d) = solve::derive16(grad, p, lits)
+    var out: Vec<(u32, f32)> = Vec::with_capacity(lits.len())
+    for k in 0..lits.len() {
+        out.push((lits[k].index, d[k]))
+    }
+    out
+}
+
+/// Where the ray through screen pixel (`x`, `y`) meets the subject: its view, and the point.
+pub fn hit<S: Surface>(lens: Lens, field: S, x: f32, y: f32) -> Option<(Ortho, vec3)> {
+    let (views, count) = lens.views()
+    for i in 0..count {
+        let v = views[i]
+        if v.holds(x, y) {
+            let (o, dir) = v.ray(x, y)
+            let t = trace(field, o, dir, 2.0 * v.reach)
+            if t < 0.0 {
+                return None
+            }
+            return Some((v, o + dir * t))
+        }
+    }
+    None
+}
+
+/// The literals of `all` that move the surface, most first: (index, derivative) by
+/// |derivative|, none of them 0 or NaN; of equals, the first in `all` first.
+pub fn ranked(all: [(u32, f32)]) -> Vec<(u32, f32)> {
+    var out: Vec<(u32, f32)> = Vec::new()
+    for item in all {
+        if item.1 != 0.0 && item.1 == item.1 {
+            out.push(item)
+        }
+    }
+    out.sort_by(|a, b| abs(a.1) > abs(b.1))
+    out
+}
+
+/// Click to source at screen pixel (`x`, `y`): the point the ray meets, the part that decides
+/// the field there, and every literal that reaches the field there, ranked by its influence
+/// (the distance's derivative by it), most first, each with its source line, and whether the
+/// part's own distance reads it (`own`: the part's code, or a constant it uses; `part_reads`).
+pub fn click<S: Surface + Lipschitz>(
+    lens: mut Lens,
+    subject: fn() -> S,
+    grad: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+    reached: fn() -> Vec<Literal>,
+    part_reads: fn(vec3, u32) -> Vec<Literal>,
+    x: f32,
+    y: f32,
+) {
+    let f = subject()
+    let Some((_, p)) = hit(lens, f, x, y) else {
+        let a = obj().text("action", "click").num("x", x).num("y", y).flag("hit", b: false).done()
+        lens.answer(a.as_str())
+        return
+    }
+    let i = f.part_at(p).1
+    let part = part_json(f, i)
+    let top = ranked(derivatives(grad, reached(), p))
+    let own = part_reads(p, i)
+    var lits = list()
+    lens.picks = Vec::new()
+    lens.pick_labels = Vec::new()
+    for item in top {
+        let (index, d) = item
+        var mine = false
+        for l in own {
+            mine = mine || l.index == index
+        }
+        let l = source_json(index, Some(d))
+        let j = obj().raw("literal", l.as_str()).flag("own", mine).done()
+        lits.add(j.as_str())
+        let (shown, label) = pick(index)
+        lens.picks.push(take shown)
+        lens.pick_labels.push(take label)
+    }
+    lens.picked = if lens.picks.len() > 0 { 0 } else { -1 }
+    let lits = take lits.done()
+    lens.mark(p)
+    let a = obj()
+        .text("action", "click")
+        .num("x", x)
+        .num("y", y)
+        .flag("hit", b: true)
+        .vec("point", p)
+        .raw("part", part.as_str())
+        .raw("literals", lits.as_str())
+        .done()
+    lens.answer(a.as_str())
+}
+
+// ---- commands -----------------------------------------------------------------------------------
+
+/// Answers that command `t` can't be run, and why.
+fn refuse(lens: mut Lens, t: str, why: str) {
+    let a = obj().text("action", "error").text("command", t).text("why", why).done()
+    lens.answer(a.as_str())
+}
+
+/// Where word `n` of `t` is (words are separated by spaces): its start and end, or `t`'s end
+/// for both.
+fn word_span(t: str, n: u32) -> (u32, u32) {
+    var k = 0
+    for range in t.split(" ") {
+        let (s, e) = range
+        if e > s {
+            if k == n {
+                return (s, e)
+            }
+            k += 1
+        }
+    }
+    (t.len(), t.len())
+}
+
+/// Word `n` of `t`, or nothing.
+fn word(t: str, n: u32) -> borrow str {
+    let (s, e) = word_span(t, n)
+    t.slice(s, e)
+}
+
+/// What follows word `n` of `t`.
+fn after_word(t: str, n: u32) -> borrow str {
+    let (_, e) = word_span(t, n)
+    t.slice(min(e + 1, t.len()), t.len())
+}
+
+/// Number `i` of `n`, or 0.
+fn arg(n: [f32], i: u32) -> f32 {
+    if i < n.len() { n[i] } else { 0.0 }
+}
+
+/// Numbers `i` to `i + 2` of `n`.
+fn v3(n: [f32], i: u32) -> vec3 {
+    vec3(arg(n, i), arg(n, i + 1), arg(n, i + 2))
+}
+
+/// Names the literals `n[from..]` for the next drags, in place of those named (each answers
+/// with the literals named so far).
+fn name_literals(lens: mut Lens, n: [f32], from: u32) {
+    lens.named.clear()
+    for k in from..n.len() {
+        choose(mut lens, u32(n[k]), none: false)
+    }
+}
+
+/// The numbers after a command's name.
+fn numbers(args: str) -> Vec<f32> {
+    var out: Vec<f32> = Vec::new()
+    for range in args.split(" ") {
+        let (s, e) = range
+        borrow w = args.slice(s, e).trim()
+        if !w.is_empty() {
+            if let Some(x) = w.parse_f32() {
+                out.push(x)
+            }
+        }
+    }
+    out
+}
+
+/// Runs a command line: the actions by name, their arguments numbers (`view` and `mode` take
+/// names too).
+pub fn command<S: Surface + Lipschitz>(
+    lens: mut Lens,
+    subject: fn() -> S,
+    grad: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+    grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
+    reached: fn() -> Vec<Literal>,
+    part_reads: fn(vec3, u32) -> Vec<Literal>,
+    channels: fn(vec3) -> String,
+    spec: fn() -> String,
+    outline: fn(u32) -> Vec<vec2>,
+    text: str,
+) {
+    borrow t = text.trim()
+    borrow name = word(t, 0)
+    borrow rest = after_word(t, 0)
+    let n = numbers(rest)
+    if name == "probe" {
+        probe(mut lens, subject, channels, v3(n, 0))
+    } else if name == "project" {
+        project(mut lens, v3(n, 0))
+    } else if name == "write" {
+        write(mut lens)
+    } else if name == "ray" {
+        ray(mut lens, subject, v3(n, 0), v3(n, 3))
+    } else if name == "move" {
+        // Literals after the points are named for this drag and the next.
+        if n.len() > 6 {
+            name_literals(mut lens, n, 6)
+        }
+        move_point(mut lens, subject, v3(n, 0), v3(n, 3))
+    } else if name == "describe" {
+        describe_subject(mut lens, subject)
+    } else if name == "silhouette" {
+        silhouette(mut lens, u32(arg(n, 0)), v3(n, 1), arg(n, 4), u32(arg(n, 5)))
+    } else if name == "fit" {
+        if n.len() > 6 {
+            name_literals(mut lens, n, 6)
+        }
+        fit_reference(mut lens, u32(arg(n, 0)), v3(n, 1), arg(n, 4), u32(arg(n, 5)))
+    } else if name == "choose" {
+        choose(mut lens, 0, none: true)
+        name_literals(mut lens, n, 0)
+    } else if name == "measure" {
+        measure(mut lens, v3(n, 0), v3(n, 3))
+    } else if name == "click" {
+        click(mut lens, subject, grad, reached, part_reads, arg(n, 0), arg(n, 1))
+    } else if name == "parts" {
+        parts(mut lens, subject)
+    } else if name == "literals" {
+        literals(mut lens)
+    } else if name == "set" {
+        set(mut lens, u32(arg(n, 0)), arg(n, 1))
+    } else if name == "diagnose" {
+        diagnose(mut lens, subject, v3(n, 0), arg(n, 3))
+    } else if name == "spec" {
+        spec_answer(mut lens, spec)
+    } else if name == "blueprint" {
+        // `blueprint side` (or front, top, 0 to 2), or `blueprint off`.
+        borrow r = rest.trim()
+        if r == "off" {
+            blueprint_off(mut lens)
+        } else {
+            show_blueprint(mut lens, subject, outline, blueprint::facing_named(r))
+        }
+    } else if name == "fit_blueprint" {
+        // `fit_blueprint side 512`: fits the literals named (`choose`) to the outline.
+        let f = blueprint::facing_named(word(rest, 0))
+        let res = if let Some(x) = word(rest, 1).parse_u32() { x } else { 512 }
+        fit_blueprint(mut lens, outline, f, res)
+    } else if name == "zoom" {
+        // `zoom x y z half`, or `zoom off`.
+        if rest.trim() == "off" {
+            zoom(mut lens, vec3(0.0), 0.0)
+        } else {
+            zoom(mut lens, v3(n, 0), arg(n, 3))
+        }
+    } else if name == "view" {
+        // A facing by name (`side`) or number (`0`, as the export takes it); `sheet` or `4` is
+        // the contact sheet.
+        borrow r = rest.trim()
+        var f = 5
+        for i in 0..4 {
+            if r == facing_name(SHEET[i]) {
+                f = i
+            }
+        }
+        if r == "sheet" || r == "" {
+            f = 4
+        }
+        if let Some(x) = r.parse_u32() {
+            f = x
+        }
+        if f > 4 {
+            refuse(mut lens, t, "`view` takes side, front, three-quarter, top or sheet, or 0 to 4")
+        } else {
+            show(mut lens, f)
+        }
+    } else if name == "mode" {
+        // A mode by name or number, then a part's index.
+        borrow m = word(rest, 0)
+        borrow after = after_word(rest, 0)
+        var k = MODE_NAMES.len()
+        for i in 0..MODE_NAMES.len() {
+            if m == MODE_NAMES[i] {
+                k = i
+            }
+        }
+        if let Some(x) = m.parse_u32() {
+            k = x
+        }
+        let part = if let Some(x) = after.trim().parse_u32() { x } else { 0 }
+        if k >= MODE_NAMES.len() {
+            refuse(
+                mut lens,
+                t,
+                "`mode` takes shaded, parts, tint, isolate, silhouette or colour, or 0 to 5",
+            )
+        } else {
+            set_mode(mut lens, k, part)
+        }
+    } else {
+        refuse(mut lens, t, "no such action")
+    }
+}
+
+// ---- the frame ----------------------------------------------------------------------------------
+
+/// One frame: reads input (typed commands, a click in a view), takes a diagnosis the GPU has
+/// finished, and draws the views.
+pub fn frame<S: Colours + Lipschitz>(
+    lens: mut Lens,
+    subject: fn() -> S,
+    grad: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+    grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
+    reached: fn() -> Vec<Literal>,
+    part_reads: fn(vec3, u32) -> Vec<Literal>,
+    channels: fn(vec3) -> String,
+    spec: fn() -> String,
+    outline: fn(u32) -> Vec<vec2>,
+    width: u32,
+    height: u32,
+) {
+    lens.width = width
+    lens.height = height
+    let evs = events()
+    let right = f32(width) - panel::width(width)
+    for e in evs {
+        match e {
+            Event::Text { char } => lens.line.push_char(char),
+            Event::KeyDown { key, .. } => {
+                if key == Key::Enter {
+                    let line = std::collections::replace(mut lens.line, String::new())
+                    command(
+                        mut lens,
+                        subject,
+                        grad,
+                        grad8,
+                        reached,
+                        part_reads,
+                        channels,
+                        spec,
+                        outline,
+                        line.as_str(),
+                    )
+                } else if key == Key::Backspace && !lens.line.is_empty() {
+                    let from = previous(lens.line.as_str(), lens.line.len())
+                    lens.line.truncate(from)
+                }
+            },
+            Event::PointerDown { at, button, .. } => {
+                if button == Button::Primary && at.x < right {
+                    press(mut lens, subject, at)
+                }
+            },
+            Event::PointerMove { at, .. } => pointer_moved(mut lens, subject, at),
+            Event::PointerUp { at, button, .. } => {
+                if button == Button::Primary {
+                    released(mut lens, subject, grad, reached, part_reads, at)
+                }
+            },
+            _ => {},
+        }
+    }
+    poll_diagnosis(mut lens, subject)
+    poll_describe(mut lens, subject)
+    advance_job(mut lens, subject, grad8, grad, reached)
+    advance_fit(mut lens, subject, grad8, grad)
+    poll_write(mut lens)
+    draw_views(mut lens, subject)
+    // The panel, and what it asks for: laid out again only when there's input or something new.
+    let screen = vec2(f32(width), f32(height))
+    var asks: Vec<panel::Ask> = Vec::new()
+    let fresh = evs.len() > 0 || lens.answers != lens.panel_answers || screen != lens.panel_size
+    if fresh {
+        layout_panel(mut lens, screen, evs, mut asks)
+        lens.shown = false
+    }
+    apply_asks(mut lens, asks)
+    if lens.shown {
+        return
+    }
+    // The canvas over the views' part of the screen, then the panel.
+    begin_screen_pass(clear: view::BACKGROUND)
+    let area = vec4(0.0, 0.0, screen.x - panel::width(width), screen.y)
+    match lens.canvas {
+        Some(c) => draw(
+            view::cover_area.bind(area: area, screen: screen),
+            show_canvas.bind(canvas: c),
+            vertices: 6,
+        ),
+        None => {},
+    }
+    lens.renderer.draw(screen)
+    present()
+    lens.shown = true
+}
+
+/// Lays the panel out (`panel.wrela`) and uploads its quads; what it asks goes to `asks`.
+fn layout_panel(lens: mut Lens, screen: vec2, evs: [Event], asks: mut Vec<panel::Ask>) {
+    let width = u32(screen.x)
+    lens.ui.begin(screen, evs)
+    let title = f"the lens: {lens.part_names.len()} parts, {std::lift::count()} literals"
+    panel::draw(
+        mut lens.ui,
+        screen,
+        panel::width(width),
+        title.as_str(),
+        lens.part_names,
+        mut lens.part_pick,
+        lens.picks,
+        lens.pick_labels,
+        mut lens.picked,
+        lens.log,
+        lens.line.as_str(),
+        mut asks,
+    )
+    lens.ui.end()
+    lens.renderer.upload(lens.ui.draw)
+    lens.panel_answers = lens.answers
+    lens.panel_size = screen
+}
+
+/// Does what the panel asked.
+fn apply_asks(lens: mut Lens, asks: [panel::Ask]) {
+    for a in asks {
+        match a {
+            panel::Ask::View(f) => show(mut lens, f),
+            panel::Ask::Mode(m) => {
+                let part = lens.part
+                set_mode(mut lens, m, part)
+            },
+            panel::Ask::Part(i) => {
+                let mode = lens.mode
+                lens.part = i
+                lens.dirty = true
+                if mode != Mode::Tint && mode != Mode::Isolate {
+                    set_mode(mut lens, 2, i)
+                }
+            },
+            panel::Ask::Value(i, v) => {
+                set(mut lens, i, v)
+                for k in 0..lens.picks.len() {
+                    if lens.picks[k].index == i {
+                        lens.picks[k].value = v
+                    }
+                }
+            },
+            panel::Ask::Write => write(mut lens),
+        }
+    }
+}
+
+/// The pointer went down at `at` in the views: where on the surface, for a click or a drag.
+fn press<S: Surface>(lens: mut Lens, subject: fn() -> S, at: vec2) {
+    lens.dragging = false
+    lens.press = match hit(lens, subject(), at.x, at.y) {
+        Some((v, p)) => Some(Press { at, point: p, view: v }),
+        None => None,
+    }
+}
+
+/// The pointer moved to `at`: past 4 pixels from where it went down on the surface, a person's
+/// drag begins (a held drag job), and its target follows the pointer on the plane through the
+/// point that faces the view.
+fn pointer_moved<S: Surface>(lens: mut Lens, subject: fn() -> S, at: vec2) {
+    let Some(pr) = lens.press else { return }
+    if !lens.dragging {
+        if length(at - pr.at) < 4.0 || lens.job.is_some() {
+            return
+        }
+        lens.dragging = true
+        start_drag(mut lens, subject, pr.point, None)
+    }
+    let (o, dir) = pr.view.ray(at.x, at.y)
+    let n = pr.view.back
+    let t = dot(pr.point - o, n) / dot(dir, n)
+    let target = o + dir * t
+    lens.mark(target)
+    match mut lens.job {
+        Some(j) => {
+            j.next = Some(target)
+            j.to = target
+        },
+        None => {},
+    }
+}
+
+/// The pointer was released at `at`: a drag finishes (its literals rounded, checked whole, and
+/// what moved measured: its answer comes when done; `write` writes it); a press that didn't
+/// move is a click.
+fn released<S: Surface + Lipschitz>(
+    lens: mut Lens,
+    subject: fn() -> S,
+    grad: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+    reached: fn() -> Vec<Literal>,
+    part_reads: fn(vec3, u32) -> Vec<Literal>,
+    at: vec2,
+) {
+    let Some(pr) = lens.press else { return }
+    lens.press = None
+    if lens.dragging {
+        lens.dragging = false
+        match mut lens.job {
+            Some(j) => j.held = false,
+            None => {},
+        }
+        return
+    }
+    click(mut lens, subject, grad, reached, part_reads, pr.at.x, pr.at.y)
+}
+
+/// Draws the views into the canvas if what they show has changed since they were last drawn:
+/// first the field's grid again, if a literal has changed.
+fn draw_views<S: Colours>(lens: mut Lens, subject: fn() -> S) {
+    let (width, height) = (lens.width, lens.height)
+    let now = literal_values(built: false)
+    var changed = now.len() != lens.drawn.len() || !lens.coarse_live
+    for i in 0..min(now.len(), lens.drawn.len()) {
+        changed = changed || bitcast_u32(now[i]) != bitcast_u32(lens.drawn[i])
+    }
+    let sized = match lens.canvas {
+        Some(c) => c.width() == width && c.height() == height,
+        None => false,
+    }
+    if !changed && !lens.dirty && sized {
+        return
+    }
+    let field = subject()
+    // A silhouette in place of the views.
+    if let Some(fv) = lens.mask {
+        let n = fv.res * fv.res
+        if lens.mask_rays.len() != n {
+            lens.mask_rays = buffer(n)
+            lens.mask_other = buffer(n)
+        }
+        fit::trace_minima(field, fv, mut lens.mask_rays, mut lens.mask_other)
+        if !sized {
+            lens.canvas = Some(texture(width, height))
+        }
+        match mut lens.canvas {
+            Some(c) => {
+                let pass = begin_pass(mut c, clear: view::BACKGROUND)
+                draw(cover, fit::draw_minima.bind(fv: fv, rays: lens.mask_rays), vertices: 3)
+                pass.end()
+            },
+            None => {},
+        }
+        // The views' grid is of the literals they were drawn with: sampled again when they
+        // show next, if these changed it.
+        if changed {
+            lens.coarse_live = false
+        }
+        lens.drawn = take now
+        lens.dirty = false
+        lens.shown = false
+        return
+    }
+    // A drag's steps keep the grid it began with, the surface's motion since as its slack
+    // (the drag's way so far, and a centimetre); otherwise a change samples it again.
+    let stepping = match lens.job {
+        Some(j) => j.drag.is_some() && !j.finished && lens.coarse_live,
+        None => false,
+    }
+    if stepping {
+        lens.coarse_slack = match lens.job {
+            Some(j) => length(j.to - j.from) + 0.01,
+            None => 0.0,
+        }
+    } else if changed {
+        let g = guide(lens.bounds)
+        dispatch(
+            diagnose::sample_grid.bind(field: field, grid: g, out: mut lens.coarse),
+            groups: (g.count() + 255) / 256,
+        )
+        lens.coarse_live = true
+        lens.coarse_slack = 0.0
+    }
+    let count = width * height
+    if !sized {
+        lens.canvas = Some(texture(width, height))
+        lens.rays = buffer(count)
+        lens.rays_next = buffer(count)
+        lens.corners = buffer(4 * count)
+        lens.hit_parts = buffer(count)
+        std::gpu::write(mut lens.pixel_groups, 0, [(count + 63) / 64, 1, 1])
+        let room = max(count / 16, 64)
+        lens.gathered = append_buffer(room)
+        lens.gathered_at = buffer(count)
+        lens.tail = buffer(room)
+        lens.tail_next = buffer(room)
+    }
+    let sheet = lens.sheet()
+    if lens.mode == Mode::Isolate {
+        trace_views(mut lens, Alone { field, part: lens.part }, sheet, stepping)
+    } else {
+        trace_views(mut lens, field, sheet, stepping)
+    }
+    let groups = (count + 63) / 64
+    if lens.mode == Mode::Colour {
+        dispatch(
+            find_colours.bind(
+                field: field,
+                sheet: sheet,
+                width: width,
+                count: count,
+                rays: lens.rays_next,
+                out: mut lens.hit_parts,
+            ),
+            groups: groups,
+        )
+    }
+    if lens.mode == Mode::Parts || lens.mode == Mode::Tint {
+        dispatch(
+            find_parts.bind(
+                field: field,
+                sheet: sheet,
+                width: width,
+                count: count,
+                rays: lens.rays_next,
+                out: mut lens.hit_parts,
+            ),
+            groups: groups,
+        )
+    }
+    match mut lens.canvas {
+        Some(c) => {
+            let pass = begin_pass(mut c, clear: view::BACKGROUND)
+            draw(
+                cover,
+                colour.bind(
+                    sheet: sheet,
+                    width: width,
+                    rays: lens.rays_next,
+                    corners: lens.corners,
+                    parts: lens.hit_parts,
+                    outline: lens.outline_buf,
+                ),
+                vertices: 3,
+            )
+            pass.end()
+        },
+        None => {},
+    }
+    lens.drawn = take now
+    lens.dirty = false
+    lens.shown = false
+}
+
+/// Traces the views' rays through `field` in passes (see view.wrela), with fewer passes over the
+/// rays gathered while a drag is `stepping`: each pixel's ray ends in `lens.rays_next`, and the
+/// field around each hit in `lens.corners`.
+fn trace_views<S: Surface>(lens: mut Lens, field: S, sheet: Sheet, stepping: bool) {
+    let (width, count) = (lens.width, lens.width * lens.height)
+    let groups = (count + 63) / 64
+    dispatch(
+        start_rays.bind(
+            sheet: sheet,
+            width: width,
+            count: count,
+            cells: lens.coarse,
+            out: mut lens.rays,
+        ),
+        groups: groups,
+    )
+    let (gathered, gathered_count) = (lens.gathered.items(), lens.gathered.count())
+    let every = lens.pixel_groups.span(start: 0, count: 3)
+    for _ in 0..PASSES {
+        // Each pass reads one of the two buffers and writes the other.
+        dispatch(
+            step_rays.bind(
+                field: field,
+                sheet: sheet,
+                width: width,
+                count: count,
+                tail: 0,
+                cells: lens.coarse,
+                gathered: gathered,
+                gathered_count: gathered_count,
+                rays: lens.rays,
+                out: mut lens.rays_next,
+            ),
+            groups: every,
+        )
+        swap(mut lens.rays, mut lens.rays_next)
+    }
+    // The rays still going are gathered, and go on alone.
+    let room = lens.gathered.capacity()
+    lens.gathered.clear()
+    dispatch(
+        gather_rays.bind(
+            count: count,
+            rays: lens.rays,
+            gathered: mut lens.gathered,
+            at: mut lens.gathered_at,
+        ),
+        groups: groups,
+    )
+    dispatch(
+        gathered_groups.bind(
+            gathered_count: gathered_count,
+            room: room,
+            args: mut lens.gathered_groups,
+        ),
+        groups: 1,
+    )
+    let some = lens.gathered_groups.span(start: 0, count: 3)
+    dispatch(
+        seed_gathered.bind(
+            gathered_count: gathered_count,
+            room: room,
+            gathered: gathered,
+            rays: lens.rays,
+            out: mut lens.tail,
+        ),
+        groups: some,
+    )
+    for _ in 0..if stepping { DRAG_TAIL_PASSES } else { TAIL_PASSES } {
+        dispatch(
+            step_rays.bind(
+                field: field,
+                sheet: sheet,
+                width: width,
+                count: room,
+                tail: 1,
+                cells: lens.coarse,
+                gathered: gathered,
+                gathered_count: gathered_count,
+                rays: lens.tail,
+                out: mut lens.tail_next,
+            ),
+            groups: some,
+        )
+        swap(mut lens.tail, mut lens.tail_next)
+    }
+    // All settled into the second buffer.
+    dispatch(
+        settle_rays.bind(
+            sheet: sheet,
+            width: width,
+            count: count,
+            rays: lens.rays,
+            at: lens.gathered_at,
+            tail: lens.tail,
+            room: room,
+            out: mut lens.rays_next,
+        ),
+        groups: groups,
+    )
+    if lens.mode != Mode::Silhouette {
+        dispatch(
+            sample_corners.bind(
+                field: field,
+                sheet: sheet,
+                width: width,
+                count: count,
+                rays: lens.rays_next,
+                out: mut lens.corners,
+            ),
+            groups: (4 * count + 255) / 256,
+        )
+    }
+}
+
+/// Takes a diagnosis the GPU has finished: its report is an answer.
+fn poll_diagnosis<S: Surface>(lens: mut Lens, subject: fn() -> S) {
+    let answer = match mut lens.sampling {
+        Some(s) => s.pending.poll(),
+        None => None,
+    }
+    let Some(r) = answer else { return }
+    let g = if let Some(s) = lens.sampling { s.grid } else { return }
+    lens.sampling = None
+    match r {
+        Ok(samples) => {
+            let r = report(g, samples)
+            // The part at each place the gradient is worst.
+            let field = subject()
+            var names: Vec<String> = Vec::new()
+            for i in 0..r.worst_count {
+                names.push(part_label(field.part_name(field.part_at(r.worst[i]).1), " in "))
+            }
+            let a = r.json(lens.stated, names)
+            lens.answer(a.as_str())
+        },
+        Err(_) => fail(mut lens, "diagnose", "the GPU's answer didn't come"),
+    }
+}

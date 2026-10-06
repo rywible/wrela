@@ -1,0 +1,9 @@
+// What the lens shows of this package (`wrela studio examples/wolf`): the wolf's field.
+
+use creature::{Coat, wolf}
+use engine::creature::Creature
+use std::field::{Field, Lipschitz}
+
+pub fn subject() -> Field<Coat> + Lipschitz {
+    wolf().field()
+}

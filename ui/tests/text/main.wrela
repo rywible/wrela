@@ -1,0 +1,55 @@
+// Test strings at 10 to 72 pixels per em, in both fonts, white on a dark grey, each line's top
+// at a known place (compiler/tests/tests/suite/text.rs lays the same lines out and compares).
+
+use std::gpu::{begin_screen_pass, present}
+use ui::draw::{DrawList, Renderer}
+use ui::text::{Face, Fonts}
+
+/// The lines: their font, their size, and the top of each, from the screen's top.
+pub const SIZES: [f32; 7] = [10.0, 12.0, 16.0, 24.0, 32.0, 48.0, 72.0]
+const LATIN: Text = "The quick brown fox jumps over the lazy dog: 0123456789"
+const MORE: Text = "Grüße, Æsir! ¿Qué? £5 © ÿ ñ ß Ø"
+
+pub struct Scene {
+    fonts: Fonts,
+    renderer: Renderer,
+    list: DrawList,
+}
+
+pub fn init() -> Scene {
+    let fonts = Fonts::load()
+    let renderer = Renderer::new(fonts)
+    Scene { fonts, renderer, list: DrawList::new() }
+}
+
+/// Where line `i` of a face's lines starts: x 10, and its top.
+pub fn line_top(face: u32, i: u32) -> f32 {
+    var y = 10.0 + f32(face) * 700.0
+    for k in 0..i {
+        y += SIZES[k / 2] * 1.4 + 6.0
+    }
+    y
+}
+
+pub fn frame(state: mut Scene, time: f32, width: u32, height: u32) {
+    let screen = vec2(f32(width), f32(height))
+    state.list.clear(screen)
+    for f in 0..2 {
+        let face = if f == 0 { Face::Sans } else { Face::Mono }
+        for i in 0..14 {
+            let text = if i % 2 == 0 { LATIN } else { MORE }
+            let _ = state.list.text(
+                state.fonts,
+                face,
+                text,
+                SIZES[i / 2],
+                vec2(10.0, line_top(f, i)),
+                vec4(1.0, 1.0, 1.0, 1.0),
+            )
+        }
+    }
+    state.renderer.upload(state.list)
+    begin_screen_pass(clear: vec4(0.1, 0.1, 0.12, 1.0))
+    state.renderer.draw(screen)
+    present()
+}

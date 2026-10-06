@@ -1,0 +1,331 @@
+# The parts of a replica of sculpt-standing.obj, for `wrela reference replica`: a loft per
+# part, on a straight axis inside the sculpt. Landmarks are in the creature's frame (metres,
+# +y up, facing +z, +x the wolf's left), measured on the registered sculpt by slicing it; the
+# sculpt is mirror-symmetric, so the right side's are the left's with x negated. The rump has a
+# cleft on the midline under the tail, so the torso stops before it and a buttock on each side
+# goes on, and the tail's root runs back along the top (below a crease on its crest) before it
+# turns down. A fore paw's inner and outer toes have parts of their own: from the paw's axis,
+# the clefts between the toes (up to 1.7 cm high) hide their pads. Neighbouring parts overlap at
+# each joint (each part is inside the sculpt, so overlap costs nothing), so no wedge at a bend is
+# left out of both.
+reference = "sculpt-standing.toml"
+# Stations every 1.5 cm (1 cm gained nothing measurable, and its tables were at the size where
+# building the creature overflows the CPU's 8 MiB stack); each axis runs on 2 cm past its ends,
+# and where an end is inside another part, the part sinks by up to 2 mm toward its cap there, so
+# it passes under its neighbour before it ends (where it ended proud of it, the lens drew a line).
+spacing = 0.015
+overlap = 0.02
+taper = 0.002
+
+[landmarks]
+"chest" = [0.0, 0.60, 0.29]
+"rump" = [0.0, 0.565, -0.53]
+"haunch left" = [0.05, 0.57, -0.49]
+"seat left" = [0.07, 0.57, -0.585]
+"haunch right" = [-0.05, 0.57, -0.49]
+"seat right" = [-0.07, 0.57, -0.585]
+"neck base" = [0.0, 0.64, 0.14]
+"skull" = [0.0, 0.80, 0.36]
+"occiput" = [0.0, 0.84, 0.28]
+"nose" = [0.0, 0.713, 0.588]
+"jaw" = [0.0, 0.69, 0.42]
+"sheath" = [0.0, 0.49, -0.28]
+"sheath tip" = [0.0, 0.418, -0.255]
+"chin" = [0.0, 0.676, 0.556]
+"ear left" = [0.06, 0.86, 0.385]
+"ear tip left" = [0.098, 0.952, 0.43]
+"ear right" = [-0.06, 0.86, 0.385]
+"ear tip right" = [-0.098, 0.952, 0.43]
+"tail root" = [0.0, 0.655, -0.53]
+"tail top" = [0.0, 0.62, -0.635]
+"tail bend" = [0.0, 0.48, -0.665]
+"tail tip" = [0.0, 0.20, -0.676]
+"elbow left" = [0.10, 0.52, 0.09]
+"carpus left" = [0.113, 0.15, 0.107]
+"above carpus left" = [0.113, 0.18, 0.105]
+"fore heel left" = [0.114, 0.05, 0.135]
+"fore paw left" = [0.115, 0.025, 0.105]
+"fore toes left" = [0.115, 0.025, 0.255]
+"inner toe left" = [0.074, 0.014, 0.17]
+"inner toe tip left" = [0.070, 0.010, 0.214]
+"outer toe left" = [0.148, 0.016, 0.175]
+"outer toe tip left" = [0.152, 0.014, 0.226]
+"elbow right" = [-0.10, 0.52, 0.09]
+"carpus right" = [-0.113, 0.15, 0.107]
+"above carpus right" = [-0.113, 0.18, 0.105]
+"fore heel right" = [-0.114, 0.05, 0.135]
+"fore paw right" = [-0.115, 0.025, 0.105]
+"fore toes right" = [-0.115, 0.025, 0.255]
+"inner toe right" = [-0.074, 0.014, 0.17]
+"inner toe tip right" = [-0.070, 0.010, 0.214]
+"outer toe right" = [-0.148, 0.016, 0.175]
+"outer toe tip right" = [-0.152, 0.014, 0.226]
+"hip left" = [0.076, 0.56, -0.45]
+"stifle left" = [0.083, 0.31, -0.435]
+"below stifle left" = [0.085, 0.26, -0.45]
+"above stifle left" = [0.081, 0.36, -0.425]
+"hock left" = [0.091, 0.20, -0.555]
+"below hock left" = [0.093, 0.165, -0.562]
+"above hock left" = [0.090, 0.235, -0.54]
+"hind heel left" = [0.097, 0.055, -0.53]
+"hind paw left" = [0.098, 0.045, -0.575]
+"hind toes left" = [0.098, 0.045, -0.455]
+"hip right" = [-0.076, 0.56, -0.45]
+"stifle right" = [-0.083, 0.31, -0.435]
+"below stifle right" = [-0.085, 0.26, -0.45]
+"above stifle right" = [-0.081, 0.36, -0.425]
+"hock right" = [-0.091, 0.20, -0.555]
+"below hock right" = [-0.093, 0.165, -0.562]
+"above hock right" = [-0.090, 0.235, -0.54]
+"hind heel right" = [-0.097, 0.055, -0.53]
+"hind paw right" = [-0.098, 0.045, -0.575]
+"hind toes right" = [-0.098, 0.045, -0.455]
+
+[[part]]
+name = "torso"
+from = "chest"
+to = "rump"
+angles = 64
+r_max = 0.22
+
+[[part]]
+name = "neck"
+from = "neck base"
+to = "skull"
+parent = "torso"
+angles = 64
+r_max = 0.25
+
+[[part]]
+name = "head"
+from = "occiput"
+to = "nose"
+parent = "neck"
+angles = 64
+r_max = 0.14
+
+# The chin's tip and the buttocks' backs are round: at 1.5 cm, the straight line from a section
+# to the small one where the axis leaves the sculpt cut their corners (the buttocks' by up to
+# 2 cm, leaving a slit under the tail you could see through).
+[[part]]
+name = "jaw"
+from = "jaw"
+to = "chin"
+parent = "head"
+angles = 32
+r_max = 0.05
+spacing = 0.005
+
+[[part]]
+name = "ear left"
+from = "ear left"
+to = "ear tip left"
+parent = "head"
+angles = 64
+r_max = 0.05
+
+[[part]]
+name = "ear right"
+from = "ear right"
+to = "ear tip right"
+parent = "head"
+angles = 64
+r_max = 0.05
+
+[[part]]
+name = "sheath"
+from = "sheath"
+to = "sheath tip"
+parent = "torso"
+angles = 32
+r_max = 0.04
+
+[[part]]
+name = "buttock left"
+from = "haunch left"
+to = "seat left"
+parent = "torso"
+angles = 48
+r_max = 0.12
+spacing = 0.006
+
+[[part]]
+name = "buttock right"
+from = "haunch right"
+to = "seat right"
+parent = "torso"
+angles = 48
+r_max = 0.12
+spacing = 0.006
+
+[[part]]
+name = "tail root"
+from = "tail root"
+to = "tail top"
+parent = "torso"
+angles = 32
+r_max = 0.08
+
+[[part]]
+name = "tail upper"
+from = "tail top"
+to = "tail bend"
+parent = "tail root"
+angles = 32
+r_max = 0.08
+
+[[part]]
+name = "tail"
+from = "tail bend"
+to = "tail tip"
+parent = "tail upper"
+angles = 32
+r_max = 0.08
+
+[[part]]
+name = "forearm left"
+from = "elbow left"
+to = "carpus left"
+parent = "torso"
+angles = 32
+r_max = 0.10
+
+[[part]]
+name = "pastern left"
+from = "above carpus left"
+to = "fore heel left"
+parent = "forearm left"
+angles = 32
+r_max = 0.05
+
+[[part]]
+name = "fore paw left"
+from = "fore paw left"
+to = "fore toes left"
+parent = "pastern left"
+angles = 32
+r_max = 0.06
+
+[[part]]
+name = "inner toe left"
+from = "inner toe left"
+to = "inner toe tip left"
+parent = "fore paw left"
+angles = 32
+r_max = 0.025
+spacing = 0.008
+
+[[part]]
+name = "outer toe left"
+from = "outer toe left"
+to = "outer toe tip left"
+parent = "fore paw left"
+angles = 32
+r_max = 0.025
+spacing = 0.008
+
+[[part]]
+name = "forearm right"
+from = "elbow right"
+to = "carpus right"
+parent = "torso"
+angles = 32
+r_max = 0.10
+
+[[part]]
+name = "pastern right"
+from = "above carpus right"
+to = "fore heel right"
+parent = "forearm right"
+angles = 32
+r_max = 0.05
+
+[[part]]
+name = "fore paw right"
+from = "fore paw right"
+to = "fore toes right"
+parent = "pastern right"
+angles = 32
+r_max = 0.06
+
+[[part]]
+name = "inner toe right"
+from = "inner toe right"
+to = "inner toe tip right"
+parent = "fore paw right"
+angles = 32
+r_max = 0.025
+spacing = 0.008
+
+[[part]]
+name = "outer toe right"
+from = "outer toe right"
+to = "outer toe tip right"
+parent = "fore paw right"
+angles = 32
+r_max = 0.025
+spacing = 0.008
+
+[[part]]
+name = "thigh left"
+from = "hip left"
+to = "below stifle left"
+parent = "torso"
+angles = 48
+r_max = 0.11
+
+[[part]]
+name = "gaskin left"
+from = "above stifle left"
+to = "below hock left"
+parent = "thigh left"
+angles = 32
+r_max = 0.09
+
+[[part]]
+name = "metatarsus left"
+from = "above hock left"
+to = "hind heel left"
+parent = "gaskin left"
+angles = 32
+r_max = 0.08
+
+[[part]]
+name = "hind paw left"
+from = "hind paw left"
+to = "hind toes left"
+parent = "metatarsus left"
+angles = 32
+r_max = 0.06
+
+[[part]]
+name = "thigh right"
+from = "hip right"
+to = "below stifle right"
+parent = "torso"
+angles = 48
+r_max = 0.11
+
+[[part]]
+name = "gaskin right"
+from = "above stifle right"
+to = "below hock right"
+parent = "thigh right"
+angles = 32
+r_max = 0.09
+
+[[part]]
+name = "metatarsus right"
+from = "above hock right"
+to = "hind heel right"
+parent = "gaskin right"
+angles = 32
+r_max = 0.08
+
+[[part]]
+name = "hind paw right"
+from = "hind paw right"
+to = "hind toes right"
+parent = "metatarsus right"
+angles = 32
+r_max = 0.06

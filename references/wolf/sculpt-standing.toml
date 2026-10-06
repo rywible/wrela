@@ -1,0 +1,42 @@
+# A reference mesh for authoring: where it comes from, its licence, and how it maps to a
+# creature's frame. Unlike the photos, it isn't in the public domain: it's CC BY 4.0, not MIT.
+# A creature fitted to it is an adaptation, so its source carries `attribution` below, and a
+# game that ships such a creature credits the author too.
+title = "Fantasy wolf miniature"
+author = "Drew Vaughan (3ddrew)"
+author_url = "https://www.thingiverse.com/3ddrew"
+source = "https://www.thingiverse.com/thing:680145"
+original = "https://www.thingiverse.com/download:1092583"
+original_name = "svaughan_wolfMini.OBJ"
+published = "2015-02-12"
+licence = "CC BY 4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+attribution = "\"Fantasy wolf miniature\" by Drew Vaughan (https://www.thingiverse.com/thing:680145), CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)"
+changes = "none: the file as downloaded, renamed"
+sha256 = "f25f6a3d0e0157a9f47a8dde747760b98271e320d99af18e3aa01ea89b0d6587"
+
+# What the licence rests on, checked 2026-10-05: the page's own metadata gives the licence
+# (http://creativecommons.org/licenses/by/4.0/); the uploader's profile names Drew Vaughan, a
+# games artist who sculpts in ZBrush, with a portfolio of his own characters; the file is a
+# ZBrush 4.7 export; a reverse image search of the preview (Bing) found only two Pinterest pins
+# of this listing, from 2022 and 2023.
+checked = "2026-10-05"
+
+# The mesh: 10,901 vertices and 21,782 triangles, closed (no open or non-manifold edges): one
+# body, and four stray pieces of two triangles each near the front paws, to ignore. A sculpt
+# with its coat modelled as form (ruff, thighs, a brush tail) and fine fur strokes cut into it.
+pose = "standing, all four paws down, mouth slightly open"
+
+# How the mesh maps to a creature's frame (+y up, the animal facing +z, +x its left, metres):
+# its axes are already the frame's; `origin` is the mesh point that goes to the frame's origin
+# (on the ground, midway between the nose and the tail's base), and each unit is
+# `metres_per_unit`, which puts the withers 0.8 m up.
+#
+# Measured on the mesh: the ground at y = -0.0736, the nose at z = 6.59, the tail's base at
+# z = -4.3 (where the back's line breaks to the tail), and the withers 7.35 above the ground
+# (on the back's midline above the elbow; the back rises to the head without a bump, so give
+# or take 0.15). So at 0.8 m withers the wolf is about 1.18 m from nose to tail base (1.15 to
+# 1.21), close to the side photo's 1.1 m.
+axes = "x,y,z"
+origin = [0.0, -0.0736, 1.145]
+metres_per_unit = 0.1088

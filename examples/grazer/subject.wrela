@@ -1,0 +1,9 @@
+// What the lens shows of this package (`wrela studio examples/grazer`): the grazer's field.
+
+use creature::{Coat, grazer}
+use engine::creature::Creature
+use std::field::{Field, Lipschitz}
+
+pub fn subject() -> Field<Coat> + Lipschitz {
+    grazer().field()
+}

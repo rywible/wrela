@@ -1,0 +1,925 @@
+// A drag (AC9 of #39): begin at a surface point, follow the target as it moves, and finish:
+// prune, round each literal to its source's decimals, and measure what moved. See solve.wrela
+// for the problem solved at each step.
+
+use diagnose
+use json::{List, list, obj}
+use lens::{derivatives, source_json}
+use solve::{
+    K, W, W_ANCHOR, W_PATCH, add_row, cholesky, derive, derive16, filled, residual, ring, set, snap,
+    value,
+}
+use std::collections::Vec
+use std::field::{Surface, part_families, part_image}
+use std::lift::{Literal, literal}
+use std::string::String
+use std::gpu::GpuBuffer
+use surface::{Reading, Snapping, Spot}
+
+/// The most anchors a drag takes, and the fewest it takes from each part that has them.
+const ANCHORS: u32 = 480
+const PER_PART: u32 = 8
+
+/// A drag under way.
+pub struct Drag {
+    /// Where it started, on the surface, and the part there.
+    pub from: vec3,
+    pub part: u32,
+    /// The 6 mm ring around `from`, and the surface's normal at `from` and at each of the
+    /// ring's points (the residuals' directions).
+    pub patch: [vec3; 6],
+    pub normals: [vec3; 7],
+    /// Whether the subject is mirror-symmetric (within 1 cm), so the patch's image follows.
+    pub mirrored: bool,
+    /// The literals, their values when the drag began, and now; which are still in play
+    /// (finishing prunes some, back to where they began) and which are held (rounded).
+    pub lits: Vec<u32>,
+    pub original: Vec<f32>,
+    pub now: Vec<f32>,
+    pub active: Vec<bool>,
+    pub held: Vec<bool>,
+    /// The anchors' part of the normal equations, linearized when the drag began: W_A Σ JᵀJ
+    /// over their residuals' derivatives, k × k row-major; and how many there were.
+    pub anchored: Vec<f32>,
+    pub anchors: u32,
+    /// Every other part's surface points that the dragged part has no share in (outside its
+    /// blends), with their distances and gradients' lengths when the drag began: locality is
+    /// measured at them. Where a part blends into another, the blend is both's, and moves with
+    /// either.
+    pub others: Vec<Spot>,
+    pub others_on_gpu: GpuBuffer<vec4>,
+    /// The other parts' points refinements found moving (`refine`): anchors from then on, and
+    /// what the literals are chosen to keep still.
+    pub movers: Vec<Spot>,
+    /// The target so far.
+    pub to: vec3,
+}
+
+/// `p` mirrored in x = 0.
+fn image(p: vec3) -> vec3 {
+    vec3(-p.x, p.y, p.z)
+}
+
+/// A point whose residual the drag drives to 0, the direction of its residual, and its weight.
+struct Point: Copy {
+    p: vec3,
+    n: vec3,
+    w: f32,
+}
+
+/// The drag's points toward `to`: the target and the moved patch (weights 1 and `W_PATCH`),
+/// and with `images`, their mirror images if the subject is symmetric.
+fn drag_points(d: Drag, to: vec3, images: bool) -> Vec<Point> {
+    let delta = to - d.from
+    var out: Vec<Point> = Vec::new()
+    out.push(Point { p: to, n: d.normals[0], w: 1.0 })
+    for i in 0..6 {
+        out.push(Point { p: d.patch[i] + delta, n: d.normals[i + 1], w: W_PATCH })
+    }
+    if images && d.mirrored {
+        out.push(Point { p: image(to), n: image(d.normals[0]), w: 1.0 })
+        for i in 0..6 {
+            out.push(Point { p: image(d.patch[i] + delta), n: image(d.normals[i + 1]), w: W_PATCH })
+        }
+    }
+    out
+}
+
+/// Starts a drag at `from` (snapped to the surface), toward `to`: chooses the literals (or
+/// takes `named`), and linearizes the anchors. `spots` are the surface's points.
+pub fn begin<S: Surface>(
+    subject: fn() -> S,
+    grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
+    grad16: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+    reached: fn() -> Vec<Literal>,
+    spots: [Spot],
+    named: [u32],
+    from: vec3,
+    to: vec3,
+) -> Drag {
+    let f = subject()
+    let p0 = snap(f, from)
+    let part = f.part_at(p0).1
+    // Every other part's points the dragged part (and its image) has no share in (0.1% at
+    // most), and whether the subject is symmetric (on every 64th point).
+    let family = part_families(f)
+    var others: Vec<Spot> = Vec::new()
+    var points: Vec<vec3> = Vec::new()
+    var asymmetry = 0.0
+    for i in 0..spots.len() {
+        let s = spots[i]
+        if i % 64 == 0 {
+            asymmetry = max(asymmetry, abs(f.distance(image(s.p))))
+        }
+        if s.part < family.len() && family[s.part] != family[part] && s.share <= 1.0e-3 {
+            others.push(s)
+            points.push(s.p)
+        }
+    }
+    let patch = ring(f, p0, r: 0.006)
+    var normals = [normalize(f.gradient(p0)); 7]
+    for i in 0..6 {
+        normals[i + 1] = normalize(f.gradient(patch[i]))
+    }
+    var d = Drag {
+        from: p0,
+        part,
+        patch,
+        normals,
+        mirrored: asymmetry < 0.01,
+        lits: Vec::new(),
+        original: Vec::new(),
+        now: Vec::new(),
+        active: Vec::new(),
+        held: Vec::new(),
+        anchored: Vec::new(),
+        anchors: 0,
+        others: take others,
+        others_on_gpu: surface::upload(points),
+        movers: Vec::new(),
+        to,
+    }
+    let lits = if named.len() > 0 { Vec::from(named) } else {
+        choose(d, subject, grad16, reached, to)
+    }
+    take_literals(mut d, lits)
+    anchor(mut d, subject, grad8, grad16)
+    d
+}
+
+/// Makes `lits` the drag's literals, each where it is now, free.
+fn take_literals(d: mut Drag, lits: [u32]) {
+    d.lits = Vec::new()
+    d.original = Vec::new()
+    d.now = Vec::new()
+    d.active = Vec::new()
+    d.held = Vec::new()
+    for i in lits {
+        d.lits.push(i)
+        d.original.push(value(i))
+        d.now.push(value(i))
+        d.active.push(true)
+        d.held.push(false)
+    }
+}
+
+/// Chooses the drag's literals: the `K` with the largest steepest-descent share of the move
+/// toward `to` (|Σ w ∂r/∂θ r| over the target's and the patch's rows), among those that move
+/// the surface at the start (a derivative there at least 10⁻³ of the largest): a literal that
+/// only scales the field has none there. Each share is divided by 1 plus how much the literal
+/// moves the movers (`Drag::movers`, at the anchors' weight) for how much it moves the drag's
+/// points: a literal the drag shares with a part it shouldn't move (the wolf's toes, shared by
+/// its four paws) falls behind those it doesn't.
+fn choose<S: Surface>(
+    d: Drag,
+    subject: fn() -> S,
+    grad16: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+    reached: fn() -> Vec<Literal>,
+    to: vec3,
+) -> Vec<u32> {
+    let f = subject()
+    let at_start = derivatives(grad16, reached(), d.from)
+    var top = 0.0
+    for k in 0..at_start.len() {
+        top = max(top, abs(at_start[k].1))
+    }
+    // Those that move the surface at the start: only they are scored.
+    var lits: Vec<Literal> = Vec::new()
+    for a in at_start {
+        if abs(a.1) >= 1.0e-3 * top {
+            lits.push(Literal { index: a.0 })
+        }
+    }
+    let n = lits.len()
+    var score: Vec<f32> = filled(n, 0.0)
+    var moving: Vec<f32> = filled(n, 0.0)
+    var held: Vec<f32> = filled(n, 0.0)
+    for pt in drag_points(d, to, images: false) {
+        let (dist, g) = f.sample(pt.p)
+        let s = max(length(g), 1.0e-3)
+        let (_, all) = derive16(grad16, pt.p, lits)
+        for k in 0..n {
+            let j = all[k] / s
+            score[k] += pt.w * j * (dist / s)
+            moving[k] += W * pt.w * j * j
+        }
+    }
+    for m in d.movers {
+        let (_, all) = derive16(grad16, m.p, lits)
+        let g = max(m.g, 1.0e-3)
+        for k in 0..n {
+            let j = all[k] / g
+            held[k] += W_ANCHOR * j * j
+        }
+    }
+    for k in 0..n {
+        score[k] = score[k] / (1.0 + held[k] / max(moving[k], 1.0e-12))
+    }
+    var out: Vec<u32> = Vec::new()
+    for _ in 0..K {
+        var best = 0.0
+        var at = 0xffffffff
+        for k in 0..n {
+            if abs(score[k]) > best {
+                best = abs(score[k])
+                at = k
+            }
+        }
+        if at == 0xffffffff {
+            break
+        }
+        out.push(lits[at].index)
+        score[at] = 0.0
+    }
+    out
+}
+
+/// The anchors: up to `ANCHORS` of the other parts' points, at least `PER_PART` from each part
+/// that has them (so small parts count), the rest in proportion; those the literals move
+/// (a residual derivative over 10⁻⁴) go into the normal equations, linearized now.
+fn anchor<S: Surface>(
+    d: mut Drag,
+    subject: fn() -> S,
+    grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
+    grad16: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+) {
+    let k = d.lits.len()
+    d.anchored = filled(k * k, 0.0)
+    if k == 0 {
+        return
+    }
+    // Each part's points, and how many to take of them.
+    let parts = subject().parts()
+    var count: Vec<u32> = filled(parts, 0)
+    for s in d.others {
+        if s.part < parts {
+            count[s.part] += 1
+        }
+    }
+    let total = d.others.len()
+    var take_of: Vec<u32> = Vec::new()
+    for c in count {
+        let share = if total > 0 { (c * ANCHORS + total - 1) / total } else { 0 }
+        take_of.push(min(c, max(PER_PART, share)))
+    }
+    var seen: Vec<u32> = filled(parts, 0)
+    var n = 0
+    for s in d.others {
+        if s.part >= parts {
+            continue
+        }
+        let c = count[s.part]
+        let t = take_of[s.part]
+        let i = seen[s.part]
+        seen[s.part] += 1
+        // Every (c / t)th of the part's points.
+        if t == 0 || (i * t) / c == ((i + 1) * t) / c {
+            continue
+        }
+        if hold(mut d, grad8, grad16, s) {
+            n += 1
+        }
+    }
+    d.anchors = n
+}
+
+/// Makes `s` an anchor if the literals move it (a residual derivative over 10⁻⁴), linearized
+/// at the literals' values now: whether it did.
+fn hold(
+    d: mut Drag,
+    grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
+    grad16: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+    s: Spot,
+) -> bool {
+    let k = d.lits.len()
+    let (_, j) = derive(grad8, grad16, s.p, d.lits)
+    let g = max(s.g, 1.0e-3)
+    var moves = false
+    for a in 0..k {
+        moves = moves || abs(j[a] / g) > 1.0e-4
+    }
+    if !moves {
+        return false
+    }
+    for a in 0..k {
+        for b in 0..k {
+            d.anchored[a * k + b] += W_ANCHOR * (j[a] / g) * (j[b] / g)
+        }
+    }
+    true
+}
+
+/// How many of the points that moved most a refinement makes anchors, how many refinements a
+/// drag takes at most, and the motion of another part's point that calls for one (m).
+const MOVERS: u32 = 32
+const ROUNDS: u32 = 3
+const REFINE: f32 = 0.001
+
+/// Solves the drag again from where it began, with the `MOVERS` other parts' points that moved
+/// most (by `now`, their distances from the GPU) made anchors: the anchors a drag starts with
+/// are a sample, and a literal can move a part none of them is on (the wolf's paws share their
+/// toes' literals). Then finishes it again.
+fn refine<S: Surface>(
+    d: mut Drag,
+    subject: fn() -> S,
+    grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
+    grad16: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+    reached: fn() -> Vec<Literal>,
+    named: bool,
+    now: [f32],
+) {
+    // The points that moved most, largest first.
+    var top: Vec<(f32, u32)> = Vec::new()
+    for i in 0..min(d.others.len(), now.len()) {
+        let s = d.others[i]
+        let m = abs(now[i] - s.d) / max(s.g, 1.0e-3)
+        if top.len() < MOVERS || m > top[top.len() - 1].0 {
+            var at = top.len()
+            while at > 0 && top[at - 1].0 < m {
+                at -= 1
+            }
+            top.insert(at, (m, i))
+            if top.len() > MOVERS {
+                top.pop()
+            }
+        }
+    }
+    for t in top {
+        let s = d.others[t.1]
+        d.movers.push(s)
+    }
+    // Back to where the drag began; the literals chosen again (unless named), and the anchors
+    // linearized there, the movers among them.
+    reset(mut d)
+    let to = d.to
+    if !named {
+        let lits = choose(d, subject, grad16, reached, to)
+        take_literals(mut d, lits)
+    }
+    anchor(mut d, subject, grad8, grad16)
+    for i in 0..d.movers.len() {
+        let s = d.movers[i]
+        if hold(mut d, grad8, grad16, s) {
+            d.anchors += 1
+        }
+    }
+    update(mut d, grad8, grad16, to, iterations: 8)
+    finish(mut d, grad8, grad16)
+}
+
+/// Whether literal `i` of the drag may move.
+fn free(d: Drag, i: u32) -> bool {
+    d.active[i] && !d.held[i]
+}
+
+/// One damped Gauss–Newton step toward `to`: the change of each literal (0 for those that
+/// may not move).
+fn step(
+    d: Drag,
+    grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
+    grad16: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+    to: vec3,
+) -> Vec<f32> {
+    let k = d.lits.len()
+    var a: Vec<f32> = filled(k * k, 0.0)
+    var b: Vec<f32> = filled(k, 0.0)
+    for pt in drag_points(d, to, images: true) {
+        let (r, j) = residual(grad8, grad16, pt.p, pt.n, d.lits)
+        add_row(mut a, mut b, k, j, r, W * pt.w)
+    }
+    // The anchors, linear in the change since the drag began; and the damping.
+    for i in 0..k {
+        for m in 0..k {
+            let g = d.anchored[i * k + m]
+            a[i * k + m] += g
+            b[i] -= g * (d.now[m] - d.original[m])
+        }
+        let damping = solve::damping(d.original[i])
+        a[i * k + i] += damping
+        b[i] -= damping * (d.now[i] - d.original[i])
+    }
+    // A literal that may not move: its row and column are the identity's.
+    for i in 0..k {
+        if !free(d, i) {
+            for m in 0..k {
+                a[i * k + m] = 0.0
+                a[m * k + i] = 0.0
+            }
+            a[i * k + i] = 1.0
+            b[i] = 0.0
+        }
+    }
+    cholesky(a, b, k)
+}
+
+/// Moves the target to `to`, and takes `iterations` steps toward it from where the drag is.
+pub fn update(
+    d: mut Drag,
+    grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
+    grad16: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+    to: vec3,
+    iterations: u32,
+) {
+    d.to = to
+    for _ in 0..iterations {
+        let delta = step(d, grad8, grad16, to)
+        for i in 0..d.lits.len() {
+            if free(d, i) {
+                d.now[i] += delta[i]
+                set(d.lits[i], d.now[i])
+            }
+        }
+    }
+}
+
+/// How many decimals literal `i`'s text has (0 for an integer; its mantissa's, before an
+/// exponent; a unit suffix's number's).
+fn decimals(i: u32) -> u32 {
+    let Some(l) = literal(i) else { return 0 }
+    let s = l.source()
+    let text = std::lift::file_text(s.file)
+    var n = 0
+    var after = false
+    for b in s.start..s.end {
+        let c = text.byte(b)
+        if c == 46 {
+            after = true
+        } else if after && c >= 48 && c <= 57 {
+            n += 1
+        } else if after {
+            break
+        }
+    }
+    n
+}
+
+/// `v` rounded to the decimals of literal `i`'s text.
+pub fn to_decimals(i: u32, v: f32) -> f32 {
+    rounded(v, decimals(i))
+}
+
+/// `v` rounded to `n` decimals (0, not -0, when it rounds to zero: the source can't write -0).
+fn rounded(v: f32, n: u32) -> f32 {
+    let k = pow(10.0, f32(n))
+    let r = round(v * k) / k
+    if r == 0.0 { 0.0 } else { r }
+}
+
+/// Finishes the drag: a few more steps; prunes literals carrying under 5% of the target's move
+/// (back to where they began) and solves again; rounds each changed literal to its source's
+/// decimals, largest change first, solving the rest again after each (the last gets as many
+/// more decimals as keep its rounding under 5% of its change).
+pub fn finish(
+    d: mut Drag,
+    grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
+    grad16: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+) {
+    let to = d.to
+    let k = d.lits.len()
+    update(mut d, grad8, grad16, to, iterations: 4)
+    let (_, j) = residual(grad8, grad16, to, d.normals[0], d.lits)
+    var total = 0.0
+    for i in 0..k {
+        total += abs(j[i] * (d.now[i] - d.original[i]))
+    }
+    for i in 0..k {
+        if abs(j[i] * (d.now[i] - d.original[i])) < 0.05 * total || d.now[i] == d.original[i] {
+            d.active[i] = false
+            d.now[i] = d.original[i]
+            set(d.lits[i], d.original[i])
+        }
+    }
+    update(mut d, grad8, grad16, to, iterations: 4)
+    var left = 0
+    for i in 0..k {
+        if d.active[i] {
+            left += 1
+        }
+    }
+    while left > 0 {
+        var big = 0
+        var most = -1.0
+        for i in 0..k {
+            let c = abs(d.now[i] - d.original[i])
+            if free(d, i) && c > most {
+                most = c
+                big = i
+            }
+        }
+        var n = decimals(d.lits[big])
+        var v = rounded(d.now[big], n)
+        left -= 1
+        if left == 0 {
+            while abs(v - d.now[big]) > 0.05 * most && n < 7 {
+                n += 1
+                v = rounded(d.now[big], n)
+            }
+        }
+        d.now[big] = v
+        set(d.lits[big], v)
+        d.held[big] = true
+        if left > 0 {
+            update(mut d, grad8, grad16, to, iterations: 1)
+        }
+    }
+}
+
+/// What a finished drag did.
+pub struct Done {
+    /// How far the target is from the new surface (its distance over the gradient's length),
+    /// after rounding (m).
+    pub error: f32,
+    /// How far the other parts' points moved: their RMS and the most (m).
+    pub rms: f32,
+    pub most: f32,
+    /// The literals changed: index, value before, value after.
+    pub changed: Vec<(u32, f32, f32)>,
+    /// The literals the drag could change, how many points of other parts locality was
+    /// measured at, and how many anchors held them.
+    pub chosen: u32,
+    pub samples: u32,
+    pub anchors: u32,
+}
+
+/// What the drag did, where it is: the target's distance from the surface, the other parts'
+/// motion (each point's change of distance, `now` from the GPU, over its gradient's length),
+/// and the literals changed.
+fn measure<S: Surface>(d: Drag, subject: fn() -> S, now: [f32]) -> Done {
+    let f = subject()
+    var sum = 0.0
+    var most = 0.0
+    for i in 0..min(d.others.len(), now.len()) {
+        let s = d.others[i]
+        let m = abs(now[i] - s.d) / max(s.g, 1.0e-3)
+        sum += m * m
+        most = max(most, m)
+    }
+    var changed: Vec<(u32, f32, f32)> = Vec::new()
+    for i in 0..d.lits.len() {
+        let now = value(d.lits[i])
+        if now != d.original[i] {
+            changed.push((d.lits[i], d.original[i], now))
+        }
+    }
+    let (dt, gt) = f.sample(d.to)
+    Done {
+        error: abs(dt) / max(length(gt), 1.0e-3),
+        rms: if d.others.len() > 0 { sqrt(sum / f32(d.others.len())) } else { 0.0 },
+        most,
+        changed,
+        chosen: d.lits.len(),
+        samples: d.others.len(),
+        anchors: d.anchors,
+    }
+}
+
+/// The answer of job `j`'s drag: what it did (`done`), whether it stopped short of its target
+/// because going on would split the subject (and how much of the way it went: `reached`, its
+/// error measured at that point), how many steps it took, how many times it was refined, and
+/// the pieces.
+pub fn answer(done: Done, j: Job) -> String {
+    var lits = list()
+    for c in done.changed {
+        let (i, before, after) = c
+        let src = source_json(i, None)
+        let l = obj()
+            .int("literal", i)
+            .num("before", before)
+            .num("after", after)
+            .raw("source", src.as_str())
+            .done()
+        lits.add(l.as_str())
+    }
+    let lits = take lits.done()
+    obj()
+        .text("action", "move")
+        .vec("from", j.from)
+        .vec("to", j.to)
+        .num("error_mm", 1000.0 * done.error)
+        .num("others_rms_mm", 1000.0 * done.rms)
+        .num("others_most_mm", 1000.0 * done.most)
+        .int("changed", done.changed.len())
+        .int("chosen", done.chosen)
+        .int("samples", done.samples)
+        .int("anchors", done.anchors)
+        .flag("stopped", j.stopped)
+        .num("reached", j.reached)
+        .int("steps", j.steps)
+        .int("refined", j.rounds)
+        .int("pieces", j.pieces)
+        .raw("literals", lits.as_str())
+        .done()
+}
+
+// ---- a drag across frames -----------------------------------------------------------------------
+
+/// The guard's grid: `GUARD`³ cells around the subject, finer than the diagnosis's 96³, where a
+/// part thinner than a cell (the grazer's horn tips at 96³) would come and go as a piece.
+pub const GUARD: u32 = 192
+
+/// How many times a drag that would split the subject halves its way back along its path to
+/// find the last whole point.
+const PROBES: u32 = 3
+
+/// A drag that runs across frames. The GPU samples the subject on the guard's grid: its pieces,
+/// and the cells near its surface, whose points it then moves onto the surface (by part, with
+/// the dragged part's share); then the drag begins, and takes a step a frame. `path` holds the
+/// targets still to go (an agent's move); a person's drag gets its targets from the pointer
+/// until it's released. Finished, the rounded values are counted whole on the guard's grid: if
+/// they would split the subject, the drag halves its way back along its path (`PROBES` times)
+/// to the last whole point it finds, finishes there, and says it stopped. Then the GPU measures
+/// how far the other parts' points moved; if any moved more than `REFINE`, the drag is refined
+/// (`refine`) and checked again.
+pub struct Job {
+    pub drag: Option<Drag>,
+    /// Where it starts, its first target, and the literals named for it (none: the drag
+    /// chooses).
+    pub from: vec3,
+    pub to: vec3,
+    pub named: Vec<u32>,
+    pub path: Vec<vec3>,
+    pub grid: diagnose::Grid,
+    pub check: Option<diagnose::Sampling>,
+    pub snapping: Option<Snapping>,
+    /// The other parts' points' distances at the end, on their way back from the GPU.
+    pub measuring: Option<Reading<f32>>,
+    /// The dragged part and its image, for their shares.
+    pub part: u32,
+    pub twin: u32,
+    /// The pieces when the drag began (0 until counted).
+    pub pieces: u32,
+    /// Whether it stopped short of its target, because going on would split the subject, and how
+    /// much of the way it went.
+    pub stopped: bool,
+    pub reached: f32,
+    /// A person's drag: it waits for the pointer's release.
+    pub held: bool,
+    /// The target the pointer has moved to since the last step, for a person's drag.
+    pub next: Option<vec3>,
+    pub steps: u32,
+    /// Whether the drag has finished (`finish`): checks from then on are the rounded values'.
+    pub finished: bool,
+    /// How many times it has been refined (`refine`).
+    pub rounds: u32,
+    /// Halving back along its path: the fractions of the way known whole and known split (the
+    /// one being checked is halfway between), and how many have been checked.
+    pub probing: bool,
+    pub whole_at: f32,
+    pub split_at: f32,
+    pub probes: u32,
+}
+
+/// A job dragging `from` (on the surface) to `to` through `path` (none: a person's drag), with
+/// the literals `named` (none: it chooses), guarded on `grid`.
+pub fn job<S: Surface>(
+    subject: fn() -> S,
+    from: vec3,
+    to: vec3,
+    named: take Vec<u32>,
+    path: take Vec<vec3>,
+    grid: diagnose::Grid,
+    held: bool,
+) -> Job {
+    let part = subject().part_at(from).1
+    Job {
+        drag: None,
+        from,
+        to,
+        named: take named,
+        path: take path,
+        grid,
+        check: Some(diagnose::start(subject(), grid)),
+        snapping: None,
+        measuring: None,
+        part,
+        twin: part_image(subject(), part),
+        pieces: 0,
+        stopped: false,
+        reached: 1.0,
+        held,
+        next: None,
+        steps: 0,
+        finished: false,
+        rounds: 0,
+        probing: false,
+        whole_at: 0.0,
+        split_at: 1.0,
+        probes: 0,
+    }
+}
+
+/// What a frame did to a job: it goes on, or it's finished (with its answer).
+pub enum Progress {
+    Going,
+    Finished(Done),
+}
+
+/// Puts each literal back where the drag began, free.
+fn reset(d: mut Drag) {
+    for i in 0..d.lits.len() {
+        d.now[i] = d.original[i]
+        set(d.lits[i], d.original[i])
+        d.active[i] = true
+        d.held[i] = false
+    }
+}
+
+/// The drag solved toward `t` of the way to its target, from where it began (unrounded).
+fn solve_part_way(
+    d: mut Drag,
+    grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
+    grad16: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+    to: vec3,
+    t: f32,
+) {
+    reset(mut d)
+    let target = mix(d.from, to, vec3(t))
+    update(mut d, grad8, grad16, target, iterations: 8)
+}
+
+/// One frame of a job: takes what the GPU has answered, and takes the next step.
+pub fn advance<S: Surface>(
+    j: mut Job,
+    subject: fn() -> S,
+    grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
+    grad16: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+    reached: fn() -> Vec<Literal>,
+) -> Progress {
+    // The end's distances: the answer, or a refinement.
+    let measured = match mut j.measuring {
+        Some(r) => surface::poll_distances(mut r),
+        None => None,
+    }
+    if let Some(now) = measured {
+        j.measuring = None
+        let done = match j.drag {
+            Some(d) => measure(d, subject, now),
+            None => measure_nothing(),
+        }
+        if done.most <= REFINE || j.rounds >= ROUNDS || j.stopped {
+            return Progress::Finished(done)
+        }
+        // Another part moved too much: refine, and check it whole again.
+        let named = j.named.len() > 0
+        match mut j.drag {
+            Some(d) => refine(mut d, subject, grad8, grad16, reached, named, now),
+            None => {},
+        }
+        j.rounds += 1
+        j.check = Some(diagnose::start(subject(), j.grid))
+        return Progress::Going
+    }
+    if j.measuring.is_some() {
+        return Progress::Going
+    }
+    // The surface's points: the drag begins.
+    let spots = match mut j.snapping {
+        Some(s) => surface::poll(mut s),
+        None => None,
+    }
+    if let Some(points) = spots {
+        j.snapping = None
+        let d = begin(subject, grad8, grad16, reached, points, j.named, j.from, j.to)
+        j.drag = Some(take d)
+    }
+    // A count of the pieces.
+    let answer = match mut j.check {
+        Some(s) => s.pending.poll(),
+        None => None,
+    }
+    if answer.is_some() {
+        j.check = None
+    }
+    match take answer {
+        Some(Ok(samples)) => {
+            let pieces = diagnose::pieces(j.grid, samples)
+            if j.drag.is_none() {
+                // The start: the pieces, and the surface's points to find.
+                j.pieces = pieces
+                let near = surface::near(j.grid, samples)
+                j.snapping = Some(surface::start(subject(), near, j.part, j.twin))
+                return Progress::Going
+            }
+            if j.probing {
+                // A point part way back along the path: whole or not.
+                let probe = 0.5 * (j.whole_at + j.split_at)
+                if pieces == j.pieces {
+                    j.whole_at = probe
+                } else {
+                    j.split_at = probe
+                }
+                j.probes += 1
+                let to = j.to
+                if j.probes < PROBES {
+                    let t = 0.5 * (j.whole_at + j.split_at)
+                    match mut j.drag {
+                        Some(d) => solve_part_way(mut d, grad8, grad16, to, t),
+                        None => {},
+                    }
+                } else {
+                    // The last whole point found: finish there, and check it.
+                    j.probing = false
+                    let t = j.whole_at
+                    j.reached = t
+                    match mut j.drag {
+                        Some(d) => {
+                            if t > 0.0 {
+                                solve_part_way(mut d, grad8, grad16, to, t)
+                                finish(mut d, grad8, grad16)
+                            } else {
+                                reset(mut d)
+                            }
+                        },
+                        None => {},
+                    }
+                }
+                j.check = Some(diagnose::start(subject(), j.grid))
+                return Progress::Going
+            }
+            if pieces != j.pieces {
+                if j.stopped || j.rounds > 0 {
+                    // The point it stopped at (or a refinement) splits it after all: back to
+                    // where it began.
+                    match mut j.drag {
+                        Some(d) => reset(mut d),
+                        None => {},
+                    }
+                    j.stopped = true
+                    j.reached = 0.0
+                } else {
+                    // It would split the subject: halve back along the path.
+                    j.stopped = true
+                    j.probing = true
+                    j.whole_at = 0.0
+                    j.split_at = 1.0
+                    j.probes = 0
+                    let to = j.to
+                    match mut j.drag {
+                        Some(d) => solve_part_way(mut d, grad8, grad16, to, 0.5),
+                        None => {},
+                    }
+                    j.check = Some(diagnose::start(subject(), j.grid))
+                    return Progress::Going
+                }
+            }
+        },
+        Some(Err(_)) => {
+            j.stopped = true
+        },
+        None => {},
+    }
+    if j.check.is_some() || j.snapping.is_some() {
+        return Progress::Going
+    }
+    if j.drag.is_none() {
+        // The GPU failed before the drag began.
+        return Progress::Finished(measure_nothing())
+    }
+    if !j.finished {
+        let target = if j.path.len() > 0 {
+            Some(j.path.remove(0))
+        } else {
+            std::collections::replace(mut j.next, None)
+        }
+        if let Some(t) = target {
+            match mut j.drag {
+                Some(d) => update(mut d, grad8, grad16, t, iterations: 1),
+                None => {},
+            }
+            j.steps += 1
+            return Progress::Going
+        }
+        if j.held {
+            return Progress::Going
+        }
+        // Released: finish, and count the rounded values' pieces.
+        match mut j.drag {
+            Some(d) => finish(mut d, grad8, grad16),
+            None => {},
+        }
+        j.finished = true
+        j.check = Some(diagnose::start(subject(), j.grid))
+        return Progress::Going
+    }
+    // The end: the other parts' points' distances, from the GPU.
+    match j.drag {
+        Some(d) => j.measuring = Some(
+            surface::distances(subject(), d.others_on_gpu, d.others.len()),
+        ),
+        None => {},
+    }
+    Progress::Going
+}
+
+/// A drag that never began.
+fn measure_nothing() -> Done {
+    Done {
+        error: 0.0,
+        rms: 0.0,
+        most: 0.0,
+        changed: Vec::new(),
+        chosen: 0,
+        samples: 0,
+        anchors: 0,
+    }
+}

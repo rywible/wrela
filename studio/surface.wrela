@@ -1,0 +1,275 @@
+// Points on the subject's surface, for a drag's anchors and its locality (AC9 of #39): points
+// in the cells of a grid the surface may pass through, each moved onto the surface on the GPU,
+// with the part there and the dragged part's share in the surface there. On the drag's guard's
+// grid (192³: a centimetre on the wolf), a part a cell wide (a toe) gets points too.
+
+use diagnose::Grid
+use std::collections::Vec
+use std::field::Surface
+use std::gpu::{GlobalId, GpuBuffer, Slots, buffer, dispatch, read, write}
+use std::io::Pending
+
+/// A point on the surface: the part there (as `Surface::part_at` gives it), the distance and
+/// the gradient's length there, and the most share the dragged part or its image has there
+/// (`std::field::part_share`).
+pub struct Spot: Copy {
+    pub p: vec3,
+    pub part: u32,
+    pub d: f32,
+    pub g: f32,
+    pub share: f32,
+}
+
+/// The gradient's step for differences (m).
+const H: f32 = 0.0005
+
+/// How far a part is raised to find its share (m).
+const RAISE: f32 = 0.001
+
+/// The field's gradient at `p`, by central differences.
+fn differences<S: Surface>(field: S, p: vec3) -> vec3 {
+    var g = vec3(0.0)
+    for k in 0..3 {
+        let u = vec3(if k == 0 { 1.0 } else { 0.0 }, if k == 1 { 1.0 } else { 0.0 }, if k == 2 {
+            1.0
+        } else { 0.0 })
+        g += u * ((field.distance(p + u * H) - field.distance(p - u * H)) / (2.0 * H))
+    }
+    g
+}
+
+/// Moves each of the first `count` points onto the surface (three Newton steps), and writes
+/// (p, 0) to `at` (−1 for w if it didn't get within 1 mm) and (d, |∇d|, 0, 0) to `about`.
+/// Other kernels find the parts and the shares: one kernel holding them all would be over the
+/// size a pipeline may have (AC12).
+@compute(64)
+pub fn snap_points<S: Surface>(
+    field: S,
+    points: [vec4],
+    count: u32,
+    at: mut Slots<vec4>,
+    about: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= count {
+        return
+    }
+    var q = points[id.x].xyz
+    var d = 0.0
+    var g = vec3(0.0)
+    for s in 0..4 {
+        d = field.distance(q)
+        g = differences(field, q)
+        let gg = dot(g, g)
+        if s < 3 && gg > 0.0 {
+            q -= g * (d / gg)
+        }
+    }
+    at[id] = vec4(q, if abs(d) < 0.001 { 0.0 } else { -1.0 })
+    about[id] = vec4(d, length(g), 0.0, 0.0)
+}
+
+/// The part at each point `snap_points` moved onto the surface (w: the part; −1 stays −1).
+@compute(64)
+pub fn part_of_points<S: Surface>(
+    field: S,
+    snapped: [vec4],
+    count: u32,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= count {
+        return
+    }
+    let a = snapped[id.x]
+    out[id] = if a.w < 0.0 { a } else { vec4(a.xyz, f32(field.part_at(a.xyz).1)) }
+}
+
+/// The distance at each point with part `part` raised by `RAISE` (`Surface::part_offset`).
+@compute(64)
+pub fn raised_points<S: Surface>(
+    field: S,
+    points: [vec4],
+    count: u32,
+    part: u32,
+    out: mut Slots<f32>,
+    id: GlobalId,
+) {
+    if id.x >= count {
+        return
+    }
+    out[id] = field.part_offset(points[id.x].xyz, part, RAISE)
+}
+
+/// The distance at each point.
+@compute(64)
+pub fn distance_points<S: Surface>(
+    field: S,
+    points: [vec4],
+    count: u32,
+    out: mut Slots<f32>,
+    id: GlobalId,
+) {
+    if id.x >= count {
+        return
+    }
+    out[id] = field.distance(points[id.x].xyz)
+}
+
+/// A buffer being read back, and what has come of it.
+pub struct Reading<T> {
+    pub buffer: GpuBuffer<T>,
+    pub pending: Pending<T>,
+    pub got: Option<Vec<T>>,
+}
+
+/// Starts reading `count` values of `buffer` back.
+pub fn reading<T: GpuData + Plain>(buffer: take GpuBuffer<T>, count: u32) -> Reading<T> {
+    let pending = read(buffer.span(start: 0, count: count))
+    Reading { buffer: take buffer, pending, got: None }
+}
+
+/// Whether `r` has come back (nothing, if the GPU failed).
+pub fn arrived<T: Plain>(r: mut Reading<T>) -> bool {
+    if r.got.is_none() {
+        match r.pending.poll() {
+            Some(Ok(v)) => r.got = Some(take v),
+            Some(Err(_)) => r.got = Some(Vec::new()),
+            None => {},
+        }
+    }
+    r.got.is_some()
+}
+
+/// What came back of `r` (nothing if it hasn't).
+pub fn got<T>(r: mut Reading<T>) -> Vec<T> {
+    if let Some(v) = std::collections::replace(mut r.got, None) { take v } else { Vec::new() }
+}
+
+/// Points being moved onto the surface on the GPU: where they went, their distances and
+/// gradients, and the distances with the dragged part and its image raised.
+pub struct Snapping {
+    pub count: u32,
+    pub points: GpuBuffer<vec4>,
+    pub snapped: GpuBuffer<vec4>,
+    pub at: Reading<vec4>,
+    pub about: Reading<vec4>,
+    pub raised: Reading<f32>,
+    pub raised_twin: Reading<f32>,
+}
+
+/// The centre of each cell of `grid` the surface may pass through: those whose centre is
+/// within 1.1 cells of it, as a field whose gradient is at most 1.25 bounds it from its distance
+/// there. A part smaller than a cell gets points too, where a test of the centres' signs would
+/// miss it.
+pub fn near(grid: Grid, d: [f32]) -> Vec<vec3> {
+    let n = grid.n
+    var out: Vec<vec3> = Vec::new()
+    for c in 0..n * n * n {
+        if abs(d[c]) < 1.1 * grid.cell {
+            out.push(grid.at(c % n, (c / n) % n, c / (n * n)))
+        }
+    }
+    out
+}
+
+/// Uploads `points` (at least one slot, so an empty list still makes a buffer).
+pub fn upload(points: [vec3]) -> GpuBuffer<vec4> {
+    var up: Vec<vec4> = Vec::with_capacity(max(points.len(), 1))
+    for p in points {
+        up.push(vec4(p, 0.0))
+    }
+    if up.len() == 0 {
+        up.push(vec4(0.0))
+    }
+    var buf: GpuBuffer<vec4> = buffer(up.len())
+    write(mut buf, at: 0, values: up)
+    buf
+}
+
+/// Starts moving `points` onto the surface of `field`, finding the parts there and the shares
+/// of part `part` and of `twin` (its image): the answer arrives on a later frame (`poll`).
+pub fn start<S: Surface>(field: S, points: [vec3], part: u32, twin: u32) -> Snapping {
+    let count = max(points.len(), 1)
+    let groups = (count + 63) / 64
+    let buf = upload(points)
+    var snapped: GpuBuffer<vec4> = buffer(count)
+    var at: GpuBuffer<vec4> = buffer(count)
+    var about: GpuBuffer<vec4> = buffer(count)
+    var raised: GpuBuffer<f32> = buffer(count)
+    var raised_twin: GpuBuffer<f32> = buffer(count)
+    let n = points.len()
+    dispatch(
+        snap_points.bind(field: field, points: buf, count: n, at: mut snapped, about: mut about),
+        groups: groups,
+    )
+    dispatch(
+        part_of_points.bind(field: field, snapped: snapped, count: n, out: mut at),
+        groups: groups,
+    )
+    dispatch(
+        raised_points.bind(field: field, points: snapped, count: n, part: part, out: mut raised),
+        groups: groups,
+    )
+    dispatch(
+        raised_points.bind(
+            field: field,
+            points: snapped,
+            count: n,
+            part: twin,
+            out: mut raised_twin,
+        ),
+        groups: groups,
+    )
+    Snapping {
+        count: n,
+        points: buf,
+        snapped: take snapped,
+        at: reading(take at, count),
+        about: reading(take about, count),
+        raised: reading(take raised, count),
+        raised_twin: reading(take raised_twin, count),
+    }
+}
+
+/// What a snapping gave: `None` while the GPU hasn't answered; the spots on the surface when it
+/// has (none if it failed).
+pub fn poll(s: mut Snapping) -> Option<Vec<Spot>> {
+    let a = arrived(mut s.at)
+    let b = arrived(mut s.about)
+    let c = arrived(mut s.raised)
+    let e = arrived(mut s.raised_twin)
+    if !(a && b && c && e) {
+        return None
+    }
+    let at = got(mut s.at)
+    let about = got(mut s.about)
+    let raised = got(mut s.raised)
+    let twin = got(mut s.raised_twin)
+    var out: Vec<Spot> = Vec::new()
+    let n = min(min(s.count, at.len()), min(about.len(), min(raised.len(), twin.len())))
+    for i in 0..n {
+        let p = at[i]
+        if p.w >= 0.0 {
+            let d = about[i].x
+            let share = max(abs(raised[i] - d), abs(twin[i] - d)) / RAISE
+            out.push(Spot { p: p.xyz, part: u32(p.w), d, g: about[i].y, share })
+        }
+    }
+    Some(out)
+}
+
+/// The distances at `points` (uploaded with `upload`, `count` of them), on their way back.
+pub fn distances<S: Surface>(field: S, points: GpuBuffer<vec4>, count: u32) -> Reading<f32> {
+    var out: GpuBuffer<f32> = buffer(max(count, 1))
+    dispatch(
+        distance_points.bind(field: field, points: points, count: count, out: mut out),
+        groups: (max(count, 1) + 63) / 64,
+    )
+    reading(take out, max(count, 1))
+}
+
+/// The distances `distances` started, when they've come back.
+pub fn poll_distances(r: mut Reading<f32>) -> Option<Vec<f32>> {
+    if arrived(mut r) { Some(got(mut r)) } else { None }
+}

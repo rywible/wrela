@@ -1,0 +1,71 @@
+// What colours the views' colour mode: the subject's albedo, from its channels. The glue
+// (`wrela studio`) wraps the subject in a type of its own that implements `Colours` from the
+// channels' first `r`, `g`, `b` floats, when they hold a colour, else in `Clay`. Either is the
+// subject in every other way: its distance, its parts and its bound are the subject's.
+
+use std::field::{Lipschitz, PartName, Surface}
+
+/// A surface with a colour at each point.
+pub trait Colours: Surface {
+    /// The colour at `p`, linear RGB.
+    fn colour_at(self, p: vec3) -> vec3
+}
+
+/// The views' clay.
+pub const CLAY: vec3 = vec3(0.74, 0.72, 0.68)
+
+/// A subject without a colour: clay.
+pub struct Clay<F>: Copy + GpuData {
+    pub field: F,
+}
+
+impl<F: Surface> Surface for Clay<F> {
+    fn distance(self, p: vec3) -> f32 {
+        self.field.distance(p)
+    }
+
+    fn part_offset(self, p: vec3, i: u32, by: f32) -> f32 {
+        self.field.part_offset(p, i, by)
+    }
+
+    fn parts(self) -> u32 {
+        self.field.parts()
+    }
+
+    fn part_at(self, p: vec3) -> (f32, u32) {
+        self.field.part_at(p)
+    }
+
+    fn part_distance(self, p: vec3, i: u32) -> f32 {
+        self.field.part_distance(p, i)
+    }
+
+    fn part_name(self, i: u32) -> PartName {
+        self.field.part_name(i)
+    }
+}
+
+impl<F: Lipschitz> Lipschitz for Clay<F> {
+    fn lipschitz(self, near: f32) -> f32 {
+        self.field.lipschitz(near)
+    }
+}
+
+impl<F: Surface> Colours for Clay<F> {
+    fn colour_at(self, p: vec3) -> vec3 {
+        CLAY
+    }
+}
+
+/// `c` packed into a `u32` (8 bits a channel, sRGB-ish: the square root of linear, clamped),
+/// for the colour pass's buffer.
+pub fn pack(c: vec3) -> u32 {
+    let s = sqrt(clamp(c, vec3(0.0), vec3(1.0)))
+    u32(s.x * 255.0 + 0.5) | (u32(s.y * 255.0 + 0.5) << 8) | (u32(s.z * 255.0 + 0.5) << 16)
+}
+
+/// `pack`'s colour back, linear.
+pub fn unpack(v: u32) -> vec3 {
+    let s = vec3(f32(v & 255), f32((v >> 8) & 255), f32((v >> 16) & 255)) / 255.0
+    s * s
+}

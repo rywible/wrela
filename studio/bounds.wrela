@@ -1,0 +1,67 @@
+// Where a surface is: a box holding everything inside it, found by its derived interval
+// (language.md §13), for any surface.
+
+use std::derive::{Box3, interval}
+use std::field::Surface
+
+/// The space searched: 8 m around the origin, the ground at the middle of its bottom half.
+pub const SEARCH: Box3 = Box3 { lo: vec3(-4.0, -2.0, -4.0), hi: vec3(4.0, 6.0, 4.0) }
+
+/// A box holding the surface's inside, each face to a cell of an octree `depth` levels deep
+/// (a cell of `SEARCH` at depth 8 is about 3 cm). Empty (`lo > hi`) if nothing is inside.
+pub fn bounds<S: Surface>(field: S, depth: u32) -> Box3 {
+    var lo = vec3(1.0e9)
+    var hi = vec3(-1.0e9)
+    for face in 0..6 {
+        let (axis, far) = (face / 2, face % 2 == 1)
+        let (found, at) = extreme(field, depth, axis, far)
+        if !found {
+            return Box3 { lo, hi }
+        }
+        if far {
+            hi[axis] = at
+        } else {
+            lo[axis] = at
+        }
+    }
+    Box3 { lo, hi }
+}
+
+/// How far the inside reaches along `axis` (toward its low end, or its high end with `far`): a
+/// best-first search of the octree, nearest the face first, so it stops at the first cell of
+/// the deepest level, or the first wholly inside, its interval can't show is outside: every
+/// cell nearer the face has been shown outside by then.
+fn extreme<S: Surface>(field: S, depth: u32, axis: u32, far: bool) -> (bool, f32) {
+    // The cells still to search, at most 512 (past that the search is coarser, never wrong:
+    // a cell dropped is kept whole).
+    var cells: Vec<(Box3, u32)> = Vec::new()
+    cells.push((SEARCH, 0))
+    while cells.len() > 0 {
+        // The cell nearest the face.
+        var best = 0
+        for k in 1..cells.len() {
+            if nearer(cells[k].0, cells[best].0, axis, far) {
+                best = k
+            }
+        }
+        let (b, d) = cells.remove(best)
+        let r = interval(|q: vec3| field.distance(q), b)
+        if r.lo > 0.0 {
+            continue
+        }
+        if d == depth || r.hi < 0.0 || cells.len() >= 504 {
+            return (true, if far { b.hi[axis] } else { b.lo[axis] })
+        }
+        let h = 0.5 * (b.hi - b.lo)
+        for j in 0..8 {
+            let o = vec3(f32(j & 1), f32((j >> 1) & 1), f32((j >> 2) & 1)) * h
+            cells.push((Box3 { lo: b.lo + o, hi: b.lo + o + h }, d + 1))
+        }
+    }
+    (false, 0.0)
+}
+
+/// Whether box `a` reaches nearer the face than `b` does.
+fn nearer(a: Box3, b: Box3, axis: u32, far: bool) -> bool {
+    if far { a.hi[axis] > b.hi[axis] } else { a.lo[axis] < b.lo[axis] }
+}

@@ -1,0 +1,102 @@
+// The lens's panel (AC3 of #39), drawn with the `ui` package beside the views: the views'
+// controls, the subject's parts, the literals at the last click (each with its source line, a
+// field to change its value, and Write), and the command line with the latest answers. On a
+// narrow screen (a headless run's) there's no panel, and the views fill it.
+
+use std::collections::Vec
+use std::string::String
+use ui::draw::Rect
+use ui::widgets::Ui
+
+/// What the panel asks the lens for this frame.
+pub enum Ask: Copy {
+    /// A facing (0 to 3), or the sheet (4).
+    View(u32),
+    /// A mode (0 shaded, 1 parts, 2 tint, 3 isolate, 4 silhouette, 5 colour).
+    Mode(u32),
+    /// A part, for tint and isolate.
+    Part(u32),
+    /// Literal `i` set to a value.
+    Value(u32, f32),
+    Write,
+}
+
+/// A literal of the last click's, as the panel shows it when it's picked.
+pub struct Pick {
+    pub index: u32,
+    /// Its value, and the line it's on in the source.
+    pub value: f32,
+    pub source: String,
+}
+
+/// The panel's width on a screen `width` pixels wide: none under 900.
+pub fn width(screen: u32) -> f32 {
+    if screen >= 900 { floor(min(400.0, 0.3 * f32(screen))) } else { 0.0 }
+}
+
+const TEXT: vec4 = vec4(0.86, 0.88, 0.91, 1.0)
+const DIM: vec4 = vec4(0.6, 0.63, 0.68, 1.0)
+
+/// Draws the panel at the right of a `screen`-sized screen, `panel` wide; what it asks goes to
+/// `asks`. `labels` lists the last click's literals, `picks`; `picked` is the one being shown
+/// (−1: none).
+pub fn draw(
+    ui: mut Ui,
+    screen: vec2,
+    panel: f32,
+    title: str,
+    parts: [String],
+    part: mut i32,
+    picks: [Pick],
+    labels: [String],
+    picked: mut i32,
+    log: [String],
+    line: str,
+    asks: mut Vec<Ask>,
+) {
+    if panel <= 0.0 {
+        return
+    }
+    ui.begin_panel(title, Rect::new(screen.x - panel, 0.0, panel, screen.y))
+    ui.begin_row()
+    let views = ["side", "front", "3/4", "top", "sheet"]
+    for i in 0..5 {
+        if ui.button(views[i]) {
+            asks.push(Ask::View(i))
+        }
+    }
+    ui.end_row()
+    ui.begin_row()
+    let modes = ["shaded", "parts", "tint", "isolate", "outline", "colour"]
+    for i in 0..6 {
+        if ui.button(modes[i]) {
+            asks.push(Ask::Mode(i))
+        }
+    }
+    ui.end_row()
+    ui.label("Parts")
+    if ui.list("parts", parts, mut part, height: 0.26 * screen.y) && part >= 0 {
+        asks.push(Ask::Part(u32(part)))
+    }
+    ui.label("At the click: the literals that move the surface there, most first")
+    ui.list("literals", labels, mut picked, height: 0.22 * screen.y)
+    if picked >= 0 && u32(picked) < picks.len() {
+        let k = u32(picked)
+        ui.mono(picks[k].source.as_str(), TEXT)
+        var v = picks[k].value
+        if ui.number("value", mut v, step: max(abs(picks[k].value) * 0.01, 0.0001)) {
+            asks.push(Ask::Value(picks[k].index, v))
+        }
+    }
+    if ui.button("write") {
+        asks.push(Ask::Write)
+    }
+    ui.label("Command")
+    var shown = String::from("> ")
+    shown.push_str(line)
+    ui.mono(shown.as_str(), TEXT)
+    for l in log {
+        ui.mono(l.as_str(), DIM)
+    }
+    ui.end_panel()
+}

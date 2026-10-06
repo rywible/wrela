@@ -1,0 +1,160 @@
+// Lofts: a form around a straight axis, given by its cross-sections. At each of `stations`
+// places along the axis, evenly from one end to the other, a section's radius is given in each
+// of `angles` directions around the axis, evenly from angle 0 (`u`) by the right hand about the
+// axis. Between them the radius is linear, along the axis and around it. The form is capped
+// flat at the axis's ends.
+//
+// A loft holds any section that's star-shaped about the axis, so it can take a measured form as
+// it is: `wrela reference replica` samples a sculpt's surface into lofts. The distance isn't
+// exact (the radius is measured in each section's plane, not to the nearest point), so
+// `Lipschitz` bounds its gradient from the table's slopes.
+
+use std::field::{Lipschitz, Surface}
+use std::math::TAU
+
+/// A loft of `N` radii: `stations` sections of `angles` radii each (`radii[i * angles + j]` is
+/// section i's radius at angle j), from `a` (section 0) to `b`, with angle 0 along `u`, which is
+/// perpendicular to the axis.
+pub struct Loft<const N: u32>: Copy + GpuData {
+    pub a: vec3,
+    pub b: vec3,
+    pub u: vec3,
+    pub stations: u32,
+    pub angles: u32,
+    pub radii: [f32; N],
+}
+
+/// A loft from `a` to `b` (`Loft`), its angle 0 along `up` made perpendicular to the axis.
+/// It needs at least two stations and three angles, and `stations × angles` radii.
+pub fn loft<const N: u32>(
+    a: vec3,
+    b: vec3,
+    up: vec3,
+    stations: u32,
+    angles: u32,
+    radii: [f32; N],
+) -> Loft<N> {
+    assert(stations >= 2 && angles >= 3, "a loft needs two stations and three angles")
+    assert(stations * angles == N, "a loft has `stations × angles` radii")
+    let w = normalize(b - a)
+    Loft { a, b, u: normalize(up - w * dot(up, w)), stations, angles, radii }
+}
+
+/// A loft's radius at a point of its table, and how it slopes there: along the axis (per
+/// metre) and around it (per radian). Both slopes are exact for the table's interpolation.
+pub struct Section: Copy {
+    pub r: f32,
+    pub along: f32,
+    pub around: f32,
+}
+
+impl<const N: u32> Loft<N> {
+    /// The radius and its slopes at `t` of the way along the axis (0 at `a`, 1 at `b`, held
+    /// there beyond) and angle `theta` (radians from `u`).
+    pub fn section(self, t: f32, theta: f32) -> Section {
+        // The weights are in [0, 1] already; `saturate` says so to a derived interval, which
+        // can't see that `i0` came from `ts` (and `mix` is tight only for weights in [0, 1]).
+        let ts = saturate(t) * f32(self.stations - 1)
+        let i0 = min(u32(ts), self.stations - 2)
+        let f = saturate(ts - f32(i0))
+        let js = fract(theta / TAU) * f32(self.angles)
+        let j0 = min(u32(js), self.angles - 1)
+        let g = saturate(js - f32(j0))
+        let j1 = (j0 + 1) % self.angles
+        let row0 = i0 * self.angles
+        let row1 = row0 + self.angles
+        let r00 = self.radii[row0 + j0]
+        let r01 = self.radii[row0 + j1]
+        let r10 = self.radii[row1 + j0]
+        let r11 = self.radii[row1 + j1]
+        Section {
+            r: mix(mix(r00, r01, g), mix(r10, r11, g), f),
+            along: mix(r10 - r00, r11 - r01, g) / self.station_gap(),
+            around: mix(r01 - r00, r11 - r10, f) * f32(self.angles) / TAU,
+        }
+    }
+
+    /// The axis's length.
+    pub fn length(self) -> f32 {
+        length(self.b - self.a)
+    }
+
+    /// The distance between stations.
+    pub fn station_gap(self) -> f32 {
+        self.length() / f32(self.stations - 1)
+    }
+}
+
+/// The size of the side's slope, √(1 + r_s² + (r_θ / ρ)²): ρ − r over it has a gradient of 1
+/// at the surface. ρ is held at least half the radius (and 1 mm), so deep inside, near the
+/// axis, the distance stays well below 0 rather than falling towards it.
+fn slope(c: Section, rho: f32) -> f32 {
+    let around = c.around / max(max(rho, 0.5 * c.r), 0.001)
+    sqrt(1.0 + c.along * c.along + around * around)
+}
+
+impl<const N: u32> Surface for Loft<N> {
+    /// The side's ρ − r, divided by its slope (where the section's edge slopes along the axis,
+    /// or around it where a ray from the axis meets the surface at a slant, ρ − r overstates
+    /// the distance), and the caps' planes.
+    fn distance(self, p: vec3) -> f32 {
+        let d = self.b - self.a
+        let len = length(d)
+        let w = d / len
+        let q = p - self.a
+        let s = dot(q, w)
+        let x = dot(q, self.u)
+        let y = dot(q, cross(w, self.u))
+        let rho = length(vec2(x, y))
+        // On the axis the angle is any: 0.
+        let theta = select(if_false: atan2(y, x), if_true: 0.0, cond: rho < 0.000001)
+        let c = self.section(s / len, theta)
+        max((rho - c.r) / slope(c, rho), max(-s, s - len))
+    }
+}
+
+impl<const N: u32> Lipschitz for Loft<N> {
+    /// The caps are exact (1). The side is D = d / k, with d = ρ − r and k = |∇d| =
+    /// √(1 + A² + (B / ρ)²) (A = r_s, B = r_θ) where ρ is at least half the radius. Where
+    /// |D| < `near`, |d| < k `near`, so |∇D| ≤ 1 + `near` |∇k| / k ≤ 1 + `near` (|∇A| + |∇(B/ρ)|);
+    /// in a cell of the table |∇A| = ΔA / (Δθ ρ) and |∇(B/ρ)| ≤ ΔB / (Δs ρ) + |B| / ρ², at the
+    /// least ρ in scope: the cell's least radius less `near` times the largest k. Where that
+    /// scope reaches half the radius (thin parts, or a wide `near`), it's infinite, as an
+    /// ellipsoid's is once the centre is in scope.
+    fn lipschitz(self, near: f32) -> f32 {
+        let ds = self.station_gap()
+        let dtheta = TAU / f32(self.angles)
+        let near = max(near, 0.0)
+        var worst = 1.0
+        for i in 0..self.stations - 1 {
+            for j in 0..self.angles {
+                let j1 = (j + 1) % self.angles
+                let r00 = self.radii[i * self.angles + j]
+                let r01 = self.radii[i * self.angles + j1]
+                let r10 = self.radii[(i + 1) * self.angles + j]
+                let r11 = self.radii[(i + 1) * self.angles + j1]
+                let least = min(min(r00, r01), min(r10, r11))
+                let (a0, a1) = ((r10 - r00) / ds, (r11 - r01) / ds)
+                let (b0, b1) = ((r01 - r00) / dtheta, (r11 - r10) / dtheta)
+                let a = max(abs(a0), abs(a1))
+                let b = max(abs(b0), abs(b1))
+                if b == 0.0 && abs(a1 - a0) == 0.0 && least <= 0.0 {
+                    // No form here (radii all 0) and no slope around: the caps and the
+                    // empty side, exact.
+                    continue
+                }
+                let half = max(0.5 * least, 0.001)
+                let k = sqrt(1.0 + a * a + (b / half) * (b / half))
+                let rho = least - near * k
+                if rho <= half {
+                    return 1.0 / 0.0
+                }
+                let grows = abs(a1 - a0) / (dtheta * rho) +
+                    abs(b1 - b0) / (ds * rho) +
+                    b / (rho * rho)
+                worst = max(worst, 1.0 + near * grows)
+            }
+        }
+        worst * 1.001
+    }
+}

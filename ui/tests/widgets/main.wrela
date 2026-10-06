@@ -1,0 +1,150 @@
+// Every widget of the ui package on one screen, for frame tests that drive them with scripts of
+// input (`@test(frames: n, input: "...")`), as a person would.
+
+use std::gpu::{begin_screen_pass, present}
+use std::input::events
+use ui::draw::Renderer
+use ui::text::Fonts
+use ui::widgets::{Dir, TreeItem, Ui}
+
+pub struct Game {
+    ui: Ui,
+    renderer: Renderer,
+    clicks: u32,
+    on: bool,
+    level: f32,
+    count: f32,
+    name: String,
+    items: Vec<String>,
+    picked: i32,
+    nodes: Vec<TreeItem>,
+    node: i32,
+    left: u32,
+}
+
+fn node(label: Text, depth: u32, children: bool) -> TreeItem {
+    TreeItem { label: label.to_string(), depth, children }
+}
+
+pub fn init() -> Game {
+    let fonts = Fonts::load()
+    let renderer = Renderer::new(fonts)
+    var items: Vec<String> = Vec::new()
+    for i in 0..40 {
+        items.push(f"item {i}")
+    }
+    var nodes: Vec<TreeItem> = Vec::new()
+    nodes.push(node("body", 0, children: true))
+    nodes.push(node("torso", 1, children: false))
+    nodes.push(node("head", 1, children: true))
+    nodes.push(node("ear", 2, children: false))
+    nodes.push(node("legs", 0, children: true))
+    nodes.push(node("fore", 1, children: false))
+    Game {
+        ui: Ui::new(take fonts),
+        renderer,
+        clicks: 0,
+        on: false,
+        level: 0.25,
+        count: 3.0,
+        name: String::from("wolf"),
+        items,
+        picked: -1,
+        nodes,
+        node: -1,
+        left: 0,
+    }
+}
+
+pub fn frame(state: mut Game, time: f32, width: u32, height: u32) {
+    let screen = vec2(f32(width), f32(height))
+    let input = events()
+    mut ui = state.ui
+    ui.begin(screen, input)
+    ui.begin_split("split", Dir::Row, 0.5)
+    if ui.button("Press") {
+        state.clicks += 1
+    }
+    ui.toggle("Toggle", mut state.on)
+    ui.slider("Level", mut state.level, lo: 0.0, hi: 1.0)
+    ui.number("Count", mut state.count, step: 0.5)
+    ui.text_field("Name", mut state.name)
+    ui.list("items", state.items, mut state.picked, 120.0)
+    ui.next_pane()
+    ui.tree("nodes", state.nodes, mut state.node, 160.0)
+    if ui.button("Left") {
+        state.left += 1
+    }
+    ui.end_split()
+    ui.end()
+    state.renderer.upload(ui.draw)
+    begin_screen_pass(clear: vec4(0.05, 0.05, 0.06, 1.0))
+    state.renderer.draw(screen)
+    present()
+}
+
+// ---- the tests: each a script of input (scripts/), and what it should leave ------------------
+
+/// A click on a button clicks it once; a press that slides off before it's let go doesn't.
+@test(frames: 8, input: "scripts/button.json")
+fn a_button_is_clicked(game: Game) {
+    assert(game.clicks == 1, f"{game.clicks} clicks")
+}
+
+/// A click flips a toggle, and so does Space while it has the focus.
+@test(frames: 8, input: "scripts/toggle.json")
+fn a_toggle_flips(game: Game) {
+    assert(game.on, "the toggle isn't on")
+}
+
+/// Dragging a slider sets it where it's let go; the arrow keys step it while it has the focus.
+@test(frames: 8, input: "scripts/slider.json")
+fn a_slider_drags(game: Game) {
+    // Let go at x = 237 of 316 pixels, then one step right (a hundredth).
+    let want = 237.0 / 316.0 + 0.01
+    assert(abs(game.level - want) < 1.0e-5, f"level {game.level}")
+}
+
+/// Dragging a number changes it by its step a pixel; a click then lets it be typed.
+@test(frames: 14, input: "scripts/number.json")
+fn a_number_drags_and_types(game: Game) {
+    assert(game.count == 7.5, f"count {game.count}")
+}
+
+/// Typing into a field, with Backspace, and text past ASCII; Escape puts the text back.
+@test(frames: 16, input: "scripts/text.json")
+fn a_text_field_types(game: Game) {
+    assert(game.name == "Grüße", f"name `{game.name}`")
+}
+
+/// Typing and editing keys in one frame apply in the order they came.
+@test(frames: 6, input: "scripts/order.json")
+fn typing_and_keys_keep_their_order(game: Game) {
+    assert(game.name == "Grüße", f"name `{game.name}`")
+}
+
+/// The wheel scrolls a list; a click selects in it, and Down moves the selection.
+@test(frames: 8, input: "scripts/list.json")
+fn a_list_scrolls_and_selects(game: Game) {
+    assert(game.picked == 11, f"picked {game.picked}")
+}
+
+/// A tree's arrow opens a node; a click selects a child; Right opens it and Down goes into it.
+@test(frames: 10, input: "scripts/tree.json")
+fn a_tree_opens_and_selects(game: Game) {
+    assert(game.node == 3, f"node {game.node}")
+}
+
+/// Tab moves the focus forward through the widgets in order, Shift+Tab back, and Enter clicks
+/// the focused button.
+@test(frames: 10, input: "scripts/focus.json")
+fn tab_moves_the_focus(game: Game) {
+    assert(game.clicks == 1 && game.left == 0, f"{game.clicks} clicks, {game.left} on Left")
+    assert(game.on, "Space on the toggle")
+}
+
+/// Dragging a split's divider moves it: the second pane's button follows.
+@test(frames: 10, input: "scripts/split.json")
+fn a_split_drags(game: Game) {
+    assert(game.left == 1, f"{game.left} clicks on Left")
+}

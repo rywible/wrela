@@ -1,0 +1,232 @@
+// Drag to edit (AC9 of #39): spike 09's solver on real wrela. A surface point `p0` is moved
+// to a target `t`; Gauss–Newton changes a few literals so the surface passes through `t`,
+// over
+//
+//   Σ W w r(patch + δ)²  +  W_A Σ (r(a) − r₀(a))²  +  λ² Σ ((θ − θ₀) / s)²
+//
+// with δ = t − p₀: the target with weight 1, six points of a 6 mm ring around `p0` moved with
+// it (the patch, so the constraint isn't met by a bulge), their mirror images where the
+// subject is mirror-symmetric (so midline literals don't break the symmetry), anchors (surface
+// points of every other part, by provenance: they shouldn't move), and damping toward the
+// values the drag started from, each literal's by its own size `s` (`damping`). Literals are chosen by the move's steepest descent, `K` at
+// most, among those that move the surface at `p0`; or an author names them.
+//
+// A residual r is the distance over its derivative along the surface's normal, so no scaling
+// of the field changes it: a factor in front of a field (a Lipschitz bound's 0.9) moves no
+// surface, and the solver mustn't pull it (spike 09 found it doing so). The anchors' rows are
+// linearized once, when the drag begins: they're on the surface and should stay there, so
+// their derivatives hardly change, and each step derives the drag's rows alone.
+//
+// The derivatives come from the glue's `grad8` and `grad16`: forward mode by 8 or 16 literals
+// at once (language.md §22).
+
+use std::collections::Vec
+use std::field::Surface
+use std::lift::{Literal, literal}
+
+/// The most literals a drag chooses itself.
+pub const K: u32 = 8
+
+/// The weights (spike 09's): the drag's rows `W` times their own (the target's 1, each of the
+/// patch's points' `W_PATCH`), the anchors', and the damping.
+pub const W: f32 = 1.0e4
+pub const W_PATCH: f32 = 0.02
+pub const W_ANCHOR: f32 = 1.0e4
+pub const DAMPING: f32 = 1.0
+
+/// The damping of a literal whose value was `v` when the drag began: `DAMPING` for a change of
+/// its own size, so a drag prefers changing literals by a small share of themselves (moving
+/// the wolf's nose pad, not flattening it). Sizes under 5 cm count as 5 cm, so a literal near 0
+/// isn't held still.
+pub fn damping(v: f32) -> f32 {
+    let s = max(abs(v), 0.05)
+    DAMPING / (s * s)
+}
+
+/// The step of the differences along a normal (m).
+const H: f32 = 0.0005
+
+/// How many literals the glue's `grad16` derives at once.
+pub const AT_ONCE: u32 = 16
+
+/// The value literal `i` has now.
+pub fn value(i: u32) -> f32 {
+    if let Some(l) = literal(i) { l.value() } else { 0.0 }
+}
+
+/// Sets literal `i` to `v`.
+pub fn set(i: u32, v: f32) {
+    if let Some(l) = literal(i) {
+        l.set(v)
+    }
+}
+
+/// `n` copies of `value`.
+pub fn filled<T: Copy>(n: u32, value: T) -> Vec<T> {
+    var out: Vec<T> = Vec::with_capacity(n)
+    for _ in 0..n {
+        out.push(value)
+    }
+    out
+}
+
+/// `p` moved onto the surface along its gradient (three Newton steps).
+pub fn snap<S: Surface>(field: S, p: vec3) -> vec3 {
+    var q = p
+    for _ in 0..3 {
+        let (d, g) = field.sample(q)
+        let gg = dot(g, g)
+        if gg > 0.0 {
+            q -= g * (d / gg)
+        }
+    }
+    q
+}
+
+/// Two unit vectors across `n` (a unit vector).
+fn across(n: vec3) -> (vec3, vec3) {
+    let a = if abs(n.x) < 0.9 { vec3(1.0, 0.0, 0.0) } else { vec3(0.0, 1.0, 0.0) }
+    let u = normalize(cross(n, a))
+    (u, cross(n, u))
+}
+
+/// Six points of a ring `r` around `p` on the surface.
+pub fn ring<S: Surface>(field: S, p: vec3, r: f32) -> [vec3; 6] {
+    let n = normalize(field.gradient(p))
+    let (u, v) = across(n)
+    var out = [p; 6]
+    for i in 0..6 {
+        let a = f32(i) * 1.0471976
+        out[i] = snap(field, p + (u * cos(a) + v * sin(a)) * r)
+    }
+    out
+}
+
+/// The distance at `p` and its derivative by each of `lits`: through `grad8` for 8 or fewer,
+/// else `grad16`, `AT_ONCE` at a time.
+pub fn derive(
+    grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
+    grad16: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+    p: vec3,
+    lits: [u32],
+) -> (f32, Vec<f32>) {
+    if lits.len() > 8 {
+        var all: Vec<Literal> = Vec::with_capacity(lits.len())
+        for i in lits {
+            all.push(Literal { index: i })
+        }
+        return derive16(grad16, p, all)
+    }
+    var out: Vec<f32> = Vec::with_capacity(lits.len())
+    if lits.len() == 0 {
+        return (0.0, out)
+    }
+    var w = [Literal { index: lits[0] }; 8]
+    for i in 0..lits.len() {
+        w[i] = Literal { index: lits[i] }
+    }
+    let (d, g) = grad8(p, w)
+    for i in 0..lits.len() {
+        out.push(g[i])
+    }
+    (d, out)
+}
+
+/// The distance at `p` and its derivative by each of `lits`, through `grad16`, `AT_ONCE` at a
+/// time.
+pub fn derive16(
+    grad16: fn(vec3, [Literal; AT_ONCE]) -> (f32, [f32; AT_ONCE]),
+    p: vec3,
+    lits: [Literal],
+) -> (f32, Vec<f32>) {
+    var out: Vec<f32> = Vec::with_capacity(lits.len())
+    var d = 0.0
+    var at = 0
+    while at < lits.len() {
+        let n = min(AT_ONCE, lits.len() - at)
+        var w = [lits[at]; AT_ONCE]
+        for i in 0..n {
+            w[i] = lits[at + i]
+        }
+        let (v, g) = grad16(p, w)
+        d = v
+        for i in 0..n {
+            out.push(g[i])
+        }
+        at += n
+    }
+    (d, out)
+}
+
+/// The residual at `p` along the unit vector `n` (the distance over its derivative along `n`,
+/// by central differences) and its derivative by each of `lits`.
+pub fn residual(
+    grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
+    grad16: fn(vec3, [Literal; 16]) -> (f32, [f32; 16]),
+    p: vec3,
+    n: vec3,
+    lits: [u32],
+) -> (f32, Vec<f32>) {
+    let (d, jd) = derive(grad8, grad16, p, lits)
+    let (a, ja) = derive(grad8, grad16, p + n * H, lits)
+    let (b, jb) = derive(grad8, grad16, p - n * H, lits)
+    // Where the field is flat along `n` (a degenerate point), the residual is the distance
+    // over a floor of 10⁻³, and the floor doesn't move.
+    let slope = (a - b) / (2.0 * H)
+    let s = max(slope, 1.0e-3)
+    var j: Vec<f32> = Vec::with_capacity(lits.len())
+    for i in 0..lits.len() {
+        let ds = if slope > 1.0e-3 { (ja[i] - jb[i]) / (2.0 * H) } else { 0.0 }
+        j.push((jd[i] * s - d * ds) / (s * s))
+    }
+    (d / s, j)
+}
+
+/// Adds a residual `r` with weight `w` and its derivatives `j` by `k` literals to the normal
+/// equations `a x = b` (`a` k×k row-major, the sum of w jᵀj; `b`, of −w j r).
+pub fn add_row(a: mut [f32], b: mut [f32], k: u32, j: [f32], r: f32, w: f32) {
+    for i in 0..k {
+        b[i] -= w * j[i] * r
+        for m in 0..k {
+            a[i * k + m] += w * j[i] * j[m]
+        }
+    }
+}
+
+/// Solves the k×k system `a x = b` (symmetric positive definite: a damped normal matrix) by
+/// Cholesky; `a` row-major.
+pub fn cholesky(a: [f32], b: [f32], k: u32) -> Vec<f32> {
+    var l: Vec<f32> = filled(k * k, 0.0)
+    for i in 0..k {
+        for j in 0..i + 1 {
+            var s = a[i * k + j]
+            for m in 0..j {
+                s -= l[i * k + m] * l[j * k + m]
+            }
+            if i == j {
+                l[i * k + i] = sqrt(max(s, 1.0e-20))
+            } else {
+                l[i * k + j] = s / l[j * k + j]
+            }
+        }
+    }
+    var y: Vec<f32> = Vec::with_capacity(k)
+    for i in 0..k {
+        var s = b[i]
+        for m in 0..i {
+            s -= l[i * k + m] * y[m]
+        }
+        y.push(s / l[i * k + i])
+    }
+    var x: Vec<f32> = filled(k, 0.0)
+    var i = k
+    while i > 0 {
+        i -= 1
+        var s = y[i]
+        for m in i + 1..k {
+            s -= l[m * k + i] * x[m]
+        }
+        x[i] = s / l[i * k + i]
+    }
+    x
+}

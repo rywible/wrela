@@ -1,0 +1,160 @@
+// JSON for the lens's answers: each action prints one line (`std::io::print`), which the
+// headless runner and the studio server read. Numbers are written exactly (std::fmt's floats
+// read back as the same f32); a NaN or an infinity, which JSON has no form for, is `null`.
+
+use std::string::String
+
+/// One JSON object being written: `obj().num("d", 0.1).text("part", "ear").done()`.
+pub struct Json {
+    out: String,
+    first: bool,
+}
+
+pub fn obj() -> Json {
+    var out = String::new()
+    out.push_str("{")
+    Json { out, first: true }
+}
+
+/// `s` as a JSON string's body: quotes, backslashes and control characters escaped.
+pub fn escape(out: mut String, s: str) {
+    for i in 0..s.len() {
+        let b = s.byte(i)
+        if b == 34 {
+            out.push_str("\\\"")
+        } else if b == 92 {
+            out.push_str("\\\\")
+        } else if b == 10 {
+            out.push_str("\\n")
+        } else if b == 13 {
+            out.push_str("\\r")
+        } else if b == 9 {
+            out.push_str("\\t")
+        } else if b < 32 {
+            out.push_str("\\u00")
+            let hex = "0123456789abcdef"
+            out.push_byte(hex.byte(u32(b >> 4)))
+            out.push_byte(hex.byte(u32(b & 15)))
+        } else {
+            out.push_byte(b)
+        }
+    }
+}
+
+/// A float as JSON: exact, or `null` for a NaN or an infinity.
+pub fn number(out: mut String, x: f32) {
+    if x == x && abs(x) < 3.4028235e38 {
+        out.push_str(f"{x}")
+    } else {
+        out.push_str("null")
+    }
+}
+
+impl Json {
+    fn key(mut self, k: str) {
+        if !self.first {
+            self.out.push_str(",")
+        }
+        self.first = false
+        self.out.push_str("\"")
+        escape(mut self.out, k)
+        self.out.push_str("\":")
+    }
+
+    pub fn num(take self, k: str, x: f32) -> Json {
+        var j = take self
+        j.key(k)
+        number(mut j.out, x)
+        j
+    }
+
+    pub fn int(take self, k: str, n: u32) -> Json {
+        var j = take self
+        j.key(k)
+        j.out.push_str(f"{n}")
+        j
+    }
+
+    pub fn flag(take self, k: str, b: bool) -> Json {
+        var j = take self
+        j.key(k)
+        j.out.push_str(if b { "true" } else { "false" })
+        j
+    }
+
+    pub fn text(take self, k: str, s: str) -> Json {
+        var j = take self
+        j.key(k)
+        j.out.push_str("\"")
+        escape(mut j.out, s)
+        j.out.push_str("\"")
+        j
+    }
+
+    pub fn vec(take self, k: str, v: vec3) -> Json {
+        var j = take self
+        j.key(k)
+        j.out.push_str("[")
+        number(mut j.out, v.x)
+        j.out.push_str(",")
+        number(mut j.out, v.y)
+        j.out.push_str(",")
+        number(mut j.out, v.z)
+        j.out.push_str("]")
+        j
+    }
+
+    pub fn vec2(take self, k: str, v: vec2) -> Json {
+        var j = take self
+        j.key(k)
+        j.out.push_str("[")
+        number(mut j.out, v.x)
+        j.out.push_str(",")
+        number(mut j.out, v.y)
+        j.out.push_str("]")
+        j
+    }
+
+    /// `raw`, already JSON (an array or an object written elsewhere).
+    pub fn raw(take self, k: str, raw: str) -> Json {
+        var j = take self
+        j.key(k)
+        j.out.push_str(raw)
+        j
+    }
+
+    /// The object, closed.
+    pub fn done(take self) -> String {
+        var j = take self
+        j.out.push_str("}")
+        take j.out
+    }
+}
+
+/// A JSON array being written from already written values: `list().add(a).add(b).done()`.
+pub struct List {
+    out: String,
+    first: bool,
+}
+
+pub fn list() -> List {
+    var out = String::new()
+    out.push_str("[")
+    List { out, first: true }
+}
+
+impl List {
+    pub fn add(mut self, raw: str) {
+        if !self.first {
+            self.out.push_str(",")
+        }
+        self.first = false
+        self.out.push_str(raw)
+    }
+
+    pub fn done(take self) -> String {
+        var l = take self
+        l.out.push_str("]")
+        take l.out
+    }
+}

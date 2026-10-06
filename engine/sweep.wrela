@@ -1,0 +1,584 @@
+// Sweeps: a form along a curved path, given by its sections. The path is a smooth curve through
+// its points (a limb's joints from hip to toes, a neck's from withers to skull); a section is
+// the form's outline across the path, given by what an artist reads off a form: how far it
+// reaches up, down, left and right of the path, how square its quarters are, how far it's
+// turned, and up to four bumps (a muscle's belly, a bone under the skin, a groove). Sections
+// are placed along the path and change smoothly between them. Its ends are flat or domed.
+//
+// A sweep bends through a joint: where straight parts overlapped there, it has no seam, and
+// nothing between the parts to leave out. A named section with four bumps (18 numbers) held 93%
+// of the reference wolf's sections within 2 mm, where eight harmonics (17 numbers) held 91%.
+//
+// The path is cut into short straight pieces. A point's section is in the plane through it
+// that turns from the plane at one end of its piece (which halves the path's turn there) to
+// the plane at the other, so neighbouring pieces meet exactly. Angle 0 is the sweep's `up`,
+// carried along the path without twisting it: at a paw that turns forward from the leg, the
+// leg's front becomes the paw's top. Angles grow toward the left (`up × forward`).
+
+use std::field::{Lipschitz, Surface}
+use std::math::{PI, TAU}
+
+/// A section across a sweep: its extents from the path toward `up` (angle 0), its left
+/// (π/2), down (π) and right (3π/2); how square its quarters are (2: an ellipse's; more is
+/// squarer, toward a box; less is pointier, a diamond at 1); its turn (radians, toward the
+/// left); and up to four bumps, each (angle, height, half-width), a height of 0 for none.
+pub struct Section: Copy + GpuData {
+    pub up: f32,
+    pub left: f32,
+    pub down: f32,
+    pub right: f32,
+    pub square: f32,
+    pub turn: f32,
+    pub bumps: [vec4; 4],
+}
+
+/// A section reaching `up`, `down`, `left` and `right` of the path (`Section`).
+pub fn section(
+    up: f32,
+    down: f32,
+    left: f32,
+    right: f32,
+    square: f32 = 2.0,
+    turn: f32 = 0.0,
+) -> Section {
+    Section { up, left, down, right, square, turn, bumps: [vec4(); 4] }
+}
+
+/// A round section, `r` from the path all round.
+pub fn round(r: f32) -> Section {
+    section(r, r, r, r)
+}
+
+/// An oval section, `width` across (left to right) and `height` (up to down), on the path.
+pub fn oval(width: f32, height: f32) -> Section {
+    section(0.5 * height, 0.5 * height, 0.5 * width, 0.5 * width)
+}
+
+/// `a` less `b`, as an angle in [-π, π).
+fn wrap(a: f32) -> f32 {
+    a - TAU * floor((a + PI) / TAU)
+}
+
+impl Section {
+    /// With a bump at angle `at` (radians from up, toward the left), `height` high (less than 0:
+    /// a groove), reaching `width` radians either side of `at`. A section has four bumps at
+    /// most; this one takes the first that's free (a height and a width of 0).
+    pub fn bump(self, at: f32, height: f32, width: f32) -> Section {
+        assert(width > 0.0, "a bump's width is more than 0")
+        var s = self
+        for i in 0..4 {
+            if s.bumps[i].y == 0.0 && s.bumps[i].z == 0.0 {
+                s.bumps[i] = vec4(at, height, width, 0.0)
+                return s
+            }
+        }
+        assert(false, "a section has four bumps at most")
+        s
+    }
+
+    /// Its radius at angle `theta` (radians from up, toward the left).
+    pub fn radius(self, theta: f32) -> f32 {
+        let phi = theta - self.turn
+        let c = cos(phi)
+        let s = sin(phi)
+        let a = max(select(if_false: self.down, if_true: self.up, cond: c >= 0.0), 0.0001)
+        let b = max(select(if_false: self.right, if_true: self.left, cond: s >= 0.0), 0.0001)
+        let n = max(self.square, 1.0)
+        // The sum is never less than max(a, b)⁻ⁿ min(1, 2^(1 − n/2)) (its least, over the
+        // angle): held there, it's the same, but a derived interval, which can't see that
+        // cos² + sin² = 1, stays finite. And a base held at 10⁻⁶ changes the radius by less
+        // than that, but keeps a derived interval's base above 0 (where `pow` is defined).
+        let least = pow(max(a, b), -n) * min(1.0, pow(2.0, 1.0 - 0.5 * n))
+        let x = max(abs(c) / a, 0.000001)
+        let y = max(abs(s) / b, 0.000001)
+        var r = 1.0 / pow(max(pow(x, n) + pow(y, n), least), 1.0 / n)
+        for i in 0..4 {
+            let k = self.bumps[i]
+            let d = abs(wrap(theta - k.x))
+            if d < k.z {
+                // (A free bump's width is 0: a derived interval runs this side too.)
+                let q = cos(0.5 * PI * d / max(k.z, 0.0001))
+                r += k.y * q * q
+            }
+        }
+        max(r, 0.0)
+    }
+}
+
+/// Section `s`'s bump in slot `i`, or, where it left the slot empty (a height and a width of 0,
+/// never set), a bump of height 0 at `like`'s angle and width.
+fn slot(s: Section, i: u32, like: vec4) -> vec4 {
+    let k = s.bumps[i]
+    if k.y == 0.0 && k.z == 0.0 { vec4(like.x, 0.0, like.z, 0.0) } else { k }
+}
+
+/// `w`'s blend of four sections (weights that may be less than 0, as a curve's are); bumps are
+/// matched by place, their angles blended around `b`'s. A slot one section leaves empty takes
+/// the angle and width of a section that fills it (`b`'s, else `c`'s, `a`'s or `d`'s), so only
+/// its height fades: an empty slot sat at angle 0, and a bump on one section and not the next
+/// slid round to it between them, a diagonal ridge like a seam (round 6's authors found it).
+fn blend(a: Section, b: Section, c: Section, d: Section, w: vec4) -> Section {
+    var out = Section {
+        up: w.x * a.up + w.y * b.up + w.z * c.up + w.w * d.up,
+        left: w.x * a.left + w.y * b.left + w.z * c.left + w.w * d.left,
+        down: w.x * a.down + w.y * b.down + w.z * c.down + w.w * d.down,
+        right: w.x * a.right + w.y * b.right + w.z * c.right + w.w * d.right,
+        square: w.x * a.square + w.y * b.square + w.z * c.square + w.w * d.square,
+        turn: w.x * a.turn + w.y * b.turn + w.z * c.turn + w.w * d.turn,
+        bumps: [vec4(); 4],
+    }
+    for i in 0..4 {
+        let like = slot(b, i, slot(c, i, slot(a, i, d.bumps[i])))
+        let (ka, kb, kc, kd) = (
+            slot(a, i, like),
+            slot(b, i, like),
+            slot(c, i, like),
+            slot(d, i, like),
+        )
+        let at = kb.x
+        let angle = at + w.x * wrap(ka.x - at) + w.z * wrap(kc.x - at) + w.w * wrap(kd.x - at)
+        let rest = w.x * ka + w.y * kb + w.z * kc + w.w * kd
+        out.bumps[i] = vec4(angle, rest.y, max(rest.z, 0.0001), 0.0)
+    }
+    out
+}
+
+/// The weights of uniform Catmull–Rom control values `m - 1` to `m + 2` at `f` of the way from
+/// `m` to `m + 1`.
+fn catmull_rom(f: f32) -> vec4 {
+    let f2 = f * f
+    let f3 = f2 * f
+    vec4(
+        -0.5 * f3 + f2 - 0.5 * f,
+        1.5 * f3 - 2.5 * f2 + 1.0,
+        -1.5 * f3 + 2.0 * f2 + 0.5 * f,
+        0.5 * f3 - 0.5 * f2,
+    )
+}
+
+/// The most vertices a sweep's path has, once cut into straight pieces.
+pub const VERTICES: u32 = 33
+
+/// How far inside a piece's turn (times its curvature) a point is when `near` takes that
+/// piece's distance too.
+const GATE: f32 = 0.4
+
+/// A form along a path, by its `S` sections (`sweep`). The path, cut into straight pieces: its
+/// vertices (`at`), the plane at each (`normal`, along the path), up there (`up`, in the plane),
+/// and the path's length to each (`along`). Each section's place, as a fraction of the path's
+/// length (rising); its ends' domes, how far each reaches past its end (0: flat); and how far
+/// it reaches from its path at most (`reach`).
+pub struct Sweep<const S: u32>: Copy + GpuData {
+    pub at: [vec3; VERTICES],
+    pub normal: [vec3; VERTICES],
+    pub up: [vec3; VERTICES],
+    pub along: [f32; VERTICES],
+    pub vertices: u32,
+    pub sections: [Section; S],
+    pub places: [f32; S],
+    pub ends: vec2,
+    pub reach: f32,
+}
+
+/// The point at `t` (from `t1` to `t2`) on a centripetal Catmull–Rom curve through `p0` to
+/// `p3`, whose knots are `t0` to `t3` (Barry and Goldman's form).
+fn on_curve(p0: vec3, p1: vec3, p2: vec3, p3: vec3, k: vec4, t: f32) -> vec3 {
+    let a1 = mix(p0, p1, (t - k.x) / (k.y - k.x))
+    let a2 = mix(p1, p2, (t - k.y) / (k.z - k.y))
+    let a3 = mix(p2, p3, (t - k.z) / (k.w - k.z))
+    let b1 = mix(a1, a2, (t - k.x) / (k.z - k.x))
+    let b2 = mix(a2, a3, (t - k.y) / (k.w - k.y))
+    mix(b1, b2, (t - k.y) / (k.z - k.y))
+}
+
+/// `v` scaled to length 1, or held at length 10⁻⁹ or more before (so a derived interval,
+/// which runs every side of a branch, never divides by a range that holds 0).
+fn unit(v: vec3) -> vec3 {
+    v / max(length(v), 0.000000001)
+}
+
+/// `u` turned as the turn from unit `from` to unit `to` turns it.
+fn carry(u: vec3, from: vec3, to: vec3) -> vec3 {
+    let axis = cross(from, to)
+    let s = length(axis)
+    let c = dot(from, to)
+    if s < 0.000001 {
+        return u
+    }
+    let k = axis / s
+    u * c + cross(k, u) * s + k * (dot(k, u) * (1.0 - c))
+}
+
+/// A sweep along a smooth curve through `points` (a straight line for two), angle 0 toward
+/// `up` at its start, with `sections` at `places` (fractions of the path's length, rising from
+/// 0 to 1), and domes at its ends reaching `ends` past them (0: flat ends).
+pub fn sweep<const P: u32, const S: u32>(
+    points: [vec3; P],
+    up: vec3,
+    sections: [Section; S],
+    places: [f32; S],
+    ends: vec2 = vec2(),
+) -> Sweep<S> {
+    assert(P >= 2 && P <= VERTICES, "a sweep's path has 2 to 33 points")
+    assert(S >= 1, "a sweep has a section")
+    for i in 1..S {
+        assert(places[i] > places[i - 1], "a sweep's sections' places rise")
+    }
+    for i in 1..P {
+        assert(length(points[i] - points[i - 1]) > 0.0001, "a sweep's points are apart")
+    }
+    // Each span between points in pieces: one for a straight path, else as many as fit.
+    let per = if P == 2 { 1 } else { min(8, (VERTICES - 1) / (P - 1)) }
+    var at = [vec3(); VERTICES]
+    var n = 0
+    for i in 0..P - 1 {
+        let p1 = points[i]
+        let p2 = points[i + 1]
+        let p0 = if i == 0 { 2.0 * p1 - p2 } else { points[i - 1] }
+        let p3 = if i + 2 == P { 2.0 * p2 - p1 } else { points[i + 2] }
+        // Centripetal knots: no loops or cusps where the points' spacing changes.
+        let k0 = 0.0
+        let k1 = k0 + max(sqrt(length(p1 - p0)), 0.0001)
+        let k2 = k1 + max(sqrt(length(p2 - p1)), 0.0001)
+        let k3 = k2 + max(sqrt(length(p3 - p2)), 0.0001)
+        for j in 0..per {
+            let t = k1 + (k2 - k1) * f32(j) / f32(per)
+            at[n] = on_curve(p0, p1, p2, p3, vec4(k0, k1, k2, k3), t)
+            n += 1
+        }
+    }
+    at[n] = points[P - 1]
+    n += 1
+    // The planes: square to the path at its ends, halving its turn at each vertex between.
+    var normal = [vec3(); VERTICES]
+    for i in 0..n {
+        let back = if i == 0 { at[1] - at[0] } else { at[i] - at[i - 1] }
+        let ahead = if i + 1 == n { at[i] - at[i - 1] } else { at[i + 1] - at[i] }
+        normal[i] = normalize(normalize(back) + normalize(ahead))
+    }
+    var frame = [vec3(); VERTICES]
+    var along = [0.0; VERTICES]
+    let u0 = up - normal[0] * dot(up, normal[0])
+    assert(length(u0) > 0.000001, "a sweep's up is along its path's start")
+    frame[0] = normalize(u0)
+    for i in 1..n {
+        let u = carry(frame[i - 1], normal[i - 1], normal[i])
+        frame[i] = normalize(u - normal[i] * dot(u, normal[i]))
+        along[i] = along[i - 1] + length(at[i] - at[i - 1])
+    }
+    // How far it reaches: its sections' largest radius (64 angles each, and a quarter more,
+    // as the curve between sections can pass them), or a dome's reach.
+    var most = 0.0
+    for i in 0..S {
+        for j in 0..64 {
+            most = max(most, sections[i].radius(TAU * f32(j) / 64.0))
+        }
+    }
+    let reach = max(1.25 * most, max(ends.x, ends.y)) + 0.001
+    Sweep { at, normal, up: frame, along, vertices: n, sections, places, ends, reach }
+}
+
+/// Where a point is about a sweep: how far along the path (less than 0 before its start, more
+/// than its length past its end, by the distance past), how far from the path, and at what
+/// angle (from up, toward the left).
+pub struct Place: Copy {
+    pub along: f32,
+    pub rho: f32,
+    pub theta: f32,
+}
+
+impl<const S: u32> Sweep<S> {
+    /// The path's length.
+    pub fn length(self) -> f32 {
+        self.along[self.vertices - 1]
+    }
+
+    /// The section `f` of the way along the path (held at the first and last sections' beyond
+    /// them).
+    pub fn section_at(self, f: f32) -> Section {
+        if S == 1 || f <= self.places[0] {
+            return self.sections[0]
+        }
+        if f >= self.places[S - 1] {
+            return self.sections[S - 1]
+        }
+        var m = 0
+        for i in 0..S - 1 {
+            if f >= self.places[i] {
+                m = i
+            }
+        }
+        let x = saturate((f - self.places[m]) / (self.places[m + 1] - self.places[m]))
+        let b = self.sections[m]
+        let c = self.sections[m + 1]
+        // Past the first and last, a control section is carried on as a line (2 b − c).
+        let a = if m == 0 { blend(c, b, c, c, vec4(-1.0, 2.0, 0.0, 0.0)) } else {
+            self.sections[m - 1]
+        }
+        let d = if m + 2 == S { blend(b, c, b, b, vec4(-1.0, 2.0, 0.0, 0.0)) } else {
+            self.sections[m + 2]
+        }
+        blend(a, b, c, d, catmull_rom(x))
+    }
+
+    /// How far `p` is past the plane at piece `i`'s start (toward its end) and before the plane
+    /// at its end, and how far outside the piece's span that puts it (but before the path's
+    /// start or past its end, which are the ends' regions).
+    fn span(self, i: u32, p: vec3) -> (f32, f32, f32) {
+        let g0 = dot(self.normal[i], p - self.at[i])
+        let g1 = dot(self.normal[i + 1], self.at[i + 1] - p)
+        let outside = select(if_false: max(-g0, 0.0), if_true: 0.0, cond: i == 0) +
+            select(if_false: max(-g1, 0.0), if_true: 0.0, cond: i + 2 == self.vertices)
+        (g0, g1, outside)
+    }
+
+    /// Where `p` is about piece `i` of the path, but its angle (`angled`): in the plane through
+    /// it of those that turn from the plane at the piece's start to the plane at its end (about
+    /// the line where they meet), held at the piece's ends; and how far `p` is outside the
+    /// piece's span (`span`).
+    fn about(self, i: u32, p: vec3) -> About {
+        let a = self.at[i]
+        let b = self.at[i + 1]
+        let n0 = self.normal[i]
+        let n1 = self.normal[i + 1]
+        let (g0, g1, outside) = self.span(i, p)
+        let lam = saturate(g0 / max(g0 + g1, 0.000000001))
+        let w = unit(b - a)
+        let c0 = dot(n0, w)
+        let c1 = dot(n1, w)
+        let len = length(b - a)
+        let t = clamp(lam * len * c1 / max((1.0 - lam) * c0 + lam * c1, 0.000001), 0.0, len)
+        let n = unit(mix(n0, n1, lam))
+        let q = p - (a + w * t)
+        let q_in = q - n * dot(q, n)
+        // Before the path's start, or past its end: by how far.
+        let before = select(if_false: 0.0, if_true: min(g0, 0.0), cond: i == 0)
+        let past = select(if_false: 0.0, if_true: max(-g1, 0.0), cond: i + 2 == self.vertices)
+        let along = self.along[i] + t + before + past
+        About { place: Place { along, rho: length(q_in), theta: 0.0 }, outside, q: q_in, n, lam }
+    }
+
+    /// `a`'s place about piece `i`, with its angle: from up there (carried along the path, in
+    /// `a`'s plane), toward the left.
+    fn angled(self, i: u32, a: About) -> Place {
+        let u = mix(self.up[i], self.up[i + 1], a.lam)
+        let uu = unit(u - a.n * dot(u, a.n))
+        let v = cross(uu, a.n)
+        // On the path the angle is any: 0.
+        let theta = select(
+            if_false: atan2(dot(a.q, v), dot(a.q, uu)),
+            if_true: 0.0,
+            cond: a.place.rho < 0.000001,
+        )
+        Place { theta, ..a.place }
+    }
+
+    /// Where `p` is about the sweep (`Place`): about the piece of path whose span holds it.
+    /// That piece is the nearest by its distance from the path in its plane and how far it is
+    /// outside the piece's span (0 for that one); where two hold it, inside a sharp turn, the
+    /// nearer.
+    pub fn place(self, p: vec3) -> Place {
+        self.nearest(p).0
+    }
+
+    /// `place`'s piece: where `p` is about it, how far it's outside its span, and which it is.
+    /// Only that piece's angle is found.
+    fn nearest(self, p: vec3) -> (Place, f32, u32) {
+        var best = self.about(0, p)
+        var which = 0
+        var key = rank(best.place, best.outside)
+        for i in 1..self.vertices - 1 {
+            let a = self.about(i, p)
+            let k = rank(a.place, a.outside)
+            if k < key {
+                best = a
+                which = i
+                key = k
+            }
+        }
+        (self.angled(which, best), best.outside, which)
+    }
+}
+
+/// Where a point is about a piece of a sweep's path, but its angle (`Sweep::about`): its place
+/// (its `theta` 0), how far it's outside the piece's span, and what its angle needs: where it
+/// is in the piece's plane from the path (`q`), the plane (`n`, its normal), and how far the
+/// plane is from the piece's start to its end (`lam`).
+struct About: Copy {
+    place: Place,
+    outside: f32,
+    q: vec3,
+    n: vec3,
+    lam: f32,
+}
+
+/// How `nearest` ranks a piece: one whose span holds the point (`outside` 0) by its distance
+/// from the path in its plane, before any that doesn't; those by that and how far outside.
+fn rank(pl: Place, outside: f32) -> f32 {
+    select(
+        if_false: pl.rho,
+        if_true: 10000.0 + sqrt(pl.rho * pl.rho + outside * outside),
+        cond: outside > 0.0,
+    )
+}
+
+/// How far the radius changes per metre along the path (`along`) and per radian around it
+/// (`around`), by central differences.
+fn slopes<const S: u32>(sw: Sweep<S>, sec: Section, s: f32, theta: f32) -> vec2 {
+    let len = sw.length()
+    let ds = 0.001
+    let a = clamp(s - ds, 0.0, len)
+    let b = clamp(s + ds, 0.0, len)
+    let along = if b > a {
+        (sw.section_at(b / len).radius(theta) - sw.section_at(a / len).radius(theta)) /
+            max(b - a, 0.000000001)
+    } else {
+        0.0
+    }
+    let dt = 0.01
+    let around = (sec.radius(theta + dt) - sec.radius(theta - dt)) / (2.0 * dt)
+    vec2(along, around)
+}
+
+impl<const S: u32> Sweep<S> {
+    /// How far `p` is from the path (its pieces, straight).
+    pub fn to_path(self, p: vec3) -> f32 {
+        var d = 1.0e9
+        for i in 0..self.vertices - 1 {
+            let a = self.at[i]
+            let ab = self.at[i + 1] - a
+            let t = saturate(dot(p - a, ab) / max(dot(ab, ab), 0.000000001))
+            d = min(d, length(p - a - ab * t))
+        }
+        d
+    }
+}
+
+impl<const S: u32> Surface for Sweep<S> {
+    /// The distance to the union of its pieces (`near`), never less than the distance to the
+    /// path less the sweep's reach (a bound that's 0 or less at the surface, so the surface is
+    /// the same): far away, where a derived interval can't tell which piece of the path a box
+    /// is about, it keeps the interval tight.
+    fn distance(self, p: vec3) -> f32 {
+        max(self.near(p), self.to_path(p) - self.reach)
+    }
+}
+
+impl<const S: u32> Sweep<S> {
+    /// The distance near the sweep (`distance`, without its bound far away): to the union of
+    /// its path's pieces, each capped by the planes at its ends. The piece whose span holds `p`
+    /// first (`nearest`), from where `p` is about it; then any other that could be nearer, from
+    /// where `p` is about that one, at least as far as `p` is outside its span. Inside a turn
+    /// sharper than the sweep is thick, two pieces' spans both hold a point, and taking one of
+    /// them made the distance jump where they changed over: bands across the surface, and
+    /// gradients of 4 to 6 (round 6's grazers). The nearest of them doesn't jump.
+    ///
+    /// Only pieces `p` is well inside the turn of (`GATE`) can be nearer than the one that holds
+    /// it; elsewhere a piece's distance is that piece's, past its plane, and no less. Taking only
+    /// those, the distance is within 0.13 mm of the whole union's within 3 cm of a bent leg's, a
+    /// folded hock's and a torus's surface, and never more than 9% above it farther out (the
+    /// bound's 25% margin holds that).
+    pub fn near(self, p: vec3) -> f32 {
+        let (first, out, which) = self.nearest(p)
+        var best = self.piece_distance(first, out)
+        for i in 0..self.vertices - 1 {
+            // How far `p` is outside the piece's span, from its end planes alone (cheaply): a
+            // piece it's farther outside than the best can't be nearer.
+            let (_, _, outside) = self.span(i, p)
+            // How far `p` is toward the centre of the piece's turn, times its curvature.
+            let inward = dot(
+                p - 0.5 * (self.at[i] + self.at[i + 1]),
+                self.normal[i + 1] - self.normal[i],
+            ) /
+                max(self.along[i + 1] - self.along[i], 0.000000001)
+            if outside < best && i != which && inward > GATE {
+                let a = self.about(i, p)
+                best = min(best, self.piece_distance(self.angled(i, a), a.outside))
+            }
+        }
+        best
+    }
+
+    /// The distance from a point at `pl` about a piece of the path, `outside` past that piece's
+    /// span: from the side, ρ − r over the side's slope (√(1 + r_s² + (r_θ / ρ)²), ρ held at
+    /// least half the radius, as a loft's); past a flat end, the larger of that and the distance
+    /// past; past a domed end, the distance to an ellipse whose half-axes are the section's
+    /// radius and the dome's reach (never more than the true distance); and at least `outside`.
+    fn piece_distance(self, pl: Place, outside: f32) -> f32 {
+        let len = self.length()
+        let s = clamp(pl.along, 0.0, len)
+        let sec = self.section_at(s / len)
+        let r = sec.radius(pl.theta)
+        let k = slopes(self, sec, s, pl.theta)
+        let around = k.y / max(max(pl.rho, 0.5 * r), 0.001)
+        let side = (pl.rho - r) / sqrt(1.0 + k.x * k.x + around * around)
+        let past = max(-pl.along, pl.along - len)
+        let dome = select(if_false: self.ends.y, if_true: self.ends.x, cond: pl.along < 0.5 * len)
+        let d = if past > 0.0 && dome > 0.0 {
+            let q = vec2(pl.rho / max(r, 0.0001), past / max(dome, 0.000001))
+            (length(q) - 1.0) * min(r, dome)
+        } else if dome > 0.0 {
+            side
+        } else {
+            max(side, past)
+        }
+        // Past the piece's span, at least as far as it's outside (inside it, the span holds
+        // nothing back).
+        select(if_false: d, if_true: length(vec2(max(d, 0.0), outside)), cond: outside > 0.0)
+    }
+}
+
+impl<const S: u32> Lipschitz for Sweep<S> {
+    /// From samples of its sections (64 places by 64 angles): the side's slope changes over
+    /// `near`, as a loft's (1 + `near` times how fast it changes). And where the path turns,
+    /// by κ per metre, a slope along it is steeper by up to 1 / (1 − κ r) on the inside of the
+    /// turn at radius r (sampled at each vertex, 32 angles). Infinite where `near` reaches
+    /// half the least radius, or a turn's centre (κ (r + `near`) ≥ 0.9). Then 25% more: the
+    /// samples miss what's between them.
+    fn lipschitz(self, near: f32) -> f32 {
+        let len = self.length()
+        let near = max(near, 0.0)
+        var least = 1.0e9
+        var grows = 0.0
+        for i in 0..64 {
+            let f = f32(i) / 63.0
+            let sec = self.section_at(f)
+            for j in 0..64 {
+                let theta = TAU * f32(j) / 64.0
+                let r = sec.radius(theta)
+                least = min(least, r)
+                let k = slopes(self, sec, f * len, theta)
+                let k2 = slopes(self, sec, f * len, theta + 0.02)
+                grows = max(
+                    grows,
+                    abs(k2.y - k.y) / 0.02 / max(r * r, 0.000001) +
+                        abs(k2.x - k.x) / 0.02 / max(r, 0.0001) +
+                        abs(k.y) / max(r * r, 0.000001),
+                )
+            }
+        }
+        if least - near <= 0.5 * least {
+            return 1.0 / 0.0
+        }
+        var bend = 1.0
+        for i in 1..self.vertices - 1 {
+            let turn = acos(clamp(dot(self.normal[i - 1], self.normal[i + 1]), -1.0, 1.0))
+            let kappa = turn / max(0.5 * (self.along[i + 1] - self.along[i - 1]), 0.000001)
+            let sec = self.section_at(self.along[i] / len)
+            var r = 0.0
+            var slope = 0.0
+            for j in 0..32 {
+                let theta = TAU * f32(j) / 32.0
+                r = max(r, sec.radius(theta))
+                slope = max(slope, abs(slopes(self, sec, self.along[i], theta).x))
+            }
+            let kr = kappa * (r + near)
+            if kr >= 0.9 {
+                return 1.0 / 0.0
+            }
+            let steep = slope / (1.0 - kr)
+            bend = max(bend, sqrt(1.0 + steep * steep) / sqrt(1.0 + slope * slope))
+        }
+        (1.0 + near * grows) * bend * 1.25
+    }
+}

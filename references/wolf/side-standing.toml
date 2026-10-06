@@ -1,0 +1,18 @@
+# A reference photo for authoring: where it comes from, and its licence.
+title = "Black and grey wolf (female from Druid pack, \"Half Black\") standing in road near Lamar River bridge (f7420519-1dd8-b71b-0b38-d5ffcfa1d981).jpg"
+author = "NPS/Jim Peaco"
+credit = "NPGallery"
+source = "https://commons.wikimedia.org/wiki/File:Black_and_grey_wolf_(female_from_Druid_pack,_%22Half_Black%22)_standing_in_road_near_Lamar_River_bridge_(f7420519-1dd8-b71b-0b38-d5ffcfa1d981).jpg"
+original = "https://upload.wikimedia.org/wikipedia/commons/b/b0/Black_and_grey_wolf_%28female_from_Druid_pack%2C_%22Half_Black%22%29_standing_in_road_near_Lamar_River_bridge_%28f7420519-1dd8-b71b-0b38-d5ffcfa1d981%29.jpg"
+original_size = [2116, 1375]
+licence = "Public domain: a work of the US federal government"
+taken = "the 1280 by 832 rendition Wikimedia Commons serves, unchanged"
+view = "side"
+
+# How the photo maps to a creature's side view, for `wrela studio <package> beside`: the
+# ground's row, metres a pixel (the withers, row 298, 0.8 m up), the column at z = 0 (midway
+# between the nose and the tail's base), and the way the wolf faces.
+ground_px = 720
+metres_per_px = 0.0018957
+z0_px = 461.5
+faces = "right"

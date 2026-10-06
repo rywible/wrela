@@ -1,0 +1,315 @@
+// Drawing: a frame's list of quads (rectangles, rounded or not, and glyphs), each clipped to a
+// rectangle, drawn by one instanced draw in order, later quads over earlier ones. A glyph's
+// coverage comes from its distance field, so text is sharp at any size from one atlas.
+
+use text::{Face, Fonts}
+use std::gpu::{
+    ClipPosition, Flat, GpuBuffer, InstanceIndex, Over, Sampler, Texture, Unorm8x4, VertexIndex,
+    buffer, draw, sampler, texture, write,
+}
+
+/// A rectangle in pixels from the screen's top left.
+pub struct Rect: Copy + Eq {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+impl Rect {
+    pub fn new(x: f32, y: f32, w: f32, h: f32) -> Rect {
+        Rect { x, y, w, h }
+    }
+
+    pub fn contains(self, p: vec2) -> bool {
+        p.x >= self.x && p.y >= self.y && p.x < self.x + self.w && p.y < self.y + self.h
+    }
+
+    /// Smaller by `d` on every side.
+    pub fn shrink(self, d: f32) -> Rect {
+        Rect {
+            x: self.x + d,
+            y: self.y + d,
+            w: max(self.w - 2.0 * d, 0.0),
+            h: max(self.h - 2.0 * d, 0.0),
+        }
+    }
+
+    /// Where it overlaps `o` (empty if they don't).
+    pub fn intersect(self, o: Rect) -> Rect {
+        let x0 = max(self.x, o.x)
+        let y0 = max(self.y, o.y)
+        let x1 = min(self.x + self.w, o.x + o.w)
+        let y1 = min(self.y + self.h, o.y + o.h)
+        Rect { x: x0, y: y0, w: max(x1 - x0, 0.0), h: max(y1 - y0, 0.0) }
+    }
+
+    pub fn center(self) -> vec2 {
+        vec2(self.x + 0.5 * self.w, self.y + 0.5 * self.h)
+    }
+
+    pub fn right(self) -> f32 {
+        self.x + self.w
+    }
+
+    pub fn bottom(self) -> f32 {
+        self.y + self.h
+    }
+}
+
+/// One quad: a rectangle (`scale` 0) with rounded corners of `radius` pixels, or a glyph,
+/// whose field's coverage is `(v − 0.5) × scale + 0.5`. `uv` is the glyph's corners in the
+/// atlas, from 0 to 1; `clip` indexes the list's clipping rectangles.
+pub struct Quad: Copy + GpuData {
+    pub rect: vec4,
+    pub uv: vec4,
+    pub color: Unorm8x4,
+    pub clip: u32,
+    pub scale: f32,
+    pub radius: f32,
+}
+
+/// What a frame draws: quads in order, and the rectangles they're clipped to.
+pub struct DrawList: Clone {
+    pub quads: Vec<Quad>,
+    pub clips: Vec<vec4>,
+    stack: Vec<u32>,
+    clip: u32,
+}
+
+impl DrawList {
+    pub fn new() -> DrawList {
+        DrawList { quads: Vec::new(), clips: Vec::new(), stack: Vec::new(), clip: 0 }
+    }
+
+    /// Empties it for a frame `screen` pixels wide and high: nothing clipped but by the screen.
+    pub fn clear(mut self, screen: vec2) {
+        self.quads.clear()
+        self.clips.clear()
+        self.stack.clear()
+        self.clips.push(vec4(0.0, 0.0, screen.x, screen.y))
+        self.clip = 0
+    }
+
+    /// The clipping rectangle now.
+    pub fn clip_rect(self) -> Rect {
+        let c = self.clips[self.clip]
+        Rect { x: c.x, y: c.y, w: c.z - c.x, h: c.w - c.y }
+    }
+
+    /// Clips what's drawn next to `r` too, until `pop_clip`.
+    pub fn push_clip(mut self, r: Rect) {
+        let c = self.clip_rect().intersect(r)
+        self.stack.push(self.clip)
+        self.clip = self.clips.len()
+        self.clips.push(vec4(c.x, c.y, c.x + c.w, c.y + c.h))
+    }
+
+    pub fn pop_clip(mut self) {
+        if let Some(c) = self.stack.pop() {
+            self.clip = c
+        }
+    }
+
+    /// A rectangle of `color`, its corners rounded by `radius` pixels.
+    pub fn rect(mut self, r: Rect, color: vec4, radius: f32 = 0.0) {
+        if r.w <= 0.0 || r.h <= 0.0 || color.w <= 0.0 {
+            return
+        }
+        self.quads.push(
+            Quad {
+                rect: vec4(r.x, r.y, r.w, r.h),
+                uv: vec4(0.0),
+                color: Unorm8x4::encode(color),
+                clip: self.clip,
+                scale: 0.0,
+                radius: min(radius, 0.5 * min(r.w, r.h)),
+            },
+        )
+    }
+
+    /// The outline of `r`, `width` pixels wide, inside it.
+    pub fn frame(mut self, r: Rect, color: vec4, width: f32 = 1.0) {
+        self.rect(Rect::new(r.x, r.y, r.w, width), color)
+        self.rect(Rect::new(r.x, r.bottom() - width, r.w, width), color)
+        self.rect(Rect::new(r.x, r.y + width, width, r.h - 2.0 * width), color)
+        self.rect(Rect::new(r.right() - width, r.y + width, width, r.h - 2.0 * width), color)
+    }
+
+    /// `text` in `face` at `size` pixels per em, its first line's top at `at` (its baseline
+    /// below by the font's ascent, on a whole pixel). How wide it was.
+    pub fn text(
+        mut self,
+        fonts: Fonts,
+        face: Face,
+        text: str,
+        size: f32,
+        at: vec2,
+        color: vec4,
+    ) -> f32 {
+        borrow font = fonts.font(face)
+        let k = size / font.em
+        let baseline = floor(at.y + font.ascender * size + 0.5)
+        let packed = Unorm8x4::encode(color)
+        let scale = 2.0 * font.spread * k
+        // tools/wfont pads each field by its spread, rounded up, and a texel.
+        let pad = ceil(font.spread) + 1.0
+        let aw = f32(fonts.width)
+        let ah = f32(fonts.height)
+        let end = font.walk(text, size, at.x, |_i, gi, pen| {
+            let g = font.glyph(gi)
+            if g.width > 0 {
+                // The field reaches `pad` texels past the ink; only half a pixel of it is drawn,
+                // so the quad covers the ink and that half pixel (and a half texel, for
+                // filtering).
+                let inset = clamp(pad - 0.5 / k - 0.5, 0.0, 0.5 * min(f32(g.width), f32(g.height)))
+                let x = pen + (g.left + inset) * k
+                let y = baseline - (g.top - inset) * k
+                let fw = f32(g.width) - 2.0 * inset
+                let fh = f32(g.height) - 2.0 * inset
+                let u0 = (f32(g.atlas_x) + inset) / aw
+                let v0 = (f32(g.atlas_y) + inset) / ah
+                self.quads.push(
+                    Quad {
+                        rect: vec4(x, y, fw * k, fh * k),
+                        uv: vec4(u0, v0, u0 + fw / aw, v0 + fh / ah),
+                        color: packed,
+                        clip: self.clip,
+                        scale,
+                        radius: 0.0,
+                    },
+                )
+            }
+            true
+        })
+        end - at.x
+    }
+}
+
+// ---- the GPU -------------------------------------------------------------------------------------
+
+/// What a quad's corner passes on.
+pub struct QuadVertex: Copy {
+    pub clip_pos: ClipPosition,
+    /// Where in the atlas, for a glyph.
+    pub uv: vec2,
+    /// From the quad's centre, in pixels, for a rounded rectangle.
+    pub local: vec2,
+    /// The pixel, for clipping.
+    pub pixel: vec2,
+    pub color: Flat<vec4>,
+    /// The clipping rectangle: left, top, right, bottom.
+    pub clip: Flat<vec4>,
+    /// `scale`, `radius`, and the quad's half width and height.
+    pub shape: Flat<vec4>,
+}
+
+@vertex
+fn quad_corner(
+    v: VertexIndex,
+    i: InstanceIndex,
+    quads: [Quad],
+    clips: [vec4],
+    screen: vec2,
+) -> QuadVertex {
+    let q = quads[i.index]
+    let corners = [
+        vec2(0.0, 0.0),
+        vec2(1.0, 0.0),
+        vec2(0.0, 1.0),
+        vec2(0.0, 1.0),
+        vec2(1.0, 0.0),
+        vec2(1.0, 1.0),
+    ]
+    let c = corners[v.index]
+    let p = q.rect.xy + c * q.rect.zw
+    let ndc = vec2(2.0 * p.x / screen.x - 1.0, 1.0 - 2.0 * p.y / screen.y)
+    QuadVertex {
+        clip_pos: ClipPosition { position: vec4(ndc, 0.0, 1.0) },
+        uv: mix(q.uv.xy, q.uv.zw, c),
+        local: (c - vec2(0.5)) * q.rect.zw,
+        pixel: p,
+        color: Flat { value: q.color.decode() },
+        clip: Flat { value: clips[q.clip] },
+        shape: Flat { value: vec4(q.scale, q.radius, 0.5 * q.rect.zw) },
+    }
+}
+
+@fragment
+fn quad_color(v: QuadVertex, atlas: Texture, linear: Sampler) -> Over {
+    let s = v.shape.value
+    var coverage = 1.0
+    if s.x > 0.0 {
+        // A glyph: the field's distance, scaled to this size's pixels.
+        let d = atlas.sample_level(linear, v.uv, 0.0).x
+        coverage = saturate((d - 0.5) * s.x + 0.5)
+    } else if s.y > 0.0 {
+        // A rounded rectangle: the distance to its edge.
+        let q = abs(v.local) - s.zw + vec2(s.y)
+        let d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - s.y
+        coverage = saturate(0.5 - d)
+    }
+    let c = v.clip.value
+    let inside = v.pixel.x >= c.x && v.pixel.x < c.z && v.pixel.y >= c.y && v.pixel.y < c.w
+    let a = if inside { v.color.value.w * coverage } else { 0.0 }
+    Over { color: vec4(v.color.value.xyz, a) }
+}
+
+/// Draws lists on the GPU: the atlas, and buffers that grow to the largest list.
+pub struct Renderer {
+    atlas: Texture,
+    linear: Sampler,
+    quads: GpuBuffer<Quad>,
+    clips: GpuBuffer<vec4>,
+    quad_room: u32,
+    clip_room: u32,
+    count: u32,
+}
+
+impl Renderer {
+    /// Makes the atlas from `fonts`' glyphs.
+    pub fn new(fonts: Fonts) -> Renderer {
+        var atlas = texture(fonts.width, fonts.height)
+        atlas.write(x: 0, y: 0, width: fonts.width, height: fonts.height, bytes: fonts.atlas())
+        Renderer {
+            atlas,
+            linear: sampler(),
+            quads: buffer(1024),
+            clips: buffer(64),
+            quad_room: 1024,
+            clip_room: 64,
+            count: 0,
+        }
+    }
+
+    /// Uploads `list`: before the pass that draws it begins.
+    pub fn upload(mut self, list: DrawList) {
+        if list.quads.len() > self.quad_room {
+            self.quad_room = max(list.quads.len(), 2 * self.quad_room)
+            self.quads = buffer(self.quad_room)
+        }
+        if list.clips.len() > self.clip_room {
+            self.clip_room = max(list.clips.len(), 2 * self.clip_room)
+            self.clips = buffer(self.clip_room)
+        }
+        if list.quads.len() > 0 {
+            write(mut self.quads, 0, list.quads)
+        }
+        if list.clips.len() > 0 {
+            write(mut self.clips, 0, list.clips)
+        }
+        self.count = list.quads.len()
+    }
+
+    /// Draws what was uploaded, in a pass on a target `screen` pixels wide and high.
+    pub fn draw(self, screen: vec2) {
+        if self.count > 0 {
+            draw(
+                quad_corner.bind(quads: self.quads, clips: self.clips, screen: screen),
+                quad_color.bind(atlas: self.atlas, linear: self.linear),
+                vertices: 6,
+                instances: self.count,
+            )
+        }
+    }
+}

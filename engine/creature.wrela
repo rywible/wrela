@@ -1,0 +1,1615 @@
+// Creatures (sketch 01 §3, and the authoring surface of M3): a skeleton, and parts, which are
+// fields in their bones' spaces, joined in order across the joints. A creature's structure is
+// its type, so every individual of a kind has one type and shares one set of pipelines; its
+// numbers are data (D-070).
+//
+// Bones have positions, not rotations, at rest: a part is placed by its bone's rest position,
+// and skinning (sketch 02) moves it with the bone's pose.
+//
+// Each part has a name, which tools show (std::field's parts, language.md §22), and joins what
+// comes before it by its own seam: smoothly over a width, hard, as a cut or as a clip. Parts can
+// be grouped: a group's parts join each other first, in the group's own space (moved, turned and
+// scaled), and the group joins the rest as one. A part or a group can be mirrored in x = 0: it
+// is written for x ≥ 0, and its image moves with the bones the skeleton pairs with its own (the
+// right legs' with the left's). A modifier changes the distance of everything before it in its
+// group (a cape, the ground). A creature is built from values, never heap memory, so a lifted
+// build derives gradients through all of it, its skeleton included (§22).
+
+use physique
+use physique::{Capsule, Mass, Per}
+use render::Parts
+use std::derive::{Box3, interval}
+use std::field::{Blend, Field, Lipschitz, PartName, Surface, smax, smin, smin_weight}
+use std::hash::StateHash
+use std::quat::Quat
+use std::serialize::Serialize
+
+/// A bone of a skeleton: its index there.
+pub struct Bone: Copy + Eq + StateHash + Serialize + GpuData {
+    pub index: u32,
+}
+
+/// A chain of evenly spaced bones, such as a neck or a tail.
+pub struct Chain: Copy + Eq + StateHash + Serialize {
+    first: u32,
+    joints: u32,
+    step: vec3,
+}
+
+impl Chain {
+    /// The bone at its base.
+    pub fn first(self) -> Bone {
+        Bone { index: self.first }
+    }
+
+    /// The bone at its tip.
+    pub fn last(self) -> Bone {
+        Bone { index: self.first + self.joints - 1 }
+    }
+
+    /// Joint `i`, from the base.
+    pub fn joint(self, i: u32) -> Bone {
+        assert(i < self.joints, "a chain's joint past its end")
+        Bone { index: self.first + i }
+    }
+
+    pub fn len(self) -> u32 {
+        self.joints
+    }
+
+    /// From one joint to the next, at rest, before the skeleton's scale.
+    pub fn step(self) -> vec3 {
+        self.step
+    }
+
+    /// From its base to one step past its tip: the whole chain.
+    pub fn span(self) -> vec3 {
+        self.step * f32(self.joints)
+    }
+}
+
+/// A leg: four joints (hip, knee, ankle and foot), and three segments between them.
+pub struct Leg: Copy + Eq + StateHash + Serialize {
+    pub joints: [Bone; 4],
+}
+
+/// A named chain, as a skeleton keeps it.
+struct NamedChain: Copy {
+    name: Text,
+    chain: Chain,
+}
+
+/// The most bones a skeleton has: a skinning palette's size (`render::MAX_BONES`).
+pub const MAX_BONES: u32 = 64
+
+/// The most chains a skeleton has.
+pub const MAX_CHAINS: u32 = 8
+
+/// Bones in a tree, with names for tools and agents, at rest. A value of fixed size: built in
+/// a constant, a name that doesn't exist fails the build (`find`); built by code from lifted
+/// literals, gradients run through it.
+pub struct Skeleton: Copy {
+    names: [Text; MAX_BONES],
+    parents: [u32; MAX_BONES],
+    /// Each bone's rest position, in the creature's rest space, at the skeleton's scale.
+    rests: [vec3; MAX_BONES],
+    /// Each bone's mirror image's bone (a left leg's, the right leg's): its own if it has none.
+    others: [u32; MAX_BONES],
+    count: u32,
+    chains: [NamedChain; MAX_CHAINS],
+    chain_count: u32,
+    legs: [Leg; 4],
+    leg_count: u32,
+}
+
+impl Skeleton {
+    pub fn new() -> Skeleton {
+        Skeleton {
+            names: [""; MAX_BONES],
+            parents: [0; MAX_BONES],
+            rests: [vec3(); MAX_BONES],
+            others: [0; MAX_BONES],
+            count: 0,
+            chains: [NamedChain {
+                name: "",
+                chain: Chain { first: 0, joints: 0, step: vec3() },
+            }; MAX_CHAINS],
+            chain_count: 0,
+            legs: [Leg { joints: [Bone { index: 0 }; 4] }; 4],
+            leg_count: 0,
+        }
+    }
+
+    fn add(mut self, name: Text, parent: u32, rest: vec3) -> Bone {
+        assert(self.count < MAX_BONES, "a skeleton has at most 64 bones (`MAX_BONES`)")
+        let index = self.count
+        self.names[index] = name
+        self.parents[index] = parent
+        self.rests[index] = rest
+        self.others[index] = index
+        self.count += 1
+        Bone { index }
+    }
+
+    /// A bone with no parent, at `at`.
+    pub fn root(mut self, name: Text, at: vec3) -> Bone {
+        let i = self.count
+        self.add(name, i, at)
+    }
+
+    /// A bone at `at` from `parent`.
+    pub fn bone(mut self, name: Text, parent: Bone, at: vec3) -> Bone {
+        self.add(name, parent.index, self.rests[parent.index] + at)
+    }
+
+    /// A bone whose rest position is `rest`, under `parent`: for a skeleton written as its
+    /// joints' places.
+    pub fn joint(mut self, name: Text, parent: Bone, rest: vec3) -> Bone {
+        self.add(name, parent.index, rest)
+    }
+
+    /// `joints` bones, the first at `at` from `parent`, each next one `span / joints` from the
+    /// one before, so the chain reaches `span` one step past its last joint.
+    pub fn chain(mut self, name: Text, parent: Bone, at: vec3, joints: u32, span: vec3) -> Chain {
+        assert(joints > 0, "a chain needs a joint")
+        assert(self.chain_count < MAX_CHAINS, "a skeleton has at most 8 chains")
+        let step = span / f32(joints)
+        let first = self.bone(name, parent, at)
+        var prev = first
+        for _ in 1..joints {
+            prev = self.bone(name, prev, step)
+        }
+        let chain = Chain { first: first.index, joints, step }
+        self.chains[self.chain_count] = NamedChain { name, chain }
+        self.chain_count += 1
+        chain
+    }
+
+    /// A leg whose hip is at `at` from `parent`, with segments `segments` (each from one joint
+    /// to the next).
+    pub fn leg(mut self, name: Text, parent: Bone, at: vec3, segments: [vec3; 3]) -> Leg {
+        let hip = self.bone(name, parent, at)
+        let knee = self.bone(name, hip, segments[0])
+        let ankle = self.bone(name, knee, segments[1])
+        let foot = self.bone(name, ankle, segments[2])
+        self.add_leg(Leg { joints: [hip, knee, ankle, foot] })
+    }
+
+    /// A leg whose four joints (hip, knee, ankle and foot) are at rest at `rests`, each named.
+    pub fn leg_at(mut self, names: [Text; 4], parent: Bone, rests: [vec3; 4]) -> Leg {
+        let hip = self.joint(names[0], parent, rests[0])
+        let knee = self.joint(names[1], hip, rests[1])
+        let ankle = self.joint(names[2], knee, rests[2])
+        let foot = self.joint(names[3], ankle, rests[3])
+        self.add_leg(Leg { joints: [hip, knee, ankle, foot] })
+    }
+
+    fn add_leg(mut self, leg: Leg) -> Leg {
+        assert(self.leg_count < 4, "a skeleton has at most 4 legs")
+        self.legs[self.leg_count] = leg
+        self.leg_count += 1
+        leg
+    }
+
+    /// Makes `a` and `b` each other's mirror image: a part mirrored on one moves with the other
+    /// where it's reflected.
+    pub fn pair(mut self, a: Bone, b: Bone) {
+        self.others[a.index] = b.index
+        self.others[b.index] = a.index
+    }
+
+    /// `pair` for each joint of two legs.
+    pub fn pair_legs(mut self, a: Leg, b: Leg) {
+        for i in 0..4 {
+            self.pair(a.joints[i], b.joints[i])
+        }
+    }
+
+    /// A bone at `rest` under `parent` (`joint`), named `name`, then its mirror image in x = 0,
+    /// named `image`, under the parent's image (`other`), paired with it.
+    pub fn joint_pair(mut self, name: Text, image: Text, parent: Bone, rest: vec3) -> (Bone, Bone) {
+        let a = self.joint(name, parent, rest)
+        let b = self.joint(image, self.other(parent), reflect_x(rest))
+        self.pair(a, b)
+        (a, b)
+    }
+
+    /// A leg whose joints are at `rests` under `parent` (`leg_at`), named `names`, then its
+    /// mirror image in x = 0, named `images`, under the parent's image, paired with it.
+    pub fn leg_pair(
+        mut self,
+        names: [Text; 4],
+        images: [Text; 4],
+        parent: Bone,
+        rests: [vec3; 4],
+    ) -> (Leg, Leg) {
+        let a = self.leg_at(names, parent, rests)
+        let at = [
+            reflect_x(rests[0]),
+            reflect_x(rests[1]),
+            reflect_x(rests[2]),
+            reflect_x(rests[3]),
+        ]
+        let b = self.leg_at(images, self.other(parent), at)
+        self.pair_legs(a, b)
+        (a, b)
+    }
+
+    /// The bone named `name`; in a constant, a name that doesn't exist fails the build.
+    pub fn find(self, name: Text) -> Bone {
+        for i in 0..self.count {
+            if self.names[i] == name {
+                return Bone { index: i }
+            }
+        }
+        panic("no bone has that name")
+    }
+
+    /// The chain named `name`.
+    pub fn find_chain(self, name: Text) -> Chain {
+        for i in 0..self.chain_count {
+            if self.chains[i].name == name {
+                return self.chains[i].chain
+            }
+        }
+        panic("no chain has that name")
+    }
+
+    /// A copy `k` times the size, about the origin.
+    pub fn scaled(self, k: f32) -> Skeleton {
+        var out = self
+        for i in 0..out.count {
+            out.rests[i] = out.rests[i] * k
+        }
+        out
+    }
+
+    pub fn len(self) -> u32 {
+        self.count
+    }
+
+    pub fn name(self, b: Bone) -> Text {
+        self.names[b.index]
+    }
+
+    pub fn parent(self, b: Bone) -> Bone {
+        Bone { index: self.parents[b.index] }
+    }
+
+    /// Its mirror image (`pair`), or itself.
+    pub fn other(self, b: Bone) -> Bone {
+        Bone { index: self.others[b.index] }
+    }
+
+    /// Where a bone is, at rest.
+    pub fn rest(self, b: Bone) -> vec3 {
+        self.rests[b.index]
+    }
+
+    /// Its legs, in the order they were added (the first `leg_count()`).
+    pub fn legs(self) -> [Leg; 4] {
+        self.legs
+    }
+
+    pub fn leg_count(self) -> u32 {
+        self.leg_count
+    }
+}
+
+// ---- seams, spaces and modifiers ---------------------------------------------------------------
+
+/// How a part joins what comes before it.
+pub enum Join: Copy + Eq + GpuData {
+    /// A smooth union (`smin`).
+    Smooth,
+    /// A union (`min`).
+    Hard,
+    /// What comes before, less the part, its edge rounded (`smax(d, -x)`).
+    Cut,
+    /// What comes before and the part hold in common, rounded (`smax(d, x)`).
+    Clip,
+    /// A union whose surface sinks into a groove where the two meet (`crease`): a fold.
+    Crease,
+}
+
+/// A join and its width: the distance over which it's rounded (or, a crease, how wide its
+/// groove is); and a crease's depth.
+pub struct Seam: Copy + GpuData {
+    pub join: Join,
+    pub k: f32,
+    pub depth: f32,
+}
+
+/// A smooth union over about `k`.
+pub fn smooth(k: f32) -> Seam {
+    Seam { join: Join::Smooth, k, depth: 0.0 }
+}
+
+/// A union with no rounding.
+pub fn hard() -> Seam {
+    Seam { join: Join::Hard, k: 0.0, depth: 0.0 }
+}
+
+/// A cut, its edge rounded over about `k`.
+pub fn cut(k: f32) -> Seam {
+    Seam { join: Join::Cut, k, depth: 0.0 }
+}
+
+/// A clip, its edge rounded over about `k`.
+pub fn clip(k: f32) -> Seam {
+    Seam { join: Join::Clip, k, depth: 0.0 }
+}
+
+/// A fold where two forms meet: a union whose surface sinks into a groove `depth` deep along
+/// the line where they cross, fading over `k` either side of it (the flank's fold into the
+/// thigh, an elbow's crease, the line of a lip): a smooth union's fillet turned over. Not
+/// more than a third of `k` deep, so its gradient stays within 1 + 4 `depth` / `k` (7/3) of
+/// theirs. It raises the distance wherever the two are within `k` of each other, inside too:
+/// where they overlap by less than `depth`, it cuts through.
+pub fn crease(k: f32, depth: f32) -> Seam {
+    assert(
+        k > 0.0 && depth >= 0.0 && depth <= k / 3.0,
+        "a crease is 0 to a third of its width deep",
+    )
+    Seam { join: Join::Crease, k, depth }
+}
+
+/// A smooth union over the creature's width (`Body::blend`): what a part has unless it says.
+pub const BLENDED: Seam = Seam { join: Join::Smooth, k: -1.0, depth: 0.0 }
+
+impl Seam {
+    /// Its width: its own, or the creature's `k` where it has none.
+    pub fn width(self, k: f32) -> f32 {
+        if self.k < 0.0 { k } else { self.k }
+    }
+
+    /// `d` joined by `x`. A width of 0 (a creature that doesn't `blend`) is a hard join,
+    /// chosen here: `smin`'s derived interval can't take a width of 0.
+    pub fn apply(self, d: f32, x: f32, k: f32) -> f32 {
+        let w = self.width(k)
+        match self.join {
+            Join::Smooth => if w > 0.0 { smin(d, x, w) } else { min(d, x) },
+            Join::Hard => min(d, x),
+            Join::Cut => if w > 0.0 { smax(d, -x, w) } else { max(d, -x) },
+            Join::Clip => if w > 0.0 { smax(d, x, w) } else { max(d, x) },
+            // A smooth union's fillet, turned over and scaled from its k/4 to `depth`: a groove.
+            Join::Crease => {
+                let m = min(d, x)
+                m + 4.0 * self.depth / max(w, 0.000001) * (m - smin(d, x, w))
+            },
+        }
+    }
+
+    /// How much steeper its join can make the distance than its parts' (`crease`).
+    pub fn steepness(self) -> f32 {
+        if self.join == Join::Crease { 1.0 + 4.0 * self.depth / max(self.k, 0.000001) } else { 1.0 }
+    }
+
+    /// Whether the joined distance follows `x` more than `d`.
+    pub fn wins(self, d: f32, x: f32) -> bool {
+        match self.join {
+            Join::Cut => -x > d,
+            Join::Clip => x > d,
+            _ => x < d,
+        }
+    }
+
+    /// The channels where `d` (channels `c`) is joined by `x` (channels `cx`).
+    pub fn blend<C: Blend>(self, d: f32, c: take C, x: f32, cx: take C, k: f32) -> C {
+        let w = self.width(k)
+        match self.join {
+            Join::Smooth => c.blend(cx, smin_weight(d, x, w)),
+            // (A crease's colours are a hard join's: its two forms meet along the groove.)
+            Join::Hard | Join::Crease => if x < d { cx } else { c },
+            // A cut's face is what it cuts.
+            Join::Cut => c,
+            Join::Clip => c.blend(cx, smin_weight(-d, -x, w)),
+        }
+    }
+
+    /// Whether a part with this seam can't change the result where it's farther than the
+    /// result plus the width (a smooth or hard union only lowers it; a crease raises it only
+    /// within its width of it).
+    fn lowers(self) -> bool {
+        self.join == Join::Smooth || self.join == Join::Hard || self.join == Join::Crease
+    }
+
+    /// `best` (a distance and its leaf) joined by `x` from leaf `leaf`: the joined distance,
+    /// and the leaf it follows more (`PartList::fold_part`).
+    fn join_part(self, best: (f32, u32), x: f32, leaf: u32, k: f32) -> (f32, u32) {
+        (self.apply(best.0, x, k), if self.wins(best.0, x) { leaf } else { best.1 })
+    }
+
+    /// `dc` (a distance and its channels) joined by `x` with channels `cx`
+    /// (`PartChannels::fold_channels`).
+    fn join_channels<C: Blend + Copy>(self, dc: take (f32, C), x: f32, cx: C, k: f32) -> (f32, C) {
+        (self.apply(dc.0, x, k), self.blend(dc.0, dc.1, x, cx, k))
+    }
+
+    /// An item's bit (`first`) if its distance (`distance`, over `b`) can change the fold
+    /// where what follows leaves it at most `hi`, and the most the fold before it can be there
+    /// (`PartList::near_mask`).
+    fn near_mask(
+        self,
+        b: Box3,
+        hi: f32,
+        k: f32,
+        first: u32,
+        distance: fn(vec3) -> f32,
+    ) -> (u32, f32) {
+        if !self.lowers() {
+            return (bit(first), hi)
+        }
+        let r = interval(distance, b)
+        (if r.lo < hi + self.width(k) { bit(first) } else { 0 }, hi)
+    }
+
+    /// How far from the surface an item's distance can be where the fold after its join is
+    /// within `near` of it (`PartList::reach`).
+    fn reach(self, near: f32, k: f32) -> f32 {
+        near + 1.25 * max(self.width(k), 0.0)
+    }
+}
+
+/// A group's space: its origin at `at` in the space it's in, turned and scaled. A point `p` is
+/// `to_local * (p - at) / scale` in it, and a distance there is `scale` times larger outside.
+pub struct Frame: Copy + GpuData {
+    pub at: vec3,
+    pub to_local: mat3,
+    pub scale: f32,
+}
+
+/// A space at `at`, turned by `turn` and `scale` times the size.
+pub fn frame(at: vec3, turn: Quat = Quat::identity(), scale: f32 = 1.0) -> Frame {
+    Frame { at, to_local: turn.inverse().to_mat3(), scale }
+}
+
+/// The space a group is in: no move, turn or scale.
+pub const SAME: Frame = Frame {
+    at: vec3(),
+    to_local: mat3(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)),
+    scale: 1.0,
+}
+
+impl Frame {
+    /// `p` in this space.
+    pub fn local(self, p: vec3) -> vec3 {
+        // Column by column, as a derived interval needs (it has no matrix arithmetic).
+        let d = p - self.at
+        let m = self.to_local
+        (m[0] * d.x + m[1] * d.y + m[2] * d.z) / self.scale
+    }
+}
+
+/// `p` reflected in x = 0.
+fn reflect_x(p: vec3) -> vec3 {
+    vec3(-p.x, p.y, p.z)
+}
+
+/// `p` reflected into x ≥ 0, where a mirrored part is written, and whether it was reflected.
+fn mirrored(p: vec3, mirror: u32) -> (vec3, bool) {
+    if mirror != 0 { (vec3(abs(p.x), p.y, p.z), p.x < 0.0) } else { (p, false) }
+}
+
+/// A change to the distance of what comes before it in its group: a cape, the ground. It
+/// states how it changes the distance's bound, for `Lipschitz`, and how far it moves the
+/// distance, for the renderer's culling.
+pub trait Modifier: Copy + GpuData {
+    /// The distance `d` at `p` (in its group's space), changed.
+    fn apply(self, d: f32, p: vec3) -> f32
+
+    /// A bound on the changed distance's gradient where it's within `near` of the surface,
+    /// where `inner` bounds `d`'s.
+    fn lipschitz(self, inner: f32, near: f32) -> f32
+
+    /// How far from the surface `d` can be where the changed distance is within `near` of it.
+    fn widen(self, near: f32) -> f32
+
+    /// The most `d` can be where the changed distance is at most `hi`.
+    fn before(self, hi: f32) -> f32
+}
+
+/// The ground, after everything before it in its group: nothing below y = `height`, so pads
+/// and hooves don't sink into it (`.then(ground())`, last).
+pub struct Ground: Copy + GpuData {
+    pub height: f32,
+}
+
+/// The ground at y = 0 (`Ground`).
+pub fn ground() -> Ground {
+    Ground { height: 0.0 }
+}
+
+impl Modifier for Ground {
+    fn apply(self, d: f32, p: vec3) -> f32 {
+        max(d, self.height - p.y)
+    }
+
+    fn lipschitz(self, inner: f32, near: f32) -> f32 {
+        max(inner, 1.0)
+    }
+
+    fn widen(self, near: f32) -> f32 {
+        near
+    }
+
+    fn before(self, hi: f32) -> f32 {
+        hi
+    }
+}
+
+// ---- parts -------------------------------------------------------------------------------------
+
+/// A field placed at its bone's rest position: one part.
+pub struct Placed<F>: Copy + GpuData {
+    pub field: F,
+    /// Its bone's rest position in its group's space (the creature's, outside a group): where
+    /// the field's origin is.
+    pub at: vec3,
+    pub bone: u32,
+    /// For a mirrored part, its image's bone.
+    pub other: u32,
+    /// 1 if it's mirrored in x = 0 (`Placed` is GPU data, which has no `bool`).
+    pub mirror: u32,
+    pub seam: Seam,
+    pub name: Text,
+    pub bone_name: Text,
+    pub other_name: Text,
+}
+
+impl<F: Surface> Placed<F> {
+    /// Its distance at `p` (in its group's space), and whether `p` was reflected to find it.
+    fn at_point(self, p: vec3) -> (f32, bool) {
+        let (q, image) = mirrored(p, self.mirror)
+        (self.field.distance(q - self.at), image)
+    }
+
+    fn distance(self, p: vec3) -> f32 {
+        self.at_point(p).0
+    }
+
+    /// The bone that moves it at a point reflected (`image`) or not.
+    fn bone_for(self, image: bool) -> u32 {
+        if image { self.other } else { self.bone }
+    }
+}
+
+/// A creature's items (parts, groups and modifiers) in the order they join, each with a bit in
+/// a mask (`render::PartMask`), and its parts: the leaves, the parts in its groups too, each
+/// mirrored one twice (as written, then its image).
+pub trait PartList: Copy + GpuData {
+    fn items(self) -> u32
+
+    fn leaves(self) -> u32
+
+    /// `d` joined at `p` by each item whose bit is in `mask`, in order (the first item's bit is
+    /// `first`). `k` is the creature's width (`Body::blend`).
+    fn fold(self, p: vec3, d: f32, k: f32, mask: u32, first: u32) -> f32
+
+    /// `fold` with every item, and the leaf that decides it: `best` is the distance so far and
+    /// its leaf, and this list's leaves are numbered from `base`.
+    fn fold_part(self, p: vec3, best: (f32, u32), k: f32, base: u32) -> (f32, u32)
+
+    /// `fold` with every item, leaf `leaf` of this list's own distance raised by `by`
+    /// (`Surface::part_offset`); `NO_LEAF` for none.
+    fn fold_offset(self, p: vec3, d: f32, k: f32, leaf: u32, by: f32) -> f32
+
+    /// Leaf `i`'s own distance at `p` (in this list's space).
+    fn leaf_distance(self, p: vec3, i: u32) -> f32
+
+    /// Leaf `i`'s name, in group `group`, as written or as its image (`image`).
+    fn leaf_name(self, i: u32, group: Text, image: bool) -> PartName
+
+    /// The four leaves of the items in `mask` nearest `p`, if nearer than those in `best`: their
+    /// distances (times `scale`, this list's space's size) and bones. `image`: `p` was
+    /// reflected on its way here.
+    fn weigh(
+        self,
+        p: vec3,
+        mask: u32,
+        first: u32,
+        image: bool,
+        scale: f32,
+        best: Nearest4,
+    ) -> Nearest4
+
+    /// The bits of the items that can change the fold in `b`, where whatever follows them
+    /// leaves it at most `hi`; and the most the fold before this list can be there. Items are
+    /// visited last to first.
+    fn near_mask(self, b: Box3, hi: f32, k: f32, first: u32) -> (u32, f32)
+
+    /// `bound` folded through its items: each part's bound within `near` of its own surface,
+    /// the largest, changed by each modifier as it comes.
+    fn bound(self, near: f32, k: f32, bound: f32) -> f32
+
+    /// How far from the surface a part's distance can be where the fold is within `near` of
+    /// it: each modifier's widening, and 1.25 times each seam's width (sketch 01's bound: a
+    /// part keeps a weight only while each later join lowers the fold by at most that). A
+    /// group's own seams count inside it, at its scale.
+    fn reach(self, near: f32, k: f32) -> f32
+}
+
+impl<F: Lipschitz> PartList for Placed<F> {
+    fn items(self) -> u32 {
+        1
+    }
+
+    fn leaves(self) -> u32 {
+        1 + self.mirror
+    }
+
+    fn fold(self, p: vec3, d: f32, k: f32, mask: u32, first: u32) -> f32 {
+        if has(mask, first) { self.seam.apply(d, self.distance(p), k) } else { d }
+    }
+
+    fn fold_part(self, p: vec3, best: (f32, u32), k: f32, base: u32) -> (f32, u32) {
+        let (x, image) = self.at_point(p)
+        let leaf = base + select(if_false: 0, if_true: 1, cond: image)
+        self.seam.join_part(best, x, leaf, k)
+    }
+
+    fn fold_offset(self, p: vec3, d: f32, k: f32, leaf: u32, by: f32) -> f32 {
+        let (x, image) = self.at_point(p)
+        let at = select(if_false: 0, if_true: 1, cond: image)
+        self.seam.apply(d, if leaf == at { x + by } else { x }, k)
+    }
+
+    fn leaf_distance(self, p: vec3, i: u32) -> f32 {
+        let q = if i == 1 { vec3(-p.x, p.y, p.z) } else { p }
+        self.field.distance(q - self.at)
+    }
+
+    fn leaf_name(self, i: u32, group: Text, image: bool) -> PartName {
+        let mirrored = image != (i == 1)
+        PartName {
+            name: self.name,
+            group,
+            frame: if mirrored { self.other_name } else { self.bone_name },
+            mirrored,
+        }
+    }
+
+    fn weigh(
+        self,
+        p: vec3,
+        mask: u32,
+        first: u32,
+        image: bool,
+        scale: f32,
+        best: Nearest4,
+    ) -> Nearest4 {
+        if !has(mask, first) {
+            return best
+        }
+        let (x, reflected) = self.at_point(p)
+        best.with(x * scale, self.bone_for(image != reflected))
+    }
+
+    fn near_mask(self, b: Box3, hi: f32, k: f32, first: u32) -> (u32, f32) {
+        self.seam.near_mask(b, hi, k, first, |q: vec3| self.distance(q))
+    }
+
+    fn bound(self, near: f32, k: f32, bound: f32) -> f32 {
+        max(bound, self.field.lipschitz(near) * self.seam.steepness())
+    }
+
+    fn reach(self, near: f32, k: f32) -> f32 {
+        self.seam.reach(near, k)
+    }
+}
+
+/// Parts `a`, then parts `b`.
+pub struct Then<A, B>: Copy + GpuData {
+    pub a: A,
+    pub b: B,
+}
+
+impl<A: PartList, B: PartList> PartList for Then<A, B> {
+    fn items(self) -> u32 {
+        self.a.items() + self.b.items()
+    }
+
+    fn leaves(self) -> u32 {
+        self.a.leaves() + self.b.leaves()
+    }
+
+    fn fold(self, p: vec3, d: f32, k: f32, mask: u32, first: u32) -> f32 {
+        self.b.fold(p, self.a.fold(p, d, k, mask, first), k, mask, first + self.a.items())
+    }
+
+    fn fold_part(self, p: vec3, best: (f32, u32), k: f32, base: u32) -> (f32, u32) {
+        self.b.fold_part(p, self.a.fold_part(p, best, k, base), k, base + self.a.leaves())
+    }
+
+    fn fold_offset(self, p: vec3, d: f32, k: f32, leaf: u32, by: f32) -> f32 {
+        let n = self.a.leaves()
+        let (la, lb) = if leaf == NO_LEAF { (NO_LEAF, NO_LEAF) } else if leaf < n {
+            (leaf, NO_LEAF)
+        } else {
+            (NO_LEAF, leaf - n)
+        }
+        self.b.fold_offset(p, self.a.fold_offset(p, d, k, la, by), k, lb, by)
+    }
+
+    fn leaf_distance(self, p: vec3, i: u32) -> f32 {
+        let n = self.a.leaves()
+        if i < n { self.a.leaf_distance(p, i) } else { self.b.leaf_distance(p, i - n) }
+    }
+
+    fn leaf_name(self, i: u32, group: Text, image: bool) -> PartName {
+        let n = self.a.leaves()
+        if i < n { self.a.leaf_name(i, group, image) } else {
+            self.b.leaf_name(i - n, group, image)
+        }
+    }
+
+    fn weigh(
+        self,
+        p: vec3,
+        mask: u32,
+        first: u32,
+        image: bool,
+        scale: f32,
+        best: Nearest4,
+    ) -> Nearest4 {
+        let w = self.a.weigh(p, mask, first, image, scale, best)
+        self.b.weigh(p, mask, first + self.a.items(), image, scale, w)
+    }
+
+    fn near_mask(self, b: Box3, hi: f32, k: f32, first: u32) -> (u32, f32) {
+        let (bits_b, h) = self.b.near_mask(b, hi, k, first + self.a.items())
+        let (bits_a, h2) = self.a.near_mask(b, h, k, first)
+        (bits_a | bits_b, h2)
+    }
+
+    fn bound(self, near: f32, k: f32, bound: f32) -> f32 {
+        self.b.bound(near, k, self.a.bound(near, k, bound))
+    }
+
+    fn reach(self, near: f32, k: f32) -> f32 {
+        self.a.reach(self.b.reach(near, k), k)
+    }
+}
+
+/// Parts joined in a space of their own (`frame`), then joined to what comes before as one,
+/// by `seam`; mirrored in x = 0 if `mirror` is 1.
+pub struct Group<P>: Copy + GpuData {
+    pub parts: P,
+    pub frame: Frame,
+    pub mirror: u32,
+    pub seam: Seam,
+    pub name: Text,
+}
+
+/// Far outside any creature.
+pub const FAR: f32 = 1000000.0
+
+/// Whether item `first`'s bit is in `mask`. A mask has 32 bits: an item past the 32nd has none,
+/// and is always in (it's never culled), so a creature may have any number of items.
+fn has(mask: u32, first: u32) -> bool {
+    first >= 32 || (mask >> first) & 1 == 1
+}
+
+/// Item `first`'s bit in a mask: none past the 32nd (see `has`).
+fn bit(first: u32) -> u32 {
+    if first < 32 { 1 << first } else { 0 }
+}
+
+/// A mask with every item's bit.
+pub const ALL: u32 = 0xffffffff
+
+/// `PartList::fold_offset`'s leaf where no leaf is raised.
+pub const NO_LEAF: u32 = 0xffffffff
+
+impl<P: PartList> Group<P> {
+    /// Its distance at `p`, where `k` is the width of a seam that gives none.
+    pub fn value(self, p: vec3, k: f32) -> f32 {
+        let (m, _) = mirrored(p, self.mirror)
+        self.parts.fold(self.frame.local(m), FAR, k, mask: ALL, first: 0) * self.frame.scale
+    }
+}
+
+/// A group alone is a surface: what a modifier reads of a part of the creature (the wolf's fur
+/// thins on its head). Its seams that give no width are hard here.
+impl<P: PartList> Surface for Group<P> {
+    fn distance(self, p: vec3) -> f32 {
+        self.value(p, 0.0)
+    }
+}
+
+impl<P: PartList> Lipschitz for Group<P> {
+    fn lipschitz(self, near: f32) -> f32 {
+        let s = abs(self.frame.scale)
+        self.parts.bound(self.parts.reach(near / s, k: 0.0), k: 0.0, bound: 0.0)
+    }
+}
+
+impl<P: PartList> PartList for Group<P> {
+    fn items(self) -> u32 {
+        1
+    }
+
+    fn leaves(self) -> u32 {
+        self.parts.leaves() * (1 + self.mirror)
+    }
+
+    fn fold(self, p: vec3, d: f32, k: f32, mask: u32, first: u32) -> f32 {
+        if has(mask, first) { self.seam.apply(d, self.value(p, k), k) } else { d }
+    }
+
+    fn fold_part(self, p: vec3, best: (f32, u32), k: f32, base: u32) -> (f32, u32) {
+        let (m, image) = mirrored(p, self.mirror)
+        let (x, leaf) = self.parts.fold_part(self.frame.local(m), (FAR, 0), k, 0)
+        let x = x * self.frame.scale
+        let leaf = base + leaf + select(if_false: 0, if_true: self.parts.leaves(), cond: image)
+        self.seam.join_part(best, x, leaf, k)
+    }
+
+    /// Its leaves as written decide where `p` isn't reflected, their images where it is.
+    fn fold_offset(self, p: vec3, d: f32, k: f32, leaf: u32, by: f32) -> f32 {
+        let (m, image) = mirrored(p, self.mirror)
+        let n = self.parts.leaves()
+        let inner = if leaf == NO_LEAF || (leaf >= n) != image { NO_LEAF } else { leaf % n }
+        let x = self.parts.fold_offset(self.frame.local(m), FAR, k, inner, by / self.frame.scale)
+        self.seam.apply(d, x * self.frame.scale, k)
+    }
+
+    fn leaf_distance(self, p: vec3, i: u32) -> f32 {
+        let n = self.parts.leaves()
+        let q = if i >= n { vec3(-p.x, p.y, p.z) } else { p }
+        self.parts.leaf_distance(self.frame.local(q), i % n) * self.frame.scale
+    }
+
+    fn leaf_name(self, i: u32, group: Text, image: bool) -> PartName {
+        let n = self.parts.leaves()
+        self.parts.leaf_name(i % n, self.name, image != (i >= n))
+    }
+
+    fn weigh(
+        self,
+        p: vec3,
+        mask: u32,
+        first: u32,
+        image: bool,
+        scale: f32,
+        best: Nearest4,
+    ) -> Nearest4 {
+        if !has(mask, first) {
+            return best
+        }
+        let (m, reflected) = mirrored(p, self.mirror)
+        self.parts.weigh(
+            self.frame.local(m),
+            mask: ALL,
+            first: 0,
+            image: image != reflected,
+            scale: scale * self.frame.scale,
+            best: best,
+        )
+    }
+
+    fn near_mask(self, b: Box3, hi: f32, k: f32, first: u32) -> (u32, f32) {
+        self.seam.near_mask(b, hi, k, first, |q: vec3| self.value(q, k))
+    }
+
+    /// Turning, scaling and reflecting keep a gradient's length; within `near` outside is
+    /// within `near / scale` inside, and further by the reach of the group's own seams.
+    fn bound(self, near: f32, k: f32, bound: f32) -> f32 {
+        let s = abs(self.frame.scale)
+        self.parts.bound(self.parts.reach(near / s, k), k, bound) * self.seam.steepness()
+    }
+
+    fn reach(self, near: f32, k: f32) -> f32 {
+        self.seam.reach(near, k)
+    }
+}
+
+/// A modifier, as an item: it changes the distance of everything before it in its list.
+pub struct Modify<M>: Copy + GpuData {
+    pub modifier: M,
+}
+
+impl<M: Modifier> PartList for Modify<M> {
+    fn items(self) -> u32 {
+        1
+    }
+
+    fn leaves(self) -> u32 {
+        0
+    }
+
+    fn fold(self, p: vec3, d: f32, k: f32, mask: u32, first: u32) -> f32 {
+        self.modifier.apply(d, p)
+    }
+
+    fn fold_offset(self, p: vec3, d: f32, k: f32, leaf: u32, by: f32) -> f32 {
+        self.modifier.apply(d, p)
+    }
+
+    fn fold_part(self, p: vec3, best: (f32, u32), k: f32, base: u32) -> (f32, u32) {
+        (self.modifier.apply(best.0, p), best.1)
+    }
+
+    fn leaf_distance(self, p: vec3, i: u32) -> f32 {
+        FAR
+    }
+
+    fn leaf_name(self, i: u32, group: Text, image: bool) -> PartName {
+        PartName { name: "", group, frame: "", mirrored: false }
+    }
+
+    fn weigh(
+        self,
+        p: vec3,
+        mask: u32,
+        first: u32,
+        image: bool,
+        scale: f32,
+        best: Nearest4,
+    ) -> Nearest4 {
+        best
+    }
+
+    fn near_mask(self, b: Box3, hi: f32, k: f32, first: u32) -> (u32, f32) {
+        (bit(first), self.modifier.before(hi))
+    }
+
+    fn bound(self, near: f32, k: f32, bound: f32) -> f32 {
+        self.modifier.lipschitz(inner: bound, near: near)
+    }
+
+    fn reach(self, near: f32, k: f32) -> f32 {
+        self.modifier.widen(near)
+    }
+}
+
+/// The four parts nearest a point: their distances, nearest first, and their bones.
+pub struct Nearest4: Copy {
+    pub d: [f32; 4],
+    pub bones: [u32; 4],
+}
+
+impl Nearest4 {
+    pub fn new() -> Nearest4 {
+        Nearest4 { d: [FAR; 4], bones: [0; 4] }
+    }
+
+    /// With a part at distance `d`, on bone `bone`, if it's among the four nearest.
+    pub fn with(self, d: f32, bone: u32) -> Nearest4 {
+        var out = self
+        var i = 4
+        while i > 0 && d < out.d[i - 1] {
+            if i < 4 {
+                out.d[i] = out.d[i - 1]
+                out.bones[i] = out.bones[i - 1]
+            }
+            i -= 1
+        }
+        if i < 4 {
+            out.d[i] = d
+            out.bones[i] = bone
+        }
+        out
+    }
+}
+
+/// Parts whose fields carry channels `C`.
+pub trait PartChannels<C>: PartList {
+    /// The first item's distance and channels at `p`.
+    fn first(self, p: vec3, k: f32) -> (f32, C)
+
+    /// `(d, c)` joined at `p` by each item from `from` on (an item's index in this list), its
+    /// channels blended as its seam weighs them.
+    fn fold_channels(self, p: vec3, dc: take (f32, C), k: f32, from: u32) -> (f32, C)
+}
+
+impl<C: Blend + Copy, F: Field<C> + Lipschitz> PartChannels<C> for Placed<F> {
+    fn first(self, p: vec3, k: f32) -> (f32, C) {
+        let (q, _) = mirrored(p, self.mirror)
+        self.field.distance_and_channels(q - self.at)
+    }
+
+    fn fold_channels(self, p: vec3, dc: take (f32, C), k: f32, from: u32) -> (f32, C) {
+        if from > 0 {
+            return dc
+        }
+        let (q, _) = mirrored(p, self.mirror)
+        let (x, cx) = self.field.distance_and_channels(q - self.at)
+        self.seam.join_channels(take dc, x, cx, k)
+    }
+}
+
+impl<C, A: PartChannels<C>, B: PartChannels<C>> PartChannels<C> for Then<A, B> {
+    fn first(self, p: vec3, k: f32) -> (f32, C) {
+        self.a.first(p, k)
+    }
+
+    fn fold_channels(self, p: vec3, dc: take (f32, C), k: f32, from: u32) -> (f32, C) {
+        let n = self.a.items()
+        let after_a = self.a.fold_channels(p, take dc, k, from)
+        self.b.fold_channels(p, take after_a, k, if from > n { from - n } else { 0 })
+    }
+}
+
+impl<C: Blend + Copy, P: PartChannels<C>> PartChannels<C> for Group<P> {
+    fn first(self, p: vec3, k: f32) -> (f32, C) {
+        let (m, _) = mirrored(p, self.mirror)
+        let q = self.frame.local(m)
+        let (d, c) = self.parts.fold_channels(q, self.parts.first(q, k), k, 1)
+        (d * self.frame.scale, c)
+    }
+
+    fn fold_channels(self, p: vec3, dc: take (f32, C), k: f32, from: u32) -> (f32, C) {
+        if from > 0 {
+            return dc
+        }
+        let (x, cx) = self.first(p, k)
+        self.seam.join_channels(take dc, x, cx, k)
+    }
+}
+
+impl<C, M: Modifier> PartChannels<C> for Modify<M> {
+    fn first(self, p: vec3, k: f32) -> (f32, C) {
+        panic("a creature's first item is a part or a group, not a modifier")
+    }
+
+    fn fold_channels(self, p: vec3, dc: take (f32, C), k: f32, from: u32) -> (f32, C) {
+        if from > 0 { take dc } else { (self.modifier.apply(dc.0, p), take dc.1) }
+    }
+}
+
+/// Items of one type, one after another (`Body::each_leg`'s segments, then its feet).
+impl<P: PartList, const N: u32> PartList for [P; N] {
+    fn items(self) -> u32 {
+        var n = 0
+        for i in 0..N {
+            n += self[i].items()
+        }
+        n
+    }
+
+    fn leaves(self) -> u32 {
+        var n = 0
+        for i in 0..N {
+            n += self[i].leaves()
+        }
+        n
+    }
+
+    fn fold(self, p: vec3, d: f32, k: f32, mask: u32, first: u32) -> f32 {
+        var out = d
+        var at = first
+        for i in 0..N {
+            out = self[i].fold(p, out, k, mask, at)
+            at += self[i].items()
+        }
+        out
+    }
+
+    fn fold_part(self, p: vec3, best: (f32, u32), k: f32, base: u32) -> (f32, u32) {
+        var out = best
+        var at = base
+        for i in 0..N {
+            out = self[i].fold_part(p, out, k, at)
+            at += self[i].leaves()
+        }
+        out
+    }
+
+    fn fold_offset(self, p: vec3, d: f32, k: f32, leaf: u32, by: f32) -> f32 {
+        var out = d
+        var at = 0
+        for i in 0..N {
+            let n = self[i].leaves()
+            let inner = if leaf >= at && leaf - at < n { leaf - at } else { NO_LEAF }
+            out = self[i].fold_offset(p, out, k, inner, by)
+            at += n
+        }
+        out
+    }
+
+    fn leaf_distance(self, p: vec3, i: u32) -> f32 {
+        let (j, leaf) = locate(self, i)
+        self[j].leaf_distance(p, leaf)
+    }
+
+    fn leaf_name(self, i: u32, group: Text, image: bool) -> PartName {
+        let (j, leaf) = locate(self, i)
+        self[j].leaf_name(leaf, group, image)
+    }
+
+    fn weigh(
+        self,
+        p: vec3,
+        mask: u32,
+        first: u32,
+        image: bool,
+        scale: f32,
+        best: Nearest4,
+    ) -> Nearest4 {
+        var out = best
+        var at = first
+        for i in 0..N {
+            out = self[i].weigh(p, mask, at, image, scale, out)
+            at += self[i].items()
+        }
+        out
+    }
+
+    fn near_mask(self, b: Box3, hi: f32, k: f32, first: u32) -> (u32, f32) {
+        var bits = 0
+        var h = hi
+        var at = first + self.items()
+        for j in 0..N {
+            let i = N - 1 - j
+            at -= self[i].items()
+            let (bits_i, h_i) = self[i].near_mask(b, h, k, at)
+            bits = bits | bits_i
+            h = h_i
+        }
+        (bits, h)
+    }
+
+    fn bound(self, near: f32, k: f32, bound: f32) -> f32 {
+        var out = bound
+        for i in 0..N {
+            out = self[i].bound(near, k, out)
+        }
+        out
+    }
+
+    fn reach(self, near: f32, k: f32) -> f32 {
+        var out = near
+        for j in 0..N {
+            out = self[N - 1 - j].reach(out, k)
+        }
+        out
+    }
+}
+
+/// Which of `items` holds leaf `i`, and the leaf's number in it; past the last leaf, the last
+/// item, as `Then` gives its `b` what's past its `a`.
+fn locate<P: PartList, const N: u32>(items: [P; N], i: u32) -> (u32, u32) {
+    var at = 0
+    for j in 0..N - 1 {
+        let n = items[j].leaves()
+        if i - at < n {
+            return (j, i - at)
+        }
+        at += n
+    }
+    (N - 1, i - at)
+}
+
+impl<C: Copy, P: PartChannels<C>, const N: u32> PartChannels<C> for [P; N] {
+    fn first(self, p: vec3, k: f32) -> (f32, C) {
+        self[0].first(p, k)
+    }
+
+    fn fold_channels(self, p: vec3, dc: take (f32, C), k: f32, from: u32) -> (f32, C) {
+        var out = dc
+        var at = 0
+        for i in 0..N {
+            out = self[i].fold_channels(p, out, k, if from > at { from - at } else { 0 })
+            at += self[i].items()
+        }
+        out
+    }
+}
+
+// ---- building a creature -----------------------------------------------------------------------
+
+/// One segment of a leg, as `LegBuilder::fill`'s closure sees it.
+pub struct Segment: Copy {
+    /// 0 at the hip, 2 at the ankle.
+    pub index: u32,
+    pub bone: Bone,
+    /// From this segment's joint to the next, at rest: where the segment ends, in its space.
+    pub end: vec3,
+}
+
+/// A leg being given its parts (`Body::each_leg`).
+pub struct LegBuilder: Copy {
+    pub leg: Leg,
+    skeleton: Skeleton,
+}
+
+/// One leg's parts: a field for each segment, in the segment's bone's space, and the foot's.
+pub struct LegParts<S, F>: Copy + GpuData {
+    pub segments: [Placed<S>; 3],
+    pub foot: Placed<F>,
+}
+
+/// A leg whose segments have their fields; `.foot(...)` gives the foot its own.
+pub struct FilledLeg<S>: Copy {
+    segments: [Placed<S>; 3],
+    builder: LegBuilder,
+}
+
+impl LegBuilder {
+    /// Segment `i`.
+    pub fn segment(self, i: u32) -> Segment {
+        let j = self.leg.joints
+        Segment {
+            index: i,
+            bone: j[i],
+            end: self.skeleton.rest(j[i + 1]) - self.skeleton.rest(j[i]),
+        }
+    }
+
+    /// Each segment's field, from `make`.
+    pub fn fill<S: Surface>(self, make: fn(Segment) -> S) -> FilledLeg<S> {
+        FilledLeg {
+            segments: [
+                self.part(0, make(self.segment(0))),
+                self.part(1, make(self.segment(1))),
+                self.part(2, make(self.segment(2))),
+            ],
+            builder: self,
+        }
+    }
+
+    /// `field` on joint `i` (3: the foot), named by its bone.
+    fn part<F: Surface>(self, i: u32, field: F) -> Placed<F> {
+        let bone = self.leg.joints[i]
+        place(self.skeleton, SAME, self.skeleton.name(bone), bone, field, BLENDED, mirror: false)
+    }
+}
+
+impl<S: Surface> FilledLeg<S> {
+    pub fn foot<F: Surface>(self, field: F) -> LegParts<S, F> {
+        LegParts { segments: self.segments, foot: self.builder.part(3, field) }
+    }
+}
+
+/// What a creature offers its engine: its field (a distance and channels `C`), and its
+/// skeleton.
+pub trait Creature<C> {
+    type Shape: Field<C> + Lipschitz + Parts
+
+    /// The creature's field, at rest: a `Copy` value that goes to the GPU as data.
+    fn field(self) -> Self::Shape
+
+    fn skeleton(self) -> Skeleton
+
+    /// The bone whose part is nearest `p`.
+    fn nearest_bone(self, p: vec3) -> Bone
+
+    fn distance(self, p: vec3) -> f32 {
+        self.field().distance(p)
+    }
+
+    /// A box that holds the creature's surface (engine::physique).
+    fn bounds(self) -> Box3 {
+        physique::bounds(self)
+    }
+
+    /// The integral of `density(channels)` over the creature's inside: its mass, per bone or
+    /// whole, refining cells the surface crosses down to `finest` (engine::physique).
+    @deterministic
+    fn integrate(self, density: fn(C) -> f32, per: Per, finest: f32) -> Mass {
+        physique::integrate(self, density, per, finest)
+    }
+
+    /// Capsules holding the creature's inside within `tolerance`, per bone or whole.
+    @deterministic
+    fn fit_capsules(self, per: Per, tolerance: f32) -> Vec<Capsule> {
+        physique::fit_capsules(self, per, tolerance)
+    }
+}
+
+/// A creature's field: its items joined in order, from a distance far outside (as spike 01's
+/// `BIG`), which the first part's join gives back exactly. `k` is the width of a seam that
+/// gives none (`Body::blend`).
+pub struct CreatureField<P>: Copy + GpuData {
+    pub parts: P,
+    pub k: f32,
+}
+
+impl<P: PartList> Surface for CreatureField<P> {
+    fn distance(self, p: vec3) -> f32 {
+        self.parts.fold(p, FAR, self.k, mask: ALL, first: 0)
+    }
+
+    fn parts(self) -> u32 {
+        self.parts.leaves()
+    }
+
+    fn part_at(self, p: vec3) -> (f32, u32) {
+        self.parts.fold_part(p, (FAR, 0), self.k, 0)
+    }
+
+    fn part_distance(self, p: vec3, i: u32) -> f32 {
+        self.parts.leaf_distance(p, i)
+    }
+
+    fn part_name(self, i: u32) -> PartName {
+        self.parts.leaf_name(i, group: "", image: false)
+    }
+
+    fn part_offset(self, p: vec3, i: u32, by: f32) -> f32 {
+        self.parts.fold_offset(p, FAR, self.k, i, by)
+    }
+}
+
+impl<C: Blend + Copy, P: PartChannels<C>> Field<C> for CreatureField<P> {
+    fn channels(self, p: vec3) -> C {
+        self.distance_and_channels(p).1
+    }
+
+    fn distance_and_channels(self, p: vec3) -> (f32, C) {
+        self.parts.fold_channels(p, self.parts.first(p, self.k), self.k, 1)
+    }
+}
+
+impl<P: PartList> Lipschitz for CreatureField<P> {
+    /// The largest bound of any part, within the band its distance can be in where the
+    /// creature's is within `near`, changed by each modifier.
+    fn lipschitz(self, near: f32) -> f32 {
+        self.parts.bound(self.parts.reach(near, self.k), self.k, 0.0)
+    }
+}
+
+/// A skeleton waiting for its first part (`creature`).
+pub struct Bare {
+    skeleton: Skeleton,
+}
+
+/// A skeleton and its items.
+pub struct Body<P> {
+    skeleton: Skeleton,
+    parts: P,
+    k: f32,
+}
+
+/// A creature with this skeleton, to give parts to: `.part(bone, field)`, `.join(name, bone,
+/// field, seam)`, `.group(name, build)`, `.each_leg(...)`, `.then(modifier)`, and `.blend(k)`
+/// across the joints that give no width.
+pub fn creature(skeleton: Skeleton) -> Bare {
+    Bare { skeleton }
+}
+
+/// A part on `bone`, in the space `space`, from a skeleton: its place there, and its image's
+/// bone where it's mirrored.
+fn place<F: Surface>(
+    sk: Skeleton,
+    space: Frame,
+    name: Text,
+    bone: Bone,
+    field: F,
+    seam: Seam,
+    mirror: bool,
+) -> Placed<F> {
+    let other = sk.other(bone)
+    Placed {
+        field,
+        at: space.local(sk.rest(bone)),
+        bone: bone.index,
+        other: other.index,
+        mirror: select(if_false: 0, if_true: 1, cond: mirror),
+        seam,
+        name,
+        bone_name: sk.name(bone),
+        other_name: sk.name(other),
+    }
+}
+
+/// A group's parts being given (`Body::group`): the skeleton, and the group's space.
+pub struct Inside: Copy {
+    skeleton: Skeleton,
+    space: Frame,
+}
+
+/// A group's parts so far.
+pub struct Members<P> {
+    skeleton: Skeleton,
+    space: Frame,
+    parts: P,
+}
+
+impl Inside {
+    /// The group's first part: `field`, written in `bone`'s space, as `name`.
+    pub fn join<F: Surface>(
+        take self,
+        name: Text,
+        bone: Bone,
+        field: F,
+        seam: Seam = BLENDED,
+        mirror: bool = false,
+    ) -> Members<Placed<F>> {
+        let part = place(self.skeleton, self.space, name, bone, field, seam, mirror)
+        Members { skeleton: self.skeleton, space: self.space, parts: part }
+    }
+}
+
+impl<P> Members<P> {
+    /// Another part, joined to those before by `seam`.
+    pub fn join<F: Surface>(
+        take self,
+        name: Text,
+        bone: Bone,
+        field: F,
+        seam: Seam = BLENDED,
+        mirror: bool = false,
+    ) -> Members<Then<P, Placed<F>>> {
+        let part = place(self.skeleton, self.space, name, bone, field, seam, mirror)
+        Members {
+            skeleton: self.skeleton,
+            space: self.space,
+            parts: Then { a: take self.parts, b: part },
+        }
+    }
+
+    /// The group's distance so far, changed by `modifier`.
+    pub fn then<M: Modifier>(take self, modifier: M) -> Members<Then<P, Modify<M>>> {
+        Members {
+            skeleton: self.skeleton,
+            space: self.space,
+            parts: Then { a: take self.parts, b: Modify { modifier } },
+        }
+    }
+}
+
+/// A group on its own, to add to a creature (`Body::add`) and to read elsewhere: the parts
+/// `build` gives, joined in `space`, joined to what comes before as one by `seam`, and mirrored
+/// in x = 0 if `mirror`.
+pub fn group<P>(
+    skeleton: Skeleton,
+    name: Text,
+    build: fn(Inside) -> Members<P>,
+    seam: Seam = BLENDED,
+    space: Frame = SAME,
+    mirror: bool = false,
+) -> Group<P> {
+    let m = build(Inside { skeleton, space })
+    Group {
+        parts: take m.parts,
+        frame: space,
+        mirror: select(if_false: 0, if_true: 1, cond: mirror),
+        seam,
+        name,
+    }
+}
+
+impl Bare {
+    /// The first item: a group made on its own (`group`).
+    pub fn add<P>(take self, g: take Group<P>) -> Body<Group<P>> {
+        Body { skeleton: self.skeleton, parts: take g, k: 0.0 }
+    }
+
+    /// The first part: `field`, written in `bone`'s space, named by the bone.
+    pub fn part<F: Surface>(take self, bone: Bone, field: F) -> Body<Placed<F>> {
+        let sk = self.skeleton
+        take self.join(sk.name(bone), bone, field)
+    }
+
+    /// The first part: `field`, written in `bone`'s space, as `name`; mirrored in x = 0 if
+    /// `mirror`.
+    pub fn join<F: Surface>(
+        take self,
+        name: Text,
+        bone: Bone,
+        field: F,
+        seam: Seam = BLENDED,
+        mirror: bool = false,
+    ) -> Body<Placed<F>> {
+        let part = place(self.skeleton, SAME, name, bone, field, seam, mirror)
+        Body { skeleton: self.skeleton, parts: part, k: 0.0 }
+    }
+
+    /// The first item, a group: the parts `build` gives, joined in `space`.
+    pub fn group<P>(
+        take self,
+        name: Text,
+        build: fn(Inside) -> Members<P>,
+        seam: Seam = BLENDED,
+        space: Frame = SAME,
+        mirror: bool = false,
+    ) -> Body<Group<P>> {
+        let g = group(self.skeleton, name, build, seam, space, mirror)
+        take self.add(take g)
+    }
+}
+
+impl<P> Body<P> {
+    /// Another part, folded after those before, named by its bone.
+    pub fn part<F: Surface>(take self, bone: Bone, field: F) -> Body<Then<P, Placed<F>>> {
+        let sk = self.skeleton
+        take self.join(sk.name(bone), bone, field)
+    }
+
+    /// Another part: `field`, written in `bone`'s space, as `name`, joined by `seam`; mirrored
+    /// in x = 0 if `mirror`.
+    pub fn join<F: Surface>(
+        take self,
+        name: Text,
+        bone: Bone,
+        field: F,
+        seam: Seam = BLENDED,
+        mirror: bool = false,
+    ) -> Body<Then<P, Placed<F>>> {
+        let part = place(self.skeleton, SAME, name, bone, field, seam, mirror)
+        Body { skeleton: self.skeleton, parts: Then { a: take self.parts, b: part }, k: self.k }
+    }
+
+    /// Another item, a group: the parts `build` gives, joined in `space`, then joined to those
+    /// before as one by `seam`; mirrored in x = 0 if `mirror`.
+    pub fn group<Q>(
+        take self,
+        name: Text,
+        build: fn(Inside) -> Members<Q>,
+        seam: Seam = BLENDED,
+        space: Frame = SAME,
+        mirror: bool = false,
+    ) -> Body<Then<P, Group<Q>>> {
+        let g = group(self.skeleton, name, build, seam, space, mirror)
+        take self.add(take g)
+    }
+
+    /// Another item: a group made on its own (`group`).
+    pub fn add<Q>(take self, g: take Group<Q>) -> Body<Then<P, Group<Q>>> {
+        Body { skeleton: self.skeleton, parts: Then { a: take self.parts, b: take g }, k: self.k }
+    }
+
+    /// Everything so far, changed by `modifier`.
+    pub fn then<M: Modifier>(take self, modifier: M) -> Body<Then<P, Modify<M>>> {
+        Body {
+            skeleton: self.skeleton,
+            parts: Then { a: take self.parts, b: Modify { modifier } },
+            k: self.k,
+        }
+    }
+
+    /// Each of the skeleton's four legs, given its parts by `build`: sixteen items, the legs'
+    /// segments (leg by leg), then their feet.
+    pub fn each_leg<S: Surface, F: Surface>(
+        take self,
+        build: fn(LegBuilder) -> LegParts<S, F>,
+    ) -> Body<Then<P, Then<[Placed<S>; 12], [Placed<F>; 4]>>> {
+        assert(self.skeleton.leg_count == 4, "`each_leg` takes a skeleton with four legs")
+        let sk = self.skeleton
+        let legs = [
+            build(LegBuilder { leg: sk.legs[0], skeleton: sk }),
+            build(LegBuilder { leg: sk.legs[1], skeleton: sk }),
+            build(LegBuilder { leg: sk.legs[2], skeleton: sk }),
+            build(LegBuilder { leg: sk.legs[3], skeleton: sk }),
+        ]
+        var segments = [legs[0].segments[0]; 12]
+        for i in 1..12 {
+            segments[i] = legs[i / 3].segments[i % 3]
+        }
+        let feet = [legs[0].foot, legs[1].foot, legs[2].foot, legs[3].foot]
+        let parts = Then { a: take self.parts, b: Then { a: segments, b: feet } }
+        Body { skeleton: self.skeleton, parts, k: self.k }
+    }
+
+    /// Smooth-unions the parts whose seams give no width with `k`: organic joints, for free.
+    pub fn blend(take self, k: f32) -> Body<P> {
+        Body { skeleton: self.skeleton, parts: take self.parts, k }
+    }
+}
+
+impl<C: Blend + Copy, P: PartChannels<C>> Creature<C> for Body<P> {
+    type Shape = CreatureField<P>
+
+    fn field(self) -> CreatureField<P> {
+        CreatureField { parts: self.parts, k: self.k }
+    }
+
+    fn skeleton(self) -> Skeleton {
+        self.skeleton
+    }
+
+    fn nearest_bone(self, p: vec3) -> Bone {
+        Bone {
+            index: self.parts.weigh(
+                p,
+                mask: ALL,
+                first: 0,
+                image: false,
+                scale: 1.0,
+                best: Nearest4::new(),
+            ).bones[0],
+        }
+    }
+}

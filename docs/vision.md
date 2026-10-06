@@ -1,6 +1,6 @@
 # wrela: vision
 
-*The goal, the theses and their evidence, the architecture, the renderer, and the constraints everything else rests on. Updated 2026-10-02, after spikes 01–13. Decision IDs (D-NNN), sketches and spikes refer to the design record in the git tag `design-archive-2026-10`; spike 13 is in the tag `spike-13-field-math`.*
+*The goal, the theses and their evidence, the architecture, the renderer, and the constraints everything else rests on. Updated 2026-10-02, after spikes 01–13; the flagship settled 2026-10-05. Decision IDs (D-NNN), sketches and spikes refer to the design record in the git tag `design-archive-2026-10`; spike 13 is in the tag `spike-13-field-math`.*
 
 ## Goal
 
@@ -18,7 +18,7 @@ They're hypotheses. Each line says where the evidence stands.
 
 | Thesis | Evidence so far |
 |---|---|
-| **1. Agent-native authoring.** An engine and language designed for agents first lets one human plus a team of agents operate like an AAA studio. | **Weakest.** Unaided agents author recognisable creatures as fields, but only at placeholder quality. The lens tool (click to source, drag to edit, fit to a reference) works mechanically, but nobody has authored with it yet. Tested in M3: a second authoring round with the lens, judged blind against the first. |
+| **1. Agent-native authoring.** An engine and language designed for agents first lets one human plus a team of agents operate like an AAA studio. | **Weakest.** Agents author recognisable creatures as fields at placeholder quality, and the best grazers at shippable mid-tier. M3 built the lens in wrela and measured it: drags land within 0.5 mm, fits recover changed literals within 0.6 mm, and every action answers the same headless and in Chrome. Three blind authoring rounds, judged by the owner: round 1 (unaided Opus, WGSL); round 2 (2026-10-04: 14 runs of Opus 5.5, Sonnet 5.5 and Fable 5.1, with the lens or with round 1's tools in wrela), where none beat round 1's finals; round 3 (the same day, the same protocol), with proportions as code (specs, solved by `wrela solve --spec`), outlines as code (blueprints), a quadruped base, a fur modifier and round 2's friction fixed. In round 3 the owner picked an agent's final over round 1's for both creatures for the first time (an Opus grazer at shippable mid-tier, an Opus wolf at placeholder), and three of seven grazers reached shippable mid-tier. Wolves stayed weak, and the owner rated the same round 1 wolf one step lower than in round 2, so verdicts move with the company they keep. Over both rounds the lens's effect on the verdict is within the noise (0.83 against 0.67 on blockout 0, placeholder 1, shippable 2, twelve runs each); the model matters more (Opus 1.0, Sonnet 0.75, Fable 0.5 in both rounds), and twice the budget didn't help. Authors took specs up as a tape measure and rejected the solvers every time: without bounds or priors, they met checks by breaking anatomy. A fourth round gave Opus authors public-domain photos (and the wolves an outline cut from one): one reference grazer was picked best in its sheet, but the reference runs averaged below round 3's best beside them, and with a real wolf in view the authors still built tube legs and ball paws. The gap is more construction than knowledge. A fifth round (the wolf alone) added tools to compare by eye and a critic between turns: the authors used their whole budgets and matched the photo's silhouette best of any round, but no better verdicts followed, and a wolf Claude built from a new anatomy kit was rated a blockout. Matching one photo isn't what the owner rewards; clean, simple, coherent forms are. A sixth test asked whether the medium can hold such a form at all: a sculpted wolf (an artist's, CC BY 4.0) replicated in wrela as 27 lofts, each a section's radii along a straight axis, measured from the sculpt (within 2 mm on 97% of its surface), was judged clearly better than every agent's wolf, as clay in the lens (weakly blinded). So the medium can hold a great form; the gap is in authoring. Compressed to harmonics per section and a few sections along each axis, it sheds the sculpt's fur strokes, but a fit that falls short of the surface opens cracks where parts meet. Held up where no other part reaches the surface, it has none, and keeps 98% of the surface within 5 mm in 6,600 numbers (twelve harmonics, a section every 3 cm), 3.4 times fewer than its tables: a leg segment takes 175 to 375 numbers. At 3,519 numbers (eight harmonics, every 4 cm) it's 95%, and it swells up to 2 cm past the sculpt where a section can't follow a narrow form. Toes, folds and the seams between parts don't compress yet. As 18 sweeps (each a form along a curved path through the joints, its sections six named numbers and up to four bumps), about 2,500 numbers, the wolf keeps 77% of the sculpt's surface within 2 mm and 94% within 5 mm. Authoring round 6 asked whether agents build better with such forms: five Opus authors built the grazer from scratch with sweeps, creases and digits, the sweep wolf's source and sheets as a reference, a critic and the whole budget. The owner ranked all three earlier grazers (round 1's, and round 3's and round 4's best) above all five new ones (four placeholder, one blockout), and Claude's blind ranking put the five new ones in the same order. The new forms' own defects showed on the sheets (bands where a sweep bends sharply, flat ends as ridges, a bump that slid between sections), and no author used creases or digits. Forms at the level a sculptor works in, and an example built from them, didn't move quality within 25 minutes. |
 | **2. Fields are the substrate.** Content is authored as fields: functions over space. They're compact and need no prebaked assets, so games are megabytes, not gigabytes. | **Holds as the source; not as the per-frame representation.** Evaluating authored fields per pixel per frame fails for anything big on screen. Cooking them on device into meshes, caches and textures works (see the renderer below). |
 | **3. The browser is the platform.** WebGPU makes AAA-class rendering viable there. | **Holds on the reference device** for creatures, terrain and lighting with the renderer below. Chrome only so far; Safari, Firefox and the secondary devices are untested. |
 | **4. A compiler that sees the game wins.** A compiler that sees the whole game's semantics can do what engines with opaque assets can't. | **Unproven.** Hand-written "compiler output" is fast enough, and derived gradients, intervals and part masks earned their keep by hand. M1's golden test is the first time a compiler produces them; M4 tests it at scale. Spike 13: the compiler's nested derivations certify a smooth creature's mesh and its topology across an animation, something an opaque asset can't offer; noisy and sharp-edged fields don't certify yet. The claim that fields beat baked assets on raw speed is not supported: per-pixel field shading costs 1.6–2.8× a texture lookup. The case is generality and size. |
@@ -109,7 +109,8 @@ The load-bearing rules. Changing one needs the owner, and the change and its rea
 | **The compiler emits WASM, WGSL and a manifest only; one pinned runtime per game** (D-099, D-100). | Old games keep working. |
 | **One origin per game;** saves stay in the game's origin (D-082, D-101). | A bug in one game can't reach another's saves. |
 | **Reference device:** MacBook Air M4 in Chrome. **Budgets:** 16.7 ms per frame at 1080p, ≤ 1.5 GB per tab, ≤ 64 pipelines per scene, sim ≤ 4 ms per tick (D-068, D-096). | Every claim is measured against these. |
-| **Size budgets:** runtime ≤ 1 MB; time-to-play ≤ 6 MB; cold start ≤ 8 MB, playable within 5 s; total ≤ 32 MB plus 32 MB of streamed music (D-041, D-069, D-083). | "Megabytes, not gigabytes." |
+| **Browsers:** Chrome, Safari and Firefox. The sim computes the same bits in all three and in the native host (owner, 2026-10-05). | The flagship's leaderboards verify replays from any browser on the native host. |
+| **Size budgets:** runtime ≤ 1 MB; time-to-play ≤ 6 MB; cold start ≤ 8 MB, playable within 5 s (D-041, D-069). Each of the flagship's floors ≤ 16 MB, streamed when the player reaches it, music excluded: an estimate until the first floor is measured. This replaces D-083's 32 MB total (owner, 2026-10-05). | "Megabytes, not gigabytes," per world. |
 | **A field's declared bounds are checked,** not trusted: a bound is a stdlib method (`Lipschitz`), and debug builds and tests check it against the bound the compiler derives (D-077, D-092; revised by the owner's language review of 2026-10-02, which replaced facts as compiler attributes). | Authors' declared bounds were wrong three times in the spikes. |
 | **The grammar is the spec;** the hand-written parser conforms by test (D-104). | Agents and tools get a machine-checkable definition. |
 | **The source is the truth; every tool is a lens that reads and writes it,** and every tool action is also an API call (D-105). | Agents and humans edit the same thing. |
@@ -117,13 +118,20 @@ The load-bearing rules. Changing one needs the owner, and the change and its rea
 
 ## The flagship game
 
-A forest-first, MMO-style open-world RPG, played offline (D-103). In the owner's order of priority:
+**The Reliquary** (working title): an offline, single-player climb of a tower of 100 worlds, played from a link (D-103; settled by the owner on 2026-10-05, with the full constraints in #44).
+
+- **The tower.** When a world ends, something takes the place, frozen at its last moment, and stacks it into the tower. Each floor is a handcrafted world with its own creatures, anchors to free and a Warden that refuses to let its world end. Beating the Warden lets that world's time run again. The tower ends at floor 100 with a final boss. It launches with three floors (the Last Green, a forest; the Titan's Back; the Clockless War) and grows each season.
+- **Skill and knowledge only.** No loot and no power levels: one soul blade that evolves by how you fight, one difficulty, and a discovery loop of echoes cut from the frozen moment.
+- **The look:** storybook anime under real light. The climber is masked; there's no voice acting. Realistic human faces stay out of scope.
+- **Seasons and leaderboards.** Each three-month season is a fresh race from floor 1. Leaderboards come from deterministic replays, verified on the native host against the season's build. The first verified unassisted climb of a season is its champion, who proposes a floor that the owner builds.
+- **Nothing collected, nothing sold.** No accounts; saves stay in the game's origin and export as files; hosting is on free tiers.
+- **Later:** an MMO in one shared world, once there's money, time and legal advice (#31).
+
+The owner's order of priority still holds:
 1. A beautiful, living forest and vegetation.
 2. Nature and landscapes.
 3. Towers and architecture.
 4. Beautiful creatures in those worlds.
-
-Realistic human faces are out of scope. **Still open (the owner's call):** the art direction, the world's scale, and the gameplay.
 
 ## The console (moonshot)
 
@@ -136,13 +144,16 @@ Planned in GitHub issues on rywible/wrela, not here. Each milestone has a scope 
 | Milestone | Outcome |
 |---|---|
 | **M0: measure first** | Done: spikes 01–12 |
-| **M1: hello field** | wrela compiles to WASM and WGSL; a field renders in a browser tab |
-| **M2: the language** | The language and stdlib, complete: tiers 0–2, without a compiler in the browser |
-| **M3: the first lens** | Agents author creatures with the lens, a studio tool written in wrela; thesis 1 tested blind against the first authoring round |
+| **M1: hello field** | Done: wrela compiles to WASM and WGSL; a field renders in a browser tab |
+| **M2: the language** | Done: the language and stdlib, complete: tiers 0–2, without a compiler in the browser |
+| **M3: the first lens** | Done (October 2026): the lens, a studio tool written in wrela, and the agents' command-line tools; thesis 1 tested blind in authoring rounds 2 and 3 |
 | **M4: the engine's spine** | Spike 01's herd rendered from wrela source, matching the hand-written numbers |
-| **M5: a clearing** | A forest clearing at 60 fps with a creature walking across it, in the chosen art direction, authored with the lens |
-| **M6: a playable slice** | Something you can play from a link |
-| **M7: the world** | A streamed open-world region you can ride and fly across |
+| **M5: the look** | The Last Green's clearing at 60 fps with a creature walking across it, in the art direction the owner picks from three prototypes |
+| **M6: the duel** | The masked climber against one creature, in all three browsers; the combat-feel gate |
+| **M7: the Ashstag** | The first Warden and the soul blade's first evolution; the art-quality gate |
+| **M8: the Last Green** | Floor 1 in full, streamed, released free as an offline game |
+| **M9: seasons** | Leaderboards from verified replays, seasons and the champion |
+| **M10: season 1** | The Titan's Back and the Clockless War; the tower opens with three floors |
 
 Everything else in the vision is in the backlog issue (#31). The pinned issue #26 tracks status against the vision.
 

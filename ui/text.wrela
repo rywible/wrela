@@ -1,0 +1,303 @@
+// Text: two fonts as signed distance fields (Inter for the UI, JetBrains Mono for source), made
+// by tools/wfont from ui/fonts, and laid out a line at a time. A glyph's field is sampled at
+// 32 pixels per em; the GPU reads it at any size (draw.wrela), from 10 to 72 pixels.
+
+/// The `.wfont` files (tools/wfont's format): embedded, so they're in the build's data.
+const SANS_FILE: Bytes = embed("fonts/inter.wfont")
+const MONO_FILE: Bytes = embed("fonts/mono.wfont")
+
+/// Which font.
+pub enum Face: Copy + Eq {
+    /// Inter: proportional, for the UI.
+    Sans,
+    /// JetBrains Mono: monospace, for source and numbers in columns.
+    Mono,
+}
+
+/// A glyph: its advance (ems), where its field sits from the pen (pixels at the font's `em`),
+/// and where its field is in the atlas.
+pub struct Glyph: Copy {
+    pub advance: f32,
+    pub left: f32,
+    pub top: f32,
+    pub width: u32,
+    pub height: u32,
+    /// Into the file's fields.
+    offset: u32,
+    /// Its top-left texel in the atlas.
+    pub atlas_x: u32,
+    pub atlas_y: u32,
+}
+
+/// A font, read from its file when the program starts.
+pub struct Font: Clone {
+    /// The pixels per em its fields were sampled at, and the distance (in those pixels) that
+    /// the field's 0 and 255 stand for.
+    pub em: f32,
+    pub spread: f32,
+    /// Above and below the baseline, and between lines: ems.
+    pub ascender: f32,
+    pub descender: f32,
+    pub line_gap: f32,
+    glyphs: Vec<Glyph>,
+    /// Each code point below 256: its glyph's index plus one (0: none).
+    index: [u32; 256],
+    /// The advance's change between two glyphs, by `left * count + right`: ems.
+    kerning: Vec<f32>,
+    file: Bytes,
+    fields_at: u32,
+    /// `?`'s glyph: what a character the font hasn't shows.
+    missing: u32,
+}
+
+fn u32_at(b: Bytes, at: u32) -> u32 {
+    u32(b.at(at)) | (u32(b.at(at + 1)) << 8) | (u32(b.at(at + 2)) << 16) | (u32(b.at(at + 3)) << 24)
+}
+
+fn f32_at(b: Bytes, at: u32) -> f32 {
+    bitcast_f32(u32_at(b, at))
+}
+
+/// `n` copies of `value`.
+fn filled<T: Copy>(n: u32, value: T) -> Vec<T> {
+    var out: Vec<T> = Vec::with_capacity(n)
+    for _ in 0..n {
+        out.push(value)
+    }
+    out
+}
+
+impl Font {
+    /// Reads a `.wfont` file; panics if it isn't one.
+    pub fn read(file: Bytes) -> Font {
+        assert(file.len() > 40 && file.at(0) == 87 && file.at(3) == 84, "not a .wfont file")
+        assert(u32_at(file, 4) == 1, "a .wfont file of another version")
+        let n = u32_at(file, 28)
+        let pairs = u32_at(file, 32)
+        var glyphs: Vec<Glyph> = Vec::with_capacity(n)
+        var index = [0; 256]
+        for i in 0..n {
+            let at = 40 + i * 32
+            let cp = u32_at(file, at)
+            glyphs.push(
+                Glyph {
+                    advance: f32_at(file, at + 4),
+                    left: f32_at(file, at + 8),
+                    top: f32_at(file, at + 12),
+                    width: u32_at(file, at + 16),
+                    height: u32_at(file, at + 20),
+                    offset: u32_at(file, at + 24),
+                    atlas_x: 0,
+                    atlas_y: 0,
+                },
+            )
+            if cp < 256 {
+                index[cp] = i + 1
+            }
+        }
+        var kerning: Vec<f32> = filled(n * n, 0.0)
+        let kern_at = 40 + n * 32
+        for k in 0..pairs {
+            let at = kern_at + k * 4
+            let a = u32(file.at(at))
+            let b = u32(file.at(at + 1))
+            let bits = u32(file.at(at + 2)) | (u32(file.at(at + 3)) << 8)
+            // An i16 in 1/8192 ems.
+            let v = if bits >= 32768 { f32(bits) - 65536.0 } else { f32(bits) }
+            kerning[a * n + b] = v / 8192.0
+        }
+        let missing = if index[63] > 0 { index[63] - 1 } else { 0 }
+        Font {
+            em: f32_at(file, 8),
+            spread: f32_at(file, 12),
+            ascender: f32_at(file, 16),
+            descender: f32_at(file, 20),
+            line_gap: f32_at(file, 24),
+            glyphs,
+            index,
+            kerning,
+            file,
+            fields_at: kern_at + pairs * 4,
+            missing,
+        }
+    }
+
+    pub fn count(self) -> u32 {
+        self.glyphs.len()
+    }
+
+    /// The index of the glyph for code point `cp`: `?`'s for one the font hasn't.
+    pub fn glyph_index(self, cp: u32) -> u32 {
+        if cp < 256 && self.index[cp] > 0 { self.index[cp] - 1 } else { self.missing }
+    }
+
+    pub fn glyph(self, i: u32) -> Glyph {
+        self.glyphs[i]
+    }
+
+    /// Byte `k` of glyph `i`'s field (rows from the top).
+    pub fn field_byte(self, i: u32, k: u32) -> u8 {
+        self.file.at(self.fields_at + self.glyphs[i].offset + k)
+    }
+
+    /// The kerning between glyphs `a` and `b`: ems added to `a`'s advance.
+    pub fn kern(self, a: u32, b: u32) -> f32 {
+        self.kerning[a * self.glyphs.len() + b]
+    }
+
+    /// A line's height at `size` pixels per em.
+    pub fn line_height(self, size: f32) -> f32 {
+        (self.ascender - self.descender + self.line_gap) * size
+    }
+
+    /// Lays `text` out at `size` pixels per em from a pen at `pen` (pixels): `visit(i, g, at)`
+    /// for each character, with its first byte, its glyph's index and the pen there (kerned),
+    /// until `visit` returns false. The pen after the last glyph laid out.
+    pub fn walk(self, text: str, size: f32, pen: f32, visit: fn(u32, u32, f32) -> bool) -> f32 {
+        var x = pen
+        var prev = 4294967295
+        var i = 0
+        while i < text.len() {
+            let (cp, next) = decode(text, i)
+            let g = self.glyph_index(cp)
+            if prev != 4294967295 {
+                x += self.kern(prev, g) * size
+            }
+            if !visit(i, g, x) {
+                return x
+            }
+            x += self.glyphs[g].advance * size
+            prev = g
+            i = next
+        }
+        x
+    }
+
+    /// How wide `text` is at `size` pixels per em.
+    pub fn measure(self, text: str, size: f32) -> f32 {
+        self.walk(text, size, 0.0, |_i, _g, _pen| true)
+    }
+
+    /// The byte offset in `text` nearest `x` pixels from its start, at `size`: where a click
+    /// puts a text cursor.
+    pub fn offset_at(self, text: str, size: f32, x: f32) -> u32 {
+        var at = text.len()
+        let _ = self.walk(text, size, 0.0, |i, g, pen| {
+            let w = self.glyphs[g].advance * size
+            let past = x < pen + 0.5 * w
+            if past {
+                at = i
+            }
+            !past
+        })
+        at
+    }
+
+    /// Glyph `i`'s place in the atlas.
+    pub fn place(mut self, i: u32, x: u32, y: u32) {
+        self.glyphs[i].atlas_x = x
+        self.glyphs[i].atlas_y = y
+    }
+}
+
+/// The code point at byte `i` of UTF-8 `s`, and where the next one starts. A byte that doesn't
+/// start a valid sequence is U+FFFD, one byte long.
+pub fn decode(s: str, i: u32) -> (u32, u32) {
+    let b0 = u32(s.byte(i))
+    if b0 < 128 {
+        return (b0, i + 1)
+    }
+    let n = s.len()
+    let cont = |k: u32| i + k < n && (u32(s.byte(i + k)) & 192) == 128
+    let low = |k: u32| u32(s.byte(i + k)) & 63
+    if b0 >= 192 && b0 < 224 && cont(1) {
+        return (((b0 & 31) << 6) | low(1), i + 2)
+    }
+    if b0 >= 224 && b0 < 240 && cont(1) && cont(2) {
+        return (((b0 & 15) << 12) | (low(1) << 6) | low(2), i + 3)
+    }
+    if b0 >= 240 && b0 < 248 && cont(1) && cont(2) && cont(3) {
+        return (((b0 & 7) << 18) | (low(1) << 12) | (low(2) << 6) | low(3), i + 4)
+    }
+    (65533, i + 1)
+}
+
+/// Where the character before byte `i` of UTF-8 `s` starts.
+pub fn previous(s: str, i: u32) -> u32 {
+    var j = i
+    while j > 0 {
+        j -= 1
+        if (u32(s.byte(j)) & 192) != 128 {
+            return j
+        }
+    }
+    0
+}
+
+/// The two fonts, and where their glyphs are in one atlas: `width` × `height` texels.
+pub struct Fonts: Clone {
+    pub sans: Font,
+    pub mono: Font,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Each glyph's place in an atlas `width` texels wide, shelf by shelf: the glyphs in order,
+/// each shelf as tall as its tallest, a texel apart so filtering doesn't bleed. Returns the
+/// height used.
+fn pack(font: mut Font, width: u32, start: u32) -> u32 {
+    var x = 1
+    var y = start
+    var shelf = 0
+    for i in 0..font.count() {
+        let g = font.glyph(i)
+        if x + g.width + 1 > width {
+            x = 1
+            y += shelf + 1
+            shelf = 0
+        }
+        font.place(i, x, y)
+        x += g.width + 1
+        shelf = max(shelf, g.height)
+    }
+    y + shelf + 1
+}
+
+impl Fonts {
+    /// Reads both fonts, and places their glyphs in an atlas 1024 texels wide.
+    pub fn load() -> Fonts {
+        var sans = Font::read(SANS_FILE)
+        var mono = Font::read(MONO_FILE)
+        let width = 1024
+        let mid = pack(mut sans, width, 1)
+        let height = pack(mut mono, width, mid)
+        Fonts { sans, mono, width, height }
+    }
+
+    pub fn font(self, face: Face) -> borrow Font {
+        match face {
+            Face::Sans => self.sans,
+            Face::Mono => self.mono,
+        }
+    }
+
+    /// The atlas's texels, RGBA8 with each glyph's field in red, rows from the top.
+    pub fn atlas(self) -> Vec<u8> {
+        var bytes: Vec<u8> = filled(self.width * self.height * 4, 0)
+        for f in 0..2 {
+            borrow font = self.font(if f == 0 { Face::Sans } else { Face::Mono })
+            for i in 0..font.count() {
+                let g = font.glyph(i)
+                for row in 0..g.height {
+                    let base = ((g.atlas_y + row) * self.width + g.atlas_x) * 4
+                    for col in 0..g.width {
+                        let v = font.field_byte(i, row * g.width + col)
+                        bytes[base + col * 4] = v
+                        bytes[base + col * 4 + 3] = 255
+                    }
+                }
+            }
+        }
+        bytes
+    }
+}

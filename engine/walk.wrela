@@ -1,0 +1,169 @@
+// A creature walking on the spot with sketch 01's cycle (`sim::GaitState`), posed by
+// `render::palette`: what the examples and the lens draw, and the record a frame test checks
+// (AC7 of #39: each creature walks for 120 frames).
+
+use creature::{Creature, Skeleton}
+use look::CreatureLook
+use render::{Lights, Palette, Shaded, SkinnedMesh, View, palette, realize_mesh, shade, skin}
+use sim::{GaitState, Mode, Pose, Transform}
+use std::gpu::{DepthTexture, begin_screen_pass_with_depth, depth_texture, draw}
+
+/// What a walk has done: the largest error in a leg bone's length, and in a foot's place
+/// against the gait's beyond what the leg can't reach; how many times a foot's place was beyond
+/// its leg's reach; the lowest and highest a foot has been, from where it is at rest; and
+/// whether every bone's matrix was finite.
+pub struct Walked: Copy {
+    pub length_error: f32,
+    pub foot_error: f32,
+    pub overreached: u32,
+    pub lowest: f32,
+    pub highest: f32,
+    pub frames: u32,
+    pub finite: bool,
+}
+
+/// Nothing walked yet.
+pub fn walked() -> Walked {
+    Walked {
+        length_error: 0.0,
+        foot_error: 0.0,
+        overreached: 0,
+        lowest: 1.0e9,
+        highest: -1.0e9,
+        frames: 0,
+        finite: true,
+    }
+}
+
+impl Walked {
+    /// Records a frame: the palette `p` that posed `s` as `pose` (`render::palette`, its root
+    /// where the creature stands). Each leg's bones should keep their lengths, and each foot be
+    /// where the gait puts it, its step scaled from the gait's hips to the leg's; beyond the
+    /// leg's reach, short by as much as the place is beyond it.
+    pub fn record(mut self, s: Skeleton, p: Palette, pose: Pose) {
+        let legs = s.legs()
+        let at = |m: mat4, v: vec3| (m * vec4(v, 1.0)).xyz
+        for i in 0..s.leg_count() {
+            let j = legs[i].joints
+            let (h, k, a, f) = (s.rest(j[0]), s.rest(j[1]), s.rest(j[2]), s.rest(j[3]))
+            let hip = at(p.bones[j[0].index], h)
+            let knee = at(p.bones[j[1].index], k)
+            let ankle = at(p.bones[j[2].index], a)
+            let foot = at(p.bones[j[3].index], f)
+            self.length_error = max(self.length_error, abs(length(knee - hip) - length(k - h)))
+            self.length_error = max(self.length_error, abs(length(ankle - knee) - length(a - k)))
+            let lp = pose.legs[i]
+            let target = f + (lp.foot - vec3(lp.hip.x, 0.0, lp.hip.z)) * (h.y / render::GAIT_HIP)
+            let short = max(length(target - (f - a) - h) - (length(k - h) + length(a - k)), 0.0)
+            if short > 0.0 {
+                self.overreached += 1
+            }
+            self.foot_error = max(self.foot_error, length(foot - target) - short)
+            self.lowest = min(self.lowest, foot.y - f.y)
+            self.highest = max(self.highest, foot.y - f.y)
+        }
+        for b in 0..s.len() {
+            for c in 0..4 {
+                let col = p.bones[b][c]
+                self.finite = self.finite && col == col && dot(col, col) < 1.0e30
+            }
+        }
+        self.frames += 1
+    }
+}
+
+/// A creature walking on the spot, drawn: its mesh, realized once (sketch 02's extraction), its
+/// gait and the palette that poses it, what its walk has done, and the screen's depth.
+pub struct Walker {
+    mesh: SkinnedMesh,
+    gait: GaitState,
+    palette: Palette,
+    pub walked: Walked,
+    depth: DepthTexture,
+    width: u32,
+    height: u32,
+}
+
+/// Where a walker stands: it walks on the spot.
+const STILL = Transform { pos: vec3(), heading: 0.0 }
+
+/// `creature`, its mesh realized as `look` says, ready to walk on the spot with sketch 01's
+/// cycle.
+pub fn walker<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Walker {
+    let gait = GaitState { phase: 0.0, speed: 0.8, turn: 0.0, mode: Mode::Walk }
+    Walker {
+        mesh: realize_mesh(creature, look),
+        gait,
+        palette: palette(creature.skeleton(), gait.pose(), STILL),
+        walked: walked(),
+        depth: depth_texture(width: 1, height: 1),
+        width: 1,
+        height: 1,
+    }
+}
+
+impl Walker {
+    /// A frame on a screen `width` by `height`: the gait a step on, `creature` posed by it (and
+    /// the pose recorded), and drawn skinned and shaded as `look` says, by a camera at `eye`
+    /// looking at `at`.
+    pub fn frame<C: Shaded, K: Creature<C>>(
+        mut self,
+        creature: K,
+        look: CreatureLook,
+        width: u32,
+        height: u32,
+        eye: vec3,
+        at: vec3,
+    ) {
+        self.gait = self.gait.advance()
+        let pose = self.gait.pose()
+        self.palette = palette(creature.skeleton(), pose, STILL)
+        self.walked.record(creature.skeleton(), self.palette, pose)
+        if width != self.width || height != self.height {
+            self.depth = depth_texture(width, height)
+            self.width = width
+            self.height = height
+        }
+        let lights = Lights {
+            sun: normalize(vec3(-0.4, -1.0, -0.3)),
+            sun_colour: vec3(1.0, 0.95, 0.85),
+            sky: vec3(0.25, 0.3, 0.4),
+        }
+        let pass = begin_screen_pass_with_depth(mut self.depth, clear: vec4(0.55, 0.7, 0.85, 1.0))
+        draw(
+            skin.bind(
+                verts: self.mesh.verts.items(),
+                weights: self.mesh.weights,
+                quads: self.mesh.quads.items(),
+                palette: self.palette,
+                view: look_at(eye, at, aspect: f32(width) / f32(height)),
+            ),
+            shade.bind(field: creature.field(), shading: look.shading, lights: lights),
+            indirect: self.mesh.draw.span(start: 0, count: 4),
+        )
+        pass.present()
+    }
+}
+
+/// A camera at `eye` looking at `at`, `aspect` wide: a perspective projection 45° high, depth 0
+/// at 0.1 m to 1 at 50 m (WebGPU's range).
+pub fn look_at(eye: vec3, at: vec3, aspect: f32) -> View {
+    let f = normalize(at - eye)
+    let r = normalize(cross(f, vec3(0.0, 1.0, 0.0)))
+    let u = cross(r, f)
+    let view = mat4(
+        vec4(r.x, u.x, -f.x, 0.0),
+        vec4(r.y, u.y, -f.y, 0.0),
+        vec4(r.z, u.z, -f.z, 0.0),
+        vec4(-dot(r, eye), -dot(u, eye), dot(f, eye), 1.0),
+    )
+    let (near, far) = (0.1, 50.0)
+    let t = 1.0 / tan(0.3926991)
+    let proj = mat4(
+        vec4(t / aspect, 0.0, 0.0, 0.0),
+        vec4(0.0, t, 0.0, 0.0),
+        vec4(0.0, 0.0, far / (near - far), -1.0),
+        vec4(0.0, 0.0, near * far / (near - far), 0.0),
+    )
+    View { view_proj: proj * view }
+}

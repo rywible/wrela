@@ -1,0 +1,7 @@
+# Round 1's wolf, ported to the engine's creature API: a test subject of the lens (AC7 of #39).
+[package]
+name = "wolf"
+
+[dependencies]
+engine = { path = "../../engine" }
+round1 = { path = "../round1" }

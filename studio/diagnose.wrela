@@ -1,0 +1,381 @@
+// What a picture doesn't show (AC8 of #39), as round 1's tool reported it (fieldview's
+// `report`, design-archive-2026-10: experiments/agent-authoring/fieldview): the field sampled
+// on a 96³ grid of cells' centres in a cube, on the GPU; then on the CPU its separate pieces
+// (6-connected cells inside), what's sunk below the ground, what the cube cuts off, its volume
+// and the mass it implies, its bounds, and the largest gradient near the surface, by
+// differences between neighbouring cells. The same grid gives the same numbers as fieldview,
+// so the lens's report on a port can be checked against fieldview's on its original.
+
+use json::{List, list, obj}
+use solve::filled
+use std::collections::Vec
+use std::derive::Box3
+use std::field::{Lipschitz, Surface}
+use std::gpu::{GlobalId, GpuBuffer, Slots, buffer, dispatch, read}
+use std::io::Pending
+use std::string::String
+
+/// Cells per edge (fieldview's `GRID`).
+pub const CELLS: u32 = 96
+
+/// The grid: a cube of `CELLS`³ cells, `cell` wide, from `origin`.
+pub struct Grid: Copy + GpuData {
+    pub origin: vec3,
+    pub cell: f32,
+    pub n: u32,
+}
+
+/// The grid over the cube centred at `centre`, `radius` from it to each face (fieldview's
+/// `--center` and `--radius`).
+pub fn grid(centre: vec3, radius: f32) -> Grid {
+    Grid { origin: centre - vec3(radius), cell: 2.0 * radius / f32(CELLS), n: CELLS }
+}
+
+/// The cube fieldview would frame `b` with: its centre, and a radius 15% past its largest half
+/// extent.
+pub fn around(b: Box3) -> Grid {
+    let e = b.hi - b.lo
+    grid(0.5 * (b.lo + b.hi), 0.5 * 1.15 * max(e.x, max(e.y, e.z)) + 0.02)
+}
+
+/// `around`'s cube in `n`³ cells.
+pub fn around_in(b: Box3, n: u32) -> Grid {
+    let g = around(b)
+    Grid { origin: g.origin, cell: g.cell * f32(g.n) / f32(n), n }
+}
+
+impl Grid {
+    /// Cell (`i`, `j`, `k`)'s centre.
+    pub fn at(self, i: u32, j: u32, k: u32) -> vec3 {
+        self.origin + (vec3(f32(i), f32(j), f32(k)) + 0.5) * self.cell
+    }
+
+    pub fn count(self) -> u32 {
+        self.n * self.n * self.n
+    }
+}
+
+/// The field at each cell's centre, cell (i, j, k) at `i + n (j + n k)`. 256 a group, so a
+/// 192³ grid is within the 65,535 groups a dispatch may have.
+@compute(256)
+pub fn sample_grid<S: Surface>(field: S, grid: Grid, out: mut Slots<f32>, id: GlobalId) {
+    let n = grid.n
+    if id.x >= n * n * n {
+        return
+    }
+    let (i, j, k) = (id.x % n, (id.x / n) % n, id.x / (n * n))
+    out[id] = field.distance(grid.at(i, j, k))
+}
+
+/// A grid being sampled: its samples, on their way back from the GPU.
+pub struct Sampling {
+    pub grid: Grid,
+    pub samples: GpuBuffer<f32>,
+    pub pending: Pending<f32>,
+}
+
+/// Samples `field` on `grid` (its answer arrives on a later frame: `Sampling::poll`).
+pub fn start<S: Surface>(field: S, grid: Grid) -> Sampling {
+    var samples: GpuBuffer<f32> = buffer(grid.count())
+    dispatch(
+        sample_grid.bind(field: field, grid: grid, out: mut samples),
+        groups: (grid.count() + 255) / 256,
+    )
+    let pending = read(samples.span(start: 0, count: grid.count()))
+    Sampling { grid, samples: take samples, pending }
+}
+
+/// What the grid shows.
+pub struct Report {
+    pub grid: Grid,
+    /// Cells inside (the field below 0).
+    pub inside: u32,
+    /// The volume inside, in cubic metres, and the mass it implies at 1050 kg/m³ (soft tissue).
+    pub volume: f32,
+    pub mass: f32,
+    /// The inside cells' centres' box.
+    pub lo: vec3,
+    pub hi: vec3,
+    /// The pieces, largest first: their cells and their centres (up to 8).
+    pub pieces: u32,
+    pub sizes: [u32; 8],
+    pub centres: [vec3; 8],
+    /// The volume below y = 0.
+    pub below: f32,
+    /// The cube's faces an inside cell touches: -x, +x, -y, +y, -z, +z.
+    pub cut: [bool; 6],
+    /// The largest difference between neighbouring cells over the cell's width, where either is
+    /// within 10 cm of the surface; how many such pairs there are and how many exceed 1.2.
+    pub gradient: f32,
+    pub pairs: u32,
+    pub over: u32,
+    /// Samples that are NaN or infinite.
+    pub bad: u32,
+    /// Where the gradient is largest: up to five places at least two cells apart, largest
+    /// first (each pair's midpoint), and their gradients; `worst_count` of them are filled.
+    pub worst: [vec3; 5],
+    pub worst_gradient: [f32; 5],
+    pub worst_count: u32,
+    /// The pieces if a thin part's cells within half a cell of the surface join it: a part
+    /// thinner than a cell has no cells inside, and can show as pieces it isn't.
+    pub pieces_joined: u32,
+}
+
+/// Keeps `g` at `at` among the worst places (`Report::worst`): replaces a place within two
+/// cells if `g` is larger, else takes a slot if `g` is among the five largest.
+fn keep_worst(r: mut Report, at: vec3, g: f32) {
+    let near = 2.0 * r.grid.cell
+    for i in 0..r.worst_count {
+        if length(r.worst[i] - at) < near {
+            if g > r.worst_gradient[i] {
+                r.worst[i] = at
+                r.worst_gradient[i] = g
+                sort_worst(mut r)
+            }
+            return
+        }
+    }
+    if r.worst_count < 5 {
+        r.worst[r.worst_count] = at
+        r.worst_gradient[r.worst_count] = g
+        r.worst_count += 1
+        sort_worst(mut r)
+    } else if g > r.worst_gradient[4] {
+        r.worst[4] = at
+        r.worst_gradient[4] = g
+        sort_worst(mut r)
+    }
+}
+
+/// The worst places, largest gradient first.
+fn sort_worst(r: mut Report) {
+    for a in 0..r.worst_count {
+        for b in a + 1..r.worst_count {
+            if r.worst_gradient[b] > r.worst_gradient[a] {
+                let (pa, ga) = (r.worst[a], r.worst_gradient[a])
+                r.worst[a] = r.worst[b]
+                r.worst_gradient[a] = r.worst_gradient[b]
+                r.worst[b] = pa
+                r.worst_gradient[b] = ga
+            }
+        }
+    }
+}
+
+/// The report of samples `d` on `grid` (fieldview's `report`, the same arithmetic).
+pub fn report(grid: Grid, d: [f32]) -> Report {
+    let n = grid.n
+    let idx = |i: u32, j: u32, k: u32| i + n * (j + n * k)
+    let vox = grid.cell * grid.cell * grid.cell
+    var r = Report {
+        grid,
+        inside: 0,
+        volume: 0.0,
+        mass: 0.0,
+        lo: vec3(3.4e38),
+        hi: vec3(-3.4e38),
+        pieces: 0,
+        sizes: [0; 8],
+        centres: [vec3(); 8],
+        below: 0.0,
+        cut: [false; 6],
+        gradient: 0.0,
+        pairs: 0,
+        over: 0,
+        bad: 0,
+        worst: [vec3(); 5],
+        worst_gradient: [0.0; 5],
+        worst_count: 0,
+        pieces_joined: 0,
+    }
+    var below = 0
+    for k in 0..n {
+        for j in 0..n {
+            for i in 0..n {
+                let v = d[idx(i, j, k)]
+                if !(v == v && abs(v) < 3.4e38) {
+                    r.bad += 1
+                    continue
+                }
+                for axis in 0..3 {
+                    let one = |a: u32| select(if_false: 0, if_true: 1, cond: axis == a)
+                    let (ni, nj, nk) = (i + one(0), j + one(1), k + one(2))
+                    if ni < n && nj < n && nk < n {
+                        let w = d[idx(ni, nj, nk)]
+                        if w == w && abs(w) < 3.4e38 && (abs(v) < 0.1 || abs(w) < 0.1) {
+                            let g = abs(w - v) / grid.cell
+                            r.gradient = max(r.gradient, g)
+                            r.pairs += 1
+                            if g > 1.2 {
+                                r.over += 1
+                            }
+                            if g > 1.05 {
+                                let mid = 0.5 * (grid.at(i, j, k) + grid.at(ni, nj, nk))
+                                keep_worst(mut r, mid, g)
+                            }
+                        }
+                    }
+                }
+                if v < 0.0 {
+                    r.inside += 1
+                    let p = grid.at(i, j, k)
+                    if p.y < 0.0 {
+                        below += 1
+                    }
+                    r.lo = min(r.lo, p)
+                    r.hi = max(r.hi, p)
+                    let edge = [i == 0, i == n - 1, j == 0, j == n - 1, k == 0, k == n - 1]
+                    for t in 0..6 {
+                        r.cut[t] = r.cut[t] || edge[t]
+                    }
+                }
+            }
+        }
+    }
+    r.volume = f32(r.inside) * vox
+    r.mass = r.volume * 1050.0
+    r.below = f32(below) * vox
+    count_pieces(mut r, d)
+    r.pieces_joined = flood(grid, d, 0.5 * grid.cell).len()
+    r
+}
+
+/// The 6-connected pieces of the cells of samples `d` on `grid` whose sample is below `level`
+/// (0: the inside), in the order found (fieldview's flood fill): each one's cells and centre.
+fn flood(grid: Grid, d: [f32], level: f32) -> Vec<(u32, vec3)> {
+    let n = grid.n
+    let total = n * n * n
+    var seen = filled(total, value: false)
+    var queue: Vec<u32> = Vec::new()
+    var found: Vec<(u32, vec3)> = Vec::new()
+    for start in 0..total {
+        if !(d[start] < level) || seen[start] {
+            continue
+        }
+        queue.clear()
+        queue.push(start)
+        seen[start] = true
+        var head = 0
+        var sum = vec3(0.0)
+        while head < queue.len() {
+            let c = queue[head]
+            head += 1
+            let (i, j, k) = (c % n, (c / n) % n, c / (n * n))
+            sum += grid.at(i, j, k)
+            // Each of the six neighbours below the level and not yet seen.
+            if i > 0 && d[c - 1] < level && !seen[c - 1] {
+                seen[c - 1] = true
+                queue.push(c - 1)
+            }
+            if i + 1 < n && d[c + 1] < level && !seen[c + 1] {
+                seen[c + 1] = true
+                queue.push(c + 1)
+            }
+            if j > 0 && d[c - n] < level && !seen[c - n] {
+                seen[c - n] = true
+                queue.push(c - n)
+            }
+            if j + 1 < n && d[c + n] < level && !seen[c + n] {
+                seen[c + n] = true
+                queue.push(c + n)
+            }
+            if k > 0 && d[c - n * n] < level && !seen[c - n * n] {
+                seen[c - n * n] = true
+                queue.push(c - n * n)
+            }
+            if k + 1 < n && d[c + n * n] < level && !seen[c + n * n] {
+                seen[c + n * n] = true
+                queue.push(c + n * n)
+            }
+        }
+        found.push((queue.len(), sum / f32(queue.len())))
+    }
+    found
+}
+
+/// The pieces of the inside cells, largest first.
+fn count_pieces(r: mut Report, d: [f32]) {
+    let found = flood(r.grid, d, 0.0)
+    r.pieces = found.len()
+    // The largest eight, largest first; of equal sizes, the first found.
+    for item in found {
+        let (size, centre) = item
+        var at = 8
+        while at > 0 && size > r.sizes[at - 1] {
+            at -= 1
+        }
+        if at < 8 {
+            var s = 7
+            while s > at {
+                r.sizes[s] = r.sizes[s - 1]
+                r.centres[s] = r.centres[s - 1]
+                s -= 1
+            }
+            r.sizes[at] = size
+            r.centres[at] = centre
+        }
+    }
+}
+
+impl Report {
+    /// The report as one JSON object, with the stated Lipschitz bound beside the derived one
+    /// (the largest gradient found), and where the gradient is worst, each place with the part
+    /// there (`names[i]` for `worst[i]`).
+    pub fn json(self, stated: f32, names: [String]) -> String {
+        var worst = list()
+        for i in 0..self.worst_count {
+            var w = obj().vec("at", self.worst[i]).num("gradient", self.worst_gradient[i])
+            if i < names.len() {
+                w = take w.text("part", names[i].as_str())
+            }
+            let w = take w.done()
+            worst.add(w.as_str())
+        }
+        let worst = take worst.done()
+        let vox = self.grid.cell * self.grid.cell * self.grid.cell
+        var pieces = list()
+        for i in 0..min(self.pieces, 8) {
+            let piece = obj()
+                .num("volume", f32(self.sizes[i]) * vox)
+                .vec("centre", self.centres[i])
+                .done()
+            pieces.add(piece.as_str())
+        }
+        var cut = list()
+        let faces = ["-x", "+x", "-y", "+y", "-z", "+z"]
+        for t in 0..6 {
+            if self.cut[t] {
+                let face = f"\"{faces[t]}\""
+                cut.add(face.as_str())
+            }
+        }
+        let (pieces, cut) = (take pieces.done(), take cut.done())
+        obj()
+            .text("action", "diagnose")
+            .vec("grid_origin", self.grid.origin)
+            .num("cell", self.grid.cell)
+            .int("cells", self.grid.n)
+            .num("volume", self.volume)
+            .num("mass", self.mass)
+            .vec("lo", self.lo)
+            .vec("hi", self.hi)
+            .int("pieces", self.pieces)
+            .raw("largest", pieces.as_str())
+            .num("below_ground", self.below)
+            .raw("cut_off", cut.as_str())
+            .int("pieces_if_thin_parts_join", self.pieces_joined)
+            .num("largest_gradient", self.gradient)
+            .raw("worst_gradients", worst.as_str())
+            .num("over_1_2", f32(self.over) / f32(max(self.pairs, 1)))
+            .num("lipschitz_stated", stated)
+            .num("lipschitz_derived", self.gradient)
+            .int("bad_samples", self.bad)
+            .done()
+    }
+}
+
+/// How many 6-connected pieces the inside cells of samples `d` on `grid` form (`report`'s
+/// count, without the rest of the report).
+pub fn pieces(grid: Grid, d: [f32]) -> u32 {
+    flood(grid, d, 0.0).len()
+}

@@ -1,0 +1,109 @@
+// Digits: toes (or fingers, or a hoof's halves) set side by side, each a short sweep from its
+// base through its knuckle to a domed tip, from a few numbers an artist reads off a paw: how far
+// apart the outermost are, how long and thick the middle ones are, how much the toes fan out,
+// how far they curl down at the knuckle, and how much smaller the outer ones are.
+//
+// The reference wolf's toes needed parts of their own: from one axis along the paw, the clefts
+// between them hid their pads. And authors who had only tubes and balls built ball paws, even
+// with a photo of a wolf in view.
+
+use std::field::{Lipschitz, Surface}
+use sweep::{Sweep, section, sweep}
+
+/// `N` digits (`digits`), each a sweep of three sections.
+pub struct Digits<const N: u32>: Copy + GpuData {
+    pub toes: [Sweep<3>; N],
+}
+
+/// `N` digits whose bases sit across `spread` (from the first's to the last's, along the left
+/// of `forward` and `up`) centred at `at`, pointing along `forward`, their tops toward `up`. A
+/// middle one is `length` from base to tip and `thick` across at its knuckle (a half-width);
+/// the outermost are `outer` times that. They fan out by `splay` radians (between the outermost)
+/// and each arches over its knuckle (45% of the way along) to point down by `curl` radians at
+/// its tip.
+pub fn digits<const N: u32>(
+    at: vec3,
+    forward: vec3,
+    up: vec3,
+    spread: f32,
+    length: f32,
+    thick: f32,
+    splay: f32 = 0.15,
+    curl: f32 = 0.3,
+    outer: f32 = 0.85,
+) -> Digits<N> {
+    assert(N >= 1, "digits are at least one")
+    let f = normalize(forward)
+    let u = normalize(up - f * dot(up, f))
+    let left = cross(u, f)
+    var toes = [toe(at, f, u, length, thick, curl); N]
+    for i in 0..N {
+        // From -0.5 (the first, on the right) to 0.5 (the last).
+        let x = if N == 1 { 0.0 } else { f32(i) / f32(N - 1) - 0.5 }
+        // The middle third full size, the outermost `outer` times it, linear between.
+        let size = mix(1.0, outer, saturate((2.0 * abs(x) - 1.0 / 3.0) * 1.5))
+        let angle = splay * x
+        let d = f * cos(angle) + left * sin(angle)
+        toes[i] = toe(at + left * (spread * x), d, u, length * size, thick * size, curl)
+    }
+    Digits { toes }
+}
+
+/// One digit from `base`, pointing along `d` (its top toward `u`), `length` long and `thick`
+/// at its knuckle: an arc that leaves its base rising a little (0.15 radians) and arrives at its
+/// tip pointing down by `curl` (a curve through base, knuckle and tip alone bent all its turn at
+/// the knuckle, sharper than the toe was thick). A little wider and flatter at its base, its
+/// tip narrower, with a flat pad under it, domed.
+fn toe(base: vec3, d: vec3, u: vec3, length: f32, thick: f32, curl: f32) -> Sweep<3> {
+    let rise = 0.15
+    let turn = max(rise + curl, 0.001)
+    let r = length / turn
+    var points = [vec3(); 5]
+    for i in 0..5 {
+        let a = rise - turn * f32(i) / 4.0
+        points[i] = base + d * (r * (sin(rise) - sin(a))) + u * (r * (cos(a) - cos(rise)))
+    }
+    sweep(
+        points,
+        up: u,
+        sections: [
+            section(up: 0.9 * thick, down: 0.8 * thick, left: 1.1 * thick, right: 1.1 * thick),
+            section(up: thick, down: 0.9 * thick, left: thick, right: thick, square: 2.2),
+            section(
+                up: 0.7 * thick,
+                down: 0.55 * thick,
+                left: 0.75 * thick,
+                right: 0.75 * thick,
+                square: 2.4,
+            ),
+        ],
+        places: [0.0, 0.45, 1.0],
+        ends: vec2(0.0, 0.6 * thick),
+    )
+}
+
+impl<const N: u32> Surface for Digits<N> {
+    /// The nearest digit's distance. A digit's distance is never less than the distance to its
+    /// path less its reach (`Sweep::distance`), so where that's no nearer, it's skipped.
+    fn distance(self, p: vec3) -> f32 {
+        var d = self.toes[0].distance(p)
+        for i in 1..N {
+            let least = self.toes[i].to_path(p) - self.toes[i].reach
+            if least < d {
+                d = min(d, max(self.toes[i].near(p), least))
+            }
+        }
+        d
+    }
+}
+
+impl<const N: u32> Lipschitz for Digits<N> {
+    /// The largest of its digits'.
+    fn lipschitz(self, near: f32) -> f32 {
+        var most = 0.0
+        for i in 0..N {
+            most = max(most, self.toes[i].lipschitz(near))
+        }
+        most
+    }
+}

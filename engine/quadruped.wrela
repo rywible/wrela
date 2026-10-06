@@ -1,0 +1,760 @@
+// A four-legged body to start from: a skeleton and named parts for a torso, a neck, a head, four
+// legs and a tail, all from a few proportions, so an author begins with a sound animal and
+// spends their time on what makes it this one. `body(q, look)` is the whole creature, ready for
+// more parts (`.join(...)`), groups and modifiers (`.then(...)`); `torso`, `neck`, `head`,
+// `fore_legs`, `hind_legs` and `tail` are its groups, to use alone or replace with an author's
+// own (each is a `Group` to `.add`).
+//
+// Units: metres. +y up, ground at y = 0, the animal faces +z, +x is its left: a leg, eye, ear
+// or cheek is written for the left side and mirrored. Its numbers are proportions: most are
+// fractions of the withers' height (`withers`) or the chest's depth, so one change keeps the
+// rest in step. Every part is an exact distance (`round_cone`, `tube`) or an `oval`, so the
+// whole has a gradient near 1 (`diagnose`).
+
+use creature::{
+    Body, Bone, Group, Inside, Members, Placed, Skeleton, Then, creature, group, hard, smooth,
+}
+use std::derive::Box3
+use std::field::{
+    Cuboid, Intersect, Lipschitz, Oval, Rotate, RoundCone, Sphere, Surface, Translate, Tube, With,
+    cuboid, oval, round_cone, smin, sphere, tube,
+}
+use std::quat::Quat
+use std::units::deg
+
+/// What ends a leg.
+pub enum Feet: Copy + Eq {
+    /// A dog's or a cat's: it stands on its toes, with a pad and four toes.
+    Paws,
+    /// A hoofed animal's: it stands on the tip of its toe, a hoof below a long cannon.
+    Hooves,
+}
+
+/// A four-legged body's proportions.
+pub struct Quadruped: Copy {
+    /// Height at the withers (the top of the shoulders), and the body's length from the point
+    /// of the shoulder to the point of the buttock, in metres.
+    pub withers: f32,
+    pub length: f32,
+    /// The chest's depth (withers to brisket), as a fraction of `withers`; its width, as a
+    /// fraction of its depth.
+    pub chest_depth: f32,
+    pub chest_width: f32,
+    /// The waist's depth as a fraction of the chest's: 0.5 tucked up, 0.9 a barrel.
+    pub tuck: f32,
+    /// The croup's height as a fraction of `withers`: 1 level, less sloping down to the rear.
+    pub croup: f32,
+    /// A hump over the withers, in metres: 0 for none.
+    pub hump: f32,
+    /// The neck: its length as a fraction of `withers`, its angle above the horizontal in
+    /// degrees, and its base's radius as a fraction of the chest's depth.
+    pub neck_length: f32,
+    pub neck_angle: f32,
+    pub neck_thickness: f32,
+    /// The head: its length as a fraction of `withers`, the muzzle's share of it, its depth as
+    /// a fraction of its length, and how far the nose points down, in degrees.
+    pub head_length: f32,
+    pub muzzle: f32,
+    pub head_depth: f32,
+    pub head_angle: f32,
+    /// The snout's tip, as a fraction of the muzzle's root: 0.45 pointed, 0.8 blunt.
+    pub snout: f32,
+    /// The ears: their length as a fraction of the head's, and how far they lean out from
+    /// upright, in degrees (90 straight out to the side).
+    pub ears: f32,
+    pub ears_out: f32,
+    /// The tail: its length as a fraction of `length`, its root's radius as a fraction of the
+    /// chest's depth, and how far it hangs below the horizontal, in degrees.
+    pub tail_length: f32,
+    pub tail_thickness: f32,
+    pub tail_hang: f32,
+    /// The legs' thickness (1 is the base's), and what they end in.
+    pub legs: f32,
+    pub feet: Feet,
+}
+
+/// A dog-like body: about a wolf's or a big dog's proportions, on paws.
+pub fn paws() -> Quadruped {
+    Quadruped {
+        withers: 0.75,
+        length: 1.0,
+        chest_depth: 0.5,
+        chest_width: 0.6,
+        tuck: 0.6,
+        croup: 0.97,
+        hump: 0.0,
+        neck_length: 0.4,
+        neck_angle: 40.0,
+        neck_thickness: 0.3,
+        head_length: 0.32,
+        muzzle: 0.5,
+        head_depth: 0.55,
+        head_angle: 15.0,
+        snout: 0.45,
+        ears: 0.36,
+        ears_out: 15.0,
+        tail_length: 0.42,
+        tail_thickness: 0.17,
+        tail_hang: 65.0,
+        legs: 1.0,
+        feet: Feet::Paws,
+    }
+}
+
+/// A hoofed body: about a cow's or a deer's proportions, heavier, on hooves.
+pub fn hooves() -> Quadruped {
+    Quadruped {
+        withers: 1.4,
+        length: 1.6,
+        chest_depth: 0.52,
+        chest_width: 0.7,
+        tuck: 0.85,
+        croup: 0.94,
+        hump: 0.0,
+        neck_length: 0.45,
+        neck_angle: 35.0,
+        neck_thickness: 0.32,
+        head_length: 0.36,
+        muzzle: 0.55,
+        head_depth: 0.6,
+        head_angle: 45.0,
+        snout: 0.8,
+        ears: 0.3,
+        ears_out: 65.0,
+        tail_length: 0.45,
+        tail_thickness: 0.07,
+        tail_hang: 85.0,
+        legs: 0.9,
+        feet: Feet::Hooves,
+    }
+}
+
+/// The colour (or other channels) of each region.
+pub struct Look<C>: Copy {
+    pub back: C,
+    pub belly: C,
+    pub legs: C,
+    pub feet: C,
+    pub head: C,
+    pub muzzle: C,
+    pub ears: C,
+    pub eyes: C,
+    pub nose: C,
+    pub tail: C,
+}
+
+/// The same channels everywhere.
+pub fn plain<C: Copy>(c: C) -> Look<C> {
+    Look {
+        back: c,
+        belly: c,
+        legs: c,
+        feet: c,
+        head: c,
+        muzzle: c,
+        ears: c,
+        eyes: c,
+        nose: c,
+        tail: c,
+    }
+}
+
+// ---- where things are ---------------------------------------------------------------------------
+
+/// `q`'s key points, in the creature's rest space: where the skeleton's joints are, and the
+/// sizes the parts take from them.
+pub struct Frame: Copy {
+    pub withers: vec3,
+    pub chest: vec3,
+    pub lumbar: vec3,
+    pub pelvis: vec3,
+    pub neck: vec3,
+    pub head: vec3,
+    /// The head's forward (towards the nose) and up directions.
+    pub forward: vec3,
+    pub up: vec3,
+    pub tail: [vec3; 4],
+    pub scapula: vec3,
+    pub fore: [vec3; 4],
+    pub hind: [vec3; 4],
+    /// The chest's depth and half-width, the head's length, and the legs' base radius.
+    pub depth: f32,
+    pub half_width: f32,
+    pub head_length: f32,
+    pub leg: f32,
+}
+
+/// The rotation by `angle` degrees about x: positive turns +z towards +y.
+fn turn_x(v: vec3, angle: f32) -> vec3 {
+    let a = angle * deg
+    vec3(v.x, v.y * cos(a) + v.z * sin(a), v.z * cos(a) - v.y * sin(a))
+}
+
+/// Where `q`'s joints are.
+pub fn frame(q: Quadruped) -> Frame {
+    let w = q.withers
+    let l = q.length
+    let d = q.chest_depth * w
+    let front = 0.5 * l
+    let rear = -0.5 * l
+    let hooves = q.feet == Feet::Hooves
+    let withers = vec3(0.0, w, front - 0.18 * l)
+    let chest = vec3(0.0, w - 0.5 * d, front - 0.28 * l)
+    let lumbar = vec3(0.0, mix(w, q.croup * w, 0.55) - 0.25 * d, -0.06 * l)
+    let pelvis = vec3(0.0, q.croup * w - 0.4 * d, rear + 0.2 * l)
+    let neck = vec3(0.0, w - 0.3 * d, front - 0.1 * l)
+    let up_neck = vec3(0.0, sin(q.neck_angle * deg), cos(q.neck_angle * deg))
+    let head = neck + up_neck * (q.neck_length * w)
+    let forward = turn_x(vec3(0.0, 0.0, 1.0), -q.head_angle)
+    let up = turn_x(vec3(0.0, 1.0, 0.0), -q.head_angle)
+    // The tail hangs from the croup, curving down a little more towards its tip.
+    let tl = q.tail_length * l
+    let root = vec3(0.0, q.croup * w - 0.1 * d, rear + 0.03 * l)
+    let hang = |angle: f32| vec3(0.0, -sin(angle * deg), -cos(angle * deg))
+    let t1 = root + hang(q.tail_hang - 15.0) * (0.3 * tl)
+    let t2 = t1 + hang(q.tail_hang) * (0.35 * tl)
+    let t3 = t2 + hang(min(q.tail_hang + 12.0, 95.0)) * (0.35 * tl)
+    let x = 0.5 * q.chest_width * d
+    let scapula = vec3(x * 0.7, w - 0.22 * d, front - 0.2 * l)
+    // Fore leg: shoulder, elbow, carpus (the knee of a hoofed animal), foot or fetlock.
+    let fz = front - 0.06 * l
+    let fore = if hooves {
+        [
+            vec3(x * 0.62, w - 0.62 * d, fz - 0.02 * l),
+            vec3(x * 0.66, w - 1.0 * d, fz - 0.07 * l),
+            vec3(x * 0.6, 0.3 * w, fz - 0.06 * l),
+            vec3(x * 0.58, 0.1 * w, fz - 0.05 * l),
+        ]
+    } else {
+        [
+            vec3(x * 0.62, w - 0.6 * d, fz - 0.02 * l),
+            vec3(x * 0.66, w - 1.0 * d, fz - 0.09 * l),
+            vec3(x * 0.6, 0.17 * w, fz - 0.07 * l),
+            vec3(x * 0.58, 0.035 * w, fz - 0.03 * l),
+        ]
+    }
+    // Hind leg: hip, stifle (forward), hock (back), foot or fetlock.
+    let hz = rear + 0.18 * l
+    let hy = q.croup * w
+    let hind = if hooves {
+        [
+            vec3(x * 0.62, hy - 0.4 * d, hz),
+            vec3(x * 0.72, hy - 0.88 * d, hz + 0.035 * l),
+            vec3(x * 0.6, 0.38 * w, hz - 0.06 * l),
+            vec3(x * 0.58, 0.1 * w, hz - 0.05 * l),
+        ]
+    } else {
+        [
+            vec3(x * 0.62, hy - 0.4 * d, hz),
+            vec3(x * 0.7, hy - 0.92 * d, hz + 0.08 * l),
+            vec3(x * 0.6, 0.27 * w, hz - 0.07 * l),
+            vec3(x * 0.58, 0.035 * w, hz - 0.03 * l),
+        ]
+    }
+    Frame {
+        withers,
+        chest,
+        lumbar,
+        pelvis,
+        neck,
+        head,
+        forward,
+        up,
+        tail: [root, t1, t2, t3],
+        scapula,
+        fore,
+        hind,
+        depth: d,
+        half_width: x,
+        head_length: q.head_length * w,
+        leg: 0.18 * d * q.legs,
+    }
+}
+
+/// The names of `q`'s legs' joints: fore left, fore right, hind left and hind right. A hoofed
+/// leg's carpus is its knee, and its foot is a fetlock.
+fn leg_names(q: Quadruped) -> [[Text; 4]; 4] {
+    if q.feet == Feet::Hooves {
+        [
+            ["shoulder left", "elbow left", "knee left", "fore fetlock left"],
+            ["shoulder right", "elbow right", "knee right", "fore fetlock right"],
+            ["hip left", "stifle left", "hock left", "hind fetlock left"],
+            ["hip right", "stifle right", "hock right", "hind fetlock right"],
+        ]
+    } else {
+        [
+            ["shoulder left", "elbow left", "carpus left", "fore paw left"],
+            ["shoulder right", "elbow right", "carpus right", "fore paw right"],
+            ["hip left", "stifle left", "hock left", "hind paw left"],
+            ["hip right", "stifle right", "hock right", "hind paw right"],
+        ]
+    }
+}
+
+/// `q`'s skeleton: pelvis, lumbar, chest, withers, neck, head, four tail joints, the
+/// scapulae, and four legs (fore left, fore right, hind left, hind right: a gait's order), the
+/// right ones paired with the left.
+pub fn skeleton(q: Quadruped) -> Skeleton {
+    let f = frame(q)
+    var s = Skeleton::new()
+    let pelvis = s.root("pelvis", f.pelvis)
+    let lumbar = s.joint("lumbar", pelvis, f.lumbar)
+    let chest = s.joint("chest", lumbar, f.chest)
+    s.joint("withers", chest, f.withers)
+    let neck = s.joint("neck", chest, f.neck)
+    s.joint("head", neck, f.head)
+    let t0 = s.joint("tail 0", pelvis, f.tail[0])
+    let t1 = s.joint("tail 1", t0, f.tail[1])
+    let t2 = s.joint("tail 2", t1, f.tail[2])
+    s.joint("tail 3", t2, f.tail[3])
+    let (scapula, _) = s.joint_pair("scapula left", "scapula right", chest, f.scapula)
+    let names = leg_names(q)
+    s.leg_pair(names[0], names[1], scapula, f.fore)
+    s.leg_pair(names[2], names[3], pelvis, f.hind)
+    s
+}
+
+// ---- shapes ---------------------------------------------------------------------------------------
+
+/// A foot, in its last joint's frame (the paw's centre, or the fetlock): a paw (a pad and four
+/// toes) or a hoof (a pastern and a hoof, its sole flat on the ground), `size` across, its
+/// sole `drop` below the joint.
+pub struct Foot: Copy + GpuData {
+    pub hoof: u32,
+    pub size: f32,
+    pub drop: f32,
+}
+
+impl Surface for Foot {
+    fn distance(self, p: vec3) -> f32 {
+        let s = self.size
+        let ground = -self.drop
+        if self.hoof == 0 {
+            let pad = oval(vec3(0.42 * s, 0.32 * s, 0.55 * s)).distance(
+                p - vec3(0.0, ground + 0.3 * s, 0.05 * s),
+            )
+            var toes = 1.0e9
+            for i in 0..4 {
+                let a = (f32(i) - 1.5) * 0.36
+                let c = vec3(sin(a) * 0.3 * s, ground + 0.2 * s, 0.35 * s + cos(a) * 0.12 * s)
+                toes = min(toes, length(p - c) - 0.17 * s)
+            }
+            smin(pad, toes, 0.08 * s)
+        } else {
+            let pastern = round_cone(
+                vec3(),
+                vec3(0.0, ground + 0.55 * s, 0.12 * s),
+                r_top: 0.22 * s,
+                r_bottom: 0.26 * s,
+            ).distance(p)
+            let hoof = round_cone(
+                vec3(0.0, ground + 0.5 * s, 0.1 * s),
+                vec3(0.0, ground + 0.1 * s, 0.22 * s),
+                r_top: 0.27 * s,
+                r_bottom: 0.36 * s,
+            ).distance(p)
+            let d = smin(pastern, hoof, 0.06 * s)
+            // A flat sole, and a slot between the two toes at the front.
+            let sole = ground - p.y
+            let slot = max(abs(p.x) - 0.012 * s, 0.14 * s - p.z)
+            max(max(d, sole), -slot)
+        }
+    }
+}
+
+impl Lipschitz for Foot {
+    /// Smooth unions and intersections of exact distances.
+    fn lipschitz(self, near: f32) -> f32 {
+        1.0
+    }
+}
+
+/// `q`'s foot at the end of a leg `r` thick (`Frame::leg`), whose last joint, its frame, is at
+/// `at` (its sole on the ground), coloured by `look`.
+fn foot<C: Copy + GpuData>(q: Quadruped, r: f32, at: vec3, look: Look<C>) -> With<Foot, C> {
+    let hooves = q.feet == Feet::Hooves
+    Foot {
+        hoof: select(if_false: 0, if_true: 1, cond: hooves),
+        size: if hooves { 3.2 * r * 0.55 } else { 2.6 * r * 0.55 },
+        drop: at.y,
+    }.with(look.feet)
+}
+
+/// An ear, in its own frame: a pointed blade `length` tall and `width` wide at its root, thin
+/// across z, tilted out from upright by `out` degrees.
+fn ear_shape(length: f32, width: f32, out: f32) -> Rotate<Intersect<RoundCone, Cuboid>> {
+    round_cone(vec3(), vec3(0.0, length, 0.0), r_top: 0.5 * width, r_bottom: 0.08 * width)
+        .intersect(cuboid(vec3(width, length * 1.2, 0.28 * width)))
+        .rotate(Quat::axis_angle(vec3(0.0, 0.0, -1.0), out * deg))
+}
+
+// ---- the groups -------------------------------------------------------------------------------
+
+/// A part: a field placed on its bone, with channels.
+type Part<F, C> = Placed<With<F, C>>
+
+/// An oval, a sphere and a round cone moved to their place in a bone's frame.
+type Ov<C> = Part<Translate<Oval>, C>
+
+type Ball<C> = Part<Translate<Sphere>, C>
+
+type Cone<C> = Part<RoundCone, C>
+
+/// The torso's parts: ribcage, brisket, loin, croup and withers.
+pub type TorsoParts<C> = Then<Then<Then<Then<Ov<C>, Ov<C>>, Ov<C>>, Ov<C>>, Ov<C>>
+
+/// The neck: one tube from the chest to the head.
+pub type NeckParts<C> = Part<Tube<3>, C>
+
+/// The head's parts: cranium, muzzle, jaw, cheek, brow, eye, ear (those four mirrored) and nose.
+pub type HeadParts<C> = Then<Then<Then<Then<Then<Then<Then<Ov<C>, Part<Tube<3>, C>>, Cone<C>>, Ov<C>>, Ov<C>>, Ball<C>>, Part<Translate<Rotate<Intersect<RoundCone, Cuboid>>>, C>>, Ball<C>>
+
+/// A fore leg's parts: shoulder, upper arm, forearm, pastern (the cannon of a hoofed leg) and
+/// foot.
+pub type ForeLegParts<C> = Then<Then<Then<Then<Ov<C>, Cone<C>>, Cone<C>>, Cone<C>>, Part<Foot, C>>
+
+/// A hind leg's parts: thigh, upper leg, gaskin, hock, cannon and foot.
+pub type HindLegParts<C> = Then<Then<Then<Then<Then<Ov<C>, Cone<C>>, Cone<C>>, Ball<C>>, Cone<C>>, Part<Foot, C>>
+
+/// The tail: one tube.
+pub type TailParts<C> = Part<Tube<4>, C>
+
+/// The whole body (`body`).
+pub type QuadrupedParts<C> = Then<Then<Then<Then<Then<Group<TorsoParts<C>>, Group<NeckParts<C>>>, Group<HeadParts<C>>>, Group<ForeLegParts<C>>>, Group<HindLegParts<C>>>, Group<TailParts<C>>>
+
+/// The torso: a ribcage, the brisket in front of it, the loin behind, the croup over the hips
+/// and the withers (with the hump, if any) over the shoulders.
+pub fn torso<C: Copy + GpuData>(s: Skeleton, q: Quadruped, look: Look<C>) -> Group<TorsoParts<C>> {
+    let f = frame(q)
+    let (d, x, l) = (f.depth, f.half_width, q.length)
+    let chest = s.find("chest")
+    let lumbar = s.find("lumbar")
+    let pelvis = s.find("pelvis")
+    let withers = s.find("withers")
+    group(
+        s,
+        "torso",
+        |g: Inside| {
+            g.join(
+                "ribcage",
+                chest,
+                oval(vec3(x * 1.05, 0.5 * d, 0.3 * l))
+                    .translate(vec3(0.0, 0.0, 0.0))
+                    .with(look.back),
+            )
+                .join(
+                    "brisket",
+                    chest,
+                    oval(vec3(x * 0.6, 0.22 * d, 0.1 * l))
+                        .translate(vec3(0.0, -0.24 * d, 0.2 * l))
+                        .with(look.belly),
+                    seam: smooth(0.25 * d),
+                )
+                .join(
+                    "loin",
+                    lumbar,
+                    oval(vec3(x * 0.85, 0.5 * q.tuck * d, 0.26 * l))
+                        .translate(vec3(0.0, 0.25 * d - 0.5 * q.tuck * d + 0.05 * d, 0.0))
+                        .with(look.back),
+                    seam: smooth(0.35 * d),
+                )
+                .join(
+                    "croup",
+                    pelvis,
+                    oval(vec3(x * 1.0, 0.39 * d, 0.21 * l))
+                        .translate(vec3(0.0, 0.0, -0.02 * l))
+                        .with(look.back),
+                    seam: smooth(0.3 * d),
+                )
+                .join(
+                    "withers",
+                    withers,
+                    oval(vec3(x * 0.55, 0.16 * d + 0.6 * q.hump, 0.13 * l + 0.8 * q.hump))
+                        .translate(vec3(0.0, -0.14 * d + 0.35 * q.hump, -0.02 * l))
+                        .with(look.back),
+                    seam: smooth(0.2 * d + 0.3 * q.hump),
+                )
+        },
+        seam: hard(),
+    )
+}
+
+/// The neck: a tube from the chest's front to the head, tapering.
+pub fn neck<C: Copy + GpuData>(s: Skeleton, q: Quadruped, look: Look<C>) -> Group<NeckParts<C>> {
+    let f = frame(q)
+    let r = q.neck_thickness * f.depth
+    let base = s.find("neck")
+    let along = f.head - f.neck
+    group(
+        s,
+        "neck",
+        |g: Inside| {
+            g.join(
+                "neck",
+                base,
+                tube(
+                    [vec3(0.0, -0.1 * f.depth, -0.05 * q.length), 0.5 * along, along],
+                    [r, 0.75 * r, 0.6 * r],
+                ).with(look.back),
+            )
+        },
+        seam: smooth(0.5 * r),
+    )
+}
+
+/// The head: a cranium, a muzzle tapering to the nose, a lower jaw, cheeks, brows, eyes and
+/// ears (mirrored), and the nose.
+pub fn head<C: Copy + GpuData>(s: Skeleton, q: Quadruped, look: Look<C>) -> Group<HeadParts<C>> {
+    let f = frame(q)
+    let hl = f.head_length
+    let (fw, up) = (f.forward, f.up)
+    let deep = q.head_depth
+    let bone = s.find("head")
+    let nose_at = fw * (0.2 + q.muzzle) * hl + up * 0.02 * hl
+    let side = vec3(1.0, 0.0, 0.0)
+    group(
+        s,
+        "head",
+        |g: Inside| {
+            g.join(
+                "cranium",
+                bone,
+                oval(vec3(0.34 * hl, 0.55 * deep * hl, 0.36 * hl))
+                    .translate(up * 0.04 * hl - fw * 0.04 * hl)
+                    .with(look.head),
+            )
+                .join(
+                    "muzzle",
+                    bone,
+                    tube(
+                        [
+                            fw * 0.12 * hl - up * 0.04 * hl,
+                            fw * (0.12 + 0.6 * q.muzzle) * hl - up * 0.03 * hl,
+                            nose_at - up * 0.03 * hl,
+                        ],
+                        [
+                            0.42 * deep * hl,
+                            mix(0.42, 0.32, 1.0 - q.snout) * deep * hl,
+                            0.42 * q.snout * deep * hl,
+                        ],
+                    ).with(look.muzzle),
+                    seam: smooth(0.12 * hl),
+                )
+                .join(
+                    "jaw",
+                    bone,
+                    round_cone(
+                        fw * 0.05 * hl - up * 0.16 * deep * hl,
+                        nose_at - up * 0.12 * deep * hl - fw * 0.08 * hl,
+                        r_top: 0.08 * hl,
+                        r_bottom: 0.045 * hl,
+                    ).with(look.muzzle),
+                    seam: smooth(0.06 * hl),
+                )
+                .join(
+                    "cheek",
+                    bone,
+                    oval(vec3(0.1 * hl, 0.2 * deep * hl, 0.16 * hl))
+                        .translate(side * 0.18 * hl + fw * 0.06 * hl - up * 0.1 * deep * hl)
+                        .with(look.head),
+                    seam: smooth(0.08 * hl),
+                    mirror: true,
+                )
+                .join(
+                    "brow",
+                    bone,
+                    oval(vec3(0.08 * hl, 0.06 * hl, 0.1 * hl))
+                        .translate(side * 0.14 * hl + fw * 0.18 * hl + up * 0.3 * deep * hl)
+                        .with(look.head),
+                    seam: smooth(0.05 * hl),
+                    mirror: true,
+                )
+                .join(
+                    "eye",
+                    bone,
+                    sphere(0.045 * hl)
+                        .translate(side * 0.2 * hl + fw * 0.22 * hl + up * 0.16 * deep * hl)
+                        .with(look.eyes),
+                    seam: smooth(0.015 * hl),
+                    mirror: true,
+                )
+                .join(
+                    "ear",
+                    bone,
+                    ear_shape(q.ears * hl, 0.24 * hl, q.ears_out)
+                        .translate(side * 0.16 * hl - fw * 0.08 * hl + up * 0.42 * deep * hl)
+                        .with(look.ears),
+                    seam: smooth(0.04 * hl),
+                    mirror: true,
+                )
+                .join(
+                    "nose",
+                    bone,
+                    sphere(0.06 * deep * hl).translate(nose_at).with(look.nose),
+                    seam: smooth(0.03 * hl),
+                )
+        },
+        seam: smooth(0.12 * hl),
+    )
+}
+
+/// The fore legs (the skeleton's first leg, the left, mirrored): the shoulder's mass over the
+/// upper arm, the forearm, the pastern (a hoofed leg's cannon) and the foot.
+pub fn fore_legs<C: Copy + GpuData>(
+    s: Skeleton,
+    q: Quadruped,
+    look: Look<C>,
+) -> Group<ForeLegParts<C>> {
+    let f = frame(q)
+    let r = f.leg
+    let j = f.fore
+    let hooves = q.feet == Feet::Hooves
+    let b = s.legs()[0].joints
+    let scapula = s.parent(b[0])
+    group(
+        s,
+        "fore leg",
+        |g: Inside| {
+            g.join(
+                "shoulder",
+                scapula,
+                oval(vec3(0.7 * r, 2.2 * r, 1.4 * r))
+                    .translate(0.5 * (j[0] - f.scapula) + vec3(0.0, 0.2 * r, -0.2 * r))
+                    .with(look.back),
+            )
+                .join(
+                    "upper arm",
+                    b[0],
+                    round_cone(vec3(), j[1] - j[0], r_top: 1.0 * r, r_bottom: 0.75 * r).with(
+                        look.legs,
+                    ),
+                    seam: smooth(0.6 * r),
+                )
+                .join(
+                    "forearm",
+                    b[1],
+                    round_cone(vec3(), j[2] - j[1], r_top: 0.72 * r, r_bottom: 0.42 * r).with(
+                        look.legs,
+                    ),
+                    seam: smooth(0.4 * r),
+                )
+                .join(
+                    if hooves { "cannon" } else { "pastern" },
+                    b[2],
+                    round_cone(vec3(), j[3] - j[2], r_top: 0.42 * r, r_bottom: 0.36 * r).with(
+                        look.legs,
+                    ),
+                    seam: smooth(0.2 * r),
+                )
+                .join(
+                    if hooves { "hoof" } else { "paw" },
+                    b[3],
+                    foot(q, r, j[3], look),
+                    seam: smooth(0.2 * r),
+                )
+        },
+        seam: smooth(0.9 * r),
+        mirror: true,
+    )
+}
+
+/// The hind legs (the skeleton's third leg, the left, mirrored): the thigh's mass, the upper
+/// leg, the gaskin, the point of the hock, the cannon and the foot.
+pub fn hind_legs<C: Copy + GpuData>(
+    s: Skeleton,
+    q: Quadruped,
+    look: Look<C>,
+) -> Group<HindLegParts<C>> {
+    let f = frame(q)
+    let r = f.leg
+    let j = f.hind
+    let hooves = q.feet == Feet::Hooves
+    let b = s.legs()[2].joints
+    group(
+        s,
+        "hind leg",
+        |g: Inside| {
+            g.join(
+                "thigh",
+                b[0],
+                oval(vec3(1.0 * r, 2.6 * r, 1.7 * r))
+                    .translate(0.4 * (j[1] - j[0]) + vec3(0.1 * r, 0.3 * r, -0.4 * r))
+                    .with(look.back),
+            )
+                .join(
+                    "upper leg",
+                    b[0],
+                    round_cone(vec3(), j[1] - j[0], r_top: 1.1 * r, r_bottom: 0.75 * r).with(
+                        look.legs,
+                    ),
+                    seam: smooth(0.6 * r),
+                )
+                .join(
+                    "gaskin",
+                    b[1],
+                    round_cone(vec3(), j[2] - j[1], r_top: 0.75 * r, r_bottom: 0.4 * r).with(
+                        look.legs,
+                    ),
+                    seam: smooth(0.4 * r),
+                )
+                .join(
+                    "hock",
+                    b[2],
+                    sphere(0.42 * r).translate(vec3(0.0, 0.05 * r, -0.25 * r)).with(look.legs),
+                    seam: smooth(0.3 * r),
+                )
+                .join(
+                    "cannon",
+                    b[2],
+                    round_cone(vec3(), j[3] - j[2], r_top: 0.4 * r, r_bottom: 0.35 * r).with(
+                        look.legs,
+                    ),
+                    seam: smooth(0.2 * r),
+                )
+                .join(
+                    if hooves { "hoof" } else { "paw" },
+                    b[3],
+                    foot(q, r, j[3], look),
+                    seam: smooth(0.2 * r),
+                )
+        },
+        seam: smooth(1.0 * r),
+        mirror: true,
+    )
+}
+
+/// The tail: a tube from the croup, tapering, hanging down and back.
+pub fn tail<C: Copy + GpuData>(s: Skeleton, q: Quadruped, look: Look<C>) -> Group<TailParts<C>> {
+    let f = frame(q)
+    let r = q.tail_thickness * f.depth
+    let root = s.find("tail 0")
+    let t = f.tail
+    group(
+        s,
+        "tail",
+        |g: Inside| {
+            g.join(
+                "tail",
+                root,
+                tube(
+                    [vec3(), t[1] - t[0], t[2] - t[0], t[3] - t[0]],
+                    [r, 0.85 * r, 0.65 * r, 0.3 * r],
+                ).with(look.tail),
+            )
+        },
+        seam: smooth(0.8 * r),
+    )
+}
+
+/// The whole body from `q`, coloured by `look`: torso, neck, head, fore legs, hind legs and
+/// tail, on `skeleton(q)`. Add parts, groups and modifiers to it as to any creature.
+pub fn body<C: Copy + GpuData>(q: Quadruped, look: Look<C>) -> Body<QuadrupedParts<C>> {
+    let s = skeleton(q)
+    creature(s)
+        .add(torso(s, q, look))
+        .add(neck(s, q, look))
+        .add(head(s, q, look))
+        .add(fore_legs(s, q, look))
+        .add(hind_legs(s, q, look))
+        .add(tail(s, q, look))
+}

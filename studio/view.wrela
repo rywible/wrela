@@ -1,0 +1,781 @@
+// The lens's views (AC8 of #39): any surface, orthographic, from the side, the front, three
+// quarters above and the top, on a metric grid, the ground at y = 0. A fragment shader traces
+// each pixel's ray through the field, as round 1's tool (fieldview) did, and shades it as clay,
+// or by part (std::field's parts, language.md §22), or one part alone.
+
+use std::derive::Box3
+use std::field::Surface
+use std::gpu::{Append, ClipPosition, FragCoord, GlobalId, Slots, Texture, VertexIndex}
+use paint::{CLAY, Colours, pack, unpack}
+
+/// One orthographic view: rays run along `-back`, from a plane `reach` in front of `centre`;
+/// the view is `2 half` metres square, drawn in the screen's square at (`x0`, `y0`), `size`
+/// pixels wide.
+pub struct Ortho: Copy + GpuData {
+    pub centre: vec3,
+    pub right: vec3,
+    pub up: vec3,
+    pub back: vec3,
+    pub half: f32,
+    pub reach: f32,
+    pub x0: f32,
+    pub y0: f32,
+    pub size: f32,
+}
+
+impl Ortho {
+    /// The ray through screen pixel (`x`, `y`): its start and its direction.
+    pub fn ray(self, x: f32, y: f32) -> (vec3, vec3) {
+        let u = (x - self.x0) / self.size * 2.0 - 1.0
+        let v = (y - self.y0) / self.size * 2.0 - 1.0
+        let o = self.centre +
+            self.right * (u * self.half) -
+            self.up * (v * self.half) +
+            self.back * self.reach
+        (o, -self.back)
+    }
+
+    /// Where `p` is on the screen, in pixels.
+    pub fn project(self, p: vec3) -> vec2 {
+        let d = p - self.centre
+        let u = dot(d, self.right) / self.half
+        let v = -dot(d, self.up) / self.half
+        vec2(self.x0 + (u + 1.0) * 0.5 * self.size, self.y0 + (v + 1.0) * 0.5 * self.size)
+    }
+
+    /// Whether screen pixel (`x`, `y`) is in this view.
+    pub fn holds(self, x: f32, y: f32) -> bool {
+        x >= self.x0 && y >= self.y0 && x < self.x0 + self.size && y < self.y0 + self.size
+    }
+
+    /// A metre's width in pixels.
+    pub fn scale(self) -> f32 {
+        self.size / (2.0 * self.half)
+    }
+}
+
+/// Which way a view looks.
+pub enum Facing: Copy + Eq {
+    /// From +x: the subject's left side, +z (its front) to the left.
+    Side,
+    /// From +z: its front.
+    Front,
+    /// From above its front left.
+    ThreeQuarter,
+    /// From above, +z (its front) down.
+    Top,
+}
+
+/// The facings of the contact sheet, in its order: side, front, three-quarter, top (fieldview's).
+pub const SHEET: [Facing; 4] = [Facing::Side, Facing::Front, Facing::ThreeQuarter, Facing::Top]
+
+/// The modes by number, as `mode` takes them: shaded, parts, tint, isolate, silhouette, colour.
+pub const MODES: [Mode; 6] = [
+    Mode::Shaded,
+    Mode::Parts,
+    Mode::Tint,
+    Mode::Isolate,
+    Mode::Silhouette,
+    Mode::Colour,
+]
+
+/// The way a view from `facing` looks back along (`back`, toward the viewer) and its up.
+pub fn axes(facing: Facing) -> (vec3, vec3) {
+    match facing {
+        Facing::Side => (vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0)),
+        Facing::Front => (vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0)),
+        Facing::ThreeQuarter => {
+            let b = normalize(vec3(0.62, 0.45, 0.62))
+            (b, normalize(vec3(0.0, 1.0, 0.0) - b * b.y))
+        },
+        Facing::Top => (vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, -1.0)),
+    }
+}
+
+/// A view of `bounds` from `facing`, framed with a margin, drawn `size` pixels square at
+/// (`x0`, `y0`).
+pub fn framed(bounds: Box3, facing: Facing, x0: f32, y0: f32, size: f32) -> Ortho {
+    let c = 0.5 * (bounds.lo + bounds.hi)
+    let e = bounds.hi - bounds.lo
+    let extent = max(e.x, max(e.y, e.z))
+    let (back, up) = axes(facing)
+    let half = 0.6 * extent + 0.02
+    // Seen edge on, the ground sits near the view's bottom: what's below it is nothing.
+    let edge_on = facing == Facing::Side || facing == Facing::Front
+    let centre = if edge_on { vec3(c.x, max(c.y, half - 0.06 * half), c.z) } else { c }
+    Ortho {
+        centre,
+        right: normalize(cross(up, back)),
+        up,
+        back,
+        half,
+        reach: extent + 0.1,
+        x0,
+        y0,
+        size,
+    }
+}
+
+/// What the views show.
+pub enum Mode: Copy + Eq + GpuData {
+    /// Clay, lit from above.
+    Shaded,
+    /// Each part its own colour.
+    Parts,
+    /// One part coloured (`Sheet::part`), the rest clay.
+    Tint,
+    /// One part alone.
+    Isolate,
+    /// Inside dark, outside light.
+    Silhouette,
+    /// The subject's own colour, from its channels (`paint.wrela`), lit as clay is.
+    Colour,
+}
+
+/// The diagnosis's grid of the field's distances at its cells' centres (`n`³ cells, `cell`
+/// wide, from `origin`), which a ray steps through without evaluating the field where the grid
+/// shows the surface is far. `live` is 0 when there's no grid yet. `slack` is how far the
+/// surface may have moved since the grid was sampled (a drag under way: sampling it again each
+/// step cost 44 ms of GPU in Chrome).
+pub struct Coarse: Copy + GpuData {
+    pub origin: vec3,
+    pub cell: f32,
+    pub n: u32,
+    pub live: u32,
+    pub slack: f32,
+}
+
+/// Up to four views, what they show, and marks at points (probes): the views' uniform.
+pub struct Sheet: Copy + GpuData {
+    pub views: [Ortho; 4],
+    pub count: u32,
+    pub mode: Mode,
+    pub part: u32,
+    /// The grid's spacing, in metres.
+    pub grid: f32,
+    /// Points marked in every view: xyz, and w > 0 where shown.
+    pub marks: [vec4; 4],
+    pub coarse: Coarse,
+    /// How many points of a blueprint's outline (`blueprint.wrela`) the colour pass draws over
+    /// the views of its facing: each point's world position, and in `w` the facing.
+    pub outline_count: u32,
+}
+
+/// The background, outside every view.
+pub const BACKGROUND: vec4 = vec4(0.10, 0.11, 0.13, 1.0)
+
+/// The light, from above front left (fieldview's sun).
+const SUN: vec3 = vec3(0.5, 0.8, 0.35)
+
+/// The steps a ray takes at most.
+pub const STEPS: u32 = 400
+
+/// Part `part` of `field` alone, as a surface: what the views trace in `Mode::Isolate`.
+pub struct Alone<S>: Copy + GpuData {
+    pub field: S,
+    pub part: u32,
+}
+
+impl<S: Surface> Surface for Alone<S> {
+    fn distance(self, p: vec3) -> f32 {
+        self.field.part_distance(p, self.part)
+    }
+}
+
+/// How far along the ray from `o` along `dir` it meets the surface, or -1 if it doesn't within
+/// `far`: sphere tracing as fieldview's, 0.8 of the distance a step. A field that overstates
+/// its distance anywhere (a seam, a fitted table) can carry a step past the surface, so a ray
+/// that lands inside goes back by 0.8 of the distance, but at most half the way to the last
+/// point outside (`after`'s reasons).
+pub fn trace<S: Surface>(field: S, o: vec3, dir: vec3, far: f32) -> f32 {
+    var t = 0.0
+    var outside = 0.0
+    for _ in 0..STEPS {
+        let d = field.distance(o + dir * t)
+        if abs(d) < 0.0002 {
+            return t
+        }
+        if d < 0.0 {
+            t = max(t + 0.8 * d, 0.5 * (outside + t))
+        } else {
+            outside = t
+            t += max(0.8 * d, 0.0002)
+        }
+        if t > far {
+            break
+        }
+    }
+    -1.0
+}
+
+/// Where the ray from `o` along `dir` enters and leaves the box `lo`..`hi`: (t0, t1), t1 < t0
+/// if it misses.
+fn through(o: vec3, dir: vec3, lo: vec3, hi: vec3) -> vec2 {
+    // A direction's zero component would divide by zero: a tiny one instead.
+    let safe = vec3(
+        if abs(dir.x) < 1.0e-8 { 1.0e-8 } else { dir.x },
+        if abs(dir.y) < 1.0e-8 { 1.0e-8 } else { dir.y },
+        if abs(dir.z) < 1.0e-8 { 1.0e-8 } else { dir.z },
+    )
+    let a = (lo - o) / safe
+    let b = (hi - o) / safe
+    let near = min(a, b)
+    let far = max(a, b)
+    vec2(max(near.x, max(near.y, near.z)), min(far.x, min(far.y, far.z)))
+}
+
+/// The distance a ray stops within in view `v`: a quarter of a pixel, at least 0.2 mm.
+fn stop(v: Ortho) -> f32 {
+    max(0.0002, 0.25 / v.scale())
+}
+
+/// A colour for part `i`: hues spread by the golden angle.
+pub fn part_colour(i: u32) -> vec3 {
+    let h = fract(f32(i) * 0.618034 + 0.13)
+    let k = vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)
+    let c = abs(fract(vec3(h) + k) * 6.0 - 3.0) - 1.0
+    0.35 + 0.55 * saturate(c)
+}
+
+/// The grid behind the subject: on the ground (y = 0) where the ray meets it, else on the
+/// view's plane through its centre, a line every `step` metres and a darker one every metre;
+/// the ground's own line where a view sees it edge on.
+fn grid_colour(v: Ortho, o: vec3, dir: vec3, step: f32) -> vec4 {
+    let px = 1.0 / v.scale()
+    let base = vec3(0.86, 0.87, 0.89)
+    if abs(dir.y) > 0.2 {
+        let t = -o.y / dir.y
+        if t > 0.0 {
+            let g = o + dir * t
+            let line = |w: f32| abs(fract(w / step + 0.5) - 0.5) * step < 0.75 * px
+            let major = |w: f32| abs(fract(w + 0.5) - 0.5) < 1.0 * px
+            if major(g.x) || major(g.z) {
+                return vec4(base * 0.55, 1.0)
+            }
+            if line(g.x) || line(g.z) {
+                return vec4(base * 0.78, 1.0)
+            }
+            return vec4(base * 0.95, 1.0)
+        }
+        return vec4(base, 1.0)
+    }
+    // Edge on: the view's plane.
+    let w = o - v.back * v.reach
+    if abs(w.y) < 1.2 * px {
+        return vec4(0.35, 0.42, 0.33, 1.0)
+    }
+    if w.y < 0.0 {
+        return vec4(base * 0.82, 1.0)
+    }
+    let on = |a: f32, s: f32, width: f32| abs(fract(a / s + 0.5) - 0.5) * s < width * px
+    let axis_x = abs(v.back.x) < 0.5
+    let axis_z = abs(v.back.z) < 0.5
+    if on(w.y, 1.0, 1.0) || (axis_x && on(w.x, 1.0, 1.0)) || (axis_z && on(w.z, 1.0, 1.0)) {
+        return vec4(base * 0.55, 1.0)
+    }
+    if on(w.y, step, 0.75) || (axis_x && on(w.x, step, 0.75)) || (axis_z && on(w.z, step, 0.75)) {
+        return vec4(base * 0.78, 1.0)
+    }
+    vec4(base, 1.0)
+}
+
+/// A rectangle of the screen, `area` (x, y, width, height in pixels) of a `screen`-sized one:
+/// two triangles.
+@vertex
+pub fn cover_area(v: VertexIndex, area: vec4, screen: vec2) -> ClipPosition {
+    let corner = [
+        vec2(0.0, 0.0),
+        vec2(1.0, 0.0),
+        vec2(0.0, 1.0),
+        vec2(1.0, 0.0),
+        vec2(1.0, 1.0),
+        vec2(0.0, 1.0),
+    ]
+    let px = area.xy + corner[v.index % 6] * area.zw
+    ClipPosition {
+        position: vec4(px.x / screen.x * 2.0 - 1.0, 1.0 - px.y / screen.y * 2.0, 0.0, 1.0),
+    }
+}
+
+/// A full-screen triangle.
+@vertex
+pub fn cover(v: VertexIndex) -> ClipPosition {
+    let x = f32(v.index % 2) * 4.0 - 1.0
+    let y = f32(v.index / 2) * 4.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.0, 1.0) }
+}
+
+/// Where a pixel is: its view, and the ray through it; or the background, outside every view.
+fn locate(sheet: Sheet, px: vec2) -> Option<(Ortho, vec3, vec3)> {
+    var k = 4
+    for i in 0..4 {
+        if i < sheet.count && sheet.views[i].holds(px.x, px.y) {
+            k = i
+        }
+    }
+    if k == 4 {
+        return None
+    }
+    let v = sheet.views[k]
+    let (o, dir) = v.ray(px.x, px.y)
+    Some((v, o, dir))
+}
+
+/// The mark at `px` in view `v`, if one is there: a dot of 4 pixels, over everything.
+fn marked(sheet: Sheet, v: Ortho, px: vec2) -> bool {
+    var on = false
+    for m in 0..4 {
+        let mark = sheet.marks[m]
+        on = on || (mark.w > 0.0 && length(v.project(mark.xyz) - px) < 4.0)
+    }
+    on
+}
+
+const MARK: vec4 = vec4(0.95, 0.25, 0.2, 1.0)
+
+/// A blueprint's outline, over the views.
+const OUTLINE: vec4 = vec4(0.1, 0.45, 0.95, 1.0)
+
+/// Whether screen pixel `px` of view `v` is on the closed outline `pts` (drawn in the views
+/// that face its way): within 1.3 pixels of a segment.
+fn on_outline(sheet: Sheet, outline: [vec4], v: Ortho, px: vec2) -> bool {
+    let n = sheet.outline_count
+    if n < 2 {
+        return false
+    }
+    let f = u32(outline[0].w)
+    let (back, _) = axes(SHEET[min(f, 3)])
+    if dot(back, v.back) < 0.99 {
+        return false
+    }
+    for i in 0..n {
+        let a = v.project(outline[i].xyz)
+        let b = v.project(outline[(i + 1) % n].xyz)
+        let e = b - a
+        let t = clamp(dot(px - a, e) / max(dot(e, e), 0.000001), 0.0, 1.0)
+        if length(a + e * t - px) < 1.3 {
+            return true
+        }
+    }
+    false
+}
+
+/// Clay lit from above, in `base`'s colour, at a point whose normal is `n`, seen along `dir`.
+fn lit(base: vec3, n: vec3, dir: vec3) -> vec4 {
+    let l = normalize(SUN)
+    let light = 0.28 + 0.62 * max(dot(n, l), 0.0) + 0.12 * (0.5 + 0.5 * n.y)
+    let rim = 0.08 * pow(1.0 - max(dot(n, -dir), 0.0), 2.0)
+    vec4(base * light + vec3(rim), 1.0)
+}
+
+// ---- drawing: rays traced in passes, one evaluation of the field each ---------------------------
+//
+// On the GPU, a shader with the field's code in it twice, or in a loop, ran 6 to 30 times slower
+// per evaluation than a kernel that evaluates it once (the wolf, on an M4, in both hosts). So the
+// views trace their rays in passes. One starts each pixel's ray and steps it through the grid to
+// the surface's neighbourhood; each of `PASSES` passes evaluates the field once for each ray
+// still going; one gathers the rays still going after them, and `TAIL_PASSES` more go over
+// those alone; one marks the rays still going after those; one samples the field around each
+// hit (its normal), one finds the part there; and a fragment shader colours the pixels from
+// what the passes found.
+
+/// How many passes over every pixel the field gets. At 32, a ray that grazed one surface on its
+/// way to another behind it ran out of passes and showed the background: a slit through the
+/// subject (0.05 to 0.08% of a sheet's pixels, against 512 passes). At 64, a 1024² sheet took
+/// 74 ms of GPU in Chrome, and at 128, 102 ms: a pass costs about 0.44 ms with nearly all its
+/// rays done, as each pixel's state is read and written again.
+pub const PASSES: u32 = 64
+
+/// How many more passes the rays still going after `PASSES` get, gathered (`gather_rays`), so
+/// a pass costs only theirs. A ray still going after them hits if it's inside the surface or
+/// within 4 times its stopping distance of it, and misses if not. Rays that ran beside a
+/// surface for many centimetres (under the replica's chest, seen from the front; by its ribs
+/// and its buttocks, from above) needed up to 267 passes in all: at 64, 0.1 to 0.2% of an
+/// 1800² view's pixels showed the background. 512 in all cost a 1024² sheet 1.7 ms of GPU.
+pub const TAIL_PASSES: u32 = 448
+
+/// `TAIL_PASSES` while a drag is under way: each pass is a dispatch, and at 448 a drag's update
+/// (CPU and GPU, a 512² view) took 35 ms in Chrome, not 28. When the drag ends, the views are
+/// drawn again with all of them.
+pub const DRAG_TAIL_PASSES: u32 = 64
+
+/// What `gather_rays` gives a pixel whose ray it didn't gather.
+pub const NOT_GATHERED: u32 = 4294967295
+
+/// How far a ray steps where its last two distances show the way between them is clear: 1.2
+/// times the distance, where 0.8 is safe (a field whose gradient is at most 1.25). A ray that
+/// runs beside a surface, a little way from it, goes half again as far a pass as at 0.8 (at
+/// 0.8, rays that ran under the replica's chest, a millimetre from it, for 30 cm, ran out of
+/// passes: background in the front view, between the forelegs).
+const RELAX: f32 = 1.2
+
+/// A ray's state, between passes: `x` where it goes next, `y` the last point where the field
+/// showed it outside the surface, `z` what it's doing, `w` the distance there (or at the last
+/// point, if that was inside; 10⁹ where it's unknown).
+///
+/// What a ray is doing (its state's `z`): going, hit, missed, or there's no ray (the pixel is
+/// in no view).
+const GOING: f32 = 0.0
+const HIT: f32 = 1.0
+const MISSED: f32 = 2.0
+const NONE: f32 = 3.0
+
+/// The view and the ray of pixel `i` of a screen `width` wide.
+fn pixel_ray(sheet: Sheet, width: u32, i: u32) -> Option<(Ortho, vec3, vec3)> {
+    locate(sheet, vec2(f32(i % width) + 0.5, f32(i / width) + 0.5))
+}
+
+/// Steps a ray from `t` through the grid while the grid shows the surface far: the new `t`
+/// (past `end` where the ray leaves the cube first).
+fn skip_far(coarse: Coarse, cells: [f32], o: vec3, dir: vec3, t: f32, end: f32) -> f32 {
+    var at = t
+    let n = coarse.n
+    for _ in 0..STEPS {
+        let q = clamp(
+            floor((o + dir * at - coarse.origin) / coarse.cell),
+            vec3(0.0),
+            vec3(f32(n - 1)),
+        )
+        let skip = 0.8 * (cells[u32(q.x) + n * (u32(q.y) + n * u32(q.z))] - coarse.slack) -
+            0.87 * coarse.cell
+        if skip <= 0.25 * coarse.cell {
+            break
+        }
+        at += skip
+        if at > end {
+            break
+        }
+    }
+    at
+}
+
+/// Where a ray's march ends: where it leaves the grid's cube, if there's a grid, or twice the
+/// view's reach.
+fn ray_end(sheet: Sheet, v: Ortho, o: vec3, dir: vec3) -> f32 {
+    let c = sheet.coarse
+    if c.live == 0 {
+        return 2.0 * v.reach
+    }
+    min(2.0 * v.reach, through(o, dir, c.origin, c.origin + vec3(c.cell * f32(c.n))).y)
+}
+
+/// Starts each pixel's ray (its state: `GOING`'s). With a grid, the ray runs only through the
+/// grid's cube, and starts where the grid can't show the surface is far: the distance at a
+/// cell's centre less 1.25 times the way to the cell's corner bounds the distance anywhere in
+/// the cell (a field whose gradient is at most 1.25). A part alone doesn't use the grid, which
+/// is the whole field's.
+@compute(64)
+pub fn start_rays(
+    sheet: Sheet,
+    width: u32,
+    count: u32,
+    cells: [f32],
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= count {
+        return
+    }
+    let Some((v, o, dir)) = pixel_ray(sheet, width, id.x) else {
+        out[id] = vec4(0.0, 0.0, NONE, 0.0)
+        return
+    }
+    var t = 0.0
+    var first = 0.0
+    let end = ray_end(sheet, v, o, dir)
+    let c = sheet.coarse
+    if c.live != 0 {
+        let span = through(o, dir, c.origin, c.origin + vec3(c.cell * f32(c.n)))
+        if span.y < max(span.x, 0.0) {
+            out[id] = vec4(0.0, 0.0, MISSED, 0.0)
+            return
+        }
+        first = max(span.x, 0.0)
+        t = first
+        if sheet.mode != Mode::Isolate {
+            t = skip_far(c, cells, o, dir, t, end)
+        }
+    }
+    out[id] = vec4(t, first, if t > end { MISSED } else { GOING }, 1.0e9)
+}
+
+/// A ray's state after the field's distance `d` at its point (`r.x`): hit within the stopping
+/// distance. Inside, back toward the last point outside, by 0.8 of the distance, but at most
+/// half the way there: a field that overstates its distance on both sides of a surface (the
+/// replica's ears, by 2 times) swung rays between the same two points, 12 mm out and 12 mm
+/// in, for 512 passes. Outside, back to 0.8 of the distance from the last point outside if
+/// the step here was longer than the two distances cover (something may be between); else on
+/// `RELAX` times the distance, or through the grid where the grid shows the surface is far.
+fn after(sheet: Sheet, cells: [f32], v: Ortho, o: vec3, dir: vec3, r: vec4, d: f32) -> vec4 {
+    let eps = stop(v)
+    if abs(d) < eps {
+        return vec4(r.x, r.y, HIT, d)
+    }
+    if d < 0.0 {
+        return vec4(max(r.x + 0.8 * d, 0.5 * (r.y + r.x)), r.y, GOING, d)
+    }
+    if r.w > 0.0 && 0.8 * (r.w + d) < r.x - r.y {
+        return vec4(r.y + max(0.8 * r.w, 0.5 * eps), r.y, GOING, r.w)
+    }
+    let end = ray_end(sheet, v, o, dir)
+    let c = sheet.coarse
+    if c.live != 0 && sheet.mode != Mode::Isolate && d > 1.5 * c.cell {
+        let t = skip_far(c, cells, o, dir, r.x + 0.8 * d, end)
+        return vec4(t, r.x, if t > end { MISSED } else { GOING }, 1.0e9)
+    }
+    var t = r.x + max(RELAX * d, 0.5 * eps)
+    if t > end {
+        t = r.x + max(0.8 * d, 0.5 * eps)
+    }
+    vec4(t, r.x, if t > end { MISSED } else { GOING }, d)
+}
+
+/// The pixel whose ray invocation `k` of a pass steps: pixel k, in a pass over every pixel
+/// (`tail` 0, `count` pixels); or the k-th ray gathered, in a pass over the rays gathered (`tail`
+/// 1, `gathered_count[0]` of them, room for `count`). None past them.
+fn pass_pixel(
+    tail: u32,
+    count: u32,
+    gathered: [u32],
+    gathered_count: [u32],
+    k: u32,
+) -> Option<u32> {
+    if tail == 0 {
+        return if k < count { Some(k) } else { None }
+    }
+    if k < min(gathered_count[0], count) { Some(gathered[k]) } else { None }
+}
+
+/// One pass of the field over the rays still going: every pixel's, or the gathered rays'
+/// (`pass_pixel`).
+@compute(64)
+pub fn step_rays<S: Surface>(
+    field: S,
+    sheet: Sheet,
+    width: u32,
+    count: u32,
+    tail: u32,
+    cells: [f32],
+    gathered: [u32],
+    gathered_count: [u32],
+    rays: [vec4],
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    let Some(i) = pass_pixel(tail, count, gathered, gathered_count, id.x) else { return }
+    let r = rays[id.x]
+    let Some((v, o, dir)) = pixel_ray(sheet, width, i) else {
+        out[id] = r
+        return
+    }
+    if r.z != GOING {
+        out[id] = r
+        return
+    }
+    out[id] = after(sheet, cells, v, o, dir, r, field.distance(o + dir * r.x))
+}
+
+/// Gathers the rays still going after the passes over every pixel: each one's pixel goes in
+/// `gathered`, and its place there in `at` (`NOT_GATHERED` for the rest).
+@compute(64)
+pub fn gather_rays(
+    count: u32,
+    rays: [vec4],
+    gathered: mut Append<u32>,
+    at: mut Slots<u32>,
+    id: GlobalId,
+) {
+    if id.x >= count {
+        return
+    }
+    at[id] = if rays[id.x].z == GOING { gathered.push(id.x) } else { NOT_GATHERED }
+}
+
+/// The group counts of a pass over the rays gathered: 64 a group, as many as there's room for.
+@compute(64)
+pub fn gathered_groups(gathered_count: [u32], room: u32, args: mut Slots<u32>, id: GlobalId) {
+    if id.x < 3 {
+        args[id] = if id.x == 0 { (min(gathered_count[0], room) + 63) / 64 } else { 1 }
+    }
+}
+
+/// The rays gathered, their states from the passes over every pixel.
+@compute(64)
+pub fn seed_gathered(
+    gathered_count: [u32],
+    room: u32,
+    gathered: [u32],
+    rays: [vec4],
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x < min(gathered_count[0], room) {
+        out[id] = rays[gathered[id.x]]
+    }
+}
+
+/// After the passes: each pixel's ray, from the passes over the rays gathered if it was (its
+/// place in `tail` is `at`'s, if within the `room` there), or else over every pixel. A ray still
+/// going hits if it's inside or its last distance was within 4 times its stopping distance, and
+/// misses if not.
+@compute(64)
+pub fn settle_rays(
+    sheet: Sheet,
+    width: u32,
+    count: u32,
+    rays: [vec4],
+    at: [u32],
+    tail: [vec4],
+    room: u32,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= count {
+        return
+    }
+    let k = at[id.x]
+    let r = if k < room { tail[k] } else { rays[id.x] }
+    let Some((v, _, _)) = pixel_ray(sheet, width, id.x) else {
+        out[id] = r
+        return
+    }
+    if r.z != GOING {
+        out[id] = r
+        return
+    }
+    out[id] = vec4(r.x, r.y, if r.w < 4.0 * stop(v) { HIT } else { MISSED }, r.w)
+}
+
+/// Corner `k` of a tetrahedron around 0, at distance √3.
+fn corner(k: u32) -> vec3 {
+    vec3(
+        select(if_false: -1.0, if_true: 1.0, cond: k == 0 || k == 3),
+        select(if_false: -1.0, if_true: 1.0, cond: k == 1 || k == 3),
+        select(if_false: -1.0, if_true: 1.0, cond: k == 2 || k == 3),
+    )
+}
+
+/// The tetrahedron's step for normals (m).
+const NORMAL_STEP: f32 = 0.0004
+
+/// The field at the corners of a tetrahedron around each hit: invocation 4i + k, corner k
+/// around pixel i's hit (0 where there's none). Their differences are the surface's normal.
+@compute(256)
+pub fn sample_corners<S: Surface>(
+    field: S,
+    sheet: Sheet,
+    width: u32,
+    count: u32,
+    rays: [vec4],
+    out: mut Slots<f32>,
+    id: GlobalId,
+) {
+    if id.x >= 4 * count {
+        return
+    }
+    let (i, k) = (id.x / 4, id.x % 4)
+    let r = rays[i]
+    let Some((_, o, dir)) = pixel_ray(sheet, width, i) else {
+        out[id] = 0.0
+        return
+    }
+    if r.z != HIT {
+        out[id] = 0.0
+        return
+    }
+    out[id] = field.distance(o + dir * r.x + corner(k) * NORMAL_STEP)
+}
+
+/// The part at each hit (`Surface::part_at`), for the parts and tint modes.
+@compute(64)
+pub fn find_parts<S: Surface>(
+    field: S,
+    sheet: Sheet,
+    width: u32,
+    count: u32,
+    rays: [vec4],
+    out: mut Slots<u32>,
+    id: GlobalId,
+) {
+    if id.x >= count {
+        return
+    }
+    let r = rays[id.x]
+    let Some((_, o, dir)) = pixel_ray(sheet, width, id.x) else {
+        out[id] = 0
+        return
+    }
+    out[id] = if r.z == HIT { field.part_at(o + dir * r.x).1 } else { 0 }
+}
+
+/// The subject's colour at each hit (`Colours::colour_at`, packed), for the colour mode.
+@compute(64)
+pub fn find_colours<S: Colours>(
+    field: S,
+    sheet: Sheet,
+    width: u32,
+    count: u32,
+    rays: [vec4],
+    out: mut Slots<u32>,
+    id: GlobalId,
+) {
+    if id.x >= count {
+        return
+    }
+    let r = rays[id.x]
+    let Some((_, o, dir)) = pixel_ray(sheet, width, id.x) else {
+        out[id] = 0
+        return
+    }
+    out[id] = if r.z == HIT { pack(field.colour_at(o + dir * r.x)) } else { 0 }
+}
+
+/// A pixel of the views, from what the passes found: clay (`Mode::Shaded`), by part (`Parts`,
+/// and `Tint` with `sheet.part` coloured), one part alone (`Isolate`), silhouettes, or the
+/// subject's colour (`Colour`, packed in `parts`).
+@fragment
+pub fn colour(
+    pixel: FragCoord,
+    sheet: Sheet,
+    width: u32,
+    rays: [vec4],
+    corners: [f32],
+    parts: [u32],
+    outline: [vec4],
+) -> vec4 {
+    let px = pixel.position.xy
+    let Some((v, o, dir)) = locate(sheet, px) else { return BACKGROUND }
+    if on_outline(sheet, outline, v, px) {
+        return OUTLINE
+    }
+    let i = u32(px.y) * width + u32(px.x)
+    let hit = rays[i].z == HIT
+    if sheet.mode == Mode::Silhouette {
+        return if hit { vec4(0.08, 0.08, 0.1, 1.0) } else { vec4(0.97, 0.97, 0.97, 1.0) }
+    }
+    if marked(sheet, v, px) {
+        return MARK
+    }
+    if !hit {
+        return grid_colour(v, o, dir, sheet.grid)
+    }
+    var g = vec3(0.0)
+    for k in 0..4 {
+        g += corner(k) * corners[4 * i + k]
+    }
+    let n = if dot(g, g) > 0.0 { normalize(g) } else { -dir }
+    let base = match sheet.mode {
+        Mode::Parts => part_colour(parts[i]),
+        Mode::Tint => if parts[i] == sheet.part { vec3(0.95, 0.55, 0.2) } else { CLAY },
+        Mode::Isolate => part_colour(sheet.part),
+        Mode::Colour => unpack(parts[i]),
+        _ => CLAY,
+    }
+    lit(base, n, dir)
+}
+
+/// A pixel of the views as last drawn (into `canvas`).
+@fragment
+pub fn show_canvas(pixel: FragCoord, canvas: Texture) -> vec4 {
+    canvas.load(u32(pixel.position.x), u32(pixel.position.y))
+}
