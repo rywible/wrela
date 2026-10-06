@@ -15,6 +15,7 @@ use std::field::{
     Blend, Displace, Ellipsoid, HalfSpace, Intersect, Noise, RoundCone, SmoothUnion, Surface,
     Translate, With, ellipsoid, half_space, round_cone, value_noise,
 }
+use std::units::{kg, m}
 
 /// What a point of the grazer carries: how much it's torso (dappled hide) and how much hoof.
 /// Everything else is plain hide.
@@ -28,8 +29,8 @@ const TORSO_HIDE = Tissue { torso: 1.0, hoof: 0.0 }
 const HOOF = Tissue { torso: 0.0, hoof: 1.0 }
 
 /// Its density, kg/m³ (sketch 01 §1): hide and hoof.
-pub const HIDE_DENSITY: f32 = 1050.0
-pub const HOOF_DENSITY: f32 = 1300.0
+pub const HIDE_DENSITY: f32 = 1050 * kg / m ** 3
+pub const HOOF_DENSITY: f32 = 1300 * kg / m ** 3
 
 /// The torso's bark: fbm of value noise, `octaves` of them from `freq`, each half the last's
 /// amplitude, sampled at `p + offset`. Seen a footprint wide, an octave whose period is under
@@ -137,34 +138,34 @@ pub const BONES: u32 = 29
 /// The rest skeleton at scale 1, in metres: +y up, +z forward (grazer.js's `restSkeleton`).
 fn rest_joints() -> [P3; 29] {
     var j = [p3(x: 0.0, y: 0.0, z: 0.0); 29]
-    j[0] = p3(x: 0.0, y: 1.30, z: 0.0)
-    j[1] = p3(x: 0.0, y: 1.30, z: 1.0)
-    let neck_base = p3(x: 0.0, y: 1.50, z: 1.55)
-    let neck_span = p3(x: 0.0, y: 0.55, z: 0.45)
+    j[0] = p3(x: 0.0, y: 1.3m, z: 0.0)
+    j[1] = p3(x: 0.0, y: 1.3m, z: 1m)
+    let neck_base = p3(x: 0.0, y: 1.5m, z: 1.55m)
+    let neck_span = p3(x: 0.0, y: 55cm, z: 45cm)
     for i in 0..4 {
         j[2 + i] = add(neck_base, scl(neck_span, f64(i) / 4.0))
     }
-    j[6] = add(add(neck_base, neck_span), p3(x: 0.0, y: 0.0, z: 0.12))
-    let tail_base = p3(x: 0.0, y: 1.45, z: -0.40)
-    let tail_span = p3(x: 0.0, y: -0.55, z: -0.45)
+    j[6] = add(add(neck_base, neck_span), p3(x: 0.0, y: 0.0, z: 12cm))
+    let tail_base = p3(x: 0.0, y: 1.45m, z: -40cm)
+    let tail_span = p3(x: 0.0, y: -55cm, z: -45cm)
     for i in 0..6 {
         j[7 + i] = add(tail_base, scl(tail_span, f64(i) / 6.0))
     }
     let fore = [
-        p3(x: 0.0, y: -0.45, z: -0.04),
-        p3(x: 0.0, y: -0.42, z: 0.03),
-        p3(x: 0.0, y: -0.20, z: 0.02),
+        p3(x: 0.0, y: -45cm, z: -4cm),
+        p3(x: 0.0, y: -42cm, z: 3cm),
+        p3(x: 0.0, y: -20cm, z: 2cm),
     ]
     let hind = [
-        p3(x: 0.0, y: -0.50, z: 0.10),
-        p3(x: 0.0, y: -0.45, z: -0.12),
-        p3(x: 0.0, y: -0.22, z: 0.0),
+        p3(x: 0.0, y: -50cm, z: 10cm),
+        p3(x: 0.0, y: -45cm, z: -12cm),
+        p3(x: 0.0, y: -22cm, z: 0.0),
     ]
     let hips = [
-        p3(x: 0.25, y: 1.15, z: 1.25),
-        p3(x: -0.25, y: 1.15, z: 1.25),
-        p3(x: 0.25, y: 1.25, z: 0.05),
-        p3(x: -0.25, y: 1.25, z: 0.05),
+        p3(x: 25cm, y: 1.15m, z: 1.25m),
+        p3(x: -25cm, y: 1.15m, z: 1.25m),
+        p3(x: 25cm, y: 1.25m, z: 5cm),
+        p3(x: -25cm, y: 1.25m, z: 5cm),
     ]
     for l in 0..4 {
         var p = hips[l]
@@ -237,7 +238,7 @@ pub fn bounds(g: Params) -> Box3 {
     let s = g.scale
     let j = g.joints
     var b = Bounds { lo: p3(x: 1e300, y: 1e300, z: 1e300), hi: p3(x: -1e300, y: -1e300, z: -1e300) }
-    let amp = f(0.003) * 1.875
+    let amp = f(3mm) * 1.875
     let t = torso_parts(g)
     let (c1, r1, c2, r2) = t
     b = grow(b, fp3(c1), p3(f(r1.x) + amp, f(r1.y) + amp, f(r1.z) + amp))
@@ -245,26 +246,26 @@ pub fn bounds(g: Params) -> Box3 {
     let h = j[HEAD]
     b = grow(
         b,
-        fp3(add(h, scl(p3(x: 0.0, y: -0.04, z: 0.10), s))),
-        fp3(scl(p3(x: 0.12, y: 0.15, z: 0.24), s)),
+        fp3(add(h, scl(p3(x: 0.0, y: -4cm, z: 10cm), s))),
+        fp3(scl(p3(x: 12cm, y: 15cm, z: 24cm), s)),
     )
     b = grow_cone(
         b,
-        add(h, scl(p3(x: 0.0, y: -0.05, z: 0.15), s)),
-        0.10 * s,
-        add(h, scl(p3(x: 0.0, y: -0.16, z: 0.42), s)),
-        0.065 * s,
+        add(h, scl(p3(x: 0.0, y: -5cm, z: 15cm), s)),
+        10cm * s,
+        add(h, scl(p3(x: 0.0, y: -16cm, z: 42cm), s)),
+        6.5cm * s,
     )
-    let neck_end = add(j[NECK0], scl(p3(x: 0.0, y: 0.55, z: 0.45), s))
-    b = grow_cone(b, j[NECK0], 0.22 * s * g.bulk, neck_end, 0.12 * s)
+    let neck_end = add(j[NECK0], scl(p3(x: 0.0, y: 55cm, z: 45cm), s))
+    b = grow_cone(b, j[NECK0], 22cm * s * g.bulk, neck_end, 12cm * s)
     b = grow_cone(
         b,
         j[TAIL0],
-        0.07 * s,
-        add(j[TAIL0], scl(p3(x: 0.0, y: -0.55, z: -0.45), s)),
-        0.025 * s,
+        7cm * s,
+        add(j[TAIL0], scl(p3(x: 0.0, y: -55cm, z: -45cm), s)),
+        2.5cm * s,
     )
-    let radii = [(0.10 * g.bulk, 0.065), (0.065, 0.048), (0.048, 0.042)]
+    let radii = [(10cm * g.bulk, 6.5cm), (6.5cm, 4.8cm), (4.8cm, 4.2cm)]
     for l in 0..4 {
         let bone = LEG0 + l * 4
         for k in 0..3 {
@@ -274,9 +275,9 @@ pub fn bounds(g: Params) -> Box3 {
     }
     for l in 0..4 {
         let foot = j[LEG0 + l * 4 + 3]
-        b = grow_cone(b, foot, 0.06 * s, add(foot, p3(0.0, -0.08 * s, 0.0)), 0.07 * s)
+        b = grow_cone(b, foot, 6cm * s, add(foot, p3(0.0, -8cm * s, 0.0)), 7cm * s)
     }
-    let pad = f(0.06 * s) * 0.25
+    let pad = f(6cm * s) * 0.25
     Box3 {
         lo: vec3(f32(b.lo.x - pad), f32(b.lo.y - pad), f32(b.lo.z - pad)),
         hi: vec3(f32(b.hi.x + pad), f32(b.hi.y + pad), f32(b.hi.z + pad)),
@@ -289,10 +290,10 @@ fn torso_parts(g: Params) -> (P3, P3, P3, P3) {
     let c = g.joints[CHEST]
     let sb = s * g.bulk
     (
-        add(c, scl(p3(x: 0.0, y: 0.05, z: -0.15), s)),
-        scl(p3(x: 0.42, y: 0.48, z: 0.80), sb),
-        add(c, scl(p3(x: 0.0, y: 0.05, z: -0.85), s)),
-        scl(p3(x: 0.38, y: 0.44, z: 0.50), sb),
+        add(c, scl(p3(x: 0.0, y: 5cm, z: -15cm), s)),
+        scl(p3(x: 42cm, y: 48cm, z: 80cm), sb),
+        add(c, scl(p3(x: 0.0, y: 5cm, z: -85cm), s)),
+        scl(p3(x: 38cm, y: 44cm, z: 50cm), sb),
     )
 }
 
@@ -325,7 +326,7 @@ pub fn grazer(seed_value: u32) -> Body<Parts> {
         chest,
         v(j[NECK0]) - v(j[CHEST]),
         4,
-        v(scl(p3(x: 0.0, y: 0.55, z: 0.45), s)),
+        v(scl(p3(x: 0.0, y: 55cm, z: 45cm), s)),
     )
     let head = sk.joint("head", neck.last(), v(j[HEAD]))
     let tail = sk.chain(
@@ -333,7 +334,7 @@ pub fn grazer(seed_value: u32) -> Body<Parts> {
         pelvis,
         v(j[TAIL0]) - v(j[PELVIS]),
         6,
-        v(scl(p3(x: 0.0, y: -0.55, z: -0.45), s)),
+        v(scl(p3(x: 0.0, y: -55cm, z: -45cm), s)),
     )
     let names = [
         ["fore left hip", "fore left knee", "fore left ankle", "fore left foot"],
@@ -353,47 +354,47 @@ pub fn grazer(seed_value: u32) -> Body<Parts> {
     let (c1, r1, c2, r2) = torso_parts(g)
     let torso = ellipsoid(v(r1))
         .translate(v(c1) - at)
-        .smooth_union(ellipsoid(v(r2)).translate(v(c2) - at), k: f32(0.15 * s))
-        .displace(Bark { freq: 25.0, octaves: 4, offset: v(g.offset) + at }, amp: 0.003)
+        .smooth_union(ellipsoid(v(r2)).translate(v(c2) - at), k: f32(15cm * s))
+        .displace(Bark { freq: 25.0, octaves: 4, offset: v(g.offset) + at }, amp: 3mm)
         .with(TORSO_HIDE)
     let z_pelvis = vec3(0.0, 0.0, f32(j[PELVIS].z))
     let z_chest = vec3(0.0, 0.0, f32(j[CHEST].z))
 
     // Neck: a round cone along the neck chain's span.
     let n0 = v(j[NECK0])
-    let neck_end = v(add(j[NECK0], scl(p3(x: 0.0, y: 0.55, z: 0.45), s)))
+    let neck_end = v(add(j[NECK0], scl(p3(x: 0.0, y: 55cm, z: 45cm), s)))
     let neck_part = round_cone(
         vec3(),
         neck_end - n0,
-        r_top: f32(0.22 * s * g.bulk),
-        r_bottom: f32(0.12 * s),
+        r_top: f32(22cm * s * g.bulk),
+        r_bottom: f32(12cm * s),
     )
         .with(HIDE)
 
     // Head: an ellipsoid smooth-unioned with a muzzle cone (k 5 cm).
     let h = j[HEAD]
     let hv = v(h)
-    let head_part = ellipsoid(v(scl(p3(x: 0.12, y: 0.15, z: 0.24), s)))
-        .translate(v(add(h, scl(p3(x: 0.0, y: -0.04, z: 0.10), s))) - hv)
+    let head_part = ellipsoid(v(scl(p3(x: 12cm, y: 15cm, z: 24cm), s)))
+        .translate(v(add(h, scl(p3(x: 0.0, y: -4cm, z: 10cm), s))) - hv)
         .smooth_union(
             round_cone(
-                v(add(h, scl(p3(x: 0.0, y: -0.05, z: 0.15), s))) - hv,
-                v(add(h, scl(p3(x: 0.0, y: -0.16, z: 0.42), s))) - hv,
-                r_top: f32(0.10 * s),
-                r_bottom: f32(0.065 * s),
+                v(add(h, scl(p3(x: 0.0, y: -5cm, z: 15cm), s))) - hv,
+                v(add(h, scl(p3(x: 0.0, y: -16cm, z: 42cm), s))) - hv,
+                r_top: f32(10cm * s),
+                r_bottom: f32(6.5cm * s),
             ),
-            k: f32(0.05 * s),
+            k: f32(5cm * s),
         )
         .with(HIDE)
 
     // Tail: a round cone along the tail chain's span.
     let t0 = v(j[TAIL0])
-    let tail_end = v(add(j[TAIL0], scl(p3(x: 0.0, y: -0.55, z: -0.45), s)))
+    let tail_end = v(add(j[TAIL0], scl(p3(x: 0.0, y: -55cm, z: -45cm), s)))
     let tail_part = round_cone(
         vec3(),
         tail_end - t0,
-        r_top: f32(0.07 * s),
-        r_bottom: f32(0.025 * s),
+        r_top: f32(7cm * s),
+        r_bottom: f32(2.5cm * s),
     )
         .with(HIDE)
 
@@ -406,10 +407,10 @@ pub fn grazer(seed_value: u32) -> Body<Parts> {
         // Legs: three round cones each, then a hoof (a round cone below the sole's plane).
         .each_leg(|leg| {
             leg.fill(|seg: Segment| {
-                let (top, bottom) = if seg.index == 0 { (0.10 * bulk, 0.065) } else if seg.index ==
+                let (top, bottom) = if seg.index == 0 { (10cm * bulk, 6.5cm) } else if seg.index ==
                     1 {
-                    (0.065, 0.048)
-                } else { (0.048, 0.042) }
+                    (6.5cm, 4.8cm)
+                } else { (4.8cm, 4.2cm) }
                 round_cone(vec3(), seg.end, r_top: f32(top * s), r_bottom: f32(bottom * s)).with(
                     HIDE,
                 )
@@ -417,15 +418,15 @@ pub fn grazer(seed_value: u32) -> Body<Parts> {
                 .foot(
                     round_cone(
                         vec3(),
-                        vec3(0.0, f32(-0.08 * s), 0.0),
-                        r_top: f32(0.06 * s),
-                        r_bottom: f32(0.07 * s),
+                        vec3(0.0, f32(-8cm * s), 0.0),
+                        r_top: f32(6cm * s),
+                        r_bottom: f32(7cm * s),
                     )
-                        .intersect(half_space(vec3(0.0, -1.0, 0.0), f32(0.07 * s)))
+                        .intersect(half_space(vec3(0.0, -1.0, 0.0), f32(7cm * s)))
                         .with(HOOF),
                 )
         })
-        .blend(f32(0.06 * s))
+        .blend(f32(6cm * s))
         .bounded(bounds(g))
 }
 

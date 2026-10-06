@@ -402,7 +402,7 @@ fn bend(h: vec3, k: vec3, a: vec3, to: vec3) -> (vec3, vec3) {
 }
 
 /// The gait's hip height: `sim::GaitState::pose` is a body this tall's.
-pub const GAIT_HIP: f32 = 1.2
+pub const GAIT_HIP: f32 = 1.2m
 
 /// The palette that poses `skeleton` as `pose` has its legs, moved into the world by `root`:
 /// each foot goes where the gait puts it, its step (from under the hip) scaled from the gait's

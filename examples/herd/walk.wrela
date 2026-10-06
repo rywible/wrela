@@ -88,7 +88,7 @@ impl Poser for Walk {
 
     /// The root bobs twice a cycle.
     fn root(self, at: vec3, heading: f32, pose: vec4) -> mat4 {
-        let bob = 0.025 * cos(2.0 * TAU * pose.x)
+        let bob = 2.5cm * cos(2.0 * TAU * pose.x)
         translate(vec3(at.x, at.y - bob, at.z)) * rot_y(heading)
     }
 }

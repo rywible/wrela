@@ -426,7 +426,7 @@ fn rank(pl: Place, outside: f32) -> f32 {
 /// (`around`), by central differences.
 fn slopes<const S: u32>(sw: Sweep<S>, sec: Section, s: f32, theta: f32) -> vec2 {
     let len = sw.length()
-    let ds = 0.001
+    let ds = 1mm
     let a = clamp(s - ds, 0.0, len)
     let b = clamp(s + ds, 0.0, len)
     let along = if b > a {

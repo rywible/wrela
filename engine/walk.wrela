@@ -107,7 +107,7 @@ const LIGHTS = Lights {
     ambient: 0.6,
     exposure: 0.9,
     f0: 0.04,
-    normal_offset: 0.03,
+    normal_offset: 3cm,
     compare_bias: 0.002,
 }
 
@@ -117,7 +117,7 @@ pub fn walker<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Walker {
     let gait = GaitState { phase: 0.0, speed: 0.8, turn: 0.0, mode: Mode::Walk }
     let grid = Grid::around(
         grow(creature.bounds(), look.surface.tolerance),
-        look.surface.cell_size(0.05),
+        look.surface.cell_size(5cm),
     )
     var mesh = Mesh::new(Room { vertices: grid.blocks * 8, quads: grid.blocks * 16 })
     var scratch = Scratch::new(grid.blocks)
