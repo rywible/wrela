@@ -24,11 +24,12 @@ struct Entry<T>: Copy + StateHash + Serialize + SimState {
     pos: vec3,
 }
 
-/// Positions in cells `cell` metres wide, sorted by cell; and the sort's room.
+/// Positions in cells `cell` metres wide, sorted by cell; and the sort's room, which holds no
+/// elements (it hashes, saves and clones empty).
 pub struct SpatialGrid<T>: Clone + StateHash + Serialize + SimState {
     cell: f32,
     entries: Vec<Entry<T>>,
-    scratch: Vec<Entry<T>>,
+    room: Vec<u8>,
 }
 
 /// A cell's key: its coordinates, hashed. Two cells may share one, so queries check distances.
@@ -48,46 +49,10 @@ fn before<T>(a: Entry<T>, b: Entry<T>) -> bool {
     a.key < b.key || (a.key == b.key && a.order < b.order)
 }
 
-/// A stable merge sort, bottom up, through `scratch`.
-fn sort<T>(v: mut Vec<Entry<T>>, scratch: mut Vec<Entry<T>>) {
-    let n = v.len()
-    if n < 2 {
-        return
-    }
-    scratch.clear()
-    for i in 0..n {
-        scratch.push(v[i])
-    }
-    var width = 1
-    while width < n {
-        var lo = 0
-        while lo < n {
-            let mid = min(lo + width, n)
-            let hi = min(lo + 2 * width, n)
-            var i = lo
-            var j = mid
-            for k in lo..hi {
-                if i < mid && (j >= hi || !before(v[j], v[i])) {
-                    scratch[k] = v[i]
-                    i += 1
-                } else {
-                    scratch[k] = v[j]
-                    j += 1
-                }
-            }
-            lo = hi
-        }
-        for k in 0..n {
-            v[k] = scratch[k]
-        }
-        width = 2 * width
-    }
-}
-
 impl<T> SpatialGrid<T> {
     /// An empty grid of cells `cell` metres wide.
     pub fn new(cell: f32) -> SpatialGrid<T> {
-        SpatialGrid { cell, entries: Vec::new(), scratch: Vec::new() }
+        SpatialGrid { cell, entries: Vec::new(), room: Vec::new() }
     }
 
     /// A grid of `items`' positions, `pos(item)`, in cells `cell` metres wide.
@@ -110,7 +75,7 @@ impl<T> SpatialGrid<T> {
             )
             order += 1
         }
-        sort(mut self.entries, mut self.scratch)
+        self.entries.sort_by_in(|a, b| before(a, b), mut self.room)
     }
 
     pub fn len(self) -> u32 {
