@@ -102,12 +102,6 @@ pub fn run<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @determi
     take latest
 }
 
-/// The job for `ask`.
-@deterministic
-fn work_of<W: Asks>(ask: take W::Ask) -> W::Answer {
-    W::work(ask)
-}
-
 /// One tick: the answers due, the step, the new asks, the snapshot.
 @deterministic
 fn drive<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @deterministic fn(W) -> Snap, Snap: Copy + Plain>(
@@ -133,7 +127,7 @@ fn drive<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @determini
     d.timeline.advance(take input, d.step)
     for (ask, due) in d.timeline.world().asks(t.tick) {
         assert(due > t.tick, "a job's answer is due after the tick that asks for it")
-        d.pending.push(Pending { ask, due, job: job(ask, work_of::<W>) })
+        d.pending.push(Pending { ask, due, job: job(ask, |a| W::work(a)) })
     }
     borrow present = d.present
     d.out.publish(Stamped { ticks: t.tick + 1, snap: present(d.timeline.world()) })
