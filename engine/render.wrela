@@ -1,494 +1,341 @@
-// Drawing creatures (sketch 02): extraction on the GPU, when the engine realizes an individual,
-// then skinning and shading every frame. Engine code, generic over any creature's field: the
-// kernels are monomorphized for its type, and its numbers arrive as uniforms (D-070).
-//
-//   1. cull_blocks: which 4³-cell blocks the surface passes through (the derived interval), and
-//      which parts matter in each (each part's own interval): `Append<LiveBlock>`.
-//   2. place_vertices: a vertex in each cell the surface crosses, from the crossings on the
-//      cell's edges (dual contouring's QEF), with skin weights from the parts' distances.
-//   3. emit_quads: a quad for each crossed edge, joining the four cells around it.
-//   4. skin (@vertex) and shade (@fragment): the mesh moved by the bone palette, shaded by the
-//      field's channels and gradient per pixel, in rest space.
+// Drawing creatures (#43 §8, D-089, D-097): a realized mesh (`realize`), posed on the GPU by its
+// type's `Poser`, skinned by linear blending of four bones, cast into the sun's shadow map, and
+// shaded per pixel by its field: evaluated at the rest position, under the triangle's mask (2 or
+// 3 parts, not 20), with the pixel's footprint, its gradient the normal and its channels what the
+// type's `Look` turns into an albedo and a roughness. Engine code, generic over any creature's
+// field and look: the kernels are monomorphized for their types, and their numbers arrive as
+// uniforms (D-070).
 
-use creature::{Bone, Creature, CreatureField, FAR, Nearest4, PartList, Skeleton}
+use creature::{Bone, Creature, PartMask, Parts, Skeleton}
+use realize::{SkinVertex}
 use sim::{Pose, Transform}
-use look::{CreatureLook, Shading, Skin}
-use std::derive::{Box3, Interval, interval}
-use std::field::{Field, Surface}
+use std::derive::gradient
 use std::gpu::{
-    Append, AppendBuffer, AtomicMap, AtomicMapBuffer, ClipPosition, Flat, GlobalId, GpuBuffer,
-    LocalId, Oct32, Slots, Unorm8x4, VertexIndex, WorkgroupId, append_buffer, atomic_map_buffer,
-    buffer, dispatch,
+    ClipPosition, ComparisonSampler, DepthTexture, Flat, GlobalId, LocalId, Slots, VertexIndex,
+    WorkgroupId,
 }
 use std::math::PI
+use std::quat::Quat
 
 /// The most bones a palette holds.
 pub const MAX_BONES: u32 = 64
 
-/// Cells per block edge: a block is a 4×4×4 workgroup in `place_vertices`.
-pub const BLOCK: u32 = 4
-
-/// Which of a creature's parts can matter somewhere: a bit per part, in its fold's order
-/// (engine data, D-080).
-pub struct PartMask: Copy + GpuData + Eq {
-    pub bits: u32,
-}
-
-/// A field made of parts, as the renderer sees it (D-080). The compiler knows nothing of
-/// parts: this is ordinary code over each part's derived interval.
-pub trait Parts: Surface {
-    /// The parts that can change the field anywhere in `b`, where `whole` holds the field's
-    /// distances in `b` (its interval, which the caller has).
-    fn parts_near(self, b: Box3, whole: Interval) -> PartMask
-
-    /// The field's distance from only the parts in `mask`: the whole field's, wherever the
-    /// others can't change it.
-    fn distance_masked(self, p: vec3, mask: PartMask) -> f32
-
-    /// Skin weights at `p`: the bones of the four parts in `mask` nearest it, a byte each, and
-    /// their weights, which fall off over `falloff` from each part's surface (D-023).
-    fn weights_at(self, p: vec3, falloff: f32, mask: PartMask) -> (u32, vec4)
-
-    /// The field with only the parts in `mask`.
-    fn with_parts(self, mask: PartMask) -> Masked<Self> {
-        Masked { field: self, mask }
-    }
-}
-
-/// A field evaluated with only some of its parts.
-pub struct Masked<F>: Copy + GpuData {
-    pub field: F,
-    pub mask: PartMask,
-}
-
-impl<F: Parts + GpuData> Surface for Masked<F> {
-    fn distance(self, p: vec3) -> f32 {
-        self.field.distance_masked(p, self.mask)
-    }
-}
-
-impl<P: PartList> Parts for CreatureField<P> {
-    fn parts_near(self, b: Box3, whole: Interval) -> PartMask {
-        // A part changes a smooth fold only where it's within its seam's width of what the
-        // fold gives; a modifier moves that bound (`Modifier::before`).
-        PartMask { bits: self.parts.near_mask(b, whole.hi, self.k, 0).0 }
-    }
-
-    fn distance_masked(self, p: vec3, mask: PartMask) -> f32 {
-        self.parts.fold(p, FAR, self.k, mask: mask.bits, first: 0)
-    }
-
-    fn weights_at(self, p: vec3, falloff: f32, mask: PartMask) -> (u32, vec4) {
-        let n = self.parts.weigh(
-            p,
-            mask: mask.bits,
-            first: 0,
-            image: false,
-            scale: 1.0,
-            best: Nearest4::new(),
-        )
-        var w = [0.0; 4]
-        var total = 0.0
-        for i in 0..4 {
-            w[i] = if n.d[i] < FAR { clamp(1.0 - n.d[i] / max(falloff, 1.0e-6), 0.0, 1.0) } else {
-                0.0
-            }
-            total += w[i]
-        }
-        let weights = if total > 0.0 { vec4(w[0], w[1], w[2], w[3]) / total } else {
-            vec4(1.0, 0.0, 0.0, 0.0)
-        }
-        let bones = n.bones[0] | (n.bones[1] << 8) | (n.bones[2] << 16) | (n.bones[3] << 24)
-        (bones, weights)
-    }
-}
-
-// ---- GPU data (sketch 02 §2) -------------------------------------------------------------------
-
-/// One vertex of an extracted, skinnable mesh. `GpuData` fixes its layout to WGSL's rules
-/// (D-084), and the compiler does the padding (D-009); lossy encodings are explicit types
-/// (D-049).
-///
-/// Changed: the normal is octahedral (`Oct32`, std's lossy encoding), not a `UnitVec3`; and
-/// the bones and weights are in a buffer of their own (`SkinWeights`), which a pass of its own
-/// writes: computed in `place_vertices`, the parts' distances took a fifth of its code, and
-/// put it over the 256 KiB of WGSL a pipeline may have (AC12).
-pub struct SkinVertex: Copy + GpuData {
-    pub rest_pos: vec3,
-    pub normal: Oct32,
-    /// Which parts matter near this vertex (D-080).
-    pub parts: PartMask,
-}
-
-/// A vertex's four bones, a byte each (there are no `u8`s on the GPU), and their weights in
-/// 8 bits each (the sketch's `[Unorm8; 4]`).
-pub struct SkinWeights: Copy + GpuData {
-    pub bones: u32,
-    pub weights: Unorm8x4,
-}
-
-/// A quad of the mesh: four vertices, around a crossed edge.
-pub struct Quad: Copy + GpuData {
-    pub a: u32,
-    pub b: u32,
-    pub c: u32,
-    pub d: u32,
-}
-
-/// Per-frame data for one creature: bone matrices for its current pose (rest space to world).
-pub struct Palette: Copy + GpuData {
-    pub bones: [mat4; MAX_BONES],
-}
-
-/// The camera.
+/// A camera and the sun: the camera's view-projection, the sun's (its shadow map's), the eye,
+/// and the direction toward the sun.
 pub struct View: Copy + GpuData {
     pub view_proj: mat4,
+    pub light: mat4,
+    pub eye: vec3,
+    pub sun: vec3,
 }
 
-impl View {
-    pub fn project(self, p: vec3) -> vec4 {
-        self.view_proj * vec4(p, 1.0)
+/// The lights (D-089): a sun with a shadow map, a hemisphere's ambient light, normalized
+/// Blinn-Phong specular, and an ACES fit. The numbers are the game's (spike 01's, for the herd).
+pub struct Lights: Copy + GpuData {
+    pub sun_colour: vec3,
+    /// The hemisphere's colour straight up and straight down.
+    pub sky: vec3,
+    pub ground: vec3,
+    /// How much of the hemisphere's light reaches a surface.
+    pub ambient: f32,
+    /// What the colour is scaled by before the ACES fit.
+    pub exposure: f32,
+    /// The specular reflectance at normal incidence.
+    pub f0: f32,
+    /// The shadow lookup's offset along the normal, and its comparison's bias.
+    pub normal_offset: f32,
+    pub compare_bias: f32,
+}
+
+impl Lights {
+    /// The ACES fit (Narkowicz) of `exposure` times `x`.
+    pub fn tonemap(self, x: vec3) -> vec3 {
+        let c = x * self.exposure
+        clamp((c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14), vec3(0.0), vec3(1.0))
+    }
+
+    /// A surface of `albedo` and roughness `rough`, its normal `n`, at `world`, seen from `view`'s
+    /// eye and lit by its sun to `lit` (1 in the sun, 0 in shadow): tonemapped.
+    pub fn light(self, albedo: vec3, rough: f32, n: vec3, world: vec3, view: View, lit: f32) -> vec3 {
+        let l = view.sun
+        let v = normalize(view.eye - world)
+        let h = normalize(l + v)
+        let ndl = max(dot(n, l), 0.0)
+        let a = max(rough * rough, 0.02)
+        let sp = 2.0 / (a * a) - 2.0
+        let spec = pow(max(dot(n, h), 0.0), sp) * (sp + 8.0) / 25.13 * self.f0
+        let hemi = mix(self.ground, self.sky, 0.5 + 0.5 * n.y)
+        let sun = self.sun_colour * (ndl * lit)
+        self.tonemap(albedo * (hemi * self.ambient + sun) + sun * spec)
+    }
+
+    /// How lit `world` is, whose normal is `n` (1 in the sun, 0 in shadow): the point moved
+    /// `normal_offset` along the normal, looked up in the sun's shadow map through a comparison
+    /// sampler that blends the four nearest texels (2×2 PCF), `compare_bias` nearer the sun.
+    pub fn shadow(self, view: View, world: vec3, n: vec3, map: DepthTexture, s: ComparisonSampler) -> f32 {
+        let lp = view.light * vec4(world + n * self.normal_offset, 1.0)
+        let uv = vec2(lp.x * 0.5 + 0.5, lp.y * -0.5 + 0.5)
+        map.sample_compare_level(s, uv, lp.z - self.compare_bias)
     }
 }
 
-/// A sun and a sky.
-pub struct Lights: Copy + GpuData {
-    pub sun: vec3,
-    pub sun_colour: vec3,
-    pub sky: vec3,
+/// How a creature type's surface looks (#43 §8.4): from its field's channels at a rest-space
+/// point, seen `fp` wide, an albedo (linear) and a roughness; and the colour written to the
+/// screen from the lit, tonemapped one. Written by the game, run per pixel.
+pub trait Look<C>: Copy + GpuData {
+    fn surface(self, c: C, rest: vec3, fp: f32) -> (vec3, f32)
+
+    fn output(self, colour: vec3) -> vec4 {
+        vec4(colour, 1.0)
+    }
 }
 
-/// What shading reads from a field's channels.
+/// Channels that say their own albedo and roughness.
 pub trait Shaded {
     fn albedo(self) -> vec3
     fn roughness(self) -> f32
 }
 
-impl Lights {
-    pub fn shade(self, albedo: vec3, roughness: f32, n: vec3) -> vec4 {
-        let l = max(dot(n, -self.sun), 0.0)
-        let h = normalize(-self.sun + vec3(0.0, 0.0, 1.0))
-        let spec = pow(max(dot(n, h), 0.0), mix(64.0, 4.0, roughness)) * (1.0 - roughness) * 0.3
-        let c = albedo * (self.sun_colour * l + self.sky * (0.5 + 0.5 * n.y)) + vec3(spec)
-        vec4(c, 1.0)
+/// A look that takes the albedo and roughness straight from the channels (`Shaded`).
+pub struct ByChannels: Copy + GpuData {
+    pub unused: u32,
+}
+
+impl<C: Shaded> Look<C> for ByChannels {
+    fn surface(self, c: C, rest: vec3, fp: f32) -> (vec3, f32) {
+        (c.albedo(), c.roughness())
     }
 }
 
-// ---- the grid ------------------------------------------------------------------------------------
+// ---- posing on the GPU (§8.1) ---------------------------------------------------------------------
 
-/// The extraction grid: cells of `cell` metres from `origin`, in blocks of 4³ cells.
-pub struct Grid: Copy + GpuData {
-    pub origin: vec3,
-    pub cell: f32,
-    pub blocks_x: u32,
-    pub blocks_y: u32,
-    pub blocks_z: u32,
+/// How a creature type poses its skeleton on the GPU: each bone's turn, and where the root goes,
+/// from an instance's pose parameters (the type's: a gait phase, how its head is held). Written
+/// in wrela, run in one compute pass for every visible instance.
+pub trait Poser: Copy + GpuData {
+    /// Bone `bone`'s turn about its own rest position, for an instance whose pose is `pose`.
+    fn local(self, bone: u32, pose: vec4) -> mat4
+
+    /// Where the skeleton goes: from an instance's root position `at` and `heading`, and its
+    /// pose.
+    fn root(self, at: vec3, heading: f32, pose: vec4) -> mat4
 }
 
-/// A block the surface passes through, and the parts that matter there.
-pub struct LiveBlock: Copy + GpuData {
-    pub block: u32,
-    pub parts: PartMask,
+/// An instance to pose: where its root is, which way it faces, its pose parameters, and which
+/// rest skeleton it has (in the skeletons buffer). Its palette is its place in the instances
+/// buffer, `MAX_BONES` matrices each.
+pub struct Instance: Copy + GpuData {
+    pub at: vec3,
+    pub heading: f32,
+    pub pose: vec4,
+    pub skeleton: u32,
 }
 
-impl Grid {
-    /// A grid of `cell`-sized cells covering `b`.
-    pub fn covering(b: Box3, cell: f32) -> Grid {
-        let span = (b.hi - b.lo) / (cell * f32(BLOCK))
-        Grid {
-            origin: b.lo,
-            cell,
-            blocks_x: u32(ceil(span.x)),
-            blocks_y: u32(ceil(span.y)),
-            blocks_z: u32(ceil(span.z)),
+/// A skeleton at rest, as the posing pass reads it: each bone's rest position (in `xyz`) and
+/// parent (in `w`, its own number for a root), and how many bones.
+pub struct RestSkeleton: Copy + GpuData {
+    pub bones: [vec4; 64],
+    pub count: u32,
+}
+
+impl RestSkeleton {
+    pub fn of(s: Skeleton) -> RestSkeleton {
+        var out = RestSkeleton { bones: [vec4(0.0); 64], count: s.len() }
+        for i in 0..s.len() {
+            let b = Bone { index: i }
+            out.bones[i] = vec4(s.rest(b), f32(s.parent(b).index))
         }
-    }
-
-    pub fn block_count(self) -> u32 {
-        self.blocks_x * self.blocks_y * self.blocks_z
-    }
-
-    pub fn cell_count(self) -> u32 {
-        self.block_count() * BLOCK * BLOCK * BLOCK
-    }
-
-    /// Cells along each axis.
-    pub fn cells(self) -> vec3 {
-        vec3(f32(self.blocks_x), f32(self.blocks_y), f32(self.blocks_z)) * f32(BLOCK)
-    }
-
-    /// Block `i`'s first cell's coordinates.
-    pub fn block_cell(self, i: u32) -> (u32, u32, u32) {
-        let x = i % self.blocks_x
-        let y = (i / self.blocks_x) % self.blocks_y
-        let z = i / (self.blocks_x * self.blocks_y)
-        (x * BLOCK, y * BLOCK, z * BLOCK)
-    }
-
-    pub fn block_bounds(self, i: u32) -> Box3 {
-        let (x, y, z) = self.block_cell(i)
-        let lo = self.origin + vec3(f32(x), f32(y), f32(z)) * self.cell
-        Box3 { lo, hi: lo + vec3(self.cell * f32(BLOCK)) }
-    }
-
-    /// A cell's corner nearest the origin.
-    pub fn corner(self, x: u32, y: u32, z: u32) -> vec3 {
-        self.origin + vec3(f32(x), f32(y), f32(z)) * self.cell
-    }
-
-    /// A cell's key in the cell map.
-    pub fn key(self, x: u32, y: u32, z: u32) -> u32 {
-        let nx = self.blocks_x * BLOCK
-        let ny = self.blocks_y * BLOCK
-        x + nx * (y + ny * z)
+        out
     }
 }
 
-/// `b` grown by `by` on every side.
-pub fn grow(b: Box3, by: f32) -> Box3 {
-    Box3 { lo: b.lo - by, hi: b.hi + by }
+/// A translation by `t`.
+pub fn translate(t: vec3) -> mat4 {
+    mat4(vec4(1.0, 0.0, 0.0, 0.0), vec4(0.0, 1.0, 0.0, 0.0), vec4(0.0, 0.0, 1.0, 0.0), vec4(t, 1.0))
 }
 
-// ---- extraction, pass 1: which blocks matter (sketch 02 §3) -----------------------------------
-
-/// Which blocks does the surface pass through, and which parts matter in each?
+/// Each instance's palette (a workgroup each, an invocation per bone): bone i's matrix, rest
+/// space to world, is world_parent · T(J_i − J_parent) · local_i, with the root's from the root's
+/// transform, times T(−J_i). Each invocation walks its bone's chain from the root.
 @compute(64)
-pub fn cull_blocks<F: Surface + Parts>(
-    field: F,
-    grid: Grid,
-    live: mut Append<LiveBlock>,
+pub fn pose_instances<P: Poser>(
+    poser: P,
+    instances: [Instance],
+    skeletons: [RestSkeleton],
+    palettes: mut Slots<mat4>,
+    group: WorkgroupId,
+    lid: LocalId,
     id: GlobalId,
 ) {
-    if id.x >= grid.block_count() {
+    let inst = instances[group.x]
+    let sk = skeletons[inst.skeleton]
+    let bone = lid.x
+    if bone >= sk.count {
         return
     }
-    // The block and a cell's margin: a triangle can straddle two blocks. One interval of the
-    // field there says both whether the surface can be in the block and which parts can matter
-    // (a second, of the block alone, would be a second copy of the field's interval code).
-    let near = grow(grid.block_bounds(id.x), grid.cell)
-    let d = field.interval(near) // conservative range of distances near this block
-    if !d.contains(0.0) {
-        return // no surface here; never evaluated again
-    }
-    let _ = live.push(LiveBlock { block: id.x, parts: field.parts_near(near, d) })
-}
-
-// ---- extraction, pass 2: placing vertices (sketch 02 §4) --------------------------------------
-
-/// A cube's corners, by bit: x is bit 0, y bit 1, z bit 2.
-fn corner_offset(i: u32) -> vec3 {
-    vec3(f32(i & 1), f32((i >> 1) & 1), f32((i >> 2) & 1))
-}
-
-/// A cube's twelve edges, as pairs of corners.
-const EDGES: [u32; 24] = [0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 1, 3, 4, 6, 5, 7, 0, 4, 1, 5, 2, 6, 3, 7]
-
-/// Where `f` crosses zero between `a` (value `da`) and `b` (value `db`), whose signs differ:
-/// regula falsi, `iters` steps.
-pub fn root<F: Surface>(f: F, a: vec3, b: vec3, da: f32, db: f32, iters: u32) -> vec3 {
-    var pa = a
-    var pb = b
-    var fa = da
-    var fb = db
-    var p = a
-    for _ in 0..iters {
-        let t = clamp(fa / (fa - fb), 0.0, 1.0)
-        p = mix(pa, pb, vec3(t))
-        let fp = f.distance(p)
-        if (fp < 0.0) == (fa < 0.0) {
-            pa = p
-            fa = fp
-        } else {
-            pb = p
-            fb = fp
+    // The chain from `bone` up to its root.
+    var chain = [0; 16]
+    var n = 0
+    var b = bone
+    loop {
+        chain[n] = b
+        n += 1
+        let parent = u32(sk.bones[b].w)
+        if parent == b || n == 16 {
+            break
         }
+        b = parent
     }
-    p
+    let root = chain[n - 1]
+    var world = poser.root(inst.at, inst.heading, inst.pose) * translate(sk.bones[root].xyz) *
+        poser.local(root, inst.pose)
+    for k in 1..n {
+        let i = chain[n - 1 - k]
+        let p = chain[n - k]
+        world = world * translate(sk.bones[i].xyz - sk.bones[p].xyz) * poser.local(i, inst.pose)
+    }
+    palettes[id] = world * translate(-sk.bones[bone].xyz)
 }
 
-/// A quadratic error function: the point nearest the planes through each crossing with its
-/// normal (dual contouring), pulled towards the crossings' mean where the planes don't decide.
-pub struct Qef: Copy {
-    ata: mat3,
-    atb: vec3,
-    sum: vec3,
-    count: f32,
+// ---- skinning, shadows and shading (§8.2–§8.4) -----------------------------------------------------
+
+/// What the vertex shader passes on: the clip position, the rest position (shading is in rest
+/// space), the world position, the skinning matrix's linear part (for normals), and the
+/// vertex's mask, not interpolated.
+pub struct Skinned: Copy {
+    pub clip: ClipPosition,
+    pub rest: vec3,
+    pub world: vec3,
+    pub r0: vec3,
+    pub r1: vec3,
+    pub r2: vec3,
+    pub mask_lo: Flat<u32>,
+    pub mask_hi: Flat<u32>,
 }
 
-impl Qef {
-    pub fn new() -> Qef {
-        Qef {
-            ata: mat3(vec3(0.0), vec3(0.0), vec3(0.0)),
-            atb: vec3(0.0),
-            sum: vec3(0.0),
-            count: 0.0,
-        }
-    }
-
-    pub fn add(mut self, p: vec3, n: vec3) {
-        self.ata = mat3(self.ata[0] + n * n.x, self.ata[1] + n * n.y, self.ata[2] + n * n.z)
-        self.atb += n * dot(n, p)
-        self.sum += p
-        self.count += 1.0
-    }
-
-    pub fn is_empty(self) -> bool {
-        self.count == 0.0
-    }
-
-    /// The point, within `lo`..`hi`.
-    pub fn solve(self, lo: vec3, hi: vec3) -> vec3 {
-        let mean = self.sum / max(self.count, 1.0)
-        // (AᵀA + λI) x = Aᵀb + λ mean, by Cramer's rule.
-        let l = 0.05
-        let m = mat3(
-            self.ata[0] + vec3(l, 0.0, 0.0),
-            self.ata[1] + vec3(0.0, l, 0.0),
-            self.ata[2] + vec3(0.0, 0.0, l),
-        )
-        let r = self.atb + l * mean
-        let det = dot(m[0], cross(m[1], m[2]))
-        if abs(det) < 1.0e-12 {
-            return mean
-        }
-        let x = vec3(
-            dot(r, cross(m[1], m[2])),
-            dot(m[0], cross(r, m[2])),
-            dot(m[0], cross(m[1], r)),
-        ) /
-            det
-        clamp(x, lo, hi)
-    }
+/// Byte `k` of `w`, as a fraction of 255.
+fn unorm8(w: u32, k: u32) -> f32 {
+    f32((w >> (8 * k)) & 255) / 255.0
 }
 
-impl Skin {
-    /// Skin weights at `pos`, from each part's own distance (D-023).
-    pub fn weights_at<F: Parts>(self, field: F, pos: vec3, parts: PartMask) -> (u32, vec4) {
-        field.weights_at(pos, self.weights.falloff, parts)
+/// A vertex's skinning matrix: its four bones' matrices in the palette starting at `first`,
+/// blended by its weights.
+pub fn skin_matrix(v: SkinVertex, palettes: [mat4], first: u32) -> mat4 {
+    let b = v.bones
+    palettes[first + (b & 255)] * unorm8(v.weights, 0) +
+        palettes[first + ((b >> 8) & 255)] * unorm8(v.weights, 1) +
+        palettes[first + ((b >> 16) & 255)] * unorm8(v.weights, 2) +
+        palettes[first + (b >> 24)] * unorm8(v.weights, 3)
+}
+
+/// A mesh's vertex, skinned by the palette from `first`, seen from `view`'s camera.
+@vertex
+pub fn skin(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32, view: View) -> Skinned {
+    let sv = verts[v.index]
+    let m = skin_matrix(sv, palettes, first)
+    let wp = (m * vec4(sv.pos, 1.0)).xyz
+    Skinned {
+        clip: ClipPosition { position: view.view_proj * vec4(wp, 1.0) },
+        rest: sv.pos,
+        world: wp,
+        r0: m[0].xyz,
+        r1: m[1].xyz,
+        r2: m[2].xyz,
+        mask_lo: Flat { value: sv.mask.lo },
+        mask_hi: Flat { value: sv.mask.hi },
     }
 }
 
-/// In each live block, gives every cell the surface crosses one vertex: the point that best fits
-/// the surface's crossings on the cell's edges.
-@compute(4, 4, 4)
-pub fn place_vertices<F: Surface + Parts>(
+/// A mesh's vertex, skinned, seen from the sun: for the shadow map.
+@vertex
+pub fn skin_shadow(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32, view: View) -> ClipPosition {
+    let sv = verts[v.index]
+    ClipPosition { position: view.light * (skin_matrix(sv, palettes, first) * vec4(sv.pos, 1.0)) }
+}
+
+/// A depth-only pass's fragment: its colour goes nowhere.
+@fragment
+pub fn depth_only() -> vec4 {
+    vec4(0.0)
+}
+
+/// A pixel of a creature: its field at the rest position, under the triangle's mask, seen as
+/// wide as the pixel; the gradient turned by the skinning matrix is the normal, and the channels
+/// are what the look shades.
+@fragment
+pub fn shade<C, F: Parts<C>, L: Look<C>>(
     field: F,
-    skin: Skin,
-    grid: Grid,
-    blocks: [LiveBlock],
-    verts: mut Append<SkinVertex>,
-    cell_map: mut AtomicMap,
-    block_id: WorkgroupId,
-    cell_id: LocalId,
-) {
-    let block = blocks[block_id.x]
-    let (bx, by, bz) = grid.block_cell(block.block)
-    let (x, y, z) = (bx + cell_id.x, by + cell_id.y, bz + cell_id.z)
-    let lo = grid.corner(x, y, z)
-    let f = field.with_parts(block.parts) // evaluate only the parts that matter here
-    var d = [0.0; 8]
-    for i in 0..8 {
-        d[i] = f.distance(lo + corner_offset(i) * grid.cell)
-    }
-    var qef = Qef::new()
-    var normal = vec3(0.0)
-    for e in 0..12 {
-        let (a, b) = (EDGES[2 * e], EDGES[2 * e + 1])
-        if (d[a] < 0.0) == (d[b] < 0.0) {
-            continue
-        }
-        let pa = lo + corner_offset(a) * grid.cell
-        let pb = lo + corner_offset(b) * grid.cell
-        let p = root(f, pa, pb, d[a], d[b], 4) // where the surface crosses this edge
-        let n = normalize(f.gradient(p)) // gradient: compiler-derived (D-012)
-        qef.add(p, n)
-        normal += n
-    }
-    if qef.is_empty() {
-        return
-    }
-    let pos = qef.solve(lo, lo + vec3(grid.cell))
-    // Changed: the vertex's normal is its crossings' mean, not the gradient at the vertex
-    // again: a second derived gradient doubled the kernel's code (358 KB of WGSL).
-    let i = verts.push(
-        SkinVertex { rest_pos: pos, normal: Oct32::encode(normalize(normal)), parts: block.parts },
+    look: L,
+    s: Skinned,
+    view: View,
+    lights: Lights,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+) -> vec4 {
+    let mask = PartMask { lo: s.mask_lo.value, hi: s.mask_hi.value }
+    let fp = length(fwidth(s.rest)) // this pixel's footprint in rest space
+    let g = gradient(|q: vec3| field.distance_masked(q, mask, fp), s.rest)
+    let n = normalize(mat3(s.r0, s.r1, s.r2) * g)
+    let (albedo, rough) = look.surface(field.channels_masked(s.rest, mask, fp), s.rest, fp)
+    let lit = lights.shadow(view, s.world, n, shadow, shadow_sampler)
+    look.output(lights.light(albedo, rough, n, s.world, view, lit))
+}
+
+// ---- cameras --------------------------------------------------------------------------------------
+
+/// A right-handed view from `eye` toward `at`, with +y up.
+pub fn look_at(eye: vec3, at: vec3) -> mat4 {
+    let z = normalize(eye - at)
+    let x = normalize(cross(vec3(0.0, 1.0, 0.0), z))
+    let y = cross(z, x)
+    mat4(
+        vec4(x.x, y.x, z.x, 0.0),
+        vec4(x.y, y.y, z.y, 0.0),
+        vec4(x.z, y.z, z.z, 0.0),
+        vec4(-dot(x, eye), -dot(y, eye), -dot(z, eye), 1.0),
     )
-    let _ = cell_map.insert(grid.key(x, y, z), i)
 }
 
-// ---- extraction, pass 3: quads ---------------------------------------------------------------------
-
-/// For each crossed edge from a cell's lowest corner along +x, +y and +z, a quad joining the
-/// four cells around the edge.
-@compute(4, 4, 4)
-pub fn emit_quads<F: Surface + Parts>(
-    field: F,
-    grid: Grid,
-    blocks: [LiveBlock],
-    cell_map: mut AtomicMap,
-    quads: mut Append<Quad>,
-    block_id: WorkgroupId,
-    cell_id: LocalId,
-) {
-    let block = blocks[block_id.x]
-    let (bx, by, bz) = grid.block_cell(block.block)
-    let (x, y, z) = (bx + cell_id.x, by + cell_id.y, bz + cell_id.z)
-    let f = field.with_parts(block.parts)
-    let lo = grid.corner(x, y, z)
-    let d0 = f.distance(lo)
-    for axis in 0..3 {
-        let c = grid.cell
-        let step = if axis == 0 { vec3(c, 0.0, 0.0) } else if axis == 1 { vec3(0.0, c, 0.0) } else {
-            vec3(0.0, 0.0, c)
-        }
-        let d1 = f.distance(lo + step)
-        if (d0 < 0.0) == (d1 < 0.0) {
-            continue
-        }
-        // The other two axes, u then w; the four cells share the edge.
-        let (du, dw) = if axis == 0 { ((0, 1, 0), (0, 0, 1)) } else if axis == 1 {
-            ((0, 0, 1), (1, 0, 0))
-        } else { ((1, 0, 0), (0, 1, 0)) }
-        if (x < du.0 + dw.0) || (y < du.1 + dw.1) || (z < du.2 + dw.2) {
-            continue
-        }
-        let Some(a) = cell_map.get(grid.key(x, y, z)) else { continue }
-        let Some(b) = cell_map.get(grid.key(x - du.0, y - du.1, z - du.2)) else { continue }
-        let Some(c) = cell_map.get(
-            grid.key(x - du.0 - dw.0, y - du.1 - dw.1, z - du.2 - dw.2),
-        ) else { continue }
-        let Some(e) = cell_map.get(grid.key(x - dw.0, y - dw.1, z - dw.2)) else { continue }
-        // Facing outwards: from inside to outside along the edge.
-        let _ = quads.push(if d0 < 0.0 { Quad { a, b, c, d: e } } else {
-            Quad { a, b: e, c, d: b }
-        })
-    }
+/// A perspective projection `fovy` (radians) high, `aspect` wide, depth 0 at `near` to 1 at
+/// `far` (WebGPU's range).
+pub fn perspective(fovy: f32, aspect: f32, near: f32, far: f32) -> mat4 {
+    let f = 1.0 / tan(fovy / 2.0)
+    mat4(
+        vec4(f / aspect, 0.0, 0.0, 0.0),
+        vec4(0.0, f, 0.0, 0.0),
+        vec4(0.0, 0.0, far / (near - far), -1.0),
+        vec4(0.0, 0.0, near * far / (near - far), 0.0),
+    )
 }
 
-/// Each vertex's skin weights, from the parts near it (D-023).
-@compute(64)
-pub fn weigh_vertices<F: Surface + Parts>(
-    field: F,
-    skin: Skin,
-    count: [u32],
-    verts: [SkinVertex],
-    weights: mut Slots<SkinWeights>,
-    id: GlobalId,
-) {
-    if id.x >= min(count[0], verts.len()) {
-        return
-    }
-    let v = verts[id.x]
-    let (bones, w) = skin.weights_at(field, v.rest_pos, v.parts)
-    weights[id] = SkinWeights { bones, weights: Unorm8x4::encode(w) }
+/// An orthographic projection of the box from (l, b, -n) to (r, t, -f), depth 0 to 1.
+pub fn ortho(l: f32, r: f32, b: f32, t: f32, n: f32, f: f32) -> mat4 {
+    mat4(
+        vec4(2.0 / (r - l), 0.0, 0.0, 0.0),
+        vec4(0.0, 2.0 / (t - b), 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0 / (n - f), 0.0),
+        vec4(-(r + l) / (r - l), -(t + b) / (t - b), n / (n - f), 1.0),
+    )
 }
 
-/// A dispatch's group counts for one invocation per pushed item, 64 a group.
-@compute(64)
-pub fn groups_for(count: [u32], capacity: u32, args: mut Slots<u32>, id: GlobalId) {
-    if id.x < 3 {
-        args[id] = if id.x == 0 { (min(count[0], capacity) + 63) / 64 } else { 1 }
-    }
+/// A view: a camera at `eye` looking at `at`, `fovy` high on a screen `aspect` wide, near 0.1 m
+/// and far 400 m; and the sun, toward `sun`, its shadow map `extent` either side of the point on
+/// the ground below `at`, 60 m away along the sun's direction.
+pub fn view(eye: vec3, at: vec3, fovy: f32, aspect: f32, sun: vec3, extent: f32) -> View {
+    let s = normalize(sun)
+    let centre = vec3(at.x, 0.0, at.z)
+    let box = ortho(-extent, extent, -extent, extent, n: 1.0, f: 140.0)
+    let light = box * look_at(centre + s * 60.0, centre)
+    let proj = perspective(fovy, aspect, near: 0.1, far: 400.0)
+    View { view_proj: proj * look_at(eye, at), light, eye, sun: s }
+}
+
+// ---- a palette posed on the CPU (the examples' walk) ---------------------------------------------
+
+/// Bone matrices for one pose (rest space to world), as CPU code poses a creature: the examples'
+/// walk on the spot (`walk`).
+pub struct Palette: Copy + GpuData {
+    pub bones: [mat4; MAX_BONES],
 }
 
 /// The rotation that turns the unit vector `a` to the unit vector `b`, the short way.
@@ -561,157 +408,4 @@ pub fn palette(skeleton: Skeleton, pose: Pose, root: Transform) -> Palette {
         bones[j[3].index] = world * below
     }
     Palette { bones }
-}
-
-/// A draw's counts for `quads` quads: 6 vertices each, 1 instance, from vertex and instance 0.
-@compute(64)
-pub fn quad_draw_args(count: [u32], capacity: u32, args: mut Slots<u32>, id: GlobalId) {
-    if id.x < 4 {
-        args[id] = if id.x == 0 { 6 * min(count[0], capacity) } else if id.x == 1 { 1 } else { 0 }
-    }
-}
-
-// ---- realization, end to end (sketch 02 §6) ------------------------------------------------------
-
-/// A creature's mesh on the GPU, and the counts to draw it with.
-pub struct SkinnedMesh {
-    pub verts: AppendBuffer<SkinVertex>,
-    pub weights: GpuBuffer<SkinWeights>,
-    pub quads: AppendBuffer<Quad>,
-    pub draw: GpuBuffer<u32>,
-}
-
-/// Turns one creature into a skinned mesh on the GPU. Ordinary engine code: the engine decides
-/// when to call it (at spawn) and caches the result; the counts stay on the GPU.
-///
-/// Changed: no `gpu: mut Gpu` parameter, since std's `dispatch` records into the frame's
-/// commands; the cell size comes from the look's tolerance alone (a bend radius of 5 cm), as
-/// no curvature bound is derived.
-pub fn realize_mesh<C, K: Creature<C>>(creature: K, look: CreatureLook) -> SkinnedMesh {
-    let field = creature.field()
-    let grid = Grid::covering(
-        grow(creature.bounds(), look.surface.tolerance),
-        look.surface.cell_size(0.05),
-    )
-    var live = append_buffer::<LiveBlock>(grid.block_count())
-    var verts = append_buffer::<SkinVertex>(grid.cell_count() / 8)
-    var cells = atomic_map_buffer(grid.cell_count() / 4)
-    var quads = append_buffer::<Quad>(grid.cell_count() / 4)
-    var weights: GpuBuffer<SkinWeights> = buffer(verts.capacity())
-    var groups: GpuBuffer<u32> = buffer(3)
-    var draw: GpuBuffer<u32> = buffer(4)
-    dispatch(
-        cull_blocks.bind(field: field, grid: grid, live: mut live),
-        groups: (grid.block_count() + 63) / 64,
-    )
-    dispatch(
-        place_vertices.bind(
-            field: field,
-            skin: look.deform,
-            grid: grid,
-            blocks: live.items(),
-            verts: mut verts,
-            cell_map: mut cells,
-        ),
-        groups: live.count(),
-    )
-    dispatch(
-        emit_quads.bind(
-            field: field,
-            grid: grid,
-            blocks: live.items(),
-            cell_map: mut cells,
-            quads: mut quads,
-        ),
-        groups: live.count(),
-    )
-    dispatch(
-        groups_for.bind(count: verts.count(), capacity: verts.capacity(), args: mut groups),
-        groups: 1,
-    )
-    dispatch(
-        weigh_vertices.bind(
-            field: field,
-            skin: look.deform,
-            count: verts.count(),
-            verts: verts.items(),
-            weights: mut weights,
-        ),
-        groups: groups.span(start: 0, count: 3),
-    )
-    dispatch(
-        quad_draw_args.bind(count: quads.count(), capacity: quads.capacity(), args: mut draw),
-        groups: 1,
-    )
-    SkinnedMesh { verts: take verts, weights: take weights, quads: take quads, draw: take draw }
-}
-
-// ---- drawing: skin and shade (sketch 02 §7) --------------------------------------------------------
-
-/// What the vertex shader passes on. The rotation travels as its quaternion's components
-/// (varyings are numbers and vectors).
-pub struct Skinned: Copy {
-    pub clip: ClipPosition,
-    pub rest_pos: vec3,
-    pub rot: vec4,
-    pub normal: vec3,
-    pub parts: Flat<u32>,
-}
-
-/// Which corner of its quad each of a quad's six vertices is.
-const CORNERS: [u32; 6] = [0, 1, 2, 0, 2, 3]
-
-@vertex
-pub fn skin(
-    v: VertexIndex,
-    verts: [SkinVertex],
-    weights: [SkinWeights],
-    quads: [Quad],
-    palette: Palette,
-    view: View,
-) -> Skinned {
-    let q = quads[v.index / 6]
-    let k = CORNERS[v.index % 6]
-    let i = if k == 0 { q.a } else if k == 1 { q.b } else if k == 2 { q.c } else { q.d }
-    let sv = verts[i]
-    let sw = weights[i]
-    let w = sw.weights.decode()
-    var pos = vec3(0.0)
-    var n = vec3(0.0)
-    var col = [vec3(0.0); 3]
-    for j in 0..4 {
-        let m = palette.bones[(sw.bones >> (8 * j)) & 255]
-        let wj = if j == 0 { w.x } else if j == 1 { w.y } else if j == 2 { w.z } else { w.w }
-        pos += wj * (m * vec4(sv.rest_pos, 1.0)).xyz
-        n += wj * (m * vec4(sv.normal.decode(), 0.0)).xyz
-        for c in 0..3 {
-            col[c] += wj * m[c].xyz
-        }
-    }
-    Skinned {
-        clip: ClipPosition { position: view.project(pos) },
-        rest_pos: sv.rest_pos,
-        rot: Quat::from_mat3(mat3(col[0], col[1], col[2])).v,
-        normal: normalize(n),
-        parts: Flat { value: sv.parts.bits },
-    }
-}
-
-@fragment
-pub fn shade<C: Shaded, F: Field<C> + Parts>(
-    field: F,
-    shading: Shading,
-    s: Skinned,
-    lights: Lights,
-) -> vec4 {
-    let f = field.with_parts(PartMask { bits: s.parts.value }) // 2–3 parts per pixel, not 20
-    // Changed: the channels are the whole field's, blended by every part (a masked field's
-    // channels would need each part's, which `Field<C>` doesn't give a mask), and they take no
-    // pixel footprint: std's noise filters for a footprint (`Noise::filtered`), its fields don't.
-    let t = field.channels(s.rest_pos)
-    let n = match shading { // a uniform branch
-        Shading::PerPixel => Quat { v: s.rot }.rotate(normalize(f.gradient(s.rest_pos))), // wrinkles finer than the mesh
-        Shading::PerVertex => s.normal,
-    }
-    lights.shade(t.albedo(), t.roughness(), n)
 }

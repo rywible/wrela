@@ -4,9 +4,13 @@
 
 use creature::{Creature, Skeleton}
 use look::CreatureLook
-use render::{Lights, Palette, Shaded, SkinnedMesh, View, palette, realize_mesh, shade, skin}
+use realize::{Grid, Mesh, Room, Scratch, grow, record}
+use render::{ByChannels, Lights, Palette, Shaded, skin, palette, shade, view}
 use sim::{GaitState, Mode, Pose, Transform}
-use std::gpu::{DepthTexture, begin_screen_pass_with_depth, depth_texture, draw}
+use std::gpu::{
+    ComparisonSampler, Cull, DepthTexture, GpuBuffer, begin_depth_pass,
+    begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture, draw, write,
+}
 
 /// What a walk has done: the largest error in a leg bone's length, and in a foot's place
 /// against the gait's beyond what the leg can't reach; how many times a foot's place was beyond
@@ -72,14 +76,18 @@ impl Walked {
     }
 }
 
-/// A creature walking on the spot, drawn: its mesh, realized once (sketch 02's extraction), its
-/// gait and the palette that poses it, what its walk has done, and the screen's depth.
+/// A creature walking on the spot, drawn: its mesh, realized once, its gait and the palette
+/// that poses it (on the CPU), what its walk has done, and the screen's depth. It casts no
+/// shadow: its shadow map is one texel, all lit.
 pub struct Walker {
-    mesh: SkinnedMesh,
+    mesh: Mesh,
     gait: GaitState,
     palette: Palette,
+    palettes: GpuBuffer<mat4>,
     pub walked: Walked,
     depth: DepthTexture,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
     width: u32,
     height: u32,
 }
@@ -91,16 +99,37 @@ const STILL = Transform { pos: vec3(), heading: 0.0 }
 /// frames a second.
 const FRAME_STEP: f32 = 1.0 / 60.0
 
+/// The examples' lights: a warm sun and a cool sky.
+const LIGHTS = Lights {
+    sun_colour: vec3(1.6, 1.5, 1.35),
+    sky: vec3(0.55, 0.65, 0.8),
+    ground: vec3(0.3, 0.27, 0.22),
+    ambient: 0.6,
+    exposure: 0.9,
+    f0: 0.04,
+    normal_offset: 0.03,
+    compare_bias: 0.002,
+}
+
 /// `creature`, its mesh realized as `look` says, ready to walk on the spot with sketch 01's
 /// cycle.
 pub fn walker<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Walker {
     let gait = GaitState { phase: 0.0, speed: 0.8, turn: 0.0, mode: Mode::Walk }
+    let grid = Grid::around(grow(creature.bounds(), look.surface.tolerance), look.surface.cell_size(0.05))
+    var mesh = Mesh::new(Room { vertices: grid.blocks * 8, quads: grid.blocks * 16 })
+    var scratch = Scratch::new(grid.blocks)
+    record(creature.field(), grid, look.deform.weights.falloff, mut scratch, mut mesh)
+    var shadow = depth_texture(width: 1, height: 1)
+    begin_depth_pass(mut shadow, clear_depth: 1.0).end()
     Walker {
-        mesh: realize_mesh(creature, look),
+        mesh: take mesh,
         gait,
         palette: palette(creature.skeleton(), gait.pose(), STILL),
+        palettes: buffer(64),
         walked: walked(),
         depth: depth_texture(width: 1, height: 1),
+        shadow: take shadow,
+        shadow_sampler: comparison_sampler(),
         width: 1,
         height: 1,
     }
@@ -123,51 +152,40 @@ impl Walker {
         let pose = self.gait.pose()
         self.palette = palette(creature.skeleton(), pose, STILL)
         self.walked.record(creature.skeleton(), self.palette, pose)
+        write(mut self.palettes, 0, self.palette.bones)
         if width != self.width || height != self.height {
             self.depth = depth_texture(width, height)
             self.width = width
             self.height = height
         }
-        let lights = Lights {
-            sun: normalize(vec3(-0.4, -1.0, -0.3)),
-            sun_colour: vec3(1.0, 0.95, 0.85),
-            sky: vec3(0.25, 0.3, 0.4),
-        }
+        let v = view(
+            eye,
+            at,
+            fovy: 0.7853982,
+            aspect: f32(width) / f32(height),
+            sun: vec3(0.4, 1.0, 0.3),
+            extent: 4.0,
+        )
         let pass = begin_screen_pass_with_depth(mut self.depth, clear: vec4(0.55, 0.7, 0.85, 1.0))
         draw(
             skin.bind(
                 verts: self.mesh.verts.items(),
-                weights: self.mesh.weights,
-                quads: self.mesh.quads.items(),
-                palette: self.palette,
-                view: look_at(eye, at, aspect: f32(width) / f32(height)),
+                palettes: self.palettes.span(start: 0, count: 64),
+                first: 0,
+                view: v,
             ),
-            shade.bind(field: creature.field(), shading: look.shading, lights: lights),
-            indirect: self.mesh.draw.span(start: 0, count: 4),
+            shade.bind(
+                field: creature.field(),
+                look: ByChannels { unused: 0 },
+                view: v,
+                lights: LIGHTS,
+                shadow: self.shadow,
+                shadow_sampler: self.shadow_sampler,
+            ),
+            indices: self.mesh.quads.items(),
+            indirect: self.mesh.args.span(start: 0, count: 5),
+            cull: Cull::Back,
         )
         pass.present()
     }
-}
-
-/// A camera at `eye` looking at `at`, `aspect` wide: a perspective projection 45° high, depth 0
-/// at 0.1 m to 1 at 50 m (WebGPU's range).
-pub fn look_at(eye: vec3, at: vec3, aspect: f32) -> View {
-    let f = normalize(at - eye)
-    let r = normalize(cross(f, vec3(0.0, 1.0, 0.0)))
-    let u = cross(r, f)
-    let view = mat4(
-        vec4(r.x, u.x, -f.x, 0.0),
-        vec4(r.y, u.y, -f.y, 0.0),
-        vec4(r.z, u.z, -f.z, 0.0),
-        vec4(-dot(r, eye), -dot(u, eye), dot(f, eye), 1.0),
-    )
-    let (near, far) = (0.1, 50.0)
-    let t = 1.0 / tan(0.3926991)
-    let proj = mat4(
-        vec4(t / aspect, 0.0, 0.0, 0.0),
-        vec4(0.0, t, 0.0, 0.0),
-        vec4(0.0, 0.0, far / (near - far), -1.0),
-        vec4(0.0, 0.0, near * far / (near - far), 0.0),
-    )
-    View { view_proj: proj * view }
 }

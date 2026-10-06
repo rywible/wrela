@@ -1,0 +1,533 @@
+// Realization (#43 §7): a creature's field cooked into a skinned mesh on the GPU, by code
+// compiled from wrela (D-091, D-097). Each individual at each level (a cell size):
+//
+//   1. clear_blocks: the block map (block → its live slot + 1) zeroed.
+//   2. cull_blocks: one invocation per block of 4×4×4 cells. Each item's interval over the block
+//      grown by a cell gives its bit in the block's `PartMask`, and the creature's interval,
+//      folded through the kept items, says whether the surface can be there; live blocks go
+//      into a list, whose count is the next passes' indirect dispatch.
+//   3. place_vertices: one 4×4×4 workgroup per live block. The block's 5³ corners are evaluated
+//      once each, into workgroup memory, each under one mask: its block's inside it, and on the
+//      block's boundary the union of the masks of the live blocks that share it, so every block
+//      that evaluates a corner gets the same bits and no quad goes missing (§7.5). Each cell the
+//      surface crosses gets a vertex: each crossed edge's root (regula falsi) and gradient, a QEF
+//      pulled toward their mean, clamped to the cell; and its skin weights. The cell map keeps
+//      each cell's signs and vertex.
+//   4. emit_quads: each cell with a vertex emits a quad for each crossed edge leaving its low
+//      corner, joining the four cells around it, facing outward; the index count is the draw's.
+//   5. finish_mesh: the index count clamped to the slab, so a draw reads only its own indices.
+//
+// No count is read back in this path. Meshes live in pools, one per creature type and level,
+// cut into slabs (§7.8); the queue realizes as many as a frame's budget allows (§7.7).
+
+use creature::{PartMask, Parts}
+use std::derive::{Box3, gradient}
+use std::gpu::{
+    Append, AppendBuffer, Atomics, GlobalId, GpuBuffer, LocalId, Shared, Slots, WorkgroupId,
+    append_buffer, barrier, buffer, dispatch, write,
+}
+
+/// A block's cells along each axis: a 4×4×4 workgroup in `place_vertices` and `emit_quads`.
+pub const BLOCK: u32 = 4
+
+/// A cell with no vertex, in the cell map's low 24 bits.
+pub const NO_VERTEX: u32 = 0xffffff
+
+/// A mesh's draw arguments (`Mesh::args`): an indexed indirect draw's five words (index count,
+/// instances, first index, base vertex, first instance), then what its passes count.
+pub const INDEX_COUNT: u32 = 0
+pub const VERTEX_COUNT: u32 = 5
+pub const HOLES: u32 = 6
+pub const FLAGS: u32 = 7
+pub const ARGS: u32 = 8
+
+/// `FLAGS`: the vertices ran past the mesh's room; the quads did.
+pub const VERTICES_FULL: u32 = 2
+pub const QUADS_FULL: u32 = 4
+
+/// Root-finding steps for each crossed edge (sketch 02).
+pub const ROOT_STEPS: u32 = 4
+
+/// The QEF's pull toward the crossings' mean.
+pub const QEF_PULL: f32 = 0.05
+
+/// The extraction grid, in rest space: cells `cell` wide from `origin`, in blocks of 4³.
+pub struct Grid: Copy + GpuData {
+    pub origin: vec3,
+    pub cell: f32,
+    pub blocks_x: u32,
+    pub blocks_y: u32,
+    pub blocks_z: u32,
+    pub blocks: u32,
+}
+
+impl Grid {
+    /// The grid around `b` (spike 01's `gridFor`): its origin two cells below `b`'s low corner,
+    /// and enough blocks to reach two cells past its high one.
+    pub fn around(b: Box3, cell: f32) -> Grid {
+        let pad = 2.0 * cell
+        let origin = b.lo - vec3(pad)
+        let n = ceil((b.hi + vec3(pad) - origin) / (f32(BLOCK) * cell))
+        let (x, y, z) = (u32(n.x), u32(n.y), u32(n.z))
+        Grid { origin, cell, blocks_x: x, blocks_y: y, blocks_z: z, blocks: x * y * z }
+    }
+
+    /// Block `b`'s coordinates, in blocks.
+    pub fn block_xyz(self, b: u32) -> (u32, u32, u32) {
+        (b % self.blocks_x, (b / self.blocks_x) % self.blocks_y, b / (self.blocks_x * self.blocks_y))
+    }
+
+    /// The block at block coordinates `(x, y, z)`.
+    pub fn block_at(self, x: u32, y: u32, z: u32) -> u32 {
+        x + self.blocks_x * (y + self.blocks_y * z)
+    }
+
+    /// Block `b`'s low corner.
+    pub fn block_corner(self, b: u32) -> vec3 {
+        let (x, y, z) = self.block_xyz(b)
+        self.origin + vec3(f32(x), f32(y), f32(z)) * (f32(BLOCK) * self.cell)
+    }
+
+    /// Block `b`, as a box.
+    pub fn block_bounds(self, b: u32) -> Box3 {
+        let lo = self.block_corner(b)
+        Box3 { lo, hi: lo + vec3(self.cell * f32(BLOCK)) }
+    }
+}
+
+/// `b` grown by `by` on every side.
+pub fn grow(b: Box3, by: f32) -> Box3 {
+    Box3 { lo: b.lo - vec3(by), hi: b.hi + vec3(by) }
+}
+
+/// A block the surface can pass through, and the items that can matter in it.
+pub struct LiveBlock: Copy + GpuData {
+    pub block: u32,
+    pub mask: PartMask,
+}
+
+/// One vertex of a realized mesh, 48 bytes as spike 01's: its rest position, its four bones (a
+/// byte each), its normal, their weights (a byte each, adding up to 255), and the items that
+/// matter near it, for shading.
+pub struct SkinVertex: Copy + GpuData {
+    pub pos: vec3,
+    pub bones: u32,
+    pub normal: vec3,
+    pub weights: u32,
+    pub mask: PartMask,
+}
+
+/// A quad's two triangles, six indices: an indexed draw reads them in order.
+pub struct Quad: Copy + GpuData {
+    pub a: u32,
+    pub b: u32,
+    pub c: u32,
+    pub d: u32,
+    pub e: u32,
+    pub f: u32,
+}
+
+/// Where cell `(x, y, z)` of the block in live slot `slot` is in the cell map, of `live` live
+/// blocks: as `place_vertices` writes it (its invocation's place in the dispatch, row by row).
+fn cell_key(slot: u32, x: u32, y: u32, z: u32, live: u32) -> u32 {
+    (slot * BLOCK + x) + y * live * BLOCK + z * live * BLOCK * BLOCK
+}
+
+// ---- pass 1: which blocks matter, and which items matter in each ------------------------------
+
+/// Which blocks the surface can pass through, and which items can matter in each: each item's
+/// interval over the block grown by one cell (a quad can straddle two blocks). The block map
+/// gets each block's live slot + 1, or 0.
+@compute(64)
+pub fn cull_blocks<C, F: Parts<C>>(
+    field: F,
+    grid: Grid,
+    live: mut Append<LiveBlock>,
+    block_map: mut Slots<u32>,
+    id: GlobalId,
+) {
+    if id.x >= grid.blocks {
+        return
+    }
+    let c = field.cull(grow(grid.block_bounds(id.x), grid.cell))
+    if c.lo > 0.0 || c.hi < 0.0 {
+        block_map[id] = 0 // no surface here; never evaluated again
+        return
+    }
+    block_map[id] = live.push(LiveBlock { block: id.x, mask: c.mask }) + 1
+}
+
+// ---- pass 2: a vertex in each crossed cell ---------------------------------------------------
+
+/// The mask a corner `(cx, cy, cz)` of block `own` (at block coordinates `b`) is evaluated
+/// under: the block's own, and on its boundary the union with each live block that shares the
+/// corner (§7.5).
+fn corner_mask(
+    grid: Grid,
+    blocks: [LiveBlock],
+    block_map: [u32],
+    own: PartMask,
+    b: (u32, u32, u32),
+    c: (u32, u32, u32),
+) -> PartMask {
+    let (cx, cy, cz) = c
+    if cx > 0 && cx < BLOCK && cy > 0 && cy < BLOCK && cz > 0 && cz < BLOCK {
+        return own
+    }
+    let (bx, by, bz) = b
+    // Along each axis, the blocks sharing the corner: one below at its low face, one above at
+    // its high face.
+    let lx = if cx == 0 && bx > 0 { 1 } else { 0 }
+    let ly = if cy == 0 && by > 0 { 1 } else { 0 }
+    let lz = if cz == 0 && bz > 0 { 1 } else { 0 }
+    let hx = if cx == BLOCK && bx + 1 < grid.blocks_x { 1 } else { 0 }
+    let hy = if cy == BLOCK && by + 1 < grid.blocks_y { 1 } else { 0 }
+    let hz = if cz == BLOCK && bz + 1 < grid.blocks_z { 1 } else { 0 }
+    var mask = own
+    for z in 0..1 + lz + hz {
+        for y in 0..1 + ly + hy {
+            for x in 0..1 + lx + hx {
+                let s = block_map[grid.block_at(bx + x - lx, by + y - ly, bz + z - lz)]
+                if s != 0 {
+                    mask = mask.or(blocks[s - 1].mask)
+                }
+            }
+        }
+    }
+    mask
+}
+
+/// A cube's corner `j`'s offset: x is bit 0, y bit 1, z bit 2.
+fn corner_offset(j: u32) -> vec3 {
+    vec3(f32(j & 1), f32((j >> 1) & 1), f32((j >> 2) & 1))
+}
+
+fn det3(a: vec3, b: vec3, c: vec3) -> f32 {
+    dot(a, cross(b, c))
+}
+
+/// The solution of `(a0 a1 a2) x = b` by Cramer's rule; 0 where the matrix is singular.
+fn solve3(a0: vec3, a1: vec3, a2: vec3, b: vec3) -> vec3 {
+    let det = det3(a0, a1, a2)
+    if abs(det) < 1.0e-12 {
+        return vec3(0.0)
+    }
+    vec3(det3(b, a1, a2), det3(a0, b, a2), det3(a0, a1, b)) / det
+}
+
+/// In each live block, a vertex for every cell the surface crosses: where the planes through
+/// its edges' crossings, with the gradient there, best meet (dual contouring), with skin weights
+/// that fall off over `falloff` from each part. Its cell map entry: its signs, and the vertex.
+@compute(4, 4, 4)
+pub fn place_vertices<C, F: Parts<C>>(
+    field: F,
+    grid: Grid,
+    falloff: f32,
+    blocks: [LiveBlock],
+    block_map: [u32],
+    corners: mut Shared<f32, 125>,
+    cells: mut Slots<u32>,
+    verts: mut Append<SkinVertex>,
+    block: WorkgroupId,
+    lid: LocalId,
+    id: GlobalId,
+) {
+    let slot = block.x
+    let lb = blocks[slot]
+    let cell = grid.cell
+    let b = grid.block_xyz(lb.block)
+    let base = grid.block_corner(lb.block)
+    // Detail finer than a cell is for shading: the field is seen a cell wide.
+    let fp = cell
+    let chunk = corners.chunk(lid)
+    for k in 0..chunk.len() {
+        let i = chunk.index(k)
+        let c = (i % 5, (i / 5) % 5, i / 25)
+        let mask = corner_mask(grid, blocks, block_map, lb.mask, b, c)
+        let at = base + vec3(f32(c.0), f32(c.1), f32(c.2)) * cell
+        corners.write(chunk, k, field.distance_masked(at, mask, fp))
+    }
+    barrier(mut corners)
+
+    var vals = [0.0; 8]
+    var signs = 0
+    for j in 0..8 {
+        let x = lid.x + (j & 1)
+        let y = lid.y + ((j >> 1) & 1)
+        let z = lid.z + ((j >> 2) & 1)
+        vals[j] = corners.get(x + y * 5 + z * 25)
+        if vals[j] < 0.0 {
+            signs = signs | (1 << j)
+        }
+    }
+    if signs == 0 || signs == 255 {
+        cells[id] = (signs << 24) | NO_VERTEX
+        return
+    }
+
+    // Where the surface crosses each of the 12 edges, and its normal there.
+    let mask = lb.mask
+    let cmin = base + vec3(f32(lid.x), f32(lid.y), f32(lid.z)) * cell
+    var pts = [vec3(0.0); 12]
+    var nrm = [vec3(0.0); 12]
+    var n = 0
+    var mass = vec3(0.0)
+    for e in 0..12 {
+        let axis = e >> 2
+        let r = e & 3
+        let ja = ((r & 1) << ((axis + 1) % 3)) | ((r >> 1) << ((axis + 2) % 3))
+        let jb = ja | (1 << axis)
+        if ((signs >> ja) & 1) == ((signs >> jb) & 1) {
+            continue
+        }
+        var pa = cmin + corner_offset(ja) * cell
+        var pb = cmin + corner_offset(jb) * cell
+        var fa = vals[ja]
+        var fb = vals[jb]
+        for _ in 0..ROOT_STEPS {
+            let x = pa + (pb - pa) * (fa / (fa - fb))
+            let fx = field.distance_masked(x, mask, fp)
+            if (fx < 0.0) == (fa < 0.0) {
+                pa = x
+                fa = fx
+            } else {
+                pb = x
+                fb = fx
+            }
+        }
+        let x = pa + (pb - pa) * (fa / (fa - fb))
+        pts[n] = x
+        nrm[n] = normalize(gradient(|q: vec3| field.distance_masked(q, mask, fp), x))
+        mass += x
+        n += 1
+    }
+
+    // The QEF, pulled toward the crossings' mean, clamped to the cell.
+    let m = mass / f32(n)
+    var a0 = vec3(QEF_PULL, 0.0, 0.0)
+    var a1 = vec3(0.0, QEF_PULL, 0.0)
+    var a2 = vec3(0.0, 0.0, QEF_PULL)
+    var rhs = vec3(0.0)
+    for i in 0..n {
+        let q = nrm[i]
+        a0 += q * q.x
+        a1 += q * q.y
+        a2 += q * q.z
+        rhs += q * dot(q, pts[i] - m)
+    }
+    let pos = clamp(m + solve3(a0, a1, a2, rhs), cmin, cmin + vec3(cell))
+    let normal = normalize(gradient(|q: vec3| field.distance_masked(q, mask, fp), pos))
+    let (bones, weights) = field.skin_at(pos, mask, fp, falloff)
+    let vi = verts.push(SkinVertex { pos, bones, normal, weights, mask })
+    cells[id] = (signs << 24) | min(vi, NO_VERTEX)
+}
+
+// ---- pass 3: a quad for every crossed edge -----------------------------------------------------
+
+/// The vertex of the cell at grid cell `(x, y, z)` (as `i32`s, which may be outside the grid),
+/// through the block map and the cell map: none outside the grid, in a culled block, or past
+/// the vertices' room.
+fn vertex_at(grid: Grid, block_map: [u32], cells: [u32], live: u32, room: u32, x: i32, y: i32, z: i32) -> u32 {
+    let (nx, ny, nz) = (grid.blocks_x * BLOCK, grid.blocks_y * BLOCK, grid.blocks_z * BLOCK)
+    if x < 0 || y < 0 || z < 0 || u32(x) >= nx || u32(y) >= ny || u32(z) >= nz {
+        return NO_VERTEX
+    }
+    let (ux, uy, uz) = (u32(x), u32(y), u32(z))
+    let s = block_map[grid.block_at(ux / BLOCK, uy / BLOCK, uz / BLOCK)]
+    if s == 0 {
+        return NO_VERTEX
+    }
+    let v = cells[cell_key(s - 1, ux % BLOCK, uy % BLOCK, uz % BLOCK, live)] & NO_VERTEX
+    if v >= room { NO_VERTEX } else { v }
+}
+
+/// For each crossed edge leaving a cell's low corner along +x, +y and +z, a quad joining the
+/// four cells around it, facing from inside to outside. A quad missing a neighbour's vertex is
+/// counted as a hole.
+@compute(4, 4, 4)
+pub fn emit_quads(
+    grid: Grid,
+    room: u32,
+    blocks: [LiveBlock],
+    live: [u32],
+    block_map: [u32],
+    cells: [u32],
+    quads: mut Append<Quad>,
+    args: mut Atomics<u32>,
+    block: WorkgroupId,
+    lid: LocalId,
+) {
+    let slot = block.x
+    let n = live[0]
+    let data = cells[cell_key(slot, lid.x, lid.y, lid.z, n)]
+    let v0 = data & NO_VERTEX
+    if v0 >= room {
+        return
+    }
+    let signs = data >> 24
+    let (bx, by, bz) = grid.block_xyz(blocks[slot].block)
+    let gx = i32(bx * BLOCK + lid.x)
+    let gy = i32(by * BLOCK + lid.y)
+    let gz = i32(bz * BLOCK + lid.z)
+    let in0 = signs & 1
+    for axis in 0..3 {
+        let in1 = (signs >> (1 << axis)) & 1
+        if in0 == in1 {
+            continue
+        }
+        // The other two axes: the four cells around the edge are this one, back along the first,
+        // back along both, and back along the second.
+        let a1 = (axis + 1) % 3
+        let a2 = (axis + 2) % 3
+        let (ux, uy, uz) = (i32(a1 == 0), i32(a1 == 1), i32(a1 == 2))
+        let (wx, wy, wz) = (i32(a2 == 0), i32(a2 == 1), i32(a2 == 2))
+        let v1 = vertex_at(grid, block_map, cells, n, room, gx - ux, gy - uy, gz - uz)
+        let v2 = vertex_at(grid, block_map, cells, n, room, gx - ux - wx, gy - uy - wy, gz - uz - wz)
+        let v3 = vertex_at(grid, block_map, cells, n, room, gx - wx, gy - wy, gz - wz)
+        if v1 == NO_VERTEX || v2 == NO_VERTEX || v3 == NO_VERTEX {
+            let _ = args.add(HOLES, 1)
+            continue
+        }
+        let _ = quads.push(if in0 == 1 {
+            Quad { a: v0, b: v1, c: v2, d: v0, e: v2, f: v3 }
+        } else {
+            Quad { a: v0, b: v2, c: v1, d: v0, e: v3, f: v2 }
+        })
+    }
+}
+
+// ---- pass 4: the draw's arguments ---------------------------------------------------------------
+
+/// The draw's arguments from the counts, each clamped to its room (`vroom` vertices, `qroom`
+/// quads), so a draw reads only its own mesh; and the overflow flags. The holes stay as
+/// `emit_quads` counted them.
+@compute(64)
+pub fn finish_mesh(
+    vertices: [u32],
+    quads: [u32],
+    vroom: u32,
+    qroom: u32,
+    args: mut Slots<u32>,
+    id: GlobalId,
+) {
+    let (v, q) = (vertices[0], quads[0])
+    if id.x == INDEX_COUNT {
+        args[id] = 6 * min(q, qroom)
+    } else if id.x == 1 {
+        args[id] = 1
+    } else if id.x < VERTEX_COUNT {
+        args[id] = 0
+    } else if id.x == VERTEX_COUNT {
+        args[id] = min(v, vroom)
+    } else if id.x == FLAGS {
+        args[id] = (if v > vroom { VERTICES_FULL } else { 0 }) | (if q > qroom { QUADS_FULL } else { 0 })
+    }
+}
+
+// ---- meshes, scratch and pools (§7.8) -------------------------------------------------------
+
+/// What every realization shares, one after another: the live list (whose count is the next
+/// passes' indirect dispatch), the block map and the cell map, for grids of up to `blocks`
+/// blocks.
+pub struct Scratch {
+    pub live: AppendBuffer<LiveBlock>,
+    pub block_map: GpuBuffer<u32>,
+    pub cells: GpuBuffer<u32>,
+}
+
+impl Scratch {
+    pub fn new(blocks: u32) -> Scratch {
+        let n = max(blocks, 1)
+        Scratch { live: append_buffer(n), block_map: buffer(n), cells: buffer(n * 64) }
+    }
+
+    /// Room for a grid of `blocks` blocks: grown if need be.
+    pub fn fit(mut self, blocks: u32) {
+        if blocks > self.block_map.len() {
+            self = Scratch::new(blocks)
+        }
+    }
+}
+
+/// A mesh's room: how many vertices and quads it holds.
+pub struct Room: Copy + Eq {
+    pub vertices: u32,
+    pub quads: u32,
+}
+
+/// A realized mesh: its vertices, its quads (an index buffer), and its draw's arguments.
+pub struct Mesh {
+    pub verts: AppendBuffer<SkinVertex>,
+    pub quads: AppendBuffer<Quad>,
+    pub args: GpuBuffer<u32>,
+}
+
+impl Mesh {
+    pub fn new(room: Room) -> Mesh {
+        Mesh { verts: append_buffer(room.vertices), quads: append_buffer(room.quads), args: buffer(ARGS) }
+    }
+
+    pub fn room(self) -> Room {
+        Room { vertices: self.verts.capacity(), quads: self.quads.capacity() }
+    }
+
+    /// Bytes it takes.
+    pub fn bytes(self) -> u64 {
+        u64(self.verts.capacity()) * 48 + u64(self.quads.capacity()) * 24 + u64(ARGS * 4 + 24)
+    }
+}
+
+/// Records one realization: `field`'s mesh on `grid`, its skin weights falling off over
+/// `falloff`, into `mesh`.
+pub fn record<C, F: Parts<C>>(field: F, grid: Grid, falloff: f32, scratch: mut Scratch, mesh: mut Mesh) {
+    scratch.fit(grid.blocks)
+    let room = mesh.room()
+    scratch.live.clear()
+    mesh.verts.clear()
+    mesh.quads.clear()
+    write(mut mesh.args, 0, [0, 1, 0, 0, 0, 0, 0, 0])
+    dispatch(
+        cull_blocks.bind(
+            field: field,
+            grid: grid,
+            live: mut scratch.live,
+            block_map: mut scratch.block_map,
+        ),
+        groups: (grid.blocks + 63) / 64,
+    )
+    dispatch(
+        place_vertices.bind(
+            field: field,
+            grid: grid,
+            falloff: falloff,
+            blocks: scratch.live.items(),
+            block_map: scratch.block_map.span(0, scratch.block_map.len()),
+            cells: mut scratch.cells,
+            verts: mut mesh.verts,
+        ),
+        groups: scratch.live.count(),
+    )
+    dispatch(
+        emit_quads.bind(
+            grid: grid,
+            room: room.vertices,
+            blocks: scratch.live.items(),
+            live: scratch.live.count(),
+            block_map: scratch.block_map.span(0, scratch.block_map.len()),
+            cells: scratch.cells.span(0, scratch.cells.len()),
+            quads: mut mesh.quads,
+            args: mut mesh.args,
+        ),
+        groups: scratch.live.count(),
+    )
+    dispatch(
+        finish_mesh.bind(
+            vertices: mesh.verts.count(),
+            quads: mesh.quads.count(),
+            vroom: room.vertices,
+            qroom: room.quads,
+            args: mut mesh.args,
+        ),
+        groups: 1,
+    )
+}
