@@ -16,7 +16,7 @@ Scope #43, criteria #42. Status: `[ ]` open, `[x]` done.
 - [x] `std::handoff`: triple buffer, test-build checks
 - [x] Native host: tick instance, lockstep, records, tick log, `--no-gpu`, `--replay`, no batches on long runs, cached CpuBuild
 - [x] `@test(frames: n)` ticks in lockstep; `@test(ticks: n, input: ...)`
-- [ ] Stream v6 `DrawIndexedIndirect`; manifest cull and depth bias; `draw(indices:, cull:, depth_bias:)`, build-time constants
+- [x] Stream v6 `DrawIndexedIndirect`; manifest cull and depth bias; `draw(indices:, cull:, depth_bias:)`, build-time constants
 - [x] Browser: sim worker, clock, catch-up, visibility and shutdown words, input ring's second reader, stamping, lockstep and paced test modes, helpers = min(cores − 3, 8), job traps, load timing
 - [x] x86-64 native host under Rosetta
 
