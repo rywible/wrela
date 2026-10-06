@@ -87,6 +87,10 @@ pub struct Walker {
 /// Where a walker stands: it walks on the spot.
 const STILL = Transform { pos: vec3(), heading: 0.0 }
 
+/// How far its gait steps each frame: a walker is presentation, stepped once a frame, as at 60
+/// frames a second.
+const FRAME_STEP: f32 = 1.0 / 60.0
+
 /// `creature`, its mesh realized as `look` says, ready to walk on the spot with sketch 01's
 /// cycle.
 pub fn walker<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Walker {
@@ -115,7 +119,7 @@ impl Walker {
         eye: vec3,
         at: vec3,
     ) {
-        self.gait = self.gait.advance()
+        self.gait = self.gait.advance(FRAME_STEP)
         let pose = self.gait.pose()
         self.palette = palette(creature.skeleton(), pose, STILL)
         self.walked.record(creature.skeleton(), self.palette, pose)

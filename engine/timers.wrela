@@ -7,9 +7,6 @@ use sim::{Sim, SimState, Tick}
 use std::hash::StateHash
 use std::serialize::Serialize
 
-/// Ticks a second.
-pub const TICKS_PER_SECOND: f32 = 60.0
-
 pub struct Timers<A>: Sim {
     /// Sorted by when they're due, then by the order they were set.
     pending: Vec<Timer<A>>,
@@ -29,10 +26,11 @@ impl<A: Clone> Timers<A> {
         Timers { pending: Vec::new(), next: 0 }
     }
 
-    /// Runs `action` `delay` seconds after tick `now`. An id for `cancel`.
+    /// Runs `action` `delay` seconds after tick `now`, where a tick is `dt` seconds long (the
+    /// tick's input has it). An id for `cancel`.
     @deterministic
-    pub fn after(mut self, now: Tick, delay: f32, action: take A) -> u64 {
-        let due = now + u32(ceil(delay * TICKS_PER_SECOND))
+    pub fn after(mut self, now: Tick, delay: f32, dt: f32, action: take A) -> u64 {
+        let due = now + u32(ceil(delay / dt))
         var at = self.pending.len()
         while at > 0 && self.pending[at - 1].due > due {
             at -= 1

@@ -147,22 +147,20 @@ pub struct Intent: Copy + Eq + StateHash + Serialize {
     pub flee: bool,
 }
 
-/// A tick's length.
-pub const DT: f32 = 1.0 / 60.0
-
 /// A stride's length, per metre of speed.
 const STRIDE: f32 = 1.4m
 
 impl GaitState {
-    /// This tick's motion: forward by speed, turned by `turn` (Transform::advance's frame).
-    pub fn root_motion(self) -> vec3 {
-        vec3(0, self.turn * DT, self.speed * DT)
+    /// A tick's motion, `dt` seconds long: forward by speed, turned by `turn`
+    /// (Transform::advance's frame).
+    pub fn root_motion(self, dt: f32) -> vec3 {
+        vec3(0, self.turn * dt, self.speed * dt)
     }
 
-    /// The gait a tick later with no controller: the stride's phase advances as
+    /// The gait `dt` seconds later with no controller: the stride's phase advances as
     /// `GaitNet::eval` advances it before its corrections.
-    pub fn advance(self) -> GaitState {
-        GaitState { phase: (self.phase + DT * (0.5 + self.speed / STRIDE)) % 1.0, ..self }
+    pub fn advance(self, dt: f32) -> GaitState {
+        GaitState { phase: (self.phase + dt * (0.5 + self.speed / STRIDE)) % 1.0, ..self }
     }
 
     /// The pose the gait gives, on flat ground: each leg's foot swings with the stride.
@@ -403,9 +401,10 @@ impl GaitNet {
         bitcast_f32(b(0) | (b(1) << 8) | (b(2) << 16) | (b(3) << 24))
     }
 
-    /// The next gait, from this one, what the creature wants, and the ground's slope.
+    /// The gait a tick (`dt` seconds) later, from this one, what the creature wants, and the
+    /// ground's slope.
     @deterministic
-    pub fn eval(self, gait: GaitState, intent: Intent, slope: f32) -> GaitState {
+    pub fn eval(self, gait: GaitState, intent: Intent, slope: f32, dt: f32) -> GaitState {
         let x = [
             sin(gait.phase * 6.2831855),
             cos(gait.phase * 6.2831855),
@@ -439,7 +438,7 @@ impl GaitNet {
             Mode::Walk
         } else { Mode::Graze }
         GaitState {
-            phase: (gait.phase + DT * (0.5 + speed / STRIDE) * (1.0 + 0.05 * y[0])) % 1.0,
+            phase: (gait.phase + dt * (0.5 + speed / STRIDE) * (1.0 + 0.05 * y[0])) % 1.0,
             speed,
             turn: mix(gait.turn, intent.turn, 0.2) + 0.01 * y[2],
             mode,
