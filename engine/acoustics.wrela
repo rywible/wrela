@@ -82,10 +82,7 @@ pub fn modal_modes<C: Acoustic, F: Field<C>>(field: F, extent: f32) -> ModalMode
     let h = (step.x + step.y + step.z) / 3.0
     let mid = field.channels(lo + 0.5 * (hi - lo))
     let scale = mid.stiffness() / (mid.density() * h * h)
-    var k: Vec<f64> = Vec::new()
-    for _ in 0..count * count {
-        k.push(0.0)
-    }
+    var k: Vec<f64> = Vec::filled(count * count, 0.0)
     for i in 0..LATTICE * LATTICE * LATTICE {
         let a = index[i]
         if a == 0 {

@@ -131,8 +131,7 @@ fn drive<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @determini
         answers: take answers,
     }
     d.timeline.advance(take input, d.step)
-    for x in d.timeline.world().asks(t.tick) {
-        let (ask, due) = x
+    for (ask, due) in d.timeline.world().asks(t.tick) {
         assert(due > t.tick, "a job's answer is due after the tick that asks for it")
         d.pending.push(Pending { ask, due, job: job(ask, work_of::<W>) })
     }

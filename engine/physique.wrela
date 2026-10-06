@@ -68,8 +68,7 @@ pub fn bounds<C, K: Creature<C>>(c: K) -> Box3 {
     var hi = vec3(-1.0e9)
     var stack: Vec<(Box3, u32)> = Vec::new()
     stack.push((cover(c), 0))
-    loop {
-        let Some((b, depth)) = stack.pop() else { break }
+    while let Some((b, depth)) = stack.pop() {
         let r = interval(|q: vec3| field.distance(q), b)
         if r.lo > 0.0 {
             continue
@@ -120,14 +119,10 @@ const EMPTY: MassProps = MassProps { mass: 0.0, centre: vec3(), inertia: vec3() 
 pub fn integrate<C, K: Creature<C>>(c: K, density: fn(C) -> f32, per: Per, finest: f32) -> Mass {
     let field = c.field()
     let bones = c.skeleton().len()
-    var out = Mass { per: Vec::new(), total: EMPTY }
-    for _ in 0..bones {
-        out.per.push(EMPTY)
-    }
+    var out = Mass { per: Vec::filled(bones, EMPTY), total: EMPTY }
     var stack: Vec<Box3> = Vec::new()
     stack.push(cover(c))
-    loop {
-        let Some(b) = stack.pop() else { break }
+    while let Some(b) = stack.pop() {
         let size = b.hi.x - b.lo.x
         let centre = 0.5 * (b.lo + b.hi)
         // A cell at the finest size is sampled at its centre; a larger one is classified by
@@ -186,16 +181,11 @@ pub fn fit_capsules<C, K: Creature<C>>(c: K, per: Per, tolerance: f32) -> Vec<Ca
             axes[parent] = (axes[parent].0, s.rest(b))
         }
     }
-    var radius: Vec<f32> = Vec::new()
-    var used: Vec<bool> = Vec::new()
-    for _ in 0..n {
-        radius.push(0.0)
-        used.push(false)
-    }
+    var radius: Vec<f32> = Vec::filled(n, 0.0)
+    var used = Vec::filled(n, value: false)
     var stack: Vec<Box3> = Vec::new()
     stack.push(cover(c))
-    loop {
-        let Some(b) = stack.pop() else { break }
+    while let Some(b) = stack.pop() {
         let size = b.hi.x - b.lo.x
         if size > tolerance {
             let r = interval(|q: vec3| field.distance(q), b)
@@ -429,16 +419,10 @@ pub fn adaptive_physique<C, K: Creature<C>>(
     let h = max(e.x, max(e.y, e.z)) * 0.5
     var sums = BoneSums {
         creature: take creature,
-        mass: Vec::new(),
-        first: Vec::new(),
-        second: Vec::new(),
-        own: Vec::new(),
-    }
-    for _ in 0..n {
-        sums.mass.push(0.0)
-        sums.first.push([0.0; 3])
-        sums.second.push([0.0; 3])
-        sums.own.push(0.0)
+        mass: Vec::filled(n, 0.0),
+        first: Vec::filled(n, [0.0; 3]),
+        second: Vec::filled(n, [0.0; 3]),
+        own: Vec::filled(n, 0.0),
     }
     node(field, density, bounds, c, h, finest, mut sums)
     var out = Mass { per: Vec::new(), total: EMPTY }

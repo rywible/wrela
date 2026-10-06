@@ -859,21 +859,13 @@ impl<F> Realizer<F> {
     /// A realizer for a creature type drawn as `look` says.
     pub fn new(look: CreatureLook) -> Realizer<F> {
         let detail = look.detail
-        var rooms: Vec<Option<Room>> = Vec::new()
-        var calibrating: Vec<bool> = Vec::new()
-        var free: Vec<Vec<Mesh>> = Vec::new()
-        for _ in 0..detail.count {
-            rooms.push(None)
-            calibrating.push(false)
-            free.push(Vec::new())
-        }
         Realizer {
             detail,
             falloff: look.deform.weights.falloff,
             held: Vec::new(),
-            rooms,
-            calibrating,
-            free,
+            rooms: Vec::filled(detail.count, None),
+            calibrating: Vec::filled(detail.count, value: false),
+            free: Vec::from_fn(detail.count, |_| Vec::new()),
             checks: Vec::new(),
             scratch: Scratch::new(1),
             readbacks: 0,
@@ -889,10 +881,7 @@ impl<F> Realizer<F> {
     /// Looks after an instance whose field is `field`, its surface in `bounds` (rest space): its
     /// number.
     pub fn add(mut self, field: take F, bounds: Box3) -> u32 {
-        var meshes: Vec<Option<Mesh>> = Vec::new()
-        for _ in 0..self.detail.count {
-            meshes.push(None)
-        }
+        let meshes: Vec<Option<Mesh>> = Vec::from_fn(self.detail.count, |_| None)
         self.held.push(
             Held {
                 field: take field,
