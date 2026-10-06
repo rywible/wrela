@@ -6,15 +6,10 @@
 // the spike's weights. Its numbers come from its seed as grazer.js draws them: mulberry32 seeded
 // with seed × 7919 + 17, five draws, computed in f64 and rounded once.
 
-use engine::creature::{
-    Body, Bone, Creature, CreatureField, Placed, Segment, Skeleton, Then, along, creature, split,
-}
+use engine::creature::{Bone, Creature, Parts, Segment, Skeleton, along, creature, split}
 use engine::rng::{Rng, seed}
 use std::derive::{Box3, Interval}
-use std::field::{
-    Blend, Displace, Ellipsoid, HalfSpace, Intersect, Noise, RoundCone, SmoothUnion, Surface,
-    Translate, With, ellipsoid, half_space, round_cone, value_noise,
-}
+use std::field::{Blend, Noise, ellipsoid, half_space, round_cone, value_noise}
 use std::units::{kg, m}
 
 /// What a point of the grazer carries: how much it's torso (dappled hide) and how much hoof.
@@ -299,21 +294,19 @@ fn torso_parts(g: Params) -> (P3, P3, P3, P3) {
 
 // ---- the creature ---------------------------------------------------------------------------------
 
-pub type Torso = With<Displace<SmoothUnion<Translate<Ellipsoid>, Translate<Ellipsoid>>, Bark>, Tissue>
-
-pub type Cone = With<RoundCone, Tissue>
-
-pub type Head = With<SmoothUnion<Translate<Ellipsoid>, RoundCone>, Tissue>
-
-pub type Hoof = With<Intersect<RoundCone, HalfSpace>, Tissue>
-
-pub type Parts = Then<Then<Then<Then<Placed<Torso>, Placed<Cone>>, Placed<Head>>, Placed<Cone>>, Then<[Placed<Cone>; 12], [Placed<Hoof>; 4]>>
+/// A grazer: whatever `grazer` builds, seen as a creature of `Tissue`.
+pub type Grazer = Creature<Tissue>
 
 /// A grazer's field: what the renderer and the physique read.
-pub type GrazerField = CreatureField<Parts>
+pub type GrazerField = Parts<Tissue>
+
+/// The field of the grazer of seed `seed_value`.
+pub fn grazer_field(seed_value: u32) -> GrazerField {
+    grazer(seed_value).field()
+}
 
 /// The grazer of seed `seed_value`.
-pub fn grazer(seed_value: u32) -> Body<Parts> {
+pub fn grazer(seed_value: u32) -> Grazer {
     let g = params(seed_value)
     let s = g.scale
     let j = g.joints

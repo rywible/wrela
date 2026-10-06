@@ -22,7 +22,7 @@ use engine::render::{
     view,
 }
 use engine::run::{Stamped, run}
-use grazer::{GrazerField, grazer, params}
+use grazer::{GrazerField, grazer, grazer_field, params}
 use herd::{HERD, Seen, Snap, World, between, snapshot, spawn, step}
 use look::{GrazerLook, LIGHTS, SKY, SUN, ground_shade, transfer}
 use std::gpu::{
@@ -104,7 +104,7 @@ pub fn init() -> Game {
     var rests: Vec<RestSkeleton> = Vec::new()
     for i in 0..HERD {
         let g = grazer(i + 1)
-        let _ = realizer.add(g.field(), g.bounds())
+        let _ = realizer.add(grazer_field(i + 1), g.bounds())
         let p = params(i + 1)
         looks.push(GrazerLook { offset: vec3(f32(p.offset.x), f32(p.offset.y), f32(p.offset.z)) })
         rests.push(RestSkeleton::of(g.skeleton()))
