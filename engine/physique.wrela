@@ -250,6 +250,16 @@ pub struct Weighed: Copy + StateHash {
     pub samples: u32,
 }
 
+/// What the octree counts each cube of the inside into (for a creature whose channels are
+/// `C`).
+trait Gather<C> {
+    /// A cube of half-edge `h` at `c`, of density `rho`, counted whole.
+    fn add(mut self, c: vec3, h: f32, rho: f32)
+
+    /// One more sample taken.
+    fn sampled(mut self)
+}
+
 /// Sums, in f64, as spike 01 keeps them.
 struct Sums {
     mass: f64,
@@ -258,8 +268,11 @@ struct Sums {
     samples: u32,
 }
 
-impl Sums {
-    /// A cube of half-edge `h` at `c`, of density `rho`, counted whole.
+impl<C> Gather<C> for Sums {
+    fn sampled(mut self) {
+        self.samples += 1
+    }
+
     fn add(mut self, c: vec3, h: f32, rho: f32) {
         let edge = 2.0 * f64(h)
         let vol = edge * edge * edge
@@ -310,16 +323,16 @@ pub fn adaptive_mass<C, F: Parts<C>>(field: F, density: fn(C) -> f32, finest: f3
 
 /// The node of half-edge `h` at `c`: classified, counted, or split into eight.
 @deterministic
-fn node<C, F: Parts<C>>(
+fn node<C, F: Parts<C>, G: Gather<C>>(
     field: F,
     density: fn(C) -> f32,
     bounds: [Bound],
     c: vec3,
     h: f32,
     finest: f32,
-    sums: mut Sums,
+    sums: mut G,
 ) {
-    sums.samples += 1
+    sums.sampled()
     let (d, ch) = field.sample_pruned(c, bounds)
     let r = h * 1.7320508 * CLASSIFY
     if d > r {
@@ -344,4 +357,101 @@ fn node<C, F: Parts<C>>(
         )
         node(field, density, bounds, c + o, q, finest, mut sums)
     }
+}
+
+/// Each bone's sums, in f64: its mass, its first moments, its second moments (Σ m x², Σ m y²,
+/// Σ m z²), and the cubes' own moments about their centres.
+struct BoneSums<K> {
+    creature: K,
+    mass: Vec<f64>,
+    first: Vec<[f64; 3]>,
+    second: Vec<[f64; 3]>,
+    own: Vec<f64>,
+}
+
+impl<C, K: Creature<C>> Gather<C> for BoneSums<K> {
+    fn sampled(mut self) {}
+
+    /// The cube counts for the bone whose part is nearest its centre.
+    fn add(mut self, c: vec3, h: f32, rho: f32) {
+        let i = self.creature.nearest_bone(c).index
+        let edge = 2.0 * f64(h)
+        let m = edge * edge * edge * f64(rho)
+        let p = [f64(c.x), f64(c.y), f64(c.z)]
+        self.mass[i] += m
+        for k in 0..3 {
+            self.first[i][k] += m * p[k]
+            self.second[i][k] += m * p[k] * p[k]
+        }
+        // A cube's moment about an axis through its centre: m (a² + a²) / 12.
+        self.own[i] += m * edge * edge / 6.0
+    }
+}
+
+/// Mass properties from sums: the centre, and the moments about axes through it (the
+/// parallel-axis theorem, in f64).
+fn props(mass: f64, first: [f64; 3], second: [f64; 3], own: f64) -> MassProps {
+    if mass <= 0.0 {
+        return EMPTY
+    }
+    let c = [first[0] / mass, first[1] / mass, first[2] / mass]
+    // Σ m (y² + z²) about the origin, moved to the centre: minus M (cy² + cz²).
+    let about = |a: u32, b: u32| second[a] + second[b] + own - mass * (c[a] * c[a] + c[b] * c[b])
+    MassProps {
+        mass: f32(mass),
+        centre: vec3(f32(c[0]), f32(c[1]), f32(c[2])),
+        inertia: vec3(f32(about(1, 2)), f32(about(0, 2)), f32(about(0, 1))),
+    }
+}
+
+/// A creature's mass, centre of mass and moments of inertia, each bone's (the bone whose part
+/// is nearest each counted cube) and the whole's: `adaptive_mass`'s octree, cells down to
+/// `finest`, sums in f64 (#43 §9). The whole is the bones' sum.
+@deterministic
+pub fn adaptive_physique<C, K: Creature<C>>(
+    creature: take K,
+    density: fn(C) -> f32,
+    finest: f32,
+) -> Mass {
+    let field = creature.field()
+    let n = creature.skeleton().len()
+    let bounds = field.item_bounds()
+    var lo = vec3(1.0e30)
+    var hi = vec3(-1.0e30)
+    for b in bounds {
+        if b.radius < 1.0e29 {
+            lo = min(lo, b.centre - vec3(b.radius))
+            hi = max(hi, b.centre + vec3(b.radius))
+        }
+    }
+    let c = (lo + hi) * 0.5
+    let e = hi - lo
+    let h = max(e.x, max(e.y, e.z)) * 0.5
+    var sums = BoneSums {
+        creature: take creature,
+        mass: Vec::new(),
+        first: Vec::new(),
+        second: Vec::new(),
+        own: Vec::new(),
+    }
+    for _ in 0..n {
+        sums.mass.push(0.0)
+        sums.first.push([0.0; 3])
+        sums.second.push([0.0; 3])
+        sums.own.push(0.0)
+    }
+    node(field, density, bounds, c, h, finest, mut sums)
+    var out = Mass { per: Vec::new(), total: EMPTY }
+    var all = (0.0, [0.0; 3], [0.0; 3], 0.0)
+    for i in 0..n {
+        out.per.push(props(sums.mass[i], sums.first[i], sums.second[i], sums.own[i]))
+        all.0 += sums.mass[i]
+        for k in 0..3 {
+            all.1[k] += sums.first[i][k]
+            all.2[k] += sums.second[i][k]
+        }
+        all.3 += sums.own[i]
+    }
+    out.total = props(all.0, all.1, all.2, all.3)
+    out
 }

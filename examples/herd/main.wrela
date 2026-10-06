@@ -388,6 +388,45 @@ pub fn mass(s: u32, finest: f32) -> f32 {
     f32(engine::physique::adaptive_mass(grazer(s).field(), grazer::density, finest).mass)
 }
 
+/// Its physique per bone by the spike's method, cells down to `finest` (#43 §9): the whole's
+/// mass (kg), the bones' masses summed, how many bones have mass, and the least of each bone's
+/// moments' triangle inequalities (I_a + I_b - I_c over the largest moment: never below 0).
+pub fn physique(s: u32, finest: f32) -> vec4 {
+    let m = engine::physique::adaptive_physique(grazer(s), grazer::density, finest)
+    var sum = 0.0
+    var bones = 0
+    var least = 1.0
+    for b in m.per {
+        sum += b.mass
+        if b.mass > 0.0 {
+            bones += 1
+            let i = b.inertia
+            let most = max(i.x, max(i.y, i.z))
+            least = min(least, min(i.x + i.y - i.z, min(i.x + i.z - i.y, i.y + i.z - i.x)) / most)
+        }
+    }
+    vec4(m.total.mass, sum, f32(bones), least)
+}
+
+/// The most two physiques' bones differ, for bones over 1 kg (relative to the bone's mass):
+/// the spike's method's against the derived interval's (`integrate`), cells down to `finest`.
+pub fn physique_methods_differ(s: u32, finest: f32) -> f32 {
+    let a = engine::physique::adaptive_physique(grazer(s), grazer::density, finest)
+    let b = engine::physique::integrate(
+        grazer(s),
+        grazer::density,
+        engine::physique::Per::Bone,
+        finest,
+    )
+    var most = 0.0
+    for i in 0..a.per.len() {
+        if b.per[i].mass > 1.0 {
+            most = max(most, abs(a.per[i].mass - b.per[i].mass) / b.per[i].mass)
+        }
+    }
+    most
+}
+
 /// Its grid at level `level` (0 3 cm, 1 2 cm, 2 1.5 cm): origin, cell, and blocks along x, y, z.
 pub fn grid(game: Game, s: u32, level: u32) -> vec4 {
     let g = game.realizer.grid(s - 1, level)
