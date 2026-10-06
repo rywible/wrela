@@ -76,7 +76,7 @@ impl Asks for World {
     /// The spike's method (#43 §9): an adaptive octree down to a 2 cm finest cell.
     @deterministic
     fn work(ask: u32) -> f32 {
-        f32(adaptive_mass(grazer(ask).field(), density, 0.02).mass)
+        f32(adaptive_mass(grazer(ask).field(), density, 2cm).mass)
     }
 }
 
@@ -135,7 +135,7 @@ fn turn_towards(heading: f32, dir: vec3) -> f32 {
 
 /// What a grazer wants this tick (sketch 03's `herd_intent`, without its threat): toward its
 /// herd's middle, wandering a little by its own stream. How fast to turn (radians a second),
-/// and to go (m/s).
+/// and to go (metres a second).
 @deterministic
 pub fn herd_intent(g: mut Grazer, mates: Vec<Found<Grazer>>) -> (f32, f32) {
     let wander = 0.4 * (g.rng.unit() - 0.5)
@@ -146,7 +146,7 @@ pub fn herd_intent(g: mut Grazer, mates: Vec<Found<Grazer>>) -> (f32, f32) {
     let n = f32(mates.len())
     let forward = vec3(sin(g.heading), 0.0, cos(g.heading))
     let toward = if n > 1.0 { centre / n - g.pos } else { forward }
-    (0.5 * turn_towards(g.heading, toward) + wander, 0.6)
+    (0.5 * turn_towards(g.heading, toward) + wander, 60cm)
 }
 
 /// A tick: the physiques due arrive; the grid is built; each grazer steers, walks, follows the
@@ -162,10 +162,10 @@ pub fn step(w: mut World, input: TickInput<World>) {
         w.asked.retain(|x| x.seed != a.ask)
     }
     let dt = input.dt
-    let herd = SpatialGrid::build(w.grazers, |g| g.pos, cell: 10.0) // positions at the tick's start
+    let herd = SpatialGrid::build(w.grazers, |g| g.pos, cell: 10m) // positions at the tick's start
     borrow terrain = w.terrain
     w.grazers.par_each_mut(|g| {
-        let mates = herd.within(g.pos, radius: 15.0)
+        let mates = herd.within(g.pos, radius: 15m)
         let (turn, speed) = herd_intent(mut g, mates)
         g.heading += turn * dt
         let forward = vec3(sin(g.heading), 0.0, cos(g.heading))
@@ -179,9 +179,9 @@ pub fn step(w: mut World, input: TickInput<World>) {
             let x = g.pos.x + c * f.x + s * f.y
             let z = g.pos.z - s * f.x + c * f.y
             let (hit, _) = terrain.raycast(
-                vec3(x, terrain.height(x, z) + 1.5, z),
+                vec3(x, terrain.height(x, z) + 1.5m, z),
                 vec3(0.0, -1.0, 0.0),
-                10.0,
+                10m,
             )
             g.hits[l] = hit
         }
