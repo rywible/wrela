@@ -28,6 +28,7 @@ use std::gpu::{
     append_buffer, barrier, buffer, dispatch, read, write,
 }
 use std::io::Pending
+use std::mem::debug_build
 
 /// A block's cells along each axis: a 4×4×4 workgroup in `place_vertices` and `emit_quads`.
 pub const BLOCK: u32 = 4
@@ -126,6 +127,17 @@ pub struct LiveBlock: Copy + GpuData {
     pub block: u32,
     pub mask: PartMask,
 }
+
+/// The boundary corners one invocation of `place_vertices` evaluated, in a debug build (#42 AC2:
+/// every block that evaluates a corner gets the same bits): for each of its two, the corner's
+/// index in the grid's lattice (x fastest) plus 1 (0: none), and its value's bits.
+pub struct CornerProbe: Copy + GpuData {
+    pub corners: [u32; 2],
+    pub bits: [u32; 2],
+}
+
+/// The most live blocks a debug build's probe holds (`Scratch::probe`).
+pub const PROBE_BLOCKS: u32 = 32768
 
 /// One vertex of a realized mesh, 48 bytes as spike 01's: its rest position, its four bones (a
 /// byte each), its normal, their weights (a byte each, adding up to 255), and the items that
@@ -244,6 +256,7 @@ pub fn place_vertices<C, F: Parts<C>>(
     block_map: [u32],
     near: mut Shared<PartMask, 27>,
     corners: mut Shared<f32, 125>,
+    probe: mut Slots<CornerProbe>,
     cells: mut Slots<u32>,
     verts: mut Append<SkinVertex>,
     block: WorkgroupId,
@@ -265,12 +278,23 @@ pub fn place_vertices<C, F: Parts<C>>(
     }
     barrier(mut near)
     let chunk = corners.chunk(lid)
+    var probed = CornerProbe { corners: [0, 0], bits: [0, 0] }
     for k in 0..chunk.len() {
         let i = chunk.index(k)
         let c = (i % 5, (i / 5) % 5, i / 25)
         let mask = corner_mask(near, lb.mask, c)
         let at = grid.corner(gx + c.0, gy + c.1, gz + c.2)
-        corners.write(chunk, k, field.distance_masked(at, mask, fp))
+        let d = field.distance_masked(at, mask, fp)
+        corners.write(chunk, k, d)
+        let inside = c.0 > 0 && c.0 < BLOCK && c.1 > 0 && c.1 < BLOCK && c.2 > 0 && c.2 < BLOCK
+        if debug_build() && !inside && k < 2 {
+            let (nx, ny) = (grid.blocks_x * BLOCK + 1, grid.blocks_y * BLOCK + 1)
+            probed.corners[k] = gx + c.0 + nx * (gy + c.1 + ny * (gz + c.2)) + 1
+            probed.bits[k] = bitcast_u32(d)
+        }
+    }
+    if debug_build() {
+        probe[id] = probed
     }
     barrier(mut corners)
 
@@ -511,12 +535,20 @@ pub struct Scratch {
     pub live: AppendBuffer<LiveBlock>,
     pub block_map: GpuBuffer<u32>,
     pub cells: GpuBuffer<u32>,
+    /// A debug build's: each boundary corner's value as each live block evaluated it, an
+    /// invocation's two in its slot. A release build's holds one, and nothing writes it.
+    pub probe: GpuBuffer<CornerProbe>,
 }
 
 impl Scratch {
     pub fn new(blocks: u32) -> Scratch {
         let n = max(blocks, 1)
-        Scratch { live: append_buffer(n), block_map: buffer(n), cells: buffer(n * 64) }
+        Scratch {
+            live: append_buffer(n),
+            block_map: buffer(n),
+            cells: buffer(n * 64),
+            probe: buffer(if debug_build() { min(n, PROBE_BLOCKS) * 64 } else { 1 }),
+        }
     }
 
     /// Room for a grid of `blocks` blocks: grown if need be.
@@ -555,7 +587,13 @@ impl Mesh {
 
     /// Bytes it takes.
     pub fn bytes(self) -> u64 {
-        u64(self.verts.capacity()) * 48 + u64(self.quads.capacity()) * 24 + u64(ARGS * 4 + 24)
+        Mesh::bytes_for(self.room())
+    }
+
+    /// Bytes a mesh with room `room` takes: its vertices, its quads, its arguments and its two
+    /// counts.
+    pub fn bytes_for(room: Room) -> u64 {
+        u64(room.vertices) * 48 + u64(room.quads) * 24 + u64(ARGS * 4 + 24)
     }
 }
 
@@ -589,6 +627,7 @@ pub fn record<C, F: Parts<C>>(
             grid: grid,
             blocks: scratch.live.items(),
             block_map: scratch.block_map.span(0, scratch.block_map.len()),
+            probe: mut scratch.probe,
             cells: mut scratch.cells,
             verts: mut mesh.verts,
         ),
@@ -797,6 +836,14 @@ impl<F> Realizer<F> {
         }
     }
 
+    /// A slab's bytes at `level` (a mesh with that level's room), or 0 before it's calibrated.
+    pub fn slab_bytes(self, level: u32) -> u64 {
+        match self.rooms[level] {
+            Some(room) => Mesh::bytes_for(room),
+            None => 0,
+        }
+    }
+
     /// Bytes its meshes take, the free lists' and the calibrations' included.
     pub fn allocated(self) -> u64 {
         var n: u64 = 0
@@ -968,27 +1015,29 @@ impl<C, F: Parts<C>> Realizer<F> {
         }
     }
 
-    /// Calibrates `level`'s room (§7.8): the waiting instance with the largest grid is realized
-    /// into room for the most its grid could hold, and draws that mesh until the room is known
-    /// and it's realized again; its counts are read back once.
+    /// Calibrates `level`'s room (§7.8): the instance with the largest grid at that level, of all
+    /// of them, is realized into room for the most its grid could hold, and its counts are read
+    /// back once. Of all, not of those waiting (#43 §7.8's choice): a larger one realized later
+    /// would overflow the room, and on a 10-minute tour two did. If it's waiting for the level,
+    /// it draws that mesh until the room is known and it's realized again.
     fn calibrate(mut self, level: u32, force: bool) -> f32 {
-        var best = NO_LEVEL
+        var best = 0
         var blocks = 0
         for i in 0..self.held.len() {
-            if self.next_level(i, force) == level {
-                let g = self.grid(i, level)
-                if best == NO_LEVEL || g.blocks > blocks {
-                    best = i
-                    blocks = g.blocks
-                }
+            let g = self.grid(i, level)
+            if g.blocks > blocks {
+                best = i
+                blocks = g.blocks
             }
         }
         let grid = self.grid(best, level)
         var mesh = Mesh::new(Room { vertices: grid.blocks * 8, quads: grid.blocks * 8 })
         self.calibrating[level] = true
         self.record_into(best, level, grid, mut mesh, calibration: true)
-        self.place(best, level, take mesh)
-        self.held[best].stale = true
+        if self.next_level(best, force) == level {
+            self.place(best, level, take mesh)
+            self.held[best].stale = true
+        }
         f32(grid.blocks) * self.detail.cost_us[level]
     }
 

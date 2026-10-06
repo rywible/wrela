@@ -9,7 +9,6 @@
 use creature::{Bone, Creature, PartMask, Parts, Skeleton}
 use realize::{SkinVertex}
 use sim::{Pose, Transform}
-use std::derive::gradient
 use std::gpu::{
     ClipPosition, ComparisonSampler, DepthTexture, Flat, GlobalId, LocalId, Slots, VertexIndex,
     WorkgroupId,
@@ -302,9 +301,9 @@ pub fn shade<C, F: Parts<C>, L: Look<C>>(
 ) -> vec4 {
     let mask = PartMask { lo: s.mask_lo.value, hi: s.mask_hi.value }
     let fp = length(fwidth(s.rest)) // this pixel's footprint in rest space
-    let g = gradient(|q: vec3| field.distance_masked(q, mask, fp), s.rest)
+    let (_, g, channels) = field.sample_masked(s.rest, mask, fp)
     let n = normalize(mat3(s.r0, s.r1, s.r2) * g)
-    let (albedo, rough) = look.surface(field.channels_masked(s.rest, mask, fp), s.rest, fp)
+    let (albedo, rough) = look.surface(channels, s.rest, fp)
     let lit = lights.shadow(view, s.world, n, shadow, shadow_sampler)
     look.output(lights.light(albedo, rough, n, s.world, view, lit))
 }

@@ -8,8 +8,10 @@
 // default), C the close-up's (seed 1 alone, at the origin, as the spike draws it); L the live herd
 // (the default); and 1, 2 or 3 a still frame for comparing with the spike's: its placement, each
 // grazer's phase at its own plus 0.9 t (t the frame's time), every grazer realized at 3, 2 or
-// 1.5 cm. The sim doesn't drive a still frame. T draws the terrain or not (for timing the
-// creatures' passes alone).
+// 1.5 cm; 4 the still frame with each grazer at the level its size on screen asks (LOD). The sim
+// doesn't drive a still frame. T draws the terrain or not (for timing the creatures' passes
+// alone). O starts the camera's tour of the live herd: a 2-minute loop, from 30 m out to 4, round
+// the herd, again and again (#42 AC4's 10 minutes).
 
 use engine::creature::Creature
 use engine::present::Snapshots
@@ -49,6 +51,23 @@ const DETAIL = Detail {
 pub enum Camera: Copy + Eq {
     Herd,
     CloseUp,
+    /// The tour, from when it started.
+    Tour(f32),
+}
+
+/// A still frame whose levels come from LOD, not one level for every grazer.
+const LOD_STILL: u32 = 99
+
+/// The tour's loop, seconds.
+const TOUR_LOOP: f32 = 120.0
+
+/// The tour's camera `t` seconds in: round the herd once a loop, from 30 m out to 4 and back
+/// three times, looking at the herd's middle.
+fn tour(t: f32) -> (vec3, vec3) {
+    let at = vec3(0.0, 0.8, 1.0)
+    let a = 2.0 * PI * t / TOUR_LOOP
+    let r = 4.0 + 13.0 * (1.0 + cos(6.0 * PI * t / TOUR_LOOP))
+    (at + vec3(r * sin(a), 0.8 + 0.25 * r, -r * cos(a)), at)
 }
 
 pub struct Game {
@@ -73,6 +92,9 @@ pub struct Game {
     frames: u32,
     all_drawn: bool,
     terrain: bool,
+    /// Whether each grazer has been drawn, and reached the level it should have, yet (live).
+    drawn_yet: Vec<bool>,
+    at_level_yet: Vec<bool>,
 }
 
 pub fn init() -> Game {
@@ -112,11 +134,13 @@ pub fn init() -> Game {
         frames: 0,
         all_drawn: false,
         terrain: true,
+        drawn_yet: Vec::new(),
+        at_level_yet: Vec::new(),
     }
 }
 
-/// The keys this frame: cameras and modes.
-fn keys(game: mut Game) {
+/// The keys this frame (at `time`): cameras and modes.
+fn keys(game: mut Game, time: f32) {
     for e in events() {
         if let Event::KeyDown { key, .. } = e {
             match key {
@@ -126,7 +150,9 @@ fn keys(game: mut Game) {
                 Key::Digit1 => game.still = 0,
                 Key::Digit2 => game.still = 1,
                 Key::Digit3 => game.still = 2,
+                Key::Digit4 => game.still = LOD_STILL,
                 Key::T => game.terrain = !game.terrain,
+                Key::O => game.camera = Camera::Tour(time),
                 _ => {},
             }
         }
@@ -168,7 +194,7 @@ fn seen(game: mut Game, time: f32) -> Vec<Seen> {
 }
 
 pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
-    keys(mut game)
+    keys(mut game, time)
     if width != game.width || height != game.height {
         game.depth = depth_texture(width, height)
         game.width = width
@@ -193,6 +219,10 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
             sun: SUN,
             extent: 4.0,
         ),
+        Camera::Tour(from) => {
+            let (eye, at) = tour(time - from)
+            view(eye: eye, at: at, fovy: fovy, aspect: aspect, sun: SUN, extent: 26.0)
+        },
     }
     let grazers = seen(mut game, time)
 
@@ -202,7 +232,7 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
     for g in grazers {
         placed.push(Placement { at: g.pos, heading: g.heading })
     }
-    if game.still != NO_LEVEL {
+    if game.still != NO_LEVEL && game.still != LOD_STILL {
         if game.realized != game.still && game.realizer.realize_all(game.still) {
             game.realized = game.still
             print(f"every grazer realized at level {game.still}")
@@ -213,6 +243,22 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
             Eye { at: v.eye, view_proj: v.view_proj, height: f32(height), fovy },
             placed,
         )
+        // When each grazer is first drawn, and first has the level it should (#42 AC4).
+        while game.drawn_yet.len() < HERD {
+            game.drawn_yet.push(false)
+            game.at_level_yet.push(false)
+        }
+        for i in 0..HERD {
+            let (drawn, target) = (game.realizer.drawn(i), game.realizer.target(i))
+            if !game.drawn_yet[i] && drawn != NO_LEVEL {
+                game.drawn_yet[i] = true
+                print(f"grazer {i + 1} drawn")
+            }
+            if !game.at_level_yet[i] && drawn != NO_LEVEL && drawn == target {
+                game.at_level_yet[i] = true
+                print(f"grazer {i + 1} at its level")
+            }
+        }
     }
 
     // Posing: one pass for every grazer drawn.
@@ -357,6 +403,11 @@ pub fn realized(game: Game) -> vec4 {
 /// The bytes of mesh memory allocated, in MiB.
 pub fn mesh_memory(game: Game) -> f32 {
     f32(game.realizer.allocated()) / 1048576.0
+}
+
+/// A slab's MiB at level `level` (0 before the level is calibrated).
+pub fn slab_mib(game: Game, level: u32) -> f32 {
+    f32(game.realizer.slab_bytes(level)) / 1048576.0
 }
 
 /// The level each grazer draws (`NO_LEVEL` before it has a mesh) and should have.

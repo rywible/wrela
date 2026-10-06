@@ -17,7 +17,7 @@
 
 use physique
 use physique::{Capsule, Mass, Per}
-use std::derive::{Box3, Interval, interval}
+use std::derive::{Box3, Interval, interval, value_gradient_with}
 use std::field::{
     Blend, Bound, Field, Lipschitz, PartName, Surface, UNBOUNDED, smax, smin, smin_weight,
 }
@@ -2393,6 +2393,10 @@ pub trait Parts<C>: Field<C> + Lipschitz {
     /// Its channels at `p`, from the items in `mask` alone, seen `fp` wide.
     fn channels_masked(self, p: vec3, mask: PartMask, fp: f32) -> C
 
+    /// Its distance at `p`, its gradient and its channels, from the items in `mask` alone,
+    /// seen `fp` wide: one derived evaluation (a pixel's shading, #43 §8.3).
+    fn sample_masked(self, p: vec3, mask: PartMask, fp: f32) -> (f32, vec3, C)
+
     /// Culling over `b`: the items that can change the field there, and its interval there.
     fn cull(self, b: Box3) -> Culled
 
@@ -2428,6 +2432,10 @@ impl<C: Blend + Copy, P: PartChannels<C>> Parts<C> for CreatureField<P> {
 
     fn channels_masked(self, p: vec3, mask: PartMask, fp: f32) -> C {
         self.fold_masked_channels(p, mask, fp, NO_ITEM, 0.0).1
+    }
+
+    fn sample_masked(self, p: vec3, mask: PartMask, fp: f32) -> (f32, vec3, C) {
+        value_gradient_with(|q: vec3| self.fold_masked_channels(q, mask, fp, NO_ITEM, 0.0), p)
     }
 
     fn cull(self, b: Box3) -> Culled {
