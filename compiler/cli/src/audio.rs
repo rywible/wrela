@@ -13,6 +13,7 @@
 //! wrela audio <package-dir> speed [--take n]
 //! wrela audio partials <file.wav> --key k [--from s] [--seconds s]
 //! wrela audio model <dir> --out <file.wrela> [--against <dir>]
+//! wrela audio clicks <file.wav> [--notes <take.json>]
 //! ```
 //!
 //! A piece is a program with three exports: `choose(...)`, called before its first frame
@@ -22,6 +23,7 @@
 //! release build and run on the native host's CPU; the voice is rendered offline, so the
 //! samples are the ones Chrome's AudioWorklet renders too.
 
+mod clicks;
 mod dsp;
 mod measure;
 mod model;
@@ -42,6 +44,7 @@ struct Args {
     from: f64,
     out: Option<PathBuf>,
     against: Option<PathBuf>,
+    notes: Option<PathBuf>,
 }
 
 fn parse(args: &[String]) -> Option<Args> {
@@ -56,6 +59,7 @@ fn parse(args: &[String]) -> Option<Args> {
         from: 0.0,
         out: None,
         against: None,
+        notes: None,
     };
     let mut positional = Vec::new();
     let mut it = args.iter();
@@ -71,6 +75,7 @@ fn parse(args: &[String]) -> Option<Args> {
             "--key" => a.key = Some(it.next()?.parse().ok()?),
             "--out" => a.out = Some(PathBuf::from(it.next()?)),
             "--against" => a.against = Some(PathBuf::from(it.next()?)),
+            "--notes" => a.notes = Some(PathBuf::from(it.next()?)),
             "--bars" => {
                 let (lo, hi) = it.next()?.split_once('-')?;
                 a.bars = Some((lo.parse().ok()?, hi.parse().ok()?));
@@ -79,7 +84,7 @@ fn parse(args: &[String]) -> Option<Args> {
             _ => positional.push(x.clone()),
         }
     }
-    if let Some(tool @ ("partials" | "model")) = positional.first().map(String::as_str) {
+    if let Some(tool @ ("partials" | "model" | "clicks")) = positional.first().map(String::as_str) {
         a.action = tool.into();
         a.rest = positional[1..].to_vec();
         return Some(a);
@@ -103,6 +108,10 @@ pub fn run(args: &[String]) -> ExitCode {
         "sheet" => sheet_command(&a),
         "speed" => speed(&a),
         "partials" => partials(&a),
+        "clicks" => match a.rest.first() {
+            Some(file) => clicks::run(Path::new(file), a.notes.as_deref()),
+            None => return crate::usage(),
+        },
         "model" => match (a.rest.first(), &a.out) {
             (Some(dir), Some(out)) => model::run(Path::new(dir), out, a.against.as_deref()),
             _ => return crate::usage(),

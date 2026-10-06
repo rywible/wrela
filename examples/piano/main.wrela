@@ -1,7 +1,7 @@
 // One note on engine::piano: `choose(key, velocity, whole)` (MIDI's numbers) before the first
 // frame, then the note is struck at once and held for 12 seconds, with no pedal. With `whole`
-// 0, the strings alone, as the model is fitted to them; with 1, the board and the strike's
-// noise too (no room). It follows `wrela audio`'s protocol:
+// 0, the strings alone, as the model is fitted to them; with 1, the board and the sympathetic
+// strings too (no room). It follows `wrela audio`'s protocol:
 // `wrela audio examples/piano wav c4.wav --take 60,64,0`.
 
 use engine::perform::{PedalPoint, Performance, Played}
@@ -57,12 +57,12 @@ fn note(b: Bench) -> Performance {
 pub fn frame(b: mut Bench, time: f32, width: u32, height: u32) {
     if !b.started {
         b.started = true
-        // The strings alone, as the model was measured: no board, room or strike's noise, and
-        // gain 1; or the whole piano but the room.
+        // The strings alone, as the model was measured: no board or room, and gain 1; or the
+        // whole piano but the room.
         let model = if b.whole {
             Model { gain: 1.0, room: 0.0, ..GRAND }
         } else {
-            Model { gain: 1.0, board: 0.0, room: 0.0, knock: 0.0, ..GRAND }
+            Model { gain: 1.0, board: 0.0, room: 0.0, ..GRAND }
         }
         play(piano(model, note(b)), play_piano)
     }

@@ -19,13 +19,10 @@
 //   string's stretching, louder for a harder blow (Conklin);
 // - dampers that stop a string when its key is up, unless the sustain pedal lifts them: off the
 //   strings by 60% of the pedal's travel, touching them in a half-pedal zone below; the top
-//   strings have none;
+//   strings have none. A damper quickens each partial's decay, as it lands, never cuts it;
 // - with the pedal down, every string free to ring in sympathy with what's played;
 // - the soft pedal, which moves the hammers onto fewer strings: softer, darker, and more of
 //   the aftersound;
-// - the strike's noise: the key's thump on the keybed (low, some 15 ms) and the hammer's
-//   click on the string (high, some 4 ms), the thump stronger in the bass and the click in the
-//   treble, as loud beside the strings as the recorded piano's.
 // Then the strings' sound goes through a soundboard (broad resonances) and a room (a reverb),
 // across two channels: the low strings to the player's left, and each partial a little apart
 // from the others, as a pair of microphones over a soundboard hears them.
@@ -33,6 +30,12 @@
 // The model's numbers are measured (engine::piano_grand: a recorded piano, fitted by `wrela
 // audio model`), except what notes recorded one at a time, without the pedal, can't show: the
 // dampers, the sympathy, the soft pedal, the board, the room.
+//
+// There's no noise of the strike (a keybed's thump, a hammer's click): the strings' own attack
+// comes within 2.7 dB of the recorded piano's sharpness (a note's peak in its first 30 ms over
+// its level from 30 to 300 ms), and filtered noise added to close that gap clicked, at every
+// level tried (`wrela audio clicks`), where the recording's attacks don't. The owner heard the
+// clicks before the tool counted them.
 //
 // The resonators are kept four to a `vec4`, so the bank's arithmetic is SIMD (language.md §11).
 // Everything the audio thread does is f32 arithmetic in a fixed order, so both hosts give the
@@ -110,15 +113,6 @@ pub struct Model: Copy {
     pub undamped_from: u32 = 89,
     /// How strongly the free strings ring in sympathy, with the pedal down.
     pub sympathy: f32 = 0.02,
-    /// How loud the strike's noise is, beside the strings' sound when struck (their RMS
-    /// amplitude), and how much louder (dB) in the top two octaves, where a note is short and
-    /// its strike more of it. Set by ear: the owner heard the strike too loud for the note when
-    /// the noise was set so each attack's peak matched the recorded piano's. A recording's
-    /// attack peak is mostly its partials starting together, not a hammer's noise, so matching
-    /// it with noise overdoes the noise (and matching the noise between the partials,
-    /// `wrela audio partials`' `onset_noise_db`, overdid it 16 dB more).
-    pub knock: f32 = 1.5,
-    pub knock_treble_db: f32 = 3.0,
     /// How far apart the channels put the low and the high strings (0: none, 1: fully).
     pub width: f32 = 0.5,
     /// The soundboard's share of the sound, and the room's.
@@ -288,18 +282,22 @@ pub struct Piano {
     swell: [u32; 88],
     swelled: [u32; 88],
     // Each resonator, four to a vec4: its state, and the state of a blow still swelling in; its
-    // rotation per sample (decay included); its level (dB) when struck at each of the model's
-    // velocities (five vec4s a group); how much of the blow it takes (its prompt or aftersound
-    // share, and the strike's position); the phase it reaches the listener at; 1 for an
-    // aftersound resonator; 1 for a phantom partial; how much darker the soft pedal makes it
-    // (its band, from 0 to 1); its damper's rate and current factor per quantum; and its
-    // channels' gains.
+    // rotation per sample (decay included), and the cosine and sine of its angle per sample;
+    // its free decay per sample, and how much faster its damper makes it; its level (dB) when
+    // struck at each of the model's velocities (five vec4s a group); how much of the blow it
+    // takes (its prompt or aftersound share, and the strike's position); the phase it reaches
+    // the listener at; 1 for an aftersound resonator; 1 for a phantom partial; how much darker
+    // the soft pedal makes it (its band, from 0 to 1); and its channels' gains.
     re: Vec<vec4>,
     im: Vec<vec4>,
     new_re: Vec<vec4>,
     new_im: Vec<vec4>,
     rc: Vec<vec4>,
     rs: Vec<vec4>,
+    cw: Vec<vec4>,
+    sw: Vec<vec4>,
+    rate: Vec<vec4>,
+    damper: Vec<vec4>,
     levels: Vec<vec4>,
     share: Vec<vec4>,
     phase_c: Vec<vec4>,
@@ -307,27 +305,23 @@ pub struct Piano {
     after: Vec<vec4>,
     phantom: Vec<vec4>,
     height: Vec<vec4>,
-    damper: Vec<vec4>,
-    damping: Vec<vec4>,
     pan_left: Vec<vec4>,
     pan_right: Vec<vec4>,
     acc_left: [vec4; 128],
     acc_right: [vec4; 128],
     swelling: [f32; 128],
     strings: [f32; 128],
-    // The sympathetic strings: driven resonators, y = a1 y₁ + a2 y₂ + g x.
+    // The sympathetic strings: driven resonators, y = a1 y₁ + a2 y₂ + g x, their a1 and a2 from
+    // 2 cos w and their free decay per sample, at the dampers' lift last set.
     sym_a1: [vec4; 44],
     sym_a2: [vec4; 44],
+    sym_cw: [vec4; 44],
+    sym_rate: [vec4; 44],
+    sym_lifted: f32,
     sym_g: [vec4; 44],
     sym_y1: [vec4; 44],
     sym_y2: [vec4; 44],
     board: [Resonance; 12],
-    // The strike's noise: the thump's and the click's envelopes, and their filters.
-    thump: f32,
-    click: f32,
-    thump_filter: Resonance,
-    click_filter: Resonance,
-    noise: u32,
     lines: [f32; 14778],
     line_at: [u32; 8],
     line_low: [f32; 8],
@@ -359,6 +353,10 @@ pub fn piano(model: Model, performance: Performance) -> Piano {
         new_im: Vec::new(),
         rc: Vec::new(),
         rs: Vec::new(),
+        cw: Vec::new(),
+        sw: Vec::new(),
+        rate: Vec::new(),
+        damper: Vec::new(),
         levels: Vec::new(),
         share: Vec::new(),
         phase_c: Vec::new(),
@@ -366,8 +364,6 @@ pub fn piano(model: Model, performance: Performance) -> Piano {
         after: Vec::new(),
         phantom: Vec::new(),
         height: Vec::new(),
-        damper: Vec::new(),
-        damping: Vec::new(),
         pan_left: Vec::new(),
         pan_right: Vec::new(),
         acc_left: [vec4(0.0); 128],
@@ -376,15 +372,13 @@ pub fn piano(model: Model, performance: Performance) -> Piano {
         strings: [0.0; 128],
         sym_a1: [vec4(0.0); 44],
         sym_a2: [vec4(0.0); 44],
+        sym_cw: [vec4(0.0); 44],
+        sym_rate: [vec4(0.0); 44],
+        sym_lifted: -1.0,
         sym_g: [vec4(0.0); 44],
         sym_y1: [vec4(0.0); 44],
         sym_y2: [vec4(0.0); 44],
         board: [Resonance { a1: 0.0, a2: 0.0, gain: 0.0, y1: 0.0, y2: 0.0 }; 12],
-        thump: 0.0,
-        click: 0.0,
-        thump_filter: band(hz: 180.0, q: 1.2),
-        click_filter: band(hz: 2500.0, q: 0.8),
-        noise: 1,
         lines: [0.0; 14778],
         line_at: [0; 8],
         line_low: [0.0; 8],
@@ -438,19 +432,15 @@ fn samples(seconds: f64) -> u32 {
     u32(max(seconds, 0.0) * 48000.0 + 0.5)
 }
 
-/// A two-pole band-pass at `hz` with quality `q`, its gain at `hz` 1.
-fn band(hz: f32, q: f32) -> Resonance {
-    let w = TAU * hz / RATE
-    let r = exp(-w / (2.0 * q))
-    Resonance { a1: 2.0 * r * cos(w), a2: -r * r, gain: (1.0 - r) * 2.0 * sin(w), y1: 0.0, y2: 0.0 }
+/// The decay per sample, as a rate (ln of the factor, negated), of a resonator that falls
+/// 60 dB in `t60` seconds.
+fn decay_rate(t60: f32) -> f32 {
+    6.9078 / (t60 * RATE)
 }
 
-/// The rotation per sample of a resonator at `hz` that falls 60 dB in `t60` seconds.
-fn rotation(hz: f32, t60: f32) -> (f32, f32) {
-    let d = exp(-6.9078 / (t60 * RATE))
-    let w = TAU * hz / RATE
-    (d * cos(w), d * sin(w))
-}
+/// A free string's sympathetic ringing damped, when the dampers are down: it falls 60 dB in
+/// 0.15 s.
+const SYMPATHY_DAMPED: f32 = 6.9078 / (0.15 * 48000.0)
 
 /// One resonator's numbers, as `build_key` lays them out.
 struct Lane: Copy {
@@ -567,8 +557,9 @@ impl Piano {
         // levels (measured from both channels' mean) are, for every partial.
         let pan = 0.5 * m.width * ((f32(k) / 87.0) * 2.0 - 1.0)
         for g in 0..groups {
-            var rc = vec4(0.0)
-            var rs = vec4(0.0)
+            var cw = vec4(1.0)
+            var sw = vec4(0.0)
+            var rate = vec4(0.0)
             var share = vec4(0.0)
             var phase_c = vec4(1.0)
             var phase_s = vec4(0.0)
@@ -585,18 +576,19 @@ impl Piano {
                     continue
                 }
                 let l = lanes[i]
-                let (c, s) = rotation(l.hz, l.t60)
+                let w = TAU * l.hz / RATE
                 let phase = TAU * scatter(key, i, 6)
                 let apart = m.scatter_pan * (2.0 * scatter(key, i, 7) - 1.0)
-                rc = set(rc, lane, c)
-                rs = set(rs, lane, s)
+                cw = set(cw, lane, cos(w))
+                sw = set(sw, lane, sin(w))
+                rate = set(rate, lane, decay_rate(l.t60))
                 share = set(share, lane, l.share)
                 phase_c = set(phase_c, lane, cos(phase))
                 phase_s = set(phase_s, lane, sin(phase))
                 after = set(after, lane, l.after)
                 phantom = set(phantom, lane, l.phantom)
                 height = set(height, lane, band_at(l.hz) / f32(BANDS - 1))
-                damper = set(damper, lane, l.damper)
+                damper = set(damper, lane, l.damper / RATE)
                 pan_left = set(pan_left, lane, 1.0 - pan + apart)
                 pan_right = set(pan_right, lane, 1.0 + pan - apart)
                 for v in 0..MODEL_VELOCITIES {
@@ -607,8 +599,12 @@ impl Piano {
             self.im.push(vec4(0.0))
             self.new_re.push(vec4(0.0))
             self.new_im.push(vec4(0.0))
-            self.rc.push(rc)
-            self.rs.push(rs)
+            self.rc.push(vec4(0.0))
+            self.rs.push(vec4(0.0))
+            self.cw.push(cw)
+            self.sw.push(sw)
+            self.rate.push(rate)
+            self.damper.push(damper)
             for v in 0..MODEL_VELOCITIES {
                 self.levels.push(by_velocity[v])
             }
@@ -618,8 +614,6 @@ impl Piano {
             self.after.push(after)
             self.phantom.push(phantom)
             self.height.push(height)
-            self.damper.push(damper)
-            self.damping.push(vec4(1.0))
             self.pan_left.push(pan_left)
             self.pan_right.push(pan_right)
         }
@@ -643,22 +637,39 @@ impl Piano {
                 // Free strings ring a while: shorter than an aftersound, the bridge coupling
                 // them loosely.
                 let t60 = 0.5 * per_band(m.after, at, f)
-                let r = exp(-6.9078 / (t60 * RATE))
+                let r = exp(-decay_rate(t60))
                 let w = TAU * f / RATE
-                self.sym_a1[g] = set(self.sym_a1[g], lane, 2.0 * r * cos(w))
-                self.sym_a2[g] = set(self.sym_a2[g], lane, -r * r)
+                self.sym_cw[g] = set(self.sym_cw[g], lane, 2.0 * cos(w))
+                self.sym_rate[g] = set(self.sym_rate[g], lane, decay_rate(t60))
                 // A two-pole resonator's gain at its frequency is about g / ((1 - r) 2 sin w).
                 self.sym_g[g] = set(self.sym_g[g], lane, m.sympathy * (1.0 - r) * 2.0 * sin(w))
             }
         }
+        self.set_sympathy(0.0)
     }
 
-    /// The factors that damp key `k`'s resonators each quantum, at its `damp`.
+    /// The sympathetic strings' poles with the dampers lifted by `lifted`: free strings ring,
+    /// damped ones die in 0.15 s. Only their decay changes, never their state, so the ringing
+    /// fades as the dampers land and doesn't click.
+    @audio
+    fn set_sympathy(mut self, lifted: f32) {
+        self.sym_lifted = lifted
+        for g in 0..SYMPATHY_GROUPS {
+            let r = exp(-(self.sym_rate[g] + vec4((1.0 - lifted) * SYMPATHY_DAMPED)))
+            self.sym_a1[g] = r * self.sym_cw[g]
+            self.sym_a2[g] = -(r * r)
+        }
+    }
+
+    /// Key `k`'s resonators' rotations, with its damper on the string by `damp`: the damper
+    /// quickens their decay; their state, and so their sound, doesn't jump.
     @audio
     fn set_damping(mut self, k: u32) {
         let d = self.damp[k]
         for g in self.first[k]..self.first[k] + self.groups[k] {
-            self.damping[g] = exp(-self.damper[g] * (d * 128.0 / RATE))
+            let decay = exp(-(self.rate[g] + self.damper[g] * d))
+            self.rc[g] = decay * self.cw[g]
+            self.rs[g] = decay * self.sw[g]
         }
     }
 
@@ -688,7 +699,6 @@ impl Piano {
         let louder = soft * m.soft_db
         // Phantom partials grow as the blow does: 20 dB softer for a tenth of the velocity.
         let phantom_db = 20.0 * log(max(velocity, 0.05)) / log(10.0)
-        var power = 0.0
         for g in self.first[k]..self.first[k] + self.groups[k] {
             let lo = self.levels[g * MODEL_VELOCITIES + v]
             let hi = self.levels[g * MODEL_VELOCITIES + v + 1]
@@ -700,8 +710,6 @@ impl Piano {
             let a = exp(db * to_amplitude) * self.share[g]
             self.new_re[g] = a * self.phase_c[g]
             self.new_im[g] = a * self.phase_s[g]
-            let a2 = a * a
-            power += (a2.x + a2.y) + (a2.z + a2.w)
         }
         // The hammer's time on the string: longer in the bass and for a softer blow.
         let key = k + LOWEST
@@ -712,11 +720,6 @@ impl Piano {
         }
         self.swell[k] = max(u32(ms * (1.0 - 0.67 * clamp(velocity, 0.0, 1.0)) * RATE / 1000.0), 8)
         self.swelled[k] = 0
-        // The thump is the bass's, the click the treble's.
-        let h = f32(k) / 87.0
-        let noise = m.knock * sqrt(power) * pow(10.0, m.knock_treble_db * smoothstep(0.6, 0.78, h) / 20.0)
-        self.thump += noise * (1.0 - 0.7 * h)
-        self.click += noise * (0.3 + 0.7 * h)
         self.sounding[k] = true
         self.held[k] += 1
         self.quiet[k] = 0
@@ -828,14 +831,6 @@ impl Piano {
                 self.damp[k] = d
                 self.set_damping(k)
             }
-            if d > 0.0 {
-                for g in self.first[k]..self.first[k] + self.groups[k] {
-                    self.re[g] = self.re[g] * self.damping[g]
-                    self.im[g] = self.im[g] * self.damping[g]
-                    self.new_re[g] = self.new_re[g] * self.damping[g]
-                    self.new_im[g] = self.new_im[g] * self.damping[g]
-                }
-            }
             self.quiet[k] += 1
             if self.quiet[k] >= 16 && self.swell[k] == 0 {
                 self.quiet[k] = 0
@@ -856,18 +851,14 @@ impl Piano {
         }
     }
 
-    /// The sympathetic strings, the knock, the soundboard and the room, over this quantum.
+    /// The sympathetic strings, the soundboard and the room, over this quantum.
     @audio
     fn body(mut self, pedal: f32, left: mut [f32], right: mut [f32]) {
-        borrow m = self.model
         let lifted = lift(pedal)
-        // With the dampers down the free strings are damped: their ringing dies in a quantum or
-        // two.
-        let sym_damp = if lifted < 0.5 { 0.5 + lifted } else { 1.0 }
-        for g in 0..SYMPATHY_GROUPS {
-            self.sym_y1[g] = self.sym_y1[g] * sym_damp
-            self.sym_y2[g] = self.sym_y2[g] * sym_damp
+        if abs(lifted - self.sym_lifted) > 0.001 {
+            self.set_sympathy(lifted)
         }
+        borrow m = self.model
         for s in 0..128 {
             let x = self.strings[s] * lifted
             var sum = vec4(0.0)
@@ -880,32 +871,17 @@ impl Piano {
                 sum = sum + y
             }
             let ringing = (sum.x + sum.y) + (sum.z + sum.w)
-            // The strike's noise: a burst through each of two filters, the thump dying in some
-            // 15 ms (60 dB in 100 ms), the click in some 4 ms.
-            self.noise = self.noise.wrapping_mul(1664525).wrapping_add(1013904223)
-            let white = f32(self.noise >> 8) / 8388608.0 - 1.0
-            let t = self.thump_filter
-            let thump = t.a1 * t.y1 + t.a2 * t.y2 + t.gain * white * self.thump
-            self.thump_filter.y2 = t.y1
-            self.thump_filter.y1 = thump
-            let c = self.click_filter
-            let click = c.a1 * c.y1 + c.a2 * c.y2 + c.gain * white * self.click
-            self.click_filter.y2 = c.y1
-            self.click_filter.y1 = click
-            self.thump = self.thump * 0.99856
-            self.click = self.click * 0.99479
-            let knock = thump + click
             let dry = self.strings[s] + ringing
             var board = 0.0
             for i in 0..12 {
                 let r = self.board[i]
-                let y = r.a1 * r.y1 + r.a2 * r.y2 + r.gain * (dry + knock)
+                let y = r.a1 * r.y1 + r.a2 * r.y2 + r.gain * dry
                 self.board[i].y2 = r.y1
                 self.board[i].y1 = y
                 board += y
             }
-            let l = left[s] + 0.5 * ringing + m.board * board + knock
-            let rr = right[s] + 0.5 * ringing + m.board * board + knock
+            let l = left[s] + 0.5 * ringing + m.board * board
+            let rr = right[s] + 0.5 * ringing + m.board * board
             // The room: eight delay lines, mixed by a Householder matrix, each darkened.
             var outs = [0.0; 8]
             var total = 0.0

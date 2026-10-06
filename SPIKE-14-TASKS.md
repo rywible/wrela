@@ -55,7 +55,12 @@ SF2, played by FluidSynth. Neither is in the repo: both are in `~/.cache/wrela`.
       noise as a thump and a click, calibrated by the attacks' crest (within 0.3 dB)
 - [x] The performance, third version: the pulse kept (no rubato, one breath)
 - [x] `tools/listening.py` with sfizz; round 2's set in `build/listening2`
-- [ ] The owner's second listening
+- [x] The owner's second listening: the sampled piano (A, B) really good; wrela's (C, D)
+      clicking and knocking
+- [x] `wrela audio clicks`: the clicks were the strike's noise (74 to 100 a minute, 24 to
+      32 dB, at onsets); removed, and the dampers made continuous: 1 to 2.5 a minute, all
+      marginal, against the sampled piano's 0.3 to 0.8
+- [ ] The owner's third listening (`build/listening3`)
 
 ## 7. Results (posted on #48)
 - [x] Claude's first performance from the tools alone
