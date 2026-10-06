@@ -245,6 +245,12 @@ fn solve3(a0: vec3, a1: vec3, a2: vec3, b: vec3) -> vec3 {
     vec3(det3(b, a1, a2), det3(a0, b, a2), det3(a0, a1, b)) / det
 }
 
+/// The field's normal at `x`, from the items in `mask`, seen `fp` wide: one function for an
+/// edge's crossing and a vertex alike, so a large creature's shader holds its derived fold once.
+fn normal_at<C, F: Parts<C>>(field: F, mask: PartMask, fp: f32, x: vec3) -> vec3 {
+    normalize(gradient(|q: vec3| field.distance_masked(q, mask, fp), x))
+}
+
 /// In each live block, a vertex for every cell the surface crosses: where the planes through
 /// its edges' crossings, with the gradient there, best meet (dual contouring). Its cell map
 /// entry: its signs, and the vertex. Its skin weights come in a pass of their own
@@ -348,7 +354,7 @@ pub fn place_vertices<C, F: Parts<C>>(
         }
         let x = pa + (pb - pa) * (fa / (fa - fb))
         pts[n] = x
-        nrm[n] = normalize(gradient(|q: vec3| field.distance_masked(q, mask, fp), x))
+        nrm[n] = normal_at(field, mask, fp, x)
         mass += x
         n += 1
     }
@@ -367,7 +373,7 @@ pub fn place_vertices<C, F: Parts<C>>(
         rhs += q * dot(q, pts[i] - m)
     }
     let pos = clamp(m + solve3(a0, a1, a2, rhs), cmin, grid.corner(cx + 1, cy + 1, cz + 1))
-    let normal = normalize(gradient(|q: vec3| field.distance_masked(q, mask, fp), pos))
+    let normal = normal_at(field, mask, fp, pos)
     // Its skin weights come in their own pass (`skin_vertices`).
     let vi = verts.push(SkinVertex { pos, bones: 0, normal, weights: 255, mask })
     cells[id] = (signs << 24) | min(vi, NO_VERTEX)

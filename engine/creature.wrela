@@ -634,43 +634,23 @@ pub fn split(from: Bone, to: Bone, a: vec3, b: vec3) -> SkinBinding {
     SkinBinding { kind: 2, first: from.index, count: to.index, a: bits3(a), b: bits3(b) }
 }
 
-/// Skin weights being gathered: up to 8 bones and their weights.
+/// Skin weights being gathered, by bone, as spike 01 gathers them: adding to one is a single
+/// write, wherever a part's binding is, and the four heaviest are found once, at the end. `top`
+/// is one past the highest bone given any weight.
 pub struct BoneWeights: Copy {
-    pub bones: [u32; 8],
-    pub w: [f32; 8],
-    pub n: u32,
+    pub w: [f32; MAX_BONES],
+    pub top: u32,
 }
 
 impl BoneWeights {
     pub fn new() -> BoneWeights {
-        BoneWeights { bones: [0; 8], w: [0.0; 8], n: 0 }
+        BoneWeights { w: [0.0; MAX_BONES], top: 0 }
     }
 
-    /// `w` more on `bone`. Past 8 bones, the lightest gives way. (In place: the weights
-    /// gathered over a creature's parts aren't copied at each part.)
+    /// `w` more on `bone`.
     pub fn add(mut self, bone: u32, w: f32) {
-        for i in 0..8 {
-            if i < self.n && self.bones[i] == bone {
-                self.w[i] += w
-                return
-            }
-        }
-        if self.n < 8 {
-            self.bones[self.n] = bone
-            self.w[self.n] = w
-            self.n += 1
-            return
-        }
-        var light = 0
-        for i in 1..8 {
-            if self.w[i] < self.w[light] {
-                light = i
-            }
-        }
-        if w > self.w[light] {
-            self.bones[light] = bone
-            self.w[light] = w
-        }
+        self.w[bone] += w
+        self.top = max(self.top, bone + 1)
     }
 
     /// The four heaviest bones (ties to the lower bone), then, where fewer have weight, the
@@ -680,31 +660,20 @@ impl BoneWeights {
     pub fn quantized(self) -> (u32, u32) {
         var idx = [0; 4]
         var wq = [0.0; 4]
-        var left = self
+        var left = self.w
+        let n = min(max(self.top, 4), MAX_BONES)
         for k in 0..4 {
-            var best = 8
-            var bone = 0xffffffff
-            var bv = 0.0
-            for i in 0..left.n {
-                let w = left.w[i]
-                if w > bv || (w == bv && w > 0.0 && left.bones[i] < bone) {
-                    bv = w
-                    best = i
-                    bone = left.bones[i]
+            var best = 0
+            var bv = -1.0
+            for b in 0..n {
+                if left[b] > bv {
+                    bv = left[b]
+                    best = b
                 }
             }
-            if best < 8 {
-                idx[k] = bone
-                wq[k] = bv
-                left.w[best] = -1.0
-            } else {
-                var b = 0
-                while (k > 0 && idx[0] == b) || (k > 1 && idx[1] == b) || (k > 2 && idx[2] == b) {
-                    b += 1
-                }
-                idx[k] = b
-                wq[k] = 0.0
-            }
+            idx[k] = best
+            wq[k] = max(bv, 0.0)
+            left[best] = -1.0
         }
         let sum = max(wq[0] + wq[1] + wq[2] + wq[3], 0.000000001)
         let q1 = u32(round(wq[1] / sum * 255.0))
