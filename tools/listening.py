@@ -7,16 +7,19 @@ blind.
 The four are {wrela's piano, a sampled piano} x {the deadpan, the performance}. wrela's are the
 piece's dry takes (examples/gymnopedie takes 2 and 3: no room, as the sampled piano has none);
 the sampled piano plays each take's MIDI file (`wrela audio ... midi`): the Salamander Grand
-Piano V3 (Alexander Holm, CC BY 3.0), as FreePats' SF2, played by FluidSynth with its reverb and
-chorus off. Every render is scaled to the same RMS level (the loudest the four allow with no
-peak past -1 dBFS), so loudness doesn't give one away.
+Piano V3 (Alexander Holm, CC BY 3.0), the whole instrument (FreePats' retuned SFZ, with its velocity
+tracking, release samples and pedal noise), played by sfizz. Every render is scaled to the same
+RMS level (the loudest the four allow with no peak past -1 dBFS), so loudness doesn't give one
+away. (Round 1 of the spike played the sampled piano as FreePats' SF2 in FluidSynth, which
+leaves most of that out.)
 
 Then they're shuffled and written as A.wav to D.wav; which is which goes in
 key-open-after-ranking.json. With them, outside the test: the performance as the game plays it,
 with the room (wrela-performance-with-room.wav).
 
-Needs `wrela` built (`cargo build --release -p wrela`), FluidSynth, and the SF2: at
-$WRELA_REFERENCE_SF2, or ~/.cache/wrela/salamander/. Run from the repository's root.
+Needs `wrela` built (`cargo build --release -p wrela`), sfizz's `sfizz_render` (its macOS
+release, under $WRELA_SFIZZ or ~/.cache/wrela/sfizz/sfizz-1.2.3-macos/usr/local), and the SFZ:
+at $WRELA_REFERENCE_SFZ, or ~/.cache/wrela/salamander-sfz/. Run from the repository's root.
 """
 
 import json, os, secrets, struct, subprocess, sys
@@ -24,14 +27,15 @@ from pathlib import Path
 
 PIECE = "examples/gymnopedie"
 WRELA = "target/release/wrela"
-SF2 = os.environ.get(
-    "WRELA_REFERENCE_SF2",
-    str(Path.home() / ".cache/wrela/salamander/SalamanderGrandPiano-SF2-V3+20200602/SalamanderGrandPiano-V3+20200602.sf2"),
+SFZ = os.environ.get(
+    "WRELA_REFERENCE_SFZ",
+    str(Path.home() / ".cache/wrela/salamander-sfz/SalamanderGrandPiano-SFZ+FLAC-V3+20200602/SalamanderGrandPianoRetuned-V3+20200602.sfz"),
 )
+SFIZZ = Path(os.environ.get("WRELA_SFIZZ", str(Path.home() / ".cache/wrela/sfizz/sfizz-1.2.3-macos/usr/local")))
 
 
-def run(*args):
-    r = subprocess.run(args, capture_output=True, text=True)
+def run(*args, env=None):
+    r = subprocess.run(args, capture_output=True, text=True, env=env)
     if r.returncode != 0:
         sys.exit(f"{' '.join(args)} failed:\n{r.stdout}{r.stderr}")
     return r.stdout
@@ -39,7 +43,7 @@ def run(*args):
 
 def read_wav(path):
     """A WAV file's samples as floats (channels interleaved), its channels and its rate. Reads
-    32-bit float and 16-bit PCM."""
+    32-bit float, and 16- and 24-bit PCM."""
     data = Path(path).read_bytes()
     at, fmt, channels, rate, bits = 12, None, 0, 0, 0
     while at + 8 <= len(data):
@@ -55,6 +59,8 @@ def read_wav(path):
                 return list(struct.unpack(f"<{len(body) // 4}f", body)), channels, rate
             if (fmt, bits) == (1, 16):
                 return [x / 32768 for x in struct.unpack(f"<{len(body) // 2}h", body)], channels, rate
+            if (fmt, bits) == (1, 24):
+                return [int.from_bytes(body[i : i + 3], "little", signed=True) / 8388608 for i in range(0, len(body) - 2, 3)], channels, rate
             sys.exit(f"{path}: WAV format {fmt} at {bits} bits isn't read")
         at += 8 + size + (size % 2)
     sys.exit(f"{path} has no data")
@@ -74,8 +80,12 @@ def main():
     out = Path(sys.argv[1] if len(sys.argv) > 1 else f"{PIECE}/build/listening")
     work = out / "work"
     work.mkdir(parents=True, exist_ok=True)
-    if not Path(SF2).is_file():
-        sys.exit(f"no SF2 at {SF2}: set WRELA_REFERENCE_SF2")
+    if not Path(SFZ).is_file():
+        sys.exit(f"no SFZ at {SFZ}: set WRELA_REFERENCE_SFZ")
+    sfizz = SFIZZ / "bin" / "sfizz_render"
+    if not sfizz.is_file():
+        sys.exit(f"no sfizz_render under {SFIZZ}: set WRELA_SFIZZ")
+    sfizz_env = {**os.environ, "DYLD_LIBRARY_PATH": str(SFIZZ / "lib")}
     renders = {}
     for take, name in ((2, "deadpan"), (3, "performance")):
         wav = work / f"wrela-{name}.wav"
@@ -84,7 +94,7 @@ def main():
         mid = work / f"{name}.mid"
         run(WRELA, "audio", PIECE, "midi", str(mid), "--take", str(take))
         ref = work / f"sampled-{name}.wav"
-        run("fluidsynth", "-ni", "-q", "-R", "0", "-C", "0", "-g", "1.0", "-r", "48000", "-O", "float", "-F", str(ref), SF2, str(mid))
+        run(str(sfizz), "--sfz", SFZ, "--midi", str(mid), "--wav", str(ref), "--samplerate", "48000", "--quality", "3", env=sfizz_env)
         renders[f"sampled piano, {name}"] = ref
     run(WRELA, "audio", PIECE, "wav", str(out / "wrela-performance-with-room.wav"), "--take", "1")
 

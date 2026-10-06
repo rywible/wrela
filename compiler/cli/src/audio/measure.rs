@@ -51,11 +51,16 @@ pub fn measure(samples: &[f32], rate: f64, key: u32, from: f64, seconds: f64) ->
     let early = spectrum(samples, start + hop, long);
     let loudest = early.iter().copied().fold(0.0, f64::max);
     let typical = typical_b(key);
+    // A sample can be 40 cents out (a top key's, recorded sharp): the first partials are
+    // searched for within 3%.
     let wide = |f: f64, p: f64| {
-        (0.01 * f + 0.3 * p * p * p * nominal * typical).min(0.4 * nominal).max(2.0 * fine)
+        let off = if p <= 2.0 { 0.03 * f } else { 0.01 * f };
+        (off + 0.3 * p * p * p * nominal * typical).min(0.4 * nominal).max(2.0 * fine)
     };
     let first = search(&early, fine, nominal, typical, loudest * 10f64.powf(-55.0 / 20.0), &wide);
-    let (f0, b) = fit(&first).unwrap_or((nominal, typical));
+    // Too few partials to fit (a top key's): the first one found sets f₀, with a typical B.
+    let found_first = first.iter().find(|(p, _)| *p == 1).map(|(_, f)| f / (1.0 + typical).sqrt());
+    let (f0, b) = fit(&first).unwrap_or((found_first.unwrap_or(nominal), typical));
     let narrow = |f: f64, _: f64| (0.008 * f).min(0.4 * nominal).max(4.0 * fine);
     let found = search(&early, fine, f0, b, loudest * 10f64.powf(-70.0 / 20.0), &narrow);
     let (f0, b) = fit(&found).unwrap_or((f0, b));
@@ -228,9 +233,39 @@ pub fn two_stage(levels: &[f64], dt: f64) -> Option<Decay> {
     })
 }
 
+/// The strike's noise: in the first 43 ms, the energy between the partials (more than 70 Hz
+/// from each, 200 Hz to 8 kHz) over the energy at them, in dB. The hammer's knock and the
+/// action's are most of it. `None` where the partials are too close together to leave room
+/// between them (a fundamental under 150 Hz).
+pub fn onset_noise(samples: &[f32], rate: f64, m: &Measured, from: f64) -> Option<f64> {
+    if m.f0 < 150.0 {
+        return None;
+    }
+    let n = 2048;
+    let bin = rate / n as f64;
+    let mag = spectrum(samples, (from * rate) as usize, n);
+    let (mut tonal, mut between) = (0.0, 0.0);
+    for (k, a) in mag.iter().enumerate() {
+        let hz = k as f64 * bin;
+        if !(200.0..=8000.0).contains(&hz) {
+            continue;
+        }
+        // The nearest partial, where f0 and B put it.
+        let p = (hz / m.f0).round().max(1.0);
+        let near = p * m.f0 * (1.0 + m.inharmonicity * p * p).sqrt();
+        if (hz - near).abs() <= 70.0 {
+            tonal += a * a;
+        } else {
+            between += a * a;
+        }
+    }
+    (tonal > 0.0).then(|| 10.0 * (between.max(1e-30) / tonal).log10())
+}
+
 /// `wrela audio partials`' report: a note's partials as JSON.
 pub fn report(samples: &[f32], rate: f64, key: u32, from: f64, seconds: f64) -> serde_json::Value {
     let m = measure(samples, rate, key, from, seconds);
+    let noise = onset_noise(samples, rate, &m, from);
     let loudest = m.partials.iter().map(Partial::peak_db).fold(-200.0, f64::max);
     let partials: Vec<_> = m
         .partials
@@ -256,6 +291,7 @@ pub fn report(samples: &[f32], rate: f64, key: u32, from: f64, seconds: f64) -> 
         "cents_from_equal": round(m.cents(), 2),
         "inharmonicity": m.inharmonicity,
         "loudest_db": round(loudest, 1),
+        "onset_noise_db": noise.map(|x| round(x, 1)),
         "partials": partials,
     })
 }

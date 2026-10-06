@@ -47,6 +47,16 @@ SF2, played by FluidSynth. Neither is in the repo: both are in `~/.cache/wrela`.
 - [x] `wav`, `describe`, `numbers`, `midi`, `sheet`, `speed`, `partials`, `model`
 - [x] `tools/listening.py`: the four blind renders and their key
 
+## 7b. Round 2, after the owner's first listening
+- [x] The reference: the whole Salamander (FreePats' retuned SFZ) played by sfizz, not the SF2
+      in FluidSynth; the model refitted to it (partials within 2.9 dB, loudest 0.8 dB)
+- [x] The piano: seeded phases, detunes, decays and stereo per partial; the blow swelling in
+      over the hammer's contact; phantom partials in the bass; a half-pedal zone; the strike's
+      noise as a thump and a click, calibrated by the attacks' crest (within 0.3 dB)
+- [x] The performance, third version: the pulse kept (no rubato, one breath)
+- [x] `tools/listening.py` with sfizz; round 2's set in `build/listening2`
+- [ ] The owner's second listening
+
 ## 7. Results (posted on #48)
 - [x] Claude's first performance from the tools alone
 - [ ] The owner's listening: rankings, notes, and rounds of the performance after them

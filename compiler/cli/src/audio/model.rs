@@ -381,8 +381,8 @@ pub fn run(dir: &Path, out: &Path, against: Option<&Path>) -> Result<(), String>
         "// Written by `wrela audio model {dir}` (spike 14, #48); edit the tool, not this file.\n\
          //\n\
          // engine::piano's model fitted to the Salamander Grand Piano V3 (a Yamaha C5, recorded by\n\
-         // Alexander Holm; CC BY 3.0), as FreePats' SF2 played by FluidSynth with its reverb and\n\
-         // chorus off: {n} notes, {k} keys at {v} velocities each. The numbers are measurements of\n\
+         // Alexander Holm; CC BY 3.0), the whole instrument as FreePats' retuned SFZ, played by\n\
+         // sfizz: {n} notes, {k} keys at {v} velocities each. The numbers are measurements of\n\
          // those recordings, moved by rounds of the model's own notes measured against them.\n\
          \n\
          use piano::Model\n\

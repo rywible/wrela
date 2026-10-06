@@ -1,6 +1,8 @@
-// One note on engine::piano: `choose(key, velocity)` (MIDI's numbers) before the first frame,
-// then the note is struck at once and held for 12 seconds, with no pedal. It follows
-// `wrela audio`'s protocol: `wrela audio examples/piano wav c4.wav --take 60,64`.
+// One note on engine::piano: `choose(key, velocity, whole)` (MIDI's numbers) before the first
+// frame, then the note is struck at once and held for 12 seconds, with no pedal. With `whole`
+// 0, the strings alone, as the model is fitted to them; with 1, the board and the strike's
+// noise too (no room). It follows `wrela audio`'s protocol:
+// `wrela audio examples/piano wav c4.wav --take 60,64,0`.
 
 use engine::perform::{PedalPoint, Performance, Played}
 use engine::piano::{Model, piano, play_piano}
@@ -12,19 +14,21 @@ use std::io::print
 pub struct Bench {
     key: u32,
     velocity: u32,
+    whole: bool,
     started: bool,
 }
 
 pub fn init() -> Bench {
-    Bench { key: 60, velocity: 64, started: false }
+    Bench { key: 60, velocity: 64, whole: false, started: false }
 }
 
-pub fn choose(b: mut Bench, key: u32, velocity: u32) {
+pub fn choose(b: mut Bench, key: u32, velocity: u32, whole: u32) {
     assert(!b.started, "a note is chosen before the first frame")
     assert(key >= 21 && key <= 108, "a key is one of the piano's 88: 21 to 108")
     assert(velocity >= 1 && velocity <= 127, "a velocity is MIDI's: 1 to 127")
     b.key = key
     b.velocity = velocity
+    b.whole = whole != 0
 }
 
 /// How long the note is held.
@@ -53,9 +57,14 @@ fn note(b: Bench) -> Performance {
 pub fn frame(b: mut Bench, time: f32, width: u32, height: u32) {
     if !b.started {
         b.started = true
-        // The strings alone, as the model was measured: no board, room or knock, and gain 1.
-        let strings = Model { gain: 1.0, board: 0.0, room: 0.0, knock: 0.0, ..GRAND }
-        play(piano(strings, note(b)), play_piano)
+        // The strings alone, as the model was measured: no board, room or strike's noise, and
+        // gain 1; or the whole piano but the room.
+        let model = if b.whole {
+            Model { gain: 1.0, room: 0.0, ..GRAND }
+        } else {
+            Model { gain: 1.0, board: 0.0, room: 0.0, knock: 0.0, ..GRAND }
+        }
+        play(piano(model, note(b)), play_piano)
     }
 }
 
