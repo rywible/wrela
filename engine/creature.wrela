@@ -18,7 +18,7 @@
 use physique
 use physique::{Capsule, Mass, Per}
 use std::derive::{Box3, Interval, interval}
-use std::field::{Blend, Field, Lipschitz, PartName, Surface, smax, smin, smin_weight}
+use std::field::{Blend, Bound, Field, Lipschitz, PartName, Surface, UNBOUNDED, smax, smin, smin_weight}
 use std::hash::StateHash
 use std::quat::Quat
 use std::serialize::Serialize
@@ -830,6 +830,13 @@ pub trait PartList: Copy + GpuData {
     /// only lower the fold), if smaller than `best`: the most the fold can be there.
     fn cull_hi(self, b: Box3, k: f32, first: u32, best: f32) -> f32
 
+    /// Each item's bound (`Surface::bound`), in order, after those in `out`: a group's and a
+    /// modifier's bound nothing.
+    fn bounds(self, out: mut Vec<Bound>)
+
+    /// Item `i`'s own distance at `p` (`i` counted in this list).
+    fn item_distance(self, p: vec3, i: u32, k: f32) -> f32
+
     /// `c` after each item over `b`, where the fold can be at most `min_hi` (`Seam::cull`).
     fn cull(self, b: Box3, k: f32, first: u32, min_hi: f32, c: Culled) -> Culled
 
@@ -934,6 +941,16 @@ impl<F: Lipschitz> PartList for Placed<F> {
         }
     }
 
+    /// Its field's bound, placed; a mirrored part's holds its image too.
+    fn bounds(self, out: mut Vec<Bound>) {
+        let b = self.field.bound().moved(self.at)
+        out.push(if self.mirror != 0 { b.and(b.moved(vec3(-2.0 * b.centre.x, 0.0, 0.0))) } else { b })
+    }
+
+    fn item_distance(self, p: vec3, i: u32, k: f32) -> f32 {
+        self.distance(p)
+    }
+
     fn cull(self, b: Box3, k: f32, first: u32, min_hi: f32, c: Culled) -> Culled {
         self.seam.cull(c, interval(|q: vec3| self.distance(q), b), k, first, min_hi)
     }
@@ -1033,6 +1050,16 @@ impl<A: PartList, B: PartList> PartList for Then<A, B> {
 
     fn cull_hi(self, b: Box3, k: f32, first: u32, best: f32) -> f32 {
         self.b.cull_hi(b, k, first + self.a.items(), self.a.cull_hi(b, k, first, best))
+    }
+
+    fn bounds(self, out: mut Vec<Bound>) {
+        self.a.bounds(mut out)
+        self.b.bounds(mut out)
+    }
+
+    fn item_distance(self, p: vec3, i: u32, k: f32) -> f32 {
+        let n = self.a.items()
+        if i < n { self.a.item_distance(p, i, k) } else { self.b.item_distance(p, i - n, k) }
     }
 
     fn cull(self, b: Box3, k: f32, first: u32, min_hi: f32, c: Culled) -> Culled {
@@ -1273,6 +1300,14 @@ impl<P: PartList> PartList for Group<P> {
         if self.seam.lowers() { min(best, self.interval_over(b, k).hi) } else { best }
     }
 
+    fn bounds(self, out: mut Vec<Bound>) {
+        out.push(UNBOUNDED)
+    }
+
+    fn item_distance(self, p: vec3, i: u32, k: f32) -> f32 {
+        self.value(p, k)
+    }
+
     fn cull(self, b: Box3, k: f32, first: u32, min_hi: f32, c: Culled) -> Culled {
         self.seam.cull(c, self.interval_over(b, k), k, first, min_hi)
     }
@@ -1361,6 +1396,14 @@ impl<M: Modifier> PartList for Modify<M> {
 
     fn cull_hi(self, b: Box3, k: f32, first: u32, best: f32) -> f32 {
         best
+    }
+
+    fn bounds(self, out: mut Vec<Bound>) {
+        out.push(UNBOUNDED)
+    }
+
+    fn item_distance(self, p: vec3, i: u32, k: f32) -> f32 {
+        FAR
     }
 
     fn cull(self, b: Box3, k: f32, first: u32, min_hi: f32, c: Culled) -> Culled {
@@ -1693,6 +1736,24 @@ impl<P: PartList, const N: u32> PartList for [P; N] {
         out
     }
 
+    fn bounds(self, out: mut Vec<Bound>) {
+        for i in 0..N {
+            self[i].bounds(mut out)
+        }
+    }
+
+    fn item_distance(self, p: vec3, i: u32, k: f32) -> f32 {
+        var at = 0
+        for j in 0..N {
+            let n = self[j].items()
+            if i < at + n {
+                return self[j].item_distance(p, i - at, k)
+            }
+            at += n
+        }
+        FAR
+    }
+
     fn cull(self, b: Box3, k: f32, first: u32, min_hi: f32, c: Culled) -> Culled {
         var out = c
         var at = first
@@ -1929,6 +1990,16 @@ pub trait Parts<C>: Field<C> + Lipschitz {
     /// Skin weights at `p`, from the parts of the items in `mask`, seen `fp` wide, falling off
     /// over `falloff`: four bones and their weights, quantized (`BoneWeights::quantized`).
     fn skin_at(self, p: vec3, mask: PartMask, fp: f32, falloff: f32) -> (u32, u32)
+
+    /// Each item's bound (`Surface::bound`), in order.
+    fn item_bounds(self) -> Vec<Bound>
+
+    /// Its distance and channels at `p` from only the items that can matter there (spike 01's
+    /// pruned sample): of the items `bounds` bounds, the one with the least lower bound at `p`
+    /// is evaluated, and every other whose lower bound is at least the creature's width above
+    /// that is left out (a smooth union then leaves the fold as it is). Items past the 64th,
+    /// and those that bound nothing, are always in.
+    fn sample_pruned(self, p: vec3, bounds: [Bound]) -> (f32, C)
 }
 
 impl<C: Blend + Copy, P: PartChannels<C>> Parts<C> for CreatureField<P> {
@@ -1944,6 +2015,41 @@ impl<C: Blend + Copy, P: PartChannels<C>> Parts<C> for CreatureField<P> {
     fn cull(self, b: Box3) -> Culled {
         let hi = self.parts.cull_hi(b, self.k, 0, FAR)
         self.parts.cull(b, self.k, 0, hi, Culled { mask: NONE, lo: FAR, hi: FAR })
+    }
+
+    fn item_bounds(self) -> Vec<Bound> {
+        var out: Vec<Bound> = Vec::new()
+        self.parts.bounds(mut out)
+        out
+    }
+
+    fn sample_pruned(self, p: vec3, bounds: [Bound]) -> (f32, C) {
+        let n = min(bounds.len(), 64)
+        var best = 64
+        var least = FAR
+        for i in 0..n {
+            let b = bounds[i]
+            if b.radius < 1.0e29 {
+                let lb = b.below(p)
+                if lb < least {
+                    least = lb
+                    best = i
+                }
+            }
+        }
+        var mask = ALL
+        if best < 64 {
+            let est = self.parts.item_distance(p, best, self.k)
+            mask = NONE
+            for i in 0..n {
+                let b = bounds[i]
+                if i == best || b.radius >= 1.0e29 || b.below(p) < est + self.k {
+                    mask = mask.or(PartMask::bit(i))
+                }
+            }
+        }
+        let start = (FAR, self.parts.channels_only(p))
+        self.parts.fold_channels_masked(p, start, self.k, mask, 0, 0.0)
     }
 
     fn skin_at(self, p: vec3, mask: PartMask, fp: f32, falloff: f32) -> (u32, u32) {
@@ -1981,6 +2087,8 @@ pub struct Body<P> {
     skeleton: Skeleton,
     parts: P,
     k: f32,
+    /// A box holding its surface, when the creature gives its own (`bounded`).
+    own_bounds: Option<Box3>,
 }
 
 /// A creature with this skeleton, to give parts to: `.part(bone, field)`, `.join(name, bone,
@@ -2099,7 +2207,7 @@ pub fn group<P>(
 impl Bare {
     /// The first item: a group made on its own (`group`).
     pub fn add<P>(take self, g: take Group<P>) -> Body<Group<P>> {
-        Body { skeleton: self.skeleton, parts: take g, k: 0.0 }
+        Body { skeleton: self.skeleton, parts: take g, k: 0.0, own_bounds: None }
     }
 
     /// The first part: `field`, written in `bone`'s space, named by the bone.
@@ -2120,7 +2228,7 @@ impl Bare {
         skin: SkinBinding = ON_BONE,
     ) -> Body<Placed<F>> {
         let part = place(self.skeleton, SAME, name, bone, field, seam, mirror, skin)
-        Body { skeleton: self.skeleton, parts: part, k: 0.0 }
+        Body { skeleton: self.skeleton, parts: part, k: 0.0, own_bounds: None }
     }
 
     /// The first item, a group: the parts `build` gives, joined in `space`.
@@ -2156,7 +2264,12 @@ impl<P> Body<P> {
         skin: SkinBinding = ON_BONE,
     ) -> Body<Then<P, Placed<F>>> {
         let part = place(self.skeleton, SAME, name, bone, field, seam, mirror, skin)
-        Body { skeleton: self.skeleton, parts: Then { a: take self.parts, b: part }, k: self.k }
+        Body {
+            skeleton: self.skeleton,
+            parts: Then { a: take self.parts, b: part },
+            k: self.k,
+            own_bounds: self.own_bounds,
+        }
     }
 
     /// Another item, a group: the parts `build` gives, joined in `space`, then joined to those
@@ -2175,7 +2288,12 @@ impl<P> Body<P> {
 
     /// Another item: a group made on its own (`group`).
     pub fn add<Q>(take self, g: take Group<Q>) -> Body<Then<P, Group<Q>>> {
-        Body { skeleton: self.skeleton, parts: Then { a: take self.parts, b: take g }, k: self.k }
+        Body {
+            skeleton: self.skeleton,
+            parts: Then { a: take self.parts, b: take g },
+            k: self.k,
+            own_bounds: self.own_bounds,
+        }
     }
 
     /// Everything so far, changed by `modifier`.
@@ -2184,6 +2302,7 @@ impl<P> Body<P> {
             skeleton: self.skeleton,
             parts: Then { a: take self.parts, b: Modify { modifier } },
             k: self.k,
+            own_bounds: self.own_bounds,
         }
     }
 
@@ -2207,12 +2326,18 @@ impl<P> Body<P> {
         }
         let feet = [legs[0].foot, legs[1].foot, legs[2].foot, legs[3].foot]
         let parts = Then { a: take self.parts, b: Then { a: segments, b: feet } }
-        Body { skeleton: self.skeleton, parts, k: self.k }
+        Body { skeleton: self.skeleton, parts, k: self.k, own_bounds: self.own_bounds }
     }
 
     /// Smooth-unions the parts whose seams give no width with `k`: organic joints, for free.
     pub fn blend(take self, k: f32) -> Body<P> {
-        Body { skeleton: self.skeleton, parts: take self.parts, k }
+        Body { skeleton: self.skeleton, parts: take self.parts, k, own_bounds: self.own_bounds }
+    }
+
+    /// The creature with `b` as the box that holds its surface (`Creature::bounds`): one it knows
+    /// to be tighter than what its field's intervals show.
+    pub fn bounded(take self, b: Box3) -> Body<P> {
+        Body { skeleton: self.skeleton, parts: take self.parts, k: self.k, own_bounds: Some(b) }
     }
 }
 
@@ -2225,6 +2350,13 @@ impl<C: Blend + Copy, P: PartChannels<C>> Creature<C> for Body<P> {
 
     fn skeleton(self) -> Skeleton {
         self.skeleton
+    }
+
+    fn bounds(self) -> Box3 {
+        match self.own_bounds {
+            Some(b) => b,
+            None => physique::bounds::<C, Body<P>>(self),
+        }
     }
 
     fn nearest_bone(self, p: vec3) -> Bone {

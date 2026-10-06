@@ -22,10 +22,12 @@
 
 use creature::{PartMask, Parts}
 use std::derive::{Box3, gradient}
+use std::collections::replace
 use std::gpu::{
     Append, AppendBuffer, Atomics, GlobalId, GpuBuffer, LocalId, Shared, Slots, WorkgroupId,
-    append_buffer, barrier, buffer, dispatch, write,
+    append_buffer, barrier, buffer, dispatch, read, write,
 }
+use std::io::Pending
 
 /// A block's cells along each axis: a 4×4×4 workgroup in `place_vertices` and `emit_quads`.
 pub const BLOCK: u32 = 4
@@ -34,12 +36,17 @@ pub const BLOCK: u32 = 4
 pub const NO_VERTEX: u32 = 0xffffff
 
 /// A mesh's draw arguments (`Mesh::args`): an indexed indirect draw's five words (index count,
-/// instances, first index, base vertex, first instance), then what its passes count.
+/// instances, first index, base vertex, first instance), then what its passes counted: its
+/// vertices (within its room), the holes, the overflow flags, the vertices and quads pushed (past
+/// its room too), and the live blocks. One readback of them says all a realization did.
 pub const INDEX_COUNT: u32 = 0
 pub const VERTEX_COUNT: u32 = 5
 pub const HOLES: u32 = 6
 pub const FLAGS: u32 = 7
-pub const ARGS: u32 = 8
+pub const PUSHED_VERTICES: u32 = 8
+pub const PUSHED_QUADS: u32 = 9
+pub const LIVE_BLOCKS: u32 = 10
+pub const ARGS: u32 = 12
 
 /// `FLAGS`: the vertices ran past the mesh's room; the quads did.
 pub const VERTICES_FULL: u32 = 2
@@ -399,12 +406,13 @@ pub fn emit_quads(
 // ---- pass 4: the draw's arguments ---------------------------------------------------------------
 
 /// The draw's arguments from the counts, each clamped to its room (`vroom` vertices, `qroom`
-/// quads), so a draw reads only its own mesh; and the overflow flags. The holes stay as
-/// `emit_quads` counted them.
+/// quads), so a draw reads only its own mesh; the overflow flags; and the counts as pushed, and
+/// the live blocks. The holes stay as `emit_quads` counted them.
 @compute(64)
 pub fn finish_mesh(
     vertices: [u32],
     quads: [u32],
+    live: [u32],
     vroom: u32,
     qroom: u32,
     args: mut Slots<u32>,
@@ -421,6 +429,12 @@ pub fn finish_mesh(
         args[id] = min(v, vroom)
     } else if id.x == FLAGS {
         args[id] = (if v > vroom { VERTICES_FULL } else { 0 }) | (if q > qroom { QUADS_FULL } else { 0 })
+    } else if id.x == PUSHED_VERTICES {
+        args[id] = v
+    } else if id.x == PUSHED_QUADS {
+        args[id] = q
+    } else if id.x == LIVE_BLOCKS {
+        args[id] = live[0]
     }
 }
 
@@ -485,7 +499,7 @@ pub fn record<C, F: Parts<C>>(field: F, grid: Grid, falloff: f32, scratch: mut S
     scratch.live.clear()
     mesh.verts.clear()
     mesh.quads.clear()
-    write(mut mesh.args, 0, [0, 1, 0, 0, 0, 0, 0, 0])
+    write(mut mesh.args, 0, [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
     dispatch(
         cull_blocks.bind(
             field: field,
@@ -524,10 +538,453 @@ pub fn record<C, F: Parts<C>>(field: F, grid: Grid, falloff: f32, scratch: mut S
         finish_mesh.bind(
             vertices: mesh.verts.count(),
             quads: mesh.quads.count(),
+            live: scratch.live.count(),
             vroom: room.vertices,
             qroom: room.quads,
             args: mut mesh.args,
         ),
         groups: 1,
     )
+}
+
+// ---- the realization queue, levels of detail and mesh memory (§7.6–§7.8) --------------------------
+
+/// How a creature type's meshes are kept: its levels of detail (cell sizes, coarse to fine), when
+/// to move between them, and how much realizing a frame may do.
+pub struct Detail: Copy {
+    /// Cell sizes, coarse to fine: the first `count`.
+    pub cells: [f32; 4],
+    pub count: u32,
+    /// The largest a cell may look on screen, in pixels: an instance's level is the coarsest
+    /// whose cells look no larger (#43 §7.6).
+    pub max_cell_px: f32,
+    /// How far under `max_cell_px` a coarser level's cells must look before an instance moves
+    /// back to it (a finer level is taken at once).
+    pub hysteresis: f32,
+    /// A frame's realization budget, in microseconds of estimated GPU time.
+    pub budget_us: f32,
+    /// Estimated GPU time per block of a level's grid, in microseconds (#43 §7.7).
+    pub cost_us: [f32; 4],
+    /// How far skin weights fall off from each part.
+    pub falloff: f32,
+}
+
+/// Where an instance is this frame: its root and heading, which place its rest space.
+pub struct Placement: Copy {
+    pub at: vec3,
+    pub heading: f32,
+}
+
+/// The camera as LOD reads it: where the eye is, the view-projection, the screen's height in
+/// pixels, and how high the view is (radians).
+pub struct Eye: Copy {
+    pub at: vec3,
+    pub view_proj: mat4,
+    pub height: f32,
+    pub fovy: f32,
+}
+
+/// No level.
+pub const NO_LEVEL: u32 = 0xffffffff
+
+/// One instance a realizer looks after: its field and rest-space bounds, its mesh at each
+/// level, the level it draws, the level it should have, and how large its finest cells look.
+struct Held<F> {
+    field: F,
+    bounds: Box3,
+    meshes: Vec<Option<Mesh>>,
+    drawn: u32,
+    target: u32,
+    priority: f32,
+    visible: bool,
+    /// Its drawn mesh is to be realized again (a calibration's, or one that overflowed).
+    stale: bool,
+}
+
+/// A realization whose result is being read back: its instance and level, and whether it
+/// calibrated its level's room.
+struct Check {
+    instance: u32,
+    level: u32,
+    args: Pending<u32>,
+    calibration: bool,
+}
+
+/// A mesh's room after seeing a realization push `vertices` and `quads`: a quarter more, and
+/// room to spare (spike 01's).
+fn room_for(vertices: u32, quads: u32) -> Room {
+    Room { vertices: vertices + vertices / 4 + 1024, quads: quads + quads / 4 + 1024 }
+}
+
+/// The meshes of every instance of one creature type (#43 §7.6–§7.8): realized at their levels
+/// of detail as their size on screen asks, a frame's budget at a time, the largest on screen
+/// first; a new one at its coarsest level first. Each level's room is calibrated once, from the
+/// largest grid waiting; each realization's counts are read back to catch an overflow, which
+/// grows the room and realizes the instance again. These two readbacks are presentation's alone:
+/// nothing read back drives a pass. A released mesh goes back to its level's free list.
+pub struct Realizer<F> {
+    pub detail: Detail,
+    held: Vec<Held<F>>,
+    rooms: Vec<Option<Room>>,
+    calibrating: Vec<bool>,
+    free: Vec<Vec<Mesh>>,
+    checks: Vec<Check>,
+    scratch: Scratch,
+    /// How many readbacks it made, how many realizations, and how many holes and overflows the
+    /// readbacks found.
+    pub readbacks: u32,
+    pub realizations: u32,
+    pub holes: u32,
+    pub overflows: u32,
+}
+
+impl<F> Realizer<F> {
+    pub fn new(detail: Detail) -> Realizer<F> {
+        var rooms: Vec<Option<Room>> = Vec::new()
+        var calibrating: Vec<bool> = Vec::new()
+        var free: Vec<Vec<Mesh>> = Vec::new()
+        for _ in 0..detail.count {
+            rooms.push(None)
+            calibrating.push(false)
+            free.push(Vec::new())
+        }
+        Realizer {
+            detail,
+            held: Vec::new(),
+            rooms,
+            calibrating,
+            free,
+            checks: Vec::new(),
+            scratch: Scratch::new(1),
+            readbacks: 0,
+            realizations: 0,
+            holes: 0,
+            overflows: 0,
+        }
+    }
+
+    /// Looks after an instance whose field is `field`, its surface in `bounds` (rest space): its
+    /// number.
+    pub fn add(mut self, field: take F, bounds: Box3) -> u32 {
+        var meshes: Vec<Option<Mesh>> = Vec::new()
+        for _ in 0..self.detail.count {
+            meshes.push(None)
+        }
+        self.held.push(Held {
+            field: take field,
+            bounds,
+            meshes: take meshes,
+            drawn: NO_LEVEL,
+            target: NO_LEVEL,
+            priority: 0.0,
+            visible: true,
+            stale: false,
+        })
+        self.held.len() - 1
+    }
+
+    pub fn len(self) -> u32 {
+        self.held.len()
+    }
+
+    /// The level instance `i` draws, or `NO_LEVEL` before it has a mesh.
+    pub fn drawn(self, i: u32) -> u32 {
+        self.held[i].drawn
+    }
+
+    /// The level instance `i` should have.
+    pub fn target(self, i: u32) -> u32 {
+        self.held[i].target
+    }
+
+    /// Instance `i`'s field.
+    pub fn field(self, i: u32) -> borrow F {
+        self.held[i].field
+    }
+
+    /// The mesh instance `i` draws: it must have one (`drawn`).
+    pub fn mesh(self, i: u32) -> borrow Mesh {
+        borrow h = self.held[i]
+        match h.meshes[h.drawn] {
+            Some(m) => m,
+            None => panic("this instance has no mesh to draw"),
+        }
+    }
+
+    /// Bytes its meshes take, the free lists' and the calibrations' included.
+    pub fn allocated(self) -> u64 {
+        var n: u64 = 0
+        for h in self.held {
+            for m in h.meshes {
+                if let Some(mesh) = m {
+                    n += mesh.bytes()
+                }
+            }
+        }
+        for level in self.free {
+            for m in level {
+                n += m.bytes()
+            }
+        }
+        n
+    }
+
+    /// Whether every instance draws its target level and nothing waits on a readback.
+    pub fn settled(self) -> bool {
+        if self.checks.len() > 0 {
+            return false
+        }
+        for h in self.held {
+            if h.drawn == NO_LEVEL || h.drawn != h.target || h.stale {
+                return false
+            }
+        }
+        true
+    }
+
+    /// The grid instance `i` is realized on at level `level`.
+    pub fn grid(self, i: u32, level: u32) -> Grid {
+        Grid::around(self.held[i].bounds, self.detail.cells[level])
+    }
+
+    /// How large instance `i`'s cells at level `level` look on screen, placed at `p`, in pixels:
+    /// its cell size over the size of a pixel at its point nearest the eye.
+    fn projected(self, i: u32, level: u32, p: Placement, eye: Eye) -> f32 {
+        let b = self.held[i].bounds
+        let (c, s) = (cos(p.heading), sin(p.heading))
+        let mid = 0.5 * (b.lo + b.hi)
+        let centre = p.at + vec3(c * mid.x + s * mid.z, mid.y, -s * mid.x + c * mid.z)
+        let radius = 0.5 * length(b.hi - b.lo)
+        let near = max(length(centre - eye.at) - radius, 0.1)
+        let pixel = 2.0 * near * tan(0.5 * eye.fovy) / eye.height
+        self.detail.cells[level] / pixel
+    }
+
+    /// Whether instance `i`, placed at `p`, can be on screen: its bounding sphere against the
+    /// view's clip space.
+    fn on_screen(self, i: u32, p: Placement, eye: Eye) -> bool {
+        let b = self.held[i].bounds
+        let (c, s) = (cos(p.heading), sin(p.heading))
+        let mid = 0.5 * (b.lo + b.hi)
+        let centre = p.at + vec3(c * mid.x + s * mid.z, mid.y, -s * mid.x + c * mid.z)
+        let radius = 0.5 * length(b.hi - b.lo)
+        let clip = eye.view_proj * vec4(centre, 1.0)
+        // The projection's largest scale: a radius in clip units, at the centre's depth.
+        let m = eye.view_proj
+        let scale = max(length(vec3(m[0].x, m[1].x, m[2].x)), length(vec3(m[0].y, m[1].y, m[2].y)))
+        let r = radius * scale
+        clip.w > -radius && abs(clip.x) <= clip.w + r && abs(clip.y) <= clip.w + r
+    }
+}
+
+impl<C, F: Parts<C>> Realizer<F> {
+    /// This frame (#43 §6, steps 3, 4 and 7): the readbacks that have arrived; each instance's
+    /// target level, from how large its cells look; then the queue, realized within the budget.
+    pub fn frame(mut self, eye: Eye, placed: [Placement]) {
+        self.answer()
+        let n = min(self.held.len(), placed.len())
+        let top = self.detail.count - 1
+        let max_px = self.detail.max_cell_px
+        for i in 0..n {
+            let p = placed[i]
+            self.held[i].visible = self.on_screen(i, p, eye)
+            // The coarsest level whose cells look small enough; the finest if none does.
+            var want = top
+            for l in 0..self.detail.count {
+                if self.projected(i, l, p, eye) <= max_px {
+                    want = l
+                    break
+                }
+            }
+            let drawn = self.held[i].drawn
+            // Back to a coarser level only once its cells look well under the limit.
+            if drawn != NO_LEVEL && want < drawn {
+                if self.projected(i, want, p, eye) > max_px * (1.0 - self.detail.hysteresis) {
+                    want = drawn
+                }
+            }
+            self.held[i].target = want
+            self.held[i].priority = self.projected(i, top, p, eye)
+        }
+        self.spend()
+    }
+
+    /// Every instance at `level`, whatever the budget, on screen or not: for still frames and
+    /// tests. A frame realizes all it can; a level whose room isn't known yet is calibrated
+    /// first, which takes a readback, answered from a later frame. Whether every instance draws
+    /// `level` now.
+    pub fn realize_all(mut self, level: u32) -> bool {
+        self.answer()
+        for i in 0..self.held.len() {
+            self.held[i].target = level
+        }
+        while self.step(true) > 0.0 {}
+        self.settled()
+    }
+
+    /// Realizes the waiting instances, largest on screen first, until the budget is spent.
+    fn spend(mut self) {
+        var spent = 0.0
+        while spent < self.detail.budget_us {
+            let cost = self.step(false)
+            if cost <= 0.0 {
+                break
+            }
+            spent += cost
+        }
+    }
+
+    /// The level instance `i` should realize next: its coarsest first, then its target, or its
+    /// drawn level again when that mesh is stale; none when it has its target or is off screen.
+    /// `force`: straight to its target, on screen or not.
+    fn next_level(self, i: u32, force: bool) -> u32 {
+        borrow h = self.held[i]
+        if (!h.visible && !force) || h.target == NO_LEVEL {
+            return NO_LEVEL
+        }
+        if h.drawn == NO_LEVEL {
+            return if force { h.target } else { 0 }
+        }
+        if h.stale {
+            return h.drawn
+        }
+        if h.drawn != h.target {
+            return h.target
+        }
+        NO_LEVEL
+    }
+
+    /// One realization: the waiting instance largest on screen, at its next level (calibrating
+    /// the level's room first if no one has). Its estimated cost, in microseconds; 0 when
+    /// nothing could be realized.
+    fn step(mut self, force: bool) -> f32 {
+        var best = NO_LEVEL
+        var level = NO_LEVEL
+        var priority = -1.0
+        for i in 0..self.held.len() {
+            let l = self.next_level(i, force)
+            if l == NO_LEVEL || (self.rooms[l].is_none() && self.calibrating[l]) {
+                continue
+            }
+            let p = self.held[i].priority
+            if p > priority {
+                priority = p
+                best = i
+                level = l
+            }
+        }
+        if best == NO_LEVEL {
+            return 0.0
+        }
+        match self.rooms[level] {
+            None => self.calibrate(level, force),
+            Some(room) => self.realize(best, level, room),
+        }
+    }
+
+    /// Calibrates `level`'s room (§7.8): the waiting instance with the largest grid is realized
+    /// into room for the most its grid could hold, and draws that mesh until the room is known
+    /// and it's realized again; its counts are read back once.
+    fn calibrate(mut self, level: u32, force: bool) -> f32 {
+        var best = NO_LEVEL
+        var blocks = 0
+        for i in 0..self.held.len() {
+            if self.next_level(i, force) == level {
+                let g = self.grid(i, level)
+                if best == NO_LEVEL || g.blocks > blocks {
+                    best = i
+                    blocks = g.blocks
+                }
+            }
+        }
+        let grid = self.grid(best, level)
+        var mesh = Mesh::new(Room { vertices: grid.blocks * 8, quads: grid.blocks * 8 })
+        self.calibrating[level] = true
+        self.record_into(best, level, grid, mut mesh, calibration: true)
+        self.place(best, level, take mesh)
+        self.held[best].stale = true
+        f32(grid.blocks) * self.detail.cost_us[level]
+    }
+
+    /// Realizes instance `i` at `level` into a mesh with room `room`, which it draws from now on.
+    fn realize(mut self, i: u32, level: u32, room: Room) -> f32 {
+        let grid = self.grid(i, level)
+        var mesh = match self.free[level].pop() {
+            Some(m) => take m,
+            None => Mesh::new(room),
+        }
+        self.record_into(i, level, grid, mut mesh, calibration: false)
+        self.place(i, level, take mesh)
+        self.held[i].stale = false
+        f32(grid.blocks) * self.detail.cost_us[level]
+    }
+
+    /// Records instance `i`'s realization at `level` into `mesh`, and the readback of what it
+    /// counted.
+    fn record_into(mut self, i: u32, level: u32, grid: Grid, mesh: mut Mesh, calibration: bool) {
+        record(self.held[i].field, grid, self.detail.falloff, mut self.scratch, mut mesh)
+        self.checks.push(Check {
+            instance: i,
+            level,
+            args: read(mesh.args.span(start: 0, count: ARGS)),
+            calibration,
+        })
+        self.readbacks += 1
+        self.realizations += 1
+    }
+
+    /// Instance `i` draws `mesh` at `level` from now on; the mesh it drew before goes back to
+    /// its level's free list, if it has that level's room.
+    fn place(mut self, i: u32, level: u32, mesh: take Mesh) {
+        let before = self.held[i].drawn
+        if let Some(old) = replace(mut self.held[i].meshes[level], Some(take mesh)) {
+            self.release(level, take old)
+        }
+        if before != NO_LEVEL && before != level {
+            if let Some(old) = replace(mut self.held[i].meshes[before], None) {
+                self.release(before, take old)
+            }
+        }
+        self.held[i].drawn = level
+    }
+
+    fn release(mut self, level: u32, mesh: take Mesh) {
+        if let Some(room) = self.rooms[level] {
+            if mesh.room() == room {
+                self.free[level].push(take mesh)
+            }
+        }
+    }
+
+    /// The readbacks that have arrived: a calibration sets its level's room; an overflow grows
+    /// it, and has the instance realized again.
+    fn answer(mut self) {
+        var k = 0
+        while k < self.checks.len() {
+            let Some(answer) = self.checks[k].args.poll() else {
+                k += 1
+                continue
+            }
+            let c = self.checks.remove(k)
+            let Ok(words) = answer else { continue }
+            if words.len() < ARGS {
+                continue
+            }
+            self.holes += words[HOLES]
+            let pushed = room_for(words[PUSHED_VERTICES], words[PUSHED_QUADS])
+            if c.calibration {
+                self.rooms[c.level] = Some(pushed)
+                self.calibrating[c.level] = false
+            } else if words[FLAGS] != 0 {
+                self.overflows += 1
+                let had = self.rooms[c.level].unwrap()
+                self.rooms[c.level] = Some(Room {
+                    vertices: max(had.vertices, pushed.vertices),
+                    quads: max(had.quads, pushed.quads),
+                })
+                self.free[c.level].clear()
+                self.held[c.instance].stale = true
+            }
+        }
+    }
 }

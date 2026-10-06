@@ -1,0 +1,7 @@
+# The herd (#43 §12): spike 01's 40 grazers on its terrain, simulated on the ticker's thread and
+# drawn from their fields. compiler/tests/tests/suite/herd.rs checks it against the spike.
+[package]
+name = "herd"
+
+[dependencies]
+engine = { path = "../../engine" }

@@ -24,6 +24,12 @@ impl Rng {
         Rng { state: seed.value.wrapping_mul(7919).wrapping_add(17) }
     }
 
+    /// A generator whose state is `state` as it is: spike 01's `rng(state)`, which a seed's
+    /// stream (`new`) mixes first.
+    pub fn raw(state: u32) -> Rng {
+        Rng { state }
+    }
+
     /// The next draw, in [0, 1).
     pub fn next(mut self) -> f64 {
         self.state = self.state.wrapping_add(0x6d2b79f5)

@@ -3,9 +3,9 @@
 // derived interval classifies cells as inside, outside or straddling; only straddling cells
 // are refined, so the cost follows the surface's area, not the volume (T3).
 
-use creature::{Bone, Creature, Skeleton}
+use creature::{Bone, Creature, Parts, Skeleton}
 use std::derive::{Box3, interval}
-use std::field::{Field, Surface}
+use std::field::{Bound, Field, Surface}
 use std::hash::StateHash
 
 /// What a quantity is gathered per.
@@ -237,4 +237,111 @@ pub fn segment_distance(p: vec3, a: vec3, b: vec3) -> f32 {
     let ab = b - a
     let t = if dot(ab, ab) > 0.0 { clamp(dot(p - a, ab) / dot(ab, ab), 0.0, 1.0) } else { 0.0 }
     length(p - (a + t * ab))
+}
+
+// ---- mass by spike 01's method (#43 §9) ----------------------------------------------------------
+
+/// What `adaptive_mass` finds: the mass (kg), the volume (m³), the centre of mass, and how many
+/// samples it took.
+pub struct Weighed: Copy + StateHash {
+    pub mass: f64,
+    pub volume: f64,
+    pub centre: vec3,
+    pub samples: u32,
+}
+
+/// Sums, in f64, as spike 01 keeps them.
+struct Sums {
+    mass: f64,
+    volume: f64,
+    moment: [f64; 3],
+    samples: u32,
+}
+
+impl Sums {
+    /// A cube of half-edge `h` at `c`, of density `rho`, counted whole.
+    fn add(mut self, c: vec3, h: f32, rho: f32) {
+        let edge = 2.0 * f64(h)
+        let vol = edge * edge * edge
+        let mass = vol * f64(rho)
+        self.volume += vol
+        self.mass += mass
+        self.moment[0] += mass * f64(c.x)
+        self.moment[1] += mass * f64(c.y)
+        self.moment[2] += mass * f64(c.z)
+    }
+}
+
+/// How far a node's centre's distance may be from the surface's where the node holds none: its
+/// half-diagonal times 1.5, spike 01's assumption about the gradient near the surface.
+const CLASSIFY: f32 = 1.5
+
+/// A creature's mass by spike 01's method (#43 §9): an adaptive octree from a cube around the
+/// bounds of its items, each node classified by the distance at its centre (empty where it's
+/// more than 1.5 h √3, whole where it's less than minus that, h the node's half-edge), down to
+/// cells `finest` wide, which count where their centre is inside (the midpoint rule). Each
+/// sample leaves out the items that can't matter there (`Parts::sample_pruned`), and `density`
+/// gives its density from its channels. An estimate, not a certificate: the factor 1.5 is an
+/// assumption, not a bound (the grazer's gradient reaches 11 deep inside).
+@deterministic
+pub fn adaptive_mass<C, F: Parts<C>>(field: F, density: fn(C) -> f32, finest: f32) -> Weighed {
+    let bounds = field.item_bounds()
+    var lo = vec3(1.0e30)
+    var hi = vec3(-1.0e30)
+    for b in bounds {
+        if b.radius < 1.0e29 {
+            lo = min(lo, b.centre - vec3(b.radius))
+            hi = max(hi, b.centre + vec3(b.radius))
+        }
+    }
+    let c = (lo + hi) * 0.5
+    let e = hi - lo
+    let h = max(e.x, max(e.y, e.z)) * 0.5
+    var sums = Sums { mass: 0.0, volume: 0.0, moment: [0.0; 3], samples: 0 }
+    node(field, density, bounds, c, h, finest, mut sums)
+    let m = max(sums.mass, 1.0e-30)
+    Weighed {
+        mass: sums.mass,
+        volume: sums.volume,
+        centre: vec3(f32(sums.moment[0] / m), f32(sums.moment[1] / m), f32(sums.moment[2] / m)),
+        samples: sums.samples,
+    }
+}
+
+/// The node of half-edge `h` at `c`: classified, counted, or split into eight.
+@deterministic
+fn node<C, F: Parts<C>>(
+    field: F,
+    density: fn(C) -> f32,
+    bounds: [Bound],
+    c: vec3,
+    h: f32,
+    finest: f32,
+    sums: mut Sums,
+) {
+    sums.samples += 1
+    let (d, ch) = field.sample_pruned(c, bounds)
+    let r = h * 1.7320508 * CLASSIFY
+    if d > r {
+        return
+    }
+    if d < -r {
+        sums.add(c, h, density(ch))
+        return
+    }
+    if 2.0 * h <= finest {
+        if d < 0.0 {
+            sums.add(c, h, density(ch))
+        }
+        return
+    }
+    let q = h * 0.5
+    for i in 0..8 {
+        let o = vec3(
+            if i & 1 != 0 { q } else { -q },
+            if i & 2 != 0 { q } else { -q },
+            if i & 4 != 0 { q } else { -q },
+        )
+        node(field, density, bounds, c + o, q, finest, mut sums)
+    }
 }
