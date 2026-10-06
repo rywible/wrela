@@ -46,8 +46,29 @@ pub enum Eval: Copy + Eq {
     Interpreted,
 }
 
+/// How a creature type's meshes are kept (#43 §7.6–§7.7): its levels of detail (cell sizes,
+/// coarse to fine), when to move between them, and how much realizing a frame may do. The
+/// defaults are spike 01's.
+pub struct Detail: Copy {
+    /// Cell sizes, coarse to fine: the first `count`.
+    pub cells: [f32; 4] = [3cm, 2cm, 1.5cm, 0.0],
+    pub count: u32 = 3,
+    /// The largest a cell may look on screen, in pixels: an instance's level is the coarsest
+    /// whose cells look no larger.
+    pub max_cell_px: f32 = 2.5,
+    /// How far under `max_cell_px` a coarser level's cells must look before an instance moves
+    /// back to it (a finer level is taken at once).
+    pub hysteresis: f32 = 0.2,
+    /// A frame's realization budget, in microseconds of estimated GPU time.
+    pub budget_us: f32 = 4000.0,
+    /// Estimated GPU time per block of a level's grid, in microseconds: spike 01's.
+    pub cost_us: [f32; 4] = [0.34, 0.27, 0.21, 0.15],
+}
+
 pub struct CreatureLook: Copy {
     pub surface: Mesh = Mesh { tolerance: 2mm },
+    /// Levels of detail and realization, for a type drawn by `realize::Realizer`.
+    pub detail: Detail = Detail {},
     pub deform: Skin = Skin { weights: ByPart { falloff: 5cm }, max_bones: 4 },
     pub shading: Shading = Shading::PerPixel,
     pub far: Option<Bricks> = None,

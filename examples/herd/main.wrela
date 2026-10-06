@@ -15,7 +15,8 @@
 
 use engine::creature::Creature
 use engine::present::Snapshots
-use engine::realize::{Detail, Eye, NO_LEVEL, Placement, Realizer}
+use engine::look::{ByPart, CreatureLook, Detail, Shadow, Skin}
+use engine::realize::{Eye, NO_LEVEL, Placement, Realizer}
 use engine::render::{
     Instance, MAX_BONES, RestSkeleton, View, depth_only, pose_instances, shade, skin, skin_shadow,
     view,
@@ -34,16 +35,13 @@ use std::math::PI
 use terrain::{GRID, ground, height}
 use walk::Walk
 
-/// The levels of detail: 3, 2 and 1.5 cm cells (#43 §7.6, §13).
-const DETAIL = Detail {
-    cells: [3cm, 2cm, 1.5cm, 0.0],
-    count: 3,
-    max_cell_px: 2.5,
-    hysteresis: 0.2,
-    budget_us: 4000.0,
-    // Spike 01's GPU time per block at each level, in microseconds.
-    cost_us: [0.34, 0.27, 0.21, 0.15],
-    falloff: 6cm,
+/// How the grazers are drawn (#43 §13): levels of detail at 3, 2 and 1.5 cm cells, with spike
+/// 01's costs and a 4 ms budget (the defaults); skin weights falling off over 6 cm; a 2048²
+/// shadow map.
+const LOOK = CreatureLook {
+    detail: Detail {},
+    deform: Skin { weights: ByPart { falloff: 6cm } },
+    shadow: Shadow::Map { resolution: 2048 },
 }
 
 /// The cameras: 40° high at 16:9 (the screen's own aspect is used), each with its shadow map's
@@ -101,7 +99,7 @@ pub fn init() -> Game {
     let world = spawn()
     let placed = snapshot(world)
     let latest = run(take world, hz: 60, step: step, present: snapshot)
-    var realizer: Realizer<GrazerField> = Realizer::new(DETAIL)
+    var realizer: Realizer<GrazerField> = Realizer::new(LOOK)
     var looks: Vec<GrazerLook> = Vec::new()
     var rests: Vec<RestSkeleton> = Vec::new()
     for i in 0..HERD {
@@ -113,7 +111,11 @@ pub fn init() -> Game {
     }
     var skeletons: GpuBuffer<RestSkeleton> = buffer(HERD)
     write(mut skeletons, 0, rests)
-    var shadow = depth_texture(width: 2048, height: 2048)
+    let side = match LOOK.shadow {
+        Shadow::Map { resolution } => resolution,
+        Shadow::None => 1,
+    }
+    var shadow = depth_texture(width: side, height: side)
     begin_depth_pass(mut shadow, clear_depth: 1.0).end()
     Game {
         snaps: Snapshots::new(take latest, hz: 60),

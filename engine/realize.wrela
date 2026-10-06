@@ -21,6 +21,7 @@
 // cut into slabs (§7.8); the queue realizes as many as a frame's budget allows (§7.7).
 
 use creature::{NONE, PartMask, Parts}
+use look::{CreatureLook, Detail}
 use std::derive::{Box3, gradient}
 use std::collections::replace
 use std::gpu::{
@@ -672,26 +673,6 @@ pub fn record<C, F: Parts<C>>(
 
 // ---- the realization queue, levels of detail and mesh memory (§7.6–§7.8) --------------------------
 
-/// How a creature type's meshes are kept: its levels of detail (cell sizes, coarse to fine), when
-/// to move between them, and how much realizing a frame may do.
-pub struct Detail: Copy {
-    /// Cell sizes, coarse to fine: the first `count`.
-    pub cells: [f32; 4],
-    pub count: u32,
-    /// The largest a cell may look on screen, in pixels: an instance's level is the coarsest
-    /// whose cells look no larger (#43 §7.6).
-    pub max_cell_px: f32,
-    /// How far under `max_cell_px` a coarser level's cells must look before an instance moves
-    /// back to it (a finer level is taken at once).
-    pub hysteresis: f32,
-    /// A frame's realization budget, in microseconds of estimated GPU time.
-    pub budget_us: f32,
-    /// Estimated GPU time per block of a level's grid, in microseconds (#43 §7.7).
-    pub cost_us: [f32; 4],
-    /// How far skin weights fall off from each part.
-    pub falloff: f32,
-}
-
 /// Where an instance is this frame: its root and heading, which place its rest space.
 pub struct Placement: Copy {
     pub at: vec3,
@@ -746,7 +727,10 @@ fn room_for(vertices: u32, quads: u32) -> Room {
 /// grows the room and realizes the instance again. These two readbacks are presentation's alone:
 /// nothing read back drives a pass. A released mesh goes back to its level's free list.
 pub struct Realizer<F> {
+    /// The type's levels and realization settings (its look's `detail`), and how far its skin
+    /// weights fall off from each part (its look's).
     pub detail: Detail,
+    falloff: f32,
     held: Vec<Held<F>>,
     rooms: Vec<Option<Room>>,
     calibrating: Vec<bool>,
@@ -762,7 +746,9 @@ pub struct Realizer<F> {
 }
 
 impl<F> Realizer<F> {
-    pub fn new(detail: Detail) -> Realizer<F> {
+    /// A realizer for a creature type drawn as `look` says.
+    pub fn new(look: CreatureLook) -> Realizer<F> {
+        let detail = look.detail
         var rooms: Vec<Option<Room>> = Vec::new()
         var calibrating: Vec<bool> = Vec::new()
         var free: Vec<Vec<Mesh>> = Vec::new()
@@ -773,6 +759,7 @@ impl<F> Realizer<F> {
         }
         Realizer {
             detail,
+            falloff: look.deform.weights.falloff,
             held: Vec::new(),
             rooms,
             calibrating,
@@ -1057,7 +1044,7 @@ impl<C, F: Parts<C>> Realizer<F> {
     /// Records instance `i`'s realization at `level` into `mesh`, and the readback of what it
     /// counted.
     fn record_into(mut self, i: u32, level: u32, grid: Grid, mesh: mut Mesh, calibration: bool) {
-        record(self.held[i].field, grid, self.detail.falloff, mut self.scratch, mut mesh)
+        record(self.held[i].field, grid, self.falloff, mut self.scratch, mut mesh)
         self.checks.push(
             Check {
                 instance: i,
