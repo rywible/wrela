@@ -35,9 +35,9 @@ use std::math::PI
 use terrain::{GRID, ground, height}
 use walk::Walk
 
-/// How the grazers are drawn (#43 §13): levels of detail at 3, 2 and 1.5 cm cells, with spike
-/// 01's costs and a 4 ms budget (the defaults); skin weights falling off over 6 cm; a 2048²
-/// shadow map.
+/// How the grazers are drawn (#43 §13): levels of detail at 3, 2 and 1.5 cm cells, with our
+/// realization's costs and a 4 ms budget (the defaults); skin weights falling off over 6 cm; a
+/// 2048² shadow map.
 const LOOK = CreatureLook {
     detail: Detail {},
     deform: Skin { weights: ByPart { falloff: 6cm } },

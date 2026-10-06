@@ -161,10 +161,11 @@ pub struct Quad: Copy + GpuData {
     pub f: u32,
 }
 
-/// Where cell `(x, y, z)` of the block in live slot `slot` is in the cell map, of `live` live
-/// blocks: as `place_vertices` writes it (its invocation's place in the dispatch, row by row).
-fn cell_key(slot: u32, x: u32, y: u32, z: u32, live: u32) -> u32 {
-    (slot * BLOCK + x) + y * live * BLOCK + z * live * BLOCK * BLOCK
+/// Where cell `(x, y, z)` of the block in live slot `slot` is in a cell map with room for
+/// `blocks` blocks (its length over `BLOCK³`): row by row, as one dispatch of that many blocks
+/// would number its invocations.
+fn cell_key(slot: u32, x: u32, y: u32, z: u32, blocks: u32) -> u32 {
+    (slot * BLOCK + x) + y * blocks * BLOCK + z * blocks * BLOCK * BLOCK
 }
 
 // ---- pass 1: which blocks matter, and which items matter in each ------------------------------
@@ -245,6 +246,21 @@ fn solve3(a0: vec3, a1: vec3, a2: vec3, b: vec3) -> vec3 {
     vec3(det3(b, a1, a2), det3(a0, b, a2), det3(a0, a1, b)) / det
 }
 
+/// Each slice's group counts for `record_vertices`, from the live blocks' count: three `u32`s a
+/// slice, `SLICE_BLOCKS` workgroups (fewer past the live blocks' end), the last slice the rest.
+@compute(64)
+fn slice_groups(live: [u32], slices: u32, out: mut Slots<u32>, id: GlobalId) {
+    let s = id.x / 3
+    if s >= slices {
+        return
+    }
+    let first = s * SLICE_BLOCKS
+    let left = if live[0] > first { live[0] - first } else { 0 }
+    out[id] = if id.x % 3 != 0 { 1 } else if s == slices - 1 { left } else {
+        min(left, SLICE_BLOCKS)
+    }
+}
+
 /// The field's normal at `x`, from the items in `mask`, seen `fp` wide: one function for an
 /// edge's crossing and a vertex alike, so a large creature's shader holds its derived fold once.
 fn normal_at<C, F: Parts<C>>(field: F, mask: PartMask, fp: f32, x: vec3) -> vec3 {
@@ -259,19 +275,23 @@ fn normal_at<C, F: Parts<C>>(field: F, mask: PartMask, fp: f32, x: vec3) -> vec3
 pub fn place_vertices<C, F: Parts<C>>(
     field: F,
     grid: Grid,
+    first: u32,
     blocks: [LiveBlock],
     block_map: [u32],
     near: mut Shared<PartMask, 27>,
     corners: mut Shared<f32, 125>,
     probe: mut Slots<CornerProbe>,
-    cells: mut Slots<u32>,
+    cells: mut Atomics<u32>,
     verts: mut Append<SkinVertex>,
     block: WorkgroupId,
     lid: LocalId,
     id: GlobalId,
 ) {
-    let slot = block.x
+    // A slice of the live blocks starts at `first` (`record_vertices`).
+    let slot = block.x + first
     let lb = blocks[slot]
+    // Each cell's entry in the cell map, wherever the slice's dispatch puts its invocation.
+    let key = cell_key(slot, lid.x, lid.y, lid.z, cells.len() / (BLOCK * BLOCK * BLOCK))
     let cell = grid.cell
     let b = grid.block_xyz(lb.block)
     // The block's low corner, in cells.
@@ -317,7 +337,7 @@ pub fn place_vertices<C, F: Parts<C>>(
         }
     }
     if signs == 0 || signs == 255 {
-        cells[id] = (signs << 24) | NO_VERTEX
+        cells.store(key, (signs << 24) | NO_VERTEX)
         return
     }
 
@@ -376,7 +396,7 @@ pub fn place_vertices<C, F: Parts<C>>(
     let normal = normal_at(field, mask, fp, pos)
     // Its skin weights come in their own pass (`skin_vertices`).
     let vi = verts.push(SkinVertex { pos, bones: 0, normal, weights: 255, mask })
-    cells[id] = (signs << 24) | min(vi, NO_VERTEX)
+    cells.store(key, (signs << 24) | min(vi, NO_VERTEX))
 }
 
 // ---- pass 3: a quad for every crossed edge -----------------------------------------------------
@@ -388,7 +408,7 @@ fn vertex_at(
     grid: Grid,
     block_map: [u32],
     cells: [u32],
-    live: u32,
+    blocks: u32,
     room: u32,
     x: i32,
     y: i32,
@@ -403,7 +423,7 @@ fn vertex_at(
     if s == 0 {
         return NO_VERTEX
     }
-    let v = cells[cell_key(s - 1, ux % BLOCK, uy % BLOCK, uz % BLOCK, live)] & NO_VERTEX
+    let v = cells[cell_key(s - 1, ux % BLOCK, uy % BLOCK, uz % BLOCK, blocks)] & NO_VERTEX
     if v >= room { NO_VERTEX } else { v }
 }
 
@@ -415,7 +435,6 @@ pub fn emit_quads(
     grid: Grid,
     room: u32,
     blocks: [LiveBlock],
-    live: [u32],
     block_map: [u32],
     cells: [u32],
     quads: mut Append<Quad>,
@@ -424,7 +443,7 @@ pub fn emit_quads(
     lid: LocalId,
 ) {
     let slot = block.x
-    let n = live[0]
+    let n = cells.len() / (BLOCK * BLOCK * BLOCK)
     let data = cells[cell_key(slot, lid.x, lid.y, lid.z, n)]
     let v0 = data & NO_VERTEX
     if v0 >= room {
@@ -542,6 +561,8 @@ pub struct Scratch {
     pub live: AppendBuffer<LiveBlock>,
     pub block_map: GpuBuffer<u32>,
     pub cells: GpuBuffer<u32>,
+    /// A sliced realization's group counts (`slice_groups`).
+    pub slices: GpuBuffer<u32>,
     /// A debug build's: each boundary corner's value as each live block evaluated it, an
     /// invocation's two in its slot. A release build's holds one, and nothing writes it.
     pub probe: GpuBuffer<CornerProbe>,
@@ -554,6 +575,7 @@ impl Scratch {
             live: append_buffer(n),
             block_map: buffer(n),
             cells: buffer(n * 64),
+            slices: buffer(3 * MAX_SLICES),
             probe: buffer(if debug_build() { min(n, PROBE_BLOCKS) * 64 } else { 1 }),
         }
     }
@@ -605,7 +627,8 @@ impl Mesh {
 }
 
 /// Records one realization: `field`'s mesh on `grid`, its skin weights falling off over
-/// `falloff`, into `mesh`.
+/// `falloff`, into `mesh`: `record_cull`, `record_vertices`, then `record_finish` (a
+/// `Realizer` spreads a level change's vertices over frames: `record_slice`).
 pub fn record<C, F: Parts<C>>(
     field: F,
     grid: Grid,
@@ -613,8 +636,14 @@ pub fn record<C, F: Parts<C>>(
     scratch: mut Scratch,
     mesh: mut Mesh,
 ) {
+    record_cull(field, grid, mut scratch, mut mesh)
+    record_vertices(field, grid, mut scratch, mut mesh)
+    record_finish(field, grid, falloff, mut scratch, mut mesh)
+}
+
+/// A realization's first part: `mesh` emptied, and the live blocks of `grid` found.
+pub fn record_cull<C, F: Parts<C>>(field: F, grid: Grid, scratch: mut Scratch, mesh: mut Mesh) {
     scratch.fit(grid.blocks)
-    let room = mesh.room()
     scratch.live.clear()
     mesh.verts.clear()
     mesh.quads.clear()
@@ -628,10 +657,15 @@ pub fn record<C, F: Parts<C>>(
         ),
         groups: (grid.blocks + 63) / 64,
     )
+}
+
+/// A realization's vertices in every live block.
+pub fn record_vertices<C, F: Parts<C>>(field: F, grid: Grid, scratch: mut Scratch, mesh: mut Mesh) {
     dispatch(
         place_vertices.bind(
             field: field,
             grid: grid,
+            first: 0,
             blocks: scratch.live.items(),
             block_map: scratch.block_map.span(0, scratch.block_map.len()),
             probe: mut scratch.probe,
@@ -640,12 +674,56 @@ pub fn record<C, F: Parts<C>>(
         ),
         groups: scratch.live.count(),
     )
+}
+
+/// A realization's vertices in slice `slice` of its live blocks, of `slices`: `SLICE_BLOCKS`
+/// of them from `slice × SLICE_BLOCKS`, the last slice taking the rest (each slice's group
+/// counts from `slice_groups`, dispatched with the first, after culling). A `Realizer` spreads
+/// a level change so over frames.
+pub fn record_slice<C, F: Parts<C>>(
+    field: F,
+    grid: Grid,
+    slice: u32,
+    slices: u32,
+    scratch: mut Scratch,
+    mesh: mut Mesh,
+) {
+    if slice == 0 {
+        dispatch(
+            slice_groups.bind(live: scratch.live.count(), slices: slices, out: mut scratch.slices),
+            groups: (3 * slices + 63) / 64,
+        )
+    }
+    dispatch(
+        place_vertices.bind(
+            field: field,
+            grid: grid,
+            first: slice * SLICE_BLOCKS,
+            blocks: scratch.live.items(),
+            block_map: scratch.block_map.span(0, scratch.block_map.len()),
+            probe: mut scratch.probe,
+            cells: mut scratch.cells,
+            verts: mut mesh.verts,
+        ),
+        groups: scratch.slices.span(start: 3 * slice, count: 3),
+    )
+}
+
+/// A realization's last part, once every live block has its vertices: the quads, the draw's
+/// arguments, and the skin weights.
+pub fn record_finish<C, F: Parts<C>>(
+    field: F,
+    grid: Grid,
+    falloff: f32,
+    scratch: mut Scratch,
+    mesh: mut Mesh,
+) {
+    let room = mesh.room()
     dispatch(
         emit_quads.bind(
             grid: grid,
             room: room.vertices,
             blocks: scratch.live.items(),
-            live: scratch.live.count(),
             block_map: scratch.block_map.span(0, scratch.block_map.len()),
             cells: scratch.cells.span(0, scratch.cells.len()),
             quads: mut mesh.quads,
@@ -726,6 +804,27 @@ fn room_for(vertices: u32, quads: u32) -> Room {
     Room { vertices: vertices + vertices / 4 + 1024, quads: quads + quads / 4 + 1024 }
 }
 
+/// The live blocks a frame's slice of a level change takes (`Realizer::advance`): about 0.4 ms
+/// of the GPU at 3 cm in Chrome, 1.1 ms at its slowest clocks.
+pub const SLICE_BLOCKS: u32 = 384
+
+/// The most slices a level change is cut into: the last takes the rest.
+pub const MAX_SLICES: u32 = 512
+
+/// A level change being realized a step a frame (`Realizer::advance`): its instance and level,
+/// its grid and mesh, the step it's at (0 culls, 1 to `slices` place a slice of the live blocks'
+/// vertices each, then it finishes) and how many slices.
+struct Slicing {
+    instance: u32,
+    level: u32,
+    grid: Grid,
+    mesh: Mesh,
+    at: u32,
+    slices: u32,
+    /// It calibrates its level's room (`Realizer::calibrate`).
+    calibration: bool,
+}
+
 /// The meshes of every instance of one creature type (#43 §7.6–§7.8): realized at their levels
 /// of detail as their size on screen asks, a frame's budget at a time, the largest on screen
 /// first; a new one at its coarsest level first. Each level's room is calibrated once, from the
@@ -743,12 +842,17 @@ pub struct Realizer<F> {
     free: Vec<Vec<Mesh>>,
     checks: Vec<Check>,
     scratch: Scratch,
+    /// The level change being realized a step a frame, and its own scratch.
+    slicing: Option<Slicing>,
+    slow: Scratch,
     /// How many readbacks it made, how many realizations, and how many holes and overflows the
     /// readbacks found.
     pub readbacks: u32,
     pub realizations: u32,
     pub holes: u32,
     pub overflows: u32,
+    /// Whether the last realization was of an instance off screen (`spend`).
+    last_off_screen: bool,
 }
 
 impl<F> Realizer<F> {
@@ -776,6 +880,9 @@ impl<F> Realizer<F> {
             realizations: 0,
             holes: 0,
             overflows: 0,
+            last_off_screen: false,
+            slicing: None,
+            slow: Scratch::new(1),
         }
     }
 
@@ -851,6 +958,9 @@ impl<F> Realizer<F> {
             for m in level {
                 n += m.bytes()
             }
+        }
+        if let Some(s) = self.slicing {
+            n += s.mesh.bytes()
         }
         n
     }
@@ -932,6 +1042,10 @@ impl<C, F: Parts<C>> Realizer<F> {
             self.held[i].target = want
             self.held[i].priority = self.projected(i, top, p, eye)
         }
+        // An instance this frame doesn't place isn't in it.
+        for i in n..self.held.len() {
+            self.held[i].visible = false
+        }
         self.spend()
     }
 
@@ -941,38 +1055,58 @@ impl<C, F: Parts<C>> Realizer<F> {
     /// `level` now.
     pub fn realize_all(mut self, level: u32) -> bool {
         self.answer()
+        // A level change in progress is dropped (a calibration's, so its level calibrates again).
+        if let Some(s) = replace(mut self.slicing, None) {
+            if s.calibration {
+                self.calibrating[s.level] = false
+            }
+            self.release(s.level, take s.mesh)
+        }
         for i in 0..self.held.len() {
             self.held[i].target = level
         }
-        while self.step(true) > 0.0 {}
+        while self.step(force: true, off_screen: true) > 0.0 {}
         self.settled()
     }
 
-    /// Realizes the waiting instances, largest on screen first, until the budget is spent.
+    /// Realizes the waiting instances, largest on screen first, until the budget is spent; and
+    /// with what's left, at most one new instance off screen, at its coarsest level, so a camera
+    /// that turns to it finds it drawn: moving from the close-up to the herd asked for 39
+    /// realizations at once, and in Chrome the first frame's ran 2.7 times as long (#42 AC4).
     fn spend(mut self) {
         var spent = 0.0
+        var off_screen = 0
         while spent < self.detail.budget_us {
-            let cost = self.step(false)
+            let cost = self.step(force: false, off_screen: off_screen == 0)
             if cost <= 0.0 {
                 break
             }
             spent += cost
+            if self.last_off_screen {
+                off_screen += 1
+            }
         }
+        self.advance()
     }
 
     /// The level instance `i` should realize next: its coarsest first, then its target, or its
-    /// drawn level again when that mesh is stale; none when it has its target or is off screen.
-    /// `force`: straight to its target, on screen or not.
+    /// drawn level again when that mesh is stale; none when it has its target, or is off screen
+    /// with a mesh that isn't stale. `force`: straight to its target, on screen or not.
     fn next_level(self, i: u32, force: bool) -> u32 {
         borrow h = self.held[i]
+        // A new instance's coarsest level, or a stale mesh again, on screen or off (off screen
+        // goes last: `step`).
+        if h.drawn == NO_LEVEL && !force {
+            return 0
+        }
+        if h.stale && h.drawn != NO_LEVEL {
+            return h.drawn
+        }
         if (!h.visible && !force) || h.target == NO_LEVEL {
             return NO_LEVEL
         }
         if h.drawn == NO_LEVEL {
-            return if force { h.target } else { 0 }
-        }
-        if h.stale {
-            return h.drawn
+            return h.target
         }
         if h.drawn != h.target {
             return h.target
@@ -983,16 +1117,25 @@ impl<C, F: Parts<C>> Realizer<F> {
     /// One realization: the waiting instance largest on screen, at its next level (calibrating
     /// the level's room first if no one has). Its estimated cost, in microseconds; 0 when
     /// nothing could be realized.
-    fn step(mut self, force: bool) -> f32 {
+    fn step(mut self, force: bool, off_screen: bool) -> f32 {
         var best = NO_LEVEL
         var level = NO_LEVEL
-        var priority = -1.0
+        var priority = -2.0
         for i in 0..self.held.len() {
+            // A level change, or a stale mesh, goes a step a frame (`advance`), unless forced.
+            if !force && self.held[i].drawn != NO_LEVEL {
+                continue
+            }
             let l = self.next_level(i, force)
             if l == NO_LEVEL || (self.rooms[l].is_none() && self.calibrating[l]) {
                 continue
             }
-            let p = self.held[i].priority
+            // Off screen goes last, if at all (a new instance, at its coarsest level).
+            let seen = self.held[i].visible || force
+            if !seen && !off_screen {
+                continue
+            }
+            let p = if seen { self.held[i].priority } else { -1.0 }
             if p > priority {
                 priority = p
                 best = i
@@ -1002,10 +1145,112 @@ impl<C, F: Parts<C>> Realizer<F> {
         if best == NO_LEVEL {
             return 0.0
         }
+        self.last_off_screen = !(self.held[best].visible || force)
         match self.rooms[level] {
             None => self.calibrate(level, force),
             Some(room) => self.realize(best, level, room),
         }
+    }
+
+    /// One step of the level change in progress, or the start of the next (`begin`): culling,
+    /// then a slice of the live blocks' vertices (`SLICE_BLOCKS`) each frame, the last slice
+    /// taking the rest, then the quads and skin weights; meanwhile the instance draws the mesh
+    /// it has. A frame's share of a level change is so at most about 0.4 ms of the GPU: in
+    /// Chrome, paced, the GPU's clocks fall and rise, and the herd's frame took up to 14 ms where
+    /// it took 5.5, so a whole realization (2 to 6 ms) in such a frame passed 16.7 ms (#42 AC1).
+    /// New instances aren't spread so: they're realized whole within the budget, to draw soon.
+    fn advance(mut self) {
+        if self.slicing.is_none() && !self.begin() {
+            return
+        }
+        var s = replace(mut self.slicing, None).unwrap()
+        let i = s.instance
+        if s.at == 0 {
+            record_cull(self.held[i].field, s.grid, mut self.slow, mut s.mesh)
+        } else if s.at <= s.slices {
+            record_slice(
+                self.held[i].field,
+                s.grid,
+                slice: s.at - 1,
+                slices: s.slices,
+                scratch: mut self.slow,
+                mesh: mut s.mesh,
+            )
+        } else {
+            record_finish(self.held[i].field, s.grid, self.falloff, mut self.slow, mut s.mesh)
+            self.checks.push(
+                Check {
+                    instance: i,
+                    level: s.level,
+                    args: read(s.mesh.args.span(start: 0, count: ARGS)),
+                    calibration: s.calibration,
+                },
+            )
+            self.readbacks += 1
+            self.realizations += 1
+            // A calibration's mesh is drawn if its instance wants the level, until it's realized
+            // again in the room the calibration finds (as `calibrate`'s).
+            if !s.calibration {
+                self.place(i, s.level, take s.mesh)
+                self.held[i].stale = false
+            } else if self.next_level(i, force: false) == s.level {
+                self.place(i, s.level, take s.mesh)
+                self.held[i].stale = true
+            }
+            return
+        }
+        s.at += 1
+        self.slicing = Some(take s)
+    }
+
+    /// Starts the next level change: the instance largest on screen whose mesh is stale or
+    /// whose level isn't its target, else one off screen whose mesh is stale. Its level's room
+    /// is calibrated first, whole, if no one has. Whether one started.
+    fn begin(mut self) -> bool {
+        var best = NO_LEVEL
+        var level = NO_LEVEL
+        var priority = -2.0
+        for i in 0..self.held.len() {
+            if self.held[i].drawn == NO_LEVEL {
+                continue
+            }
+            let l = self.next_level(i, force: false)
+            if l == NO_LEVEL || (self.rooms[l].is_none() && self.calibrating[l]) {
+                continue
+            }
+            let p = if self.held[i].visible { self.held[i].priority } else { -1.0 }
+            if p > priority {
+                priority = p
+                best = i
+                level = l
+            }
+        }
+        if best == NO_LEVEL {
+            return false
+        }
+        // A level no one has calibrated is calibrated first, a step a frame too.
+        let calibration = self.rooms[level].is_none()
+        if calibration {
+            best = self.largest(level)
+            self.calibrating[level] = true
+        }
+        let grid = self.grid(best, level)
+        let mesh = match self.rooms[level] {
+            None => Mesh::new(Room { vertices: grid.blocks * 8, quads: grid.blocks * 8 }),
+            Some(room) => match self.free[level].pop() {
+                Some(m) => take m,
+                None => Mesh::new(room),
+            },
+        }
+        // Live blocks go as the grid's surface, about 6 × blocks^(2/3) (spike 01's grazers at
+        // every level); a quarter more, so the last slice, which takes the rest, is seldom more
+        // than one.
+        let expected = 7.5 * pow(f32(grid.blocks), 2.0 / 3.0)
+        let slices = clamp(u32(ceil(expected / f32(SLICE_BLOCKS))), 1, MAX_SLICES)
+        self.slicing = Some(
+            Slicing { instance: best, level, grid, mesh: take mesh, at: 0, slices, calibration },
+        )
+        true
     }
 
     /// Calibrates `level`'s room (§7.8): the instance with the largest grid at that level, of all
@@ -1014,15 +1259,7 @@ impl<C, F: Parts<C>> Realizer<F> {
     /// would overflow the room, and on a 10-minute tour two did. If it's waiting for the level,
     /// it draws that mesh until the room is known and it's realized again.
     fn calibrate(mut self, level: u32, force: bool) -> f32 {
-        var best = 0
-        var blocks = 0
-        for i in 0..self.held.len() {
-            let g = self.grid(i, level)
-            if g.blocks > blocks {
-                best = i
-                blocks = g.blocks
-            }
-        }
+        let best = self.largest(level)
         let grid = self.grid(best, level)
         var mesh = Mesh::new(Room { vertices: grid.blocks * 8, quads: grid.blocks * 8 })
         self.calibrating[level] = true
@@ -1032,6 +1269,20 @@ impl<C, F: Parts<C>> Realizer<F> {
             self.held[best].stale = true
         }
         f32(grid.blocks) * self.detail.cost_us[level]
+    }
+
+    /// The instance with the largest grid at `level`, of all of them.
+    fn largest(self, level: u32) -> u32 {
+        var best = 0
+        var blocks = 0
+        for i in 0..self.held.len() {
+            let g = self.grid(i, level)
+            if g.blocks > blocks {
+                best = i
+                blocks = g.blocks
+            }
+        }
+        best
     }
 
     /// Realizes instance `i` at `level` into a mesh with room `room`, which it draws from now on.

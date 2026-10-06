@@ -48,7 +48,7 @@ pub enum Eval: Copy + Eq {
 
 /// How a creature type's meshes are kept (#43 §7.6–§7.7): its levels of detail (cell sizes,
 /// coarse to fine), when to move between them, and how much realizing a frame may do. The
-/// defaults are spike 01's.
+/// levels are spike 01's.
 pub struct Detail: Copy {
     /// Cell sizes, coarse to fine: the first `count`.
     pub cells: [f32; 4] = [3cm, 2cm, 1.5cm, 0.0],
@@ -61,8 +61,10 @@ pub struct Detail: Copy {
     pub hysteresis: f32 = 0.2,
     /// A frame's realization budget, in microseconds of estimated GPU time.
     pub budget_us: f32 = 4000.0,
-    /// Estimated GPU time per block of a level's grid, in microseconds: spike 01's.
-    pub cost_us: [f32; 4] = [0.34, 0.27, 0.21, 0.15],
+    /// Estimated GPU time per block of a level's grid, in microseconds: ours, measured (#43
+    /// §7.7): spike 01's in Chrome (0.34, 0.27, 0.21 and 0.15) times our realization's time to
+    /// its at each level (#42 AC2: 1.25, 1.11, 1.07 and 1.04).
+    pub cost_us: [f32; 4] = [0.42, 0.30, 0.22, 0.16],
 }
 
 pub struct CreatureLook: Copy {
