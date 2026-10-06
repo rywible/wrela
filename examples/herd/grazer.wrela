@@ -13,8 +13,7 @@ use engine::rng::{Rng, seed}
 use std::derive::{Box3, Interval}
 use std::field::{
     Blend, Displace, Ellipsoid, HalfSpace, Intersect, Noise, RoundCone, SmoothUnion, Surface,
-    Translate,
-    With, ellipsoid, half_space, round_cone, value_noise,
+    Translate, With, ellipsoid, half_space, round_cone, value_noise,
 }
 
 /// What a point of the grazer carries: how much it's torso (dappled hide) and how much hoof.
@@ -151,8 +150,16 @@ fn rest_joints() -> [P3; 29] {
     for i in 0..6 {
         j[7 + i] = add(tail_base, scl(tail_span, f64(i) / 6.0))
     }
-    let fore = [p3(x: 0.0, y: -0.45, z: -0.04), p3(x: 0.0, y: -0.42, z: 0.03), p3(x: 0.0, y: -0.20, z: 0.02)]
-    let hind = [p3(x: 0.0, y: -0.50, z: 0.10), p3(x: 0.0, y: -0.45, z: -0.12), p3(x: 0.0, y: -0.22, z: 0.0)]
+    let fore = [
+        p3(x: 0.0, y: -0.45, z: -0.04),
+        p3(x: 0.0, y: -0.42, z: 0.03),
+        p3(x: 0.0, y: -0.20, z: 0.02),
+    ]
+    let hind = [
+        p3(x: 0.0, y: -0.50, z: 0.10),
+        p3(x: 0.0, y: -0.45, z: -0.12),
+        p3(x: 0.0, y: -0.22, z: 0.0),
+    ]
     let hips = [
         p3(x: 0.25, y: 1.15, z: 1.25),
         p3(x: -0.25, y: 1.15, z: 1.25),
@@ -236,7 +243,11 @@ pub fn bounds(g: Params) -> Box3 {
     b = grow(b, fp3(c1), p3(f(r1.x) + amp, f(r1.y) + amp, f(r1.z) + amp))
     b = grow(b, fp3(c2), p3(f(r2.x) + amp, f(r2.y) + amp, f(r2.z) + amp))
     let h = j[HEAD]
-    b = grow(b, fp3(add(h, scl(p3(x: 0.0, y: -0.04, z: 0.10), s))), fp3(scl(p3(x: 0.12, y: 0.15, z: 0.24), s)))
+    b = grow(
+        b,
+        fp3(add(h, scl(p3(x: 0.0, y: -0.04, z: 0.10), s))),
+        fp3(scl(p3(x: 0.12, y: 0.15, z: 0.24), s)),
+    )
     b = grow_cone(
         b,
         add(h, scl(p3(x: 0.0, y: -0.05, z: 0.15), s)),
@@ -246,7 +257,13 @@ pub fn bounds(g: Params) -> Box3 {
     )
     let neck_end = add(j[NECK0], scl(p3(x: 0.0, y: 0.55, z: 0.45), s))
     b = grow_cone(b, j[NECK0], 0.22 * s * g.bulk, neck_end, 0.12 * s)
-    b = grow_cone(b, j[TAIL0], 0.07 * s, add(j[TAIL0], scl(p3(x: 0.0, y: -0.55, z: -0.45), s)), 0.025 * s)
+    b = grow_cone(
+        b,
+        j[TAIL0],
+        0.07 * s,
+        add(j[TAIL0], scl(p3(x: 0.0, y: -0.55, z: -0.45), s)),
+        0.025 * s,
+    )
     let radii = [(0.10 * g.bulk, 0.065), (0.065, 0.048), (0.048, 0.042)]
     for l in 0..4 {
         let bone = LEG0 + l * 4
@@ -282,13 +299,14 @@ fn torso_parts(g: Params) -> (P3, P3, P3, P3) {
 // ---- the creature ---------------------------------------------------------------------------------
 
 pub type Torso = With<Displace<SmoothUnion<Translate<Ellipsoid>, Translate<Ellipsoid>>, Bark>, Tissue>
+
 pub type Cone = With<RoundCone, Tissue>
+
 pub type Head = With<SmoothUnion<Translate<Ellipsoid>, RoundCone>, Tissue>
+
 pub type Hoof = With<Intersect<RoundCone, HalfSpace>, Tissue>
-pub type Parts = Then<
-    Then<Then<Then<Placed<Torso>, Placed<Cone>>, Placed<Head>>, Placed<Cone>>,
-    Then<[Placed<Cone>; 12], [Placed<Hoof>; 4]>,
->
+
+pub type Parts = Then<Then<Then<Then<Placed<Torso>, Placed<Cone>>, Placed<Head>>, Placed<Cone>>, Then<[Placed<Cone>; 12], [Placed<Hoof>; 4]>>
 
 /// A grazer's field: what the renderer and the physique read.
 pub type GrazerField = CreatureField<Parts>
@@ -302,9 +320,21 @@ pub fn grazer(seed_value: u32) -> Body<Parts> {
     var sk = Skeleton::new()
     let pelvis = sk.root("pelvis", v(j[PELVIS]))
     let chest = sk.joint("chest", pelvis, v(j[CHEST]))
-    let neck = sk.chain("neck", chest, v(j[NECK0]) - v(j[CHEST]), 4, v(scl(p3(x: 0.0, y: 0.55, z: 0.45), s)))
+    let neck = sk.chain(
+        "neck",
+        chest,
+        v(j[NECK0]) - v(j[CHEST]),
+        4,
+        v(scl(p3(x: 0.0, y: 0.55, z: 0.45), s)),
+    )
     let head = sk.joint("head", neck.last(), v(j[HEAD]))
-    let tail = sk.chain("tail", pelvis, v(j[TAIL0]) - v(j[PELVIS]), 6, v(scl(p3(x: 0.0, y: -0.55, z: -0.45), s)))
+    let tail = sk.chain(
+        "tail",
+        pelvis,
+        v(j[TAIL0]) - v(j[PELVIS]),
+        6,
+        v(scl(p3(x: 0.0, y: -0.55, z: -0.45), s)),
+    )
     let names = [
         ["fore left hip", "fore left knee", "fore left ankle", "fore left foot"],
         ["fore right hip", "fore right knee", "fore right ankle", "fore right foot"],
@@ -332,7 +362,12 @@ pub fn grazer(seed_value: u32) -> Body<Parts> {
     // Neck: a round cone along the neck chain's span.
     let n0 = v(j[NECK0])
     let neck_end = v(add(j[NECK0], scl(p3(x: 0.0, y: 0.55, z: 0.45), s)))
-    let neck_part = round_cone(vec3(), neck_end - n0, r_top: f32(0.22 * s * g.bulk), r_bottom: f32(0.12 * s))
+    let neck_part = round_cone(
+        vec3(),
+        neck_end - n0,
+        r_top: f32(0.22 * s * g.bulk),
+        r_bottom: f32(0.12 * s),
+    )
         .with(HIDE)
 
     // Head: an ellipsoid smooth-unioned with a muzzle cone (k 5 cm).
@@ -354,7 +389,12 @@ pub fn grazer(seed_value: u32) -> Body<Parts> {
     // Tail: a round cone along the tail chain's span.
     let t0 = v(j[TAIL0])
     let tail_end = v(add(j[TAIL0], scl(p3(x: 0.0, y: -0.55, z: -0.45), s)))
-    let tail_part = round_cone(vec3(), tail_end - t0, r_top: f32(0.07 * s), r_bottom: f32(0.025 * s))
+    let tail_part = round_cone(
+        vec3(),
+        tail_end - t0,
+        r_top: f32(0.07 * s),
+        r_bottom: f32(0.025 * s),
+    )
         .with(HIDE)
 
     let bulk = g.bulk
@@ -366,13 +406,21 @@ pub fn grazer(seed_value: u32) -> Body<Parts> {
         // Legs: three round cones each, then a hoof (a round cone below the sole's plane).
         .each_leg(|leg| {
             leg.fill(|seg: Segment| {
-                let (top, bottom) = if seg.index == 0 { (0.10 * bulk, 0.065) } else if seg.index == 1 {
+                let (top, bottom) = if seg.index == 0 { (0.10 * bulk, 0.065) } else if seg.index ==
+                    1 {
                     (0.065, 0.048)
                 } else { (0.048, 0.042) }
-                round_cone(vec3(), seg.end, r_top: f32(top * s), r_bottom: f32(bottom * s)).with(HIDE)
+                round_cone(vec3(), seg.end, r_top: f32(top * s), r_bottom: f32(bottom * s)).with(
+                    HIDE,
+                )
             })
                 .foot(
-                    round_cone(vec3(), vec3(0.0, f32(-0.08 * s), 0.0), r_top: f32(0.06 * s), r_bottom: f32(0.07 * s))
+                    round_cone(
+                        vec3(),
+                        vec3(0.0, f32(-0.08 * s), 0.0),
+                        r_top: f32(0.06 * s),
+                        r_bottom: f32(0.07 * s),
+                    )
                         .intersect(half_space(vec3(0.0, -1.0, 0.0), f32(0.07 * s)))
                         .with(HOOF),
                 )

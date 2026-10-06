@@ -124,7 +124,12 @@ fn drive<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @determini
             i += 1
         }
     }
-    let input = TickInput { tick: t.tick, dt: t.dt, records: t.records.clone(), answers: take answers }
+    let input = TickInput {
+        tick: t.tick,
+        dt: t.dt,
+        records: t.records.clone(),
+        answers: take answers,
+    }
     borrow step = d.step
     d.timeline.advance(take input, |w, i| step(mut w, i))
     for x in d.timeline.world().asks(t.tick) {

@@ -115,7 +115,10 @@ const LIGHTS = Lights {
 /// cycle.
 pub fn walker<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Walker {
     let gait = GaitState { phase: 0.0, speed: 0.8, turn: 0.0, mode: Mode::Walk }
-    let grid = Grid::around(grow(creature.bounds(), look.surface.tolerance), look.surface.cell_size(0.05))
+    let grid = Grid::around(
+        grow(creature.bounds(), look.surface.tolerance),
+        look.surface.cell_size(0.05),
+    )
     var mesh = Mesh::new(Room { vertices: grid.blocks * 8, quads: grid.blocks * 16 })
     var scratch = Scratch::new(grid.blocks)
     record(creature.field(), grid, look.deform.weights.falloff, mut scratch, mut mesh)

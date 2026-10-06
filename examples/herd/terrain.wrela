@@ -14,7 +14,8 @@ use std::serialize::Serialize
 
 /// The drawn terrain's height at (x, z): spike 01's `terrainHeight` (draw.wgsl's `terrain_h`).
 pub fn height(x: f32, z: f32) -> f32 {
-    0.6 * sin(0.11 * x) * cos(0.09 * z) + 0.3 * sin(0.23 * x + 1.3) * sin(0.19 * z + 0.4) +
+    0.6 * sin(0.11 * x) * cos(0.09 * z) +
+        0.3 * sin(0.23 * x + 1.3) * sin(0.19 * z + 0.4) +
         0.08 * sin(0.9 * x) * cos(0.7 * z)
 }
 
@@ -42,7 +43,11 @@ pub fn ground(v: VertexIndex, view: View) -> Ground {
     let e = 0.1
     let world = vec3(x, height(x, z), z)
     let n = vec3(height(x - e, z) - height(x + e, z), 2.0 * e, height(x, z - e) - height(x, z + e))
-    Ground { clip: ClipPosition { position: view.view_proj * vec4(world, 1.0) }, world, normal: normalize(n) }
+    Ground {
+        clip: ClipPosition { position: view.view_proj * vec4(world, 1.0) },
+        world,
+        normal: normalize(n),
+    }
 }
 
 // ---- the sim's terrain ----------------------------------------------------------------------------

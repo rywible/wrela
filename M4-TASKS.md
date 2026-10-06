@@ -7,35 +7,33 @@ Scope #43, criteria #42. Status: `[ ]` open, `[x]` done.
 - [x] Measure sketch 02 (extraction, frame) and sketch 03 (tick), physique; post on #42
 
 ## 1. Platform and compiler foundations
-- [x] Memory: thread slots and blocks (stack, panic message, par descriptor, allocations), tick region; DATA_BASE moves
-- [x] `@thread_entry`, `@effects(...)`; only the unsafe core; worker and audio through them; special cases go
-- [x] `std::mem::task` (a task from a function): audio, tick and jobs use it
-- [x] `std::par`: a descriptor per starting thread, nested jobs inline, job slots, `job`, `Job::done`, `Job::join`, traps kept
-- [x] `allocations()` per thread
-- [x] `std::tick`: `start`, `Ticked`, `origin`, hash reporting; `__tick`
-- [x] `std::handoff`: triple buffer, test-build checks
-- [x] Native host: tick instance, lockstep, records, tick log, `--no-gpu`, `--replay`, no batches on long runs, cached CpuBuild
-- [x] `@test(frames: n)` ticks in lockstep; `@test(ticks: n, input: ...)`
-- [x] Stream v6 `DrawIndexedIndirect`; manifest cull and depth bias; `draw(indices:, cull:, depth_bias:)`, build-time constants
-- [x] Browser: sim worker, clock, catch-up, visibility and shutdown words, input ring's second reader, stamping, lockstep and paced test modes, helpers = min(cores − 3, 8), job traps, load timing
+- [x] Memory, `@thread_entry`, `@effects`, `std::mem::task`, `std::par`, `std::tick`, `std::handoff`
+- [x] Native host: tick instance, lockstep, records, tick log, `--no-gpu`, `--replay`
+- [x] `@test(frames: n)`, `@test(ticks: n)`; stream v6 indexed indirect draws; cull mode and depth bias
+- [x] Browser: sim worker, clock, lockstep and paced test modes, helpers, job traps, load timing
 - [x] x86-64 native host under Rosetta
+- [x] Both hosts: a buffer write is a copy in the encoder (upload ring), not a submission
+- [x] `std::derive::within`; `Lipschitz::interval_near`
 
 ## 2. Engine
-- [ ] std `Surface::filtered` (a footprint), combinators forward it
-- [ ] `run` (driver, `Asks`, `TickInput`), `Timeline` input `Clone`, `DT` and `TICKS_PER_SECOND` go
-- [ ] `present`: snapshots, interpolation
-- [ ] `realize`: grid, 64-bit part masks, shared-corner masks, corners in workgroup memory, QEF, skin weights, quads, indexed indirect
-- [ ] Mesh pools, slabs, calibration and overflow readbacks, queue, LOD
-- [ ] `render`: posing pass (`Poser`), skinning, shadow pass, shading, views
-- [ ] `physique`: the spike's method, as a job
-- [ ] `creature`: skin bindings (bone, chain, split)
+- [x] `run`, `present`, `realize` (grid, masks, shared corners, workgroup corners, QEF, skin pass, quads, indexed indirect)
+- [x] Mesh pools, calibration and overflow readbacks, queue, LOD
+- [x] `render` (posing, skinning, shadow, shading), `physique` (spike's method, a job), skin bindings
 
 ## 3. The herd
-- [ ] `examples/herd`: grazer, walk, terrains, placement, tick, snapshot, look, cameras
+- [x] `examples/herd`: grazer, walk, terrain, placement, tick, snapshot, look, cameras
 
 ## 4. Checks
-- [ ] Harness (TS): port of `encodeExtract`, `update`, `encodeFrame`; held to the recorded run
-- [ ] AC1–AC7 tests; AC9 `check.sh --gpu`; speed and size budgets
+- [x] Spike harness (Rust/wgpu) held to the recorded run
+- [x] AC2 test passes (live, holes, Hausdorff, triangles, GPU ≤ 1.25×)
+- [ ] AC2: shared-corners test build; readback count test
+- [ ] AC1: parity frames (native vs spike, Chrome vs native); 600 paced frames; pipelines ≤ 64; load numbers
+- [ ] AC3: frame GPU times vs the spike harness
+- [ ] AC4: LOD image and cost, spawn and camera load, latency, memory, 10-minute tour, cold pipelines
+- [ ] AC5: 10,000-tick hashes in every configuration; tick p99; misuse diagnostics
+- [ ] AC6: check every item against earlier work (physique job, replays, torn reads, jobs)
+- [ ] AC7: field 1e-6 near the surface, channels 1e-5, skin weights vs fixture mesh, layering, units, std examples
+- [ ] AC9: `check.sh --gpu`, speed and WGSL budgets, runtime size
 
 ## 5. Record
 - [ ] language.md, vision.md, #26, retrospective on #42, AC8

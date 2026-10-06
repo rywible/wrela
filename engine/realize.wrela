@@ -20,7 +20,7 @@
 // No count is read back in this path. Meshes live in pools, one per creature type and level,
 // cut into slabs (§7.8); the queue realizes as many as a frame's budget allows (§7.7).
 
-use creature::{PartMask, Parts}
+use creature::{NONE, PartMask, Parts}
 use std::derive::{Box3, gradient}
 use std::collections::replace
 use std::gpu::{
@@ -38,7 +38,8 @@ pub const NO_VERTEX: u32 = 0xffffff
 /// A mesh's draw arguments (`Mesh::args`): an indexed indirect draw's five words (index count,
 /// instances, first index, base vertex, first instance), then what its passes counted: its
 /// vertices (within its room), the holes, the overflow flags, the vertices and quads pushed (past
-/// its room too), and the live blocks. One readback of them says all a realization did.
+/// its room too), and the live blocks; then the skin pass's group counts. One readback of them
+/// says all a realization did.
 pub const INDEX_COUNT: u32 = 0
 pub const VERTEX_COUNT: u32 = 5
 pub const HOLES: u32 = 6
@@ -46,7 +47,8 @@ pub const FLAGS: u32 = 7
 pub const PUSHED_VERTICES: u32 = 8
 pub const PUSHED_QUADS: u32 = 9
 pub const LIVE_BLOCKS: u32 = 10
-pub const ARGS: u32 = 12
+pub const SKIN_GROUPS: u32 = 12
+pub const ARGS: u32 = 15
 
 /// `FLAGS`: the vertices ran past the mesh's room; the quads did.
 pub const VERTICES_FULL: u32 = 2
@@ -81,12 +83,24 @@ impl Grid {
 
     /// Block `b`'s coordinates, in blocks.
     pub fn block_xyz(self, b: u32) -> (u32, u32, u32) {
-        (b % self.blocks_x, (b / self.blocks_x) % self.blocks_y, b / (self.blocks_x * self.blocks_y))
+        (
+            b % self.blocks_x,
+            (b / self.blocks_x) % self.blocks_y,
+            b / (self.blocks_x * self.blocks_y),
+        )
     }
 
     /// The block at block coordinates `(x, y, z)`.
     pub fn block_at(self, x: u32, y: u32, z: u32) -> u32 {
         x + self.blocks_x * (y + self.blocks_y * z)
+    }
+
+    /// The lattice's corner `(x, y, z)`, in cells from the origin. Every block that shares a
+    /// corner gets the same point from it, bit for bit, which a block's corner plus an offset
+    /// doesn't give: two blocks evaluating one corner at points an ulp apart can disagree on its
+    /// sign, and a quad between them is lost (spike 01's holes, #43 §7.5).
+    pub fn corner(self, x: u32, y: u32, z: u32) -> vec3 {
+        self.origin + vec3(f32(x), f32(y), f32(z)) * self.cell
     }
 
     /// Block `b`'s low corner.
@@ -166,47 +180,43 @@ pub fn cull_blocks<C, F: Parts<C>>(
 
 // ---- pass 2: a vertex in each crossed cell ---------------------------------------------------
 
-/// The mask a corner `(cx, cy, cz)` of block `own` (at block coordinates `b`) is evaluated
-/// under: the block's own, and on its boundary the union with each live block that shares the
-/// corner (§7.5).
-fn corner_mask(
+/// The mask of the block at `i` (`(dx + 1) + 3 (dy + 1) + 9 (dz + 1)`) of the 3 × 3 × 3 around
+/// block `b`: none outside the grid or where culled.
+fn neighbour_mask(
     grid: Grid,
     blocks: [LiveBlock],
     block_map: [u32],
-    own: PartMask,
     b: (u32, u32, u32),
-    c: (u32, u32, u32),
+    i: u32,
 ) -> PartMask {
-    let (cx, cy, cz) = c
-    if cx > 0 && cx < BLOCK && cy > 0 && cy < BLOCK && cz > 0 && cz < BLOCK {
-        return own
-    }
     let (bx, by, bz) = b
-    // Along each axis, the blocks sharing the corner: one below at its low face, one above at
-    // its high face.
-    let lx = if cx == 0 && bx > 0 { 1 } else { 0 }
-    let ly = if cy == 0 && by > 0 { 1 } else { 0 }
-    let lz = if cz == 0 && bz > 0 { 1 } else { 0 }
-    let hx = if cx == BLOCK && bx + 1 < grid.blocks_x { 1 } else { 0 }
-    let hy = if cy == BLOCK && by + 1 < grid.blocks_y { 1 } else { 0 }
-    let hz = if cz == BLOCK && bz + 1 < grid.blocks_z { 1 } else { 0 }
-    var mask = own
-    for z in 0..1 + lz + hz {
-        for y in 0..1 + ly + hy {
-            for x in 0..1 + lx + hx {
-                let s = block_map[grid.block_at(bx + x - lx, by + y - ly, bz + z - lz)]
-                if s != 0 {
-                    mask = mask.or(blocks[s - 1].mask)
-                }
-            }
-        }
+    let (x, y, z) = (bx + i % 3, by + (i / 3) % 3, bz + i / 9)
+    if x < 1 || y < 1 || z < 1 || x > grid.blocks_x || y > grid.blocks_y || z > grid.blocks_z {
+        return NONE
     }
-    mask
+    let s = block_map[grid.block_at(x - 1, y - 1, z - 1)]
+    if s == 0 { NONE } else { blocks[s - 1].mask }
 }
 
-/// A cube's corner `j`'s offset: x is bit 0, y bit 1, z bit 2.
-fn corner_offset(j: u32) -> vec3 {
-    vec3(f32(j & 1), f32((j >> 1) & 1), f32((j >> 2) & 1))
+/// The mask a corner `(cx, cy, cz)` of a block whose own is `own` is evaluated under: its own,
+/// and on its boundary the union with each live block that shares the corner (§7.5), from the
+/// masks of the blocks around it (`neighbour_mask`).
+fn corner_mask(near: Shared<PartMask, 27>, own: PartMask, c: (u32, u32, u32)) -> PartMask {
+    let (cx, cy, cz) = c
+    // Along each axis, the blocks sharing the corner: the one below too at its low face, the
+    // one above too at its high face. All eight unions, the same block more than once inside
+    // (no branch: the invocations of a SIMD group take different corners).
+    let (x0, x1) = (if cx == 0 { 0 } else { 1 }, if cx == BLOCK { 2 } else { 1 })
+    let (y0, y1) = (3 * (if cy == 0 { 0 } else { 1 }), 3 * (if cy == BLOCK { 2 } else { 1 }))
+    let (z0, z1) = (9 * (if cz == 0 { 0 } else { 1 }), 9 * (if cz == BLOCK { 2 } else { 1 }))
+    own.or(near.get(x0 + y0 + z0))
+        .or(near.get(x1 + y0 + z0))
+        .or(near.get(x0 + y1 + z0))
+        .or(near.get(x1 + y1 + z0))
+        .or(near.get(x0 + y0 + z1))
+        .or(near.get(x1 + y0 + z1))
+        .or(near.get(x0 + y1 + z1))
+        .or(near.get(x1 + y1 + z1))
 }
 
 fn det3(a: vec3, b: vec3, c: vec3) -> f32 {
@@ -223,15 +233,16 @@ fn solve3(a0: vec3, a1: vec3, a2: vec3, b: vec3) -> vec3 {
 }
 
 /// In each live block, a vertex for every cell the surface crosses: where the planes through
-/// its edges' crossings, with the gradient there, best meet (dual contouring), with skin weights
-/// that fall off over `falloff` from each part. Its cell map entry: its signs, and the vertex.
+/// its edges' crossings, with the gradient there, best meet (dual contouring). Its cell map
+/// entry: its signs, and the vertex. Its skin weights come in a pass of their own
+/// (`skin_vertices`, #43 §7.3: this pass's WGSL has no room for them in its 256 KiB).
 @compute(4, 4, 4)
 pub fn place_vertices<C, F: Parts<C>>(
     field: F,
     grid: Grid,
-    falloff: f32,
     blocks: [LiveBlock],
     block_map: [u32],
+    near: mut Shared<PartMask, 27>,
     corners: mut Shared<f32, 125>,
     cells: mut Slots<u32>,
     verts: mut Append<SkinVertex>,
@@ -243,15 +254,22 @@ pub fn place_vertices<C, F: Parts<C>>(
     let lb = blocks[slot]
     let cell = grid.cell
     let b = grid.block_xyz(lb.block)
-    let base = grid.block_corner(lb.block)
+    // The block's low corner, in cells.
+    let (gx, gy, gz) = (b.0 * BLOCK, b.1 * BLOCK, b.2 * BLOCK)
     // Detail finer than a cell is for shading: the field is seen a cell wide.
     let fp = cell
+    // The masks around the block, read once for its 98 boundary corners.
+    let around = near.chunk(lid)
+    for k in 0..around.len() {
+        near.write(around, k, neighbour_mask(grid, blocks, block_map, b, around.index(k)))
+    }
+    barrier(mut near)
     let chunk = corners.chunk(lid)
     for k in 0..chunk.len() {
         let i = chunk.index(k)
         let c = (i % 5, (i / 5) % 5, i / 25)
-        let mask = corner_mask(grid, blocks, block_map, lb.mask, b, c)
-        let at = base + vec3(f32(c.0), f32(c.1), f32(c.2)) * cell
+        let mask = corner_mask(near, lb.mask, c)
+        let at = grid.corner(gx + c.0, gy + c.1, gz + c.2)
         corners.write(chunk, k, field.distance_masked(at, mask, fp))
     }
     barrier(mut corners)
@@ -274,7 +292,8 @@ pub fn place_vertices<C, F: Parts<C>>(
 
     // Where the surface crosses each of the 12 edges, and its normal there.
     let mask = lb.mask
-    let cmin = base + vec3(f32(lid.x), f32(lid.y), f32(lid.z)) * cell
+    let (cx, cy, cz) = (gx + lid.x, gy + lid.y, gz + lid.z)
+    let cmin = grid.corner(cx, cy, cz)
     var pts = [vec3(0.0); 12]
     var nrm = [vec3(0.0); 12]
     var n = 0
@@ -287,8 +306,8 @@ pub fn place_vertices<C, F: Parts<C>>(
         if ((signs >> ja) & 1) == ((signs >> jb) & 1) {
             continue
         }
-        var pa = cmin + corner_offset(ja) * cell
-        var pb = cmin + corner_offset(jb) * cell
+        var pa = grid.corner(cx + (ja & 1), cy + ((ja >> 1) & 1), cz + (ja >> 2))
+        var pb = grid.corner(cx + (jb & 1), cy + ((jb >> 1) & 1), cz + (jb >> 2))
         var fa = vals[ja]
         var fb = vals[jb]
         for _ in 0..ROOT_STEPS {
@@ -322,10 +341,10 @@ pub fn place_vertices<C, F: Parts<C>>(
         a2 += q * q.z
         rhs += q * dot(q, pts[i] - m)
     }
-    let pos = clamp(m + solve3(a0, a1, a2, rhs), cmin, cmin + vec3(cell))
+    let pos = clamp(m + solve3(a0, a1, a2, rhs), cmin, grid.corner(cx + 1, cy + 1, cz + 1))
     let normal = normalize(gradient(|q: vec3| field.distance_masked(q, mask, fp), pos))
-    let (bones, weights) = field.skin_at(pos, mask, fp, falloff)
-    let vi = verts.push(SkinVertex { pos, bones, normal, weights, mask })
+    // Its skin weights come in their own pass (`skin_vertices`).
+    let vi = verts.push(SkinVertex { pos, bones: 0, normal, weights: 255, mask })
     cells[id] = (signs << 24) | min(vi, NO_VERTEX)
 }
 
@@ -334,7 +353,16 @@ pub fn place_vertices<C, F: Parts<C>>(
 /// The vertex of the cell at grid cell `(x, y, z)` (as `i32`s, which may be outside the grid),
 /// through the block map and the cell map: none outside the grid, in a culled block, or past
 /// the vertices' room.
-fn vertex_at(grid: Grid, block_map: [u32], cells: [u32], live: u32, room: u32, x: i32, y: i32, z: i32) -> u32 {
+fn vertex_at(
+    grid: Grid,
+    block_map: [u32],
+    cells: [u32],
+    live: u32,
+    room: u32,
+    x: i32,
+    y: i32,
+    z: i32,
+) -> u32 {
     let (nx, ny, nz) = (grid.blocks_x * BLOCK, grid.blocks_y * BLOCK, grid.blocks_z * BLOCK)
     if x < 0 || y < 0 || z < 0 || u32(x) >= nx || u32(y) >= ny || u32(z) >= nz {
         return NO_VERTEX
@@ -389,7 +417,16 @@ pub fn emit_quads(
         let (ux, uy, uz) = (i32(a1 == 0), i32(a1 == 1), i32(a1 == 2))
         let (wx, wy, wz) = (i32(a2 == 0), i32(a2 == 1), i32(a2 == 2))
         let v1 = vertex_at(grid, block_map, cells, n, room, gx - ux, gy - uy, gz - uz)
-        let v2 = vertex_at(grid, block_map, cells, n, room, gx - ux - wx, gy - uy - wy, gz - uz - wz)
+        let v2 = vertex_at(
+            grid,
+            block_map,
+            cells,
+            n,
+            room,
+            gx - ux - wx,
+            gy - uy - wy,
+            gz - uz - wz,
+        )
         let v3 = vertex_at(grid, block_map, cells, n, room, gx - wx, gy - wy, gz - wz)
         if v1 == NO_VERTEX || v2 == NO_VERTEX || v3 == NO_VERTEX {
             let _ = args.add(HOLES, 1)
@@ -406,8 +443,8 @@ pub fn emit_quads(
 // ---- pass 4: the draw's arguments ---------------------------------------------------------------
 
 /// The draw's arguments from the counts, each clamped to its room (`vroom` vertices, `qroom`
-/// quads), so a draw reads only its own mesh; the overflow flags; and the counts as pushed, and
-/// the live blocks. The holes stay as `emit_quads` counted them.
+/// quads), so a draw reads only its own mesh; the overflow flags; the counts as pushed, and the
+/// live blocks; and the skin pass's group counts. The holes stay as `emit_quads` counted them.
 @compute(64)
 pub fn finish_mesh(
     vertices: [u32],
@@ -428,14 +465,41 @@ pub fn finish_mesh(
     } else if id.x == VERTEX_COUNT {
         args[id] = min(v, vroom)
     } else if id.x == FLAGS {
-        args[id] = (if v > vroom { VERTICES_FULL } else { 0 }) | (if q > qroom { QUADS_FULL } else { 0 })
+        args[id] = (if v > vroom { VERTICES_FULL } else { 0 }) | (if q > qroom { QUADS_FULL } else {
+            0
+        })
     } else if id.x == PUSHED_VERTICES {
         args[id] = v
     } else if id.x == PUSHED_QUADS {
         args[id] = q
     } else if id.x == LIVE_BLOCKS {
         args[id] = live[0]
+    } else if id.x == SKIN_GROUPS {
+        args[id] = (min(v, vroom) + 63) / 64
+    } else if id.x > SKIN_GROUPS && id.x < ARGS {
+        args[id] = 1
     }
+}
+
+// ---- pass 5: skin weights ------------------------------------------------------------------------
+
+/// Each vertex's skin weights (spike 01's: from the parts of the items in its mask, falling off
+/// over `falloff`, the field seen `fp` wide, a cell), as `place_vertices` would give them.
+@compute(64)
+pub fn skin_vertices<C, F: Parts<C>>(
+    field: F,
+    fp: f32,
+    falloff: f32,
+    args: [u32],
+    verts: mut Slots<SkinVertex>,
+    id: GlobalId,
+) {
+    if id.x >= args[VERTEX_COUNT] {
+        return
+    }
+    let v = verts[id]
+    let (bones, weights) = field.skin_at(v.pos, v.mask, fp, falloff)
+    verts[id] = SkinVertex { pos: v.pos, bones, normal: v.normal, weights, mask: v.mask }
 }
 
 // ---- meshes, scratch and pools (§7.8) -------------------------------------------------------
@@ -478,7 +542,11 @@ pub struct Mesh {
 
 impl Mesh {
     pub fn new(room: Room) -> Mesh {
-        Mesh { verts: append_buffer(room.vertices), quads: append_buffer(room.quads), args: buffer(ARGS) }
+        Mesh {
+            verts: append_buffer(room.vertices),
+            quads: append_buffer(room.quads),
+            args: buffer(ARGS),
+        }
     }
 
     pub fn room(self) -> Room {
@@ -493,13 +561,19 @@ impl Mesh {
 
 /// Records one realization: `field`'s mesh on `grid`, its skin weights falling off over
 /// `falloff`, into `mesh`.
-pub fn record<C, F: Parts<C>>(field: F, grid: Grid, falloff: f32, scratch: mut Scratch, mesh: mut Mesh) {
+pub fn record<C, F: Parts<C>>(
+    field: F,
+    grid: Grid,
+    falloff: f32,
+    scratch: mut Scratch,
+    mesh: mut Mesh,
+) {
     scratch.fit(grid.blocks)
     let room = mesh.room()
     scratch.live.clear()
     mesh.verts.clear()
     mesh.quads.clear()
-    write(mut mesh.args, 0, [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    write(mut mesh.args, 0, [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1])
     dispatch(
         cull_blocks.bind(
             field: field,
@@ -513,7 +587,6 @@ pub fn record<C, F: Parts<C>>(field: F, grid: Grid, falloff: f32, scratch: mut S
         place_vertices.bind(
             field: field,
             grid: grid,
-            falloff: falloff,
             blocks: scratch.live.items(),
             block_map: scratch.block_map.span(0, scratch.block_map.len()),
             cells: mut scratch.cells,
@@ -544,6 +617,17 @@ pub fn record<C, F: Parts<C>>(field: F, grid: Grid, falloff: f32, scratch: mut S
             args: mut mesh.args,
         ),
         groups: 1,
+    )
+    // The arguments bound it (their vertex count) and drive it (their group counts): both reads.
+    dispatch(
+        skin_vertices.bind(
+            field: field,
+            fp: grid.cell,
+            falloff: falloff,
+            args: mesh.args.span(start: 0, count: ARGS),
+            verts: mesh.verts.items_mut(),
+        ),
+        groups: mesh.args.span(start: SKIN_GROUPS, count: 3),
     )
 }
 
@@ -670,16 +754,18 @@ impl<F> Realizer<F> {
         for _ in 0..self.detail.count {
             meshes.push(None)
         }
-        self.held.push(Held {
-            field: take field,
-            bounds,
-            meshes: take meshes,
-            drawn: NO_LEVEL,
-            target: NO_LEVEL,
-            priority: 0.0,
-            visible: true,
-            stale: false,
-        })
+        self.held.push(
+            Held {
+                field: take field,
+                bounds,
+                meshes: take meshes,
+                drawn: NO_LEVEL,
+                target: NO_LEVEL,
+                priority: 0.0,
+                visible: true,
+                stale: false,
+            },
+        )
         self.held.len() - 1
     }
 
@@ -923,12 +1009,14 @@ impl<C, F: Parts<C>> Realizer<F> {
     /// counted.
     fn record_into(mut self, i: u32, level: u32, grid: Grid, mesh: mut Mesh, calibration: bool) {
         record(self.held[i].field, grid, self.detail.falloff, mut self.scratch, mut mesh)
-        self.checks.push(Check {
-            instance: i,
-            level,
-            args: read(mesh.args.span(start: 0, count: ARGS)),
-            calibration,
-        })
+        self.checks.push(
+            Check {
+                instance: i,
+                level,
+                args: read(mesh.args.span(start: 0, count: ARGS)),
+                calibration,
+            },
+        )
         self.readbacks += 1
         self.realizations += 1
     }
@@ -978,10 +1066,12 @@ impl<C, F: Parts<C>> Realizer<F> {
             } else if words[FLAGS] != 0 {
                 self.overflows += 1
                 let had = self.rooms[c.level].unwrap()
-                self.rooms[c.level] = Some(Room {
-                    vertices: max(had.vertices, pushed.vertices),
-                    quads: max(had.quads, pushed.quads),
-                })
+                self.rooms[c.level] = Some(
+                    Room {
+                        vertices: max(had.vertices, pushed.vertices),
+                        quads: max(had.quads, pushed.quads),
+                    },
+                )
                 self.free[c.level].clear()
                 self.held[c.instance].stale = true
             }

@@ -56,7 +56,15 @@ impl Lights {
 
     /// A surface of `albedo` and roughness `rough`, its normal `n`, at `world`, seen from `view`'s
     /// eye and lit by its sun to `lit` (1 in the sun, 0 in shadow): tonemapped.
-    pub fn light(self, albedo: vec3, rough: f32, n: vec3, world: vec3, view: View, lit: f32) -> vec3 {
+    pub fn light(
+        self,
+        albedo: vec3,
+        rough: f32,
+        n: vec3,
+        world: vec3,
+        view: View,
+        lit: f32,
+    ) -> vec3 {
         let l = view.sun
         let v = normalize(view.eye - world)
         let h = normalize(l + v)
@@ -72,7 +80,14 @@ impl Lights {
     /// How lit `world` is, whose normal is `n` (1 in the sun, 0 in shadow): the point moved
     /// `normal_offset` along the normal, looked up in the sun's shadow map through a comparison
     /// sampler that blends the four nearest texels (2×2 PCF), `compare_bias` nearer the sun.
-    pub fn shadow(self, view: View, world: vec3, n: vec3, map: DepthTexture, s: ComparisonSampler) -> f32 {
+    pub fn shadow(
+        self,
+        view: View,
+        world: vec3,
+        n: vec3,
+        map: DepthTexture,
+        s: ComparisonSampler,
+    ) -> f32 {
         let lp = view.light * vec4(world + n * self.normal_offset, 1.0)
         let uv = vec2(lp.x * 0.5 + 0.5, lp.y * -0.5 + 0.5)
         map.sample_compare_level(s, uv, lp.z - self.compare_bias)
@@ -187,7 +202,8 @@ pub fn pose_instances<P: Poser>(
         b = parent
     }
     let root = chain[n - 1]
-    var world = poser.root(inst.at, inst.heading, inst.pose) * translate(sk.bones[root].xyz) *
+    var world = poser.root(inst.at, inst.heading, inst.pose) *
+        translate(sk.bones[root].xyz) *
         poser.local(root, inst.pose)
     for k in 1..n {
         let i = chain[n - 1 - k]
@@ -230,7 +246,13 @@ pub fn skin_matrix(v: SkinVertex, palettes: [mat4], first: u32) -> mat4 {
 
 /// A mesh's vertex, skinned by the palette from `first`, seen from `view`'s camera.
 @vertex
-pub fn skin(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32, view: View) -> Skinned {
+pub fn skin(
+    v: VertexIndex,
+    verts: [SkinVertex],
+    palettes: [mat4],
+    first: u32,
+    view: View,
+) -> Skinned {
     let sv = verts[v.index]
     let m = skin_matrix(sv, palettes, first)
     let wp = (m * vec4(sv.pos, 1.0)).xyz
@@ -248,7 +270,13 @@ pub fn skin(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32, v
 
 /// A mesh's vertex, skinned, seen from the sun: for the shadow map.
 @vertex
-pub fn skin_shadow(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32, view: View) -> ClipPosition {
+pub fn skin_shadow(
+    v: VertexIndex,
+    verts: [SkinVertex],
+    palettes: [mat4],
+    first: u32,
+    view: View,
+) -> ClipPosition {
     let sv = verts[v.index]
     ClipPosition { position: view.light * (skin_matrix(sv, palettes, first) * vec4(sv.pos, 1.0)) }
 }

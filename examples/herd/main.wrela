@@ -8,7 +8,8 @@
 // default), C the close-up's (seed 1 alone, at the origin, as the spike draws it); L the live herd
 // (the default); and 1, 2 or 3 a still frame for comparing with the spike's: its placement, each
 // grazer's phase at its own plus 0.9 t (t the frame's time), every grazer realized at 3, 2 or
-// 1.5 cm. The sim doesn't drive a still frame.
+// 1.5 cm. The sim doesn't drive a still frame. T draws the terrain or not (for timing the
+// creatures' passes alone).
 
 use engine::creature::Creature
 use engine::present::Snapshots
@@ -23,8 +24,7 @@ use herd::{HERD, Seen, Snap, World, between, snapshot, spawn, step}
 use look::{GrazerLook, LIGHTS, SKY, SUN, ground_shade, transfer}
 use std::gpu::{
     ComparisonSampler, Cull, DepthBias, DepthTexture, GpuBuffer, begin_depth_pass,
-    begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture, dispatch, draw,
-    write,
+    begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture, dispatch, draw, write,
 }
 use std::input::{Event, Key, events}
 use std::io::print
@@ -72,6 +72,7 @@ pub struct Game {
     /// The frame when every grazer was first drawn, and when each first reached its target.
     frames: u32,
     all_drawn: bool,
+    terrain: bool,
 }
 
 pub fn init() -> Game {
@@ -110,6 +111,7 @@ pub fn init() -> Game {
         realized: NO_LEVEL,
         frames: 0,
         all_drawn: false,
+        terrain: true,
     }
 }
 
@@ -124,6 +126,7 @@ fn keys(game: mut Game) {
                 Key::Digit1 => game.still = 0,
                 Key::Digit2 => game.still = 1,
                 Key::Digit3 => game.still = 2,
+                Key::T => game.terrain = !game.terrain,
                 _ => {},
             }
         }
@@ -137,7 +140,15 @@ fn seen(game: mut Game, time: f32) -> Vec<Seen> {
     var out: Vec<Seen> = Vec::new()
     if game.camera == Camera::CloseUp {
         let phase = 0.3 + 0.9 * time
-        out.push(Seen { seed: 1, pos: vec3(0.0, height(x: 0.0, z: 0.0), 0.0), heading: PI / 2.0, phase: fract(phase), head_down: 0.2 })
+        out.push(
+            Seen {
+                seed: 1,
+                pos: vec3(0.0, height(x: 0.0, z: 0.0), 0.0),
+                heading: PI / 2.0,
+                phase: fract(phase),
+                head_down: 0.2,
+            },
+        )
         return out
     }
     if game.still != NO_LEVEL {
@@ -166,8 +177,22 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
     let aspect = f32(width) / f32(height)
     let fovy = 40.0 * PI / 180.0
     let v = match game.camera {
-        Camera::Herd => view(eye: vec3(2.0, 7.5, -27.0), at: vec3(0.0, 0.8, 1.0), fovy: fovy, aspect: aspect, sun: SUN, extent: 26.0),
-        Camera::CloseUp => view(eye: vec3(0.85, 1.4, -3.6), at: vec3(0.85, 1.2, 0.0), fovy: fovy, aspect: aspect, sun: SUN, extent: 4.0),
+        Camera::Herd => view(
+            eye: vec3(2.0, 7.5, -27.0),
+            at: vec3(0.0, 0.8, 1.0),
+            fovy: fovy,
+            aspect: aspect,
+            sun: SUN,
+            extent: 26.0,
+        ),
+        Camera::CloseUp => view(
+            eye: vec3(0.85, 1.4, -3.6),
+            at: vec3(0.85, 1.2, 0.0),
+            fovy: fovy,
+            aspect: aspect,
+            sun: SUN,
+            extent: 4.0,
+        ),
     }
     let grazers = seen(mut game, time)
 
@@ -184,7 +209,10 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
         }
     } else {
         game.realized = NO_LEVEL
-        game.realizer.frame(Eye { at: v.eye, view_proj: v.view_proj, height: f32(height), fovy }, placed)
+        game.realizer.frame(
+            Eye { at: v.eye, view_proj: v.view_proj, height: f32(height), fovy },
+            placed,
+        )
     }
 
     // Posing: one pass for every grazer drawn.
@@ -194,7 +222,14 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
         let g = grazers[k]
         let i = g.seed - 1
         if game.realizer.drawn(i) != NO_LEVEL {
-            instances.push(Instance { at: g.pos, heading: g.heading, pose: vec4(g.phase, g.head_down, 0.0, 0.0), skeleton: i })
+            instances.push(
+                Instance {
+                    at: g.pos,
+                    heading: g.heading,
+                    pose: vec4(g.phase, g.head_down, 0.0, 0.0),
+                    skeleton: i,
+                },
+            )
             drawn.push(i)
         }
     }
@@ -238,11 +273,18 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
 
     // The terrain, then the grazers, shaded per pixel.
     let pass = begin_screen_pass_with_depth(mut game.depth, clear: vec4(transfer(SKY), 1.0))
-    draw(
-        ground.bind(view: v),
-        ground_shade.bind(view: v, lights: LIGHTS, shadow: game.shadow, shadow_sampler: game.shadow_sampler),
-        vertices: GRID * GRID * 6,
-    )
+    if game.terrain {
+        draw(
+            ground.bind(view: v),
+            ground_shade.bind(
+                view: v,
+                lights: LIGHTS,
+                shadow: game.shadow,
+                shadow_sampler: game.shadow_sampler,
+            ),
+            vertices: GRID * GRID * 6,
+        )
+    }
     for k in 0..n {
         let i = drawn[k]
         borrow mesh = game.realizer.mesh(i)
@@ -325,7 +367,17 @@ pub fn level(game: Game, s: u32) -> vec2 {
 /// Spike 01's evaluation benchmark (`bench_eval`) on seed `s`: `n` points from xorshift 12345
 /// in the box from `lo` to `hi`, the distance at each summed; with `pruned` 1, each sample
 /// leaves out the items that can't matter there.
-pub fn bench_eval(s: u32, n: u32, pruned: u32, lx: f32, ly: f32, lz: f32, hx: f32, hy: f32, hz: f32) -> f64 {
+pub fn bench_eval(
+    s: u32,
+    n: u32,
+    pruned: u32,
+    lx: f32,
+    ly: f32,
+    lz: f32,
+    hx: f32,
+    hy: f32,
+    hz: f32,
+) -> f64 {
     let field = grazer(s).field()
     let bounds = engine::creature::Parts::item_bounds(field)
     let (lo, e) = (vec3(lx, ly, lz), vec3(hx - lx, hy - ly, hz - lz))

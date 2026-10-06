@@ -86,7 +86,13 @@ impl Look<Tissue> for GrazerLook {
 
 /// The terrain's colour: two greens mixed by noise, lit as the grazers are.
 @fragment
-pub fn ground_shade(g: Ground, view: View, lights: Lights, shadow: DepthTexture, shadow_sampler: ComparisonSampler) -> vec4 {
+pub fn ground_shade(
+    g: Ground,
+    view: View,
+    lights: Lights,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+) -> vec4 {
     let n = normalize(g.normal)
     let k = value_noise(vec3(g.world.x, 0.0, g.world.z) * 0.35) * 0.5 + 0.5
     let albedo = mix(vec3(0.035, 0.060, 0.012), vec3(0.075, 0.085, 0.020), vec3(k))

@@ -178,7 +178,11 @@ pub fn step(w: mut World, input: TickInput<World>) {
             let f = g.feet[l]
             let x = g.pos.x + c * f.x + s * f.y
             let z = g.pos.z - s * f.x + c * f.y
-            let (hit, _) = terrain.raycast(vec3(x, terrain.height(x, z) + 1.5, z), vec3(0.0, -1.0, 0.0), 10.0)
+            let (hit, _) = terrain.raycast(
+                vec3(x, terrain.height(x, z) + 1.5, z),
+                vec3(0.0, -1.0, 0.0),
+                10.0,
+            )
             g.hits[l] = hit
         }
     })

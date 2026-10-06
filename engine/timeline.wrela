@@ -126,7 +126,12 @@ impl<W: Clone + StateHash, I: Clone> Timeline<W, I> {
     /// A correction arrived for tick `t`, for example from the server (D-042): restore the last
     /// copy at or before `t`, fix the input, and replay to the present. The replayed ticks'
     /// checksums replace the ones recorded; how many of them changed.
-    pub fn correct<F: @deterministic fn(mut W, I)>(mut self, t: Tick, input: take I, step: F) -> u32 {
+    pub fn correct<F: @deterministic fn(mut W, I)>(
+        mut self,
+        t: Tick,
+        input: take I,
+        step: F,
+    ) -> u32 {
         borrow s = self.saved.last_at_or_before(t)
         self.world = s.world.clone()
         let from = s.tick

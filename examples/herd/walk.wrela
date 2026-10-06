@@ -9,17 +9,32 @@ use std::math::TAU
 
 pub fn rot_x(t: f32) -> mat4 {
     let (c, s) = (cos(t), sin(t))
-    mat4(vec4(1.0, 0.0, 0.0, 0.0), vec4(0.0, c, s, 0.0), vec4(0.0, -s, c, 0.0), vec4(0.0, 0.0, 0.0, 1.0))
+    mat4(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, c, s, 0.0),
+        vec4(0.0, -s, c, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0),
+    )
 }
 
 pub fn rot_y(t: f32) -> mat4 {
     let (c, s) = (cos(t), sin(t))
-    mat4(vec4(c, 0.0, -s, 0.0), vec4(0.0, 1.0, 0.0, 0.0), vec4(s, 0.0, c, 0.0), vec4(0.0, 0.0, 0.0, 1.0))
+    mat4(
+        vec4(c, 0.0, -s, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(s, 0.0, c, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0),
+    )
 }
 
 pub fn rot_z(t: f32) -> mat4 {
     let (c, s) = (cos(t), sin(t))
-    mat4(vec4(c, s, 0.0, 0.0), vec4(-s, c, 0.0, 0.0), vec4(0.0, 0.0, 1.0, 0.0), vec4(0.0, 0.0, 0.0, 1.0))
+    mat4(
+        vec4(c, s, 0.0, 0.0),
+        vec4(-s, c, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0),
+    )
 }
 
 const IDENTITY = mat4(
@@ -56,11 +71,15 @@ impl Poser for Walk {
             // A lateral-sequence walk: each leg a quarter of the cycle after the last.
             let l = (bone - LEG0) / 4
             let k = (bone - LEG0) % 4
-            let offset = if l == 0 { 0.25 } else if l == 1 { 0.75 } else if l == 2 { 0.0 } else { 0.5 }
+            let offset = if l == 0 { 0.25 } else if l == 1 { 0.75 } else if l == 2 { 0.0 } else {
+                0.5
+            }
             let c = TAU * (phi + offset)
             let flex = max(0.0, -cos(c))
             let fore = if l < 2 { 1.0 } else { -1.0 }
-            return if k == 0 { rot_x(-0.30 * sin(c)) } else if k == 1 { rot_x(0.45 * flex * fore) } else if k == 2 {
+            return if k == 0 { rot_x(-0.30 * sin(c)) } else if k == 1 {
+                rot_x(0.45 * flex * fore)
+            } else if k == 2 {
                 rot_x(-0.5 * flex * fore)
             } else { rot_x(-0.2 * flex) }
         }
