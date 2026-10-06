@@ -1293,19 +1293,8 @@ impl PartMask {
 
     /// How many of the first 64 items are in.
     pub fn count(self) -> u32 {
-        ones(self.lo) + ones(self.hi)
+        self.lo.count_ones() + self.hi.count_ones()
     }
-}
-
-/// How many bits of `x` are set.
-fn ones(x: u32) -> u32 {
-    var n = 0
-    var v = x
-    while v != 0 {
-        v = v & (v - 1)
-        n += 1
-    }
-    n
 }
 
 /// The items a masked fold visits, in order: those whose bits are set in a mask, then every
@@ -1333,12 +1322,12 @@ impl InMask {
     /// The next item, or `NO_ITEM` after the last.
     fn next(mut self) -> u32 {
         if self.lo != 0 {
-            let i = lowest_bit(self.lo)
+            let i = self.lo.trailing_zeros()
             self.lo = self.lo & (self.lo - 1)
             return i
         }
         if self.hi != 0 {
-            let i = 32 + lowest_bit(self.hi)
+            let i = 32 + self.hi.trailing_zeros()
             self.hi = self.hi & (self.hi - 1)
             return i
         }
@@ -1348,13 +1337,6 @@ impl InMask {
         }
         NO_ITEM
     }
-}
-
-/// The index of `v`'s lowest set bit (`v` isn't 0): that bit alone, as an f32, is a power of
-/// two, exactly, whose exponent is the index.
-fn lowest_bit(v: u32) -> u32 {
-    let low = v & (!v).wrapping_add(1)
-    (bitcast_u32(f32(low)) >> 23) - 127
 }
 
 /// Whether item `first`'s bit is in `mask` (`PartMask::has`).
