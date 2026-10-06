@@ -110,15 +110,15 @@ pub struct Model: Copy {
     pub undamped_from: u32 = 89,
     /// How strongly the free strings ring in sympathy, with the pedal down.
     pub sympathy: f32 = 0.02,
-    /// How loud the strike's noise is, beside the strings' sound when struck, and how much
-    /// louder (dB) in the top two octaves, where a note is short and its strike most of it:
-    /// calibrated against the recorded piano's attacks, so a note's peak in its first 30 ms
-    /// over its level from 30 to 300 ms is the recording's (within 0.3 dB on average over 24
-    /// notes). Matching the noise between the partials instead (`wrela audio partials`'
-    /// `onset_noise_db`) took bursts 16 dB too sharp: the recording's is mostly its attack's
-    /// own spread and the board's, not a hammer's noise.
+    /// How loud the strike's noise is, beside the strings' sound when struck (their RMS
+    /// amplitude), and how much louder (dB) in the top two octaves, where a note is short and
+    /// its strike more of it. Set by ear: the owner heard the strike too loud for the note when
+    /// the noise was set so each attack's peak matched the recorded piano's. A recording's
+    /// attack peak is mostly its partials starting together, not a hammer's noise, so matching
+    /// it with noise overdoes the noise (and matching the noise between the partials,
+    /// `wrela audio partials`' `onset_noise_db`, overdid it 16 dB more).
     pub knock: f32 = 1.5,
-    pub knock_treble_db: f32 = 7.0,
+    pub knock_treble_db: f32 = 3.0,
     /// How far apart the channels put the low and the high strings (0: none, 1: fully).
     pub width: f32 = 0.5,
     /// The soundboard's share of the sound, and the room's.
@@ -688,7 +688,7 @@ impl Piano {
         let louder = soft * m.soft_db
         // Phantom partials grow as the blow does: 20 dB softer for a tenth of the velocity.
         let phantom_db = 20.0 * log(max(velocity, 0.05)) / log(10.0)
-        var total = 0.0
+        var power = 0.0
         for g in self.first[k]..self.first[k] + self.groups[k] {
             let lo = self.levels[g * MODEL_VELOCITIES + v]
             let hi = self.levels[g * MODEL_VELOCITIES + v + 1]
@@ -700,7 +700,8 @@ impl Piano {
             let a = exp(db * to_amplitude) * self.share[g]
             self.new_re[g] = a * self.phase_c[g]
             self.new_im[g] = a * self.phase_s[g]
-            total += (a.x + a.y) + (a.z + a.w)
+            let a2 = a * a
+            power += (a2.x + a2.y) + (a2.z + a2.w)
         }
         // The hammer's time on the string: longer in the bass and for a softer blow.
         let key = k + LOWEST
@@ -713,7 +714,7 @@ impl Piano {
         self.swelled[k] = 0
         // The thump is the bass's, the click the treble's.
         let h = f32(k) / 87.0
-        let noise = m.knock * total * pow(10.0, m.knock_treble_db * smoothstep(0.6, 0.78, h) / 20.0)
+        let noise = m.knock * sqrt(power) * pow(10.0, m.knock_treble_db * smoothstep(0.6, 0.78, h) / 20.0)
         self.thump += noise * (1.0 - 0.7 * h)
         self.click += noise * (0.3 + 0.7 * h)
         self.sounding[k] = true
