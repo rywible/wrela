@@ -3,46 +3,10 @@
 // is down; the cycle is a pelvis sway, the neck and head set by the head's lowering, a tail wave,
 // legs in a lateral-sequence walk, and a root bob.
 
-use engine::render::{Poser, translate}
+use engine::render::Poser
 use grazer::{HEAD, LEG0, NECK0, PELVIS, TAIL0}
 use std::math::TAU
-
-pub fn rot_x(t: f32) -> mat4 {
-    let (c, s) = (cos(t), sin(t))
-    mat4(
-        vec4(1.0, 0.0, 0.0, 0.0),
-        vec4(0.0, c, s, 0.0),
-        vec4(0.0, -s, c, 0.0),
-        vec4(0.0, 0.0, 0.0, 1.0),
-    )
-}
-
-pub fn rot_y(t: f32) -> mat4 {
-    let (c, s) = (cos(t), sin(t))
-    mat4(
-        vec4(c, 0.0, -s, 0.0),
-        vec4(0.0, 1.0, 0.0, 0.0),
-        vec4(s, 0.0, c, 0.0),
-        vec4(0.0, 0.0, 0.0, 1.0),
-    )
-}
-
-pub fn rot_z(t: f32) -> mat4 {
-    let (c, s) = (cos(t), sin(t))
-    mat4(
-        vec4(c, s, 0.0, 0.0),
-        vec4(-s, c, 0.0, 0.0),
-        vec4(0.0, 0.0, 1.0, 0.0),
-        vec4(0.0, 0.0, 0.0, 1.0),
-    )
-}
-
-const IDENTITY = mat4(
-    vec4(1.0, 0.0, 0.0, 0.0),
-    vec4(0.0, 1.0, 0.0, 0.0),
-    vec4(0.0, 0.0, 1.0, 0.0),
-    vec4(0.0, 0.0, 0.0, 1.0),
-)
+use std::transform::{identity, rotate_x, rotate_y, rotate_z, translate}
 
 /// The walk. A pose is (phase, head down, unused, unused).
 pub struct Walk: Copy + GpuData {}
@@ -52,18 +16,18 @@ impl Poser for Walk {
         let phi = pose.x
         let head_down = pose.y
         if bone == PELVIS {
-            return rot_x(0.02 * sin(2.0 * TAU * phi)) * rot_z(0.03 * sin(TAU * phi))
+            return rotate_x(0.02 * sin(2.0 * TAU * phi)) * rotate_z(0.03 * sin(TAU * phi))
         }
         if bone >= NECK0 && bone < HEAD {
             let i = f32(bone - NECK0)
-            return rot_x(head_down * 0.22 + 0.04 * sin(2.0 * TAU * phi + i * 0.5))
+            return rotate_x(head_down * 0.22 + 0.04 * sin(2.0 * TAU * phi + i * 0.5))
         }
         if bone == HEAD {
-            return rot_x(-head_down * 0.3)
+            return rotate_x(-head_down * 0.3)
         }
         if bone >= TAIL0 && bone < LEG0 {
             let i = f32(bone - TAIL0)
-            return rot_y(0.15 * sin(TAU * phi - i * 0.6) * (i + 1.0) / 6.0) * rot_x(0.05 * i)
+            return rotate_y(0.15 * sin(TAU * phi - i * 0.6) * (i + 1.0) / 6.0) * rotate_x(0.05 * i)
         }
         if bone >= LEG0 && bone < LEG0 + 16 {
             // A lateral-sequence walk: each leg a quarter of the cycle after the last.
@@ -75,18 +39,18 @@ impl Poser for Walk {
             let c = TAU * (phi + offset)
             let flex = max(0.0, -cos(c))
             let fore = if l < 2 { 1.0 } else { -1.0 }
-            return if k == 0 { rot_x(-0.30 * sin(c)) } else if k == 1 {
-                rot_x(0.45 * flex * fore)
+            return if k == 0 { rotate_x(-0.30 * sin(c)) } else if k == 1 {
+                rotate_x(0.45 * flex * fore)
             } else if k == 2 {
-                rot_x(-0.5 * flex * fore)
-            } else { rot_x(-0.2 * flex) }
+                rotate_x(-0.5 * flex * fore)
+            } else { rotate_x(-0.2 * flex) }
         }
-        IDENTITY
+        identity()
     }
 
     /// The root bobs twice a cycle.
     fn root(self, at: vec3, heading: f32, pose: vec4) -> mat4 {
         let bob = 2.5cm * cos(2.0 * TAU * pose.x)
-        translate(vec3(at.x, at.y - bob, at.z)) * rot_y(heading)
+        translate(vec3(at.x, at.y - bob, at.z)) * rotate_y(heading)
     }
 }

@@ -86,61 +86,46 @@ pub const MAX_BONES: u32 = 64
 /// The most chains a skeleton has.
 pub const MAX_CHAINS: u32 = 8
 
+/// A skeleton's bone: its name, its parent's number (its own for a root), where it is at rest,
+/// and its mirror image's number (its own if it has none).
+struct BoneDef: Copy {
+    name: Text,
+    parent: u32,
+    /// In the creature's rest space, at the skeleton's scale.
+    rest: vec3,
+    other: u32,
+}
+
 /// Bones in a tree, with names for tools and agents, at rest. A value of fixed size: built in
 /// a constant, a name that doesn't exist fails the build (`find`); built by code from lifted
 /// literals, gradients run through it.
 pub struct Skeleton: Copy {
-    names: [Text; MAX_BONES],
-    parents: [u32; MAX_BONES],
-    /// Each bone's rest position, in the creature's rest space, at the skeleton's scale.
-    rests: [vec3; MAX_BONES],
-    /// Each bone's mirror image's bone (a left leg's, the right leg's): its own if it has none.
-    others: [u32; MAX_BONES],
-    count: u32,
-    chains: [NamedChain; MAX_CHAINS],
-    chain_count: u32,
-    legs: [Leg; 4],
-    leg_count: u32,
+    bones: Bounded<BoneDef, MAX_BONES>,
+    chains: Bounded<NamedChain, MAX_CHAINS>,
+    legs: Bounded<Leg, 4>,
 }
 
 impl Skeleton {
     pub fn new() -> Skeleton {
-        Skeleton {
-            names: [""; MAX_BONES],
-            parents: [0; MAX_BONES],
-            rests: [vec3(); MAX_BONES],
-            others: [0; MAX_BONES],
-            count: 0,
-            chains: [NamedChain {
-                name: "",
-                chain: Chain { first: 0, joints: 0, step: vec3() },
-            }; MAX_CHAINS],
-            chain_count: 0,
-            legs: [Leg { joints: [Bone { index: 0 }; 4] }; 4],
-            leg_count: 0,
-        }
+        Skeleton { bones: Bounded::new(), chains: Bounded::new(), legs: Bounded::new() }
     }
 
     fn add(mut self, name: Text, parent: u32, rest: vec3) -> Bone {
-        assert(self.count < MAX_BONES, "a skeleton has at most 64 bones (`MAX_BONES`)")
-        let index = self.count
-        self.names[index] = name
-        self.parents[index] = parent
-        self.rests[index] = rest
-        self.others[index] = index
-        self.count += 1
+        assert(!self.bones.is_full(), "a skeleton has at most 64 bones (`MAX_BONES`)")
+        let index = self.bones.len()
+        self.bones.push(BoneDef { name, parent, rest, other: index })
         Bone { index }
     }
 
     /// A bone with no parent, at `at`.
     pub fn root(mut self, name: Text, at: vec3) -> Bone {
-        let i = self.count
+        let i = self.bones.len()
         self.add(name, i, at)
     }
 
     /// A bone at `at` from `parent`.
     pub fn bone(mut self, name: Text, parent: Bone, at: vec3) -> Bone {
-        self.add(name, parent.index, self.rests[parent.index] + at)
+        self.add(name, parent.index, self.bones[parent.index].rest + at)
     }
 
     /// A bone whose rest position is `rest`, under `parent`: for a skeleton written as its
@@ -153,7 +138,7 @@ impl Skeleton {
     /// one before, so the chain reaches `span` one step past its last joint.
     pub fn chain(mut self, name: Text, parent: Bone, at: vec3, joints: u32, span: vec3) -> Chain {
         assert(joints > 0, "a chain needs a joint")
-        assert(self.chain_count < MAX_CHAINS, "a skeleton has at most 8 chains")
+        assert(!self.chains.is_full(), "a skeleton has at most 8 chains")
         let step = span / f32(joints)
         let first = self.bone(name, parent, at)
         var prev = first
@@ -161,8 +146,7 @@ impl Skeleton {
             prev = self.bone(name, prev, step)
         }
         let chain = Chain { first: first.index, joints, step }
-        self.chains[self.chain_count] = NamedChain { name, chain }
-        self.chain_count += 1
+        self.chains.push(NamedChain { name, chain })
         chain
     }
 
@@ -186,17 +170,16 @@ impl Skeleton {
     }
 
     fn add_leg(mut self, leg: Leg) -> Leg {
-        assert(self.leg_count < 4, "a skeleton has at most 4 legs")
-        self.legs[self.leg_count] = leg
-        self.leg_count += 1
+        assert(!self.legs.is_full(), "a skeleton has at most 4 legs")
+        self.legs.push(leg)
         leg
     }
 
     /// Makes `a` and `b` each other's mirror image: a part mirrored on one moves with the other
     /// where it's reflected.
     pub fn pair(mut self, a: Bone, b: Bone) {
-        self.others[a.index] = b.index
-        self.others[b.index] = a.index
+        self.bones[a.index].other = b.index
+        self.bones[b.index].other = a.index
     }
 
     /// `pair` for each joint of two legs.
@@ -238,8 +221,8 @@ impl Skeleton {
 
     /// The bone named `name`; in a constant, a name that doesn't exist fails the build.
     pub fn find(self, name: Text) -> Bone {
-        for i in 0..self.count {
-            if self.names[i] == name {
+        for i in 0..self.bones.len() {
+            if self.bones[i].name == name {
                 return Bone { index: i }
             }
         }
@@ -248,9 +231,9 @@ impl Skeleton {
 
     /// The chain named `name`.
     pub fn find_chain(self, name: Text) -> Chain {
-        for i in 0..self.chain_count {
-            if self.chains[i].name == name {
-                return self.chains[i].chain
+        for c in self.chains {
+            if c.name == name {
+                return c.chain
             }
         }
         panic("no chain has that name")
@@ -259,41 +242,41 @@ impl Skeleton {
     /// A copy `k` times the size, about the origin.
     pub fn scaled(self, k: f32) -> Skeleton {
         var out = self
-        for i in 0..out.count {
-            out.rests[i] = out.rests[i] * k
+        for mut b in out.bones {
+            b.rest = b.rest * k
         }
         out
     }
 
     pub fn len(self) -> u32 {
-        self.count
+        self.bones.len()
     }
 
     pub fn name(self, b: Bone) -> Text {
-        self.names[b.index]
+        self.bones[b.index].name
     }
 
     pub fn parent(self, b: Bone) -> Bone {
-        Bone { index: self.parents[b.index] }
+        Bone { index: self.bones[b.index].parent }
     }
 
     /// Its mirror image (`pair`), or itself.
     pub fn other(self, b: Bone) -> Bone {
-        Bone { index: self.others[b.index] }
+        Bone { index: self.bones[b.index].other }
     }
 
     /// Where a bone is, at rest.
     pub fn rest(self, b: Bone) -> vec3 {
-        self.rests[b.index]
+        self.bones[b.index].rest
     }
 
-    /// Its legs, in the order they were added (the first `leg_count()`).
-    pub fn legs(self) -> [Leg; 4] {
+    /// Its legs, in the order they were added.
+    pub fn legs(self) -> Bounded<Leg, 4> {
         self.legs
     }
 
     pub fn leg_count(self) -> u32 {
-        self.leg_count
+        self.legs.len()
     }
 }
 
@@ -2754,7 +2737,7 @@ impl<P> Body<P> {
         take self,
         build: fn(LegBuilder) -> LegParts<S, F>,
     ) -> Body<Then<P, Then<[Placed<S>; 12], [Placed<F>; 4]>>> {
-        assert(self.skeleton.leg_count == 4, "`each_leg` takes a skeleton with four legs")
+        assert(self.skeleton.legs.len() == 4, "`each_leg` takes a skeleton with four legs")
         let sk = self.skeleton
         let legs = [
             build(LegBuilder { leg: sk.legs[0], skeleton: sk }),

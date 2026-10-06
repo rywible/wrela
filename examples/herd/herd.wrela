@@ -207,26 +207,23 @@ pub const MAX_SEEN: u32 = 64
 
 /// What the frames see of the world: each grazer's seed, place, heading, phase and head.
 pub struct Snap: Copy + Plain {
-    pub count: u32,
-    pub grazers: [Seen; 64],
+    pub grazers: Bounded<Seen, MAX_SEEN>,
 }
 
 @deterministic
 pub fn snapshot(w: World) -> Snap {
-    var out = Snap {
-        count: 0,
-        grazers: [Seen { seed: 0, pos: vec3(0.0), heading: 0.0, phase: 0.0, head_down: 0.0 }; 64],
-    }
+    var out = Snap { grazers: Bounded::new() }
     for g in w.grazers {
-        if out.count < MAX_SEEN {
-            out.grazers[out.count] = Seen {
-                seed: g.seed,
-                pos: g.pos,
-                heading: g.heading,
-                phase: g.phase,
-                head_down: g.head_down,
-            }
-            out.count += 1
+        if !out.grazers.is_full() {
+            out.grazers.push(
+                Seen {
+                    seed: g.seed,
+                    pos: g.pos,
+                    heading: g.heading,
+                    phase: g.phase,
+                    head_down: g.head_down,
+                },
+            )
         }
     }
     out

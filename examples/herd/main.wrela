@@ -180,16 +180,14 @@ fn seen(game: mut Game, time: f32) -> Vec<Seen> {
         return out
     }
     if game.still != NO_LEVEL {
-        for i in 0..game.placed.count {
-            var g = game.placed.grazers[i]
-            g.phase = fract(g.phase + 0.9 * time)
-            out.push(g)
+        for g in game.placed.grazers {
+            out.push(Seen { phase: fract(g.phase + 0.9 * time), ..g })
         }
         return out
     }
     game.snaps.update()
     let b = game.snaps.at(game.snaps.sim_time(time))
-    for i in 0..min(b.a.count, b.b.count) {
+    for i in 0..min(b.a.grazers.len(), b.b.grazers.len()) {
         out.push(between(b.a.grazers[i], b.b.grazers[i], b.alpha))
     }
     out

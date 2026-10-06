@@ -31,12 +31,15 @@ pub trait Acoustic {
 /// The most modes a solve keeps.
 pub const MODES: u32 = 8
 
-/// A body's lowest vibration modes: each one's frequency (Hz) and how strongly a strike
-/// excites it.
+/// A vibration mode: its frequency (Hz), and how strongly a strike excites it.
+pub struct ModalMode: Copy + StateHash {
+    pub frequency: f32,
+    pub gain: f32,
+}
+
+/// A body's lowest vibration modes, lowest first.
 pub struct ModalModes: Copy + StateHash {
-    pub count: u32,
-    pub frequency: [f32; 8],
-    pub gain: [f32; 8],
+    pub modes: Bounded<ModalMode, MODES>,
 }
 
 /// The cells of the lattice the solve puts masses on, per axis.
@@ -107,14 +110,13 @@ pub fn modal_modes<C: Acoustic, F: Field<C>>(field: F, extent: f32) -> ModalMode
     }
     let values = jacobi_eigenvalues(mut k, count)
     // The lowest nonzero ones (the zeros are rigid motions), as frequencies.
-    var out = ModalModes { count: 0, frequency: [0.0; 8], gain: [0.0; 8] }
+    var out = ModalModes { modes: Bounded::new() }
     for lambda in values {
-        if lambda <= 1e-6 * f64(scale) || out.count == MODES {
+        if lambda <= 1e-6 * f64(scale) || out.modes.is_full() {
             continue
         }
-        out.frequency[out.count] = f32(sqrt(lambda)) / TAU
-        out.gain[out.count] = 1.0 / f32(out.count + 1)
-        out.count += 1
+        let gain = 1.0 / f32(out.modes.len() + 1)
+        out.modes.push(ModalMode { frequency: f32(sqrt(lambda)) / TAU, gain })
     }
     out
 }
@@ -179,28 +181,33 @@ pub struct Contact: Copy {
     pub impulse: f32,
 }
 
-/// What a strike rings: each mode's frequency, starting amplitude and decay per sample.
+/// A mode a strike rings: its frequency, starting amplitude and decay per sample.
+pub struct Ringing: Copy {
+    pub frequency: f32,
+    pub amplitude: f32,
+    pub decay: f32,
+}
+
+/// What a strike rings: its modes'.
 pub struct Voice: Copy {
-    pub count: u32,
-    pub frequency: [f32; 8],
-    pub amplitude: [f32; 8],
-    pub decay: [f32; 8],
+    pub modes: Bounded<Ringing, MODES>,
 }
 
 /// The modes of a body struck with `impulse` against a surface that absorbs `against`.
 @audio
 pub fn modal(modes: ModalModes, against: Absorption, impulse: f32) -> Voice {
-    var v = Voice {
-        count: modes.count,
-        frequency: modes.frequency,
-        amplitude: [0.0; 8],
-        decay: [1.0; 8],
-    }
-    for i in 0..modes.count {
-        v.amplitude[i] = impulse * modes.gain[i]
+    var v = Voice { modes: Bounded::new() }
+    for i in 0..modes.modes.len() {
+        let m = modes.modes[i]
         // The surface takes its fraction of the energy per second; higher modes go faster.
         let per_second = 1.0 + 8.0 * against.coefficient * (1.0 + 0.25 * f32(i))
-        v.decay[i] = exp(-per_second / 48000.0)
+        v.modes.push(
+            Ringing {
+                frequency: m.frequency,
+                amplitude: impulse * m.gain,
+                decay: exp(-per_second / 48000.0),
+            },
+        )
     }
     v
 }
@@ -230,14 +237,14 @@ impl Bank {
     /// Starts a voice's modes ringing, in the bank's oldest slots.
     @audio
     pub fn strike(mut self, v: Voice) {
-        for i in 0..v.count {
+        for m in v.modes {
             let s = self.next
-            let w = TAU * v.frequency[i] / 48000.0
+            let w = TAU * m.frequency / 48000.0
             self.re[s] = 0.0
-            self.im[s] = v.amplitude[i]
+            self.im[s] = m.amplitude
             self.cos_w[s] = cos(w)
             self.sin_w[s] = sin(w)
-            self.decay[s] = v.decay[i]
+            self.decay[s] = m.decay
             self.next = (self.next + 1) % 32
         }
     }

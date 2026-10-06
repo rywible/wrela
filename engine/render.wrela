@@ -15,6 +15,7 @@ use std::gpu::{
 }
 use std::math::PI
 use std::quat::Quat
+use std::transform::{look_at, ortho, perspective, translate}
 
 /// The most bones a palette holds.
 pub const MAX_BONES: u32 = 64
@@ -144,26 +145,20 @@ pub struct Instance: Copy + GpuData {
 }
 
 /// A skeleton at rest, as the posing pass reads it: each bone's rest position (in `xyz`) and
-/// parent (in `w`, its own number for a root), and how many bones.
+/// parent (in `w`, its own number for a root).
 pub struct RestSkeleton: Copy + GpuData {
-    pub bones: [vec4; 64],
-    pub count: u32,
+    pub bones: Bounded<vec4, 64>,
 }
 
 impl RestSkeleton {
     pub fn of(s: Skeleton) -> RestSkeleton {
-        var out = RestSkeleton { bones: [vec4(0.0); 64], count: s.len() }
+        var out = RestSkeleton { bones: Bounded::new() }
         for i in 0..s.len() {
             let b = Bone { index: i }
-            out.bones[i] = vec4(s.rest(b), f32(s.parent(b).index))
+            out.bones.push(vec4(s.rest(b), f32(s.parent(b).index)))
         }
         out
     }
-}
-
-/// A translation by `t`.
-pub fn translate(t: vec3) -> mat4 {
-    mat4(vec4(1.0, 0.0, 0.0, 0.0), vec4(0.0, 1.0, 0.0, 0.0), vec4(0.0, 0.0, 1.0, 0.0), vec4(t, 1.0))
 }
 
 /// Each instance's palette (a workgroup each, an invocation per bone): bone i's matrix, rest
@@ -182,7 +177,7 @@ pub fn pose_instances<P: Poser>(
     let inst = instances[group.x]
     let sk = skeletons[inst.skeleton]
     let bone = lid.x
-    if bone >= sk.count {
+    if bone >= sk.bones.len() {
         return
     }
     // The chain from `bone` up to its root.
@@ -308,48 +303,13 @@ pub fn shade<C, F: Parts<C>, L: Look<C>>(
 
 // ---- cameras --------------------------------------------------------------------------------------
 
-/// A right-handed view from `eye` toward `at`, with +y up.
-pub fn look_at(eye: vec3, at: vec3) -> mat4 {
-    let z = normalize(eye - at)
-    let x = normalize(cross(vec3(0.0, 1.0, 0.0), z))
-    let y = cross(z, x)
-    mat4(
-        vec4(x.x, y.x, z.x, 0.0),
-        vec4(x.y, y.y, z.y, 0.0),
-        vec4(x.z, y.z, z.z, 0.0),
-        vec4(-dot(x, eye), -dot(y, eye), -dot(z, eye), 1.0),
-    )
-}
-
-/// A perspective projection `fovy` (radians) high, `aspect` wide, depth 0 at `near` to 1 at
-/// `far` (WebGPU's range).
-pub fn perspective(fovy: f32, aspect: f32, near: f32, far: f32) -> mat4 {
-    let f = 1.0 / tan(fovy / 2.0)
-    mat4(
-        vec4(f / aspect, 0.0, 0.0, 0.0),
-        vec4(0.0, f, 0.0, 0.0),
-        vec4(0.0, 0.0, far / (near - far), -1.0),
-        vec4(0.0, 0.0, near * far / (near - far), 0.0),
-    )
-}
-
-/// An orthographic projection of the box from (l, b, -n) to (r, t, -f), depth 0 to 1.
-pub fn ortho(l: f32, r: f32, b: f32, t: f32, n: f32, f: f32) -> mat4 {
-    mat4(
-        vec4(2.0 / (r - l), 0.0, 0.0, 0.0),
-        vec4(0.0, 2.0 / (t - b), 0.0, 0.0),
-        vec4(0.0, 0.0, 1.0 / (n - f), 0.0),
-        vec4(-(r + l) / (r - l), -(t + b) / (t - b), n / (n - f), 1.0),
-    )
-}
-
 /// A view: a camera at `eye` looking at `at`, `fovy` high on a screen `aspect` wide, near 0.1 m
 /// and far 400 m; and the sun, toward `sun`, its shadow map `extent` either side of the point on
 /// the ground below `at`, 60 m away along the sun's direction.
 pub fn view(eye: vec3, at: vec3, fovy: f32, aspect: f32, sun: vec3, extent: f32) -> View {
     let s = normalize(sun)
     let centre = vec3(at.x, 0.0, at.z)
-    let box = ortho(-extent, extent, -extent, extent, n: 1.0, f: 140.0)
+    let box = ortho(-extent, extent, -extent, extent, near: 1.0, far: 140.0)
     let light = box * look_at(centre + s * 60.0, centre)
     let proj = perspective(fovy, aspect, near: 0.1, far: 400.0)
     View { view_proj: proj * look_at(eye, at), light, eye, sun: s }

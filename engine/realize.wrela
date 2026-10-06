@@ -863,9 +863,9 @@ impl<F> Realizer<F> {
             detail,
             falloff: look.deform.weights.falloff,
             held: Vec::new(),
-            rooms: Vec::filled(detail.count, None),
-            calibrating: Vec::filled(detail.count, value: false),
-            free: Vec::from_fn(detail.count, |_| Vec::new()),
+            rooms: Vec::filled(detail.levels.len(), None),
+            calibrating: Vec::filled(detail.levels.len(), value: false),
+            free: Vec::from_fn(detail.levels.len(), |_| Vec::new()),
             checks: Vec::new(),
             scratch: Scratch::new(1),
             readbacks: 0,
@@ -881,7 +881,7 @@ impl<F> Realizer<F> {
     /// Looks after an instance whose field is `field`, its surface in `bounds` (rest space): its
     /// number.
     pub fn add(mut self, field: take F, bounds: Box3) -> u32 {
-        let meshes: Vec<Option<Mesh>> = Vec::from_fn(self.detail.count, |_| None)
+        let meshes: Vec<Option<Mesh>> = Vec::from_fn(self.detail.levels.len(), |_| None)
         self.held.push(
             Held {
                 field: take field,
@@ -969,7 +969,7 @@ impl<F> Realizer<F> {
 
     /// The grid instance `i` is realized on at level `level`.
     pub fn grid(self, i: u32, level: u32) -> Grid {
-        Grid::around(self.held[i].bounds, self.detail.cells[level])
+        Grid::around(self.held[i].bounds, self.detail.levels[level].cell)
     }
 
     /// How large instance `i`'s cells at level `level` look on screen, placed at `p`, in pixels:
@@ -982,7 +982,7 @@ impl<F> Realizer<F> {
         let radius = 0.5 * length(b.hi - b.lo)
         let near = max(length(centre - eye.at) - radius, 0.1)
         let pixel = 2.0 * near * tan(0.5 * eye.fovy) / eye.height
-        self.detail.cells[level] / pixel
+        self.detail.levels[level].cell / pixel
     }
 
     /// Whether instance `i`, placed at `p`, can be on screen: its bounding sphere against the
@@ -1008,14 +1008,14 @@ impl<C, F: Parts<C>> Realizer<F> {
     pub fn frame(mut self, eye: Eye, placed: [Placement]) {
         self.answer()
         let n = min(self.held.len(), placed.len())
-        let top = self.detail.count - 1
+        let top = self.detail.levels.len() - 1
         let max_px = self.detail.max_cell_px
         for i in 0..n {
             let p = placed[i]
             self.held[i].visible = self.on_screen(i, p, eye)
             // The coarsest level whose cells look small enough; the finest if none does.
             var want = top
-            for l in 0..self.detail.count {
+            for l in 0..self.detail.levels.len() {
                 if self.projected(i, l, p, eye) <= max_px {
                     want = l
                     break
@@ -1257,7 +1257,7 @@ impl<C, F: Parts<C>> Realizer<F> {
             self.place(best, level, take mesh)
             self.held[best].stale = true
         }
-        f32(grid.blocks) * self.detail.cost_us[level]
+        f32(grid.blocks) * self.detail.levels[level].cost_us
     }
 
     /// The instance with the largest grid at `level`, of all of them.
@@ -1284,7 +1284,7 @@ impl<C, F: Parts<C>> Realizer<F> {
         self.record_into(i, level, grid, mut mesh, calibration: false)
         self.place(i, level, take mesh)
         self.held[i].stale = false
-        f32(grid.blocks) * self.detail.cost_us[level]
+        f32(grid.blocks) * self.detail.levels[level].cost_us
     }
 
     /// Records instance `i`'s realization at `level` into `mesh`, and the readback of what it

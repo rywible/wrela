@@ -46,13 +46,26 @@ pub enum Eval: Copy + Eq {
     Interpreted,
 }
 
-/// How a creature type's meshes are kept (#43 §7.6–§7.7): its levels of detail (cell sizes,
-/// coarse to fine), when to move between them, and how much realizing a frame may do. The
-/// levels are spike 01's.
+/// A level of detail: how large its cells are, and what realizing it is estimated to cost.
+pub struct Level: Copy {
+    pub cell: f32,
+    /// Estimated GPU time per block of the level's grid, in microseconds.
+    pub cost_us: f32,
+}
+
+/// How a creature type's meshes are kept (#43 §7.6–§7.7): its levels of detail, when to move
+/// between them, and how much realizing a frame may do.
 pub struct Detail: Copy {
-    /// Cell sizes, coarse to fine: the first `count`.
-    pub cells: [f32; 4] = [3cm, 2cm, 1.5cm, 0.0],
-    pub count: u32 = 3,
+    /// The levels, coarse to fine: spike 01's cell sizes, and our costs, measured (#43 §7.7):
+    /// spike 01's in Chrome (0.34, 0.27 and 0.21) times our realization's time to its at each
+    /// level (#42 AC2: 1.25, 1.11 and 1.07).
+    pub levels: Bounded<Level, 4> = Bounded::from(
+        [
+            Level { cell: 3cm, cost_us: 0.42 },
+            Level { cell: 2cm, cost_us: 0.30 },
+            Level { cell: 1.5cm, cost_us: 0.22 },
+        ],
+    ),
     /// The largest a cell may look on screen, in pixels: an instance's level is the coarsest
     /// whose cells look no larger.
     pub max_cell_px: f32 = 2.5,
@@ -61,10 +74,6 @@ pub struct Detail: Copy {
     pub hysteresis: f32 = 0.2,
     /// A frame's realization budget, in microseconds of estimated GPU time.
     pub budget_us: f32 = 4000.0,
-    /// Estimated GPU time per block of a level's grid, in microseconds: ours, measured (#43
-    /// §7.7): spike 01's in Chrome (0.34, 0.27, 0.21 and 0.15) times our realization's time to
-    /// its at each level (#42 AC2: 1.25, 1.11, 1.07 and 1.04).
-    pub cost_us: [f32; 4] = [0.42, 0.30, 0.22, 0.16],
 }
 
 pub struct CreatureLook: Copy {

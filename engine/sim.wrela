@@ -286,12 +286,12 @@ impl Pose {
     /// The positions of a chain's joints, as this pose has them (the rest positions when the
     /// pose has no joints of its own).
     pub fn chain(self, c: Chain, rest: Skeleton) -> ChainPose {
-        var out = ChainPose { joints: [vec3(); 8], count: min(c.len(), 8) }
-        for i in 0..out.count {
+        var out = ChainPose { joints: Bounded::new() }
+        for i in 0..min(c.len(), out.joints.capacity()) {
             let b = c.joint(i)
-            out.joints[i] = if b.index < self.joints.len() { self.joints[b.index] } else {
+            out.joints.push(if b.index < self.joints.len() { self.joints[b.index] } else {
                 rest.rest(b)
-            }
+            })
         }
         out
     }
@@ -299,8 +299,7 @@ impl Pose {
 
 /// A chain's joint positions, at most 8.
 pub struct ChainPose: Copy {
-    pub joints: [vec3; 8],
-    pub count: u32,
+    pub joints: Bounded<vec3, 8>,
 }
 
 /// Secondary motion drawn over a pose.
@@ -316,8 +315,7 @@ pub struct Spring: Copy {
 
 /// Springs along a chain, following its joints a little late: a tail's sway.
 pub struct SpringChain: Copy {
-    pub springs: [Spring; 8],
-    pub count: u32,
+    pub springs: Bounded<Spring, 8>,
     pub stiffness: f32,
 }
 
@@ -332,16 +330,16 @@ impl Spring {
 
 impl SpringChain {
     pub fn new(count: u32, stiffness: f32) -> SpringChain {
-        SpringChain {
-            springs: [Spring { pos: vec3(), vel: vec3() }; 8],
-            count: min(count, 8),
-            stiffness,
+        var springs = Bounded::new()
+        for _ in 0..min(count, springs.capacity()) {
+            springs.push(Spring { pos: vec3(), vel: vec3() })
         }
+        SpringChain { springs, stiffness }
     }
 
     /// Follows the chain's joints.
     pub fn follow(mut self, target: ChainPose, dt: f32) {
-        for i in 0..self.count {
+        for i in 0..min(self.springs.len(), target.joints.len()) {
             self.springs[i].follow(target.joints[i], self.stiffness, dt)
         }
     }
@@ -350,7 +348,7 @@ impl SpringChain {
 impl Layer for SpringChain {
     fn apply(self, pose: mut Pose) {
         // The springs' sway moves the pose's last joints (a tail's tip); with no joints, nothing.
-        let n = min(self.count, pose.joints.len())
+        let n = min(self.springs.len(), pose.joints.len())
         for i in 0..n {
             let j = pose.joints.len() - n + i
             pose.joints[j] = mix(pose.joints[j], self.springs[i].pos, 0.5)
@@ -397,8 +395,7 @@ const OUTPUTS: u32 = 4
 
 impl GaitNet {
     fn weight(self, i: u32) -> f32 {
-        let b = |k: u32| u32(self.weights.at(4 * i + k))
-        bitcast_f32(b(0) | (b(1) << 8) | (b(2) << 16) | (b(3) << 24))
+        self.weights.f32_le(4 * i)
     }
 
     /// The gait a tick (`dt` seconds) later, from this one, what the creature wants, and the
