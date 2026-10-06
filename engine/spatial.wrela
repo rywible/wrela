@@ -2,9 +2,13 @@
 // so a system reads them while the entities themselves change. Built in iteration order and
 // sorted by cell, ties kept in that order, so its answers depend on nothing but the positions.
 // There are no iterator types: a query takes a closure (`each_within`) or returns an owned
-// `Vec` (`within`), language.md §6.6.
+// `Vec` (`within`), language.md §6.6. A grid kept in the world and rebuilt each tick
+// (`rebuild`) reuses its buffers, so a steady tick allocates nothing for it (#43 §5.2).
 
+use sim::SimState
 use std::arena::{Arena, Handle}
+use std::hash::StateHash
+use std::serialize::Serialize
 
 /// What a query found: an entity's handle, and where it was when the grid was built.
 pub struct Found<T>: Copy {
@@ -13,17 +17,18 @@ pub struct Found<T>: Copy {
 }
 
 /// A grid entry: its cell's key, its order in the arena, and what it holds.
-struct Entry<T>: Copy {
+struct Entry<T>: Copy + StateHash + Serialize + SimState {
     key: u32,
     order: u32,
     handle: Handle<T>,
     pos: vec3,
 }
 
-/// Positions in cells `cell` metres wide, sorted by cell.
-pub struct SpatialGrid<T> {
+/// Positions in cells `cell` metres wide, sorted by cell; and the sort's room.
+pub struct SpatialGrid<T>: Clone + StateHash + Serialize + SimState {
     cell: f32,
     entries: Vec<Entry<T>>,
+    scratch: Vec<Entry<T>>,
 }
 
 /// A cell's key: its coordinates, hashed. Two cells may share one, so queries check distances.
@@ -43,13 +48,13 @@ fn before<T>(a: Entry<T>, b: Entry<T>) -> bool {
     a.key < b.key || (a.key == b.key && a.order < b.order)
 }
 
-/// A stable merge sort, bottom up.
-fn sort<T>(v: mut Vec<Entry<T>>) {
+/// A stable merge sort, bottom up, through `scratch`.
+fn sort<T>(v: mut Vec<Entry<T>>, scratch: mut Vec<Entry<T>>) {
     let n = v.len()
     if n < 2 {
         return
     }
-    var scratch: Vec<Entry<T>> = Vec::with_capacity(n)
+    scratch.clear()
     for i in 0..n {
         scratch.push(v[i])
     }
@@ -80,20 +85,32 @@ fn sort<T>(v: mut Vec<Entry<T>>) {
 }
 
 impl<T> SpatialGrid<T> {
+    /// An empty grid of cells `cell` metres wide.
+    pub fn new(cell: f32) -> SpatialGrid<T> {
+        SpatialGrid { cell, entries: Vec::new(), scratch: Vec::new() }
+    }
+
     /// A grid of `items`' positions, `pos(item)`, in cells `cell` metres wide.
     pub fn build(items: Arena<T>, pos: fn(T) -> vec3, cell: f32) -> SpatialGrid<T> {
-        var entries: Vec<Entry<T>> = Vec::with_capacity(items.len())
+        var grid = SpatialGrid::new(cell)
+        grid.rebuild(items, pos)
+        grid
+    }
+
+    /// The grid of `items`' positions now, in the buffers it had: once they've grown to size,
+    /// nothing is allocated.
+    pub fn rebuild(mut self, items: Arena<T>, pos: fn(T) -> vec3) {
+        self.entries.clear()
         var order = 0
         for x in items {
             let p = pos(x)
-            let (cx, cy, cz) = cell_of(p, cell)
-            entries.push(
+            let (cx, cy, cz) = cell_of(p, self.cell)
+            self.entries.push(
                 Entry { key: key_of(cx, cy, cz), order, handle: items.handle_at(order), pos: p },
             )
             order += 1
         }
-        sort(mut entries)
-        SpatialGrid { cell, entries }
+        sort(mut self.entries, mut self.scratch)
     }
 
     pub fn len(self) -> u32 {

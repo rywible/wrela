@@ -69,6 +69,20 @@ pub struct Saved<W>: Clone {
 }
 
 impl<W: Clone> Ring<Saved<W>> {
+    /// Keeps `world` as tick `tick`'s keyframe: copied into the oldest one's place once the
+    /// ring is full (`clone_into`), so a steady timeline allocates nothing for it (#43 §5.2).
+    pub fn keep(mut self, tick: Tick, world: W) {
+        if self.items.len() < self.capacity {
+            self.items.push(Saved { tick, world: world.clone() })
+        } else {
+            let at = self.next % self.capacity
+            self.items[at].tick = tick
+            world.clone_into(mut self.items[at].world)
+            self.first += 1
+        }
+        self.next += 1
+    }
+
     /// The newest keyframe taken at or before tick `t`.
     pub fn last_at_or_before(self, t: Tick) -> borrow Saved<W> {
         var i = self.next
@@ -115,7 +129,7 @@ impl<W: Clone + StateHash, I: Clone> Timeline<W, I> {
     /// Steps the world with `input`, which it keeps for a correction to replay.
     pub fn advance<F: @deterministic fn(mut W, I)>(mut self, input: take I, step: F) {
         if self.tick % KEYFRAME_TICKS == 0 {
-            self.saved.push(Saved { tick: self.tick, world: self.world.clone() }) // the copy's cost is visible
+            self.saved.keep(self.tick, self.world) // a copy, into the oldest keyframe's buffers
         }
         step(mut self.world, input)
         self.inputs.push(take input)
