@@ -130,8 +130,7 @@ fn drive<W: Sim + Asks, S: @deterministic fn(mut W, TickInput<W>), P: @determini
         records: t.records.clone(),
         answers: take answers,
     }
-    borrow step = d.step
-    d.timeline.advance(take input, |w, i| step(mut w, i))
+    d.timeline.advance(take input, d.step)
     for x in d.timeline.world().asks(t.tick) {
         let (ask, due) = x
         assert(due > t.tick, "a job's answer is due after the tick that asks for it")
