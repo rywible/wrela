@@ -7,18 +7,18 @@ Scope #43, criteria #42. Status: `[ ]` open, `[x]` done.
 - [x] Measure sketch 02 (extraction, frame) and sketch 03 (tick), physique; post on #42
 
 ## 1. Platform and compiler foundations
-- [ ] Memory: thread slots and blocks (stack, panic message, par descriptor, allocations), tick region; DATA_BASE moves
-- [ ] `@thread_entry`, `@effects(...)`; only the unsafe core; worker and audio through them; special cases go
-- [ ] `std::mem::task` (a task from a function): audio, tick and jobs use it
-- [ ] `std::par`: a descriptor per starting thread, nested jobs inline, job slots, `job`, `Job::done`, `Job::take`, traps kept
-- [ ] `allocations()` per thread
-- [ ] `std::tick`: `start`, `Ticked`, `origin`, hash reporting; `__tick`
-- [ ] `std::handoff`: triple buffer, test-build checks
-- [ ] Native host: tick instance, lockstep, records, tick log, `--no-gpu`, `--replay`, no batches on long runs, cached CpuBuild
-- [ ] `@test(frames: n)` ticks in lockstep; `@test(ticks: n, input: ...)`
+- [x] Memory: thread slots and blocks (stack, panic message, par descriptor, allocations), tick region; DATA_BASE moves
+- [x] `@thread_entry`, `@effects(...)`; only the unsafe core; worker and audio through them; special cases go
+- [x] `std::mem::task` (a task from a function): audio, tick and jobs use it
+- [x] `std::par`: a descriptor per starting thread, nested jobs inline, job slots, `job`, `Job::done`, `Job::join`, traps kept
+- [x] `allocations()` per thread
+- [x] `std::tick`: `start`, `Ticked`, `origin`, hash reporting; `__tick`
+- [x] `std::handoff`: triple buffer, test-build checks
+- [x] Native host: tick instance, lockstep, records, tick log, `--no-gpu`, `--replay`, no batches on long runs, cached CpuBuild
+- [x] `@test(frames: n)` ticks in lockstep; `@test(ticks: n, input: ...)`
 - [ ] Stream v6 `DrawIndexedIndirect`; manifest cull and depth bias; `draw(indices:, cull:, depth_bias:)`, build-time constants
-- [ ] Browser: sim worker, clock, catch-up, visibility and shutdown words, input ring's second reader, stamping, lockstep and paced test modes, helpers = min(cores − 3, 8), job traps, load timing
-- [ ] x86-64 native host under Rosetta
+- [x] Browser: sim worker, clock, catch-up, visibility and shutdown words, input ring's second reader, stamping, lockstep and paced test modes, helpers = min(cores − 3, 8), job traps, load timing
+- [x] x86-64 native host under Rosetta
 
 ## 2. Engine
 - [ ] std `Surface::filtered` (a footprint), combinators forward it
