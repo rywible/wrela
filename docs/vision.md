@@ -1,6 +1,6 @@
 # wrela: vision
 
-*The goal, the theses and their evidence, the architecture, the renderer, and the constraints everything else rests on. Updated 2026-10-02, after spikes 01–13; the flagship settled 2026-10-05. Decision IDs (D-NNN), sketches and spikes refer to the design record in the git tag `design-archive-2026-10`; spike 13 is in the tag `spike-13-field-math`.*
+*The goal, the theses and their evidence, the architecture, the renderer, and the constraints everything else rests on. Updated 2026-10-02, after spikes 01–13; the flagship settled 2026-10-05; spike 14 (audio) 2026-10-06. Decision IDs (D-NNN), sketches and spikes refer to the design record in the git tag `design-archive-2026-10`; spike 13 is in the tag `spike-13-field-math`.*
 
 ## Goal
 
@@ -90,6 +90,21 @@ Decided after spikes 01–12 (2026-10-02). **Cook fields on device; rasterize wh
 | 12 | Styles | Cel with field-native outlines is the most attractive; stylized content saves 20–36% |
 | 13 | Certified field math (native host: wasmtime and wgpu) | Nested derived bounds certify the smooth creature for meshing (0 open boxes to 3.9 mm; 5 ms per 2M boxes on the GPU) and its topology for every breath (0.4 s); a corner-sampled grid misses a 12 mm part the certificate finds. Bark noise and box edges don't certify; segment tracing with derived bounds costs 3–50× sphere tracing |
 
+## Audio
+
+Spike 14 (#48, branch `spike-14`, 2026-10-06) asked whether music can be a program: Satie's first Gymnopédie as a **score** in code, a **performance** in code, and a **piano** that plays it. The owner judged it blind, against the same notes played by a sampled concert piano.
+
+- **The score** (`engine::score`) is LilyPond-like notation that a constant reads, and the form (the repeat, its endings) is code. A mistake fails the build at its voice, bar and beat. The piece is 3.8 KB of notation and 12 KB as built; the same 221 s at 128 kbps is 3.5 MB, so about 300 times more.
+- **The performance** (`engine::perform`) is what a pianist controls and nothing else: each note's onset, hammer velocity and release, and the pedals. A taste (habits) and marks (this time, at places) write it; flourishes are in seconds, not beats; every number lifts. A taste of only a tempo is the deadpan.
+- **The piano** (`engine::piano`) is modal: per partial a prompt and an aftersound resonator, four to a vec4, with stretched tuning, dampers, a half pedal, sympathetic strings, the soft pedal, phantom partials, a board and a room. Its tables are measured from a recorded Yamaha C5 (the Salamander Grand Piano V3, CC BY 3.0) and corrected in a closed loop (`wrela audio model`): its partials are within 2.9 dB of the recording's on average over 80 notes, the loudest within 0.8 dB, decays within about 2×. It costs 115 KB of code and 8.5 KB of tables, once for every piece.
+- **The voice is stereo** (language.md §6.13). Chrome renders the piece at 47 times real time, the same samples as the native host, bit for bit, and plays it live with no underrun.
+- **The blind rounds** (the owner's ears; four renders each, {wrela's piano, the sampled piano} × {deadpan, performance}, matched in loudness):
+  1. wrela's piano "video-gamey", "tinny", worse when louder; the performance's rubato (the melody up to 170 ms behind the chords) and breaths "weird timing". The deadpan won on both pianos, and the sampled piano (a simplified SF2 in FluidSynth) had an edge too.
+  2. The reference became the whole instrument (the retuned SFZ, in sfizz), the piano gained per-partial phases, beating and stereo, a hammer's contact and phantom partials, and the performance kept the pulse (no rubato, one breath). The performance on the sampled piano: "really good", as was its deadpan. wrela's piano clicked and knocked.
+  3. The clicks were the strike's noise (74 to 100 a minute at onsets, found by `wrela audio clicks`; the sampled piano had none there) and stepped dampers; both went (1 to 2.5 marginal clicks a minute, against the sampled piano's 0.3 to 0.8). The owner hasn't ranked round 3 yet.
+- **Agents can't hear,** so the method is measurement: every claim about the sound above is a number a tool reports (`partials`, `model`, `clicks`, the attacks' crest, `sheet`), and the owner's ears judge. Twice a measured target was the wrong one, and the ears caught it: noise matched to a recording's attack peak (too loud a strike), then to the energy between its partials (clicks).
+- **Not modelled yet:** the hammer's contact beyond a 1 to 4 ms swell, longitudinal partials, release and damper noise, a board solved from a field, and any instrument but the piano. Music for the flagship stays the owner's call (#44).
+
 ## Constraints
 
 The load-bearing rules. Changing one needs the owner, and the change and its reason go in the commit and here.
@@ -176,5 +191,5 @@ Everything else in the vision is in the backlog issue (#31). The pinned issue #2
 | Staging and specialization | Halide; Terra; Zig `comptime` |
 | Learned locomotion | MANN (2018); Learned Motion Matching (2020); DeepPhase (2022) |
 | Procedural animation | Overgrowth; Rain World |
-| Audio | Modal impact synthesis (van den Doel; O'Brien); DDSP |
+| Audio | Modal impact synthesis (van den Doel; O'Brien); DDSP; piano strings and hammers (Weinreich's coupled unisons; Chaigne and Askenfelt; Conklin's phantom partials; Bank); performance rules (KTH's Director Musices: Friberg, Bresin and Sundberg; Todd's phrase arch; Desain and Honing on time); music as values (Euterpea; LilyPond) |
 | Direct manipulation of programs | Sketch-n-Sketch (output-directed programming) |
