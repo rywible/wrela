@@ -64,7 +64,7 @@ const TOUR_LOOP: f32 = 120s
 /// The tour's camera `t` seconds in: round the herd once a loop, from 30 m out to 4 and back
 /// three times, looking at the herd's middle.
 fn tour(t: f32) -> (vec3, vec3) {
-    let at = vec3(0.0, 0.8, 1.0)
+    let at = vec3(0.0, 80cm, 1m)
     let a = 2.0 * PI * t / TOUR_LOOP
     let r = 4m + 13m * (1.0 + cos(6.0 * PI * t / TOUR_LOOP))
     (at + vec3(r * sin(a), 80cm + 0.25 * r, -r * cos(a)), at)
@@ -284,7 +284,7 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
         write(mut game.instances, 0, instances)
         dispatch(
             pose_instances.bind(
-                poser: Walk { unused: 0 },
+                poser: Walk {},
                 instances: game.instances.span(start: 0, count: n),
                 skeletons: game.skeletons.span(start: 0, count: HERD),
                 palettes: mut game.palettes,
@@ -378,7 +378,7 @@ pub fn skin_at(s: u32, x: f32, y: f32, z: f32, lo: u32, hi: u32, fp: f32) -> vec
         vec3(x, y, z),
         engine::creature::PartMask { lo, hi },
         fp,
-        0.06,
+        6cm,
     )
     vec2(bitcast_f32(bones), bitcast_f32(weights))
 }

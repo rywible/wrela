@@ -45,9 +45,7 @@ const IDENTITY = mat4(
 )
 
 /// The walk. A pose is (phase, head down, unused, unused).
-pub struct Walk: Copy + GpuData {
-    pub unused: u32,
-}
+pub struct Walk: Copy + GpuData {}
 
 impl Poser for Walk {
     fn local(self, bone: u32, pose: vec4) -> mat4 {

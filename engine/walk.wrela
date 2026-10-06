@@ -179,7 +179,7 @@ impl Walker {
             ),
             shade.bind(
                 field: creature.field(),
-                look: ByChannels { unused: 0 },
+                look: ByChannels {},
                 view: v,
                 lights: LIGHTS,
                 shadow: self.shadow,

@@ -111,9 +111,7 @@ pub trait Shaded {
 }
 
 /// A look that takes the albedo and roughness straight from the channels (`Shaded`).
-pub struct ByChannels: Copy + GpuData {
-    pub unused: u32,
-}
+pub struct ByChannels: Copy + GpuData {}
 
 impl<C: Shaded> Look<C> for ByChannels {
     fn surface(self, c: C, rest: vec3, fp: f32) -> (vec3, f32) {
