@@ -321,3 +321,31 @@ pub fn mesh_memory(game: Game) -> f32 {
 pub fn level(game: Game, s: u32) -> vec2 {
     vec2(f32(game.realizer.drawn(s - 1)), f32(game.realizer.target(s - 1)))
 }
+
+/// Spike 01's evaluation benchmark (`bench_eval`) on seed `s`: `n` points from xorshift 12345
+/// in the box from `lo` to `hi`, the distance at each summed; with `pruned` 1, each sample
+/// leaves out the items that can't matter there.
+pub fn bench_eval(s: u32, n: u32, pruned: u32, lx: f32, ly: f32, lz: f32, hx: f32, hy: f32, hz: f32) -> f64 {
+    let field = grazer(s).field()
+    let bounds = engine::creature::Parts::item_bounds(field)
+    let (lo, e) = (vec3(lx, ly, lz), vec3(hx - lx, hy - ly, hz - lz))
+    var r = terrain::XorShift { state: 12345 }
+    var sum: f64 = 0.0
+    for _ in 0..n {
+        let x = r.unit()
+        let y = r.unit()
+        let z = r.unit()
+        let q = lo + vec3(x * e.x, y * e.y, z * e.z)
+        let d = if pruned != 0 { engine::creature::Parts::sample_pruned(field, q, bounds).0 } else {
+            field.distance(q)
+        }
+        sum += f64(d)
+    }
+    sum
+}
+
+/// Spike 01's raycast benchmark on the sim's terrain: the steps `n` rays took, and how many hit.
+pub fn raycast(n: u32) -> vec2 {
+    let (steps, hits) = terrain::raycast_bench(terrain::Terrain::new(7), n)
+    vec2(f32(steps), f32(hits))
+}

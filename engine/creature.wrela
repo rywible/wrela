@@ -422,6 +422,11 @@ impl Seam {
     /// `dc` (a distance and its channels) joined by `x` with channels `cx`
     /// (`PartChannels::fold_channels`).
     fn join_channels<C: Blend + Copy>(self, dc: take (f32, C), x: f32, cx: C, k: f32) -> (f32, C) {
+        let w = self.width(k)
+        if self.join == Join::Smooth && w > 0.0 {
+            let (d, h) = smin_and_weight(dc.0, x, w)
+            return (d, dc.1.blend(cx, h))
+        }
         (self.apply(dc.0, x, k), self.blend(dc.0, dc.1, x, cx, k))
     }
 
@@ -454,6 +459,21 @@ impl Seam {
     /// within `near` of it (`PartList::reach`).
     fn reach(self, near: f32, k: f32) -> f32 {
         near + 1.25 * max(self.width(k), 0.0)
+    }
+}
+
+/// `smin(a, b, k)` and `smin_weight(a, b, k)` at once, as spike 01's `smin_h` gives them: the
+/// two share `max(k - |a - b|, 0)`. The same numbers as theirs, bit for bit (`0.5 / k` is twice
+/// `0.25 / k` exactly).
+fn smin_and_weight(a: f32, b: f32, k: f32) -> (f32, f32) {
+    let s = 0.25 / max(k, 1.1754944e-38)
+    let d = b - a
+    if d > 0.0 {
+        let m = max(k - d, 0.0)
+        (a - m * (m * s), m * (2.0 * s))
+    } else {
+        let m = max(k + select(if_false: d, if_true: 0.0, cond: a == b && d != d), 0.0)
+        (b - m * (m * s), 1.0 - m * (2.0 * s))
     }
 }
 
@@ -765,6 +785,7 @@ impl<F: Surface> Placed<F> {
 /// a mask (`render::PartMask`), and its parts: the leaves, the parts in its groups too, each
 /// mirrored one twice (as written, then its image).
 pub trait PartList: Copy + GpuData {
+    /// How many items: the same for every value of the type (an array counts on it).
     fn items(self) -> u32
 
     fn leaves(self) -> u32
@@ -1154,6 +1175,9 @@ fn bit(first: u32) -> PartMask {
 /// `PartList::fold_offset`'s leaf where no leaf is raised.
 pub const NO_LEAF: u32 = 0xffffffff
 
+/// No item (`PartChannels::fold_channels_masked`).
+pub const NO_ITEM: u32 = 0xffffffff
+
 impl<P: PartList> Group<P> {
     /// Its distance at `p`, where `k` is the width of a seam that gives none.
     pub fn value(self, p: vec3, k: f32) -> f32 {
@@ -1465,7 +1489,8 @@ pub trait PartChannels<C>: PartList {
     fn channels_only(self, p: vec3) -> C
 
     /// `dc` joined at `p` by each item in `mask` (bits from `first`), each seen `fp` wide, its
-    /// channels blended as its seam weighs them.
+    /// channels blended as its seam weighs them. Item `known`'s distance is `x` already (as
+    /// spike 01's pruned sample has its nearest part's); `NO_ITEM` for none.
     fn fold_channels_masked(
         self,
         p: vec3,
@@ -1474,6 +1499,8 @@ pub trait PartChannels<C>: PartList {
         mask: PartMask,
         first: u32,
         fp: f32,
+        known: u32,
+        x: f32,
     ) -> (f32, C)
 }
 
@@ -1505,13 +1532,15 @@ impl<C: Blend + Copy, F: Field<C> + Lipschitz> PartChannels<C> for Placed<F> {
         mask: PartMask,
         first: u32,
         fp: f32,
+        known: u32,
+        x: f32,
     ) -> (f32, C) {
         if !has(mask, first) {
             return dc
         }
-        let (q, _) = mirrored(p, self.mirror)
-        let (x, _) = self.seen(p, fp)
-        self.seam.join_channels(take dc, x, self.field.channels(q - self.at), k)
+        let q = mirrored(p, self.mirror).0 - self.at
+        let d = if first == known { x } else { self.field.filtered(q, fp) }
+        self.seam.join_channels(take dc, d, self.field.channels(q), k)
     }
 }
 
@@ -1538,9 +1567,11 @@ impl<C, A: PartChannels<C>, B: PartChannels<C>> PartChannels<C> for Then<A, B> {
         mask: PartMask,
         first: u32,
         fp: f32,
+        known: u32,
+        x: f32,
     ) -> (f32, C) {
-        let after_a = self.a.fold_channels_masked(p, take dc, k, mask, first, fp)
-        self.b.fold_channels_masked(p, take after_a, k, mask, first + self.a.items(), fp)
+        let after_a = self.a.fold_channels_masked(p, take dc, k, mask, first, fp, known, x)
+        self.b.fold_channels_masked(p, take after_a, k, mask, first + self.a.items(), fp, known, x)
     }
 }
 
@@ -1574,12 +1605,15 @@ impl<C: Blend + Copy, P: PartChannels<C>> PartChannels<C> for Group<P> {
         mask: PartMask,
         first: u32,
         fp: f32,
+        known: u32,
+        x: f32,
     ) -> (f32, C) {
         if !has(mask, first) {
             return dc
         }
         let (_, cx) = self.first(p, k)
-        self.seam.join_channels(take dc, self.seen(p, k, fp), cx, k)
+        let d = if first == known { x } else { self.seen(p, k, fp) }
+        self.seam.join_channels(take dc, d, cx, k)
     }
 }
 
@@ -1604,6 +1638,8 @@ impl<C, M: Modifier> PartChannels<C> for Modify<M> {
         mask: PartMask,
         first: u32,
         fp: f32,
+        known: u32,
+        x: f32,
     ) -> (f32, C) {
         (self.modifier.apply(dc.0, p), take dc.1)
     }
@@ -1611,12 +1647,10 @@ impl<C, M: Modifier> PartChannels<C> for Modify<M> {
 
 /// Items of one type, one after another (`Body::each_leg`'s segments, then its feet).
 impl<P: PartList, const N: u32> PartList for [P; N] {
+    /// An item's count of items comes from its type alone (a part, a group and a modifier are
+    /// one each), so each element has the first's.
     fn items(self) -> u32 {
-        var n = 0
-        for i in 0..N {
-            n += self[i].items()
-        }
-        n
+        if N == 0 { 0 } else { N * self[0].items() }
     }
 
     fn leaves(self) -> u32 {
@@ -1823,11 +1857,13 @@ impl<C: Copy, P: PartChannels<C>, const N: u32> PartChannels<C> for [P; N] {
         mask: PartMask,
         first: u32,
         fp: f32,
+        known: u32,
+        x: f32,
     ) -> (f32, C) {
         var out = dc
         var at = first
         for i in 0..N {
-            out = self[i].fold_channels_masked(p, out, k, mask, at, fp)
+            out = self[i].fold_channels_masked(p, out, k, mask, at, fp, known, x)
             at += self[i].items()
         }
         out
@@ -2009,7 +2045,7 @@ impl<C: Blend + Copy, P: PartChannels<C>> Parts<C> for CreatureField<P> {
 
     fn channels_masked(self, p: vec3, mask: PartMask, fp: f32) -> C {
         let start = (FAR, self.parts.channels_only(p))
-        self.parts.fold_channels_masked(p, start, self.k, mask, 0, fp).1
+        self.parts.fold_channels_masked(p, start, self.k, mask, 0, fp, NO_ITEM, 0.0).1
     }
 
     fn cull(self, b: Box3) -> Culled {
@@ -2025,31 +2061,39 @@ impl<C: Blend + Copy, P: PartChannels<C>> Parts<C> for CreatureField<P> {
 
     fn sample_pruned(self, p: vec3, bounds: [Bound]) -> (f32, C) {
         let n = min(bounds.len(), 64)
+        // Each item's lower bound; one that bounds nothing is always in.
+        var below = [0.0; 64]
         var best = 64
         var least = FAR
         for i in 0..n {
             let b = bounds[i]
             if b.radius < 1.0e29 {
                 let lb = b.below(p)
+                below[i] = lb
                 if lb < least {
                     least = lb
                     best = i
                 }
+            } else {
+                below[i] = -1.0e30
             }
         }
         var mask = ALL
+        var known = NO_ITEM
+        var est = FAR
         if best < 64 {
-            let est = self.parts.item_distance(p, best, self.k)
+            // The fold reads its distance again from here, rather than evaluate it twice.
+            known = best
+            est = self.parts.item_distance(p, best, self.k)
             mask = NONE
             for i in 0..n {
-                let b = bounds[i]
-                if i == best || b.radius >= 1.0e29 || b.below(p) < est + self.k {
+                if i == best || below[i] < est + self.k {
                     mask = mask.or(PartMask::bit(i))
                 }
             }
         }
         let start = (FAR, self.parts.channels_only(p))
-        self.parts.fold_channels_masked(p, start, self.k, mask, 0, 0.0)
+        self.parts.fold_channels_masked(p, start, self.k, mask, 0, 0.0, known, est)
     }
 
     fn skin_at(self, p: vec3, mask: PartMask, fp: f32, falloff: f32) -> (u32, u32) {
