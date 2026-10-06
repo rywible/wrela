@@ -446,9 +446,3 @@ impl GaitNet {
     }
 }
 
-/// `tanh`, from `exp`: std's math has none.
-fn tanh(x: f32) -> f32 {
-    let c = clamp(x, -10.0, 10.0)
-    let e = exp(2.0 * c)
-    (e - 1.0) / (e + 1.0)
-}
