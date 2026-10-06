@@ -146,8 +146,8 @@ Planned in GitHub issues on rywible/wrela, not here. Each milestone has a scope 
 | **M0: measure first** | Done: spikes 01–12 |
 | **M1: hello field** | Done: wrela compiles to WASM and WGSL; a field renders in a browser tab |
 | **M2: the language** | Done: the language and stdlib, complete: tiers 0–2, without a compiler in the browser |
-| **M3: the first lens** | Done (October 2026): the lens, a studio tool written in wrela, and the agents' command-line tools; thesis 1 tested blind in authoring rounds 2 and 3 |
-| **M4: the engine's spine** | Spike 01's herd rendered from wrela source, matching the hand-written numbers |
+| **M3: the first lens** | Done (October 2026): the lens, a studio tool written in wrela, and the agents' command-line tools; thesis 1 tested blind in authoring rounds 2 to 6 |
+| **M4: the engine's spine** | Spike 01's herd simulated and rendered from wrela source, matching the hand-written numbers; the sim on its own worker, its replays verified with no GPU |
 | **M5: the look** | The Last Green's clearing at 60 fps with a creature walking across it, in the art direction the owner picks from three prototypes |
 | **M6: the duel** | The masked climber against one creature, in all three browsers; the combat-feel gate |
 | **M7: the Ashstag** | The first Warden and the soul blade's first evolution; the art-quality gate |
