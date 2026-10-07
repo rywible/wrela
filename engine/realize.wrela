@@ -625,6 +625,74 @@ pub fn realize_once<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Mesh 
     mesh
 }
 
+/// `creature`'s mesh, realized as `realize_once` does it, but over frames: `start` culls, and
+/// each `step` places the vertices of a few slices of the live blocks (`SLICE_BLOCKS` each),
+/// the last finishing the mesh. So no submission runs long (the GPU safety rule: under 100 ms,
+/// #51 AC6): realized at 1 cm in one submission, the clearing's creature took 0.4 s.
+pub struct Realizing {
+    pub mesh: Mesh,
+    grid: Grid,
+    scratch: Scratch,
+    falloff: f32,
+    /// The next slice, and how many: past the last, the finish; past that, done.
+    at: u32,
+    slices: u32,
+}
+
+impl Realizing {
+    pub fn start<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Realizing {
+        let grid = Grid::around(
+            grow(creature.bounds(), look.surface.tolerance),
+            look.surface.cell_size(5cm),
+        )
+        var mesh = Mesh::new(Room { vertices: grid.blocks * 8, quads: grid.blocks * 16 })
+        var scratch = Scratch::new(grid.blocks)
+        record_cull(creature.field(), grid, mut scratch, mut mesh)
+        // As the realizer counts them (`Realizer::advance`): live blocks go as the grid's
+        // surface, about 6 × blocks^(2/3), and a quarter more.
+        let expected = 7.5 * pow(f32(grid.blocks), 2.0 / 3.0)
+        let slices = clamp(u32(ceil(expected / f32(SLICE_BLOCKS))), 1, MAX_SLICES)
+        Realizing {
+            mesh: take mesh,
+            grid,
+            scratch: take scratch,
+            falloff: look.deform.weights.falloff,
+            at: 0,
+            slices,
+        }
+    }
+
+    /// Whether the mesh is whole.
+    pub fn done(self) -> bool {
+        self.at > self.slices
+    }
+
+    /// The next `n` slices, or the finish after the last: once a frame until `done`.
+    pub fn step<C, K: Creature<C>>(mut self, creature: K, n: u32) {
+        for _ in 0..n {
+            if self.at < self.slices {
+                record_slice(
+                    creature.field(),
+                    self.grid,
+                    self.at,
+                    self.slices,
+                    mut self.scratch,
+                    mut self.mesh,
+                )
+            } else if self.at == self.slices {
+                record_finish(
+                    creature.field(),
+                    self.grid,
+                    self.falloff,
+                    mut self.scratch,
+                    mut self.mesh,
+                )
+            }
+            self.at = min(self.at + 1, self.slices + 1)
+        }
+    }
+}
+
 /// A realization's first part: `mesh` emptied, and the live blocks of `grid` found.
 pub fn record_cull<C, F: Parts<C>>(field: F, grid: Grid, scratch: mut Scratch, mesh: mut Mesh) {
     scratch.fit(grid.blocks)

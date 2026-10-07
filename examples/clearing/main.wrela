@@ -9,7 +9,7 @@ use engine::character::{
 use engine::gait::{Body, between, palette}
 use engine::grass::{Blooms, Grass, GrassLook}
 use engine::present::Snapshots
-use engine::realize::{Mesh, realize_once}
+use engine::realize::Realizing
 use engine::render::MAX_BONES
 use engine::run::run
 use fawn::creature::fawn
@@ -28,7 +28,7 @@ use engine::terrain::{Clipmap, Terrain, Texel, ground, ground_shade}
 use engine::vegetation::{Forest, Kind, kind, nothing}
 use engine::view::{BEHIND, Camera, NEAREST, camera, first_camera}
 use std::gpu::dispatch
-use std::collections::swap
+use std::collections::{replace, swap}
 use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, start_eye}
 use std::gpu::{
     ClipPosition, Compare, ComparisonSampler, Cull, Depth, DepthBias, DepthTexture, FragCoord,
@@ -43,12 +43,25 @@ use std::reload::{keep, kept}
 use std::serialize::{LoadError, Serialize, load, save}
 use trees::{KINDS, kind_plant, occluders, placed}
 use clouds::cloudscape
-use rocks::{boulders, footprints}
+use rocks::{BOULDERS, boulder, boulders, footprints}
 use path::shot
 use world::{World, present as snapshot, spawn, tick}
 
 /// The scene's size against the output's: half each way (Q3 of #51).
 const SCALE: u32 = 2
+
+/// The forest's card width for its levels, in the scene's pixels (`Lod::card_px`): the levels
+/// are chosen as the game draws them, at `SCALE`, so a scene drawn at another scale (a test's
+/// native frame) draws the same levels and fades, the same content.
+fn card_px(scale: u32) -> f32 {
+    engine::lod::CARD_PX * f32(SCALE) / f32(scale)
+}
+
+/// What's cooked a frame at load, so each frame's GPU work stays short (the GPU safety rule,
+/// AC6): a slice of the creature's mesh (`Realizing`), two of the forest's kinds, and a
+/// boulder.
+const CREATURE_SLICES: u32 = 1
+const KINDS_PER_FRAME: u32 = 2
 
 /// The static cascades: the clearing's (about 7 cm a texel) and the valley's.
 const NEAR_CASCADE = Cascade { centre: vec3(0.0, 4.0, 36.0), span: 144.0, reach: 250.0, side: 2048 }
@@ -174,7 +187,10 @@ pub struct Clearing {
     /// The sim's snapshots, the creature's mesh and colours, its body for walking, and its
     /// palettes: this frame's and the last.
     snaps: Snapshots<World>,
-    mesh: Mesh,
+    /// The creature's mesh, realized a few slices a frame (a short submission each), and its
+    /// colours, once it's whole.
+    creature: Realizing,
+    creature_done: bool,
     colours: GpuBuffer<Unorm8x4>,
     body: Body,
     palette: GpuBuffer<mat4>,
@@ -188,7 +204,11 @@ pub struct Clearing {
     stones: Vec<Realized>,
     light: Light,
     cam: Camera,
+    /// The forest, its kinds cooked a few a frame at load (a short submission each): until
+    /// they're all cooked, a forest of none.
     forest: Forest,
+    kinds: Vec<Kind>,
+    forest_done: bool,
     grass: Grass,
     /// The shadow maps: the static cascades (drawn when something static changes), and the
     /// moving map.
@@ -300,22 +320,23 @@ fn keys(s: mut Clearing, time: f32) {
 pub fn init() -> Clearing {
     let world = spawn()
     let latest = run(take world, hz: 60, step: tick, present: snapshot)
-    let mesh = realize_once(fawn(), REALIZED)
-    let colours = colours(mesh, fawn().field(), Fawn {}, cell: 1cm)
+    let creature = Realizing::start(fawn(), REALIZED)
     let atlas = leaf_atlas(6)
-    let linear = sampler()
-    let forest = forest_of(atlas, linear)
+
     print(f"forest: {KINDS} kinds, {placed().len()} instances")
     let probes = probes_of()
-    print(f"probes: {probes.grid.probes()} in {probes.grid.cols * probes.grid.cols} columns, {probes.occluder_count} occluders")
+    print(
+        f"probes: {probes.grid.probes()} in {probes.grid.cols * probes.grid.cols} columns, {probes.occluder_count} occluders",
+    )
     let puffs = puffs_of()
     print(f"clouds: {puffs.len()} puffs")
     let w = spawn().walker
     let back: Result<Carried, LoadError> = load(kept())
     var s = Clearing {
         snaps: Snapshots::new(take latest, hz: 60),
-        mesh: take mesh,
-        colours: take colours,
+        creature: take creature,
+        creature_done: false,
+        colours: buffer(1),
         body: walker_body(),
         palette: buffer(MAX_BONES),
         last_palette: buffer(MAX_BONES),
@@ -323,10 +344,12 @@ pub fn init() -> Clearing {
         follow: w.root.pos,
         follow_heading: w.root.heading,
         clipmap: Clipmap::new(levels: 11, finest: 0.125),
-        stones: boulders(),
+        stones: Vec::new(),
         light: sun_light(),
         cam: first_camera(start_eye(), LOOK_AT, FOVY, width: 960, height: 540),
-        forest: take forest,
+        forest: Forest::new(Vec::new(), Vec::new(), cards_to: 150.0, impostors_to: 1000.0),
+        kinds: Vec::new(),
+        forest_done: false,
         grass: Grass::new(),
         near: depth_texture(width: NEAR_CASCADE.side, height: NEAR_CASCADE.side),
         far: depth_texture(width: FAR_CASCADE.side, height: FAR_CASCADE.side),
@@ -414,6 +437,7 @@ fn cook_again(s: mut Clearing, eye: vec3) {
     }
     if s.watches.forest.changed() {
         s.forest = forest_of(s.atlas, s.linear)
+        s.forest.card_px = card_px(s.scale)
         shadows = true
         probes = true
     }
@@ -577,6 +601,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         s.width = width
         s.height = height
         s.frames = 0
+        s.forest.card_px = card_px(s.scale)
     }
     // The creature, between the two ticks round the frame's sim time, and its palette.
     s.snaps.update()
@@ -611,6 +636,35 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     }
     s.clipmap.follow(Ground {}, eye, again: false)
     cook_again(mut s, eye)
+    // The forest's kinds, a few a frame; the forest once they're all cooked.
+    if !s.forest_done {
+        for _ in 0..KINDS_PER_FRAME {
+            let k = s.kinds.len()
+            if k < KINDS {
+                s.kinds.push(kind(kind_plant(k), seed: k + 1, atlas: s.atlas, s: s.linear))
+            }
+        }
+        if s.kinds.len() == KINDS {
+            let kinds = replace(mut s.kinds, Vec::new())
+            s.forest = Forest::new(take kinds, placed(), cards_to: 150.0, impostors_to: 1000.0)
+            s.forest.card_px = card_px(s.scale)
+            s.forest_done = true
+            s.static_drawn = false
+        }
+    }
+    // The boulders, one a frame.
+    if s.stones.len() < BOULDERS {
+        s.stones.push(boulder(s.stones.len()))
+        s.static_drawn = false
+    }
+    // The creature's mesh, a few slices a frame until it's whole; then its colours.
+    if !s.creature_done {
+        s.creature.step(fawn(), n: CREATURE_SLICES)
+        if s.creature.done() {
+            s.colours = colours(s.creature.mesh, fawn().field(), Fawn {}, cell: 1cm)
+            s.creature_done = true
+        }
+    }
     let sh = shadows(
         s.light.sun,
         NEAR_CASCADE,
@@ -621,22 +675,23 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         frame: s.frames,
     )
     s.sh = sh
-    if !s.static_drawn {
+    // The static shadows, once the forest that casts them is cooked.
+    if !s.static_drawn && s.forest_done && s.stones.len() == BOULDERS {
         static_shadows(mut s, sh, wind)
         s.static_drawn = true
     }
     label("shadow moving")
     let mv = begin_depth_pass(mut s.moving, clear_depth: 1.0)
-    if on(s.off, testing::CREATURE) {
+    if on(s.off, testing::CREATURE) && s.creature_done {
         draw(
             character_shadow.bind(
-                verts: s.mesh.verts.items(),
+                verts: s.creature.mesh.verts.items(),
                 palettes: s.palette.span(start: 0, count: MAX_BONES),
                 view: sh.moving,
             ),
             nothing,
-            indices: s.mesh.quads.items(),
-            indirect: s.mesh.args.span(start: 0, count: 5),
+            indices: s.creature.mesh.quads.items(),
+            indirect: s.creature.mesh.args.span(start: 0, count: 5),
             depth_bias: DepthBias { constant: 2, slope: 1.5, clamp: 0.0 },
         )
     }
@@ -694,8 +749,9 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         s.clouds_again = false
     }
     // The probes: their occluders cooked once, then a strip of columns a frame.
+    // They read the static shadows, so they start once those are drawn.
     let texels = s.clipmap.texels()
-    if !s.occluders_cooked {
+    if !s.static_drawn {} else if !s.occluders_cooked {
         s.probes.cook()
         s.occluders_cooked = true
     } else if !s.probes.done() {
@@ -714,7 +770,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             s.rebaking = false
         }
     }
-    if !s.ready && s.probes.done() && s.strips >= STRIPS {
+    if !s.ready && s.probes.done() && s.strips >= STRIPS && s.creature_done {
         s.ready = true
         print(f"clearing ready at frame {s.frames}")
     }
@@ -858,10 +914,10 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     ter.end()
     label("creature")
     let cr = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)
-    if on(s.off, testing::CREATURE) {
+    if on(s.off, testing::CREATURE) && s.creature_done {
         draw(
             character.bind(
-                verts: s.mesh.verts.items(),
+                verts: s.creature.mesh.verts.items(),
                 colours: s.colours.span(start: 0, count: s.colours.len()),
                 palettes: s.palette.span(start: 0, count: MAX_BONES),
                 parts: parts_of(fawn().skeleton()),
@@ -878,8 +934,8 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
                 probes,
                 grounds,
             ),
-            indices: s.mesh.quads.items(),
-            indirect: s.mesh.args.span(start: 0, count: 5),
+            indices: s.creature.mesh.quads.items(),
+            indirect: s.creature.mesh.args.span(start: 0, count: 5),
             cull: Cull::Back,
             depth: NEAREST,
         )
@@ -901,17 +957,17 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     // The creature's motion, where it's seen.
     label("motion")
     let mo = begin_pass_with_depth(mut s.motion, mut s.depth, clear: vec4(0.0), keep_depth: true)
-    if on(s.off, testing::CREATURE) {
+    if on(s.off, testing::CREATURE) && s.creature_done {
         draw(
             character_motion.bind(
-                verts: s.mesh.verts.items(),
+                verts: s.creature.mesh.verts.items(),
                 palettes: s.palette.span(start: 0, count: MAX_BONES),
                 last: s.last_palette.span(start: 0, count: MAX_BONES),
                 cam: cam,
             ),
             motion.bind(cam),
-            indices: s.mesh.quads.items(),
-            indirect: s.mesh.args.span(start: 0, count: 5),
+            indices: s.creature.mesh.quads.items(),
+            indirect: s.creature.mesh.args.span(start: 0, count: 5),
             cull: Cull::Back,
             depth: Depth { compare: Compare::GreaterEqual, write: false },
         )

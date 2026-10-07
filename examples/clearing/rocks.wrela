@@ -22,16 +22,23 @@ fn squash(seed: u32) -> vec3 {
     vec3(1.0 + 0.3 * rand(seed, 1), 0.62 + 0.15 * rand(seed, 2), 0.9 + 0.3 * rand(seed, 3))
 }
 
-/// The boulders, realized: each sunk a third of its height into the ground.
+/// How many boulders there are.
+pub const BOULDERS: u32 = 7
+
+/// Boulder `i`, realized: sunk a third of its height into the ground.
+pub fn boulder(i: u32) -> Realized {
+    let s = SPOTS[i]
+    let seed = u32(s.w)
+    let q = squash(seed)
+    let at = vec3(s.x, height(x: s.x, z: s.y) + s.z * q.y * 0.35, s.y)
+    realize_stone(radius: s.z, squash: q, seed: seed, at: at, turn: TAU * rand(seed, 4))
+}
+
+/// The boulders, realized.
 pub fn boulders() -> Vec<Realized> {
     var out: Vec<Realized> = Vec::new()
-    for s in SPOTS {
-        let seed = u32(s.w)
-        let q = squash(seed)
-        let at = vec3(s.x, height(x: s.x, z: s.y) + s.z * q.y * 0.35, s.y)
-        out.push(
-            realize_stone(radius: s.z, squash: q, seed: seed, at: at, turn: TAU * rand(seed, 4)),
-        )
+    for i in 0..BOULDERS {
+        out.push(boulder(i))
     }
     out
 }

@@ -22,6 +22,8 @@ pub const VOLUME: u32 = 4
 /// level whose cards look no wider than this on screen.
 pub const CARD_PX: f32 = 24.0
 /// The width on screen (the scene's pixels) below which a far crown fades out, by half again.
+/// Like `CARD_PX`, it's scaled by `Lod::card_px`: a scene drawn at another size chooses the
+/// same levels and fades by giving `card_px` in its own pixels.
 pub const FAINT_PX: f32 = 1.5
 
 /// What deciding a plant's level reads: where its cards hand over to an impostor and the
@@ -52,7 +54,8 @@ pub fn place(l: Lod, cam: Camera, at: vec3, scale: f32) -> (f32, f32) {
     level += smoothstep(0.92, 1.08, d / l.cards_to) + smoothstep(0.92, 1.08, d / l.impostors_to)
     // Beyond the cards, a crown fading as it shrinks to a pixel or two.
     let crown = 2.0 * r / max(cam.footprint(d), 1.0e-6)
-    let faint = if d > l.cards_to { 1.0 - smoothstep(FAINT_PX, 2.0 * FAINT_PX, crown) } else { 0.0 }
+    let fp = FAINT_PX * l.card_px / CARD_PX
+    let faint = if d > l.cards_to { 1.0 - smoothstep(fp, 2.0 * fp, crown) } else { 0.0 }
     (level, faint)
 }
 
