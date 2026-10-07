@@ -74,7 +74,7 @@ pub fn present(w: World) -> World {
 /// bones' lengths (within 1e-4 m).
 @test
 fn the_walk_keeps_its_feet_planted_on_the_terrain() {
-    let s = grazer::creature::grazer().skeleton()
+    let s = fawn::creature::fawn().skeleton()
     let b = walker_body()
     var w = spawn().walker
     let legs = s.legs()

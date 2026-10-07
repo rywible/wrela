@@ -1,0 +1,9 @@
+// What the lens shows of this package (`wrela studio examples/fawn`): the fawn's field.
+
+use creature::{Coat, fawn}
+use engine::creature::Creature
+use std::field::{Field, Lipschitz}
+
+pub fn subject() -> Field<Coat> + Lipschitz {
+    fawn().field()
+}

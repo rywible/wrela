@@ -8,19 +8,26 @@ use std::math::TAU
 
 /// The great tree, its base at the origin.
 pub fn great_tree() -> Plant {
-    var p = plant(leaves: Leaves { size: 0.85, cover: 1.9 }, bark: Bark {})
+    // Old bark: darker than a young tree's, so the trunk stays a shape in shade under the crown.
+    let bark = Bark { dark: vec3(0.085, 0.065, 0.05), light: vec3(0.19, 0.155, 0.115) }
+    var p = plant(leaves: Leaves { size: 0.85, cover: 1.9 }, bark: bark)
     let base = vec3(0.0, -0.3, 0.0)
-    let fork = base + vec3(0.2, 4.2, -0.1)
-    p.straight(base - vec3(0.0, 0.5, 0.0), base + vec3(0.0, 1.1, 0.0), r_from: 1.25, r_to: 0.7)
-    p.straight(base + vec3(0.0, 0.8, 0.0), fork, r_from: 0.72, r_to: 0.55)
+    let fork = base + vec3(0.215, 4.2, -0.1)
+    // The trunk, one tube: from below the ground (its rounded end out of sight), flared at its
+    // root, tapering to past the fork, where the limbs hide its closing tip.
+    let top = fork + vec3(0.0, 1.4, 0.0)
+    p.tube(
+        [base - vec3(0.0, 0.9, 0.0), base + vec3(0.0, 0.6, 0.0), mix(base, top, vec3(0.45)), top],
+        [1.6, 1.2, 0.9, 0.62],
+    )
     let dome = base + vec3(0.0, 9.6, 0.0)
     for i in 0..5 {
         let a = TAU * (f32(i) + 0.3) / 5.0 + pick(31, i, lo: -0.3, hi: 0.3)
         let out = vec3(cos(a), 0.0, sin(a))
         let mid = fork + out * 3.2 + vec3(0.0, 2.6, 0.0)
         let tip = fork + out * 6.6 + vec3(0.0, 4.4 + pick(33, i, lo: -0.8, hi: 0.8), 0.0)
-        p.limb(fork, mix(fork, mid, vec3(0.5)) + vec3(0.0, 0.3, 0.0), mid, r_from: 0.42, r_to: 0.3)
-        p.limb(mid, mix(mid, tip, vec3(0.5)) + vec3(0.0, 0.2, 0.0), tip, r_from: 0.3, r_to: 0.14)
+        p.limb(fork, mix(fork, mid, vec3(0.5)) + vec3(0.0, 0.3, 0.0), mid, r_from: 0.6, r_to: 0.4)
+        p.limb(mid, mix(mid, tip, vec3(0.5)) + vec3(0.0, 0.2, 0.0), tip, r_from: 0.4, r_to: 0.18)
         let side = vec3(-out.z, 0.0, out.x)
         p.straight(mid, mid + side * 2.2 + out * 1.5 + vec3(0.0, 2.0, 0.0), r_from: 0.2, r_to: 0.09)
         p.straight(

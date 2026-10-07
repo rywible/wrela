@@ -85,6 +85,14 @@ impl Plant {
         }
     }
 
+    /// A limb through four points, its radius at each given: a trunk that flares at its root
+    /// and tapers in one tube, with no seam where two tubes cross.
+    pub fn tube(mut self, points: [vec3; 4], radii: [f32; 4]) {
+        if !self.limbs.is_full() {
+            self.limbs.push(Tube { points, radii })
+        }
+    }
+
     /// A straight limb from `from` to `to`.
     pub fn straight(mut self, from: vec3, to: vec3, r_from: f32, r_to: f32) {
         self.limb(from, mix(from, to, vec3(0.5)), to, r_from, r_to)
@@ -358,9 +366,11 @@ pub fn leaves_on(uv: vec2, seed: u32, w: f32, n: u32) -> (f32, u32) {
 
 // ---- limbs as geometry -----------------------------------------------------------------------
 
-/// Sides round a limb's tube, and rings along each of its three pieces.
-pub const SIDES: u32 = 10
-pub const RINGS: u32 = 3
+/// Sides round a limb's tube, and rings along each of its three pieces. A piece is straight, and
+/// its radius changes evenly along it, so two rings are enough (the last piece's closing tip
+/// takes the second); sides are what a thick trunk shows, as flat faces the look paints by.
+pub const SIDES: u32 = 14
+pub const RINGS: u32 = 2
 /// Vertices a limb draws: each piece's rings of quads round it.
 pub const LIMB_VERTICES: u32 = 3 * RINGS * SIDES * 6
 

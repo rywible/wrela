@@ -51,7 +51,7 @@ Scope: #28 ("The clearing, specified", § numbers). Criteria: #51 (AC numbers).
   - [x] G1f the clearing: carried state; what's cooked from changed literals cooked again
   - [x] G1g tests: latencies and effects in both hosts
 - [x] G2 The great tree as a plant in its own package; the lens draws, probes and drags it
-- [ ] G3 The art-directed round: the great tree and the creature authored with the lens; edit shares
+- [x] G3 The art-directed round, the agents' part: the great tree and the fawn authored with the lens (edit log in the commit); the owner's verdicts and edits pending
 - [ ] G4 #31's M3 friction met in the round: fixed, or noted in #31
 
 ## H. The clearing and its measures (§1, §11, AC2, AC11)

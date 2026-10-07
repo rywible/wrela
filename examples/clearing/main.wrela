@@ -12,7 +12,7 @@ use engine::present::Snapshots
 use engine::realize::{Mesh, realize_once}
 use engine::render::MAX_BONES
 use engine::run::run
-use grazer::creature::grazer
+use fawn::creature::fawn
 use engine::light::{Light, afternoon}
 use engine::paint::{Develop, Look, dab_map, develop, glow_blur, glow_down}
 use engine::lit::Lighting
@@ -300,8 +300,8 @@ fn keys(s: mut Clearing, time: f32) {
 pub fn init() -> Clearing {
     let world = spawn()
     let latest = run(take world, hz: 60, step: tick, present: snapshot)
-    let mesh = realize_once(grazer(), REALIZED)
-    let colours = colours(mesh, grazer().field(), Fawn {}, cell: 1cm)
+    let mesh = realize_once(fawn(), REALIZED)
+    let colours = colours(mesh, fawn().field(), Fawn {}, cell: 1cm)
     let atlas = leaf_atlas(6)
     let linear = sampler()
     let forest = forest_of(atlas, linear)
@@ -582,7 +582,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     s.snaps.update()
     let b = s.snaps.at(s.snaps.sim_time(time))
     let walker = between(b.a.walker, b.b.walker, b.alpha)
-    let pose = palette(grazer().skeleton(), s.body, walker)
+    let pose = palette(fawn().skeleton(), s.body, walker)
     copy_palette(mut s)
     write(mut s.palette, 0, pose.bones)
     // The camera on its path, following the creature eased.
@@ -864,7 +864,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
                 verts: s.mesh.verts.items(),
                 colours: s.colours.span(start: 0, count: s.colours.len()),
                 palettes: s.palette.span(start: 0, count: MAX_BONES),
-                parts: parts_of(grazer().skeleton()),
+                parts: parts_of(fawn().skeleton()),
                 cam: cam,
             ),
             character_shade.bind(

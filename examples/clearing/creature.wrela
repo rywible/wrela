@@ -1,12 +1,13 @@
-// The clearing's creature (#28 §8): until the art-directed round's exists, round 1's grazer, as
-// spike 15 drew it (Q4 of #51). Its walk: a trail along the worn track to the great tree's rise,
-// then round toward the gap; its body for walking (springs on its neck and tail); and its look.
+// The clearing's creature (#28 §8): the art-directed round's fawn (examples/fawn), authored with
+// the lens from round 1's grazer, which spike 15 drew (Q4 of #51). Its walk: a trail along the
+// worn track to the great tree's rise, then round toward the gap; its body for walking (springs
+// on its neck and tail); and its look.
 
 use engine::creature::{Creature, Skeleton}
 use engine::gait::{Body, Path, body}
 use engine::look::{CreatureLook, Mesh}
 use engine::render::Look
-use grazer::creature::{Coat, grazer}
+use fawn::creature::{Coat, fawn}
 use scene::height
 
 /// Where it starts (spike 15's grazer stood here), and the trail it follows from there, as
@@ -81,7 +82,7 @@ impl Path for Trail {
 
 /// The creature, its body for walking: springs on its neck (to its head) and its tail.
 pub fn walker_body() -> Body {
-    let s = grazer().skeleton()
+    let s = fawn().skeleton()
     let head = [
         s.find("neck 0"),
         s.find("neck 1"),

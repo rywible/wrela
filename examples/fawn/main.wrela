@@ -1,0 +1,13 @@
+// The fawn as a program: its export gives the lens's tests its distance. The lens draws it
+// (`wrela studio examples/fawn`); the clearing walks it.
+
+use creature::fawn
+use engine::creature::Creature
+use std::field::Surface
+
+/// The fawn's distance at a point.
+pub fn distance(x: f32, y: f32, z: f32) -> f32 {
+    fawn().field().distance(vec3(x, y, z))
+}
+
+pub fn frame(time: f32, width: u32, height: u32) {}
