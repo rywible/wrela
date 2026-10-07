@@ -359,8 +359,14 @@ pub fn card(
 ) -> LeafVertex {
     let (world, uv, card, inst) = card_corner(v.index, i.index, d, cards, instances)
     let t = card.tint.decode()
+    // A coarser level draws the same card twice the size in the same plane (a card faces the
+    // camera's basis, so it's at one depth), so where two levels cross-fade the prepass's depth
+    // would pass both levels' equal test. Each level's cards lie a hundred-thousandth farther
+    // along the eye's ray than the level before's: each corner stays on its pixel, and the
+    // depth is one level's (some hundred steps of a float apart, in reversed depth).
+    let apart = cam.eye + (world - cam.eye) * (1.0 + 1.0e-5 * f32(min(d.way, CARD_LEVELS)))
     LeafVertex {
-        clip: ClipPosition { position: cam.clip(world) },
+        clip: ClipPosition { position: cam.clip(apart) },
         world,
         uv,
         normal: inst.turn(card.normal.decode()),
