@@ -7,6 +7,10 @@
 use camera::{BARK, Cam, GOUACHE, LEAVES}
 use light::{Lit, hazed, shade}
 use noise::{noise2, rand}
+use history::{
+    ALIVE, BEECH, BIRCH, History, LIGHTNING, LOG, OAK, OAK_SOWN, SNAG, SNAPPED, THORN, Tree, WIND,
+    YEARS, HABITS, sample,
+}
 use scene::{KNOLL, MEADOW, eye, height, in_gap, past_edge}
 use shadow::{Sun, sunlit}
 use std::gpu::{ClipPosition, ComparisonSampler, DepthTexture, Flat, VertexIndex, discard}
@@ -30,13 +34,27 @@ pub struct Card: Copy + GpuData {
     pub crown: u32,
 }
 
-/// A limb: a tapered tube from `a` to `b`.
+/// A limb: a tapered tube from `a` to `b`, its bark's kind (`PLAIN`, `OAK_BARK`, ...), and how
+/// mossy it is.
 pub struct Limb: Copy + GpuData {
     pub a: vec3,
     pub ra: f32,
     pub b: vec3,
     pub rb: f32,
+    pub kind: u32 = 0,
+    pub moss: f32 = 0.0,
+    /// How much sky it sees (spike 15's limbs all saw 0.55).
+    pub sky: f32 = 0.55,
 }
+
+/// Barks: spike 15's, the oak's, the beech's, the birch's, dead wood standing (silvered), and
+/// a log's (rotting, mossy by `moss`).
+pub const PLAIN: u32 = 0
+pub const OAK_BARK: u32 = 1
+pub const BEECH_BARK: u32 = 2
+pub const BIRCH_BARK: u32 = 3
+pub const DEAD: u32 = 4
+pub const ROTTEN: u32 = 5
 
 /// The forest, as the GPU takes it.
 pub struct Forest {
@@ -299,7 +317,14 @@ pub fn forest() -> Forest {
         }
     }
     f.far_from = f.cards.len()
-    // The far trees, down the valley's slopes and over its floor.
+    far_trees(mut f)
+    f
+}
+
+/// The far trees, down the valley's slopes and over its floor.
+fn far_trees(f: mut Forest) {
+    let e = eye()
+    var s = 1000 + 48 * 30
     let far_cell = 13.0
     for i in 0..80 {
         for j in 0..60 {
@@ -314,7 +339,412 @@ pub fn forest() -> Forest {
             }
         }
     }
+}
+
+// ---- the forest the history left (spike 16) -----------------------------------------------------
+
+/// The forest the history left: the authored great tree, then each tree the history kept that
+/// the camera can see, alive or dead, by its species, height, crown and lean; and the far trees.
+pub fn forest_of(h: History) -> Forest {
+    var f = Forest {
+        clumps: Vec::new(),
+        cards: Vec::new(),
+        limbs: Vec::new(),
+        crowns: 0,
+        far_from: 0,
+    }
+    // The great oak is the author's once it's grown (§9 authors it); before that, the history's.
+    let grown_up = YEARS - OAK_SOWN >= 300
+    if grown_up {
+        great_tree(mut f)
+    }
+    let e = eye()
+    let yaw = scene::view_yaw()
+    for t in h.trees {
+        var a = atan2(t.at.x - e.x, t.at.y - e.z) - yaw
+        a = a - TAU * floor((a + PI) / TAU)
+        let near = length(t.at - e.xz) < 6.0
+        if (abs(a) < 1.35 || near) &&
+            length(t.at - e.xz) > 1.2 &&
+            !(t.pinned && grown_up) &&
+            past_edge(t.at) < -1.0 {
+            let base = vec3(t.at.x, height(t.at.x, t.at.y), t.at.y)
+            let wet = sample(h.wet, t.at)
+            // The light that reaches the ground at the crown's edge toward the light: how low an
+            // edge tree keeps its limbs there.
+            let toward = if length(t.lean) > 0.05 { normalize(t.lean) } else { vec2(0.0) }
+            let side = sample(h.light, t.at + toward * (t.reach + 1.0))
+            let sky = 0.32 + 0.35 * sample(h.light, t.at)
+            if t.state == ALIVE {
+                if t.kind == THORN {
+                    thorn_bush(mut f, base, t)
+                } else if t.tall > 1.2 {
+                    grown(mut f, base, t, wet, side, sky)
+                } else if length(t.at - e.xz) < 70.0 {
+                    seedling(mut f, base, t)
+                }
+            } else if t.state == SNAG {
+                snag(mut f, base, t, sky)
+            } else if t.state == LOG {
+                fallen(mut f, base, t, wet)
+            }
+        }
+    }
+    // Ferns on the forest floor, where a little light reaches it and it's damp.
+    for c in 0..(history::N * history::N) {
+        let p = history::centre(c)
+        var a = atan2(p.x - e.x, p.y - e.z) - yaw
+        a = a - TAU * floor((a + PI) / TAU)
+        let d = length(p - e.xz)
+        let l = h.light[c]
+        let suits = smoothstep(0.04, 0.12, l) *
+            (1.0 - smoothstep(0.35, 0.6, l)) *
+            smoothstep(0.2, 0.6, h.wet[c] + 0.3 * h.litter[c])
+        if abs(a) < 1.0 && d > 2.0 && d < 60.0 && rand(c, 77) < suits * 0.8 {
+            for k in 0..3 {
+                let q = p + vec2(rand(c, 80 + k) - 0.5, rand(c, 90 + k) - 0.5) * 2.0
+                fern(mut f, vec3(q.x, height(q.x, q.y), q.y), c * 3 + k)
+            }
+        }
+    }
+    f.far_from = f.cards.len()
+    far_trees(mut f)
     f
+}
+
+/// A fern: a low, wide spray of small bright leaves.
+fn fern(f: mut Forest, base: vec3, s: u32) {
+    var crown = Crown { clumps: Vec::new(), tint: vec3(0.06, 0.08, -0.01) }
+    let size = pick(s, 1, vec2(0.35, 0.6))
+    for i in 0..2 {
+        let a = TAU * rand(s, 10 + i)
+        let p = base + vec3(cos(a) * size * 0.4, size * 0.45, sin(a) * size * 0.4)
+        crown.clumps.push(Clump { centre: p, radius: size * 0.55 })
+    }
+    add_cards(mut f, crown, size: 0.3, cover: 1.2, seed: s)
+}
+
+/// The colour a species' leaves lean to, and its leaf card's size.
+fn leaves_of_kind(kind: u32) -> (vec3, f32) {
+    if kind == OAK {
+        (vec3(0.012, 0.004, -0.01), 1.0)
+    } else if kind == BEECH {
+        (vec3(-0.025, -0.012, 0.012), 0.95)
+    } else if kind == BIRCH {
+        (vec3(0.06, 0.07, -0.012), 0.72)
+    } else {
+        (vec3(-0.03, -0.02, 0.0), 0.6)
+    }
+}
+
+fn bark_of(kind: u32) -> u32 {
+    if kind == OAK {
+        OAK_BARK
+    } else if kind == BEECH {
+        BEECH_BARK
+    } else if kind == BIRCH {
+        BIRCH_BARK
+    } else {
+        PLAIN
+    }
+}
+
+/// A living tree from the history: a trunk leaning toward the light, a few limbs, and a crown of
+/// clumps as wide as the history let it grow, its middle where the light drew it. Trees grown in
+/// the open keep their low limbs; trees grown in the forest carry their crowns high.
+fn grown(f: mut Forest, base: vec3, t: Tree, wet: f32, side: f32, sky: f32) {
+    let s = t.seed
+    let tall = t.tall
+    let open = clamp(t.light, 0.0, 1.0)
+    let reach = max(t.reach, 0.5)
+    let lean = vec3(t.lean.x, 0.0, t.lean.y)
+    let kind = t.kind
+    let shaded = if kind == BIRCH { 0.5 } else if kind == OAK { mix(0.5, 0.28, open) } else {
+        mix(0.58, 0.32, open)
+    }
+    let young = 1.0 - smoothstep(3.0, 7.0, tall)
+    let low = mix(mix(shaded, 0.12, smoothstep(0.3, 0.8, side)), 0.15, young)
+    let crown_lo = tall * low
+    let half = max((tall - crown_lo) * 0.5, 0.4)
+    let mid = base + lean + vec3(0.0, crown_lo + half, 0.0)
+    let top = base + lean * 0.8 + vec3(0.0, crown_lo + half * 0.9, 0.0)
+    let girth = max(t.girth, 0.04)
+    let moss = 0.25 + 0.6 * wet
+    f.limbs.push(
+        Limb {
+            a: base - vec3(0.0, 0.4, 0.0),
+            ra: girth * 1.1,
+            b: top,
+            rb: girth * 0.4,
+            kind: bark_of(kind),
+            moss,
+            sky,
+        },
+    )
+    if girth > 0.15 {
+        f.limbs.push(
+            Limb {
+                a: base - vec3(0.0, 0.3, 0.0),
+                ra: girth * 1.45,
+                b: base + vec3(0.0, 0.7, 0.0) + lean * 0.05,
+                rb: girth * 1.02,
+                kind: bark_of(kind),
+                moss: moss * 1.2,
+                sky,
+            },
+        )
+    }
+    let (tint, leaf) = leaves_of_kind(kind)
+    var crown = Crown {
+        clumps: Vec::new(),
+        tint: tint + vec3(pick(s, 6, vec2(-0.03, 0.03)), pick(s, 7, vec2(-0.03, 0.03)), 0.0),
+    }
+    let blob = if kind == BIRCH { clamp(reach * 0.5, 0.55, 1.4) } else {
+        clamp(reach * 0.42, 0.8, 2.8)
+    }
+    let flat = if kind == OAK { 0.7 } else if kind == BIRCH { 1.15 } else { 0.9 }
+    let volume = reach * reach * half * flat
+    let count = clamp(u32(volume / (blob * blob * blob) * 1.4), 2, 18)
+    let fork = base + lean * 0.45 + vec3(0.0, crown_lo, 0.0)
+    for i in 0..count {
+        let dir = direction(rand(s, 20 + i), rand(s, 40 + i))
+        let r = pow(rand(s, 60 + i), 0.4)
+        let p = mid +
+            vec3(dir.x * reach * 0.72 * r, dir.y * half * 0.8 * r * flat, dir.z * reach * 0.72 * r)
+        crown.clumps.push(Clump { centre: p, radius: blob * pick(s, 80 + i, vec2(0.75, 1.15)) })
+        if i < 4 && tall > 4.0 {
+            f.limbs.push(
+                Limb {
+                    a: fork,
+                    ra: girth * 0.45,
+                    b: mix(fork, p, vec3(0.7)),
+                    rb: max(girth * 0.12, 0.04),
+                    kind: bark_of(kind),
+                    moss: moss * 0.6,
+                    sky,
+                },
+            )
+        }
+    }
+    add_cards(mut f, crown, size: leaf, cover: 1.5, seed: s)
+}
+
+/// A seedling or a sapling under a metre or so: a few small clumps of its species' leaves.
+fn seedling(f: mut Forest, base: vec3, t: Tree) {
+    let s = t.seed
+    let (tint, leaf) = leaves_of_kind(t.kind)
+    var crown = Crown { clumps: Vec::new(), tint }
+    let tall = max(t.tall, 0.4)
+    for i in 0..3 {
+        let a = TAU * rand(s, 10 + i)
+        let p = base + vec3(cos(a) * 0.25, tall * pick(s, 20 + i, vec2(0.45, 0.9)), sin(a) * 0.25)
+        crown.clumps.push(Clump { centre: p, radius: tall * pick(s, 30 + i, vec2(0.25, 0.4)) })
+    }
+    add_cards(mut f, crown, size: leaf * 0.5, cover: 1.4, seed: s)
+}
+
+/// A hawthorn: a dense, low dome of small dark clumps on a few crooked stems.
+fn thorn_bush(f: mut Forest, base: vec3, t: Tree) {
+    let s = t.seed
+    let reach = max(t.reach, 0.5)
+    let tall = max(t.tall, 0.8)
+    let lean = vec3(t.lean.x, 0.0, t.lean.y)
+    let (tint, leaf) = leaves_of_kind(THORN)
+    var crown = Crown { clumps: Vec::new(), tint }
+    let count = clamp(u32(reach * reach * 1.1), 3, 14)
+    for i in 0..count {
+        let a = TAU * rand(s, 10 + i)
+        let r = reach * 0.75 * sqrt(rand(s, 20 + i))
+        let p = base +
+            lean * 0.5 +
+            vec3(r * cos(a), tall * pick(s, 30 + i, vec2(0.35, 0.85)), r * sin(a))
+        crown.clumps.push(Clump { centre: p, radius: reach * pick(s, 40 + i, vec2(0.35, 0.55)) })
+        if i < 3 {
+            f.limbs.push(
+                Limb { a: base, ra: 0.06 + 0.01 * tall, b: p, rb: 0.03, kind: PLAIN, moss: 0.2 },
+            )
+        }
+    }
+    add_cards(mut f, crown, size: leaf, cover: 1.8, seed: s)
+}
+
+/// A dead tree standing: its top broken off (unless lightning took it whole), its bark gone to
+/// silver, a few bare limbs left, fewer the longer it's stood.
+fn snag(f: mut Forest, base: vec3, t: Tree, sky: f32) {
+    let s = t.seed
+    let stood = f32(YEARS - t.died)
+    let struck = t.cause == LIGHTNING
+    // A snag loses its top a piece at a time: an oak's lasts, a beech's or a birch's soon goes.
+    let lasts = HABITS[t.kind].stands * t.tall * (if struck { 1.6 } else { 1.0 }) + 1.0
+    let aged = clamp(stood / lasts, 0.0, 1.0)
+    let keep = if struck { 0.92 - 0.3 * aged } else {
+        pick(s, 1, vec2(0.6, 0.85)) * (1.0 - 0.6 * aged)
+    }
+    let tall = t.tall * keep
+    let girth = max(t.girth, 0.05)
+    let lean = vec3(t.lean.x, 0.0, t.lean.y) * 0.5
+    let top = base + lean + vec3(0.0, tall, 0.0)
+    let sky = max(sky, 0.4)
+    f.limbs.push(
+        Limb {
+            a: base - vec3(0.0, 0.4, 0.0),
+            ra: girth * 1.1,
+            b: top,
+            rb: girth * mix(0.75, 0.45, keep),
+            kind: DEAD,
+            moss: 0.15 + 0.4 * aged,
+            sky,
+        },
+    )
+    // Its broken top: a splinter or two, leaning off true.
+    for i in 0..2 {
+        let a = TAU * rand(s, 40 + i)
+        let up = pick(s, 45 + i, vec2(0.2, 0.6)) * girth * 2.5
+        let tip = top + vec3(cos(a) * girth * 0.5, up, sin(a) * girth * 0.5)
+        f.limbs.push(
+            Limb {
+                a: top - vec3(0.0, 0.15, 0.0),
+                ra: girth * 0.3,
+                b: tip,
+                rb: 0.01,
+                kind: DEAD,
+                sky,
+            },
+        )
+    }
+    // Its bare limbs: an oak keeps its great ones for a century, stag-headed; others drop
+    // theirs sooner.
+    let keeps = if t.kind == OAK { 160.0 } else { 15.0 }
+    let limbs = if keep < 0.45 { 0 } else { u32(clamp(5.0 * (1.0 - stood / keeps), 0.0, 5.0)) }
+    let spread = if t.kind == OAK { 1.6 } else { 1.0 }
+    for i in 0..limbs {
+        let along = pick(s, 10 + i, vec2(0.45, 0.85))
+        let from = base + lean * along + vec3(0.0, tall * along, 0.0)
+        let toward = atan2(t.lean.y, t.lean.x)
+        let a = if length(t.lean) > 0.2 { toward + pick(s, 20 + i, vec2(-1.3, 1.3)) } else {
+            TAU * (f32(i) / f32(limbs) + 0.3 * rand(s, 20 + i))
+        }
+        let len = tall * spread * pick(s, 30 + i, vec2(0.16, 0.3))
+        var p = from
+        var r = girth * 0.32
+        var heading = a
+        var rise = pick(s, 35 + i, vec2(0.15, 0.6))
+        for k in 0..3 {
+            heading += pick(s, 50 + i * 3 + k, vec2(-0.6, 0.6))
+            rise += pick(s, 70 + i * 3 + k, vec2(-0.25, 0.35))
+            let step = len / 3.0
+            let next = p + normalize(vec3(cos(heading), rise, sin(heading))) * step
+            let rn = r * 0.66
+            f.limbs.push(Limb { a: p, ra: r, b: next, rb: rn, kind: DEAD, moss: 0.05, sky })
+            // A side branch off each bend, shorter.
+            if k < 2 {
+                let side = heading + select(if_false: -1.0, if_true: 1.0, cond: k == 0) * 0.9
+                let twig = next + normalize(vec3(cos(side), rise + 0.4, sin(side))) * step * 0.55
+                f.limbs.push(Limb { a: next, ra: rn * 0.6, b: twig, rb: 0.015, kind: DEAD, sky })
+            }
+            p = next
+            r = rn
+        }
+    }
+}
+
+/// A fallen tree: its trunk along the ground the way it fell, sinking and greening as it rots,
+/// in pieces once it's far gone; thrown by the wind, its roots stand up in a plate at its foot
+/// (`rocks::plates` draws the plate); snapped, a jagged stump stands where it broke.
+fn fallen(f: mut Forest, base: vec3, t: Tree, wet: f32) {
+    let s = t.seed
+    let h = HABITS[t.kind]
+    let years = f32(YEARS - t.fell)
+    let rot = clamp(years / (h.rots * t.tall + 4.0), 0.0, 1.0)
+    let girth = max(t.girth, 0.05) * (1.0 - 0.25 * rot)
+    let dir = vec3(t.fall.x, 0.0, t.fall.y)
+    var start = 0.0
+    if t.cause == SNAPPED {
+        let stump = pick(s, 2, vec2(1.4, 3.0))
+        f.limbs.push(
+            Limb {
+                a: base - vec3(0.0, 0.3, 0.0),
+                ra: girth * 1.2,
+                b: base + vec3(0.0, stump, 0.0),
+                rb: girth * 0.9,
+                kind: DEAD,
+                moss: 0.2,
+            },
+        )
+        start = stump * 0.6
+    }
+    let len = t.tall * 0.85 * (1.0 - 0.3 * rot)
+    let pieces = if rot > 0.45 { 3 } else if girth < 0.22 { 2 } else { 1 }
+    let seg = 2.5
+    var at = start
+    while at < len {
+        let piece = u32(at / len * f32(pieces))
+        let gap_end = (f32(piece) + 0.12) * len / f32(pieces)
+        if pieces > 1 && at > 0.5 && at < gap_end && piece > 0 {
+            at = gap_end
+        }
+        let next = min(at + seg, len)
+        let ra = girth * (1.0 - 0.65 * at / len)
+        let rb = girth * (1.0 - 0.65 * next / len)
+        let pa = base + dir * at
+        let pb = base + dir * next
+        let sink = 1.0 - 0.55 * rot
+        let kink = vec3(-dir.z, 0.0, dir.x) * (0.25 * (rand(s, 200 + piece) - 0.5))
+        let wa = 0.85 + 0.3 * rand(s, 210 + u32(at))
+        let a3 = vec3(pa.x, height(pa.x, pa.z) + ra * sink, pa.z) + kink * (at / len)
+        let b3 = vec3(pb.x, height(pb.x, pb.z) + rb * sink, pb.z) + kink * (next / len)
+        let ra = ra * wa
+        f.limbs.push(
+            Limb {
+                a: a3,
+                ra,
+                b: b3,
+                rb,
+                kind: ROTTEN,
+                moss: clamp(rot * 1.4 + 0.3 * wet, 0.0, 1.0),
+            },
+        )
+        at = next
+    }
+    // Its broken branches, while they last.
+    if rot < 0.4 {
+        for i in 0..2 {
+            let along = len * pick(s, 50 + i, vec2(0.45, 0.9))
+            let from = base + dir * along
+            let from3 = vec3(from.x, height(from.x, from.z) + girth * 0.8, from.z)
+            let side = vec3(-dir.z, 0.0, dir.x) *
+                select(if_false: -1.0, if_true: 1.0, cond: rand(s, 60 + i) < 0.5)
+            let to = from3 +
+                (side * 0.8 + vec3(0.0, 0.7, 0.0) + dir * 0.3) * pick(s, 70 + i, vec2(0.5, 1.2))
+            f.limbs.push(
+                Limb {
+                    a: from3,
+                    ra: girth * 0.3,
+                    b: to,
+                    rb: girth * 0.12,
+                    kind: ROTTEN,
+                    moss: rot,
+                },
+            )
+        }
+    }
+    // A windthrow's roots, torn up round the plate's rim, curling back.
+    if t.cause == WIND && rot < 0.8 {
+        let side = vec3(-dir.z, 0.0, dir.x)
+        let plate = (0.9 + girth * 3.2) * (1.0 - 0.4 * rot)
+        let foot = base + vec3(0.0, plate * 0.5, 0.0) - dir * 0.35
+        for i in 0..7 {
+            let a = PI * (f32(i) + 0.5) / 7.0 + pick(s, 90 + i, vec2(-0.15, 0.15))
+            let out = side * cos(a) + vec3(0.0, sin(a), 0.0)
+            if i % 2 == 0 {
+                let rim = foot + out * plate * 0.85
+                let tip = rim + out * plate * pick(s, 80 + i, vec2(0.1, 0.25)) - dir * 0.25
+                f.limbs.push(
+                    Limb { a: rim, ra: girth * 0.12, b: tip, rb: 0.012, kind: ROTTEN, moss: 0.0 },
+                )
+            }
+        }
+    }
 }
 
 // ---- drawing ------------------------------------------------------------------------------------
@@ -473,6 +903,9 @@ pub struct Bark: Copy {
     pub world: vec3,
     pub normal: vec3,
     pub along: vec2,
+    pub kind: Flat<u32>,
+    pub moss: f32,
+    pub sky: f32,
 }
 
 /// A limb's tube vertex: around and along it.
@@ -505,8 +938,17 @@ fn limb_vertex(limb: Limb, k: u32) -> (vec3, vec3, vec2) {
 
 @vertex
 pub fn limb(v: VertexIndex, cam: Cam, limbs: [Limb]) -> Bark {
-    let (world, n, along) = limb_vertex(limbs[v.index / (SIDES * 6)], v.index % (SIDES * 6))
-    Bark { clip: ClipPosition { position: cam.clip(world) }, world, normal: n, along }
+    let l = limbs[v.index / (SIDES * 6)]
+    let (world, n, along) = limb_vertex(l, v.index % (SIDES * 6))
+    Bark {
+        clip: ClipPosition { position: cam.clip(world) },
+        world,
+        normal: n,
+        along,
+        kind: Flat { value: l.kind },
+        moss: l.moss,
+        sky: l.sky,
+    }
 }
 
 @vertex
@@ -525,13 +967,61 @@ pub fn bark_shade(
     ss: ComparisonSampler,
 ) -> vec4 {
     let n = normalize(b.normal)
+    let kind = b.kind.value
     // Bark's ridges run along the limb.
     let ridges = noise2(vec2(b.along.x * 22.0, b.along.y * 1.6))
-    let albedo = mix(vec3(0.16, 0.12, 0.09), vec3(0.30, 0.25, 0.19), vec3(ridges))
-    let moss = smoothstep(0.2, 0.7, n.y + 0.4 * noise2(b.world.xz * 3.0)) * 0.6
-    let a = mix(albedo, vec3(0.06, 0.09, 0.02), vec3(moss))
+    var albedo = mix(vec3(0.16, 0.12, 0.09), vec3(0.30, 0.25, 0.19), vec3(ridges))
+    var mossy = smoothstep(0.2, 0.7, n.y + 0.4 * noise2(b.world.xz * 3.0)) * 0.6
+    if kind == OAK_BARK {
+        // Deep, dark furrows.
+        let furrows = noise2(vec2(b.along.x * 30.0, b.along.y * 2.4))
+        albedo = mix(
+            vec3(0.09, 0.08, 0.07),
+            vec3(0.26, 0.23, 0.19),
+            vec3(smoothstep(0.3, 0.7, furrows)),
+        )
+    } else if kind == BEECH_BARK {
+        // Smooth, grey, mottled, greened on its weather side.
+        let mottle = noise2(vec2(b.along.x * 6.0, b.along.y * 0.9) + vec2(3.0))
+        albedo = mix(vec3(0.19, 0.20, 0.18), vec3(0.31, 0.31, 0.28), vec3(mottle))
+        albedo = mix(albedo, vec3(0.12, 0.16, 0.08), vec3(smoothstep(0.2, 0.9, -n.x) * 0.5))
+    } else if kind == BIRCH_BARK {
+        // White, with dark bands across it, darker and rougher at the foot.
+        let bands = smoothstep(0.62, 0.72, noise2(vec2(b.along.x * 9.0, b.along.y * 7.0)))
+        let foot = 1.0 - smoothstep(0.3, 1.6, b.along.y)
+        albedo = mix(
+            vec3(0.78, 0.77, 0.72),
+            vec3(0.08, 0.07, 0.07),
+            vec3(max(bands * 0.85, foot * 0.7)),
+        )
+        mossy *= 0.3
+    } else if kind == DEAD {
+        // Bark gone; the wood silvered by the weather, split along its grain.
+        let grain = noise2(vec2(b.along.x * 40.0, b.along.y * 0.8))
+        albedo = mix(vec3(0.24, 0.23, 0.21), vec3(0.44, 0.42, 0.39), vec3(grain))
+        mossy *= 0.25
+    } else if kind == ROTTEN {
+        // Softening wood under a coat of moss.
+        let grain = noise2(vec2(b.along.x * 18.0, b.along.y * 1.2))
+        albedo = mix(vec3(0.17, 0.13, 0.09), vec3(0.32, 0.27, 0.20), vec3(grain))
+        // Bark in plates, curling away as it rots.
+        let plates = smoothstep(0.35, 0.45, noise2(vec2(b.along.x * 14.0, b.along.y * 3.0)))
+        albedo = mix(albedo * 0.55, albedo, vec3(plates))
+        // Moss in cushions on its top, more the older it is.
+        let cushions = noise2(b.world.xz * 3.1 + vec2(b.world.y * 2.0)) +
+            0.5 * noise2(b.world.xz * 9.0)
+        let top = smoothstep(-0.1, 0.7, n.y) * smoothstep(1.15 - b.moss, 1.3 - b.moss, cushions)
+        albedo = mix(albedo, vec3(0.15, 0.22, 0.04), vec3(top))
+        mossy = 0.0
+    }
+    // The trunk's foot greens with moss where the ground is wet.
+    let foot = (1.0 - smoothstep(0.2, 2.5, b.along.y)) * b.moss
+    if kind != ROTTEN && kind != BIRCH_BARK {
+        mossy = max(mossy, foot * smoothstep(0.3, 0.7, noise2(b.world.xz * 2.0 + vec2(b.world.y))))
+    }
+    let a = mix(albedo, vec3(0.06, 0.10, 0.02), vec3(mossy))
     let lit = sunlit(sun, b.world, n, near, far, ss, 1.5)
-    let s = Lit { albedo: a, n, sun: lit, sky: 0.55, through: vec3(0.0) }
+    let s = Lit { albedo: a, n, sun: lit, sky: b.sky, through: vec3(0.0) }
     vec4(hazed(shade(s, b.world, cam), b.world, cam.eye, cam.sun), BARK)
 }
 

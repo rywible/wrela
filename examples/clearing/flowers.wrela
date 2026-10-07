@@ -2,7 +2,8 @@
 // petals cut by `discard` on a thin stem, placed at load with the grass.
 
 use camera::{Cam, FLOWER}
-use grass::growth
+use grass::{growth, growth_of}
+use history::{History, fine, in_fine, sample}
 use light::{Lit, hazed, shade}
 use noise::{fbm2, rand}
 use scene::{MEADOW, eye, height, normal, past_edge}
@@ -34,6 +35,42 @@ pub fn wildflowers() -> Vec<Flower> {
         let r = length(p - MEADOW)
         if rand(i, 3) < smoothstep(0.55, 0.72, drift) * density && r < 30.0 && past_edge(p) < 0.0 {
             let kind = if kind_n < 0.45 { 0 } else if kind_n < 0.6 { 1 } else { 2 }
+            let y = height(x, z) + tall * (0.75 + 0.35 * rand(i, 4))
+            out.push(Flower { head: vec3(x, y, z), size: 0.035 + 0.03 * rand(i, 5), kind, seed: i })
+        }
+    }
+    out
+}
+
+/// The flowers where the history left their ground (spike 16): white daisies and clover in the
+/// grazed lawn, yellow buttercups (which grazers leave) in the damp, violet knapweed in the long
+/// grass of the fringes the herd doesn't crop; none on the trails.
+pub fn wildflowers_of(h: History) -> Vec<Flower> {
+    var out: Vec<Flower> = Vec::new()
+    let e = eye()
+    let yaw = if scene::VIEW == 0 { 0.0 } else { scene::view_yaw() }
+    for i in 0..70000 {
+        let a = yaw - 0.75 + 1.5 * rand(i, 1)
+        let d = 2.0 + 60.0 * pow(rand(i, 2), 1.6)
+        let x = e.x + d * sin(a)
+        let z = e.z + d * cos(a)
+        let p = vec2(x, z)
+        let (tall, density, _, _) = growth_of(h, p)
+        let browse = sample(h.browse, p)
+        let wet = sample(h.wet, p)
+        let light = sample(h.light, p)
+        let wear = if in_fine(p) { fine(h.wear, p) } else { 0.0 }
+        let drift = fbm2(p * 0.07 + vec2(1.0, 4.0), 3)
+        let white = 0.3 * smoothstep(0.18, 0.5, browse) * (1.0 - smoothstep(0.5, 0.8, wet))
+        let yellow = smoothstep(0.4, 0.75, wet) * smoothstep(0.05, 0.3, browse)
+        let violet = smoothstep(0.3, 0.06, browse) * smoothstep(0.45, 0.85, light)
+        let suit = min(white + yellow + violet, 1.0) *
+            smoothstep(0.45, 0.7, light) *
+            (1.0 - smoothstep(0.15, 0.4, wear)) *
+            density
+        if rand(i, 3) < smoothstep(0.45, 0.68, drift) * suit && past_edge(p) < 0.0 {
+            let pick = rand(i, 9) * (white + yellow + violet)
+            let kind = if pick < white { 0 } else if pick < white + yellow { 1 } else { 2 }
             let y = height(x, z) + tall * (0.75 + 0.35 * rand(i, 4))
             out.push(Flower { head: vec3(x, y, z), size: 0.035 + 0.03 * rand(i, 5), kind, seed: i })
         }

@@ -10,7 +10,8 @@ use scene::{MEADOW, eye, height, normal, past_edge, track}
 use shadow::{Sun, sunlit}
 use std::gpu::{ClipPosition, ComparisonSampler, DepthTexture, Flat, VertexIndex}
 use std::math::TAU
-use rocks::{Boulder, boulders}
+use history::{History, LOG, Tree, fine, in_fine, sample}
+use rocks::{Boulder, PLATE, boulders}
 
 /// A blade: its root, its height, width and facing, how far it bends, its colour's variation,
 /// and its seed.
@@ -44,6 +45,107 @@ pub fn growth(p: vec2) -> (f32, f32) {
     let floor = smoothstep(24.0, 34.0, r + 6.0 * noise2(p * 0.07))
     let density = (1.0 - 0.85 * worn) * (1.0 - 0.6 * floor)
     (tall * mown * (1.0 - 0.75 * worn) * (1.0 - 0.45 * floor), density)
+}
+
+/// How the meadow's grass grows where the history left it (spike 16): its height, density,
+/// dryness and depth of green. Grazed short where the herd feeds, long where it doesn't (the
+/// forest's fringe, round the thorns); worn away on the trails and where it rests; lush in the
+/// wet swales, thin in the shade, and over the forest floor's litter.
+pub fn growth_of(h: History, p: vec2) -> (f32, f32, f32, f32) {
+    let browse = sample(h.browse, p)
+    let light = sample(h.light, p)
+    let wet = sample(h.wet, p)
+    let litter = sample(h.litter, p)
+    let (wear, rest) = if in_fine(p) { (fine(h.wear, p), fine(h.rest, p)) } else { (0.0, 0.0) }
+    let patches = fbm2(p * 0.09 + vec2(5.0, 1.0), 3)
+    let grazed = smoothstep(0.12, 0.5, browse)
+    var tall = mix(0.78, 0.17, grazed) * (0.75 + 0.45 * wet) * (0.8 + 0.4 * patches)
+    tall *= mix(0.45, 1.0, smoothstep(0.15, 0.6, light))
+    tall *= 1.0 - 0.7 * smoothstep(0.1, 0.35, wear)
+    // Short where the camera stands.
+    let mown = 1.0 - 0.55 * exp(-dot(p - vec2(-1.5, 0.0), p - vec2(-1.5, 0.0)) / 30.0)
+    tall *= mown
+    var density = 1.0 - 0.97 * smoothstep(0.14, 0.34, wear)
+    density *= mix(0.03, 1.0, smoothstep(0.15, 0.6, light)) * (1.0 - 0.9 * litter)
+    density *= 1.0 - 0.5 * smoothstep(0.15, 0.6, rest)
+    let dry = clamp(smoothstep(0.55, 0.1, wet) * light * 0.85 + 0.25 * grazed, 0.0, 1.0)
+    let deep = smoothstep(0.45, 0.85, wet) * (1.0 - 0.5 * grazed)
+    (tall, density, dry, deep)
+}
+
+/// Whether `p` is under a log the history left.
+fn under_log(logs: [Tree], p: vec2) -> bool {
+    var under = false
+    for t in logs {
+        let len = t.tall * 0.85
+        let s = clamp(dot(p - t.at, t.fall), 0.0, len)
+        under = under || length(p - (t.at + t.fall * s)) < t.girth * 0.9
+    }
+    under
+}
+
+/// The blades the history's meadow grows, in view from the eye (spike 16): as `meadow`, from
+/// `growth_of`, round the stones, the root plates and the logs.
+pub fn meadow_of(h: History, stones: [Boulder]) -> Vec<Blade> {
+    var logs: Vec<Tree> = Vec::new()
+    let e = eye()
+    for t in h.trees {
+        if t.state == LOG && length(t.at - e.xz) < 110.0 {
+            logs.push(t)
+        }
+    }
+    var blades: Vec<Blade> = Vec::new()
+    let yaw = if scene::VIEW == 0 { 0.07 } else { scene::view_yaw() }
+    var r = 0.6
+    var spacing = 0.035
+    var n = 1
+    while r < 95.0 {
+        let ring_end = min(r * 1.6 + 2.0, 95.0)
+        var rr = r
+        while rr < ring_end {
+            let half = 0.72
+            let steps = u32(2.0 * half * rr / spacing)
+            for k in 0..steps {
+                n += 1
+                let a = yaw - half + (f32(k) + rand(n, 1)) * (2.0 * half / f32(steps))
+                let d = rr + rand(n, 2) * spacing
+                let x = e.x + d * sin(a)
+                let z = e.z + d * cos(a)
+                let p = vec2(x, z)
+                let (tall, density, dry, deep) = growth_of(h, p)
+                if rand(n, 3) < density && past_edge(p) < 4.0 {
+                    var in_stone = false
+                    for b in stones {
+                        if b.kind != PLATE {
+                            let q = (p - b.at.xz) / (b.radius * b.squash.xz)
+                            in_stone = in_stone || dot(q, q) < 0.75
+                        }
+                    }
+                    if !in_stone && !under_log(logs, p) {
+                        let y = height(x, z)
+                        let tint = rand(n, 8)
+                        blades.push(
+                            Blade {
+                                root: vec3(x, y - 0.02, z),
+                                tall: tall * (0.6 + 0.8 * rand(n, 4)),
+                                ground: normal(x, z, 0.3),
+                                width: spacing * (0.55 + 0.4 * rand(n, 5)),
+                                facing: TAU * rand(n, 6),
+                                bend: 0.2 + 0.5 * rand(n, 7),
+                                tint,
+                                dry: clamp(dry + 0.25 * (tint - 0.5), 0.0, 1.0),
+                                deep,
+                            },
+                        )
+                    }
+                }
+            }
+            rr += spacing
+        }
+        r = ring_end
+        spacing *= 1.5
+    }
+    blades
 }
 
 /// The blades in view from the eye: rings out to 95 m, each ring's spacing half again its

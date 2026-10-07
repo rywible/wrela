@@ -1,0 +1,1459 @@
+// Spike 16: the clearing's history, simulated. Nine hundred years run at load, on the CPU, from
+// the terrain up:
+// - water finds the hollows;
+// - a forest of four species grows, competes for light, dies, stands, falls and rots;
+// - a storm opens the clearing; a herd of grazers keeps it open, wears its trails and rests under
+//   the great oak, which grew up in a thorn thicket the grazers left alone;
+// - lightning and a later gale leave their marks at the clearing's edge.
+// What's left in the last year is what the clearing draws. The author writes the events and pins
+// the composition (`PINS` below); the simulation works out the consequences. Throwaway code: it
+// answers the spike's question.
+
+use noise::{noise2, rand}
+use rocks::boulders
+use scene::{ACROSS, KNOLL, MEADOW, STAND, SUN, height, in_gap, past_edge}
+use std::math::TAU
+
+// ---- the grids ----------------------------------------------------------------------------------
+
+/// The domain the history runs over: 2 m cells, `N` by `N`, from (`X0`, `Z0`).
+pub const X0: f32 = -128.0
+pub const Z0: f32 = -40.0
+pub const CELL: f32 = 2.0
+pub const N: u32 = 128
+
+/// The fine grid round the meadow, where the herd walks: 0.5 m cells, `FN` by `FN`.
+pub const FX0: f32 = -64.0
+pub const FZ0: f32 = -24.0
+pub const FCELL: f32 = 0.5
+pub const FN: u32 = 256
+
+fn index(i: i32, j: i32, n: u32) -> u32 {
+    u32(clamp(j, 0, i32(n) - 1)) * n + u32(clamp(i, 0, i32(n) - 1))
+}
+
+/// The domain's cell at `p`, clamped to the domain.
+pub fn cell(p: vec2) -> u32 {
+    index(i32(floor((p.x - X0) / CELL)), i32(floor((p.y - Z0) / CELL)), N)
+}
+
+/// The middle of the domain's cell `c`.
+pub fn centre(c: u32) -> vec2 {
+    vec2(X0 + (f32(c % N) + 0.5) * CELL, Z0 + (f32(c / N) + 0.5) * CELL)
+}
+
+/// The fine grid's cell at `p`, clamped to the grid.
+pub fn fcell(p: vec2) -> u32 {
+    index(i32(floor((p.x - FX0) / FCELL)), i32(floor((p.y - FZ0) / FCELL)), FN)
+}
+
+/// The middle of the fine grid's cell `c`.
+pub fn fcentre(c: u32) -> vec2 {
+    vec2(FX0 + (f32(c % FN) + 0.5) * FCELL, FZ0 + (f32(c / FN) + 0.5) * FCELL)
+}
+
+/// Whether `p` is on the fine grid.
+pub fn in_fine(p: vec2) -> bool {
+    let e = f32(FN) * FCELL
+    p.x > FX0 && p.x < FX0 + e && p.y > FZ0 && p.y < FZ0 + e
+}
+
+/// Whether `p` is in the domain.
+pub fn in_domain(p: vec2) -> bool {
+    let e = f32(N) * CELL
+    p.x > X0 && p.x < X0 + e && p.y > Z0 && p.y < Z0 + e
+}
+
+fn bilinear(g: [f32], p: vec2, x0: f32, z0: f32, size: f32, n: u32) -> f32 {
+    let u = (p.x - x0) / size - 0.5
+    let v = (p.y - z0) / size - 0.5
+    let i = clamp(i32(floor(u)), 0, i32(n) - 2)
+    let j = clamp(i32(floor(v)), 0, i32(n) - 2)
+    let s = clamp(u - f32(i), 0.0, 1.0)
+    let t = clamp(v - f32(j), 0.0, 1.0)
+    let k = u32(j) * n + u32(i)
+    mix(mix(g[k], g[k + 1], s), mix(g[k + n], g[k + n + 1], s), t)
+}
+
+/// A domain grid's value at `p`, bilinear.
+pub fn sample(g: [f32], p: vec2) -> f32 {
+    bilinear(g, p, X0, Z0, CELL, N)
+}
+
+/// A fine grid's value at `p`, bilinear.
+pub fn fine(g: [f32], p: vec2) -> f32 {
+    bilinear(g, p, FX0, FZ0, FCELL, FN)
+}
+
+/// A box blur of an `n` by `n` grid, `r` cells each way, across then down: running sums, the
+/// edges clamped.
+fn blur(g: [f32], n: u32, r: i32) -> Vec<f32> {
+    let w = 1.0 / f32(2 * r + 1)
+    let last = i32(n) - 1
+    var a: Vec<f32> = Vec::filled(n * n, 0.0)
+    for j in 0..n {
+        let row = j * n
+        var s = 0.0
+        for k in 0..(2 * r + 1) {
+            s += g[row + u32(clamp(k - r, 0, last))]
+        }
+        a[row] = s * w
+        for i in 1..n {
+            let add = u32(clamp(i32(i) + r, 0, last))
+            let sub = u32(clamp(i32(i) - r - 1, 0, last))
+            s += g[row + add] - g[row + sub]
+            a[row + i] = s * w
+        }
+    }
+    var b: Vec<f32> = Vec::filled(n * n, 0.0)
+    for i in 0..n {
+        var s = 0.0
+        for k in 0..(2 * r + 1) {
+            s += a[u32(clamp(k - r, 0, last)) * n + i]
+        }
+        b[i] = s * w
+        for j in 1..n {
+            let add = u32(clamp(i32(j) + r, 0, last))
+            let sub = u32(clamp(i32(j) - r - 1, 0, last))
+            s += a[add * n + i] - a[sub * n + i]
+            b[j * n + i] = s * w
+        }
+    }
+    b
+}
+
+/// The eight neighbours' offsets.
+const DI = [-1, 0, 1, -1, 1, -1, 0, 1]
+const DJ = [-1, -1, -1, 0, 0, 1, 1, 1]
+
+// ---- the species --------------------------------------------------------------------------------
+
+/// The forest's step: it grows, dies and seeds every other year (it changes slowly); the herd
+/// walks every year.
+const STEP_YEARS: f32 = 2.0
+
+pub const OAK: u32 = 0
+pub const BEECH: u32 = 1
+pub const BIRCH: u32 = 2
+pub const THORN: u32 = 3
+const KINDS: u32 = 4
+/// Seed of each species from the forests beyond the domain: birch's rides the wind.
+const BEYOND = [0.01, 0.005, 0.3, 0.01]
+
+/// How a species lives.
+pub struct Habit: Copy {
+    /// Its greatest height (m), and how fast it grows in full light while it's small (m a year).
+    pub tallest: f32,
+    pub rate: f32,
+    /// The light it needs to grow at all (0 to 1 of the open sky's).
+    pub need: f32,
+    pub lifespan: f32,
+    /// Its crown's radius per metre of height, in the open.
+    pub crown: f32,
+    /// How much of the light its crown stops.
+    pub shade: f32,
+    /// How readily grazers eat it while it's small.
+    pub palatable: f32,
+    /// How far its seed goes (m), and the age it first seeds at.
+    pub reach: f32,
+    pub mature: f32,
+    /// Years it stands dead, and years it lasts as a log, per metre of height.
+    pub stands: f32,
+    pub rots: f32,
+}
+
+pub const HABITS = [
+    // Oak: light-hungry, slow, long-lived and broad; jays carry its acorns to open edges.
+    Habit {
+        tallest: 21.0,
+        rate: 0.40,
+        need: 0.28,
+        lifespan: 600.0,
+        crown: 0.38,
+        shade: 0.72,
+        palatable: 0.55,
+        reach: 45.0,
+        mature: 45.0,
+        stands: 2.5,
+        rots: 4.0,
+    },
+    // Beech: shade-tolerant, tall and deep-shading; its nuts fall near it.
+    Habit {
+        tallest: 23.0,
+        rate: 0.36,
+        need: 0.03,
+        lifespan: 320.0,
+        crown: 0.30,
+        shade: 0.9,
+        palatable: 0.45,
+        reach: 16.0,
+        mature: 45.0,
+        stands: 0.5,
+        rots: 2.2,
+    },
+    // Birch: the pioneer, fast, short-lived and airy; its seed goes everywhere on the wind.
+    Habit {
+        tallest: 17.0,
+        rate: 0.8,
+        need: 0.45,
+        lifespan: 100.0,
+        crown: 0.2,
+        shade: 0.5,
+        palatable: 0.7,
+        reach: 30.0,
+        mature: 12.0,
+        stands: 0.4,
+        rots: 1.2,
+    },
+    // Hawthorn: a thorny shrub of the edges, which grazers leave alone and birds sow.
+    Habit {
+        tallest: 6.5,
+        rate: 0.25,
+        need: 0.3,
+        lifespan: 150.0,
+        crown: 0.6,
+        shade: 0.8,
+        palatable: 0.03,
+        reach: 30.0,
+        mature: 10.0,
+        stands: 1.0,
+        rots: 1.5,
+    },
+]
+
+// ---- trees --------------------------------------------------------------------------------------
+
+/// A tree's state.
+pub const ALIVE: u32 = 0
+pub const SNAG: u32 = 1
+pub const LOG: u32 = 2
+pub const GONE: u32 = 3
+
+/// What killed it.
+pub const OLD: u32 = 0
+pub const WIND: u32 = 1
+pub const LIGHTNING: u32 = 2
+pub const SNAPPED: u32 = 3
+
+/// A tree, alive or dead.
+pub struct Tree: Copy {
+    /// Its trunk's foot (x, z).
+    pub at: vec2,
+    pub kind: u32,
+    pub born: i32,
+    pub tall: f32,
+    /// Its crown's radius, and how far its crown's middle has moved from the trunk, toward the
+    /// light.
+    pub reach: f32,
+    pub lean: vec2,
+    /// Its trunk's radius (m).
+    pub girth: f32,
+    /// Last year's light at its crown, and its recent growth against what it could grow.
+    pub light: f32,
+    pub vigour: f32,
+    pub state: u32,
+    pub died: i32,
+    /// The year it came down, which way, and why it died.
+    pub fell: i32,
+    pub fall: vec2,
+    pub cause: u32,
+    /// Kept alive by the author (the great oak).
+    pub pinned: bool,
+    pub seed: u32,
+}
+
+fn sapling(at: vec2, kind: u32, year: i32, tall: f32, seed: u32) -> Tree {
+    Tree {
+        at,
+        kind,
+        born: year,
+        tall,
+        reach: max(0.3, HABITS[kind].crown * tall),
+        lean: vec2(0.0),
+        girth: 0.01 + 0.008 * tall,
+        light: 1.0,
+        vigour: 0.5,
+        state: ALIVE,
+        died: 0,
+        fell: 0,
+        fall: vec2(0.0),
+        cause: OLD,
+        pinned: false,
+        seed,
+    }
+}
+
+/// The trees' bins, 8 m square: each bin's first item, and the items (the living trees' crowns,
+/// compact, in bin order), so a tree finds its neighbours.
+struct Bins {
+    start: Vec<u32>,
+    crowns: Vec<Crown>,
+}
+
+/// A living tree's crown, as its neighbours see it.
+struct Crown: Copy {
+    at: vec2,
+    middle: vec2,
+    reach: f32,
+    tall: f32,
+    shade: f32,
+    tree: u32,
+}
+
+const BINS: u32 = 32
+const BIN: f32 = 8.0
+
+fn bin_ij(p: vec2) -> (i32, i32) {
+    (i32(floor((p.x - X0) / BIN)), i32(floor((p.y - Z0) / BIN)))
+}
+
+fn bins(trees: [Tree]) -> Bins {
+    let nb = BINS * BINS
+    var start: Vec<u32> = Vec::filled(nb + 1, 0)
+    for t in trees {
+        if t.state == ALIVE {
+            let (i, j) = bin_ij(t.at)
+            start[index(i, j, BINS) + 1] += 1
+        }
+    }
+    for k in 0..nb {
+        let before = start[k]
+        start[k + 1] += before
+    }
+    var cursor = start.clone()
+    let none = Crown {
+        at: vec2(0.0),
+        middle: vec2(0.0),
+        reach: 0.0,
+        tall: 0.0,
+        shade: 0.0,
+        tree: 0,
+    }
+    var crowns: Vec<Crown> = Vec::filled(start[nb], none)
+    var o = 0
+    for t in trees {
+        if t.state == ALIVE {
+            let (i, j) = bin_ij(t.at)
+            let b = index(i, j, BINS)
+            crowns[cursor[b]] = Crown {
+                at: t.at,
+                middle: t.at + t.lean,
+                reach: t.reach,
+                tall: t.tall,
+                shade: HABITS[t.kind].shade,
+                tree: o,
+            }
+            cursor[b] += 1
+        }
+        o += 1
+    }
+    Bins { start, crowns }
+}
+
+/// What a tree's neighbours leave it: light at its crown (0 to 1), room for its crown (m from
+/// its middle), and the push of their crowns on it.
+struct Need: Copy {
+    me: u32,
+    light: f32,
+    space: f32,
+    push: vec2,
+}
+
+/// Each tree's need, from its neighbours within two bins: the crowns over it shade it, and the
+/// crowns level with it crowd it. In parallel: each tree's is its own.
+fn competition(trees: [Tree], b: Bins) -> Vec<Need> {
+    var out: Vec<Need> = Vec::from_fn(
+        trees.len(),
+        |i| Need { me: i, light: 1.0, space: 1.0e9, push: vec2(0.0) },
+    )
+    out.par_each_mut(|need| measure(mut need, trees, b))
+    out
+}
+
+fn measure(need: mut Need, trees: [Tree], b: Bins) {
+    let t = trees[need.me]
+    if t.state == ALIVE {
+        let c = t.at + t.lean
+        let (bi, bj) = bin_ij(t.at)
+        var shading = 0.0
+        var space = 1.0e9
+        var push = vec2(0.0)
+        for dj in 0..5 {
+            let j = bj + i32(dj) - 2
+            if j >= 0 && j < i32(BINS) {
+                for di in 0..5 {
+                    let i = bi + i32(di) - 2
+                    if i >= 0 && i < i32(BINS) {
+                        let k = u32(j) * BINS + u32(i)
+                        for q in b.start[k]..b.start[k + 1] {
+                            let u = b.crowns[q]
+                            let dv = c - u.middle
+                            let both = t.reach + u.reach
+                            let d2 = dot(dv, dv)
+                            if d2 < both * both && u.tree != need.me {
+                                let d = sqrt(d2)
+                                let overlap = min(both - d, 2.0 * min(t.reach, u.reach))
+                                let cover = min(overlap / (2.0 * t.reach), 1.0) *
+                                    min(u.reach / t.reach, 1.0)
+                                let above = clamp(0.35 + 0.22 * (u.tall - t.tall), 0.0, 1.0)
+                                shading += u.shade * cover * above
+                                if u.tall > t.tall - 1.5 && u.tall < t.tall + 6.0 {
+                                    space = min(space, max(d - 0.55 * u.reach, 0.0))
+                                    push += dv / max(d, 0.1) * cover * above
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        need.light = exp(-1.8 * shading)
+        need.space = space
+        need.push = push
+    }
+}
+
+// ---- the land and the ground --------------------------------------------------------------------
+
+/// What doesn't change: where trees can stand, how wet the ground is, how exposed to the valley's
+/// wind, and the author's pins.
+struct Land {
+    habitable: Vec<bool>,
+    wet: Vec<f32>,
+    exposed: Vec<f32>,
+    /// The view through the gap: trees there stay shrubs (a pin).
+    low: Vec<bool>,
+    /// The herd's lawn, from the camera's rise to the great oak: nothing takes there (a pin).
+    lawn: Vec<bool>,
+}
+
+/// Whether `p` is on the herd's lawn: the view from the camera's rise up the meadow to the great
+/// oak, which the author keeps open (the herd crops it hardest; nothing that takes there lasts).
+fn on_lawn(p: vec2) -> bool {
+    let a = vec2(-1.5, 3.0)
+    let b = KNOLL + vec2(-4.0, -9.0)
+    let t = clamp(dot(p - a, b - a) / dot(b - a, b - a), 0.0, 1.0)
+    length(p - a - (b - a) * t) < 9.0 + 5.0 * t
+}
+
+/// What does: light at the ground, thorn cover (which shelters seedlings from grazers), browsing,
+/// and fresh soil (where birch seed takes).
+struct Ground {
+    light: Vec<f32>,
+    thorn: Vec<f32>,
+    browse: Vec<f32>,
+    bare: Vec<f32>,
+    /// Seed of each species, `KINDS` grids end to end.
+    seed: Vec<f32>,
+    /// Shade over the years, for the forest floor's litter.
+    shade_sum: Vec<f32>,
+}
+
+/// The wind of the valley's storms: up over the plateau's edge, into the forest.
+fn wind() -> vec2 {
+    -normalize(ACROSS)
+}
+
+/// The ground's wetness from where its water goes: each cell passes what reaches it to its lower
+/// neighbours (more to the steeper), highest first; wetness is the topographic index,
+/// ln(catchment / slope), mapped to 0 to 1.
+fn water(heights: [f32]) -> Vec<f32> {
+    let nn = N * N
+    var order: Vec<u32> = Vec::from_fn(nn, |i| i)
+    order.sort_by(|a, b| heights[a] > heights[b])
+    var acc: Vec<f32> = Vec::filled(nn, 1.0)
+    var slope: Vec<f32> = Vec::filled(nn, 0.0)
+    for c in order {
+        let i = i32(c % N)
+        let j = i32(c / N)
+        let h = heights[c]
+        var total = 0.0
+        var steepest = 0.0
+        for k in 0..8 {
+            let ni = i + DI[k]
+            let nj = j + DJ[k]
+            if ni >= 0 && nj >= 0 && ni < i32(N) && nj < i32(N) {
+                let dist = if DI[k] != 0 && DJ[k] != 0 { 1.4142 * CELL } else { CELL }
+                let drop = (h - heights[u32(nj) * N + u32(ni)]) / dist
+                if drop > 0.0 {
+                    total += pow(drop, 1.1)
+                    steepest = max(steepest, drop)
+                }
+            }
+        }
+        slope[c] = steepest
+        if total > 0.0 {
+            let mine = acc[c]
+            for k in 0..8 {
+                let ni = i + DI[k]
+                let nj = j + DJ[k]
+                if ni >= 0 && nj >= 0 && ni < i32(N) && nj < i32(N) {
+                    let o = u32(nj) * N + u32(ni)
+                    let dist = if DI[k] != 0 && DJ[k] != 0 { 1.4142 * CELL } else { CELL }
+                    let drop = (h - heights[o]) / dist
+                    if drop > 0.0 {
+                        acc[o] += mine * pow(drop, 1.1) / total
+                    }
+                }
+            }
+        }
+    }
+    var wet: Vec<f32> = Vec::filled(nn, 0.0)
+    for c in 0..nn {
+        let twi = log(acc[c] * CELL / (slope[c] + 0.01))
+        wet[c] = smoothstep(4.2, 8.5, twi)
+    }
+    blur(wet, N, 1)
+}
+
+/// The land: the terrain's heights, its water, where trees can stand, and the pins.
+fn survey() -> Land {
+    let nn = N * N
+    var heights: Vec<f32> = Vec::with_capacity(nn)
+    var habitable: Vec<bool> = Vec::with_capacity(nn)
+    var exposed: Vec<f32> = Vec::with_capacity(nn)
+    var low: Vec<bool> = Vec::with_capacity(nn)
+    var lawn: Vec<bool> = Vec::with_capacity(nn)
+    let stones = boulders()
+    for c in 0..nn {
+        let p = centre(c)
+        heights.push(height(p.x, p.y))
+        let past = past_edge(p)
+        var free = past < -3.0 && length(p - STAND) > 12.0
+        for s in stones {
+            free = free && length(p - s.at.xz) > s.radius * 1.2
+        }
+        habitable.push(free)
+        exposed.push(smoothstep(-45.0, -2.0, past))
+        low.push(in_gap(p.x, p.y) && length(p - STAND) > 14.0)
+        // The view through the gap: open to the plateau's edge, where shrubs may stand.
+        let gap = in_gap(p.x, p.y) && length(p - STAND) > 14.0
+        lawn.push(on_lawn(p) || (gap && past < -10.0))
+    }
+    let wet = water(heights)
+    Land { habitable, wet, exposed, low, lawn }
+}
+
+/// Light at the ground (each crown stops its share, softened a cell each way), thorn cover from
+/// hawthorns and fresh logs, and how much shade each cell has had.
+fn canopy(trees: [Tree], ground: mut Ground, year: i32) {
+    let nn = N * N
+    var light: Vec<f32> = Vec::filled(nn, 1.0)
+    var thorn: Vec<f32> = Vec::filled(nn, 0.0)
+    for t in trees {
+        if t.state == ALIVE && t.tall > 0.8 {
+            let c = t.at + t.lean
+            let r = t.reach + 0.5
+            let stop = HABITS[t.kind].shade * min(t.tall / 3.0, 1.0)
+            let lo = vec2(c.x - r, c.y - r)
+            let (i0, j0) = (i32(floor((lo.x - X0) / CELL)), i32(floor((lo.y - Z0) / CELL)))
+            let span = i32(ceil(2.0 * r / CELL)) + 1
+            for dj in 0..span {
+                for di in 0..span {
+                    let i = i0 + di
+                    let j = j0 + dj
+                    if i >= 0 && j >= 0 && i < i32(N) && j < i32(N) {
+                        let k = u32(j) * N + u32(i)
+                        let d = length(centre(k) - c)
+                        if d < r {
+                            let w = 1.0 - smoothstep(0.55 * r, r, d)
+                            light[k] *= 1.0 - stop * w
+                            if t.kind == THORN {
+                                thorn[k] = max(thorn[k], w)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // A fresh log and the tangle of its crown keep grazers off what grows in it.
+        if t.state == LOG && year - t.fell < 25 && t.tall > 6.0 {
+            let len = t.tall * 0.85
+            var s = 0.0
+            while s < len {
+                let p = t.at + t.fall * s
+                let wide = 1.0 + 3.0 * s / len
+                for k in 0..3 {
+                    let side = vec2(-t.fall.y, t.fall.x) * (f32(k) - 1.0) * wide
+                    let c = cell(p + side)
+                    thorn[c] = max(thorn[c], 0.9)
+                }
+                s += CELL * 0.7
+            }
+        }
+    }
+    ground.light = blur(light, N, 1)
+    ground.thorn = take thorn
+    for k in 0..nn {
+        let l = ground.light[k]
+        ground.shade_sum[k] = ground.shade_sum[k] * 0.94 + (1.0 - l) * 0.06
+    }
+}
+
+/// Seed of each species at each cell (0 to 1): each mature tree's crop, spread round it by two
+/// box blurs (a tent as wide as the species' seed goes), the oak's then drawn to open ground (jays
+/// cache acorns at edges) and the hawthorn's to edges (where birds perch). Birch seed also rides
+/// the wind everywhere, and a little of every species' comes in from the forest beyond.
+fn seed_rain(trees: [Tree], ground: mut Ground, year: i32) {
+    let nn = N * N
+    for kind in 0..KINDS {
+        var crop: Vec<f32> = Vec::filled(nn, 0.0)
+        let h = HABITS[kind]
+        var total = 0.0
+        for t in trees {
+            let age = f32(year - t.born)
+            let big = if t.kind == THORN { 1.5 } else { 6.0 }
+            if t.kind == kind && t.state == ALIVE && age >= h.mature && t.tall >= big {
+                let w = 0.04 * t.reach * t.reach
+                crop[cell(t.at)] += w
+                total += w
+            }
+        }
+        let r = i32(h.reach / CELL / 2.0)
+        let spread = blur(blur(crop, N, r), N, r)
+        // A tent's peak holds 1 / (2r + 1)² of the crop; scaled so a tree's own cell sees about
+        // what the disk's centre did.
+        let gain = f32((2 * r + 1) * (2 * r + 1)) * 0.25
+        let wind = if kind == BIRCH { 0.0004 * total } else { 0.0 }
+        for k in 0..nn {
+            let l = ground.light[k]
+            var w = spread[k] * gain
+            if kind == OAK {
+                w *= 0.15 + 1.5 * l
+            }
+            if kind == THORN {
+                w *= 0.3 + 2.0 * l * (1.0 - l)
+            }
+            ground.seed[kind * nn + k] = 1.0 - exp(-(w + wind + BEYOND[kind]))
+        }
+    }
+}
+
+/// How well a species' seedling takes in ground this wet: beech can't stand wet feet.
+fn takes(kind: u32, wet: f32) -> f32 {
+    if kind == BEECH {
+        1.0 - 0.8 * smoothstep(0.55, 0.9, wet)
+    } else if kind == OAK {
+        0.6 + 0.4 * wet
+    } else {
+        1.0
+    }
+}
+
+/// This year's new saplings: in each cell, each species' seed takes where there's light enough,
+/// ground wet enough, and no grazer eats it first, and only where no stem already stands.
+fn recruit(trees: [Tree], b: Bins, land: Land, ground: Ground, year: i32) -> Vec<Tree> {
+    let nn = N * N
+    var out: Vec<Tree> = Vec::new()
+    for c in 0..nn {
+        if land.habitable[c] && !(land.lawn[c] && year >= ARRIVE) {
+            let l = ground.light[c]
+            for kind in 0..KINDS {
+                let s = ground.seed[kind * nn + c]
+                if s > 0.005 {
+                    let h = HABITS[kind]
+                    let est = clamp((l - 0.7 * h.need) / (1.0 - 0.7 * h.need), 0.0, 1.0)
+                    var p = 0.012 * STEP_YEARS * s * est * takes(kind, land.wet[c])
+                    if kind == BIRCH {
+                        p *= 5.0 * (0.05 + 0.95 * ground.bare[c])
+                    }
+                    let eaten = min(1.0, 3.0 * ground.browse[c] * h.palatable)
+                    p *= 1.0 - eaten * (1.0 - ground.thorn[c])
+                    let n = c.wrapping_mul(KINDS) + kind
+                    if rand(n, u32(year)) < p {
+                        let at = centre(c) +
+                            vec2(rand(n, u32(year) + 7001) - 0.5, rand(n, u32(year) + 9001) - 0.5) *
+                                CELL
+                        if room(trees, b, at, 1.1) {
+                            out.push(sapling(at, kind, year, 0.5, n ^ u32(year).wrapping_mul(977)))
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether no living stem stands within `r` of `p`.
+fn room(trees: [Tree], b: Bins, p: vec2, r: f32) -> bool {
+    let (bi, bj) = bin_ij(p)
+    var free = true
+    for dj in 0..3 {
+        for di in 0..3 {
+            let i = bi + i32(di) - 1
+            let j = bj + i32(dj) - 1
+            if i >= 0 && j >= 0 && i < i32(BINS) && j < i32(BINS) {
+                let k = u32(j) * BINS + u32(i)
+                for q in b.start[k]..b.start[k + 1] {
+                    free = free && length(b.crowns[q].at - p) > r
+                }
+            }
+        }
+    }
+    free
+}
+
+/// A year of growth and death: each living tree grows by its light, shapes its crown to its room
+/// and leans to the light; it dies of age, of shade, of grazing or of the valley's wind. The dead
+/// stand, fall and rot.
+fn grow(trees: mut Vec<Tree>, needs: [Need], land: Land, ground: mut Ground, year: i32) {
+    var i = 0
+    for mut t in trees {
+        let n = needs[i]
+        i += 1
+        let h = HABITS[t.kind]
+        let c = cell(t.at)
+        let draw = rand(t.seed, u32(year))
+        if t.state == ALIVE {
+            let age = f32(year - t.born)
+            t.light = n.light
+            let f = clamp((n.light - h.need) / (0.9 - h.need), 0.0, 1.0)
+            let tallest = if land.low[c] && !t.pinned { min(h.tallest, 3.5) } else { h.tallest }
+            let potential = h.rate * max(1.0 - t.tall / tallest, 0.0) + 0.01
+            t.tall += potential * f * STEP_YEARS
+            t.vigour = 0.72 * t.vigour + 0.28 * f
+            let thickens = if t.kind == OAK { 1.7 } else { 1.0 }
+            t.girth += 0.0011 *
+                thickens *
+                STEP_YEARS *
+                (0.25 + n.light) *
+                max(1.0 - t.girth / 0.9, 0.0)
+            let want = max(h.crown * t.tall * (0.6 + 0.4 * n.light), 0.3)
+            let target = if t.pinned { want } else { min(want, max(n.space, 0.3)) }
+            t.reach += clamp(target - t.reach, -0.4 * STEP_YEARS, 0.2 * STEP_YEARS)
+            let pushed = length(n.push)
+            let lean = if pushed > 0.001 {
+                n.push / pushed * min(pushed, 1.0) * 0.45 * t.reach
+            } else {
+                vec2(0.0)
+            }
+            t.lean += (lean - t.lean) * 0.19
+            var p = if t.kind == BIRCH { 0.004 } else { 0.002 }
+            let old = age / h.lifespan
+            if old > 0.7 {
+                let o = (old - 0.7) / 0.3
+                p += 0.04 * o * o
+            }
+            if t.vigour < 0.06 {
+                p += if h.need > 0.2 { 0.08 } else { 0.012 }
+            }
+            if t.tall < 2.5 {
+                p += 0.6 * h.palatable * min(1.0, 2.5 * ground.browse[c]) * (1.0 - ground.thorn[c])
+            }
+            let gusts = 0.002 * land.exposed[c] * smoothstep(12.0, 25.0, t.tall) * STEP_YEARS
+            p *= STEP_YEARS
+            if !t.pinned && draw < p + gusts {
+                t.died = year
+                if draw >= p {
+                    // Thrown by the wind, roots and all.
+                    t.state = LOG
+                    t.fell = year
+                    t.cause = WIND
+                    t.fall = rotate(wind(), (rand(t.seed, 3) - 0.5) * 0.7)
+                    tear(mut ground, t.at, 3.0)
+                } else {
+                    t.state = SNAG
+                    t.cause = OLD
+                }
+            }
+        } else if t.state == SNAG {
+            let stands = h.stands * t.tall * (0.6 + 0.8 * rand(t.seed, 5)) + 1.0
+            let stands = if t.cause == LIGHTNING { stands * 1.6 } else { stands }
+            if f32(year - t.died) > stands {
+                t.state = LOG
+                t.fell = year
+                t.fall = toward_light(t)
+            }
+        } else if t.state == LOG {
+            if f32(year - t.fell) > h.rots * t.tall * (0.7 + 0.6 * rand(t.seed, 7)) + 4.0 {
+                t.state = GONE
+            }
+        }
+    }
+    trees.retain(|t| t.state != GONE && !(t.state != ALIVE && t.tall < 4.0))
+}
+
+/// Which way a dead tree comes down: the way it leans (an edge tree leans to the light), else
+/// any way.
+fn toward_light(t: Tree) -> vec2 {
+    let any = rotate(vec2(1.0, 0.0), TAU * rand(t.seed, 6))
+    if length(t.lean) > 0.3 { normalize(normalize(t.lean) + any * 0.3) } else { any }
+}
+
+fn rotate(v: vec2, a: f32) -> vec2 {
+    let (s, c) = (sin(a), cos(a))
+    vec2(c * v.x - s * v.y, s * v.x + c * v.y)
+}
+
+// ---- the herd -----------------------------------------------------------------------------------
+
+/// The herd's marks on the fine grid: the wear of its hooves and the trails' pull (the wear,
+/// blurred), where it grazes and where it rests; and what it walks round.
+pub struct Herd {
+    trail: Vec<f32>,
+    pull_x: Vec<f32>,
+    pull_z: Vec<f32>,
+    graze: Vec<f32>,
+    rest: Vec<f32>,
+    cost: Vec<f32>,
+    /// The ground's steepness and the plateau's edge: the part of `cost` that doesn't change.
+    rough: Vec<f32>,
+    /// Steps walked, and legs that ended without arriving.
+    steps: u32,
+    lost: u32,
+}
+
+/// Where the herd comes into the meadow (up the slope behind the camera), and where it goes down
+/// to the valley's water at the plateau's edge.
+const ENTRY = vec2(-9.0, -14.0)
+const DESCENT = vec2(-27.0, 58.0)
+/// A step, how much wear a hoof leaves, and how hard a trail pulls.
+const STEP: f32 = 1.0
+/// A fan of turns to look round what's in the way: cos and sin of 0.32 rad steps.
+const FAN_C = [0.9492, 0.8021, 0.5735, 0.2879, -0.0292, -0.3436, -0.6227]
+const FAN_S = [0.3146, 0.5972, 0.8192, 0.9577, 0.9996, 0.9391, 0.7825]
+const WEAR: f32 = 0.07
+const PULL: f32 = 2.2
+const TRIPS: u32 = 24
+
+fn new_herd() -> Herd {
+    let nn = FN * FN
+    var rough: Vec<f32> = Vec::with_capacity(nn)
+    for c in 0..nn {
+        let p = fcentre(c)
+        let e = 0.6
+        let gx = (height(p.x + e, p.y) - height(p.x - e, p.y)) / (2.0 * e)
+        let gz = (height(p.x, p.y + e) - height(p.x, p.y - e)) / (2.0 * e)
+        let steep = smoothstep(0.3, 0.7, length(vec2(gx, gz)))
+        let edge = smoothstep(-3.0, -0.5, past_edge(p))
+        rough.push(max(steep, edge))
+    }
+    Herd {
+        trail: Vec::filled(nn, 0.0),
+        pull_x: Vec::filled(nn, 0.0),
+        pull_z: Vec::filled(nn, 0.0),
+        graze: Vec::filled(nn, 0.0),
+        rest: Vec::filled(nn, 0.0),
+        cost: rough.clone(),
+        rough,
+        steps: 0,
+        lost: 0,
+    }
+}
+
+/// What the herd walks round: stones, trunks, thorn thickets and logs, over the rough ground.
+fn obstacles(herd: mut Herd, trees: [Tree]) {
+    herd.cost = herd.rough.clone()
+    for s in boulders() {
+        mark(mut herd.cost, s.at.xz, s.radius * 1.15, 1.0)
+    }
+    for t in trees {
+        if in_fine(t.at) {
+            if t.state == ALIVE && t.kind == THORN && t.tall > 1.0 {
+                mark(mut herd.cost, t.at + t.lean, t.reach * 0.9, 0.85)
+            } else if t.state != LOG && t.tall > 2.0 {
+                mark(mut herd.cost, t.at, t.girth + 0.45, 1.0)
+            } else if t.state == LOG {
+                let len = t.tall * 0.85
+                let high = smoothstep(0.15, 0.5, t.girth)
+                var s = 0.0
+                while s < len {
+                    let r = t.girth * (1.0 - 0.6 * s / len)
+                    mark(
+                        mut herd.cost,
+                        t.at + t.fall * s,
+                        r + 0.3,
+                        0.2 + 0.8 * high * (1.0 - s / len),
+                    )
+                    s += FCELL
+                }
+            }
+        }
+    }
+}
+
+/// Sets `g`'s fine cells within `r` of `p` to at least `v`.
+fn mark(g: mut Vec<f32>, p: vec2, r: f32, v: f32) {
+    let span = i32(ceil(2.0 * r / FCELL)) + 1
+    let i0 = i32(floor((p.x - r - FX0) / FCELL))
+    let j0 = i32(floor((p.y - r - FZ0) / FCELL))
+    for dj in 0..span {
+        for di in 0..span {
+            let i = i0 + di
+            let j = j0 + dj
+            if i >= 0 && j >= 0 && i < i32(FN) && j < i32(FN) {
+                let k = u32(j) * FN + u32(i)
+                if length(fcentre(k) - p) < r {
+                    g[k] = max(g[k], v)
+                }
+            }
+        }
+    }
+}
+
+/// Adds `amount`, fading to nothing at `r`, to `g`'s fine cells round `p`.
+fn spread(g: mut Vec<f32>, p: vec2, r: f32, amount: f32) {
+    let span = i32(ceil(2.0 * r / FCELL)) + 1
+    let i0 = i32(floor((p.x - r - FX0) / FCELL))
+    let j0 = i32(floor((p.y - r - FZ0) / FCELL))
+    for dj in 0..span {
+        for di in 0..span {
+            let i = i0 + di
+            let j = j0 + dj
+            if i >= 0 && j >= 0 && i < i32(FN) && j < i32(FN) {
+                let k = u32(j) * FN + u32(i)
+                let d = length(fcentre(k) - p)
+                if d < r {
+                    g[k] += amount * (1.0 - d / r)
+                }
+            }
+        }
+    }
+}
+
+/// One leg of a trip, from `from` toward `to`, a step at a time: drawn to the trails it finds,
+/// wandering a little, and round what's in its way. Each step wears the ground and crops the
+/// grass. Returns where it stopped.
+fn leg(herd: mut Herd, from: vec2, to: vec2, seed: u32) -> vec2 {
+    var p = from
+    var heading = normalize(to - from)
+    var step = 0
+    var closest = length(to - p)
+    var since = 0
+    while step < 200 && since < 30 && length(to - p) > 1.5 {
+        let goal = normalize(to - p)
+        let side = vec2(-goal.y, goal.x)
+        let wander = goal + side * (rand(seed, step) - 0.5) * 1.2
+        let pull = vec2(fine(herd.pull_x, p), fine(herd.pull_z, p))
+        let dir = normalize(wander + pull * PULL + heading * 0.9)
+        var best = dir
+        var cheapest = fine(herd.cost, p + dir * 0.9)
+        if cheapest > 0.25 {
+            for k in 0..7 {
+                for side in 0..2 {
+                    let s = if side == 0 { FAN_S[k] } else { -FAN_S[k] }
+                    let d = vec2(FAN_C[k] * dir.x - s * dir.y, s * dir.x + FAN_C[k] * dir.y)
+                    let cost = fine(herd.cost, p + d * 0.9)
+                    if cost < cheapest - 0.05 {
+                        cheapest = cost
+                        best = d
+                    }
+                }
+            }
+        }
+        heading = best
+        for _ in 0..2 {
+            p += best * (STEP * 0.5)
+            let c = fcell(p)
+            let w = herd.trail[c]
+            herd.trail[c] = w + WEAR * (1.0 - w)
+            let g = herd.graze[c]
+            herd.graze[c] = g + 0.02
+        }
+        step += 1
+        let d = length(to - p)
+        if d < closest - 0.1 {
+            closest = d
+            since = 0
+        } else {
+            since += 1
+        }
+    }
+    herd.steps += step
+    if length(to - p) > 1.5 {
+        herd.lost += 1
+    }
+    p
+}
+
+/// Somewhere to graze: the best of a few places in the open, the lusher the better.
+fn pasture(herd: Herd, land: Land, ground: Ground, seed: u32) -> vec2 {
+    var best = MEADOW
+    var score = -1.0
+    for k in 0..6 {
+        let a = TAU * rand(seed, 40 + k)
+        let r = 30.0 * sqrt(rand(seed, 60 + k))
+        let along = mix(OPEN_FROM, MEADOW, vec2(rand(seed, 100 + k)))
+        let p = along + vec2(cos(a), sin(a)) * r
+        let c = cell(p)
+        let s = ground.light[c] *
+            (0.35 + 0.65 * land.wet[c]) *
+            (1.0 - fine(herd.cost, p)) *
+            (0.6 + 0.4 * rand(seed, 80 + k))
+        if s > score {
+            score = s
+            best = p
+        }
+    }
+    best
+}
+
+/// Where the herd rests: in the great oak's shade once it casts one, before that at the forest's
+/// edge.
+fn resting(year: i32, seed: u32) -> vec2 {
+    let j = vec2(rand(seed, 90) - 0.5, rand(seed, 91) - 0.5)
+    if year > OAK_SOWN + 80 {
+        let shade = -normalize(SUN.xz)
+        KNOLL + shade * 3.5 + j * 5.0
+    } else {
+        MEADOW + vec2(24.0, 4.0) + j * 8.0
+    }
+}
+
+/// Years between the herd's bookkeeping (`herd_book`).
+const BOOK: i32 = 4
+
+/// A year of the herd: its trips, from where it comes in, to graze, to rest, to graze, and out
+/// (down to the water, or back the way it came). Then the year's grass grows back and the trails
+/// soften.
+fn herd_year(herd: mut Herd, land: Land, ground: Ground, year: i32) {
+    for trip in 0..TRIPS {
+        let s = u32(year).wrapping_mul(7919) ^ trip.wrapping_mul(104729)
+        let j = vec2(rand(s, 1) - 0.5, rand(s, 2) - 0.5) * 6.0
+        let entry = ENTRY + j
+        let first = pasture(herd, land, ground, s)
+        let rest = resting(year, s)
+        let second = pasture(herd, land, ground, s + 17)
+        let out = if rand(s, 3) < 0.45 { DESCENT + j * 0.5 } else { entry }
+        var p = leg(mut herd, entry, first, s)
+        spread(mut herd.graze, p, r: 7.0, amount: 0.5)
+        p = leg(mut herd, p, rest, s + 1)
+        spread(mut herd.rest, p, r: 3.5, amount: 0.25)
+        spread(mut herd.trail, p, r: 3.0, amount: 0.08)
+        p = leg(mut herd, p, second, s + 2)
+        spread(mut herd.graze, p, r: 7.0, amount: 0.5)
+        let _ = leg(mut herd, p, out, s + 3)
+    }
+}
+
+/// The herd's ground over `BOOK` years: the grass grows back and the trails soften (each year's
+/// share at once), and the trails' pull is worked out again.
+fn herd_book(herd: mut Herd) {
+    let nn = FN * FN
+    for k in 0..nn {
+        herd.trail[k] = min(herd.trail[k] * 0.41, 1.0)
+        herd.graze[k] *= 0.0625
+        herd.rest[k] *= 0.52
+    }
+    // The trails' pull: the gradient of the wear, blurred.
+    let soft = blur(herd.trail, FN, 3)
+    for c in 0..nn {
+        let i = i32(c % FN)
+        let j = i32(c / FN)
+        herd.pull_x[c] = (soft[index(i + 1, j, FN)] - soft[index(i - 1, j, FN)]) / (2.0 * FCELL)
+        herd.pull_z[c] = (soft[index(i, j + 1, FN)] - soft[index(i, j - 1, FN)]) / (2.0 * FCELL)
+    }
+}
+
+/// The herd's browsing, on the domain's grid: its grazing and resting, spread a few metres.
+fn browsing(herd: Herd, ground: mut Ground) {
+    let nn = N * N
+    var b: Vec<f32> = Vec::filled(nn, 0.0)
+    for c in 0..nn {
+        let p = centre(c)
+        if in_fine(p) {
+            b[c] = min(0.6 * fine(herd.graze, p) + 0.5 * fine(herd.rest, p), 1.0)
+        }
+    }
+    ground.browse = blur(b, N, 2)
+}
+
+// ---- the history --------------------------------------------------------------------------------
+
+/// The years, and the author's events in them.
+pub const YEARS: i32 = 900
+/// A storm out of the valley throws the trees where the meadow is now.
+const STORM: i32 = 500
+/// The herd comes, and stays.
+const ARRIVE: i32 = 503
+/// A hawthorn thicket on the knoll; an acorn cached in it.
+const THICKET: i32 = 506
+pub const OAK_SOWN: i32 = 520
+/// Lightning kills the tallest tree near `STRUCK`.
+const LIGHTNING_YEAR: i32 = 830
+const STRUCK = vec2(-10.0, 54.0)
+/// A gale throws the trees round `GALE_AT`; a beech snaps near `SNAP_AT`.
+const GALE_YEAR: i32 = 862
+const GALE_AT = vec2(20.0, 44.0)
+const GALE_THROWS: u32 = 6
+const SNAP_YEAR: i32 = 893
+const SNAP_AT = vec2(2.0, 52.0)
+
+/// What the history leaves: the trees, the ground's fields on the domain's grid (light, wetness,
+/// litter, thorn) and the herd's on the fine grid (wear, grazing, resting).
+pub struct History {
+    pub trees: Vec<Tree>,
+    pub light: Vec<f32>,
+    pub wet: Vec<f32>,
+    pub litter: Vec<f32>,
+    pub thorn: Vec<f32>,
+    pub wear: Vec<f32>,
+    pub graze: Vec<f32>,
+    pub rest: Vec<f32>,
+    /// How hard the herd browses, on the domain's grid.
+    pub browse: Vec<f32>,
+    /// A census each century.
+    pub log: Vec<String>,
+}
+
+/// The open ground's spine: from the camera's rise to the meadow's middle. The storm's swath and
+/// the herd's pasture are round it.
+const OPEN_FROM = vec2(-2.0, 4.0)
+
+/// How far `p` is from the open ground's spine (m), its rim ragged.
+fn from_open(p: vec2) -> f32 {
+    let ab = MEADOW - OPEN_FROM
+    let t = clamp(dot(p - OPEN_FROM, ab) / dot(ab, ab), 0.0, 1.0)
+    length(p - OPEN_FROM - ab * t) + 8.0 * (noise2(p * 0.07) - 0.5)
+}
+
+/// The storm's swath: the meadow and the slope up to the camera's rise, out to the plateau's
+/// edge, its rim ragged.
+fn swath(p: vec2) -> f32 {
+    let r = from_open(p)
+    let toward = smoothstep(-26.0, -10.0, past_edge(p)) * (1.0 - smoothstep(38.0, 52.0, r))
+    max(1.0 - smoothstep(24.0, 31.0, r), toward)
+}
+
+/// Bares the soil within `r` of `p`: a tree's roots torn up, its crown crushing what grew there.
+fn tear(ground: mut Ground, p: vec2, r: f32) {
+    let span = i32(ceil(2.0 * r / CELL)) + 1
+    let i0 = i32(floor((p.x - r - X0) / CELL))
+    let j0 = i32(floor((p.y - r - Z0) / CELL))
+    for dj in 0..span {
+        for di in 0..span {
+            let i = i0 + di
+            let j = j0 + dj
+            if i >= 0 && j >= 0 && i < i32(N) && j < i32(N) {
+                let k = u32(j) * N + u32(i)
+                if length(centre(k) - p) < r {
+                    ground.bare[k] = 1.0
+                }
+            }
+        }
+    }
+}
+
+/// The author's events, in their years.
+fn events(trees: mut Vec<Tree>, ground: mut Ground, year: i32) {
+    if year == STORM {
+        for mut t in trees {
+            if t.state == ALIVE {
+                let p = swath(t.at) * (0.65 + 0.35 * smoothstep(3.0, 14.0, t.tall))
+                if rand(t.seed, 11) < p {
+                    t.state = LOG
+                    t.died = year
+                    t.fell = year
+                    t.cause = WIND
+                    t.fall = rotate(wind(), (rand(t.seed, 3) - 0.5) * 0.6)
+                    ground.bare[cell(t.at)] = 1.0
+                }
+            }
+        }
+    }
+    if year == THICKET {
+        for k in 0..4 {
+            let a = TAU * f32(k) / 4.0 + 0.4
+            let at = KNOLL + vec2(cos(a), sin(a)) * 1.6
+            trees.push(sapling(at, THORN, year, 1.2, 50000 + k))
+        }
+    }
+    if year == OAK_SOWN {
+        var oak = sapling(KNOLL, OAK, year, 0.5, 51111)
+        oak.pinned = true
+        trees.push(oak)
+    }
+    if year == LIGHTNING_YEAR {
+        strike(mut trees, STRUCK, 8.0, year, LIGHTNING)
+    }
+    if year == GALE_YEAR {
+        // The gale throws the tall trees nearest `GALE_AT`, one after another, downwind.
+        for _ in 0..GALE_THROWS {
+            var best = trees.len()
+            var nearest = 18.0
+            var i = 0
+            for t in trees {
+                let d = length(t.at - GALE_AT)
+                if t.state == ALIVE && !t.pinned && t.tall > 8.0 && d < nearest {
+                    nearest = d
+                    best = i
+                }
+                i += 1
+            }
+            if best < trees.len() {
+                mut t = trees[best]
+                t.state = LOG
+                t.died = year
+                t.fell = year
+                t.cause = WIND
+                t.fall = rotate(wind(), (rand(t.seed, 3) - 0.5) * 0.5)
+                tear(mut ground, t.at, 4.0)
+            }
+        }
+    }
+    if year == SNAP_YEAR {
+        strike(mut trees, SNAP_AT, 8.0, year, SNAPPED)
+    }
+}
+
+/// Kills the tallest living tree within `r` of `p`, oaks first for lightning: struck, it stands;
+/// snapped, its top comes down.
+fn strike(trees: mut Vec<Tree>, p: vec2, r: f32, year: i32, cause: u32) {
+    var best = trees.len()
+    var tallest = 0.0
+    var i = 0
+    for t in trees {
+        let fit = if cause == LIGHTNING && t.kind == OAK { t.tall + 6.0 } else { t.tall }
+        if t.state == ALIVE && !t.pinned && length(t.at - p) < r && fit > tallest {
+            tallest = fit
+            best = i
+        }
+        i += 1
+    }
+    if best < trees.len() {
+        mut t = trees[best]
+        t.died = year
+        t.cause = cause
+        if cause == SNAPPED {
+            t.state = LOG
+            t.fell = year
+            t.fall = toward_light(t)
+        } else {
+            t.state = SNAG
+        }
+    }
+}
+
+/// The first forest: saplings of every species across the domain, which the first centuries sort
+/// out.
+fn first_forest(land: Land) -> Vec<Tree> {
+    var trees: Vec<Tree> = Vec::new()
+    let nn = N * N
+    for c in 0..nn {
+        if land.habitable[c] && rand(c, 1) < 0.3 {
+            let k = rand(c, 2)
+            let kind = if k < 0.35 { BEECH } else if k < 0.6 { OAK } else if k < 0.92 {
+                BIRCH
+            } else {
+                THORN
+            }
+            let at = centre(c) + vec2(rand(c, 3) - 0.5, rand(c, 4) - 0.5) * CELL
+            trees.push(sapling(at, kind, -i32(rand(c, 5) * 10.0), 0.5 + 3.0 * rand(c, 6), c))
+        }
+    }
+    trees
+}
+
+/// Counts of the living, standing dead and fallen, by species.
+fn census(trees: [Tree], year: i32, ground: Ground) -> String {
+    var alive = [0, 0, 0, 0]
+    var snags = 0
+    var logs = 0
+    var big = 0
+    for t in trees {
+        if t.state == ALIVE {
+            alive[t.kind] += 1
+            if t.tall > 15.0 {
+                big += 1
+            }
+        } else if t.state == SNAG {
+            snags += 1
+        } else if t.state == LOG {
+            logs += 1
+        }
+    }
+    let m = cell(MEADOW)
+    f"year {year}: oak {alive[0]}, beech {alive[1]}, birch {alive[2]}, thorn {alive[3]}, over 15 m {big}, snags {snags}, logs {logs}; meadow light {ground.light[m]}, browse {ground.browse[m]}"
+}
+
+/// Puts `ch` on the map at `p`.
+fn put(grid: mut Vec<u32>, p: vec2, ch: u32) {
+    let i = i32(floor((p.x - FX0) / 2.0))
+    let j = i32(floor((p.y - FZ0) / 2.0))
+    if i >= 0 && j >= 0 && i < 64 && j < 64 {
+        grid[u32(j) * 64 + u32(i)] = ch
+    }
+}
+
+/// A map of the fine grid's square, 2 m a character, as the camera sees it from above: far at
+/// the top, +x on the left. Living trunks by species (capitals over 15 m): `O` oak, `B` beech,
+/// `I` birch, `t` hawthorn; `!` a snag, `=` a log; the ground: `:` trail, `~` wet open grass,
+/// `.` open grass, `-` half shade, blank deep shade; `@` a boulder, `*` the camera.
+fn ascii_map(trees: [Tree], ground: Ground, herd: Herd, land: Land) -> String {
+    let w = 64
+    var grid: Vec<u32> = Vec::filled(w * w, 32)
+    for j in 0..w {
+        for i in 0..w {
+            let p = vec2(FX0 + (f32(i) + 0.5) * 2.0, FZ0 + (f32(j) + 0.5) * 2.0)
+            let c = cell(p)
+            let l = ground.light[c]
+            var ch = if l < 0.3 { 32 } else if l < 0.6 { 45 } else if land.wet[c] > 0.6 {
+                126
+            } else {
+                46
+            }
+            if fine(herd.trail, p) > 0.3 {
+                ch = 58
+            }
+            if past_edge(p) > 0.0 {
+                ch = 35
+            }
+            grid[j * w + i] = ch
+        }
+    }
+    for t in trees {
+        if t.state == LOG {
+            var s = 0.0
+            while s < t.tall * 0.85 {
+                put(mut grid, t.at + t.fall * s, 61)
+                s += 1.5
+            }
+        }
+    }
+    for t in trees {
+        if t.state == ALIVE && t.tall > 1.5 {
+            let big = t.tall > 15.0
+            let ch = if t.kind == OAK { if big { 79 } else { 111 } } else if t.kind == BEECH {
+                if big { 66 } else { 98 }
+            } else if t.kind == BIRCH { if big { 73 } else { 105 } } else { 116 }
+            put(mut grid, t.at, ch)
+        } else if t.state == SNAG {
+            put(mut grid, t.at, 33)
+        }
+    }
+    for b in boulders() {
+        put(mut grid, b.at.xz, 64)
+    }
+    put(mut grid, STAND, 42)
+    var text = String::new()
+    // From the far edge down to 8 m behind the camera.
+    for jj in 0..(w - 8) {
+        let j = w - 1 - jj
+        for ii in 0..w {
+            let i = w - 1 - ii
+            text.push_char(grid[j * w + i])
+        }
+        text.push_str("\n")
+    }
+    text
+}
+
+/// The history, from the first forest to now; none at all for spike 15's clearing (so its load
+/// can be timed without it).
+pub fn simulate() -> History {
+    simulate_for(if scene::HISTORY { YEARS } else { 0 })
+}
+
+/// The history's first `years` years.
+fn simulate_for(years: i32) -> History {
+    let land = survey()
+    let nn = N * N
+    var ground = Ground {
+        light: Vec::filled(nn, 1.0),
+        thorn: Vec::filled(nn, 0.0),
+        browse: Vec::filled(nn, 0.0),
+        bare: Vec::filled(nn, 0.0),
+        seed: Vec::filled(nn * KINDS, 0.0),
+        shade_sum: Vec::filled(nn, 0.0),
+    }
+    var trees = first_forest(land)
+    var herd = new_herd()
+    var log: Vec<String> = Vec::new()
+    var year = 0
+    while year < years {
+        events(mut trees, mut ground, year)
+        if year % i32(STEP_YEARS) == 0 {
+            let b = bins(trees)
+            let needs = competition(trees, b)
+            grow(mut trees, needs, land, mut ground, year)
+            canopy(trees, mut ground, year)
+            if year % 10 == 0 {
+                seed_rain(trees, mut ground, year)
+            }
+            let b = bins(trees)
+            var young = recruit(trees, b, land, ground, year)
+            trees.append(mut young)
+        }
+        if year >= ARRIVE {
+            if year % 5 == 0 {
+                obstacles(mut herd, trees)
+            }
+            herd_year(mut herd, land, ground, year)
+            if (year - ARRIVE) % BOOK == BOOK - 1 {
+                browsing(herd, mut ground)
+                herd_book(mut herd)
+            }
+        }
+        for k in 0..nn {
+            ground.bare[k] *= 0.9
+        }
+        if year % 100 == 0 {
+            log.push(census(trees, year, ground))
+        }
+        year += 1
+    }
+    log.push(census(trees, year, ground))
+    log.push(f"herd: {herd.steps} steps, {herd.lost} legs lost")
+    log.push(ascii_map(trees, ground, herd, land))
+    var litter: Vec<f32> = Vec::filled(nn, 0.0)
+    for k in 0..nn {
+        litter[k] = smoothstep(0.35, 0.85, ground.shade_sum[k])
+    }
+    History {
+        trees: take trees,
+        light: ground.light.clone(),
+        wet: land.wet.clone(),
+        litter: take litter,
+        thorn: ground.thorn.clone(),
+        wear: herd.trail.clone(),
+        graze: herd.graze.clone(),
+        rest: herd.rest.clone(),
+        browse: ground.browse.clone(),
+        log: take log,
+    }
+}
+
+/// The most worn point of the trails within `r` of `p`: where a grazer walks.
+pub fn on_trail(h: History, p: vec2, r: f32) -> vec2 {
+    var best = p
+    var most = -1.0
+    let span = i32(ceil(2.0 * r / FCELL)) + 1
+    let i0 = i32(floor((p.x - r - FX0) / FCELL))
+    let j0 = i32(floor((p.y - r - FZ0) / FCELL))
+    for dj in 0..span {
+        for di in 0..span {
+            let i = i0 + di
+            let j = j0 + dj
+            if i >= 0 && j >= 0 && i < i32(FN) && j < i32(FN) {
+                let k = u32(j) * FN + u32(i)
+                let q = fcentre(k)
+                let w = h.wear[k] - 0.01 * length(q - p)
+                if length(q - p) < r && w > most {
+                    most = w
+                    best = q
+                }
+            }
+        }
+    }
+    best
+}
+
+/// The ground's fields for the GPU, on the fine grid: wear, browsing, resting and wetness.
+pub fn fine_fields(h: History) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::with_capacity(FN * FN)
+    for c in 0..(FN * FN) {
+        let p = fcentre(c)
+        out.push(vec4(h.wear[c], sample(h.browse, p), h.rest[c], sample(h.wet, p)))
+    }
+    out
+}
+
+/// The ground's fields for the GPU, on the domain's grid: light, wetness, litter and browsing.
+pub fn wide_fields(h: History) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::with_capacity(N * N)
+    for c in 0..(N * N) {
+        out.push(vec4(h.light[c], h.wet[c], h.litter[c], h.browse[c]))
+    }
+    out
+}

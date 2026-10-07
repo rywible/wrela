@@ -4,6 +4,7 @@
 use camera::{Cam, ROCK}
 use light::{Lit, hazed, shade}
 use noise::noise3
+use history::{HABITS, History, LOG, WIND, YEARS}
 use scene::height
 use shadow::{Sun, sunlit}
 use std::gpu::{ClipPosition, ComparisonSampler, DepthTexture, Flat, VertexIndex}
@@ -16,6 +17,38 @@ pub struct Boulder: Copy + GpuData {
     pub squash: vec3,
     pub turn: f32,
     pub seed: u32,
+    /// `STONE`, or a windthrown tree's `PLATE` of roots and earth.
+    pub kind: u32 = 0,
+}
+
+pub const STONE: u32 = 0
+pub const PLATE: u32 = 1
+
+/// The boulders, and the root plates of the trees the wind threw (spike 16): each stands on edge
+/// at its tree's foot, across the way it fell, its pit beside it; the older, the lower and greener.
+pub fn plates(h: History) -> Vec<Boulder> {
+    var out = boulders()
+    for t in h.trees {
+        if t.state == LOG && t.cause == WIND {
+            let years = f32(YEARS - t.fell)
+            let rot = clamp(years / (HABITS[t.kind].rots * t.tall + 4.0), 0.0, 1.0)
+            if rot < 0.8 {
+                let r = (0.9 + t.girth * 3.2) * (1.0 - 0.4 * rot)
+                let y = height(x: t.at.x, z: t.at.y) + r * (0.45 - 0.35 * rot)
+                out.push(
+                    Boulder {
+                        at: vec3(t.at.x - t.fall.x * 0.3, y, t.at.y - t.fall.y * 0.3),
+                        radius: r,
+                        squash: vec3(1.2, 0.8, 0.13),
+                        turn: atan2(t.fall.x, t.fall.y),
+                        seed: t.seed % 100000,
+                        kind: PLATE,
+                    },
+                )
+            }
+        }
+    }
+    out
 }
 
 /// The boulders, placed for the shot: one big and mossy at the right of the foreground, a pair
@@ -62,6 +95,11 @@ fn lump(b: Boulder, d: vec3) -> f32 {
     let q = d * 1.7 + vec3(f32(b.seed) * 3.1)
     let n = 0.6 * noise3(q) + 0.28 * noise3(q * 2.3) + 0.12 * noise3(q * 5.1)
     var r = 0.88 + 0.3 * n
+    if b.kind == PLATE {
+        // A torn disc: its rim ragged, its face lumpy with earth.
+        let rim = noise3(d * 4.3 + vec3(f32(b.seed) * 1.7))
+        return b.radius * (0.7 + 0.55 * n + 0.35 * (rim - 0.5))
+    }
     // Facets: the stone split along a few planes, as weathered granite is.
     for k in 0..7 {
         let a = std::math::TAU * noise::rand(b.seed, 20 + k)
@@ -86,6 +124,7 @@ pub struct Stone: Copy {
     pub normal: vec3,
     pub up: f32,
     pub seed: Flat<u32>,
+    pub kind: Flat<u32>,
 }
 
 /// Direction `(row, col)` of the grid.
@@ -127,6 +166,7 @@ pub fn stone(v: VertexIndex, cam: Cam, boulders: [Boulder]) -> Stone {
         normal: n,
         up,
         seed: Flat { value: b.seed },
+        kind: Flat { value: b.kind },
     }
 }
 
@@ -154,7 +194,15 @@ pub fn stone_shade(
     stone_col = mix(stone_col, vec3(0.42, 0.40, 0.22), vec3(lichen * 0.7))
     let moss = smoothstep(0.55, 0.85, n.y + 0.35 * (noise3(s.world * 2.5) - 0.5)) *
         smoothstep(0.2, 0.6, s.up)
-    let albedo = mix(stone_col, vec3(0.10, 0.14, 0.035), vec3(moss * 0.6))
+    var albedo = mix(stone_col, vec3(0.10, 0.14, 0.035), vec3(moss * 0.6))
+    if s.kind.value == PLATE {
+        // Earth held in torn roots: dark soil, pale root ends, stones, grass on its old top.
+        let roots = smoothstep(0.66, 0.7, noise3(s.world * vec3(14.0, 3.0, 14.0)))
+        let soil = mix(vec3(0.07, 0.05, 0.035), vec3(0.15, 0.11, 0.07), vec3(grain))
+        albedo = mix(soil, vec3(0.30, 0.24, 0.17), vec3(roots * 0.5))
+        // Its old top, grass and moss, faces the way the tree fell.
+        albedo = mix(albedo, vec3(0.08, 0.13, 0.03), vec3(moss * 0.8))
+    }
     let lit = sunlit(sun, s.world, n, near, far, ss, 1.0)
     // Where it meets the ground, the grass and the earth darken it.
     let ground = height(x: s.world.x, z: s.world.z)

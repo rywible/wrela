@@ -10,9 +10,11 @@ use engine::realize::{Mesh, realize_once}
 use engine::render::{MAX_BONES, palette, skin, skin_shadow}
 use engine::sim::{GaitState, Mode, Transform}
 use grazer::creature::grazer
-use grass::{BLADE_VERTICES, Blade, blade, blade_shade, meadow}
-use flowers::{Flower, flower, flower_shade, wildflowers}
-use rocks::{BOULDER_VERTICES, Boulder, boulders, stone, stone_shade, stone_shadow}
+use grass::{BLADE_VERTICES, Blade, blade, blade_shade, meadow, meadow_of}
+use flowers::{Flower, flower, flower_shade, wildflowers, wildflowers_of}
+use history::{fine_fields, wide_fields}
+use scene::HISTORY
+use rocks::{BOULDER_VERTICES, Boulder, boulders, plates, stone, stone_shade, stone_shadow}
 use post::{blur, develop, down, show}
 use shadow::{FAR_SIZE, NEAR_SIZE, sun_views}
 use sky::sky_shade
@@ -25,7 +27,7 @@ use std::input::{Event, Key, events}
 use std::io::print
 use terrain::{RINGS, SEGS, ground, ground_shade}
 use trees::{
-    Card, Limb, SIDES, bark_shade, forest, leaf, leaf_cut, leaf_shade, leaf_shadow, limb,
+    Card, Limb, SIDES, bark_shade, forest, forest_of, leaf, leaf_cut, leaf_shade, leaf_shadow, limb,
     limb_shadow,
 }
 
@@ -54,6 +56,8 @@ pub struct Clearing {
     stone_count: u32,
     clouds: Texture,
     puffs: GpuBuffer<Puff>,
+    fine: GpuBuffer<vec4>,
+    wide: GpuBuffer<vec4>,
     puff_count: u32,
     linear: Sampler,
     width: u32,
@@ -65,34 +69,46 @@ pub struct Clearing {
 }
 
 pub fn init() -> Clearing {
-    let f = forest()
+    let h = history::simulate()
+    for line in h.log {
+        print(line)
+    }
+    print(f"history: {h.trees.len()} trees")
+    let f = if HISTORY { forest_of(h) } else { forest() }
     print(f"forest: {f.clumps.len()} clumps, {f.cards.len()} cards, {f.limbs.len()} limbs")
     var cards: GpuBuffer<Card> = buffer(f.cards.len())
     write(mut cards, 0, f.cards)
     var limbs: GpuBuffer<Limb> = buffer(f.limbs.len())
     write(mut limbs, 0, f.limbs)
-    let m = meadow()
+    let bs = if HISTORY { plates(h) } else { boulders() }
+    let m = if HISTORY { meadow_of(h, bs) } else { meadow() }
     print(f"meadow: {m.len()} blades")
     var blades: GpuBuffer<Blade> = buffer(m.len())
     write(mut blades, 0, m)
-    let fl = wildflowers()
+    let fl = if HISTORY { wildflowers_of(h) } else { wildflowers() }
     print(f"flowers: {fl.len()}")
     var flowers: GpuBuffer<Flower> = buffer(fl.len())
     write(mut flowers, 0, fl)
-    let bs = boulders()
     var stones: GpuBuffer<Boulder> = buffer(bs.len())
     write(mut stones, 0, bs)
     let sky = cloudscape()
     print(f"clouds: {sky.len()} puffs")
     var puffs: GpuBuffer<Puff> = buffer(sky.len())
     write(mut puffs, 0, sky)
+    let ff = fine_fields(h)
+    var fine: GpuBuffer<vec4> = buffer(ff.len())
+    write(mut fine, 0, ff)
+    let wf = wide_fields(h)
+    var wide: GpuBuffer<vec4> = buffer(wf.len())
+    write(mut wide, 0, wf)
     // The grazer: realized once at 1 cm (its size on screen asks no finer), posed mid-stride where it stands.
     let mesh = realize_once(
         grazer(),
         CreatureLook { surface: engine::look::Mesh { tolerance: 1cm } },
     )
     let gait = GaitState { phase: 0.3, speed: 0.8, turn: 0.0, mode: Mode::Walk }
-    let at = vec3(AT.x, scene::height(x: AT.x, z: AT.y), AT.y)
+    let on = if HISTORY { history::on_trail(h, AT, 2.5) } else { AT }
+    let at = vec3(on.x, scene::height(x: on.x, z: on.y), on.y)
     let posed = palette(grazer().skeleton(), gait.pose(), Transform { pos: at, heading: HEADING })
     var palettes: GpuBuffer<mat4> = buffer(MAX_BONES)
     write(mut palettes, 0, posed.bones)
@@ -122,6 +138,8 @@ pub fn init() -> Clearing {
         clouds: texture(width: CLOUD_W, height: CLOUD_H, format: TextureFormat::Rgba16Float),
         puffs: take puffs,
         puff_count: sky.len(),
+        fine: take fine,
+        wide: take wide,
         linear: sampler(),
         width: 1,
         height: 1,
@@ -301,7 +319,15 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     if on(off, TERRAIN) {
         draw(
             ground.bind(cam: cam),
-            ground_shade.bind(cam: cam, sun: sun, near: s.near, far: s.far, ss: s.ss),
+            ground_shade.bind(
+                cam: cam,
+                sun: sun,
+                near: s.near,
+                far: s.far,
+                ss: s.ss,
+                fine: s.fine.span(start: 0, count: history::FN * history::FN),
+                wide: s.wide.span(start: 0, count: history::N * history::N),
+            ),
             vertices: RINGS * SEGS * 6,
         )
     }

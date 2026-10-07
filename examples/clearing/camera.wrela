@@ -1,6 +1,6 @@
 // The camera, the sun and the frame's jitter: one uniform block every pass reads.
 
-use scene::{FOVY, LOOK_AT, SUN, eye}
+use scene::{FOVY, SUN, eye}
 use std::gpu::{ClipPosition, VertexIndex}
 use std::transform::{look_at, perspective}
 
@@ -54,7 +54,7 @@ fn halton(i: u32, b: u32) -> f32 {
 /// within its pixel by the Halton (2, 3) sequence.
 pub fn camera(width: u32, height: u32, frame: u32, style: u32, map: bool) -> Cam {
     let e = select(if_false: eye(), if_true: vec3(0.0, 260.0, -60.0), cond: map)
-    let at = select(if_false: LOOK_AT, if_true: vec3(0.0, 0.0, 60.0), cond: map)
+    let at = select(if_false: scene::look_at(), if_true: vec3(0.0, 0.0, 60.0), cond: map)
     let aspect = f32(width) / f32(height)
     let proj = perspective(FOVY, aspect, near: 0.1, far: 12000.0)
     let forward = normalize(at - e)
