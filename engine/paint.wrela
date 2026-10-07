@@ -17,7 +17,8 @@
 use light::{Light, display}
 use noise::{hash2, noise3}
 use std::gpu::{DepthTexture, FragCoord, Sampler, Texture}
-use view::{CREATURE, Camera, class_of, jitter_of}
+use terrain::{Levels, Texel, ground_at}
+use view::{CREATURE, Camera, FLOWER, GRASS, GROUND, class_of, jitter_of}
 
 /// The look's settings: how strong the dabs are on near surfaces, on broad far ones and on the
 /// sky; the paper's tooth; the bloom; the characters' lines (their width in output pixels, and
@@ -31,7 +32,7 @@ pub struct Look: Copy + GpuData {
     pub bloom: f32 = 0.18,
     pub line_px: f32 = 1.6,
     pub line_dark: f32 = 0.45,
-    pub sharpen: f32 = 0.25,
+    pub sharpen: f32 = 0.2,
     pub vignette: f32 = 0.28,
 }
 
@@ -52,7 +53,9 @@ fn strokes(q: vec2) -> f32 {
             let along = dot(d, dir) / 0.62
             let across = dot(d, vec2(-dir.y, dir.x)) / 0.3
             let cover = 1.0 - (along * along + across * across)
-            let w = smoothstep(0.0, 0.25, cover) * (0.5 + hash2(x + 3, y + 1))
+            // Its edge about two output pixels wide, which a map at half the output's size
+            // holds.
+            let w = smoothstep(0.0, 0.6, cover) * (0.5 + hash2(x + 3, y + 1))
             if w > best {
                 best = w
                 value = hash2(x + 31, y + 17) * 2.0 - 1.0
@@ -192,24 +195,32 @@ fn line(
 /// The dabs and the paper's tooth at a scene pixel (the scene's resolution: the look allows
 /// them there, #28 §7): its surface from its depth and its neighbours' (its world point and
 /// normal, as the jittered sample saw it), or its sky direction; each the amount it moves the
-/// paint, for the output's pass to read between texels.
+/// paint, for the output's pass to read between texels. Their sizes are in the output's
+/// pixels (`out` its size), whatever the scene's. The ground and what grows on it take the
+/// terrain's plane (the clipmap's normal), which the depth's neighbours give only roughly
+/// through the grass.
 @fragment
 pub fn dab_map(
     pixel: FragCoord,
     cam: Camera,
     look: Look,
+    out: vec2,
+    levels: Levels,
+    texels: [Texel],
     scene: Texture,
     depth: DepthTexture,
 ) -> vec4 {
     let p = vec2u(pixel.position.xy)
     let px = pixel.position.xy
+    // An output pixel's share of a scene pixel.
+    let per_out = cam.screen.y / out.y
     let class = class_of(scene.load(x: p.x, y: p.y).a)
     let z = depth.load(x: p.x, y: p.y)
     if class == 0 || z <= 0.0 {
         // The sky: dabs anchored to directions, a pixel's angle being its footprint at 1 m.
         let ray = cam.ray(px)
         let footprint = 2.0 * cam.tan_half / cam.screen.y
-        let dab = dabs(ray, -ray, footprint, look.dab_px * 0.8)
+        let dab = dabs(ray, -ray, footprint, look.dab_px * 1.6 * per_out)
         return vec4(look.dabs_sky * dab, 0.0, 0.0, 1.0)
     }
     let world = cam.world_at(px, z)
@@ -224,15 +235,29 @@ pub fn dab_map(
     if dot(n, cam.eye - world) < 0.0 {
         n = -n
     }
+    if class == class_of(GROUND) || class == class_of(GRASS) || class == class_of(FLOWER) {
+        let (ground_n, _, _) = ground_at(levels, texels, world.xz)
+        n = ground_n
+    }
+    // A crown is a mass of leaves, each tilted its own way: its dabs lie across the line of
+    // sight, as a painter lays a crown's.
+    if class == 3 {
+        n = normalize(cam.eye - world)
+    }
     // Broad things take stronger dabs: the far ground, crowns; characters half.
     let broad = if class == 3 { 1.0 } else { smoothstep(30.0, 250.0, dist) }
     var strength = mix(look.dabs_near, look.dabs_far, broad)
     if class == class_of(CREATURE) {
         strength *= 0.5
     }
-    // Dabs are measured in output pixels: the scene's are twice as wide.
-    let dab = dabs(world, n, footprint, look.dab_px * 0.5)
-    vec4(strength * dab, look.tooth * tooth(world, footprint * 0.5), 0.0, 1.0)
+    // A pixel's footprint on the surface, across the slope it's seen at (a surface seen edge on
+    // spreads a pixel along it): so a dab is as wide on screen one way as the other, never a
+    // streak thinner than a pixel.
+    let facing = max(abs(dot(n, normalize(cam.eye - world))), 0.2)
+    let dab = dabs(world, n, footprint / facing, look.dab_px * per_out)
+    // The tooth's grain, a few output pixels: no finer than two of the scene's pixels at half
+    // the output's size, so the map holds it at either.
+    vec4(strength * dab, look.tooth * tooth(world, footprint * per_out * 2.0), 0.0, 1.0)
 }
 
 /// The output pixel, painted: the dabs and the paper's tooth (from the dab map, between its

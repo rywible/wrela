@@ -13,12 +13,15 @@
 use light::{Lit, hazed}
 use lit::{Lighting, sky_at, sun_at}
 use noise::{hash2, rand}
-use plant::{Bark, Card, Instance, LIMB_VERTICES, Leaves, Plant, leaf_at, level_cards, limb_vertex}
+use plant::{
+    Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_VERTICES, Leaves, Plant, Wind, leaf_at,
+    level_cards, limb_vertex, sway,
+}
 use probes::Probe
 use std::field::Tube
 use std::gpu::{
     ClipPosition, Compare, ComparisonSampler, Depth, DepthTexture, Flat, FragCoord, GlobalId,
-    GpuBuffer, InstanceIndex, Sampler, Slots, Texture, TextureFormat, VertexIndex,
+    GpuBuffer, InstanceIndex, Sampler, Slots, Texture, TextureFormat, VertexIndex, WithDepth,
     begin_pass_with_depth, buffer, depth_texture, discard, dispatch, draw, texture,
 }
 use std::math::{PI, TAU}
@@ -26,9 +29,9 @@ use terrain::Texel
 use view::{Camera, LEAVES}
 
 /// The views along each side of an impostor's grid, and each view's texels a side.
-pub const VIEWS: u32 = 12
+pub const VIEWS: u32 = 16
 pub const CELL: u32 = 64
-pub const ATLAS: u32 = 768
+pub const ATLAS: u32 = 1024
 
 /// The direction a hemi-octahedral grid's point `g` (each in [0, 1]) looks from (unit, y ≥ 0).
 pub fn hemi_dir(g: vec2) -> vec3 {
@@ -68,12 +71,14 @@ pub struct Bake: Copy + GpuData {
 }
 
 /// What a baked card or limb fragment carries: its place in its view, its normal and depth in
-/// the crown, its uv on its card, its colour, and its view.
+/// the crown, how far toward the viewer it is from the plant's middle (over the half-width),
+/// its uv on its card, its colour, and its view.
 pub struct BakeVertex: Copy {
     pub clip: ClipPosition,
     pub uv: vec2,
     pub normal: vec3,
     pub depth: f32,
+    pub toward: f32,
     pub albedo: vec3,
     pub seed: Flat<u32>,
     pub view: Flat<u32>,
@@ -105,8 +110,8 @@ pub fn bake_card(v: VertexIndex, i: InstanceIndex, b: Bake, cards: [Card]) -> Ba
     let (s, c) = (sin(a), cos(a))
     let q = vec2(qx[k], qy[k])
     let t = vec2(c * q.x - s * q.y, s * q.x + c * q.y)
-    // The level-1 card's size: the impostor holds a coarse crown.
-    let world = card.centre + (right * t.x + up * t.y) * (card.size * 2.0 * 0.5)
+    // The coarsest level's card (`BAKED`): the impostor holds what it takes over from.
+    let world = card.centre + (right * t.x + up * t.y) * (card.size * f32(1 << BAKED) * 0.5)
     let n = card.normal.decode()
     let tint = card.tint.decode()
     let age = saturate(0.35 + 0.65 * n.y)
@@ -115,11 +120,13 @@ pub fn bake_card(v: VertexIndex, i: InstanceIndex, b: Bake, cards: [Card]) -> Ba
             (tint.xyz - vec3(0.5)) * vec3(0.02, 0.025, 0.0),
         vec3(0.005),
     )
+    let (d, _, _) = view_basis(i.index)
     BakeVertex {
         clip: ClipPosition { position: in_cell(b, i.index, world) },
         uv: q,
         normal: n,
         depth: card.depth,
+        toward: dot(world - b.mid, d) / b.half,
         albedo,
         seed: Flat { value: card.seed },
         view: Flat { value: i.index },
@@ -131,11 +138,13 @@ pub fn bake_card(v: VertexIndex, i: InstanceIndex, b: Bake, cards: [Card]) -> Ba
 @vertex
 pub fn bake_limb(v: VertexIndex, i: InstanceIndex, b: Bake, limbs: [Tube<4>]) -> BakeVertex {
     let (p, n, along) = limb_vertex(limbs[v.index / LIMB_VERTICES], v.index % LIMB_VERTICES)
+    let (d, _, _) = view_basis(i.index)
     BakeVertex {
         clip: ClipPosition { position: in_cell(b, i.index, p) },
         uv: along,
         normal: n,
         depth: 0.0,
+        toward: dot(p - b.mid, d) / b.half,
         albedo: mix(b.bark.dark, b.bark.light, vec3(0.5)),
         seed: Flat { value: 0 },
         view: Flat { value: i.index },
@@ -150,6 +159,53 @@ fn outside_cell(pixel: vec2, view: u32) -> bool {
     q.x < 0.0 || q.y < 0.0 || q.x >= f32(CELL) || q.y >= f32(CELL)
 }
 
+/// The deepest a leaf is in its crown that an impostor holds (m).
+const DEEPEST: f32 = 40.0
+
+/// A unit vector folded onto the octahedron and unfolded onto a square, each in [-1, 1].
+fn oct_encode(n: vec3) -> vec2 {
+    let p = n.xz / (abs(n.x) + abs(n.y) + abs(n.z))
+    if n.y >= 0.0 {
+        return p
+    }
+    (vec2(1.0) - abs(vec2(p.y, p.x))) * vec2(if p.x >= 0.0 { 1.0 } else { -1.0 }, if p.y >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    })
+}
+
+fn oct_decode(e: vec2) -> vec3 {
+    let y = 1.0 - abs(e.x) - abs(e.y)
+    let t = max(-y, 0.0)
+    let x = e.x + (if e.x >= 0.0 { -t } else { t })
+    let z = e.y + (if e.y >= 0.0 { -t } else { t })
+    normalize(vec3(x, y, z))
+}
+
+/// A baked leaf's light, as `vegetation::leaf_shade` has it: its leaf's own tilt off the crown's
+/// normal and its own age; cut where the card has no leaf.
+fn baked_leaf(f: BakeVertex, b: Bake, atlas: Texture, s: Sampler) -> (vec3, vec3) {
+    if f.leaf.value != 1 {
+        return (normalize(f.normal), f.albedo)
+    }
+    let seed = f.seed.value
+    let (m, which) = leaf_at(atlas, s, seed, f.uv)
+    if m < 0.5 || which >= b.leaves.per_card {
+        discard()
+    }
+    let crown_n = normalize(f.normal)
+    let tilt = vec3(
+        rand(seed, 100 + which) - 0.5,
+        rand(seed, 120 + which) - 0.5,
+        rand(seed, 140 + which) - 0.5,
+    )
+    let age = saturate(0.35 + 0.65 * crown_n.y + 0.3 * (rand(seed, 160 + which) - 0.5))
+    let tint = f.albedo - mix(b.leaves.old, b.leaves.young, vec3(saturate(0.35 + 0.65 * crown_n.y)))
+    let albedo = max(mix(b.leaves.old, b.leaves.young, vec3(age)) + tint, vec3(0.005))
+    (normalize(crown_n + tilt * 0.9), albedo)
+}
+
 /// The impostor's colour: each view's leaves' (and limbs') albedo (its square root), and the
 /// coverage in alpha.
 @fragment
@@ -157,31 +213,20 @@ pub fn bake_colour(f: BakeVertex, pixel: FragCoord, b: Bake, atlas: Texture, s: 
     if outside_cell(pixel.position.xy, f.view.value) {
         discard()
     }
-    if f.leaf.value == 1 {
-        let (m, which) = leaf_at(atlas, s, f.seed.value, f.uv)
-        if m < 0.5 || which >= b.leaves.per_card {
-            discard()
-        }
-    }
-    vec4(sqrt(saturate(f.albedo)), 1.0)
+    let (_, albedo) = baked_leaf(f, b, atlas, s)
+    vec4(sqrt(saturate(albedo)), 1.0)
 }
 
-/// The impostor's normal (in the plant's frame, from 0 to 1) and depth in the crown (m, over 8).
+/// The impostor's normal (in the plant's frame, folded: `oct_encode`), how far toward its view
+/// it is (from 0 at the back of the box to 1 at its front), and its depth in the crown (m, over
+/// `DEEPEST`).
 @fragment
 pub fn bake_normal(f: BakeVertex, pixel: FragCoord, b: Bake, atlas: Texture, s: Sampler) -> vec4 {
     if outside_cell(pixel.position.xy, f.view.value) {
         discard()
     }
-    if f.leaf.value == 1 {
-        let (m, which) = leaf_at(atlas, s, f.seed.value, f.uv)
-        if m < 0.5 || which >= b.leaves.per_card {
-            discard()
-        }
-    }
-    vec4(
-        normalize(f.normal) * 0.5 + vec3(0.5),
-        saturate(f.depth / 8.0) + f32(1 - f.leaf.value) * 0.0,
-    )
+    let (n, _) = baked_leaf(f, b, atlas, s)
+    vec4(oct_encode(n), saturate(f.toward * 0.5 + 0.5), saturate(f.depth / DEEPEST))
 }
 
 /// A kind's impostor: its two atlases, and how it was baked.
@@ -191,7 +236,11 @@ pub struct Impostor {
     pub bake: Bake,
 }
 
-/// Bakes `plant`'s impostor from its cards (at level 1) and limbs.
+/// The card level an impostor is baked from: the coarsest, which it takes over from where they
+/// meet, so the two show the same cards.
+pub const BAKED: u32 = CARD_LEVELS - 1
+
+/// Bakes `plant`'s impostor from its cards (at level `BAKED`) and limbs.
 pub fn bake(
     plant: Plant,
     cards: GpuBuffer<Card>,
@@ -203,13 +252,15 @@ pub fn bake(
 ) -> Impostor {
     let top = plant.top()
     let mid = vec3(0.0, top * 0.5, 0.0)
-    let half = plant.reach()
+    // The plant's reach, and as far again as a card of the baked level reaches past a clump's
+    // surface (to its corner, the largest a card is, turned any way).
+    let half = plant.reach() + plant.leaves.size * 1.2 * f32(1 << BAKED) * 0.5 * 1.415
     let b = Bake { mid, half, leaves: plant.leaves, bark: plant.bark }
     var colour = texture(width: ATLAS, height: ATLAS, format: TextureFormat::Rgba8)
     var normal = texture(width: ATLAS, height: ATLAS, format: TextureFormat::Rgba16Float)
     var depth = depth_texture(width: ATLAS, height: ATLAS)
     let views = VIEWS * VIEWS
-    let level = level_cards(n, 1)
+    let level = level_cards(n, BAKED)
     {
         let p = begin_pass_with_depth(mut colour, mut depth, clear: vec4(0.0), clear_depth: 1.0)
         draw(
@@ -232,7 +283,7 @@ pub fn bake(
         let p = begin_pass_with_depth(
             mut normal,
             mut depth,
-            clear: vec4(0.5, 1.0, 0.5, 0.0),
+            clear: vec4(0.0, 0.0, 0.5, 0.0),
             clear_depth: 1.0,
         )
         draw(
@@ -265,16 +316,33 @@ pub struct FarVertex: Copy {
     pub centre: vec3,
     pub yaw: Flat<f32>,
     pub tint: vec3,
+    pub id: Flat<u32>,
+    /// The four views round the eye's direction (`views_round`): where the quad's point falls in
+    /// each one's cell (two to a vec4), how much each counts, and how far its point moves in its
+    /// cell as a leaf is a half-width toward the eye (its parallax, two to a vec4).
+    pub views: vec4,
+    pub views2: vec4,
+    pub weights: Flat<vec4>,
+    pub shift: Flat<vec4>,
+    pub shift2: Flat<vec4>,
 }
 
-/// A far instance: a quad facing the eye, the plant's reach wide, about its middle.
+/// A far instance: a quad facing the eye, the plant's reach wide, about its middle; swayed by
+/// the wind as its cards would be at each corner's height (`plant::sway`), so it leans and moves
+/// as they do. Its id is its place in the frame's instances (`first` is its list's) plus 1. For
+/// the shading pass (`front`), the quad is moved toward the eye to the front of the plant's box
+/// (along the eye's rays, so it covers the same pixels and its points are the same): a depth
+/// test there leaves what's in front of the plant, early.
 @vertex
 pub fn far_quad(
     v: VertexIndex,
     i: InstanceIndex,
     cam: Camera,
+    wind: Wind,
     b: Bake,
     instances: [Instance],
+    first: u32,
+    front: u32,
 ) -> FarVertex {
     let inst = instances[i.index]
     let k = v.index % 6
@@ -285,54 +353,220 @@ pub fn far_quad(
     let to = normalize(cam.eye - centre)
     let right = normalize(cross(vec3(0.0, 1.0, 0.0), to))
     let up = cross(to, right)
-    let world = centre + (right * q.x + up * q.y) * (b.half * inst.scale)
+    let flat = centre + (right * q.x + up * q.y) * (b.half * inst.scale)
+    let height = max(flat.y - inst.at.y, 0.0)
+    var world = flat + sway(wind, flat, height)
+    // The views round the eye's direction, the same for all the quad: each one's place for this
+    // corner (between corners, a view's place moves as the quad's point does).
+    let (cells, w) = views_round(into_plant(inst.yaw, to))
+    let p = into_plant(inst.yaw, right * q.x + up * q.y)
+    let local_to = into_plant(inst.yaw, to)
+    var uv = [vec2(0.0); 4]
+    var shift = [vec2(0.0); 4]
+    for k in 0..4 {
+        let (_, vr, vu) = view_basis(cells[k].y * VIEWS + cells[k].x)
+        uv[k] = cell_uv(cells[k], p)
+        shift[k] = vec2(dot(local_to, vr), dot(local_to, vu)) * (0.5 / f32(VIEWS))
+    }
+    if front != 0 {
+        let d = length(centre - cam.eye)
+        world = cam.eye + (world - cam.eye) * max((d - b.half * inst.scale) / d, 0.05)
+    }
     FarVertex {
         clip: ClipPosition { position: cam.clip(world) },
-        world,
+        world: flat,
         uv: q,
         centre,
         yaw: Flat { value: inst.yaw },
         tint: inst.tint,
+        id: Flat { value: first + i.index + 1 },
+        views: vec4(uv[0], uv[1]),
+        views2: vec4(uv[2], uv[3]),
+        weights: Flat { value: w },
+        shift: Flat { value: vec4(shift[0], shift[1]) },
+        shift2: Flat { value: vec4(shift[2], shift[3]) },
     }
 }
 
-/// The impostor's texel for a far quad's point: the view nearest the eye's direction (in the
-/// plant's frame), at the point's place in that view.
-fn impostor_uv(f: FarVertex, cam: Camera, b: Bake) -> (vec2, u32) {
-    let to = normalize(cam.eye - f.centre)
-    // Into the plant's frame: turned back by its yaw.
-    let (c, s) = (cos(f.yaw.value), sin(f.yaw.value))
-    let local = vec3(c * to.x - s * to.z, to.y, s * to.x + c * to.z)
-    let g = hemi_grid(local)
-    let cell = min(vec2u(g * f32(VIEWS)), vec2u(VIEWS - 1))
-    let view = cell.y * VIEWS + cell.x
-    // The quad's point in that view's basis: the quad faces the eye, the view nearly so.
-    let (_, right, up) = view_basis(view)
-    let world_right = normalize(cross(vec3(0.0, 1.0, 0.0), to))
-    let world_up = cross(to, world_right)
-    let p = (world_right * f.uv.x + world_up * f.uv.y)
-    let lp = vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z)
-    let local_uv = vec2(dot(lp, right), dot(lp, up))
-    let uv = (vec2(cell) + (local_uv * 0.5 + vec2(0.5))) / f32(VIEWS)
-    (vec2(uv.x, uv.y), view)
+/// A far instance's id as the prepass writes it (its low 24 bits, a byte a channel), and back.
+fn id_colour(id: u32) -> vec4 {
+    vec4(f32(id & 255), f32((id >> 8) & 255), f32((id >> 16) & 255), 0.0) / 255.0
 }
 
-/// A far instance cut to its impostor's coverage: the depth prepass's.
+fn id_at(ids: Texture, pixel: FragCoord) -> u32 {
+    let c = ids.load(x: u32(pixel.position.x), y: u32(pixel.position.y))
+    u32(c.r * 255.0 + 0.5) | (u32(c.g * 255.0 + 0.5) << 8) | (u32(c.b * 255.0 + 0.5) << 16)
+}
+
+/// A direction of the world in a plant's frame: turned back by its yaw.
+fn into_plant(yaw: f32, v: vec3) -> vec3 {
+    let (c, s) = (cos(yaw), sin(yaw))
+    vec3(c * v.x - s * v.z, v.y, s * v.x + c * v.z)
+}
+
+/// The impostor's views round the eye's direction `local` (in the plant's frame): the four
+/// cells of the grid round it, and each one's weight (bilinear on the grid).
+fn views_round(local: vec3) -> ([vec2u; 4], vec4) {
+    let g = hemi_grid(local) * f32(VIEWS) - vec2(0.5)
+    let i = floor(g)
+    let w = g - i
+    let last = f32(VIEWS - 1)
+    let at = |dx: f32, dy: f32| vec2u(clamp(i + vec2(dx, dy), vec2(0.0), vec2(last)))
+    (
+        [at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0), at(1.0, 1.0)],
+        vec4((1.0 - w.x) * (1.0 - w.y), w.x * (1.0 - w.y), (1.0 - w.x) * w.y, w.x * w.y),
+    )
+}
+
+/// Where point `q` of the plant's frame (over the half-width) falls in view `cell`'s cell.
+fn cell_uv(cell: vec2u, q: vec3) -> vec2 {
+    let (_, right, up) = view_basis(cell.y * VIEWS + cell.x)
+    (vec2(cell) + (vec2(dot(q, right), dot(q, up)) * 0.5 + vec2(0.5))) / f32(VIEWS)
+}
+
+/// A far quad's point's place in view `k` of its four, and that view's parallax.
+fn view_at(f: FarVertex, k: u32) -> (vec2, vec2) {
+    let uvs = [f.views.xy, f.views.zw, f.views2.xy, f.views2.zw]
+    let shifts = [f.shift.value.xy, f.shift.value.zw, f.shift2.value.xy, f.shift2.value.zw]
+    (uvs[k], shifts[k])
+}
+
+/// What an impostor holds at a far quad's point, its four views round the eye's direction
+/// blended (each where its leaves cover it): their coverage, albedo, normal (the plant's frame),
+/// depth in the crown, and how far toward the eye they are (over the half-width).
+struct Seen {
+    coverage: f32,
+    albedo: vec3,
+    normal: vec3,
+    depth: f32,
+    toward: f32,
+}
+
+/// The impostor's normal texture at `uv`, between its texels: each texel's normal unfolded
+/// first (folded normals don't blend: between two that fold to either side, the blend is
+/// neither), and its place and depth blended.
+fn normal_at(normal: Texture, uv: vec2) -> (vec3, vec2) {
+    let size = vec2(f32(normal.width()), f32(normal.height()))
+    let g = uv * size - vec2(0.5)
+    let i = floor(g)
+    let t = g - i
+    let lim = vec2u(size) - vec2u(1)
+    var n = vec3(0.0)
+    var zw = vec2(0.0)
+    for dy in 0..2 {
+        for dx in 0..2 {
+            let w = (if dx == 0 { 1.0 - t.x } else { t.x }) * (if dy == 0 { 1.0 - t.y } else {
+                t.y
+            })
+            let at = min(vec2u(max(i + vec2(f32(dx), f32(dy)), vec2(0.0))), lim)
+            let nd = normal.load(x: at.x, y: at.y)
+            n += oct_decode(nd.xy) * w
+            zw += nd.zw * w
+        }
+    }
+    (n, zw)
+}
+
+fn seen(f: FarVertex, colour: Texture, normal: Texture, s: Sampler) -> Seen {
+    let w = f.weights.value
+    var coverage = 0.0
+    var albedo = vec3(0.0)
+    var ln = vec3(0.0)
+    var depth = 0.0
+    var toward = 0.0
+    var total = 0.0
+    for k in 0..4 {
+        // Where the eye's ray through the quad's point meets what view `k` baked: moved along the
+        // ray by how far toward the view the leaf there was (one step).
+        let (at, shift) = view_at(f, k)
+        let uv = at + shift * (normal.sample_level(s, at).z * 2.0 - 1.0)
+        let c = colour.sample_level(s, uv)
+        let (n, zw) = normal_at(normal, uv)
+        let nd = vec4(0.0, 0.0, zw)
+        coverage += c.a * w[k]
+        let wk = w[k] * c.a
+        // Its albedo where its leaves cover it (the texel's colour is filtered with the empty
+        // texels round it).
+        let own = c.rgb / max(c.a, 1.0e-3)
+        albedo += own * own * wk
+        ln += n * wk
+        depth += nd.w * DEEPEST * wk
+        toward += (nd.z * 2.0 - 1.0) * wk
+        total += wk
+    }
+    let inv = 1.0 / max(total, 1.0e-4)
+    Seen {
+        coverage,
+        albedo: albedo * inv,
+        normal: normalize(ln + vec3(0.0, 1.0e-4, 0.0)),
+        depth: depth * inv,
+        toward: toward * inv,
+    }
+}
+
+/// Where the leaf an impostor shows at a far quad's point is: toward the eye from the quad by
+/// what was baked (the quad is the plant's reach wide, `b.half` times its scale).
+fn leaf_place(f: FarVertex, cam: Camera, b: Bake, toward: f32) -> vec3 {
+    let scale = length(f.world - f.centre) / max(length(f.uv), 1.0e-4) / b.half
+    f.world + normalize(cam.eye - f.centre) * (toward * b.half * scale)
+}
+
+/// The depth a point of the world has on the camera's target (reversed: nearer is larger).
+fn depth_of(cam: Camera, at: vec3) -> f32 {
+    let c = cam.clip(at)
+    c.z / c.w
+}
+
+/// A far instance's draw state in the shading pass (its quad at the front of its plant's box):
+/// where nothing in front of the plant is.
+pub const SHADED = Depth { compare: Compare::GreaterEqual, write: false }
+
+/// A far instance cut to its impostor's coverage, dithered (temporal AA brings it to the
+/// coverage: blending the views softens their edges, and a fixed cut would wear them away), at
+/// the depth of the leaf it shows, its id in the colour: the depth prepass's. (The four views'
+/// coverage and place, without their parallax: the shading pass reads which instance won.)
 @fragment
-pub fn far_cut(f: FarVertex, cam: Camera, b: Bake, colour: Texture, s: Sampler) -> vec4 {
-    let (uv, _) = impostor_uv(f, cam, b)
-    if colour.sample_level(s, uv).a < 0.5 {
+pub fn far_cut(
+    f: FarVertex,
+    pixel: FragCoord,
+    cam: Camera,
+    b: Bake,
+    colour: Texture,
+    normal: Texture,
+    s: Sampler,
+) -> WithDepth {
+    let w = f.weights.value
+    var a = vec4(0.0)
+    for k in 0..4 {
+        let (at, _) = view_at(f, k)
+        a[k] = colour.sample_level(s, at).a * w[k]
+    }
+    let coverage = a.x + a.y + a.z + a.w
+    // Most of the quad is empty: left before its leaves' places are read. The blended coverage
+    // is steepened about its middle: blending softens the views' edges into a wider fringe,
+    // which the tone curve shows brighter than the crisp edge it stands for.
+    if smoothstep(0.2, 0.8, coverage) <= ordered(pixel.position.xy, cam.frame) {
         discard()
     }
-    vec4(0.0)
+    var toward = 0.0
+    for k in 0..4 {
+        if a[k] > 0.0 {
+            let (at, _) = view_at(f, k)
+            toward += (normal.sample_level(s, at).z * 2.0 - 1.0) * a[k]
+        }
+    }
+    let at = leaf_place(f, cam, b, toward / coverage)
+    WithDepth { color: id_colour(f.id.value), depth: depth_of(cam, at) }
 }
 
-/// A far instance's pixel, where the prepass left its depth: the impostor's colour, normal and
-/// depth, lit as a leaf is.
+/// A far instance's pixel, where its prepass won (its id there): what its impostor shows
+/// (`seen`), lit as a leaf is, where the leaf is.
 @fragment
 pub fn far_shade(
     f: FarVertex,
+    pixel: FragCoord,
     lt: Lighting,
+    ids: Texture,
     b: Bake,
     colour: Texture,
     normal: Texture,
@@ -345,25 +579,27 @@ pub fn far_shade(
     probes: [Probe],
     grounds: [f32],
 ) -> vec4 {
-    let (uv, _) = impostor_uv(f, lt.cam, b)
-    let c = colour.sample_level(s, uv)
-    let nd = normal.sample_level(s, uv)
+    if id_at(ids, pixel) != f.id.value {
+        discard()
+    }
+    let leaf = seen(f, colour, normal, s)
     let (cy, sy) = (cos(f.yaw.value), sin(f.yaw.value))
-    let ln = nd.xyz * 2.0 - vec3(1.0)
-    let n = normalize(vec3(cy * ln.x + sy * ln.z, ln.y, -sy * ln.x + cy * ln.z))
-    let depth = nd.w * 8.0
+    let lnn = leaf.normal
+    let n = normalize(vec3(cy * lnn.x + sy * lnn.z, lnn.y, -sy * lnn.x + cy * lnn.z))
+    let depth = leaf.depth
+    let albedo = leaf.albedo
     let ao = exp(-depth / 1.6)
-    let albedo = c.rgb * c.rgb + f.tint * 0.5
-    let sun = sun_at(lt, f.world, n, near, far, moving, cmp, clouds, s, soft: 1.5)
-    let sky = sky_at(lt, probes, grounds, f.world, n) * (0.25 + 0.75 * ao)
+    let at = leaf_place(f, lt.cam, b, leaf.toward)
+    let sun = sun_at(lt, at, n, near, far, moving, cmp, clouds, s, soft: 1.5)
+    let sky = sky_at(lt, probes, grounds, at, n) * (0.25 + 0.75 * ao)
     let lit = Lit {
-        albedo: max(albedo, vec3(0.005)),
+        albedo: max(albedo + f.tint * 0.5, vec3(0.005)),
         n,
         sun: sun * (0.35 + 0.65 * ao),
         sky,
         through: b.leaves.through * (0.4 + 0.6 * ao),
     }
-    let out = hazed(lt.light, light::world(lt.light, lit, f.world, lt.cam.eye), f.world, lt.cam.eye)
+    let out = hazed(lt.light, light::world(lt.light, lit, at, lt.cam.eye), at, lt.cam.eye)
     vec4(out, LEAVES + f32(u32(hash2(i32(f.centre.x), i32(f.centre.z)) * 60.0)))
 }
 
@@ -372,53 +608,119 @@ pub fn far_shade(
 /// A volume's voxels along each side.
 pub const VOXELS: u32 = 24
 
-/// What a volume holds and is lit by: its box (the impostor's: `mid` ± `half`), how dense its
-/// leaves are (per metre at full density), and its leaves.
+/// What a volume holds and is lit by: its box (the impostor's: `mid` ± `half`), and its leaves.
 pub struct Volume: Copy + GpuData {
     pub mid: vec3,
     pub half: f32,
-    pub density: f32,
     pub leaves: Leaves,
 }
 
-/// Voxel `id`'s density: the crown's inside (from its field, softly at its edge), where the
-/// cards' leaves are.
+/// Each leaf pattern's share of its card that its first `per_card` leaves cover (64 samples).
+@compute(16)
+pub fn cook_pattern_cover(
+    atlas: Texture,
+    s: Sampler,
+    per_card: u32,
+    out: mut Slots<f32>,
+    id: GlobalId,
+) {
+    if id.x >= LEAF_PATTERNS {
+        return
+    }
+    var covered = 0
+    for j in 0..8 {
+        for i in 0..8 {
+            let uv = (vec2(f32(i), f32(j)) + vec2(0.5)) / 8.0 * 2.0 - vec2(1.0)
+            let (m, which) = leaf_at(atlas, s, id.x, uv)
+            if m >= 0.5 && which < per_card {
+                covered += 1
+            }
+        }
+    }
+    out[id] = f32(covered) / 64.0
+}
+
+/// Voxel `id` of a volume cooked from the cards (the near level, spike 03: a far level keeps
+/// the near one's shading statistics, not only its opacity): the leaves' area per cubic metre
+/// round it (each card's leaves spread over a Gaussian as wide as the card, or the voxel), and
+/// their mean normal (times the density); and their mean depth in the crown (times the
+/// density). A card faces the eye, so its whole leaf area stops a ray: the density is the
+/// extinction.
 @compute(64)
-pub fn cook_volume(plant: Plant, v: Volume, out: mut Slots<f32>, id: GlobalId) {
-    let n = VOXELS * VOXELS * VOXELS
-    if id.x >= n {
+pub fn cook_volume(
+    v: Volume,
+    cards: [Card],
+    n: u32,
+    covers: [f32],
+    out: mut Slots<vec4>,
+    depths: mut Slots<f32>,
+    id: GlobalId,
+) {
+    let total = VOXELS * VOXELS * VOXELS
+    if id.x >= total {
         return
     }
     let c = vec3u(id.x % VOXELS, (id.x / VOXELS) % VOXELS, id.x / (VOXELS * VOXELS))
-    let p = v.mid + ((vec3(c) + vec3(0.5)) / f32(VOXELS) * 2.0 - vec3(1.0)) * v.half
-    let (d, _) = plant.crown(p)
-    // The cards lie within about a third of a clump's radius inside its surface: the crown's
-    // inside is leaves, most near its skin.
-    out[id] = (1.0 - smoothstep(-0.4, 0.6, d)) * (0.55 + 0.45 * smoothstep(-2.5, -0.5, d))
+    let voxel = 2.0 * v.half / f32(VOXELS)
+    let p = v.mid + (vec3(c) + vec3(0.5)) * voxel - vec3(v.half)
+    var density = 0.0
+    var normal = vec3(0.0)
+    var depth = 0.0
+    for k in 0..n {
+        let card = cards[k]
+        let d = p - card.centre
+        let sigma = max(card.size * 0.5, voxel * 0.6)
+        let q = dot(d, d) / (sigma * sigma)
+        if q < 9.0 {
+            let area = card.size * card.size * covers[card.seed % LEAF_PATTERNS]
+            let w = area * exp(-0.5 * q) / (15.749610 * sigma * sigma * sigma)
+            density += w
+            normal += card.normal.decode() * w
+            depth += card.depth * w
+        }
+    }
+    out[id] = vec4(density, normal)
+    depths[id] = depth
 }
 
-/// A volume's density at a point of its box `q` (in [-1, 1]³), between voxels (trilinear).
-fn density_in(voxels: [f32], q: vec3) -> f32 {
+/// A volume's voxels at a point of its box `q` (in [-1, 1]³), between voxels (trilinear): the
+/// density and normal (times the density), and the depth (times the density).
+fn voxels_in(voxels: [vec4], depths: [f32], q: vec3) -> (vec4, f32) {
     let g = (q * 0.5 + vec3(0.5)) * f32(VOXELS) - vec3(0.5)
     let lim = f32(VOXELS) - 1.001
     let g2 = clamp(g, vec3(0.0), vec3(lim))
     let i = floor(g2)
     let f = g2 - i
     let v = vec3u(i)
-    let at = |dx: u32, dy: u32, dz: u32| {
-        let w = v + vec3u(dx, dy, dz)
-        voxels[(w.z * VOXELS + w.y) * VOXELS + w.x]
+    var out = vec4(0.0)
+    var depth = 0.0
+    for dz in 0..2 {
+        for dy in 0..2 {
+            for dx in 0..2 {
+                let w = (if dx == 0 { 1.0 - f.x } else { f.x }) * (if dy == 0 { 1.0 - f.y } else {
+                    f.y
+                }) * (if dz == 0 { 1.0 - f.z } else { f.z })
+                let at = v + vec3u(dx, dy, dz)
+                let k = (at.z * VOXELS + at.y) * VOXELS + at.x
+                out += voxels[k] * w
+                depth += depths[k] * w
+            }
+        }
     }
-    let x00 = mix(at(0, 0, 0), at(1, 0, 0), f.x)
-    let x10 = mix(at(0, 1, 0), at(1, 1, 0), f.x)
-    let x01 = mix(at(0, 0, 1), at(1, 0, 1), f.x)
-    let x11 = mix(at(0, 1, 1), at(1, 1, 1), f.x)
-    mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z)
+    (out, depth)
 }
 
-/// The ray through a far quad's point into its volume: its opacity, how deep it went before it
-/// was mostly stopped (the crown's depth there), and where (the plant's frame).
-fn march_volume(f: FarVertex, cam: Camera, v: Volume, voxels: [f32]) -> (f32, f32, vec3) {
+/// What the ray through a far quad's point meets in its volume: its opacity, and, weighted by
+/// how much each part of the crown it passes shows, the leaves' mean normal and depth in the
+/// crown and their place (the plant's frame).
+struct Met {
+    opacity: f32,
+    normal: vec3,
+    depth: f32,
+    at: vec3,
+}
+
+fn march_volume(f: FarVertex, cam: Camera, v: Volume, voxels: [vec4], depths: [f32]) -> Met {
     let (c, s) = (cos(f.yaw.value), sin(f.yaw.value))
     let scale = length(f.world - f.centre) / max(length(f.uv), 1.0e-4) / v.half
     let to_local = |w: vec3| {
@@ -436,50 +738,94 @@ fn march_volume(f: FarVertex, cam: Camera, v: Volume, voxels: [f32]) -> (f32, f3
     let t1 = (hi - o) * inv
     let near = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z))
     let far = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z))
+    var met = Met { opacity: 0.0, normal: vec3(0.0, 1.0, 0.0), depth: 0.0, at: p }
     if far <= near {
-        return (0.0, 0.0, p)
+        return met
     }
-    let steps = 12
+    let steps = 16
     let dt = (far - near) / f32(steps)
     var trans = 1.0
+    var normal = vec3(0.0)
     var depth = 0.0
-    var hit = o + dir * far
-    var found = false
+    var at = vec3(0.0)
+    var shown = 0.0
     for i in 0..steps {
-        let t = near + (f32(i) + 0.5) * dt
-        let q = o + dir * t
-        let d = density_in(voxels, (q - v.mid) / v.half)
-        trans *= exp(-d * v.density * dt)
-        if !found && trans < 0.5 {
-            found = true
-            hit = q
-            depth = 0.0
-        }
-        if found {
-            depth += dt * d
+        let q = o + dir * (near + (f32(i) + 0.5) * dt)
+        let (vx, d) = voxels_in(voxels, depths, (q - v.mid) / v.half)
+        if vx.x > 1.0e-5 {
+            let a = 1.0 - exp(-vx.x * dt)
+            let w = trans * a
+            normal += vx.yzw / vx.x * w
+            depth += d / vx.x * w
+            at += q * w
+            shown += w
+            trans *= 1.0 - a
         }
     }
-    (1.0 - trans, depth, hit)
+    if shown > 1.0e-5 {
+        met = Met {
+            opacity: 1.0 - trans,
+            normal: normalize(normal + vec3(0.0, 1.0e-5, 0.0)),
+            depth: depth / shown,
+            at: at / shown,
+        }
+    }
+    met
 }
 
-/// A very far instance cut to its volume's coverage: the depth prepass's.
+/// A pixel's draw in [0, 1) for a frame: the same each 16 frames (temporal AA's cycle), so a
+/// still frame repeats, and it averages to the crown's coverage and its leaves' light.
+fn dither(pixel: vec2, frame: u32, k: u32) -> f32 {
+    rand(u32(pixel.x) * 7919 + u32(pixel.y) * 104729 + (frame % 16) * 15485863, k)
+}
+
+/// A pixel's threshold for a frame, ordered (a 4 × 4 Bayer matrix, its thresholds turned each
+/// frame): over temporal AA's cycle of 16 frames, each pixel takes every one of 16 thresholds
+/// once, and each block of 4 × 4 every one each frame.
+fn ordered(pixel: vec2, frame: u32) -> f32 {
+    let bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]
+    let p = vec2u(pixel) % vec2u(4)
+    f32((bayer[p.y * 4 + p.x] + frame * 7) % 16) / 16.0 + 1.0 / 32.0
+}
+
+/// A very far instance cut by its volume's opacity, dithered: temporal AA brings it to the
+/// crown's coverage, as it does an impostor's (the depth prepass's).
 @fragment
-pub fn volume_cut(f: FarVertex, cam: Camera, v: Volume, voxels: [f32]) -> vec4 {
-    let (a, _, _) = march_volume(f, cam, v, voxels)
-    if a < 0.5 {
+pub fn volume_cut(
+    f: FarVertex,
+    pixel: FragCoord,
+    cam: Camera,
+    v: Volume,
+    voxels: [vec4],
+    depths: [f32],
+) -> WithDepth {
+    let met = march_volume(f, cam, v, voxels, depths)
+    if met.opacity <= ordered(pixel.position.xy, cam.frame) {
         discard()
     }
-    vec4(0.0)
+    WithDepth { color: id_colour(f.id.value), depth: depth_of(cam, volume_place(f, v, met.at)) }
 }
 
-/// A very far instance's pixel: its crown's leaves, lit as the cards and impostors are (the sun,
-/// the sky darkened by the depth in the crown, the light through).
+/// Where a point of a volume's plant's frame is in the world.
+fn volume_place(f: FarVertex, v: Volume, q: vec3) -> vec3 {
+    let (cy, sy) = (cos(f.yaw.value), sin(f.yaw.value))
+    let scale = length(f.world - f.centre) / max(length(f.uv), 1.0e-4) / v.half
+    let d = (q - v.mid) * scale
+    f.centre + vec3(cy * d.x + sy * d.z, d.y, -sy * d.x + cy * d.z)
+}
+
+/// A very far instance's pixel: its leaves as the cards' are lit (`vegetation::leaf_shade`): the
+/// mean normal the ray met, tilted as one of its leaves (drawn each frame: temporal AA averages
+/// them), their depth in the crown, where they are.
 @fragment
 pub fn volume_shade(
     f: FarVertex,
+    pixel: FragCoord,
     lt: Lighting,
+    ids: Texture,
     v: Volume,
-    voxels: [f32],
+    voxels: [vec4],
+    depths: [f32],
     s: Sampler,
     near: DepthTexture,
     far: DepthTexture,
@@ -489,18 +835,29 @@ pub fn volume_shade(
     probes: [Probe],
     grounds: [f32],
 ) -> vec4 {
-    let (_, depth, hit) = march_volume(f, lt.cam, v, voxels)
-    // The crown's normal at its surface: from its middle out, as its clumps' are.
-    let local_n = normalize(hit - v.mid + vec3(0.0, v.half * 0.3, 0.0))
+    if id_at(ids, pixel) != f.id.value {
+        discard()
+    }
+    let met = march_volume(f, lt.cam, v, voxels, depths)
     let (cy, sy) = (cos(f.yaw.value), sin(f.yaw.value))
-    let n = normalize(
-        vec3(cy * local_n.x + sy * local_n.z, local_n.y, -sy * local_n.x + cy * local_n.z),
+    let world_n = |l: vec3| vec3(cy * l.x + sy * l.z, l.y, -sy * l.x + cy * l.z)
+    let crown_n = normalize(world_n(met.normal))
+    let px = pixel.position.xy
+    let tilt = vec3(
+        dither(px, lt.cam.frame, 100) - 0.5,
+        dither(px, lt.cam.frame, 120) - 0.5,
+        dither(px, lt.cam.frame, 140) - 0.5,
     )
-    let ao = exp(-depth * 0.5 / 1.6)
-    let age = saturate(0.35 + 0.65 * local_n.y)
+    let n = normalize(crown_n + tilt * 0.9)
+    let ao = exp(-met.depth / 1.6)
+    let age = saturate(
+        0.35 + 0.65 * met.normal.y + 0.3 * (dither(px, lt.cam.frame, 160) - 0.5),
+    )
     let albedo = max(mix(v.leaves.old, v.leaves.young, vec3(age)) + f.tint * 0.5, vec3(0.005))
-    let sun = sun_at(lt, f.world, n, near, far, moving, cmp, clouds, s, soft: 1.5)
-    let sky = sky_at(lt, probes, grounds, f.world, n) * (0.25 + 0.75 * ao)
+    // Lit where its leaves are, not on the quad (which lies in its own shadow).
+    let at = volume_place(f, v, met.at)
+    let sun = sun_at(lt, at, n, near, far, moving, cmp, clouds, s, soft: 1.5)
+    let sky = sky_at(lt, probes, grounds, at, crown_n) * (0.25 + 0.75 * ao)
     let lit = Lit {
         albedo,
         n,
@@ -508,21 +865,46 @@ pub fn volume_shade(
         sky,
         through: v.leaves.through * (0.4 + 0.6 * ao),
     }
-    let out = hazed(lt.light, light::world(lt.light, lit, f.world, lt.cam.eye), f.world, lt.cam.eye)
+    let out = hazed(lt.light, light::world(lt.light, lit, at, lt.cam.eye), at, lt.cam.eye)
     vec4(out, LEAVES + f32(u32(hash2(i32(f.centre.x), i32(f.centre.z)) * 60.0)))
 }
 
-/// A kind's volume, cooked.
+/// A kind's volume, cooked: its voxels and their depths.
 pub struct Cooked {
     pub volume: Volume,
-    pub voxels: GpuBuffer<f32>,
+    pub voxels: GpuBuffer<vec4>,
+    pub depths: GpuBuffer<f32>,
 }
 
-/// Cooks `plant`'s volume in its impostor's box.
-pub fn cook(plant: Plant, b: Bake) -> Cooked {
-    let v = Volume { mid: b.mid, half: b.half, density: 2.2, leaves: plant.leaves }
-    let n = VOXELS * VOXELS * VOXELS
-    var voxels: GpuBuffer<f32> = buffer(n)
-    dispatch(cook_volume.bind(plant, v, out: mut voxels), groups: (n + 63) / 64)
-    Cooked { volume: v, voxels: take voxels }
+/// Cooks `plant`'s volume in its impostor's box, from its `n` cards (level 0) and the leaf
+/// atlas their leaves are cut by.
+pub fn cook(
+    plant: Plant,
+    b: Bake,
+    cards: GpuBuffer<Card>,
+    n: u32,
+    atlas: Texture,
+    s: Sampler,
+) -> Cooked {
+    let v = Volume { mid: b.mid, half: b.half, leaves: plant.leaves }
+    var covers: GpuBuffer<f32> = buffer(LEAF_PATTERNS)
+    dispatch(
+        cook_pattern_cover.bind(atlas, s, per_card: plant.leaves.per_card, out: mut covers),
+        groups: 1,
+    )
+    let total = VOXELS * VOXELS * VOXELS
+    var voxels: GpuBuffer<vec4> = buffer(total)
+    var depths: GpuBuffer<f32> = buffer(total)
+    dispatch(
+        cook_volume.bind(
+            v,
+            cards: cards.span(start: 0, count: n),
+            n: n,
+            covers: covers.span(start: 0, count: LEAF_PATTERNS),
+            out: mut voxels,
+            depths: mut depths,
+        ),
+        groups: (total + 63) / 64,
+    )
+    Cooked { volume: v, voxels: take voxels, depths: take depths }
 }

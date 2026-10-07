@@ -105,9 +105,11 @@ pub fn resolve(
             let texel = scene.load(x: u32(p.x), y: u32(p.y))
             let c = tamed(max(texel.rgb, vec3(0.0)))
             let pos = vec2(p) + vec2(0.5) - j
-            let d2 = dot(pos - q, pos - q)
-            // A Gaussian about half a scene pixel wide: a sample counts by how near it falls.
-            let w = exp(-2.9 * d2)
+            // How far it falls, in output pixels: a Gaussian an output pixel or so wide, so a
+            // sample counts by how near it falls whatever the scene's size (the history gathers
+            // the others over the jitter's cycle).
+            let d = (pos - q) / scale
+            let w = exp(-1.4 * dot(d, d))
             sum += c * w
             weight += w
             if w > nearest {

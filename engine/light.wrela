@@ -7,7 +7,10 @@ use view::Camera
 
 /// The light a frame is lit by: toward the sun, its colour, the sky's at the zenith and the
 /// horizon, the sky light on a surface facing up and the bounce on one facing down, and the
-/// haze's density (per metre at height 0) and how fast it thins with height.
+/// haze's density (per metre at height 0) and how fast it thins with height. And for a test of
+/// the sky light (`sky_test` 1): every surface's sky light set to `sky_sh`, spherical
+/// harmonics' first two bands (`probes::sky_light`), so the test learns how each pixel answers
+/// to it.
 pub struct Light: Copy + GpuData {
     pub sun: vec3,
     pub haze_density: f32,
@@ -16,8 +19,10 @@ pub struct Light: Copy + GpuData {
     pub zenith: vec3,
     pub exposure: f32,
     pub horizon: vec3,
+    pub sky_test: u32 = 0,
     pub sky_light: vec3,
     pub bounce: vec3,
+    pub sky_sh: vec4 = vec4(0.0),
 }
 
 /// A late-afternoon light: a warm sun at `sun`, a blue sky, haze over kilometres.

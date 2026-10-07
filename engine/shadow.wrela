@@ -68,7 +68,8 @@ pub fn shadows(
         far: sun_view(s, far.centre, far.span, far.reach),
         moving: sun_view(s, centre, moving_span, 40.0),
         right,
-        turn: TAU * noise::rand(frame, 3),
+        // Turned with temporal AA's jitter, whose cycle is 16 frames: a still frame repeats.
+        turn: TAU * noise::rand(frame % 16, 3),
         up,
         near_texel: near.span / f32(near.side),
         toward: s,
@@ -77,7 +78,7 @@ pub fn shadows(
     }
 }
 
-/// The 4 taps of a disc, in texels; turned each frame.
+/// The 4 taps of a disc, in texels; turned each frame (16 turns, over and over).
 const TAPS = [vec2(0.5, 0.2), vec2(-0.6, 0.9), vec2(-0.9, -0.7), vec2(0.8, -1.1)]
 
 /// How lit `p` is in one map (`view`'s), `soft` texels of penumbra, biased `bias` in depth.

@@ -12,8 +12,8 @@
 use light::{Light, open_sky, sky}
 use shadow::{Shadows, sunlit}
 use std::gpu::{
-    Atomics, ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, GpuSpan, Slots, buffer, dispatch,
-    label, write,
+    Atomics, ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, GpuSpan, Slots, Texture, buffer,
+    dispatch, label, write,
 }
 use std::math::{PI, TAU}
 use terrain::{Levels, Texel, ground_at, height_at}
@@ -174,7 +174,9 @@ pub struct Trace: Copy + GpuData {
 
 /// The light arriving at `from` along `-dir` (looking along `dir`): through the occluders to
 /// the sky, or to the ground (its bounce), or scattered by the crowns on the way (their dim
-/// green). The sun's own light is the shadows' business; this is the rest.
+/// green). The sun's own light is the shadows' business; this is the rest. From a surface
+/// (`from_surface`), a ray leaves the solid it starts in (a stone or a limb, whose occluder
+/// holds its surface) before solids stop it: the surface's own back is its cosine's business.
 pub fn trace(
     t: Trace,
     volume: [u32],
@@ -186,12 +188,14 @@ pub fn trace(
     near: DepthTexture,
     far: DepthTexture,
     cmp: ComparisonSampler,
+    from_surface: bool = false,
 ) -> vec3 {
     let step = t.grid.voxel * 0.75
     var trans = 1.0
     var light = vec3(0.0)
     var x = step * 0.5
     let steps = u32(t.reach / step)
+    var leaving = from_surface
     for _ in 0..steps {
         let p = from + dir * x
         let ground = height_at(levels, texels, p.xz)
@@ -202,7 +206,13 @@ pub fn trace(
             let sun = t.light.sun_colour * (max(dot(n, t.light.sun), 0.0) * lit)
             return light + trans * albedo * (sun + open_sky(t.light, n)) / PI
         }
-        let d = density_at(t.grid, volume, p)
+        var d = density_at(t.grid, volume, p)
+        // Solid is denser than any crown (`cook_occluders`).
+        if leaving && d > 1.5 {
+            d = 0.0
+        } else {
+            leaving = false
+        }
         if d > 0.0 {
             let a = 1.0 - exp(-d * t.grid.extinction * step)
             light += t.foliage * (a * trans)
@@ -263,6 +273,12 @@ pub fn bake(
     let p = probe_at(g, levels, texels, i, j, k)
     // Each probe's slot holds its column's ground height too (a layer's, all alike).
     grounds[id] = p.y - LAYER_HEIGHTS[k]
+    // A probe inside a solid (a stone, a trunk) sees nothing of the light round the surface
+    // beside it: it holds none, and the surfaces round it read the probes outside (`sky_sh`).
+    if density_at(g, volume, p) > 1.5 {
+        probes[id] = Probe { r: vec4(0.0), g: vec4(0.0), b: vec4(0.0) }
+        return
+    }
     var r = vec4(0.0)
     var gg = vec4(0.0)
     var b = vec4(0.0)
@@ -307,21 +323,40 @@ pub fn probe_light(p: Probe, n: vec3) -> vec3 {
     max(vec3(dot(p.r, basis), dot(p.g, basis), dot(p.b, basis)) / PI, vec3(0.0))
 }
 
-/// The sky light at `world` for a surface facing `n`: the probes round it, trilinear (between
-/// columns and between layers by the height above the ground), or the open sky outside the
-/// grid.
-pub fn sky_light(
+/// The open sky as a probe would hold it: the sky's light above, the ground's bounce below,
+/// varying with a normal's height (`light::open_sky`).
+pub fn open_probe(light: Light) -> Probe {
+    let c0 = (light.bounce + light.sky_light) * (0.5 * PI / 0.282095)
+    let c2 = (light.sky_light - light.bounce) * (0.5 * PI / 0.488603)
+    Probe {
+        r: vec4(c0.x, 0.0, c2.x, 0.0),
+        g: vec4(c0.y, 0.0, c2.y, 0.0),
+        b: vec4(c0.z, 0.0, c2.z, 0.0),
+    }
+}
+
+fn scaled(p: Probe, w: f32) -> Probe {
+    Probe { r: p.r * w, g: p.g * w, b: p.b * w }
+}
+
+fn plus(a: Probe, b: Probe) -> Probe {
+    Probe { r: a.r + b.r, g: a.g + b.g, b: a.b + b.b }
+}
+
+/// The light round `world` as a probe there would hold it: the probes round it, trilinear
+/// (between columns, and between layers by its height above the ground), or the open sky
+/// outside the grid, faded to it at the grid's edge.
+pub fn sky_sh(
     grid: ProbeGrid,
     probes: [Probe],
     grounds: [f32],
     light: Light,
     world: vec3,
-    n: vec3,
-) -> vec3 {
+) -> Probe {
     let g = (world.xz - grid.corner) / grid.spacing
     let last = f32(max(grid.cols, 2) - 1)
     if grid.cols < 2 || g.x < 0.0 || g.y < 0.0 || g.x >= last || g.y >= last {
-        return open_sky(light, n)
+        return open_probe(light)
     }
     // The ground under it, between its four columns' (each column's first layer holds it).
     let c = floor(g)
@@ -338,23 +373,46 @@ pub fn sky_light(
         k += 1
     }
     let fk = saturate((above - LAYER_HEIGHTS[k]) / (LAYER_HEIGHTS[k + 1] - LAYER_HEIGHTS[k]))
-    let i = floor(g)
-    let f = g - i
-    let (x, z) = (u32(i.x), u32(i.y))
-    var out = vec3(0.0)
+    // The eight round it, weighted by nearness; one inside a solid (which holds no light) left
+    // out, and the others' weights grown to make up for it.
+    var out = Probe { r: vec4(0.0), g: vec4(0.0), b: vec4(0.0) }
+    var total = 0.0
     for dk in 0..2 {
         for dz in 0..2 {
             for dx in 0..2 {
-                let w = (if dx == 0 { 1.0 - f.x } else { f.x }) * (if dz == 0 { 1.0 - f.y } else {
-                    f.y
-                }) * (if dk == 0 { 1.0 - fk } else { fk })
-                out += probe_light(probes[grid.index(x + dx, z + dz, k + dk)], n) * w
+                let p = probes[grid.index(cx + dx, cz + dz, k + dk)]
+                let held = if p.r.x + p.g.x + p.b.x > 0.0 { 1.0 } else { 0.0 }
+                let wx = if dx == 0 { 1.0 - cf.x } else { cf.x }
+                let wz = if dz == 0 { 1.0 - cf.y } else { cf.y }
+                let wk = if dk == 0 { 1.0 - fk } else { fk }
+                let w = wx * wz * wk * held
+                out = plus(out, scaled(p, w))
+                total += w
             }
         }
     }
-    // Fade to the open sky at the grid's edge.
-    let edge = min(min(g.x, g.y), min(last - g.x, last - g.y))
-    mix(open_sky(light, n), out, vec3(saturate(edge / 3.0)))
+    let probed = if total > 1.0e-4 { scaled(out, 1.0 / total) } else { open_probe(light) }
+    // Faded to the open sky at the grid's edge.
+    let edge = saturate(min(min(g.x, g.y), min(last - g.x, last - g.y)) / 3.0)
+    plus(scaled(open_probe(light), 1.0 - edge), scaled(probed, edge))
+}
+
+/// The sky light at `world` for a surface facing `n`: what a probe there holds (`sky_sh`), or,
+/// for a test of it, the light's own (`Light::sky_test`).
+pub fn sky_light(
+    grid: ProbeGrid,
+    probes: [Probe],
+    grounds: [f32],
+    light: Light,
+    world: vec3,
+    n: vec3,
+) -> vec3 {
+    if light.sky_test != 0 {
+        return vec3(
+            dot(light.sky_sh, vec4(0.282095, 0.488603 * n.x, 0.488603 * n.y, 0.488603 * n.z)),
+        )
+    }
+    probe_light(sky_sh(grid, probes, grounds, light, world), n)
 }
 
 /// The probes the grid holds, baked: their buffer, the occluder volume they're traced through,
@@ -446,12 +504,14 @@ impl Baked {
 
 // ---- the reference (a test's) ---------------------------------------------------------------
 
-/// A point of the screen's sky light two ways: from the probes, and traced from the point itself
-/// (the reference); each the light a white surface there reflects, in rgb, with 1 in `w` where
-/// the screen shows a surface (0 for the sky, or a point whose normal the depth doesn't give).
+/// A point of the screen's sky light two ways, as probes hold it (each channel's spherical
+/// harmonics, convolved): the probes' round it, and traced from the point itself (the
+/// reference). In `at`: what the point shows (its tag's class) plus 1, or 0 for none (the sky,
+/// or a point whose normal the depth doesn't give); and how far it is.
 pub struct Reference: Copy + GpuData {
-    pub probes: vec4,
-    pub traced: vec4,
+    pub probes: Probe,
+    pub traced: Probe,
+    pub at: vec4,
 }
 
 /// What the reference reads besides the textures and buffers: the tracing, the shadows, the
@@ -483,6 +543,7 @@ fn surface_at(cam: Camera, depth: DepthTexture, p: vec2i) -> (vec3, f32) {
 pub fn reference(
     at: Sampling,
     depth: DepthTexture,
+    scene: Texture,
     volume: [u32],
     levels: Levels,
     texels: [Texel],
@@ -497,7 +558,8 @@ pub fn reference(
     let cols = depth.width() / at.step
     let k = at.first + id.x
     let p = vec2i(i32((k % cols) * at.step + at.step / 2), i32((k / cols) * at.step + at.step / 2))
-    let none = Reference { probes: vec4(0.0), traced: vec4(0.0) }
+    let zero = Probe { r: vec4(0.0), g: vec4(0.0), b: vec4(0.0) }
+    let none = Reference { probes: zero, traced: zero, at: vec4(0.0) }
     if k / cols >= depth.height() / at.step {
         out[id] = none
         return
@@ -524,18 +586,43 @@ pub fn reference(
         out[id] = none
         return
     }
-    let from = w + n * 0.02
-    var sum = vec3(0.0)
+    // From just off the surface, and above the ground as the clipmap holds it (which the rays
+    // meet): a coarse level's ground lies off the drawn one by up to its cell's slope.
+    var from = w + n * 0.02
+    from.y = max(from.y, height_at(levels, texels, from.xz) + 0.02)
+    // Each ray's light projected as a probe's (`bake`), a ray in front of the surface leaving
+    // the solid it starts in.
+    var r = vec4(0.0)
+    var gg = vec4(0.0)
+    var b = vec4(0.0)
     for i in 0..at.rays {
         let dir = fibonacci(i, at.rays)
-        let c = dot(dir, n)
-        if c > 0.0 {
-            sum += trace(at.t, volume, levels, texels, from, dir, at.sh, near, far, cmp) * c
-        }
+        let front = dot(dir, n) > 0.0
+        let l = trace(
+            at.t,
+            volume,
+            levels,
+            texels,
+            from,
+            dir,
+            at.sh,
+            near,
+            far,
+            cmp,
+            from_surface: front,
+        )
+        let basis = vec4(0.282095, 0.488603 * dir.x, 0.488603 * dir.y, 0.488603 * dir.z)
+        r += basis * l.r
+        gg += basis * l.g
+        b += basis * l.b
     }
-    // The irradiance (each ray 4π / rays of the sphere) over π: the light a white surface
-    // reflects.
-    let traced = sum * (4.0 / f32(at.rays))
-    let estimate = sky_light(at.t.grid, probes, grounds, at.t.light, w, n)
-    out[id] = Reference { probes: vec4(estimate, 1.0), traced: vec4(traced, 1.0) }
+    let wr = 4.0 * PI / f32(at.rays)
+    let conv = vec4(PI, 2.0 * PI / 3.0, 2.0 * PI / 3.0, 2.0 * PI / 3.0) * wr
+    let traced = Probe { r: r * conv, g: gg * conv, b: b * conv }
+    let class = f32(view::class_of(scene.load(x: u32(p.x), y: u32(p.y)).a))
+    out[id] = Reference {
+        probes: sky_sh(at.t.grid, probes, grounds, at.t.light, w),
+        traced,
+        at: vec4(class + 1.0, length(w - at.cam.eye), 0.0, 0.0),
+    }
 }

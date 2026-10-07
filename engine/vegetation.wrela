@@ -56,7 +56,7 @@ pub fn kind(plant: Plant, seed: u32, atlas: Texture, s: Sampler) -> Kind {
     }
     write(mut limbs, 0, list)
     let impostor = bake(plant, cards, n, limbs, limb_count, atlas, s)
-    let volume = cook(plant, impostor.bake)
+    let volume = cook(plant, impostor.bake, cards, n, atlas, s)
     Kind {
         plant,
         cards: take cards,
@@ -93,6 +93,9 @@ pub struct List: Copy {
     pub first: u32,
     pub count: u32,
 }
+
+/// The width on screen (the scene's pixels) below which a far crown isn't drawn.
+pub const FAINT_PX: f32 = 1.5
 
 /// Where each card level ends, in pixels a card's width: an instance is drawn at the coarsest
 /// level whose cards look no wider than this on screen.
@@ -259,6 +262,11 @@ fn way(k: Kind, at: Instance, cam: Camera, cards_to: f32, impostors_to: f32) -> 
             return HIDDEN
         }
     }
+    // Beyond the cards, a crown smaller on screen than a few output pixels adds nothing to the
+    // terrain's shading under it (#28 §4): it isn't drawn.
+    if d > cards_to && 2.0 * r / max(cam.footprint(d), 1.0e-6) < FAINT_PX {
+        return HIDDEN
+    }
     if d > impostors_to {
         return VOLUME
     }
@@ -270,6 +278,11 @@ fn way(k: Kind, at: Instance, cam: Camera, cards_to: f32, impostors_to: f32) -> 
     var level = 0
     while level + 1 < CARD_LEVELS && px * f32(1 << (level + 1)) <= CARD_PX {
         level += 1
+    }
+    // Near where the impostor takes over, the coarsest level, which it was baked from: the two
+    // show the same cards where they meet.
+    if d > cards_to * 0.75 {
+        level = CARD_LEVELS - 1
     }
     level
 }
@@ -520,8 +533,21 @@ impl Forest {
                 borrow k = self.kinds[l.kind]
                 let b = k.impostor.bake
                 draw(
-                    far_quad.bind(cam, b, instances: self.instances(l)),
-                    far_cut.bind(cam, b, colour: k.impostor.colour, s: s),
+                    far_quad.bind(
+                        cam,
+                        wind,
+                        b,
+                        instances: self.instances(l),
+                        first: l.first,
+                        front: 0,
+                    ),
+                    far_cut.bind(
+                        cam,
+                        b,
+                        colour: k.impostor.colour,
+                        normal: k.impostor.normal,
+                        s: s,
+                    ),
                     vertices: 6,
                     instances: l.count,
                     depth: view::NEAREST,
@@ -529,8 +555,20 @@ impl Forest {
             } else if l.how == VOLUME {
                 borrow k = self.kinds[l.kind]
                 draw(
-                    far_quad.bind(cam, k.impostor.bake, instances: self.instances(l)),
-                    volume_cut.bind(cam, k.volume.volume, voxels: k.volume.voxels),
+                    far_quad.bind(
+                        cam,
+                        wind,
+                        k.impostor.bake,
+                        instances: self.instances(l),
+                        first: l.first,
+                        front: 0,
+                    ),
+                    volume_cut.bind(
+                        cam,
+                        k.volume.volume,
+                        voxels: k.volume.voxels,
+                        depths: k.volume.depths,
+                    ),
                     vertices: 6,
                     instances: l.count,
                     depth: view::NEAREST,
@@ -571,6 +609,7 @@ impl Forest {
         s: Sampler,
         probes: GpuSpan<Probe>,
         grounds: GpuSpan<f32>,
+        ids: Texture,
     ) {
         let cam = lt.cam
         for l in self.lists {
@@ -608,9 +647,17 @@ impl Forest {
                 borrow k = self.kinds[l.kind]
                 let b = k.impostor.bake
                 draw(
-                    far_quad.bind(cam, b, instances: self.instances(l)),
+                    far_quad.bind(
+                        cam,
+                        wind,
+                        b,
+                        instances: self.instances(l),
+                        first: l.first,
+                        front: 1,
+                    ),
                     far_shade.bind(
                         lt,
+                        ids,
                         b,
                         colour: k.impostor.colour,
                         normal: k.impostor.normal,
@@ -625,16 +672,25 @@ impl Forest {
                     ),
                     vertices: 6,
                     instances: l.count,
-                    depth: PREPASSED,
+                    depth: impostor::SHADED,
                 )
             } else if l.how == VOLUME {
                 borrow k = self.kinds[l.kind]
                 draw(
-                    far_quad.bind(cam, k.impostor.bake, instances: self.instances(l)),
+                    far_quad.bind(
+                        cam,
+                        wind,
+                        k.impostor.bake,
+                        instances: self.instances(l),
+                        first: l.first,
+                        front: 1,
+                    ),
                     volume_shade.bind(
                         lt,
+                        ids,
                         k.volume.volume,
                         voxels: k.volume.voxels,
+                        depths: k.volume.depths,
                         s: s,
                         near: near,
                         far: far,
@@ -646,7 +702,7 @@ impl Forest {
                     ),
                     vertices: 6,
                     instances: l.count,
-                    depth: PREPASSED,
+                    depth: impostor::SHADED,
                 )
             }
         }
@@ -723,12 +779,22 @@ impl Forest {
 
 // ---- counting (a test's) ------------------------------------------------------------------------
 
-/// A card's fragment where the prepass left its depth, counted at its pixel (row by row,
-/// `width` to a row) and drawn as nothing: the cards' shading pass's work, pixel by pixel (AC4).
+/// A card's fragment, counted at its pixel (row by row, `width` to a row) where its depth is
+/// the prepass's (`depth`), and drawn as nothing: the cards' shading pass's work, pixel by
+/// pixel (AC4). A fragment shader that writes a buffer runs before the depth test, so it makes
+/// the shading pass's equal test itself.
 @fragment
-pub fn leaf_counted(l: LeafVertex, p: FragCoord, width: u32, shaded: mut Atomics<u32>) -> vec4 {
-    let i = u32(p.position.y) * width + u32(p.position.x)
-    let _ = shaded.add(i, 1)
+pub fn leaf_counted(
+    l: LeafVertex,
+    p: FragCoord,
+    depth: DepthTexture,
+    width: u32,
+    shaded: mut Atomics<u32>,
+) -> vec4 {
+    let (x, y) = (u32(p.position.x), u32(p.position.y))
+    if p.position.z == depth.load(x, y) {
+        let _ = shaded.add(y * width + x, 1)
+    }
     vec4(0.0)
 }
 
@@ -754,10 +820,17 @@ pub fn leaf_covering(
 }
 
 impl Forest {
-    /// The cards' shading pass as `shade` draws it (where the prepass left the depth), each
-    /// fragment counted into `shaded` at its pixel instead of shaded (the target is `width`
-    /// wide).
-    pub fn count_shading(self, cam: Camera, wind: Wind, width: u32, shaded: mut GpuBuffer<u32>) {
+    /// The cards' shading pass as `shade` draws it (where the prepass left the depth, `depth`),
+    /// each fragment counted into `shaded` at its pixel instead of shaded (the target is
+    /// `width` wide; its pass has no depth target).
+    pub fn count_shading(
+        self,
+        cam: Camera,
+        wind: Wind,
+        depth: DepthTexture,
+        width: u32,
+        shaded: mut GpuBuffer<u32>,
+    ) {
         for l in self.lists {
             if l.how < CARD_LEVELS {
                 borrow k = self.kinds[l.kind]
@@ -769,10 +842,9 @@ impl Forest {
                         cards: k.cards.span(start: 0, count: level_cards(k.card_count, l.how)),
                         instances: self.instances(l),
                     ),
-                    leaf_counted.bind(width, shaded: mut shaded),
+                    leaf_counted.bind(depth, width, shaded: mut shaded),
                     vertices: level_cards(k.card_count, l.how) * 6,
                     instances: l.count,
-                    depth: PREPASSED,
                 )
             }
         }

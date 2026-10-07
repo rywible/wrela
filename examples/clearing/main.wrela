@@ -98,6 +98,8 @@ pub struct Clearing {
     /// The scene: linear colour and tags, depth, motion; and the output's history, two to swap.
     scene: Texture,
     depth: DepthTexture,
+    /// Which far tree won each pixel of the prepass (`impostor::far_cut`).
+    ids: Texture,
     motion: Texture,
     history_a: Texture,
     history_b: Texture,
@@ -129,6 +131,7 @@ pub struct Clearing {
     covering: GpuBuffer<u32>,
     captured: GpuBuffer<vec4>,
     captured_depth: GpuBuffer<f32>,
+    captured_counts: GpuBuffer<u32>,
     captured_texels: GpuBuffer<Texel>,
     references: GpuBuffer<Reference>,
 }
@@ -237,6 +240,7 @@ pub fn init() -> Clearing {
         strips: 0,
         scene: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
         depth: depth_texture(width: 1, height: 1),
+        ids: texture(width: 1, height: 1, format: TextureFormat::Rgba8),
         motion: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
         history_a: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
         history_b: texture(width: 1, height: 1, format: TextureFormat::Rgba16Float),
@@ -260,6 +264,7 @@ pub fn init() -> Clearing {
         covering: buffer(1),
         captured: buffer(1),
         captured_depth: buffer(1),
+        captured_counts: buffer(1),
         captured_texels: buffer(1),
         references: buffer(1),
     }
@@ -363,6 +368,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     if width != s.width || height != s.height || f32(w) != s.cam.screen.x {
         s.scene = texture(width: w, height: h, format: TextureFormat::Rgba16Float)
         s.depth = depth_texture(width: w, height: h)
+        s.ids = texture(width: w, height: h, format: TextureFormat::Rgba8)
         s.motion = texture(width: w, height: h, format: TextureFormat::Rgba16Float)
         s.dabs = texture(width: w, height: h, format: TextureFormat::Rgba16Float)
         s.history_a = texture(width, height, format: TextureFormat::Rgba16Float)
@@ -509,7 +515,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
 
     // The depth prepass: the cut cards and flowers.
     label("vegetation prepass")
-    let pre = begin_depth_pass(mut s.depth, clear_depth: 0.0)
+    let pre = begin_pass_with_depth(mut s.ids, mut s.depth, clear: vec4(0.0), clear_depth: 0.0)
     if on(s.off, TREES) {
         s.forest.prepass(cam, wind, s.linear)
     }
@@ -522,13 +528,8 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         // cards covering each pixel (for a test, `test_count`).
         s.shaded = buffer(w * h)
         s.covering = buffer(w * h)
-        let shading = begin_pass_with_depth(
-            mut s.scene,
-            mut s.depth,
-            clear: vec4(0.0),
-            keep_depth: true,
-        )
-        s.forest.count_shading(cam, wind, w, mut s.shaded)
+        let shading = begin_pass(mut s.scene, clear: vec4(0.0))
+        s.forest.count_shading(cam, wind, s.depth, w, mut s.shaded)
         shading.end()
         let covering = begin_pass_with_depth(mut s.scene, mut s.depth, keep: true, keep_depth: true)
         s.forest.count_covering(cam, wind, s.linear, w, mut s.covering)
@@ -550,6 +551,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
             s.linear,
             probes,
             grounds,
+            s.ids,
         )
     }
     if on(s.off, GRASS) {
@@ -687,7 +689,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     let r = Resolve {
         cam,
         out: vec2(f32(width), f32(height)),
-        blend: 0.1,
+        blend: 0.12,
         fresh: if s.frames == 0 || !on(s.off, testing::HISTORY) { 1 } else { 0 },
     }
     label("temporal")
@@ -702,7 +704,15 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         let dp = begin_pass(mut s.dabs)
         draw(
             cover.bind(z: 0.5),
-            dab_map.bind(cam, look: d.look, scene: s.scene, depth: s.depth),
+            dab_map.bind(
+                cam,
+                look: d.look,
+                out: d.out,
+                levels: s.clipmap.levels(),
+                texels: s.clipmap.texels(),
+                scene: s.scene,
+                depth: s.depth,
+            ),
             vertices: 3,
         )
         dp.end()
@@ -831,19 +841,18 @@ pub fn test_capture(s: mut Clearing, what: u32) -> u32 {
         return n
     }
     if what == 4 || what == 5 {
-        var out: GpuBuffer<u32> = buffer(n)
+        s.captured_counts = buffer(n)
         if what == 4 {
             std::gpu::copy(
                 from: s.shaded.span(start: 0, count: n),
-                to: out.span_mut(start: 0, count: n),
+                to: s.captured_counts.span_mut(start: 0, count: n),
             )
         } else {
             std::gpu::copy(
                 from: s.covering.span(start: 0, count: n),
-                to: out.span_mut(start: 0, count: n),
+                to: s.captured_counts.span_mut(start: 0, count: n),
             )
         }
-        s.shaded = take out
         return n
     }
     let texels = s.clipmap.levels().count * engine::terrain::STRIDE
@@ -929,6 +938,7 @@ pub fn test_reference(s: mut Clearing, first: u32, count: u32, step: u32, rays: 
         reference.bind(
             at,
             s.depth,
+            s.scene,
             volume: s.probes.volume.span(start: 0, count: s.probes.grid.voxels()),
             levels: s.clipmap.levels(),
             texels: s.clipmap.texels(),
@@ -949,6 +959,28 @@ pub fn test_ready(s: Clearing) -> vec2 {
     vec2(if s.ready { 1.0 } else { 0.0 }, if s.path_from < 0.0 { -1.0 } else {
         s.cam.time - s.path_from
     })
+}
+
+/// Every surface's sky light set to `sh` (spherical harmonics' first two bands: `Light`'s
+/// `sky_sh`), or back to the probes' (`on` 0).
+pub fn test_sky(s: mut Clearing, on: u32, sh: vec4) {
+    s.light = Light { sky_test: on, sky_sh: sh, ..s.light }
+}
+
+/// `c` (linear light) as the tone curve shows it (in [0, 1]).
+pub fn test_display(s: Clearing, c: vec3) -> vec3 {
+    engine::light::display(s.light, c)
+}
+
+/// Kind `k`'s far levels' sizes: its impostor's box (its half-width), one texel of its
+/// impostor's views and one voxel of its volume (m).
+pub fn test_kind(s: Clearing, k: u32) -> vec3 {
+    let b = s.forest.kinds[k].impostor.bake
+    vec3(
+        b.half,
+        2.0 * b.half / f32(engine::impostor::CELL),
+        2.0 * b.half / f32(engine::impostor::VOXELS),
+    )
 }
 
 /// The instances drawn the last frame as cards, as impostors and as volumes.
