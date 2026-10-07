@@ -52,7 +52,7 @@ Scope: #28 ("The clearing, specified", § numbers). Criteria: #51 (AC numbers).
   - [x] G1g tests: latencies and effects in both hosts
 - [x] G2 The great tree as a plant in its own package; the lens draws, probes and drags it
 - [x] G3 The art-directed round, the agents' part: the great tree and the fawn authored with the lens (edit log in the commit); the owner's verdicts and edits pending
-- [ ] G4 #31's M3 friction met in the round: fixed, or noted in #31
+- [x] G4 #31's M3 friction met in the round: diagnose names its pieces' parts (fixed); solver priors met, noted in #31 (at the end, with the record)
 
 ## H. The clearing and its measures (§1, §11, AC2, AC11)
 - [x] H1 The clearing's content (examples/clearing): meadow, track, rise, plateau's edge, valley, hills, mountain, forest wall, gap, boulders, flowers, cumulus, sun at 24°

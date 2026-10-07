@@ -1752,7 +1752,11 @@ fn poll_diagnosis<S: Surface>(lens: mut Lens, subject: fn() -> S) {
             for i in 0..r.worst_count {
                 names.push(part_label(field.part_name(field.part_at(r.worst[i]).1), " in "))
             }
-            let a = r.json(lens.stated, names)
+            var pieces_at: Vec<String> = Vec::new()
+            for i in 0..min(r.pieces, 8) {
+                pieces_at.push(part_label(field.part_name(field.part_at(r.centres[i]).1), " in "))
+            }
+            let a = r.json(lens.stated, names, pieces_at)
             lens.answer(a.as_str())
         },
         Err(_) => fail(mut lens, "diagnose", "the GPU's answer didn't come"),

@@ -319,8 +319,10 @@ fn count_pieces(r: mut Report, d: [f32]) {
 impl Report {
     /// The report as one JSON object, with the stated Lipschitz bound beside the derived one
     /// (the largest gradient found), and where the gradient is worst, each place with the part
-    /// there (`names[i]` for `worst[i]`).
-    pub fn json(self, stated: f32, names: [String]) -> String {
+    /// there (`names[i]` for `worst[i]`); and each piece with the part at its centre
+    /// (`pieces_at[i]`), so a sliver of a thin part (an ear's tip thinner than a cell, which
+    /// the grid sees apart) is named, not just counted.
+    pub fn json(self, stated: f32, names: [String], pieces_at: [String]) -> String {
         var worst = list()
         for i in 0..self.worst_count {
             var w = obj().vec("at", self.worst[i]).num("gradient", self.worst_gradient[i])
@@ -334,10 +336,13 @@ impl Report {
         let vox = self.grid.cell * self.grid.cell * self.grid.cell
         var pieces = list()
         for i in 0..min(self.pieces, 8) {
-            let piece = obj()
+            var piece = obj()
                 .num("volume", f32(self.sizes[i]) * vox)
                 .vec("centre", self.centres[i])
-                .done()
+            if i < pieces_at.len() {
+                piece = take piece.text("part", pieces_at[i].as_str())
+            }
+            let piece = take piece.done()
             pieces.add(piece.as_str())
         }
         var cut = list()
