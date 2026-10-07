@@ -627,6 +627,8 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         frame: s.frames,
         time: time,
         last: s.cam,
+        // A frame drawn with no history (a test's) isn't jittered: plain rendering.
+        still: !on(s.off, testing::HISTORY),
     )
     let cam = s.cam
     let wind = Wind {

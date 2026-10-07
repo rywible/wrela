@@ -17,7 +17,7 @@
 use light::{Light, display}
 use noise::{hash2, noise3}
 use std::gpu::{DepthTexture, FragCoord, Sampler, Texture}
-use terrain::{Levels, Texel, ground_at}
+use terrain::{Levels, Texel, ground_at, height_at}
 use view::{CREATURE, Camera, FLOWER, GRASS, GROUND, class_of, jitter_of}
 
 /// The look's settings: how strong the dabs are on near surfaces, on broad far ones and on the
@@ -210,23 +210,49 @@ pub fn dab_map(
     scene: Texture,
     depth: DepthTexture,
 ) -> vec4 {
-    let p = vec2u(pixel.position.xy)
+    // The scene's pixel, at its unjittered centre: each texel holds the dab of the same point
+    // of a surface from frame to frame, and the output reads it at the same place (`develop`).
+    // (Read at a place the jitter shifted each frame, between texels sampled at shifted points,
+    // the dabs' sharp edges flickered.)
     let px = pixel.position.xy
+    let size = vec2u(cam.screen) - vec2u(1)
+    let p = min(vec2u(px), size)
     // An output pixel's share of a scene pixel.
     let per_out = cam.screen.y / out.y
+    let still = Camera { jitter: vec2(0.0), ..cam }
     let class = class_of(scene.load(x: p.x, y: p.y).a)
     let z = depth.load(x: p.x, y: p.y)
     if class == 0 || z <= 0.0 {
         // The sky: dabs anchored to directions, a pixel's angle being its footprint at 1 m.
-        let ray = cam.ray(px)
+        let ray = still.ray(px)
         let footprint = 2.0 * cam.tan_half / cam.screen.y
         let dab = dabs(ray, -ray, footprint, look.dab_px * 1.6 * per_out)
         return vec4(look.dabs_sky * dab, 0.0, 0.0, 1.0)
     }
-    let world = cam.world_at(px, z)
-    let dist = cam.distance_of(z)
+    // The surface at the pixel's own (unjittered) point, not at the jittered sample the scene
+    // took near it: the depth between the samples round that point (reversed depth is linear
+    // on screen across a plane, so bilinear is exact there). So a dab stays where it is on a
+    // surface from frame to frame, as temporal AA's image does. Across an edge (the four depths
+    // over 2% apart), the nearest sample itself.
+    let jp = vec2(cam.jitter.x * cam.screen.x, -cam.jitter.y * cam.screen.y) * 0.5
+    let f = px - vec2(0.5) + jp
+    let b = floor(f)
+    let t = f - b
+    let at = |dx: f32, dy: f32| {
+        let q = clamp(b + vec2(dx, dy), vec2(0.0), vec2(size))
+        depth.load(x: u32(q.x), y: u32(q.y))
+    }
+    let (d00, d10, d01, d11) = (at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0), at(1.0, 1.0))
+    let lo = min(min(d00, d10), min(d01, d11))
+    let hi = max(max(d00, d10), max(d01, d11))
+    var world = cam.world_at(vec2(p) + vec2(0.5), z)
+    var zz = z
+    if lo > 0.0 && hi - lo <= 0.02 * hi {
+        zz = mix(mix(d00, d10, t.x), mix(d01, d11, t.x), t.y)
+        world = still.world_at(px, zz)
+    }
+    let dist = cam.distance_of(zz)
     let footprint = cam.footprint(dist)
-    let size = vec2u(cam.screen) - vec2u(1)
     let qx = vec2u(min(p.x + 1, size.x), p.y)
     let qy = vec2u(p.x, min(p.y + 1, size.y))
     let wx = cam.world_at(vec2(qx) + vec2(0.5), max(depth.load(x: qx.x, y: qx.y), 1.0e-9))
@@ -238,6 +264,17 @@ pub fn dab_map(
     if class == class_of(GROUND) || class == class_of(GRASS) || class == class_of(FLOWER) {
         let (ground_n, _, _) = ground_at(levels, texels, world.xz)
         n = ground_n
+        // Grass and flowers are painted on the ground they grow from: where the texel's
+        // unjittered ray meets the terrain's plane there, which the blades' jittered samples
+        // don't move.
+        if class != class_of(GROUND) {
+            let ground = vec3(world.x, height_at(levels, texels, world.xz), world.z)
+            let ray = still.ray(px)
+            let across = dot(ray, n)
+            if abs(across) > 0.05 {
+                world = cam.eye + ray * (dot(ground - cam.eye, n) / across)
+            }
+        }
     }
     // A crown is a mass of leaves, each tilted its own way: its dabs lie across the line of
     // sight, as a painter lays a crown's.
@@ -287,9 +324,9 @@ pub fn develop(
         here.rgb + (here.rgb * 4.0 - (n1 + n2 + n3 + n4)) * (look.sharpen * 0.25),
         vec3(0.0),
     )
-    // The dab map's texel for this point: the scene's samples sat at their pixels' centres less
-    // the jitter, so the unjittered point is read that much over.
-    let q = px * (d.cam.screen / d.out) + jitter_of(d.cam.frame)
+    // The dab map's texel for this point: its texels hold their unjittered centres' points
+    // (`dab_map`), so the same place each frame.
+    let q = px * (d.cam.screen / d.out)
     let m = dabs.sample_level(s, q / d.cam.screen)
     paint = paint * (1.0 + m.r) * vec3(1.0 + 0.25 * m.r, 1.0, 1.0 - 0.3 * m.r) * (1.0 + m.g)
     // Bloom.
