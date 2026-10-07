@@ -43,6 +43,13 @@ Scope: #28 ("The clearing, specified", § numbers). Criteria: #51 (AC numbers).
 
 ## G. Authoring (§9, AC9)
 - [ ] G1 Hot reload, both hosts: literal edits (≤ 0.5 s), structural edits (≤ 3 s), no restart
+  - [ ] G1a compiler: `__lift_set` export in lifted builds; `std::lift::generation()`; `reads` of any `fn() -> T`
+  - [ ] G1b `std::reload::keep`/`kept` (imports `wrela.keep`, `wrela.kept`), both hosts
+  - [ ] G1c driver: the watcher (literals, or a rebuild); `wrela run <pkg>` serves the page with live updates
+  - [ ] G1d browser: literal updates; a new build swapped in place (kept bytes, the ticks replayed)
+  - [ ] G1e native: `Host::set_literal`, `Host::reload` (kept bytes, ticks replayed)
+  - [ ] G1f the clearing: carried state; what's cooked from changed literals cooked again
+  - [ ] G1g tests: latencies and effects in both hosts
 - [ ] G2 The great tree as a plant in its own package; the lens draws, probes and drags it
 - [ ] G3 The art-directed round: the great tree and the creature authored with the lens; edit shares
 - [ ] G4 #31's M3 friction met in the round: fixed, or noted in #31
