@@ -33,15 +33,14 @@ pub struct SpatialGrid<T>: Clone + StateHash + Serialize + SimState {
 }
 
 /// A cell's key: its coordinates, hashed. Two cells may share one, so queries check distances.
-fn key_of(x: i32, y: i32, z: i32) -> u32 {
-    let h = u32(x).wrapping_mul(73856093) ^
-        u32(y).wrapping_mul(19349663) ^
-        u32(z).wrapping_mul(83492791)
+fn key_of(c: vec3i) -> u32 {
+    let u = vec3u(c)
+    let h = u.x.wrapping_mul(73856093) ^ u.y.wrapping_mul(19349663) ^ u.z.wrapping_mul(83492791)
     h ^ (h >> 16)
 }
 
-fn cell_of(p: vec3, cell: f32) -> (i32, i32, i32) {
-    (i32(floor(p.x / cell)), i32(floor(p.y / cell)), i32(floor(p.z / cell)))
+fn cell_of(p: vec3, cell: f32) -> vec3i {
+    vec3i(floor(p / cell))
 }
 
 /// Whether `a` goes before `b`: by key, then by order.
@@ -69,10 +68,8 @@ impl<T> SpatialGrid<T> {
         var order = 0
         for x in items {
             let p = pos(x)
-            let (cx, cy, cz) = cell_of(p, self.cell)
-            self.entries.push(
-                Entry { key: key_of(cx, cy, cz), order, handle: items.handle_at(order), pos: p },
-            )
+            let key = key_of(cell_of(p, self.cell))
+            self.entries.push(Entry { key, order, handle: items.handle_at(order), pos: p })
             order += 1
         }
         self.entries.sort_by_in(|a, b| before(a, b), mut self.room)
@@ -100,12 +97,12 @@ impl<T> SpatialGrid<T> {
     /// Calls `f` with each entity within `radius` of `p`, cell by cell.
     pub fn each_within(self, p: vec3, radius: f32, f: fn(Found<T>)) {
         let r = i32(ceil(radius / self.cell))
-        let (cx, cy, cz) = cell_of(p, self.cell)
+        let c = cell_of(p, self.cell)
         let r2 = radius * radius
         for dz in -r..r + 1 {
             for dy in -r..r + 1 {
                 for dx in -r..r + 1 {
-                    let key = key_of(cx + dx, cy + dy, cz + dz)
+                    let key = key_of(c + vec3i(dx, dy, dz))
                     var i = self.first_at(key)
                     while i < self.entries.len() && self.entries[i].key == key {
                         let e = self.entries[i]

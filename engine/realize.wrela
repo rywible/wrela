@@ -66,9 +66,8 @@ pub const QEF_PULL: f32 = 0.05
 pub struct Grid: Copy + GpuData {
     pub origin: vec3,
     pub cell: f32,
-    pub blocks_x: u32,
-    pub blocks_y: u32,
-    pub blocks_z: u32,
+    /// Blocks along each axis.
+    pub size: vec3u,
     pub blocks: u32,
 }
 
@@ -78,37 +77,32 @@ impl Grid {
     pub fn around(b: Box3, cell: f32) -> Grid {
         let pad = 2.0 * cell
         let origin = b.lo - vec3(pad)
-        let n = ceil((b.hi + vec3(pad) - origin) / (f32(BLOCK) * cell))
-        let (x, y, z) = (u32(n.x), u32(n.y), u32(n.z))
-        Grid { origin, cell, blocks_x: x, blocks_y: y, blocks_z: z, blocks: x * y * z }
+        let size = vec3u(ceil((b.hi + vec3(pad) - origin) / (f32(BLOCK) * cell)))
+        Grid { origin, cell, size, blocks: size.x * size.y * size.z }
     }
 
     /// Block `b`'s coordinates, in blocks.
-    pub fn block_xyz(self, b: u32) -> (u32, u32, u32) {
-        (
-            b % self.blocks_x,
-            (b / self.blocks_x) % self.blocks_y,
-            b / (self.blocks_x * self.blocks_y),
-        )
+    pub fn block_xyz(self, b: u32) -> vec3u {
+        let s = self.size
+        vec3u(b % s.x, (b / s.x) % s.y, b / (s.x * s.y))
     }
 
-    /// The block at block coordinates `(x, y, z)`.
-    pub fn block_at(self, x: u32, y: u32, z: u32) -> u32 {
-        x + self.blocks_x * (y + self.blocks_y * z)
+    /// The block at block coordinates `c`.
+    pub fn block_at(self, c: vec3u) -> u32 {
+        c.x + self.size.x * (c.y + self.size.y * c.z)
     }
 
-    /// The lattice's corner `(x, y, z)`, in cells from the origin. Every block that shares a
-    /// corner gets the same point from it, bit for bit, which a block's corner plus an offset
-    /// doesn't give: two blocks evaluating one corner at points an ulp apart can disagree on its
-    /// sign, and a quad between them is lost (spike 01's holes, #43 §7.5).
-    pub fn corner(self, x: u32, y: u32, z: u32) -> vec3 {
-        self.origin + vec3(f32(x), f32(y), f32(z)) * self.cell
+    /// The lattice's corner `c`, in cells from the origin. Every block that shares a corner
+    /// gets the same point from it, bit for bit, which a block's corner plus an offset doesn't
+    /// give: two blocks evaluating one corner at points an ulp apart can disagree on its sign,
+    /// and a quad between them is lost (spike 01's holes, #43 §7.5).
+    pub fn corner(self, c: vec3u) -> vec3 {
+        self.origin + vec3(c) * self.cell
     }
 
     /// Block `b`'s low corner.
     pub fn block_corner(self, b: u32) -> vec3 {
-        let (x, y, z) = self.block_xyz(b)
-        self.origin + vec3(f32(x), f32(y), f32(z)) * (f32(BLOCK) * self.cell)
+        self.origin + vec3(self.block_xyz(b)) * (f32(BLOCK) * self.cell)
     }
 
     /// Block `b`, as a box.
@@ -161,11 +155,11 @@ pub struct Quad: Copy + GpuData {
     pub f: u32,
 }
 
-/// Where cell `(x, y, z)` of the block in live slot `slot` is in a cell map with room for
-/// `blocks` blocks (its length over `BLOCK³`): row by row, as one dispatch of that many blocks
-/// would number its invocations.
-fn cell_key(slot: u32, x: u32, y: u32, z: u32, blocks: u32) -> u32 {
-    (slot * BLOCK + x) + y * blocks * BLOCK + z * blocks * BLOCK * BLOCK
+/// Where cell `c` of the block in live slot `slot` is in a cell map with room for `blocks`
+/// blocks (its length over `BLOCK³`): row by row, as one dispatch of that many blocks would
+/// number its invocations.
+fn cell_key(slot: u32, c: vec3u, blocks: u32) -> u32 {
+    (slot * BLOCK + c.x) + c.y * blocks * BLOCK + c.z * blocks * BLOCK * BLOCK
 }
 
 // ---- pass 1: which blocks matter, and which items matter in each ------------------------------
@@ -194,29 +188,30 @@ pub fn cull_blocks<C, F: Parts<C>>(
 
 // ---- pass 2: a vertex in each crossed cell ---------------------------------------------------
 
+/// A cell's corner `j` (0 to 7), from its low corner: bit 0 along x, bit 1 along y, bit 2
+/// along z.
+fn corner_offset(j: u32) -> vec3u {
+    vec3u(j & 1, (j >> 1) & 1, (j >> 2) & 1)
+}
+
 /// The mask of the block at `i` (`(dx + 1) + 3 (dy + 1) + 9 (dz + 1)`) of the 3 × 3 × 3 around
 /// block `b`: none outside the grid or where culled.
-fn neighbour_mask(
-    grid: Grid,
-    blocks: [LiveBlock],
-    block_map: [u32],
-    b: (u32, u32, u32),
-    i: u32,
-) -> PartMask {
-    let (bx, by, bz) = b
-    let (x, y, z) = (bx + i % 3, by + (i / 3) % 3, bz + i / 9)
-    if x < 1 || y < 1 || z < 1 || x > grid.blocks_x || y > grid.blocks_y || z > grid.blocks_z {
+fn neighbour_mask(grid: Grid, blocks: [LiveBlock], block_map: [u32], b: vec3u, i: u32) -> PartMask {
+    // One past `b`'s neighbour, so none is below 0.
+    let n = b + vec3u(i % 3, (i / 3) % 3, i / 9)
+    let size = grid.size
+    if n.x < 1 || n.y < 1 || n.z < 1 || n.x > size.x || n.y > size.y || n.z > size.z {
         return NONE
     }
-    let s = block_map[grid.block_at(x - 1, y - 1, z - 1)]
+    let s = block_map[grid.block_at(n - 1)]
     if s == 0 { NONE } else { blocks[s - 1].mask }
 }
 
-/// The mask a corner `(cx, cy, cz)` of a block whose own is `own` is evaluated under: its own,
-/// and on its boundary the union with each live block that shares the corner (§7.5), from the
-/// masks of the blocks around it (`neighbour_mask`).
-fn corner_mask(near: Shared<PartMask, 27>, own: PartMask, c: (u32, u32, u32)) -> PartMask {
-    let (cx, cy, cz) = c
+/// The mask a corner `c` of a block whose own is `own` is evaluated under: its own, and on its
+/// boundary the union with each live block that shares the corner (§7.5), from the masks of the
+/// blocks around it (`neighbour_mask`).
+fn corner_mask(near: Shared<PartMask, 27>, own: PartMask, c: vec3u) -> PartMask {
+    let (cx, cy, cz) = (c.x, c.y, c.z)
     // Along each axis, the blocks sharing the corner: the one below too at its low face, the
     // one above too at its high face. All eight unions, the same block more than once inside
     // (no branch: the invocations of a SIMD group take different corners).
@@ -291,11 +286,11 @@ pub fn place_vertices<C, F: Parts<C>>(
     let slot = block.x + first
     let lb = blocks[slot]
     // Each cell's entry in the cell map, wherever the slice's dispatch puts its invocation.
-    let key = cell_key(slot, lid.x, lid.y, lid.z, cells.len() / (BLOCK * BLOCK * BLOCK))
+    let key = cell_key(slot, lid.xyz(), cells.len() / (BLOCK * BLOCK * BLOCK))
     let cell = grid.cell
     let b = grid.block_xyz(lb.block)
     // The block's low corner, in cells.
-    let (gx, gy, gz) = (b.0 * BLOCK, b.1 * BLOCK, b.2 * BLOCK)
+    let g = b * BLOCK
     // Detail finer than a cell is for shading: the field is seen a cell wide.
     let fp = cell
     // The masks around the block, read once for its 98 boundary corners.
@@ -308,15 +303,16 @@ pub fn place_vertices<C, F: Parts<C>>(
     var probed = CornerProbe { corners: [0, 0], bits: [0, 0] }
     for k in 0..chunk.len() {
         let i = chunk.index(k)
-        let c = (i % 5, (i / 5) % 5, i / 25)
+        let c = vec3u(i % 5, (i / 5) % 5, i / 25)
         let mask = corner_mask(near, lb.mask, c)
-        let at = grid.corner(gx + c.0, gy + c.1, gz + c.2)
+        let at = grid.corner(g + c)
         let d = field.distance_masked(at, mask, fp)
         corners.write(chunk, k, d)
-        let inside = c.0 > 0 && c.0 < BLOCK && c.1 > 0 && c.1 < BLOCK && c.2 > 0 && c.2 < BLOCK
+        let inside = c.x > 0 && c.x < BLOCK && c.y > 0 && c.y < BLOCK && c.z > 0 && c.z < BLOCK
         if debug_build() && !inside && k < 2 {
-            let (nx, ny) = (grid.blocks_x * BLOCK + 1, grid.blocks_y * BLOCK + 1)
-            probed.corners[k] = gx + c.0 + nx * (gy + c.1 + ny * (gz + c.2)) + 1
+            let (nx, ny) = (grid.size.x * BLOCK + 1, grid.size.y * BLOCK + 1)
+            let p = g + c
+            probed.corners[k] = p.x + nx * (p.y + ny * p.z) + 1
             probed.bits[k] = bitcast_u32(d)
         }
     }
@@ -328,10 +324,8 @@ pub fn place_vertices<C, F: Parts<C>>(
     var vals = [0.0; 8]
     var signs = 0
     for j in 0..8 {
-        let x = lid.x + (j & 1)
-        let y = lid.y + ((j >> 1) & 1)
-        let z = lid.z + ((j >> 2) & 1)
-        vals[j] = corners.get(x + y * 5 + z * 25)
+        let p = lid.xyz() + corner_offset(j)
+        vals[j] = corners.get(p.x + p.y * 5 + p.z * 25)
         if vals[j] < 0.0 {
             signs = signs | (1 << j)
         }
@@ -343,8 +337,8 @@ pub fn place_vertices<C, F: Parts<C>>(
 
     // Where the surface crosses each of the 12 edges, and its normal there.
     let mask = lb.mask
-    let (cx, cy, cz) = (gx + lid.x, gy + lid.y, gz + lid.z)
-    let cmin = grid.corner(cx, cy, cz)
+    let cc = g + lid.xyz()
+    let cmin = grid.corner(cc)
     var pts = [vec3(0.0); 12]
     var nrm = [vec3(0.0); 12]
     var n = 0
@@ -357,8 +351,8 @@ pub fn place_vertices<C, F: Parts<C>>(
         if ((signs >> ja) & 1) == ((signs >> jb) & 1) {
             continue
         }
-        var pa = grid.corner(cx + (ja & 1), cy + ((ja >> 1) & 1), cz + (ja >> 2))
-        var pb = grid.corner(cx + (jb & 1), cy + ((jb >> 1) & 1), cz + (jb >> 2))
+        var pa = grid.corner(cc + corner_offset(ja))
+        var pb = grid.corner(cc + corner_offset(jb))
         var fa = vals[ja]
         var fb = vals[jb]
         for _ in 0..ROOT_STEPS {
@@ -392,7 +386,7 @@ pub fn place_vertices<C, F: Parts<C>>(
         a2 += q * q.z
         rhs += q * dot(q, pts[i] - m)
     }
-    let pos = clamp(m + solve3(a0, a1, a2, rhs), cmin, grid.corner(cx + 1, cy + 1, cz + 1))
+    let pos = clamp(m + solve3(a0, a1, a2, rhs), cmin, grid.corner(cc + 1))
     let normal = normal_at(field, mask, fp, pos)
     // Its skin weights come in their own pass (`skin_vertices`).
     let vi = verts.push(SkinVertex { pos, bones: 0, normal, weights: 255, mask })
@@ -401,29 +395,18 @@ pub fn place_vertices<C, F: Parts<C>>(
 
 // ---- pass 3: a quad for every crossed edge -----------------------------------------------------
 
-/// The vertex of the cell at grid cell `(x, y, z)` (as `i32`s, which may be outside the grid),
-/// through the block map and the cell map: none outside the grid, in a culled block, or past
-/// the vertices' room.
-fn vertex_at(
-    grid: Grid,
-    block_map: [u32],
-    cells: [u32],
-    blocks: u32,
-    room: u32,
-    x: i32,
-    y: i32,
-    z: i32,
-) -> u32 {
-    let (nx, ny, nz) = (grid.blocks_x * BLOCK, grid.blocks_y * BLOCK, grid.blocks_z * BLOCK)
-    if x < 0 || y < 0 || z < 0 || u32(x) >= nx || u32(y) >= ny || u32(z) >= nz {
+/// The vertex of the cell at grid cell `c` (which may be outside the grid), through the block
+/// map and the cell map: none outside the grid, in a culled block, or past the vertices' room.
+fn vertex_at(grid: Grid, block_map: [u32], cells: [u32], blocks: u32, room: u32, c: vec3i) -> u32 {
+    let (u, n) = (vec3u(c), grid.size * BLOCK)
+    if c.x < 0 || c.y < 0 || c.z < 0 || u.x >= n.x || u.y >= n.y || u.z >= n.z {
         return NO_VERTEX
     }
-    let (ux, uy, uz) = (u32(x), u32(y), u32(z))
-    let s = block_map[grid.block_at(ux / BLOCK, uy / BLOCK, uz / BLOCK)]
+    let s = block_map[grid.block_at(u / BLOCK)]
     if s == 0 {
         return NO_VERTEX
     }
-    let v = cells[cell_key(s - 1, ux % BLOCK, uy % BLOCK, uz % BLOCK, blocks)] & NO_VERTEX
+    let v = cells[cell_key(s - 1, u % BLOCK, blocks)] & NO_VERTEX
     if v >= room { NO_VERTEX } else { v }
 }
 
@@ -444,16 +427,13 @@ pub fn emit_quads(
 ) {
     let slot = block.x
     let n = cells.len() / (BLOCK * BLOCK * BLOCK)
-    let data = cells[cell_key(slot, lid.x, lid.y, lid.z, n)]
+    let data = cells[cell_key(slot, lid.xyz(), n)]
     let v0 = data & NO_VERTEX
     if v0 >= room {
         return
     }
     let signs = data >> 24
-    let (bx, by, bz) = grid.block_xyz(blocks[slot].block)
-    let gx = i32(bx * BLOCK + lid.x)
-    let gy = i32(by * BLOCK + lid.y)
-    let gz = i32(bz * BLOCK + lid.z)
+    let g = vec3i(grid.block_xyz(blocks[slot].block) * BLOCK + lid.xyz())
     let in0 = signs & 1
     for axis in 0..3 {
         let in1 = (signs >> (1 << axis)) & 1
@@ -464,20 +444,11 @@ pub fn emit_quads(
         // back along both, and back along the second.
         let a1 = (axis + 1) % 3
         let a2 = (axis + 2) % 3
-        let (ux, uy, uz) = (i32(a1 == 0), i32(a1 == 1), i32(a1 == 2))
-        let (wx, wy, wz) = (i32(a2 == 0), i32(a2 == 1), i32(a2 == 2))
-        let v1 = vertex_at(grid, block_map, cells, n, room, gx - ux, gy - uy, gz - uz)
-        let v2 = vertex_at(
-            grid,
-            block_map,
-            cells,
-            n,
-            room,
-            gx - ux - wx,
-            gy - uy - wy,
-            gz - uz - wz,
-        )
-        let v3 = vertex_at(grid, block_map, cells, n, room, gx - wx, gy - wy, gz - wz)
+        let u = vec3i(i32(a1 == 0), i32(a1 == 1), i32(a1 == 2))
+        let w = vec3i(i32(a2 == 0), i32(a2 == 1), i32(a2 == 2))
+        let v1 = vertex_at(grid, block_map, cells, n, room, g - u)
+        let v2 = vertex_at(grid, block_map, cells, n, room, g - u - w)
+        let v3 = vertex_at(grid, block_map, cells, n, room, g - w)
         if v1 == NO_VERTEX || v2 == NO_VERTEX || v3 == NO_VERTEX {
             let _ = args.add(HOLES, 1)
             continue

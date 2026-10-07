@@ -254,7 +254,7 @@ trait Gather<C> {
 struct Sums {
     mass: f64,
     volume: f64,
-    moment: [f64; 3],
+    moment: vec3d,
     samples: u32,
 }
 
@@ -269,9 +269,7 @@ impl<C> Gather<C> for Sums {
         let mass = vol * f64(rho)
         self.volume += vol
         self.mass += mass
-        self.moment[0] += mass * f64(c.x)
-        self.moment[1] += mass * f64(c.y)
-        self.moment[2] += mass * f64(c.z)
+        self.moment += mass * vec3d(c)
     }
 }
 
@@ -300,13 +298,13 @@ pub fn adaptive_mass<C, F: Parts<C>>(field: F, density: fn(C) -> f32, finest: f3
     let c = (lo + hi) * 0.5
     let e = hi - lo
     let h = max(e.x, max(e.y, e.z)) * 0.5
-    var sums = Sums { mass: 0.0, volume: 0.0, moment: [0.0; 3], samples: 0 }
+    var sums = Sums { mass: 0.0, volume: 0.0, moment: vec3d(0.0), samples: 0 }
     node(field, density, bounds, c, h, finest, mut sums)
     let m = max(sums.mass, 1.0e-30)
     Weighed {
         mass: sums.mass,
         volume: sums.volume,
-        centre: vec3(f32(sums.moment[0] / m), f32(sums.moment[1] / m), f32(sums.moment[2] / m)),
+        centre: vec3(sums.moment / m),
         samples: sums.samples,
     }
 }
@@ -354,8 +352,8 @@ fn node<C, F: Parts<C>, G: Gather<C>>(
 struct BoneSums<K> {
     creature: K,
     mass: Vec<f64>,
-    first: Vec<[f64; 3]>,
-    second: Vec<[f64; 3]>,
+    first: Vec<vec3d>,
+    second: Vec<vec3d>,
     own: Vec<f64>,
 }
 
@@ -367,12 +365,10 @@ impl<C, K: Creature<C>> Gather<C> for BoneSums<K> {
         let i = self.creature.nearest_bone(c).index
         let edge = 2.0 * f64(h)
         let m = edge * edge * edge * f64(rho)
-        let p = [f64(c.x), f64(c.y), f64(c.z)]
+        let p = vec3d(c)
         self.mass[i] += m
-        for k in 0..3 {
-            self.first[i][k] += m * p[k]
-            self.second[i][k] += m * p[k] * p[k]
-        }
+        self.first[i] += m * p
+        self.second[i] += m * p * p
         // A cube's moment about an axis through its centre: m (a² + a²) / 12.
         self.own[i] += m * edge * edge / 6.0
     }
@@ -380,16 +376,16 @@ impl<C, K: Creature<C>> Gather<C> for BoneSums<K> {
 
 /// Mass properties from sums: the centre, and the moments about axes through it (the
 /// parallel-axis theorem, in f64).
-fn props(mass: f64, first: [f64; 3], second: [f64; 3], own: f64) -> MassProps {
+fn props(mass: f64, first: vec3d, second: vec3d, own: f64) -> MassProps {
     if mass <= 0.0 {
         return EMPTY
     }
-    let c = [first[0] / mass, first[1] / mass, first[2] / mass]
+    let c = first / mass
     // Σ m (y² + z²) about the origin, moved to the centre: minus M (cy² + cz²).
     let about = |a: u32, b: u32| second[a] + second[b] + own - mass * (c[a] * c[a] + c[b] * c[b])
     MassProps {
         mass: f32(mass),
-        centre: vec3(f32(c[0]), f32(c[1]), f32(c[2])),
+        centre: vec3(c),
         inertia: vec3(f32(about(1, 2)), f32(about(0, 2)), f32(about(0, 1))),
     }
 }
@@ -420,20 +416,18 @@ pub fn adaptive_physique<C, K: Creature<C>>(
     var sums = BoneSums {
         creature: take creature,
         mass: Vec::filled(n, 0.0),
-        first: Vec::filled(n, [0.0; 3]),
-        second: Vec::filled(n, [0.0; 3]),
+        first: Vec::filled(n, vec3d(0.0)),
+        second: Vec::filled(n, vec3d(0.0)),
         own: Vec::filled(n, 0.0),
     }
     node(field, density, bounds, c, h, finest, mut sums)
     var out = Mass { per: Vec::new(), total: EMPTY }
-    var all = (0.0, [0.0; 3], [0.0; 3], 0.0)
+    var all = (0.0, vec3d(0.0), vec3d(0.0), 0.0)
     for i in 0..n {
         out.per.push(props(sums.mass[i], sums.first[i], sums.second[i], sums.own[i]))
         all.0 += sums.mass[i]
-        for k in 0..3 {
-            all.1[k] += sums.first[i][k]
-            all.2[k] += sums.second[i][k]
-        }
+        all.1 += sums.first[i]
+        all.2 += sums.second[i]
         all.3 += sums.own[i]
     }
     out.total = props(all.0, all.1, all.2, all.3)
