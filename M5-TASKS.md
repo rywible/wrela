@@ -6,7 +6,7 @@ Scope: #28 ("The clearing, specified", § numbers). Criteria: #51 (AC numbers).
 - [x] A1 `discard`: spike 15's commit, conformance cases (fragment ok; E0607 in a kernel, a vertex shader, CPU code), a diagnostics golden, language.md §12
 - [x] A2 Depth state per draw (compare: less, less-equal, equal, greater, always; writes on or off), build-time constants as cull and depth bias; manifest; both hosts; conformance; renderer.rs frames in both hosts
 - [x] A3 Frame timing: each timed pass's start and end in both hosts; a frame's span; the serial mode (passes one at a time); a pass's own time against the pass alone within 10%
-- [ ] A4 std's ellipsoid without the zero at its centre (spike 13's case); M4's parity tests hold
+- [x] A4 std's ellipsoid without the zero at its centre (spike 13's case); M4's parity tests hold
 
 ## B. Terrain (§3, AC3)
 - [ ] B1 `engine::terrain`: a terrain field, its clipmap cooked on the GPU (height, normal, material), its raycasts on the CPU
